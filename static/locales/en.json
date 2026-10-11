@@ -3249,7 +3249,7 @@
             "localCharacterNotFound": "The local character could not be found.",
             "cloudCharacterNotFound": "The cloud character could not be found.",
             "localCharacterExists": "A local character with the same name already exists.",
-            "visitDataBusy": "A deleted character with the same name is still having its visit data cleaned up. Please try again later.",
+            "visitDataBusy": "Visit data under this name is still being sorted out (a character with this name was just deleted or renamed). Please try again later.",
             "cloudCharacterExists": "A cloud character with the same name already exists.",
             "writeFenceActive": "Cloud save maintenance mode is active. Please try again later.",
             "nameAuditFailed": "The character name did not pass the cloud save validation rules.",

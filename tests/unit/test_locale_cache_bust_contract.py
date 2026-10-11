@@ -65,6 +65,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-10-11-pr3385-cloudsave-visit-data-busy",
         "2026-10-11-pngtuber-skipped-bound-memory-toggle-main-merge",
         "2026-10-10-pngtuber-delete-skipped-bound",
         "2026-10-09-memory-toggle-repair",

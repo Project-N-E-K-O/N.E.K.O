@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -348,7 +349,13 @@ class CloudSaveManager:
         steamworks=None,
         deadline_monotonic: float | None = None,
         fence_already_active: bool = False,
+        on_characters_removed: Callable[[list[dict[str, Any]], frozenset[str]], Any] | None = None,
     ) -> dict[str, Any]:
+        """Download the remote bundle and import the snapshot when startup needs it.
+
+        ``on_characters_removed`` is handed to
+        :func:`import_local_cloudsave_snapshot` (see there).
+        """
         if is_cloudsave_disabled():
             return _build_cloudsave_disabled_action_result(
                 self.config_manager,
@@ -386,10 +393,14 @@ class CloudSaveManager:
             if reason_code == "manual_download_required":
                 result_payload["hint"] = _build_manual_download_hint(status)
             return result_payload
+        import_kwargs: dict[str, Any] = {}
+        if on_characters_removed is not None:
+            import_kwargs["on_characters_removed"] = on_characters_removed
         result = import_local_cloudsave_snapshot(
             self.config_manager,
             deadline_monotonic=deadline_monotonic,
             use_cloud_apply_fence=not fence_already_active,
+            **import_kwargs,
         )
         return {
             "success": True,

@@ -1151,13 +1151,13 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
 
 
 async def _visit_name_refusal(config_manager, name: str, label: str):
-    """409 while a deleted character of ``name`` still has visit data being retired (design OD-13)."""
+    """409 while ``name`` is held by a pending retirement or rename of the visit data (design OD-13)."""
     from main_routers.visit_router import character_hooks as visit_hooks
 
     if not await visit_hooks.name_blocked(config_manager, name):
         return None
     return JSONResponse({'success': False, 'error_code': VISIT_DATA_BUSY,
-                         'error': f'同名的已删除角色还在清理串门数据，请稍后再使用这个{label}'}, status_code=409)
+                         'error': f'这个名字的串门数据还在整理（同名角色刚被删除或改名），请稍后再使用这个{label}'}, status_code=409)
 
 
 async def _rename_catgirl_transaction(
@@ -2080,7 +2080,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
     except Exception as exc:
         logger.warning("删除前写串门退役标记失败，已阻止删除: %s: %r", name, exc)
         return JSONResponse({'success': False, 'error_code': VISIT_DATA_BUSY,
-                             'error': '串门数据无法读取，请稍后再删除'}, status_code=409)
+                             'error': '串门数据正在整理或无法读取，请稍后再删除'}, status_code=409)
     visit_settled = True
     settle_cancelled = False
     try:

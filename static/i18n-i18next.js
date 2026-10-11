@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // PNGTuber 删除跳过提示（本分支）与记忆开关修复提示（上游）合并，刷新八语言客户端缓存。
-    const LOCALE_VERSION = '2026-10-11-pr3385-cloudsave-visit-data-busy';
+    // 串门「名字仍在整理」提示改成同时涵盖删除与改名，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-11-visit-data-busy-rename-text';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

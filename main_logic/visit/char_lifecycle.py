@@ -37,6 +37,13 @@ visit data is not consistent with the character config:
   lives under ``memory_dir/<character>/`` and goes with the character's
   memory directory in the delete transaction itself. While an item is
   pending, a new character may not take its name (:func:`is_name_retiring`).
+  A delete of a character whose own rename is still unreconciled settles
+  that rename first (otherwise the entries left under its other name would
+  outlive it), and a cloudsave import that removes local characters records
+  them with :func:`record_removed_characters_sync` before it commits.
+
+While either marker names a character, no new character may take that name
+(:func:`name_marker_state`): the roster keys entries by name.
 
 Machines without any visit data never get a marker: the transactions are
 unchanged for them.
@@ -47,7 +54,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
@@ -59,8 +66,10 @@ from main_logic.visit.subjects import (
     PeerRoster,
     RosterCorruptError,
     add_roster_marker_item,
+    add_roster_marker_item_sync,
     clear_roster_marker,
     read_roster_marker,
+    read_roster_marker_sync,
     remove_roster_marker_item,
     set_roster_marker,
 )
@@ -263,14 +272,50 @@ def retire_item(name: str, character_uid: str | None) -> dict:
     return {"name": name, "character_uid": character_uid or None}
 
 
-async def begin_retire(config_dir: str | Path, name: str, character_uid: str | None) -> dict | None:
+async def _settle_own_rename(
+    config_dir: Path, name: str, character_uid: str | None, load_names: LoadNames,
+) -> None:
+    """Reconcile a pending rename of the character about to be deleted; raise when it cannot be.
+
+    Retirement goes by the character's current name only: entries a failed
+    rename migration left under its other name would outlive it, and a new
+    character taking that name later would inherit them. An unsettleable
+    rename (unreadable spools) raises :class:`RenamePendingElsewhere`; an
+    ambiguous one (the other name was taken by another character meanwhile)
+    lets the delete go ahead, nothing being separable any more.
+    """
+    marker = await read_roster_marker(config_dir, PENDING_RENAME)
+    if not _rename_names_of(marker, name, character_uid):
+        return
+    try:
+        names, uid_of = await load_names()
+        unsettled = await reconcile_rename(config_dir, names, uid_of)
+    except Exception as exc:  # noqa: BLE001 - 对不完账就拒绝这次删除，标记留给启动对账
+        raise RenamePendingElsewhere("this character's rename is still being migrated") from exc
+    if unsettled is ALL_NAMES:
+        raise RenamePendingElsewhere("this character's rename is still being migrated")
+    if unsettled:
+        # 另一个名字已被别的角色占用：两边的条目分不开了，删掉这个角色不会让情况更糟；
+        # 它的 uid 一消失，下次对账就按「已删除」清掉标记
+        logger.warning("visit retire: ambiguous pending_rename of %r left as is, delete goes ahead", name)
+
+
+async def begin_retire(
+    config_dir: str | Path, name: str, character_uid: str | None, *, load_names: LoadNames | None = None,
+) -> dict | None:
     """Add the ``pending_retire`` item before the delete commits; return it (``None``: no visit data).
 
-    An unreadable roster raises :class:`RosterCorruptError` (the delete is
+    With ``load_names`` (the config before the delete), a pending rename of
+    this very character is reconciled first; when it cannot be,
+    :class:`RenamePendingElsewhere` is raised and nothing is written. An
+    unreadable roster raises :class:`RosterCorruptError` (the delete is
     refused rather than leaving visit data no marker points at).
     """
+    config_dir = Path(config_dir)
     if not await has_visit_data(config_dir, character_uid):
         return None
+    if load_names is not None:
+        await _settle_own_rename(config_dir, name, character_uid, load_names)
     item = retire_item(name, character_uid)
     await add_roster_marker_item(config_dir, PENDING_RETIRE, item)
     return item
@@ -365,6 +410,15 @@ async def replay_retires(
     clean = True
     for item in marker:
         async with (config_lock() if config_lock is not None else contextlib.nullcontext()):
+            # 锁内重读标记：等锁期间这一项可能已被别处处理掉、同名新角色也已建好，
+            # 拿着旧快照再退役会删掉新角色的名册条目
+            try:
+                current = await read_roster_marker(config_dir, PENDING_RETIRE)
+            except RosterCorruptError:
+                clean = False
+                continue
+            if not isinstance(current, list) or item not in current:
+                continue
             # 锁内重读配置：等锁期间删除事务可能刚提交 / 刚回滚
             names, uid_of = await load_names()
             clean = await settle_retire(config_dir, item, names=names, uid_of=uid_of,
@@ -389,6 +443,85 @@ async def is_name_retiring(config_dir: str | Path, name: str) -> bool:
     return isinstance(marker, list) and any(
         (_item_fields(item) or ("", None))[0] == name for item in marker
     )
+
+
+NAME_FREE = "free"
+NAME_RETIRING = "retiring"
+NAME_RENAMING = "renaming"
+NAME_UNREADABLE = "unreadable"
+
+
+async def name_marker_state(config_dir: str | Path, name: str) -> str:
+    """Whether a pending marker still holds ``name``, as one of the ``NAME_*`` states.
+
+    ``NAME_RETIRING``: a deleted character of that name is being retired.
+    ``NAME_RENAMING``: it is the old or the new name of an unreconciled
+    rename (the roster entries under it are not settled yet).
+    ``NAME_UNREADABLE``: the roster cannot be read, so nothing is known;
+    callers creating characters let it pass (see :func:`is_name_retiring`).
+    """
+    try:
+        retiring = await read_roster_marker(config_dir, PENDING_RETIRE)
+        renaming = await read_roster_marker(config_dir, PENDING_RENAME)
+    except RosterCorruptError as exc:
+        logger.warning("visit lifecycle: roster unreadable, name %r not checked: %s", name, exc)
+        return NAME_UNREADABLE
+    if isinstance(retiring, list) and any((_item_fields(item) or ("", None))[0] == name for item in retiring):
+        return NAME_RETIRING
+    if isinstance(renaming, dict) and name in (renaming.get("old"), renaming.get("new")):
+        return NAME_RENAMING
+    return NAME_FREE
+
+
+def _rename_names_of(marker: Any, name: str, character_uid: str | None) -> tuple[str, ...]:
+    """The ``old`` / ``new`` names of ``marker`` when it is a pending rename of this character, else ``()``."""
+    if not isinstance(marker, dict):
+        return ()
+    old, new = marker.get("old"), marker.get("new")
+    if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
+        return ()
+    marker_uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
+    involved = marker_uid == character_uid if marker_uid and character_uid else name in (old, new)
+    return (old, new) if involved else ()
+
+
+def record_removed_characters_sync(
+    config_dir: str | Path, removed: Iterable[Mapping[str, Any]], kept_local_names: Iterable[str] = (),
+) -> int:
+    """Add a ``pending_retire`` item for each character a cloudsave import is about to remove.
+
+    Called from the import thread right before it commits, with the
+    ``{name, character_uid}`` of every local character absent from the
+    snapshot and the names of the local characters it keeps. Startup
+    recovery then settles the items against the committed config like any
+    delete (an import that rolled back only drops them). A removed character
+    whose own rename is still pending gets an item for its other name too:
+    recovery drops the rename marker of a character that is gone, so the
+    entries a failed migration left under that name would otherwise outlive
+    it, and a character the snapshot brings under that name would inherit
+    them. Only a name another local character already holds is left alone:
+    its entries are mixed with that character's and cannot be told apart
+    (the same rule as an ordinary delete). Machines without visit data get
+    nothing; returns the number of items added.
+    """
+    config_dir = Path(config_dir)
+    kept = set(kept_local_names)
+    try:
+        rename_marker = read_roster_marker_sync(config_dir, PENDING_RENAME)
+    except RosterCorruptError:
+        rename_marker = None  # 名册读不出：写标记那一步同样会失败，由回调方记日志
+    added = 0
+    for entry in removed:
+        fields = _item_fields(retire_item(entry.get("name"), entry.get("character_uid")))
+        if fields is None or not _has_visit_files_sync(config_dir, fields[1]):
+            continue
+        name, uid = fields
+        names = [name] + [
+            other for other in _rename_names_of(rename_marker, name, uid) if other != name and other not in kept
+        ]
+        for retiring in names:
+            added += bool(add_roster_marker_item_sync(config_dir, PENDING_RETIRE, retire_item(retiring, uid)))
+    return added
 
 
 def names_of(characters: Any) -> tuple[set[str], dict[str, str]]:

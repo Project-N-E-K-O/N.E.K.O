@@ -438,8 +438,12 @@ async def read_roster_marker(config_dir: str | Path, key: str) -> Any:
     ``pending_retire``) that live outside every account partition. Reads
     strictly: an unreadable roster raises :class:`RosterCorruptError`.
     """
-    path = Path(config_dir) / VISIT_PEERS_FILENAME
-    data = await asyncio.to_thread(_read_top_level_sync, path)
+    return await asyncio.to_thread(read_roster_marker_sync, config_dir, key)
+
+
+def read_roster_marker_sync(config_dir: str | Path, key: str) -> Any:
+    """Blocking :func:`read_roster_marker`, for callers already off the event loop (a startup import thread)."""
+    data = _read_top_level_sync(Path(config_dir) / VISIT_PEERS_FILENAME)
     return copy.deepcopy(data.get(key))
 
 
@@ -523,8 +527,12 @@ async def add_roster_marker_item(config_dir: str | Path, key: str, item: Any) ->
     is added and removed on its own. A ``key`` that is not a list, or an
     unreadable roster, raises :class:`RosterCorruptError`.
     """
-    path = Path(config_dir) / VISIT_PEERS_FILENAME
-    return await asyncio.to_thread(_edit_marker_list_sync, path, key, item, True)
+    return await asyncio.to_thread(add_roster_marker_item_sync, config_dir, key, item)
+
+
+def add_roster_marker_item_sync(config_dir: str | Path, key: str, item: Any) -> bool:
+    """Blocking :func:`add_roster_marker_item`, for callers already off the event loop (a startup import thread)."""
+    return _edit_marker_list_sync(Path(config_dir) / VISIT_PEERS_FILENAME, key, item, True)
 
 
 async def remove_roster_marker_item(config_dir: str | Path, key: str, item: Any) -> bool:

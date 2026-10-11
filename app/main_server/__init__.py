@@ -359,9 +359,10 @@ async def _run_cloudsave_manager_action(
     reason: str,
     budget_seconds: float | None = None,
     steamworks=None,
+    **action_kwargs,
 ):
     action = getattr(_cloudsave_manager, action_name)
-    kwargs = {"reason": reason}
+    kwargs = {"reason": reason, **action_kwargs}
     if (
         budget_seconds is not None
         and budget_seconds > 0
@@ -1095,10 +1096,15 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                 bootstrap_local_cloudsave_environment(_config_manager)
                 import_result = None
                 try:
+                    from main_logic.cloudsave_visit_retire import removed_characters_recorder
+
+                    # 导入删掉的本地角色记成串门退役项，由启动对账补完退役（没有配置目录时不挂回调）
+                    recorder = removed_characters_recorder(_config_manager)
                     import_result = await _run_cloudsave_manager_action(
                         "import_if_needed",
                         reason="main_server_startup",
                         budget_seconds=10.0,
+                        **({"on_characters_removed": recorder} if recorder is not None else {}),
                     )
                     logger.info("Steam Auto-Cloud startup import: %s", import_result)
                 except CloudsaveDeadlineExceeded:

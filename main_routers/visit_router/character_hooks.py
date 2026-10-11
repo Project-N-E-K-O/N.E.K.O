@@ -76,11 +76,18 @@ async def settle_rename(config_manager: Any, marker: dict) -> bool:
 
 
 async def begin_retire(config_manager: Any, name: str, character_uid: str | None) -> dict | None:
-    """Add the ``pending_retire`` item of a character about to be deleted."""
+    """Add the ``pending_retire`` item of a character about to be deleted.
+
+    A pending rename of this character is reconciled first (see
+    :func:`char_lifecycle.begin_retire`); the caller holds the config lock,
+    so the config read for it is the one the delete starts from.
+    """
     config_dir = _config_dir(config_manager)
     if config_dir is None:
         return None
-    return await char_lifecycle.begin_retire(config_dir, name, character_uid)
+    return await char_lifecycle.begin_retire(
+        config_dir, name, character_uid, load_names=names_loader(config_manager),
+    )
 
 
 async def settle_retire(config_manager: Any, item: dict) -> bool:
@@ -99,13 +106,31 @@ async def settle_retire(config_manager: Any, item: dict) -> bool:
 
 
 async def name_blocked(config_manager: Any, name: str) -> bool:
-    """Whether ``name`` may not be taken yet: a deleted character of that name is still being retired.
+    """Whether ``name`` may not be taken yet by a new character.
 
-    The caller holds the character-config lock, so the pending retirements
-    are retried once first (a transient failure clears without a restart).
+    Taken while a deleted character of that name is still being retired, or
+    while it is the old or new name of an unreconciled rename (a new
+    character would inherit the entries left under it, and the rename could
+    never be told apart from it again). The caller holds the character-config
+    lock, so the pending marker is retried once first (a transient failure
+    clears without a restart). An unreadable roster blocks nothing.
     """
     config_dir = _config_dir(config_manager)
-    if config_dir is None or not await char_lifecycle.is_name_retiring(config_dir, name):
+    if config_dir is None:
         return False
-    await char_lifecycle.replay_retires(config_dir, names_loader(config_manager), retire_persona=retire_persona)
-    return await char_lifecycle.is_name_retiring(config_dir, name)
+    state = await char_lifecycle.name_marker_state(config_dir, name)
+    if state == char_lifecycle.NAME_RETIRING:
+        try:
+            await char_lifecycle.replay_retires(config_dir, names_loader(config_manager), retire_persona=retire_persona)
+        except Exception as exc:  # noqa: BLE001 - 重试失败按「仍在退役」处理：409 / 跳过这张卡，不能变成 500
+            logger.warning("visit retire: retry before reusing name %r failed: %r", name, exc)
+            return True
+        state = await char_lifecycle.name_marker_state(config_dir, name)
+    if state == char_lifecycle.NAME_RENAMING:
+        try:
+            names, uid_of = await names_loader(config_manager)()
+            await char_lifecycle.reconcile_rename(config_dir, names, uid_of)
+        except Exception as exc:  # noqa: BLE001 - 对不完账就挡住这个名字，标记留给启动对账
+            logger.warning("visit rename: pending_rename not reconciled before reusing %r: %r", name, exc)
+        state = await char_lifecycle.name_marker_state(config_dir, name)
+    return state in (char_lifecycle.NAME_RETIRING, char_lifecycle.NAME_RENAMING)
