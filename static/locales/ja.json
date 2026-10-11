@@ -4599,6 +4599,7 @@
         "loadExpressionsFailed": "モデル表情の読み込みに失敗しました",
         "expressionsLoadedFromModel": "現在のモデルから表情リストを読み込みました",
         "useGenericExpressions": "汎用表情リストを使用（先にメインページでモデルを読み込んでください）",
+        "useSupplementedExpressions": "汎用の予備表情リストに保存済みの表情名を追加しています（モデルを読み込んで使用可能な表情を確認してください）",
         "useDefaultExpressions": "デフォルト表情リストを使用（先にメインページでモデルを読み込んでください）",
         "configLoadSuccess": "設定を読み込みました",
         "configUseDefault": "デフォルト設定を使用",

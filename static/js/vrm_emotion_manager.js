@@ -303,7 +303,10 @@
                 populateSelects();
                 populatePreviewButtons();
                 emotionConfig.style.display = 'block';
-                showStatus(t('vrmEmotionManager.useGenericExpressions', '使用通用表情列表（请先在主页面加载模型）'), 'info');
+                const sourceMessage = data.source === 'common_with_emotion_mapping'
+                    ? t('vrmEmotionManager.useSupplementedExpressions', '使用通用备用表情列表，已补充保存的表情名称（请加载模型确认可用表情）')
+                    : t('vrmEmotionManager.useGenericExpressions', '使用通用表情列表（请先在主页面加载模型）');
+                showStatus(sourceMessage, 'info');
                 return true;
             } else {
                 showStatus(t('vrmEmotionManager.loadExpressionsFailed', '加载模型表情失败') + ': ' + (data.error || t('common.unknownError', '未知错误')), 'error');

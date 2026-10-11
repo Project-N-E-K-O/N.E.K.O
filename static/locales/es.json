@@ -4599,6 +4599,7 @@
         "loadExpressionsFailed": "No se pudieron cargar las expresiones del modelo",
         "expressionsLoadedFromModel": "Lista de expresiones cargada desde el modelo actual",
         "useGenericExpressions": "Usando la lista de expresiones genéricas (primero cargue el modelo en la página principal)",
+        "useSupplementedExpressions": "Usando la lista genérica de respaldo con los nombres de expresiones guardados (cargue el modelo para confirmar las expresiones disponibles)",
         "useDefaultExpressions": "Usando la lista de expresiones predeterminada (primero cargue el modelo en la página principal)",
         "configLoadSuccess": "Configuración cargada exitosamente",
         "configUseDefault": "Usando la configuración predeterminada",

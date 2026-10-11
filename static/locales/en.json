@@ -4599,6 +4599,7 @@
         "loadExpressionsFailed": "Failed to load model expressions",
         "expressionsLoadedFromModel": "Expression list loaded from current model",
         "useGenericExpressions": "Using generic expression list (please load model on main page first)",
+        "useSupplementedExpressions": "Using generic fallback expressions plus saved names (load the model to confirm available expressions)",
         "useDefaultExpressions": "Using default expression list (please load model on main page first)",
         "configLoadSuccess": "Configuration loaded successfully",
         "configUseDefault": "Using default configuration",

@@ -4599,6 +4599,7 @@
         "loadExpressionsFailed": "모델 표정을 로드하지 못했습니다",
         "expressionsLoadedFromModel": "현재 모델에서 표정 목록을 로드했습니다",
         "useGenericExpressions": "일반 표정 목록 사용 (먼저 메인 페이지에서 모델을 로드하세요)",
+        "useSupplementedExpressions": "일반 대체 표정 목록에 저장된 표정 이름을 추가했습니다 (모델을 로드하여 사용 가능한 표정을 확인하세요)",
         "useDefaultExpressions": "기본 표정 목록 사용 (먼저 메인 페이지에서 모델을 로드하세요)",
         "configLoadSuccess": "설정이 성공적으로 로드되었습니다",
         "configUseDefault": "기본 설정 사용",

@@ -4599,6 +4599,7 @@
         "loadExpressionsFailed": "載入模型表情失敗",
         "expressionsLoadedFromModel": "已從當前模型載入表情列表",
         "useGenericExpressions": "使用通用表情列表（請先在主頁面載入模型）",
+        "useSupplementedExpressions": "使用通用備用表情列表，已補充儲存的表情名稱（請載入模型確認可用表情）",
         "useDefaultExpressions": "使用預設表情列表（請先在主頁面載入模型）",
         "configLoadSuccess": "配置載入成功",
         "configUseDefault": "使用預設配置",

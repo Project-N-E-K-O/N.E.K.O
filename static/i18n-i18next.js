@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 明文 HTTP 配对提示与上游剧场重邀文案合并，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-10-05-instance-access-plain-http-main-merge';
+    // 新增 VRM 备用候选来源提示，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-10-11-vrm-fallback-candidates';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
