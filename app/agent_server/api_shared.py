@@ -190,4 +190,6 @@ from .channels.user_plugin import (  # noqa: F401
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
+from utils.instance_access import InstanceAccessMiddleware
+app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)

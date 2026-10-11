@@ -181,7 +181,7 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         output_streaming=True,
         client_sentence_split=False,
         audio_format="PCM 24kHz -> resample 48kHz",
-        notes="ElevenLabs Text-to-Dialogue stream with eleven_v3_conversational",
+        notes="ElevenLabs Text-to-Dialogue stream with eleven_v4_turbo",
     ),
     "minimax": TTSProviderMeta(
         name="minimax",

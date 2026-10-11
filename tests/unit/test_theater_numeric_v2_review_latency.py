@@ -194,8 +194,8 @@ def test_only_metric_judgment_is_on_by_default():
         'suggestion_fill': False, 'history_lookup': False, 'actor_retry': False}
 
 
-def test_evaluator_off_accepts_the_public_offer_deterministically():
-    """判定关闭时不猜数值与意图，但接受已公开提议的第一条推荐仍可放行选路。"""  # noqa: DOCSTRING_CJK
+def test_evaluator_off_does_not_authorize_an_unverified_first_suggestion():
+    """推荐的位置不证明玩家授权；没有作者合同核验时保持当前幕。"""  # noqa: DOCSTRING_CJK
 
     engine, session, _outcome, _candidate = _fixture(50)
     suggestion = '（点头）好，带路吧。'
@@ -206,7 +206,7 @@ def test_evaluator_off_accepts_the_public_offer_deterministically():
     current = SimpleNamespace(session=session)
     accepted = numeric_v2_workflow._evaluation_without_evaluator(
         current, SimpleNamespace(message=suggestion))
-    assert accepted.transition_intent == 'accept'
+    assert accepted.transition_intent == 'unclear'
     assert accepted.metric_changes == ()
     stalled = numeric_v2_workflow._evaluation_without_evaluator(
         current, SimpleNamespace(message='我想再看看别的地方。'))
@@ -514,8 +514,10 @@ async def test_workflow_inserts_acceptance_only_after_offer_review(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_evaluator_failure_keeps_exact_public_acceptance_button(tmp_path, monkeypatch):
-    """判定服务故障时，玩家逐字点击已公开的接受按钮仍应换幕。"""  # noqa: DOCSTRING_CJK
+@pytest.mark.parametrize('authored', [False, True])
+@pytest.mark.parametrize('followup', ['', '（歪头）你觉得呢？'])
+async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path, monkeypatch, authored, followup):
+    """判定故障时只核验作者合同，不把 Actor 推荐首位当成接受权限。"""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -525,6 +527,9 @@ async def test_evaluator_failure_keeps_exact_public_acceptance_button(tmp_path, 
     engine = case['engine']
     runtime = NumericV2Runtime(engine, tmp_path)
     suggestion = '（点头）好，带路吧。'
+    if authored:
+        engine.nodes['start']['route_gates'][1]['transition_contract'].update(
+            fallback_offer='手续办妥了，我们现在去阅览室吧。', accept_input=suggestion)
     current = await runtime.start_session(
         session_id='evaluator_failure_acceptance',
         catgirl_binding=_binding(),
@@ -543,10 +548,12 @@ async def test_evaluator_failure_keeps_exact_public_acceptance_button(tmp_path, 
         generations.append(kwargs)
         if len(generations) == 1:
             return {
-                'performance': '手续办妥了，我们现在去阅览室吧。',
+                'performance': '手续办妥了，我们现在去阅览室吧。' + followup,
                 'suggested_inputs': [suggestion, '再等等。'],
                 'transition_offered': True,
             }
+        if kwargs['outcome'].session.current_node_id == current.session.current_node_id:
+            return {'performance': '先留在这里。', 'suggested_inputs': [], 'transition_offered': False}
         return engine.finalize_transition_performance(
             kwargs['outcome'],
             _candidate(),
@@ -579,20 +586,21 @@ async def test_evaluator_failure_keeps_exact_public_acceptance_button(tmp_path, 
         ensure_current_binding=lambda _: _binding(),
     )
     current = offered.stored
-    assert current.session.transition_offered is True
+    # A: even a literal authored quote is not a program-issued invitation.
+    assert current.session.transition_offered is False
 
     diagnostics = {}
     result = await numeric_v2_workflow.execute_numeric_v2_turn(
         config_manager=object(),
         runtime=runtime,
         current=current,
-        turn=TurnRequestV2('accept', current.session.revision, suggestion),
+        turn=TurnRequestV2('accept', current.session.revision, suggestion, input_source='suggestion'),
         ensure_current_binding=lambda _: _binding(),
         diagnostics_sink=diagnostics,
     )
 
     assert diagnostics['evaluator_degraded'] is True
-    assert result.stored.session.current_node_id != current.session.current_node_id
+    assert result.stored.session.current_node_id == current.session.current_node_id
 
 
 @pytest.mark.asyncio
@@ -854,7 +862,8 @@ def test_contract_check_accepts_only_authored_boundary_items():
 
 
 @pytest.mark.asyncio
-async def test_boundary_check_reads_author_boundaries_and_reports_violation(monkeypatch):
+@pytest.mark.parametrize('include_all_segments', [False, True])
+async def test_boundary_check_reads_author_boundaries_and_reports_violation(monkeypatch, include_all_segments):
     """窄判定必须真的读到作者禁令，并把逐字命中的违规返回给调用方。"""  # noqa: DOCSTRING_CJK
 
     captured = {}
@@ -886,13 +895,22 @@ async def test_boundary_check_reads_author_boundaries_and_reports_violation(monk
     }}
     worker = evaluator.NumericV2MetricEvaluator(object())
     violated = await worker.verify_contract_boundaries(
-        node=node, actor_performance={'performance': '两人抵达观景坡顶端的平台。'},
+        node=node, actor_performance={'segments': [
+            {'phase': 'source_response', 'performance': ''.join(
+                f'（点头）这是第{i}条已经确认的消息。' for i in range(8)
+            )},
+            {'phase': 'transition_bridge', 'scene_narration': '走过林间小径。'},
+            {'phase': 'target_opening', 'performance': '两人抵达观景坡顶端的平台。'},
+        ]},
+        include_all_segments=include_all_segments,
         player_input='（加快步伐走完最后几级台阶）呼，终于到了！')
 
     assert violated == ('不得直接到达最高处平台',)
     sent = captured['messages'][0].content + captured['messages'][1].content
     assert '不得直接到达最高处平台' in sent
     assert '不得描述已到达终点平台' in sent
+    assert '两人抵达观景坡顶端的平台。' in sent
+    assert ('这是第0条已经确认的消息。' in sent) == include_all_segments
     # 没有禁令的幕不发请求，直接返回空。
     captured.clear()
     assert await worker.verify_contract_boundaries(

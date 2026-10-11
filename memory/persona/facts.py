@@ -1055,7 +1055,7 @@ class FactsMixin:
         return persona.setdefault(entity, {}).setdefault('facts', [])
 
     async def aupdate_subject_display_name(
-        self, name: str, subject, display_name,
+        self, name: str, subject, display_name, *, strict: bool = False,
     ) -> bool:
         """Stamp a human-readable display name onto an EXISTING scoped section.
 
@@ -1074,6 +1074,10 @@ class FactsMixin:
            题，群名/群名片是用户可改的原始数据，与 speaker_label 同一个
            攻击面（#2605），复用同一个中和器；中和后为空视为没有名字，
            不清除已有值（名字暂时拿不到时保留旧名比退回裸 id 有用）。
+
+        ``strict``: a persona file that cannot be read (or is not an object)
+        raises instead of returning False, so a caller that must retry can
+        tell it apart from the legitimate no-ops (no section yet, unchanged).
         """  # noqa: DOCSTRING_CJK
         from memory.facts import FactStore
         from memory.scopes import coerce_subject, persona_subject_from_section
@@ -1097,12 +1101,16 @@ class FactsMixin:
                 try:
                     persona = await read_json_async(path)
                 except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                    if strict:
+                        raise
                     logger.warning(
                         f"[Persona] {name}: display_name skipped; strict load "
                         f"failed: {exc}"
                     )
                     return False
                 if not isinstance(persona, dict):
+                    if strict:
+                        raise ValueError(f"persona of {name!r} is not an object")
                     logger.warning(
                         f"[Persona] {name}: display_name skipped; persona is not a dict"
                     )

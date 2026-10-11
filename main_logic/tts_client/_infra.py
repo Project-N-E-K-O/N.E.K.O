@@ -254,6 +254,53 @@ def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
     steady_bytes = int(steady_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
     return AudioJitterBuffer(response_queue, initial_bytes, steady_bytes)
 
+# Close codes that mean "the server refused this request" rather than "the
+# connection went away". Everything else stays on the reconnect path: 1000 /
+# 1001 / 1005 are ordinary shutdown, and 1006 / 1011 / 1012 / 1013 are drops,
+# restarts and throttling that the worker recovers from by itself. Providers
+# with extra refusal codes pass them through ``extra_refusal_codes`` rather than
+# widening this set for everyone.
+SERVER_CLOSE_REFUSAL_CODES = frozenset({1007, 1008})
+# Application-defined close range: a provider putting a condition in 4xxx means
+# a deliberate rejection, not a transport event.
+SERVER_CLOSE_APPLICATION_RANGE = range(4000, 5000)
+
+
+def classify_server_close(exc, *, extra_refusal_codes=()):
+    """Turn a peer-initiated refusal close frame into a structured TTS error.
+
+    Returns None for every close the worker can recover from unnoticed: our own
+    closes, TCP-level drops (no close frame at all), and transient codes. Only a
+    frame the peer actually sent, naming a refusal code, becomes an error.
+
+    The payload deliberately carries no top-level ``code``: the message text is
+    classified in ``tts_response_handler`` (arrears / quota / rate-limit / bad
+    key …), so workers do not duplicate that keyword table.
+
+    ``exc`` is a ``websockets`` ``ConnectionClosed``; duck-typed on ``rcvd`` so
+    this helper stays importable without the websocket dependency.
+    """
+    received = getattr(exc, "rcvd", None)
+    if received is None:
+        # 没有收到关闭帧 = 链路层断的，或对端没发帧。不是拒绝。
+        return None
+    if getattr(exc, "rcvd_then_sent", None) is False:
+        # 我们先关的（sid 轮换、interrupt、shutdown），这条只是回执。
+        return None
+    code = getattr(received, "code", None)
+    refusal_codes = set(SERVER_CLOSE_REFUSAL_CODES) | set(extra_refusal_codes)
+    if not (code in refusal_codes or (isinstance(code, int) and code in SERVER_CLOSE_APPLICATION_RANGE)):
+        return None
+    reason = str(getattr(received, "reason", "") or "")
+    return {
+        "type": "error",
+        "data": {
+            "close_code": code,
+            "message": reason or f"connection closed ({code})",
+        },
+    }
+
+
 def _enqueue_error(response_queue, error_value):
     """Unified error logging and error-message enqueueing."""
     if isinstance(error_value, str):

@@ -21,6 +21,7 @@ from .numeric_v2 import (
     DEFAULT_METRIC_MIN,
     metrics_to_package,
     normalize_metric_drafts,
+    preset_metric_catalog,
 )
 from .numeric_v2_branch import NumericV2BranchService
 
@@ -41,6 +42,94 @@ class NumericV2RevisionConflictError(NumericV2ProjectError):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _repair_band_descriptions(source):
+    """Clean legacy author descriptions without changing the source package."""
+    setup = deepcopy(dict(source)) if isinstance(source, Mapping) else {}
+    metrics = setup.get("metrics")
+    for metric in metrics if isinstance(metrics, list) else []:
+        bands = metric.get("bands") if isinstance(metric, Mapping) else None
+        for band in bands if isinstance(bands, list) else []:
+            if isinstance(band, dict) and band.get("description") is not None:
+                description = band["description"]
+                if not isinstance(description, str) or len(description) > 2000:
+                    band.pop("description")
+    return setup
+
+
+def _setup_fields(source, *, legacy=None, strict=True):
+    """Validate draft field names without requiring a complete metric schema."""
+    from .contracts import NumericV2SetupPayload, MetricPayload, MetricBandPayload
+
+    def clean(value, fields, reason, old=None):
+        result = deepcopy(dict(value))
+        for key in set(result).difference(fields):
+            if strict and result[key] is not None and not (
+                isinstance(old, Mapping) and key in old and old[key] == result[key]
+            ):
+                raise NumericV2ProjectError(reason)
+            result.pop(key)
+        return result
+
+    setup = clean(source, NumericV2SetupPayload.model_fields, "unsupported_setup_field", legacy)
+    old_metrics = (legacy or {}).get("metrics") or []
+    if not isinstance(old_metrics, list):
+        old_metrics = []
+    metrics = setup.get("metrics")
+    if isinstance(metrics, list):
+        for index, metric in enumerate(metrics):
+            if not isinstance(metric, Mapping):
+                continue
+            old = next((item for item in old_metrics if isinstance(item, Mapping)
+                        and metric.get("id") and item.get("id") == metric["id"]),
+                       old_metrics[index] if index < len(old_metrics) else None)
+            metric = clean(metric, MetricPayload.model_fields, "unsupported_metric_field", old)
+            old_bands = (old.get("bands") or []) if isinstance(old, Mapping) else []
+            if not isinstance(old_bands, list):
+                old_bands = []
+            bands = metric.get("bands")
+            if isinstance(bands, list):
+                metric["bands"] = [clean(band, MetricBandPayload.model_fields,
+                    "unsupported_metric_band_field", next((item for item in old_bands
+                        if isinstance(item, Mapping) and all(key in item and item[key] == band[key]
+                            for key in set(band).difference(MetricBandPayload.model_fields)
+                            if band[key] is not None)), None))
+                    if isinstance(band, Mapping) else band for i, band in enumerate(bands)]
+                for band in metric["bands"]:
+                    if isinstance(band, Mapping) and band.get("description") is not None:
+                        description = band["description"]
+                        if not isinstance(description, str) or len(description) > 2000:
+                            if strict:
+                                raise NumericV2ProjectError("invalid_metric_band_description")
+                            # Repair legacy drafts/package projections without changing
+                            # the stored source package or accepting invalid new edits.
+                            band.pop("description")
+            metrics[index] = metric
+    return setup
+
+
+def _package_metrics(story: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Recover the author metric projection without rewriting its source package."""
+    metrics = []
+    for metric_id, definition in (story.get("metric_schema") or {}).items():
+        metrics.append({
+            "id": metric_id,
+            "preset": None,
+            "name": definition.get("name", ""),
+            "description": definition.get("description", ""),
+            "relationship_effect": definition.get("relationship_effect", "none"),
+            "min": definition.get("min", DEFAULT_METRIC_MIN),
+            "max": definition.get("max", DEFAULT_METRIC_MAX),
+            "initial": definition.get("initial", DEFAULT_METRIC_INITIAL),
+            "increase_limit": (definition.get("per_turn_limit") or {}).get("increase", 5),
+            "decrease_limit": (definition.get("per_turn_limit") or {}).get("decrease", 5),
+            "increase_criteria": definition.get("increase_criteria", []),
+            "decrease_criteria": definition.get("decrease_criteria", []),
+            "visibility": "hidden",
+            "bands": definition.get("bands", []),
+        })
+    return _setup_fields({"metrics": normalize_metric_drafts(metrics)}, strict=False)["metrics"]
 
 
 def _normalize_editor(value: Any) -> dict[str, Any]:
@@ -411,6 +500,7 @@ class NumericV2ProjectStore:
             if unknown:
                 raise NumericV2ProjectError("unsupported_project_change")
             content_neutral = set(changes) <= {"editor", "stage"}
+            project["authoring"] = _normalize_authoring(project.get("authoring"), project.get("story"))
             previous_fingerprint = NumericV2BranchService._fingerprint(project) if content_neutral else None
             package_changed = "story" in changes
             if "title" in changes:
@@ -422,20 +512,58 @@ class NumericV2ProjectStore:
             if "stage" in changes and changes["stage"] in {"setup", "story", "publish"}:
                 project["stage"] = changes["stage"]
             if "setup" in changes:
-                old_setup = deepcopy(dict(project.get("setup") or {}))
-                setup = deepcopy(dict(changes["setup"] or {}))
-                setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
-                old_metrics = (project.get("setup") or {}).get("metrics") or []
+                from .contracts import NumericV2SetupPayload
+
+                stored_setup = project.get("setup")
+                damaged_setup = not isinstance(stored_setup, Mapping)
+                old_setup = (deepcopy(dict(stored_setup)) if not damaged_setup
+                    else self._new_project()["setup"])
+                incoming = _setup_fields(dict(changes["setup"] or {}), legacy=old_setup)
+                if damaged_setup and "metrics" not in incoming and isinstance(project.get("story"), Mapping):
+                    try:
+                        old_setup["metrics"] = _package_metrics(project["story"])
+                    except (TypeError, AttributeError) as exc:
+                        raise NumericV2ProjectError("invalid_metric_draft") from exc
+                fields = NumericV2SetupPayload.model_fields
+                # Existing drafts with unknown keys can be repaired without
+                # deleting the project. Null clears an optional field.
+                setup = _setup_fields(old_setup, strict=False)
+                old_metrics = setup.get("metrics") or []
+                try:
+                    old_metrics = normalize_metric_drafts(list(old_metrics))
+                except (ValueError, TypeError, AttributeError):
+                    # An invalid legacy draft must not block a valid replacement.
+                    # The merged metrics are still validated below before saving.
+                    pass
+                comparable_setup = {**deepcopy(setup), "metrics": old_metrics}
+                for key, value in incoming.items():
+                    if value is None:
+                        if fields[key].is_required():
+                            raise NumericV2ProjectError("required_setup_field")
+                        setup.pop(key, None)
+                    else:
+                        setup[key] = value
+                try:
+                    setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
+                except (TypeError, AttributeError) as exc:
+                    raise NumericV2ProjectError("invalid_metric_draft") from exc
                 project["setup"] = setup
                 project["_generation_checkpoint"] = None
                 # Metric definitions also affect quality advice and pacing.
-                if old_setup != setup:
+                if comparable_setup != setup:
                     authoring = _normalize_authoring(project.get("authoring"), project.get("story"))
                     if isinstance(authoring.get("quality_assessment"), dict):
                         authoring["quality_assessment"]["stale"] = True
                     authoring["pacing_diagnostics"] = None
                     project["authoring"] = authoring
-                if isinstance(project.get("story"), dict) and setup["metrics"] != old_metrics:
+                if isinstance(project.get("story"), dict) and (
+                    setup["metrics"] != old_metrics or "metrics" in incoming and (
+                        not setup["metrics"] and (
+                            project["story"].get("metric_schema")
+                            or (project["story"].get("initial_state") or {}).get("metrics")
+                        )
+                    )
+                ):
                     metric_schema, initial_metrics = metrics_to_package(setup["metrics"])
                     project["story"]["metric_schema"] = metric_schema
                     # 数值编辑不能清空姓名披露等既有初始状态。
@@ -453,6 +581,28 @@ class NumericV2ProjectStore:
                         metric_schema, initial_metrics = metrics_to_package(project["setup"]["metrics"])
                         next_story["metric_schema"] = metric_schema
                         next_story.setdefault("initial_state", {})["metrics"] = initial_metrics
+                    elif "metric_schema" in next_story:
+                        # A package edit is also the source of the author metrics.
+                        # Keep the package itself intact, including its extensions.
+                        try:
+                            metrics = _package_metrics(next_story)
+                        except (TypeError, AttributeError) as exc:
+                            raise NumericV2ProjectError("invalid_metric_draft") from exc
+                        except ValueError as exc:
+                            raise NumericV2ProjectError(str(exc)) from exc
+                        stored_setup = project.get("setup")
+                        setup = (deepcopy(dict(stored_setup)) if isinstance(stored_setup, Mapping)
+                            else self._new_project()["setup"])
+                        old_metrics = setup.get("metrics")
+                        if isinstance(old_metrics, list):
+                            preset_ids = {row["preset"] for row in preset_metric_catalog()}
+                            presets = {row.get("id"): row["preset"] for row in old_metrics
+                                if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+                                and isinstance(row.get("preset"), str) and row["preset"] in preset_ids}
+                            for metric in metrics:
+                                metric["preset"] = presets.get(metric["id"])
+                        setup["metrics"] = metrics
+                        project["setup"] = setup
                 authoring = _normalize_authoring(project.get("authoring"), project.get("story"))
                 old_signatures = _route_signatures(project.get("story"))
                 new_signatures = _route_signatures(next_story)
@@ -742,12 +892,27 @@ class NumericV2ProjectStore:
         base_revision: int,
         error: Mapping[str, Any],
         checkpoint: Mapping[str, Any] | None = None,
+        source_project: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Record failure diagnostics without overwriting author setup, existing story content or revision."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))
             if project["revision"] != base_revision:
+                if (source_project is not None
+                        and project.get("generation_state") == "interrupted"
+                        and (project.get("generation_error") or {}).get("code") == "generation_revision_changed"):
+                    # Preserve diagnostics of this interrupted generation, but
+                    # never overwrite a newer running/completed generation.
+                    project["generation_error"]["original_error"] = deepcopy(dict(error))
+                    if (all(project.get(key) == source_project.get(key) for key in ("title", "story"))
+                            and _repair_band_descriptions(project.get("setup"))
+                            == _repair_band_descriptions(source_project.get("setup"))):
+                        project["_generation_checkpoint"] = (
+                            deepcopy(dict(checkpoint)) if isinstance(checkpoint, Mapping) else None
+                        )
+                    self._write(project)
+                    return self._view(project)
                 raise NumericV2RevisionConflictError(self._view(project))
             project["generation_state"] = "failed"
             project["generation_error"] = deepcopy(dict(error))
@@ -810,26 +975,8 @@ class NumericV2ProjectStore:
                      compile_result: Mapping[str, Any] | None = None) -> dict[str, Any]:
         with self.transaction():
             project = self._new_project()
-            setup_metrics = []
-            for metric_id, definition in story.get("metric_schema", {}).items():
-                setup_metrics.append({
-                    "id": metric_id,
-                    "preset": None,
-                    "name": definition.get("name", ""),
-                    "description": definition.get("description", ""),
-                    "relationship_effect": definition.get("relationship_effect", "none"),
-                    "min": definition.get("min", DEFAULT_METRIC_MIN),
-                    "max": definition.get("max", DEFAULT_METRIC_MAX),
-                    "initial": definition.get("initial", DEFAULT_METRIC_INITIAL),
-                    "increase_limit": (definition.get("per_turn_limit") or {}).get("increase", 5),
-                    "decrease_limit": (definition.get("per_turn_limit") or {}).get("decrease", 5),
-                    "increase_criteria": definition.get("increase_criteria", []),
-                    "decrease_criteria": definition.get("decrease_criteria", []),
-                    "visibility": "hidden",
-                    "bands": definition.get("bands", []),
-                })
             # The setup is an editor projection; importing must retain the original package.
-            project["setup"]["metrics"] = normalize_metric_drafts(setup_metrics)
+            project["setup"]["metrics"] = _package_metrics(story)
             project["story"] = deepcopy(dict(story))
             project["title"] = str(story.get("meta", {}).get("title", "未命名剧本") or "").strip()
             project["stage"] = "story"
@@ -844,6 +991,14 @@ class NumericV2ProjectStore:
 
     def import_project(self, source: Mapping[str, Any]) -> dict[str, Any]:
         with self.transaction():
+            source = deepcopy(dict(source))
+            # Package bands permit extensions; only extensions backed by the
+            # imported package may be cleaned from its author projection.
+            schema = (source.get("story") or {}).get("metric_schema") or {}
+            package_metrics = [{"id": key, "bands": value.get("bands") or []}
+                               for key, value in schema.items() if isinstance(value, Mapping)] if isinstance(schema, Mapping) else []
+            source["setup"] = _setup_fields(_repair_band_descriptions(source.get("setup") or {}),
+                legacy={"metrics": package_metrics})
             path = self._path(source["project_id"])
             if path.exists() or path.is_symlink():
                 raise NumericV2ProjectError("project_already_exists")
@@ -903,6 +1058,7 @@ class NumericV2ProjectStore:
     @staticmethod
     def _view(project: Mapping[str, Any]) -> dict[str, Any]:
         result = deepcopy(dict(project))
+        result["setup"] = _repair_band_descriptions(result.get("setup") or {})
         checkpoint = result.pop("_generation_checkpoint", None)
         if isinstance(checkpoint, Mapping) and isinstance(checkpoint.get("candidate"), Mapping):
             issues = checkpoint.get("issues") if isinstance(checkpoint.get("issues"), list) else []

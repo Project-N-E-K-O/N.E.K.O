@@ -498,7 +498,7 @@ def test_worker_rejects_old_runtime_without_ready_event(monkeypatch, capsys, ver
         backend._StreamingSpotter(config)
     connection = WorkerConnection()
     backend._worker(connection, config)
-    assert connection.responses == [(False, "WAKE_WORD_WORKER_FAILED")]
+    assert connection.responses == [(False, "WAKE_WORD_RUNTIME_FIX_REQUIRED")]
     assert connection.closed
     assert "event=ready" not in capsys.readouterr().out
 
@@ -513,7 +513,7 @@ def test_supported_package_with_old_native_core_never_reports_ready(monkeypatch,
         backend._StreamingSpotter(config)
     connection = WorkerConnection()
     backend._worker(connection, config)
-    assert connection.responses == [(False, "WAKE_WORD_WORKER_FAILED")]
+    assert connection.responses == [(False, "WAKE_WORD_RUNTIME_FIX_REQUIRED")]
     assert connection.closed
     assert "event=ready" not in capsys.readouterr().out
 

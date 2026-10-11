@@ -60,7 +60,7 @@ class JSONResponseParser:
                     text_content.append(line)
 
             if text_content:
-                return {"content": '\n'.join(text_content)}
+                return {"content": '\n'.join(text_content), "parse_error": True}
 
         # 最后尝试，返回原始文本但添加错误标记
         print(f"警告：无法解析JSON响应，返回原始文本")

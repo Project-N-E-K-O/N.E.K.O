@@ -157,6 +157,15 @@ function createHarness() {
   };
 }
 
+async function drainQueue(h) {
+  for (let i = 0; i < 100; i++) {
+    if (!h.S.isProcessingIncomingAudioBlob && !h.S.incomingAudioBlobQueue.length) return;
+    await Promise.resolve();
+  }
+  throw new Error('Receive queue did not drain');
+}
+
+(async () => {
 const report = {};
 
 // 阵间空档：turn-end 落在队列瞬时为空的时刻，audio_done 还没到 → 不许收尾。
@@ -168,6 +177,7 @@ const report = {};
   report.gap_speech_ends = h.speechEnds();
   report.gap_armed_timer = h.pendingTimers() > 0;
   h.mod.noteAssistantAudioStreamClosed('sid-1');
+  await drainQueue(h);
   report.gap_after_audio_done = h.speechEnds();
   report.gap_timer_cleared = h.pendingTimers();
 }
@@ -179,6 +189,7 @@ const report = {};
   h.turnEnd('T2');
   report.giveup_before = h.speechEnds();
   h.flushTimers();
+  await drainQueue(h);
   report.giveup_after = h.speechEnds();
 }
 
@@ -189,6 +200,7 @@ const report = {};
   h.turnEnd('T3');
   h.S.audioBufferQueue.push({ turnId: 'T3', speechId: 'sid-3' });
   h.flushTimers();
+  await drainQueue(h);
   report.giveup_resumed = h.speechEnds();
 }
 
@@ -199,6 +211,7 @@ const report = {};
   h.primeSpeakingTurn('T4');
   h.mod.rememberAssistantAudioSpeechTurn('sid-4', 'T4');
   h.mod.noteAssistantAudioStreamClosed('sid-4');
+  await drainQueue(h);
   h.S.isProcessingIncomingAudioBlob = true;
   h.S.processingAudioBlobTurnId = 'T4';
   h.turnEnd('T4');
@@ -206,6 +219,7 @@ const report = {};
   h.S.isProcessingIncomingAudioBlob = false;
   h.S.processingAudioBlobTurnId = null;
   h.mod.noteAssistantAudioStreamClosed('sid-4');
+  await drainQueue(h);
   report.decoding_after = h.speechEnds();
 }
 
@@ -215,6 +229,7 @@ const report = {};
   h.primeSpeakingTurn('T5');
   h.mod.rememberAssistantAudioSpeechTurn('sid-5', 'T5');
   h.mod.noteAssistantAudioStreamClosed('sid-5');
+  await drainQueue(h);
   h.S.isProcessingIncomingAudioBlob = true;
   h.S.processingAudioBlobTurnId = 'OTHER-TURN';
   h.turnEnd('T5');
@@ -230,6 +245,7 @@ const report = {};
   // 下一轮已经开始：不查映射就会回落到 assistantTurnId，归错轮。
   h.S.assistantTurnId = 'T7';
   h.mod.noteAssistantAudioStreamClosed('sid-6');
+  await drainQueue(h);
   report.mapped_closed_turn = h.S.assistantAudioStreamClosedTurnId;
   h.turnEnd('T6');
   report.mapped_speech_ends = h.speechEnds();
@@ -241,6 +257,7 @@ const report = {};
   h.primeSpeakingTurn('T8');
   h.mod.rememberAssistantAudioSpeechTurn('sid-8', 'T8');
   h.mod.noteAssistantAudioStreamClosed('sid-8');
+  await drainQueue(h);
   h.S.incomingAudioEpoch += 1;
   h.turnEnd('T8');
   report.stale_epoch_speech_ends = h.speechEnds();
@@ -254,6 +271,7 @@ const report = {};
   h.mod.rememberAssistantAudioSpeechTurn('sid-9', 'T9');
   h.turnEnd('T9');
   h.mod.noteAssistantAudioStreamClosed('sid-9');
+  await drainQueue(h);
   report.settled_id = h.S.assistantTurnSettledId;
   report.settled_speech_ends = h.speechEnds();
   report.settled_is_playing = h.S.isPlaying;
@@ -266,6 +284,7 @@ const report = {};
   h.primeSpeakingTurn('TA');
   h.mod.rememberAssistantAudioSpeechTurn('sid-a', 'TA');
   h.mod.noteAssistantAudioStreamClosed('sid-a');
+  await drainQueue(h);
   h.win.dispatchEvent(new CustomEventLike('neko-assistant-turn-start', { detail: {} }));
   report.turn_start_cleared_mark = h.S.assistantAudioStreamClosedTurnId;
   report.turn_start_cleared_map = Object.keys(h.S.assistantAudioTurnBySpeechId || {}).length;
@@ -279,9 +298,11 @@ const report = {};
   h.mod.rememberAssistantAudioSpeechTurn('sid-b', 'TB');
   h.turnEnd('TB');
   h.mod.noteAssistantAudioStreamClosed('sid-never-played');
+  await drainQueue(h);
   report.unknown_sid_speech_ends = h.speechEnds();
   report.unknown_sid_closed_turn = h.S.assistantAudioStreamClosedTurnId;
   h.mod.noteAssistantAudioStreamClosed('sid-b');
+  await drainQueue(h);
   report.unknown_sid_then_real = h.speechEnds();
 }
 
@@ -292,15 +313,18 @@ const report = {};
   h.primeSpeakingTurn('TC');
   h.mod.rememberAssistantAudioSpeechTurn('sid-c', 'TC');
   h.mod.noteAssistantAudioStreamClosed('sid-c');   // 第一个 response 的 audio.done
+  await drainQueue(h);
   h.mod.rememberAssistantAudioSpeechTurn('sid-c', 'TC');  // 第二个 response 的音频头
   report.reopen_closed_turn = h.S.assistantAudioStreamClosedTurnId;
   h.turnEnd('TC');
   report.reopen_speech_ends = h.speechEnds();
   h.mod.noteAssistantAudioStreamClosed('sid-c');   // 第二个 response 的 audio.done
+  await drainQueue(h);
   report.reopen_after_second_done = h.speechEnds();
 }
 
 console.log(JSON.stringify(report));
+})().catch(error => { console.error(error); process.exitCode = 1; });
 """
 
 

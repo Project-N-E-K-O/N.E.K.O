@@ -57,6 +57,42 @@ def _main_server_request(*, method: str = "POST", origin: str = "") -> Request:
 
 
 @pytest.mark.asyncio
+async def test_facts_cloud_lookup_concurrency_and_cancellation_release_budget(monkeypatch):
+    monkeypatch.setattr(C, "_facts_cloud_budget", {"tokens": 12.0, "updated": C.time.monotonic(), "active": 0})
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: None)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    count = 0
+
+    async def lookup(base, token):
+        nonlocal count
+        count += 1
+        if count == 2:
+            entered.set()
+        await release.wait()
+        return "mismatch"
+
+    monkeypatch.setattr(C, "_request_matches_desktop_session", lookup)
+
+    def request():
+        result = _main_server_request(method="GET")
+        result.scope["headers"].append((b"authorization", b"Bearer fake"))
+        return result
+
+    tasks = [asyncio.create_task(C._facts_request_auth_state(request())) for _ in range(2)]
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    assert await C._facts_request_auth_state(request()) == "rate_limited"
+    assert count == 2
+    tasks[0].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tasks[0]
+    release.set()
+    assert await tasks[1] == "mismatch"
+    assert await C._facts_request_auth_state(request()) == "mismatch"
+    assert count == 3
+
+
+@pytest.mark.asyncio
 async def test_main_active_character_post_allows_native_and_local_origin(monkeypatch):
     from app.main_server import web_app
 
@@ -626,6 +662,7 @@ def client(monkeypatch, tmp_path):
     from main_routers import community_oauth
 
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
+    monkeypatch.setattr(C, "_facts_cloud_budget", {"tokens": 12.0, "updated": C.time.monotonic(), "active": 0})
     # Keep the suite off the developer's real credential file.
     monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
 
@@ -646,7 +683,7 @@ def client(monkeypatch, tmp_path):
     C._native_delegates.clear()
     app = FastAPI()
     app.include_router(C.router)
-    with TestClient(app, base_url="http://localhost:48911") as test_client:
+    with TestClient(app, base_url="http://localhost:48911", client=("127.0.0.1", 50000)) as test_client:
         yield test_client
     C._native_sync_tickets.clear()
     C._native_delegates.clear()

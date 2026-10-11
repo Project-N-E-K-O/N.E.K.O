@@ -371,6 +371,9 @@ class NumericV2BranchService:
                     goals.append(carried_goal)
                 if len(goals) > 6:
                     raise NumericV2BranchError("branch_scene_goal_limit_exceeded")
+                scenes[index]["ordered_goals"] = self._validate_ordered_goals(
+                    goals, path=f"scenes[{index}].ordered_goals",
+                )
             else:
                 if (item.get("contract") or {}).get("owner") == "player":
                     raise NumericV2BranchError("branch_continuity_placement_invalid")
@@ -899,9 +902,94 @@ class NumericV2BranchService:
             return {"scenarios": [], "unknown_reasons": ["metric_initial_invalid"]}
         scenarios: list[dict[str, Any]] = []
         unknown_reasons: list[str] = []
+        # Downstream paths that cannot return to the source contribute no entry
+        # scenario. Prune them before enumerating route paths through diamonds.
+        predecessors: dict[str, set[str]] = {}
+        for node_id, node in nodes.items():
+            for route in node.get("route_gates") or []:
+                if isinstance(route, Mapping):
+                    predecessors.setdefault(str(route.get("target_node_id") or ""), set()).add(node_id)
+        ancestors = {source_node_id}
+        frontier = [source_node_id]
+        while frontier:
+            for parent in predecessors.get(frontier.pop(), ()):
+                if parent not in ancestors:
+                    ancestors.add(parent)
+                    frontier.append(parent)
+        if start_id not in ancestors:
+            return {"scenarios": [], "unknown_reasons": ["source_unreachable"]}
         stack: list[tuple[str, int, list[str], frozenset[str]]] = [
             (start_id, initial, [], frozenset())
         ]
+        successors: dict[tuple[str, int], list[tuple[str, str, int]]] = {}
+        reverse_states: dict[tuple[str, int], set[tuple[str, int]]] = {}
+        pending_states = [(start_id, initial)]
+        while pending_states:
+            state = pending_states.pop()
+            if state in successors:
+                continue
+            node_id, value = state
+            if node_id == source_node_id:
+                successors[state] = []
+                continue
+            node = nodes.get(node_id)
+            edges: list[tuple[str, str, int]] = []
+            if not isinstance(node, Mapping):
+                unknown_reasons.append(f"node_missing:{node_id}")
+            else:
+                for route in node.get("route_gates") or []:
+                    if not isinstance(route, Mapping):
+                        continue
+                    target_id = str(route.get("target_node_id") or "")
+                    if target_id not in nodes:
+                        unknown_reasons.append(f"target_missing:{target_id or node_id}")
+                        continue
+                    if target_id not in ancestors:
+                        continue
+                    alternatives = self._condition_alternatives(route.get("conditions"), metric_schema, metric_id, value)
+                    if alternatives is None:
+                        unknown_reasons.append(f"condition_unknown:{route.get('id') or target_id}")
+                        continue
+                    edges.extend((str(route.get("id") or target_id), target_id, next_value) for next_value in alternatives)
+            successors[state] = edges
+            for _, target, next_value in edges:
+                target_state = (target, next_value)
+                reverse_states.setdefault(target_state, set()).add(state)
+                pending_states.append(target_state)
+
+        # Propagate viability backwards with an explicit work list; author
+        # routes are not bounded by Python's call-stack depth.
+        viable = {state for state in successors if state[0] == source_node_id}
+        pending_states = list(viable)
+        while pending_states:
+            for parent in reverse_states.get(pending_states.pop(), ()):
+                if parent not in viable:
+                    viable.add(parent)
+                    pending_states.append(parent)
+
+        # Keep cycle diagnostics even for dead suffixes pruned below. This
+        # depth-first traversal also uses explicit frames rather than calls.
+        colors: dict[tuple[str, int], int] = {}
+        for root in successors:
+            if root in colors:
+                continue
+            colors[root] = 1
+            frames = [(root, iter(successors[root]))]
+            while frames:
+                current_state, edges = frames[-1]
+                try:
+                    _, target, next_value = next(edges)
+                except StopIteration:
+                    colors[current_state] = 2
+                    frames.pop()
+                    continue
+                target_state = (target, next_value)
+                if colors.get(target_state) == 1:
+                    unknown_reasons.append(f"cycle:{target}")
+                elif target_state not in colors:
+                    colors[target_state] = 1
+                    frames.append((target_state, iter(successors[target_state])))
+
         while stack:
             node_id, value, path, visited = stack.pop()
             if node_id == source_node_id:
@@ -910,31 +998,20 @@ class NumericV2BranchService:
             if node_id in visited:
                 unknown_reasons.append(f"cycle:{node_id}")
                 continue
+            if (node_id, value) not in viable:
+                continue
             node = nodes.get(node_id)
             if not isinstance(node, Mapping):
                 unknown_reasons.append(f"node_missing:{node_id}")
                 continue
-            routes = [route for route in node.get("route_gates") or [] if isinstance(route, Mapping)]
             next_visited = visited | {node_id}
-            for route in routes:
-                target_id = str(route.get("target_node_id") or "")
-                if target_id not in nodes:
-                    unknown_reasons.append(f"target_missing:{target_id or node_id}")
+            for route_id, target_id, next_value in successors.get((node_id, value), []):
+                if (target_id, next_value) not in viable:
                     continue
-                alternatives = self._condition_alternatives(
-                    route.get("conditions"),
-                    metric_schema,
-                    metric_id,
-                    value,
-                )
-                if alternatives is None:
-                    unknown_reasons.append(f"condition_unknown:{route.get('id') or target_id}")
-                    continue
-                for next_value in alternatives:
-                    if len(scenarios) + len(stack) >= _MAX_ENTRY_SCENARIOS:
-                        unknown_reasons.append("entry_scenario_overflow")
-                        break
-                    stack.append((target_id, next_value, path + [str(route.get("id") or target_id)], next_visited))
+                if len(scenarios) + len(stack) >= _MAX_ENTRY_SCENARIOS:
+                    unknown_reasons.append("entry_scenario_overflow")
+                    break
+                stack.append((target_id, next_value, path + [route_id], next_visited))
         return {
             "scenarios": scenarios,
             "unknown_reasons": list(dict.fromkeys(unknown_reasons)),
@@ -2084,7 +2161,7 @@ class NumericV2BranchService:
         text = str(item.get("text") or "").strip()
         if evidence_mode == "exact" and not anchors:
             anchors = [text]
-        sources = ["player_input"] if delivery_type == "player_action" else [
+        sources = ["player_input"] if owner == "player" else [
             "previous_goal" if has_previous else "opening"
         ]
         result = {

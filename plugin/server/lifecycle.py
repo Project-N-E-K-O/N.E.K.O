@@ -390,7 +390,14 @@ class ServerLifecycleService:
                 len(refresh_result.get("removed", [])),
                 len(refresh_result.get("failed", [])),
             )
-            autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
+            # 分成「可并发」与「需按序」两组。依赖检查（core/dependency.py 的
+            # _find_plugins_by_entry）读的是 state.event_handlers —— 被依赖方必须
+            # 已经启动并注册完 handler，所以声明了依赖的插件不能与它的提供者同时起。
+            # 两组各自保持既有拓扑序，详见
+            # registry_service._get_autostart_plugin_groups_sync。
+            independent_ids, ordered_ids = (
+                await self._plugin_registry_service.list_autostart_plugin_groups()
+            )
         except Exception as exc:
             logger.error(
                 "plugin registry refresh failed at startup: err_type={}, err={}",
@@ -399,21 +406,25 @@ class ServerLifecycleService:
             )
             return
 
-        if not autostart_plugin_ids:
+        if not independent_ids and not ordered_ids:
             logger.warning("no autostart plugins discovered at startup; plugins may need manual start")
             return
 
-        for plugin_id in autostart_plugin_ids:
-            try:
-                await self._plugin_lifecycle_service.start_plugin(plugin_id, refresh_registry=False)
-                logger.debug("autostart plugin started: plugin_id={}", plugin_id)
-            except Exception as exc:
-                logger.error(
-                    "failed to autostart plugin at startup: plugin_id={}, err_type={}, err={}",
-                    plugin_id,
-                    type(exc).__name__,
-                    str(exc),
-                )
+        # Independent plugins start in bounded concurrent waves. Each wave
+        # releases the operation lock after its starts finish, so queued
+        # management requests can run before the next wave. Dependents retain
+        # serial starts. Setting concurrency to 1 restores per-plugin locking.
+        result = await self._plugin_lifecycle_service.start_plugins_batch(
+            independent_ids,
+            ordered_ids,
+        )
+        logger.debug(
+            "autostart batch finished: started={}, failed={}, independent={}, ordered={}",
+            len(result.get("started") or []),
+            len(result.get("failed") or []),
+            len(independent_ids),
+            len(ordered_ids),
+        )
 
     @serialized_plugin_operation
     async def _migrate_layout_and_reconcile_install_sources(self) -> None:

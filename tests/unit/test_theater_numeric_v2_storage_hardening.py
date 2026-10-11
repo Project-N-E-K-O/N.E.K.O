@@ -19,6 +19,16 @@ from services.theater.numeric_v2_store import update_numeric_v2_character_bindin
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _branch_story, _opening
 
 
+def test_completed_maintenance_does_not_resolve_unrelated_character_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(numeric_v2_maintenance, '_MAINTAINED_ROOTS', {str(tmp_path.resolve())})
+
+    def fail_ids():
+        raise PermissionError('unrelated old character cannot be written')
+
+    assert numeric_v2_maintenance.maintain_numeric_v2_storage_once(
+        tmp_path, NumericV2PackageRegistry(tmp_path / 'packages'), character_ids_by_name=fail_ids) is None
+
+
 async def _prepared_interrupted_delete(theater_root):
     story = _branch_story()
     story_id = story["meta"]["story_id"]
@@ -275,6 +285,31 @@ async def test_quarantined_session_attribution_follows_archive_policy(tmp_path):
         files["duplicate"], files["own"], files["other_character"], files["corrupt_live"],
         files["same_name_other"],
     }
+
+
+@pytest.mark.asyncio
+async def test_quarantined_session_name_keeps_attributing_the_legacy_long_nonce(tmp_path):
+    _story_id, _registry, _runtime, stored, files = await _quarantine_fixture(tmp_path)
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+    session_id = stored.session.session_id
+    # Unparseable, so only the name can attribute it; files quarantined before the
+    # nonce was shortened carry a full 32-hex uuid.
+    legacy = files["corrupt_live"].with_name(f"invalid-1700000000000-{'a' * 32}-{session_id}.json")
+    files["corrupt_live"].rename(legacy)
+
+    assert legacy in store.quarantined_session_paths(session_ids=[session_id])
+    assert files["unknown"] not in store.quarantined_session_paths(session_ids=[session_id])
+
+
+def test_quarantined_public_archive_name_fits_windows_path_budget():
+    # Without long-path support Windows fails a move past 260 characters, and
+    # the theater root sits under the user's documents folder.
+    original = f"{'e' * 64}.json"
+    name = numeric_v2_archive.quarantined_file_name("invalid", original)
+
+    assert name.endswith(f"-{original}")
+    assert numeric_v2_archive._QUARANTINED_ARCHIVE_KEY_RE.search(name).group(1) == "e" * 64
+    assert len(name) <= 100
 
 
 @pytest.mark.asyncio

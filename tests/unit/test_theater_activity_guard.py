@@ -65,6 +65,135 @@ def test_activity_signal_expires_and_only_successful_payloads_count():
     assert theater_activity.is_theater_active("Lan") is False
 
 
+def test_owner_release_preserves_peer_and_fences_late_responses():
+    theater_activity.clear_all_theater_activity()
+    assert theater_activity.note_theater_session_response(_ok('active'), activity_claim_id='owner-a')
+    assert theater_activity.note_theater_session_response(_ok('active'), activity_claim_id='owner-b')
+    theater_activity.clear_theater_activity('Lan', activity_claim_id='owner-a')
+    assert theater_activity.is_theater_active('Lan')
+    assert not theater_activity.note_theater_session_response(_ok('active'), activity_claim_id='owner-a')
+    theater_activity.clear_theater_activity('Lan', activity_claim_id='owner-b')
+    assert not theater_activity.is_theater_active('Lan')
+    # Release before the delayed GET has registered anything at all.
+    theater_activity.clear_theater_activity('', activity_claim_id='pending')
+    assert not theater_activity.note_theater_session_response(_ok('active'), activity_claim_id='pending')
+    assert not theater_activity.is_theater_active('Lan')
+
+
+@pytest.mark.asyncio
+async def test_release_overtakes_an_in_flight_activity_response():
+    ready, finish = asyncio.Event(), asyncio.Event()
+
+    async def handler(request):
+        ready.set()
+        await finish.wait()
+        return _ok('active')
+
+    tracked = numeric_theater_router._track_theater_activity(handler)
+    task = asyncio.create_task(tracked(request=SimpleNamespace(headers={'X-Neko-Theater-Activity': 'pending'})))
+    await ready.wait()
+    theater_activity.clear_theater_activity('', activity_claim_id='pending')
+    finish.set()
+    result = await task
+    assert result['activity_claimed'] is False
+    assert not theater_activity.is_theater_active('Lan')
+
+
+def test_route_activity_claims_are_isolated_and_release_is_a_fence(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    name = numeric_theater_router._current_catgirl_binding(numeric_theater_router.get_config_manager())['catgirl_name']
+    with client:
+        assert client.post('/api/theater-numeric/session/start', headers={'X-Neko-Theater-Activity': 'a'},
+                           json={'story_id': 'numeric_v2_contract', 'session_id': 'leases'}).status_code == 200
+        url = '/api/theater-numeric/session/leases?story_id=numeric_v2_contract'
+        assert client.get(url, headers={'X-Neko-Theater-Activity': 'b'}).json()['activity_claimed']
+        assert client.post('/api/theater-numeric/session/release', json={'activity_claim_id': 'a'}).status_code == 200
+        assert theater_activity.is_theater_active(name)
+        assert not client.get(url, headers={'X-Neko-Theater-Activity': 'a'}).json()['activity_claimed']
+        assert client.post('/api/theater-numeric/session/release', json={'activity_claim_id': 'b'}).status_code == 200
+        assert not theater_activity.is_theater_active(name)
+
+
+@pytest.mark.parametrize('ending_headers', [{}, {'X-Neko-Theater-Activity': 'restored-window'}])
+def test_end_releases_orphaned_and_legacy_owners_of_the_session(tmp_path, monkeypatch, ending_headers):
+    """Selector end and post-reload capsule end both unblock ordinary chat."""
+    client = _client(tmp_path, monkeypatch)
+    name = numeric_theater_router._current_catgirl_binding(numeric_theater_router.get_config_manager())['catgirl_name']
+    with client:
+        # Standalone selector start does not own the stage or create a legacy guard.
+        start = client.post('/api/theater-numeric/session/start?claim_activity=false',
+                            json={'story_id': 'numeric_v2_contract', 'session_id': 'reload',
+                                  'character_id': 'character_' + '1' * 32})
+        assert start.status_code == 200, start.json()
+        assert not theater_activity.is_theater_active(name)
+        url = '/api/theater-numeric/session/reload?story_id=numeric_v2_contract'
+        for owner in ('old-window', 'restored-window'):
+            assert client.get(url, headers={'X-Neko-Theater-Activity': owner}).json()['activity_claimed']
+        # Compatibility clients are scoped too, so end can clear their signal.
+        assert client.get(url).status_code == 200
+        assert theater_activity.is_theater_active(name)
+        ended = client.post('/api/theater-numeric/session/end', headers=ending_headers, json={
+            'story_id': 'numeric_v2_contract', 'session_id': 'reload',
+            'base_revision': 0, 'base_lifecycle_revision': 0,
+        })
+        assert ended.status_code == 200
+        assert not theater_activity.is_theater_active(name)
+        assert not theater_activity._activity_claims.get(name)
+        assert name not in theater_activity._last_activity
+        # A resumed lifecycle can acquire a fresh owner despite the ending fence.
+        resumed = client.post('/api/theater-numeric/session/resume?claim_activity=false', json={
+            'story_id': 'numeric_v2_contract', 'session_id': 'reload',
+            'base_revision': 0, 'base_lifecycle_revision': 1,
+        })
+        assert resumed.status_code == 200
+        assert client.get(url, headers={'X-Neko-Theater-Activity': 'resumed-window'}).json()['activity_claimed']
+        assert theater_activity.is_theater_active(name)
+
+
+def _scoped_response(session_id, lifecycle=0, status='active', story_id='story'):
+    response = _ok(status)
+    response['session'].update(session_id=session_id, story_package_id=story_id, lifecycle_revision=lifecycle)
+    return response
+
+
+def test_session_end_preserves_other_sessions_and_newer_resumed_lifecycle():
+    for owner, session_id in [('a', 'one'), ('orphan', 'one'), ('peer', 'two')]:
+        assert theater_activity.note_theater_session_response(_scoped_response(session_id), activity_claim_id=owner)
+    # A legacy compatibility request in another Session must also survive.
+    assert theater_activity.note_theater_session_response(_scoped_response('two'))
+    ended = _scoped_response('one', 1, 'ended')
+    assert theater_activity.note_theater_session_response(ended)
+    assert set(theater_activity._activity_claims['Lan']) == {'peer'}
+    assert 'Lan' in theater_activity._last_activity
+    assert not theater_activity.note_theater_session_response(_scoped_response('one'), activity_claim_id='late')
+    assert theater_activity.note_theater_session_response(_scoped_response('one', 2), activity_claim_id='resumed')
+    # A delayed ended snapshot for the old lifecycle cannot clear the resumed owner.
+    assert theater_activity.note_theater_session_response(ended, activity_claim_id='resumed')
+    assert set(theater_activity._activity_claims['Lan']) == {'peer', 'resumed'}
+    theater_activity.clear_theater_activity('Lan', activity_claim_id='peer')
+    theater_activity.clear_theater_activity('Lan')
+    assert theater_activity.is_theater_active('Lan')
+
+
+@pytest.mark.asyncio
+async def test_session_end_fences_active_response_that_arrives_after_end():
+    ready, finish = asyncio.Event(), asyncio.Event()
+
+    async def handler(request):
+        ready.set()
+        await finish.wait()
+        return _scoped_response('one')
+
+    tracked = numeric_theater_router._track_theater_activity(handler)
+    task = asyncio.create_task(tracked(request=SimpleNamespace(headers={'X-Neko-Theater-Activity': 'late'})))
+    await ready.wait()
+    theater_activity.note_theater_session_response(_scoped_response('one', 1, 'ended'))
+    finish.set()
+    result = await task
+    assert result['activity_claimed'] is False
+    assert not theater_activity.is_theater_active('Lan')
+
+
 def test_theater_session_requests_drive_the_activity_signal(tmp_path, monkeypatch):
     """Launch, input and resume mark the character; end and release clear it; browsing does not mark."""
     client = _client(tmp_path, monkeypatch)
@@ -90,7 +219,14 @@ def test_theater_session_requests_drive_the_activity_signal(tmp_path, monkeypatc
         assert client.get(f"/api/theater-numeric/session/missing?story_id={story}").status_code == 404
         assert active() is False
 
+        assert client.get(f"/api/theater-numeric/session/activity?story_id={story}&claim_activity=false").status_code == 200
+        assert active() is False
+
         assert client.get(f"/api/theater-numeric/session/activity?story_id={story}").status_code == 200
+        assert active() is True
+
+        # A selector preview must not clear another window's existing claim.
+        assert client.get(f"/api/theater-numeric/session/activity?story_id={story}&claim_activity=false").status_code == 200
         assert active() is True
 
         theater_activity.clear_theater_activity(name)
@@ -107,10 +243,13 @@ def test_theater_session_requests_drive_the_activity_signal(tmp_path, monkeypatc
         assert ended.status_code == 200
         assert active() is False
 
-        resumed = client.post("/api/theater-numeric/session/resume", json={
+        resumed = client.post("/api/theater-numeric/session/resume?claim_activity=false", json={
             "story_id": story, "session_id": "activity", "base_revision": 1, "base_lifecycle_revision": 1,
         })
         assert resumed.status_code == 200
+        assert active() is False
+        # Only the body runtime's read after handoff claims ordinary-chat blocking.
+        assert client.get(f"/api/theater-numeric/session/activity?story_id={story}").status_code == 200
         assert active() is True
 
         # Another window performing with a different character keeps its guard:
@@ -246,6 +385,31 @@ async def test_ordinary_audio_frames_are_dropped_and_live_voice_ended_while_thea
     _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket, game_active=True)
     await websocket_router.websocket_endpoint(websocket, "Lan")
     assert [name for name, _ in manager.calls if name == "stream_data"] == ["stream_data"]
+
+
+@pytest.mark.asyncio
+async def test_external_route_keeps_its_input_while_theater_signal_lingers(monkeypatch):
+    from utils import external_route_registry
+    theater_activity.mark_theater_activity('Lan')
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket([
+        {'action': 'stream_data', 'input_type': 'text', 'data': 'hello'},
+        dict(_AUDIO_FRAME),
+    ])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    route = AsyncMock(return_value=True)
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind='visit-test', is_active=lambda name: name == 'Lan',
+            route_stream_message=route, on_start_session=AsyncMock(return_value=True),
+            finalize_for_character=AsyncMock(return_value=0),
+            current_instance=lambda name: 'visit-session',
+        )
+    )
+    await websocket_router.websocket_endpoint(websocket, 'Lan')
+    assert [call.args[1]['input_type'] for call in route.await_args_list] == ['text', 'audio']
+    assert not [name for name, _ in manager.calls if name in {'stream_data', 'end_session'}]
+    assert not any('THEATER_SESSION_ACTIVE' in message for message in websocket.sent_text)
 
 
 @pytest.mark.asyncio

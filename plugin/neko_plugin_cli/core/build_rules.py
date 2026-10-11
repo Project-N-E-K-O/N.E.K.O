@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import os
-import re
 from fnmatch import fnmatchcase
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from plugin.utils.source_paths import (
+    VENDOR_SYNC_BACKUP_PREFIX as VENDOR_SYNC_BACKUP_PREFIX,
+    VENDOR_SYNC_GLOBS as VENDOR_SYNC_GLOBS,
+    VENDOR_SYNC_PENDING_SUFFIX as VENDOR_SYNC_PENDING_SUFFIX,
+    VENDOR_SYNC_STAGING_PREFIX as VENDOR_SYNC_STAGING_PREFIX,
+    is_vendor_sync_path,
+    is_metadata_probe_path,
+)
 
 # Built-in excludes are hard safety defaults. User rules extend them, but do
 # not replace them, so common cache/build artifacts never leak into packages.
@@ -32,31 +40,6 @@ _DEFAULT_ROOT_EXCLUDE_DIR_NAMES = {
     "dist",
     "build",
 }
-# `neko-plugin sync` swaps vendor/ through sibling work directories at the
-# plugin root. Each one holds a full third-party tree and is never plugin
-# source, so every scan (build, pack, publish, ruff, check) must skip them.
-#
-# Only the exact generated names count (prefix + 8 hex digits, plus the
-# ".pending" marker beside a backup), so a plugin's own directory that merely
-# shares the prefix (".vendor.backup-notes") stays plugin source.
-VENDOR_SYNC_STAGING_PREFIX = ".vendor.staging-"
-VENDOR_SYNC_BACKUP_PREFIX = ".vendor.backup-"
-VENDOR_SYNC_PENDING_SUFFIX = ".pending"
-_VENDOR_SYNC_TOKEN_GLOB = "[0-9a-f]" * 8
-# The same names as globs; fnmatch, gitignore, git pathspecs and ruff all
-# accept "[...]" character classes.
-VENDOR_SYNC_GLOBS = (
-    f"{VENDOR_SYNC_STAGING_PREFIX}{_VENDOR_SYNC_TOKEN_GLOB}",
-    f"{VENDOR_SYNC_BACKUP_PREFIX}{_VENDOR_SYNC_TOKEN_GLOB}",
-    f"{VENDOR_SYNC_BACKUP_PREFIX}{_VENDOR_SYNC_TOKEN_GLOB}{VENDOR_SYNC_PENDING_SUFFIX}",
-)
-# Only a backup has a pending marker; staging never does.
-_VENDOR_SYNC_NAME_RE = re.compile(
-    rf"{re.escape(VENDOR_SYNC_STAGING_PREFIX)}[0-9a-f]{{8}}"
-    rf"|{re.escape(VENDOR_SYNC_BACKUP_PREFIX)}[0-9a-f]{{8}}"
-    rf"(?:{re.escape(VENDOR_SYNC_PENDING_SUFFIX)})?"
-)
-_VENDOR_SYNC_STAGING_RE = re.compile(rf"{re.escape(VENDOR_SYNC_STAGING_PREFIX)}[0-9a-f]{{8}}")
 _DEFAULT_EXCLUDE_FILE_NAMES = {
     ".DS_Store",
 }
@@ -118,18 +101,6 @@ def load_build_rules(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
     return BuildRuleSet.model_validate(build_table)
 
 
-def is_vendor_sync_path(relative_path: Path) -> bool:
-    """Whether a plugin-relative path lives in a sync staging/backup dir: at
-    the plugin root, or the staging dir an in-place --clean of a linked or
-    mounted vendor/ creates inside it (half-installed until it finishes)."""
-    parts = relative_path.parts
-    if parts and _VENDOR_SYNC_NAME_RE.fullmatch(parts[0]):
-        return True
-    return len(parts) > 1 and parts[0] == "vendor" and bool(
-        _VENDOR_SYNC_STAGING_RE.fullmatch(parts[1])
-    )
-
-
 def reraise_walk_error(error: OSError) -> None:
     """os.walk onerror that fails like Path.rglob did: rglob skipped only
     directories it was denied, and raised any other error (an I/O error on a
@@ -169,6 +140,8 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) 
         return True
 
     if not is_dir:
+        if is_metadata_probe_path(relative_path):
+            return True
         if relative_path.name in _DEFAULT_EXCLUDE_FILE_NAMES:
             return True
         if relative_path.suffix in _DEFAULT_EXCLUDE_SUFFIXES:

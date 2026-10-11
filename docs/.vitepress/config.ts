@@ -480,14 +480,17 @@ function deploymentSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Deployment', overview: 'Overview', docker: 'Docker',
       manual: 'Manual Setup', win: 'Windows Executable', embeddings: 'Local Embedding Assets',
+      lowSpec: 'Low-Spec Server (2C2G)',
     },
     'zh-CN': {
       group: '部署', overview: '概览', docker: 'Docker',
       manual: '手动部署', win: 'Windows 可执行文件', embeddings: '本地嵌入模型资源',
+      lowSpec: '低配云服务器（2C2G）',
     },
     ja: {
       group: 'デプロイ', overview: '概要', docker: 'Docker',
       manual: '手動セットアップ', win: 'Windows 実行ファイル', embeddings: 'ローカル埋め込みアセット',
+      lowSpec: null,
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -497,6 +500,8 @@ function deploymentSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       items: [
         { text: t.overview, link: `${p}/deployment/` },
         { text: t.docker, link: `${p}/deployment/docker` },
+        // The low-spec guide has no Japanese translation yet.
+        ...(t.lowSpec ? [{ text: t.lowSpec, link: `${p}/deployment/low-spec-server` }] : []),
         { text: t.manual, link: `${p}/deployment/manual` },
         { text: t.win, link: `${p}/deployment/windows-exe` },
         { text: t.embeddings, link: `${p}/deployment/embedding-models` },

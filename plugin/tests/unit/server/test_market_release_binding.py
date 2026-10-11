@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from plugin.utils.http_imports import load_httpx
+
 import asyncio
 
 import httpx
@@ -41,7 +43,7 @@ def catalog(monkeypatch, releases, status=200):
 
     monkeypatch.setattr(market_bridge, "MARKET_API_URL", "https://market.test")
     monkeypatch.setattr(
-        market_bridge.httpx, "AsyncClient",
+        load_httpx(), "AsyncClient",
         lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
     )
     return requests
@@ -199,7 +201,7 @@ async def test_total_timeout_releases_other_async_work(monkeypatch):
 
     monkeypatch.setattr(market_bridge, "MARKET_API_URL", "https://market.test")
     monkeypatch.setattr(market_bridge, "_MARKET_RELEASE_CHECK_TIMEOUT", 0.05)
-    monkeypatch.setattr(market_bridge.httpx, "AsyncClient", lambda **kwargs:
+    monkeypatch.setattr(load_httpx(), "AsyncClient", lambda **kwargs:
         original_client(transport=httpx.MockTransport(stalled), **kwargs))
     concurrent = asyncio.create_task(other_work())
     try:

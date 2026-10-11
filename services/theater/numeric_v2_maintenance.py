@@ -22,6 +22,7 @@ from .numeric_v2_archive import (
     SESSION_QUARANTINE_DIRNAME,
     NumericV2ArchiveError,
     NumericV2ArchiveStore,
+    quarantined_file_name,
 )
 from .numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageError, NumericV2PackageNotFoundError
 from .numeric_v2_runtime import NumericV2RuntimeError
@@ -694,9 +695,7 @@ def _delete_story_files(theater_root: Path, registry: NumericV2PackageRegistry, 
 
 def _quarantine_session(path: Path, quarantine_root: Path, reason: str) -> None:
     quarantine_root.mkdir(parents=True, exist_ok=True)
-    target = quarantine_root / (
-        f"{reason}-{int(time.time() * 1000)}-{uuid.uuid4().hex}-{path.name}"
-    )
+    target = quarantine_root / quarantined_file_name(reason, path.name)
     os.replace(path, target)
     try:
         # os.replace keeps the ledger's last write time; record when it was quarantined.
@@ -877,7 +876,7 @@ def maintain_numeric_v2_storage_once(
     theater_root: Path,
     registry: NumericV2PackageRegistry,
     *,
-    character_ids_by_name: Mapping[str, str],
+    character_ids_by_name: Mapping[str, str] | Callable[[], Mapping[str, str]],
     assert_writable: Callable[[], None] | None = None,
     write_transaction=nullcontext,
 ) -> dict[str, int] | None:
@@ -887,6 +886,8 @@ def maintain_numeric_v2_storage_once(
     with _MAINTENANCE_LOCK:
         if key in _MAINTAINED_ROOTS:
             return None
+        if callable(character_ids_by_name):
+            character_ids_by_name = character_ids_by_name()
         with write_transaction():
             # 冷启动恢复、默认包安装和索引重建都会写盘，必须服从与云存档相同的写栅栏。
             if assert_writable is not None:

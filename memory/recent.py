@@ -14,6 +14,12 @@
 
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
+from memory.thinking_llm import (
+    aclose_quietly,
+    describe_output,
+    output_cap_rejected,
+    response_hit_output_limit,
+)
 from memory.message_sources import (
     is_theater_episode_summary,
     is_theater_memory_message,
@@ -56,7 +62,7 @@ from utils.screen_comment_guard import strip_screen_labels
 from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
-    MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
+    MEMORY_THINKING_OUTPUT_MAX_TOKENS,
     RECENT_HISTORY_MAX_ITEMS,
     RECENT_COMPRESS_THRESHOLD_ITEMS,
     RECENT_SUMMARY_MAX_TOKENS,
@@ -207,44 +213,6 @@ async def review_context_token_count(messages: list) -> int:
             role = message.get('type', message.get('role', role)) or ''
         rows.append(f"{role}: {content}")
     return await acount_tokens('\n\n'.join(rows))
-
-
-def _review_response_hit_output_limit(
-    response, output_cap: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
-) -> bool:
-    """Classify only strong evidence that the provider exhausted output tokens."""
-    metadata = getattr(response, 'response_metadata', None) or {}
-    finish_reason = str(metadata.get('finish_reason') or '').strip().lower()
-    if finish_reason in {'length', 'max_tokens'}:
-        return True
-
-    content = str(getattr(response, 'content', '') or '').strip()
-    if content:
-        return False
-    usage = metadata.get('token_usage') or {}
-    output_tokens = usage.get('completion_tokens')
-    if output_tokens is None:
-        output_tokens = usage.get('output_tokens')
-    try:
-        return int(output_tokens or 0) >= output_cap
-    except (TypeError, ValueError):
-        return False
-
-
-def _review_output_cap_rejected(exc: BaseException) -> bool:
-    """True when a 400 says the requested output cap exceeds the model's limit.
-
-    Correction endpoints are user-configurable; a model whose output limit is
-    below ``MEMORY_REVIEW_OUTPUT_MAX_TOKENS`` rejects the request before
-    generating anything, so the review must retry once at the shared guard.
-    """
-    if getattr(exc, 'status_code', None) != 400:
-        return False
-    text = str(exc).lower()
-    return any(
-        key in text
-        for key in ('max_tokens', 'max_completion_tokens', 'max_output_tokens')
-    )
 
 
 def _msg_identity(m) -> tuple[str, str]:
@@ -468,6 +436,56 @@ def is_retracted_theater_episode(
 THEATER_RETRACTIONS_FILENAME = "theater_retractions.json"
 THEATER_RETRACTION_TTL_SECONDS = 7 * 24 * 3600
 THEATER_RETRACTIONS_MAX = 128
+THEATER_RUNS_FILENAME = "theater_runs.json"
+THEATER_PREVIOUS_EPISODE = "_theater_previous_episode"
+
+
+def restored_theater_history(history, story_id, session_id, through):
+    """Replace a declined capsule with its previous version, without nesting backups."""
+    restored = []
+    for message in history:
+        if not is_retracted_theater_episode(message, story_id, session_id, through):
+            restored.append(message)
+            continue
+        backup = message_metadata(message).get(THEATER_PREVIOUS_EPISODE)
+        if not isinstance(backup, dict):
+            continue
+        previous = messages_from_dict([backup])[0]
+        metadata = message_metadata(previous)
+        if (
+            theater_memory_episode_key(previous) == (story_id, session_id)
+            and _positive_metadata_int(metadata.get("archive_through_revision")) < through
+        ):
+            restored.append(previous)
+    return restored
+
+
+def _load_theater_runs_unlocked(recent_path):
+    """Read durable numbers, quarantining malformed data but propagating I/O errors."""
+    path = recent_file.recent_sidecar_path(recent_path, THEATER_RUNS_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    if not isinstance(payload, dict) or any(
+        not isinstance(story, dict)
+        or not isinstance(story.get("sessions"), dict)
+        or not isinstance(story.get("total"), int)
+        or not _positive_metadata_int(story.get("total"))
+        or any(not isinstance(number, int) or not _positive_metadata_int(number)
+               for number in story["sessions"].values())
+        or story["total"] < max(story["sessions"].values(), default=0)
+        for story in payload.values()
+    ):
+        # Preserve the damaged file, then let the caller seed only verifiable
+        # numbers from recent. I/O errors still propagate without resetting it.
+        os.replace(path, f"{path}.{secrets.token_hex(8)}.corrupt")
+        logger.warning("[RecentHistory] quarantined invalid theater run numbers: %s", path)
+        return {}
+    return payload
 
 
 class TheaterEpisodeRetracted(RuntimeError):
@@ -709,6 +727,14 @@ def _merge_theater_episode_summary(history: list, incoming):
             ending_titles.append(current_ending)
 
     previous_metadata = message_metadata(previous) if previous is not None else {}
+    if previous is not None:
+        if previous_metadata.get("archive_through_revision") == incoming_metadata.get("archive_through_revision"):
+            backup = previous_metadata.get(THEATER_PREVIOUS_EPISODE)
+        else:
+            backup = messages_to_dict([previous])[0]
+            backup["data"]["metadata"].pop(THEATER_PREVIOUS_EPISODE, None)
+        if backup:
+            incoming_metadata[THEATER_PREVIOUS_EPISODE] = backup
     previous_run_index = _positive_metadata_int(previous_metadata.get("run_index"))
     if previous_run_index:
         run_index = previous_run_index
@@ -717,11 +743,15 @@ def _merge_theater_episode_summary(history: list, incoming):
             _positive_metadata_int(previous_metadata.get("story_run_count")),
         )
     else:
-        run_index = known_total + 1
+        run_index = _positive_metadata_int(incoming_metadata.get("run_index")) or known_total + 1
+    known_total = max(known_total, _positive_metadata_int(incoming_metadata.get("story_run_count")))
     for title in previous_metadata.get("ending_titles_seen") or []:
         normalized = str(title or "").strip()
         if normalized and normalized not in ending_titles:
             ending_titles.append(normalized)
+    previous_ending = str(previous_metadata.get("ending_title") or "").strip()
+    if previous_ending and previous_ending not in ending_titles:
+        ending_titles.append(previous_ending)
     current_ending = str(incoming_metadata.get("ending_title") or "").strip()
     if current_ending and current_ending not in ending_titles:
         ending_titles.append(current_ending)
@@ -731,9 +761,17 @@ def _merge_theater_episode_summary(history: list, incoming):
         "ending_titles_seen": ending_titles,
     })
     stored_incoming = _copy_message_metadata(incoming, incoming_metadata)
+
+    def retry_payload(message):
+        metadata = dict(message_metadata(message))
+        # These describe the whole story, not a change to this episode.
+        metadata.pop("story_run_count", None)
+        metadata.pop("ending_titles_seen", None)
+        return messages_to_dict([_copy_message_metadata(message, metadata)])
+
     if (
         previous is not None
-        and messages_to_dict([stored_incoming]) == messages_to_dict([previous])
+        and retry_payload(stored_incoming) == retry_payload(previous)
     ):
         # A retried archive that changes nothing keeps its slot, so the retry
         # cannot reorder history under an in-flight compression snapshot or
@@ -750,9 +788,13 @@ def _merge_theater_episode_summary(history: list, incoming):
         if is_theater_episode_summary(message)
         and message_metadata(message).get("story_id") == story_id
     ]
-    drop_indexes = set(
-        story_indexes[:-THEATER_RECENT_EPISODES_PER_STORY]
-    )
+    # The durable run number determines the recent three episodes. An evicted
+    # old Session arriving late must not displace a newer run just by arriving.
+    ranked_story_indexes = sorted(story_indexes, key=lambda index: (
+        _positive_metadata_int(message_metadata(merged[index]).get("run_index")), index,
+    ))
+    drop_indexes = set(ranked_story_indexes[:-THEATER_RECENT_EPISODES_PER_STORY])
+    incoming_evicted_by_run_limit = any(merged[index] is stored_incoming for index in drop_indexes)
     if drop_indexes:
         merged = [
             message
@@ -775,7 +817,10 @@ def _merge_theater_episode_summary(history: list, incoming):
         ]
     from memory.theater_budget import bound_theater_history
     bounded = bound_theater_history(merged)
-    if not any(message is stored_incoming for message in bounded):
+    # A known older run intentionally outside the per-story window may be
+    # acknowledged without re-entering hot memory; token-budget rejection is
+    # still an error for an incoming run that should have been retained.
+    if not incoming_evicted_by_run_limit and not any(message is stored_incoming for message in bounded):
         # Reject before persistence: the caller must retain its archive receipt
         # rather than acknowledge a capsule that never entered hot memory.
         raise ValueError("theater_episode_budget_exceeded")
@@ -1050,7 +1095,7 @@ class CompressedRecentHistoryManager:
             provider_type=api_config.get('provider_type'),
         )
 
-    def _get_review_llm(self, max_completion_tokens: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS):
+    def _get_review_llm(self, max_completion_tokens: int = MEMORY_THINKING_OUTPUT_MAX_TOKENS):
         """Fetch the review LLM instance dynamically to support config hot-reload.
 
         timeout uses MEMORY_LLM_HARD_TIMEOUT_SECONDS (the upstream forwards with
@@ -1059,18 +1104,21 @@ class CompressedRecentHistoryManager:
         concurrent runs are harmless), so thinking can remain enabled for the
         judgment-dense work of rewriting history.
 
-        ``extra_body=None`` explicitly overrides the provider-aware factory
-        default, leaving thinking models on their native/default behavior.
+        ``extra_body`` overrides the provider-aware factory default (which
+        would disable thinking): ``None`` leaves thinking models on their
+        native behavior, and endpoints whose native thinking is unbounded get
+        the lower-effort form from ``memory_thinking_extra_body``.
         max_retries=0 as above: SDK auto-retry off; the business-layer retry is
         the safety net.
         """
+        from config.providers import memory_thinking_extra_body
         api_config = self._config_manager.get_model_api_config('correction')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
             max_completion_tokens=max_completion_tokens,  # thinking shares this budget with the corrected-dialogue JSON
-            extra_body=None,
+            extra_body=memory_thinking_extra_body(api_config['base_url'], max_completion_tokens),
             provider_type=api_config.get('provider_type'),
         )
 
@@ -1171,11 +1219,47 @@ class CompressedRecentHistoryManager:
                 # its durable receipt retries through the complete /cache path.
                 raise RuntimeError("theater_episode_persist_failed")
 
+            runs = _load_theater_runs_unlocked(file_path)
+            current = list(history) + list(pending)
+            for message in current:
+                metadata = message_metadata(message)
+                story, session = theater_memory_episode_key(message)
+                if story and session and _positive_metadata_int(metadata.get("run_index")):
+                    record = runs.setdefault(story, {"sessions": {}, "total": 0})
+                    record["sessions"].setdefault(session, int(metadata["run_index"]))
+                    record["total"] = max(record["total"], int(metadata["run_index"]),
+                                          _positive_metadata_int(metadata.get("story_run_count")))
+            # Allocate old unnumbered capsules from the same durable registry
+            # before allocating incoming, rather than giving both position 1.
+            for position, message in enumerate(current):
+                if not is_theater_episode_summary(message):
+                    continue
+                metadata = dict(message_metadata(message))
+                if _positive_metadata_int(metadata.get("run_index")):
+                    continue
+                story, session = theater_memory_episode_key(message)
+                record = runs.setdefault(story, {"sessions": {}, "total": 0})
+                number = record["sessions"].get(session) or record["total"] + 1
+                record["sessions"][session] = number
+                record["total"] = max(record["total"], number)
+                metadata.update(run_index=number, story_run_count=record["total"])
+                current[position] = _copy_message_metadata(message, metadata)
+            metadata = dict(message_metadata(incoming))
+            story, session = theater_memory_episode_key(incoming)
+            record = runs.setdefault(story, {"sessions": {}, "total": 0})
+            sessions = record["sessions"]
+            number = sessions.get(session) or record["total"] + 1
+            sessions[session] = number
+            record["total"] = max(record["total"], number)
+            metadata.update(run_index=number, story_run_count=record["total"])
+            incoming = _copy_message_metadata(incoming, metadata)
             merged, stored_incoming = _merge_theater_episode_summary(
-                list(history) + list(pending),
+                current,
                 incoming,
             )
             try:
+                # Write ahead: retry reuses the same number even if recent fails.
+                recent_file.write_recent_sidecar_unlocked(file_path, THEATER_RUNS_FILENAME, runs)
                 recent_file.write_recent_payload_unlocked(
                     file_path, messages_to_dict(merged),
                 )
@@ -1298,10 +1382,12 @@ class CompressedRecentHistoryManager:
                 message, story_id, session_id, archive_through_revision,
             ),
             expected_generation,
+            restore_episode=(story_id, session_id, archive_through_revision),
         )
 
     def _drop_theater_messages_locked(
         self, file_path, lanlan_name, should_drop, expected_generation=None,
+        restore_episode=None,
     ):
         """Remove matching messages from recent.json inside its file critical section."""
 
@@ -1313,8 +1399,11 @@ class CompressedRecentHistoryManager:
                 raise RuntimeError("theater_recent_history_unreadable")
             pending = recent_file.get_recent_pending_unlocked(file_path)
             current = list(history) + list(pending)
-            retained = [message for message in current if not should_drop(message)]
-            removed = len(current) - len(retained)
+            retained = (
+                restored_theater_history(current, *restore_episode)
+                if restore_episode else [message for message in current if not should_drop(message)]
+            )
+            removed = sum(bool(should_drop(message)) for message in current)
             if not removed:
                 self._cache_history_view(file_path, lanlan_name, history, pending)
                 return 0
@@ -1374,6 +1463,9 @@ class CompressedRecentHistoryManager:
                 "forgotten_at": forgotten_at,
                 "forget_marker": forget_marker,
             })
+            runs = _load_theater_runs_unlocked(file_path)
+            runs.pop(story_id, None)
+            recent_file.write_recent_sidecar_unlocked(file_path, THEATER_RUNS_FILENAME, runs)
             _write_theater_retraction_state_unlocked(file_path, entries, kept)
 
     async def record_theater_story_forget(self, lanlan_name, story_id) -> str:
@@ -2590,32 +2682,35 @@ class CompressedRecentHistoryManager:
                 )
                 # 审阅额度高于共享护栏；输出上限更低的自定义纠错模型会在生成前
                 # 400，这时退回共享护栏重发一次，保持以前能跑的配置照旧能跑。
-                review_cap = MEMORY_REVIEW_OUTPUT_MAX_TOKENS
+                review_cap = MEMORY_THINKING_OUTPUT_MAX_TOKENS
                 review_llm = self._get_review_llm()
                 try:
                     try:
                         response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
                     except Exception as cap_error:
-                        if not _review_output_cap_rejected(cap_error):
+                        if not output_cap_rejected(cap_error):
                             raise
                         logger.info(
                             f"[RecentHistory] {lanlan_name} 纠错模型拒绝 {review_cap} 输出额度，"
                             f"改用 {LLM_OUTPUT_GUARD_MAX_TOKENS} 重试"
                         )
-                        await review_llm.aclose()
+                        await aclose_quietly(review_llm, f"{lanlan_name} memory_review")
                         review_cap = LLM_OUTPUT_GUARD_MAX_TOKENS
                         review_llm = self._get_review_llm(review_cap)
                         response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # same capped prompt, lower output cap.
                 finally:
-                    await review_llm.aclose()
+                    await aclose_quietly(review_llm, f"{lanlan_name} memory_review")
 
                 # 检查是否被取消（LLM调用后）
                 if cancel_event and cancel_event.is_set():
                     _safe_print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
                     return ('failed', None)
 
-                if _review_response_hit_output_limit(response, review_cap):
-                    _safe_print(f"⚠️ {lanlan_name} 的历史审阅输出达到 token 上限，本轮暂停解析")
+                if response_hit_output_limit(response, review_cap):
+                    _safe_print(
+                        f"⚠️ {lanlan_name} 的历史审阅输出达到 token 上限，本轮暂停解析"
+                        f"（{describe_output(response)}）"
+                    )
                     return ('output_exhausted', None)
 
                 # 确保response_content是字符串

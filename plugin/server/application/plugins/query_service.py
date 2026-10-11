@@ -18,6 +18,7 @@ from plugin.server.application.install_source import (
 from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.autostart_approvals import get_autostart_pending_snapshot
 from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.application.plugins.query")
@@ -535,6 +536,7 @@ def _prepare_plugin_projection(
     plugin_meta: Mapping[str, object],
     running_plugin_ids: set[str],
     locale: str,
+    autostart_pending_ids: frozenset[str],
     install_source_by_plugin_id: Mapping[str, LockEntry],
     install_source_by_directory_name: Mapping[str, LockEntry],
     fields: tuple[str, ...] | None = None,
@@ -547,6 +549,7 @@ def _prepare_plugin_projection(
         else {field: plugin_meta[field] for field in fields if field in plugin_meta}
     )
     plugin_info["id"] = plugin_id
+    plugin_info["autostart_pending"] = plugin_id in autostart_pending_ids
     plugin_info["status"] = _resolve_plugin_status(
         plugin_id=plugin_id,
         plugin_meta=plugin_meta,
@@ -593,6 +596,7 @@ def _build_plugin_summary_sync(locale: str | None = None) -> list[dict[str, obje
     if snapshots is None:
         return []
     plugins_snapshot, running_plugin_ids, handlers_snapshot = snapshots
+    autostart_pending_ids = get_autostart_pending_snapshot()
     install_source_by_plugin_id, install_source_by_directory_name = _install_source_index()
     handlers_by_plugin = _index_plugin_entry_handlers(handlers_snapshot)
     result: list[dict[str, object]] = []
@@ -609,6 +613,7 @@ def _build_plugin_summary_sync(locale: str | None = None) -> list[dict[str, obje
                 plugin_meta=plugin_meta,
                 running_plugin_ids=running_plugin_ids,
                 locale=effective_locale,
+                autostart_pending_ids=autostart_pending_ids,
                 install_source_by_plugin_id=install_source_by_plugin_id,
                 install_source_by_directory_name=install_source_by_directory_name,
                 fields=_PLUGIN_SUMMARY_FIELDS,
@@ -740,6 +745,7 @@ def _build_plugin_list_sync(
         return result
     plugins_snapshot, running_plugin_ids, handlers_snapshot = snapshots
 
+    autostart_pending_ids = get_autostart_pending_snapshot()
     install_source_by_plugin_id, install_source_by_directory_name = _install_source_index()
     handlers_by_plugin = _index_plugin_entry_handlers(handlers_snapshot)
 
@@ -759,6 +765,7 @@ def _build_plugin_list_sync(
                 plugin_meta=plugin_meta,
                 running_plugin_ids=running_plugin_ids,
                 locale=effective_locale,
+                autostart_pending_ids=autostart_pending_ids,
                 install_source_by_plugin_id=install_source_by_plugin_id,
                 install_source_by_directory_name=install_source_by_directory_name,
             )

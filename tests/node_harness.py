@@ -125,6 +125,14 @@ _SPAWN_SLACK_SECONDS = 5.0
 # Distinctive exit code so a watchdog kill is never mistaken for an assertion
 # failure or an uncaught exception, both of which leave node with 1.
 _WATCHDOG_EXIT_CODE = 87
+# How many runs an invocation gets in all when node keeps stalling before it
+# reaches the script.  Two was not enough: a Windows runner under
+# ``pytest -n auto`` has burned two back-to-back 35s ceilings without node
+# reaching the first line of a harness, failing a test that had run nothing.
+# Each attempt is a fresh process with a fresh temp script, so a third one
+# gives a passing stall on the runner the time to clear.  Bounded all the same,
+# so a node that never starts on this machine still comes back red.
+_SPAWN_ATTEMPTS = 3
 
 
 
@@ -143,8 +151,9 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
     """The run hit the ceiling without node exiting.
 
     Subclasses ``TimeoutExpired`` so existing ``except`` clauses keep working,
-    and carries what each attempt managed to emit.  One attempt means the stall
-    came with output and was not worth repeating; two means both were silent.
+    and carries what each attempt managed to emit.  One attempt means node had
+    reached the script and the stall was not worth repeating; more than one
+    means every attempt stalled before getting that far.
     """
 
     def __init__(self, cmd, timeout, attempts, started=False):
@@ -467,21 +476,24 @@ def _guarded(merged: dict, deadline_seconds: float, marker: str) -> tuple[list[s
 
 
 def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
-    """Run once, and once more if node stalled without ever reaching the script.
+    """Run, and run again while node stalls without ever reaching the script.
+
+    At most ``_SPAWN_ATTEMPTS`` runs in all; an attempt that reached the script
+    is reported as it stands, however many are left.
 
     ``next_attempt`` is called per attempt so a caller that stages a temp file
     gets a fresh one, rather than a second attempt inheriting whatever state
     the killed first attempt left behind.
     """
     attempts = []
-    for attempt in (1, 2):
+    for attempt in range(1, _SPAWN_ATTEMPTS + 1):
         argv, run_kwargs, marker = next_attempt()
         try:
             return subprocess.run(argv, **run_kwargs)
         except subprocess.TimeoutExpired as exc:
             attempts.append(exc)
             started = _script_started(marker)
-            if attempt == 2 or started:
+            if attempt == _SPAWN_ATTEMPTS or started:
                 raise NodeHarnessSpawnTimeout(
                     cmd_for_error, exc.timeout, attempts, started=started
                 ) from exc

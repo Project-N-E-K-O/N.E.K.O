@@ -124,7 +124,9 @@ def _load_from_disk() -> dict[str, RuntimeOverride]:
     try:
         from utils.config_manager import get_config_manager
 
-        cm = get_config_manager()
+        # This sidecar needs storage paths, not main-application config/avatar/
+        # memory migration. Normal config consumers still request migration.
+        cm = get_config_manager(migrate=False)
         raw = cm.load_json_config(OVERRIDES_FILENAME)
     except FileNotFoundError:
         _cache_write_blocked_by_invalid_content = False
@@ -154,7 +156,7 @@ def _save_to_disk(overrides: dict[str, RuntimeOverride]) -> None:
     try:
         from utils.config_manager import get_config_manager
 
-        cm = get_config_manager()
+        cm = get_config_manager(migrate=False)
         cm.save_json_config(OVERRIDES_FILENAME, dict(overrides))
     except Exception as exc:
         logger.error(
@@ -256,6 +258,37 @@ def set_runtime_override(
         else:
             new_value = {"enabled": enabled, "auto_start": auto_start}
         if _cache.get(plugin_id) == new_value:
+            return
+        candidate = dict(_cache)
+        candidate[plugin_id] = new_value
+        _ensure_cache_can_be_written()
+        _save_to_disk(candidate)
+        _cache = candidate
+
+
+def set_runtime_auto_start_override(plugin_id: str, auto_start: bool) -> None:
+    """Persist only the auto-start preference for ``plugin_id``.
+
+    An existing ``enabled`` preference (including a legacy boolean entry) is
+    preserved; when the user never toggled ``enabled`` the entry stores
+    ``auto_start`` alone so the manifest default for ``enabled`` still applies.
+    """
+    if not plugin_id:
+        return
+    global _cache
+    with _cache_lock:
+        if _cache is None:
+            _cache = _load_from_disk()
+        existing = _cache.get(plugin_id)
+        new_value: dict[str, bool]
+        if isinstance(existing, Mapping):
+            new_value = dict(existing)
+        elif isinstance(existing, bool):
+            new_value = {"enabled": existing}
+        else:
+            new_value = {}
+        new_value["auto_start"] = auto_start
+        if existing == new_value:
             return
         candidate = dict(_cache)
         candidate[plugin_id] = new_value

@@ -646,4 +646,17 @@ async def test_runtime_noise_reduction_aba_reinstalls_after_stale_prepare(
     assert not service._runtime_audio_contract_transition_pending  # type: ignore[attr-defined]
     await service.close()
 
+@pytest.mark.asyncio
+async def test_trial_isolation_reports_contract_change_instead_of_enrollment(tmp_path):
+    from main_logic.voice_identity_service.resource_manager import VoiceResourceError
+    service, *_ = _service(tmp_path)
+    await service.initialize()
+    try:
+        service._runtime_audio_contract_transition_pending = True
+        with pytest.raises(VoiceResourceError, match="audio_contract_changed"):
+            service.begin_trial_isolation("contract-change")
+    finally:
+        await service.close()
+
+
 pytestmark = pytest.mark.unit_fast

@@ -6,8 +6,8 @@
     const RUNTIME_CHUNK_SAMPLES = 480;
     const REFERENCE_RECORDING_MS = 3000;
     const VERIFICATION_RECORDING_MS = 5000;
-    // The service validates at least 1.5 s of real speech. Keep the fixed
-    // 3 s / 5 s upload shape and zero-fill only the remaining tail.
+    // Count actual collected samples before padding; the backend separately
+    // validates human speech. Keep the fixed 3 s / 5 s upload shape.
     const MINIMUM_RECORDING_MS = 1500;
     const MAX_RECORDING_MS = VERIFICATION_RECORDING_MS;
     // Keep a bounded handoff window for worklet flush, upload, and the
@@ -26,6 +26,8 @@
     const FINAL_STATUS_TIMEOUT_MS = 1000;
     const RETRY_CONNECTION_TIMEOUT_MS = 5000;
     const CANCEL_REQUEST_TIMEOUT_MS = 5000;
+    const ROUTE_RECOVERY_POLL_INTERVAL_MS = 600;
+    const ROUTE_RECOVERY_TIMEOUT_MS = 8000;
     const PROMPT_PAINT_TIMEOUT_MS = 1000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const PROFILE_HEADER = 'X-Voice-Identity-Profile';
@@ -45,9 +47,9 @@
     const ENROLLMENT_ERROR_MESSAGES = Object.freeze({
         invalid_pcm: ['voiceIdentity.errorInvalidPcm', '录音格式无效，请重新录入。'],
         audio_too_long: ['voiceIdentity.errorAudioTooLong', '录音时间过长，请换一句较短的话重新录入。'],
-        speech_too_short: ['voiceIdentity.errorSpeechTooShort', '没有检测到足够的语音，请重新说一句完整的话。'],
+        speech_too_short: ['voiceIdentity.errorSpeechTooShort', '录音长度不足，请重录当前段。'],
         volume_too_low: ['voiceIdentity.errorVolumeTooLow', '录音音量过低，请重录当前段。'],
-        no_speech_detected: ['voiceIdentity.errorNoSpeechDetected', '没有检测到有效语音，请重录当前段。'],
+        no_speech_detected: ['voiceIdentity.errorNoSpeechDetected', '未检测到足够的有效人声，请重录当前段。'],
         silence: ['voiceIdentity.errorSilence', '没有检测到声音，请检查麦克风后重试。'],
         severe_clipping: ['voiceIdentity.errorSevereClipping', '声音过大或失真，请稍微远离麦克风。'],
         incomplete_capture: ['voiceIdentity.errorIncompleteCapture', '录音没有完整采集，请重试。'],
@@ -61,6 +63,15 @@
         secure_storage_unavailable: ['voiceIdentity.errorSecureStorageUnavailable', '安全存储不可用，无法保存声纹。'],
         feature_disabled: ['voiceIdentity.featureDisabled', '声纹功能当前已关闭，无法录入或开启声纹激活；已保存的声纹仍可删除。'],
         insufficient_enrollment_time: ['voiceIdentity.errorInsufficientTime', '剩余时间不足以完成下一段，请重新开始录入。']
+    });
+
+    const READINESS_HINT_FALLBACKS = Object.freeze({
+        'voiceIdentity.setupBusy': '正在准备或检查，请稍候。',
+        'voiceIdentity.resourcesChecking': '录入资源尚未确认，请检查并加载。',
+        'voiceIdentity.resourcesNeeded': '录入资源未就绪，请检查并加载资源。',
+        'voiceIdentity.resourcesNeedRepair': '录入所需资源缺失或不可用，请点击「修复资源」。',
+        'voiceIdentity.inputTestRequired': '请先完成试录，再开始录入。',
+        'voiceIdentity.enrollmentReady': '试录与资源检查已通过，可以开始录入。'
     });
 
     const state = {
@@ -90,6 +101,7 @@
         cancelPending: false,
         cancelReleaseWhenIdle: false,
         statusEpoch: 0,
+        microphoneSetupGeneration: 0,
         statusRefreshSequence: 0,
         statusRefreshAppliedSequence: 0,
         filterPending: false,
@@ -107,6 +119,11 @@
         segmentPhase: 'idle',
         segmentAdvance: null,
         uiPhase: 'idle',
+        // The final verification is returned only by the segment-4 upload
+        // response. Keep the result in page state so the subsequent status
+        // refresh and the finally block cannot discard it.
+        completionResult: null,
+        routeRecoveryTask: null,
         initializationError: false,
         statusRefreshFallback: null,
         statusRefreshFallbackEpoch: 0,
@@ -116,6 +133,7 @@
     };
 
     const elements = {};
+    let readiness = null;
 
     function translate(key, fallback, options) {
         if (typeof window.t === 'function') {
@@ -135,6 +153,14 @@
         elements.stepCount = document.getElementById('voice-identity-step-count');
         elements.stepTitle = document.getElementById('voice-identity-step-title');
         elements.stepBody = document.getElementById('voice-identity-step-body');
+        elements.eyebrow = document.getElementById('voice-identity-eyebrow');
+        elements.ruleNote = document.getElementById('voice-identity-rule-note');
+        elements.actions = document.getElementById('voice-identity-actions');
+        elements.result = document.getElementById('voice-identity-result');
+        elements.resultTitle = document.getElementById('voice-identity-result-title');
+        elements.matchPercent = document.getElementById('voice-identity-match-percent');
+        elements.scoreHelp = document.getElementById('voice-identity-score-help');
+        elements.resultStatus = document.getElementById('voice-identity-result-status');
         elements.prompt = document.getElementById('voice-identity-prompt');
         elements.progress = typeof document.querySelectorAll === 'function' ? Array.from(document.querySelectorAll('#voice-identity-progress span')) : [];
         elements.next = document.getElementById('voice-identity-next');
@@ -333,6 +359,42 @@
             state.runtimeDisabled = status.runtime_mode === 'off';
         }
         render();
+        startRouteRecoveryPolling();
+    }
+
+    function routeRecoveryNeeded() {
+        return !state.runtimeDisabled
+            && state.profileAvailable
+            && !state.effectiveEnabled
+            && ['runtime_degraded', 'unsupported_asr_route'].includes(
+                state.effectiveReason,
+            );
+    }
+
+    function startRouteRecoveryPolling() {
+        if (!routeRecoveryNeeded() || state.closeStarted || state.cancelPending || state.routeRecoveryTask) return;
+        const epoch = state.statusEpoch;
+        const deadline = Date.now() + ROUTE_RECOVERY_TIMEOUT_MS;
+        const pollTask = (async function () {
+            while (Date.now() < deadline) {
+                await new Promise(function (resolve) {
+                    window.setTimeout(resolve, ROUTE_RECOVERY_POLL_INTERVAL_MS);
+                });
+                if (epoch !== state.statusEpoch || state.closeStarted || !routeRecoveryNeeded()) return;
+                const status = await reconcileStatus({
+                    timeoutMs: FINAL_STATUS_TIMEOUT_MS,
+                });
+                if (status && (state.effectiveEnabled || !routeRecoveryNeeded())) return;
+            }
+        }()).finally(function () {
+            if (state.routeRecoveryTask !== pollTask) return;
+            state.routeRecoveryTask = null;
+            render();
+            // A newer status could not claim the occupied slot. Hand it the
+            // task only after retirement; the same epoch keeps its deadline.
+            if (epoch !== state.statusEpoch) startRouteRecoveryPolling();
+        });
+        state.routeRecoveryTask = pollTask;
     }
 
     async function reconcileStatus(options) {
@@ -431,6 +493,11 @@
 
     function enrollmentErrorMessage(error) {
         const code = error && (error.message || error.code);
+        if (code === 'preview_owner_active') return translate('voiceIdentity.errorStopMainMicrophone', '主会话麦克风仍在使用，请先关闭主会话麦克风，再重试此操作。');
+        if (code === 'audio_contract_changed') return translate('voiceIdentity.inputChanged', '输入已变化，请重新试录并开始录入。');
+        if (code === 'microphone_unavailable' || (error && ['NotFoundError', 'NotReadableError'].includes(error.name))) return translate('voiceIdentity.inputReason_microphone_unavailable', '麦克风已断开或不可用，请重新选择或连接设备。');
+        if (error && error.name === 'NotAllowedError') return translate('voiceIdentity.inputReason_permission_denied', '麦克风权限被拒绝，请允许访问后重试。');
+        if (code === 'input_test_required' || code === 'capture_owner_unavailable') return translate('voiceIdentity.inputTestRequired', '请先完成试录，再开始录入。');
         const configured = code && ENROLLMENT_ERROR_MESSAGES[code];
         if (configured) return translate(configured[0], configured[1]);
         if (['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected', 'incomplete_capture'].includes(code)) return translate('voiceIdentity.qualityCheckFailed', '声音质量未达标，请重录当前段。');
@@ -519,7 +586,8 @@
         );
         const enrollmentActive = !state.profileAvailable
             || state.busy || state.cancelPending || Boolean(state.enrollmentId);
-        const enrollmentVisible = enrollmentActive || hasMessage;
+        const enrollmentVisible = enrollmentActive || hasMessage
+            || Boolean(state.completionResult);
         elements.enrollment.hidden = !enrollmentVisible;
         const enrollmentBusy = state.busy || state.cancelPending
             || Boolean(state.enrollmentId) || state.segmentIndex > 0;
@@ -532,13 +600,13 @@
         elements.profileStatus.textContent = reasonMessage();
 
         const pending = !state.initialized || state.busy
-            || state.cancelPending || state.filterPending;
+            || state.cancelPending || state.filterPending || Boolean(readiness && readiness.isPending());
         const enrollmentUnavailable = state.runtimeDisabled
-            || ['secure_storage_unavailable', 'model_unavailable']
-                .includes(state.effectiveReason);
+            || state.effectiveReason === 'secure_storage_unavailable'
+            || (!readiness && state.effectiveReason === 'model_unavailable');
         elements.start.hidden = state.busy || state.cancelPending
             || (state.profileAvailable && !state.enrollmentId);
-        elements.start.disabled = pending || enrollmentUnavailable;
+        elements.start.disabled = pending || enrollmentUnavailable || Boolean(readiness && (state.enrollmentId ? readiness.canResume && !readiness.canResume() : !readiness.canStart()));
         elements.start.textContent = state.enrollmentId
             ? translate('voiceIdentity.continueEnrollment', '继续录入')
             : translate('voiceIdentity.startEnrollment', '开始录入');
@@ -547,7 +615,29 @@
             && !state.startSettled
             && !state.segmentIndex;
         elements.cancel.disabled = state.cancelPending;
-        elements.reenroll.disabled = pending || enrollmentUnavailable;
+        elements.reenroll.disabled = pending || enrollmentUnavailable || Boolean(readiness && !readiness.canStart());
+        for (const [id, hidden, disabled] of [
+            ['voice-identity-start-hint', elements.start.hidden, elements.start.disabled],
+            ['voice-identity-reenroll-hint', elements.profileActions.hidden, elements.reenroll.disabled]
+        ]) {
+            const hint = document.getElementById(id);
+            if (!hint) continue;
+            hint.hidden = hidden;
+            let text = '';
+            if (state.initializationError) text = translate('voiceIdentity.setupConnectionFailed', '连接失败，请点击“重试连接”。');
+            else if (enrollmentUnavailable) text = state.runtimeDisabled
+                ? reasonMessage() : enrollmentErrorMessage(new Error(state.effectiveReason));
+            else if (pending) text = translate('voiceIdentity.setupBusy', '正在准备或检查，请稍候。');
+            else if (state.enrollmentId) text = disabled
+                ? translate('voiceIdentity.inputChanged', '输入设置已更改；如正在录入，请取消后重新试录。')
+                : '';
+            else if (readiness && readiness.startHintKey) {
+                const key = readiness.startHintKey();
+                text = translate(key, READINESS_HINT_FALLBACKS[key] || '');
+            }
+            if (hint.textContent !== text) hint.textContent = text;
+            hint.classList.toggle('is-ready', !disabled);
+        }
         elements.delete.disabled = pending;
         if (!state.filterPending) elements.filter.checked = state.requestedEnabled;
         elements.filter.disabled = pending
@@ -570,8 +660,39 @@
     }
 
     function renderEnrollment() {
-        const active = state.segmentIndex > 0;
-        const captureVisible = active && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
+        const resultVisible = Boolean(
+            state.completionResult && state.completionResult.passed
+        );
+        const active = state.segmentIndex > 0 || resultVisible;
+        const captureVisible = !resultVisible && active
+            && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
+        if (elements.result) elements.result.hidden = !resultVisible;
+        if (elements.eyebrow) elements.eyebrow.hidden = resultVisible;
+        if (elements.ruleNote) elements.ruleNote.hidden = resultVisible;
+        if (elements.actions) elements.actions.hidden = resultVisible;
+        if (elements.stepTitle) elements.stepTitle.hidden = resultVisible;
+        if (elements.stepBody) elements.stepBody.hidden = resultVisible;
+        if (elements.resultTitle && resultVisible) {
+            elements.resultTitle.textContent = translate(
+                'voiceIdentity.verificationResultTitle',
+                '声纹验证通过',
+            );
+        }
+        if (elements.matchPercent) {
+            const matchPercent = resultVisible ? state.completionResult.matchPercent : null;
+            const hasScore = Number.isFinite(matchPercent);
+            elements.matchPercent.hidden = !hasScore;
+            elements.matchPercent.textContent = hasScore ? `${matchPercent}%` : '';
+        }
+        if (elements.scoreHelp) {
+            elements.scoreHelp.textContent = translate(
+                'voiceIdentity.verificationScoreHelp',
+                '结果取本次验证录音三个检查点中的最低值，不代表身份认证准确率。',
+            );
+        }
+        if (elements.resultStatus && resultVisible) {
+            elements.resultStatus.textContent = enrollmentCompleteMessage();
+        }
         elements.captureStatus.hidden = !captureVisible;
         elements.captureStatus.classList.toggle('preparing', state.uiPhase === 'preparing');
         elements.captureStatus.classList.toggle('saving', state.saving);
@@ -585,14 +706,15 @@
             elements.voiceState.textContent = state.saving ? '' : translate(configured[0], configured[1]);
         }
         if (elements.finish) {
-            elements.finish.hidden = !state.recording;
+            elements.finish.hidden = resultVisible || !state.recording;
             // Keep the action clickable during capture so an early click can
             // explain the minimum speech requirement instead of looking inert.
             elements.finish.disabled = !state.recording;
             elements.finish.textContent = translate('voiceIdentity.finish', '说完了，保存');
         }
         if (elements.next) {
-            const nextVisible = state.segmentPhase === 'ready' || state.segmentPhase === 'retry';
+            const nextVisible = !resultVisible
+                && (state.segmentPhase === 'ready' || state.segmentPhase === 'retry');
             elements.next.hidden = !nextVisible;
             elements.next.disabled = !nextVisible;
             elements.next.textContent = translate(state.segmentPhase === 'retry' ? 'voiceIdentity.retrySegment' : 'voiceIdentity.nextSegment', state.segmentPhase === 'retry' ? '重录本段' : '开始下一段');
@@ -604,11 +726,13 @@
             : state.segmentIndex;
         if (elements.stepCount) {
             const fallback = '第 ' + displayedSegment + ' / ' + ENROLLMENT_SEGMENT_COUNT + ' 段';
-            elements.stepCount.textContent = active ? translate('voiceIdentity.stepCount', fallback, { current: displayedSegment, total: ENROLLMENT_SEGMENT_COUNT }) : '';
+            elements.stepCount.textContent = resultVisible ? '' : active
+                ? translate('voiceIdentity.stepCount', fallback, { current: displayedSegment, total: ENROLLMENT_SEGMENT_COUNT })
+                : '';
         }
         if (elements.progress) elements.progress.forEach((item, index) => {
-            const completed = active && index < displayedSegment - 1;
-            const current = active && index === displayedSegment - 1;
+            const completed = resultVisible || (active && index < displayedSegment - 1);
+            const current = !resultVisible && active && index === displayedSegment - 1;
             item.classList.toggle('active', completed || current);
             item.classList.toggle('completed', completed);
             item.classList.toggle('current', current);
@@ -626,14 +750,14 @@
             else item.textContent = String(index + 1);
         });
         if (elements.stepTitle) elements.stepTitle.textContent = active ? translate('voiceIdentity.readingPromptLabel', '朗读提示语') : translate('voiceIdentity.privacyTitle', '录入 3 段声纹和 1 段验证语音');
-        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.activeRecordingBody', '请使用平时聊天的自然音量和语速朗读下面这句话，说满约 1.5 秒即可保存；系统会补齐分析所需时长。') : translate('voiceIdentity.privacyBody', '按提示完成 3 段参考录音和 1 段验证录音。每段自然说满约 1.5 秒即可保存，系统会补齐分析所需时长。');
+        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.activeRecordingBody', '请按平时的音量和语速朗读下面的完整句子。实际采集满 1.5 秒后可提交，是否接受由后端人声与声纹校验决定。') : translate('voiceIdentity.privacyBody', '使用同一麦克风，以自然音量朗读完整句子，完成三段参考录音和一段验证录音。语音会发送到此页面使用的 N.E.K.O. 服务处理，仅在后端人声与声纹校验通过后加密保存声纹。');
         if (elements.prompt) {
             let promptIndex = 0;
-            if (active) {
+            if (!resultVisible && active) {
                 promptIndex = state.segmentPhase === 'ready'
                     ? Math.min(ENROLLMENT_SEGMENT_COUNT, state.segmentIndex + 1)
                     : state.segmentIndex;
-            } else if (!state.profileAvailable) {
+            } else if (!resultVisible && !state.profileAvailable) {
                 // Let the user read the first line before starting capture.
                 promptIndex = 1;
             }
@@ -650,28 +774,42 @@
     function render() {
         renderProfile();
         renderEnrollment();
+        if (readiness) readiness.controls();
     }
 
     async function ensureMicrophone() {
         const setupEpoch = state.statusEpoch;
-        const isStale = function () {
-            return setupEpoch !== state.statusEpoch || state.cancelPending || state.closeStarted;
-        };
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             throw new Error('media_devices_unavailable');
         }
+        if (state.mediaStream && window.nekoMicrophoneInput && !window.nekoMicrophoneInput.liveTrack(state.mediaStream)) {
+            stopMicrophone('microphone_unavailable');
+        }
+        const setupGeneration = state.microphoneSetupGeneration;
+        const isStale = function () {
+            return setupEpoch !== state.statusEpoch || setupGeneration !== state.microphoneSetupGeneration || state.cancelPending || state.closeStarted;
+        };
         if (!state.mediaStream) {
             let selectedMicrophoneId = null;
             try { selectedMicrophoneId = localStorage.getItem('neko_selected_microphone'); } catch (_) {}
             const constraints = {
                 noiseSuppression: false,
                 echoCancellation: true,
-                autoGainControl: true,
+                autoGainControl: false,
                 channelCount: 1
             };
             const selectedConstraints = selectedMicrophoneId
                 ? { ...constraints, deviceId: { exact: selectedMicrophoneId } } : constraints;
-            try {
+            if (window.nekoMicrophoneInput) {
+                const info = await window.nekoMicrophoneInput.open(navigator.mediaDevices, selectedMicrophoneId, () => !isStale());
+                state.mediaStream = info.stream;
+                if (readiness) readiness.receivedStream(info);
+                if (info.track && typeof info.track.addEventListener === 'function') info.track.addEventListener('ended', function () {
+                    if (state.mediaStream !== info.stream) return;
+                    stopMicrophone('microphone_unavailable');
+                    if (readiness) readiness.deviceLost();
+                }, { once: true });
+            } else try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedConstraints, video: false });
                 if (isStale()) {
                     stream.getTracks().forEach(function (track) { track.stop(); });
@@ -736,6 +874,7 @@
             sumSquares += sample * sample;
         }
         const rms = Math.sqrt(sumSquares / chunk.length);
+        if (readiness) readiness.updateMeter(rms);
         const active = rms >= ACTIVE_FRAME_RMS;
         const now = performance.now();
         if (active) {
@@ -796,7 +935,6 @@
         const mute = context.createGain();
         const chunks = [];
         let capturedSamples = 0;
-        let activeSpeechSamples = 0;
         state.captureReady = false;
         let startedAt = null;
         let finishCapture = null;
@@ -891,8 +1029,8 @@
                         if (tail.length) {
                             chunks.push(tail);
                             capturedSamples += tail.length;
-                            if (updateVoiceActivity(tail)) activeSpeechSamples += tail.length;
-                            state.captureReady = activeSpeechSamples >= minimumSamples;
+                            updateVoiceActivity(tail);
+                            state.captureReady = capturedSamples >= minimumSamples;
                         }
                         settle();
                         return;
@@ -901,13 +1039,13 @@
                     if (chunk.length === 0) return;
                     chunks.push(chunk);
                     capturedSamples += chunk.length;
-                    if (updateVoiceActivity(chunk)) activeSpeechSamples += chunk.length;
-                    state.captureReady = activeSpeechSamples >= minimumSamples;
+                    updateVoiceActivity(chunk);
+                    state.captureReady = capturedSamples >= minimumSamples;
                     if (capturedSamples >= requiredSamples && finishCapture) finishCapture();
                 };
             });
             if (capturedSamples <= 0) throw new Error('incomplete_capture');
-            if (activeSpeechSamples < minimumSamples) throw new Error('speech_too_short');
+            if (capturedSamples < minimumSamples) throw new Error('speech_too_short');
             const alignedSamples = Math.floor(
                 Math.min(capturedSamples, requiredSamples) / RUNTIME_CHUNK_SAMPLES
             ) * RUNTIME_CHUNK_SAMPLES;
@@ -946,6 +1084,7 @@
     }
 
     function stopMicrophone(reason) {
+        state.microphoneSetupGeneration += 1;
         const startAbort = state.startAbort;
         state.startAbort = null;
         if (startAbort) {
@@ -1133,6 +1272,8 @@
 
     async function startEnrollment() {
         if (state.busy || state.filterPending || state.cancelPending) return;
+        if (readiness && state.enrollmentId && readiness.canResume && !readiness.canResume()) { readiness.contractChanged(); return; }
+        if (readiness && !state.enrollmentId && !readiness.canStart()) { readiness.requireTest(); return; }
         state.statusEpoch += 1;
         const operationEpoch = state.statusEpoch;
         const isStale = function () {
@@ -1142,6 +1283,7 @@
         let settleStart = null;
         let segmentRequestPending = false;
         let finalSegmentCommitted = false;
+        let finalVerification = null;
         let preserveActiveSession = false;
         let ownedMediaStream = null;
         let ownedAudioContext = null;
@@ -1155,6 +1297,9 @@
         };
         const profileWasAvailable = state.profileAvailable;
         const profileRevisionBefore = state.profileRevision;
+        // A new enrollment invalidates any result from the previous page
+        // lifetime. The score is intentionally not read from /status.
+        state.completionResult = null;
         state.busy = true;
         state.segmentIndex = state.nextSegmentIndex;
         state.segmentPhase = 'preparing';
@@ -1173,6 +1318,8 @@
             ownedMediaStream = state.mediaStream;
             ownedAudioContext = state.audioContext;
             if (isStale()) return;
+            if (readiness && state.enrollmentId && readiness.canResume && !readiness.canResume()) throw new Error('audio_contract_changed');
+            if (readiness && !state.enrollmentId && !readiness.canStart()) throw new Error('input_test_required');
             startSettled = new Promise(function (resolve) { settleStart = resolve; });
             state.startSettled = startSettled;
             const startController = typeof AbortController === 'function'
@@ -1214,8 +1361,11 @@
             }
             let started;
             try {
+                if (readiness && !state.enrollmentId && !readiness.canStart()) throw new Error('input_test_required');
+                const previewContract = readiness && !state.enrollmentId ? readiness.audioContract() : null;
                 started = await apiRequest('/enrollment/start', {
                     method: 'POST',
+                    ...(previewContract ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preview_audio_contract: previewContract }) } : {}),
                     signal: startController ? startController.signal : undefined
                 });
             } catch (error) {
@@ -1369,6 +1519,11 @@
                             }
                             continue;
                         }
+                        if (segment === ENROLLMENT_SEGMENT_COUNT && verification && verification.passed) {
+                            // Keep the transient response before the following
+                            // status refresh, which deliberately omits it.
+                            finalVerification = verification;
+                        }
                         setMessage('');
                         segmentAccepted = true;
                         if (segment === ENROLLMENT_SEGMENT_COUNT && state.profileAvailable) {
@@ -1449,11 +1604,13 @@
             }
             state.enrollmentId = null;
             state.profileId = null;
+            state.completionResult = finalVerification || { passed: true, matchPercent: null };
             state.uiPhase = 'success';
             setMessage(enrollmentCompleteMessage(), false);
         } catch (error) {
             stopOwnedMicrophone();
             if (isStale()) return;
+            if (readiness && error && error.message === 'audio_contract_changed') readiness.contractChanged();
             const reconciled = await reconcileStatus({ timeoutMs: FINAL_STATUS_TIMEOUT_MS });
             const replacementConfirmed = segmentRequestPending || finalSegmentCommitted;
             const profileCommitConfirmed = replacementConfirmed
@@ -1461,7 +1618,13 @@
                 && state.profileAvailable
                 && (!profileWasAvailable || (profileRevisionBefore !== null && state.profileRevision !== null && state.profileRevision !== profileRevisionBefore));
             if (profileCommitConfirmed) {
-                state.enrollmentId = null; state.profileId = null; setMessage(enrollmentCompleteMessage(), false);
+                state.enrollmentId = null;
+                state.profileId = null;
+                // A transport error can happen after the profile commit. In
+                // that path finalVerification is absent, so never invent a
+                // score from the ordinary status response.
+                state.completionResult = finalVerification || { passed: true, matchPercent: null };
+                setMessage(enrollmentCompleteMessage(), false);
             } else if (preserveActiveSession && state.enrollmentId) {
                 setMessage(enrollmentErrorMessage(error), true);
             } else {
@@ -1490,6 +1653,7 @@
             !state.enrollmentId || state.microphoneSetupEpoch === state.statusEpoch
         );
         state.statusEpoch += 1;
+        state.completionResult = null;
         state.cancelPending = true;
         if (state.statusAbort) state.statusAbort.abort();
         if (state.segmentAdvance) { state.segmentAdvance(false); state.segmentAdvance = null; }
@@ -1563,6 +1727,7 @@
                 confirmed = window.confirm(message);
             }
             if (!confirmed) return;
+            state.completionResult = null;
             const payload = await apiRequest('/profile', { method: 'DELETE' });
             applyStatus(payload);
             if (state.profileAvailable) await reconcileStatus();
@@ -1620,7 +1785,7 @@
             if (!state.captureReady) {
                 setMessage(translate(
                     'voiceIdentity.finishTooSoon',
-                    '请继续说话约 1.5 秒后再保存。',
+                    '录音尚未满 1.5 秒，请继续录制。',
                 ), false);
                 renderEnrollment();
                 return;
@@ -1637,6 +1802,7 @@
         const refreshVisibleStatus = function () {
             if (state.busy || state.filterPending || state.cancelPending || state.closeStarted || document.visibilityState === 'hidden') return;
             reconcileStatus().catch(function () {});
+            if (readiness && !readiness.isPending()) readiness.refreshResources().catch(function () {});
         };
         window.addEventListener('focus', refreshVisibleStatus);
         document.addEventListener('visibilitychange', refreshVisibleStatus);
@@ -1761,6 +1927,7 @@
             applyStatus(status);
         } catch (error) {
             if (retryEpoch !== state.statusEpoch) return;
+            state.completionResult = null;
             state.initializationError = true;
             setMessage(enrollmentErrorMessage(error), true);
         } finally {
@@ -1773,6 +1940,15 @@
 
     async function initialize() {
         cacheElements();
+        if (typeof window.createVoiceIdentityReadiness === 'function') readiness = window.createVoiceIdentityReadiness({
+            translate, request: apiRequest, status: reconcileStatus, render,
+            error: enrollmentErrorMessage,
+            stream: () => state.mediaStream,
+            enrolling: () => state.busy || state.enrollmentId || state.cancelPending,
+            microphone: ensureMicrophone, capture: capturePcm16,
+            pause: pauseMicrophone, stop: stopMicrophone,
+            cancel: () => cancelEnrollment({ silent: true }).catch(function () {})
+        });
         bindEvents();
         state.busy = true;
         render();
@@ -1782,7 +1958,12 @@
             state.initialized = true;
             state.initializationError = false;
             applyStatus(status);
+            if (readiness) {
+                // Resource diagnostics own their error display and retry flow.
+                try { await readiness.refreshResources(); } catch (_) {}
+            }
         } catch (error) {
+            state.completionResult = null;
             state.initializationError = true;
             setMessage(enrollmentErrorMessage(error), true);
         } finally {

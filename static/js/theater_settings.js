@@ -3,6 +3,7 @@
   var api = '/api/theater-numeric/options';
   var order = ['evaluator','review','dispute','review_delivery','review_contract','suggestion_fill','history_lookup','actor_retry'];
   var currentModules = null;
+  var saving = false;
   var labels = {
     evaluator: '前置判定', review: '快速复核', dispute: '争议复查', review_delivery: '交付校验',
     review_contract: '边界校验', suggestion_fill: '补推荐', history_lookup: '历史查找', actor_retry: '输出重试'
@@ -59,18 +60,22 @@
       heading.append(title, tip); copy.append(heading, description);
       var label = document.createElement('label'); label.className = 'theater-switch'; label.setAttribute('aria-label', t(labelKeys[key], labels[key]));
       var input = document.createElement('input'); input.type = 'checkbox'; input.checked = currentModules[key] === true;
+      input.disabled = saving;
       var slider = document.createElement('span'); slider.className = 'theater-switch-slider'; label.append(input, slider);
       input.addEventListener('change', function () {
         var previous = currentModules[key] === true;
-        input.disabled = true;
+        if (saving) { input.checked = previous; return; }
+        saving = true;
         var payload = {}; payload[key] = input.checked;
+        host.querySelectorAll('input').forEach(function (control) { control.disabled = true; });
         request({method: 'POST', body: {modules: payload}}).then(function (data) {
           if (!data || !data.modules) throw new Error('numeric_theater_options_save_failed');
+          saving = false;
           render(data.modules);
           feedback(t('theater.settingsSaved', '设置已保存。'), false);
         }).catch(function () {
-          input.checked = previous;
-          input.disabled = false;
+          saving = false;
+          render(currentModules);
           feedback(t('theater.settingsSaveFailed', '设置保存失败，请重试。'), true);
         });
       });

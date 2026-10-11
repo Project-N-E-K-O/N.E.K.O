@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.neko_plugin_cli.core.build_rules import is_vendor_sync_path
+from plugin.utils.source_paths import is_vendor_sync_path
 from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
@@ -57,12 +57,12 @@ from plugin.server.application.plugins.lifecycle_service import (
     plugin_is_running_sync,
     plugin_needs_hot_reload_recovery,
 )
+from plugin.server.application.plugins._metadata_scan_settings import (
+    METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_SCAN_TIMEOUT_SECONDS,
+)
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     bounded_operation_wait,
-)
-from plugin.server.application.plugins.metadata_scanner import (
-    _DEFAULT_SCAN_TIMEOUT_SECONDS,
 )
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event

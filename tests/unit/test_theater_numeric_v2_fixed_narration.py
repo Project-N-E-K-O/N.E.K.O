@@ -290,6 +290,7 @@ async def test_literal_order_cold_recovery_fork_and_exit_gate(tmp_path):
 
 
 @pytest.mark.parametrize('claims', [({'id': 'log', 'evidence': '没有发生的原话'},),
+                                  ({'id': 'log', 'evidence': '。'},),
                                   ({'id': 'unknown', 'evidence': '将铭牌放入读取器'},)])
 def test_uncited_or_unknown_triggers_do_not_display(claims):
     engine = _engine()

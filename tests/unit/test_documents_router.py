@@ -71,7 +71,7 @@ def test_documents_parse_rejects_untrusted_browser_origin_before_parsing(
     # Route-level coverage must not start plugin hosts, whose process-wide
     # storage-root export would leak into unrelated unit tests.
     client = TestClient(
-        build_plugin_server_app(), base_url="http://127.0.0.1:48916"
+        build_plugin_server_app(), base_url="http://127.0.0.1:48916", client=("127.0.0.1", 50000)
     )
     try:
         response = client.post(
@@ -202,7 +202,7 @@ def test_documents_parse_returns_public_code_for_multipart_shape_errors():
 def test_documents_parse_allows_loopback_browser_origin():
     # Keep this at route level for the same storage-root isolation guarantee.
     client = TestClient(
-        build_plugin_server_app(), base_url="http://127.0.0.1:48916"
+        build_plugin_server_app(), base_url="http://127.0.0.1:48916", client=("127.0.0.1", 50000)
     )
     try:
         response = client.post(

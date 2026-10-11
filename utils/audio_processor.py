@@ -29,6 +29,7 @@ Important: RNNoise's GRU state drifts while processing background noise,
 and must be reset once end of speech is detected.
 """
 
+import math
 from contextlib import suppress
 
 import numpy as np
@@ -731,15 +732,27 @@ class AudioProcessor:
             # Only allow gain to stay same or decrease, cap at 1.0
             desired_gain = min(self._agc_gain, 1.0)
         
-        # Smooth gain changes using attack/release coefficients
+        # The gain state is updated once per audio block, not once per sample.
+        # Convert the current block size to seconds before deriving the
+        # exponential coefficients so 10/20/32 ms blocks have the same
+        # attack/release time constants.
+        chunk_seconds = audio.nbytes / (2.0 * self.input_sample_rate)
+        attack_coeff = math.exp(-chunk_seconds / self.AGC_ATTACK_TIME)
+        release_coeff = math.exp(-chunk_seconds / self.AGC_RELEASE_TIME)
+        # Keep the coefficients observable for diagnostics without using a
+        # sample-rate formula that is only correct when called per sample.
+        self._agc_attack_coeff = attack_coeff
+        self._agc_release_coeff = release_coeff
+
+        # Smooth gain changes using the block-duration coefficients.
         if desired_gain < self._agc_gain:
             # Attack: fast response to loud signals
-            self._agc_gain = (self._agc_attack_coeff * self._agc_gain + 
-                             (1 - self._agc_attack_coeff) * desired_gain)
+            self._agc_gain = (attack_coeff * self._agc_gain +
+                             (1 - attack_coeff) * desired_gain)
         else:
             # Release: slow return to higher gain
-            self._agc_gain = (self._agc_release_coeff * self._agc_gain + 
-                             (1 - self._agc_release_coeff) * desired_gain)
+            self._agc_gain = (release_coeff * self._agc_gain +
+                             (1 - release_coeff) * desired_gain)
         
         # Apply gain
         audio_float = audio_float * self._agc_gain

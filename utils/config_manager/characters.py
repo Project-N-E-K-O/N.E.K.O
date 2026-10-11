@@ -34,6 +34,7 @@ from .persona_payload import (
 )
 from .reserved_schema import (
     ensure_catgirl_character_id,
+    ensure_character_uids,
     get_reserved,
     migrate_catgirl_reserved,
     normalize_character_id,
@@ -115,6 +116,29 @@ class CharactersMixin:
         """Get default character config data (content values localized per Steam language)"""
         from config import get_localized_default_characters
         return get_localized_default_characters()
+
+    def load_character_binding_snapshot(self, catgirl_name=None):
+        """Verify only the selected persisted identity, without auditing other cards."""
+        snapshot = self.load_characters()
+        selected = str(catgirl_name or snapshot.get("当前猫娘") or "").strip()
+        with open(self.get_config_path('characters.json'), 'r', encoding='utf-8') as stream:
+            persisted = json.load(stream)
+        profiles = persisted.get("猫娘") if isinstance(persisted, dict) else None
+        profile = profiles.get(selected) if isinstance(profiles, dict) else None
+        if not isinstance(profile, dict) or not normalize_character_id(get_reserved(profile, "character_id", default="")):
+            # A user retry after permissions recover must bypass dirty-cache backoff.
+            # Only retry when this card lacks a durable ID; unrelated old cards
+            # cannot block a selected card whose identity is already persisted.
+            self.load_characters(require_authoritative=True)
+            with open(self.get_config_path('characters.json'), 'r', encoding='utf-8') as stream:
+                persisted = json.load(stream)
+            profiles = persisted.get("猫娘") if isinstance(persisted, dict) else None
+            profile = profiles.get(selected) if isinstance(profiles, dict) else None
+        if not isinstance(profile, dict) or not normalize_character_id(get_reserved(profile, "character_id", default="")):
+            raise ValueError("current_catgirl_identity_unavailable")
+        # Use the persisted card for both its identity and its personality hash.
+        snapshot["猫娘"][selected] = profile
+        return snapshot
 
     def load_characters(self, character_json_path=None, *, require_authoritative=False):
         """Load profiles; authoritative callers reject fallbacks and unpersisted IDs."""
@@ -375,6 +399,59 @@ class CharactersMixin:
             character_json_path,
             bypass_write_fence=bypass_write_fence,
         )
+
+    def backfill_character_uids(self) -> bool:
+        """Give every stored character a stable ``_reserved.character_uid`` once.
+
+        Runs as an explicit startup step after cloudsave bootstrap/import, never
+        from ``load_characters``: a load-time write would make a freshly seeded
+        characters.json look user-modified and stop the legacy-root import.
+        Only an existing runtime characters.json is touched, and it is written
+        (atomically) only when some character lacked a valid id. Returns
+        whether anything was written. Raises what ``save_characters`` raises
+        (e.g. the cloudsave write fence in maintenance mode).
+        """
+        character_json_path = str(self.get_runtime_config_path('characters.json'))
+        if not os.path.isfile(character_json_path):
+            return False
+        # load_characters falls back to the default profiles when the file is
+        # unreadable or not an object; saving those back would overwrite every
+        # user-created profile. Only a file that parses as an object is touched.
+        try:
+            with open(character_json_path, 'r', encoding='utf-8') as f:
+                on_disk = json.load(f)
+        except (OSError, ValueError) as read_err:
+            logger.warning("角色配置文件无法解析，跳过 character_uid 补发: %s", read_err)
+            return False
+        if not isinstance(on_disk, dict):
+            logger.warning("角色配置文件结构异常（非 dict），跳过 character_uid 补发。")
+            return False
+        # Write back exactly what was parsed: a second read (load_characters)
+        # could hit a transient lock / replacement and silently yield defaults.
+        # The raw file may still hold legacy top-level reserved fields; migrate
+        # them as load_characters does, so the write below (which also seeds
+        # the cache) never stores an unmigrated profile.
+        catgirls = on_disk.get('猫娘')
+        changed = False
+        used_character_ids: set[str] = set()
+        if isinstance(catgirls, dict):
+            for catgirl_data in catgirls.values():
+                if isinstance(catgirl_data, dict):
+                    changed |= migrate_catgirl_reserved(catgirl_data)
+                    _, theater_id_changed = ensure_catgirl_character_id(
+                        catgirl_data, used_ids=used_character_ids,
+                    )
+                    changed |= theater_id_changed
+        changed |= ensure_character_uids(catgirls)
+        if not changed:
+            return False
+        self.save_characters(on_disk, character_json_path=character_json_path)
+        logger.info("已为缺少稳定 id 的角色补发 character_uid。")
+        return True
+
+    async def abackfill_character_uids(self) -> bool:
+        """Async wrapper for ``backfill_character_uids`` (file IO off the event loop)."""
+        return await asyncio.to_thread(self.backfill_character_uids)
 
     # --- Character metadata helpers ---
 

@@ -16,13 +16,18 @@
     if (!transport) throw new Error('numeric_theater_transport_unavailable');
     var MESSAGE_SCHEMA = transport.MESSAGE_SCHEMA;
     var createId = transport.createId;
-    var requestJson = transport.requestJson;
+    function requestJson(url, options) {
+        var opts = Object.assign({}, options || {});
+        var claim = opts.activityClaimId || state.activityClaimId;
+        if (claim) opts.headers = Object.assign({}, opts.headers || {}, { 'X-Neko-Theater-Activity': claim });
+        return transport.requestJson(url, opts);
+    }
     // 旧 Session 可能已保存过去的空桥段占位句；只在转场桥段中精确隐藏，不改写正式演绎记录。
     var LEGACY_EMPTY_TRANSITION_BRIDGE = '时间向前流转，现场随之转换。';
     var state = {
         active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0, lifecycleRevision: 0,
-        playerName: '', catgirlName: '', activityCatgirlName: '',
-        sessionStatus: '', scene: null, history: [], suggestedInputs: [],
+        playerName: '', catgirlName: '', activityCatgirlName: '', activityClaimId: '',
+        sessionStatus: '', scene: null, history: [], suggestedInputs: [], invitationRecoveryAvailable: false,
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, composerVisibilityRestore: null,
         chatSurfaceModeRestore: null, windowClaimed: false,
@@ -35,6 +40,9 @@
     var desktopLaunchRelayTimers = Object.create(null);
     var launchEpoch = 0;
     var pendingLaunch = null;
+    var startCleanupBarrier = Promise.resolve();
+    var pendingSelectorEnd = null;
+    var runtimeHostId = createId('theater_host_');
     var endConfirmationPending = false;
     var committedSnapshot = null;
     // 仅在内存中登记的主动搭话临时抑制；不写用户设置，页面关闭或崩溃时随之消失。
@@ -588,7 +596,10 @@
             phase: state.phase,
             storyTitle: state.storyTitle,
             history: state.history.slice(),
-            suggestedInputs: state.phase === 'awaiting_player' ? state.suggestedInputs.slice(0, 3) : [],
+            suggestedInputs: state.phase === 'awaiting_player' ? (state.invitationRecoveryAvailable
+                ? [t('theater.reinvite', '重新邀请')].concat(state.suggestedInputs.filter(function (text) {
+                    return text !== t('theater.reinvite', '重新邀请');
+                })).slice(0, 3) : state.suggestedInputs.slice(0, 3)) : [],
             busy: ['loading', 'evaluating', 'ending', 'returning_selector'].indexOf(state.phase) >= 0,
             sessionEnded: state.sessionStatus === 'ended',
             errorMessage: state.errorMessage,
@@ -628,7 +639,8 @@
         });
     }
     function submitSuggestedFromHost(text) {
-        void submit(text, 'suggestion').catch(function () {
+        var source = state.invitationRecoveryAvailable && text === t('theater.reinvite', '重新邀请') ? 'reinvite' : 'suggestion';
+        void submit(text, source).catch(function () {
             if (!state.active) return;
             state.phase = 'awaiting_player';
             state.errorMessage = t('theater.inputFailed', '暂时未能取得演绎回复，请重试。');
@@ -680,6 +692,12 @@
         state.scene = snapshot.scene || null;
         state.storyTitle = String(snapshot.story_title || state.storyTitle || state.storyId);
         state.suggestedInputs = Array.isArray(snapshot.suggested_inputs) ? snapshot.suggested_inputs.map(String) : [];
+        state.invitationRecoveryAvailable = snapshot.invitation_recovery_available === true;
+        if (snapshot.end_receipt_pending) {
+            state.errorMessage = t('theater.endReceiptPending', '演出已经结束；记忆确认暂未准备好，请稍后重新打开选剧页。');
+        } else if (snapshot.evaluator_degraded) {
+            state.errorMessage = t('theater.evaluatorDegraded', '判定暂时不可用，本轮数值未推进；已显示的作者邀请仍可确认。');
+        }
         // 保留最近一次服务端已提交快照；表现播放被打断时可直接恢复完整历史和推荐输入。
         committedSnapshot = snapshot;
     }
@@ -831,8 +849,13 @@
         // 小剧场只接管文本胶囊；必须先停掉普通语音 Session，避免 ASR 和普通回复穿插进演绎。
         if (!await stopOrdinaryVoiceInput() || launchToken !== launchEpoch) {
             restoreProactiveChatAfterTheater();
-            delete launchReplyTargets[message.launch_id];
             return false;
+        }
+        if (pendingLaunch && pendingLaunch.token === launchToken && pendingLaunch.activityClaimId) {
+            if (state.activityClaimId && state.activityClaimId !== pendingLaunch.activityClaimId) {
+                releaseServerTheaterActivity(state.activityCatgirlName, state.activityClaimId);
+            }
+            state.activityClaimId = pendingLaunch.activityClaimId;
         }
         var chatHost = host();
         captureOrdinaryDraft(chatHost);
@@ -852,6 +875,7 @@
         state.errorMessage = '';
         state.tokenUsage = message.token_usage || null;
         state.pendingEnd = null;
+        pendingSelectorEnd = null;
         // 新启动（含同一 Session 被恢复后重新接管）使进行中的结束流程失效，迟到的结束响应不能关闭它。
         state.endInFlight = null;
         committedSnapshot = null;
@@ -878,7 +902,6 @@
         var hostReady = await waitForHost();
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
         if (!hostReady) {
-            delete launchReplyTargets[message.launch_id];
             clear('launch-host-unavailable');
             return false;
         }
@@ -891,6 +914,10 @@
         state.tokenUsage = message.token_usage || null;
         applySnapshot(snapshot);
         state.history = buildCommittedHistory(snapshot);
+        if (snapshot.end_receipt_id) state.pendingEnd = {
+            story_id: state.storyId, session_id: state.sessionId, revision: state.revision,
+            end_receipt_id: snapshot.end_receipt_id, archive_request_id: snapshot.archive_request_id || ''
+        };
         state.active = true;
         rememberPointer();
         claimAudioPlayback();
@@ -914,7 +941,7 @@
         var nextSessionId = String(message.session_id);
         var snapshot;
         try {
-            snapshot = await requestJson(api.session + '/' + encodeURIComponent(nextSessionId) + '?story_id=' + encodeURIComponent(nextStoryId));
+            snapshot = await requestJson(api.session + '/' + encodeURIComponent(nextSessionId) + '?claim_activity=false&story_id=' + encodeURIComponent(nextStoryId));
         } catch (_) {
             // 候选快照读取失败时还未接管全局状态，保留当前健康演绎并只结束本次启动。
             delete launchReplyTargets[message.launch_id];
@@ -931,18 +958,34 @@
         }
         message.story_title = snapshot.story_title || message.story_title;
         var boundCatgirlName = snapshot.participants && snapshot.participants.catgirl_name;
-        if (!await prepareLaunchSurface(message, launchToken, boundCatgirlName) || !await completeLaunch(message, launchToken, snapshot)) {
-            releaseAbandonedLaunchActivity(snapshot, launchToken);
-            return false;
+        if (!pendingLaunch || pendingLaunch.cancelled) return false;
+        var claim = createId('theater_activity_');
+        if (pendingLaunch && pendingLaunch.token === launchToken) {
+            pendingLaunch.activityClaimId = claim;
+            pendingLaunch.catgirlName = boundCatgirlName;
         }
-        return true;
+        var accepted = false;
+        try {
+            var claimed = await requestJson(api.session + '/' + encodeURIComponent(nextSessionId) + '?story_id=' + encodeURIComponent(nextStoryId), { activityClaimId: claim });
+            if (claimed.activity_claimed === false || launchToken !== launchEpoch || !pendingLaunch || pendingLaunch.cancelled) return false;
+            if (!claimed.ok || !claimed.session || Number(claimed.session.revision) !== Number(message.revision)) return false;
+            snapshot = claimed;
+            boundCatgirlName = snapshot.participants && snapshot.participants.catgirl_name;
+            message.story_title = snapshot.story_title || message.story_title;
+            if (!await prepareLaunchSurface(message, launchToken, boundCatgirlName)) return false;
+            accepted = await completeLaunch(message, launchToken, snapshot);
+            return accepted;
+        } finally {
+            if (!accepted) releaseServerTheaterActivity(boundCatgirlName, claim);
+        }
     }
     async function performStart(message, launchToken) {
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
+        var startClaim = pendingLaunch && pendingLaunch.activityClaimId;
         if (!await prepareLaunchSurface(message, launchToken)) return false;
         // 胶囊接管完成后即可关闭选剧页；模型生成继续由本体持有，不受选剧窗口生命周期影响。
-        var startPromise = requestJson(api.start, { method: 'POST', body: {
+        var startPromise = requestJson(api.start, { method: 'POST', activityClaimId: startClaim, body: {
             story_id: nextStoryId,
             session_id: nextSessionId,
             character_id: String(message.character_id),
@@ -957,9 +1000,46 @@
         } catch (_) {
             snapshot = { ok: false };
         }
+        if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)
+            && snapshot.ok && snapshot.resumed === true && snapshot.session
+            && snapshot.session.status === 'ended'
+            && snapshot.session.ended_reason === 'cancelled_start') {
+            // Starting a new performance must not adopt a retired recovery slot.
+            // Keep ordinary continue/restore semantics and retry replacement once.
+            // The ended response retires its activity owner as well.
+            releaseServerTheaterActivity('', startClaim);
+            startClaim = createId('theater_activity_');
+            pendingLaunch.activityClaimId = startClaim;
+            state.activityClaimId = startClaim;
+            if (snapshot.session.session_id === nextSessionId) {
+                nextSessionId = createId('theater_session_');
+                message.session_id = nextSessionId;
+                pendingLaunch.sessionId = nextSessionId;
+                state.sessionId = nextSessionId;
+            }
+            try {
+                snapshot = await requestJson(api.start, {method: 'POST', activityClaimId: startClaim, body: {
+                    story_id: nextStoryId, session_id: nextSessionId,
+                    character_id: String(message.character_id), replace_existing: true
+                }});
+            } catch (_) { snapshot = {ok: false}; }
+        }
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
             // 开场生成期间已退出或被新启动取代：迟到的开场结果只丢弃，不能重新接管胶囊。
-            releaseAbandonedLaunchActivity(snapshot, launchToken);
+            if (snapshot.ok && snapshot.resumed !== true && snapshot.session
+                && snapshot.session.session_id === nextSessionId && snapshot.session.status === 'active') {
+                // Only retire the session created by this cancelled request.
+                // Revision/lifecycle checks protect a session another operation advanced.
+                try {
+                    await requestJson(api.end, {method: 'POST', activityClaimId: startClaim, body: {
+                        story_id: nextStoryId, session_id: nextSessionId,
+                        cancelled_start: true,
+                        base_revision: snapshot.session.revision,
+                        base_lifecycle_revision: snapshot.session.lifecycle_revision || 0
+                    }});
+                } catch (_) {}
+            }
+            releaseServerTheaterActivity('', startClaim);
             return false;
         }
         if (!snapshot.ok || !snapshot.session) {
@@ -985,11 +1065,12 @@
         var launchToken = ++launchEpoch;
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
-        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId };
+        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId, activityClaimId: createId('theater_activity_') };
         var request = performLaunch(message, launchToken).catch(function () {
             if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) clear('launch-request-failed');
             return false;
         }).finally(function () {
+            delete launchReplyTargets[launchId];
             if (pendingLaunch && pendingLaunch.token === launchToken) pendingLaunch = null;
         });
         launchRequests[launchId] = request;
@@ -1003,9 +1084,16 @@
         var launchToken = ++launchEpoch;
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
-        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId };
-        var request = performStart(message, launchToken).catch(function () {
-            if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
+        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId, activityClaimId: createId('theater_activity_') };
+        // A cancelled opening must finish its retirement before the next start
+        // can resume the same Session without advancing its lifecycle.
+        var request = startCleanupBarrier.then(function () {
+            if (launchToken !== launchEpoch) return false;
+            return performStart(message, launchToken);
+        }).catch(function () {
+            var failedSessionId = pendingLaunch && pendingLaunch.token === launchToken
+                ? pendingLaunch.sessionId : nextSessionId;
+            if (isCurrentLaunch(launchToken, nextStoryId, failedSessionId)) {
                 state.phase = 'ended';
                 state.sessionStatus = 'ended';
                 state.history = [];
@@ -1013,9 +1101,17 @@
                 render();
             }
             return false;
+        }).then(function (result) {
+            if (!result) {
+                var failedMessage = postMessage({action: 'theater:start-failed', launch_id: launchId});
+                postDirect(launchReplyTargets[launchId], failedMessage);
+            }
+            return result;
         }).finally(function () {
+            delete launchReplyTargets[launchId];
             if (pendingLaunch && pendingLaunch.token === launchToken) pendingLaunch = null;
         });
+        startCleanupBarrier = request;
         launchRequests[launchId] = request;
         launchRequestOrder.push(launchId);
         if (launchRequestOrder.length > 64) delete launchRequests[launchRequestOrder.shift()];
@@ -1023,9 +1119,9 @@
     }
     async function submit(text, inputSource) {
         var message = String(text || '').trim();
-        var normalizedInputSource = inputSource === 'suggestion' ? 'suggestion' : 'freeform';
+        var normalizedInputSource = inputSource === 'reinvite' ? 'reinvite' : inputSource === 'suggestion' ? 'suggestion' : 'freeform';
         if (!state.active || state.phase !== 'awaiting_player' || !message) return false;
-        var signature = state.sessionId + '\u001f' + state.revision + '\u001f' + message;
+        var signature = state.sessionId + '\u001f' + state.revision + '\u001f' + normalizedInputSource + '\u001f' + message;
         if (!state.pendingTurn || state.pendingTurn.signature !== signature) state.pendingTurn = { signature: signature, id: createId('theater_turn_') };
         // 请求期间可能从另一个选剧页切换剧本；响应只能写回发起它的 Session。
         var submittedStoryId = state.storyId;
@@ -1035,7 +1131,7 @@
         var submittedSuggestedInputs = state.suggestedInputs.slice();
         var optimisticHistoryId = 'player-pending-' + state.pendingTurn.id;
         // 玩家行动先进入历史区，让推荐输入和手动提交都立即得到可见反馈。
-        if (!state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
+        if (normalizedInputSource !== 'reinvite' && !state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
             state.history.push(historyEntry(optimisticHistoryId, 'player_action', message, state.playerName));
         }
         state.phase = 'evaluating'; state.suggestedInputs = []; state.draftRestore = null; state.errorMessage = ''; render();
@@ -1064,6 +1160,7 @@
             if (state.phase !== 'evaluating') return false;
             var refreshed = null;
             if (result.reason === 'numeric_base_revision_mismatch'
+                || result.reason === 'numeric_reinvitation_not_available'
                 || result.reason === 'numeric_suggested_input_not_current'
                 || result.reason === 'numeric_duplicate_client_turn_id'
                 || result.reason === 'session_already_ended') {
@@ -1077,7 +1174,7 @@
             if (!state.active || state.storyId !== submittedStoryId || state.sessionId !== submittedSessionId
                 || !state.pendingTurn || state.pendingTurn.id !== submittedTurnId || state.phase !== 'evaluating') return false;
             state.history = state.history.filter(function (entry) { return entry.id !== optimisticHistoryId; });
-            state.draftRestore = { id: createId('theater_draft_restore_'), text: message };
+            state.draftRestore = { id: createId('theater_draft_restore_'), text: normalizedInputSource === 'reinvite' ? '' : message };
             state.errorMessage = t('theater.inputFailed', '暂时未能取得演绎回复，请重试。');
             // 只有当前接口明确在提交前返回的模型失败才恢复旧按钮；断网仍保留原输入与幂等编号。
             if (['numeric_v2_actor_failed', 'numeric_v2_actor_unavailable',
@@ -1099,7 +1196,9 @@
                 }
                 state.errorMessage = state.sessionStatus === 'ended'
                     ? t('theater.ended', '已结束')
-                    : t('theater.numericSessionUpdated', '演出状态已更新，已保留你的输入，请确认后重试。');
+                    : normalizedInputSource === 'reinvite'
+                        ? t('theater.numericSessionUpdatedControl', '演出状态已更新，请确认当前可用操作。')
+                        : t('theater.numericSessionUpdated', '演出状态已更新，已保留你的输入，请确认后重试。');
             }
             state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
             render();
@@ -1107,7 +1206,8 @@
         }
         state.pendingTurn = null;
         // 成功回合已经推进权威 revision；此前发起的同 Session 启动快照不得再覆盖新历史。
-        launchEpoch += 1;
+        if (pendingLaunch && pendingLaunch.storyId === submittedStoryId
+            && pendingLaunch.sessionId === submittedSessionId) launchEpoch += 1;
         applySnapshot(result);
         if (result.end_receipt_id) state.pendingEnd = {
             story_id: state.storyId,
@@ -1144,36 +1244,38 @@
         }
         return true;
     }
-    function releaseServerTheaterActivity(catgirlName) {
+    function releaseServerTheaterActivity(catgirlName, activityClaimId) {
         // 服务端对主动搭话和普通语音的兜底按最近一次剧场请求计时（TTL 到期自动失效）；
         // 退出而未结束演绎时显式释放本窗口演绎的角色，避免 TTL 内把已恢复的普通语音误拦，
         // 也不影响其他窗口正在演绎的角色。失败只等 TTL。
-        if (!catgirlName) return;
+        if (!catgirlName && !activityClaimId) return;
+        var payload = { catgirl_name: catgirlName || '' };
+        if (activityClaimId) payload.activity_claim_id = activityClaimId;
         try {
             Promise.resolve(requestJson(api.release, {
-                method: 'POST', body: { catgirl_name: catgirlName }
+                method: 'POST', body: payload
             })).catch(function () {});
         } catch (_) {}
-    }
-    function releaseAbandonedLaunchActivity(snapshot, launchToken) {
-        // 被放弃的启动可能已在服务端登记剧场信号（开场或快照请求成功即登记）；否则普通对话会被兜底拦到 TTL。
-        // 本窗口仍在演绎或正在启动时不释放，避免误清正在进行的演绎。
-        var participants = snapshot && snapshot.ok === true ? snapshot.participants : null;
-        var name = String(participants && participants.catgirl_name || '').trim();
-        if (!name || state.active || (pendingLaunch && pendingLaunch.token !== launchToken)) return;
-        releaseServerTheaterActivity(name);
     }
     function clear(reason) {
         var wasActive = state.active === true;
         var releasedCatgirlName = state.activityCatgirlName;
+        var releasedClaim = state.activityClaimId;
+        if (pendingLaunch && pendingLaunch.activityClaimId) {
+            launchEpoch += 1;
+            pendingLaunch.cancelled = true;
+            releaseServerTheaterActivity(pendingLaunch.catgirlName || '', pendingLaunch.activityClaimId);
+        }
         if (state.active && state.phase !== 'loading') claimAudioPlayback();
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.history = []; state.suggestedInputs = [];
-        state.playerName = ''; state.catgirlName = ''; state.activityCatgirlName = ''; state.windowClaimed = false;
+        state.playerName = ''; state.catgirlName = ''; state.activityCatgirlName = ''; state.activityClaimId = ''; state.windowClaimed = false;
         state.endInFlight = null;
         if (wasActive) publishSpeechAllowlist();
         restoreProactiveChatAfterTheater();
         state.pendingTurn = null; state.draftRestore = null;
+        state.pendingEnd = null;
+        pendingSelectorEnd = null;
         committedSnapshot = null;
         rememberPointer();
         var chatHost = host();
@@ -1195,7 +1297,7 @@
             });
         }
         window.dispatchEvent(new CustomEvent('neko:theater-cleared', { detail: { reason: reason || 'clear' } }));
-        if (wasActive) releaseServerTheaterActivity(releasedCatgirlName);
+        if (wasActive || releasedClaim) releaseServerTheaterActivity(releasedCatgirlName, releasedClaim);
     }
     function openSelector(receipt) {
         state.pendingEnd = receipt || state.pendingEnd;
@@ -1244,12 +1346,16 @@
         sendPendingEnd(selectorTarget);
         // 确认弹窗关闭和结束请求都会把焦点留回本体；提交成功后必须再次恢复选剧页。
         restoreSelectorWindow(selectorTarget);
+        var deliveryReceipt = state.pendingEnd;
         clear(clearReason);
+        pendingSelectorEnd = deliveryReceipt ? {target: selectorTarget, receipt: deliveryReceipt} : null;
         return true;
     }
     function sendPendingEnd(target) {
-        if (!state.pendingEnd) return;
-        var content = Object.assign({ action: 'theater:post-end', message_id: createId('theater_post_end_') }, state.pendingEnd);
+        var receipt = pendingSelectorEnd && pendingSelectorEnd.target === target
+            ? pendingSelectorEnd.receipt : state.pendingEnd;
+        if (!receipt) return;
+        var content = Object.assign({ action: 'theater:post-end', message_id: createId('theater_post_end_') }, receipt);
         // 已知选剧页时只直发；直发失败才广播，避免同一回执通过两个传输通道重复到达。
         if (target) {
             var directMessage = transport.createMessage('theater-runtime', content);
@@ -1382,7 +1488,7 @@
                 applySnapshot(snapshot);
                 state.history = buildCommittedHistory(snapshot);
             }
-            state.phase = 'awaiting_player';
+            state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
             // 只有请求本身未取得响应时才提示本地服务连接；后端拒绝属于业务状态错误。
             state.errorMessage = endRequestFailed
                 ? t('theater.endConnectionFailed', '无法连接 N.E.K.O 本地服务，请确认程序仍在运行后重试。')
@@ -1411,11 +1517,12 @@
         var restoreLaunchEpoch = launchEpoch;
         // Refresh restoration is a pending launch too: end/delete notifications
         // can arrive before its GET resolves, while the runtime is still inactive.
-        pendingLaunch = { token: restoreLaunchEpoch, storyId: pointer.story_id, sessionId: pointer.session_id };
+        var restoreClaim = createId('theater_activity_');
+        pendingLaunch = { token: restoreLaunchEpoch, storyId: pointer.story_id, sessionId: pointer.session_id, activityClaimId: restoreClaim };
         try {
             var snapshot;
             try {
-                snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id));
+                snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id), { activityClaimId: restoreClaim });
             } catch (_) {
                 // 暂时性网络失败保留指针供下次恢复，但不让启动 Promise 产生未处理拒绝。
                 return;
@@ -1438,6 +1545,7 @@
             // 刷新恢复的会话同样要暂停普通主动搭话，与正常启动保持一致。
             lockProactiveChatForTheater();
             stopPeerOrdinaryVoiceInput(state.activityCatgirlName);
+            state.activityClaimId = restoreClaim;
             var hostReady = await waitForHost();
             if (restoreLaunchEpoch !== launchEpoch) return;
             if (!hostReady) {
@@ -1447,6 +1555,7 @@
             }
             render();
         } finally {
+            if (!state.active || state.activityClaimId !== restoreClaim) releaseServerTheaterActivity('', restoreClaim);
             if (pendingLaunch && pendingLaunch.token === restoreLaunchEpoch) pendingLaunch = null;
         }
     }
@@ -1465,7 +1574,13 @@
             pendingLaunch = null;
             if (!state.active) rememberPointer();
         }
-        if ((message.action === 'theater:launch-ready' || message.action === 'theater:start-ready') && message.launch_id) {
+        if (message.action === 'theater:host-probe' && message.probe_id) {
+            var candidateRole = desktopRuntimeRole();
+            if (candidateRole && candidateRole !== 'compact') return;
+            postMessage({action: 'theater:host-candidate', probe_id: message.probe_id,
+                runtime_host_id: runtimeHostId, visible: document.visibilityState === 'visible'});
+        }
+        else if ((message.action === 'theater:launch-ready' || message.action === 'theater:start-ready') && message.launch_id) {
             stopDesktopLaunchRelay(message.launch_id);
         }
         else if (
@@ -1475,6 +1590,7 @@
             && message.session_id
             && (message.action === 'theater:start-request' || Number.isInteger(message.revision))
         ) {
+            if (message.runtime_host_id && message.runtime_host_id !== runtimeHostId) return;
             var role = desktopRuntimeRole();
             if (role === 'pet') {
                 if (message.runtime_host_kind) return;
@@ -1488,10 +1604,17 @@
             if (role && role !== 'compact') return;
             if (message.runtime_host_kind && role && message.runtime_host_kind !== role) return;
             if (event.source && event.source !== window) launchReplyTargets[message.launch_id] = event.source;
-            if (message.action === 'theater:start-request') startLaunch(message);
+            if (message.action === 'theater:start-request') {
+                var acceptedMessage = postMessage({ action: 'theater:start-accepted', launch_id: message.launch_id,
+                    story_id: message.story_id, session_id: message.session_id });
+                postDirect(launchReplyTargets[message.launch_id], acceptedMessage);
+                startLaunch(message);
+            }
             else launch(message);
         }
         else if (message.action === 'theater:selector-ready') sendPendingEnd(event.source);
+        else if (message.action === 'theater:post-end-accepted' && pendingSelectorEnd
+            && message.end_receipt_id === pendingSelectorEnd.receipt.end_receipt_id) pendingSelectorEnd = null;
         else if (message.action === 'theater:ordinary-voice-stop' && !state.active) {
             // A theater started in another window: stop this window's ordinary mic or
             // voice session, exactly as the theater window stops its own before launch,

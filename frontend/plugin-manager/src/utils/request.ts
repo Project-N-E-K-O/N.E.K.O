@@ -188,6 +188,7 @@ function requiresCsrfToken(config: Pick<AxiosRequestConfig, 'method' | 'url'>): 
   const method = config.method?.toLowerCase()
   if (method === 'delete') return /^\/plugin\/[^/]+$/.test(path) || path === '/plugin-cli/upload'
   return /^\/plugin\/[^/]+\/(?:start|stop|refresh|reload)$/.test(path)
+    || (method === 'put' && /^\/plugin\/[^/]+\/auto-start$/.test(path))
     || /^\/plugins\/(?:refresh|reload)$/.test(path)
     || (method === 'post'
       && /^\/plugin-cli\/(?:upload|upload-and-install|upload-and-unpack|install|unpack|build|pack)$/.test(path))
@@ -356,7 +357,7 @@ service.interceptors.request.use(
           source?.request,
           source?.response,
         )
-        error.cause = cause
+        error.cause = cause instanceof Error ? cause : new Error(String(cause))
         throw error
       }
       if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']

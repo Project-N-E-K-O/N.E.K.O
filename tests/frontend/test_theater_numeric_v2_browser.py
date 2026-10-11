@@ -167,6 +167,41 @@ def test_owned_selector_closes_after_capsule_takeover_before_opening_response(
 
 
 @pytest.mark.frontend
+def test_selector_stays_open_when_runtime_microphone_preparation_fails(mock_page: Page, running_server: str):
+    starts = []
+    def handler(route: Route):
+        path = route.request.url.split('?', 1)[0]
+        if path.endswith('/stories'):
+            _fulfill(route, {'ok': True, 'stories': [STORY], 'character_id': CHARACTER_ID})
+        elif path.endswith('/session/active'):
+            _fulfill(route, {'ok': False, 'reason': 'numeric_session_not_found'}, 404)
+        elif path.endswith('/memory/archives'):
+            _fulfill(route, {'ok': True, 'archives': []})
+        elif path.endswith('/session/start'):
+            starts.append(route)
+            _fulfill(route, {'ok': False}, 500)
+        else:
+            route.fallback()
+    mock_page.context.route('**/api/theater-numeric/**', handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    mock_page.evaluate("""() => {
+        window.appState.isRecording = true;
+        window.appAudioCapture = {stopMicCapture: async () => {throw new Error('mic failed');}};
+    }""")
+    with mock_page.expect_popup() as popup_info:
+        mock_page.evaluate("() => window.open('/theater', 'failed_theater_test')")
+    selector = popup_info.value
+    selector.wait_for_load_state('domcontentloaded')
+    expect(selector.locator('#theater-start-btn')).to_be_enabled()
+    selector.locator('#theater-start-btn').click()
+    expect(selector.get_by_text('启动演出失败，请重试。', exact=True)).to_be_visible(timeout=15000)
+    assert not selector.is_closed()
+    assert not starts
+
+
+@pytest.mark.frontend
 def test_selector_shows_story_summary_roles_and_new_session_actions(mock_page: Page, running_server: str):
     _install_selector_routes(mock_page)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
@@ -571,7 +606,7 @@ def test_user_exit_story_can_continue_same_session(mock_page: Page, running_serv
     expect(mock_page.locator("#theater-session-badge")).to_have_text("已退出")
     expect(mock_page.locator("#theater-session-hint")).to_contain_text("继续原进度")
     expect(mock_page.locator("#theater-token-budget")).to_have_count(0)
-    with mock_page.expect_request("**/api/theater-numeric/session/resume") as request_info:
+    with mock_page.expect_request("**/api/theater-numeric/session/resume?claim_activity=false") as request_info:
         mock_page.locator("#theater-continue-btn").click()
     assert json.loads(request_info.value.post_data or "{}") == {
         "story_id": STORY["story_id"],
@@ -614,7 +649,7 @@ def test_ended_story_start_replaces_session_after_confirmation(mock_page: Page, 
     mock_page.locator("#theater-modal-cancel").click()
     expect(mock_page.locator("#theater-start-btn")).to_be_focused()
     mock_page.locator("#theater-start-btn").click()
-    with mock_page.expect_request("**/api/theater-numeric/session/start") as request_info:
+    with mock_page.expect_request("**/api/theater-numeric/session/start?claim_activity=false") as request_info:
         mock_page.locator("#theater-modal-confirm").click()
 
     start_payload = json.loads(request_info.value.post_data or "{}")
@@ -1119,6 +1154,10 @@ def test_background_memory_selection_cannot_steal_session_launch(mock_page: Page
     mock_page.add_init_script('''window.__launches = [];
         window.__launchChannel = new BroadcastChannel('neko_page_channel');
         window.__launchChannel.onmessage = event => {
+            if (event.data.action === 'theater:host-probe') {
+                window.__launchChannel.postMessage({...event.data, action:'theater:host-candidate', runtime_host_id:'fixture-host', visible:true});
+                return;
+            }
             if (event.data.action !== 'theater:launch-request') return;
             window.__launches.push(event.data);
             window.__launchChannel.postMessage({...event.data, action:'theater:launch-ready'});
@@ -1128,7 +1167,7 @@ def test_background_memory_selection_cannot_steal_session_launch(mock_page: Page
     button = '#theater-start-btn' if operation == 'start' else '#theater-continue-btn'
     expect(mock_page.locator(button)).to_be_enabled()
     with mock_page.expect_request(lambda request: '/session/' in request.url and (
-        request.url.endswith('/start') or request.url.endswith('/resume') or '/session/launch-session?' in request.url)):
+        request.url.split('?')[0].endswith('/start') or request.url.split('?')[0].endswith('/resume') or '/session/launch-session?' in request.url)):
         mock_page.locator(button).click()
     _fulfill(pending['memory'], {'ok':True, 'character_id':CHARACTER_ID,
         'stories':[{**STORY, 'story_id':'deleted-memory', 'title':'已删除的另一剧本', 'memory_only':True}]})

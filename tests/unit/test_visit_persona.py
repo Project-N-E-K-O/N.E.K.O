@@ -1,0 +1,1435 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Public visit persona (OD-10 v3; visit design §4.6 persona, §5 PR-09a ``persona.py``)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import stat
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import config.visit_settings as visit_settings
+from config.prompts.prompts_visit import build_visit_instructions, get_family_neutral_term
+from main_logic.visit.sanitize import ngram_units
+from main_routers.system_router import AUTOSTART_CSRF_TOKEN
+from main_routers.visit_router import persona
+from main_routers.visit_router import router as visit_router
+from main_routers.visit_router.local_context import CharacterContext
+
+ORIGIN = "http://testserver"
+GOOD = {"Origin": ORIGIN, "X-CSRF-Token": AUTOSTART_CSRF_TOKEN}
+UID_A = "a" * 32
+UID_B = "b" * 32
+
+PUBLIC = ["你是{LANLAN_NAME}，一只活泼好动的橘色猫娘，说话尾巴总爱带一个喵字。",
+          "喜欢晒太阳、追毛线球和吃小鱼干，讨厌洗澡和打雷的夜晚。"]
+PRIVATE = ["你的亲人叫小明，你们住在桂花路的老房子里。",
+           "小明每周三都要加班到很晚，你会在门口等他回家。",
+           "小明的微信号是 xiaoming_1990，QQ 123456。"]
+CARD = "\n".join(PUBLIC + PRIVATE)
+FAMILY = ("小明",)
+GOOD_PERSONA = "你是{LANLAN_NAME}，一只活泼好动的橘色猫娘，口头禅是喵。喜欢晒太阳和吃小鱼干，讨厌洗澡。"
+
+
+class FakeLLM:
+    """Generation call: returns queued replies in order (the last one repeats)."""
+
+    def __init__(self, *replies: str) -> None:
+        self.replies = list(replies) or [GOOD_PERSONA]
+        self.prompts: list[str] = []
+        self.fail = False
+
+    async def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if self.fail:
+            raise RuntimeError("boom")
+        return self.replies[min(len(self.prompts) - 1, len(self.replies) - 1)]
+
+
+class FakeScan:
+    def __init__(self, sections=None) -> None:
+        self.sections = list(PRIVATE[:2]) if sections is None else sections
+        self.calls = 0
+        self.fail = False
+
+    async def __call__(self, prompt: str) -> str:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("scan down")
+        return json.dumps(self.sections, ensure_ascii=False)
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    persona._reset_for_tests()
+    state = {"cards": {"A": CARD, "B": "你是{LANLAN_NAME}，一只安静的白猫。"}, "uids": {"A": UID_A, "B": UID_B}}
+    llm, scan = FakeLLM(), FakeScan()
+
+    async def load_context():
+        return CharacterContext(family_names=FAMILY, cards=dict(state["cards"]))
+
+    async def resolve(name):
+        return state["uids"].get(name)
+
+    async def resolve_name(uid):
+        return next((name for name, u in state["uids"].items() if u == uid), None)
+
+    saved = persona._hooks.__dict__.copy()
+    persona.configure_persona(config_dir=lambda: tmp_path, load_context=load_context, resolve_char_uid=resolve,
+                              resolve_char_name=resolve_name,
+                              llm=llm, scan_llm=scan, lang=lambda: "zh")
+    monkeypatch.setattr(visit_settings, "VISIT_ENABLED", True)
+    monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", False)
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+    app = FastAPI()
+    app.include_router(visit_router)
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        yield client, tmp_path, state, llm, scan
+    persona._reset_for_tests()
+    persona._hooks.__dict__.update(saved)
+
+
+def _settle(client) -> None:
+    async def wait():
+        jobs = list(persona._jobs.values())
+        if jobs:
+            await asyncio.wait_for(asyncio.gather(*jobs, return_exceptions=True), 5)
+
+    client.portal.call(wait)
+
+
+def _generate(client, name="A"):
+    resp = client.post(f"/api/visit/persona/regenerate?catgirl={name}", headers=GOOD, json={})
+    assert resp.status_code == 202, resp.text
+    _settle(client)
+    return client.get(f"/api/visit/persona?catgirl={name}", headers=GOOD).json()
+
+
+def _confirm(client, name="A"):
+    """Confirm the persona the panel shows (``reviewed:true`` with the version it got from GET)."""
+    view = client.get(f"/api/visit/persona?catgirl={name}", headers=GOOD).json()
+    return client.put(f"/api/visit/persona?catgirl={name}", headers=GOOD,
+                      json={"reviewed": True, "persona_version": view["persona_version"]})
+
+
+def _file(tmp_path, uid=UID_A) -> dict:
+    return json.loads((tmp_path / "visit_persona" / f"{uid}.json").read_text(encoding="utf-8"))
+
+
+def _shares_ngram(text: str, source: str, n: int = 8) -> bool:
+    a, b = ngram_units(text), ngram_units(source)
+    grams = {tuple(b[i:i + n]) for i in range(len(b) - n + 1)}
+    return any(tuple(a[i:i + n]) in grams for i in range(len(a) - n + 1))
+
+
+# ── 生成与隐私检查 ─────────────────────────────────────────────────────
+
+
+def test_instructions_carry_only_the_public_persona(env):
+    client, tmp_path, *_ = env
+    view = _generate(client)
+    assert view["state"] == "unreviewed" and view["text"]
+    instructions = build_visit_instructions("A", "guest", "zh", persona_text=view["text"],
+                                            memory_block="", peer_display="")
+    for section in PRIVATE:
+        assert not _shares_ngram(instructions, section)
+    assert "小明" not in instructions and "桂花路" not in instructions
+
+
+def test_private_overlap_regenerates_once_then_refuses(env):
+    client, tmp_path, _state, llm, _scan = env
+    leaking = GOOD_PERSONA + "小明每周三都要加班到很晚，你会在门口等他。"
+    llm.replies = [leaking, leaking]
+    view = _generate(client)
+    assert len(llm.prompts) == 2
+    assert view["state"] == "missing" and view["error"] == "persona_sensitive_overlap"
+    assert not (tmp_path / "visit_persona").exists() or not any((tmp_path / "visit_persona").iterdir())
+
+
+def test_overlap_then_clean_regeneration_is_saved(env):
+    client, _tmp, _state, llm, _scan = env
+    llm.replies = [GOOD_PERSONA + "小明每周三都要加班到很晚，你会在门口等他。", GOOD_PERSONA]
+    view = _generate(client)
+    assert len(llm.prompts) == 2 and view["state"] == "unreviewed" and "error" not in view
+
+
+def test_rule_sections_catch_a_private_sentence_the_scan_missed(env):
+    client, _tmp, _state, llm, scan = env
+    scan.sections = []
+    # 「小明」会被脱敏、句子里也没有规则敏感词：只有规则段落的 8-gram 对照能挡住
+    leaking = GOOD_PERSONA + "小明每周三都要加班到很晚，你会在门口等他。"
+    llm.replies = [leaking, leaking]
+    view = _generate(client)
+    assert view["error"] == "persona_sensitive_overlap"
+
+
+@pytest.mark.parametrize("leak", ["QQ 123456", "桂花路"])
+def test_short_sensitive_tokens_are_caught_even_when_the_scan_misses_them(env, leak):
+    client, _tmp, _state, llm, scan = env
+    scan.sections = []
+    llm.replies = [GOOD_PERSONA + f"她常提起{leak}。"]
+    view = _generate(client)
+    assert view["error"] == "persona_sensitive_overlap"
+
+
+def test_family_names_are_redacted_from_generated_text(env):
+    client, _tmp, _state, llm, _scan = env
+    llm.replies = ["你是{LANLAN_NAME}，喜欢和小明一起晒太阳。"]
+    view = _generate(client)
+    assert "小明" not in view["text"] and get_family_neutral_term("zh") in view["text"]
+
+
+def test_private_sections_persist_and_get_never_rescans(env):
+    client, tmp_path, _state, _llm, scan = env
+    view = _generate(client)
+    assert scan.calls == 1
+    sections = view["private_sections"]
+    assert set(PRIVATE[:2]) <= set(sections) and view["scan_complete"] is True
+    # 「重启」：清掉进程内状态后再读
+    persona._reset_for_tests()
+    again = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
+    assert again["private_sections"] == sections and scan.calls == 1
+    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"text": GOOD_PERSONA, "reviewed": True})
+    assert client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()["private_sections"] == sections
+    scan.sections = [PRIVATE[2]]
+    regenerated = _generate(client)
+    assert scan.calls == 2 and PRIVATE[2] in regenerated["private_sections"]
+    assert regenerated["reviewed"] is False and regenerated["edited"] is False
+
+
+def test_failed_scan_is_persisted_as_incomplete(env):
+    client, tmp_path, _state, _llm, scan = env
+    scan.fail = True
+    view = _generate(client)
+    assert view["scan_complete"] is False and _file(tmp_path)["scan_complete"] is False
+    # 规则段落仍在清单里（亲人名 / 账号 / 地址所在的句子）
+    assert set(PRIVATE) <= set(view["private_sections"])
+    persona._reset_for_tests()
+    assert client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()["scan_complete"] is False
+    scan.fail = False
+    assert _generate(client)["scan_complete"] is True
+
+
+def test_generation_failure_reports_llm_unavailable_and_writes_nothing(env):
+    client, tmp_path, _state, llm, _scan = env
+    llm.fail = True
+    view = _generate(client)
+    assert view["state"] == "missing" and view["error"] == "llm_unavailable"
+
+
+def test_card_is_cut_to_its_input_budget(env, monkeypatch):
+    client, _tmp, state, llm, _scan = env
+    monkeypatch.setattr(persona, "PERSONA_CARD_MAX_TOKENS", 20)
+    state["cards"]["A"] = CARD + "\n" + "很长的设定" * 2000
+    _generate(client)
+    assert all(len(p) < 4000 for p in llm.prompts)
+    assert _file(_tmp)["scan_complete"] is False          # 截掉的尾巴没被扫描过
+
+
+# ── 闸门 ───────────────────────────────────────────────────────────────
+
+
+def _gate(client, name="A"):
+    return client.portal.call(persona.persona_gate, name)
+
+
+def test_gate_refuses_missing_and_unreviewed(env):
+    client, tmp_path, *_ = env
+    assert _gate(client).ok is False and _gate(client).state == "missing"
+    _generate(client)
+    gate = _gate(client)
+    assert gate.ok is False and gate.state == "unreviewed"
+    _confirm(client)
+    gate = _gate(client)
+    assert gate.ok and gate.state == "ready" and gate.text == _file(tmp_path)["text"]
+
+
+def test_card_change_without_edit_regenerates_and_requires_review(env):
+    client, tmp_path, state, llm, _scan = env
+    _generate(client)
+    _confirm(client)
+    calls = len(llm.prompts)
+    state["cards"]["A"] = CARD + "\n新加了一句：喜欢看雨。"
+    gate = _gate(client)
+    assert gate.ok is False and gate.state == "generating"
+    _settle(client)
+    assert len(llm.prompts) == calls + 1
+    doc = _file(tmp_path)
+    assert doc["source_card_hash"] == persona.card_hash(state["cards"]["A"]) and doc["reviewed"] is False
+    assert _gate(client).ok is False
+    _confirm(client)
+    assert _gate(client).ok
+
+
+def test_edited_persona_survives_a_card_change(env):
+    client, tmp_path, state, llm, _scan = env
+    _generate(client)
+    hand = "你是{LANLAN_NAME}，一只爱睡觉的猫。"
+    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"text": hand, "reviewed": True})
+    before = (tmp_path / "visit_persona" / f"{UID_A}.json").read_bytes()
+    calls = len(llm.prompts)
+    state["cards"]["A"] = CARD + "\n又改了卡。"
+    gate = _gate(client)
+    assert gate.ok and gate.text == hand
+    assert (tmp_path / "visit_persona" / f"{UID_A}.json").read_bytes() == before and len(llm.prompts) == calls
+    view = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
+    assert view["card_changed"] is True and view["edited"] is True
+    regenerated = _generate(client)
+    assert regenerated["edited"] is False and regenerated["reviewed"] is False
+
+
+def test_persona_is_keyed_by_character_uid(env):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    # 改名：同一个 character_uid 换了名字，读到的还是同一份文件
+    state["cards"]["A2"] = state["cards"].pop("A")
+    state["uids"]["A2"] = state["uids"].pop("A")
+    view = client.get("/api/visit/persona?catgirl=A2", headers=GOOD).json()
+    assert view["state"] == "ready" and view["character_uid"] == UID_A
+    if os.name != "nt":
+        mode = stat.S_IMODE((tmp_path / "visit_persona" / f"{UID_A}.json").stat().st_mode)
+        assert mode == 0o600
+
+
+# ── PUT / 端点 ─────────────────────────────────────────────────────────
+
+
+def test_put_redacts_family_names(env):
+    client, tmp_path, *_ = env
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，最喜欢小明了。", "reviewed": True})
+    assert resp.status_code == 200
+    text = _file(tmp_path)["text"]
+    assert "小明" not in text and get_family_neutral_term("zh") in text
+
+
+def test_put_with_a_sensitive_token_is_refused_and_keeps_the_file(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    before = (tmp_path / "visit_persona" / f"{UID_A}.json").read_bytes()
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，号码 123456。", "reviewed": True})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "persona_sensitive_overlap" and "123456" in resp.json()["hits"]
+    assert (tmp_path / "visit_persona" / f"{UID_A}.json").read_bytes() == before
+
+
+def test_put_over_the_token_budget_is_refused(env):
+    client, *_ = env
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "猫" * 5000, "reviewed": True})
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_too_long"
+
+
+def test_put_and_regenerate_while_generating_answer_409(env):
+    client, _tmp, _state, llm, _scan = env
+    gate = asyncio.Event()
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
+    assert client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()["state"] == "generating"
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 409
+    assert client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True}).status_code == 409
+    client.portal.call(gate.set)
+    _settle(client)
+
+
+def test_unknown_character_is_404(env):
+    client, *_ = env
+    assert client.get("/api/visit/persona?catgirl=Z", headers=GOOD).status_code == 404
+
+
+@pytest.mark.parametrize("method,path", [
+    ("get", "/api/visit/persona?catgirl=A"),
+    ("put", "/api/visit/persona?catgirl=A"),
+    ("post", "/api/visit/persona/regenerate?catgirl=A"),
+])
+def test_persona_endpoints_need_csrf_and_loopback(env, method, path):
+    client, *_ = env
+    body = {"reviewed": True} if method != "get" else None
+    kwargs = {"json": body} if body is not None else {}
+    assert getattr(client, method)(path, headers={"Origin": ORIGIN}, **kwargs).status_code == 403
+    lan = TestClient(client.app, client=("192.168.1.20", 5000))
+    assert getattr(lan, method)(path, headers=GOOD, **kwargs).status_code == 403
+
+
+def test_persona_endpoints_are_behind_the_release_switch(env, monkeypatch):
+    client, *_ = env
+    monkeypatch.setattr(visit_settings, "VISIT_ENABLED", False)
+    assert client.get("/api/visit/persona?catgirl=A", headers=GOOD).status_code == 404
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 404
+
+
+# ── 纯函数 ─────────────────────────────────────────────────────────────
+
+
+def test_sensitive_tokens_cover_contacts_addresses_and_family():
+    tokens = persona.extract_sensitive_tokens(
+        CARD + "\n邮箱 cat@example.com，主页 https://example.com/me，家在幸福小区3栋502室。", FAMILY,
+    )
+    for expected in ("小明", "123456", "xiaoming_1990", "桂花路", "cat@example.com", "幸福小区", "502室"):
+        assert any(expected in t for t in tokens), expected
+
+
+@pytest.mark.parametrize("card,text,hit", [
+    ("家里的网站 private-family.example 只给亲戚看。", "她提过 private-family.example 这个网站。", "private-family.example"),
+    ("Our page is https://private-family.example/path.", "See https://private-family.example/path for more.",
+     "https://private-family.example/path"),
+    ("Our page is https://private-family.example/path.", "Her family runs private-family.example.",
+     "private-family.example"),
+])
+def test_urls_match_without_sentence_punctuation_and_by_host(card, text, hit):
+    assert hit in persona.sensitive_token_hits(card, text, ())
+
+
+def test_lowercase_street_names_after_a_house_number_are_caught():
+    card = "Her address: 12 main street, second floor."
+    assert persona.sensitive_token_hits(card, "She often walks down main street.", ()) == ["main street"]
+    pets = "She lives in a flat with 2 cats and a dog."
+    assert persona.sensitive_token_hits(pets, "She loves cats and dogs.", ()) == []
+    playing = "She lives in a flat with 2 cats playing outside."
+    assert persona.sensitive_token_hits(playing, "Her cats playing outside is a sight.", ()) == []
+    grove = "address: 12 maple grove, near the river"           # 没有街道类词尾，靠开头的门牌号
+    assert persona.sensitive_token_hits(grove, "She loves walking in maple grove.", ()) == ["maple grove"]
+    mid = "address: the house is at 42 main street"
+    assert persona.sensitive_token_hits(mid, "She grew up near main street.", ()) == ["main street"]
+
+
+def test_capitalised_dotted_words_are_not_host_names():
+    assert persona.sensitive_token_hits("She calls him Mr.Smith at home.", "Mr.Smith is her teacher.", ()) == []
+
+
+def test_multi_word_addresses_are_caught():
+    card = "She lives with her family. Her address: 12 Main Street."
+    assert persona.sensitive_token_hits(card, "She often walks down Main Street.", ()) == ["Main Street"]
+    assert persona.sensitive_token_hits(card, "She lives on a quiet street.", ()) == []
+
+
+def test_phone_numbers_match_whatever_the_separators():
+    card = "联系电话 138 0013 8000，随时找她。"
+    assert persona.sensitive_token_hits(card, "她的号码是138-0013-8000。", ()) == ["13800138000"]
+    assert persona.sensitive_token_hits(card, "她出生在 2001 年。", ()) == []
+
+
+@pytest.mark.parametrize("card,text", [
+    ("联系电话 138 0013 8000 2024年登记", "她的号码是138-0013-8000。"),     # 相邻年份被并进匹配
+    ("phone: +1 (555) 010-0199", "Call her at 555-010-0199."),          # 一边省略国家码
+    ("电话 5550100199", "号码 +1 555 010 0199"),
+])
+def test_phone_numbers_match_across_country_codes_and_adjacent_digits(card, text):
+    assert persona.sensitive_token_hits(card, text, ())
+
+
+def test_capped_private_section_list_counts_as_an_incomplete_scan(env, monkeypatch):
+    client, _tmp, state, _llm, scan = env
+    monkeypatch.setattr(persona, "_PRIVATE_SECTIONS_MAX", 2)
+    view = _generate(client)
+    assert len(view["private_sections"]) == 2 and view["scan_complete"] is False
+
+
+def test_generic_road_words_are_not_tokens():
+    assert persona.sensitive_token_hits("她喜欢走路，也爱在马路边看车。", "她喜欢走路。", ()) == []
+
+
+def test_rule_sections_are_the_private_sentences():
+    sections = persona.rule_private_sections(CARD, FAMILY)
+    assert set(PRIVATE) <= set(sections)
+    assert PUBLIC[1] not in sections
+
+
+
+def test_put_copying_a_private_passage_is_refused(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，每周三都要加班到很晚，你会在门口等他回家。", "reviewed": True})
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
+
+
+def test_a_regeneration_never_overwrites_an_edit_made_meanwhile(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    gate = client.portal.call(_make_event)
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
+    edited = {**_file(tmp_path), "text": "你是{LANLAN_NAME}，手写的人设。", "edited": True, "reviewed": True}
+    client.portal.call(persona.store().save, UID_A, edited)     # 另一个窗口抢在生成结束前确认了手写
+    persona._note_write(UID_A)
+    client.portal.call(gate.set)
+    _settle(client)
+    assert _file(tmp_path)["text"] == "你是{LANLAN_NAME}，手写的人设。"
+
+
+async def _make_event():
+    return asyncio.Event()
+
+
+def test_a_regeneration_started_while_an_edit_holds_the_lock_does_not_overwrite_it(env, monkeypatch):
+    client, tmp_path, *_ = env
+    _generate(client)
+    gate = client.portal.call(_make_event)
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    real_save = persona.VisitPersonaStore.save
+    clicked = []
+
+    async def save_with_a_click(self, uid, doc):
+        if not clicked:                                    # PUT 已拿着锁、正在写盘
+            clicked.append(persona.start_regeneration("A", uid))   # 另一个窗口此刻点了重新生成
+        await real_save(self, uid, doc)
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "save", save_with_a_click)
+    hand = "你是{LANLAN_NAME}，抢先手写的人设。"
+    assert client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": hand, "reviewed": True}).status_code == 200
+    assert clicked and persona.is_generating(UID_A)
+    client.portal.call(gate.set)
+    _settle(client)
+    assert _file(tmp_path)["text"] == hand
+
+
+
+def test_gate_refuses_when_regeneration_starts_while_it_reads(env, monkeypatch):
+    client, *_ = env
+    _generate(client)
+    _confirm(client)
+    real = persona._hooks.load_context
+
+    async def read_then_click():
+        ctx = await real()
+        persona.start_regeneration("A", UID_A)          # 另一个窗口此刻点了重新生成
+        return ctx
+
+    monkeypatch.setattr(persona._hooks, "load_context", read_then_click)
+    gate = _gate(client)
+    assert gate.ok is False and gate.state == "generating"
+    _settle(client)
+
+
+def test_gate_rereads_a_persona_written_while_it_reads(env, monkeypatch):
+    client, tmp_path, *_ = env
+    _generate(client)
+    _confirm(client)
+    real = persona._hooks.load_context
+    written = []
+
+    async def read_then_write():
+        ctx = await real()
+        if not written:                                  # 重生成刚落了一份未审核的
+            written.append(True)
+            await persona.store().save(UID_A, {**_file(tmp_path), "reviewed": False})
+            persona._note_write(UID_A)
+        return ctx
+
+    monkeypatch.setattr(persona._hooks, "load_context", read_then_write)
+    gate = _gate(client)
+    assert gate.ok is False and gate.state == "unreviewed"
+
+
+
+def test_the_token_cap_holds_after_redaction():
+    from utils.tokenize import count_tokens
+
+    raw = "Al " * (visit_settings.VISIT_PERSONA_MAX_TOKENS * 2)           # 短名字反复出现，替换成更长的中性称呼
+    text = persona._clean_persona_text(raw, ["Al"], "en")
+    assert "Al " not in text and count_tokens(text) <= visit_settings.VISIT_PERSONA_MAX_TOKENS
+
+
+
+def test_address_segments_after_a_comma_are_scanned():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, 12 Main Street", [])]
+    assert "main street" in tokens
+
+
+def test_latin_keywords_need_a_word_boundary_and_a_separator():
+    tokens = persona.extract_sensitive_tokens("She enjoys smartphone games.\nHer phone games are fun.", [])
+    assert not any("games" in t.lower() for t in tokens)
+    tokens = persona.extract_sensitive_tokens("Favorite microphone: Shure SM7B", [])
+    assert not any("shure" in t.lower() for t in tokens)          # microphone 里的 phone 不算关键词
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "phone: 138 0013 8000\nwechat: mimi_cat\naddress is 12 Main Street", [])]
+    assert "mimi_cat" in tokens and "main street" in tokens
+
+
+
+def test_unpunctuated_contact_ids_and_capitalised_addresses_are_found():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "wechat mimi_cat\nHer address Maple Grove is quiet.\nShe loves phone games.", [])]
+    assert "mimi_cat" in tokens and any(t.startswith("maple grove") for t in tokens)
+    assert not any("games" in t for t in tokens)
+
+
+def test_address_line_hobbies_are_not_sensitive():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: Apt 4, 12 Main Street, enjoys Star Wars", [])]
+    assert "main street" in tokens and not any("star wars" in t for t in tokens)
+
+
+
+def test_chinese_contact_keywords_need_a_separator_or_a_contact_shaped_value():
+    tokens = persona.extract_sensitive_tokens("她喜欢手机游戏，也常开电话会议。", [])
+    assert "游戏" not in "".join(tokens) and "会议" not in "".join(tokens)
+    tokens = persona.extract_sensitive_tokens("微信：mimi猫\n手机13800138000\n家住桂花路", [])
+    assert "mimi猫" in tokens and "桂花路" in tokens
+
+
+def test_alphabetic_contact_ids_after_an_explicit_id_keyword_or_in_camel_case():
+    tokens = persona.extract_sensitive_tokens("wechat AliceFoo\nline id alicefoo\nwechat id bobcat", [])
+    lowered = [t.lower() for t in tokens]
+    assert "alicefoo" in lowered and "bobcat" in lowered
+    assert not persona.extract_sensitive_tokens("I use wechat daily.", [])
+
+
+def test_family_nicknames_split_on_whitespace_too():
+    from main_routers.visit_router.local_context import family_names_of
+
+    assert family_names_of({"档案名": "张三", "昵称": "Alice Ally, 小A/阿A"}) == ("张三", "Alice", "Ally", "小A", "阿A")
+
+
+
+def test_an_explicit_chinese_account_keyword_needs_no_separator():
+    tokens = persona.extract_sensitive_tokens("微信号小雨\n她常在微信群里聊天。", [])
+    assert "小雨" in tokens and not any("群" in t for t in tokens)
+
+
+
+def test_at_prefixed_contact_handles_are_found():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("wechat @alicefoo\n微信@bobcat", [])]
+    assert "@alicefoo" in tokens and "@bobcat" in tokens
+
+
+
+def test_a_contact_handle_is_its_own_token_when_more_words_follow():
+    tokens = persona.extract_sensitive_tokens("wechat @alicefoo likes cats\n微信：mimi_cat 常在线", [])
+    assert "@alicefoo" in tokens and "mimi_cat" in tokens
+
+
+
+def test_a_country_code_is_not_a_token_of_its_own():
+    tokens = persona.extract_sensitive_tokens("phone: +1 555-010-0199", [])
+    assert "+1" not in tokens
+
+
+
+def test_only_account_shaped_words_of_a_contact_value_stand_alone():
+    tokens = persona.extract_sensitive_tokens("wechat: usually online as @alicefoo", [])
+    assert "@alicefoo" in tokens and "usually" not in tokens
+
+
+
+def test_hyphenated_contact_handles_stand_alone():
+    assert "alice-foo" in persona.extract_sensitive_tokens("wechat: alice-foo likes cats", [])
+
+
+def test_gate_does_not_regenerate_over_an_edit_saved_while_it_reads_the_card(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    state["cards"]["A"] = CARD + "\n新加了一句：喜欢看雨。"            # 卡片变了，人设没手改过
+    real = persona._hooks.load_context
+    hand = "你是{LANLAN_NAME}，读卡时刚确认的手写人设。"
+    landed = []
+
+    async def read_while_an_edit_lands():
+        ctx = await real()
+        if not landed:                                   # 另一个窗口的手写确认正好在读卡时落盘
+            landed.append(True)
+            await persona.store().save(UID_A, {**_file(tmp_path), "text": hand, "edited": True, "reviewed": True})
+            persona._note_write(UID_A)
+        return ctx
+
+    monkeypatch.setattr(persona._hooks, "load_context", read_while_an_edit_lands)
+    gate = _gate(client)
+    assert gate.ok is True and gate.text == hand and not persona.is_generating(UID_A)
+
+
+
+def test_the_first_word_after_an_explicit_id_keyword_stands_alone():
+    tokens = persona.extract_sensitive_tokens("line id alicefoo likes cats\nwechat: usually online", [])
+    assert "alicefoo" in tokens and "usually" not in tokens
+
+
+def test_unnumbered_street_names_after_an_address_comma():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: Apt 4, Main Street\naddress: Apt 4, near the station, enjoys Star Wars", [])]
+    assert "main street" in tokens and not any("star wars" in t or "the station" in t for t in tokens)
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, near the High Street", [])]
+    assert "high street" in tokens and "the high street" not in tokens       # 街名截到虚词为止
+
+
+
+def test_lowercase_street_type_words_are_not_street_names():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: 12 Maple Dr, we went the long way around", [])]
+    assert not any("long way" in t for t in tokens)
+
+
+
+def test_an_explicit_id_keyword_skips_a_linking_is():
+    tokens = persona.extract_sensitive_tokens("line id is alicefoo likes cats", [])
+    assert "alicefoo" in tokens and "is" not in tokens
+
+
+
+def test_lowercase_street_names_with_an_unambiguous_street_type():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: Apt 4, main street\naddress: 12 Maple Dr, we went the long way around", [])]
+    assert "main street" in tokens and not any("long way" in t for t in tokens)
+
+
+
+def test_a_street_core_is_registered_without_a_leading_preposition():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, near main street", [])]
+    assert "main street" in tokens
+
+
+
+def test_a_one_word_street_after_a_house_number():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Broadway", [])]
+    assert "broadway" in tokens
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 main street", [])]
+    assert "main street" in tokens and "main" not in tokens        # 多词街名不拆出单个词
+
+
+
+def test_a_lowercase_single_word_after_a_number_is_not_a_street():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("She lives in 2 cities at once.", [])]
+    assert "cities" not in tokens
+
+
+
+def test_a_single_proper_word_segment_on_an_address_line():
+    tokens = persona.extract_sensitive_tokens("address: Apt 4, Broadway", [])
+    assert "Broadway" in tokens
+    tokens = persona.extract_sensitive_tokens("address: Apt 4, upstairs", [])
+    assert "upstairs" not in tokens
+
+
+
+def test_lowercase_road_names_and_colon_line_handles():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: Apt 4, main road\nLINE: alicefoo likes cats\nShe waited in line for hours.", [])]
+    assert "main road" in tokens and "alicefoo" in tokens
+    assert not any(t.startswith("for hours") for t in tokens)
+
+
+
+def test_a_one_word_street_before_trailing_prose():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Broadway likes cats", [])]
+    assert "broadway" in tokens
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Main Street", [])]
+    assert "main" not in tokens
+
+
+
+def test_a_multi_word_proper_street_is_not_split():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Maple Grove", [])]
+    assert "maple" not in tokens and "maple grove" in tokens
+
+
+
+def test_a_leading_one_word_address_before_prose():
+    tokens = persona.extract_sensitive_tokens("address: Broadway likes cats", [])
+    assert "Broadway" in tokens
+    tokens = persona.extract_sensitive_tokens("address: The house is blue", [])
+    assert "The" not in tokens
+
+
+
+def test_a_generic_dwelling_word_is_not_a_place_name():
+    tokens = persona.extract_sensitive_tokens("address: Apartment is on the top floor", [])
+    assert "Apartment" not in tokens
+    assert "Broadway" in persona.extract_sensitive_tokens("address: Broadway likes cats", [])
+
+
+
+def test_a_place_name_after_an_address_qualifier():
+    tokens = persona.extract_sensitive_tokens("address: Apartment near Broadway", [])
+    assert "Broadway" in tokens and "Apartment" not in tokens
+    tokens = persona.extract_sensitive_tokens("address: House on the top floor", [])
+    assert not any(t in ("House", "floor") for t in tokens)
+
+
+
+def test_a_descriptive_word_after_with_is_not_a_place():
+    assert "Garden" not in persona.extract_sensitive_tokens("address: House with Garden", [])
+    assert "Broadway" in persona.extract_sensitive_tokens("address: Apartment near Broadway", [])
+
+
+
+def test_sentence_punctuation_after_a_one_word_value_is_not_part_of_it():
+    assert persona.sensitive_token_hits("LINE: alicefoo.", "my line is alicefoo too", []) == ["alicefoo"]
+    assert persona.sensitive_token_hits("address: Broadway.", "we met on Broadway today", []) == ["Broadway"]
+
+
+
+def test_a_place_name_after_a_bare_dwelling_word():
+    assert "Broadway" in persona.extract_sensitive_tokens("address: apartment Broadway", [])
+
+
+def test_a_regeneration_does_not_save_for_a_character_deleted_meanwhile(env):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    gate = client.portal.call(_make_event)
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
+    del state["uids"]["A"]                                           # 生成期间角色被删除
+    client.portal.call(persona.store().retire, UID_A)
+    client.portal.call(gate.set)
+    _settle(client)
+    assert not (tmp_path / "visit_persona" / f"{UID_A}.json").exists()
+
+
+
+@pytest.mark.parametrize("card", [
+    "她和主人住在一起，每天早上一起喝咖啡。",
+    "地址保密，不能说。",
+    "她家住得离公司很近。",
+])
+def test_an_undelimited_chinese_address_keyword_needs_an_address_shaped_value(card):
+    assert persona.extract_sensitive_tokens(card, []) == []
+
+
+def test_chinese_address_values_with_an_address_shape_or_a_delimiter_are_kept():
+    assert "桂花路" in persona.extract_sensitive_tokens("我们住在桂花路。", [])
+    assert "杭州西湖区" in persona.extract_sensitive_tokens("家住杭州西湖区。", [])
+    assert "秘密基地" in persona.extract_sensitive_tokens("地址：秘密基地。", [])
+
+
+def test_confirming_needs_the_version_the_panel_showed(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    shown = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
+    assert client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True}).json()["code"] == "persona_version_required"
+    # 面板打开后另一个窗口重新生成了一份
+    client.portal.call(persona.store().save, UID_A, {**_file(tmp_path), "text": "你是{LANLAN_NAME}，换过的一份。"})
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True, "persona_version": shown["persona_version"]})
+    assert resp.status_code == 409 and resp.json()["code"] == "persona_changed"
+    assert _file(tmp_path)["reviewed"] is False
+    assert _confirm(client).status_code == 200 and _file(tmp_path)["reviewed"] is True
+
+
+def test_a_same_text_with_a_new_private_section_list_needs_a_new_confirmation(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    shown = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
+    # 卡片变更触发的重生成恰好写出同样的正文，但私人段落清单换了
+    client.portal.call(persona.store().save, UID_A,
+                       {**_file(tmp_path), "private_sections": ["新扫出来的一段私人内容。"]})
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True, "persona_version": shown["persona_version"]})
+    assert resp.status_code == 409 and _file(tmp_path)["reviewed"] is False
+
+
+def test_a_manual_edit_is_not_saved_for_a_character_deleted_meanwhile(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    async def deleted(_uid):
+        return None                                          # 请求进来之后角色被删除
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_name", deleted)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert resp.status_code == 404 and not (tmp_path / "visit_persona" / f"{UID_A}.json").exists()
+
+
+@pytest.mark.parametrize("value", ["Apartment next to Broadway", "Apartment across from Broadway"])
+def test_a_place_after_a_two_word_preposition(value):
+    assert "Broadway" in persona.extract_sensitive_tokens(f"address: {value}", [])
+
+
+def test_a_long_scanned_passage_is_kept_whole_in_overlapping_pieces():
+    passage = "".join(chr(0x4E00 + i % 500) for i in range(4500))
+    pieces, _complete = persona._parse_scan(json.dumps([passage], ensure_ascii=False))
+    assert all(len(p) <= persona._SECTION_MAX_CHARS for p in pieces)
+    assert pieces[-1].endswith(passage[-50:])
+    # 任意 300 字的片段都完整落在某一块里（重叠 200 字以上的 8-gram 不会被块边界切开）
+    for start in range(0, len(passage) - 150, 97):
+        assert any(passage[start:start + 150] in p for p in pieces)
+
+
+
+def test_a_regeneration_is_kept_for_a_character_renamed_meanwhile(env):
+    client, tmp_path, state, *_ = env
+    gate = client.portal.call(_make_event)
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
+    state["uids"]["A2"] = state["uids"].pop("A")                     # 生成期间只是改了名
+    state["cards"]["A2"] = state["cards"].pop("A")
+    client.portal.call(gate.set)
+    _settle(client)
+    assert _file(tmp_path)["text"] == GOOD_PERSONA
+
+
+def test_a_hand_edit_after_a_card_change_still_checks_scanned_passages_left_in_the_card(env):
+    client, tmp_path, state, _llm, scan = env
+    secret = "她偷偷收藏了一整抽屉的旧电影票根，谁也没告诉。"
+    state["cards"]["A"] = CARD + "\n" + secret
+    scan.sections = [secret]                                         # 只有独立扫描认出它是私人内容
+    _generate(client)
+    state["cards"]["A"] += "\n又改了卡。"                              # 扫描清单基于旧卡了
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}。" + secret, "reviewed": True})
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
+
+
+@pytest.mark.parametrize("length", [2000, 2001, 3800, 4000, 5600, 5601, 9200])
+def test_section_chunks_always_reach_the_end_with_the_full_overlap(length):
+    passage = "".join(chr(0x4E00 + i) for i in range(length))         # 不重复：漏掉中间一段也看得出来
+    pieces = persona._section_chunks(passage)
+    step = persona._SECTION_MAX_CHARS - persona._SECTION_CHUNK_OVERLAP
+    # 每块就是预期的那一段切片：从 0 起每次前进 step，最后一块到结尾
+    assert pieces == [passage[i:i + persona._SECTION_MAX_CHARS] for i in range(0, len(pieces) * step, step)]
+    assert pieces[-1].endswith(passage[-50:])
+    covered = set()
+    for i in range(len(pieces)):
+        covered.update(range(i * step, min(i * step + persona._SECTION_MAX_CHARS, length)))
+    assert covered == set(range(length))
+
+
+def test_privacy_checks_run_off_the_event_loop(env, monkeypatch):
+    import threading
+
+    client, *_ = env
+    loop_thread = client.portal.call(_current_thread)
+    real = persona.persona_privacy_check
+    seen = []
+
+    def recording(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(persona, "persona_privacy_check", recording)
+    _generate(client)                                                   # 生成路径
+    client.put("/api/visit/persona?catgirl=A", headers=GOOD,           # 手写路径
+               json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    # 整张卡跑几十个正则：都在工作线程里算，不占事件循环
+    assert len(seen) >= 2 and loop_thread not in seen
+
+
+async def _current_thread():
+    import threading
+
+    return threading.get_ident()
+
+
+def test_a_gate_that_keeps_meeting_writes_does_not_report_generating(env, monkeypatch):
+    client, *_ = env
+    _generate(client)
+    _confirm(client)
+    real_load = persona.VisitPersonaStore.load
+
+    async def load_while_written(self, uid):
+        doc = await real_load(self, uid)
+        persona._note_write(uid)                                        # 每次读盘都碰上另一个窗口的写入
+        return doc
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "load", load_while_written)
+    gate = _gate(client)
+    # 并没有在生成：按待确认拒，前端引导去面板，而不是一直等「生成中」
+    assert gate.ok is False and gate.state == "unreviewed" and not persona.is_generating(UID_A)
+
+
+
+def test_a_scan_reply_with_non_string_entries_is_incomplete_but_keeps_its_passages():
+    sections, complete = persona._parse_scan('["她偷偷收藏了一整抽屉的旧电影票根。", {"section": "另一段"}]')
+    # 认不出的条目让检查如实标成不完整；认得出的段落照样留着参与比对
+    assert complete is False and sections == ["她偷偷收藏了一整抽屉的旧电影票根。"]
+    assert persona._parse_scan('["一段"]') == (["一段"], True)
+
+
+def test_a_partly_malformed_scan_still_guards_its_passages_and_reports_incomplete(env):
+    client, tmp_path, state, _llm, scan = env
+    secret = "她偷偷收藏了一整抽屉的旧电影票根，谁也没告诉。"
+    state["cards"]["A"] = "\n".join([CARD, secret])
+    scan.sections = [secret, {"section": "格式不对的一条"}]
+    view = _generate(client)
+    assert view["scan_complete"] is False and secret in _file(tmp_path)["private_sections"]
+
+
+def test_a_hand_edit_is_checked_against_the_card_as_it_is_when_saved(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    secret = "她偷偷收藏了一整抽屉的旧电影票根，号码是 13800138000。"
+    real_load = persona.VisitPersonaStore.load
+
+    async def card_edited_while_waiting(self, uid):
+        state["cards"]["A"] = CARD + "\n" + secret                 # 等锁 / 读盘期间卡片改了
+        return await real_load(self, uid)
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "load", card_edited_while_waiting)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，号码 13800138000。", "reviewed": True})
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
+
+
+
+def test_each_part_of_a_transliterated_profile_name_is_a_family_name():
+    from main_routers.visit_router.local_context import family_names_of
+
+    assert family_names_of({"档案名": "约翰·史密斯"}) == ("约翰·史密斯", "约翰", "史密斯")
+    assert family_names_of({"档案名": "张三"}) == ("张三",)
+
+
+def test_a_space_separated_profile_name_is_not_split_into_common_words():
+    from main_logic.visit.sanitize import redact_outbound
+    from main_routers.visit_router.local_context import family_names_of
+
+    names = family_names_of({"档案名": "Will Smith"})
+    assert names == ("Will Smith",)
+    # 拆成 Will 会把人设里的普通词 will 一起换掉
+    assert redact_outbound("I will tell you.", family_names=names, replacement="[F]") == "I will tell you."
+
+
+
+def test_a_copular_address_label_registers_the_place():
+    assert "Broadway" in persona.extract_sensitive_tokens("address is Broadway", [])
+    assert "broadway" in persona.extract_sensitive_tokens("address is broadway", [])   # 「is」本身就是分隔
+    assert "Broadway" in persona.extract_sensitive_tokens("address at Broadway", [])
+
+
+def test_retiring_a_persona_waits_for_a_write_in_progress(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    path = tmp_path / "visit_persona" / f"{UID_A}.json"
+
+    async def retire_during_a_write():
+        async with persona.persona_lock(UID_A):                     # 手写保存正拿着锁
+            task = asyncio.create_task(persona.retire_persona(UID_A))
+            await asyncio.sleep(0.05)
+            assert not task.done()                                  # 删角色的清理等它写完
+            await persona.store().save(UID_A, _file(tmp_path))
+        return await task
+
+    assert client.portal.call(retire_during_a_write) is True
+    assert not path.exists()                                        # 写完之后才删：不会留下孤儿文件
+
+
+
+def test_retiring_waits_for_a_regeneration_write_already_in_its_thread(env, monkeypatch):
+    import threading
+
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    path = tmp_path / "visit_persona" / f"{UID_A}.json"
+    started, release, written = threading.Event(), threading.Event(), threading.Event()
+    real_save = persona.VisitPersonaStore._save_sync
+
+    def slow_save(self, uid, doc):
+        started.set()
+        release.wait(5)                                              # 写盘线程卡在这里
+        real_save(self, uid, doc)
+        written.set()
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "_save_sync", slow_save)
+
+    async def scenario():
+        job = persona.start_regeneration("A", UID_A)
+        while not started.is_set():
+            await asyncio.sleep(0.01)                               # 重生成已进入写盘
+        del state["uids"]["A"]                                       # 此时角色被删除
+        retire = asyncio.create_task(persona.retire_persona(UID_A))
+        await asyncio.sleep(0.05)
+        release.set()
+        assert await retire is True                                  # 删到了在途写盘落下的那份
+        await asyncio.gather(job, return_exceptions=True)
+        assert written.is_set()                                     # 写盘确实发生过，退役等它写完
+
+    client.portal.call(scenario)
+    # 退役等在途写盘写完才删：不会被写回来
+    assert not path.exists()
+
+
+
+def test_a_place_after_far_from():
+    assert "Broadway" in persona.extract_sensitive_tokens("address: Apartment far from Broadway", [])
+
+
+
+def test_a_scan_passage_not_copied_from_the_card_makes_the_scan_incomplete():
+    card = "她偷偷收藏了一整抽屉的旧电影票根。\n喜欢晒太阳。"
+    assert persona._parse_scan('["她偷偷收藏了一整抽屉的旧电影票根。"]', card) == (
+        ["她偷偷收藏了一整抽屉的旧电影票根。"], True)
+    sections, complete = persona._parse_scan('["她收藏了很多电影票。"]', card)        # 改写过的
+    assert complete is False and sections == ["她收藏了很多电影票。"]
+
+
+def test_a_persona_file_that_cannot_be_read_right_now_is_not_reported_missing(env, monkeypatch):
+    client, *_ = env
+    _generate(client)
+    _confirm(client)
+
+    def locked(self, uid):
+        raise persona.PersonaUnavailable("in use")
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "_load_sync", locked)
+    resp = client.get("/api/visit/persona?catgirl=A", headers=GOOD)
+    assert resp.status_code == 503 and resp.json()["code"] == "persona_unavailable"
+    put = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                     json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert put.status_code == 503
+    gate = _gate(client)
+    assert gate.ok is False and gate.state == "unavailable"
+
+
+def test_a_sharing_violation_on_the_persona_file_raises_unavailable(tmp_path, monkeypatch):
+    import builtins
+
+    store = persona.VisitPersonaStore(tmp_path)
+    path = store.path(UID_A)
+    path.parent.mkdir(parents=True)
+    path.write_text("{}", encoding="utf-8")
+    real_open = builtins.open
+
+    def locked_open(file, *args, **kwargs):
+        if str(file) == str(path):
+            raise PermissionError("in use")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", locked_open)
+    with pytest.raises(persona.PersonaUnavailable):
+        store._load_sync(UID_A)
+
+
+
+def test_a_hand_edit_is_refused_when_the_card_changes_during_its_check(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    before = _file(tmp_path)
+    real = persona.persona_privacy_check
+
+    def check_while_the_card_changes(*args, **kwargs):
+        state["cards"]["A"] = CARD + "\n新加的私人内容：她把钥匙藏在门口第三块砖下面。"   # 检查期间改了卡
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(persona, "persona_privacy_check", check_while_the_card_changes)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert resp.status_code == 409 and resp.json()["code"] == "persona_card_changed"
+    assert _file(tmp_path) == before
+
+
+def test_the_gate_redacts_with_the_family_names_of_now(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    assert "橘色" in _file(tmp_path)["text"]
+
+    async def renamed_family():
+        return CharacterContext(family_names=FAMILY + ("橘色",), cards=dict(state["cards"]))
+
+    monkeypatch.setattr(persona._hooks, "load_context", renamed_family)   # 确认之后亲人改了昵称
+    gate = _gate(client)
+    assert gate.ok is True and "橘色" not in gate.text
+
+
+
+def test_the_gate_keeps_the_token_cap_after_redacting_new_names(env, monkeypatch):
+    from utils.tokenize import count_tokens
+
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    long_text = "你是{LANLAN_NAME}。" + "阿喵喜欢晒太阳。" * 400               # 接近上限、到处是「阿喵」
+    long_text = persona.truncate_to_tokens(long_text, persona.VISIT_PERSONA_MAX_TOKENS)
+    client.portal.call(persona.store().save, UID_A, {**_file(tmp_path), "text": long_text})
+
+    async def renamed_family():
+        return CharacterContext(family_names=FAMILY + ("阿喵",), cards=dict(state["cards"]))
+
+    monkeypatch.setattr(persona._hooks, "load_context", renamed_family)
+    gate = _gate(client)
+    assert gate.ok is True and "阿喵" not in gate.text
+    assert count_tokens(gate.text) <= persona.VISIT_PERSONA_MAX_TOKENS
+
+
+
+def test_a_copula_after_a_contact_keyword_is_not_a_separator():
+    # 「is」后的普通词（ok / great）收成敏感词会按子串误挡人设（book、okay）；纯字母账号交给独立扫描
+    assert persona.extract_sensitive_tokens("WeChat is ok", []) == []
+    assert persona.extract_sensitive_tokens("my phone is broken", []) == []
+
+
+
+def test_a_hand_edit_saved_while_the_card_changes_is_rolled_back(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    before = _file(tmp_path)
+    real_save = persona.VisitPersonaStore.save
+    saves = []
+
+    async def save_while_the_card_changes(self, uid, doc):
+        saves.append(doc["text"])
+        await real_save(self, uid, doc)
+        if len(saves) == 1:
+            state["cards"]["A"] = CARD + "\naddress: Broadway"                # 写盘期间卡片加了地址
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "save", save_while_the_card_changes)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "reviewed": True})
+    # 只按旧卡查过的手写不能留下：撤回成原来那份
+    assert resp.status_code == 409 and resp.json()["code"] == "persona_card_changed"
+    assert _file(tmp_path) == before
+
+
+def test_a_regeneration_reads_the_card_of_its_own_character_after_a_rename(env, monkeypatch):
+    client, tmp_path, state, llm, _scan = env
+    gate = client.portal.call(_make_event)
+    prompts = []
+
+    async def slow(prompt):
+        prompts.append(prompt)
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    real_load = persona._hooks.load_context
+    renamed = []
+
+    async def rename_then_load():
+        if not renamed:
+            renamed.append(True)
+            state["uids"]["A2"] = state["uids"].pop("A")                    # A 改名为 A2
+            state["cards"]["A2"] = state["cards"].pop("A")
+            state["uids"]["A"] = "c" * 32                                    # 又新建了一个叫 A 的角色
+            state["cards"]["A"] = "你是{LANLAN_NAME}，另一只完全不同的猫，喜欢下雨天。"
+        return await real_load()
+
+    monkeypatch.setattr(persona._hooks, "load_context", rename_then_load)
+
+    async def scenario():
+        job = persona.start_regeneration("A", UID_A)
+        for _ in range(200):
+            if prompts:
+                break
+            await asyncio.sleep(0.01)
+        gate.set()
+        assert await job is None
+
+    client.portal.call(scenario)
+    # 生成用的是 UID_A 这只猫（改名后的 A2）的卡，不是新建的同名角色
+    assert "完全不同的猫" not in prompts[0] and "橘色猫娘" in prompts[0]
+
+
+
+def test_a_hand_edit_is_never_ready_before_its_card_recheck(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    real_save = persona.VisitPersonaStore.save
+    seen = []
+
+    async def save_and_peek(self, uid, doc):
+        await real_save(self, uid, doc)
+        if "Broadway" in doc["text"] and not seen:
+            seen.append(await persona.persona_gate("A"))                 # 写盘之后、核对卡片之前，另一个建房请求
+            state["cards"]["A"] = "\n".join([CARD, "address: Broadway"])
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "save", save_and_peek)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "reviewed": True})
+    # 空档里门槛只看到待确认，不放行；随后发现卡片变了，撤回
+    assert seen and seen[0].ok is False and seen[0].state == "unreviewed"
+    assert resp.status_code == 409 and "Broadway" not in _file(tmp_path)["text"]
+
+
+def test_a_failed_card_recheck_leaves_the_hand_edit_unreviewed_at_most(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    real_load = persona._hooks.load_context
+    calls = []
+
+    async def fails_on_recheck():
+        calls.append(1)
+        if len(calls) >= 4:                                             # _resolve、锁内重读、存前核对之后：写盘后的核对
+            raise OSError("config unreadable")
+        return await real_load()
+
+    monkeypatch.setattr(persona._hooks, "load_context", fails_on_recheck)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    # 核对不了就当卡片变了：不留下一份已确认、却没核对过卡片的手写
+    assert resp.status_code == 409
+    assert not (_file(tmp_path)["text"] == "你是{LANLAN_NAME}，一只爱睡觉的猫。" and _file(tmp_path)["reviewed"])
+
+
+
+def test_confirming_a_hand_edit_checks_it_against_the_current_card(env):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    # 写盘中途被打断留下的待确认手写：只按旧卡查过
+    client.portal.call(persona.store().save, UID_A, {
+        **_file(tmp_path), "text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "edited": True, "reviewed": False})
+    state["cards"]["A"] = "\n".join([CARD, "address: Broadway"])           # 随后卡片加了地址
+    resp = _confirm(client)
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
+    assert _file(tmp_path)["reviewed"] is False
+
+
+
+def test_old_scan_sections_still_in_the_card_survive_case_and_spacing_changes():
+    secret = "She Keeps Old Ticket Stubs In A Drawer"
+    doc = {"scan_card_hash": "0" * 64, "private_sections": [secret, "a passage that is gone"]}
+    card = "she keeps old ticket stubs\nin a drawer"                       # 只改了大小写与换行
+    assert list(persona._scanned_sections(doc, card)) == [secret]
+
+
+def test_a_hand_edit_is_refused_when_the_name_now_belongs_to_another_character(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    before = _file(tmp_path)
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def renamed_meanwhile(name):
+        calls.append(name)
+        return await real(name) if len(calls) == 1 else "d" * 32          # 之后「A」成了新建的另一个角色
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", renamed_meanwhile)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"
+    assert _file(tmp_path) == before
+
+
+
+def test_the_gate_does_not_open_with_a_persona_whose_name_moved_to_another_character(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def renamed_while_reading(name):
+        calls.append(name)
+        return await real(name) if len(calls) == 1 else None             # 读的过程中原角色改名、名字空出来
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", renamed_while_reading)
+    gate = _gate(client)
+    # 不能拿原角色的人设放行：名字已不对应它
+    assert gate.ok is False and gate.state == "missing"
+
+
+
+def test_a_hand_edit_is_rolled_back_when_the_name_moves_during_its_checks(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    before = _file(tmp_path)
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def replaced_with_an_identical_card(name):
+        calls.append(name)
+        return await real(name) if len(calls) <= 2 else "d" * 32       # 写盘后：名字已是另一个（卡片相同的）角色
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", replaced_with_an_identical_card)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert resp.status_code == 409 and _file(tmp_path) == before
+
+
+
+def test_confirming_is_refused_when_the_name_moves_during_the_check(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    client.portal.call(persona.store().save, UID_A, {
+        **_file(tmp_path), "text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "edited": True, "reviewed": False})
+    view = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def replaced_during_the_check(name):
+        calls.append(name)
+        return await real(name) if len(calls) <= 2 else "d" * 32
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", replaced_during_the_check)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True, "persona_version": view["persona_version"]})
+    assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"
+    assert _file(tmp_path)["reviewed"] is False
+
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_a_persona_file_with_a_non_finite_timestamp_counts_as_malformed(tmp_path, value):
+    store = persona.VisitPersonaStore(tmp_path)
+    path = store.path(UID_A)
+    path.parent.mkdir(parents=True)
+    doc = {"text": "x", "source_card_hash": "0" * 64, "generated_at": value, "edited": False, "reviewed": False,
+           "private_sections": [], "scan_card_hash": "0" * 64, "scan_complete": False}
+    path.write_text(json.dumps(doc), encoding="utf-8")                  # JSON 里的 NaN / Infinity
+    assert store._load_sync(UID_A) is None
+
+
+
+@pytest.mark.parametrize("field", ["text", "private_sections"])
+def test_a_persona_file_with_a_lone_surrogate_counts_as_malformed(tmp_path, field):
+    store = persona.VisitPersonaStore(tmp_path)
+    path = store.path(UID_A)
+    path.parent.mkdir(parents=True)
+    value = '"x \\ud800"' if field == "text" else '["x \\ud800"]'
+    other_text = '"x"' if field != "text" else None
+    raw = ('{"text": %s, "source_card_hash": "%s", "generated_at": null, "edited": false, "reviewed": false, '
+           '"private_sections": %s, "scan_card_hash": "%s", "scan_complete": false}') % (
+        value if field == "text" else other_text, "0" * 64, value if field == "private_sections" else "[]", "0" * 64)
+    path.write_text(raw, encoding="utf-8")                                # 文件里是转义的孤立代理字符
+    assert store._load_sync(UID_A) is None
+
+
+def test_reading_a_persona_is_refused_when_the_name_moves_meanwhile(env, monkeypatch):
+    client, *_ = env
+    _generate(client)
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def moved(name):
+        calls.append(name)
+        return await real(name) if len(calls) == 1 else "d" * 32
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", moved)
+    resp = client.get("/api/visit/persona?catgirl=A", headers=GOOD)
+    assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"

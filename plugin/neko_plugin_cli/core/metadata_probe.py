@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from plugin._types.version import SDK_VERSION
-from plugin.server.infrastructure.packaged_metadata import (
+from plugin.core.packaged_metadata import (
     build_environment,
     entries_config_digest,
     PACKAGED_METADATA_FILENAME,
@@ -183,6 +183,22 @@ def derive_plugin_metadata(plugin_dir: Path, *, source_only: bool = False) -> di
     }
 
 
+def _remove_staged_metadata(path: Path) -> None:
+    """Refuse to export a stale generated file that cannot be removed."""
+    if not path.exists():
+        return
+    try:
+        path.unlink()
+    except OSError:
+        try:
+            path.chmod(stat.S_IWRITE | stat.S_IREAD)
+            path.unlink()
+        except OSError as exc:
+            raise MetadataProbeError(
+                f"stale generated metadata cannot be removed: {path}: {exc}"
+            ) from exc
+
+
 def write_packaged_metadata(
     *,
     source_dir: Path,
@@ -217,30 +233,7 @@ def write_packaged_metadata(
     try:
         payload = derive_plugin_metadata(Path(target_dir), **({"source_only": True} if source_only else {}))
     except MetadataProbeError as exc:
-        stale = Path(target_dir) / PACKAGED_METADATA_FILENAME
-        if stale.exists():
-            # 源树里本来就有一份（内置插件的就在仓库里），打包管线会先把它抄进
-            # target_dir。这次没能重新生成却把那份旧的留在包里，等于拿上一次的
-            # handler 和 schema 冒充这次的——而它的 source_sha 完全可能还对得上，
-            # 宿主于是照单全收，本该走的 manifest 回落根本不会发生（codex）。
-            try:
-                stale.unlink()
-            except OSError:
-                # Windows 上只读属性会让 unlink 直接失败。清掉属性再试一次。
-                try:
-                    stale.chmod(stat.S_IWRITE | stat.S_IREAD)
-                    stale.unlink()
-                except OSError as unlink_exc:
-                    # 这条不能只警告。归档器照样会把这份旧文件打进包，而下面那句
-                    # 警告说的是"这次不带元数据"——包和说法对不上，用户机器上则
-                    # 拿着上一次构建的 handler 当真（codex）。出不了诚实的包就
-                    # 不出包。
-                    raise MetadataProbeError(
-                        f"a stale {PACKAGED_METADATA_FILENAME} from an earlier "
-                        f"build is in the package directory and cannot be "
-                        f"removed ({unlink_exc}); delete "
-                        f"{stale} and build again"
-                    ) from unlink_exc
+        _remove_staged_metadata(Path(target_dir) / PACKAGED_METADATA_FILENAME)
         print(
             f"[WARN] {Path(source_dir).name}: could not derive plugin metadata "
             f"({exc}); packaging without {PACKAGED_METADATA_FILENAME}. Entry "

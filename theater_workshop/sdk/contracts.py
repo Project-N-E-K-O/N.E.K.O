@@ -193,6 +193,7 @@ class MetricBandPayload(StrictPayload):
     min: int
     max: int
     label: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
 
 
 class MetricPayload(StrictPayload):

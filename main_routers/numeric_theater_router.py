@@ -7,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 import functools
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
@@ -14,6 +15,7 @@ from weakref import WeakValueDictionary
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from main_routers.shared_state import get_config_manager
 from main_routers.system_router._shared import _validate_local_mutation_request
@@ -46,8 +48,6 @@ from services.theater.numeric_v2_archive import (
     build_numeric_v2_memory_messages,
 )
 from services.theater.numeric_v2_evaluator import (
-    NumericV2EvaluatorError,
-    NumericV2EvaluatorUnavailableError,
     NumericV2MetricEvaluator,
 )
 from services.theater.numeric_v2_registry import (
@@ -77,6 +77,7 @@ from services.theater.numeric_v2_store import (
 from services.theater.numeric_v2_workflow import (
     execute_numeric_v2_turn,
     generate_validated_opening,
+    invitation_recovery_contract,
 )
 from services.theater.tts_bridge import speak_committed_line
 from utils.cloudsave_runtime import (
@@ -85,10 +86,35 @@ from utils.cloudsave_runtime import (
     cloudsave_writable_transaction,
 )
 from utils.character_memory import character_config_mutation_lock
-from utils.theater_activity import clear_theater_activity, note_theater_session_response
+from utils.theater_activity import can_retire_cancelled_start, clear_theater_activity, note_theater_session_response
 
 
-router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
+class _NumericTheaterRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def handle(request: Request):
+            try:
+                return await handler(request)
+            except ValueError as exc:
+                # Only stable domain reason codes are safe client errors.
+                return _domain_value_error(exc, 400)
+
+        return handle
+
+
+router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"], route_class=_NumericTheaterRoute)
+
+
+def _domain_value_error(exc: ValueError, status_code: int):
+    reason = str(exc)
+    if reason not in {
+        "client_turn_id_invalid", "base_revision_invalid", "revision_invalid",
+        "current_node_id_invalid", "node_turn_count_invalid", "lifecycle_revision_invalid",
+        "forgotten_through_revision_invalid",
+    } and not re.fullmatch(r"(?:numeric_|current_catgirl_|catgirl_|story_|session_)[a-z0-9_]+", reason):
+        raise exc
+    return _error(reason, status_code)
 logger = logging.getLogger(__name__)
 # 请求执行期间由局部变量强持有锁；完成后弱引用表可自动回收不同请求 ID，避免长期运行持续增长。
 _speak_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -116,8 +142,15 @@ def _track_theater_activity(handler):
 
     @functools.wraps(handler)
     async def wrapper(*args, **kwargs):
+        request = kwargs.get("request")
+        claim = str(request.headers.get("X-Neko-Theater-Activity", "")).strip() if request else ""
+        if len(claim) > 160:
+            return _error("numeric_activity_claim_invalid", 400)
         response = await handler(*args, **kwargs)
-        note_theater_session_response(response)
+        if kwargs.get("claim_activity", True):
+            claimed = note_theater_session_response(response, activity_claim_id=claim)
+            if claim and isinstance(response, dict):
+                response["activity_claimed"] = bool(claimed)
         return response
 
     return wrapper
@@ -218,16 +251,12 @@ async def _assert_numeric_writable(config_manager: Any, target: str) -> None:
 async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
     numeric_root = _numeric_root(config_manager)
     registry = NumericV2PackageRegistry(numeric_root / "numeric_v2" / "packages")
-    character_ids_by_name = await asyncio.to_thread(
-        numeric_v2_character_ids,
-        config_manager,
-    )
     await run_storage_mutation(
         nullcontext,
         maintain_numeric_v2_storage_once,
         numeric_root,
         registry,
-        character_ids_by_name=character_ids_by_name,
+        character_ids_by_name=lambda: numeric_v2_character_ids(config_manager),
         write_transaction=_numeric_write_transaction(config_manager, numeric_root),
         assert_writable=lambda: assert_cloudsave_writable(
             config_manager,
@@ -241,6 +270,8 @@ async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
 async def _create_ended_receipt(config_manager: Any, session: Any) -> dict[str, Any] | None:
     """兼容旧 Session 补建结束回执前，先通过共享写栅栏。"""  # noqa: DOCSTRING_CJK
 
+    if session.ended_reason == "cancelled_start":
+        return None
     await _assert_numeric_writable(config_manager, "end_receipts")
     if await asyncio.to_thread(
         _archive_store(config_manager).pending_forget,
@@ -455,7 +486,7 @@ def _public_session(session: Any) -> dict[str, Any]:
     }
 
 
-def _numeric_payload(
+async def _numeric_payload(
     runtime: NumericV2Runtime,
     stored: Any,
     *,
@@ -463,6 +494,9 @@ def _numeric_payload(
     display_binding: Mapping[str, str] | None = None,
     story_projection_compatible: bool = True,
 ) -> dict[str, Any]:
+    from services.theater.numeric_v2_options import aload_theater_module_options
+
+    modules = await aload_theater_module_options()
     binding = display_binding or stored.session.catgirl_binding
     if not story_projection_compatible:
         # 旧 Session 可以在剧本升级后结束，但不能把新剧本的场景投影伪装成旧剧情。
@@ -503,6 +537,7 @@ def _numeric_payload(
         "story_intro": cast.intro(runtime.engine.story),
         "scene": _scene_projection(runtime, stored, binding),
         "suggested_inputs": list(latest.get("suggested_inputs") or []),
+        "invitation_recovery_available": invitation_recovery_contract(runtime, stored, condition_narrations_enabled=bool(modules.get("review"))) is not None,
     }
     if end_receipt:
         payload["end_receipt_id"] = str(end_receipt.get("receipt_id") or "")
@@ -596,10 +631,10 @@ async def list_numeric_memory_stories():
     result = []
     for story_id, row in stories.items():
         try:
-            path = registry.package_path(story_id)
+            registry.package_path(story_id)
         except NumericV2PackageError:
             continue
-        if not await asyncio.to_thread(path.is_file):
+        if not await asyncio.to_thread(registry.package_file_exists, story_id):
             result.append({**row, "memory_only": True})
     return {"ok": True, "stories": result, "character_id": binding["character_id"],
             "memory_available": available}
@@ -774,7 +809,7 @@ async def delete_numeric_story(story_id: str, request: Request):
 
 @router.post("/session/start")
 @_track_theater_activity
-async def start_numeric_session(request: Request):
+async def start_numeric_session(request: Request, claim_activity: bool = True):
     # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
     with numeric_v2_usage_scope() as calls, text_trace_scope("opening"):
         response = await _start_numeric_session(request)
@@ -843,7 +878,7 @@ async def _start_numeric_session(request: Request):
                     return {
                         "ok": True,
                         "resumed": True,
-                        **_numeric_payload(runtime, existing, display_binding=binding, story_projection_compatible=compatible),
+                        **(await _numeric_payload(runtime, existing, display_binding=binding, story_projection_compatible=compatible)),
                     }
                 if session_id == existing.session.session_id:
                     return _error("numeric_replacement_session_id_must_differ", 400)
@@ -881,7 +916,7 @@ async def _start_numeric_session(request: Request):
                     return {
                         "ok": True,
                         "resumed": True,
-                        **_numeric_payload(runtime, existing, display_binding=binding, story_projection_compatible=compatible),
+                        **(await _numeric_payload(runtime, existing, display_binding=binding, story_projection_compatible=compatible)),
                     }
                 if session_id == existing.session.session_id:
                     return _error("numeric_replacement_session_id_must_differ", 400)
@@ -902,12 +937,12 @@ async def _start_numeric_session(request: Request):
                     existing.session.session_id,
                 )
                 if needs_legacy_archive:
-                    previous_public = _numeric_payload(
+                    previous_public = (await _numeric_payload(
                         runtime,
                         existing,
                         display_binding=binding,
                         story_projection_compatible=compatible,
-                    )
+                    ))
                     # 兼容升级前已经写入记忆、但尚未生成冷档案的 Session；
                     # 冷档案落盘失败时不能继续删除旧恢复槽位。
                     await archive_store.awrite_public_archive(
@@ -953,13 +988,13 @@ async def _start_numeric_session(request: Request):
         return _error("numeric_v2_actor_unavailable", 503)
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
+    except (NumericV2StoreError, NumericV2RuntimeError) as exc:
+        return _domain_value_error(exc, 400)
     except ValueError as exc:
         if str(exc) == "catgirl_changed_requires_new_session":
-            return _error(str(exc), 409)
-        return _error(str(exc), 400)
-    except (NumericV2StoreError, NumericV2RuntimeError) as exc:
-        return _error(str(exc), 400)
-    return {"ok": True, **_numeric_payload(runtime, stored, display_binding=binding)}
+            return _domain_value_error(exc, 409)
+        return _domain_value_error(exc, 400)
+    return {"ok": True, **(await _numeric_payload(runtime, stored, display_binding=binding))}
 
 
 @router.get("/session/active")
@@ -984,23 +1019,23 @@ async def get_active_numeric_session(story_id: str):
     except NumericV2StoreError as exc:
         return _error(str(exc), 422)
     except ValueError as exc:
-        return _error(str(exc), 409)
+        return _domain_value_error(exc, 409)
     return {
         "ok": True,
         "resumed": True,
-        **_numeric_payload(
+        **(await _numeric_payload(
             runtime,
             stored,
             end_receipt=receipt,
             display_binding=binding,
             story_projection_compatible=compatible,
-        ),
+        )),
     }
 
 
 @router.get("/session/{session_id}")
 @_track_theater_activity
-async def get_numeric_session(session_id: str, story_id: str):
+async def get_numeric_session(request: Request, session_id: str, story_id: str, claim_activity: bool = True):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
@@ -1024,15 +1059,15 @@ async def get_numeric_session(session_id: str, story_id: str):
     except NumericV2StoreError as exc:
         return _error(str(exc), 422)
     except ValueError as exc:
-        return _error(str(exc), 409)
+        return _domain_value_error(exc, 409)
     return {
         "ok": True,
-        **_numeric_payload(
+        **(await _numeric_payload(
             runtime,
             stored,
             end_receipt=receipt,
             display_binding=binding,
-        ),
+        )),
     }
 
 
@@ -1102,24 +1137,25 @@ async def _submit_numeric_input_once(
         current_binding = _ensure_current_catgirl(current.session, config_manager)
         # 幂等重放直接返回已提交快照，不能再次调用模型或重复结算。
         if turn.client_turn_id in current.session.processed_client_turn_ids:
-            replay_receipt = (
-                await _create_receipt_for_existing_ended_session(
-                    config_manager,
-                    runtime,
-                    current.session,
-                )
-                if current.session.status == "ended"
-                else None
-            )
+            replay_receipt = None
+            replay_receipt_pending = False
+            if current.session.status == "ended":
+                try:
+                    replay_receipt = await _create_receipt_for_existing_ended_session(
+                        config_manager, runtime, current.session,
+                    )
+                except (ValueError, OSError, MaintenanceModeError):
+                    replay_receipt_pending = True
             return {
                 "ok": True,
                 "idempotent_replay": True,
-                **_numeric_payload(
+                "end_receipt_pending": replay_receipt_pending,
+                **(await _numeric_payload(
                     runtime,
                     current,
                     end_receipt=replay_receipt,
                     display_binding=current_binding,
-                ),
+                )),
             }
         forget_scope = (
             str(current.session.story_package_id),
@@ -1157,12 +1193,16 @@ async def _submit_numeric_input_once(
         stored = workflow.stored
         current_binding = workflow.display_binding
         end_receipt = None
+        end_receipt_pending = False
         if stored.session.status == "ended":
-            end_receipt = await _create_receipt_for_existing_ended_session(
-                config_manager,
-                runtime,
-                stored.session,
-            )
+            try:
+                end_receipt = await _create_receipt_for_existing_ended_session(
+                    config_manager, runtime, stored.session,
+                )
+            except (ValueError, OSError, MaintenanceModeError):
+                # The turn is already committed. Later snapshot reads retry the
+                # receipt; report the authoritative ending rather than a failed input.
+                end_receipt_pending = True
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except (NumericV2RevisionConflictError, NumericV2StoreRevisionConflictError) as exc:
@@ -1175,23 +1215,19 @@ async def _submit_numeric_input_once(
         return _error(_FORGET_PENDING_REASON, 409)
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
-    except NumericV2EvaluatorUnavailableError:
-        return _error("numeric_v2_evaluator_unavailable", 503)
-    except NumericV2EvaluatorError:
-        return _error("numeric_v2_evaluator_failed", 502)
     except NumericV2ActorUnavailableError:
         return _error("numeric_v2_actor_unavailable", 503)
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
+    except (NumericV2RuntimeError, NumericV2StoreError) as exc:
+        return _domain_value_error(exc, 400)
     except ValueError as exc:
         if str(exc) in {
             "catgirl_changed_requires_new_session",
             "catgirl_profile_changed_requires_retry",
         }:
-            return _error(str(exc), 409)
-        return _error(str(exc), 400)
-    except (NumericV2RuntimeError, NumericV2StoreError) as exc:
-        return _error(str(exc), 400)
+            return _domain_value_error(exc, 409)
+        return _domain_value_error(exc, 400)
     return {
         "ok": True,
         "resolved_turn": {
@@ -1200,12 +1236,14 @@ async def _submit_numeric_input_once(
             "route_changed": outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"],
         },
         "performance": _public_performance(performance),
-        **_numeric_payload(
+        "end_receipt_pending": end_receipt_pending,
+        "evaluator_degraded": workflow.diagnostics.get("evaluator_degraded") is True,
+        **(await _numeric_payload(
             runtime,
             stored,
             end_receipt=end_receipt,
             display_binding=current_binding,
-        ),
+        )),
     }
 
 
@@ -1260,18 +1298,25 @@ async def end_numeric_session(request: Request):
                 # Session 已提交但回执写入失败时只补建回执；仅相邻生命周期允许幂等重放。
                 if (
                     current.session.revision != base_revision
-                    or current.session.ended_reason != "user_exit"
+                    or current.session.ended_reason != (
+                        "cancelled_start" if payload.get("cancelled_start") is True else "user_exit"
+                    )
                     or current.session.lifecycle_revision != base_lifecycle_revision + 1
                 ):
                     raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
                 stored = current
             else:
+                if payload.get("cancelled_start") is True and not can_retire_cancelled_start(
+                    story_id, session_id, current.session.lifecycle_revision,
+                    str(request.headers.get("X-Neko-Theater-Activity", "")).strip(),
+                ):
+                    return _error("numeric_cancelled_start_taken_over", 409)
                 await _assert_numeric_writable(config_manager, "sessions")
                 stored = await runtime.end_session(
                     session_id,
                     base_revision=base_revision,
                     base_lifecycle_revision=base_lifecycle_revision,
-                    reason="user_exit",
+                    reason="cancelled_start" if payload.get("cancelled_start") is True else "user_exit",
                 )
             receipt = await _create_ended_receipt(
                 config_manager,
@@ -1281,13 +1326,13 @@ async def end_numeric_session(request: Request):
             return {
                 "ok": True,
                 "idempotent_replay": True,
-                **_numeric_payload(
+                **(await _numeric_payload(
                     runtime,
                     current,
                     end_receipt=receipt,
                     display_binding=current_binding,
                     story_projection_compatible=story_projection_compatible,
-                ),
+                )),
             }
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
@@ -1295,25 +1340,25 @@ async def end_numeric_session(request: Request):
         return _error("numeric_base_revision_mismatch", 409)
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
-    except ValueError as exc:
-        return _error(str(exc), 409)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
-        return _error(str(exc), 400)
+        return _domain_value_error(exc, 400)
+    except ValueError as exc:
+        return _domain_value_error(exc, 409)
     return {
         "ok": True,
-        **_numeric_payload(
+        **(await _numeric_payload(
             runtime,
             stored,
             end_receipt=receipt,
             display_binding=current_binding,
             story_projection_compatible=story_projection_compatible,
-        ),
+        )),
     }
 
 
 @router.post("/session/resume")
 @_track_theater_activity
-async def resume_numeric_session(request: Request):
+async def resume_numeric_session(request: Request, claim_activity: bool = True):
     """继续玩家主动退出的演绎；剧情自然结局不能从该入口恢复。"""  # noqa: DOCSTRING_CJK
 
     payload = await _json_object(request)
@@ -1370,14 +1415,14 @@ async def resume_numeric_session(request: Request):
         return _error("numeric_base_revision_mismatch", 409)
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
-    except ValueError as exc:
-        return _error(str(exc), 409)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
-        return _error(str(exc), 409)
+        return _domain_value_error(exc, 409)
+    except ValueError as exc:
+        return _domain_value_error(exc, 409)
     return {
         "ok": True,
         "resumed": True,
-        **_numeric_payload(runtime, stored, display_binding=current_binding),
+        **(await _numeric_payload(runtime, stored, display_binding=current_binding)),
     }
 
 
@@ -1403,9 +1448,10 @@ async def release_numeric_session_activity(request: Request):
         return validation_error
     raw_name = payload.get("catgirl_name")
     catgirl_name = raw_name.strip() if isinstance(raw_name, str) else ""
-    if not catgirl_name or len(catgirl_name) > 256:
+    claim = str(payload.get("activity_claim_id") or "").strip()
+    if len(claim) > 160 or (not catgirl_name and not claim) or len(catgirl_name) > 256:
         return _error("numeric_release_character_required", 400)
-    clear_theater_activity(catgirl_name)
+    clear_theater_activity(catgirl_name, activity_claim_id=claim)
     return {"ok": True}
 
 
@@ -1470,7 +1516,7 @@ async def speak_numeric_block(request: Request):
                 return _error("numeric_base_revision_mismatch", 409)
             if stored.session.lifecycle_revision != lifecycle_revision:
                 return _error("numeric_base_lifecycle_revision_mismatch", 409)
-            if stored.session.ended_reason == "user_exit":
+            if stored.session.status == "ended" and stored.session.ended_reason not in (None, "natural_ending"):
                 return _error("session_already_ended", 409)
             if revision == 0:
                 performance = stored.session.opening_performance
@@ -1530,7 +1576,7 @@ async def speak_numeric_block(request: Request):
                 # its lifecycle separately, while allowing natural ending audio.
                 if latest.session.lifecycle_revision != lifecycle_revision:
                     return _error("numeric_base_lifecycle_revision_mismatch", 409)
-                if latest.session.ended_reason == "user_exit":
+                if latest.session.status == "ended" and latest.session.ended_reason not in (None, "natural_ending"):
                     return _error("session_already_ended", 409)
                 if revision == 0:
                     latest_performance = latest.session.opening_performance
@@ -1572,7 +1618,7 @@ async def speak_numeric_block(request: Request):
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
             return _package_error(exc)
         except (NumericV2StoreError, NumericV2RuntimeError, ValueError) as exc:
-            return _error(str(exc), 409)
+            return _domain_value_error(exc, 409)
 
 
 async def _validated_receipt(
@@ -1652,12 +1698,12 @@ async def archive_numeric_session(request: Request):
                         return _error("numeric_end_receipt_character_mismatch", 409)
                     if stored.session.status != "ended" or stored.session.revision != receipt["revision"]:
                         return _error("numeric_archive_session_not_ended", 409)
-                    public = _numeric_payload(
+                    public = (await _numeric_payload(
                         runtime,
                         stored,
                         display_binding=current_binding,
                         story_projection_compatible=compatible,
-                    )
+                    ))
                     title = str(runtime.engine.story["meta"]["title"])
                     messages = build_numeric_v2_memory_messages(
                         title=title,
@@ -1757,7 +1803,7 @@ async def archive_numeric_session(request: Request):
                     )
                     return {"ok": True, "status": "written", "count": data.get("count")}
         except NumericV2ArchiveError as exc:
-            return _error(str(exc), 409)
+            return _domain_value_error(exc, 409)
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
             return _package_error(exc)
         except MaintenanceModeError:
@@ -1874,7 +1920,7 @@ async def skip_numeric_session_archive(request: Request):
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
             return _package_error(exc)
         except NumericV2ArchiveError as exc:
-            return _error(str(exc), 409)
+            return _domain_value_error(exc, 409)
 
 
 def _receipt_archive_attempt(receipt: Mapping[str, Any]) -> int:
@@ -2208,7 +2254,8 @@ async def forget_numeric_story_memory(request: Request):
                 await archive_store.mutate(archive_store.delete_forget_files, pending)
                 removed_archives = len(pending["archive_files"])
                 removed_receipts = len(pending["receipt_files"])
-                if stored is not None and stored.session.status == "ended":
+                if (stored is not None and stored.session.status == "ended"
+                        and stored.session.ended_reason != "cancelled_start"):
                     # 保留一个最新“不写入”决策回执，防止选剧页立即再次询问。
                     skipped = await archive_store.acreate_or_get(stored.session)
                     await archive_store.aupdate(skipped, status="skipped")

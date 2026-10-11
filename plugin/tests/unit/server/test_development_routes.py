@@ -14,6 +14,16 @@ from plugin.server.infrastructure.mutation_auth import AUTOSTART_CSRF_TOKEN, MAI
 
 @pytest.fixture
 def app(monkeypatch, tmp_path):
+    from plugin.core.state import state
+
+    monkeypatch.setattr(state, "plugins", {})
+    monkeypatch.setattr(state, "plugin_hosts", {})
+    monkeypatch.setattr(state, "event_handlers", {})
+    monkeypatch.setattr(state, "_snapshot_cache", {
+        key: dict(value, data=None, timestamp=0.0)
+        for key, value in state._snapshot_cache.items()
+    })
+    monkeypatch.setattr(state, "_snapshot_cache_gen", dict(state._snapshot_cache_gen))
     monkeypatch.setattr(store.settings, "get_plugin_state_root", lambda: tmp_path / "state" / "plugins")
     monkeypatch.setattr(store.settings, "PLUGIN_CONFIG_ROOTS", (tmp_path / "installed",))
     monkeypatch.setattr(operation_lock, "_operation_file_lock_path", lambda: tmp_path / "operation.lock")

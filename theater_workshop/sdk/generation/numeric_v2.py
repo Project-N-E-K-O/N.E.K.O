@@ -1824,6 +1824,8 @@ def _validate_node_enhancement(
     if not isinstance(goals, list) or not goals:
         issues.append({"code": "required_items", "path": "ordered_goals", "message": "必须是非空目标数组。"})
         goals = []
+    if len(goals) > 6:
+        issues.append({"code": "too_many_goals", "path": "ordered_goals", "message": "每幕最多六项目标。"})
     opening_goal_count = 0
     for index, raw in enumerate(goals):
         path = f"ordered_goals[{index}]"
@@ -1849,6 +1851,8 @@ def _validate_node_enhancement(
         if not isinstance(anchors, list):
             issues.append({"code": "required_array", "path": f"{path}.anchors", "message": "锚点必须是数组。"})
             anchors = []
+        elif any(not isinstance(anchor, str) or not anchor.strip() for anchor in anchors):
+            issues.append({"code": "goal_anchor_invalid", "path": f"{path}.anchors", "message": "锚点必须是非空文本。"})
         if evidence_mode == "exact" and not anchors:
             issues.append({"code": "exact_goal_anchors_required", "path": f"{path}.anchors", "message": "exact 目标必须提供字面锚点。"})
         elif evidence_mode == "semantic" and anchors:

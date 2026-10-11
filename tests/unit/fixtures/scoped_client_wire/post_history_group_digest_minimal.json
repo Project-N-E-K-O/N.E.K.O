@@ -1,0 +1,33 @@
+{
+  "call": {
+    "method": "post_history",
+    "lanlan": "小八",
+    "kwargs": {
+      "subject": {
+        "subject_kind": "group_chat",
+        "subject_id": "neko_visit:0123456789abcdef01234567"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": "[对方猫娘·团子] 你家阳台的猫薄荷长得真好！"
+        },
+        {
+          "role": "assistant",
+          "content": "嘿嘿，是我家里人种的～"
+        },
+        {
+          "role": "user",
+          "content": "[对方亲人] Hello from the other side 👋"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:48912/internal/memory/%E5%B0%8F%E5%85%AB/scoped_history",
+    "body": "{\"input_history\":\"[{\\\"role\\\": \\\"user\\\", \\\"content\\\": \\\"[对方猫娘·团子] 你家阳台的猫薄荷长得真好！\\\"}, {\\\"role\\\": \\\"assistant\\\", \\\"content\\\": \\\"嘿嘿，是我家里人种的～\\\"}, {\\\"role\\\": \\\"user\\\", \\\"content\\\": \\\"[对方亲人] Hello from the other side 👋\\\"}]\",\"subject\":{\"subject_kind\":\"group_chat\",\"subject_id\":\"neko_visit:0123456789abcdef01234567\"}}"
+  },
+  "model": "ScopedHistoryRequest",
+  "qq_reference": "b0b283e34:plugin/plugins/qq_auto_reply/memory_bridge.py::QQMemoryBridge.post_scoped_memory_history"
+}

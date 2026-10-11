@@ -164,7 +164,7 @@ def test_pin_templates_version_shared_window_control_and_locale_assets():
         auth_routes,
     )
     assert credential_guide_route
-    assert 'templates.TemplateResponse("cookies_guide.html"' in credential_guide_route.group("body")
+    assert 'templates.TemplateResponse(request, "cookies_guide.html"' in credential_guide_route.group("body")
 
 
 def test_credentials_page_opens_the_universal_guide_in_a_named_window():

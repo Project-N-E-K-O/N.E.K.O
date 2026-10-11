@@ -281,12 +281,18 @@
         const oldMarker = container.getAttribute('data-in-tutorial');
         const styles = ['display', 'opacity', 'visibility'].map(name => [name, container.style.getPropertyValue(name), container.style.getPropertyPriority(name)]);
         const mgr = root[prefix + 'Manager'];
-        const lock = document.getElementById(prefix + '-lock-icon');
-        const lockStyles = lock && ['display', 'opacity', 'visibility'].map(name => [name, lock.style.getPropertyValue(name), lock.style.getPropertyPriority(name)]);
+        let lock = document.getElementById(prefix + '-lock-icon');
+        let lockStyles = lock && ['display', 'opacity', 'visibility'].map(name => [name, lock.style.getPropertyValue(name), lock.style.getPropertyPriority(name)]);
         // Near a screen edge the lock icon can overlap the last toolbar button.
         // Keep its own lesson separate without moving the model or the toolbar.
         lock?.classList.add('click-guide-hidden-control');
         revealLock = () => {
+            const currentLock = document.getElementById(prefix + '-lock-icon');
+            if (currentLock !== lock) {
+                lock?.classList.remove('click-guide-hidden-control');
+                lock = currentLock;
+                lockStyles = lock && ['display', 'opacity', 'visibility'].map(name => [name, lock.style.getPropertyValue(name), lock.style.getPropertyPriority(name)]);
+            }
             lock?.classList.remove('click-guide-hidden-control');
             if (lock) {
                 lock.style.setProperty('display', 'block', 'important');

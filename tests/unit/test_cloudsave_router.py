@@ -1907,3 +1907,65 @@ async def test_cancelled_download_finishes_reload_before_propagating_cancel():
         assert reload_mock.await_args.args[1]
         assert finalized_modes == [ROOT_MODE_BOOTSTRAP_IMPORTING]
         assert get_root_mode(cm) != ROOT_MODE_BOOTSTRAP_IMPORTING
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_waits_for_a_pending_visit_retirement_of_the_name():
+    # 同名的已删除角色还在退役串门数据时，不能从云端导入同名角色（名册按名字存）
+    from main_logic.visit.char_lifecycle import retire_item
+    from main_logic.visit.subjects import add_roster_marker_item, remove_roster_marker_item
+
+    with TemporaryDirectory() as td:
+        source_cm = _make_config_manager(Path(td) / "source")
+        target_cm = _make_config_manager(Path(td) / "target")
+        bootstrap_local_cloudsave_environment(source_cm)
+        bootstrap_local_cloudsave_environment(target_cm)
+        _write_runtime_state(source_cm, character_name="云端角色")
+        _write_runtime_state(target_cm, character_name="本地角色")
+
+        from utils.cloudsave_runtime import export_cloudsave_character_unit
+
+        export_cloudsave_character_unit(source_cm, "云端角色")
+        shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+        item = retire_item("云端角色", "e" * 32)
+        await add_roster_marker_item(target_cm.config_dir, "pending_retire", item)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", target_cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=target_cm,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+            blocked = await cloudsave_router_module.post_cloudsave_character_download(
+                "云端角色",
+                _DummyRequest({"overwrite": False, "backup_before_overwrite": True}),
+            )
+            blocked_payload = json.loads(blocked.body)
+            # 变异：去掉检查必红
+            assert blocked.status_code == 409
+            assert blocked_payload["code"] == "VISIT_DATA_BUSY"
+            _assert_localized_error_payload(blocked_payload, "cloudsave.error.visitDataBusy")
+            assert "云端角色" not in (target_cm.load_characters().get("猫娘") or {})
+
+            await remove_roster_marker_item(target_cm.config_dir, "pending_retire", item)
+            with patch.object(cloudsave_router_module, "_reload_after_character_download",
+                              AsyncMock(return_value=(True, ""))):
+                download = await cloudsave_router_module.post_cloudsave_character_download(
+                    "云端角色",
+                    _DummyRequest({"overwrite": False, "backup_before_overwrite": True}),
+                )
+            assert download["success"] is True
+            assert "云端角色" in (target_cm.load_characters().get("猫娘") or {})

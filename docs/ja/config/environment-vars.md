@@ -54,4 +54,30 @@ launcher は foreground プロセスです。daemon 化して親から離脱す�
 パッケージ版は `NEKO_MERGED=0` ですぐにロールバックできます。
 `NEKO_MERGED` 自体が受け付ける値は `1/true/yes` と `0/false/no` です。
 
+## プラグインの自動起動の並列数
+
+| 変数 | デフォルト | 説明 |
+| --- | --- | --- |
+| `NEKO_PLUGIN_AUTOSTART_CONCURRENCY` | `min(8, max(2, (os.cpu_count() or 4) // 2))` | 依存関係を宣言していないプラグインを、自動起動の各バッチで同時に開始する最大数。`1`–`64` の整数を指定できます。`1` ではプラグインごとに操作ロックを取得して順次起動します。依存関係のないプラグインが先に起動するため、従来の全体のトポロジカル順序や adapter の優先順位には戻りません。 |
+
+既定値は 2–8 です。論理 CPU 数を取得できない場合は 4 個として計算し、並列数は 2 になります。
+依存関係を宣言したプラグインは、独立したプラグインの起動がすべて完了してから、
+従来のトポロジカル順序で逐次起動します。各並列バッチの終了後に操作ロックを解放し、
+待機中のプラグイン管理リクエストを処理できるようにします。この設定はサーバーの
+自動起動だけに適用されます。無効または未承認のプラグインの自動起動を有効にしたり、
+手動で起動・停止したときの保存済み設定を変更したりするものではありません。
+
+N.E.K.O を起動する前に環境変数を設定し、変更後はランタイムを再起動してください。
+整数に変換できない値は既定値に戻ります。変換できても `1`–`64` の範囲外の場合は
+設定の検証に失敗します。順次起動に戻す例:
+
+```powershell
+$env:NEKO_PLUGIN_AUTOSTART_CONCURRENCY = "1"
+uv run python launcher.py
+```
+
+```bash
+NEKO_PLUGIN_AUTOSTART_CONCURRENCY=1 uv run python launcher.py
+```
+
 Docker entrypoint は initial `/app/config/core_config.json` の生成時だけ `NEKO_CORE_API_KEY`、`NEKO_CORE_API`、`NEKO_ASSIST_API`、一部 `NEKO_ASSIST_API_KEY_*`、`NEKO_MCP_TOKEN` を読みます。`NEKO_FORCE_ENV_UPDATE` は再生成要求です。旧 `docker/env.template` の未接続 model 変数には依存しないでください。

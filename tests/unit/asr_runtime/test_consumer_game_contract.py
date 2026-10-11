@@ -19,7 +19,7 @@ async def test_game_consumer_ignores_empty_final(monkeypatch) -> None:
     runtime = _Runtime()
     route_transcript = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     monkeypatch.setattr(

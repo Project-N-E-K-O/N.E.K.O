@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import math
 import threading
 
 import numpy as np
@@ -24,6 +25,68 @@ class _FakeRnnoise:
 
     def destroy(self, state: object) -> None:
         self.destroyed.append(state)
+
+
+@pytest.mark.parametrize("duration_ms", [10, 20, 32])
+def test_agc_dynamics_use_audio_block_duration(duration_ms: int) -> None:
+    processor = AudioProcessor(
+        input_sample_rate=48_000,
+        output_sample_rate=48_000,
+        noise_reduce_enabled=False,
+        agc_enabled=True,
+        limiter_enabled=False,
+    )
+    try:
+        samples = round(48_000 * duration_ms / 1000)
+        # RMS=0.5 means the target gain is 0.5, making the expected one-step
+        # attack value independent of any clipping or limiter behavior.
+        audio = np.full(samples, round(0.5 * 32768), dtype=np.int16)
+        processor._apply_agc(audio)
+
+        chunk_seconds = audio.nbytes / (2 * processor.input_sample_rate)
+        attack_alpha = math.exp(
+            -chunk_seconds / processor.AGC_ATTACK_TIME
+        )
+        expected_gain = attack_alpha + (1 - attack_alpha) * 0.5
+        assert processor._agc_attack_coeff == pytest.approx(attack_alpha)
+        assert processor._agc_gain == pytest.approx(expected_gain)
+
+        # A quieter block requests more gain and therefore exercises the
+        # release path with the same block-duration conversion.
+        processor._agc_gain = 1.0
+        quiet_audio = np.full(samples, round(0.05 * 32768), dtype=np.int16)
+        processor._apply_agc(quiet_audio)
+        release_alpha = math.exp(
+            -chunk_seconds / processor.AGC_RELEASE_TIME
+        )
+        quiet_rms = float(np.sqrt(np.mean((quiet_audio / 32768.0) ** 2)))
+        desired_release_gain = min(
+            processor.AGC_MAX_GAIN,
+            max(processor.AGC_MIN_GAIN, processor.AGC_TARGET_LEVEL / quiet_rms),
+        )
+        expected_release_gain = (
+            release_alpha + (1 - release_alpha) * desired_release_gain
+        )
+        assert processor._agc_release_coeff == pytest.approx(release_alpha)
+        assert processor._agc_gain == pytest.approx(expected_release_gain)
+    finally:
+        processor.close()
+
+
+def test_audio_processor_reset_restores_agc_gain() -> None:
+    processor = AudioProcessor(
+        input_sample_rate=48_000,
+        output_sample_rate=48_000,
+        noise_reduce_enabled=False,
+        agc_enabled=True,
+        limiter_enabled=False,
+    )
+    try:
+        processor._agc_gain = 8.0
+        processor.reset()
+        assert processor._agc_gain == 1.0
+    finally:
+        processor.close()
 
 
 @pytest.mark.parametrize("terminal", ["close", "finalize_stream"])

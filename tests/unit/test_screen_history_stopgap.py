@@ -474,7 +474,10 @@ def test_rewrite_survives_the_client_request_path(prefix, with_tool_round):
 
     poisoned = prefix + _chain()
     if with_tool_round:
+        # A round follows the user turn it answers (a round with none before
+        # it gets a stand-in, which is not what this test is about).
         messages = [
+            {"role": "user", "content": "帮我查一下。"},
             {"role": "assistant", "content": poisoned, "reasoning_content": "opaque",
              "tool_calls": [{"id": "c1", "type": "function",
                              "function": {"name": "lookup", "arguments": "{}"}}]},
@@ -489,12 +492,14 @@ def test_rewrite_survives_the_client_request_path(prefix, with_tool_round):
 
     assert messages == snapshot, "the saved transcript must not be rewritten"
     assert payload is not messages
-    assert payload[0]["content"] == prefix + WIRE_COMMENTS[0]
+    first = 1 if with_tool_round else 0
+    assert payload[first]["content"] == prefix + WIRE_COMMENTS[0]
     if with_tool_round:
+        assert payload[0] is messages[0]
         # Tool-result pairing must survive or the provider rejects the request.
-        assert payload[0]["tool_calls"] == messages[0]["tool_calls"]
-        assert payload[0]["reasoning_content"] == "opaque"
-        assert payload[1] is messages[1]
+        assert payload[1]["tool_calls"] == messages[1]["tool_calls"]
+        assert payload[1]["reasoning_content"] == "opaque"
+        assert payload[2] is messages[2]
     assert payload[-1] is messages[-1]
     import json as _json
     dumped = _json.dumps(payload, ensure_ascii=False)
@@ -629,6 +634,35 @@ def test_tool_result_ends_the_run():
                 {"role": "tool", "tool_call_id": "c1", "content": "ok"},
                 _assistant(_COMMENT_B), _user("那你继续说说。")]
     assert _rewritten(messages) == []
+
+
+@pytest.mark.parametrize("answered", [False, True])
+def test_the_request_view_projects_the_tool_rounds_the_provider_receives(answered):
+    """The request view pairs tool rounds before it projects, so the chain
+    check judges the order the provider receives. A tool reply no call
+    claims is not sent, and the two comments it stood between reach the
+    provider as one run, which is cut; a reply its call claims is sent and
+    still ends the run (``test_tool_result_ends_the_run``)."""
+    from utils.llm_client import AIMessage, HumanMessage
+
+    calls = [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+    first = (
+        {"role": "assistant", "content": _COMMENT_A, "tool_calls": calls}
+        if answered else AIMessage(content=_COMMENT_A)
+    )
+    messages = [HumanMessage(content="陪我聊聊。"), first,
+                {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+                AIMessage(content=_COMMENT_B), HumanMessage(content="那你继续说说。")]
+    view = _bare_client()._dialog_messages_for_provider(messages)
+
+    def content(message):
+        return message["content"] if isinstance(message, dict) else message.content
+
+    if answered:
+        assert [content(m) for m in view] == ["陪我聊聊。", _BODY_A, "ok", _BODY_B, "那你继续说说。"]
+        assert view[1]["tool_calls"] == calls
+    else:
+        assert [content(m) for m in view] == ["陪我聊聊。", _BODY_A, "那你继续说说。"]
 
 
 def test_a_single_trailing_comment_is_not_a_chain():

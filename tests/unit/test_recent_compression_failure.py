@@ -131,7 +131,7 @@ def test_compress_history_returns_none_when_summary_llm_keeps_failing(tmp_path):
 
 
 def test_deepseek_thinking_is_disabled_only_for_memory_compression():
-    """Compression must run thinking-off; review keeps the model's native thinking.
+    """Compression must run thinking-off; review keeps thinking on at low effort.
 
     Deliberately goes through the real ``create_chat_llm`` instead of stubbing it:
     thinking-off is resolved by the factory from the model name, so a stub would
@@ -146,8 +146,9 @@ def test_deepseek_thinking_is_disabled_only_for_memory_compression():
 
     assert mgr._config_manager.features == ["summary", "correction"]
     assert compression.extra_body == {"thinking": {"type": "disabled"}}
-    # 记忆整理显式 extra_body=None，压过工厂的自动解析，保持模型原生思考行为。
-    assert review.extra_body == {}
+    # 记忆整理压过工厂的关思考解析、保持开思考；DeepSeek 原生思考量会顶穿
+    # 输出额度（max_tokens 修好后真正生效），所以显式压到 low 档。
+    assert review.extra_body == {"reasoning_effort": "low"}
 
 
 def test_update_history_preserves_existing_memo_when_compression_fails(tmp_path):

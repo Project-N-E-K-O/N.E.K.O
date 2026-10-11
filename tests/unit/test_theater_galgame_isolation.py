@@ -76,6 +76,16 @@ async function launch(ctx, sessionId) {
     session_id: sessionId, revision: 4, launch_action: 'continue',
   } });
   await respond(ctx.requests.shift(), snapshot(sessionId));
+  const claimIndex = ctx.requests.findIndex(request => request.url.includes('/session/' + sessionId));
+  assert.ok(claimIndex >= 0);
+  const claim = ctx.requests.splice(claimIndex, 1)[0];
+  assert.ok(claim.options.headers['X-Neko-Theater-Activity']);
+  await respond(claim, { ...snapshot(sessionId), activity_claimed: true });
+  for (let i = ctx.requests.length - 1; i >= 0; i -= 1) {
+    if (ctx.requests[i].url.endsWith('/session/release')) {
+      await respond(ctx.requests.splice(i, 1)[0], { ok: true });
+    }
+  }
   assert.equal(ctx.runtime.getState().phase, 'awaiting_player');
 }
 """

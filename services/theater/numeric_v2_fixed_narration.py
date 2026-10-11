@@ -177,7 +177,13 @@ def apply_triggers(node: Mapping[str, Any], session: Any, performance: Mapping[s
     selected: set[str] = set()
     for claim in claims:
         evidence = str(claim.get("evidence") or "")
-        if not evidence or not any(evidence in text for text in sources):
+        cjk_count = sum('\u3400' <= char <= '\u9fff' for char in evidence)
+        other_count = sum(char.isalnum() and not ('\u3400' <= char <= '\u9fff') for char in evidence)
+        whole_input = bool(player_input.strip()) and evidence.strip('（）() !！。.,，?？') == player_input.strip('（）() !！。.,，?？')
+        meaningful = cjk_count >= 3 or cjk_count + other_count >= 4 or (
+            whole_input and sum(char.isalnum() for char in evidence) >= 2
+        )
+        if not meaningful or not any(evidence in text for text in sources):
             continue
         definition = next((item for item in definitions(node) if item["id"] == claim.get("id")), None)
         trigger = (definition or {}).get("trigger", {})

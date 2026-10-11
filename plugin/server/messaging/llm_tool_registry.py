@@ -33,14 +33,17 @@ from __future__ import annotations
 import asyncio
 import os
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
 from config import MAIN_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from plugin.logging_config import get_logger
+from plugin.utils.http_imports import ensure_httpx, load_httpx
 
 logger = get_logger("server.messaging.llm_tool_registry")
+
 
 # ---------------------------------------------------------------------------
 # Process-global state
@@ -62,6 +65,7 @@ _HTTP_CLIENT: Optional[httpx.AsyncClient] = None
 def _get_http_client() -> httpx.AsyncClient:
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None:
+        httpx = load_httpx()
         _HTTP_CLIENT = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=2.0),
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
@@ -156,6 +160,7 @@ async def register_remote_tool(
     IPC.
     """
     callback_url = build_callback_url(plugin_id, name)
+    httpx = await ensure_httpx()
     payload = {
         "name": name,
         "description": description,
@@ -232,8 +237,15 @@ async def unregister_remote_tool(
     half-registered on some role; pruning local tracking in that case
     means a later ``clear_plugin_tools`` can't catch the stragglers and
     the model would still see them.
+
+    The payload carries ``expected_source`` so ``main_server`` refuses to
+    remove the name when it is owned by a different source (e.g. our own
+    registration was rejected by the cross-source guard and the name
+    actually belongs to another plugin) — a plugin can never unregister
+    another plugin's tool by name collision.
     """
-    payload = {"name": name, "role": role}
+    payload = {"name": name, "role": role, "expected_source": _source_tag(plugin_id)}
+    httpx = await ensure_httpx()
     client = _get_http_client()
     url = f"{_main_server_base_url()}/api/tools/unregister"
     try:
@@ -255,6 +267,14 @@ async def unregister_remote_tool(
             f"main_server /api/tools/unregister returned {resp.status_code}: {text[:500]}"
         )
     body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    refused_roles = body.get("refused_roles") if isinstance(body, dict) else None
+    if refused_roles:
+        # 名字归属其它 source：我们的注册从未在 main_server 生效（跨 source
+        # 守卫拒绝、缓存竞态等）。本地跟踪作废即可，绝不能触碰别人的工具。
+        logger.warning(
+            "unregister_remote_tool refused foreign-owned name: plugin_id={}, name={}, refused_roles={}",
+            plugin_id, name, refused_roles,
+        )
     failed_roles = body.get("failed_roles") if isinstance(body, dict) else None
     if failed_roles:
         logger.warning(
@@ -279,7 +299,7 @@ async def unregister_remote_tool(
 
 # 停止插件时清理远端工具的超时。比默认的 2.0s connect 短得多：这一步是尽力而为
 # 的收尾，而它在跨进程锁里面，慢一秒就是所有插件操作排队慢一秒。
-_CLEAR_TOOLS_TIMEOUT = httpx.Timeout(2.0, connect=0.3)
+# The default timeout is constructed with the backend on first cleanup.
 
 
 async def clear_plugin_tools(
@@ -292,6 +312,7 @@ async def clear_plugin_tools(
     swallows HTTP errors (the plugin is already going away; a noisy
     failure here would mask the real shutdown reason).
     """
+    httpx = await ensure_httpx()
     async with _lock:
         owned = list(_plugin_tools.pop(plugin_id, {}).keys())
 
@@ -318,7 +339,7 @@ async def clear_plugin_tools(
             url,
             json=payload,
             timeout=(
-                _CLEAR_TOOLS_TIMEOUT
+                httpx.Timeout(2.0, connect=0.3)
                 if timeout is None
                 else httpx.Timeout(timeout, connect=min(0.3, timeout))
             ),

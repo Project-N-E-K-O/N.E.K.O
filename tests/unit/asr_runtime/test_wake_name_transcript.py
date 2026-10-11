@@ -138,7 +138,7 @@ async def test_non_core_first_consumer_gets_raw_text_and_consumes_opportunity(mo
     registry = runtime._voice_input_registry
     route_transcript = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active", lambda _name: True,
+        "main_logic.voice_input.consumers.game.is_external_route_active", lambda _name: True,
     )
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.get_active_game_route_identity",

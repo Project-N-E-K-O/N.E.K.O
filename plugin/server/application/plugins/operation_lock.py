@@ -16,6 +16,8 @@ import threading
 from types import TracebackType
 from typing import Any, ParamSpec, TypeVar
 
+from plugin.utils.asyncio_utils import await_cancellation_safe
+
 P = ParamSpec("P")
 T = TypeVar("T")
 
@@ -100,7 +102,11 @@ class _CrossLoopLock:
     def _handoff_locked(self) -> _Waiter | None:
         while self._waiters:
             waiter = self._waiters.popleft()
-            if waiter.state != "waiting" or waiter.future.cancelled() or waiter.loop.is_closed():
+            if (
+                waiter.state != "waiting"
+                or waiter.future.cancelled()
+                or waiter.loop.is_closed()
+            ):
                 waiter.state = "cancelled"
                 continue
             waiter.state = "granted"
@@ -386,7 +392,9 @@ async def _acquire_file_lock_cancellation_safe(deadline: float | None = None) ->
             cancel_event.set()
         except _FileLockAcquireCancelled:
             if cancellation is None:  # pragma: no cover - invariant
-                raise RuntimeError("plugin operation file lock wait was cancelled internally")
+                raise RuntimeError(
+                    "plugin operation file lock wait was cancelled internally"
+                )
             raise cancellation
 
     if cancellation is not None:
@@ -411,22 +419,26 @@ class _HeldPluginOperationLock:
         self._owner_token: Token[asyncio.Task[Any] | None] | None = None
         self._acquired = False
         self._file_lock_handle: Any | None = None
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
 
-    async def __aenter__(self) -> None:
+    async def __aenter__(self) -> _HeldPluginOperationLock:
         current_task = asyncio.current_task()
         if current_task is None:  # pragma: no cover - async context invariant
             raise RuntimeError("plugin operation lock requires an asyncio task")
+        self._owner_loop = current_task.get_loop()
         depth = _OPERATION_DEPTH.get()
         if depth and _OPERATION_OWNER.get() is current_task:
             self._depth_token = _OPERATION_DEPTH.set(depth + 1)
-            return
+            return self
 
         # 一次逻辑加锁只算一个截止期，两层锁共用（见 _CrossLoopLock.acquire）。
         deadline = _wait_deadline()
         await _PROCESS_LOCK.acquire(deadline)
         self._acquired = True
         try:
-            self._file_lock_handle = await _acquire_file_lock_cancellation_safe(deadline)
+            self._file_lock_handle = await _acquire_file_lock_cancellation_safe(
+                deadline
+            )
             await asyncio.to_thread(_reload_install_source_manager_sync)
         except BaseException:
             if self._file_lock_handle is not None:
@@ -437,6 +449,17 @@ class _HeldPluginOperationLock:
             raise
         self._owner_token = _OPERATION_OWNER.set(current_task)
         self._depth_token = _OPERATION_DEPTH.set(1)
+        return self
+
+    def require_active(self) -> None:
+        """Validate an explicitly borrowed scope before starting a batch member."""
+        if (
+            self._depth_token is None
+            or asyncio.get_running_loop() is not self._owner_loop
+        ):
+            raise RuntimeError(
+                "Plugin startup requires an active operation scope on this loop"
+            )
 
     async def __aexit__(
         self,
@@ -447,6 +470,7 @@ class _HeldPluginOperationLock:
         if self._depth_token is None:
             raise RuntimeError("plugin operation lock was not acquired")
         _OPERATION_DEPTH.reset(self._depth_token)
+        self._depth_token = None
         if not self._acquired:
             return
         if self._owner_token is not None:
@@ -492,24 +516,8 @@ def serialized_plugin_operation(
                 return await function(*args, **kwargs)
 
         operation = asyncio.create_task(run_locked())
-        cancelled = False
-        while True:
-            try:
-                result = await asyncio.shield(operation)
-            except asyncio.CancelledError:
-                cancelled = True
-                if not lock_acquired.is_set():
-                    operation.cancel()
-                if operation.done():
-                    break
-            except BaseException:
-                if cancelled:
-                    raise asyncio.CancelledError from None
-                raise
-            else:
-                if cancelled:
-                    raise asyncio.CancelledError
-                return result
-        raise asyncio.CancelledError
+        return await await_cancellation_safe(
+            operation, cancel_if=lambda: not lock_acquired.is_set()
+        )
 
     return wrapped

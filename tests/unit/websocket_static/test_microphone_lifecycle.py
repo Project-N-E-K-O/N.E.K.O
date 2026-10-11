@@ -237,7 +237,8 @@ def test_in_flight_microphone_start_is_cancellable():
         "        mediaStream,\n"
         "        startToken,\n"
         "        selectedMicrophoneIdAtStart,\n"
-        "        microphoneSelectionGenerationAtStart\n"
+        "        microphoneSelectionGenerationAtStart,\n"
+        "        captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000\n"
         "    ) {",
     )
     assert "startToken !== micStartGeneration" in worklet
@@ -293,7 +294,7 @@ def test_in_flight_microphone_start_is_cancellable():
     assert (
         "constmicStartCommitted=awaitstartAudioWorklet("
         "ownStream,micStartToken,selectedMicrophoneIdAtStart,"
-        "microphoneSelectionGenerationAtStart);"
+        "microphoneSelectionGenerationAtStart,captureTargetSampleRate);"
         in compact_start_code
     )
     assert "if (!micStartCommitted) {" in start_code_only

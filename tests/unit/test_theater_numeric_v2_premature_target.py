@@ -105,12 +105,16 @@ def test_exact_target_opening_fact_in_dialogue_is_allowed():
     assert leaked == ()
 
 
-def test_entered_target_scene_fact_allows_rementioning_opening():
+@pytest.mark.parametrize('later_events', [0, 32])
+def test_entered_target_scene_fact_allows_rementioning_opening(later_events):
     session = _session()
     session.story_state = {
         "revision": 1,
         "facts": {"event:scene.entered:target:r1": {"visibility": "public"}},
     }
+    session.story_state['facts'].update({f'event:scene.entered:other_{index}:r{index + 2}':
+                                       {'visibility': 'public', 'updated_revision': index + 2}
+                                       for index in range(later_events)})
     leaked = premature_target_scene_facts(
         _engine(), session, _outcome(),
         {"scene_narration": "信标预热还剩三分钟，隔壁控制台突然报警。"},

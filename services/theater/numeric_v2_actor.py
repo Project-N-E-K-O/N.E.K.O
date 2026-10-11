@@ -72,6 +72,7 @@ from .numeric_v2_performance import (
 )
 from .numeric_v2_runtime import (
     PLAYER_ADDRESS_BOUNDARY_CHARS,
+    current_visit_started_revision,
     NumericV2Engine,
     ScriptSessionV2,
     TurnOutcomeV2,
@@ -1134,7 +1135,7 @@ def _repeats_earlier_session_performance(
         current_variants = current_variants[:1]
     current_visit_id = (
         f"{session.current_node_id}:r"
-        f"{max(int(session.revision) - int(session.node_turn_count), 0)}"
+        f"{current_visit_started_revision(session)}"
     )
     earlier: list[Mapping[str, Any]] = []
     # 开场只属于第一场景访问；进入新场景后，不能拿开场的告别或口头禅判定当前回合复读。

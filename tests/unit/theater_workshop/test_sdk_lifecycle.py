@@ -67,6 +67,113 @@ def setup_project(sdk):
         changes={"title": "旧信", "setup": _generation_setup()})
 
 
+def test_generation_error_survives_a_concurrent_revision_change(opened, monkeypatch):
+    host, _config = opened
+    project = setup_project(host.sdk)
+    failure = NumericV2GenerationError('model_auth_failed', checkpoint={'stage': 'outline'})
+
+    def fail(**kwargs):
+        host.sdk._store.update(project['project_id'], base_revision=project['revision'],
+                                       changes={'title': '修改中的标题'})
+        raise failure
+
+    monkeypatch.setattr(host.sdk._generator, 'generate', fail)
+    with pytest.raises(NumericV2GenerationError) as raised:
+        host.sdk.generate(project['project_id'], base_revision=project['revision'])
+    assert raised.value is failure
+    assert failure.checkpoint == {'stage': 'outline'}
+    persisted = host.sdk._store.get(project['project_id'])
+    assert persisted['generation_error']['original_error']['code'] == 'model_auth_failed'
+    assert persisted['generation_checkpoint'] is None
+
+
+def test_partial_setup_update_round_trips_the_full_author_snapshot(opened, tmp_path):
+    host, _ = opened
+    project = host.sdk.create_project()
+    project = host.sdk.update_project(project['project_id'], base_revision=project['revision'],
+        changes={'title': '雨后的旧信', 'setup': {'brief': '核对收信记录。', 'length_preset': 'short', 'metrics': []}})
+    snapshot = json.loads((host.sdk.root / f"{project['project_id']}.json").read_bytes())
+    destination = open_workshop(TestConfig(tmp_path / 'destination'), model_call=fixed_model)
+    try:
+        imported = destination.sdk.import_project(snapshot)
+        assert imported['setup'] == project['setup']
+    finally:
+        destination.sdk.close()
+
+
+@pytest.mark.asyncio
+async def test_generated_projects_with_identical_content_have_separate_stable_story_ids(opened):
+    host, _ = opened
+    projects = [setup_project(host.sdk), setup_project(host.sdk)]
+    generated = [host.sdk.generate(row['project_id'], base_revision=row['revision'])['project'] for row in projects]
+    identities = [row['story']['meta']['story_id'] for row in generated]
+    assert identities[0] != identities[1]
+    for row in generated:
+        host.sdk.compile(row['project_id'], base_revision=row['revision'])
+        verified = host.sdk.validate(row['project_id'], base_revision=row['revision'])
+        await host.install(row['project_id'], base_revision=verified['revision'])
+    first = generated[0]
+    regenerated = host.sdk.generate(first['project_id'], base_revision=first['revision'])['project']
+    assert regenerated['story']['meta']['story_id'] == identities[0]
+
+
+def test_enhancement_rebuilds_outgoing_goal_references(opened, monkeypatch):
+    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from .test_numeric_v2_branch import _ordered_goal
+
+    host, _ = opened
+    project = ready_to_publish(host.sdk)
+    story = deepcopy(project['story'])
+    node = next(node for node in story['nodes'] if node.get('route_gates'))
+    node['story_beat']['goals'] = goals_to_package(node['id'], [_ordered_goal('线索已经交付。')])
+    goal = deepcopy(node['story_beat']['goals'][-1])
+    node['route_gates'][0]['transition_contract']['source_ids'] = [f"goal.{goal['id']}"]
+    project = host.sdk.update_project(project['project_id'], base_revision=project['revision'], changes={'story': story})
+    goal['id'] = 'enhanced_goal'
+    monkeypatch.setattr(host.sdk._generator, 'enhance_node', lambda **kwargs: {'goals': [goal]})
+    result = host.sdk.enhance_node(project['project_id'], node['id'], base_revision=project['revision'])
+    updated = next(row for row in result['project']['story']['nodes'] if row['id'] == node['id'])
+    assert updated['route_gates'][0]['transition_contract']['source_ids'] == ['goal.enhanced_goal']
+
+
+@pytest.mark.parametrize('refs', [[0], [0, 1], [2], [0, 2]])
+def test_enhancement_preserves_valid_nonfinal_goal_references(opened, monkeypatch, refs):
+    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from .test_numeric_v2_branch import _ordered_goal
+
+    host, _ = opened
+    project = ready_to_publish(host.sdk)
+    story = deepcopy(project['story'])
+    node = next(node for node in story['nodes'] if node.get('route_gates'))
+    goals = goals_to_package(node['id'], [_ordered_goal(f'线索{i}已经交付。') for i in range(3)])
+    node['story_beat']['goals'] = goals
+    sources = [f"goal.{goals[i]['id']}" for i in refs] + [f"opening.{node['id']}"]
+    node['route_gates'][0]['transition_contract']['source_ids'] = sources
+    project = host.sdk.update_project(project['project_id'], base_revision=project['revision'], changes={'story': story})
+    enhanced = goals_to_package(node['id'], [_ordered_goal(f'线索{i}已经交付。') for i in range(4)])
+    monkeypatch.setattr(host.sdk._generator, 'enhance_node', lambda **kwargs: {'goals': enhanced})
+    result = host.sdk.enhance_node(project['project_id'], node['id'], base_revision=project['revision'])
+    updated = next(row for row in result['project']['story']['nodes'] if row['id'] == node['id'])
+    actual = updated['route_gates'][0]['transition_contract']['source_ids']
+    assert all(f"goal.{goals[i]['id']}" in actual for i in refs if i != 2)
+    assert f"opening.{node['id']}" in actual
+    assert (f"goal.{enhanced[-1]['id']}" in actual) == (2 in refs)
+    assert f"goal.{goals[-1]['id']}" not in actual
+
+
+def test_unknown_total_usage_uses_reported_components_without_fabricating_counts():
+    from theater_workshop.sdk.model import ModelAgent, capture_usage
+    agent = ModelAgent('test', lambda *a, **kw: ModelReply('{}', 'test',
+                       {'prompt_tokens': 5, 'completion_tokens': 7, 'total_tokens': None}))
+    with capture_usage() as usage:
+        agent.call_llm([])
+    assert usage[0]['total_tokens'] == 12 and usage[0]['usage_reported'] is True
+    agent._model_call = lambda *a, **kw: ModelReply('{}', 'test', {'total_tokens': None})
+    with capture_usage() as unknown:
+        agent.call_llm([])
+    assert unknown[0]['usage_reported'] is False
+
+
 def ready_to_publish(sdk):
     project = sdk.import_story(numeric_v2_story())
     return sdk.validate(project["project_id"], base_revision=project["revision"])

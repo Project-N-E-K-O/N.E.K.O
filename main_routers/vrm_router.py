@@ -32,6 +32,7 @@ import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -112,6 +113,20 @@ async def _handle_vrm_file_upload(
         
         # 只取文件名，避免上传时夹带子目录
         filename = Path(filename).name
+
+        if allowed_extension == '.vrm':
+            model_name = filename[:-len(allowed_extension)]
+            if not _is_valid_vrm_model_name(model_name):
+                return JSONResponse(status_code=400, content={
+                    "success": False,
+                    "error": f"无效的模型名称: {model_name!r}"
+                })
+            builtin_dir = get_config_manager().project_root / 'static' / 'vrm'
+            if _vrm_model_stem_exists(model_name, (builtin_dir, target_dir)):
+                return JSONResponse(status_code=400, content={
+                    "success": False,
+                    "error": f"{file_type_name} {filename} 已存在，请先删除或重命名现有模型"
+                })
         
         # 使用安全路径函数防止路径穿越
         target_file_path, path_error = safe_vrm_path(target_dir, filename, subdir)
@@ -187,7 +202,7 @@ async def _handle_vrm_file_upload(
                 "success": True,
                 "message": f"{file_type_name} {filename} 上传成功",
                 "model_name": model_name,
-                "model_url": f"{VRM_USER_PATH}/{filename}",
+                "model_url": f"{VRM_USER_PATH}/{quote(filename, safe='')}",
                 "file_size": total_size
             })
             
@@ -220,6 +235,15 @@ async def upload_vrm_animation(file: UploadFile = File(...)):
     return await _handle_vrm_file_upload(file, user_vrm_dir, '.vrma', '动作文件', 'animation')
 
 
+def _iter_vrm_model_files(vrm_dir: Path):
+    """Yield model files using the upload endpoint's case-insensitive extension rule."""
+    if vrm_dir.exists():
+        # Mapping identities are stems; keep the same representative as model lookup.
+        for path in sorted(vrm_dir.iterdir(), key=lambda p: (p.stem, p.suffix != '.vrm', p.name)):
+            if path.suffix.lower() == '.vrm' and path.is_file():
+                yield path
+
+
 @router.get('/models')
 async def get_vrm_models():
     """List VRM models (without exposing absolute filesystem paths)."""
@@ -234,8 +258,8 @@ async def get_vrm_models():
         project_root = config_mgr.project_root
         static_vrm_dir = project_root / "static" / "vrm"
         if static_vrm_dir.exists():
-            for vrm_file in static_vrm_dir.glob('*.vrm'):
-                url = f"/static/vrm/{vrm_file.name}"
+            for vrm_file in _iter_vrm_model_files(static_vrm_dir):
+                url = f"/static/vrm/{quote(vrm_file.name, safe='')}"
                 # 跳过已存在的 URL（避免重复）
                 if url in seen_urls:
                     continue
@@ -245,7 +269,7 @@ async def get_vrm_models():
                 models.append({
                         "name": vrm_file.stem,
                         "filename": vrm_file.name,
-                        "path": url,
+                        "path": f"/static/vrm/{vrm_file.name}",
                         "url": url,
                         "type": "vrm",
                         "size": vrm_file.stat().st_size,
@@ -255,8 +279,8 @@ async def get_vrm_models():
         # 2. 搜索用户目录下的VRM文件 (user_vrm/)
         vrm_dir = config_mgr.vrm_dir
         if vrm_dir.exists():
-            for vrm_file in vrm_dir.glob('*.vrm'):
-                url = f"{VRM_USER_PATH}/{vrm_file.name}"
+            for vrm_file in _iter_vrm_model_files(vrm_dir):
+                url = f"{VRM_USER_PATH}/{quote(vrm_file.name, safe='')}"
                 # 跳过已存在的 URL（避免重复）
                 if url in seen_urls:
                     continue
@@ -266,7 +290,7 @@ async def get_vrm_models():
                 models.append({
                         "name": vrm_file.stem,
                         "filename": vrm_file.name,
-                        "path": url,
+                        "path": f"{VRM_USER_PATH}/{vrm_file.name}",
                         "url": url,
                         "type": "vrm",
                         "size": vrm_file.stat().st_size,
@@ -285,7 +309,7 @@ async def get_vrm_models():
                         # 检查安装目录下是否有.vrm文件
                         for filename in os.listdir(installed_folder):
                             if filename.lower().endswith('.vrm'):
-                                url = f"/workshop/{item_id}/{filename}"
+                                url = f"/workshop/{item_id}/{quote(filename, safe='')}"
                                 if url in seen_urls:
                                     continue
                                 seen_urls.add(url)
@@ -293,7 +317,7 @@ async def get_vrm_models():
                                 models.append({
                                     "name": Path(filename).stem,
                                     "filename": filename,
-                                    "path": url,
+                                    "path": f"/workshop/{item_id}/{filename}",
                                     "url": url,
                                     "type": "vrm",
                                     "size": os.path.getsize(vrm_path),
@@ -307,7 +331,7 @@ async def get_vrm_models():
                             if os.path.isdir(subdir_path):
                                 for filename in os.listdir(subdir_path):
                                     if filename.lower().endswith('.vrm'):
-                                        url = f"/workshop/{item_id}/{subdir}/{filename}"
+                                        url = f"/workshop/{item_id}/{quote(subdir, safe='')}/{quote(filename, safe='')}"
                                         if url in seen_urls:
                                             continue
                                         seen_urls.add(url)
@@ -315,7 +339,7 @@ async def get_vrm_models():
                                         models.append({
                                             "name": Path(filename).stem,
                                             "filename": filename,
-                                            "path": url,
+                                            "path": f"/workshop/{item_id}/{subdir}/{filename}",
                                             "url": url,
                                             "type": "vrm",
                                             "size": os.path.getsize(vrm_path),
@@ -501,24 +525,23 @@ async def delete_vrm_model(request: Request):
             return JSONResponse(status_code=400, content={"success": False, "error": "只能删除用户导入的 VRM 模型"})
 
         rel = url[len(VRM_USER_PATH) + 1:]  # 去掉 '/user_vrm/'
-        if not rel or '..' in rel or rel.startswith('/'):
-            return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
-
-        # 只允许删除顶层 .vrm 文件
-        if Path(rel).name != rel or not rel.lower().endswith('.vrm'):
-            return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
-
         config_mgr = get_config_manager()
         vrm_dir = config_mgr.vrm_dir
-        target = (vrm_dir / rel).resolve()
-
+        # URL 路径只解码一次，不能再用编码后的文本猜测另一个文件名。
+        try:
+            filename = unquote(rel, errors='strict')
+        except UnicodeDecodeError:
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
+        if not _is_vrm_basename(filename):
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
+        target = (vrm_dir / filename).resolve()
         if not target.is_relative_to(vrm_dir.resolve()):
             return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
-
         if not target.is_file():
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
         target.unlink()
+        await _cleanup_vrm_emotion_mapping(target.stem)
         logger.info(f"已删除 VRM 模型: {target.name}")
 
         return JSONResponse(content={"success": True, "message": f"VRM 模型 {target.stem} 已删除"})
@@ -554,11 +577,15 @@ DEFAULT_MOOD_MAP = {
 }
 
 
+def _is_valid_vrm_model_name(model_name: str) -> bool:
+    """Preserve filename stems while rejecting path syntax and reserved characters."""
+    # 保留上传时的原始名称；禁止路径分隔符、控制字符和 Windows 保留字符。
+    return model_name not in {'', '.', '..'} and re.search(r'[<>:"/\\|?*\x00-\x1f]', model_name) is None
+
+
 def _get_emotion_config_path(model_name: str) -> Path | None:
     """Get the emotion config file path for a model."""
-    # 允许 Unicode 单词字符、点、下划线、连字符（与 _get_model_path 保持一致）
-    safe_name = re.sub(r'[^\w.\-]', '', model_name, flags=re.UNICODE)
-    if not safe_name or safe_name != model_name:
+    if not _is_valid_vrm_model_name(model_name):
         logger.warning(f"无效的模型名称: {model_name!r}")
         return None
 
@@ -568,7 +595,7 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
     config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = config_dir / f"{safe_name}_emotion.json"
+    config_path = config_dir / f"{model_name}_emotion.json"
 
     # 验证解析后的路径仍在 config_dir 内
     try:
@@ -582,44 +609,91 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
 
 def _get_model_path(model_name: str) -> tuple[Path | None, str]:
     """Get the VRM model file path; returns (path, url_prefix)."""
-    # 仅允许字母、数字、点、下划线、连字符（含 CJK 等 Unicode 单词字符）
-    safe_name = re.sub(r'[^\w.\-]', '', model_name, flags=re.UNICODE)
-    if not safe_name or safe_name != model_name:
+    if not _is_valid_vrm_model_name(model_name):
         logger.warning(f"无效的模型名称: {model_name!r}")
         return None, ""
 
     config_mgr = get_config_manager()
     project_root = config_mgr.project_root
 
-    # 1. 检查项目目录
-    static_vrm_dir = project_root / "static" / "vrm"
-    static_vrm_path = static_vrm_dir / f"{safe_name}.vrm"
-    try:
-        resolved = static_vrm_path.resolve()
-        resolved.relative_to(static_vrm_dir.resolve())
-    except ValueError:
-        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
-        return None, ""
-    if resolved.suffix == '.vrm' and resolved.is_file():
-        return resolved, "/static/vrm"
-
-    # 2. 检查用户目录
-    config_mgr.ensure_vrm_directory()
-    user_vrm_path = config_mgr.vrm_dir / f"{safe_name}.vrm"
-    try:
-        resolved = user_vrm_path.resolve()
-        resolved.relative_to(config_mgr.vrm_dir.resolve())
-    except ValueError:
-        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
-        return None, ""
-    if resolved.suffix == '.vrm' and resolved.is_file():
-        return resolved, VRM_USER_PATH
+    # 优先项目目录和原有的小写扩展名，再兼容磁盘上已有的大小写变体。
+    for vrm_dir, url_prefix in (
+        (project_root / "static" / "vrm", VRM_STATIC_PATH),
+        (config_mgr.vrm_dir, VRM_USER_PATH),
+    ):
+        if url_prefix == VRM_USER_PATH:
+            config_mgr.ensure_vrm_directory()
+        try:
+            model_path = _find_vrm_model_file(vrm_dir, model_name)
+        except ValueError:
+            return None, ""
+        if model_path is not None:
+            return model_path, url_prefix
 
     return None, ""
 
 
+def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
+    canonical_path = vrm_dir / f"{model_name}.vrm"
+    def candidates():
+        yield canonical_path
+        yield from (path for path in _iter_vrm_model_files(vrm_dir)
+                    if path.stem == model_name and path != canonical_path)
+    for candidate in candidates():
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(vrm_dir.resolve()):
+            logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
+            raise ValueError("路径越界")
+        if resolved.suffix.lower() == '.vrm' and resolved.is_file():
+            return resolved
+    return None
+
+
+def _is_vrm_basename(filename: str) -> bool:
+    # Legacy files can violate the upload policy. Keep the directory boundary
+    # check in both deletion routes and reject path syntax here.
+    return filename.lower().endswith('.vrm') and Path(filename).name == filename and not any(
+        char in filename for char in ('/', chr(92), chr(0))
+    )
+
+
+def _vrm_model_stem_exists(model_name: str, directories) -> bool:
+    # Conservatively protect mappings shared on case-insensitive filesystems.
+    return any(path.stem.casefold() == model_name.casefold()
+               for directory in directories for path in _iter_vrm_model_files(directory))
+
+
+async def _cleanup_vrm_emotion_mapping(model_name: str):
+    # Built-in/user models and case-variant extensions intentionally share a mapping.
+    try:
+        config_mgr = get_config_manager()
+        directories = [config_mgr.project_root / 'static' / 'vrm', config_mgr.vrm_dir]
+        emotion_config = _get_emotion_config_path(model_name)
+        if not emotion_config or not emotion_config.is_file():
+            return
+        workshop = await get_subscribed_workshop_items()
+        if not isinstance(workshop, dict) or not workshop.get('success'):
+            raise RuntimeError("无法确认创意工坊的共享映射")
+        for item in workshop.get('items', []):
+            installed_folder = item.get('installedFolder')
+            if not installed_folder or not item.get('publishedFileId'):
+                continue
+            folder = Path(installed_folder)
+            if folder.is_dir():
+                directories.append(folder)
+                directories.extend(child for child in folder.iterdir() if child.is_dir())
+        for directory in directories:
+            for model in _iter_vrm_model_files(directory):
+                other_config = emotion_config.parent / f"{model.stem}_emotion.json"
+                if model.stem == model_name or (other_config.is_file() and other_config.samefile(emotion_config)):
+                    return
+        emotion_config.unlink()
+    except Exception as e:
+        logger.warning(f"删除情感映射配置失败: {e}")
+
+
 @router.delete('/model/{model_name}')
-def delete_vrm_model(model_name: str):
+async def delete_vrm_model(model_name: str):
     """Delete the specified user-imported VRM model."""
     try:
         config_mgr = get_config_manager()
@@ -627,30 +701,20 @@ def delete_vrm_model(model_name: str):
         vrm_dir = config_mgr.vrm_dir
 
         # 基本安全检查：不允许空名称或含路径分隔符
-        if not model_name or '/' in model_name or '\\' in model_name or '..' in model_name:
+        if not model_name or not _is_vrm_basename(f"{model_name}.vrm"):
             return JSONResponse(status_code=400, content={"success": False, "error": f"无效的模型名称: {model_name!r}"})
 
-        # safe_vrm_path 已做完整的路径穿越防护
-        vrm_path, err = safe_vrm_path(vrm_dir, f"{model_name}.vrm")
-        if vrm_path is None:
-            return JSONResponse(status_code=400, content={"success": False, "error": err})
-
         # 只允许删除用户目录下的 VRM 模型
-        if not vrm_path.is_file():
+        try:
+            vrm_path = _find_vrm_model_file(vrm_dir, model_name)
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
+        if vrm_path is None:
             return JSONResponse(status_code=404, content={"success": False, "error": f"未在用户目录中找到模型 {model_name}，可能是内置模型，无法删除"})
 
         vrm_path.unlink()
 
-        # 同时删除关联的情感映射配置（仅当没有同名内置模型时）
-        emotion_config = _get_emotion_config_path(model_name)
-        if emotion_config and emotion_config.is_file():
-            # 检查内置目录是否存在同名 VRM，避免删除共享配置
-            builtin_vrm = config_mgr.project_root / "static" / "vrm" / f"{model_name}.vrm"
-            if not builtin_vrm.is_file():
-                try:
-                    emotion_config.unlink()
-                except Exception as e:
-                    logger.warning(f"删除情感映射配置失败: {e}")
+        await _cleanup_vrm_emotion_mapping(model_name)
 
         logger.info(f"已删除VRM模型: {model_name}")
         return {"success": True, "message": f"模型 {model_name} 已成功删除"}

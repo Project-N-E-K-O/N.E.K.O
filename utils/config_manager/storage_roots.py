@@ -33,6 +33,12 @@ from utils.file_utils import atomic_write_json
 from utils.root_state_lock import root_state_transaction
 
 from ._shared import LocalStateDirectoryError, logger
+from .json_update import aupdate_json_config, update_json_config
+
+
+def chat_avatar_directory(config_manager) -> Path:
+    """Resolve local display resources against the currently connected backend root."""
+    return Path(config_manager.app_docs_dir) / "chat_avatars"
 
 
 class StorageRootsMixin:
@@ -159,6 +165,10 @@ class StorageRootsMixin:
         self.docs_dir = self.app_docs_dir.parent
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
+        # Public knowledge packs (registry + raw packs + derived index). Kept
+        # apart from memory; owned by the knowledge subsystem in the Memory
+        # Server and migrated as one top-level entry.
+        self.knowledge_dir = self.app_docs_dir / "knowledge"
         self.plugins_dir = self.app_docs_dir / "plugins"
         self.live2d_dir = self.app_docs_dir / "live2d"
         # VRM模型存储在用户文档目录下（与Live2D保持一致）
@@ -943,7 +953,7 @@ class StorageRootsMixin:
         except OSError as e:
             self._raise_local_state_file_error(operation, path, str(e), cause=e)
 
-    def _load_local_state_json_file(self, path, default_value, operation):
+    def _load_local_state_json_file(self, path, default_value, operation, *, tolerate_replace=False):
         path = Path(path)
         if path.exists() and not path.is_file():
             self._raise_local_state_file_error(
@@ -952,6 +962,9 @@ class StorageRootsMixin:
                 "state file target exists but is not a file",
             )
         try:
+            if tolerate_replace:
+                from utils.file_utils import read_json_tolerating_replace
+                return self._load_json_file(path, default_value, reader=read_json_tolerating_replace)
             return self._load_json_file(path, default_value)
         except OSError as e:
             self._raise_local_state_file_error(operation, path, str(e), cause=e)
@@ -989,9 +1002,11 @@ class StorageRootsMixin:
             "tombstones": [],
         }
 
-    def _load_json_file(self, path, default_value=None):
+    def _load_json_file(self, path, default_value=None, *, reader=None):
         """Load an arbitrary JSON file; returns a copy of the default when the file is missing."""
         try:
+            if reader is not None:
+                return reader(path)
             with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except FileNotFoundError:
@@ -1008,16 +1023,28 @@ class StorageRootsMixin:
 
     def load_root_state(self, default_value=None):
         """Load root_state; returns the default state when missing."""
-        if default_value is None:
-            default_value = self.build_default_root_state()
-        state = self._load_local_state_json_file(
-            self.root_state_path,
-            default_value,
-            "loading root_state",
-        )
+        return self._apply_root_state_recovery_override(self.load_raw_root_state(default_value))
+
+    def _apply_root_state_recovery_override(self, state):
         if self._has_selected_root_unavailable_recovery_override():
             return self._build_selected_root_unavailable_recovery_state(state)
         return state
+
+    def load_root_state_with_raw(self, default_value=None):
+        """Return semantic and raw root state derived from the same disk read."""
+        state = self.load_raw_root_state(default_value, tolerate_replace=True)
+        return self._apply_root_state_recovery_override(state), deepcopy(state)
+
+    def load_raw_root_state(self, default_value=None, *, tolerate_replace=False):
+        """Load persisted root_state without applying the runtime recovery override."""
+        if default_value is None:
+            default_value = self.build_default_root_state()
+        return self._load_local_state_json_file(
+            self.root_state_path,
+            default_value,
+            "loading root_state",
+            tolerate_replace=tolerate_replace,
+        )
 
     def save_root_state(self, data):
         """Save root_state."""
@@ -1222,6 +1249,26 @@ class StorageRootsMixin:
             print(f"Error saving {filename}: {e}", file=sys.stderr)
             raise
     
+    def assert_json_config_writable(self, filename):
+        """Run the same write fence as ``save_json_config`` without writing.
+
+        Deliberately a plain mode check, not ``cloudsave_writable_transaction``:
+        an in-process restore holds the cloud-apply process guard for its whole
+        run, so a transaction would queue behind it and then apply a pre-restore
+        snapshot to the restored file instead of being refused.
+        """
+        from utils.cloudsave_runtime import assert_cloudsave_writable
+
+        assert_cloudsave_writable(self, operation="save", target=filename)
+
+    def update_json_config(self, filename, mutator):
+        """Locked read-modify-write of a JSON config; see ``utils.config_manager.json_update``."""
+        return update_json_config(self, filename, mutator)
+
+    async def aupdate_json_config(self, filename, mutator):
+        """Async twin of ``update_json_config``; the locked section runs in a worker thread."""
+        return await aupdate_json_config(self, filename, mutator)
+
     def get_memory_path(self, filename):
         """
         Get a memory file path

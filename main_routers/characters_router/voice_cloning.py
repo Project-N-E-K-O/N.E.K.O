@@ -28,8 +28,10 @@ from .direct_link import (
 from .voice_providers import (
     ElevenLabsUpstreamError,
     _elevenlabs_clone_voice,
+    _get_elevenlabs_base_url,
     _is_local_voice_clone_tts_config,
     _local_voice_clone_tts_base_url,
+    _raw_elevenlabs_voice_id,
 )
 
 import io
@@ -1007,7 +1009,8 @@ async def voice_clone_direct(request: Request):
                 'code': 'TTS_AUDIO_API_KEY_MISSING'
             }, status_code=400)
 
-    # 导入所有可能用到的异常类（用于后面的异常捕获）
+    # Bind shared helpers and errors before dispatching to any provider.
+    from utils.audio import normalize_voice_clone_api_audio
     from utils.voice_clone import MinimaxVoiceCloneError, QwenVoiceCloneError
 
     # 设置服务商相关参数
@@ -1083,7 +1086,6 @@ async def voice_clone_direct(request: Request):
             logger.info(f"音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
 
             # 2. 计算音频内容的 MD5 用于去重（与文件上传路径保持一致）
-            import hashlib
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
             # 3. MD5 去重检查
@@ -1099,7 +1101,6 @@ async def voice_clone_direct(request: Request):
                 })
 
             # 2. 音频归一化处理（与文件上传路径保持一致）
-            from utils.audio import normalize_voice_clone_api_audio
             original_buffer = io.BytesIO(audio_bytes)
             normalized_buffer, normalized_filename, _ = await asyncio.to_thread(
                 normalize_voice_clone_api_audio,
@@ -1185,12 +1186,6 @@ async def voice_clone_direct(request: Request):
 
         elif provider == 'glm_tts':
             # ========== GLM 直链克隆流程（照 MiniMax 模式：下载 → 上传 → 注册） ==========
-            # 与 minimax 分支同构：函数内局部导入（其余分支也这么写），避免与本函数
-            # 其它分支的局部导入绑定冲突（UnboundLocalError）。
-            import hashlib
-
-            from utils.audio import normalize_voice_clone_api_audio
-
             logger.info(f"开始下载直链音频用于GLM声音复刻: {direct_link}")
             filename, audio_bytes = await _download_direct_link_audio(
                 direct_link,
@@ -1261,7 +1256,6 @@ async def voice_clone_direct(request: Request):
             logger.info(f"音频下载完成，大小: {len(audio_bytes)} bytes")
 
             # 2. 计算音频内容的 MD5 用于去重
-            import hashlib
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
             # 3. MD5 去重检查

@@ -470,6 +470,11 @@ def test_scoped_header_language_tables_cover_all_kinds_and_langs():
     assert set(SCOPED_PERSONA_SECTION_HEADER_NAMED) == set(
         SCOPED_PERSONA_SECTION_HEADER
     )
+    # 串门专表（按 kind+platform 选）两张表都要有，且同样八 locale。
+    assert {
+        "group_chat", "participant", "group_participant",
+        "group_chat@neko_visit", "participant@neko_visit",
+    } == set(SCOPED_PERSONA_SECTION_HEADER)
     for kind, table in SCOPED_PERSONA_SECTION_HEADER_NAMED.items():
         # #2623 把既有表的繁中补键留给 #2500；合并 #2616 后两张表必须
         # 锁成同一套八 locale，不能再依赖缺键回退。
@@ -1931,3 +1936,26 @@ def test_scoped_promotion_holds_reflection_lock_through_persona_write():
     assert "async with self._get_alock(lanlan_name):" in source
     assert "result = await self._persona_manager.aadd_fact(" in source
     assert "merge_outcome = await self._persona_manager.amerge_into(" in source
+
+
+@pytest.mark.asyncio
+async def test_strict_display_name_update_raises_on_an_unreadable_persona(tmp_path):
+    subject = MemorySubject.group_chat("qq", "7788")
+    path = tmp_path / "persona.json"
+    path.write_text('{"master": {"facts": [', encoding="utf-8")
+    manager = _DisplayNamePersona({}, str(path))
+    # 读不出与「没有 section / 没变化」这类正常空操作要分得开：带键日志据此决定是否重试
+    with pytest.raises(json.JSONDecodeError):
+        await manager.aupdate_subject_display_name(
+            "Neko", subject.as_entry_fields(), "水群", strict=True,
+        )
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError):
+        await manager.aupdate_subject_display_name(
+            "Neko", subject.as_entry_fields(), "水群", strict=True,
+        )
+    # 正常的空操作在 strict 下仍是返回 False，不抛
+    path.write_text("{}", encoding="utf-8")
+    assert await manager.aupdate_subject_display_name(
+        "Neko", subject.as_entry_fields(), "水群", strict=True,
+    ) is False

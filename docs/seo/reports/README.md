@@ -6,7 +6,6 @@
 
 - [`TEMPLATE.md`](./TEMPLATE.md)：完整生产日报结构与每个字段的可信度规则。
 - [`SKILL-INTEGRATION.md`](./SKILL-INTEGRATION.md)：把 `gingiris-seo-geo-agent` 的四阶段、BOFU 优先、GEO 三件套和日/周/月节奏映射到 N.E.K.O 双站点的执行手册。
-- [`2026-07-29-pr-validation.md`](./2026-07-29-pr-validation.md)：两个拟提交 PR 的完整测试证据、零费用请求计划，以及搜索频率/AIO 引用频率如何进入最终日报的验收说明。
 - [`2026-07-28-integrated-skill-report.md`](./2026-07-28-integrated-skill-report.md)：按 SEO/GEO skill 四阶段模型生成的当前验收样本；它保留真实 DataForSEO 与技术探针结果，并把未在本机提供的 Google/IndexNow 凭证明确标成 `UNKNOWN` 或 `NOT_RUN`。
 - [`2026-07-28-preflight.md`](./2026-07-28-preflight.md)：用真实 DataForSEO artifact 和线上技术探针生成的历史预检样本；文件头会注明当时缺少哪些凭证或数据源。
 - `docs/seo/monitoring.config.json`：双站点、30 个排名查询、GSC、GA4、IndexNow、CTA 与负责人配置。

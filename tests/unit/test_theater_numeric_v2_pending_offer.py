@@ -455,7 +455,7 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
     assert result.stored.session.revision == current.session.revision + 1
     assert len(result.stored.ledger_events) == len(current.ledger_events) + 1
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
-    assert result.stored.session.transition_offered
+    assert result.stored.session.transition_offered is (mode != 'fallback')
     assert result.stored.session.current_node_id == current.session.current_node_id
     assert result.diagnostics['semantic_review_fallback'] is (mode == 'fallback')
     assert result.diagnostics['transition_judge_degraded'] is (mode == 'fast_failure')
@@ -464,10 +464,10 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
         # 原邀请仍有效，但本次送审整组被否定，接受按钮不能在复核后绕回。
         assert result.performance['suggested_inputs'] == []
     assert await runtime.restore_session(current.session.session_id) == result.stored
-    # 冷恢复后仍可按原邀请接受，不需先由演员再邀请一次。
+    # A fallback response ends the invitation; reviewed safe replies retain it.
     accepted = runtime.prepare_turn(result.stored, TurnRequestV2('accept', result.stored.session.revision, '好，现在出发。'), (),
         transition_intent='accept')
-    assert accepted.session.current_node_id != current.session.current_node_id
+    assert (accepted.session.current_node_id != current.session.current_node_id) is (mode != 'fallback')
 
 
 @pytest.mark.asyncio

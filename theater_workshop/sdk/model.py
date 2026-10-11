@@ -76,7 +76,10 @@ class ModelAgent(JSONResponseParser):
                 "agent": self.name, "operation": options.get("operation"),
                 "model": reply.model if isinstance(reply, ModelReply) else "injected",
                 "prompt_tokens": prompt, "completion_tokens": completion,
-                "total_tokens": count("total_tokens") if "total_tokens" in usage else prompt + completion,
-                "usage_reported": isinstance(reply, ModelReply) and reply.usage is not None,
+                "total_tokens": count("total_tokens") if isinstance(usage.get("total_tokens"), int)
+                and not isinstance(usage.get("total_tokens"), bool) else prompt + completion,
+                "usage_reported": isinstance(reply, ModelReply) and any(
+                    isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")),
             })
         return content

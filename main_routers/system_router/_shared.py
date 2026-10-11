@@ -22,12 +22,12 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 
 import os
 import sys
-import ipaddress
 import secrets
 from typing import Any
 from urllib.parse import urlparse, urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from main_routers.local_access import is_direct_loopback_request as _is_loopback_request
 from ..shared_state import get_config_manager
 from main_logic.activity.system_signals import is_remote_backend_deployment
 from config import (
@@ -52,17 +52,6 @@ def _set_no_store_headers(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
-
-
-def _is_loopback_request(request: Request) -> bool:
-    client_host = request.client.host if request.client else ""
-    if client_host == "localhost":
-        return True
-    normalized_host = str(client_host or "").removeprefix("::ffff:")
-    try:
-        return ipaddress.ip_address(normalized_host).is_loopback
-    except ValueError:
-        return False
 
 
 # /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到

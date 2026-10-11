@@ -278,7 +278,8 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "message[\"data\"].get(\"has_image\")" in cross_server_source
     assert "input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None" in offline_source
     assert "history_replacement_text: str | None = None" in offline_source
-    assert "self._conversation_history[history_replacement_index] = HumanMessage" in offline_source
+    # The index is only a hint; the write goes wherever identity finds the turn.
+    assert "_history[_replace_at] = HumanMessage(content=history_replacement_text)" in offline_source
     assert "transcript_callback = input_transcript_callback or self.on_input_transcript" in offline_source
     assert '_SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})' in websocket_source
     assert '_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})' in websocket_source

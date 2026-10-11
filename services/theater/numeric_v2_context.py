@@ -705,7 +705,8 @@ def premature_target_scene_facts(
         return ()
 
     # 事实投影只证明已经发生过入幕；已有入幕记录时，当前检查不再把重返开场当作提前。
-    scene_facts = project_scene_facts(session)
+    state_facts = (getattr(session, "story_state", None) or {}).get("facts", {})
+    scene_facts = project_scene_facts(session, max_facts=max(24, len(state_facts)))
     target_entry_prefix = f"event:scene.entered:{target_id}:"
     if any(str(row.get("key") or "").startswith(target_entry_prefix)
            for row in scene_facts.get("facts", ())):

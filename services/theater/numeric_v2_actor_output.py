@@ -152,6 +152,8 @@ def _parse_transition_performance(
         normalized_action = action.strip()
         if normalized_action.startswith("(") and normalized_action.endswith(")"):
             normalized_action = "（" + normalized_action[1:-1] + "）"
+        elif normalized_action and not (normalized_action.startswith("（") and normalized_action.endswith("）")):
+            normalized_action = "（" + normalized_action + "）"
         value = normalized_action + dialogue.strip()
     return _parse_mixed_performance(
         value,
@@ -349,8 +351,11 @@ def _parse_output(
         alternatives = payload.get("alternative_inputs")
         if not isinstance(alternatives, list) or len(alternatives) not in {1, 2}:
             raise NumericV2ActorOutputError("numeric_v2_actor_suggestions_invalid")
+        acceptance = payload.get("accept_input")
+        if not isinstance(acceptance, str) or not _parse_actor_suggestions([acceptance]):
+            raise NumericV2ActorOutputError("numeric_v2_actor_suggestions_invalid")
         suggestions = _parse_actor_suggestions(
-            [payload.get("accept_input"), *alternatives],
+            [acceptance, *alternatives],
             diagnostics=suggestion_diagnostics,
         )
         return {"suggested_inputs": suggestions}

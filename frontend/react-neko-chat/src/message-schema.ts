@@ -207,6 +207,11 @@ const turnIdSchema = z.preprocess((value) => {
   return value;
 }, z.string().min(1).optional());
 
+export const messageReactionSchema = z.object({
+  emoji: z.enum(['😊', '😄', '😃', '🙂', '😌', '🤔', '🧐', '💭', '❓', '👍', '✅', '🙌', '💪', '🎉', '🙏', '🤝', '😮', '👀', '⚠️', '💡', '😔', '😢', '😅', '🙇', '🥳', '✨', '🌟', '💻', '🤖', '📚', '🔧', '❤️', '⭐', '🔥', '🚀', '📌', '😂', '🤗', '🥰', '🥺', '💧', '😲', '❗', '😤', '😠', '💢', '😾']),
+  author: z.string().trim().min(1),
+});
+
 export const chatMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['user', 'assistant', 'system', 'tool']),
@@ -218,6 +223,7 @@ export const chatMessageSchema = z.object({
   avatarUrl: z.string().optional(),
   blocks: z.array(messageBlockSchema),
   actions: z.array(messageActionSchema).optional(),
+  reaction: messageReactionSchema.optional(),
   status: z.enum(['sending', 'sent', 'failed', 'streaming']).optional(),
   sortKey: z.number().finite().optional(),
 });
@@ -388,6 +394,7 @@ export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
+export type MessageReaction = z.infer<typeof messageReactionSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;
 export type ChatWindowSchemaProps = z.infer<typeof chatWindowPropsSchema>;

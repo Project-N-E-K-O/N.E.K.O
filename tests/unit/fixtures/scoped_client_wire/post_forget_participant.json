@@ -1,0 +1,19 @@
+{
+  "call": {
+    "method": "post_forget",
+    "lanlan": "小八",
+    "kwargs": {
+      "subject": {
+        "subject_kind": "participant",
+        "subject_id": "neko_visit:5f2c1b7e-3a4d-4e8f-9b10-2c3d4e5f6a7b"
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:48912/internal/memory/%E5%B0%8F%E5%85%AB/scoped_forget",
+    "body": "{\"subject\":{\"subject_kind\":\"participant\",\"subject_id\":\"neko_visit:5f2c1b7e-3a4d-4e8f-9b10-2c3d4e5f6a7b\"}}"
+  },
+  "model": "ScopedForgetRequest",
+  "qq_reference": "b0b283e34:plugin/plugins/qq_auto_reply/memory_bridge.py::QQMemoryBridge.post_scoped_forget"
+}

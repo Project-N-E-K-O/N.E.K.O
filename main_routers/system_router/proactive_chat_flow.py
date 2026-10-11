@@ -124,11 +124,14 @@ async def _push_mini_game_invite_options(mgr: Any, payload: dict) -> None:
     await websocket.send_json(payload)
 
 
-def _game_route_active_for(lanlan_name: str) -> bool:
-    """Resolve the game-route collaborator lazily to avoid router cycles."""
-    from main_routers.game_router import is_game_route_active
+def _external_route_active_for(lanlan_name: str) -> bool:
+    """Proactive chat stays out while any external route owns the character."""
+    # Imported lazily to avoid router cycles; importing game_router is what
+    # registers the ``game`` kind in the external-route registry.
+    from main_routers import game_router  # noqa: F401
+    from utils.external_route_registry import is_external_route_active
 
-    return bool(is_game_route_active(lanlan_name))
+    return bool(is_external_route_active(lanlan_name))
 
 
 def _adapt_result(result) -> JSONResponse:
@@ -188,7 +191,7 @@ async def proactive_chat(request: Request):
             config_manager=config_manager,
             session_manager=session_manager,
             character_data=character_data,
-            game_route_active_for=_game_route_active_for,
+            game_route_active_for=_external_route_active_for,
             break_config_manager_provider=get_config_manager,
             run_mini_game_invite_short_circuit=(_run_mini_game_invite_short_circuit),
             push_mini_game_invite_options=_push_mini_game_invite_options,

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 if TYPE_CHECKING:
-    from .lifecycle import VoiceTurnToken
+    from main_logic.voice_turn.contracts import VoiceTurnToken
 
 
 class AudioRingBuffer:

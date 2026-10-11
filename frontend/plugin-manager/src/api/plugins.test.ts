@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const postMock = vi.fn()
 const getMock = vi.fn()
 const delMock = vi.fn()
+const putMock = vi.fn()
 
 vi.mock('@/api', () => ({
   get: getMock,
   post: postMock,
   del: delMock,
+  put: putMock,
 }))
 
 describe('plugin deletion', () => {
@@ -43,6 +45,17 @@ describe('plugin hosted UI API', () => {
   beforeEach(() => {
     postMock.mockReset()
     getMock.mockReset()
+    putMock.mockReset()
+  })
+
+  it('writes only the auto-start preference through a dedicated PUT', async () => {
+    putMock.mockResolvedValue({ success: true, plugin_id: 'demo plugin', auto_start: false })
+    const { setPluginAutoStart } = await import('./plugins')
+
+    await setPluginAutoStart('demo plugin', false)
+
+    expect(putMock).toHaveBeenCalledWith('/plugin/demo%20plugin/auto-start', { auto_start: false })
+    expect(postMock).not.toHaveBeenCalled()
   })
 
   it('merges locale with existing plugin list parameters', async () => {

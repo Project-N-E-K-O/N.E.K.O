@@ -1,0 +1,30 @@
+{
+  "call": {
+    "method": "post_history",
+    "lanlan": "Lanlan",
+    "kwargs": {
+      "subject": {
+        "subject_kind": "participant",
+        "subject_id": "neko_visit:5f2c1b7e-3a4d-4e8f-9b10-2c3d4e5f6a7b"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": "I collect vintage teapots."
+        }
+      ],
+      "speaker_label": "Mika",
+      "speaker_tier": "none",
+      "speaker_id": "neko_visit:5f2c1b7e-3a4d-4e8f-9b10-2c3d4e5f6a7b",
+      "display_name": "Mika",
+      "speaker_channel": "neko_visit"
+    }
+  },
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:48912/internal/memory/Lanlan/scoped_history",
+    "body": "{\"input_history\":\"[{\\\"role\\\": \\\"user\\\", \\\"content\\\": \\\"I collect vintage teapots.\\\"}]\",\"subject\":{\"subject_kind\":\"participant\",\"subject_id\":\"neko_visit:5f2c1b7e-3a4d-4e8f-9b10-2c3d4e5f6a7b\"},\"speaker_label\":\"Mika\",\"speaker_tier\":\"none\",\"speaker_channel\":\"neko_visit\",\"speaker_id\":\"neko_visit:5f2c1b7e-3a4d-4e8f-9b10-2c3d4e5f6a7b\",\"display_name\":\"Mika\"}"
+  },
+  "model": "ScopedHistoryRequest",
+  "qq_reference": "b0b283e34:plugin/plugins/qq_auto_reply/memory_bridge.py::QQMemoryBridge.post_scoped_memory_history"
+}

@@ -102,12 +102,6 @@ def _detect_fact_extraction_prompt_language(
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
 _ARCHIVE_COOLDOWN_HOURS = 24   # 两次归档尝试之间的最小间隔
 
-# Sentinel：让 _allm_call_with_retries 区分"调用方没指定 extra_body"（默认走
-# create_chat_llm 自动解析）和"调用方显式传 None"（关闭 extra_body 自动解析，
-# 保留 thinking）。Phase D：Stage-2 signal detection 显式传 None 开 thinking。
-_DEFAULT_EXTRA_BODY = object()
-
-
 def safe_importance(f: dict, default: int = 5) -> int:
     """Defensively coerce ``f['importance']`` to int.
 
@@ -579,6 +573,52 @@ class FactStore:
 
     async def aload_facts_full(self, name: str) -> list[dict]:
         return await asyncio.to_thread(self.load_facts_full, name)
+
+    def _assert_active_facts_readable(self, name: str) -> int:
+        """Raise ``RuntimeError`` when ``facts.json`` exists but is not a readable JSON list.
+
+        Keyed scoped writes only: the lenient loader caches an unreadable
+        active pool as empty, and saving on top of that would erase it.
+        Returns the number of rows on disk (0 when the file is absent).
+        """
+        path = self._facts_path(name)
+        if not os.path.exists(path):
+            return 0
+        from utils.file_utils import read_json_tolerating_replace
+
+        try:
+            # 扛过归档 / 去重写入方 os.replace 的 Windows 共享冲突，别把替换窗口当成读不出
+            data = read_json_tolerating_replace(path)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+            raise RuntimeError(f"facts of {name!r} unreadable: {e}") from e
+        if not isinstance(data, list):
+            raise RuntimeError(f"facts of {name!r} is not a list")
+        return len(data)
+
+    def _read_archived_effect_keys(self, name: str) -> set[str]:
+        """Effect keys stamped on archived rows (keyed scoped writes only).
+
+        Strict: an absent archive is an empty set, but an unreadable or
+        malformed one raises ``RuntimeError`` instead of reading as "no keys".
+        The effect key is what keeps a keyed retry from writing a fact twice;
+        guessing "absent" could duplicate a row that was archived meanwhile,
+        so the keyed apply fails and is retried with the same key.
+        """
+        archive_path = self._facts_archive_path(name)
+        if not os.path.exists(archive_path):
+            return set()
+        from utils.file_utils import read_json_tolerating_replace
+
+        try:
+            archived = read_json_tolerating_replace(archive_path)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+            raise RuntimeError(f"facts archive of {name!r} unreadable: {e}") from e
+        if not isinstance(archived, list):
+            raise RuntimeError(f"facts archive of {name!r} is not a list")
+        return {
+            row['effect_key'] for row in archived
+            if isinstance(row, dict) and isinstance(row.get('effect_key'), str)
+        }
 
     @classmethod
     def _migrate_v1_entity_values(cls, facts: list[dict]) -> bool:
@@ -2701,7 +2741,7 @@ class FactStore:
         self, prompt: str, lanlan_name: str, tier: str, call_type: str,
         max_retries: int = 3,
         timeout: float = 60,
-        extra_body=_DEFAULT_EXTRA_BODY,
+        thinking: bool = False,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
@@ -2718,37 +2758,42 @@ class FactStore:
         max_retries=0 avoids double-layer retries (the business layer already
         controls retries via its max_retries parameter).
 
-        extra_body: the default _DEFAULT_EXTRA_BODY lets create_chat_llm resolve
-        it per model (for most providers this disables thinking); explicitly
-        passing None means "send no extra_body" → the model's default behavior
-        (thinking models enter thinking mode).
-        Phase D: Stage-2 signal detection explicitly passes None to enable thinking."""
+        thinking: False lets create_chat_llm resolve extra_body per model (for
+        most providers this disables thinking) under the shared 4096 guard.
+        True keeps thinking on through ``memory.thinking_llm`` — the larger
+        ``MEMORY_THINKING_OUTPUT_MAX_TOKENS`` cap with a one-shot fallback, and
+        a log line when the output is exhausted (#3319: the 4096 guard was hit
+        with an empty answer and only surfaced as a JSON parse error).
+        Phase D: Stage-2 signal detection passes True."""
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm_async
+        from memory.thinking_llm import ainvoke_thinking, describe_output
 
         retries = 0
         while retries < max_retries:
+            resp = None
             try:
                 set_call_type(call_type)
                 api_config = await self._config_manager.aget_model_api_config(tier)
-                from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-                _llm_kwargs = dict(
-                    timeout=timeout,
-                    max_retries=0,
-                    max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
-                    provider_type=api_config.get('provider_type'),
-                )
-                if extra_body is not _DEFAULT_EXTRA_BODY:
-                    _llm_kwargs['extra_body'] = extra_body
-                llm = await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout live in _llm_kwargs above (splat invisible to the lint); guard is generous for variable-length JSON.
-                    api_config['model'],
-                    api_config['base_url'], api_config['api_key'],
-                    **_llm_kwargs,
-                )
-                try:
-                    resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # extract-facts prompt assembled from token-capped recent history components.
-                finally:
-                    await llm.aclose()
+                if thinking:
+                    resp, _ = await ainvoke_thinking(
+                        api_config, prompt, timeout=timeout,
+                        call_label=f"{lanlan_name} {call_type}",
+                    )
+                else:
+                    from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+                    llm = await create_chat_llm_async(
+                        api_config['model'],
+                        api_config['base_url'], api_config['api_key'],
+                        timeout=timeout,
+                        max_retries=0,
+                        max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous for variable-length JSON.
+                        provider_type=api_config.get('provider_type'),
+                    )
+                    try:
+                        resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # extract-facts prompt assembled from token-capped recent history components.
+                    finally:
+                        await llm.aclose()
                 raw = resp.content.strip()
                 raw = self._strip_code_fence(raw)
                 return robust_json_loads(raw)
@@ -2765,7 +2810,7 @@ class FactStore:
                 retries += 1
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} JSON 解析失败 "
-                    f"(重试 {retries}/{max_retries}): {e}"
+                    f"(重试 {retries}/{max_retries}): {e} ({describe_output(resp)})"
                 )
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
@@ -3377,6 +3422,7 @@ class FactStore:
         speaker_provenance: dict | None = None,
         expected_subject_generation: int | None = None,
         reconciled_facts: list[dict] | None = None,
+        effect_keys: list[str | None] | None = None,
     ) -> list[dict]:
         # 近重复配对在锁内只收集，出锁之后才投递：投递要拿
         # FactDedupResolver 的 per-character 锁，而 aresolve 是反着来的——
@@ -3415,6 +3461,10 @@ class FactStore:
                 speaker_provenance=speaker_provenance,
                 reconciled_facts=reconciled_facts,
                 near_dup_pairs_out=near_dup_pairs,
+                **(
+                    {"effect_keys": effect_keys}
+                    if effect_keys is not None else {}
+                ),
             )
         if near_dup_pairs:
             await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
@@ -3454,6 +3504,7 @@ class FactStore:
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
         near_dup_pairs_out: list | None = None,
+        effect_keys: list[str | None] | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -3484,6 +3535,16 @@ class FactStore:
         ``reconciled_facts`` receives snapshots of existing rows whose
         provenance this call reconciled, so callers can distinguish their own
         write from a concurrent provenance change.
+
+        ``effect_keys`` (keyed scoped_history only) is aligned index-for-index
+        with ``extracted``. A non-empty entry is stamped onto the created row
+        as ``effect_key`` in the same save, and a candidate whose effect key
+        already exists on any active or archived row is skipped. That closes
+        the "row written, journal not yet updated" crash window independently
+        of content dedup. It is a separate argument rather than a field on the
+        extracted dict on purpose: extracted dicts are model output, and a
+        model must never be able to mint or collide an effect key. ``None``
+        (every legacy caller) leaves this method's behaviour unchanged.
         """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
@@ -3626,6 +3687,12 @@ class FactStore:
                 f"existing_speaker={existing_speaker_id or '-'} "
                 f"incoming_speaker={request_provenance['speaker_id']}"
             )
+        if effect_keys is not None:
+            # 带键写入：先严格核对磁盘，再从磁盘出发。宽松加载器曾把读不出的文件缓存成
+            # 空列表；文件修好后缓存仍是空的，照它保存会把修好的事实整个覆盖掉
+            on_disk = await asyncio.to_thread(self._assert_active_facts_readable, lanlan_name)
+            if on_disk and not self._facts.get(lanlan_name):
+                self._facts.pop(lanlan_name, None)
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -3643,8 +3710,35 @@ class FactStore:
                 lanlan_name, existing_facts,
             )
 
-        for fact in extracted:
+        # 效果键集合（只有带幂等键的 scoped_history 才传 effect_keys）：活跃池
+        # + 归档里已出现过的 effect_key。不传时完全不读归档、不建集合。
+        existing_effect_keys: set[str] | None = None
+        # 重放命中的效果对应的现有行：一并作为这次的结果返回，否则「事实已写、日志未记」
+        # 之后的重试会报 created: 0、调用方拿不到这些事实的身份
+        replayed_effect_rows: list[dict] = []
+        active_effect_rows: dict[str, dict] = {}
+        if effect_keys is not None:
+            active_effect_rows = {
+                f['effect_key']: f for f in existing_facts
+                if isinstance(f, dict) and isinstance(f.get('effect_key'), str)
+            }
+            existing_effect_keys = set(active_effect_rows)
+            existing_effect_keys |= await asyncio.to_thread(
+                self._read_archived_effect_keys, lanlan_name,
+            )
+
+        for fact_index, fact in enumerate(extracted):
             if not isinstance(fact, dict):
+                continue
+            effect_key = None
+            if existing_effect_keys is not None and fact_index < len(effect_keys):
+                candidate_effect_key = effect_keys[fact_index]
+                if isinstance(candidate_effect_key, str) and candidate_effect_key:
+                    effect_key = candidate_effect_key
+            if effect_key is not None and effect_key in existing_effect_keys:
+                # 这条效果上一次已经落盘（崩在「事实已写、日志未记」之间）。
+                if effect_key in active_effect_rows:
+                    replayed_effect_rows.append(dict(active_effect_rows[effect_key]))
                 continue
             text = fact.get('text', '').strip()
             if not text:
@@ -3966,6 +4060,9 @@ class FactStore:
 
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
+            if effect_key is not None:
+                fact_entry['effect_key'] = effect_key
+                existing_effect_keys.add(effect_key)
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
             facts_by_id[fact_entry['id']] = fact_entry
@@ -4051,7 +4148,7 @@ class FactStore:
                 }
                 reconciled_facts.extend(reconciled_by_identity.values())
 
-        return new_facts
+        return new_facts + replayed_effect_rows
 
     async def _aensure_fact_index_backfilled(
         self, lanlan_name: str, active_facts: list[dict],
@@ -4502,12 +4599,14 @@ class FactStore:
         # 现有 [memory/facts.py:670-708](memory/facts.py:670) 防御代码本身就是
         # 在补 LLM 幻觉，思考能减少 target_id 错位。完全后台 (signal extraction
         # loop)，无人等。timeout 拉到 90s 给 thinking 模型留余量。
+        # 思考量由提示词开头的推理限制压住（#3319：不加限制时 qwen3.8-flash
+        # 思考 8k~10k token、耗时超过 90s），额度走 MEMORY_THINKING_OUTPUT_MAX_TOKENS。
         parsed = await self._allm_call_with_retries(
             prompt, lanlan_name,
             tier=EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
             call_type="memory_signal_detection",
             timeout=90,
-            extra_body=None,
+            thinking=True,
         )
         if parsed is None:
             return None
@@ -5782,12 +5881,15 @@ class FactStore:
             set_call_type("memory_recheck_fact")
             api_config = await self._config_manager.aget_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+            # 不开思考（走工厂默认的关思考 extra_body）：同一个 event_when 字段在
+            # Stage-1 抽取里本来就是关思考标的，那边输入还更难（整段对话、多条
+            # fact 同时标）；这里只给单条老 fact 补标，开思考只多一条
+            # 「思考过长→截断/超时→耗尽重试后永远停在 v1」的失败路径。
             llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
-                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
-                extra_body=None,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; the answer is one small event_when JSON
                 provider_type=api_config.get('provider_type'),
             )
             try:

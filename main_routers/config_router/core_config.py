@@ -23,6 +23,7 @@ from .connectivity import _auto_resolve_provider_urls_for_save
 
 import asyncio
 import json
+from copy import deepcopy
 from fastapi import Request
 from ..shared_state import get_session_manager, get_initialize_character_data
 from utils.file_utils import read_json_async
@@ -46,10 +47,18 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
+    'assistApiKeyRequesty',
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
     f'{model_type}ModelApiKey' for model_type in CORE_CONFIG_MODEL_TYPES
+)
+
+CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS = (
+    'doubaoVoiceManagementAccessKey', 'doubaoVoiceManagementSecretKey',
+)
+CORE_CONFIG_VOICE_MANAGEMENT_CONTEXT_FIELDS = (
+    'doubaoVoiceManagementAppId', 'doubaoVoiceManagementProjectName',
 )
 
 CORE_CONFIG_PROVIDER_API_KEY_FIELDS = frozenset(
@@ -63,6 +72,7 @@ CORE_CONFIG_SECRET_FIELDS = (
     *CORE_CONFIG_ASSIST_API_KEY_FIELDS,
     'mcpToken',
     *CORE_CONFIG_MODEL_API_KEY_FIELDS,
+    *CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS,
 )
 
 
@@ -263,6 +273,7 @@ async def get_core_config_api():
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "assistApiKeyOrcarouter": core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter'),
+            "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -281,6 +292,12 @@ async def get_core_config_api():
             "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
             "success": True
         }
+        for field in CORE_CONFIG_VOICE_MANAGEMENT_CONTEXT_FIELDS:
+            response[field] = core_cfg.get(field, '')
+        for field in CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS:
+            value = core_cfg.get(field, '')
+            response[field] = redact_core_config_secret(value)
+            response[f'{field}_display'] = mask_core_config_secret_for_display(value)
         response['api_key'] = redact_core_config_secret(
             response['api_key'],
             preserve_free_access=True,
@@ -325,9 +342,21 @@ async def get_core_config_api():
         }
 
 
+# /core_api 保存之间互斥（请求级，与 core_config.json 的文件锁是两回事）：
+# 每次保存基于快照算出派生字段（resolvedProviderUrls、Key Book 槽位迁移等），
+# 再把差异合并进最新文件。两次 /core_api 交错时，按字段合并会拼出「A 的 provider
+# + B 基于旧 provider 算的 resolvedProviderUrls」这种谁都没提交过的组合。串行后，
+# 后一次保存的快照一定已经包含前一次的结果。记忆开关等其它写入方只碰互不相干的键，
+# 不受这把锁影响，照常在 URL 解析期间落盘。
+# 只罩「读快照 → 写盘」：写完立即释放，之后的通知前端 / 结束 session / 重载配置
+# 可能卡在慢 WebSocket 上，不能让它拖住下一次保存。
+_core_api_save_lock = asyncio.Lock()
+
+
 @router.post("/core_api")
 async def update_core_config(request: Request):
-    """Update the core config (API keys)."""
+    """Update the core config (API keys); the snapshot-to-write section runs one save at a time."""
+    save_lock_held = False
     try:
         data = await request.json()
         if not data:
@@ -339,15 +368,31 @@ async def update_core_config(request: Request):
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
         
+        # 请求体在锁外读完：慢速上传的请求体不能拖住别的保存。从这里起到写盘为止
+        # 都依赖配置快照，必须在锁内。
+        await _core_api_save_lock.acquire()
+        save_lock_held = True
+
         # 构建配置对象：先加载旧配置，再按本次提交覆盖。
         # 这与前端 API 管理簿的行为保持一致，避免某个字段本次未提交时被意外清空。
+        # 只有「文件不存在」才从空配置开始；文件存在却读不出/解析失败时直接拒绝保存——
+        # 以前这里吞成 {}，结果是用本次提交的寥寥几个字段把整份损坏文件覆盖掉。
+        # 这份快照只用来做决策和算差异，真正落盘见下方 aupdate_json_config。
+        from utils.config_manager.json_update import (
+            json_values_equal,
+            load_json_config_snapshot,
+        )
         try:
             existing_core_cfg = await asyncio.to_thread(
-                config_manager.load_json_config, 'core_config.json', {}
+                load_json_config_snapshot, config_manager, 'core_config.json'
             )
-        except Exception:
-            existing_core_cfg = {}
-        core_cfg = dict(existing_core_cfg) if isinstance(existing_core_cfg, dict) else {}
+        except Exception as exc:
+            logger.warning(f"读取 core_config.json 失败，拒绝保存以免覆盖原文件: {exc}")
+            return {
+                "success": False,
+                "error": "core_config.json 读取失败（文件可能已损坏），为避免覆盖现有配置，本次未保存",
+            }
+        core_cfg = deepcopy(existing_core_cfg)
 
         def _incoming_provider(field, error_message):
             if field not in data:
@@ -524,8 +569,19 @@ async def update_core_config(request: Request):
                 if normalized_key and normalized_value:
                     sanitized_resolved_urls[normalized_key] = normalized_value
             core_cfg['resolvedProviderUrls'] = sanitized_resolved_urls
-        for field in (*CORE_CONFIG_ASSIST_API_KEY_FIELDS, 'mcpToken'):
+        for field in (
+            *CORE_CONFIG_ASSIST_API_KEY_FIELDS, 'mcpToken',
+            *CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS,
+        ):
+            if field in CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS and field in data:
+                if not isinstance(data[field], str) or len(data[field]) > 2048:
+                    return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
             apply_core_config_secret_update(core_cfg, data, field)
+        for field in CORE_CONFIG_VOICE_MANAGEMENT_CONTEXT_FIELDS:
+            if field in data:
+                if not isinstance(data[field], str) or len(data[field]) > 200:
+                    return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
+                core_cfg[field] = data[field].strip()
         if 'openclawUrl' in data:
             # 前端表单回填的是文件里的原始值。若启动期迁移曾写盘失败（Windows 上
             # os.replace 可能被杀软占用），这里收到的就还是旧的 8089，原样落盘等于把
@@ -658,12 +714,30 @@ async def update_core_config(request: Request):
         if not isinstance(checked_resolved_urls, dict):
             checked_resolved_urls = {}
         save_connectivity = await _auto_resolve_provider_urls_for_save(core_cfg, checked_resolved_urls)
-        
-        # save_json_config 内部已调用 assert_cloudsave_writable + ensure_config_directory
-        # + atomic_write_json，不需要再显式栅栏 / 手工拼 core_config_path
-        await asyncio.to_thread(
-            config_manager.save_json_config, 'core_config.json', core_cfg
+
+        # 上面所有决策（含可能联网的 URL 解析）都基于开头那份快照，耗时可能很长；
+        # 这期间别的写入方（记忆开关等）可能已经落盘。所以不能把整份快照写回，
+        # 只把「本次相对快照改了 / 删了哪些顶层字段」在锁内应用到重新读到的文件上，
+        # 本次没碰的字段一律保留磁盘上的最新值。
+        changed_fields = {
+            key: value for key, value in core_cfg.items()
+            if key not in existing_core_cfg
+            or not json_values_equal(existing_core_cfg[key], value)
+        }
+        removed_fields = [key for key in existing_core_cfg if key not in core_cfg]
+
+        def _apply_core_config_changes(fresh_cfg):
+            # 没有字段变化时 update_json_config 也会过写栅栏，维护模式下照旧拒绝。
+            for key in removed_fields:
+                fresh_cfg.pop(key, None)
+            fresh_cfg.update(deepcopy(changed_fields))
+            return deepcopy(fresh_cfg)
+
+        core_cfg = await config_manager.aupdate_json_config(
+            'core_config.json', _apply_core_config_changes
         )
+        _core_api_save_lock.release()
+        save_lock_held = False
 
         await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)
 
@@ -759,6 +833,9 @@ async def update_core_config(request: Request):
         raise
     except Exception as e:
         return {"success": False, "error": str(e)}
+    finally:
+        if save_lock_held:
+            _core_api_save_lock.release()
 
 
 @router.get("/api_providers")

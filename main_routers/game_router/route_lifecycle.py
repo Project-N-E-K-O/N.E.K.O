@@ -58,6 +58,7 @@ from .memory_policy import (
 import asyncio
 import re
 import time
+import uuid
 from typing import Any
 from ..shared_state import get_session_manager
 from utils.game_route_state import _game_route_states, _route_state_key
@@ -67,18 +68,31 @@ _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _GAME_WINDOW_STATE_CHANGE_PUSH_TIMEOUT_SECONDS = 2.0
 # Route-state slot for the inbox behind SessionManager._takeover_callback_sink.
 _TAKEOVER_CALLBACK_INBOX_KEY = "_takeover_callback_inbox"
+# Route-state slot for the SessionManager.acquire_takeover token; every exit
+# path releases exactly this token (a stale token releases nothing).
+_TAKEOVER_TOKEN_KEY = "_takeover_token"
 
 
-def _close_takeover_callback_inbox(state: dict, mgr=None) -> None:
+def _clear_route_activity_flags(state: dict) -> None:
+    """Flip every route-activity flag off (exit flow and unstarted rollback)."""
+    state["game_route_active"] = False
+    state["game_external_voice_route_active"] = False
+    state["game_external_text_route_active"] = False
+    state["heartbeat_enabled"] = False
+
+
+def _close_takeover_callback_inbox(state: dict, mgr=None, *, handoff: bool = True) -> None:
     """Close this route's takeover inbox; recent cues return to ordinary delivery.
 
     Call after the takeover flags are cleared, so resubmitted cues are queued
-    for normal proactive delivery instead of the closed sink.
+    for normal proactive delivery instead of the closed sink. With
+    ``handoff=False`` (another owner holds the takeover by now) the cues are
+    declined instead: resubmitting them would land in that owner's sink.
     """
     close = getattr(state.get(_TAKEOVER_CALLBACK_INBOX_KEY), "close", None)
     if not callable(close):
         return
-    submit = getattr(mgr, "submit_proactive_callback", None)
+    submit = getattr(mgr, "submit_proactive_callback", None) if handoff else None
     for callback in close() or ():
         if callable(submit):
             try:
@@ -89,6 +103,30 @@ def _close_takeover_callback_inbox(state: dict, mgr=None) -> None:
                 logger.warning("takeover inbox handoff failed: %s", type(exc).__name__)
         from main_logic.proactive_delivery import resolve_callback_delivery_ack
         resolve_callback_delivery_ack(callback, False)
+
+
+def _release_route_takeover(state: dict, mgr=None) -> bool:
+    """Release this route's takeover and settle its parked callbacks.
+
+    The one release step shared by the exit flow and the stale-state sweep.
+    Only the route's own token releases the takeover, so one another owner
+    (or a newer route) holds by now stays in place. Parked cues are handed
+    back only when nobody holds the takeover afterwards; otherwise they are
+    declined, since they answer the route that ended, not the one that took
+    over. Returns that same "nobody else holds it" verdict (``handoff``):
+    when it is False the newer owner's side effects (e.g. its voice lease)
+    must be left alone too.
+    """
+    takeover_token = state.get(_TAKEOVER_TOKEN_KEY)
+    released = mgr.release_takeover(takeover_token) if mgr is not None else False
+    # Drop the token only after the release call returned (without a manager
+    # there is nothing to release it on): if the release raised, the token
+    # stays on the state so a later sweep can still release it.
+    state.pop(_TAKEOVER_TOKEN_KEY, None)
+    takeover_owner = getattr(mgr, "takeover_owner", None)
+    handoff = released or not callable(takeover_owner) or takeover_owner() is None
+    _close_takeover_callback_inbox(state, mgr, handoff=handoff)
+    return handoff
 
 
 async def _push_game_window_state_change(
@@ -261,6 +299,9 @@ def _build_route_state(
         "game_type": game_type,
         "session_id": session_id,
         "lanlan_name": lanlan_name,
+        # Unique per activation: a restart with the same game type and session
+        # id (e.g. the default session) is still a different route instance.
+        "_route_activation_id": uuid.uuid4().hex,
         "before_game_external_mode": before_mode,
         "before_game_external_active": before_active,
         "game_route_active": True,

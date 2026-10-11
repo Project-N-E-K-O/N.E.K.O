@@ -1,0 +1,73 @@
+"""Visit route state: a pending placeholder is active, locks are weak per character."""
+from __future__ import annotations
+
+import gc
+
+import pytest
+
+from utils import visit_route_state as vrs
+
+
+@pytest.fixture(autouse=True)
+def _clean():
+    vrs._reset_for_tests()
+    yield
+    vrs._reset_for_tests()
+
+
+def test_pending_placeholder_counts_as_active():
+    assert not vrs.is_visit_route_active("A")
+    state = vrs.activate_visit_route("A")
+    assert state["phase"] == "pending"
+    assert vrs.is_visit_route_active("A")
+    assert vrs.get_visit_route_state("A") is state
+    assert not vrs.is_visit_route_active("B")
+
+
+def test_finalize_drops_slot_and_flips_stale_reference():
+    state = vrs.activate_visit_route("A", phase="active")
+    removed = vrs.finalize_visit_route_state("A")
+    assert removed is state
+    assert state["visit_route_active"] is False
+    assert vrs.get_visit_route_state("A") is None
+    assert vrs.finalize_visit_route_state("A") is None
+
+
+def test_inactive_slot_is_not_reported():
+    state = vrs.activate_visit_route("A")
+    state["visit_route_active"] = False
+    assert vrs.get_visit_route_state("A") is None
+    assert not vrs.is_visit_route_active("A")
+
+
+def test_lock_is_shared_while_referenced_and_released_when_idle():
+    first = vrs._get_visit_route_lock("A")
+    assert vrs._get_visit_route_lock("A") is first
+    assert vrs._get_visit_route_lock("B") is not first
+    del first
+    gc.collect()
+    assert "A" not in vrs._visit_route_locks
+    # A fresh lock is created on demand after the old one was collected.
+    again = vrs._get_visit_route_lock("A")
+    assert again is vrs._get_visit_route_lock("A")
+
+
+def test_a_replaced_slot_is_marked_inactive():
+    # 与 finalize 一致：还拿着旧 dict 的任务要看到状态翻转
+    from utils.visit_route_state import activate_visit_route, finalize_visit_route_state, get_visit_route_state
+
+    old = activate_visit_route("ReplaceNeko", phase="active")
+    new = activate_visit_route("ReplaceNeko")
+    assert old["visit_route_active"] is False
+    assert get_visit_route_state("ReplaceNeko") is new and new["visit_route_active"] is True
+    finalize_visit_route_state("ReplaceNeko")
+
+
+def test_slot_records_the_owning_visit_id():
+    vrs._reset_for_tests()
+    try:
+        assert vrs.activate_visit_route("A")["visit_id"] is None
+        assert vrs.activate_visit_route("A", visit_id="AbCdEfGhIjKlMnOpQrStUv")["visit_id"] == "AbCdEfGhIjKlMnOpQrStUv"
+        assert vrs.get_visit_route_state("A")["visit_id"] == "AbCdEfGhIjKlMnOpQrStUv"
+    finally:
+        vrs._reset_for_tests()

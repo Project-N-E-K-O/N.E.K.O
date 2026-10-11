@@ -292,3 +292,38 @@ def test_relative_imports_are_skipped(script_module) -> None:
     assert "config.sub" not in modules
     assert "parent_pkg" not in modules
     assert "sibling" not in modules
+
+
+@pytest.mark.unit
+def test_public_knowledge_boundaries_are_forbidden_edges(script_module) -> None:
+    """Main and the plugin server reach public knowledge over HTTP only, and
+    the knowledge package never depends on memory. Layers alone allow all of
+    these edges (knowledge sits in L2), so ``FORBIDDEN_EDGES`` pins them."""
+    root = script_module.REPO_ROOT
+
+    def edge(rel: str, dst: str):
+        src = rel.split("/", 1)[0]
+        return (root / rel, 1, 1, src, dst, f"import {dst}")
+
+    edges = [
+        edge("main_logic/public_knowledge.py", "knowledge"),
+        edge("main_routers/public_knowledge_router.py", "knowledge"),
+        edge("app/main_server/web_app.py", "knowledge"),
+        edge("plugin/server/routes/knowledge_bridge.py", "knowledge"),
+        edge("knowledge/service.py", "memory"),
+        # Allowed: the Memory Server hosts the subsystem.
+        edge("app/memory_server/knowledge_routes.py", "knowledge"),
+        edge("app/memory_server/knowledge_routes.py", "memory"),
+        edge("knowledge/service.py", "utils"),
+    ]
+    flagged = {
+        found[0][0].relative_to(root).as_posix()
+        for found in script_module.find_forbidden_edges(edges)
+    }
+    assert flagged == {
+        "main_logic/public_knowledge.py",
+        "main_routers/public_knowledge_router.py",
+        "app/main_server/web_app.py",
+        "plugin/server/routes/knowledge_bridge.py",
+        "knowledge/service.py",
+    }

@@ -29,6 +29,7 @@ from typing import Any, TypeAlias
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from ..connection_cleanup import connection_registry
 from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection
@@ -535,10 +536,9 @@ async def _step_sender(
 
                 if request.kind == "clear":
                     state.intentional_close.set()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+                    await connection_registry(request_queue).register(
+                        ws, worker_identity="step"
+                    ).retire()
                     return "clear", request
 
                 if request.kind == "shutdown":
@@ -553,10 +553,9 @@ async def _step_sender(
                                 utterance_id=request.utterance_id,
                             )
                         )
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+                    await connection_registry(request_queue).register(
+                        ws, worker_identity="step"
+                    ).retire()
                     return "shutdown", request
 
                 await _emit_step_error_once(
@@ -823,6 +822,8 @@ async def step_asr_worker(
                 clock=clock,
             )
             active_state = state
+            retirement = None
+            registry = connection_registry(request_queue)
             ws: Any | None = None
             sender_task: asyncio.Task[tuple[str, _AsrWorkerRequest | None]] | None = (
                 None
@@ -836,10 +837,12 @@ async def step_asr_worker(
                     additional_headers={"Authorization": f"Bearer {api_key}"},
                     close_timeout=0.5,
                 )
+                retirement = registry.register(ws, worker_identity="step")
                 receiver_task = asyncio.create_task(
                     _step_receiver(ws, response_queue, config, state),
                     name="step-asr-receiver",
                 )
+                registry.register_tasks(receiver_task)
                 await ws.send(json.dumps(session_update))
                 sender_task = asyncio.create_task(
                     _step_sender(
@@ -851,6 +854,7 @@ async def step_asr_worker(
                     ),
                     name="step-asr-sender",
                 )
+                registry.register_tasks(sender_task, receiver_task)
                 done, pending = await asyncio.wait(
                     {sender_task, receiver_task},
                     return_when=asyncio.FIRST_COMPLETED,
@@ -878,23 +882,6 @@ async def step_asr_worker(
                         # connection. A concurrently finished sender keeps
                         # its own outcome (clear/shutdown/error) instead.
                         outcome = "reset"
-                for task in pending:
-                    if not task.done():
-                        task.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-                if (
-                    outcome == "reset"
-                    and sender_task is not None
-                    and sender_task.done()
-                    and not sender_task.cancelled()
-                    and sender_task.exception() is None
-                ):
-                    # The sender finished a request (shutdown/clear/error)
-                    # in the window between the reset decision and its
-                    # cancellation; that outcome must win or the worker
-                    # would reconnect after the session already closed.
-                    outcome, outcome_request = sender_task.result()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -914,23 +901,31 @@ async def step_asr_worker(
                 )
                 outcome = "error"
             finally:
+                if retirement is not None:
+                    state.intentional_close.set()
+                    retirement.start()
+                registry.register_tasks(sender_task, receiver_task)
                 for task in (sender_task, receiver_task):
                     if task is not None and not task.done():
                         task.cancel()
-                pending_tasks = [
-                    task
-                    for task in (sender_task, receiver_task)
-                    if task is not None and not task.done()
-                ]
-                if pending_tasks:
-                    await asyncio.gather(*pending_tasks, return_exceptions=True)
-                if ws is not None:
-                    state.intentional_close.set()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+                try:
+                    if retirement is not None:
+                        await retirement.retire()
+                finally:
+                    await registry.join_tasks()
 
+            if (
+                outcome == "reset"
+                and sender_task is not None
+                and sender_task.done()
+                and not sender_task.cancelled()
+                and sender_task.exception() is None
+            ):
+                # The sender finished a request (shutdown/clear/error)
+                # in the window between the reset decision and its
+                # cancellation; that outcome must win or the worker
+                # would reconnect after the session already closed.
+                outcome, outcome_request = sender_task.result()
             closed_sent = state.closed_sent.is_set()
             if outcome == "reset":
                 # Reconnect with a fresh item-id namespace. The route is

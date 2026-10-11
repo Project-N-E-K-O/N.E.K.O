@@ -15,6 +15,8 @@
 
 """Analyzer, lifecycle, and task endpoints for the agent server."""
 
+import math
+
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
     AGENT_PROACTIVE_ANALYZE_ENABLED,
@@ -315,6 +317,19 @@ def _forward_provider_frame(event: Dict[str, Any]) -> bool:
         return False
 
 
+def _resolve_conversation_ts(event: Dict[str, Any]) -> float:
+    """Prefer the producer's message time; fall back to the forward time."""
+    raw = (event or {}).get("ts")
+    if raw is None:
+        return time.time()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return time.time()
+    # Keep non-finite producer times out of consumer-side display sorting.
+    return value if math.isfinite(value) else time.time()
+
+
 def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
     """Copy one already-handled conversation message into the ``conversations`` store.
 
@@ -366,10 +381,12 @@ def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
         metadata["message_count"] = (
             int(message_count) if isinstance(message_count, (int, float)) else 0
         )
+        metadata["ts"] = _resolve_conversation_ts(event)
         record: Dict[str, Any] = {
             "kind": "conversation",
             "type": "conversation_turn",
             "source": str((event or {}).get("source") or "unknown"),
+            # The SDK cursor follows arrival time; producer time is display-only.
             "timestamp": time.time(),
             "content": content,
             "metadata": metadata,

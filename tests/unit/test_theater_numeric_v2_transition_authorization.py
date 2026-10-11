@@ -27,6 +27,40 @@ async def _invited(tmp_path, target="阅览室"):
     return runtime, await runtime.commit_turn(outcome, performance), accept
 
 
+@pytest.mark.asyncio
+async def test_authored_acceptance_survives_a_committed_followup(tmp_path):
+    runtime, current, accept = await _invited(tmp_path)
+    outcome = runtime.prepare_turn(current, TurnRequestV2('question', 1, '那里远吗？'), ())
+    outcome, performance = runtime.engine.finalize_transition_offer_state(outcome,
+        {'performance': '（指向走廊）就在旁边。', 'suggested_inputs': [accept]}, new_offer=False)
+    later = await runtime.commit_turn(outcome, performance)
+    assert later.session.revision == 2
+    assert wf._confirmed_authored_acceptance(runtime.engine, later,
+        TurnRequestV2('go', 2, accept, 'suggestion'))
+
+
+@pytest.mark.asyncio
+async def test_disabled_judgement_does_not_authorize_actor_invitation(tmp_path, monkeypatch):
+    runtime, invited, accept = await _invited(tmp_path)
+    current = await runtime.start_session(session_id='new-invitation', catgirl_binding=_binding(),
+                                          opening_performance=invited.session.opening_performance)
+    async def options():
+        return {'evaluator': False, 'review': False, 'dispute': False}
+    async def generate(self, **kwargs):
+        return {'performance': '（指向走廊）我们去那边吧。', 'suggested_inputs': ['好，带路吧。'], 'transition_offered': True}
+    monkeypatch.setattr(wf, 'aload_theater_module_options', options)
+    monkeypatch.setattr(wf.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(wf.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('invitation', current.session.revision, '接下来呢？'), ensure_current_binding=lambda _: _binding())
+    assert result.performance['suggested_inputs'] == []
+    assert not result.stored.session.transition_offered
+    assert 'program_invitation' not in result.stored.ledger_events[-1]
+    assert not wf._confirmed_authored_acceptance(runtime.engine, result.stored,
+        TurnRequestV2('accept', result.stored.session.revision, accept, 'suggestion'),
+        require_program_invitation=True)
+
+
 def _review(*, delivered=True, rejected=False):
     return ev._parse_transition_judge_output(json.dumps({
         "offer_present": False, "valid": False,

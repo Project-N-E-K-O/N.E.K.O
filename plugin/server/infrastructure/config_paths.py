@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from fastapi import HTTPException
+from plugin.server.infrastructure.error_mapping import http_exception
 
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
 from plugin.core.state import state
@@ -69,7 +69,7 @@ def get_plugin_config_path(plugin_id: str) -> Path:
     if snapshot is not None:
         return snapshot.manifest_path
     if not re.match(r"^[a-zA-Z0-9_-]+$", plugin_id):
-        raise HTTPException(
+        raise http_exception(
             status_code=400,
             detail=(
                 f"Invalid plugin_id: '{plugin_id}'. Only alphanumeric characters, "
@@ -87,7 +87,7 @@ def get_plugin_config_path(plugin_id: str) -> Path:
             resolved_path = config_file.resolve()
             root_resolved = root.resolve()
         except (OSError, RuntimeError, ValueError) as exc:
-            raise HTTPException(
+            raise http_exception(
                 status_code=400,
                 detail=f"Invalid plugin_id: '{plugin_id}'. {str(exc)}",
             ) from exc
@@ -110,7 +110,7 @@ def get_plugin_config_path(plugin_id: str) -> Path:
             )
             return config_file
 
-    raise HTTPException(
+    raise http_exception(
         status_code=404,
         detail=f"Plugin '{plugin_id}' configuration not found",
     )
@@ -126,13 +126,22 @@ def get_plugin_manifest_path(plugin_id: str) -> Path:
     return get_plugin_config_path(plugin_id)
 
 
+def _runtime_layout(
+    plugin_id: str,
+    manifest_path: Path | None,
+) -> PluginLayout:
+    if manifest_path is None:
+        manifest_path = get_plugin_manifest_path(plugin_id)
+    return resolve_plugin_layout(plugin_id, manifest_path.parent)
+
+
 def get_plugin_runtime_config_path(
     plugin_id: str,
     *,
     manifest_path: Path | None = None,
 ) -> Path:
-    installed_manifest = manifest_path or get_plugin_manifest_path(plugin_id)
-    return resolve_plugin_layout(plugin_id, installed_manifest.parent).config_path
+    """Return the runtime path using current installation and storage paths."""
+    return _runtime_layout(plugin_id, manifest_path).config_path
 
 
 def ensure_plugin_runtime_config(
@@ -140,8 +149,8 @@ def ensure_plugin_runtime_config(
     *,
     manifest_path: Path | None = None,
 ) -> Path:
-    installed_manifest = manifest_path or get_plugin_manifest_path(plugin_id)
-    layout = resolve_plugin_layout(plugin_id, installed_manifest.parent)
+    """Initialize runtime config using current installation and storage paths."""
+    layout = _runtime_layout(plugin_id, manifest_path)
     return ensure_plugin_layout_runtime_config(layout)
 
 
@@ -151,7 +160,7 @@ def ensure_plugin_layout_runtime_config(layout: PluginLayout) -> Path:
         if target.exists():
             if target.is_file():
                 return target
-            raise HTTPException(
+            raise http_exception(
                 status_code=500,
                 detail=f"Plugin '{layout.plugin_id}' runtime config path is not a file: {target}",
             )
@@ -167,10 +176,8 @@ def ensure_plugin_layout_runtime_config(layout: PluginLayout) -> Path:
                 payload=payload,
                 prefix=".plugin_config_init_",
             )
-        except HTTPException:
-            raise
         except OSError as exc:
-            raise HTTPException(
+            raise http_exception(
                 status_code=500,
                 detail=f"Failed to initialize runtime config for plugin '{layout.plugin_id}': {exc}",
             ) from exc

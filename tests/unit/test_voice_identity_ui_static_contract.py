@@ -174,6 +174,14 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert 'aria-labelledby="voice-identity-step-title"' in template
     assert 'id="voice-identity-step-title" tabindex="-1"' in template
     assert 'id="voice-identity-prompt"' in template
+    assert 'id="voice-identity-result"' in template
+    assert 'id="voice-identity-result-title"' in template
+    assert 'id="voice-identity-match-percent"' in template
+    assert 'id="voice-identity-score-help"' in template
+    assert 'id="voice-identity-result-status"' in template
+    assert 'id="voice-identity-eyebrow"' in template
+    assert 'id="voice-identity-rule-note"' in template
+    assert 'id="voice-identity-actions"' in template
     assert 'role="status" aria-live="polite" aria-atomic="true"></blockquote>' in template
     assert 'id="voice-identity-voice-state"' in template
     assert 'data-i18n="voiceIdentity.enrollAndEnable"' in template
@@ -188,7 +196,7 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert template.count('data-step="') == 4
     assert "voice-identity-record" not in template
     assert "embedding" not in template.lower()
-    assert "similarity" not in template.lower()
+    assert "verification-score" in template
 
     assert ".switch input:focus-visible + .switch-track" in stylesheet
     assert "--voice-danger: #b4233b" in stylesheet
@@ -207,11 +215,15 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
             css_color(theme, "voice-focus"),
             css_color(theme, "voice-panel-soft"),
         ) >= 3
-    # Primary-button text sits on a gradient between these two stops.
-    for stop in ("#74d6fa", css_color(light_theme, "voice-blue-strong")):
-        assert _contrast_ratio("#07354d", stop) >= 4.5
+    # Primary actions and current-segment markers share solid fill/text tokens.
+    # Both themes must retain readable text when either token changes.
+    for theme in (light_theme, dark_theme):
+        assert _contrast_ratio(
+            css_color(theme, "voice-progress-current-text"),
+            css_color(theme, "voice-blue-strong"),
+        ) >= 4.5
     assert re.search(
-        r"\.primary-button\s*\{[^}]*color:\s*#07354d[^}]*background:\s*linear-gradient\(100deg,\s*#74d6fa,\s*var\(--voice-blue-strong\)\)",
+        r"\.primary-button\s*\{[^}]*color:\s*var\(--voice-progress-current-text\)[^}]*background:\s*var\(--voice-blue-strong\)",
         stylesheet,
         re.DOTALL,
     )
@@ -228,14 +240,6 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
         css_color(light_theme, "voice-success-text"),
         css_color(light_theme, "voice-panel-soft"),
     ) >= 4.5
-    # The current-segment marker keeps the same blue fill in both themes, so
-    # its text token must pass on that fill and must not be themed away.
-    assert _contrast_ratio(
-        css_color(light_theme, "voice-progress-current-text"),
-        css_color(light_theme, "voice-blue-strong"),
-    ) >= 4.5
-    assert "--voice-progress-current-text" not in dark_theme.group("body")
-    assert "--voice-blue-strong" not in dark_theme.group("body")
     for selector in (r"\.segment-progress\s+span\.active", r"\.segment-progress\s+span\.current"):
         assert re.search(
             selector + r"\s*\{[^}]*color:\s*var\(--voice-progress-current-text\)[^}]*background:\s*var\(--voice-blue-strong\)",
@@ -259,7 +263,11 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     )
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
-    assert "padding: 18px 24px" in stylesheet
+    assert re.search(
+        r"\.voice-identity-header\s*\{[^}]*padding:\s*14px 24px",
+        stylesheet,
+        re.DOTALL,
+    )
     assert "/static/js/voice_identity.js" in template
     assert "/static/css/voice_identity.css" in template
 
@@ -323,7 +331,8 @@ def test_browser_capture_is_one_click_audio_worklet_pcm16_and_cancels_on_close()
     assert "readingPrompt${index}" in script
     assert "ready_to_commit" not in script
     assert "embedding" not in script.lower()
-    assert "similarity" not in script.lower()
+    assert "completionResult" in script
+    assert "enrollmentVerification" in script
     assert "window.addEventListener('localechange', render)" in script
     assert "reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS })" in script
     assert "needsLowPass = this.targetSampleRate < this.originalSampleRate" in processor
@@ -496,6 +505,9 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         "requestFailed",
         "deleteConfirm",
         "retryConnection",
+        "verificationResultTitle",
+        "verificationScoreLabel",
+        "verificationSavedStatus",
     }
     required_segment_keys = {
         "readingPrompt1",
@@ -507,6 +519,7 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         "nextSegment",
         "retrySegment",
         "finish",
+        "finishTooSoon",
         "voiceWaiting",
         "voiceDetected",
         "voiceQuiet",

@@ -1,23 +1,43 @@
-"""
-Plugin Config 模块
+"""Public plugin configuration helpers, loaded on first use."""
 
-提供插件配置的读取、校验和更新功能。
-"""
-from plugin.config.service import (
-    load_plugin_config,
-    replace_plugin_config,
-    update_plugin_config,
-    load_plugin_config_toml,
-    parse_toml_to_config,
-    render_config_to_toml,
-    update_plugin_config_toml,
-    load_plugin_base_config,
-    get_plugin_profiles_state,
-    get_plugin_profile_config,
-    upsert_plugin_profile_config,
-    delete_plugin_profile_config,
-    set_plugin_active_profile,
-    hot_update_plugin_config,
-    deep_merge,
-)
-from plugin.config.schema import validate_plugin_config, ConfigValidationError
+from importlib import import_module
+
+_EXPORTS = {
+    "load_plugin_config": ".service",
+    "replace_plugin_config": ".service",
+    "update_plugin_config": ".service",
+    "load_plugin_config_toml": ".service",
+    "parse_toml_to_config": ".service",
+    "render_config_to_toml": ".service",
+    "update_plugin_config_toml": ".service",
+    "load_plugin_base_config": ".service",
+    "get_plugin_profiles_state": ".service",
+    "get_plugin_profile_config": ".service",
+    "upsert_plugin_profile_config": ".service",
+    "delete_plugin_profile_config": ".service",
+    "set_plugin_active_profile": ".service",
+    "hot_update_plugin_config": ".service",
+    "deep_merge": ".service",
+    "validate_plugin_config": ".schema",
+    "ConfigValidationError": ".schema",
+}
+_SUBMODULES = frozenset({"service", "schema"})
+
+
+def __getattr__(name: str):
+    if name in _SUBMODULES:
+        value = import_module(f".{name}", __name__)
+    else:
+        module = _EXPORTS.get(name)
+        if module is None:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        value = getattr(import_module(module, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
+
+__all__ = [*_EXPORTS, "service", "schema"]

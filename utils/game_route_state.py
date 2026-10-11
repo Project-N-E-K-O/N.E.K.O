@@ -24,15 +24,14 @@ finalize, archive, organizer). This module only holds:
 
 - the global ``_game_route_states`` container
 - the small read helpers used by both layers
-- a registration hook so ``game_router`` can plug its voice-transcript
-  handler in at module load, and ``main_logic/core.py`` can call the
-  generic ``route_external_voice_transcript()`` without taking a
-  reverse-direction import on ``main_routers``.
+
+Voice transcripts reach the route through ``utils.external_route_registry``,
+where ``game_router`` registers its handlers at import time.
 """
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable, Dict, Optional, Tuple
+from typing import Dict, Tuple
 from weakref import WeakValueDictionary
 
 
@@ -207,47 +206,3 @@ def get_active_game_route_generation_identity(
             str(state.get("_sdk_route_instance_id") or "").strip(),
         )
     return None
-
-
-_VoiceTranscriptHandler = Callable[..., Awaitable[bool]]
-_voice_transcript_handler: Optional[_VoiceTranscriptHandler] = None
-
-
-def register_voice_transcript_handler(handler: _VoiceTranscriptHandler) -> None:
-    """Plug in the heavy voice-transcript handler from ``main_routers/game_router``.
-
-    Called once at module load by ``main_routers.game_router``; allows
-    ``main_logic/core.py`` to dispatch voice transcripts via the generic
-    ``route_external_voice_transcript`` below without taking a
-    ``main_logic → main_routers`` import.
-    """
-    global _voice_transcript_handler
-    _voice_transcript_handler = handler
-
-
-async def route_external_voice_transcript(
-    lanlan_name: str,
-    transcript: str,
-    *,
-    request_id: str | None = None,
-    game_type: str | None = None,
-    session_id: str | None = None,
-    sdk_route_instance_id: str | None = None,
-) -> bool:
-    """Dispatch a voice transcript into the active game route, if any.
-
-    Returns ``True`` iff the registered handler claimed the transcript.
-    Returns ``False`` if no handler is registered (e.g. game_router never
-    imported in this process) or no active route matched.
-    """
-    handler = _voice_transcript_handler
-    if handler is None:
-        return False
-    return bool(await handler(
-        lanlan_name,
-        transcript,
-        request_id=request_id,
-        game_type=game_type,
-        session_id=session_id,
-        sdk_route_instance_id=sdk_route_instance_id,
-    ))

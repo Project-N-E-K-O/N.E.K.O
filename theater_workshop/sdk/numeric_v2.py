@@ -126,13 +126,14 @@ def normalize_metric_drafts(metrics: list[Mapping[str, Any]]) -> list[dict[str, 
     if len(metrics) > 4:
         raise ValueError("metric_limit_exceeded")
     normalized: list[dict[str, Any]] = []
+    reserved_ids = {str(metric.get("id") or "").strip() for metric in metrics if metric.get("id")}
     existing_ids: set[str] = set()
     for raw in metrics:
         metric = deepcopy(dict(raw))
         name = str(metric.get("name") or "").strip()
         metric_id = str(metric.get("id") or "").strip()
         if not metric_id and name:
-            metric_id = allocate_metric_id(name, existing_ids)
+            metric_id = allocate_metric_id(name, existing_ids | reserved_ids)
         if not metric_id:
             raise ValueError("metric_id_required")
         if metric_id in existing_ids:

@@ -198,4 +198,31 @@ describe('message-schema', () => {
     expect(() => secondProps.onAvatarToolStateChange?.({ active: 'yes' } as never)).toThrow(ZodError);
   });
 
+  it('preserves an optional character reaction without changing legacy messages', () => {
+    const base = {
+      id: 'reaction-user', role: 'user', author: 'You', time: '10:00',
+      blocks: [{ type: 'text', text: 'Hello' }],
+    };
+    expect(parseChatMessage(base).reaction).toBeUndefined();
+    for (const emoji of ['😊', '😄', '😃', '🙂', '😌', '🤔', '🧐', '💭', '❓', '👍', '✅', '🙌', '💪', '🎉', '🙏', '🤝', '😮', '👀', '⚠️', '💡', '😔', '😢', '😅', '🙇', '🥳', '✨', '🌟', '💻', '🤖', '📚', '🔧', '❤️', '⭐', '🔥', '🚀', '📌', '😂', '🤗']) {
+      expect(parseChatMessage({ ...base, reaction: { emoji, author: ' Neko ' } }).reaction)
+        .toEqual({ emoji, author: 'Neko' });
+    }
+    expect(parseChatWindowProps({ messages: [{ ...base, reaction: { emoji: '❤️', author: 'Neko' } }] })
+      .messages?.[0]?.reaction).toEqual({ emoji: '❤️', author: 'Neko' });
+  });
+
+  it.each([
+    { emoji: 'invalid', author: 'Neko' },
+    { emoji: '❤️', author: '' },
+    { emoji: '❤️', author: '   ' },
+    { emoji: '❤️' },
+    null,
+  ])('rejects malformed reactions at the schema boundary: %j', (reaction) => {
+    expect(() => parseChatMessage({
+      id: 'reaction-invalid', role: 'user', author: 'You', time: '10:00',
+      blocks: [{ type: 'text', text: 'Hello' }], reaction,
+    })).toThrow(ZodError);
+  });
+
 });

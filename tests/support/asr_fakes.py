@@ -93,6 +93,12 @@ class _TestSmartTurnLease:
 
 
 class _Runtime(AsrRuntimeMixin):
+    # The production helper, so the fake interrupts exactly as core does.
+    from main_logic.core.turn import TurnMixin as _TurnMixin
+    _interrupt_offline_reply = _TurnMixin._interrupt_offline_reply
+    _close_taken_over_offline_reply = _TurnMixin._close_taken_over_offline_reply
+    del _TurnMixin
+
     def __init__(self) -> None:
         self._init_asr_runtime_state()
         self._voice_lease_synchronized = True
@@ -103,6 +109,10 @@ class _Runtime(AsrRuntimeMixin):
         self.session.create_response = AsyncMock()
         self.session.handle_interruption = AsyncMock()
         self.handle_new_message = AsyncMock()
+        # TurnMixin in production: interrupting goes through the real helper
+        # (so session.handle_interruption stays observable); closing the
+        # interrupted reply and its wrap-up are recorded.
+        self._close_interrupted_offline_turn = MagicMock(return_value=True)
         self.handle_input_transcript = AsyncMock(return_value=True)
         self.send_status = AsyncMock()
 

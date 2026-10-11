@@ -12,6 +12,7 @@ from main_logic.voice_input.wake_word.sherpa_backend import (
     SherpaWakeWordConfig,
     SherpaWakeWordDetector,
 )
+from main_logic.voice_input.wake_word.resources import WakeWordResources, UnavailableWakeWordDetector
 
 from .activation_runtime import (
     ActivationStatusCallback,
@@ -33,6 +34,7 @@ class OwnerVoiceSessionActivationFactory:
         enforce: bool,
         noise_reduction_enabled: bool | None = None,
         config: VoiceSessionActivationRuntimeConfig | None = None,
+        wake_resources: WakeWordResources | None = None,
     ) -> None:
         del runtime_owner
         if type(profile) is not SpeakerProfile:
@@ -52,6 +54,9 @@ class OwnerVoiceSessionActivationFactory:
         self._noise_reduction_enabled = noise_reduction_enabled
         self._config = config
         self._wake_model_dir = wake_word_model_dir() if enforce else None
+        self._wake_resources = wake_resources if enforce else None
+        if self._wake_resources is not None:
+            self._wake_model_dir = self._wake_resources.model_dir if self._wake_resources.enabled else None
         self._lock = threading.Lock()
         self._scorer_generation = 0
         self._closed = False
@@ -101,6 +106,8 @@ class OwnerVoiceSessionActivationFactory:
             if self._wake_model_dir is not None
             else None
         )
+        if self._wake_resources is not None and self._wake_resources.reason:
+            wake_detector = UnavailableWakeWordDetector(self._wake_resources.reason)
         return VoiceSessionActivationRuntime(
             generation,
             scorer,

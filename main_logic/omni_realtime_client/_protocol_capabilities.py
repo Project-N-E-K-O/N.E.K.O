@@ -37,6 +37,24 @@ ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES = frozenset(
 )
 
 
+# Server events that acknowledge a conversation item the client created. The
+# OpenAI beta protocol and the OpenAI-compatible providers (qwen / glm / step /
+# free routes) announce it with ``conversation.item.created``; OpenAI Realtime
+# GA renamed it to ``conversation.item.added`` (followed by ``.done``) and never
+# sends ``.created``, so a route listening only for the old name waits out the
+# whole item-ack timeout on every turn (#3350).
+ITEM_CREATED_EVENT_TYPE = "conversation.item.created"
+ITEM_ADDED_EVENT_TYPE = "conversation.item.added"
+LEGACY_ITEM_ACK_EVENT_TYPES = frozenset({ITEM_CREATED_EVENT_TYPE})
+# The OpenAI route keeps the legacy name too: an ``openai`` api_type may point
+# at a compatible proxy that still speaks the beta dialect. A provider that
+# sends both for one item is counted once -- see
+# ``RealtimeResponseArbiter.notify_item_created``.
+OPENAI_ITEM_ACK_EVENT_TYPES = frozenset(
+    {ITEM_CREATED_EVENT_TYPE, ITEM_ADDED_EVENT_TYPE}
+)
+
+
 def _response_id_text(value: Any) -> str | None:
     """Return one canonical reading of whether a value names a response.
 
@@ -77,6 +95,7 @@ class RealtimeProtocolCapabilities:
     )
     responds_to_conversation_items: bool = False
     function_call_ids_match_terminal: bool = True
+    item_ack_event_types: frozenset[str] = LEGACY_ITEM_ACK_EVENT_TYPES
 
     @property
     def accepts_id_bearing_content_start(self) -> bool:
@@ -95,6 +114,7 @@ OPENAI_REALTIME_PROTOCOL_CAPABILITIES = RealtimeProtocolCapabilities(
     route_key="strict_default",
     response_start_evidence=ResponseStartEvidence.ANNOUNCEMENT_ONLY,
     multimodal_turn_delivery=MultimodalTurnDelivery.DIRECT_ATOMIC,
+    item_ack_event_types=OPENAI_ITEM_ACK_EVENT_TYPES,
 )
 
 GEMINI_REALTIME_PROTOCOL_CAPABILITIES = RealtimeProtocolCapabilities(

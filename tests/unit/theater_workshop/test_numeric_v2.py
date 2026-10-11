@@ -43,6 +43,13 @@ def test_numeric_v2_custom_metric_gets_stable_non_conflicting_id():
     assert allocate_metric_id("trust", {"trust"}) == "trust_2"
 
 
+def test_explicit_metric_ids_are_reserved_before_allocating_automatic_ids():
+    automatic = normalize_metric_drafts([{'name': '归乡意愿'}])[0]['id']
+    rows = normalize_metric_drafts([{'name': '归乡意愿'}, {'id': automatic, 'name': '明确编号'}])
+    assert rows[1]['id'] == automatic
+    assert rows[0]['id'] != automatic
+
+
 def test_numeric_v2_metrics_are_always_hidden_from_players():
     normalized = normalize_metric_drafts([{
         "id": "trust",

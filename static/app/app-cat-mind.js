@@ -155,6 +155,9 @@
     ]);
     var CHAT_MOVED_FAR_DISTANCE_PX = 24;
     var AUTONOMOUS_TICK_INTERVAL_MS = 30 * 1000;
+    // 防止连续 hover 在极短时间内反复唤起决策、造成动作连播。
+    var HOVER_DEDUPE_WINDOW_MS = 1500;
+    var ACTION_START_BURST_GUARD_MS = 60 * 1000;
     var ACTION_REQUEST_LEASE_MS = 5 * 1000;
     var ACTION_ACCEPTED_START_LEASE_MS = 12 * 1000;
     var TIME_RATE_PER_MINUTE = Object.freeze({
@@ -376,6 +379,8 @@
             lastChatMinimizedRect: null,
             lastChatMinimizedState: null,
             lastChatIdleDocked: false,
+            lastCompactSurfaceSignature: '',
+            lastHoverScheduledAt: 0,
             returnSummaryDraft: null,
             returnEpisodeAccumulator: createReturnEpisodeAccumulator(),
             lastDecision: null,
@@ -398,6 +403,8 @@
                 lastTickAt: 0,
                 lastUserInteractionAt: 0,
                 lastActionStartedAt: 0,
+                // 只记 runner 确认 started 的时间；lastActionStartedAt 在进场时也会被设为锚点。
+                lastConfirmedActionStartedAt: 0,
                 dragInterruptionRecoveryActive: false,
             },
             lastResetReason: '',
@@ -565,6 +572,7 @@
                 lastTickAt: runtimeState.clock.lastTickAt,
                 lastUserInteractionAt: runtimeState.clock.lastUserInteractionAt,
                 lastActionStartedAt: runtimeState.clock.lastActionStartedAt,
+                lastConfirmedActionStartedAt: runtimeState.clock.lastConfirmedActionStartedAt,
                 dragInterruptionRecoveryActive: runtimeState.clock.dragInterruptionRecoveryActive,
             },
             actionIntentEvidence: getActionIntentSnapshot(snapshotAt),
@@ -708,6 +716,7 @@
                 lastTickAt: Number(clock.lastTickAt) || 0,
                 lastUserInteractionAt: Number(clock.lastUserInteractionAt) || 0,
                 lastActionStartedAt: Number(clock.lastActionStartedAt) || 0,
+                lastConfirmedActionStartedAt: Number(clock.lastConfirmedActionStartedAt) || 0,
                 dragInterruptionRecoveryActive: clock.dragInterruptionRecoveryActive === true,
             },
             scheduler: normalizeDebugTimelineScheduler(snapshot),
@@ -1014,6 +1023,7 @@
                 fullCooldownMs: scoreConfig ? scoreConfig.cooldownMs : 0,
             };
             runtimeState.clock.lastActionStartedAt = timestamp;
+            runtimeState.clock.lastConfirmedActionStartedAt = timestamp;
             runtimeState.clock.dragInterruptionRecoveryActive = false;
             // Intent is consumed only after the existing runner proves it
             // really started. accepted/rejected/provider dry-run never spend it.
@@ -1349,6 +1359,7 @@
         if (gates.yarnDragActive) return 'chat_yarn_dragging';
         if (gates.yarnSettling) return 'chat_yarn_settling';
         if (gates.edgePeekActive) return 'edge_peek_active';
+        if (gates.cat1PositionPresentationBusy) return 'cat1_position_presentation_busy';
         return '';
     }
 
@@ -1639,6 +1650,20 @@
             return;
         }
 
+        // 排在硬闸门之后、且合并完 deferredTriggers 之后：既不盖掉硬闸门原因，
+        // 也不会把此前被延后的用户触发再多压一个窗口。
+        var lastConfirmedActionStartedAt = Number(runtimeState.clock.lastConfirmedActionStartedAt) || 0;
+        var sinceLastActionStarted = scheduler.lastEvaluatedAt - lastConfirmedActionStartedAt;
+        if (lastConfirmedActionStartedAt &&
+            sinceLastActionStarted >= 0 &&
+            sinceLastActionStarted < ACTION_START_BURST_GUARD_MS &&
+            !triggerTypes.some(isUserInteractionObservationType) &&
+            !hasFreshActionIntent(scheduler.lastEvaluatedAt)) {
+            base.reason = 'action_start_burst_guard';
+            recordDecision(base);
+            return;
+        }
+
         var actionIds = [
             ACTION_IDS.CAT1_SOCIAL_PING,
             ACTION_IDS.CAT1_EAT_SNACK,
@@ -1786,6 +1811,16 @@
         if (type === OBSERVATION_TYPES.CAT1_LOCAL_PLAY_DONE ||
             type === OBSERVATION_TYPES.CAT1_LOCAL_PLAY_CANCELLED) {
             return false;
+        }
+        // 短时间内连续 hover 只唤起一次决策；观测本身照常计入 need、intent、
+        // 互动时间和回归摘要。乱序的旧时间戳不会把窗口往回拨。
+        if (type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
+            var hoverAt = Number(observation.timestamp) || 0;
+            var lastHoverAt = Number(runtimeState.lastHoverScheduledAt) || 0;
+            if (lastHoverAt && hoverAt - lastHoverAt < HOVER_DEDUPE_WINDOW_MS) {
+                return false;
+            }
+            runtimeState.lastHoverScheduledAt = hoverAt;
         }
         return true;
     }
@@ -2672,6 +2707,7 @@
         if (detail.available === false) {
             // 用户关闭/窗口隐藏是「目标不存在」，不是一次聊天框展开体验。
             retireDesktopChatMinimizedLifecycle();
+            runtimeState.lastCompactSurfaceSignature = '';
             return;
         }
         var rect = normalizeRect(detail.screenRect);
@@ -2741,6 +2777,8 @@
 
     function observeCompactSurface(detail) {
         if (!detail || typeof detail !== 'object') {
+            // web 宿主关闭聊天框时清锚点会派发 detail=null；原地重开要能被重新观测。
+            runtimeState.lastCompactSurfaceSignature = '';
             return;
         }
         if (detail.available === false) {
@@ -2769,8 +2807,22 @@
             retireDesktopChatMinimizedLifecycle();
         }
         if (!visible && !detail.screenRect && !detail.left && !detail.width) {
+            runtimeState.lastCompactSurfaceSignature = '';
             return;
         }
+        // Electron 带 screenRect；单窗口 web 宿主的 layout 事件把几何直接平铺在 detail 上。
+        var rect = normalizeRect(detail.screenRect) || normalizeRect(detail);
+        var compactSignature = [
+            visible ? 'visible' : 'hidden',
+            rect ? [rect.left, rect.top, rect.width, rect.height].join(',') : '',
+            // 拖拽 / 缩放在最后一个矩形上松手时只有这两个标志变化，松手要能重新唤起评估。
+            detail.dragging === true ? 'dragging' : '',
+            detail.resizeActive === true ? 'resizing' : '',
+        ].join('|');
+        if (compactSignature && compactSignature === runtimeState.lastCompactSurfaceSignature) {
+            return;
+        }
+        runtimeState.lastCompactSurfaceSignature = compactSignature;
         observe({
             type: OBSERVATION_TYPES.CHAT_COMPACT_SURFACE_VISIBLE,
             source: detail.source || 'compact-surface',
@@ -3001,6 +3053,7 @@
                 lastTickAt: runtimeState.clock.lastTickAt,
                 lastUserInteractionAt: runtimeState.clock.lastUserInteractionAt,
                 lastActionStartedAt: runtimeState.clock.lastActionStartedAt,
+                lastConfirmedActionStartedAt: runtimeState.clock.lastConfirmedActionStartedAt,
                 dragInterruptionRecoveryActive: runtimeState.clock.dragInterruptionRecoveryActive,
             },
             lastResetReason: runtimeState.lastResetReason,

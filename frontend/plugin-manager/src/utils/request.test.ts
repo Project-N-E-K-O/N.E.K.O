@@ -491,6 +491,44 @@ describe('CSRF bootstrap error policy', () => {
     requestMocks.errorMessage.mockClear()
   })
 
+  it('never sends auto-start preferences when token bootstrap fails', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(new Error('bootstrap unavailable'))
+    const adapter = vi.fn()
+    try {
+      await expect(fresh.put('/plugin/demo/auto-start', { auto_start: true }, { adapter }))
+        .rejects.toMatchObject({ config: { csrfBootstrapFailed: true } })
+      expect(adapter).not.toHaveBeenCalled()
+      expect(bootstrap).toHaveBeenCalledTimes(1)
+    } finally {
+      bootstrap.mockRestore()
+    }
+  })
+
+  it('waits past the best-effort budget before sending auto-start with the token', async () => {
+    vi.useFakeTimers()
+    const fresh = (await import('./request')).default
+    let finishBootstrap!: (value: any) => void
+    const bootstrap = vi.spyOn(axios, 'get').mockImplementation(() => new Promise(resolve => {
+      finishBootstrap = resolve
+    }))
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => ({
+      data: { success: true }, status: 200, statusText: 'OK', headers: {}, config,
+    }))
+    try {
+      const pending = fresh.put('/plugin/demo/auto-start', { auto_start: false }, { adapter })
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(adapter).not.toHaveBeenCalled()
+      finishBootstrap({ data: { csrf_token: 'auto-start-token' } })
+      await expect(pending).resolves.toEqual({ success: true })
+      expect(adapter).toHaveBeenCalledTimes(1)
+      expect(adapter.mock.calls[0]![0].headers.get('X-CSRF-Token')).toBe('auto-start-token')
+    } finally {
+      bootstrap.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it('uses generic bootstrap timeout and preserves caller silence without sharing error config', async () => {
     const fresh = (await import('./request')).default
     const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(Object.assign(new Error('timeout'), {

@@ -1,0 +1,16 @@
+{
+  "call": {
+    "method": "list_scoped_subjects",
+    "lanlan": "Lanlan",
+    "kwargs": {
+      "platform": "qq"
+    }
+  },
+  "request": {
+    "method": "GET",
+    "url": "http://127.0.0.1:48912/internal/memory/Lanlan/scoped_subjects?platform=qq",
+    "body": null
+  },
+  "model": null,
+  "qq_reference": null
+}

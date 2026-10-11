@@ -309,7 +309,9 @@ async def test_stale_connect_failure_cannot_fail_new_generation() -> None:
     runtime._asr_session = None
     started = asyncio.Event()
     release = asyncio.Event()
-    candidate = SimpleNamespace(close=AsyncMock())
+    candidate = SimpleNamespace(
+        close=AsyncMock(), last_failure_code=None, failure_started_at=None,
+    )
 
     async def connect() -> None:
         started.set()

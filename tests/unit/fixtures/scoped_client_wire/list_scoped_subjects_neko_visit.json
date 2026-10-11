@@ -1,0 +1,16 @@
+{
+  "call": {
+    "method": "list_scoped_subjects",
+    "lanlan": "小八",
+    "kwargs": {
+      "platform": "neko_visit"
+    }
+  },
+  "request": {
+    "method": "GET",
+    "url": "http://127.0.0.1:48912/internal/memory/%E5%B0%8F%E5%85%AB/scoped_subjects?platform=neko_visit",
+    "body": null
+  },
+  "model": null,
+  "qq_reference": null
+}

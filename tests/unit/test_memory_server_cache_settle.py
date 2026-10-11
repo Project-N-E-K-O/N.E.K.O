@@ -204,6 +204,7 @@ async def test_cache_upserts_theater_episode_summary_instead_of_appending():
     assert result == {"status": "cached", "count": 1}
     fake_recent_history_manager.upsert_theater_episode.assert_awaited_once()
     fake_recent_history_manager.update_history.assert_not_awaited()
+    fake_spawn_outbox.assert_not_awaited()
     events = fake_time_manager.areconcile_theater_conversations.await_args.args[0]
     event_id, indexed = events["story_rain"]
     assert indexed[0].metadata["run_index"] == 2

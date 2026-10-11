@@ -43,6 +43,7 @@ from ..shared_state import get_config_manager, get_initialize_character_data
 from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import read_json_async
 from utils.config_manager import delete_reserved, ensure_catgirl_character_id, set_reserved
+from utils.config_manager import assign_new_character_uid, set_reserved
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.character_memory import (
     asave_characters_with_recent_activation,
@@ -415,6 +416,17 @@ async def sync_workshop_character_cards(
                                         )
                                 skipped_count += 1
                                 continue
+                            from main_routers.visit_router import character_hooks as visit_hooks
+
+                            if await visit_hooks.name_blocked(config_mgr, chara_name):
+                                # 同名的已删除角色还在退役串门数据：这轮先不建，下次同步再来
+                                logger.info(
+                                    "sync_workshop_character_cards: 同名旧角色的串门数据仍在清理，暂不添加 '%s' (物品 %s)",
+                                    chara_name,
+                                    item_id,
+                                )
+                                skipped_count += 1
+                                continue
                             
                             # 构建角色数据，过滤保留字段
                             catgirl_data = {}
@@ -489,6 +501,8 @@ async def sync_workshop_character_cards(
                             # 外部角色卡不得指定本地持久化身份。
                             delete_reserved(catgirl_data, "character_id")
                             ensure_catgirl_character_id(catgirl_data)
+                            # 工坊卡同步出来的是新角色，生成新的稳定 id。
+                            assign_new_character_uid(catgirl_data)
                             characters['猫娘'][chara_name] = catgirl_data
                             pending_added_catgirls[chara_name] = catgirl_data
                             pending_card_face_writes[chara_name] = {

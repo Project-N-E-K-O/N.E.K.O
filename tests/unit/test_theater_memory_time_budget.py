@@ -132,8 +132,7 @@ def test_theater_does_not_reduce_ordinary_hard_cap_retention(tmp_path, monkeypat
 
 def test_upsert_bounds_theater_metadata_without_pruning_chat():
     from memory.recent import _merge_theater_episode_summary
-    from memory.theater_budget import THEATER_MEMORY_BUDGET_TOKENS, count_tokens
-    import json
+    from memory.theater_budget import THEATER_MEMORY_BUDGET_TOKENS, theater_capsule_cost
     ordinary = HumanMessage(content="chat " * 2000)
     history = [ordinary]
     for i in range(30):
@@ -143,7 +142,7 @@ def test_upsert_bounds_theater_metadata_without_pruning_chat():
     assert history[0] is ordinary
     theater = [m for m in history if m is not ordinary]
     assert 0 < len(theater) < 30
-    cost = sum(count_tokens(json.dumps(messages_to_dict([m]), ensure_ascii=False, sort_keys=True)) for m in theater)
+    cost = sum(theater_capsule_cost(m) for m in theater)
     assert cost <= THEATER_MEMORY_BUDGET_TOKENS
 
 

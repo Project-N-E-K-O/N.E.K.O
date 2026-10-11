@@ -47,6 +47,7 @@
 
         async function send() {
             var headers = { 'Content-Type': 'application/json' };
+            Object.assign(headers, opts.headers || {});
             if (method !== 'GET') Object.assign(headers, await mutationHeaders());
             // 每次发送（含 CSRF 重试）各自拥有有界超时，避免悬空 fetch 永久锁住剧场 busy/phase。
             var controller = typeof AbortController === 'function' ? new AbortController() : null;

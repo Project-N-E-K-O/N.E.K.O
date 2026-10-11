@@ -2045,6 +2045,28 @@ def _ending_enhancement_case():
     return generator, story, candidate
 
 
+def test_ending_chapter_cannot_bypass_the_repair_projection():
+    generator, story, _candidate = _ending_enhancement_case()
+    with pytest.raises(QualityAssessmentError, match='quality_repair_outside_plan'):
+        NumericV2QualityAssessor._apply_node_updates(story, {'node_updates': [
+            {'node_id': 'ending_normal', 'chapter': '偷偷改动的结局标题'}]}, ['ending_normal'])
+
+
+@pytest.mark.parametrize('bad_goals', [False, True])
+def test_enhancement_rejects_null_anchors_and_excessive_goals(bad_goals):
+    generator, story, candidate = _ending_enhancement_case()
+    if bad_goals:
+        candidate['ordered_goals'] *= 9
+        expected = 'too_many_goals'
+    else:
+        candidate['ordered_goals'][0].update(evidence_mode='exact', anchors=[None])
+        expected = 'goal_anchor_invalid'
+    generator.call_llm = lambda *args, **kwargs: json.dumps(candidate, ensure_ascii=False)
+    with pytest.raises(NumericV2GenerationError) as raised:
+        generator.enhance_node(story=story, node_id='ending_normal')
+    assert expected in {issue['code'] for issue in raised.value.issues}
+
+
 @pytest.mark.parametrize("copies", [1, 3])
 def test_node_enhancement_does_not_accumulate_existing_state_prefix(copies):
     """When the model reuses assembled instructions, both enhancements retain one state description and independent supplements without mutating input."""

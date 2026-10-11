@@ -11,6 +11,13 @@ from services.theater.numeric_v2_actor_output import (
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
 
+@pytest.mark.parametrize('acceptance', [None, '', '（）', 42])
+def test_invalid_acceptance_fill_cannot_promote_a_rejection(acceptance):
+    with pytest.raises(NumericV2ActorOutputError):
+        _parse_output(json.dumps({'accept_input': acceptance, 'alternative_inputs': ['（摇头）再等等。']}),
+                      transition_suggestions_only=True)
+
+
 @pytest.mark.parametrize('mode', ['ordinary', 'opening', 'formal', 'fill', 'acceptance_fill'])
 def test_action_choices_keep_public_string_contract_in_every_actor_mode(mode):
     choices = ['（打开课本开始复习）', '（查看终端）请解释这条读数。']

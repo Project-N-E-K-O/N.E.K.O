@@ -6,6 +6,55 @@ import utils.config_manager as config_manager_module
 from plugin.server.infrastructure import runtime_overrides as ro
 
 _ORIGINAL_LOAD_FROM_DISK = ro._load_from_disk
+_ORIGINAL_SAVE_TO_DISK = ro._save_to_disk
+
+
+def test_runtime_preferences_do_not_request_unrelated_application_migrations(monkeypatch):
+    requests = []
+    persisted = {"alpha": {"auto_start": False}}
+
+    class Manager:
+        def load_json_config(self, name):
+            assert name == ro.OVERRIDES_FILENAME
+            return persisted
+
+        def save_json_config(self, name, data):
+            assert name == ro.OVERRIDES_FILENAME
+            persisted.clear()
+            persisted.update(data)
+
+    def get_manager(*, migrate=True):
+        requests.append(migrate)
+        return Manager()
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", get_manager)
+    assert _ORIGINAL_LOAD_FROM_DISK() == {"alpha": {"auto_start": False}}
+    _ORIGINAL_SAVE_TO_DISK({"beta": True})
+    assert persisted == {"beta": True}
+    assert requests == [False, False]
+
+
+def test_normal_configuration_consumer_still_migrates_after_runtime_preferences(monkeypatch):
+    migrations = []
+
+    class Manager:
+        def load_json_config(self, _name):
+            return {"alpha": {"auto_start": False}}
+
+        def __getattr__(self, name):
+            if name.startswith("migrate_"):
+                return lambda: migrations.append(name)
+            raise AttributeError(name)
+
+    manager = Manager()
+    monkeypatch.setattr(config_manager_module, "_config_manager", manager)
+    monkeypatch.setattr(config_manager_module, "_config_manager_migrated", False)
+    assert _ORIGINAL_LOAD_FROM_DISK() == {"alpha": {"auto_start": False}}
+    assert not migrations
+    assert config_manager_module.get_config_manager() is manager
+    assert migrations == ["migrate_config_files", "migrate_default_card_faces",
+                          "migrate_memory_files", "migrate_openclaw_url_port",
+                          "migrate_legacy_documents_memory"]
 
 
 @pytest.mark.plugin_unit
@@ -142,7 +191,7 @@ def test_runtime_override_read_error_is_not_treated_as_empty_or_cached(monkeypat
         def load_json_config(self, _filename):
             raise ValueError("invalid json")
 
-    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda **_kwargs: _ConfigManager())
     monkeypatch.setattr(ro, "_load_from_disk", _ORIGINAL_LOAD_FROM_DISK)
     ro.reset_cache_for_testing()
 
@@ -181,7 +230,7 @@ def test_tolerated_invalid_entries_cannot_be_silently_overwritten(monkeypatch):
         def save_json_config(self, _filename, overrides):
             saved.append(dict(overrides))
 
-    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda **_kwargs: _ConfigManager())
     monkeypatch.setattr(ro, "_load_from_disk", _ORIGINAL_LOAD_FROM_DISK)
     ro.reset_cache_for_testing()
 

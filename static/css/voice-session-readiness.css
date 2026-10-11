@@ -1,0 +1,5 @@
+.voice-session-readiness { position: fixed; z-index: 1100; inset-inline-start: 12px; bottom: 12px; max-width: min(420px, calc(100vw - 24px)); display: flex; gap: 8px; align-items: center; padding: 8px 12px; border: 1px solid #b9dcf3; border-radius: 10px; background: #fff; color: #17354a; font-size: 13px; }
+.voice-session-readiness[hidden] { display: none; }
+.voice-session-readiness button { color: inherit; border: 1px solid currentColor; background: transparent; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
+.voice-session-readiness button:focus-visible { outline: 3px solid #145679; outline-offset: 2px; }
+[data-theme="dark"] .voice-session-readiness { background: #17232c; color: #e8f5fb; }

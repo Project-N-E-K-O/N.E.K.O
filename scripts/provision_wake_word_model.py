@@ -1,66 +1,33 @@
-"""Download the pinned upstream KWS asset into an explicit external directory."""
+"""Download the pinned KWS asset and atomically publish a complete version."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import shutil
-import tarfile
-import tempfile
-import urllib.request
+import sys
 from pathlib import Path
 
-
-MODEL_NAME = "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
-MODEL_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/{MODEL_NAME}.tar.bz2"
-# Observed upstream release bytes, pinned to reject changed/corrupt downloads.
-MODEL_SHA256 = "68447f4fbc67e70eee3a93961f36e81e98f47aef73ce7e7ca00885c6cd3616a6"
-ASSETS = (
-    "encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
-    "decoder-epoch-13-avg-2-chunk-8-left-64.onnx",
-    "joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
-    "tokens.txt",
+# Allow the documented standalone script entry point.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from main_logic.voice_identity_service.wake_word_bundle import (  # noqa: E402,F401
+    ASSETS, MODEL_NAME, MODEL_SHA256, MODEL_URL, install_bundle,
 )
 
 
+def _validate_bundle(path: Path) -> None:
+    from config.voice_wake_word import DEFAULT_WAKE_WORD_KEYWORDS
+    from main_logic.voice_input.wake_word.sherpa_backend import (
+        SherpaWakeWordConfig, validate_wake_word_resources,
+    )
+    validate_wake_word_resources(SherpaWakeWordConfig(model_dir=str(path), keywords=DEFAULT_WAKE_WORD_KEYWORDS))
+
+
 def provision(destination: Path, archive: Path | None = None) -> None:
-    """Extract only the four expected regular files after authenticating bytes."""
-    destination = destination.resolve()
-    destination.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="neko-kws-") as temporary:
-        source = archive or Path(temporary) / "model.tar.bz2"
-        if archive is None:
-            request = urllib.request.Request(MODEL_URL, headers={"User-Agent": "NEKO-model-provisioner"})
-            with urllib.request.urlopen(request, timeout=30) as response, source.open("wb") as out:
-                size = 0
-                while block := response.read(1024 * 1024):
-                    size += len(block)
-                    if size > 64 * 1024 * 1024:
-                        raise ValueError("Model download exceeds budget")
-                    out.write(block)
-        with source.open("rb") as data:
-            digest = hashlib.file_digest(data, "sha256").hexdigest()
-        if digest != MODEL_SHA256:
-            raise ValueError("Model archive SHA-256 mismatch")
-        with tarfile.open(source, "r:bz2") as bundle:
-            for name in ASSETS:
-                member = bundle.getmember(f"{MODEL_NAME}/{name}")
-                if not member.isfile() or member.size > 16 * 1024 * 1024:
-                    raise ValueError("Unexpected model asset")
-                with bundle.extractfile(member) as data, (Path(temporary) / name).open("wb") as out:
-                    shutil.copyfileobj(data, out)
-            for name in ASSETS:
-                staged = destination / (name + ".download")
-                shutil.copyfile(Path(temporary) / name, staged)
-                staged.replace(destination / name)
-    print(f"Model ready: {destination}")
-    print(f"Set NEKO_WAKE_WORD_MODEL_DIR to {destination}")
-    print("The wake-word extra intentionally installs no wheel (the upstream wheel is incompatible).")
-    print("Build the patched runtime, then install its wheel before starting NEKO:")
-    print(r"  powershell -File scripts/wake_word/build_wake_word_runtime.ps1 -Python .venv\Scripts\python.exe -OutputDirectory .wake-word-runtime")
-    print(r"  $wheel = (Get-ChildItem .wake-word-runtime\sherpa-onnx\dist\*.whl | Select-Object -First 1).FullName")
-    print(r"  uv pip install --python .venv\Scripts\python.exe --force-reinstall $wheel")
-    print(r"  & .venv\Scripts\python.exe -c 'import sherpa_onnx as s; print(s.__version__, s.version)'")
+    """Publish an authenticated immutable bundle; print its resolved path."""
+    directory = install_bundle(destination, archive, validate=_validate_bundle)
+    print(f"Model installed: {directory}")
+    print("Enable wake words in Voice identity settings after preparing resources.")
+    print(f"For deployment-managed settings: NEKO_WAKE_WORD_MODEL_DIR={directory}")
+    print("A compatible bundled runtime or patched source runtime is required.")
 
 
 def main() -> None:

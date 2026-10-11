@@ -81,7 +81,11 @@
             </div>
             <div class="container-content">
                 <div class="plugin-model-settings-link">
-                    <a href="/api/agent/user_plugin/dashboard?page=model-api" target="_blank" rel="noopener" data-i18n="api.pluginApiSettings">Plugin API 设置 ↗</a>
+                    <!-- data-in-app-window：本地插件面板入口，由 api_key_settings.js 以应用内窗口
+                         （neko_plugin_dashboard）打开，不走外链拦截器的系统浏览器路径 -->
+                    <a href="/api/agent/user_plugin/dashboard?page=model-api" target="_blank" rel="noopener"
+                        id="plugin-api-settings-link" data-in-app-window="true"
+                        data-i18n="api.pluginApiSettings">Plugin API 设置 ↗</a>
                 </div>
                 <div class="api-key-info">
                     <h3>
@@ -892,7 +896,7 @@
 
     <!-- Independent revision forces existing clients off the previously cached
          API-key settings script after a settings-display behavior change. -->
-    <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}-api-key-mask-v8"></script>
+    <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}-api-key-mask-v9"></script>
 
 
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>

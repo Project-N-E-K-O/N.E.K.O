@@ -63,7 +63,12 @@ async function launch(ctx, sessionId = 'session_a', revision = 4) {
   } });
   const request = ctx.requests.shift();
   assert.match(request.url, /\/session\//);
+  assert.match(request.url, /claim_activity=false/);
   await respond(request, snapshot(sessionId, revision));
+  const claim = ctx.requests.shift();
+  assert.match(claim.url, /\/session\//);
+  assert.doesNotMatch(claim.url, /claim_activity=false/);
+  await respond(claim, snapshot(sessionId, revision));
   assert.equal(ctx.runtime.getState().phase, 'awaiting_player');
 }
 async function submit(ctx, source = 'freeform', text = '询问细节。') {
@@ -87,6 +92,84 @@ function assertRecovery(ctx, before, buttons, draft) {
 """
 
 SCENARIOS = (
+    ("clear_during_voice_teardown_cannot_finish_a_pending_launch", r"""
+      const ctx = createContext();
+      let voiceStopped;
+      ctx.window.appState = { isRecording: true };
+      ctx.window.appAudioCapture = { stopMicCapture: () => new Promise(resolve => { voiceStopped = resolve; }) };
+      ctx.listeners.message({ origin: 'https://local.test', data: {
+        schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
+        launch_id: 'voice-await', story_id: 'story_session_a', session_id: 'session_a', revision: 4,
+        launch_action: 'continue',
+      } });
+      await respond(ctx.requests.shift(), snapshot());
+      const claim = ctx.requests.shift();
+      const id = claim.options.headers['X-Neko-Theater-Activity'];
+      await respond(claim, { ...snapshot(), activity_claimed: true });
+      assert.equal(typeof voiceStopped, 'function');
+      ctx.runtime.clear('cancel_during_voice_stop');
+      voiceStopped(true);
+      await tick(); await tick();
+      assert.equal(ctx.runtime.getState().active, false);
+      assert.ok(ctx.requests.some(r => /\/session\/release$/.test(r.url)
+        && JSON.parse(r.options.body).activity_claim_id === id));
+    """),
+    ("slow_host_is_waited_for_only_after_activity_claim", r"""
+      const ctx = createContext();
+      ctx.listeners.message({ origin: 'https://local.test', data: {
+        schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
+        launch_id: 'slow-host', story_id: 'story_session_a', session_id: 'session_a', revision: 4,
+        launch_action: 'continue',
+      } });
+      await respond(ctx.requests.shift(), snapshot());
+      const claim = ctx.requests.shift();
+      const id = claim.options.headers['X-Neko-Theater-Activity'];
+      ctx.window.reactChatWindowHost = null;
+      await respond(claim, { ...snapshot(), activity_claimed: true });
+      assert.equal(ctx.runtime.getState().phase, 'loading');
+      assert.equal(ctx.runtime.getState().activityClaimId, id);
+      ctx.runtime.clear('cancel_slow_host');
+      await tick(); await tick();
+      assert.ok(ctx.requests.some(r => /\/session\/release$/.test(r.url)
+        && JSON.parse(r.options.body).activity_claim_id === id));
+    """),
+    ("released_pending_claim_cannot_restore_a_cleared_launch", r"""
+      const ctx = createContext();
+      ctx.listeners.message({ origin: 'https://local.test', data: {
+        schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
+        launch_id: 'race', story_id: 'story_session_a', session_id: 'session_a', revision: 4,
+        launch_action: 'continue',
+      } });
+      await respond(ctx.requests.shift(), snapshot());
+      const claim = ctx.requests.shift();
+      const id = claim.options.headers['X-Neko-Theater-Activity'];
+      assert.match(id, /^theater_activity_/);
+      assert.equal(ctx.runtime.getState().active, false, '领取服务端守卫完成前不能展示接管');
+      ctx.runtime.clear('cancel_pending_claim');
+      await tick(); await tick();
+      const release = ctx.requests.shift();
+      assert.equal(JSON.parse(release.options.body).activity_claim_id, id);
+      await respond(claim, { ...snapshot(), activity_claimed: false });
+      assert.equal(ctx.runtime.getState().active, false);
+      assert.ok(ctx.requests.every(r => /\/session\/release$/.test(r.url)));
+    """),
+    ("abandoned_revision_neither_claims_nor_releases_peer_activity", r"""
+      for (const alreadyActive of [false, true]) {
+        const ctx = createContext();
+        if (alreadyActive) await launch(ctx);
+        ctx.listeners.message({ origin: 'https://local.test', data: {
+          schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
+          launch_id: 'mismatched', story_id: 'story_session_b', session_id: 'session_b',
+          revision: 7, launch_action: 'continue',
+        } });
+        const request = ctx.requests.shift();
+        assert.match(request.url, /claim_activity=false/);
+        await respond(request, snapshot('session_b', 8));
+        const release = ctx.requests.find(r => /\/session\/release/.test(r.url));
+        assert.equal(!!release, false, '预检不领取锁，放弃不得释放其他窗口的角色守卫');
+        assert.equal(ctx.requests.length, 0, '未接管不能发送领取活动的请求');
+      }
+    """),
     # 失败请求和缺报必须展示，幂等重放清零，新会话不能沿用上一份用量。
     ("usage_failure_replay_and_new_session", r"""
       const ctx = createContext(); await launch(ctx);

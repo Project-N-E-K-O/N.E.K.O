@@ -39,7 +39,7 @@ async def test_game_final_cannot_cross_lease_back_to_core(monkeypatch) -> None:
     runtime = _Runtime()
     route_transcript = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     monkeypatch.setattr(
@@ -80,8 +80,13 @@ async def test_game_final_cannot_cross_lease_back_to_core(monkeypatch) -> None:
 async def test_hard_mute_overrides_game_consumer(monkeypatch) -> None:
     runtime = _Runtime()
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
+    )
+    # An active game route always has a pinnable identity; availability requires it.
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("soccer", "match-1", ""),
     )
 
     await runtime._handle_voice_input_control(

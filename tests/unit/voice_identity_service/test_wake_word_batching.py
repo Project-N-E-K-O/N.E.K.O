@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from main_logic.voice_input.activation import ActivationState, AudioFrame, WakeWordBatchResult, WakeWordDetection
+from main_logic.voice_input.activation import ActivationState, AudioFrame, OutputOrigin, WakeWordBatchResult, WakeWordDetection
 from main_logic.voice_identity_service.activation_runtime import VoiceSessionActivationRuntimeConfig
 from tests.unit.voice_identity_service.test_wake_word_runtime import Detector, GENERATION, runtime, settle
 
@@ -263,7 +263,7 @@ async def test_accepted_mid_batch_hit_keeps_original_replay_once():
     await settle()
     assert instance.state is ActivationState.ACTIVE
     assert len(detector.batches) == 1
-    assert sent == [small(i) for i in range(4)]
+    assert sent == [replace(small(i), output_origin=OutputOrigin.REPLAY) for i in range(4)]
     assert sum(item.reason == "wake_word_detected" for item in statuses) == 1
     assert instance._wake_inflight_bytes == instance._wake_queue_bytes == 0
     await instance.close()

@@ -60,6 +60,15 @@ class AsrCoreRoute:
 
 
 @dataclass(frozen=True, slots=True)
+class AsrFailureRule:
+    """Trusted fault semantics registered alongside their provider."""
+
+    recover_on_provider_failure: bool = False
+    retry_connect: bool = False
+    use_delivery_notice: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class AsrProviderMeta:
     """Architectural metadata for one ASR provider implementation."""
 
@@ -95,6 +104,8 @@ class AsrProviderMeta:
     # Qwen provider VAD remains authoritative; local activity only arms its
     # bounded session.finish recovery path.
     observes_local_activity: bool = False
+    supports_result_preserving_finish: bool = False
+    failure_rules: tuple[tuple[str, AsrFailureRule], ...] = ()
 
     @property
     def availability(self) -> AsrProviderAvailability:
@@ -205,6 +216,13 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
         observes_local_activity=True,
+        supports_result_preserving_finish=True,
+        failure_rules=(
+            ("ASR_QWEN_READ_DISCONNECTED", AsrFailureRule(recover_on_provider_failure=True)),
+            ("ASR_QWEN_CONNECTION_FAILED", AsrFailureRule(retry_connect=True)),
+            ("ASR_QWEN_CONNECTION_CLOSED", AsrFailureRule(use_delivery_notice=True)),
+            ("ASR_QWEN_WORKER_FAILED", AsrFailureRule(use_delivery_notice=True)),
+        ),
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",
@@ -213,6 +231,9 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=24_000,
         supported_endpointing_modes=frozenset({"provider"}),
         implementation_status="implemented",
+        failure_rules=(
+            ("ASR_OPENAI_WORKER_FAILED", AsrFailureRule(use_delivery_notice=True)),
+        ),
     ),
     "step": AsrProviderMeta(
         provider_key="step",
@@ -221,6 +242,10 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"provider"}),
         implementation_status="implemented",
+        failure_rules=(
+            ("ASR_STEP_CONNECTION_CLOSED", AsrFailureRule(use_delivery_notice=True)),
+            ("ASR_STEP_WORKER_FAILED", AsrFailureRule(use_delivery_notice=True)),
+        ),
     ),
     "grok": AsrProviderMeta(
         provider_key="grok",
@@ -269,6 +294,13 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         implementation_status="implemented",
         replay_policy="provider_managed",
         connect_max_attempts=3,
+        failure_rules=(
+            ("ASR_SONIOX_RETRYABLE", AsrFailureRule(retry_connect=True)),
+            ("ASR_SONIOX_CONNECTION_LIMIT", AsrFailureRule(retry_connect=True)),
+            ("ASR_RATE_LIMITED", AsrFailureRule(retry_connect=True)),
+            ("ASR_SONIOX_PROTECTED_REPLAY_DISABLED", AsrFailureRule(use_delivery_notice=True)),
+            ("ASR_SONIOX_REPLAY_INCOMPLETE", AsrFailureRule(use_delivery_notice=True)),
+        ),
     ),
     # Local faster-whisper. It is never a Core route: users opt in through the
     # voice-recognition settings, and Core capability (``free`` disables
@@ -309,3 +341,20 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         replay_policy="none",
     ),
 }
+
+
+_EMPTY_FAILURE_RULE = AsrFailureRule()
+
+
+def resolve_provider_failure_rule(code: str) -> AsrFailureRule:
+    """Resolve an exact machine code without importing any provider worker.
+
+    Fault provenance is checked by the caller. Lookup remains independent of
+    the active route so legacy delivery notices keep their existing meaning.
+    Unknown faults grant no recovery or notification override.
+    """
+    for meta in ASR_PROVIDER_REGISTRY.values():
+        for registered_code, rule in meta.failure_rules:
+            if code == registered_code:
+                return rule
+    return _EMPTY_FAILURE_RULE

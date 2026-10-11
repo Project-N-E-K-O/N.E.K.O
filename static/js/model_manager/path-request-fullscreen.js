@@ -1,4 +1,39 @@
 const ModelPathHelper = {
+    /** Match persisted raw paths before comparing complete raw filenames. */
+    findVrmOption(options, rawPath) {
+        const candidates = Array.from(options).filter(option => option.value);
+        const exact = candidates.find(option =>
+            (option.getAttribute('data-path') || option.value) === rawPath);
+        if (exact) return exact;
+        const filename = rawPath.split(/[/\\]/).pop();
+        return candidates.find(option => {
+            let rawFilename = option.getAttribute('data-filename');
+            if (!rawFilename) {
+                const path = option.getAttribute('data-path');
+                rawFilename = (path || option.value).split('/').pop();
+                if (!path) {
+                    try { rawFilename = decodeURIComponent(rawFilename); }
+                    catch (_) { /* Preserve malformed legacy URL segments. */ }
+                }
+            }
+            return rawFilename === filename;
+        });
+    },
+
+    /** Get the original VRM stem, decoding a URL segment only when no filename is available. */
+    getVrmModelName(modelPath, filename) {
+        let name = filename;
+        if (!name) {
+            name = modelPath.split('/').pop();
+            try {
+                name = decodeURIComponent(name);
+            } catch (_) {
+                // Legacy paths may contain a literal, incomplete percent escape.
+            }
+        }
+        return name.replace(/\.vrm$/i, '');
+    },
+
     /**
      * 验证模型路径是否有效
      * 拒绝 undefined/null 字符串、空值、以及包含 'undefined'/'null' 的字符串

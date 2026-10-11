@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import plugin.server.application.plugin_cli as plugin_cli_application
+
+from plugin.utils.http_imports import load_httpx
+
 import asyncio
 from pathlib import Path
 import shutil
@@ -471,8 +475,8 @@ async def test_market_builtin_override_rejects_caller_hash_not_in_catalog(
             return None
 
         async def get(self, url: str, **_kwargs: object) -> object:
-            request = market_bridge.httpx.Request("GET", url)
-            return market_bridge.httpx.Response(
+            request = load_httpx().Request("GET", url)
+            return load_httpx().Response(
                 200,
                 request=request,
                 json=[
@@ -487,7 +491,7 @@ async def test_market_builtin_override_rejects_caller_hash_not_in_catalog(
                 ],
             )
 
-    monkeypatch.setattr(market_bridge.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(market_bridge, "MARKET_API_URL", "https://market.invalid")
 
     with pytest.raises(HTTPException) as exc_info:
@@ -536,8 +540,8 @@ async def test_market_builtin_override_routes_verified_package_to_source_switch(
         }
 
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(upload_and_install=upload_and_install),
     )
 
@@ -582,7 +586,7 @@ def _configure_paths(
     )
     monkeypatch.setattr(
         market_bridge,
-        "inspect_package",
+        "_inspect_package_sync",
         lambda path: SimpleNamespace(package_id="demo"),
     )
 
@@ -894,8 +898,8 @@ async def test_market_upgrade_preserves_profile_at_recorded_custom_location(
 
     monkeypatch.setattr(market_bridge, "replace_plugin", fake_replace)
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(
             upload_and_install=lambda **kwargs: (
                 upload_calls.append(kwargs) or _async_value({"operation": "upgrade"})
@@ -1094,7 +1098,7 @@ async def test_market_manual_takeover_rejects_unowned_existing_profile(
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
     monkeypatch.setattr(
         market_bridge,
-        "inspect_package",
+        "_inspect_package_sync",
         lambda _path: SimpleNamespace(
             package_id="demo",
             profile_names=["payload/profiles/default.toml"],
@@ -1158,8 +1162,8 @@ async def test_market_upgrade_rolls_back_plugin_profile_with_plugin_directory(
         raise RuntimeError("install failed after promotion")
 
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(upload_and_install=install_then_fail),
     )
 
@@ -1193,8 +1197,8 @@ async def test_market_upgrade_exposes_rollback_while_files_are_being_restored(
     monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(
             upload_and_install=lambda **_kwargs: _async_raise(RuntimeError("install failed")),
         ),
@@ -1255,8 +1259,8 @@ async def test_market_upgrade_preserves_install_source_error_after_rollback(
     monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(
             upload_and_install=lambda **_kwargs: _async_raise(
                 market_bridge.InstallSourceError("lock_write_failed", "lock is read-only")
@@ -1314,8 +1318,8 @@ async def test_market_upgrade_preserves_existing_profile_files_on_success(
         return {"operation": "upgrade"}
 
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(upload_and_install=install_new),
     )
 
@@ -1367,7 +1371,7 @@ async def test_market_upgrade_uses_package_id_for_profile_backup(
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda path: None)
     monkeypatch.setattr(
         market_bridge,
-        "inspect_package",
+        "_inspect_package_sync",
         lambda path: SimpleNamespace(package_id=package_id),
         raising=False,
     )
@@ -1382,8 +1386,8 @@ async def test_market_upgrade_uses_package_id_for_profile_backup(
         return {"operation": "upgrade"}
 
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(upload_and_install=install_new),
     )
 
@@ -1428,7 +1432,7 @@ async def test_market_upgrade_rejects_legacy_rename_despite_stale_incoming_profi
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
     monkeypatch.setattr(
         market_bridge,
-        "inspect_package",
+        "_inspect_package_sync",
         lambda _path: SimpleNamespace(package_id="new-package"),
     )
 
@@ -1440,8 +1444,8 @@ async def test_market_upgrade_rejects_legacy_rename_despite_stale_incoming_profi
         return {}
 
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(upload_and_install=unexpected_install),
     )
 
@@ -1490,7 +1494,7 @@ async def test_market_upgrade_blocks_package_id_change_and_preserves_old_profile
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
     monkeypatch.setattr(
         market_bridge,
-        "inspect_package",
+        "_inspect_package_sync",
         lambda _path: SimpleNamespace(package_id="new-package"),
     )
 
@@ -1502,8 +1506,8 @@ async def test_market_upgrade_blocks_package_id_change_and_preserves_old_profile
         return {}
 
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(upload_and_install=unexpected_install),
     )
 
@@ -1559,7 +1563,7 @@ async def test_market_restart_failure_restores_previous_install_source_entry(
     monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: manager)
     monkeypatch.setattr(
         market_bridge,
-        "inspect_package",
+        "_inspect_package_sync",
         lambda _path: SimpleNamespace(
             package_id="demo",
             profile_names=["payload/profiles/default.toml"],
@@ -1605,8 +1609,8 @@ async def test_market_restart_failure_restores_previous_install_source_entry(
         return None
 
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(upload_and_install=install_new),
     )
     monkeypatch.setattr(replacement_transaction, "_start_plugin", fail_new_start)
@@ -1673,7 +1677,11 @@ async def test_market_backup_failure_reports_incomplete_when_old_plugin_cannot_r
     )
     monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
-    monkeypatch.setattr(market_bridge.os, "rename", lambda source, target: _raise_permission_error())
+    monkeypatch.setattr(
+        replacement_transaction.os,
+        "rename",
+        lambda source, target: _raise_permission_error(),
+    )
 
     with pytest.raises(market_bridge._TaskError) as exc_info:
         await market_bridge._do_upgrade({}, _payload(), {})
@@ -1798,8 +1806,8 @@ async def test_stopped_builtin_override_upgrade_validates_runtime_and_rolls_back
         raise RuntimeError("entry class is missing")
 
     monkeypatch.setattr(
-        market_bridge,
-        "_cli_service",
+        plugin_cli_application,
+        "_service",
         SimpleNamespace(upload_and_install=install_invalid_runtime),
     )
     monkeypatch.setattr(

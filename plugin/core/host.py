@@ -18,8 +18,9 @@ import time
 import hashlib
 import types
 import uuid
+import weakref
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Type
+from typing import Any, Dict, Iterator, Optional, Type, TYPE_CHECKING
 
 from config import (
     MAIN_SERVER_PORT,
@@ -36,7 +37,12 @@ from plugin.sdk import PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
 from plugin.core.communication import PluginCommunicationResourceManager, STARTUP_RESULT_REQ_ID
-from plugin._types.models import HealthCheckResponse
+
+if TYPE_CHECKING:
+    # Keep server API models out of the child startup import path. The SDK
+    # still uses pydantic; health_check constructs this API response on demand.
+    from plugin._types.models import HealthCheckResponse
+
 from plugin._types.exceptions import (
     PluginLifecycleError,
     PluginEntryNotFoundError,
@@ -2127,6 +2133,30 @@ def _plugin_process_runner(
         raise  # 重新抛出，让进程退出
 
 
+_PLUGIN_HOSTS: weakref.WeakSet[PluginHost] = weakref.WeakSet()
+_FORKING_HOST = threading.local()
+
+
+def _scrub_inherited_host_credentials() -> None:
+    current = getattr(_FORKING_HOST, "host", None)
+    for host in tuple(_PLUGIN_HOSTS):
+        try:
+            host.clear_inherited_credentials(keep_launch_options=host is current)
+        except Exception:
+            pass
+    _PLUGIN_HOSTS.clear()
+    try:
+        state.clear_inherited_plugin_references()
+    except Exception:
+        pass
+
+
+_HOST_CREDENTIAL_FORK_HOOK_REGISTERED = False
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_scrub_inherited_host_credentials)
+    _HOST_CREDENTIAL_FORK_HOOK_REGISTERED = True
+
+
 class PluginHost:
     """
     插件进程宿主
@@ -2137,6 +2167,7 @@ class PluginHost:
     """
 
     def __init__(self, plugin_id: str, entry_point: str, config_path: Path, *, source_only: bool = False):
+        _PLUGIN_HOSTS.add(self)
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
@@ -2210,6 +2241,22 @@ class PluginHost:
             transport=self.transport,
         )
     
+    def clear_inherited_credentials(self, *, keep_launch_options: bool = False) -> None:
+        """Erase copied host secrets while retaining this child's launch arguments."""
+        self._model_gateway_token = ""
+        options = getattr(self, "_model_gateway_options", None)
+        if not keep_launch_options and options is not None:
+            options.clear()
+
+    def _start_process(self) -> None:
+        # The fork hook must retain this child's own launch options while
+        # clearing credentials of every other host, including in-flight starts.
+        _FORKING_HOST.host = self
+        try:
+            self.process.start()
+        finally:
+            del _FORKING_HOST.host
+
     async def start(
         self,
         message_target_queue=None,
@@ -2255,7 +2302,7 @@ class PluginHost:
                 "token": self._model_gateway_token,
             })
             _refresh_child_storage_layout_env(self.logger)
-            start_task = asyncio.create_task(asyncio.to_thread(self.process.start))
+            start_task = asyncio.create_task(asyncio.to_thread(self._start_process))
             await asyncio.shield(start_task)
         except asyncio.CancelledError:
             self._revoke_model_gateway_access()
@@ -2605,6 +2652,8 @@ class PluginHost:
     
     def health_check(self) -> HealthCheckResponse:
         """执行健康检查，返回详细状态"""
+        from plugin._types.models import HealthCheckResponse
+
         alive = self.is_alive()
         exitcode = self.process.exitcode
         pid = self.process.pid if self.process.is_alive() else None

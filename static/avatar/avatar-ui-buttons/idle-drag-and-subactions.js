@@ -750,9 +750,8 @@ function _clearNekoIdleCat1EdgePeekForTierExit(container) {
 function _getNekoIdleCat1RapidDragAssetUrl(button, tier) {
     if (_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1) return '';
     const state = button && button.__nekoIdleReturnDragActionState;
-    return state && state.active && state.rapidActive
-        ? `${_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL}${_getNekoIdleReturnAssetVersionSuffix()}`
-        : '';
+    if (!state || !state.active || !state.rapidActive || !_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL) return '';
+    return `${_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL}${_getNekoIdleReturnAssetVersionSuffix()}`;
 }
 
 function _isNekoIdleCat1RapidDragCurrentTier(button) {

@@ -312,7 +312,7 @@
                         <p id="memory-settings-scope" class="memory-settings-scope" data-i18n="memory.settingsScopeAllCharacters">这些设置适用于所有角色。</p>
                         <div class="memory-settings-toggle-group">
                             <div class="review-toggle">
-                                <input type="checkbox" id="review-toggle-checkbox">
+                                <input type="checkbox" id="review-toggle-checkbox" disabled aria-describedby="review-toggle-status">
                                 <div class="review-toggle-control">
                                     <div class="review-toggle-heading">
                                         <label for="review-toggle-checkbox" class="review-toggle-title" data-i18n="memory.autoReview">自动记忆整理</label>
@@ -323,12 +323,20 @@
                                     </div>
                                     <label for="review-toggle-checkbox" class="auto-review-toggle-btn" aria-hidden="true">
                                         <span class="auto-review-toggle-icon"></span>
-                                        <span class="auto-review-toggle-text" id="review-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                        <span class="auto-review-toggle-text" id="review-toggle-text" data-i18n="common.loading">加载中...</span>
                                     </label>
+                                    <div class="memory-setting-feedback">
+                                        <span id="review-toggle-status" role="status" data-i18n="common.loading">加载中...</span>
+                                        <button type="button" id="review-toggle-retry" class="storage-location-open-btn" data-i18n="common.retry" hidden>重试</button>
+                                        <div id="review-toggle-repair" class="memory-toggle-repair" role="group" aria-labelledby="review-toggle-status" hidden>
+                                            <button type="button" class="storage-location-open-btn" data-enabled="true" data-i18n="memory.repairEnable">设为开启</button>
+                                            <button type="button" class="storage-location-open-btn" data-enabled="false" data-i18n="memory.repairDisable">设为关闭</button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="review-toggle">
-                                <input type="checkbox" id="strong-memory-toggle-checkbox">
+                                <input type="checkbox" id="strong-memory-toggle-checkbox" disabled aria-describedby="strong-memory-toggle-status">
                                 <div class="review-toggle-control">
                                     <div class="review-toggle-heading">
                                         <label for="strong-memory-toggle-checkbox" class="review-toggle-title" data-i18n="memory.strongMemory">强力记忆模式</label>
@@ -339,8 +347,16 @@
                                     </div>
                                     <label for="strong-memory-toggle-checkbox" class="auto-review-toggle-btn" aria-hidden="true">
                                         <span class="auto-review-toggle-icon"></span>
-                                        <span class="auto-review-toggle-text" id="strong-memory-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                        <span class="auto-review-toggle-text" id="strong-memory-toggle-text" data-i18n="common.loading">加载中...</span>
                                     </label>
+                                    <div class="memory-setting-feedback">
+                                        <span id="strong-memory-toggle-status" role="status" data-i18n="common.loading">加载中...</span>
+                                        <button type="button" id="strong-memory-toggle-retry" class="storage-location-open-btn" data-i18n="common.retry" hidden>重试</button>
+                                        <div id="strong-memory-toggle-repair" class="memory-toggle-repair" role="group" aria-labelledby="strong-memory-toggle-status" hidden>
+                                            <button type="button" class="storage-location-open-btn" data-enabled="true" data-i18n="memory.repairEnable">设为开启</button>
+                                            <button type="button" class="storage-location-open-btn" data-enabled="false" data-i18n="memory.repairDisable">设为关闭</button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

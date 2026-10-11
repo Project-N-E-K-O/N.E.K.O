@@ -615,12 +615,14 @@ class PromotionMixin:
             set_call_type("memory_recheck_reflection")
             api_config = await self._config_manager.aget_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+            # 不开思考，跟 memory_recheck_fact 对偶：只给单条老条目补标两个字段，
+            # 同样的 temporal_scope / event_when 新条目由 reflection 合成顺带产出，
+            # 补标不值得多一条「思考过长→截断/超时→耗尽重试后永远停在 v1」的路径。
             llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
-                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
-                extra_body=None,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; the answer is one small two-field JSON
                 provider_type=api_config.get('provider_type'),
             )
             try:

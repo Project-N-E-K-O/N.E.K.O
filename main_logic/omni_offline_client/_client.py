@@ -85,6 +85,10 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
             Callback when a response is complete.
     """
 
+    # 连续高重复时清空对话历史（只留系统指令）。历史由调用方按序维护的会话关掉它：
+    # 清空会抹掉其中每一条发言，调用方按条目打的标记也随之丢失
+    repetition_reset_enabled: bool = True
+
     def __init__(
         self,
         base_url: str,
@@ -251,7 +255,23 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # State management
         self._is_responding = False
         self._response_generation = 0
+        self._interrupter_owned_generations: set[int] = set()
         self._active_response_generation: int | None = None
+        self._completion_pending_generation: int | None = None
+        # stream_text / prompt_ephemeral calls still running (see is_idle).
+        self._reply_calls_in_flight = 0
+        # Closes of clients switch_model replaced while a reply call was in
+        # flight; the last call to return runs them (_retire_replaced_clients).
+        self._retired_client_closers: list = []
+        # Both sync and optional. on_response_displaced(kind): a user reply
+        # began over this one without an interruption and took its close over
+        # (the owner closes it). on_idle(): the last reply call returned and
+        # nothing is left in progress.
+        self.on_response_displaced: Optional[Callable[[str], Any]] = None
+        # What on_response_displaced handed back to send before this reply's
+        # first output (see _run_displaced_followup).
+        self._displaced_followup = None
+        self.on_idle: Optional[Callable[[], None]] = None
         self._conversation_history = []
         self._instructions = ""
         self._stream_task = None

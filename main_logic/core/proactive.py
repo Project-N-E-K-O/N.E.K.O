@@ -26,10 +26,11 @@ from main_logic.omni_realtime_client import (
     MultimodalTurnDelivery,
     OmniRealtimeClient,
     RealtimeImagePayloadTooLargeError,
+    new_client_item_id,
 )
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
-from main_logic.session_state import SessionEvent, ProactivePhase
+from main_logic.session_state import SessionEvent, ProactivePhase, session_reply_in_progress
 from main_logic.proactive_delivery import (
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
@@ -542,7 +543,7 @@ class ProactiveMixin:
             # (only the agent-direct-reply path in main_server.py does), so
             # without this the buffer would carry the proactive text forward
             # and contaminate the next user-initiated turn's AI message.
-            self._flush_ai_turn_text_to_tracker()
+            self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
 
             if self.session and hasattr(self.session, '_conversation_history'):
                 # action_note 只进历史，不进 send_lanlan_response（前端不展示）
@@ -1813,6 +1814,14 @@ class ProactiveMixin:
                 passive=False,
             )
             ack_resolved = False
+            # Whether visible text came out. A callback whose tool call ran
+            # with nothing said is still delivered (its side effect happened),
+            # but nothing fills the topic teaser then.
+            text_committed = False
+
+            def _mark_text_committed(_text: str) -> None:
+                nonlocal text_committed
+                text_committed = True
 
             def _resolve_text_delivery_ack(delivered: bool) -> None:
                 nonlocal ack_resolved
@@ -1852,6 +1861,7 @@ class ProactiveMixin:
                         instruction,
                         images=_proactive_images or None,
                         on_committed=lambda: _resolve_text_delivery_ack(True),
+                        on_committed_text=_mark_text_committed,
                     )
                 except Exception as exc:
                     if ack_resolved:
@@ -1878,6 +1888,8 @@ class ProactiveMixin:
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered or ack_resolved:
                 _resolve_text_delivery_ack(True)
+                if topic_hint_sent and not text_committed:
+                    await self.send_cancel_topic_hint(turn_id=proactive_sid)
                 delivered_ids = {
                     cb.get("_callback_delivery_id")
                     for cb in active_callbacks
@@ -2178,16 +2190,26 @@ class ProactiveMixin:
         # A takeover controller that can speak on its own (e.g. a media scene
         # filling gaps) receives respond cues directly; ordinary chat output is
         # muted for the whole takeover, so queuing here would only let them age out.
+        # A callback hold (``hold_callbacks``) parks cues after the takeover was
+        # released, until its owner hands them back for ordinary delivery. The
+        # takeover sink, while installed, is asked first.
+        sinks = []
         sink = getattr(self, "_takeover_callback_sink", None)
         if getattr(self, "_takeover_active", False) and callable(sink):
+            sinks.append(("takeover", sink))
+        hold_sink = getattr(self, "_callback_hold_sink", None)
+        if callable(hold_sink):
+            sinks.append(("hold", hold_sink))
+        for sink_label, candidate_sink in sinks:
             # The sink only sees the dict; carry the caller's priority like the key above.
             callback.setdefault("priority", priority)
             try:
-                consumed = bool(sink(callback))
+                consumed = bool(candidate_sink(callback))
             except Exception as exc:
                 consumed = False
                 logger.warning(
-                    "[%s] takeover callback sink failed: %s", self.lanlan_name, type(exc).__name__,
+                    "[%s] %s callback sink failed: %s",
+                    self.lanlan_name, sink_label, type(exc).__name__,
                 )
             if consumed:
                 return
@@ -2512,9 +2534,7 @@ class ProactiveMixin:
                                 "type": "conversation.item.create",
                                 "event_id": description_event_id,
                                 "item": {
-                                    "id": (
-                                        f"item_neko_callback_visual_{uuid4().hex}"
-                                    ),
+                                    "id": new_client_item_id("cbvis"),
                                     "type": "message",
                                     "role": "user",
                                     "content": [{
@@ -3004,11 +3024,12 @@ class ProactiveMixin:
         ``pending_agent_callbacks`` outside the manager (Codex P2).
 
         Returns False while: audio is playing (frontend gate), the SM is not
-        IDLE (another proactive/greeting turn owns it), or the session is still
-        GENERATING a response (_is_responding — covers BOTH the realtime
-        response.created→voice_play_start window the playback gate can't see,
-        AND an active offline/text user response where try_start_proactive
-        would deny the claim)."""
+        IDLE (another proactive/greeting turn owns it), or the session still
+        has a reply in progress (``session_reply_in_progress``: _is_responding,
+        which covers the realtime response.created→voice_play_start window the
+        playback gate can't see, plus an offline/text reply that is live,
+        guard-paused or awaiting its completion — exactly where
+        try_start_proactive would deny the claim)."""
         # Keep plugin respond cues under bounded/coalescing queue ownership for
         # the whole game session, including automatic watch-together transitions.
         if getattr(self, "_takeover_active", False):
@@ -3031,16 +3052,18 @@ class ProactiveMixin:
         sess = self.session
         # Both realtime AND offline sessions expose _is_responding (set while
         # generating a response — user OR proactive); realtime's
-        # is_active_response() is just a read of it. Releasing while True would
-        # have trigger deny/defer the claim (voice: is_active_response gate;
-        # text: try_start_proactive denies during _is_responding) and park the
-        # cue in pending_agent_callbacks outside the manager (Codex P2).
+        # is_active_response() is just a read of it. An offline reply paused
+        # by a guard has it down while still live, so read the same "reply in
+        # progress" check try_start_proactive denies on. Releasing while it
+        # holds would have trigger deny/defer the claim (voice:
+        # is_active_response gate; text: try_start_proactive) and park the cue
+        # in pending_agent_callbacks outside the manager (Codex P2).
         try:
-            if sess is not None and getattr(sess, "_is_responding", False):
+            if session_reply_in_progress(sess):
                 return False
         except Exception:
             # Read hiccup → treat as not-responding rather than wedging the queue.
-            logger.debug("[%s] _can_release_proactive: _is_responding check failed; treating as not-responding", self.lanlan_name)
+            logger.debug("[%s] _can_release_proactive: reply-in-progress check failed; treating as not-responding", self.lanlan_name)
         return True
 
     def _reset_proactive_gate(self) -> None:

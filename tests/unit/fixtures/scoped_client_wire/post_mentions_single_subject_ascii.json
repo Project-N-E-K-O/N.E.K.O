@@ -1,0 +1,22 @@
+{
+  "call": {
+    "method": "post_mentions",
+    "lanlan": "Lanlan",
+    "kwargs": {
+      "subjects": [
+        {
+          "subject_kind": "group_participant",
+          "subject_id": "neko_visit:0123456789abcdef01234567:c_89abcdef0123456789abcdef"
+        }
+      ],
+      "response_text": "Nice to see you again!\nHow was the trip?"
+    }
+  },
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:48912/internal/memory/Lanlan/scoped_mentions",
+    "body": "{\"response_text\":\"Nice to see you again!\\nHow was the trip?\",\"subjects\":[{\"subject_kind\":\"group_participant\",\"subject_id\":\"neko_visit:0123456789abcdef01234567:c_89abcdef0123456789abcdef\"}]}"
+  },
+  "model": "ScopedMentionsRequest",
+  "qq_reference": "b0b283e34:plugin/plugins/qq_auto_reply/memory_bridge.py::QQMemoryBridge.post_scoped_mentions"
+}

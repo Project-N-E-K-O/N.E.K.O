@@ -112,3 +112,38 @@ def test_selector_rerenders_script_texts_on_localechange():
     result = run_node_stdin(node, SCRIPT, cwd=str(ROOT), capture_output=True, check=False, timeout=10)
     assert result.returncode == 0, f"Node regression failed:\n{result.stdout}\n{result.stderr}"
     assert result.stdout == "ok", "async scenario did not complete"
+
+
+def test_standalone_selector_start_does_not_claim_activity():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    harness = SCRIPT.split("async function run() {")[0].replace(
+        "fetch: url => new Promise(resolve => requests.push({ url, resolve })),",
+        "fetch: (url, options) => new Promise(resolve => requests.push({ url, options, resolve })),",
+    )
+    script = harness + r"""
+async function run() {
+  docListeners.DOMContentLoaded();
+  await respond(/\/stories$/, { ok: true, character_id: 'cat_a', stories: [
+    { story_id: 'story_a', title: 'Story A', revision: 2, display_intro: {} },
+  ] });
+  await respond(/\/session\/active\?/, { ok: true, session: null });
+  await respond(/\/memory\/archives\?/, { ok: true, archives: [] });
+  await respond(/\/memory\/stories$/, { ok: true, character_id: 'cat_a', stories: [] });
+  element('#theater-start-btn').listeners.click();
+  await respond(/\/session\/active\?/, { ok: true, session: null });
+  await tick(); await tick();
+  const start = requests.find(request => request.url.includes('/session/start'));
+  assert.ok(start);
+  assert.equal(start.url, '/api/theater-numeric/session/start?claim_activity=false');
+  assert.equal(start.options.method, 'POST');
+  const payload = JSON.parse(start.options.body);
+  assert.equal(payload.character_id, 'cat_a');
+  assert.equal(payload.story_id, 'story_a');
+}
+run().then(() => process.stdout.write('ok')).catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, cwd=str(ROOT), capture_output=True, check=False, timeout=10)
+    assert result.returncode == 0, f"Node regression failed:\n{result.stdout}\n{result.stderr}"
+    assert result.stdout == "ok", "async scenario did not complete"

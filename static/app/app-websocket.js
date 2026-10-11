@@ -1821,6 +1821,8 @@
     function finalizeAssistantTurn(assistantTurnId, options) {
         options = options || {};
         var enableMusic = options.enableMusic !== false;
+        var reactionTarget = options.enableReactions !== false ? S.messageReactionTarget : null;
+        S.messageReactionTarget = null;
 
         var bufferedFullText = typeof window._geminiTurnFullText === 'string'
             ? window._geminiTurnFullText
@@ -1857,6 +1859,9 @@
                 });
                 var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
                 if (emotionResult && emotionResult.emotion) {
+                    if (typeof window.applyMessageReactionFromEmotion === 'function') {
+                        try { window.applyMessageReactionFromEmotion(reactionTarget, emotionResult); } catch (_) { }
+                    }
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
                     if (assistantTurnId) {
@@ -1925,6 +1930,10 @@
         );
         window._nekoAssistantTurnId = S.assistantTurnId;
         S.assistantTurnStartedAt = Date.now();
+        S.messageReactionTarget = typeof window.captureMessageReactionTarget === 'function'
+            && !(responseMeta && (responseMeta.passthrough
+                || ['proactive', 'agent_callback', 'game_route', 'new_user_icebreaker'].indexOf(responseMeta.source) >= 0))
+            ? window.captureMessageReactionTarget(resolveAssistantRequestId(requestId, responseMeta)) : null;
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
@@ -2818,6 +2827,7 @@
 
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
+        if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.reset();
         attachStartSessionHandshake(S.socket);
         var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
 
@@ -2825,6 +2835,8 @@
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
             console.log(window.t('console.websocketConnected'));
+            // The state module publishes read errors; reconnect must remain usable.
+            window.appChatAvatarState?.refresh('reconnect')?.catch?.(() => {});
 
             if (S._conversationLanguageClearPending) {
                 var pendingLanguageClear = S._conversationLanguageClearPending;
@@ -3117,6 +3129,12 @@
 
             try {
                 var response = JSON.parse(event.data);
+                // Persistent display resources do not belong to the assistant stream
+                // or model-preview IPC pipeline; invalidate even while a turn is gated.
+                if (response.type === 'chat_avatar_changed') {
+                    window.appChatAvatarState?.onBackendChanged(response);
+                    return;
+                }
                 if (response.type === 'catgirl_switched') {
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
                 }
@@ -3770,6 +3788,13 @@
                         }
                     } catch (_) { }
 
+                    if (['ASR_RECOVERY_STARTED', 'ASR_RECOVERY_READY', 'ASR_RECOVERY_FAILED',
+                        'ASR_TURN_INCOMPLETE'].includes(statusCode)) {
+                        if (_thisSocket !== S.socket) return;
+                        window.appAudioCapture?.handleAutomaticRecoveryStatus(statusCode, statusDetails);
+                        return;
+                    }
+
                     if (statusCode === 'ASR_INPUT_CONNECTING'
                         || statusCode === 'ASR_INPUT_DELIVERY_FAILED'
                         || statusCode === 'ASR_INPUT_DELIVERY_UNCERTAIN') {
@@ -3789,6 +3814,13 @@
                     }
 
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
+                        if (statusDetails?.recovery_id != null) {
+                            if (_thisSocket !== S.socket) return;
+                            const accepted = statusDetails.state === 'blocked'
+                                ? window.appAudioCapture?.handleAutomaticRecoveryBlocked(statusDetails)
+                                : window.appAudioCapture?.matchesAutomaticRecoveryOperation(statusDetails);
+                            if (!accepted) return;
+                        }
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
                             'off', 'local_listen', 'prewarming', 'active',
@@ -3838,7 +3870,16 @@
                         return;
                     }
 
+                    if (statusCode === 'VOICE_IDENTITY_CONTROL_RESULT') {
+                        if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.controlResult(statusDetails, _thisSocket);
+                        return;
+                    }
+                    if (statusCode === 'VOICE_INPUT_PREVIEW_BUSY') {
+                        if (typeof window.showStatusToast === 'function') window.showStatusToast(window.t('voiceIdentity.inputPreviewBusy'), 5000);
+                        return;
+                    }
                     if (statusCode === 'VOICE_SESSION_ACTIVATION_STATE') {
+                        if (window.nekoVoiceCaptureReadiness && !window.nekoVoiceCaptureReadiness.activationStatus(statusDetails, _thisSocket)) return;
                         var activationState = (statusDetails && statusDetails.state) || '';
                         var allowedActivationStates = [
                             'disabled', 'preparing', 'waiting', 'verifying',
@@ -5163,6 +5204,13 @@
                         }
                     })();
 
+                // -------- system turn abandoned --------
+                // The reply to this request was interrupted: release only what was
+                // held for that request (rollback draft, last-submitted marker).
+                // Never seal a bubble here; the interrupting turn owns the current one.
+                } else if (response.type === 'system' && response.data === 'turn abandoned') {
+                    clearPendingRollbackForRequest(response.request_id);
+
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     if (S.suppressAssistantStreamUntilNextSession) {
@@ -5207,7 +5255,7 @@
                     // 与正常 'turn end' 走同一套收尾（emotion + 字幕）。music 关闭——
                     // 主动消息不自动放歌；也不在此调 scheduleProactiveChat（见上方
                     // "skipping proactive chat schedule"），防 proactive 自触发。
-                    finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false });
+                    finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false, enableReactions: false });
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
@@ -5966,6 +6014,7 @@
                 return;
             }
             console.log(window.t('console.websocketClosed'));
+            if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.disconnected();
             removeExternalAsrPreview();
             // Socket teardown ends the backend ASR route; drop the route flags so
             // the mic settings hint stops reporting independent ASR as active. A

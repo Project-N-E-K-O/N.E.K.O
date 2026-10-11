@@ -25,29 +25,29 @@ MMD_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "mmd" / "mmd-ui-buttons.js"
 LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
 LIVE2D_INTERACTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
-CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
-CAT1_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1-click.gif"
-CAT2_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat2.gif"
-CAT2_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat2-click.gif"
-CAT3_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat3.gif"
-CAT3_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat3-click.gif"
-CAT1_VOICE_CLICK_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-click.mp3"
-CAT1_VOICE1_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice1.mp3"
-CAT1_VOICE2_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice2.mp3"
-CAT1_VOICE3_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice3.mp3"
-CAT2_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat2-sleep1.mp3"
-CAT2_SLEEP_SOUND2_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat2-sleep2.mp3"
-CAT3_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat3-sleep1.mp3"
-CAT3_SLEEP_SOUND2_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat3-sleep2.mp3"
-CAT1_WALK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-1.gif"
-CAT1_STRETCH_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-2.gif"
-CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-3.gif"
-CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-1.gif"
-CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-2.gif"
-CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-3.gif"
-CAT4_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-4.gif"
-CAT1_RAPID_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-5.gif"
-CAT1_RAPID_DRAG_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-funny.mp3"
+CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat1.gif"
+CAT1_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat1-click.gif"
+CAT2_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat2.gif"
+CAT2_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat2-click.gif"
+CAT3_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat3.gif"
+CAT3_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat3-click.gif"
+CAT1_VOICE_CLICK_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "interaction" / "cat1-voice-click.mp3"
+CAT1_VOICE1_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "ambient" / "cat1-voice1.mp3"
+CAT1_VOICE2_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "ambient" / "cat1-voice2.mp3"
+CAT1_VOICE3_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "ambient" / "cat1-voice3.mp3"
+CAT2_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "sleep" / "cat2-sleep1.mp3"
+CAT2_SLEEP_SOUND2_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "sleep" / "cat2-sleep2.mp3"
+CAT3_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "sleep" / "cat3-sleep1.mp3"
+CAT3_SLEEP_SOUND2_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "sleep" / "cat3-sleep2.mp3"
+CAT1_WALK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "movement" / "cat-idle-cat4-1.gif"
+CAT1_STRETCH_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "movement" / "cat-idle-cat4-2.gif"
+CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "movement" / "cat-idle-cat4-3.gif"
+CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-1.gif"
+CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-2.gif"
+CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-3.gif"
+CAT4_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-4.gif"
+CAT1_RAPID_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-5.gif"
+CAT1_RAPID_DRAG_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "interaction" / "cat1-voice-funny.mp3"
 CAT1_QUESTION_MARK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-question-mark.png"
 CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
 THOUGHT_BUBBLE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cloud-thought-bubble.gif"
@@ -87,32 +87,32 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     app_ui_source = read_js_parts(APP_UI_PATH)
 
     # Non-click states
-    assert "/static/assets/neko-idle/cat-idle-cat1.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat2.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat3.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat4-1.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat4-2.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-2.gif" in source
     assert '_NEKO_IDLE_TIER_CAT1' in source
     assert '_NEKO_IDLE_TIER_CAT2' in source
     assert '_NEKO_IDLE_TIER_CAT3' in source
 
     # Click states
-    assert "/static/assets/neko-idle/cat-idle-cat1-click.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat2-click.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat3-click.gif" in source
-    assert "/static/assets/neko-idle/cat1-voice-click.mp3" in source
-    assert "/static/assets/neko-idle/cat1-voice1.mp3" in source
-    assert "/static/assets/neko-idle/cat1-voice2.mp3" in source
-    assert "/static/assets/neko-idle/cat1-voice3.mp3" in source
-    assert "/static/assets/neko-idle/cat2-sleep1.mp3" in source
-    assert "/static/assets/neko-idle/cat3-sleep1.mp3" in source
-    assert "/static/assets/neko-idle/cat-idle-cat4-3.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat-move-1.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat-move-2.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat-move-3.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat-move-4.gif" in source
-    assert "/static/assets/neko-idle/cat-idle-cat-move-5.gif" in source
-    assert "/static/assets/neko-idle/cat1-voice-funny.mp3" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat1-click.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif" in source
+    assert "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-click.mp3" in source
+    assert "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice1.mp3" in source
+    assert "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice2.mp3" in source
+    assert "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice3.mp3" in source
+    assert "/static/assets/cat-resources/voice/dev_neko/sleep/cat2-sleep1.mp3" in source
+    assert "/static/assets/cat-resources/voice/dev_neko/sleep/cat3-sleep1.mp3" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-4.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-5.gif" in source
+    assert "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-funny.mp3" in source
     assert "/static/assets/neko-idle/cat_model_change.gif" in app_ui_source
     assert '_getNekoIdleReturnClickAssetUrl' in source
     assert '_getNekoIdleReturnDragAssetUrl' in source
@@ -128,8 +128,7 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
         "]),\n    [_NEKO_IDLE_TIER_CAT2]",
         "cat1 drag asset pool",
     )
-    assert "cat-idle-cat-move-1.gif" in cat1_drag_pool
-    assert "cat-idle-cat-move-2.gif" in cat1_drag_pool
+    assert "..._getNekoCatAppearanceUrls('drag.cat1')" in cat1_drag_pool
 
     cat2_drag_pool = _source_slice_between(
         source,
@@ -137,8 +136,7 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
         "]),\n    [_NEKO_IDLE_TIER_CAT3]",
         "cat2 drag asset pool",
     )
-    assert "cat-idle-cat-move-2.gif" in cat2_drag_pool
-    assert "cat-idle-cat-move-3.gif" in cat2_drag_pool
+    assert "..._getNekoCatAppearanceUrls('drag.cat2')" in cat2_drag_pool
 
     cat3_drag_pool = _source_slice_between(
         source,
@@ -146,8 +144,7 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
         "])\n});",
         "cat3 drag asset pool",
     )
-    assert "cat-idle-cat-move-3.gif" in cat3_drag_pool
-    assert "cat-idle-cat-move-4.gif" in cat3_drag_pool
+    assert "..._getNekoCatAppearanceUrls('drag.cat3')" in cat3_drag_pool
 
 
 def test_cat1_question_mark_keyboard_trigger_replaces_drag_sequence():
@@ -220,7 +217,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _handleNekoIdleCat1PlaygroundEntryRequest(event)" in source
     assert "window.addEventListener('neko:idle-cat1-playground-entry-request', _handleNekoIdleCat1PlaygroundEntryRequest);" in source
     assert "button.__nekoIdleCat1PlaygroundDropState" in source
-    assert "_NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-2.gif'" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL = _getNekoCatAppearanceUrl('playground.cat1.air', { random: false })" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png'" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING = 0.988" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3" in source
@@ -1191,6 +1188,27 @@ def test_pngtuber_return_replays_model_enter_animation_after_preparing_container
     assert "if (modelReturnEnterRect) {" in branch
     assert "playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);" in branch
     assert branch.index("prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });") < branch.index("playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);")
+
+
+def test_pngtuber_show_without_return_rect_clears_prepared_inline_opacity():
+    # prepareModelReturnContainer leaves inline opacity:1 / transition:none when there is
+    # no return rect. Inline opacity outranks #pngtuber-container.locked-hover-fade, so the
+    # locked hover fade only works if the no-rect path clears both (flush first so the
+    # minimized -> visible snap does not animate).
+    source = read_js_parts(APP_UI_PATH)
+    branch = source[
+        source.index("} else if (effectiveModelType === 'pngtuber') {"):
+        source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
+    ]
+
+    enter_call = branch.index("playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);")
+    no_rect_branch = branch[
+        branch.index("} else {", enter_call):
+        branch.index("pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');")
+    ]
+    flush = no_rect_branch.index("void pngtuberContainer.offsetWidth;")
+    assert flush < no_rect_branch.index("pngtuberContainer.style.removeProperty('transition');")
+    assert flush < no_rect_branch.index("pngtuberContainer.style.removeProperty('opacity');")
 
 
 def test_return_button_idle_tier_styles_are_present():
@@ -2567,8 +2585,8 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     source = _read_avatar_ui_buttons_source()
     app_ui_source = read_js_parts(APP_UI_PATH)
 
-    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-5.gif'" in source
-    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3'" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = _getNekoCatAppearanceUrl('drag.rapid', { random: false })" in source
+    assert "_getNekoCatVoiceUrl('cat1.rapid_drag')" in source
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS = 5000" in source
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_WINDOW_MS = 1100" in source
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_MIN_DISTANCE_PX = 28" in source
@@ -3168,7 +3186,8 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     _assert_source_order(
         sleep_play_block,
         "sleep sound playback",
-        "const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume);",
+        "const sleepSlot = tier === _NEKO_IDLE_TIER_CAT3 ? 'cat3.sleep' : 'cat2.sleep';",
+        "_getNekoCatVoiceUrl(sleepSlot),",
         "_runAfterNekoIdleSoundStarted(_nekoIdleSleepSoundState, audio, () => {",
         "if (token !== _nekoIdleSleepSoundState.token || _nekoIdleSleepSoundState.tier !== tier) return;",
         "_showNekoIdleThoughtBubbleForSound(tier, audio);",
@@ -3462,13 +3481,11 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     assert "[_NEKO_IDLE_TIER_CAT2]" in source
     assert "[_NEKO_IDLE_TIER_CAT3]" in source
     assert "srcs: Object.freeze([" in source
-    assert "'/static/assets/neko-idle/cat2-sleep1.mp3'" in source
-    assert "'/static/assets/neko-idle/cat2-sleep2.mp3'" in source
-    assert "'/static/assets/neko-idle/cat3-sleep1.mp3'" in source
-    assert "'/static/assets/neko-idle/cat3-sleep2.mp3'" in source
-    assert "function _pickNekoIdleSleepSoundSrc(config)" in source
-    assert "Math.floor(Math.random() * srcs.length)" in source
-    assert "_playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume)" in source
+    assert "..._getNekoCatVoiceUrls('cat2.sleep')" in source
+    assert "..._getNekoCatVoiceUrls('cat3.sleep')" in source
+    assert "function _pickNekoIdleSleepSoundSrc" not in source
+    assert "_playNekoIdleSound(" in source
+    assert "_getNekoCatVoiceUrl(sleepSlot)" in source
     assert "audio.volume = Math.max(0, Math.min(1, Number(volume) || 0.2))" in source
     assert "audio.__nekoIdlePlayStarted = playStarted;" in source
     assert "audio.dispatchEvent(new Event('error'));" in source
@@ -3488,11 +3505,14 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.10" in source
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.12" in source
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900" in source
-    assert "'/static/assets/neko-idle/cat1-voice1.mp3'" in source
-    assert "'/static/assets/neko-idle/cat1-voice2.mp3'" in source
-    assert "'/static/assets/neko-idle/cat1-voice3.mp3'" in source
-    assert "_NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3'" in source
-    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3'" in source
+    assert "_getNekoCatVoiceUrl('cat1.ambient')" in source
+    assert "_getNekoCatVoiceUrl('cat1.drag')" in source
+    assert "_getNekoCatVoiceUrl('cat1.rapid_drag')" in source
+    # Sounds are looked up per call; no load-time URL constants linger beside the registry.
+    for retired in ("_NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS", "_NEKO_IDLE_CAT1_DRAG_SOUND_URL",
+                    "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL", "_NEKO_IDLE_CAT1_EAT_SOUND_URL",
+                    "_NEKO_IDLE_CAT1_PLAY_SOUND_URL", "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL"):
+        assert retired not in source, retired
     assert "const _nekoIdleCat1RapidDragSoundState = {" in source
     assert "function _scheduleNekoIdleCat1AmbientSoundInterval" not in source
     assert "urls[Math.floor(Math.random() * urls.length)]" in source
@@ -3544,7 +3564,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
         "_stopNekoIdleSoundAudio(_nekoIdleCat1DragSoundState);",
         "_playNekoIdleSound(",
         "_nekoIdleCat1RapidDragSoundState,",
-        "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL,",
+        "_getNekoCatVoiceUrl('cat1.rapid_drag'),",
     )
 
     normal_drag_sound_block = _source_slice_between(
@@ -3559,7 +3579,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
         "_stopNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState);",
         "_playNekoIdleSound(",
         "_nekoIdleCat1DragSoundState,",
-        "_NEKO_IDLE_CAT1_DRAG_SOUND_URL,",
+        "_getNekoCatVoiceUrl('cat1.drag'),",
     )
 
 

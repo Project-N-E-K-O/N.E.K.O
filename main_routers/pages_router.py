@@ -54,6 +54,11 @@ _CHARACTER_CARD_MANAGER_JS_PATHS = tuple(sorted(
 _MODEL_MANAGER_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/js/model_manager").glob("*.js")
 ))
+_CAT_RESOURCE_ASSET_PATHS = tuple(sorted(
+    path
+    for path in (_PROJECT_ROOT / "static/assets/cat-resources").rglob("*")
+    if path.is_file()
+))
 _YUI_GUIDE_DIRECTOR_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/tutorial/yui-guide/director").glob("*.js")
 ))
@@ -137,22 +142,6 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/app/app-chat-export.js",
     *_AVATAR_UI_BUTTON_ASSET_PATHS,
     _PROJECT_ROOT / "static/subtitle/subtitle.js",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-eat.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-play-1.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2-click.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3-click.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-1.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-2.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-3.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-1.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-2.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-3.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-4.gif",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-5.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-question-mark.png",
     _PROJECT_ROOT / "static/assets/neko-idle/cat_model_change.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/chat-minimized-yarn-ball.png",
@@ -163,17 +152,6 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/catnip-pouch.png",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/fish-cookie.png",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/toy-mouse.png",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-click.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice1.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice2.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice3.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-eat.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-funny.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-chat-angry.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep1.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep2.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep1.mp3",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep2.mp3",
     _PROJECT_ROOT / "static/css/character_card_manager.css",
     *_CHARACTER_CARD_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
@@ -194,6 +172,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/voice_identity.css",
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
+    *_CAT_RESOURCE_ASSET_PATHS,
     _PROJECT_ROOT / "static/css/theater_selector.css",
     _PROJECT_ROOT / "static/js/theater_selector.js",
     _PROJECT_ROOT / "static/css/theater_settings.css",
@@ -290,7 +269,7 @@ def _air_basketball_assets_ctx() -> dict:
 @router.get("/", response_class=HTMLResponse)
 async def get_default_index(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse("templates/index.html", {
+    return templates.TemplateResponse(request, "templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
@@ -301,7 +280,7 @@ async def get_default_index(request: Request):
 def _render_model_manager(request: Request):
     """Internal implementation for rendering the model manager page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/model_manager.html", {
+    return templates.TemplateResponse(request, "templates/model_manager.html", {
         "request": request,
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
@@ -324,7 +303,7 @@ async def get_model_manager(request: Request):
 async def get_theater(request: Request):
     """渲染唯一的 Numeric v2 剧本选择页。"""  # noqa: DOCSTRING_CJK
     templates = get_templates()
-    return templates.TemplateResponse("templates/theater.html", {
+    return templates.TemplateResponse(request, "templates/theater.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -334,7 +313,7 @@ async def get_theater(request: Request):
 async def get_theater_settings(request: Request):
     """渲染小剧场独立设置页。"""  # noqa: DOCSTRING_CJK
     templates = get_templates()
-    return templates.TemplateResponse("templates/theater_settings.html", {
+    return templates.TemplateResponse(request, "templates/theater_settings.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -344,7 +323,7 @@ async def get_theater_settings(request: Request):
 async def live2d_parameter_editor(request: Request):
     """Live2D parameter editor page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/live2d_parameter_editor.html", {
+    return templates.TemplateResponse(request, "templates/live2d_parameter_editor.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -354,7 +333,7 @@ async def live2d_parameter_editor(request: Request):
 async def soccer_demo(request: Request):
     """Soccer MVP demo (VRM + L2D avatars)"""
     templates = get_templates()
-    return templates.TemplateResponse("templates/soccer_demo.html", {
+    return templates.TemplateResponse(request, "templates/soccer_demo.html", {
         "request": request,
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
@@ -363,7 +342,7 @@ async def soccer_demo(request: Request):
 
 @router.get("/watch_together", response_class=HTMLResponse)
 async def watch_together(request: Request):
-    return get_templates().TemplateResponse("templates/watch_together.html", {
+    return get_templates().TemplateResponse(request, "templates/watch_together.html", {
         "request": request, **_static_assets_ctx(),
     })
 
@@ -372,7 +351,7 @@ async def watch_together(request: Request):
 async def badminton_demo(request: Request):
     """Badminton challenge mini-game."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/badminton_demo.html", {
+    return templates.TemplateResponse(request, "templates/badminton_demo.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -382,7 +361,7 @@ async def badminton_demo(request: Request):
 async def air_basketball(request: Request):
     """Air basketball shooting mini-game."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/air_basketball.html", {
+    return templates.TemplateResponse(request, "templates/air_basketball.html", {
         "request": request,
         **_static_assets_ctx(),
         **_air_basketball_assets_ctx(),
@@ -393,7 +372,7 @@ async def air_basketball(request: Request):
 async def drawing_guess_demo(request: Request):
     """Drawing Guess companion mini-game."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/drawing_guess.html", {
+    return templates.TemplateResponse(request, "templates/drawing_guess.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -403,7 +382,7 @@ async def drawing_guess_demo(request: Request):
 async def live2d_emotion_manager(request: Request):
     """Live2D emotion mapping manager page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/live2d_emotion_manager.html", {
+    return templates.TemplateResponse(request, "templates/live2d_emotion_manager.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -413,7 +392,7 @@ async def live2d_emotion_manager(request: Request):
 async def vrm_emotion_manager(request: Request):
     """VRM emotion mapping manager page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/vrm_emotion_manager.html", {
+    return templates.TemplateResponse(request, "templates/vrm_emotion_manager.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -423,7 +402,7 @@ async def vrm_emotion_manager(request: Request):
 async def mmd_emotion_manager(request: Request):
     """MMD emotion mapping manager page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/mmd_emotion_manager.html", {
+    return templates.TemplateResponse(request, "templates/mmd_emotion_manager.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -432,7 +411,7 @@ async def mmd_emotion_manager(request: Request):
 @router.get('/voice_clone', response_class=HTMLResponse)
 async def voice_clone_page(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse("templates/voice_clone.html", {
+    return templates.TemplateResponse(request, "templates/voice_clone.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -442,7 +421,7 @@ async def voice_clone_page(request: Request):
 async def api_key_settings(request: Request):
     """API key settings page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/api_key_settings.html", {
+    return templates.TemplateResponse(request, "templates/api_key_settings.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -452,7 +431,7 @@ async def api_key_settings(request: Request):
 async def voice_identity_settings(request: Request):
     """Owner voice identity enrollment page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/voice_identity.html", {
+    return templates.TemplateResponse(request, "templates/voice_identity.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -469,7 +448,7 @@ async def chara_manager_redirect(request: Request):
 @router.get('/character_card_manager', response_class=HTMLResponse)
 async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/character_card_manager.html", {
+    return templates.TemplateResponse(request, "templates/character_card_manager.html", {
         "request": request,
         "lanlan_name": lanlan_name,
         **_static_assets_ctx(),
@@ -479,7 +458,7 @@ async def character_card_manager_page(request: Request, lanlan_name: str = ""):
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
 async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/cloudsave_manager.html", {
+    return templates.TemplateResponse(request, "templates/cloudsave_manager.html", {
         "request": request,
         "lanlan_name": lanlan_name,
         **_static_assets_ctx(),
@@ -489,7 +468,7 @@ async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
 @router.get('/memory_browser', response_class=HTMLResponse)
 async def memory_browser(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse('templates/memory_browser.html', {
+    return templates.TemplateResponse(request, 'templates/memory_browser.html', {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -499,7 +478,7 @@ async def memory_browser(request: Request):
 async def cookies_login_page(request: Request):
     """Media credential acquisition page."""
     templates = get_templates()
-    return templates.TemplateResponse('templates/cookies_login.html', {
+    return templates.TemplateResponse(request, 'templates/cookies_login.html', {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -510,7 +489,7 @@ async def cookies_login_page(request: Request):
 async def get_chat_page(request: Request):
     """Standalone chat window page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/chat.html", {
+    return templates.TemplateResponse(request, "templates/chat.html", {
         "request": request,
         "initial_chat_surface_mode": "compact",
         "initial_chat_host_kind": "compact",
@@ -524,7 +503,7 @@ async def get_chat_page(request: Request):
 async def get_chat_full_page(request: Request):
     """Web-only full chat window page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/chat.html", {
+    return templates.TemplateResponse(request, "templates/chat.html", {
         "request": request,
         "initial_chat_surface_mode": "full",
         "initial_chat_host_kind": "full",
@@ -538,7 +517,7 @@ async def get_chat_full_page(request: Request):
 async def get_avatar_tool_editor_page(request: Request):
     """Dedicated custom avatar-tool editor management page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/avatar_tool_editor.html", {
+    return templates.TemplateResponse(request, "templates/avatar_tool_editor.html", {
         "request": request,
         **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
@@ -549,7 +528,7 @@ async def get_avatar_tool_editor_page(request: Request):
 async def get_web_chat_compact_page(request: Request):
     """Open the home page with React Chat initialized in compact mode."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/index.html", {
+    return templates.TemplateResponse(request, "templates/index.html", {
         "request": request,
         "initial_chat_surface_mode": "compact",
         **_vrm_defaults_ctx(),
@@ -562,14 +541,14 @@ async def get_web_chat_compact_page(request: Request):
 async def get_subtitle_page(request: Request):
     """Standalone subtitle window page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/subtitle.html", {"request": request})
+    return templates.TemplateResponse(request, "templates/subtitle.html", {"request": request})
 
 
 @router.get("/agenthud", response_class=HTMLResponse)
 async def get_agenthud_page(request: Request):
     """Standalone AgentHUD window page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/agenthud.html", {
+    return templates.TemplateResponse(request, "templates/agenthud.html", {
         "request": request,
         **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
@@ -580,7 +559,7 @@ async def get_agenthud_page(request: Request):
 async def get_card_maker_page(request: Request):
     """Card-face maker page (loads the model standalone with adjustable composition)."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/card_maker.html", {
+    return templates.TemplateResponse(request, "templates/card_maker.html", {
         "request": request,
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
@@ -591,7 +570,7 @@ async def get_card_maker_page(request: Request):
 async def get_jukebox_page(request: Request):
     """Standalone jukebox window page (loaded by Electron)."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/jukebox.html", {
+    return templates.TemplateResponse(request, "templates/jukebox.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -601,7 +580,7 @@ async def get_jukebox_page(request: Request):
 async def get_jukebox_manager_page(request: Request):
     """Standalone jukebox manager window page (opened from the jukebox)."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/jukebox_manager.html", {
+    return templates.TemplateResponse(request, "templates/jukebox_manager.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -611,7 +590,7 @@ async def get_jukebox_manager_page(request: Request):
 async def get_toast_page(request: Request):
     """Standalone toast notification window page (loaded by Electron)."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/toast.html", {"request": request})
+    return templates.TemplateResponse(request, "templates/toast.html", {"request": request})
 
 
 
@@ -619,7 +598,7 @@ async def get_toast_page(request: Request):
 async def get_index(request: Request, lanlan_name: str):
     # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
     templates = get_templates()
-    return templates.TemplateResponse("templates/index.html", {
+    return templates.TemplateResponse(request, "templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),

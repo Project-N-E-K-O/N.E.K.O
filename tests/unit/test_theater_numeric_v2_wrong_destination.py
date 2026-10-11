@@ -149,7 +149,10 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
         assert result.diagnostics['semantic_review_fallback'] is (ordinary_result in {'body', 'bad_offer'})
         assert '错误转场待审候选' not in str(result.stored)
         assert len(review_modes) == 3
-        invalidated = intent == 'accept' and invalid_invitation
+        # Failed semantic review cannot preserve an earlier prose invitation under A.
+        invalidated = intent == 'accept' and (
+            invalid_invitation or ordinary_result in {'body', 'bad_offer'}
+        )
         assert result.stored.ledger_events[-1].get('transition_offer_invalidated', False) is invalidated
         if invalidated:
             from services.theater.numeric_v2_context import pending_transition_record

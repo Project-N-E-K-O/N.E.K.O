@@ -218,6 +218,16 @@ async def test_originless_loopback_native_call_without_browser_metadata_is_suppo
 
 
 @pytest.mark.asyncio
+async def test_forwarded_loopback_host_cannot_mutate_plugins_without_origin(app, monkeypatch):
+    stop = AsyncMock()
+    monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", stop)
+    async with _client(app, headers={"X-Forwarded-For": "127.0.0.1"}) as client:
+        response = await client.post("/plugin/demo/stop")
+    assert response.status_code == 403
+    stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_foreign_origin_on_lan_and_untrusted_hostname_are_rejected(app: FastAPI) -> None:
     async with _client(app, host="192.168.1.5:48911", peer="192.168.1.10", headers=_valid_headers()) as client:
         response = await client.post("/plugin/demo/stop")
@@ -469,14 +479,17 @@ def package_app(monkeypatch: pytest.MonkeyPatch, tmp_path) -> _BodyReadTracker:
 @pytest.fixture
 def package_actions(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
     """Replace install side effects; uploads still write to the temp root."""
-    from plugin.server.routes import plugin_cli as plugin_cli_routes
-
     actions = {
         "upload_and_install": AsyncMock(return_value={"upload": _UPLOAD_RESULT, "install": _INSTALL_RESULT}),
         "install": AsyncMock(return_value=_INSTALL_RESULT),
     }
+    from plugin.server.application import plugin_cli as cli_application
+    from plugin.server.application.plugin_cli.service import PluginCliService
+
+    service = PluginCliService()
+    monkeypatch.setattr(cli_application, "_service", service)
     for name, action in actions.items():
-        monkeypatch.setattr(plugin_cli_routes.service, name, action)
+        monkeypatch.setattr(service, name, action)
     return actions
 
 

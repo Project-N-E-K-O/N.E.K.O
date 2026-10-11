@@ -113,10 +113,13 @@ def _configured_origins() -> frozenset[str]:
 
 
 def _local_request(request: Request) -> bool:
+    from utils.deployment import has_forwarding_metadata
+
     return bool(
         request.client is not None
         and _is_loopback(request.client.host)
         and _is_loopback(request.url.hostname)
+        and not has_forwarding_metadata(request.headers)
     )
 
 

@@ -39,6 +39,12 @@ ALLOWED_CONVERSATION_SETTINGS = frozenset({
     "independentAsrEnabled",
     "independentAsrProviderPreference",
     "voiceInputResourceOptimizationEnabled",
+    # 串门（docs/design/visit-infrastructure.md §3.7.6）：visitEnabled 默认关；
+    # visitMemoryEnabled 默认开、隐藏配置（不进设置页）；visitVoiceEnabled 默认开。
+    # 默认值见 config/visit_settings.py 的 VISIT_*_DEFAULT。
+    "visitEnabled",
+    "visitMemoryEnabled",
+    "visitVoiceEnabled",
 })
 # Accepted values for ``independentAsrProviderPreference``. "auto" follows the
 # Core route; every other value must be a user-selectable provider key in

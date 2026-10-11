@@ -55,7 +55,8 @@ from .route_lifecycle import (
     _cancel_game_context_organizer_before_disabled_archive,
     _push_game_speech_cancel,
     _push_game_window_state_change,
-    _close_takeover_callback_inbox,
+    _clear_route_activity_flags,
+    _release_route_takeover,
     _settle_game_context_organizer_before_archive,
 )
 from .session_pool import (
@@ -1247,37 +1248,45 @@ async def _finalize_game_route_state_inner(
     state["_exit_flow_started"] = True
     state["exit_reason"] = reason
     state["exit_started_at"] = time.time()
-    # Capture postgame's prompt context BEFORE flipping the route inactive
-    # / before the archive resolution / before any peer ``/route/start``
-    # can replace this state in ``_game_route_states``.
-    postgame_context_snapshot = _build_postgame_context_snapshot(state)
-    state["game_route_active"] = False
-    state["game_external_voice_route_active"] = False
-    state["game_external_text_route_active"] = False
-    state["heartbeat_enabled"] = False
     lanlan_name = str(state.get("lanlan_name") or "")
-    mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
-    await _cancel_route_game_speech_preloads(state)
-    await _cancel_route_game_speech(state, mgr)
-    # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
-    # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
-    # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
-    await _push_game_window_state_change(
-        mgr,
-        action="closed",
-        lanlan_name=lanlan_name,
-        game_type=str(state.get("game_type") or ""),
-        session_id=str(state.get("session_id") or ""),
-        route_instance_id=str(state.get("_sdk_route_instance_id") or ""),
-    )
-    # Release the SessionManager-level takeover so ordinary chat handlers come
-    # back online; chat LLM may produce auto-replies again, but the player has
-    # exited the game so that's the desired behavior.
-    if mgr is not None:
-        mgr._takeover_active = False
-        mgr._takeover_input_dispatcher = None
-        mgr._takeover_callback_sink = None
-    _close_takeover_callback_inbox(state, mgr)
+    mgr = None
+    try:
+        mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+        # Capture postgame's prompt context BEFORE flipping the route inactive
+        # / before the archive resolution / before any peer ``/route/start``
+        # can replace this state in ``_game_route_states``. A failed snapshot
+        # only loses that context: the exit flow below (speech cancel, window
+        # close) must still run, since nothing retries it once the route is
+        # inactive.
+        try:
+            postgame_context_snapshot = _build_postgame_context_snapshot(state)
+        except Exception as exc:
+            logger.warning("⚠️ 游戏路由退出时构造 postgame 上下文快照失败: %s", exc, exc_info=True)
+            postgame_context_snapshot = {"pre_game_context": None, "game_context": None, "mode": None}
+        _clear_route_activity_flags(state)
+        await _cancel_route_game_speech_preloads(state)
+        await _cancel_route_game_speech(state, mgr)
+        # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
+        # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
+        # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
+        await _push_game_window_state_change(
+            mgr,
+            action="closed",
+            lanlan_name=lanlan_name,
+            game_type=str(state.get("game_type") or ""),
+            session_id=str(state.get("session_id") or ""),
+            route_instance_id=str(state.get("_sdk_route_instance_id") or ""),
+        )
+    finally:
+        # Release the SessionManager-level takeover so ordinary chat handlers
+        # come back online; chat LLM may produce auto-replies again, but the
+        # player has exited the game so that's the desired behavior. Only this
+        # route's own token releases it: a takeover another owner (or a newer
+        # route) holds by now stays in place. This runs even if the steps
+        # above raised or were cancelled: the token's presence on the state is
+        # what keeps the game slot locked (``is_game_route_locked``), so it
+        # must always leave, with or without a manager.
+        handoff = _release_route_takeover(state, mgr)
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
     resume_voice = getattr(
@@ -1285,7 +1294,12 @@ async def _finalize_game_route_state_inner(
         "_resume_independent_voice_input_after_game",
         None,
     )
-    if callable(resume_voice) and not _game_voice_lease_release_needed(mgr):
+    if not handoff:
+        # A newer route holds the takeover now (e.g. a mini-game that started
+        # while this one was exiting): the voice lease is that route's too, so
+        # handing it back to core would pull its microphone input away.
+        realtime_restore["reason"] = "takeover_held_by_newer_route"
+    elif callable(resume_voice) and not _game_voice_lease_release_needed(mgr):
         # realtime-STT 游戏租约从未离开 Core：跳过 resume，避免 core->core
         # 空转换清掉在途麦克风 PCM（见 ``_game_voice_lease_release_needed``）。
         realtime_restore["reason"] = "voice_lease_not_taken"

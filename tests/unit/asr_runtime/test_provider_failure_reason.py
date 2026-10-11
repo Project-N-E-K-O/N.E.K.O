@@ -1,7 +1,7 @@
 """The provider's own failure code and warm-up state reach the client.
 
 A provider session reports failures as ``"<ASR_CODE>: <message>"``. The runtime
-keeps routing on its generic codes but forwards the provider code as an opaque
+classifies and reports the provider code and also forwards it as an opaque
 ``reason`` so the client can explain e.g. a local model that failed to load.
 A provider that is still preparing when it connects is announced as
 ``ASR_INDEPENDENT_PREPARING``.
@@ -63,6 +63,8 @@ async def _start_with_session(
 
 def _session(*, warming_up: bool, reason: str = ""):
     session = type("Provider", (), {})()
+    session.last_failure_code = None
+    session.failure_started_at = None
     session.connect = AsyncMock()
     session.close = AsyncMock()
     session.provider_warmup_snapshot = (warming_up, None)
@@ -97,7 +99,7 @@ async def test_provider_failure_code_is_forwarded_as_reason(monkeypatch) -> None
     assert runtime._asr_route_mode == "blocked"
     failures = [
         status for status in _sent_statuses(runtime)
-        if status.get("code") == "ASR_INDEPENDENT_FAILED"
+        if status.get("code") == "ASR_LOCAL_MODEL_LOAD_FAILED"
     ]
     assert failures
     assert all(
@@ -118,7 +120,7 @@ async def test_generic_worker_failure_carries_no_reason(monkeypatch) -> None:
 
     failures = [
         status for status in _sent_statuses(runtime)
-        if status.get("code") == "ASR_INDEPENDENT_FAILED"
+        if status.get("code") == "ASR_WORKER_FAILED"
     ]
     assert failures
     assert all("reason" not in status["details"] for status in failures)
@@ -187,6 +189,8 @@ async def test_start_failure_carries_the_provider_code_as_reason(monkeypatch) ->
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     session = type("Provider", (), {})()
+    session.last_failure_code = "ASR_LOCAL_MODEL_LOAD_FAILED"
+    session.failure_started_at = None
     session.connect = AsyncMock(
         side_effect=RuntimeError(
             "ASR_LOCAL_MODEL_LOAD_FAILED: faster-whisper model could not be loaded"

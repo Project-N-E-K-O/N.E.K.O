@@ -382,7 +382,13 @@ class SessionOwnershipMixin:
                         record.callbacks.discard(task)
             guarded._session_owner = session
             setattr(session, name, guarded)
-        for name in ('get_host_turn_id',):
+        # Sync callbacks keep a sync guard and their return value:
+        # ``on_response_displaced`` hands back the follow-up the client awaits
+        # (wrapped async it would return a coroutine, and the frontend turn
+        # end it sends would be dropped). It and ``on_idle`` close or settle
+        # the host's current turn, which a reply on a retired or not yet
+        # installed client never owns.
+        for name in ('get_host_turn_id', 'on_response_displaced', 'on_idle'):
             callback = getattr(session, name, None)
             if not callable(callback) or getattr(callback, '_session_owner', None) is session:
                 continue

@@ -51,6 +51,8 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
+from utils.deployment import is_remote_backend_deployment as _deployment_is_remote
+
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == 'Windows'
@@ -86,11 +88,7 @@ def is_remote_backend_deployment() -> bool:
     Default off — most users run backend on their own PC where local
     OS signals / screenshots / computer_use are correct.
     """
-    for key in ('NEKO_ACTIVITY_TRACKER_REMOTE', 'ACTIVITY_TRACKER_REMOTE'):
-        raw = os.getenv(key, '').strip().lower()
-        if raw in ('1', 'true', 'yes', 'on'):
-            return True
-    return False
+    return _deployment_is_remote()
 
 
 # Legacy private alias — keeps in-flight callers (and tests that patch

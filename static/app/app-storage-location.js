@@ -151,7 +151,7 @@
         if (!notice || typeof notice !== 'object') {
             return '';
         }
-        return JSON.stringify([
+        var parts = [
             notice.completed_at,
             notice.target_root,
             notice.retained_root,
@@ -159,7 +159,17 @@
             notice.selection_source
         ].map(function (value) {
             return String(value || '').trim();
-        }));
+        });
+        // Data a later v1 catch-up could not bring over is news even after
+        // the plain completion notice was dismissed. Only added when present,
+        // so notices dismissed before keep their key.
+        var skipped = Array.isArray(notice.v1_catch_up_skipped)
+            ? notice.v1_catch_up_skipped.map(function (entry) { return String(entry); }).join(',')
+            : '';
+        if (skipped) {
+            parts.push(skipped);
+        }
+        return JSON.stringify(parts);
     }
 
     function isCompletionNoticeDismissed(notice) {
@@ -356,6 +366,26 @@
 
     function translateResponseErrorCode(code, fallbackText) {
         switch (String(code || '').trim()) {
+            case 'migration_already_pending':
+                return translate('storage.migrationAlreadyPending', '请先处理当前迁移或恢复状态，再变更存储位置。');
+            case 'selected_root_empty':
+                return translate('storage.selectedRootEmpty', '目标路径不能为空。');
+            case 'selected_root_not_absolute':
+                return translate('storage.selectedRootNotAbsolute', '目标路径必须是绝对路径。');
+            case 'selected_root_inside_project':
+                return translate('storage.selectedRootInsideProject', '目标路径不能位于项目目录内，请选择其他位置。');
+            case 'selected_root_is_file':
+            case 'selected_root_not_directory':
+                return translate('storage.selectedRootNotDirectory', '目标路径必须是文件夹，不能是文件。');
+            case 'selected_root_parent_missing':
+                return translate('storage.selectedRootParentMissing', '找不到目标路径的父目录，无法创建，请选择其他位置。');
+            case 'selected_root_parent_not_writable':
+                return translate('storage.selectedRootParentNotWritable', '目标路径的父目录不可写，无法创建，请选择其他位置。');
+            case 'selected_root_inside_cloudsave':
+            case 'selected_root_inside_staging':
+            case 'selected_root_inside_backups':
+            case 'selected_root_inside_anchor_root':
+                return translate('storage.selectedRootReserved', '目标路径位于保留的存储区域，请选择其他位置。');
             case 'cloudsave_local_state_unavailable':
                 return translate('storage.cloudsaveLocalStateUnavailable', '本机状态目录不可用，当前会话已禁用云存档。请先修复 state 路径并重启应用，再进行存储位置变更。');
             case 'directory_picker_unavailable':
@@ -372,6 +402,8 @@
                 return translate('storage.restartUnavailable', '当前应用暂时无法执行受控重启，请稍后重试。');
             case 'retained_source_cleanup_failed':
                 return translate('storage.retainedSourceCleanupFailed', '清理旧数据保留目录失败，请稍后重试。');
+            case 'retained_source_cleanup_incomplete':
+                return translate('storage.retainedSourceCleanupIncomplete', '已清理能确认复制完整的部分。以下条目与新目录不一致或缺少复制记录，已原样保留，请手动确认并删除后再点一次「清理旧数据」：');
             case 'retained_source_mismatch':
                 return translate('storage.retainedSourceMismatch', '请求的清理路径与当前保留目录不一致，请刷新后重试。');
             case 'retained_source_not_found':
@@ -381,14 +413,29 @@
             case 'selected_root_unavailable':
                 return translate('storage.selectedRootUnavailable', '原始数据路径当前仍不可用，请先恢复该路径后再重试。');
             case 'startup_release_failed':
-                return translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。');
+                return translate('storage.startupReleaseFailed', '当前会话暂时无法解除受限启动，请重试或刷新页面后再继续。');
+            case 'storage_operation_failed':
+                return translate('storage.storageOperationFailed', '提交存储位置操作失败，未发生落盘改动，请稍后重试。');
             case 'storage_bootstrap_blocking':
                 return translate('storage.storageBootstrapBlocking', '当前存储状态仍需恢复或迁移，暂时不能继续当前会话。');
+            case 'storage_policy_rollback_failed':
+                return translate('storage.storagePolicyRollbackFailed', '写入存储位置配置失败，且未能恢复原有状态，请检查本机状态目录是否可写；若仍异常请手动确认状态文件。');
+            case 'startup_release_rollback_failed':
+                return translate('storage.startupReleaseRollbackFailed', '解除受限启动失败且未能确认原有状态已恢复，请检查或恢复状态文件。');
+            case 'restart_rollback_failed':
+                return translate('storage.restartRollbackFailed', '受控重启失败且未能确认原有状态已恢复，请检查或恢复状态文件。');
+            case 'storage_policy_write_failed':
+                return translate('storage.storagePolicyWriteFailed', '写入存储位置配置失败，已恢复原有状态，请检查本机状态目录是否可写后重试。');
+            case 'storage_state_unreadable':
+                return translate('storage.storageStateUnreadable', '写入存储位置配置失败：状态文件当前无法读取（可能不存在，或所在目录不可访问），未发生落盘改动，请稍后重试或检查本机状态目录是否可访问。');
+            case 'storage_state_invalid':
+                return translate('storage.storageStateInvalid', '存储状态文件内容损坏或格式无效，未发生落盘改动，请检查或恢复状态文件。');
             case 'target_confirmation_required':
                 return existingTargetConfirmationText();
             case 'target_not_empty':
                 return translate('storage.targetNotEmpty', '目标路径已经包含运行时数据，请确认目标目录后再继续迁移。');
             case 'target_not_writable':
+            case 'selected_root_not_writable':
                 return translate('storage.blockingTargetNotWritable', '目标路径当前不可写，无法开始迁移流程。');
             default:
                 return fallbackText || '';
@@ -985,7 +1032,14 @@
             || ''
         ).trim();
         var isRebindOnly = restartMode === 'rebind_only';
-        var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required';
+        var migrationErrorCode = String(
+            statusPayload && statusPayload.migration && statusPayload.migration.error_code || ''
+        ).trim();
+        // The commit could not be confirmed (unreadable policy): the stage
+        // stays committing so the next start decides again, but nothing is
+        // running until then.
+        var commitAmbiguous = migrationStage === 'committing' && migrationErrorCode === 'migration_commit_ambiguous';
+        var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required' || commitAmbiguous;
         var percent = 14;
         var activeIndex = 0;
         var label = translate('storage.progressWaitingShutdown', '正在关闭');
@@ -1019,9 +1073,14 @@
                     label = translate('storage.progressVerifying', '正在校验迁移结果');
                     break;
                 case 'committing':
-                    percent = 86;
                     activeIndex = 2;
-                    label = translate('storage.progressCommitting', '正在提交新的存储位置');
+                    if (commitAmbiguous) {
+                        percent = 100;
+                        label = translate('storage.progressCommitAmbiguous', '无法确认新的存储位置是否已经生效（存储策略文件无法读取或已损坏），迁移已暂停，新旧两边的数据都原样保留。请重启应用重试；如果仍然如此，请检查数据目录下 state 文件夹里的存储策略文件。');
+                    } else {
+                        percent = 86;
+                        label = translate('storage.progressCommitting', '正在提交新的存储位置');
+                    }
                     break;
                 case 'retaining_source':
                     percent = 94;
@@ -1037,7 +1096,37 @@
                 case 'rollback_required':
                     percent = 100;
                     activeIndex = 2;
-                    label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    var migrationPayload = statusPayload && statusPayload.migration;
+                    if (migrationPayload && migrationPayload.error_code === 'migration_source_missing') {
+                        // Nothing is rolled back until the source is back; tell
+                        // the user which directory that is instead of "waiting".
+                        label = translate('storage.progressSourceMissing', '原始数据目录或其中的数据不见了，迁移已暂停，新旧两边的数据都原样保留。请把原始数据目录恢复原样后重启：')
+                            + ' ' + String(migrationPayload.source_root || '').trim();
+                    } else if (migrationPayload && (
+                        migrationPayload.error_code === 'migration_publish_conflict'
+                        || migrationPayload.error_code === 'migration_stage_unreadable'
+                    )) {
+                        // The original target data lives in the transaction
+                        // backup, the staged copies in its stage; deleting
+                        // that directory would lose them.
+                        var targetRoot = String(migrationPayload.target_root || '').trim();
+                        // Join with the separator the path already uses, so a
+                        // Windows path does not end up mixing both kinds.
+                        var backslash = String.fromCharCode(92);
+                        var separator = targetRoot.indexOf(backslash) >= 0 ? backslash : '/';
+                        label = migrationPayload.error_code === 'migration_stage_unreadable'
+                            ? translate('storage.progressStageUnreadable', '迁移暂存的数据无法读取，迁移已暂停，新旧两边的数据都原样保留。暂存数据在下面这个事务目录的 stage 里，请勿删除，检查它的读取权限后重启应用：')
+                            : translate('storage.progressPublishConflict', '迁移时目标位置被其他程序重新创建，迁移已暂停，新旧数据都已保留。原来的数据在下面这个事务目录的 backup 里，请勿删除，确认后再手动处理：');
+                        // The backup sits in this transaction's own directory,
+                        // named after the first 12 characters of its id.
+                        var transactionDir = ['.smtx', String(migrationPayload.txid || '').slice(0, 12)]
+                            .filter(function (part) { return !!part; })
+                            .join(separator);
+                        label = label
+                            + ' ' + (targetRoot ? targetRoot + separator + transactionDir : transactionDir);
+                    } else {
+                        label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    }
                     break;
                 default:
                     percent = isRebindOnly ? 38 : 14;
@@ -1118,6 +1207,8 @@
         retainedItem.appendChild(openRetainedButton);
         pathList.appendChild(targetItem);
         pathList.appendChild(retainedItem);
+        var skippedNote = createElement('p', 'storage-location-completion-skipped', '');
+        skippedNote.hidden = true;
 
         var actions = createElement('div', 'storage-location-actions storage-location-completion-actions');
         var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据'));
@@ -1135,11 +1226,13 @@
         state.completionOpenTargetButton = openTargetButton;
         state.completionOpenRetainedButton = openRetainedButton;
         state.completionCleanupButton = cleanupButton;
+        state.completionSkipped = skippedNote;
 
         title.classList.add('storage-location-panel-title--with-close');
         title.classList.add('storage-location-completion-drag-handle');
         card.appendChild(title);
         card.appendChild(pathList);
+        card.appendChild(skippedNote);
         card.appendChild(actions);
         document.body.appendChild(card);
         installCompletionCardDragging(card);
@@ -1241,7 +1334,23 @@
         state.completionOpenTargetButton.hidden = !String(state.completionNotice.target_root || '').trim();
         state.completionOpenRetainedButton.hidden = !String(state.completionNotice.retained_root || '').trim();
         state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
+        var skippedText = describeV1CatchUpSkipped(state.completionNotice);
+        state.completionSkipped.textContent = skippedText;
+        state.completionSkipped.hidden = !skippedText;
         card.hidden = false;
+    }
+
+    // Data an old (v1) migration left in the old directory that could not be
+    // copied over later, because the current location had its own.
+    function describeV1CatchUpSkipped(notice) {
+        var entries = Array.isArray(notice && notice.v1_catch_up_skipped)
+            ? notice.v1_catch_up_skipped.map(function (entry) { return String(entry); }).filter(Boolean)
+            : [];
+        if (!entries.length) {
+            return '';
+        }
+        return translate('storage.v1CatchUpSkipped', '旧数据目录里还有这些数据没有搬到当前路径（当前路径里已有同名数据，没有覆盖）。请确认后自行处理：')
+            + ' ' + entries.join(', ');
     }
 
     function handleHomeTutorialStartupRelease(event) {
@@ -1337,6 +1446,16 @@
             try {
                 payload = await response.json();
             } catch (_) {}
+            if (payload && payload.error_code === 'retained_source_cleanup_incomplete') {
+                if (state.completionCleanupButton) {
+                    state.completionCleanupButton.disabled = false;
+                }
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(buildCleanupIncompleteMessage(payload), 8000);
+                }
+                await checkReadyStateCompletionNotice();
+                return;
+            }
             if (!response.ok || !payload || payload.ok !== true) {
                 throw new Error(extractResponseError(payload, translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')));
             }
@@ -1344,7 +1463,9 @@
             applyCompletionNotice({ completed: false });
             if (typeof window.showStatusToast === 'function') {
                 window.showStatusToast(
-                    translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
+                    payload.retained_root_kept === true
+                        ? translate('storage.cleanupRetainedRootDoneKept', '旧数据目录里迁移过的数据已清理；目录里还有其他文件，已原样保留。')
+                        : translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
                     4000
                 );
             }
@@ -1361,12 +1482,20 @@
         }
     }
 
-    var STORAGE_ERROR_DETAIL_MAX_LEN = 200;
-
-    function truncateErrorDetail(text) {
-        var trimmed = String(text || '').trim();
-        if (trimmed.length <= STORAGE_ERROR_DETAIL_MAX_LEN) return trimmed;
-        return trimmed.slice(0, STORAGE_ERROR_DETAIL_MAX_LEN) + '…';
+    // Part of the old directory is already gone; say so and name what was
+    // kept instead of reporting a plain failure.
+    function buildCleanupIncompleteMessage(payload) {
+        var remainingEntries = Array.isArray(payload && payload.remaining_entries)
+            ? payload.remaining_entries.map(function (entry) { return String(entry); }).join(', ')
+            : '';
+        var parts = [];
+        if (remainingEntries) {
+            parts.push(extractResponseError(payload, '') + ' ' + remainingEntries);
+        }
+        if (payload && payload.retained_root_unlistable === true) {
+            parts.push(translate('storage.retainedRootUnlistable', '旧数据目录的内容无法列出，里面可能还有清理到一半的条目，已暂停清理。请检查该目录的读取权限后再点一次「清理旧数据」。'));
+        }
+        return parts.length ? parts.join(' ') : extractResponseError(payload, '');
     }
 
     function extractResponseError(payload, fallbackText) {
@@ -1375,17 +1504,6 @@
             var code = String(payload.error_code || payload.blocking_error_code || '').trim();
             var codedText = translateResponseErrorCode(code, '');
             if (codedText) {
-                // startup_release_failed 这类后端会把异常细节塞进 payload.error
-                // （f"... {exc}" 风格）。完整字符串可能含路径/异常类名/栈片段，
-                // 直接展示既不友好也可能泄露内部信息。所以：
-                //   - 完整原文打到 console.warn 给开发者看
-                //   - UI 只展示翻译后的概括语 + 裁短的尾巴（≤200 字符）
-                if (code === 'startup_release_failed' && rawError && rawError !== codedText) {
-                    try {
-                        console.warn('[storage-location] startup_release_failed detail:', rawError);
-                    } catch (_) {}
-                    return codedText + ' ' + truncateErrorDetail(rawError);
-                }
                 return codedText;
             }
             // 未在 translateResponseErrorCode 命中的 error_code 走通用兜底：
@@ -2370,6 +2488,11 @@
     }
 
     window.appStorageLocation = {
+        formatError: extractResponseError,
+        buildCleanupIncompleteMessage: buildCleanupIncompleteMessage,
+        describeV1CatchUpSkipped: describeV1CatchUpSkipped,
+        buildCompletionNoticeDismissKey: buildCompletionNoticeDismissKey,
+        buildMaintenanceProgressModel: buildMaintenanceProgressModel,
         init: init,
         waitUntilMainUiAllowed: function () {
             return init();

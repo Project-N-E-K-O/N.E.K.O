@@ -100,7 +100,7 @@ def test_actor_receives_current_names_with_disclosure_gate(known):
 
 
 class _NameConfig:
-    def load_characters(self):
+    def load_characters(self, *, require_authoritative=False):
         return {"当前猫娘": "霜月", "主人": {"昵称": "小明，二号", "档案名": "档案旧名"},
                 "猫娘": {"霜月": {"人格": "测试人格", "_reserved": {"character_id": "character_" + "1" * 32}}}}
 
@@ -116,7 +116,7 @@ def test_catgirl_binding_loads_the_character_config_once():
     class _CountingConfig(_NameConfig):
         calls = 0
 
-        def load_characters(self):
+        def load_characters(self, *, require_authoritative=False):
             type(self).calls += 1
             return super().load_characters()
 

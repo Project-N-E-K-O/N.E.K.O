@@ -18,7 +18,7 @@ from .generation.quality import NumericV2QualityAssessor
 from .model import capture_usage
 from .numeric_v2 import NumericV2Compiler, normalize_metric_drafts, preset_metric_catalog
 from .numeric_v2_branch import NumericV2BranchService
-from .numeric_v2_project_store import NumericV2ProjectStore, NumericV2RevisionConflictError
+from .numeric_v2_project_store import NumericV2ProjectStore, NumericV2RevisionConflictError, _setup_fields
 from .packages import PackageError, PublishCandidate
 
 
@@ -237,8 +237,12 @@ class TheaterWorkshop:
         if not project["title"].strip():
             raise WorkshopError("generation_setup_invalid")
         setup = dict(project["setup"])
-        setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
-        setup = C.NumericV2SetupPayload.model_validate(setup).model_dump()
+        try:
+            setup = _setup_fields(setup, strict=False)
+            setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
+            setup = C.NumericV2SetupPayload.model_validate(setup).model_dump(exclude_none=True)
+        except (ValueError, TypeError, AttributeError) as error:
+            raise WorkshopError("generation_setup_invalid") from error
         checkpoint = self._store.generation_checkpoint(project_id)
         names = checkpoint.get("cast_names") if checkpoint is not None else self._names()
         self._store.begin_generation(project_id, base_revision=base_revision)
@@ -246,17 +250,29 @@ class TheaterWorkshop:
             result = self._generator.generate(title=project["title"], setup=setup,
                                               checkpoint=checkpoint, cast_names=names)
         except NumericV2GenerationError as error:
-            self._store.fail_generation(project_id, base_revision=base_revision,
-                error={"code": error.code, "details": {
-                    "issues": error.issues, "provider": error.provider_details,
-                    "attempts": error.attempts}},
-                checkpoint=error.checkpoint)
+            try:
+                self._store.fail_generation(project_id, base_revision=base_revision,
+                    error={"code": error.code, "details": {
+                        "issues": error.issues, "provider": error.provider_details,
+                        "attempts": error.attempts}},
+                    checkpoint=error.checkpoint, source_project=project)
+            except Exception as persistence_error:
+                error.add_note(f"generation failure checkpoint not saved: {type(persistence_error).__name__}")
             raise
         except Exception as error:
-            self._store.fail_generation(project_id, base_revision=base_revision,
-                error={"code": "generation_technical_failed", "exception_type": type(error).__name__},
-                checkpoint=checkpoint)
+            try:
+                self._store.fail_generation(project_id, base_revision=base_revision,
+                    error={"code": "generation_technical_failed", "exception_type": type(error).__name__},
+                    checkpoint=checkpoint, source_project=project)
+            except Exception as persistence_error:
+                error.add_note(f"generation failure checkpoint not saved: {type(persistence_error).__name__}")
             raise
+        previous_story = project.get("story") or {}
+        previous_story_id = (previous_story.get("meta") or {}).get("story_id")
+        # Titles and introductions describe content, not project identity.
+        # Preserve existing package identities; namespace new generated projects.
+        result["story"]["meta"]["story_id"] = previous_story_id or (
+            "story_" + project_id.removeprefix("project_"))
         for field in ("relationship", "tone"):
             if field in (result.get("setup_updates") or {}):
                 setup[field] = result["setup_updates"][field]
@@ -303,11 +319,29 @@ class TheaterWorkshop:
         if node is None:
             raise WorkshopError("node_not_found")
         beat = node.setdefault("story_beat", {})
+        previous_goal_refs = {f"goal.{goal['id']}" for goal in beat.get("goals") or [] if goal.get("id")}
+        previous_goals = beat.get("goals") or []
+        previous_final_ref = f"goal.{previous_goals[-1]['id']}" if previous_goals and previous_goals[-1].get("id") else None
         for field in ("opening_scene", "narrative_focus", "goals", "must_not_happen",
                       "catgirl_situation", "transition_goal", "character_state", "acting_contract"):
             if field in enhancement:
                 beat[field] = deepcopy(enhancement[field])
         beat.pop("must_happen", None)
+        current_goal_refs = {f"goal.{goal['id']}" for goal in beat.get("goals") or [] if goal.get("id")}
+        for route in node.get("route_gates") or []:
+            contract = route.get("transition_contract") or {}
+            refs = contract.get("source_ids") or []
+            if any(ref in previous_goal_refs for ref in refs) and previous_goal_refs != current_goal_refs:
+                # The generator derives outgoing source evidence from the final
+                # source goal. Regenerate that reference with the enhanced goals.
+                replaced_refs = previous_goal_refs.difference(current_goal_refs) | {previous_final_ref}
+                if not any(ref in replaced_refs for ref in refs):
+                    continue
+                refs = [ref for ref in refs if ref not in replaced_refs]
+                goals = beat.get("goals") or []
+                if goals:
+                    refs.append(f"goal.{goals[-1]['id']}")
+                contract["source_ids"] = list(dict.fromkeys(refs))
         return {"project": self._store.update(project_id, base_revision=base_revision,
                 changes={"story": story}), "node_id": node_id}
 

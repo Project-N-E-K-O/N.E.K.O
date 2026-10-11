@@ -1,0 +1,20 @@
+{
+  "call": {
+    "method": "post_forget",
+    "lanlan": "Lanlan",
+    "kwargs": {
+      "subject": {
+        "subject_kind": "group_participant",
+        "subject_id": "neko_visit:0123456789abcdef01234567:c_89abcdef0123456789abcdef",
+        "scope": "group_participant:neko_visit:0123456789abcdef01234567:c_89abcdef0123456789abcdef"
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:48912/internal/memory/Lanlan/scoped_forget",
+    "body": "{\"subject\":{\"subject_kind\":\"group_participant\",\"subject_id\":\"neko_visit:0123456789abcdef01234567:c_89abcdef0123456789abcdef\",\"scope\":\"group_participant:neko_visit:0123456789abcdef01234567:c_89abcdef0123456789abcdef\"}}"
+  },
+  "model": "ScopedForgetRequest",
+  "qq_reference": "b0b283e34:plugin/plugins/qq_auto_reply/memory_bridge.py::QQMemoryBridge.post_scoped_forget"
+}

@@ -1563,11 +1563,11 @@ class _CapRejected(Exception):
 def test_review_retries_at_shared_guard_when_endpoint_rejects_review_cap(tmp_path):
     """A model whose output limit is below the review cap must still be reviewed.
 
-    The first request asks for MEMORY_REVIEW_OUTPUT_MAX_TOKENS; an endpoint
+    The first request asks for MEMORY_THINKING_OUTPUT_MAX_TOKENS; an endpoint
     with a 4096 limit rejects it with a 400 before generating. The review then
     retries once at LLM_OUTPUT_GUARD_MAX_TOKENS instead of failing every pass.
     """
-    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_REVIEW_OUTPUT_MAX_TOKENS
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_THINKING_OUTPUT_MAX_TOKENS
 
     snapshot = _review_snapshot()
     mgr, name, path = _make_manager(tmp_path)
@@ -1587,7 +1587,7 @@ def test_review_retries_at_shared_guard_when_endpoint_rejects_review_cap(tmp_pat
                 )
             return await super().ainvoke(prompt, **kwargs)
 
-    def _factory(max_completion_tokens: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS):
+    def _factory(max_completion_tokens: int = MEMORY_THINKING_OUTPUT_MAX_TOKENS):
         caps.append(max_completion_tokens)
         return _CapLimitedLLM(max_completion_tokens)
 
@@ -1596,13 +1596,13 @@ def test_review_retries_at_shared_guard_when_endpoint_rejects_review_cap(tmp_pat
     status, _fingerprint = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
 
     assert status == "patched"
-    assert caps == [MEMORY_REVIEW_OUTPUT_MAX_TOKENS, LLM_OUTPUT_GUARD_MAX_TOKENS]
+    assert caps == [MEMORY_THINKING_OUTPUT_MAX_TOKENS, LLM_OUTPUT_GUARD_MAX_TOKENS]
     assert "hi 1 fixed" in [m.content for m in _read_disk(path)]
 
 
 def test_review_fallback_cap_exhaustion_is_reported_as_output_exhausted(tmp_path):
     """After the lower-cap retry, an empty reply at that cap is output exhaustion."""
-    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_REVIEW_OUTPUT_MAX_TOKENS
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_THINKING_OUTPUT_MAX_TOKENS
 
     snapshot = _review_snapshot()
     mgr, name, path = _make_manager(tmp_path)
@@ -1631,7 +1631,7 @@ def test_review_fallback_cap_exhaustion_is_reported_as_output_exhausted(tmp_path
     setattr(
         mgr,
         "_get_review_llm",
-        lambda max_completion_tokens=MEMORY_REVIEW_OUTPUT_MAX_TOKENS: _ExhaustedLLM(max_completion_tokens),
+        lambda max_completion_tokens=MEMORY_THINKING_OUTPUT_MAX_TOKENS: _ExhaustedLLM(max_completion_tokens),
     )
 
     result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
@@ -2719,3 +2719,21 @@ async def test_recent_file_route_rejects_save_without_loaded_snapshot_tokens():
 
     assert response.status_code == 409
     assert "重新加载" in json.loads(response.body)["error"]
+
+
+def test_review_close_failure_does_not_mask_a_valid_review(tmp_path):
+    """Closing the review client is cleanup; a close error must not turn a
+    valid corrected dialogue into a failed review."""
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+
+    class _CloseBoomLLM(_ReviewLLM):
+        async def aclose(self) -> None:
+            raise RuntimeError("close boom")
+
+    setattr(mgr, "_get_review_llm", lambda: _CloseBoomLLM(_review_corrected()))
+
+    result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert result[0] == 'patched'

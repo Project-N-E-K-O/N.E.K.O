@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 from utils.config_manager import delete_reserved, get_reserved, normalize_character_id
+from utils.cloudsave_runtime import MaintenanceModeError
 
 from .llm_context import _load_player_address
 
@@ -43,7 +44,11 @@ def numeric_v2_catgirl_binding(
     config_manager: Any,
     catgirl_name: str | None = None,
 ) -> dict[str, str]:
-    characters = config_manager.load_characters()
+    try:
+        reader = getattr(config_manager, "load_character_binding_snapshot", None)
+        characters = reader(catgirl_name) if reader else config_manager.load_characters(require_authoritative=True)
+    except (OSError, ValueError, MaintenanceModeError) as exc:
+        raise ValueError("current_catgirl_identity_unavailable") from exc
     selected_name = str(
         catgirl_name
         or (characters.get("当前猫娘") if isinstance(characters, dict) else "")
@@ -63,6 +68,7 @@ def numeric_v2_catgirl_binding(
     # 继续匹配迁移前的 profile_hash。
     profile_for_hash = deepcopy(profile)
     delete_reserved(profile_for_hash, "character_id")
+    delete_reserved(profile_for_hash, "character_uid")
     canonical = json.dumps(
         profile_for_hash,
         ensure_ascii=False,
@@ -85,8 +91,14 @@ def numeric_v2_catgirl_binding(
 def numeric_v2_authoring_names(config_manager: Any) -> dict[str, str]:
     """Provide the author with one name snapshot; knowing the nickname does not disclose it within the story."""
 
-    binding = numeric_v2_catgirl_binding(config_manager)
-    return {"player_name": binding["player_address"], "catgirl_name": binding["catgirl_name"]}
+    # Workshop prose uses display names, never a persisted Session identity.
+    # Do not require write-back permission merely to read an author's names.
+    characters = config_manager.load_characters()
+    selected = str(characters.get("当前猫娘") or "").strip()
+    profiles = characters.get("猫娘")
+    if not selected or not isinstance(profiles, dict) or not isinstance(profiles.get(selected), dict):
+        raise ValueError("current_catgirl_unavailable")
+    return {"player_name": _load_player_address(config_manager, characters=characters) or "你", "catgirl_name": selected}
 
 
 __all__ = ["numeric_v2_catgirl_binding", "numeric_v2_character_ids", "numeric_v2_authoring_names"]

@@ -48,6 +48,7 @@ from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_narrative import narrative_body_fingerprint, narrative_event_table, project_narrative_state
 from .numeric_v2_runtime import (
     MetricChangeV2,
+    current_visit_started_revision,
     NumericV2Engine,
     NumericV2RuntimeError,
     ScriptSessionV2,
@@ -304,11 +305,15 @@ def _band_label(definition: Mapping[str, Any], value: int) -> str:
     return ""
 
 
-def _context_content(performance: Mapping[str, Any]) -> list[dict[str, str]]:
+def _context_content(
+    performance: Mapping[str, Any], *, include_all_segments: bool = False,
+) -> list[dict[str, str]]:
     """投影当前场景事实；跨幕记录只保留玩家看到的新幕开场。"""  # noqa: DOCSTRING_CJK
 
     segments = performance.get("segments")
-    if isinstance(segments, list):
+    if include_all_segments:
+        blocks = performance_content_blocks(performance)
+    elif isinstance(segments, list):
         # 三段式换场的前两段分别属于旧幕回应和换场过程。下一幕的
         # Evaluator 只需要 target_opening，避免把整段换场重复算入当前幕。
         target_opening = next(
@@ -1185,8 +1190,7 @@ def _build_transition_judge_messages(
     complete_visit = bool(
         full_scene_context
         and full_scene_context[0].get("phase") in {"opening", "scene_entry"}
-        and len(full_scene_context) == session.node_turn_count + 1
-        and visit_revisions == list(range(session.revision - session.node_turn_count, session.revision + 1))
+        and visit_revisions == list(range(current_visit_started_revision(session), session.revision + 1))
     )
     character_state = beat.get("character_state")
     acting_contract = beat.get("acting_contract")
@@ -3051,6 +3055,7 @@ class NumericV2MetricEvaluator:
         node: Mapping[str, Any],
         actor_performance: Mapping[str, Any],
         player_input: str,
+        include_all_segments: bool = False,
     ) -> tuple[str, ...]:
         """窄判定：只核对给定禁令和本轮可见文本足以确认的冲突。
 
@@ -3064,7 +3069,9 @@ class NumericV2MetricEvaluator:
         config = await _model_config(self.config_manager)
         messages = _build_contract_check_messages(
             required=required,
-            candidate_text=json.dumps(_context_content(actor_performance), ensure_ascii=False),
+            candidate_text=json.dumps(_context_content(
+                actor_performance, include_all_segments=include_all_segments,
+            ), ensure_ascii=False),
             player_input=player_input,
         )
         set_call_type("theater_numeric_v2_contract_check")

@@ -149,6 +149,17 @@ startup_failure = "warn"
 - `auto_start` — When `true`, starts automatically with N.E.K.O; otherwise start manually from the panel
 - `priority` — Optional integer runtime ordering hint
 
+Plugin Manager's independent auto-start switch controls the saved preference.
+By default, manual Start/Stop/Reload does not change that preference. Newly
+installed plugins remain pending auto-start approval until the independent
+switch is enabled; starting or reloading them manually never grants approval.
+
+Setting `NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE=1` opts into legacy preference
+synchronization: manual Start/Reload saves `auto_start=true`, and Stop saves
+`auto_start=false`. The switch's "manual start/stop does not change this" hint
+therefore describes the default mode. Even in legacy mode, a pending plugin
+still requires explicit approval through the independent auto-start switch.
+
 ---
 
 ### `[plugin.i18n]` — Multi-language support

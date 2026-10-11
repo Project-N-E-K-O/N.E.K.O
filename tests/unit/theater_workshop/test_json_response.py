@@ -7,6 +7,11 @@ import pytest
 from theater_workshop.sdk.json_response import JSONResponseParser
 
 
+def test_non_json_fence_does_not_become_a_generation_candidate():
+    result = JSONResponseParser().parse_json_response('Sure:\n```\nnot json\n```')
+    assert result['parse_error'] is True
+
+
 @pytest.mark.parametrize("wrapper", ["plain", "fenced", "trailing_comma", "missing_comma"])
 def test_json_repair_preserves_every_string_value(wrapper):
     parser = JSONResponseParser()

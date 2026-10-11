@@ -16,6 +16,43 @@ from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore
 from .numeric_v2_fixture import numeric_v2_story
 
 
+@pytest.mark.parametrize('has_previous', [False, True])
+def test_carried_player_semantic_goal_requires_player_input(has_previous):
+    goal = NumericV2BranchService._continuity_goal({
+        'text': '玩家确认线索。',
+        'contract': {'owner': 'player', 'delivery_type': 'semantic_state', 'evidence_mode': 'semantic'},
+    }, has_previous=has_previous)
+    assert goal['sources'] == ['player_input']
+    NumericV2BranchService._validate_ordered_goals([goal], path='goals')
+
+
+def test_entry_scenarios_prune_downstream_diamonds(monkeypatch):
+    project = branchable_project()
+    nodes = project['story']['nodes']
+    start = next(node for node in nodes if node['id'] == 'main_1')
+    start['route_gates'].append(_unconditional_route('downstream', 'diamond_0', '下游'))
+    for index in range(18):
+        nodes.append({'id': f'diamond_{index}', 'route_gates': [
+            _unconditional_route(f'left_{index}', f'left_{index}', '左侧'),
+            _unconditional_route(f'right_{index}', f'right_{index}', '右侧')]})
+        for side in ('left', 'right'):
+            nodes.append({'id': f'{side}_{index}', 'route_gates': [
+                _unconditional_route(f'join_{side}_{index}', f'diamond_{index + 1}', '合流')]})
+    nodes.append({'id': 'diamond_18', 'route_gates': []})
+    service = NumericV2BranchService()
+    original = service._condition_alternatives
+    calls = []
+
+    def counted(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(service, '_condition_alternatives', counted)
+    result = service._entry_scenarios(project, 'main_2', 'trust')
+    assert result['scenarios']
+    assert len(calls) == 1
+
+
 def _unconditional_route(route_id: str, target: str, label: str) -> dict:
     return {
         "id": route_id,

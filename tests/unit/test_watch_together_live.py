@@ -12,7 +12,11 @@ from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY, DELIVERY_ACK_
 from main_logic.watch_together import live
 from main_routers import watch_together_router as router
 from main_routers.game_router import runtime
-from main_routers.game_router.route_lifecycle import _TAKEOVER_CALLBACK_INBOX_KEY
+from main_routers.game_router.route_lifecycle import (
+    _TAKEOVER_CALLBACK_INBOX_KEY,
+    _TAKEOVER_TOKEN_KEY,
+)
+from .game_route_test_helpers import TakeoverManagerDouble
 
 
 def _cue(text, *, priority=0, key=''):
@@ -129,10 +133,10 @@ async def test_failed_watch_takeover_hands_held_cues_back_to_ordinary_delivery()
     inbox = live.LiveInbox()
     held = _cue('held', priority=8, key='reminder')
     inbox.accept(held)
-    manager = SimpleNamespace(
-        _takeover_active=True, _takeover_input_dispatcher=object(), _takeover_callback_sink=inbox.accept,
+    manager = TakeoverManagerDouble(
         interrupt_ordinary_speech_for_takeover=AsyncMock(side_effect=RuntimeError()),
     )
+    token = manager.acquire_takeover('game', object(), callback_sink=inbox.accept)
 
     def submit(callback, **kwargs):
         assert manager._takeover_active is False and manager._takeover_callback_sink is None, 'handoff after release'
@@ -140,7 +144,9 @@ async def test_failed_watch_takeover_hands_held_cues_back_to_ordinary_delivery()
     submitted = []
     manager.submit_proactive_callback = submit
     with pytest.raises(RuntimeError):
-        await runtime._start_watch_speech_takeover({_TAKEOVER_CALLBACK_INBOX_KEY: inbox}, manager)
+        await runtime._start_watch_speech_takeover(
+            {_TAKEOVER_CALLBACK_INBOX_KEY: inbox, _TAKEOVER_TOKEN_KEY: token}, manager,
+        )
     assert submitted == [(held, {'priority': 8, 'coalesce_key': 'reminder'})]
     assert _ack(held) is None
     assert not inbox.accept(_cue('late'))

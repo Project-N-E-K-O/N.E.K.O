@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 
+from utils.deployment import uvicorn_proxy_options
 from config import MAIN_SERVER_PORT
 
 from . import (
@@ -103,11 +104,6 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     # 1) 配置 UVicorn
-    _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
@@ -115,8 +111,7 @@ if __name__ == "__main__":
         log_level="info",
         loop="asyncio",
         reload=False,
-        proxy_headers=_behind_proxy,
-        forwarded_allow_ips="*" if _behind_proxy else None,
+        **uvicorn_proxy_options(),
         # WebSocket keep-alive: send server-initiated pings every 20s, close if no pong within 60s
         ws_ping_interval=20.0,
         ws_ping_timeout=60.0,
