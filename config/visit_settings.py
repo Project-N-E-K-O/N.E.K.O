@@ -606,6 +606,12 @@ VISIT_BLOCKLIST_FILENAME = "visit_blocklist.json"
 VISIT_REVOCATIONS_DIRNAME = "visit_revocations"
 """Directory of local "forget this person" revocation logs under ``config_dir``."""
 
+VISIT_REVOCATIONS_QUARANTINE_DIRNAME = "quarantine"
+"""Subdirectory of ``VISIT_REVOCATIONS_DIRNAME`` holding unreadable forget records the user discarded.
+
+Never listed by replay or the admission gates (they only read the top level).
+"""
+
 VISIT_FORGET_EPOCHS_FILENAME = "visit_forget_epochs.json"
 """Per-subject forget generations under ``config_dir`` (only increase, never deleted)."""
 

@@ -61,6 +61,7 @@ from config.visit_settings import (
     VISIT_FORGET_EPOCHS_FILENAME,
     VISIT_MEMORY_PLATFORM,
     VISIT_REVOCATIONS_DIRNAME,
+    VISIT_REVOCATIONS_QUARANTINE_DIRNAME,
 )
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import (
@@ -720,6 +721,12 @@ class ClearingSentinels:
             raise ValueError("clearing sentinel scope must be person or chars")
         return doc
 
+    @classmethod
+    def _read(cls, path: Path, op_id: str) -> dict:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        return cls._validate(doc, op_id)
+
     def _create_sync(self, doc: dict) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self.path_for(doc["op_id"])
@@ -818,9 +825,7 @@ class ClearingSentinels:
             if not CLEARING_ID_RE.fullmatch(op_id):
                 continue
             try:
-                with open(self.dir / name, "r", encoding="utf-8") as f:
-                    doc = json.load(f)
-                out.append(self._validate(doc, op_id))
+                out.append(self._read(self.dir / name, op_id))
             except FileNotFoundError:
                 continue
             except (OSError, ValueError, RecursionError) as exc:
@@ -885,6 +890,87 @@ def sentinel_covers(doc: Mapping[str, Any], own_char_uid: str, peer_uid: str | N
     if doc.get("scope") == "person" and peer_uid is not None:
         return doc.get("peer_uid") == peer_uid
     return True
+
+
+# ── 丢弃读不出的清除记录（用户明确确认后）──────────────────────────────
+
+
+@dataclass(frozen=True)
+class QuarantinedRecord:
+    """One unreadable forget record moved aside: ``kind`` is ``revocation_log`` or ``clearing_sentinel``."""
+
+    kind: str
+    name: str
+    error: str
+
+
+def _quarantine_unreadable_sync(config_dir: Path, now: float) -> tuple[list[QuarantinedRecord], int]:
+    directory = config_dir / VISIT_REVOCATIONS_DIRNAME
+    quarantine = directory / VISIT_REVOCATIONS_QUARANTINE_DIRNAME
+    moved: list[QuarantinedRecord] = []
+    failed = 0
+    try:
+        names = sorted(os.listdir(directory))
+    except FileNotFoundError:
+        return moved, failed
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        record_id = name[: -len(".json")]
+        if REVOCATION_ID_RE.fullmatch(record_id):
+            kind, read = "revocation_log", _read_record
+        elif CLEARING_ID_RE.fullmatch(record_id):
+            kind, read = "clearing_sentinel", ClearingSentinels._read
+        else:
+            continue
+        path = directory / name
+        # 与所有写入（开日志 / 记完成 / 关日志 / 写删哨兵）同一把文件锁：锁内重读一遍，
+        # 只有此刻仍读不出才移走。正在被写好的、读得出的记录一律不碰
+        with path_lock(path):
+            try:
+                read(path, record_id)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, RecursionError) as exc:
+                error = type(exc).__name__
+            else:
+                continue
+            # 不删，挪进隔离目录：文件名带时间与随机后缀、不以 .json 结尾，同名不会互相覆盖，
+            # 重放与准入闸只列顶层，看不到这里
+            target = quarantine / f"{name}.{int(now)}-{secrets.token_hex(4)}.bad"
+            try:
+                quarantine.mkdir(parents=True, exist_ok=True)
+                os.replace(path, target)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.error("visit forget record %s could not be quarantined: %s", name, exc)
+                failed += 1
+                continue
+        moved.append(QuarantinedRecord(kind=kind, name=name, error=error))
+    return moved, failed
+
+
+async def quarantine_unreadable_records(
+    config_dir: str | Path, *, now: float | None = None,
+) -> tuple[list[QuarantinedRecord], int]:
+    """Move every unreadable revocation log and clearing sentinel into the quarantine subdirectory.
+
+    Returns ``(moved records, number that could not be moved)``. Only records
+    that still fail to read while their file lock is held are moved, so a
+    record a forget is writing right now (or any readable one) is never
+    touched. Files are moved, not deleted, into
+    ``visit_revocations/quarantine/``, which startup replay and the admission
+    gates never list. Raises ``OSError`` when the directory cannot be listed.
+
+    This is the user's explicit way out of the fail-closed rule: an
+    unreadable log cannot be attributed to a character, so it blocks every
+    visit on the machine until it is discarded. Whatever clearing it
+    described is abandoned; the user can run the forget again.
+    """
+    return await asyncio.to_thread(
+        _quarantine_unreadable_sync, Path(config_dir), time.time() if now is None else now,
+    )
 
 
 ForgetSubject = Callable[[dict], Awaitable[bool]]

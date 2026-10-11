@@ -281,7 +281,12 @@ async def _admit(
             return _refused(409, {"reason": "busy"})
         if uid:
             own_uid = await accounts.lookup_visit_uid(account)
-            if await memory_bridge.char_forget_in_progress(_config_dir(), uid, own_uid=own_uid):
+            refusal = await memory_bridge.char_forget_refusal(_config_dir(), uid, own_uid=own_uid)
+            if refusal == memory_bridge.FORGET_REFUSAL_UNREADABLE:
+                # 同一个码（旧前端照旧认得），多带 reason：挡住的是读不出的清除记录，不是真在清除，
+                # 前端据此引导到「丢弃损坏的清除记录」（POST /api/visit/memory/forget/discard_unreadable）
+                return _error(409, "VISIT_FORGET_IN_PROGRESS", reason=refusal)
+            if refusal is not None:
                 return _error(409, "VISIT_FORGET_IN_PROGRESS")
         try:
             rt = await runtime.start_visit(name, side, **kwargs)
