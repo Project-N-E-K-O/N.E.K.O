@@ -200,6 +200,16 @@ def test_failed_report_keeps_the_draft_and_only_settled_outcomes_drop_it():
     assert drops == [True, True, True, True, False, False], drops
 
 
+def test_report_submission_is_guarded_while_in_flight():
+    # 请求在途时表单可能被重建（刷新列表等）：同一场不能再提交一次（CodeRabbit）
+    submit = function_body("submitVisitReport")
+    guard = submit.index("if (visitMemoryState.reportInFlight.has(visitId)) return;")
+    assert guard < submit.index("visitMemoryState.reportInFlight.add(visitId);") < submit.index("visitRequest(")
+    assert "visitMemoryState.reportInFlight.delete(visitId);" in submit[submit.index("} finally {"):]
+    form = function_body("renderVisitReportForm")
+    assert "submit.disabled = visitMemoryState.reportInFlight.has(visitId);" in form
+
+
 def test_queued_report_with_an_expired_login_is_shown_as_queued():
     submit = function_body("submitVisitReport")
     branch = submit[submit.index("code === 'VISIT_LOGIN_REQUIRED' && result.payload.queued === true"):]

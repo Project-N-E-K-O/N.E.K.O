@@ -88,6 +88,31 @@ async def test_saving_other_keys_while_on_keeps_the_visit(monkeypatch, tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_saving_the_voice_switch_pushes_it_to_live_visits(monkeypatch, tmp_path):
+    pushed = []
+    monkeypatch.setattr(rtm, "apply_voice_setting", lambda enabled: pushed.append(enabled) or 0)
+    _use_preferences_file(monkeypatch, tmp_path)
+    await _save({"visitVoiceEnabled": True})               # 缺省 → 开：照推一次，无害
+    await _save({"visitVoiceEnabled": True, "slopFilterEnabled": False})   # 没变：不推
+    await _save({"visitVoiceEnabled": False})
+    await _save({"visitVoiceEnabled": True})
+    assert pushed == [True, False, True]
+
+
+@pytest.mark.asyncio
+async def test_failing_visit_hooks_do_not_fail_the_saved_settings(monkeypatch, tmp_path):
+    def boom(*_args):
+        raise RuntimeError("runtime unavailable")
+
+    monkeypatch.setattr(rtm, "end_visits_disabled", boom)
+    monkeypatch.setattr(rtm, "apply_voice_setting", boom)
+    _use_preferences_file(monkeypatch, tmp_path)
+    await _save({"visitEnabled": True, "visitVoiceEnabled": True})
+    body = await _save({"visitEnabled": False, "visitVoiceEnabled": False})
+    assert body["success"] is True and body["settings"]["visitEnabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_end_visits_disabled_finalizes_with_visit_disabled(tmp_path, monkeypatch):
     host, guest, wire, clock, _wall = await bring_up(tmp_path, monkeypatch)
     try:
@@ -97,3 +122,17 @@ async def test_end_visits_disabled_finalizes_with_visit_disabled(tmp_path, monke
         assert rtm.end_visits_disabled() == 0          # 已在收尾的不再重起
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+def test_write_result_carries_the_snapshot_read_under_the_same_lock(monkeypatch, tmp_path):
+    # 前后值取自同一次加锁写入：读旧值与写新值之间插不进别的保存（CodeRabbit：并发保存漏判）
+    from utils import preferences
+
+    _use_preferences_file(monkeypatch, tmp_path)
+    first = preferences.save_global_conversation_settings_versioned({"visitEnabled": True})
+    assert first.success and first.previous is not None and "visitEnabled" not in first.previous.settings
+    second = preferences.save_global_conversation_settings_versioned({"visitEnabled": False})
+    assert second.previous.settings["visitEnabled"] is True and second.snapshot.settings["visitEnabled"] is False
+    assert second.previous.revision + 1 == second.snapshot.revision
+    stale = preferences.save_global_conversation_settings_versioned({"visitEnabled": True}, expected_revision=0)
+    assert stale.conflict and stale.previous is None

@@ -329,23 +329,8 @@ class TalkMixin:
             return get_visit_your_turn_notice(self.lang)
         return get_visit_arrival_notice(self.side, self.lang)
 
-    async def _refresh_voice_setting(self) -> None:
-        """Re-read ``visitVoiceEnabled`` before a line: a mid-visit switch applies from the next line.
-
-        Design §3.7.6. The one-way TTS fallback (``voice.fallen_back``) is kept;
-        an unreadable or missing setting keeps the current value.
-        """
-        try:
-            settings = await self.deps.settings()
-        except Exception:  # noqa: BLE001 - 读不出就沿用当前值
-            return
-        value = settings.get("visitVoiceEnabled") if isinstance(settings, dict) else None
-        if isinstance(value, bool):
-            self.voice.enabled = value
-
     async def speak_line(self, *, reply_to: Optional[LineRef], goodbye: bool) -> None:
         """Generate, speak and close one own line; returns once it is committed."""
-        await self._refresh_voice_setting()
         room = self.room
         if room is None or self.finalizing:
             return

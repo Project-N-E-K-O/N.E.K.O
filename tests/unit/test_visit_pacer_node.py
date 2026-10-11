@@ -363,6 +363,21 @@ const report = {};
   report.reload_ritual_final = h.bySid('ritual').filter((m) => m.ended && m.final).length;
 }
 
+// A 结束后的收尾窗口里新一场 B 的开始前帧到达：A 的仪式句仍按 A 回报，B 没开始不认作 B（Codex P2）
+{
+  const h = createHarness();
+  const A = 'A'.repeat(26), B = 'B'.repeat(26);
+  h.emit('neko-visit-bound', { socket: h.socket });
+  h.emit('neko-visit-frame', { type: 'visit_state_change', action: 'started', visit_id: A });
+  h.emit('neko-visit-frame', { type: 'visit_state_change', action: 'ended', visit_id: A });
+  h.emit('neko-visit-frame', { type: 'visit_state_change', action: 'pending', visit_id: B });
+  h.ctx.currentTime = 10;
+  h.chunk('ritualA', 10, 11);
+  h.emit('neko-audio-stream-closed', { speechId: 'ritualA' });
+  h.advance(2000);
+  report.window_visit_ids = Array.from(new Set(h.bySid('ritualA').map((m) => m.visit_id)));
+}
+
 // socket 换了还没重新 bind：发送一直失败，记录静置后丢掉、定时器停下（CodeRabbit）
 {
   const h = createHarness();
@@ -525,6 +540,10 @@ def test_pre_start_state_frames_do_not_arm_the_pacer(report):
 
 def test_bind_after_a_mid_visit_reload_still_opens_the_post_end_window(report):
     assert report["reload_ritual_final"] == 1
+
+
+def test_post_end_window_reports_under_the_visit_that_ended(report):
+    assert report["window_visit_ids"] == ["A" * 26]
 
 
 def test_records_unsendable_after_a_socket_swap_are_dropped_and_ticking_stops(report):

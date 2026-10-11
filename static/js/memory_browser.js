@@ -136,6 +136,8 @@
         reportMessages: new Map(),
         // 举报表单草稿（按场次）：提交失败后重建表单时回填，成功 / 排队 / 取消时丢掉
         reportDrafts: new Map(),
+        // 正在提交的举报（按场次）：期间表单被重建（刷新列表等）也不能再提交一次
+        reportInFlight: new Set(),
         details: null,
         detailsRequestId: 0
     };
@@ -882,6 +884,7 @@
         });
         const submit = createVisitElement('button', 'memory-visit-button memory-visit-danger', visitText('reportSubmit', '提交举报'));
         submit.type = 'submit';
+        submit.disabled = visitMemoryState.reportInFlight.has(visitId);
         actions.appendChild(cancel);
         actions.appendChild(submit);
         form.appendChild(reasonLabel);
@@ -902,6 +905,8 @@
     }
 
     async function submitVisitReport(visitId, fields) {
+        if (visitMemoryState.reportInFlight.has(visitId)) return;
+        visitMemoryState.reportInFlight.add(visitId);
         let result = null;
         try {
             result = await visitRequest(VISIT_REPORT_URL, {
@@ -915,6 +920,8 @@
             });
         } catch (error) {
             console.warn('[MemoryBrowser] visit report request failed:', error);
+        } finally {
+            visitMemoryState.reportInFlight.delete(visitId);
         }
         const code = visitResultCode(result);
         if (result && result.status === 202 && result.payload.queued === true) {

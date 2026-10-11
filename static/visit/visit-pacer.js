@@ -40,6 +40,8 @@
 
     var boundSocket = null;
     var visitId = null;
+    // 收尾窗口属于哪一场：窗口期间新一场的开始前状态帧不会把回报记到新一场头上
+    var armedVisitId = null;
     var visitActive = false;
     // 收到过 started 的那一场：只有它之后的状态才让 pacer 跟踪语音，开始之前就中止（邀请过期、
     // 被拒、入房途中重连）推来的 reconnecting / ending / ended 都不算
@@ -67,6 +69,11 @@
         var ctx = S && S.audioPlayerContext;
         if (ctx && Number.isFinite(ctx.currentTime)) return ctx.currentTime;
         return Number.isFinite(fallback) ? fallback : 0;
+    }
+
+    function reportVisitId() {
+        if (visitActive) return startedVisitId || visitId;
+        return armedVisitId || visitId;
     }
 
     function isArmed() {
@@ -127,7 +134,7 @@
         var msg = {
             action: 'visit_speech_progress',
             speech_id: rec.sid,
-            visit_id: visitId,
+            visit_id: reportVisitId(),
             played_ms: played,
             ended: ended
         };
@@ -286,6 +293,7 @@
         } else if (frame.action === 'ended') {
             if (startedVisitId && startedVisitId === (frameVisit || visitId)) {
                 armedUntil = wallNow() + POST_END_ARM_MS;
+                armedVisitId = startedVisitId;
             }
             visitActive = false;
             startedVisitId = null;

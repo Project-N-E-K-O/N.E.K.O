@@ -290,6 +290,21 @@ def end_visits_disabled() -> int:
     return sum(1 for rt in live_runtimes() if rt.request_finalize("visit_disabled"))
 
 
+def apply_voice_setting(enabled: bool) -> int:
+    """``visitVoiceEnabled`` was saved: live visits use it from their next line (design §3.7.6).
+
+    Pushed by the settings save instead of re-read before each line, so the
+    reply runner keeps no await between its admission check and taking the
+    line; the home-coming line and debrief summary follow it as well. The
+    one-way TTS fallback (``voice.fallen_back``) is kept. Returns how many
+    runtimes were updated.
+    """
+    runtimes = live_runtimes()
+    for rt in runtimes:
+        rt.voice.enabled = bool(enabled)
+    return len(runtimes)
+
+
 def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
     return _by_visit.get(visit_id)
 
