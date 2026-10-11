@@ -1603,6 +1603,7 @@ function _startNekoIdleCat1PairMove(button) {
     const catMindRunOptions = arguments[1] || {};
     const isCatMindRun = catMindRunOptions.source === 'cat_mind';
     if (!isCatMindRun) return false;
+    if (!_isNekoCatActionResourceAvailable('cat1_small_move')) return false;
     const state = _getNekoIdleCat1Journey(button);
     _prepareNekoIdleCat1PairMoveStart(button, state);
     if (_isNekoIdleCat1MovementAnchored(button)) {
@@ -1937,7 +1938,6 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
 
 function _playNekoIdleHoverArt(art, tier, options = {}) {
     if (!art || !tier || tier === _NEKO_IDLE_TIER_NONE) return;
-    _cleanupNekoIdleArtTransition(art);
 
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const button = _getNekoIdleReturnButtonFromArt(art);
@@ -1945,16 +1945,10 @@ function _playNekoIdleHoverArt(art, tier, options = {}) {
     if (_isNekoIdleCat1IndependentActionActive(button)) return;
     const profile = _getNekoIdleReturnSubactionProfile(normalizedTier);
     const subactionState = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
-    if (subactionState && subactionState.profile === profile) {
-        _cancelNekoIdleCat1PairMove(subactionState);
-    }
     const useSubactionInteractive = !!(profile
         && subactionState
         && subactionState.profile === profile
         && subactionState.substate === profile.walkingSubstate);
-    if (useSubactionInteractive) {
-        _pauseNekoIdleCat1Journey(button);
-    }
     const clickSrc = useSubactionInteractive
         ? profile.assets.interactive()
         : _getNekoIdleReturnClickAssetUrl(normalizedTier);
@@ -1970,6 +1964,20 @@ function _playNekoIdleHoverArt(art, tier, options = {}) {
             targetKind: subactionState && subactionState.targetKind ? subactionState.targetKind : ''
         });
     };
+    if (!clickSrc) {
+        // The audio/social action remains valid when its optional visual
+        // reaction is unavailable.  Never assign an empty URL: that would
+        // blank the cat and leave a journey paused on a missing asset.
+        dispatchHoverObservation();
+        return;
+    }
+    _cleanupNekoIdleArtTransition(art);
+    if (subactionState && subactionState.profile === profile) {
+        _cancelNekoIdleCat1PairMove(subactionState);
+    }
+    if (useSubactionInteractive) {
+        _pauseNekoIdleCat1Journey(button);
+    }
     if (art.__nekoIdleHoverSrc === clickSrc) {
         if (art.__nekoIdleHoverTimer) {
             clearTimeout(art.__nekoIdleHoverTimer);

@@ -33,8 +33,11 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
 from utils.external_route_registry import is_route_slot_taken
-from main_logic.session_state import SessionEvent
-from main_logic.agent_event_bus import dispatch_user_utterance
+from main_logic.session_state import SessionEvent, TurnOwner
+from main_logic.agent_event_bus import (
+    dispatch_user_utterance,
+    publish_conversation_turn_observed_best_effort,
+)
 from config import SESSION_ARCHIVE_TRIGGER_TOKENS, SESSION_TURN_THRESHOLD
 from uuid import uuid4
 import numpy as np
@@ -60,6 +63,320 @@ from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
 from main_logic import core as _core_facade
 
 
+class MirrorSpeechStream:
+    """One streaming mirror speech of :meth:`TurnMixin.open_mirror_speech_stream` (OD-15 v3).
+
+    ``push`` / ``finish`` / ``abort`` are synchronous: they only record the
+    request. One task per stream applies them in order. Streams of one
+    manager take the TTS turn one after another, in the order they were
+    opened: a stream claims it (its speech id becomes the current one, the
+    turn's done flags are reset, the TTS pipeline is started) only once the
+    stream opened before it got its end marker into the TTS queue (not just
+    deferred until the worker is ready), was aborted -- and its interruption
+    finished -- or failed. A stream that ends before it ever claimed hands
+    over only once its own predecessor did, so a later stream never skips a
+    line still being spoken. ``_PREDECESSOR_WAIT_S`` bounds that wait; a
+    predecessor still holding the turn then is failed and interrupted
+    before the claim (through the unclaimed ones in between). A stream does
+    not claim at all when an ordinary turn started after it was opened (the
+    family spoke first): it fails instead.
+    Each text then goes
+    through ``_enqueue_tts_text_chunk`` (``tts_pending_chunks`` while the
+    worker is not ready) and the end through ``_request_tts_done_locked``,
+    under ``tts_cache_lock``, and only while its speech id is still the
+    current one: a stream whose turn was taken over (ordinary chat, a newer
+    stream after the bound) stops touching the shared TTS state. Text is
+    never mirrored to the page (``mirror_text=False``) and never enters the
+    private chat history.
+
+    ``push`` / ``finish`` return False once the stream is closed (finished,
+    aborted, failed); ``finish`` returns ``"no_worker"`` when it already
+    knows no worker can take the end marker. ``abort`` is terminal and
+    idempotent: it stops the task, drops the ``on_enqueued`` registration
+    and, while this speech is still the current one, runs
+    :meth:`TurnMixin.interrupt_mirror_speech`. ``on_failed()`` is called
+    once when the stream stops without its end marker for any reason but
+    ``abort`` (no worker, a TTS start or enqueue error, turn taken over); an
+    enqueue error after text reached TTS also interrupts the partial line.
+    """
+
+    NO_WORKER = "no_worker"
+    _PREDECESSOR_WAIT_S = 30.0
+    _DEFERRED_POLL_S = 0.25
+
+    def __init__(
+        self,
+        mgr: Any,
+        speech_id: str,
+        *,
+        metadata: dict,
+        request_id: str,
+        on_failed: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._mgr = mgr
+        self._speech_id = speech_id
+        self.metadata = dict(metadata or {})
+        self.request_id = request_id
+        self._on_failed = on_failed
+        self._ops: deque = deque()
+        self._wake = asyncio.Event()
+        self._closed = False
+        self._aborted = False
+        self._started = False
+        self._claimed = False
+        self._task: Optional[asyncio.Future] = None
+        # 前一条流：它交出轮次后就清掉，已结束的流不会一条拖一条地留在管理器上
+        self._predecessor: Optional["MirrorSpeechStream"] = None
+        self._handing_over = False
+        self._giving_up: Optional[asyncio.Future] = None
+        # finish() 当场发现没有 worker：轮次由打断做完之后交出，被取消的后台任务不抢先交出
+        self._release_after_interrupt = False
+        # 打开时的当前语音：认领时它若被普通对话换掉（亲人先开口），本流不抢那一轮
+        self._base_speech_id = getattr(mgr, "current_speech_id", None)
+        self._end_deferred = False
+        # 本流交出 TTS 轮次的时刻（结束标记真正入队 / 中止且打断清理完 / 失败）：下一条流等它
+        self._released = asyncio.get_running_loop().create_future()
+
+    @property
+    def speech_id(self) -> str:
+        return self._speech_id
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def _start(self, predecessor: Optional["MirrorSpeechStream"]) -> None:
+        self._predecessor = predecessor
+        self._task = self._mgr._fire_task(self._run())
+
+    def push(self, delta: str) -> bool:
+        if self._closed:
+            return False
+        if delta:
+            self._ops.append(delta)
+            self._wake.set()
+        return True
+
+    def finish(self) -> Any:
+        if self._closed:
+            return False
+        if self._started and not self._worker_alive():
+            # 已经知道没有 worker 接得住结束标记：当场告诉调用方（它据此改按估时放字幕）
+            self._close()
+            self._release_after_interrupt = True
+            task = self._task
+            if task is not None and not task.done():
+                task.cancel()                  # 后台任务可能正等着下一段文字：一并结束，不留着它
+            # 已入队的半句先打断（前端可能已排着它的音频），再交出轮次
+            self._mgr._fire_task(self._abort_then_release())
+            return self.NO_WORKER
+        self._closed = True
+        self._ops.append(None)
+        self._wake.set()
+        return True
+
+    def abort(self) -> bool:
+        if self._aborted:
+            return False
+        self._aborted = True
+        self._closed = True
+        self._on_failed = None
+        self._ops.clear()
+        self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
+        self._mgr._mirror_stream_ends.pop(self._speech_id, None)
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+        # 打断清理做完才交出轮次：下一条流不会在清理途中写进待发缓存、随后被一并清掉
+        self._mgr._fire_task(self._abort_then_release())
+        return True
+
+    async def _abort_then_release(self) -> None:
+        try:
+            await self._mgr._interrupt_mirror_stream(self._speech_id)
+        finally:
+            self._release()
+
+    def _close(self) -> None:
+        self._closed = True
+        self._on_failed = None
+        self._ops.clear()
+        self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
+        self._mgr._mirror_stream_ends.pop(self._speech_id, None)
+
+    async def _give_up(self) -> None:
+        """A successor waited too long: fail this stream and interrupt what it queued, then hand over."""
+        if self._released.done():
+            return
+        if self._giving_up is None:
+            # 收尾单独跑一次：几条后继同时超时只收尾一次；等它的一方被取消也不会打断到一半
+            self._giving_up = self._mgr._fire_task(self._give_up_now())
+        await asyncio.wait([self._giving_up])
+
+    async def _give_up_now(self) -> None:
+        self._fail()
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+        try:
+            if self._claimed:
+                await self._mgr._interrupt_mirror_stream(self._speech_id)
+            elif self._predecessor is not None:
+                # 本流还没认领过：轮次实际还在它前面那条手里，一并让那条收尾
+                await self._predecessor._give_up()
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        if self._released.done():
+            return
+        self._on_failed = None
+        predecessor = self._predecessor
+        if not self._claimed and predecessor is not None and not predecessor._released.done():
+            # 没认领过就结束（中止 / 失败）：轮次还在前一条手里，等它交出再交出，
+            # 后面的流不会越过一条还在说的
+            if not self._handing_over:
+                self._handing_over = True
+                predecessor._released.add_done_callback(lambda _f: self._release())
+            return
+        self._predecessor = None
+        self._released.set_result(None)
+
+    def _fail(self) -> None:
+        callback = self._on_failed
+        self._close()
+        if callback is not None:
+            try:
+                callback()
+            except Exception as exc:
+                logger.warning("[%s] mirror speech failure callback failed: %s", self._mgr.lanlan_name, exc)
+
+    def _owns_turn(self) -> bool:
+        return self._mgr.current_speech_id == self._speech_id
+
+    def _worker_alive(self) -> bool:
+        mgr = self._mgr
+        return bool(
+            getattr(mgr, "_tts_audio_output_supported", True)
+            and mgr.tts_thread and mgr.tts_thread.is_alive()
+        )
+
+    async def _run(self) -> None:
+        try:
+            await self._drain()
+            if self._end_deferred:
+                await self._watch_deferred_end()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 起不了 TTS / 入队出错：已有文字进了 TTS 就打断这半句，再关掉本流（之后的 push 返回 False）
+            logger.warning("[%s] mirror speech stream failed: %s", self._mgr.lanlan_name, exc)
+            self._fail()
+            if self._claimed:
+                await self._mgr._interrupt_mirror_stream(self._speech_id)
+        finally:
+            if not self._aborted and not self._end_deferred and not self._release_after_interrupt:
+                # 中止由 abort() 那边在打断清理做完之后交出轮次；结束标记推迟到 worker 就绪的，
+                # 等它真正入队（_request_tts_done_locked 回调）再交出——这里都不能抢先交出
+                self._release()
+
+    async def _watch_deferred_end(self) -> None:
+        """The end marker waits for the worker: fail and hand over if that pending work is discarded.
+
+        An interruption or a session restart clears ``tts_pending_chunks`` and
+        the deferred flag without queuing the marker; this speech then never
+        ends, so the stream reports failure instead of holding the turn.
+        """
+        mgr = self._mgr
+        while not self._released.done():
+            await asyncio.wait([self._released], timeout=self._DEFERRED_POLL_S)
+            if self._released.done():
+                return
+            if self._owns_turn() and not self._worker_alive():
+                # 等就绪的 worker 死了：推迟的结束标记没人补发，打断这半句再交出
+                self._fail()
+                try:
+                    await mgr._interrupt_mirror_stream(self._speech_id)
+                finally:
+                    self._release()
+                return
+            if not (getattr(mgr, "_tts_done_pending_until_ready", False) and self._owns_turn()):
+                # 推迟的结束标记被别处清掉了（打断 / 会话重建）：它不会再入队
+                self._fail()
+                self._release()
+                return
+
+    def _end_queued(self) -> None:
+        """``_request_tts_done_locked`` queued this speech's end marker: hand the turn over."""
+        self._release()
+
+    async def _drain(self) -> None:
+        mgr = self._mgr
+        predecessor = self._predecessor
+        if predecessor is not None and not predecessor._released.done():
+            # 按打开顺序轮流认领：前一条流交出轮次之前，本流不能覆盖它的 speech id 与 done 标记
+            await asyncio.wait([predecessor._released], timeout=self._PREDECESSOR_WAIT_S)
+            if not predecessor._released.done():
+                # 前一条一直不收尾：先让它失败、打断它已入队的半句，两行不会被合成一句
+                await predecessor._give_up()
+        self._predecessor = None
+        del predecessor
+        async with mgr.lock:
+            # 打开时的当前语音，或这一串里最后一条认领过的流（中间没认领就结束的流不改当前语音）
+            expected = {self._base_speech_id, mgr._mirror_last_claimed_sid}
+            if mgr.current_speech_id not in expected:
+                # 打开之后普通对话开了新一轮（亲人先开口）：不抢那一轮，本流放弃
+                self._fail()
+                return
+            mgr.current_speech_id = self._speech_id
+            mgr._mirror_last_claimed_sid = self._speech_id
+            mgr._tts_done_queued_for_turn = False
+            mgr._tts_done_pending_until_ready = False
+            mgr._mirror_stream_ends[self._speech_id] = self._end_queued
+            # 与 mirror_assistant_speech 相同：主动搭话让路（在说的那轮收尾不再发结束标记，后来的不再认领）
+            mgr.state.mark_user_input_preempt()
+        self._claimed = True
+        mgr.remember_speech_playback_gain(self._speech_id, 1.0)
+        await mgr.state.fire(SessionEvent.USER_INPUT, sid=self._speech_id)
+        await mgr.ensure_tts_pipeline_alive()
+        self._started = True
+        lost_worker = False
+        while not lost_worker:
+            while not self._ops:
+                self._wake.clear()
+                await self._wake.wait()
+            async with mgr.tts_cache_lock:
+                if self._aborted:
+                    return
+                if not self._owns_turn():
+                    # 轮次被别人接走（普通聊天、超过等待上限后认领的下一条流）：不再碰共享的 TTS 状态
+                    self._fail()
+                    return
+                if not self._worker_alive():
+                    # worker 不在 / 不出音频：之后的 push 立刻返回 False，调用方改按估时放字幕
+                    self._fail()
+                    lost_worker = True
+                    continue
+                while self._ops:
+                    item = self._ops.popleft()
+                    if item is None:
+                        status = mgr._request_tts_done_locked()
+                        if status == self.NO_WORKER:
+                            self._fail()
+                            lost_worker = True
+                            break
+                        if status == "deferred":
+                            # worker 还没就绪：结束标记补发时才交出轮次（下一条流认领会清掉推迟标记）
+                            self._end_deferred = True
+                        return
+                    if mgr.tts_ready:
+                        mgr._enqueue_tts_text_chunk(self._speech_id, item)
+                    else:
+                        mgr.tts_pending_chunks.append((self._speech_id, item))
+        # worker 没了：已入队的半句先打断（出了缓存锁再做，打断要清管线），再由 _run 交出轮次
+        await mgr._interrupt_mirror_stream(self._speech_id)
+
+
 class TurnMixin:
     """Conversation turn pipeline methods (see module docstring)."""
 
@@ -81,7 +398,7 @@ class TurnMixin:
         self._tts_done_pending_until_ready = False
         # 新一轮开始：清空上一轮 AI 文本累加器（即使上轮 turn end 已清过，
         # proactive abort 等异常路径可能漏清，新轮次起点重置最稳）
-        self._current_ai_turn_text = ''
+        self._reset_ai_turn_buffer()
         self._discarded_turn_open = False
 
         await self.send_user_activity()
@@ -321,7 +638,15 @@ class TurnMixin:
         else:
             self._activity_tracker.on_ai_message(text=text, now=now)
 
-    def _flush_ai_turn_text_to_tracker(self) -> None:
+    def _reset_ai_turn_buffer(self) -> None:
+        """Clear buffered AI text and its identity without changing discard state."""
+        self._current_ai_turn_text = ''
+        self._current_ai_turn_id = ''
+        self._current_ai_turn_started_at = 0.0
+        self._current_ai_turn_type = None
+        self._current_ai_turn_client_owned = False
+
+    def _flush_ai_turn_text_to_tracker(self, *, turn_type: str | None = None) -> None:
         """Flush the per-turn AI text buffer into conversation turn sinks.
 
         Called from each AI-turn-end exit point — there are three:
@@ -333,10 +658,74 @@ class TurnMixin:
         (when text is non-empty) bumps ``_conv_seq`` for open_threads cache
         invalidation. Other sinks, such as background topic collection, see
         the same turn without living inside ``UserActivityTracker``.
+
+        ``turn_type`` is also the conversation-bus label
+        (``assistant_message`` / ``proactive_reply``).
         """
-        self._note_ai_turn(text=self._current_ai_turn_text or None)
-        self._current_ai_turn_text = ''
+        # 文本与轮次身份一起取快照再清空：flush 之后旧 id 不能留给下一轮，
+        # 也不能被恢复路径的补记文本沿用。
+        if turn_type is None:
+            turn_type = getattr(self, "_current_ai_turn_type", None) or (
+                "proactive_reply"
+                if getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
+                else "assistant_message"
+            )
+        ai_text = self._current_ai_turn_text
+        turn_id = getattr(self, "_current_ai_turn_id", "")
+        started_at = float(getattr(self, "_current_ai_turn_started_at", 0.0) or 0.0)
+        client_owned = getattr(self, "_current_ai_turn_client_owned", False)
+        self._note_ai_turn(text=ai_text or None)
+        self._reset_ai_turn_buffer()
         self._discarded_turn_open = False
+        self._publish_ai_message_to_plugin_bus(
+            ai_text, turn_type, turn_id=turn_id, started_at=started_at,
+            client_owned=client_owned,
+        )
+
+    def _publish_ai_message_to_plugin_bus(
+        self,
+        text: Optional[str],
+        turn_type: str,
+        *,
+        turn_id: str = "",
+        started_at: float = 0.0,
+        client_owned: bool = False,
+    ) -> None:
+        """Publish one finished AI turn to the plugin conversation bus.
+
+        Plugins need the whole sentence plus when it was spoken. This store
+        previously only received proactive turns from the offline client, so
+        realtime replies were invisible; publishing here (paired with the user
+        side in ``_publish_user_utterance_to_plugin_bus``) lets plugins read
+        both sides of every turn — ordered by ``metadata.ts`` — without
+        touching host files or competing for the frontend websocket.
+
+        ``ts`` is the first-chunk time, not the flush time: an interrupted turn
+        would otherwise be stamped after the user's next message.
+        """
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        # Snapshot at the first chunk: interruption/session close can flush from
+        # a different task, whose context no longer carries the proactive sid.
+        if client_owned:
+            return
+        try:
+            finished_at = time.time()
+            spoken_at = float(started_at or 0.0) or finished_at
+            resolved_turn_id = str(turn_id or "")
+            self._fire_task(publish_conversation_turn_observed_best_effort(
+                self.lanlan_name,
+                content=cleaned,
+                turn_type=str(turn_type or "assistant_message"),
+                conversation_id=resolved_turn_id,
+                source="main_logic.core",
+                message_count=1,
+                metadata={"role": "cat", "ts": spoken_at, "ts_end": finished_at},
+                ts=spoken_at,
+            ))
+        except Exception:
+            logger.debug("[plugin-bus] ai message not published", exc_info=True)
 
     async def _interrupt_offline_reply(self, session) -> bool:
         """Stop ``session``'s reply and close it as its own AI turn.
@@ -678,7 +1067,7 @@ class TurnMixin:
         # 对称，让 seconds_since_ai_msg 不分主动/被动。proactive 文本同样走过
         # send_lanlan_response（finish_proactive_delivery 内部会调），所以
         # _current_ai_turn_text 已经累加好。
-        self._flush_ai_turn_text_to_tracker()
+        self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 await self._request_tts_done_for_turn("handle_proactive_complete")
@@ -962,7 +1351,7 @@ class TurnMixin:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             await self._clear_tts_pipeline()
             self._pending_turn_meta = None
-            self._current_ai_turn_text = ""
+            self._reset_ai_turn_buffer()
             self._discarded_turn_open = False
             self._active_text_request_id = None
             return
@@ -1213,7 +1602,7 @@ class TurnMixin:
                 # stays open until a turn end: should this reply's close be
                 # taken over now, the close must still send one.
                 self._discarded_turn_open = True
-            self._current_ai_turn_text = ''
+            self._reset_ai_turn_buffer()
             if self.sync_message_queue:
                 self.sync_message_queue.put({
                     'type': 'system',
@@ -1314,6 +1703,13 @@ class TurnMixin:
                     # recovery 这一路让 send 不 track，改由本步补记——它是同步
                     # 的、紧挨 _emit_turn_end，中间没有能丢产权的 await 窗口。
                     # 文本处理跟 send_lanlan_response 内部保持一致（剥表情标签）。
+                    if not self._current_ai_turn_text:
+                        self._current_ai_turn_started_at = time.time()
+                        self._current_ai_turn_client_owned = (
+                            _proactive_expected_sid.get() is not None
+                            and isinstance(getattr(self, "session", None), OmniOfflineClient)
+                        )
+                    self._current_ai_turn_id = str(recovery_turn_id or '')
                     self._current_ai_turn_text += self.emotion_pattern.sub('', body_text)
 
                 def _append_recovery_history() -> None:
@@ -1464,7 +1860,7 @@ class TurnMixin:
             await self.send_audio_done(self.current_speech_id)
 
     def _publish_user_utterance_to_plugin_bus(
-        self, text: Optional[str], *, is_voice_source: bool
+        self, text: Optional[str], *, is_voice_source: bool, ts: float | None = None
     ) -> None:
         """Publish one verbatim user utterance to the plugin bus's user-context bucket.
 
@@ -1486,6 +1882,28 @@ class TurnMixin:
         cleaned = text.strip()
         if not cleaned:
             return
+        # 插件总线（conversations store）：主人侧原话，与 _publish_ai_message_to_plugin_bus
+        # 成对；语音时间为转写到达时刻，不保证跨角色的实际说话顺序。
+        try:
+            published_at = time.time() if ts is None else ts
+            # Speech ids remain diagnostic context; each record is one message.
+            user_turn_id = str(getattr(self, "current_speech_id", "") or "")
+            self._fire_task(publish_conversation_turn_observed_best_effort(
+                self.lanlan_name,
+                content=cleaned,
+                turn_type="user_message",
+                conversation_id=user_turn_id,
+                source="main_logic.core",
+                message_count=1,
+                metadata={
+                    "role": "master",
+                    "is_voice": bool(is_voice_source),
+                    "ts": published_at,
+                },
+                ts=published_at,
+            ))
+        except Exception:
+            logger.debug("[plugin-bus] user message not published", exc_info=True)
         event = {
             "type": "user_message",
             "content": cleaned,
@@ -2131,7 +2549,9 @@ class TurnMixin:
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                 # bucket。文本路径在 _process_stream_data_internal 已自行调用，
                 # 这里只覆盖语音路径，避免非语音复用路径重复发布。
-                self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
+                self._publish_user_utterance_to_plugin_bus(
+                    transcript, is_voice_source=True, ts=_transcript_arrival_ts,
+                )
 
                 # 与文本路径（_process_stream_data_internal）对偶：dispatch 已
                 # 同步跑完 ban-topic 抽取 + 落盘，本轮真抽到新指令就把禁令块写进
@@ -2386,7 +2806,23 @@ class TurnMixin:
         # 必须放在最终校验之后。emotion_pattern 已剥掉表情标签，但保留 <expr>
         # 等可能的 markup——tracker 自己会做二次 strip。
         if track_ai_turn:
+            if not self._current_ai_turn_text:
+                # 轮次开始：记下她"开口"的时刻，flush 时用它做插件总线的时间戳。
+                self._current_ai_turn_started_at = time.time()
+                self._current_ai_turn_client_owned = (
+                    _proactive_expected_sid.get() is not None
+                    and isinstance(getattr(self, "session", None), OmniOfflineClient)
+                )
+                if isinstance(getattr(self, "session", None), OmniRealtimeClient):
+                    self._current_ai_turn_type = self.session.get_conversation_turn_type()
+                else:
+                    self._current_ai_turn_type = (
+                        "proactive_reply"
+                        if getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
+                        else "assistant_message"
+                    )
             self._current_ai_turn_text += text_clean
+            self._current_ai_turn_id = str(effective_turn_id or '')
             if remember_voice_echo:
                 self._remember_recent_ai_voice_echo(text_clean)
         published_at = time.time()
@@ -2764,6 +3200,81 @@ class TurnMixin:
                 pass
         await self.send_user_activity(interrupted_speech_id)
 
+    async def interrupt_mirror_speech(self) -> None:
+        """Cut whatever the character is saying before a mirrored line takes over.
+
+        The ``interrupt_audio`` prelude of :meth:`mirror_assistant_speech`,
+        shared with :meth:`open_mirror_speech_stream` (``abort``): clear the
+        resampler and the TTS pipeline, release the playback gain of the
+        interrupted speech, cancel a realtime provider's response and tell
+        the page which speech id was interrupted.
+        """
+        async with self.lock:
+            interrupted_speech_id = self.current_speech_id
+        self.audio_resampler.clear()
+        # Mirror channel feeds the project TTS pipeline regardless of
+        # ``self.use_tts``, so always clear it on interrupt — the inner
+        # liveness gate inside ``_clear_tts_pipeline`` makes this safe
+        # when no worker is actually running.
+        await self._clear_tts_pipeline()
+        self.release_speech_playback_gain(interrupted_speech_id)
+        # Realtime native voice: also tell the provider to stop generating
+        # so further audio.delta / output_audio.delta won't keep streaming
+        # past the interruption point.  Local takeover guards drop these
+        # at handler level too, but cancelling on the wire avoids wasted
+        # tokens and stale audio still in the wire buffer.
+        if isinstance(self.session, OmniRealtimeClient):
+            try:
+                await self.session.cancel_response()
+            except Exception as cancel_exc:
+                logger.debug(
+                    "[%s] mirror_assistant_speech: realtime cancel_response skipped/failed: %s",
+                    self.lanlan_name, cancel_exc,
+                )
+        await self.send_user_activity(interrupted_speech_id)
+
+    async def _interrupt_mirror_stream(self, speech_id: str) -> None:
+        """``MirrorSpeechStream.abort``: interrupt only while ``speech_id`` is still the current speech."""
+        async with self.lock:
+            current = self.current_speech_id
+        if current != speech_id:
+            return
+        await self.interrupt_mirror_speech()
+
+    def open_mirror_speech_stream(
+        self,
+        *,
+        metadata: dict,
+        request_id: str,
+        on_enqueued: Optional[Callable[[int], None]] = None,
+        on_failed: Optional[Callable[[], None]] = None,
+    ) -> MirrorSpeechStream:
+        """Open one streaming mirror speech with its own speech id (OD-15 v3).
+
+        The visit runtime speaks each line through one stream: ``push``
+        LLM deltas, ``finish`` at the end of the line (one end marker for the
+        whole line), ``abort`` to stop it. ``on_enqueued(n)`` is told how
+        many characters of this speech reached the TTS request queue (text
+        cleaned to nothing is not reported); it stays registered until the
+        speech's end marker is queued or the stream is aborted.
+        ``on_failed()`` reports a stream that stopped without its end marker
+        (see :class:`MirrorSpeechStream`). Streams take the TTS turn in the
+        order they are opened. Ordinary chat never opens one and is
+        unaffected.
+        """
+        speech_id = str(uuid4())
+        if on_enqueued is not None:
+            callbacks = self._mirror_stream_callbacks
+            callbacks[speech_id] = on_enqueued
+            while len(callbacks) > 64:
+                # 兜底上限：异常路径（别处清了管线、结束标记再没入队）留下的登记不无限增长
+                callbacks.pop(next(iter(callbacks)))
+        stream = MirrorSpeechStream(self, speech_id, metadata=metadata, request_id=request_id,
+                                    on_failed=on_failed)
+        predecessor, self._mirror_stream_tail = self._mirror_stream_tail, stream
+        stream._start(predecessor)
+        return stream
+
     async def mirror_assistant_speech(
         self,
         line: str,
@@ -2798,31 +3309,8 @@ class TurnMixin:
             cache_key, runtime_signature = self.game_speech_audio_cache_identity(clean)
             cached_chunks = GAME_SPEECH_AUDIO_CACHE.get(cache_key)
 
-        interrupted_speech_id = None
         if interrupt_audio:
-            async with self.lock:
-                interrupted_speech_id = self.current_speech_id
-            self.audio_resampler.clear()
-            # Mirror channel feeds the project TTS pipeline regardless of
-            # ``self.use_tts``, so always clear it on interrupt — the inner
-            # liveness gate inside ``_clear_tts_pipeline`` makes this safe
-            # when no worker is actually running.
-            await self._clear_tts_pipeline()
-            self.release_speech_playback_gain(interrupted_speech_id)
-            # Realtime native voice: also tell the provider to stop generating
-            # so further audio.delta / output_audio.delta won't keep streaming
-            # past the interruption point.  Local takeover guards drop these
-            # at handler level too, but cancelling on the wire avoids wasted
-            # tokens and stale audio still in the wire buffer.
-            if isinstance(self.session, OmniRealtimeClient):
-                try:
-                    await self.session.cancel_response()
-                except Exception as cancel_exc:
-                    logger.debug(
-                        "[%s] mirror_assistant_speech: realtime cancel_response skipped/failed: %s",
-                        self.lanlan_name, cancel_exc,
-                    )
-            await self.send_user_activity(interrupted_speech_id)
+            await self.interrupt_mirror_speech()
 
         async with self.lock:
             self.current_speech_id = str(uuid4())

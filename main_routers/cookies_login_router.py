@@ -151,7 +151,7 @@ async def render_auth_page(request: Request):
     """Credential management page (local access only)."""
     from config import APP_VERSION
 
-    return templates.TemplateResponse("cookies_login.html", {
+    return templates.TemplateResponse(request, "cookies_login.html", {
         "request": request,
         "static_asset_version": APP_VERSION,
     })
@@ -162,7 +162,7 @@ async def render_auth_guide(request: Request):
     """Standalone browser credential guide (local access only)."""
     from config import APP_VERSION
 
-    return templates.TemplateResponse("cookies_guide.html", {
+    return templates.TemplateResponse(request, "cookies_guide.html", {
         "request": request,
         "static_asset_version": APP_VERSION,
     })

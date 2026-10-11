@@ -151,7 +151,7 @@
         if (!notice || typeof notice !== 'object') {
             return '';
         }
-        return JSON.stringify([
+        var parts = [
             notice.completed_at,
             notice.target_root,
             notice.retained_root,
@@ -159,7 +159,17 @@
             notice.selection_source
         ].map(function (value) {
             return String(value || '').trim();
-        }));
+        });
+        // Data a later v1 catch-up could not bring over is news even after
+        // the plain completion notice was dismissed. Only added when present,
+        // so notices dismissed before keep their key.
+        var skipped = Array.isArray(notice.v1_catch_up_skipped)
+            ? notice.v1_catch_up_skipped.map(function (entry) { return String(entry); }).join(',')
+            : '';
+        if (skipped) {
+            parts.push(skipped);
+        }
+        return JSON.stringify(parts);
     }
 
     function isCompletionNoticeDismissed(notice) {
@@ -392,6 +402,8 @@
                 return translate('storage.restartUnavailable', '当前应用暂时无法执行受控重启，请稍后重试。');
             case 'retained_source_cleanup_failed':
                 return translate('storage.retainedSourceCleanupFailed', '清理旧数据保留目录失败，请稍后重试。');
+            case 'retained_source_cleanup_incomplete':
+                return translate('storage.retainedSourceCleanupIncomplete', '已清理能确认复制完整的部分。以下条目与新目录不一致或缺少复制记录，已原样保留，请手动确认并删除后再点一次「清理旧数据」：');
             case 'retained_source_mismatch':
                 return translate('storage.retainedSourceMismatch', '请求的清理路径与当前保留目录不一致，请刷新后重试。');
             case 'retained_source_not_found':
@@ -1020,7 +1032,14 @@
             || ''
         ).trim();
         var isRebindOnly = restartMode === 'rebind_only';
-        var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required';
+        var migrationErrorCode = String(
+            statusPayload && statusPayload.migration && statusPayload.migration.error_code || ''
+        ).trim();
+        // The commit could not be confirmed (unreadable policy): the stage
+        // stays committing so the next start decides again, but nothing is
+        // running until then.
+        var commitAmbiguous = migrationStage === 'committing' && migrationErrorCode === 'migration_commit_ambiguous';
+        var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required' || commitAmbiguous;
         var percent = 14;
         var activeIndex = 0;
         var label = translate('storage.progressWaitingShutdown', '正在关闭');
@@ -1054,9 +1073,14 @@
                     label = translate('storage.progressVerifying', '正在校验迁移结果');
                     break;
                 case 'committing':
-                    percent = 86;
                     activeIndex = 2;
-                    label = translate('storage.progressCommitting', '正在提交新的存储位置');
+                    if (commitAmbiguous) {
+                        percent = 100;
+                        label = translate('storage.progressCommitAmbiguous', '无法确认新的存储位置是否已经生效（存储策略文件无法读取或已损坏），迁移已暂停，新旧两边的数据都原样保留。请重启应用重试；如果仍然如此，请检查数据目录下 state 文件夹里的存储策略文件。');
+                    } else {
+                        percent = 86;
+                        label = translate('storage.progressCommitting', '正在提交新的存储位置');
+                    }
                     break;
                 case 'retaining_source':
                     percent = 94;
@@ -1072,7 +1096,37 @@
                 case 'rollback_required':
                     percent = 100;
                     activeIndex = 2;
-                    label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    var migrationPayload = statusPayload && statusPayload.migration;
+                    if (migrationPayload && migrationPayload.error_code === 'migration_source_missing') {
+                        // Nothing is rolled back until the source is back; tell
+                        // the user which directory that is instead of "waiting".
+                        label = translate('storage.progressSourceMissing', '原始数据目录或其中的数据不见了，迁移已暂停，新旧两边的数据都原样保留。请把原始数据目录恢复原样后重启：')
+                            + ' ' + String(migrationPayload.source_root || '').trim();
+                    } else if (migrationPayload && (
+                        migrationPayload.error_code === 'migration_publish_conflict'
+                        || migrationPayload.error_code === 'migration_stage_unreadable'
+                    )) {
+                        // The original target data lives in the transaction
+                        // backup, the staged copies in its stage; deleting
+                        // that directory would lose them.
+                        var targetRoot = String(migrationPayload.target_root || '').trim();
+                        // Join with the separator the path already uses, so a
+                        // Windows path does not end up mixing both kinds.
+                        var backslash = String.fromCharCode(92);
+                        var separator = targetRoot.indexOf(backslash) >= 0 ? backslash : '/';
+                        label = migrationPayload.error_code === 'migration_stage_unreadable'
+                            ? translate('storage.progressStageUnreadable', '迁移暂存的数据无法读取，迁移已暂停，新旧两边的数据都原样保留。暂存数据在下面这个事务目录的 stage 里，请勿删除，检查它的读取权限后重启应用：')
+                            : translate('storage.progressPublishConflict', '迁移时目标位置被其他程序重新创建，迁移已暂停，新旧数据都已保留。原来的数据在下面这个事务目录的 backup 里，请勿删除，确认后再手动处理：');
+                        // The backup sits in this transaction's own directory,
+                        // named after the first 12 characters of its id.
+                        var transactionDir = ['.smtx', String(migrationPayload.txid || '').slice(0, 12)]
+                            .filter(function (part) { return !!part; })
+                            .join(separator);
+                        label = label
+                            + ' ' + (targetRoot ? targetRoot + separator + transactionDir : transactionDir);
+                    } else {
+                        label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    }
                     break;
                 default:
                     percent = isRebindOnly ? 38 : 14;
@@ -1153,6 +1207,8 @@
         retainedItem.appendChild(openRetainedButton);
         pathList.appendChild(targetItem);
         pathList.appendChild(retainedItem);
+        var skippedNote = createElement('p', 'storage-location-completion-skipped', '');
+        skippedNote.hidden = true;
 
         var actions = createElement('div', 'storage-location-actions storage-location-completion-actions');
         var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据'));
@@ -1170,11 +1226,13 @@
         state.completionOpenTargetButton = openTargetButton;
         state.completionOpenRetainedButton = openRetainedButton;
         state.completionCleanupButton = cleanupButton;
+        state.completionSkipped = skippedNote;
 
         title.classList.add('storage-location-panel-title--with-close');
         title.classList.add('storage-location-completion-drag-handle');
         card.appendChild(title);
         card.appendChild(pathList);
+        card.appendChild(skippedNote);
         card.appendChild(actions);
         document.body.appendChild(card);
         installCompletionCardDragging(card);
@@ -1276,7 +1334,23 @@
         state.completionOpenTargetButton.hidden = !String(state.completionNotice.target_root || '').trim();
         state.completionOpenRetainedButton.hidden = !String(state.completionNotice.retained_root || '').trim();
         state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
+        var skippedText = describeV1CatchUpSkipped(state.completionNotice);
+        state.completionSkipped.textContent = skippedText;
+        state.completionSkipped.hidden = !skippedText;
         card.hidden = false;
+    }
+
+    // Data an old (v1) migration left in the old directory that could not be
+    // copied over later, because the current location had its own.
+    function describeV1CatchUpSkipped(notice) {
+        var entries = Array.isArray(notice && notice.v1_catch_up_skipped)
+            ? notice.v1_catch_up_skipped.map(function (entry) { return String(entry); }).filter(Boolean)
+            : [];
+        if (!entries.length) {
+            return '';
+        }
+        return translate('storage.v1CatchUpSkipped', '旧数据目录里还有这些数据没有搬到当前路径（当前路径里已有同名数据，没有覆盖）。请确认后自行处理：')
+            + ' ' + entries.join(', ');
     }
 
     function handleHomeTutorialStartupRelease(event) {
@@ -1372,6 +1446,16 @@
             try {
                 payload = await response.json();
             } catch (_) {}
+            if (payload && payload.error_code === 'retained_source_cleanup_incomplete') {
+                if (state.completionCleanupButton) {
+                    state.completionCleanupButton.disabled = false;
+                }
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(buildCleanupIncompleteMessage(payload), 8000);
+                }
+                await checkReadyStateCompletionNotice();
+                return;
+            }
             if (!response.ok || !payload || payload.ok !== true) {
                 throw new Error(extractResponseError(payload, translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')));
             }
@@ -1379,7 +1463,9 @@
             applyCompletionNotice({ completed: false });
             if (typeof window.showStatusToast === 'function') {
                 window.showStatusToast(
-                    translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
+                    payload.retained_root_kept === true
+                        ? translate('storage.cleanupRetainedRootDoneKept', '旧数据目录里迁移过的数据已清理；目录里还有其他文件，已原样保留。')
+                        : translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
                     4000
                 );
             }
@@ -1394,6 +1480,22 @@
                 );
             }
         }
+    }
+
+    // Part of the old directory is already gone; say so and name what was
+    // kept instead of reporting a plain failure.
+    function buildCleanupIncompleteMessage(payload) {
+        var remainingEntries = Array.isArray(payload && payload.remaining_entries)
+            ? payload.remaining_entries.map(function (entry) { return String(entry); }).join(', ')
+            : '';
+        var parts = [];
+        if (remainingEntries) {
+            parts.push(extractResponseError(payload, '') + ' ' + remainingEntries);
+        }
+        if (payload && payload.retained_root_unlistable === true) {
+            parts.push(translate('storage.retainedRootUnlistable', '旧数据目录的内容无法列出，里面可能还有清理到一半的条目，已暂停清理。请检查该目录的读取权限后再点一次「清理旧数据」。'));
+        }
+        return parts.length ? parts.join(' ') : extractResponseError(payload, '');
     }
 
     function extractResponseError(payload, fallbackText) {
@@ -2387,6 +2489,10 @@
 
     window.appStorageLocation = {
         formatError: extractResponseError,
+        buildCleanupIncompleteMessage: buildCleanupIncompleteMessage,
+        describeV1CatchUpSkipped: describeV1CatchUpSkipped,
+        buildCompletionNoticeDismissKey: buildCompletionNoticeDismissKey,
+        buildMaintenanceProgressModel: buildMaintenanceProgressModel,
         init: init,
         waitUntilMainUiAllowed: function () {
             return init();

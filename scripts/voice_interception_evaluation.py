@@ -243,6 +243,10 @@ def audit_receiver(manifest: dict, base: Path) -> dict:
     Segment boundaries must advance after every declared gap. A writer receipt
     is never described as provider acknowledgement. Duplicate/unknown retries
     and extra receiver chunks are rejected by exact key-set comparison.
+
+    Provider confirmation labels and IDs are unverified manifest claims. The
+    legacy provider_confirmed_chunks counter counts those claims; this local
+    file audit never verifies an external provider's acknowledgement.
     """
     if type(manifest.get("schema_version")) is not int or manifest.get("schema_version") != 1 or type(manifest.get("sample_rate")) is not int or manifest.get("sample_rate") != 16000:
         raise EvidenceError("unsupported receiver schema")
@@ -315,6 +319,8 @@ def audit_receiver(manifest: dict, base: Path) -> dict:
             "accepted_samples": sum(row["end"] - row["start"] for row in audio.values()),
             "scope": _text(manifest.get("receiver_scope"), "receiver_scope"),
             "provider_confirmed_chunks": sum(row["receipt"] == "provider_confirmed" for row in received),
+            "provider_confirmation_evidence": "self_reported_unverified",
+            "verified_provider_confirmed_chunks": 0,
             "production_ready": False}
 
 

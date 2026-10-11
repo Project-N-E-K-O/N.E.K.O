@@ -264,3 +264,18 @@ tests/testbench/docs/dev_note.txt
 /plugin/plugins/*/plugin.toml.lock
 /.codex-live-screen.png
 plugin/plugins/data/user_profile_cache.json
+
+# Issue-specific reports and local screenshot evidence do not belong in Git.
+/docs/**/issue[0-9]*/
+/docs/**/issue[0-9]*.md
+/docs/images/
+/docs/records/images/
+/docs/design/visit-t1-t5/
+/docs/**/*before*.png
+/docs/**/*after*.png
+/docs/**/*before*.jpg
+/docs/**/*after*.jpg
+/docs/**/*before*.jpeg
+/docs/**/*after*.jpeg
+/docs/**/*before*.webp
+/docs/**/*after*.webp

@@ -651,9 +651,9 @@
         if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
             // Electron 多窗口模式：通过 IPC 请求 Pet 窗口截取头像
             if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
-                // 优先使用已缓存的外部头像
-                if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
-                    var cached = window.appChatAvatar.getCurrentAvatarDataUrl();
+                // Model preview broadcasts must never contain a custom display image.
+                if (window.appChatAvatar && typeof window.appChatAvatar.getModelAvatarDataUrl === 'function') {
+                    var cached = window.appChatAvatar.getModelAvatarDataUrl();
                     if (cached) {
                         window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
                             detail: { dataUrl: cached, source: 'cached' }
@@ -1898,6 +1898,7 @@
     }
 
     I.setMessages = function setMessages(messages) {
+        cancelMessageReactions();
         // Compute fallback start past any explicit sortKey in incoming batch
         var maxIncomingSortKey = Array.isArray(messages)
             ? messages.reduce(function (max, message) {
@@ -2118,6 +2119,71 @@
         return I.state.composerAttachments;
     }
 
+    var reactionGeneration = 0;
+    var reactionCandidates = new Map();
+    var reactionAttempts = new Set();
+    var REACTION_EMOJIS = ['😊', '😄', '🥰', '✨', '🎉', '😢', '🥺', '🤗', '💧', '😮', '😲', '👀', '❗', '😤', '😠', '💢', '😾'];
+
+    function getReactionCharacterName() {
+        return (window.appState && window.appState.lanlan_name)
+            || (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+    }
+    function getReactionMessageText(message) {
+        return (message.blocks || []).filter(function (block) {
+            return block && block.type === 'text' && typeof block.text === 'string';
+        }).map(function (block) { return block.text; }).join('\n').trim();
+    }
+    function cancelMessageReactions() {
+        reactionGeneration++;
+        reactionAttempts.clear();
+        reactionCandidates.clear();
+    }
+    function pruneMessageReactions() {
+        var ids = new Set(I.state.messages.map(function (m) { return m.id; }));
+        reactionAttempts.forEach(function (id) { if (!ids.has(id)) reactionAttempts.delete(id); });
+        reactionCandidates.forEach(function (target, id) {
+            if (!I.state.messages.some(function (m) { return m === target.message; })) reactionCandidates.delete(id);
+        });
+    }
+    function scheduleMessageReaction(message) {
+        // Capture identity when the optimistic message is created, before a
+        // later send can replace the shared submission ID during async work.
+        if (!message || message.role !== 'user' || ['sending', 'sent'].indexOf(message.status) < 0 || message.reaction || reactionAttempts.has(message.id)
+                || isYuiGuideChatMessage(message) || isNewUserIcebreakerChatMessage(message)
+                || (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive())) return;
+        var text = getReactionMessageText(message);
+        var name = getReactionCharacterName();
+        var previous = reactionCandidates.get(message.id);
+        if (text && name) reactionCandidates.set(message.id, { message: message, text: text, name: name,
+            generation: reactionGeneration, requestId: previous ? previous.requestId : (window._lastSubmittedRequestId || null) });
+    }
+    window.captureMessageReactionTarget = function (requestId) {
+        // Transcripts without turn identity can arrive after reply start. Never
+        // guess which user message belongs to such a reply from arrival order.
+        if (!requestId) return null;
+        var targets = Array.from(reactionCandidates.values());
+        var target = targets.find(function (item) {
+            return item.requestId === requestId && item.message.status === 'sent';
+        });
+        if (!target) return null;
+        reactionCandidates.delete(target.message.id);
+        reactionAttempts.add(target.message.id);
+        return target;
+    };
+    window.applyMessageReactionFromEmotion = function (target, result) {
+        if (!target || target.generation !== reactionGeneration || getReactionCharacterName() !== target.name
+                || !result || result.error || !result.reaction
+                || result.reaction.author !== target.name || REACTION_EMOJIS.indexOf(result.reaction.emoji) < 0
+                || (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive())) return;
+        var current = I.state.messages.find(function (m) { return m.id === target.message.id; });
+        if (current !== target.message || current.role !== 'user' || current.status !== 'sent'
+                || current.reaction || getReactionMessageText(current) !== target.text) return;
+        I.updateMessage(current.id, { reaction: { emoji: result.reaction.emoji, author: target.name } });
+        if (window.appChatExport && typeof window.appChatExport.refreshMessageReaction === 'function') {
+            window.appChatExport.refreshMessageReaction(current.id);
+        }
+    };
+
     var MAX_MESSAGES = 50;
 
     function getNextAppendSortKey() {
@@ -2158,6 +2224,8 @@
             I.invalidatePendingGalgameRequest();
         }
         I.renderWindow();
+        pruneMessageReactions();
+        scheduleMessageReaction(normalized);
         return normalized;
     }
 
@@ -2172,6 +2240,7 @@
 
         I.state.messages = I.sortMessages(I.state.messages);
         I.renderWindow();
+        scheduleMessageReaction(updatedMessage);
         return updatedMessage;
     }
 
@@ -2180,6 +2249,7 @@
         I.state.messages = I.state.messages.filter(function (message) {
             return String(message.id) !== String(messageId);
         });
+        pruneMessageReactions();
         var changed = I.state.messages.length !== beforeLength;
         if (changed) {
             I.renderWindow();
@@ -2207,6 +2277,7 @@
     }
 
     I.clearMessages = function clearMessages() {
+        cancelMessageReactions();
         I.state.messages = [];
         I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         I._sortKeySeq = 0;

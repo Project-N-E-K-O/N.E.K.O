@@ -134,6 +134,7 @@ __all__ = [
     "PAUSE_PEER_ABSENT",
     "PAUSE_PEER_AWAY",
     "OutboundFrame",
+    "OutboxReservation",
     "VisitOutbox",
     "InboxResult",
     "InboxSequencer",
@@ -191,6 +192,37 @@ class OutboundFrame:
         return {"type": "send", "cmd": self.cmd, "payload": copy.deepcopy(self.payload)}
 
 
+class OutboxReservation:
+    """Bytes of the in-flight budget held for one reliable payload (:meth:`VisitOutbox.reserve`).
+
+    Either consumed by ``VisitOutbox.send(..., reservation=...)`` or given
+    back with :meth:`release` (idempotent; use it in ``finally``).
+    """
+
+    __slots__ = ("_outbox", "nbytes", "_open")
+
+    def __init__(self, outbox: "VisitOutbox", nbytes: int) -> None:
+        self._outbox = outbox
+        self.nbytes = nbytes
+        self._open = True
+
+    @property
+    def held(self) -> bool:
+        """True until released or consumed."""
+        return self._open
+
+    def release(self) -> None:
+        """Give the bytes back (no-op once released or consumed)."""
+        if self._open:
+            self._open = False
+            self._outbox._release_reservation(self)
+
+    def _consume(self, outbox: "VisitOutbox") -> None:
+        if outbox is not self._outbox:
+            raise ValueError("reservation belongs to another outbox")
+        self.release()
+
+
 @dataclass(eq=False)
 class _Item:
     t: str
@@ -209,6 +241,8 @@ class _Item:
     first_active: Optional[float] = None
     next_due: float = 0.0
     acked: bool = False
+    unsent_first: bool = False  # 首发没写出去（write_failed）：下一次发出仍算首发
+    written: bool = False       # 传输确认至少写出去过一次（written）：之后迟到的写失败不再回滚
 
 
 @dataclass
@@ -305,7 +339,10 @@ class VisitOutbox:
 
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._last_write: Optional[concurrent.futures.Future] = None
+        self._closed = False
+        self._close_task: Optional["asyncio.Future[None]"] = None
         self.write_errors = 0
+        self._reserved_bytes = 0
 
     # ------------------------------------------------------------------
     # 查询
@@ -321,18 +358,42 @@ class VisitOutbox:
         return list(self._unacked)
 
     @property
+    def reserved_bytes(self) -> int:
+        """Bytes held by reservations not consumed or released yet (admitted sends still persisting)."""
+        return self._reserved_bytes
+
+    @property
     def pending_bytes(self) -> int:
-        """Encoded bytes of all unacked reliable items (queued or transmitted)."""
-        return sum(item.nbytes for item in self._unacked.values())
+        """Encoded bytes of all unacked reliable items (queued or transmitted) plus held reservations."""
+        return sum(item.nbytes for item in self._unacked.values()) + self._reserved_bytes
 
     def try_reserve(self, nbytes: int) -> bool:
         """Whether ``nbytes`` more fit under ``VISIT_OUTBOX_PENDING_MAX_BYTES``.
 
         A check, not a hold: call :meth:`send` right after it, without
         awaiting in between. A human line that does not fit is refused by the
-        caller with ``status{VISIT_E_BUSY}`` (section 4.2 ``text``).
+        caller with ``status{VISIT_E_BUSY}`` (section 4.2 ``text``). A caller
+        that has to await between the check and the send uses :meth:`reserve`.
         """
         return self.pending_bytes + max(0, int(nbytes)) <= self._pending_max
+
+    def reserve(self, nbytes: int) -> Optional["OutboxReservation"]:
+        """Hold ``nbytes`` of the in-flight budget; None when they do not fit.
+
+        The held bytes count in :attr:`pending_bytes` until the reservation
+        is released or consumed by ``send(..., reservation=...)``, so other
+        lines cannot take them while the holder awaits (section 4.5
+        ``stream_data``: reserve, persist, then enqueue). Releasing is
+        idempotent; a consumed reservation releases nothing.
+        """
+        size = max(0, int(nbytes))
+        if not self.try_reserve(size):
+            return None
+        self._reserved_bytes += size
+        return OutboxReservation(self, size)
+
+    def _release_reservation(self, reservation: "OutboxReservation") -> None:
+        self._reserved_bytes = max(0, self._reserved_bytes - reservation.nbytes)
 
     def encoded_size(self, msg: Mapping[str, Any]) -> tuple[int, int]:
         """``(pieces, bytes)`` of ``msg`` as it would go on the wire, for ``try_reserve``.
@@ -474,8 +535,12 @@ class VisitOutbox:
         self._backpressure = bool(on)
 
     def send(self, msg: Mapping[str, Any], *, now: Optional[float] = None,
-             final_piece: bool = False) -> int:
+             final_piece: bool = False, reservation: Optional["OutboxReservation"] = None) -> int:
         """Queue one section 4.2 payload; return its ``seq`` (0 for unsequenced types).
+
+        ``reservation`` (from :meth:`reserve` on this outbox) is consumed when
+        the payload is queued: its bytes stop counting once the item's own
+        bytes do. It stays held when the payload is rejected.
 
         The outbox is authoritative for these fields and overwrites them:
         ``seq`` of reliable types; ``leave.last_seq`` (``seq - 1``);
@@ -489,15 +554,24 @@ class VisitOutbox:
         ``stats`` are dropped and a ``line_delta`` drops the rest of its line
         (returns 0); a line whose pieces were dropped (backpressure or a
         backlog over ``VISIT_DELTA_BACKLOG_DROP_S``) gets no further pieces,
-        its ``text`` closes it. Raises ``ValueError``
+        its ``text`` closes it. After :meth:`close` has started nothing is
+        queued any more: lossy types return 0, reliable ones raise
+        ``ValueError`` like after ``leave`` (no ``seq`` that is neither sent
+        nor in the file). Raises ``ValueError``
         for an invalid payload, a ``text`` over ``VISIT_PIECES_MAX`` pieces,
-        or a reliable payload after ``leave``.
+        or a reliable payload after ``leave`` or after :meth:`close`.
         """
         now = self._now(now)
         if not isinstance(msg, Mapping):
             raise ValueError("message must be a mapping")
         t = msg.get("t")
         cmd = cmd_of(t)  # 未知类型 → ValueError
+        if self._closed:
+            # 已关闭：泵已停、文件已删。可丢的直接丢；必达的与 leave 之后一样报错（调用方都按「没入队」处理），
+            # 不分配一个既发不出、也不在文件里的 seq
+            if is_reliable(t):
+                raise ValueError("reliable message after close")
+            return 0
         if t == "line_delta":
             self._send_delta(msg, now, final_piece=final_piece)
             return 0
@@ -532,6 +606,8 @@ class VisitOutbox:
         pieces, nbytes = wire_size(text, visit_id=self.visit_id)
         if pieces > VISIT_PIECES_MAX:
             raise ValueError("payload exceeds VISIT_PIECES_MAX pieces; fit it first")
+        if reservation is not None:
+            reservation._consume(self)
         self._next_seq += 1
         item = _Item(t=t, cmd=cmd, payload=json.loads(text), enq_at=now, seq=seq,
                      nbytes=nbytes, pieces=pieces, ln=ln)
@@ -654,8 +730,9 @@ class VisitOutbox:
         for s in list(self._unacked):
             if s > seq:
                 break
-            if not self._unacked[s].emitted:
-                # 还没发出去的项不可能被对端收到：越界 ack 不能把它当已确认
+            pending = self._unacked[s]
+            if not pending.emitted or not pending.written:
+                # 还没发出去（或放出过、但一次都没写出去）的项不可能被对端收到：越界 ack 不能把它当已确认
                 self.ack_beyond_sent += 1
                 break
             item = self._unacked.pop(s)
@@ -676,14 +753,27 @@ class VisitOutbox:
             if seq != item.seq and other.emitted and seq not in self._urgent:
                 self._urgent.append(seq)
 
-    def leave_done(self, now: Optional[float] = None) -> bool:
-        """True once ``leave`` is acked, or ``VISIT_LEAVE_GAP_GRACE_S`` passed since it was sent.
+    def final_ack_frame(self, seq: int, now: Optional[float] = None) -> OutboundFrame:
+        """A standalone ``ack`` frame for the last owed ack when the channel closes.
 
-        The grace starts when the ``leave`` frame is first transmitted (it is
-        queued behind every earlier reliable first send, so the receiver's
-        gap window never opens before those are on the wire). A ``leave``
-        still unsent ``2 × grace`` after it was queued (peer absent, bucket
-        starved) ends the outbox anyway.
+        Bypasses the queue: :meth:`due` releases nothing once :meth:`leave_done`
+        holds, but the peer's own ``leave`` may still be waiting for this ack.
+        """
+        text = encode_msg({"t": "ack", "v": 1, "seq": int(seq)})
+        pieces, nbytes = wire_size(text, visit_id=self.visit_id)
+        item = _Item(t="ack", cmd=cmd_of("ack"), payload=json.loads(text), enq_at=self._now(now),
+                     nbytes=nbytes, pieces=pieces)
+        return self._frame(item, retransmit=False)
+
+    def leave_done(self, now: Optional[float] = None) -> bool:
+        """True once ``leave`` is acked, or ``VISIT_LEAVE_GAP_GRACE_S`` passed since it was written.
+
+        The grace starts when the ``leave`` frame is first written by the
+        transport (:meth:`written`; it is queued behind every earlier
+        reliable first send, so the receiver's gap window never opens before
+        those are on the wire). A ``leave`` still not written ``2 × grace``
+        after it was queued (peer absent, bucket starved, writes stuck or
+        failing) ends the outbox anyway.
         """
         if self._leave_started is None:
             return False
@@ -691,7 +781,7 @@ class VisitOutbox:
         if self._leave_acked:
             return True
         if self._leave_sent_at is not None:
-            # 宽限从 leave 真正发出时起算：它按 FIFO 排在此前已入队的必达消息之后，
+            # 宽限从 leave 第一次真正写出去时起算：它按 FIFO 排在此前已入队的必达消息之后，
             # 接收方的补齐窗口也就不会在那些消息发出之前开始
             return now - self._leave_sent_at >= self._leave_grace_s
         # 兜底：入队后 2×宽限仍没发出去（对端不在、桶一直满），不再等
@@ -727,22 +817,74 @@ class VisitOutbox:
         self._bytes.charge(item.nbytes)
         self._msgs.charge(item.pieces)
 
+    def written(self, frame: OutboundFrame, now: Optional[float] = None) -> None:
+        """The transport wrote ``frame``: the first such write of a reliable item anchors its timers.
+
+        ``due`` books the release time for the delivery timeout; the first
+        write that actually succeeds (possibly a resend on a replacement
+        connection, after the first attempt failed or is still stuck) moves
+        it to its own time and starts the ``leave`` grace, which nothing else
+        starts. Later writes change nothing.
+        """
+        if not frame.seq:
+            return
+        item = self._unacked.get(frame.seq)
+        if item is None or item.acked or item.written:
+            return
+        now = self._now(now)
+        item.written = True
+        item.unsent_first = False
+        item.first_active = self.active_time(now)
+        if item.seq == self._leave_seq:
+            self._leave_sent_at = now
+
+    def write_failed(self, frame: OutboundFrame, now: Optional[float] = None) -> None:
+        """The transport did not write ``frame``: retry a reliable one at once; an unwritten item does not count as sent.
+
+        ``due`` books a frame as transmitted when it releases it. If the
+        write then fails and the item was never written (:meth:`written`),
+        it is due again right away and not counted as sent: the ``leave``
+        grace and the delivery timeout do not start from it, and the next
+        transmission is flagged as the first one (``retransmit`` False). A
+        failure of an item already written elsewhere (a stale connection
+        reporting late) changes nothing.
+        """
+        if not frame.seq:
+            return
+        item = self._unacked.get(frame.seq)
+        if item is None or item.acked or item.written:
+            # 已经写出去过（例如顶掉旧连接的新连接补发成功了）：旧连接迟到的失败不回滚、也不再多催一次重发
+            return
+        now = self._now(now)
+        if item.emitted:
+            # 一次都没写出去（首发与之后的补发都失败）：都不算发过
+            item.unsent_first = True
+            item.first_active = None
+            if item.seq == self._leave_seq:
+                self._leave_sent_at = None
+        item.next_due = now
+
     def _frame(self, item: _Item, *, retransmit: bool) -> OutboundFrame:
         return OutboundFrame(cmd=item.cmd, payload=copy.deepcopy(item.payload),
                              nbytes=item.nbytes, pieces=item.pieces, seq=item.seq,
                              retransmit=retransmit)
 
-    def _transmitted(self, item: _Item, now: float) -> None:
-        """Book-keeping after a reliable item went on the wire."""
-        if item.emitted == 0:
+    def _transmitted(self, item: _Item, now: float) -> bool:
+        """Book-keeping after a reliable item went on the wire; True when this is its first transmission."""
+        was_unsent = item.unsent_first
+        first = item.emitted == 0 or was_unsent
+        item.unsent_first = False
+        if was_unsent:
+            item.emitted = 0  # 那次没写出去的不算：重试间隔从第一档起
+        if first:
+            # leave 的宽限不在这里起算：放出不等于写出去（写可能卡住、失败），由 written() 按第一次写成功起算
             item.first_active = self.active_time(now)
-            if item.seq == self._leave_seq:
-                self._leave_sent_at = now
         item.emitted += 1
         if self._leave_started is not None:
             item.next_due = now + _LEAVE_RESEND_INTERVAL_S
         else:
             item.next_due = now + self._retry[min(item.emitted - 1, len(self._retry) - 1)]
+        return first
 
     def check_delivery(self, now: Optional[float] = None) -> Optional[int]:
         """Evaluate the delivery timeout; return the failed ``seq`` (sticky) or None.
@@ -808,8 +950,8 @@ class VisitOutbox:
                 return out
             self._charge(item)
             self._urgent.popleft()
-            self._transmitted(item, now)
-            out.append(self._frame(item, retransmit=True))
+            first = self._transmitted(item, now)
+            out.append(self._frame(item, retransmit=not first))
 
         # ②③ 平时：到期重传在前（outbox 到期项排在队首）、首发在后。leave 入队后
         # 反过来：此前已入队的首发与 leave 本身先发出去——leave 模式下已发项每 1 s
@@ -833,8 +975,8 @@ class VisitOutbox:
             if not self._fits(item):  # retransmit-only-with-room
                 return False
             self._charge(item)
-            self._transmitted(item, now)
-            out.append(self._frame(item, retransmit=True))
+            first = self._transmitted(item, now)
+            out.append(self._frame(item, retransmit=not first))
         return True
 
     def _release_first_sends(self, now: float, out: list[OutboundFrame]) -> bool:
@@ -929,6 +1071,9 @@ class VisitOutbox:
         line = json.dumps({"seq": item.seq, "t": item.t, "cmd": item.cmd, "payload": item.payload},
                           ensure_ascii=False, separators=(",", ":")) + "\n"
         data = line.encode("utf-8")
+        if self._closed:
+            # 已关闭：文件已删 / 将删，写线程已停，不能为迟到的一条重新建出带正文的文件
+            return
         if self._executor is None:
             self._executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix=f"visit-outbox-{self.visit_id[:6]}")
@@ -981,7 +1126,20 @@ class VisitOutbox:
         the cleanup: the pending write, the writer shutdown and the unlink
         still run, so no file with ``text`` bodies is left behind.
         """
-        await asyncio.shield(self._close_impl(delete))
+        self._closed = True
+        if self._close_task is None:
+            self._close_task = asyncio.ensure_future(self._close_impl(delete))
+        await asyncio.shield(self._close_task)
+
+    @property
+    def close_task(self) -> Optional["asyncio.Future[None]"]:
+        """The (single) cleanup started by :meth:`close`, or None before it."""
+        return self._close_task
+
+    @property
+    def closed(self) -> bool:
+        """``close`` has started: nothing is written to the file any more."""
+        return self._closed
 
     async def _close_impl(self, delete: bool) -> None:
         await self.flush()
@@ -1225,9 +1383,13 @@ class InboxSequencer:
             return False
         return self._last_ack_at is None or now - self._last_ack_at >= self._coalesce_s
 
-    def poll_ack(self, now: float) -> Optional[int]:
-        """Return the ``seq`` for an ``ack`` to send now (and mark it sent), or None."""
-        if not self.ack_due(now):
+    def poll_ack(self, now: float, *, force: bool = False) -> Optional[int]:
+        """Return the ``seq`` for an ``ack`` to send now (and mark it sent), or None.
+
+        ``force`` skips the coalescing window (an owed ``ack`` still goes out
+        right before the channel closes).
+        """
+        if not (self._ack_pending if force else self.ack_due(now)):
             return None
         self._ack_pending = False
         self._last_ack_at = now

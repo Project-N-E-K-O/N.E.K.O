@@ -6,6 +6,7 @@ import asyncio
 from contextlib import nullcontext
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -35,11 +36,12 @@ PUBLIC_ARCHIVE_QUARANTINE_DIRNAME = "quarantine_public_archives"
 # Quarantine keeps the original ``sha256(session_id).json`` basename as the suffix.
 _QUARANTINED_ARCHIVE_KEY_RE = re.compile(r"(?:^|-)([0-9a-f]{64})\.json$")
 # Startup audit moves invalid/duplicate session files (full ledger and transcript)
-# here as ``{reason}-{ms}-{uuid hex}-{session_id}.json``. It is never trimmed;
-# explicit deletes/forgets erase the ones in their scope.
+# here as ``quarantined_file_name(reason, "<session_id>.json")``. It is never
+# trimmed; explicit deletes/forgets erase the ones in their scope.
 SESSION_QUARANTINE_DIRNAME = "quarantine"
+# Files quarantined before the nonce was shortened carry a full 32-hex uuid.
 _QUARANTINED_SESSION_NAME_RE = re.compile(
-    r"^[a-z]+-\d+-[0-9a-f]{32}-([A-Za-z0-9._-]+)\.json$"
+    r"^[a-z]+-\d+-[0-9a-f]{8}(?:[0-9a-f]{24})?-([A-Za-z0-9._-]+)\.json$"
 )
 _QUARANTINED_SESSION_FILE_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*\.json")
 # Memory writes of end receipts deleted without a successor receipt (restart
@@ -51,6 +53,19 @@ RETRACT_INTENT_SCHEMA = "neko.theater.retract-intent.v1"
 # theater attaches it to archive requests issued after that forget completed.
 FORGET_MARKER_DIRNAME = "forget_markers"
 FORGET_MARKER_SCHEMA = "neko.theater.forget-marker.v1"
+
+logger = logging.getLogger(__name__)
+
+
+def quarantined_file_name(reason: str, original_name: str) -> str:
+    """Name a quarantined file ``{reason}-{ms}-{nonce}-{original_name}``.
+
+    The original basename stays as the suffix because scoped deletes attribute
+    quarantined files by it. The nonce is kept short: without Windows long-path
+    support a move past 260 characters fails, and a public archive basename
+    alone is already 69 characters.
+    """
+    return f"{reason}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}-{original_name}"
 
 
 def _retry_windows_permission_error(operation):
@@ -1016,12 +1031,11 @@ class NumericV2ArchiveStore:
             try:
                 quarantine_root.mkdir(parents=True, exist_ok=True)
                 # 只移动、不删除；该目录不参与 Session 隔离区的数量裁剪。
-                os.replace(
-                    path,
-                    quarantine_root / f"invalid-{int(time.time() * 1000)}-{uuid.uuid4().hex}-{path.name}",
-                )
+                os.replace(path, quarantine_root / quarantined_file_name("invalid", path.name))
                 moved += 1
             except OSError:
+                # Left in place, the strict preflight scan still reports this file.
+                logger.warning("Numeric v2 cannot quarantine public archive %s", path, exc_info=True)
                 continue
         return moved
 
@@ -1947,4 +1961,5 @@ __all__ = [
     "THEATER_MEMORY_SOURCE",
     "build_numeric_v2_memory_messages",
     "build_numeric_v2_public_archive",
+    "quarantined_file_name",
 ]

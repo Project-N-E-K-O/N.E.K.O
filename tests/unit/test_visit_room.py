@@ -916,6 +916,14 @@ def test_host_step_timer_starts_when_begin_is_sent_not_when_created():
     assert host.on_tick(27.0).say_goodbye
 
 
+def test_host_step_timer_is_not_pushed_back_by_a_retransmitted_begin():
+    host = make_room("host")
+    host.on_local_recall(0.0)
+    host.on_wrap_up_sent("begin", 12.0)
+    host.on_wrap_up_sent("begin", 20.0)                  # 重传：不把步骤计时器往后推
+    assert host.on_tick(27.0).say_goodbye
+
+
 def test_local_goodbye_from_active_uses_a_valid_reason():
     from utils.visit_wire import encode_msg
 

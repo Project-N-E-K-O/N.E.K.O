@@ -2621,3 +2621,36 @@ test('cross-origin real windows retain their native close fallback', async () =>
         assert.equal(guide.index, 1);
     } finally { await guide.stop(); dom.window.close(); }
 });
+
+
+for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    for (const initiallyMissing of [false, true]) {
+        test(`lock lesson reveals the current ${prefix} lock after toolbar recreation (initially missing: ${initiallyMissing})`, async t => {
+            const { dom, api, doc } = setup();
+            t.after(() => dom.window.close());
+            const root = dom.window;
+            doc.body.innerHTML = `<div id="${prefix}-floating-buttons"></div>`
+                + (initiallyMissing ? '' : `<div id="${prefix}-lock-icon" style="display:none"></div>`);
+            root.t = key => key;
+            root.universalTutorialManager = { constructor: { detectModelPrefix: () => prefix } };
+            root[prefix + 'Manager'] = { closeAllPopups() {} };
+            root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
+            const cleanup = await api.prepareFloating();
+            doc.getElementById(prefix + '-lock-icon')?.remove();
+            const current = doc.createElement('div');
+            current.id = prefix + '-lock-icon';
+            current.style.display = 'none';
+            current.style.opacity = '0';
+            current.getBoundingClientRect = () => ({ left: 20, top: 20, right: 60, bottom: 60, width: 40, height: 40 });
+            doc.body.append(current);
+            const step = api.floatingSteps().find(step => step.id === 'lock');
+            await step.enter();
+            assert.equal(step.target(), current, 'the lesson must target the recreated visible lock');
+            assert.equal(current.style.getPropertyValue('display'), 'block');
+            assert.equal(current.style.getPropertyPriority('display'), 'important');
+            await cleanup();
+            assert.equal(current.style.display, 'none', 'the current lock returns to its own pre-lesson style');
+            assert.equal(current.style.opacity, '0');
+        });
+    }
+}

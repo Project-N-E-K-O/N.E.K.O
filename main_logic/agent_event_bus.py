@@ -955,13 +955,15 @@ async def publish_conversation_turn_observed_best_effort(
     source: str,
     message_count: int = 0,
     metadata: Optional[Dict[str, Any]] = None,
+    ts: Optional[float] = None,
 ) -> bool:
     """Copy one message of an already-handled turn onto the plugin bus.
 
     The dual of :func:`publish_provider_frame_observed_best_effort`, for text
     instead of pixels, and it carries the same obligation: publish only what
-    actually happened. An instruction may be copied once the provider has
-    demonstrably received it (the first streamed chunk); a reply may be copied
+    actually happened. For offline proactive pairs, an instruction may be
+    copied once the provider has demonstrably received it (the first streamed
+    chunk); a reply may be copied
     once it is committed. Neither may be copied because it exists in local
     state -- a turn sitting in ``_conversation_history`` can still die before a
     request is made, and a half-streamed reply that was discarded was never
@@ -973,15 +975,32 @@ async def publish_conversation_turn_observed_best_effort(
     it into the ``conversations`` store (see
     ``api_runtime._forward_conversation_turn``).
 
-    ``conversation_id`` is what ties the instruction and the reply back into
-    one turn on the reader's side: it is the id ``ConversationRecord`` exposes
-    and the one ``bus.conversations.get_by_id()`` passes along. (The plane's
-    ``bus.query`` does not filter on it today -- grouping happens in the
-    reader's hands -- so this fills the field the schema has, it does not
-    promise a server-side lookup.) ``message_count`` is how many messages the
-    conversation carries as of this record (1 for the instruction, 2 once the
-    reply lands), so a reader holding one record knows whether it has the
-    whole turn.
+    What ``conversation_id`` and ``message_count`` promise depends on the
+    producer:
+
+    - Offline proactive turns (``OmniOfflineClient``) publish the instruction
+      and the reply as one pair. ``conversation_id`` ties the two together:
+      it is the id ``ConversationRecord`` exposes and the one
+      ``bus.conversations.get_by_id()`` passes along. ``message_count`` is how
+      many messages that pair carries as of this record (1 for the
+      instruction, 2 once the reply lands), so a reader holding one record
+      knows whether it has the whole pair.
+    - Host-side records from ``TurnMixin`` (``user_message``,
+      ``assistant_message``, ``proactive_reply``) are single messages.
+      ``message_count`` is always 1, and ``conversation_id`` carries the
+      host speech/turn id as diagnostic context only. It does not pair a user
+      message with the reply to it, and two records that share it are not
+      a promise that they form one turn.
+
+    The plane's ``bus.query`` does not filter on ``conversation_id`` today --
+    grouping happens in the reader's hands -- so this fills the field the
+    schema has, it does not promise a server-side lookup.
+
+    ``ts`` is when the message itself happened (epoch seconds). The forwarder
+    stores it as ``metadata.ts`` for display ordering only; the record's
+    top-level ``timestamp`` stays the forward time, which is what the
+    ``since_ts`` cursor filters on. Omitted, the forwarder uses the forward
+    time for both.
 
     Best effort in the same strong sense as the frame publisher: ``True`` means
     "handed to the socket", never "a plugin will see it".
@@ -1001,6 +1020,11 @@ async def publish_conversation_turn_observed_best_effort(
     }
     if metadata:
         event["metadata"] = dict(metadata)
+    if ts is not None:
+        try:
+            event["ts"] = float(ts)
+        except (TypeError, ValueError):
+            pass
 
     sent = await publish_session_event_threadsafe(event)
     if not sent:

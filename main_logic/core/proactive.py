@@ -26,6 +26,7 @@ from main_logic.omni_realtime_client import (
     MultimodalTurnDelivery,
     OmniRealtimeClient,
     RealtimeImagePayloadTooLargeError,
+    new_client_item_id,
 )
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
@@ -542,7 +543,7 @@ class ProactiveMixin:
             # (only the agent-direct-reply path in main_server.py does), so
             # without this the buffer would carry the proactive text forward
             # and contaminate the next user-initiated turn's AI message.
-            self._flush_ai_turn_text_to_tracker()
+            self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
 
             if self.session and hasattr(self.session, '_conversation_history'):
                 # action_note 只进历史，不进 send_lanlan_response（前端不展示）
@@ -1813,6 +1814,14 @@ class ProactiveMixin:
                 passive=False,
             )
             ack_resolved = False
+            # Whether visible text came out. A callback whose tool call ran
+            # with nothing said is still delivered (its side effect happened),
+            # but nothing fills the topic teaser then.
+            text_committed = False
+
+            def _mark_text_committed(_text: str) -> None:
+                nonlocal text_committed
+                text_committed = True
 
             def _resolve_text_delivery_ack(delivered: bool) -> None:
                 nonlocal ack_resolved
@@ -1852,6 +1861,7 @@ class ProactiveMixin:
                         instruction,
                         images=_proactive_images or None,
                         on_committed=lambda: _resolve_text_delivery_ack(True),
+                        on_committed_text=_mark_text_committed,
                     )
                 except Exception as exc:
                     if ack_resolved:
@@ -1878,6 +1888,8 @@ class ProactiveMixin:
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered or ack_resolved:
                 _resolve_text_delivery_ack(True)
+                if topic_hint_sent and not text_committed:
+                    await self.send_cancel_topic_hint(turn_id=proactive_sid)
                 delivered_ids = {
                     cb.get("_callback_delivery_id")
                     for cb in active_callbacks
@@ -2522,9 +2534,7 @@ class ProactiveMixin:
                                 "type": "conversation.item.create",
                                 "event_id": description_event_id,
                                 "item": {
-                                    "id": (
-                                        f"item_neko_callback_visual_{uuid4().hex}"
-                                    ),
+                                    "id": new_client_item_id("cbvis"),
                                     "type": "message",
                                     "role": "user",
                                     "content": [{

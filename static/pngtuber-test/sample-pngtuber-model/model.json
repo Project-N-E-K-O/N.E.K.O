@@ -66,69 +66,69 @@
       "purpose": "Click feedback animation for direct PNGTuber image interaction tests."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat-move-1.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif",
       "role": "drag_image",
       "format": "gif",
       "purpose": "Built-in hold/drag visual feedback fallback used while the PNGTuber image is dragged or pinch-moved."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat2.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif",
       "role": "variant_idle_image",
       "variant": "cat2",
       "format": "gif",
       "purpose": "Alternate idle GIF for variant switching tests."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat2-click.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif",
       "role": "variant_talking_and_click_image",
       "variant": "cat2",
       "format": "gif",
       "purpose": "Alternate talking GIF for variant switching tests."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat-move-2.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif",
       "role": "variant_drag_image",
       "variant": "cat2",
       "format": "gif",
       "purpose": "Alternate drag GIF for hold/drag feedback tests."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat3.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif",
       "role": "variant_idle_image",
       "variant": "cat3",
       "format": "gif",
       "purpose": "Third idle GIF variant for variant switching tests."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat3-click.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif",
       "role": "variant_talking_and_click_image",
       "variant": "cat3",
       "format": "gif",
       "purpose": "Third talking GIF variant for variant switching tests."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat-move-3.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif",
       "role": "variant_drag_image",
       "variant": "cat3",
       "format": "gif",
       "purpose": "Third drag GIF variant for hold/drag feedback tests."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat4-1.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif",
       "role": "action_image",
       "variant": "walk",
       "format": "gif",
       "purpose": "Optional action GIF that can be manually assigned to an expression field for stress testing."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat4-2.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-2.gif",
       "role": "action_image",
       "variant": "stretch",
       "format": "gif",
       "purpose": "Optional action GIF that can be manually assigned to an expression field for stress testing."
     },
     {
-      "file": "/static/assets/neko-idle/cat-idle-cat4-3.gif",
+      "file": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif",
       "role": "action_image",
       "variant": "interactive",
       "format": "gif",
@@ -187,24 +187,24 @@
       "idle_image": "idle.gif",
       "talking_image": "talking.gif",
       "click_image": "talking.gif",
-      "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-1.gif"
+      "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif"
     },
     "cat2_static_assets": {
-      "idle_image": "/static/assets/neko-idle/cat-idle-cat2.gif",
-      "talking_image": "/static/assets/neko-idle/cat-idle-cat2-click.gif",
-      "click_image": "/static/assets/neko-idle/cat-idle-cat2-click.gif",
-      "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-2.gif"
+      "idle_image": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif",
+      "talking_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif",
+      "click_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif",
+      "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif"
     },
     "cat3_static_assets": {
-      "idle_image": "/static/assets/neko-idle/cat-idle-cat3.gif",
-      "talking_image": "/static/assets/neko-idle/cat-idle-cat3-click.gif",
-      "click_image": "/static/assets/neko-idle/cat-idle-cat3-click.gif",
-      "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-3.gif"
+      "idle_image": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif",
+      "talking_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif",
+      "click_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif",
+      "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif"
     },
     "action_gif_examples": {
-      "happy_image": "/static/assets/neko-idle/cat-idle-cat4-1.gif",
-      "sad_image": "/static/assets/neko-idle/cat-idle-cat4-2.gif",
-      "surprised_image": "/static/assets/neko-idle/cat-idle-cat4-3.gif"
+      "happy_image": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif",
+      "sad_image": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-2.gif",
+      "surprised_image": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif"
     },
     "transition_example": {
       "drag_image": "/static/assets/neko-idle/cat_model_change.gif"
@@ -224,7 +224,7 @@
     "idle_image": "idle.gif",
     "talking_image": "talking.gif",
     "click_image": "talking.gif",
-    "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-1.gif",
+    "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif",
     "happy_image": "happy.png",
     "sad_image": "sad.png",
     "angry_image": "angry.png",

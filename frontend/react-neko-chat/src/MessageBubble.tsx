@@ -1,6 +1,7 @@
 import clsx from 'clsx';
 import { i18n } from './i18n';
 import MessageBlockView, { isGuideMessage } from './MessageBlockView';
+import MessageReactions from './MessageReactions';
 import TopicHintBubble, { isTopicHintMessage } from './TopicHintBubble';
 import {
   type ChatMessage,
@@ -133,6 +134,7 @@ export default function MessageBubble({
             />
           ))}
         </div>
+        <MessageReactions message={message} />
         {message.actions && message.actions.length > 0 ? (
           <div className="message-inline-actions">
             {message.actions.map((action) => (

@@ -1553,6 +1553,7 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "  普通语音  ",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
@@ -1586,6 +1587,7 @@ async def test_voice_plugin_observer_noop_preserves_user_context_side_effects():
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "  f(x)=x^3 derivative answer is 3x^2  ",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
@@ -1624,6 +1626,7 @@ async def test_voice_bridge_session_change_continues_ordinary_transcript_flow():
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "  Yui explain this step  ",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
@@ -1660,6 +1663,7 @@ async def test_voice_observer_broadcast_failure_continues_ordinary_transcript_fl
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "  continue this transcript  ",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
@@ -3965,6 +3969,7 @@ async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypat
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "要不要休息一下喝点水",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
@@ -3989,6 +3994,7 @@ async def test_stale_ai_echo_voice_transcript_is_not_suppressed(monkeypatch):
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "要不要休息一下喝点水",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
@@ -4013,6 +4019,7 @@ async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(mon
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "先别休息帮我打开设置",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
@@ -4037,6 +4044,7 @@ async def test_short_keyword_barge_in_from_recent_ai_text_is_not_suppressed(monk
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "coffee",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
@@ -4463,6 +4471,7 @@ async def test_takeover_dispatcher_falls_back_when_unhandled(dispatcher_outcome)
     mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
         "继续普通流程",
         is_voice_source=True,
+        ts=mgr.last_user_message_time,
     )
     assert mgr.sync_message_queue.messages == [{
         "type": "user",

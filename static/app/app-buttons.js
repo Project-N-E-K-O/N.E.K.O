@@ -2831,6 +2831,13 @@
                 if (window.mmdManager) {
                     window.mmdManager._goodbyeClicked = false;
                 }
+                if (window.pngtuberManager) {
+                    window.pngtuberManager._goodbyeClicked = false;
+                    // 侧栏返回不派发 return-click 事件，pngtuber 的 returnHandler
+                    // 没机会清 _isInReturnState；残留会让工具栏早退分支与锁图标
+                    // 守卫继续按"她还在离开态"处理，回来后半边 UI 不再出现。
+                    window.pngtuberManager._isInReturnState = false;
+                }
 
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({

@@ -181,10 +181,10 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | minimax | MiniMax-M3 | https://api.minimaxi.com/v1 |
 | minimax_intl | MiniMax-M3 | https://api.minimax.io/v1 |
 | mimo | mimo-v2.5 | https://api.xiaomimimo.com/v1 |
-| claude | claude-sonnet-5 | https://api.anthropic.com/v1 |
+| claude | claude-sonnet-5-5 | https://api.anthropic.com/v1 |
 | grok | grok-4.3 | https://api.x.ai/v1 |
 | openrouter | google/gemini-3-flash-preview | https://openrouter.ai/api/v1 |
-| orcarouter | anthropic/claude-sonnet-5 | https://api.orcarouter.ai/v1 |
+| orcarouter | anthropic/claude-sonnet-5.5 | https://api.orcarouter.ai/v1 |
 | requesty | google/gemini-3-flash-preview | https://router.requesty.ai/v1 |
 
 #### 自定义 Agent 模型

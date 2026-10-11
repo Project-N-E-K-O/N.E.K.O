@@ -738,9 +738,12 @@ async def test_arecheck_one_legacy_fact_skips_malformed_head(tmp_path):
     fake_llm.ainvoke = _ainvoke
     fake_llm.aclose = _aclose
 
-    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm) as factory:
         result = await fs.arecheck_one_legacy_fact("小天")
     assert result is True
+    # Backfilling event_when runs thinking-off, like Stage-1 extraction: no
+    # extra_body means the factory applies the model's thinking-off dialect.
+    assert "extra_body" not in factory.call_args.kwargs
     facts = await fs.aload_facts("小天")
     # malformed entry left untouched (schema_version not set)
     bad = next(f for f in facts if f.get('hash') == 'h-bad')
@@ -791,9 +794,10 @@ async def test_arecheck_one_legacy_reflection_skips_malformed_head(tmp_path):
     fake_llm.ainvoke = _ainvoke
     fake_llm.aclose = _aclose
 
-    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm) as factory:
         result = await re.arecheck_one_legacy_reflection("小天")
     assert result is True
+    assert "extra_body" not in factory.call_args.kwargs
     reflections = await re.aload_reflections("小天", include_archived=True)
     g = next(r for r in reflections if r.get('id') == 'r-good')
     assert g.get('schema_version') == 2

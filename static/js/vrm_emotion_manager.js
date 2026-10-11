@@ -114,7 +114,11 @@
                 modelSelect.innerHTML = `<option value="">${t('vrmEmotionManager.pleaseSelectModel', '请选择模型')}</option>`;
                 modelSingleselectOptions.innerHTML = '';
 
+                // Mapping APIs share one identity per exact stem, including built-in/user copies.
+                const mappingNames = new Set();
                 data.models.forEach(model => {
+                    if (mappingNames.has(model.name)) return;
+                    mappingNames.add(model.name);
                     const option = document.createElement('option');
                     option.value = model.name;
                     option.dataset.info = JSON.stringify(model);

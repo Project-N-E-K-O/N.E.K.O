@@ -841,7 +841,9 @@ window.checkAndLoadVRM = async function () {
         }
 
         // 6. 使用统一的路径转换工具函数
-        const modelUrl = window.convertVRMModelPath(newModelPath);
+        const convertedPath = window.convertVRMModelPath(newModelPath);
+        const modelUrl = /^\/(?:user_vrm|static\/vrm|workshop)\//.test(convertedPath)
+            ? convertedPath.split('/').map(encodeURIComponent).join('/') : convertedPath;
 
         // 7. 初始化Three.js场景，传入光照配置（如果存在）
         if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
@@ -851,9 +853,10 @@ window.checkAndLoadVRM = async function () {
 
         // 8. 检查是否需要重新加载模型（使用规范化比较，避免路径前缀差异导致不必要的重载）
         const currentModelUrl = window.vrmManager.currentModel?.url;
-        let needReload = true;
+        let needReload = currentModelUrl !== modelUrl;
 
-        if (currentModelUrl) {
+        const isLocalFileUrl = value => /^\/(?:user_vrm|static\/vrm|workshop)\//.test(value || '');
+        if (isLocalFileUrl(currentModelUrl) && isLocalFileUrl(modelUrl)) {
             // 使用共享的路径处理工具函数（避免与 vrm-core.js 重复）
             const getFilename = window._vrmPathUtils?.getFilename;
             const normalizePath = window._vrmPathUtils?.normalizePath;
@@ -862,16 +865,28 @@ window.checkAndLoadVRM = async function () {
                 console.warn('[VRM Init] 路径处理工具函数未初始化，跳过路径比较');
                 needReload = true;
             } else {
-                const currentFilename = getFilename(currentModelUrl);
-                const newFilename = getFilename(modelUrl);
+                // Normalize local path segments without turning encoded delimiters
+                // into URL query/fragment syntax. Custom URLs retain exact identity.
+                const normalizeLocalUrl = (value) => {
+                    try {
+                        const url = new URL(value, 'http://vrm.local');
+                        return url.pathname.split('/').map(segment =>
+                            encodeURIComponent(decodeURIComponent(segment))).join('/') + url.search + url.hash;
+                    }
+                    catch (_) { return value; }
+                };
+                const currentPath = normalizeLocalUrl(currentModelUrl);
+                const newPath = normalizeLocalUrl(modelUrl);
+                const currentFilename = getFilename(currentPath);
+                const newFilename = getFilename(newPath);
 
                 // 首先尝试文件名匹配（最宽松，处理路径前缀差异）
                 if (currentFilename && newFilename && currentFilename === newFilename) {
                     needReload = false;
                 } else {
                     // 如果文件名不同，尝试规范化路径匹配
-                    const normalizedCurrent = normalizePath(currentModelUrl);
-                    const normalizedNew = normalizePath(modelUrl);
+                    const normalizedCurrent = normalizePath(currentPath);
+                    const normalizedNew = normalizePath(newPath);
                     if (normalizedCurrent && normalizedNew && normalizedCurrent === normalizedNew) {
                         needReload = false;
                     } else if (currentModelUrl === modelUrl) {

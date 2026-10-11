@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+from services.theater.numeric_v2_archive import NumericV2ArchiveStore, quarantined_file_name
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
 from tests.unit.test_character_memory_regression import _DummyRequest, reload_module
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _branch_story, _opening
@@ -128,7 +128,7 @@ async def test_workshop_unsubscribe_cascades_theater_data(tmp_path, monkeypatch)
     other_session_path, _ = await _seed_theater(theater, other_binding)
     quarantine = archive_store.public_archive_quarantine_root
     quarantine.mkdir(parents=True)
-    own_quarantined = quarantine / f"invalid-1-{'0' * 32}-{hashlib.sha256(b'x').hexdigest()}.json"
+    own_quarantined = quarantine / quarantined_file_name("invalid", f"{hashlib.sha256(b'x').hexdigest()}.json")
     own_quarantined.write_text(
         json.dumps({"story_id": "s", "character_id": binding["character_id"]}), encoding="utf-8",
     )
@@ -478,3 +478,57 @@ async def test_workshop_unsubscribe_discards_the_intent_when_the_commit_fails(tm
     assert steam_calls == []
     assert session_path.is_file()
     assert _purge_intents(theater) == []
+
+
+async def test_workshop_unsubscribe_refuses_a_character_held_by_a_route(tmp_path, monkeypatch):
+    # 与改名 / 删除同一个守卫（OD-13）：串门 / 小游戏在用、或串门后台还在按它的名字写数据时不删它
+    from utils import external_route_registry as registry
+
+    config = _Config(tmp_path, {
+        "当前猫娘": "Other",
+        "猫娘": {
+            "Lan": _workshop_character("character_11111111111111111111111111111111"),
+            "Other": {"_reserved": {"character_id": "character_22222222222222222222222222222222"}},
+        },
+    })
+    unsubscribe, steam_calls = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+    monkeypatch.setattr(registry, "is_character_lifecycle_locked", lambda name: name == "Lan")
+    before = json.loads(json.dumps(config.characters))
+
+    result = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    body = json.loads(bytes(result.body)) if hasattr(result, "body") else result
+    assert body["success"] is False and body["code"] == "EXTERNAL_ROUTE_ACTIVE"
+    assert body["character_name"] == "Lan"
+    assert steam_calls == [] and config.saved == [] and config.characters == before
+    assert registry._mutating_characters == set()
+
+
+async def test_workshop_unsubscribe_holds_its_characters_until_the_config_is_written(tmp_path, monkeypatch):
+    # 检查通过之后到写完 characters.json：这些角色不能再开串门 / 小游戏（与改名 / 删除同一做法）
+    from utils import external_route_registry as registry
+
+    config = _Config(tmp_path, {
+        "当前猫娘": "Other",
+        "猫娘": {
+            "Lan": _workshop_character("character_11111111111111111111111111111111"),
+            "Other": {"_reserved": {"character_id": "character_22222222222222222222222222222222"}},
+        },
+    })
+    unsubscribe, _steam_calls = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+    seen: list[bool] = []
+    real_save = config.asave_characters
+
+    async def save(characters):
+        seen.append(registry.is_external_route_locked("Lan"))
+        await real_save(characters)
+
+    config.asave_characters = save
+    result = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+    assert result["success"] is True, result
+    assert seen and all(seen)
+    assert not registry.is_external_route_locked("Lan")

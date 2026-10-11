@@ -224,6 +224,11 @@ from .post_turn import (  # noqa: F401
     _spawn_outbox_post_turn_signals,
 )
 
+from . import knowledge_routes  # noqa: F401
+# Public knowledge is a separate subsystem that only shares the process (and
+# its middleware / storage gate) with memory; see knowledge_routes.
+runtime.app.include_router(knowledge_routes.router)
+
 from . import routes  # noqa: F401
 from .routes import (  # noqa: F401
     ExternalMemoryImportRequest,

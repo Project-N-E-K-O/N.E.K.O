@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ElevenLabs V3 Text-to-Dialogue worker."""
+"""ElevenLabs v4 Turbo Text-to-Dialogue worker."""
 
 import numpy as np
 import soxr
@@ -129,7 +129,7 @@ def _drain_elevenlabs_resampler(resampler, pcm_sample_rate: int) -> bytes:
     )
 
 def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
-    """ElevenLabs V3 worker using Text-to-Dialogue WebSocket PCM output."""
+    """ElevenLabs worker using Text-to-Dialogue WebSocket PCM output."""
     normalized_voice_id = _normalize_elevenlabs_voice_id(voice_id)
     options = _get_elevenlabs_options(base_url)
     output_format = options['output_format']
@@ -213,7 +213,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         await ws.send(json.dumps({"close_socket": True}))
                         text_done_sent = True
                     except Exception as exc:
-                        logger.debug("ElevenLabs V3 WS close_socket send failed: %s", exc)
+                        logger.debug("ElevenLabs WS close_socket send failed: %s", exc)
                 if wait_for_final:
                     try:
                         await asyncio.wait_for(response_finished.wait(), timeout=30.0)
@@ -296,7 +296,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             _enqueue_error(response_queue, {
                                 "code": "API_REQUEST_FAILED",
                                 "provider": "elevenlabs",
-                                "message": f"ElevenLabs V3 dialogue API error: {payload}",
+                                "message": f"ElevenLabs dialogue API error: {payload}",
                             })
                             continue
                         if not audio_bytes and not is_turn_final and not is_final:
@@ -317,7 +317,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                         audio_jitter.append(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
                     if is_turn_final:
-                        # V3 emits a turn boundary before the session-level is_final that follows
+                        # Dialogue models emit a turn boundary before the session-level is_final that follows
                         # close_socket. PCM has exact turn boundaries, so release the buffered tail
                         # now, but keep receiving until is_final before publishing audio_done.
                         audio_jitter.flush()
@@ -441,7 +441,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             continue
                         pending_text.clear()
                         pending_text_sid = None
-                    # close_socket 刷新 V3 服务端缓冲，让 receive_task 在后台抽完尾音；
+                    # close_socket 刷新服务端缓冲，让 receive_task 在后台抽完尾音；
                     # 真正的 close 由下一个 sid 切换 / __interrupt__ / shutdown 触发，
                     # 避免主循环在这里阻塞最长 30s 拖慢下一句 utterance 首音延迟喵。
                     if ws is not None and not text_done_sent:
@@ -449,7 +449,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             await ws.send(json.dumps({"close_socket": True}))
                             text_done_sent = True
                         except Exception as exc:
-                            logger.debug("ElevenLabs V3 WS close_socket send failed: %s", exc)
+                            logger.debug("ElevenLabs WS close_socket send failed: %s", exc)
                     current_speech_id = None
                     pending_text.clear()
                     pending_text_sid = None

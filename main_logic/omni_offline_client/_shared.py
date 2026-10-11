@@ -253,7 +253,7 @@ def _find_by_identity(messages, index: int, message) -> int:
 _REPLY_GENERATION_ATTR = "_reply_generation"
 
 
-def _cancelled_turn_end(history, start: int, generation: int) -> int:
+def _cancelled_turn_end(history, start: int, generation: int, round_generation=None) -> int:
     """Where the turn anchored at ``history[start]`` ends: the index of the
     first message of a later turn after it, ``len(history)`` when none.
 
@@ -265,11 +265,22 @@ def _cancelled_turn_end(history, start: int, generation: int) -> int:
     without a generation (``finish_proactive_delivery``) is always later: it
     is only claimed while no reply is in progress. ``start`` is -1 for a turn
     that began on an empty history.
+
+    A proactive reply saves its tool rounds ahead of its reply, and can do so
+    while a cancelled turn is still finishing its call.
+    ``round_generation`` tells the generation the reply that saved a tool
+    round began under (None for any other round), so that round starts the
+    later turn the same way its reply would.
     """
     for index in range(start + 1, len(history)):
         message = history[index]
         if isinstance(message, HumanMessage):
             return index
+        if isinstance(message, dict):
+            began = round_generation(message) if round_generation else None
+            if isinstance(began, int) and began > generation:
+                return index
+            continue
         extra = getattr(message, "additional_kwargs", None)
         if isinstance(extra, dict) and extra.get("dialog_source") == "proactive":
             began = getattr(message, _REPLY_GENERATION_ATTR, None)

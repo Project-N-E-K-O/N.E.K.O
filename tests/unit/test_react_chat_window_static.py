@@ -481,8 +481,8 @@ def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surf
         '@router.get("/subtitle"',
         1,
     )[0]
-    assert 'TemplateResponse("templates/index.html"' in route_block
-    assert 'TemplateResponse("templates/chat.html"' not in route_block
+    assert 'TemplateResponse(request, "templates/index.html"' in route_block
+    assert 'TemplateResponse(request, "templates/chat.html"' not in route_block
     assert '"initial_chat_surface_mode": "compact"' in route_block
     assert '"initial_chat_surface_mode": "full"' not in route_block
 

@@ -43,6 +43,7 @@ for (const locale of ['en', 'ja', 'zh-CN']) {
     ['selected_root_parent_missing', 'selectedRootParentMissing'],
     ['selected_root_parent_not_writable', 'selectedRootParentNotWritable'],
     ['selected_root_inside_staging', 'selectedRootReserved'],
+    ['retained_source_cleanup_incomplete', 'retainedSourceCleanupIncomplete'],
   ]) {
     assert.strictEqual(format({ ...payload, error_code: code }, 'fallback'), messages.storage[key]);
   }

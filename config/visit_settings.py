@@ -165,6 +165,13 @@ VISIT_CAPS_PREFLIGHT_TIMEOUT_S = 15
 VISIT_CAPS_SDK_TIMEOUT_S = 20
 """Wait limit for capability gate 3 (vendor SDK load) → ``unsupported``."""
 
+VISIT_CAPS_CACHE_TTL_S = 600
+"""How long a failed preflight (gates 1-2) of one page environment (User-Agent) is remembered.
+
+While remembered, ``POST /rooms`` and ``join`` from the same environment
+answer 409 ``VISIT_UNSUPPORTED_ON_THIS_MACHINE`` at once; afterwards the
+next attempt runs the gate again (the result may have changed)."""
+
 VISIT_INBOX_HANDOFF_MAX_S = 20
 """Fallback cap for handing ``VisitInbox`` back after finalize.
 
@@ -362,6 +369,9 @@ VISIT_VENDOR_REFRESH_MARGIN_S = 120
 
 VISIT_BANNED_CACHE_S = 60
 """A Servers ``403 banned`` is remembered this long; new rooms / joins answer 403 locally."""
+
+VISIT_INVITE_PREVIEW_REUSE_S = 60
+"""``join`` reuses the host id of an invite preview this recent for its blocklist check."""
 
 VISIT_SHORT_ID_LEN = 6
 """UI shows only ``visit_uid[:6].upper()``."""
@@ -596,6 +606,12 @@ VISIT_BLOCKLIST_FILENAME = "visit_blocklist.json"
 VISIT_REVOCATIONS_DIRNAME = "visit_revocations"
 """Directory of local "forget this person" revocation logs under ``config_dir``."""
 
+VISIT_REVOCATIONS_QUARANTINE_DIRNAME = "quarantine"
+"""Subdirectory of ``VISIT_REVOCATIONS_DIRNAME`` holding unreadable forget records the user discarded.
+
+Never listed by replay or the admission gates (they only read the top level).
+"""
+
 VISIT_FORGET_EPOCHS_FILENAME = "visit_forget_epochs.json"
 """Per-subject forget generations under ``config_dir`` (only increase, never deleted)."""
 
@@ -655,6 +671,21 @@ VISIT_PEER_NGRAM_N = 8
 
 VISIT_PERSONA_MAX_TOKENS = 800
 """Token cap of the public visit persona."""
+
+VISIT_UPLOAD_MAX_PARTS = 128
+"""Upper bound of ``parts`` in one transcript upload (Servers answers ``400 parts_out_of_range`` above)."""
+
+VISIT_UPLOAD_RETRY_BACKOFF_S = (30, 120, 600, 1800, 3600)
+"""In-process back-off (s) of transcript upload / queued report retries; the last item repeats."""
+
+VISIT_REPORT_NOTE_MAX_CHARS = 500
+"""Max characters of the free-text note of a report."""
+
+VISIT_REPORT_STALE_S = 7 * 86400
+"""A queued report older than this is shown as "not delivered yet" with retry / give up."""
+
+VISIT_ACCOUNTS_FILENAME = "visit_accounts.json"
+"""Local map community account id -> own ``visit_uid`` under ``config_dir`` (written when credentials arrive)."""
 
 
 def _check_invariants() -> None:

@@ -120,11 +120,14 @@ def _resolve_vrm_path(vrm_path: str, _config_manager, target_name: str) -> str:
         elif vrm_path.startswith(VRM_STATIC_PATH + '/'):
             _fname = vrm_path[len(VRM_STATIC_PATH) + 1:]
             _vrm_file_verified = (_config_manager.project_root / 'static' / 'vrm' / _fname).exists()
+        elif vrm_path.startswith('/workshop/'):
+            return urllib.parse.quote(vrm_path, safe='/')
         else:
-            _vrm_file_verified = True
+            # Custom routes are URLs already, including query/fragment syntax.
+            return vrm_path
         if _vrm_file_verified:
             logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {vrm_path}")
-            return vrm_path
+            return urllib.parse.quote(vrm_path, safe='/')
         else:
             logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")
             return ""
@@ -136,12 +139,12 @@ def _resolve_vrm_path(vrm_path: str, _config_manager, target_name: str) -> str:
             return ""
         project_vrm_path = _config_manager.project_root / 'static' / 'vrm' / str(safe_rel)
         if project_vrm_path.exists():
-            result = f'{VRM_STATIC_PATH}/{safe_rel}'
+            result = urllib.parse.quote(f'{VRM_STATIC_PATH}/{safe_rel}', safe='/')
             logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在项目目录: {vrm_path} -> {result}")
             return result
         user_vrm_path = _config_manager.vrm_dir / str(safe_rel)
         if user_vrm_path.exists():
-            result = f'{VRM_USER_PATH}/{safe_rel}'
+            result = urllib.parse.quote(f'{VRM_USER_PATH}/{safe_rel}', safe='/')
             logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {result}")
             return result
         logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")

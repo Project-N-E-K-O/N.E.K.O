@@ -433,10 +433,13 @@ def _rebuild_identity(target: Path, summary: SourceStatSummary) -> tuple[object,
             else (*identity, result.st_mtime_ns, result.st_ctime_ns)
         )
 
+    # File timestamps only: the probe and a failed atomic write add and remove
+    # files beside the target, and for an in-place target that directory is the
+    # plugin root. Removed, added or renamed sources still change the names.
     return (
         stamp(target),
         stamp(target.parent, directory=True),
-        summary.newest_mtime_ns,
+        summary.newest_file_mtime_ns,
         summary.total_bytes,
         hash(tuple(summary.names)),
     )

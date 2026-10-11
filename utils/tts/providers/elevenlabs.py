@@ -22,7 +22,9 @@ normalizer before sending the raw voice id to the upstream API.
 """
 
 ELEVENLABS_TTS_VOICE_PREFIX = "eleven:"
-ELEVENLABS_TTS_DEFAULT_MODEL = "eleven_v3_conversational"
+ELEVENLABS_TTS_DEFAULT_MODEL = "eleven_v4_turbo"
+# Turbo uses the realtime dialogue WebSocket; HTTP previews use standard v4.
+ELEVENLABS_TTS_PREVIEW_MODEL = "eleven_v4"
 ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT = "pcm_24000"
 
 # Backward-compatible names for older call sites.

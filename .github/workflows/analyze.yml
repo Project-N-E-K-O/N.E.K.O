@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, 'codex/stack-pr-*']
+    branches: [main]
   workflow_dispatch:
 
 # Static-check jobs only need to read the checked-out source.

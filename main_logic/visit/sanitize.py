@@ -628,6 +628,18 @@ def _is_emotion_tag(name: str) -> bool:
     return all(ch.isalpha() or ch == "_" for ch in name)
 
 
+def drop_emotion_tags(text: str) -> str:
+    """Remove the decoration tags only, leaving every other character (spaces included) as is.
+
+    Safe on streamed fragments: the caller holds back an unclosed ``<...``
+    tail until its ``>`` arrives (see ``EmotionTagFilter`` in the visit
+    line speaker).
+    """
+    if not text or "<" not in text:
+        return text or ""
+    return _EMOTION_TAG_RE.sub(lambda m: "" if _is_emotion_tag(m.group(1)) else m.group(0), text)
+
+
 def strip_emotion_tags(text: str) -> str:
     """Remove closed short angle-bracket decoration tags (``<happy>``, ``</sad>``) and tidy spaces.
 

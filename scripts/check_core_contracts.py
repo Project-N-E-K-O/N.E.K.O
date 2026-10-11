@@ -166,6 +166,11 @@ MIXIN_SUPPORT_CLASSES = {
         "HoldToken",
         "TakeoverOwned",
     },
+    "turn": {
+        # The handle returned by open_mirror_speech_stream (push / finish /
+        # abort); public API of the turn mixin, like the takeover tokens.
+        "MirrorSpeechStream",
+    },
     "tts_runtime": {
         # Private control-flow signal for the game-speech preload batch. It has
         # to be a distinct type from asyncio.CancelledError so that absorbing a

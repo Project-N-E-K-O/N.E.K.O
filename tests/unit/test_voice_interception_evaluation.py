@@ -134,6 +134,27 @@ def test_independent_receiver_exact_pcm_and_gap_segments(tmp_path):
     result = evaluation.audit_receiver(receiver(tmp_path), tmp_path)
     assert result["accepted_samples"] == 16 and result["gap_count"] == 1
     assert result["provider_confirmed_chunks"] == 0
+    assert result["verified_provider_confirmed_chunks"] == 0
+
+
+@pytest.mark.parametrize("confirmation_id", ["invented-id", "looks-like-provider-ack-123"])
+def test_self_reported_provider_confirmation_never_becomes_verified(tmp_path, confirmation_id):
+    data = receiver(tmp_path)
+    for row in data["received"]:
+        row.update(receipt="provider_confirmed", provider_confirmation_id=confirmation_id)
+    result = evaluation.audit_receiver(data, tmp_path)
+    assert result["accepted_samples"] == 16
+    assert result["provider_confirmed_chunks"] == 2  # Manifest claims only.
+    assert result["provider_confirmation_evidence"] == "self_reported_unverified"
+    assert result["verified_provider_confirmed_chunks"] == 0
+    assert result["production_ready"] is False
+
+
+def test_provider_confirmation_claim_still_requires_an_identifier(tmp_path):
+    data = receiver(tmp_path)
+    data["received"][0]["receipt"] = "provider_confirmed"
+    with pytest.raises(evaluation.EvidenceError, match="provider_confirmation_id"):
+        evaluation.audit_receiver(data, tmp_path)
 
 
 @pytest.mark.parametrize("mutation", ["duplicate", "extra", "missing", "wrong_pcm", "gap_join", "transport_only", "unconfirmed", "reordered"])

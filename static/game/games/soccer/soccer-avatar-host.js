@@ -242,7 +242,10 @@
     manager._initMouseLookAtTracking?.();
     manager.interaction?.enableMouseTracking?.(true);
     manager._cursorFollow?.setEnabled?.(true);
-    const modelName = path.split('/').pop()?.replace(/\.vrm$/i, '') || '';
+    let filename = path.split('/').pop() || '';
+    try { filename = decodeURIComponent(filename); }
+    catch (_) { /* Preserve legacy filenames containing a literal percent sign. */ }
+    const modelName = filename.replace(/\.vrm$/i, '');
     try { await manager.expression?.loadMoodMap?.(modelName); }
     catch (error) { console.warn(`[${label}] mood map load failed:`, error); }
     assertLive();

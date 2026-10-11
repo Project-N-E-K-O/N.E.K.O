@@ -288,6 +288,31 @@ async def test_quarantined_session_attribution_follows_archive_policy(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_quarantined_session_name_keeps_attributing_the_legacy_long_nonce(tmp_path):
+    _story_id, _registry, _runtime, stored, files = await _quarantine_fixture(tmp_path)
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+    session_id = stored.session.session_id
+    # Unparseable, so only the name can attribute it; files quarantined before the
+    # nonce was shortened carry a full 32-hex uuid.
+    legacy = files["corrupt_live"].with_name(f"invalid-1700000000000-{'a' * 32}-{session_id}.json")
+    files["corrupt_live"].rename(legacy)
+
+    assert legacy in store.quarantined_session_paths(session_ids=[session_id])
+    assert files["unknown"] not in store.quarantined_session_paths(session_ids=[session_id])
+
+
+def test_quarantined_public_archive_name_fits_windows_path_budget():
+    # Without long-path support Windows fails a move past 260 characters, and
+    # the theater root sits under the user's documents folder.
+    original = f"{'e' * 64}.json"
+    name = numeric_v2_archive.quarantined_file_name("invalid", original)
+
+    assert name.endswith(f"-{original}")
+    assert numeric_v2_archive._QUARANTINED_ARCHIVE_KEY_RE.search(name).group(1) == "e" * 64
+    assert len(name) <= 100
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("fail_commit", [False, True])
 async def test_package_delete_erases_attributable_quarantined_sessions_recoverably(
     tmp_path, monkeypatch, fail_commit,

@@ -3339,7 +3339,35 @@ html.neko-window-maximized .chat-item + .chat-item::before {
 
 #memory-settings-panel .review-toggle-control.is-disabled {
     cursor: not-allowed;
+}
+
+#memory-settings-panel .review-toggle-control.is-disabled .review-toggle-heading,
+#memory-settings-panel .review-toggle-control.is-disabled .auto-review-toggle-btn {
     opacity: 0.72;
+}
+
+#memory-settings-panel .memory-setting-feedback,
+#memory-settings-panel .memory-toggle-repair {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+
+#memory-settings-panel .memory-toggle-repair {
+    width: 100%;
+}
+
+#memory-settings-panel .memory-toggle-repair .storage-location-open-btn {
+    flex: 1;
+    width: auto;
+}
+
+#memory-settings-panel .memory-setting-feedback[hidden],
+#memory-settings-panel .memory-setting-feedback [hidden] {
+    display: none;
 }
 
 #memory-settings-panel .review-toggle-control.is-disabled .auto-review-toggle-btn {

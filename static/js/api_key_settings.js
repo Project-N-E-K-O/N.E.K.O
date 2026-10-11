@@ -1006,6 +1006,15 @@ async function clearVoiceIds() {
 function renderKeyBook(registry, providers) {
     const container = document.getElementById('key-book-inputs');
     if (!container) return;
+    // Provider/locale refreshes rebuild these inputs too. Preserve local edits
+    // and masked-secret state; loadCurrentApiKey still applies server values.
+    const managementSnapshot = [];
+    for (const [field, , secret] of DOUBAO_VOICE_MANAGEMENT_FIELDS) {
+        const input = document.getElementById(field);
+        if (input) managementSnapshot.push({ field, secret,
+            value: secret ? getRealKey(input) : input.value,
+            displayMask: input.dataset.maskedDisplay || '' });
+    }
     container.innerHTML = '';
 
     Object.keys(registry).forEach(providerKey => {
@@ -1034,7 +1043,57 @@ function renderKeyBook(registry, providers) {
         row.appendChild(input);
 
         container.appendChild(row);
+        if (providerKey === 'doubao_tts') {
+            container.appendChild(createDoubaoVoiceManagementSettings());
+        }
     });
+    for (const { field, secret, value, displayMask } of managementSnapshot) {
+        const input = document.getElementById(field);
+        if (!input) continue;
+        if (secret) setMaskedInput(input, value, displayMask);
+        else input.value = value;
+    }
+}
+
+const DOUBAO_VOICE_MANAGEMENT_FIELDS = [
+    ['doubaoVoiceManagementAccessKey', 'managementAccessKey', true],
+    ['doubaoVoiceManagementSecretKey', 'managementSecretKey', true],
+    ['doubaoVoiceManagementAppId', 'managementAppId', false],
+    ['doubaoVoiceManagementProjectName', 'managementProjectName', false],
+];
+
+function createDoubaoVoiceManagementSettings() {
+    const fieldset = document.createElement('fieldset');
+    fieldset.className = 'doubao-voice-management-settings';
+    fieldset.style.cssText = 'margin: 8px 0 18px; padding: 12px; border: 1px solid #cbe6f2; border-radius: 10px;';
+    const legend = document.createElement('legend');
+    legend.textContent = window.t ? window.t('voice.remote.managementTitle') : 'Doubao voice management';
+    fieldset.appendChild(legend);
+    const hint = document.createElement('p');
+    hint.textContent = window.t ? window.t('voice.remote.managementHint') : 'List queries require management credentials, plus ProjectName (new API) or AppId (legacy API). Manual import uses existing synthesis settings.';
+    fieldset.appendChild(hint);
+    for (const [field, labelKey, secret] of DOUBAO_VOICE_MANAGEMENT_FIELDS) {
+        const row = document.createElement('div');
+        row.className = 'key-book-row';
+        const label = document.createElement('label');
+        label.htmlFor = field;
+        label.textContent = window.t ? window.t('voice.remote.' + labelKey) : labelKey;
+        const input = document.createElement('input');
+        input.type = 'text'; input.id = field; input.autocomplete = 'off';
+        if (secret) attachMaskBehavior(input);
+        row.append(label, input);
+        fieldset.appendChild(row);
+    }
+    return fieldset;
+}
+
+function doubaoVoiceManagementSettingsPayload() {
+    const payload = {};
+    for (const [field, , secret] of DOUBAO_VOICE_MANAGEMENT_FIELDS) {
+        const input = document.getElementById(field);
+        if (input) payload[field] = secret ? getRealKey(input) : input.value.trim();
+    }
+    return payload;
 }
 
 /**
@@ -2686,6 +2745,15 @@ async function loadCurrentApiKey() {
 
             // Load all assist API keys into Key Book inputs
             // Use api_key_registry as single source of truth for field mapping
+            for (const [field, , secret] of DOUBAO_VOICE_MANAGEMENT_FIELDS) {
+                const input = document.getElementById(field);
+                if (!input) continue;
+                if (secret) {
+                    attachMaskBehavior(input);
+                    setMaskedInput(input, data[field] || '', data[field + '_display'] || '');
+                }
+                else input.value = data[field] || '';
+            }
             Object.keys(_apiKeyRegistry).forEach(providerKey => {
                 if (providerKey === 'free') return;
                 // 当前核心 provider 对应的管理簿位置在上面已经用 data.api_key
@@ -3290,6 +3358,49 @@ function confirmClearCustomApi() {
     showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '自定义API配置已清空，请点击「保存设置」按钮以保存更改', 'success');
 }
 
+// 打开插件面板的 Plugin API 页：与 HUD「管理面板」同一套应用内窗口逻辑。
+// Electron 端按窗口名 neko_plugin_dashboard / dashboard 路径识别（setWindowOpenHandler
+// → 应用内子窗口）；纯浏览器部署时退化为普通弹窗。不再交给系统浏览器打开。
+function openPluginApiSettingsInApp(event) {
+    if (event) event.preventDefault();
+
+    const url = new URL('/api/agent/user_plugin/dashboard', document.baseURI || window.location.href);
+    url.searchParams.set('page', 'model-api');
+    if (window.location && window.location.origin) {
+        url.searchParams.set('yui_opener_origin', window.location.origin);
+    }
+    url.searchParams.set('v', String(Date.now()));
+
+    const width = Math.min(1280, Math.round(screen.width * 0.8));
+    const height = Math.min(900, Math.round(screen.height * 0.8));
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+    const windowName = 'neko_plugin_dashboard';
+    const targetUrl = url.toString();
+    const existingWindow = window._openedWindows && window._openedWindows[windowName];
+    let openedWindow = null;
+    if (existingWindow && !existingWindow.closed) {
+        try {
+            existingWindow.location.replace(targetUrl);
+        } catch (_) {
+            existingWindow.location.href = targetUrl;
+        }
+        openedWindow = existingWindow;
+    } else if (typeof window.openOrFocusWindow === 'function') {
+        openedWindow = window.openOrFocusWindow(targetUrl, windowName, features, { navigateOnReuse: true });
+    } else {
+        openedWindow = window.open(targetUrl, windowName, features);
+    }
+    if (openedWindow) {
+        window._openedWindows = window._openedWindows || {};
+        window._openedWindows[windowName] = openedWindow;
+        try { openedWindow.focus(); } catch (_) {}
+    }
+    return false;
+}
+
 // 为自定义API开关添加事件监听器
 document.addEventListener('DOMContentLoaded', function () {
     const enableCustomApi = document.getElementById('enableCustomApi');
@@ -3305,20 +3416,28 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开
+    // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开。
+    // data-in-app-window="true" 的链接除外：它们指向本地页面（插件面板 Plugin API 入口），
+    // 要走应用内窗口（openPluginApiSettingsInApp），不能甩给系统浏览器。
     document.querySelectorAll('a[target="_blank"]').forEach(function (link) {
+        if (link.dataset && link.dataset.inAppWindow === 'true') return;
         link.addEventListener('click', function (e) {
             e.preventDefault();
             var href = link.getAttribute('href');
             if (!href) return;
             if (window.electronShell && window.electronShell.openExternal) {
-                // shell.openExternal 不能解析相对路径（如插件管理页入口），先转成绝对地址。
+                // shell.openExternal 不能解析相对路径，先转成绝对地址。
                 window.electronShell.openExternal(new URL(href, window.location.href).href);
             } else {
                 window.open(href, '_blank', 'noopener,noreferrer');
             }
         });
     });
+
+    const pluginApiSettingsLink = document.getElementById('plugin-api-settings-link');
+    if (pluginApiSettingsLink) {
+        pluginApiSettingsLink.addEventListener('click', openPluginApiSettingsInApp);
+    }
 
 
 });
@@ -3542,6 +3661,7 @@ async function save_button_down(e) {
     const payload = {
         apiKey: apiKeyForSave, coreApi, assistApi,
         ...bookPayload,
+        ...doubaoVoiceManagementSettingsPayload(),
         ...imageSettingsPayload(),
         conversationModelUrl, conversationModelId, conversationModelApiKey,
         summaryModelUrl, summaryModelId, summaryModelApiKey,

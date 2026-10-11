@@ -138,11 +138,20 @@ class Receiver:
         return res
 
 
+def due_and_write(tx: VisitOutbox, now: float) -> list[OutboundFrame]:
+    """Release what is due and report every frame as written by the transport (the runtime's on_frame_sent)."""
+    frames = tx.due(now)
+    for f in frames:
+        tx.written(f, now)
+    return frames
+
+
 def pump(sender: VisitOutbox, rx: Receiver, now: float,
          drop: Optional[Callable[[OutboundFrame, float], bool]] = None) -> list[OutboundFrame]:
     """One step of the link: release frames, deliver the surviving ones, return the ack."""
     frames = sender.due(now)
     for f in frames:
+        sender.written(f, now)            # 本侧写出去了；drop 模拟的是链路上丢了
         if drop is not None and drop(f, now):
             continue
         rx.feed(f.payload, now, cmd=f.cmd)
@@ -324,7 +333,7 @@ def test_cumulative_ack_clears_every_item_up_to_seq(tmp_path):
     tx = make_outbox(tmp_path)
     for n in range(1, 6):
         tx.send(text(n), now=0.0)
-    tx.due(0.0)
+    due_and_write(tx, 0.0)
     assert tx.on_ack(3, 0.1) == [(1, "text"), (2, "text"), (3, "text")]
     assert tx.unacked_seqs == [4, 5]
     assert tx.on_ack(2, 0.2) == []
@@ -347,7 +356,7 @@ def test_ack_cannot_release_items_that_were_never_sent(tmp_path):
 def test_ack_past_the_sent_prefix_releases_only_the_sent_part(tmp_path):
     tx = make_outbox(tmp_path)
     tx.send(text(1), now=0.0)
-    assert [f.seq for f in tx.due(0.0)] == [1]
+    assert [f.seq for f in due_and_write(tx, 0.0)] == [1]
     tx.send(text(2), now=0.5)           # 入队但还没 due() 发出
     assert tx.on_ack(2, 0.6) == [(1, "text")]
     assert tx.unacked_seqs == [2]
@@ -399,15 +408,15 @@ def test_host_waits_for_guest_hello_first_sent_on_join(tmp_path):
     rx = Receiver(peer_prefix="h:")
     tx.send(hello(), now=0.0)
     for t in ticks(0.0, 119.95):
-        assert tx.due(t) == []
+        assert due_and_write(tx, t) == []
     assert not tx.delivery_failed
     tx.resume(120.0, PAUSE_PEER_ABSENT)
-    first = tx.due(120.0)
+    first = due_and_write(tx, 120.0)
     assert [(f.t, f.retransmit) for f in first] == [("hello", False)]
     rx.feed(first[0].payload, 120.2, cmd=first[0].cmd)
     tx.on_ack(rx.inbox.poll_ack(120.2), 120.2)
     for t in ticks(120.2, 200.0):
-        tx.due(t)
+        due_and_write(tx, t)
     assert not tx.delivery_failed and tx.unacked_seqs == []
 
 
@@ -454,14 +463,14 @@ def test_replay_after_reload_resends_only_unacked(tmp_path):
     tx = make_outbox(tmp_path)
     for n in range(1, 4):
         tx.send(text(n), now=0.0)
-    tx.due(0.0)
+    due_and_write(tx, 0.0)
     tx.on_ack(1, 0.1)
     assert tx.replay_after_reload(0.5) == 2
-    assert [(f.seq, f.retransmit) for f in tx.due(0.5)] == [(2, True), (3, True)]
+    assert [(f.seq, f.retransmit) for f in due_and_write(tx, 0.5)] == [(2, True), (3, True)]
     tx.pause(0.6, PAUSE_PAGE_RELOAD)
     tx.on_ack(2, 0.7)
     tx.resume(5.0, PAUSE_PAGE_RELOAD)
-    assert [f.seq for f in tx.due(5.0)] == [3]
+    assert [f.seq for f in due_and_write(tx, 5.0)] == [3]
 
 
 # ── 接收侧按序 ────────────────────────────────────────────────────────
@@ -696,7 +705,7 @@ def test_pending_bytes_and_try_reserve(tmp_path):
     assert used > 2000 and size >= used and pieces >= 2
     assert tx.try_reserve(VISIT_OUTBOX_PENDING_MAX_BYTES - used)
     assert not tx.try_reserve(VISIT_OUTBOX_PENDING_MAX_BYTES - used + 1)
-    tx.due(0.0)
+    due_and_write(tx, 0.0)
     tx.on_ack(1, 0.1)
     assert tx.pending_bytes == 0
 
@@ -749,6 +758,7 @@ def test_leave_follows_queued_reliables_and_its_grace_starts_when_sent(tmp_path)
     leave_at = None
     for t in ticks(0.0, 12.0):
         for f in tx.due(t):
+            tx.written(f, t)
             if not f.retransmit:
                 order.append(f.t)
                 if f.t == "leave":
@@ -757,6 +767,39 @@ def test_leave_follows_queued_reliables_and_its_grace_starts_when_sent(tmp_path)
     assert leave_at is not None and leave_at > 0.0
     assert not tx.leave_done(leave_at + 4.9)
     assert tx.leave_done(leave_at + 5.0)
+
+
+async def test_an_ack_cannot_cover_an_item_that_was_never_written(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    first = [f for f in tx.due(0.0) if f.t == "text"][0]
+    tx.write_failed(first, now=0.0)                   # 一次都没写出去
+    assert tx.on_ack(first.seq, now=0.1) == []        # 越界的累计 ack 不能把它确认掉
+    assert tx.ack_beyond_sent == 1 and first.seq in tx.unacked_seqs
+    await tx.close()
+
+
+async def test_an_ack_cannot_cover_a_retry_whose_write_is_still_pending(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    first = [f for f in tx.due(0.0) if f.t == "text"][0]
+    tx.write_failed(first, now=0.0)                   # 首发没写出去
+    retry = [f for f in tx.due(0.1) if f.t == "text"][0]    # 马上重试：放出了，写的结果还没出来
+    assert tx.on_ack(retry.seq, now=0.2) == []        # 越界的累计 ack 不能先把它确认掉
+    tx.write_failed(retry, now=0.3)                   # 这次也没写出去：还在、照常重试
+    assert retry.seq in tx.unacked_seqs and [f for f in tx.due(0.3) if f.t == "text"]
+    await tx.close()
+
+
+async def test_the_leave_grace_starts_when_the_leave_is_written_not_when_released(tmp_path):
+    tx = make_outbox(tmp_path, leave_grace_s=5.0)
+    tx.send({"t": "leave", "reason": "home"}, now=0.0)
+    leave = [f for f in tx.due(0.0) if f.t == "leave"][0]    # 放出了，写还卡着
+    assert not tx.leave_done(5.0)                            # 没写出去：宽限不从放出时起算
+    tx.written(leave, now=3.0)                               # 3 s 后才写出去
+    assert not tx.leave_done(7.9)
+    assert tx.leave_done(8.0)
+    await tx.close()
 
 
 def test_unsent_leave_gives_up_after_twice_the_grace(tmp_path):
@@ -781,6 +824,91 @@ def test_unsequenced_line_events_with_a_foreign_prefix_are_rejected():
                      "sp": "c", "ad": "hc", "rt": "", "wu": False})
     assert rx.accept(ok, 0.0).deliver
     assert rx.prefix_rejected == 2
+
+
+async def test_a_send_after_close_does_not_recreate_the_outbox_file(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(hello(), now=0.0)
+    tx.send(text(1), now=0.0)
+    await tx.close()
+    assert tx.closed and not await asyncio.to_thread(tx.path.exists)
+    unacked = tx.unacked_seqs
+    with pytest.raises(ValueError):
+        tx.send(text(2), now=1.0)                          # 迟到的必达一句：与 leave 之后一样报错，不分配序号
+    assert tx.unacked_seqs == unacked
+    assert tx.send({"t": "typing", "lp": 2, "sp": "c"}, now=1.0) == 0  # 可丢的直接丢
+    await tx.flush()
+    assert tx._executor is None                            # 写线程不重建
+    assert not await asyncio.to_thread(tx.path.exists)     # 带正文的文件不重新出现
+
+
+async def test_a_first_send_that_failed_to_write_is_retried_as_a_first_send(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    first = [f for f in tx.due(0.0) if f.t == "text"][0]
+    assert first.retransmit is False
+    tx.write_failed(first, now=0.0)                  # 传输没写出去
+    again = [f for f in tx.due(0.0) if f.t == "text"]
+    assert again and again[0].retransmit is False    # 马上重试，且仍算首发
+    item = tx._unacked[again[0].seq]
+    assert item.emitted == 1 and item.next_due == tx._retry[0]  # 重试间隔从第一档起
+    await tx.close()
+
+
+async def test_a_late_failure_of_a_first_send_written_since_keeps_the_resend(tmp_path):
+    tx = make_outbox(tmp_path, leave_grace_s=5.0)
+    tx.send({"t": "leave", "reason": "home"}, now=0.0)
+    stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # 旧连接上的首发，还卡在写
+    tx.replay_after_reload(1.0)                              # 新连接顶掉它、重入时补发
+    resent = [f for f in tx.due(1.0) if f.t == "leave"]
+    assert resent and resent[0].retransmit is True
+    tx.written(resent[0], now=1.0)                           # 补发写出去了
+    tx.write_failed(stale, now=1.5)                          # 旧连接这时才报写失败
+    item = tx._unacked[stale.seq]
+    assert not item.unsent_first                             # 补发照样算数：不回滚成「没发过」
+    assert item.next_due == 2.0                              # 也不多催一次重发（仍按补发后的 1 s 间隔）
+    assert not tx.leave_done(5.9)                            # 宽限从真正写出去的那次（补发）起算
+    assert tx.leave_done(6.0)
+    await tx.close()
+
+
+async def test_a_stuck_first_send_written_after_its_resend_failed_counts_as_sent(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    stuck = [f for f in tx.due(0.0) if f.t == "text"][0]    # 旧连接上的首发，还卡在写
+    tx.replay_after_reload(0.5)
+    resent = [f for f in tx.due(0.5) if f.t == "text"][0]
+    tx.write_failed(resent, now=0.6)                         # 新连接上的补发没写出去
+    tx.written(stuck, now=0.7)                               # 卡住的首发最终写出去了
+    again = [f for f in tx.due(0.8) if f.t == "text"]
+    assert again and again[0].retransmit is True             # 已写出去过：之后的都是重传，不再当首发
+    await tx.close()
+
+
+async def test_a_first_send_and_its_resend_both_unwritten_do_not_count_as_sent(tmp_path):
+    tx = make_outbox(tmp_path, leave_grace_s=5.0)
+    tx.send({"t": "leave", "reason": "home"}, now=0.0)
+    stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # 旧连接上的首发，还卡在写
+    tx.replay_after_reload(1.0)
+    resent = [f for f in tx.due(1.0) if f.t == "leave"][0]   # 新连接上的补发
+    tx.write_failed(resent, now=1.5)                         # 补发也没写出去
+    tx.write_failed(stale, now=2.0)                          # 旧连接迟到的失败
+    assert not tx.leave_done(6.0)                            # 一次都没写出去：宽限不从放出时起算
+    again = [f for f in tx.due(6.0) if f.t == "leave"]
+    assert again and again[0].retransmit is False            # 下一次仍算首发
+    await tx.close()
+
+
+async def test_a_leave_that_failed_to_write_does_not_start_its_grace(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send({"t": "leave", "reason": "home"}, now=0.0)
+    leave = [f for f in tx.due(0.0) if f.t == "leave"][0]
+    tx.write_failed(leave, now=0.0)                  # leave 没写出去
+    assert not tx.leave_done(6.0)                    # 宽限不从这次失败起算（没写出去的 leave 不算发过）
+    again = [f for f in tx.due(6.0) if f.t == "leave"]
+    assert again and again[0].retransmit is False
+    assert not tx.leave_done(6.1)                    # 宽限从真正写出去那一刻起算
+    await tx.close()
 
 
 async def test_cancelled_close_still_deletes_the_outbox_file(tmp_path):
@@ -874,3 +1002,64 @@ async def test_purge_outbox_skips_entries_it_cannot_stat_or_delete(tmp_path, mon
     monkeypatch.setattr(outbox_mod.os, "unlink", unlink)
     deleted = await purge_outbox_files(tmp_path)
     assert [p.name for p in deleted] == [names[2]]
+
+
+# ── 可释放的在途字节预留（§4.5 stream_data：预留 → 落盘 → 入队）──
+
+
+def test_reservation_holds_bytes_until_released_or_consumed(tmp_path):
+    from config.visit_settings import VISIT_OUTBOX_PENDING_MAX_BYTES
+
+    tx = make_outbox(tmp_path)
+    msg = text(1, "x" * 2000)
+    _pieces, nbytes = tx.encoded_size(msg)
+    first = tx.reserve(nbytes)
+    assert first is not None and first.held
+    assert tx.pending_bytes == nbytes
+    # 别的行在持有者 await 期间拿不走这部分额度
+    others = []
+    while (r := tx.reserve(nbytes)) is not None:
+        others.append(r)
+    assert tx.pending_bytes <= VISIT_OUTBOX_PENDING_MAX_BYTES
+    for r in others:
+        r.release()
+    first.release()
+    first.release()                      # 幂等
+    assert tx.pending_bytes == 0
+    second = tx.reserve(nbytes)
+    seq = tx.send(msg, reservation=second)
+    assert seq == 1 and not second.held
+    queued = tx.pending_bytes
+    assert 0 < queued <= nbytes          # 现在只算这条必达项自己的字节
+    second.release()                     # 已消费：不再退还
+    assert tx.pending_bytes == queued
+
+
+def test_rejected_send_keeps_the_reservation_held(tmp_path):
+    tx = make_outbox(tmp_path)
+    res = tx.reserve(100)
+    with pytest.raises(ValueError):
+        tx.send({"t": "text", "ln": "h:1"}, reservation=res)
+    assert res.held and tx.pending_bytes == 100
+    res.release()
+    assert tx.pending_bytes == 0
+
+
+def test_reservation_of_another_outbox_is_refused(tmp_path):
+    a = make_outbox(tmp_path / "a")
+    b = make_outbox(tmp_path / "b")
+    res = a.reserve(10)
+    with pytest.raises(ValueError):
+        b.send(text(1), reservation=res)
+
+
+def test_forced_ack_skips_the_coalescing_window():
+    seq = InboxSequencer()
+    seq.accept({"t": "text", "seq": 1, "ln": "g:1", "lp": 1, "sp": "c", "ad": "hc", "rt": "", "wu": False,
+                "final": True, "txt": "a", "truncated": False, "i_done": 0}, 0.0)
+    assert seq.poll_ack(0.0) == 1
+    seq.accept({"t": "text", "seq": 2, "ln": "g:2", "lp": 2, "sp": "c", "ad": "hc", "rt": "", "wu": False,
+                "final": True, "txt": "b", "truncated": False, "i_done": 0}, 0.1)
+    assert seq.poll_ack(0.1) is None                 # 合并窗口内
+    assert seq.poll_ack(0.1, force=True) == 2
+    assert seq.poll_ack(0.2, force=True) is None     # 没有欠着的

@@ -31,75 +31,183 @@ function safeT(key, fallback, params) {
     }
 }
 
-async function getOggOpusDecoder() {
-    if (oggOpusDecoder) return oggOpusDecoder;
-    if (oggOpusDecoderReady) {
-        try {
-            const result = await oggOpusDecoderReady;
-            if (result !== null) return result;
-        } catch (e) {
-            console.warn(safeT('console.oggOpusInitFailed', 'Ogg Opus decoder initialization failed'), e);
-        }
-        oggOpusDecoderReady = null;
-    }
+// State belongs to one decoder generation. Retired work may finish, but cannot
+// publish into the cache or parser state used by a replacement generation.
+const OGG_OPUS_OPERATION_TIMEOUT_MS = 5000;
+function createOggDecoderGeneration() {
+    return { decoder: null, ready: null, chain: Promise.resolve(), work: Promise.resolve(),
+        context: null, pages: new Uint8Array(), started: false, retired: false,
+        cancelWork: null };
+}
+let oggDecoderGeneration = createOggDecoderGeneration();
 
-    oggOpusDecoderReady = (async () => {
-        const module = window["ogg-opus-decoder"];
-        if (!module || !module.OggOpusDecoder) {
-            console.error(safeT('console.oggOpusNotLoaded', 'Ogg Opus decoder not loaded'));
-            return null;
-        }
-
-        try {
-            const decoder = new module.OggOpusDecoder();
-            await decoder.ready;
-            console.log(safeT('console.oggOpusReady', 'Ogg Opus decoder ready'));
-            oggOpusDecoder = decoder;
-            return decoder;
-        } catch (e) {
-            console.error(safeT('console.oggOpusCreateFailed', 'Failed to create Ogg Opus decoder'), e);
-            return null;
-        }
-    })();
-
-    try {
-        const result = await oggOpusDecoderReady;
-        if (result === null) oggOpusDecoderReady = null;
-        return result;
-    } catch (e) {
-        // Promise reject 会"毒化缓存"，需要清空缓存允许重试
-        oggOpusDecoderReady = null;
+function currentOggEpoch() {
+    return window.appState ? window.appState.incomingAudioEpoch : 0;
+}
+function clearOggStreamContext(generation) {
+    generation.context = null;
+    generation.pages = new Uint8Array();
+    generation.started = false;
+}
+function retireOggDecoderGeneration(generation) {
+    if (generation.retired) return;
+    generation.retired = true;
+    // Wake the logical receive operation without freeing its live WASM owner.
+    if (generation.cancelWork) generation.cancelWork();
+    if (generation === oggDecoderGeneration) {
+        oggDecoderGeneration = createOggDecoderGeneration();
         oggOpusDecoder = null;
-        console.warn(safeT('console.oggOpusInitRejected', 'Ogg Opus decoder initialization rejected'), e);
-        return null;
+        oggOpusDecoderReady = null;
     }
+    // Do not free a WASM instance while decode/flush still owns it. Cleanup is
+    // detached from replacement work; even a hung old operation cannot lock it.
+    Promise.allSettled([generation.ready, generation.work]).then(async () => {
+        if (generation.decoder) await generation.decoder.free();
+        generation.decoder = null;
+        clearOggStreamContext(generation);
+    }).catch(error => console.warn('Ogg Opus retired decoder cleanup failed:', error));
 }
-
-// 重置解码器（在新的音频流开始时调用）
-// 使用 reset() 而非 free()：reset() 是为新的音频流做状态重置，实例仍可复用
-async function resetOggOpusDecoder() {
-    if (oggOpusDecoder) {
+function invalidateOggOpusDecoder() {
+    retireOggDecoderGeneration(oggDecoderGeneration);
+}
+async function getOggOpusDecoder(generation = oggDecoderGeneration) {
+    if (generation.retired) return null;
+    if (generation.decoder && oggOpusDecoder === generation.decoder) return generation.decoder;
+    if (!generation.ready) {
+        generation.ready = (async () => {
+            const module = window['ogg-opus-decoder'];
+            if (!module || !module.OggOpusDecoder) {
+                console.error(safeT('console.oggOpusNotLoaded', 'Ogg Opus decoder not loaded'));
+                return null;
+            }
+            try {
+                const decoder = new module.OggOpusDecoder();
+                generation.decoder = decoder;
+                await decoder.ready;
+                if (generation.retired || generation !== oggDecoderGeneration) return null;
+                oggOpusDecoder = decoder;
+                console.log(safeT('console.oggOpusReady', 'Ogg Opus decoder ready'));
+                return decoder;
+            } catch (error) {
+                console.warn(safeT('console.oggOpusInitFailed', 'Ogg Opus decoder initialization failed'), error);
+                return null;
+            }
+        })();
+        if (generation === oggDecoderGeneration) oggOpusDecoderReady = generation.ready;
+    }
+    const result = await generation.ready;
+    if (result === null) retireOggDecoderGeneration(generation);
+    return result;
+}
+function joinOggParts(parts, Type = Float32Array) {
+    const joined = new Type(parts.reduce((n, part) => n + part.length, 0));
+    let offset = 0;
+    for (const part of parts) { joined.set(part, offset); offset += part.length; }
+    return joined;
+}
+function queueOggOperation(fn, context) {
+    const generation = oggDecoderGeneration;
+    const alive = () => !generation.retired && generation === oggDecoderGeneration
+        && context.epoch === currentOggEpoch();
+    const task = generation.chain.then(async () => {
+        if (!alive()) return null;
+        let timer;
+        let releaseCancellation;
+        const cancellation = new Promise(resolve => { releaseCancellation = resolve; });
+        generation.cancelWork = releaseCancellation;
+        generation.work = Promise.resolve().then(() => fn(generation, alive));
+        const timeout = new Promise((_, reject) => {
+            timer = window.setTimeout(() => {
+                const error = new Error('Ogg Opus operation timed out');
+                error.name = 'TimeoutError';
+                reject(error);
+            }, OGG_OPUS_OPERATION_TIMEOUT_MS);
+        });
         try {
-            // reset() 是异步的，用于重置解码器状态以处理新的音频流
-            await oggOpusDecoder.reset();
-        } catch (e) {
-            console.warn(safeT('console.oggOpusResetFailed', 'Failed to reset Ogg Opus decoder'), e);
-            oggOpusDecoder = null;
-            oggOpusDecoderReady = null;
+            const result = await Promise.race([generation.work, timeout, cancellation]);
+            return alive() ? result : null;
+        } catch (error) {
+            // Parser state is uncertain after rejection/timeout. New speech gets
+            // a fresh generation; a late old callback only holds its old state.
+            retireOggDecoderGeneration(generation);
+            throw error;
+        } finally {
+            if (generation.cancelWork === releaseCancellation) generation.cancelWork = null;
+            window.clearTimeout(timer);
         }
-    }
+    });
+    generation.chain = task.catch(() => {});
+    return task;
 }
-
-async function decodeOggOpusChunk(uint8Array) {
-    const decoder = await getOggOpusDecoder();
-    if (!decoder) {
-        throw new Error('OGG OPUS 解码器不可用');
-    }
-
-    // decode() 用于流式解码
-    const { channelData, samplesDecoded, sampleRate } = await decoder.decode(uint8Array);
-    if (channelData && channelData[0] && channelData[0].length > 0) {
-        return { float32Data: channelData[0], sampleRate: sampleRate || 48000 };
-    }
-    return null; // 数据不足，等待更多
+async function resetOggOpusDecoder() {
+    // Logical invalidation is immediate. Physical disposal waits for the owner.
+    invalidateOggOpusDecoder();
+}
+async function decodeOggOpusChunk(bytes, options = {}) {
+    const context = { epoch: options.epoch ?? currentOggEpoch(),
+        speechId: options.speechId || null, playbackGain: options.playbackGain };
+    return queueOggOperation(async (generation, alive) => {
+        const decoder = await getOggOpusDecoder(generation);
+        if (!alive()) return null;
+        if (!decoder) throw new Error('Ogg Opus decoder unavailable');
+        if (generation.context && (generation.context.epoch !== context.epoch
+            || generation.context.speechId !== context.speechId)) {
+            // Ownership changed without a normal close: discard the old tail.
+            await decoder.reset();
+            if (!alive()) return null;
+            clearOggStreamContext(generation);
+        }
+        generation.context = context;
+        generation.pages = joinOggParts([generation.pages, bytes], Uint8Array);
+        const output = [];
+        let cursor = 0;
+        while (generation.pages.length - cursor >= 27) {
+            const pages = generation.pages;
+            if (pages[cursor] !== 79 || pages[cursor + 1] !== 103
+                || pages[cursor + 2] !== 103 || pages[cursor + 3] !== 83) {
+                throw new Error('Invalid Ogg page boundary');
+            }
+            const segments = pages[cursor + 26];
+            if (pages.length - cursor < 27 + segments) break;
+            let size = 27 + segments;
+            for (let n = 0; n < segments; n++) size += pages[cursor + 27 + n];
+            if (pages.length - cursor < size) break;
+            const page = pages.subarray(cursor, cursor + size);
+            if (page[5] & 2) {
+                if (generation.started) {
+                    // A new independent stream inside the same speech owner.
+                    const tail = await decoder.flush();
+                    if (!alive()) return null;
+                    if (tail.errors?.length) throw new Error('Ogg Opus decoder returned errors');
+                    output.push(tail.channelData[0] || new Float32Array());
+                }
+                generation.started = true;
+            }
+            const result = await decoder.decode(page);
+            if (!alive()) return null;
+            if (result.errors?.length) throw new Error('Ogg Opus decoder returned errors');
+            output.push(result.channelData[0] || new Float32Array());
+            cursor += size;
+        }
+        generation.pages = generation.pages.slice(cursor);
+        const float32Data = joinOggParts(output);
+        return float32Data.length ? { float32Data, sampleRate: 48000 } : null;
+    }, context);
+}
+async function flushOggOpusDecoder(options) {
+    return queueOggOperation(async (generation, alive) => {
+        const context = generation.context;
+        if (!context || options.epoch !== context.epoch
+            || options.speechId !== context.speechId || !generation.started) return null;
+        if (generation.pages.length) throw new Error('Audio ended inside an Ogg page');
+        const decoder = await getOggOpusDecoder(generation);
+        if (!alive()) return null;
+        const result = await decoder.flush();
+        if (!alive()) return null;
+        if (result.errors?.length) throw new Error('Ogg Opus decoder returned errors');
+        clearOggStreamContext(generation);
+        const float32Data = result.channelData[0];
+        return float32Data?.length ? { float32Data, sampleRate: result.sampleRate || 48000,
+            playbackGain: context.playbackGain } : null;
+    }, options);
 }

@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import html
 import json
 import logging
 import os
 import secrets
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -505,6 +507,12 @@ def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
     )
 
 
+async def _oauth_attempt_still_current(expected_state: str) -> bool:
+    """Whether ``expected_state`` is still the pending OAuth attempt (no newer ``/oauth/start`` replaced it)."""
+    _path, pending = await asyncio.to_thread(_load_oauth_pending)
+    return bool(pending) and pending.get("state") == expected_state
+
+
 def _load_oauth_pending() -> tuple[Path | None, dict | None]:
     """Resolve and read the pending OAuth record on a worker thread."""
     path = _oauth_pending_path()
@@ -832,6 +840,33 @@ async def oauth_status_endpoint(request: Request):
     }
 
 
+@contextlib.asynccontextmanager
+async def visit_account_change(new_local_user_id: str | None = None):
+    """Wrap a credential change: logout (``None``) or a login as ``new_local_user_id``.
+
+    While the block runs no visit is admitted, and live visits are ended
+    and their upload files sealed before it starts (they record the account
+    they ran under), unless it is a re-login as the account already signed
+    in (checked once the fence is up). Without the visit package loaded
+    there is nothing to fence.
+    """
+    runtime = sys.modules.get("main_routers.visit_router.runtime")
+    if runtime is None:
+        yield
+        return
+
+    async def ends_visits() -> bool:
+        if new_local_user_id is None:
+            return True
+        from main_routers.visit_router.accounts import local_account
+
+        # 闸已立起才比对：比对期间不会有新串门被准入，另一次登录在这期间换走账号也会被看到
+        return await local_account() != new_local_user_id
+
+    async with runtime.account_change(ends_visits=ends_visits):
+        yield
+
+
 @router.post("/oauth/logout", summary="清除社区 OAuth 本地会话（best-effort revoke）")
 async def oauth_logout_endpoint(request: Request):
     if await _account_request_identity(request) is None:
@@ -839,6 +874,12 @@ async def oauth_logout_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
+    # 在飞的串门先收尾、等它把上传文件封存（记着这场跑在哪个账号下），清本机登录态期间不准入新串门
+    async with visit_account_change():
+        return await _oauth_logout()
+
+
+async def _oauth_logout() -> dict:
     snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
     client_id = (
         str(auth.get("client_id") or "").strip()
@@ -1073,13 +1114,19 @@ async def _handle_oauth_callback(
         "oauth_attempt_identity": pending.get("instance_identity") or "local",
     }
     async with _oauth_start_lock:
-        credentials_saved = await asyncio.to_thread(
-            _persist_oauth_credentials, auth_payload, social_base=social_base,
-            access_token=access_token, refresh_token=refresh_token,
-            local_user_id=local_user_id, auth_public_url=auth_public_url,
-            client_id=client_id, expected_pending_state=expected_state,
-            authorized_request=authorized_request,
-        )
+        if not await _oauth_attempt_still_current(expected_state):
+            # 这次登录已被新的 /oauth/start 顶掉：凭证写入本来就会拒绝，不能为它先结束在飞的串门
+            credentials_saved = False
+        else:
+            # 换成另一个社区账号：在飞的串门先收尾、等上传文件封存，写入新账号登录态期间不准入新串门
+            async with visit_account_change(local_user_id):
+                credentials_saved = await asyncio.to_thread(
+                    _persist_oauth_credentials, auth_payload, social_base=social_base,
+                    access_token=access_token, refresh_token=refresh_token,
+                    local_user_id=local_user_id, auth_public_url=auth_public_url,
+                    client_id=client_id, expected_pending_state=expected_state,
+                    authorized_request=authorized_request,
+                )
         await asyncio.to_thread(_unlink_pending, expected_state)
     if not credentials_saved:
         return _callback_html(

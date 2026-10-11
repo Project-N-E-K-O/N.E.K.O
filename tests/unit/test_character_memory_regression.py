@@ -1375,6 +1375,7 @@ async def test_workshop_abort_releases_owned_claims_for_active_and_deleted_names
 @pytest.mark.asyncio
 async def test_workshop_unsubscribe_revalidates_origin_after_config_lock_wait(
     monkeypatch,
+    tmp_path,
 ):
     """A stale origin-index hit must not delete a same-name replacement."""
     unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
@@ -1408,6 +1409,7 @@ async def test_workshop_unsubscribe_revalidates_origin_after_config_lock_wait(
             self.characters = characters
 
     config = _Config()
+    config.app_docs_dir = tmp_path
     discovery_finished = threading.Event()
     mutation_lock = asyncio.Lock()
     monkeypatch.setattr(
@@ -2629,7 +2631,7 @@ async def test_delete_catgirl_keeps_receipts_when_snapshot_read_fails(tmp_path, 
     receipt_path = receipt_root / ("theater_end_" + "0" * 40 + ".json")
     receipt_path.write_text("{invalid", encoding="utf-8")
     characters = {"猫娘": {name: {"昵称": name}}, "当前猫娘": ""}
-    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+    config_manager = SimpleNamespace(app_docs_dir=tmp_path, aload_characters=AsyncMock(return_value=characters))
 
     with patch.object(crud, "get_config_manager", return_value=config_manager), \
          patch.object(crud, "assert_cloudsave_writable"), \
@@ -2701,7 +2703,7 @@ async def test_character_rename_and_delete_name_unreadable_theater_file(tmp_path
         "当前猫娘": "",
     }
     original_characters = copy.deepcopy(characters)
-    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+    config_manager = SimpleNamespace(app_docs_dir=tmp_path, aload_characters=AsyncMock(return_value=characters))
     expected_file = f"numeric_v2/{kind}/{file_name}"
 
     with patch.object(crud, "get_config_manager", return_value=config_manager), \
@@ -5356,7 +5358,7 @@ async def test_delete_catgirl_erases_quarantined_public_archives_inside_snapshot
             memory_dir.mkdir(parents=True, exist_ok=True)
             (memory_dir / "recent.json").write_text("[]", encoding="utf-8")
 
-            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore, quarantined_file_name
 
             store = NumericV2ArchiveStore(Path(cm.app_docs_dir) / "theater")
             quarantine_root = store.public_archive_quarantine_root
@@ -5364,7 +5366,7 @@ async def test_delete_catgirl_erases_quarantined_public_archives_inside_snapshot
 
             def quarantined(label: str, content: str) -> Path:
                 key = hashlib.sha256(label.encode("utf-8")).hexdigest()
-                path = quarantine_root / f"invalid-1-{'0' * 32}-{key}.json"
+                path = quarantine_root / quarantined_file_name("invalid", f"{key}.json")
                 path.write_text(content, encoding="utf-8")
                 return path
 

@@ -1,7 +1,7 @@
 import HtmlCardBlock from './HtmlCardBlock';
 import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
-import { isMemeProxyImageUrl, swapImageToMemeLoadFailedSticker } from './memeImageFallback';
+import MessageImageBlock from './MessageImageBlock';
 import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import {
   type ChatMessage,
@@ -18,10 +18,6 @@ type MessageBlockViewProps = {
 };
 
 const MUSIC_COVER_PLACEHOLDER_URL = '/static/assets/music/music-cover-placeholder.png';
-
-function handleImageLoadError(event: SyntheticEvent<HTMLImageElement>, url: string) {
-  swapImageToMemeLoadFailedSticker(event.currentTarget, url);
-}
 
 function handleLinkThumbnailLoadError(
   event: SyntheticEvent<HTMLImageElement>,
@@ -61,24 +57,7 @@ export default function MessageBlockView({
   }
 
   if (block.type === 'image') {
-    const isMemeProxyImage = isMemeProxyImageUrl(block.url);
-    const imageLoadingProps = isMemeProxyImage
-      ? { loading: 'eager' as const, fetchpriority: 'high' as const }
-      : { loading: 'lazy' as const };
-
-    return (
-      <figure
-        className="message-block message-block-image"
-        style={block.width && block.height ? { aspectRatio: `${block.width} / ${block.height}` } : undefined}
-      >
-        <img
-          src={block.url}
-          alt={block.alt || ''}
-          {...imageLoadingProps}
-          onError={(event) => handleImageLoadError(event, block.url)}
-        />
-      </figure>
-    );
+    return <MessageImageBlock key={block.url} block={block} interactive={interactive} />;
   }
 
   if (block.type === 'link') {

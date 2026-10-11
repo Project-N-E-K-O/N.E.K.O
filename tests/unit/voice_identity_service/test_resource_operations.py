@@ -18,7 +18,7 @@ import pytest
 
 from config import voice_wake_word
 from main_logic.voice_identity_service import resource_manager
-from main_logic.voice_identity_service.enrollment import EnrollmentAudioError, validate_enrollment_pcm16
+from main_logic.voice_identity_service.enrollment import EnrollmentAudioError, enrollment_audio_diagnostics, validate_enrollment_pcm16
 from main_logic.voice_identity_service import wake_word_bundle as model_bundle
 
 
@@ -249,15 +249,15 @@ def test_deployment_configuration_has_precedence_and_is_read_only(tmp_path, monk
     assert voice_wake_word.wake_word_preference(tmp_path)["enabled"] is False
 
 
-def test_insufficient_active_audio_retains_code_and_explains_duration():
+def test_rms_active_duration_is_diagnostic_and_does_not_reject_pcm():
     import numpy as np
     audio = np.zeros(48_000, dtype="<i2")
     audio[:16_000] = 4000
-    with pytest.raises(EnrollmentAudioError) as caught:
-        validate_enrollment_pcm16(audio.tobytes())
-    assert caught.value.code == "volume_too_low"
-    assert caught.value.diagnostics["active_seconds"] == 1.0
-    assert caught.value.diagnostics["rms"] > .008
+    validate_enrollment_pcm16(audio.tobytes())
+    diagnostics = enrollment_audio_diagnostics(audio.tobytes())
+    assert diagnostics["duration_seconds"] == 3.0
+    assert diagnostics["active_seconds"] == 1.0
+    assert diagnostics["rms"] > .008
     assert audio[:16_000].min() == 4000
 
 

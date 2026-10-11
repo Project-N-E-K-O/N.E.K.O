@@ -486,6 +486,10 @@ function createMovementHarness({ transferredAnchor = 'left' } = {}) {
         _isNekoIdleCompactSurfaceDragging() {
             return false;
         },
+        // Resources are present so the movement entries reach the anchor checks under test.
+        _isNekoCatActionResourceAvailable() {
+            return true;
+        },
         _reclampNekoIdleCat1EdgePeekToViewport() {
             reclampCount += 1;
         }

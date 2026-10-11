@@ -51,6 +51,10 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
+from utils.llm_tool_leak_filter import (
+    strip_tool_call_leaks,
+    strip_tool_call_leaks_from_parts,
+)
 from utils.screen_comment_guard import project_screen_history
 from utils.language_utils import (
     get_global_language_full,
@@ -1624,8 +1628,64 @@ def _screen_guarded_recent_history(history):
     Known boundary: core renders its own session cache right after this
     history and judges it separately (``NotifyMixin._convert_cache_to_str``),
     so a chain split between the two is not joined.
+
+    Tool-call markup a reply once spoke instead of calling the tool is taken
+    out first (``_without_tool_call_leaks``), so a call the model wrote into
+    an earlier reply is not shown to the next session as something to copy.
     """
-    return project_screen_history(list(history), trailing_turn=True)
+    return project_screen_history(_without_tool_call_leaks(history), trailing_turn=True)
+
+
+def _without_tool_call_leaks(history) -> list:
+    """Recent history with tool-call markup cut from the character's lines.
+
+    Memory keeps no tool registry, so only syntax that is a tool call
+    whatever the tool is cut (``strip_tool_call_leaks`` without names). The
+    stored messages are not changed; a line left empty is not rendered.
+    Already stored replies need no migration: this runs on every render.
+    """
+    cleaned = []
+    for message in history:
+        content = getattr(message, "content", None)
+        if getattr(message, "type", None) != "ai" or is_theater_memory_message(message):
+            cleaned.append(message)
+            continue
+        if isinstance(content, str):
+            text = strip_tool_call_leaks(content)
+            if text == content:
+                cleaned.append(message)
+                continue
+            if not text.strip():
+                continue
+            message = copy.copy(message)
+            message.content = text
+        elif isinstance(content, list):
+            text_at = [
+                index for index, part in enumerate(content)
+                if isinstance(part, dict) and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ]
+            parts = list(content)
+            # One stream over every text part: a call may be split across them.
+            for index, text in zip(text_at, strip_tool_call_leaks_from_parts(
+                [content[index]["text"] for index in text_at],
+            )):
+                parts[index] = {**content[index], "text": text}
+            if parts == content:
+                cleaned.append(message)
+                continue
+            # The renderers show text parts only: a reply left with nothing
+            # but other parts would render as an empty line.
+            if not any(
+                isinstance(part, dict) and part.get("type") == "text"
+                and str(part.get("text") or "").strip()
+                for part in parts
+            ):
+                continue
+            message = copy.copy(message)
+            message.content = parts
+        cleaned.append(message)
+    return cleaned
 
 
 @app.get("/get_recent_history/{lanlan_name}")

@@ -138,7 +138,8 @@ _FORGET_SOURCES = {
     "abandoned": ("commit_failed:diary", "abandoned"),
 }
 # digest 一轮的终态放弃原因（digest_writes[run].abandoned）：region_settled 按已结清
-DIGEST_ABANDON_REASONS = ("batches_mismatch",)
+# batches_mismatch：开轮后转录被改动；no_transcript：记忆开着、收口后转录一句都没有
+DIGEST_ABANDON_REASONS = ("batches_mismatch", "no_transcript")
 # digest_writes[run].plan 可带的字段：切批参数 + 开轮时定格的请求渲染
 _PLAN_FIELDS = frozenset({"max_lines", "batch_size", "language", "headers", "displays"})
 STATE_FIELDS = frozenset({
@@ -1341,6 +1342,58 @@ class VisitSpool:
             atomic_write_json(self.state_path, clean)
             return clean
 
+    async def mark_debrief_pending(self) -> dict:
+        """``debrief_choice='ask_later'`` + ``debrief_chip_pending`` unless a newer choice is already recorded.
+
+        The chips may be answered while this write is still queued: a choice
+        recorded meanwhile is never put back to ``ask_later``.
+        """
+
+        def mutate(state: dict) -> None:
+            if state.get("debrief_choice") in (None, "ask_later"):
+                state["debrief_choice"] = "ask_later"
+                state["debrief_chip_pending"] = True
+
+        return await asyncio.to_thread(self._update_state_sync, mutate)
+
+    async def mark_no_transcript(self, *, now: float) -> bool:
+        """Record the terminal "abandoned" outcome of a memory-on visit with no transcript line.
+
+        For a finalized visit whose spool holds no line at all (nothing was
+        ever appended, or every append failed): one digest run closed as
+        ``abandoned='no_transcript'`` (watermark 0) and, while nobody chose
+        yet, ``debrief_choice='abandoned'``. The visit then counts as settled
+        by the unchanged :func:`region_settled` / :func:`debrief_final` rules
+        instead of being retried on every start. No-op (False) with memory
+        off or once any digest run is registered; a recorded choice is kept.
+        """
+        def applies(state: Mapping[str, Any]) -> bool:
+            return is_digestable(state) and not state["digest_writes"] and not state["digest_runs"]
+
+        current = await self.read_state()
+        if current is None or not applies(current):
+            # 不需要写就不重写：每次启动都重写会刷新 mtime，state.json 永远到不了按龄回收
+            return False
+        changed = False
+
+        def mutate(state: dict) -> None:
+            nonlocal changed
+            if not applies(state):
+                return
+            state["digest_writes"] = {"0": {
+                "requested_at": float(now), "through_lp": 0, "group": {}, "segments": {},
+                "abandoned": "no_transcript",
+            }}
+            state["digest_runs"] = 1
+            state["digested_through_lp"] = 0
+            if state["debrief_choice"] is None:
+                state["debrief_choice"] = "abandoned"
+                state["debrief_chip_pending"] = False
+            changed = True
+
+        await asyncio.to_thread(self._update_state_sync, mutate)
+        return changed
+
     async def update_state(self, **changes: Any) -> dict:
         """Read-modify-write ``state.json`` with ``changes``; the result is validated."""
 
@@ -1884,6 +1937,51 @@ class VisitSpool:
                             # 偏保守：这一轮留下 state，下一轮读到它再回收
                             failed = True
         return deleted
+
+    @classmethod
+    def _unreclaimable_bytes_sync(cls, config_dir: Path, live_ids: frozenset[str]) -> int:
+        by_visit: dict[str, list[tuple[str, os.stat_result]]] = {}
+        for visit_id, suffix, path in _list_names(_spool_dir(config_dir)):
+            if suffix == OUTBOX_SUFFIX or visit_id in live_ids:
+                continue
+            try:
+                st = path.stat()
+            except FileNotFoundError:
+                continue
+            # 其余 stat 错误（共享冲突、权限）上抛：大小不明的文件不能当作不占额度，调用方按已满拒绝
+            by_visit.setdefault(visit_id, []).append((suffix, st))
+        total = 0
+        for visit_id, files in by_visit.items():
+            if not any(suffix in _UPLOAD_SUFFIXES for suffix, _st in files):
+                state = _try_read_state(visit_path(_spool_dir(config_dir), visit_id, STATE_SUFFIX))
+                if state is not None and transcript_releasable(state):
+                    # 已结清：容量回收会删它，不占准入额度；日记提交中 / 失败待处理的场次只留 state.json
+                    if debrief_pins_state(state):
+                        total += sum(st.st_size for suffix, st in files if suffix == STATE_SUFFIX)
+                    continue
+            total += sum(st.st_size for _suffix, st in files)
+        return total
+
+    @classmethod
+    async def unreclaimable_bytes(
+        cls, config_dir: str | Path, *, is_live: Callable[[str], bool] | None = None,
+    ) -> int:
+        """Bytes the size-based sweep (step 2 of :meth:`sweep`) may never reclaim.
+
+        Every file (outbox streams aside) of a visit with a pending upload or
+        whose ``state.json`` is missing, unreadable or not
+        :func:`transcript_releasable`: pending uploads plus unsettled spools,
+        the admission cap ``VISIT_UPLOAD_PENDING_CAP_BYTES`` bounds them. Visits
+        for which ``is_live`` answers True are left out (the visit in flight
+        has its own per-file limits); ``is_live`` runs on the event loop only.
+        Raises ``OSError`` when a counted file cannot be ``stat``-ed (unknown
+        size: the admission check fails closed).
+        """
+        live_ids: frozenset[str] = frozenset()
+        if is_live is not None:
+            candidates = await asyncio.to_thread(cls._visit_ids, _spool_dir(config_dir), _KNOWN_SUFFIXES)
+            live_ids = frozenset(visit_id for visit_id in candidates if _ask_is_live(is_live, visit_id))
+        return await asyncio.to_thread(cls._unreclaimable_bytes_sync, Path(config_dir), live_ids)
 
     @classmethod
     async def sweep(

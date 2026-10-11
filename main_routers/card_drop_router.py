@@ -2007,7 +2007,18 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             return JSONResponse(
                 {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
             )
-        if not await asyncio.to_thread(_clear_auth):
+        from main_routers import community_oauth
+
+        # 在飞的串门先收尾、封存上传文件，清登录态期间不准入新串门
+        async with community_oauth.visit_account_change():
+            # 等收尾期间别的登录可能已换成另一个账号：清除之前按同一口径再核对一次
+            current_access = await asyncio.to_thread(_access_token) or ""
+            if current_access and not secrets.compare_digest(current_access, requested_access):
+                return JSONResponse(
+                    {"detail": "local_session_mismatch"}, status_code=409, headers=cors
+                )
+            cleared = await asyncio.to_thread(_clear_auth)
+        if not cleared:
             return JSONResponse(
                 {"detail": "local_clear_failed", "cleared": False},
                 status_code=500,
@@ -2054,15 +2065,19 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
     # Web native sync only authorizes this browser account to read the installation-local
     # ledger and memories. Legacy guest-card ownership is unrelated and must not block
     # account switching with ``client_already_bound_to_other_user``.
+    from main_routers import community_oauth
+
     try:
-        bind = await _store_session(
-            base,
-            access,
-            refresh,
-            user,
-            auth_source=lookup.identity.auth_source,
-            bind_client=False,
-        )
+        # 换成另一个社区账号时：在飞的串门先收尾、封存上传文件，写入期间不准入新串门
+        async with community_oauth.visit_account_change(_normalize_local_user_id(user.get("id"))):
+            bind = await _store_session(
+                base,
+                access,
+                refresh,
+                user,
+                auth_source=lookup.identity.auth_source,
+                bind_client=False,
+            )
     except _ClientBindingConflict as exc:
         return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
     except _InvalidIdentityResponse as exc:
@@ -2431,7 +2446,12 @@ async def register_endpoint(request: Request, payload: dict = Body(default=None)
 @router.post("/logout", summary="登出（清本地 JWT）")
 async def logout_endpoint(request: Request, payload: dict | None = Body(default=None)):
     _require_local_mutation_ticket(request, payload)
-    if not await asyncio.to_thread(_clear_auth):
+    from main_routers import community_oauth
+
+    # 在飞的串门先收尾、封存上传文件，清登录态期间不准入新串门
+    async with community_oauth.visit_account_change():
+        cleared = await asyncio.to_thread(_clear_auth)
+    if not cleared:
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"logged_in": False}
 

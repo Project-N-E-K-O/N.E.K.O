@@ -21,6 +21,7 @@ from services.theater.numeric_v2_archive import (
     NumericV2ArchiveStore,
     build_numeric_v2_memory_messages,
     build_numeric_v2_public_archive,
+    quarantined_file_name,
 )
 from services.theater.numeric_v2_evaluator import (
     NumericV2EvaluationResult,
@@ -5977,7 +5978,7 @@ def test_forget_erases_story_and_unattributable_quarantined_public_archives(tmp_
     def quarantined(session_id, content):
         quarantine_root.mkdir(parents=True, exist_ok=True)
         key = hashlib.sha256(session_id.encode('utf-8')).hexdigest()
-        path = quarantine_root / f'invalid-1-{"0" * 32}-{key}.json'
+        path = quarantine_root / quarantined_file_name('invalid', f'{key}.json')
         path.write_text(content, encoding='utf-8')
         return path
 

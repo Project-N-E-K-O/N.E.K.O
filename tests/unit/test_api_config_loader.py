@@ -40,3 +40,33 @@ def test_user_preferred_model_skipped_for_intl(monkeypatch):
     """Intl only supports cosyvoice-v3-plus for enrolled voices (the existing default)."""
     _patch_core_config(monkeypatch, {'TTS_MODEL': 'cosyvoice-v3.5-flash'})
     assert get_cosyvoice_user_preferred_model('cosyvoice_intl') is None
+
+
+def test_fallback_profiles_mirror_api_providers_json():
+    """Fallback profiles in config/api_profiles.py must mirror api_providers.json.
+
+    The loader falls back to these constants wholesale when the JSON file is
+    missing or broken; letting them drift silently swaps every fallback
+    provider onto retired models. Update both together.
+    """
+    import json
+
+    from config import (
+        DEFAULT_ASSIST_API_KEY_FIELDS,
+        DEFAULT_ASSIST_API_PROFILES,
+        DEFAULT_CORE_API_PROFILES,
+    )
+    from utils.api_config_loader import (
+        _convert_assist_api_profile,
+        _convert_core_api_profile,
+        _get_config_file_path,
+    )
+
+    with open(_get_config_file_path(), encoding='utf-8') as f:
+        data = json.load(f)
+
+    core = {k: _convert_core_api_profile(v) for k, v in data['core_api_providers'].items()}
+    assist = {k: _convert_assist_api_profile(v) for k, v in data['assist_api_providers'].items()}
+    assert DEFAULT_CORE_API_PROFILES == core
+    assert DEFAULT_ASSIST_API_PROFILES == assist
+    assert DEFAULT_ASSIST_API_KEY_FIELDS == data['assist_api_key_fields']

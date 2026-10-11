@@ -806,6 +806,27 @@ def _create_exclusive_temp_file(target_dir: Path) -> tuple[int, str]:
     )
 
 
+def move_aside(path: str | os.PathLike[str], suffix: str) -> Path | None:
+    """Rename ``path`` to ``<name>.<suffix>`` (``<name>.<n>.<suffix>`` when taken).
+
+    For a damaged state file that must not be overwritten in place: its bytes
+    stay on disk for inspection and the original name is free again. Returns
+    the new path, or None when the file could not be moved.
+    """
+    path = Path(path)
+    target = path.with_name(f"{path.name}.{suffix}")
+    n = 1
+    while target.exists():
+        target = path.with_name(f"{path.name}.{n}.{suffix}")
+        n += 1
+    try:
+        os.replace(path, target)
+    except OSError as exc:
+        logger.warning("cannot move %s aside: %s", path.name, exc)
+        return None
+    return target
+
+
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
     """Atomically replace a text file in the same directory."""
     target_path = Path(path)

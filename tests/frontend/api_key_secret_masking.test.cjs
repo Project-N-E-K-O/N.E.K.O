@@ -25,24 +25,51 @@ function createInputContext() {
     const helperSource = [
         "const MASKED_SECRET_SENTINEL = '__NEKO_SECRET_MASKED__';",
         "const MASKED_SECRET_DISPLAY = '••••••••••••';",
+        'let _secretDisplayCache = null;',
         sourceBetween('function maskApiKey(', '/**\n * 判断后端保留哨兵'),
         sourceBetween('function isMaskedSecretValue(', '/**\n * 将真实 key 写入'),
         sourceBetween('function setMaskedInput(', 'function setSecretInputValue('),
         sourceBetween('function setSecretInputValue(', '/**\n * ⚠️ 重要'),
         sourceBetween('function getRealKey(', '/**\n * 为 API Key 输入框绑定'),
         sourceBetween('function attachMaskBehavior(', '// 允许的来源列表'),
+        sourceBetween('const DOUBAO_VOICE_MANAGEMENT_FIELDS =', '/**\n * 切换 Key Book'),
         'globalThis.maskApiKey = maskApiKey;',
         'globalThis.isMaskedSecretValue = isMaskedSecretValue;',
         'globalThis.setMaskedInput = setMaskedInput;',
         'globalThis.setSecretInputValue = setSecretInputValue;',
         'globalThis.getRealKey = getRealKey;',
         'globalThis.attachMaskBehavior = attachMaskBehavior;',
+        'globalThis.doubaoVoiceManagementSettingsPayload = doubaoVoiceManagementSettingsPayload;',
         'globalThis.MASKED_SECRET_SENTINEL_FOR_TEST = MASKED_SECRET_SENTINEL;',
         'globalThis.MASKED_SECRET_DISPLAY_FOR_TEST = MASKED_SECRET_DISPLAY;',
     ].join('\n');
     vm.runInContext(helperSource, context, { filename: SOURCE_PATH });
     return context;
 }
+
+test('Doubao management credentials preserve masked secrets and remain separate from synthesis keys', () => {
+    const context = createInputContext();
+    const access = createFakeInput();
+    const secret = createFakeInput();
+    context.setMaskedInput(access, context.MASKED_SECRET_SENTINEL_FOR_TEST, 'acc******key');
+    context.setMaskedInput(secret, context.MASKED_SECRET_SENTINEL_FOR_TEST);
+    const fields = {
+        doubaoVoiceManagementAccessKey: access,
+        doubaoVoiceManagementSecretKey: secret,
+        doubaoVoiceManagementAppId: { value: ' app123 ' },
+        doubaoVoiceManagementProjectName: { value: ' Project A ' },
+    };
+    context.document.getElementById = id => fields[id] || null;
+    const payload = context.doubaoVoiceManagementSettingsPayload();
+    assert.equal(payload.doubaoVoiceManagementAccessKey, '__NEKO_SECRET_MASKED__');
+    assert.equal(payload.doubaoVoiceManagementSecretKey, '__NEKO_SECRET_MASKED__');
+    assert.equal(payload.doubaoVoiceManagementAppId, 'app123');
+    assert.equal(payload.doubaoVoiceManagementProjectName, 'Project A');
+    assert.equal(access.dataset.realKey, '');
+    assert.equal(secret.dataset.realKey, '');
+    assert.equal(Object.keys(payload).length, 4);
+    assert.equal('assistApiKeyDoubaoTts' in payload, false);
+});
 
 function createFakeInput() {
     const listeners = new Map();
@@ -162,7 +189,8 @@ test('legacy masks are recognized narrowly without treating arbitrary starred ke
     assert.equal(context.isMaskedSecretValue('********'), true);
     assert.equal(context.isMaskedSecretValue('abcdef***ghijkl'), true);
     assert.equal(context.isMaskedSecretValue('abcdef*******ghijkl'), true);
-    assert.equal(context.isMaskedSecretValue('abc***def'), false);
+    // maskApiKey uses three visible characters for shorter credentials.
+    assert.equal(context.isMaskedSecretValue('abc***def'), true);
     assert.equal(context.isMaskedSecretValue('abcdef**ghijkl'), false);
     assert.equal(context.isMaskedSecretValue('abcde****fghijkl'), false);
     assert.equal(context.isMaskedSecretValue('prefix-a***b-suffix'), false);

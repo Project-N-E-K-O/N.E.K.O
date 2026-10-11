@@ -510,7 +510,7 @@ async function main() {
           model_type: 'live3d',
           live3d_sub_type: 'vrm',
           vrm: {
-            model_path: 'avatar.vrm',
+            model_path: '/user_vrm/猫娘 #%20.VRM',
             lighting: { ambient: 0.7 },
             idle_animation: ['/animations/vrm-idle.vrma', '/animations/vrm-idle-2.vrma'],
           },
@@ -525,7 +525,7 @@ async function main() {
         avatar: {
           model_type: 'live3d',
           live3d_sub_type: 'vrm',
-          vrm: { model_path: 'legacy-avatar.vrm' },
+          vrm: { model_path: 'a%20b.vrm' },
         },
       },
     },
@@ -632,7 +632,7 @@ async function main() {
       const vrm = characters[name]?._reserved?.avatar?.vrm?.model_path;
       calls.push(['canonical-model-paths', name]);
       return jsonResponse({ lanlan_name: name, mmd_path: model ? `/user_mmd/${model}` : '',
-        vrm_path: vrm ? `/static/vrm/${vrm}` : '' });
+        vrm_path: vrm ? `/static/vrm/${encodeURIComponent(vrm)}` : '' });
     }
     if (target === '/resolved/live.model3.json') {
       onLiveModelFetch?.();
@@ -1447,7 +1447,7 @@ async function main() {
   const vrmInit = calls.find((entry) => entry[0] === 'vrm-init');
   const vrmModel = calls.find((entry) => entry[0] === 'vrm-model');
   assert(vrmInit?.[1] === 0.7
-    && vrmModel?.[1] === '/vrm-resolved//static/vrm/avatar.vrm'
+    && vrmModel?.[1] === '/vrm-resolved//user_vrm/%E7%8C%AB%E5%A8%98%20%23%2520.VRM'
     && vrmModel?.[2] === '/animations/vrm-idle.vrma'
     && Array.isArray(vrmModel?.[3])
     && vrmModel[3][1] === '/animations/vrm-idle-2.vrma'
@@ -1456,7 +1456,7 @@ async function main() {
       || entry.includes('/animations/vrm-legacy-list.vrma')),
   'VRM did not prefer canonical lighting and idle animation settings');
   const legacyVrmModel = calls.find((entry) => entry[0] === 'vrm-model'
-    && entry[1] === '/vrm-resolved//static/vrm/legacy-avatar.vrm');
+    && entry[1] === '/vrm-resolved//static/vrm/a%2520b.vrm');
   const snakeLegacyVrmModel = calls.find((entry) => entry[0] === 'vrm-model'
     && entry[1] === '/vrm-resolved//static/vrm/snake-legacy-avatar.vrm');
   const clearedVrmModel = calls.find((entry) => entry[0] === 'vrm-model'

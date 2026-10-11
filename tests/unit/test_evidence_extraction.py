@@ -198,6 +198,28 @@ async def test_stage2_accepts_raw_id_prefix_mismatch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stage2_runs_thinking_on_through_shared_budget(tmp_path):
+    """Stage-2 keeps thinking on (Phase D) via the shared thinking budget."""
+    fs, _cm = _install_factstore(str(tmp_path))
+    calls = []
+
+    async def fake_llm(prompt, *_args, **kwargs):
+        calls.append(kwargs)
+        return {"signals": []}
+
+    with patch.object(fs, "_allm_call_with_retries", side_effect=fake_llm):
+        await fs._allm_detect_signals(
+            "小天",
+            [{"id": "fact_001", "text": "喜欢猫"}],
+            [{"id": "reflection.r1", "raw_id": "r1", "target_type": "reflection",
+              "text": "喜欢动物", "entity": "master", "score": 1.0}],
+        )
+
+    assert calls and calls[0]["thinking"] is True
+    assert calls[0]["call_type"] == "memory_signal_detection"
+
+
+@pytest.mark.asyncio
 async def test_stage2_locale_detection_excludes_opaque_ids(tmp_path):
     from utils.language_utils import language_context
 

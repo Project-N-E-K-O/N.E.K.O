@@ -493,7 +493,10 @@ class PrewireGate:
             # outcome. Validate before adding an otherwise orphaned PENDING
             # record which has no resolver or delivery owner to settle it.
             raise PrewireGateIdentityError(selection.reason)
-        self._ledger.add(spec)
+        try:
+            self._ledger.add(spec)
+        except PrewireCapacityError as exc:
+            raise PrewireGateCapacityError(str(exc)) from exc
         self._ledger.record_candidate_decision(
             identity, decision=selection.decision, reason=selection.reason,
             score=selection.score, scoring_parameters_digest=self._parameters_digest,

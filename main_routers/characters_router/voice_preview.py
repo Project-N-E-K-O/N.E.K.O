@@ -371,7 +371,12 @@ async def get_voices():
     except Exception:
         logger.debug("[GeoIP] 音色列表区域落定失败，按当前配置继续", exc_info=True)
 
-    result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
+    from utils.voice_management.service import public_voice_data
+    voices = await asyncio.to_thread(_config_manager.get_voices_for_current_api, for_listing=True)
+    result = {"voices": {
+        ref: public_voice_data(metadata) if isinstance(metadata, dict) and metadata.get("origin") == "import" else metadata
+        for ref, metadata in voices.items()
+    }}
 
     core_config = await _config_manager.aget_core_config()
     # 先看有没有自带静态预制目录的 provider 被选中（如 MiMo，hosted）。与 dispatch
@@ -497,10 +502,35 @@ async def get_voice_preview(
         except Exception:
             logger.debug("[GeoIP] 音色预览区域落定失败，按当前配置继续", exc_info=True)
 
-        voices = _config_manager.get_voices_for_current_api()
+        voices = await asyncio.to_thread(_config_manager.get_voices_for_current_api)
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
         is_free_preset_voice = _is_free_preset_voice_id(voice_id)
+
+        from utils.voice_config import is_imported_voice_ref
+        from .imported_voice_preview import ImportedPreviewConfig, preview_response
+        imported_preview = None
+        if is_imported_voice_ref(voice_id) and (
+            not voice_data or voice_data.get('origin') == 'import'
+        ):
+            from utils.voice_management.providers import get_adapter
+            if not voice_data:
+                return JSONResponse({
+                    'success': False, 'error': 'IMPORTED_VOICE_UNAVAILABLE',
+                    'code': 'IMPORTED_VOICE_UNAVAILABLE',
+                }, status_code=409)
+            runtime = await asyncio.to_thread(
+                get_adapter(provider).resolve_runtime, _config_manager, voice_data=voice_data,
+            )
+            if runtime.scope_id != voice_data.get('scope_id') or not runtime.api_key:
+                return JSONResponse({
+                    'success': False, 'error': 'IMPORTED_VOICE_UNAVAILABLE',
+                    'code': 'IMPORTED_VOICE_UNAVAILABLE',
+                }, status_code=409)
+            imported_preview = ImportedPreviewConfig(_config_manager, runtime, voice_data=voice_data)
+            _config_manager = imported_preview
+            voice_id = voice_data['remote_voice_id']
+            is_free_preset_voice = False
 
         # 优先尝试从 tts_custom 获取 API Key
         try:
@@ -515,6 +545,9 @@ async def get_voice_preview(
         if not audio_api_key:
             core_config = await _config_manager.aget_core_config()
             audio_api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if imported_preview:
+            audio_api_key = imported_preview.runtime.api_key
 
         cosyvoice_base_url = ''
         if provider in ('cosyvoice', 'cosyvoice_intl'):
@@ -547,6 +580,11 @@ async def get_voice_preview(
         # 该 provider 的 key/voice_id 误合成（PR #1848 Codex review；真试听留作后续）。
         # 与预制同名的克隆音色不拦（dispatch 克隆 provider 先于 MiMo 命中），仍走克隆试听。
         preview_core_config = await _config_manager.aget_core_config()
+        if imported_preview and not await imported_preview.is_current():
+            return JSONResponse({
+                'success': False, 'error': 'IMPORTED_VOICE_UNAVAILABLE',
+                'code': 'IMPORTED_VOICE_UNAVAILABLE',
+            }, status_code=409)
         if _is_unpreviewable_selected_preset_voice(
             _config_manager, preview_core_config, voice_id, voice_data
         ):
@@ -697,7 +735,7 @@ async def get_voice_preview(
                     }, status_code=502)
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
                 logger.info(f"豆包语音音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
-                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+                return await preview_response(imported_preview, {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'})
             except DoubaoTtsError as e:
                 logger.error(f"豆包语音音色 {voice_id} 预览失败: {e}")
                 return JSONResponse({
@@ -732,7 +770,7 @@ async def get_voice_preview(
                 audio_data = await glm_client.synthesize_preview(voice_id, text)
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
                 logger.info(f"GLM 音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
-                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+                return await preview_response(imported_preview, {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'})
             except GlmTtsError as e:
                 logger.error(f"GLM 音色 {voice_id} 预览失败: {e}")
                 return JSONResponse({
@@ -991,11 +1029,11 @@ async def get_voice_preview(
                     }, status_code=400)
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
                 logger.info(f"ElevenLabs 音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
-                return {
+                return await preview_response(imported_preview, {
                     'success': True,
                     'audio': audio_base64,
                     'mime_type': 'audio/mpeg'
-                }
+                })
             except ElevenLabsUpstreamError as e:
                 logger.error(f"ElevenLabs 预览上游服务错误 ({e.status_code}): {e}")
                 return JSONResponse({
@@ -1056,11 +1094,11 @@ async def get_voice_preview(
                 audio_data = await minimax_client.synthesize_preview(voice_id=voice_id, text=text)
                 logger.info(f"{provider_label} 音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-                return {
+                return await preview_response(imported_preview, {
                     'success': True,
                     'audio': audio_base64,
                     'mime_type': 'audio/mpeg'
-                }
+                })
             except MinimaxVoiceCloneError as e:
                 logger.error(f"{provider_label} 预览生成失败: {e}")
                 return JSONResponse({
@@ -1093,6 +1131,13 @@ async def get_voice_preview(
             )
 
         from utils.api_config_loader import get_cosyvoice_clone_model
+        if imported_preview:
+            preview_base_url = imported_preview.runtime.base_url
+        if imported_preview and not await imported_preview.is_current():
+            return JSONResponse({
+                'success': False, 'error': 'IMPORTED_VOICE_UNAVAILABLE',
+                'code': 'IMPORTED_VOICE_UNAVAILABLE',
+            }, status_code=409)
         clone_model = (
             (voice_data or {}).get('design_model')
             or (voice_data or {}).get('clone_model')
@@ -1137,11 +1182,11 @@ async def get_voice_preview(
             # 将音频数据转换为 Base64 字符串
             audio_base64 = base64.b64encode(audio_data).decode('utf-8')
 
-            return {
+            return await preview_response(imported_preview, {
                 "success": True,
                 "audio": audio_base64,
                 "mime_type": "audio/mpeg"
-            }
+            })
         except Exception as e:
             error_msg = str(e)
             logger.error(f"SpeechSynthesizer 调用异常: {error_msg}")

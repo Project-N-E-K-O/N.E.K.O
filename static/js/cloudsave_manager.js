@@ -147,6 +147,10 @@
             key: 'cloudsave.error.localCharacterExists',
             fallback: 'A local character with the same name already exists.',
         },
+        VISIT_DATA_BUSY: {
+            key: 'cloudsave.error.visitDataBusy',
+            fallback: 'A deleted character with the same name is still having its visit data cleaned up. Please try again later.',
+        },
         CLOUD_CHARACTER_EXISTS: {
             key: 'cloudsave.error.cloudCharacterExists',
             fallback: 'A cloud character with the same name already exists.',

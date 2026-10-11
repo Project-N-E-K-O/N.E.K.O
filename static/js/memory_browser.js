@@ -10,6 +10,11 @@
     let memoryFileRequestId = 0;
     let memorySaveRequestId = 0;
     let memoryEditRevision = 0;
+    const memoryToggleSettings = [
+        { id: 'review', endpoint: '/api/memory/review_config', enabled: null, phase: 'idle', saveFailed: false },
+        { id: 'strong-memory', endpoint: '/api/memory/powerful_memory_config', enabled: null, phase: 'idle', saveFailed: false }
+    ];
+    const MEMORY_TOGGLE_REQUEST_TIMEOUT_MS = 30000;
     let memorySaveInFlight = null;
     let memoryRowExitInProgress = false;
     let memoryRowExitTimer = 0;
@@ -2191,34 +2196,6 @@
         return translate(statusKey, '当前需要先处理存储位置状态');
     }
 
-    function setReviewControlsEnabled(enabled) {
-        const checkbox = document.getElementById('review-toggle-checkbox');
-        const label = document.querySelector("label.auto-review-toggle-btn[for='review-toggle-checkbox']");
-        if (checkbox) {
-            checkbox.disabled = !enabled;
-            if (!enabled) {
-                checkbox.checked = false;
-            }
-        }
-        if (label) {
-            label.classList.toggle('is-disabled', !enabled);
-        }
-        if (!enabled) {
-            updateToggleText(false);
-        }
-    }
-
-    function setPowerfulMemoryControlsEnabled(enabled) {
-        const checkbox = document.getElementById('strong-memory-toggle-checkbox');
-        const label = document.querySelector("label.auto-review-toggle-btn[for='strong-memory-toggle-checkbox']");
-        if (checkbox) {
-            checkbox.disabled = !enabled;
-            if (!enabled) checkbox.checked = false;
-        }
-        if (label) label.classList.toggle('is-disabled', !enabled);
-        if (!enabled) updatePowerfulMemoryToggleText(false);
-    }
-
     function renderStorageLocationPanel() {
         const state = storageLocationState || {};
         const bootstrap = state.bootstrap || {};
@@ -2937,8 +2914,7 @@
             saveRow.style.display = 'none';
         }
         setMemoryCurrentRoleName('');
-        setReviewControlsEnabled(false);
-        setPowerfulMemoryControlsEnabled(false);
+        memoryToggleSettings.forEach(renderMemoryToggle);
         updateExternalImportButton();
     }
 
@@ -4850,6 +4826,29 @@
     window.addEventListener('beforeunload', teardownMemoryRolePanelPositionSync);
     // 页面加载时隐藏保存按钮
     document.addEventListener('DOMContentLoaded', async function () {
+        document.addEventListener('focusin', () => {
+            // A user who moved elsewhere must not be pulled back when a request finishes.
+            memoryToggleSettings.forEach(setting => { setting.restoreFocus = false; });
+        });
+        memoryToggleSettings.forEach(setting => {
+            const checkbox = document.getElementById(`${setting.id}-toggle-checkbox`);
+            const retry = document.getElementById(`${setting.id}-toggle-retry`);
+            if (checkbox) {
+                checkbox.addEventListener('change', () => saveMemoryToggleConfig(setting, checkbox.checked));
+            }
+            if (retry) {
+                retry.addEventListener('click', () => loadMemoryToggleConfig(setting));
+            }
+            const repair = document.getElementById(`${setting.id}-toggle-repair`);
+            if (repair) {
+                repair.querySelectorAll('button[data-enabled]').forEach(button => {
+                    button.addEventListener('click', () => {
+                        saveMemoryToggleConfig(setting, button.dataset.enabled === 'true');
+                    });
+                });
+            }
+            renderMemoryToggle(setting);
+        });
         initMemoryExportLogs();
         initMemoryLayoutMode();
         initMemoryRolePanel();
@@ -4866,8 +4865,8 @@
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
             memoryStorageLimited = false;
-            setReviewControlsEnabled(true);
-            setPowerfulMemoryControlsEnabled(true);
+            memoryToggleSettings.forEach(renderMemoryToggle);
+            memoryToggleSettings.forEach(loadMemoryToggleConfig);
             // Load the identity list now that the root is settled. Measured
             // as redundant today -- a later control sync reaches it anyway,
             // and removing this line keeps the guard test green -- but that
@@ -4885,37 +4884,14 @@
                     console.warn('[MemoryBrowser] Failed to resolve external-memory target:', error);
                 }
             }
-            loadReviewConfig();
-            loadPowerfulMemoryConfig();
         }
         document.getElementById('save-row').style.display = 'none';
-
-        // 监听checkbox变化
-        const checkbox = document.getElementById('review-toggle-checkbox');
-        if (checkbox) {
-            checkbox.addEventListener('change', function () {
-                toggleReview(this.checked);
-            });
-        }
-        const strongCheckbox = document.getElementById('strong-memory-toggle-checkbox');
-        if (strongCheckbox) {
-            strongCheckbox.addEventListener('change', function () {
-                togglePowerfulMemory(this.checked);
-            });
-        }
 
         // 监听i18n语言变化
         if (window.i18n) {
             window.i18n.on('languageChanged', function () {
-                const checkbox = document.getElementById('review-toggle-checkbox');
                 renderStorageLocationPanel();
-                if (checkbox) {
-                    updateToggleText(checkbox.checked);
-                }
-                const strongCheckbox = document.getElementById('strong-memory-toggle-checkbox');
-                if (strongCheckbox) {
-                    updatePowerfulMemoryToggleText(strongCheckbox.checked);
-                }
+                memoryToggleSettings.forEach(renderMemoryToggle);
                 if (storageLocationState && storageLocationState.limited) {
                     renderMemoryBrowserLimitedState(storageLocationState);
                 }
@@ -5120,116 +5096,138 @@
     });
 
 
-    async function loadReviewConfig() {
-        try {
-            const resp = await fetch('/api/memory/review_config');
-            const data = await resp.json();
-            const checkbox = document.getElementById('review-toggle-checkbox');
+    function renderMemoryToggle(setting) {
+        const checkbox = document.getElementById(`${setting.id}-toggle-checkbox`);
+        if (!checkbox) return;
+        const limited = storageLocationState.limited;
+        const busy = setting.phase === 'loading' || setting.phase === 'saving';
+        const disabled = memoryStorageLimited || setting.phase !== 'ready';
+        const retry = document.getElementById(`${setting.id}-toggle-retry`);
+        const repair = document.getElementById(`${setting.id}-toggle-repair`);
+        if (busy && (document.activeElement === checkbox || document.activeElement === retry
+            || (repair && repair.contains(document.activeElement)))) {
+            setting.restoreFocus = true;
+        }
+        checkbox.disabled = disabled;
+        checkbox.checked = !limited && (setting.phase === 'saving'
+            ? setting.pendingEnabled : setting.enabled === true);
+        checkbox.setAttribute('aria-busy', String(busy));
+        const control = checkbox.nextElementSibling;
+        if (control) control.classList.toggle('is-disabled', disabled);
 
-            if (checkbox) {
-                checkbox.checked = data.enabled;
+        let statusKey = '';
+        if (!limited) {
+            if (setting.phase === 'error') statusKey = setting.repairable
+                ? 'memory.invalidToggleValue' : 'common.loadFailed';
+            else if (setting.phase !== 'ready') statusKey = 'common.loading';
+            else if (setting.saveFailed) statusKey = 'memory.saveFailedGeneral';
+        }
+        const valueKey = checkbox.checked ? 'memory.enabled' : 'memory.disabled';
+        const statusFallback = statusKey === 'common.loading' ? '加载中...'
+            : statusKey === 'common.loadFailed' ? '加载失败'
+            : statusKey === 'memory.invalidToggleValue' ? '此设置的值无效，请选择开启或关闭以修复。' : '保存失败';
+        const textKey = setting.phase === 'ready' || limited ? valueKey
+            : setting.repairable && setting.phase === 'error' ? 'common.loadFailed' : statusKey;
+        const text = document.getElementById(`${setting.id}-toggle-text`);
+        if (text) {
+            text.setAttribute('data-i18n', textKey);
+            text.textContent = translate(textKey, textKey === valueKey
+                ? (checkbox.checked ? '已开启' : '已关闭')
+                : textKey === 'common.loadFailed' ? '加载失败' : statusFallback);
+        }
+        const status = document.getElementById(`${setting.id}-toggle-status`);
+        if (status) {
+            status.hidden = !statusKey;
+            if (statusKey) {
+                status.setAttribute('data-i18n', statusKey);
+                status.textContent = translate(statusKey, statusFallback);
+            } else {
+                status.removeAttribute('data-i18n');
+                status.textContent = '';
             }
-            updateToggleText(data.enabled);
-        } catch (e) {
-            console.error('加载审阅配置失败:', e);
+            status.parentElement.hidden = !statusKey;
+        }
+        if (retry) retry.hidden = memoryStorageLimited || setting.phase !== 'error';
+        if (repair) repair.hidden = memoryStorageLimited || setting.phase !== 'error' || !setting.repairable;
+        if (!busy && setting.restoreFocus) {
+            setting.restoreFocus = false;
+            const target = setting.phase === 'error' ? retry : checkbox;
+            const panel = checkbox.closest('.memory-aux-panel');
+            if (document.activeElement === document.body && panel && !panel.hidden
+                && target && !target.disabled && !target.hidden && !memoryStorageLimited) {
+                target.focus();
+            }
         }
     }
 
-    function updateToggleText(enabled) {
-        const textSpan = document.getElementById('review-toggle-text');
-        if (!textSpan) return;
-        if (enabled) {
-            textSpan.setAttribute('data-i18n', 'memory.enabled');
-            textSpan.textContent = window.t ? window.t('memory.enabled') : '已开启';
-        } else {
-            textSpan.setAttribute('data-i18n', 'memory.disabled');
-            textSpan.textContent = window.t ? window.t('memory.disabled') : '已关闭';
-        }
-    }
-
-    async function toggleReview(enabled) {
+    async function requestMemoryToggleConfig(setting, options = {}) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), MEMORY_TOGGLE_REQUEST_TIMEOUT_MS);
         try {
-            const resp = await fetch('/api/memory/review_config', {
+            const resp = await fetch(setting.endpoint, { ...options, signal: controller.signal });
+            // Keep the deadline active until the response body has also been read.
+            const data = await resp.json();
+            if (!resp.ok) {
+                const error = new Error(`Config request failed: ${resp.status}`);
+                error.repairable = resp.status === 503 && data && data.code === 'invalid_memory_setting';
+                throw error;
+            }
+            return data;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    async function loadMemoryToggleConfig(setting) {
+        if (memoryStorageLimited || setting.phase === 'loading' || setting.phase === 'saving') return;
+        setting.phase = 'loading';
+        setting.repairable = false;
+        renderMemoryToggle(setting);
+        try {
+            const data = await requestMemoryToggleConfig(setting);
+            if (typeof data.enabled !== 'boolean') throw new Error('Invalid config value');
+            setting.enabled = data.enabled;
+            // A recovery read can confirm the requested value despite a lost save response.
+            setting.saveFailed = setting.saveFailed && data.enabled !== setting.pendingEnabled;
+            setting.phase = 'ready';
+        } catch (error) {
+            console.error('[MemoryBrowser] Failed to load setting:', setting.endpoint, error);
+            setting.phase = 'error';
+            setting.repairable = error.repairable === true;
+        }
+        renderMemoryToggle(setting);
+    }
+
+    async function saveMemoryToggleConfig(setting, enabled) {
+        // Unknown legacy values require an explicit repair choice instead of a guessed toggle.
+        const canRepair = setting.phase === 'error' && setting.repairable;
+        if (memoryStorageLimited || (setting.phase !== 'ready' && !canRepair)) {
+            renderMemoryToggle(setting);
+            return;
+        }
+        setting.pendingEnabled = enabled;
+        setting.phase = 'saving';
+        setting.repairable = false;
+        setting.saveFailed = false;
+        renderMemoryToggle(setting);
+        try {
+            const data = await requestMemoryToggleConfig(setting, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: enabled })
+                body: JSON.stringify({ enabled })
             });
-            const data = await resp.json();
-
-            if (data.success) {
-                updateToggleText(enabled);
-            } else {
-                // 如果保存失败，恢复原来的状态
-                const checkbox = document.getElementById('review-toggle-checkbox');
-                if (checkbox) {
-                    checkbox.checked = !enabled;
-                }
-                updateToggleText(!enabled);
+            if (data.success !== true || typeof data.enabled !== 'boolean') {
+                throw new Error('Config save was not confirmed');
             }
-        } catch (e) {
-            console.error('更新审阅配置失败:', e);
-            // 如果请求失败，恢复原来的状态
-            const checkbox = document.getElementById('review-toggle-checkbox');
-            if (checkbox) {
-                checkbox.checked = !enabled;
-            }
-            updateToggleText(!enabled);
-        }
-    }
-
-    // ── 强力记忆开关（与 review 开关对偶，仿同样 load/update/toggle 模板） ──
-
-    async function loadPowerfulMemoryConfig() {
-        try {
-            const resp = await fetch('/api/memory/powerful_memory_config');
-            const data = await resp.json();
-            const checkbox = document.getElementById('strong-memory-toggle-checkbox');
-            if (checkbox) {
-                checkbox.checked = data.enabled;
-            }
-            updatePowerfulMemoryToggleText(data.enabled);
-        } catch (e) {
-            console.error('加载强力记忆配置失败:', e);
-        }
-    }
-
-    function updatePowerfulMemoryToggleText(enabled) {
-        const textSpan = document.getElementById('strong-memory-toggle-text');
-        if (!textSpan) return;
-        if (enabled) {
-            textSpan.setAttribute('data-i18n', 'memory.enabled');
-            textSpan.textContent = window.t ? window.t('memory.enabled') : '已开启';
-        } else {
-            textSpan.setAttribute('data-i18n', 'memory.disabled');
-            textSpan.textContent = window.t ? window.t('memory.disabled') : '已关闭';
-        }
-    }
-
-    async function togglePowerfulMemory(enabled) {
-        try {
-            const resp = await fetch('/api/memory/powerful_memory_config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: enabled })
-            });
-            const data = await resp.json();
-
-            if (data.success) {
-                updatePowerfulMemoryToggleText(enabled);
-            } else {
-                const checkbox = document.getElementById('strong-memory-toggle-checkbox');
-                if (checkbox) {
-                    checkbox.checked = !enabled;
-                }
-                updatePowerfulMemoryToggleText(!enabled);
-            }
-        } catch (e) {
-            console.error('更新强力记忆配置失败:', e);
-            const checkbox = document.getElementById('strong-memory-toggle-checkbox');
-            if (checkbox) {
-                checkbox.checked = !enabled;
-            }
-            updatePowerfulMemoryToggleText(!enabled);
+            setting.enabled = data.enabled;
+            setting.phase = 'ready';
+            renderMemoryToggle(setting);
+        } catch (error) {
+            console.error('[MemoryBrowser] Failed to save setting:', setting.endpoint, error);
+            // A missing acknowledgement does not tell us whether the write happened.
+            setting.saveFailed = true;
+            setting.phase = 'idle';
+            await loadMemoryToggleConfig(setting);
         }
     }
 

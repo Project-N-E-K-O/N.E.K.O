@@ -18,6 +18,8 @@ export default defineConfig({
     lib: {
       entry: 'src/export.ts',
       name: 'NekoChatWindow',
+      // Keep the public stylesheet name consumed by sync-css and the templates.
+      cssFileName: 'style',
       formats: ['iife', 'es'],
       fileName: (format) => `neko-chat-window.${format}.js`,
     },

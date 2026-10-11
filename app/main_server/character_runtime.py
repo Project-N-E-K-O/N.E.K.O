@@ -807,6 +807,14 @@ def _get_explicit_session_user_language(name):
     return getattr(manager, "user_language", None)
 
 
+def _get_session_tool_names(name):
+    """Return the tool names the role's live session has registered."""
+    manager = _get_session_manager(name)
+    if manager is None:
+        return None
+    return manager.list_tools()
+
+
 def _get_session_render_language(name):
     """Return the current renderer locale without promoting it to a preference."""
     manager = _get_session_manager(name)
@@ -2007,6 +2015,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     ),
                     render_language_provider=(
                         lambda _name=k: _get_session_render_language(_name)
+                    ),
+                    tool_names_provider=(
+                        lambda _name=k: _get_session_tool_names(_name)
                     ),
                 ),
                 name=f"SyncConnector-{k}",

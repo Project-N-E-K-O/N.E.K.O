@@ -1975,3 +1975,65 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
         padding: 12px 18px 20px;
     }
 }
+/* Remote voice import shares the registration page's cyan accents. */
+.remote-voice-entry { flex-shrink: 0; width: auto !important; white-space: normal; }
+.container-content .remote-voice-entry { margin-top: 0; margin-right: 0; }
+.remote-voice-provider-controls { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 600px; }
+.remote-voice-provider-controls > .api-provider-dropdown { flex: 1; min-width: 0; }
+.remote-voice-provider-controls > select { flex: 1; min-width: 0; }
+.remote-voice-entry[hidden] { display: none !important; }
+.remote-voice-overlay { position: fixed; inset: 0; z-index: 15000; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(20, 51, 76, .42); }
+.remote-voice-dialog { width: min(820px, 100%); max-height: calc(100dvh - 40px); overflow: auto; box-sizing: border-box; padding: 24px; background: var(--card-bg, #fff); color: var(--text-color, #264960); border-radius: 18px; box-shadow: 0 18px 64px rgba(0, 55, 92, .22); }
+.remote-voice-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.remote-voice-header h3 { margin: 0; font-size: 21px; }
+.remote-voice-close { background: transparent; color: #087ba5; border: 0; cursor: pointer; padding: 8px; font: inherit; }
+.remote-voice-dialog .remote-voice-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin: 12px 12px 0 0;
+    padding: 9px 16px;
+    border: 1px solid #78bdd8;
+    border-radius: 10px;
+    background: #edf8fd;
+    color: #075a7c;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color .15s, border-color .15s;
+}
+.remote-voice-dialog .remote-voice-link:hover:not(:disabled) { background: #d9eff9; border-color: #2398c3; }
+.remote-voice-dialog .remote-voice-link:active:not(:disabled) { background: #c9e7f5; }
+.remote-voice-dialog .remote-voice-link:disabled { opacity: .6; cursor: not-allowed; }
+.remote-voice-close { font-size: 14px; }
+.remote-voice-provider, .remote-voice-hint { font-size: 14px; color: var(--text-secondary, #607e90); }
+.remote-voice-toolbar { display: flex; gap: 12px; margin: 18px 0; }
+.remote-voice-toolbar input { flex: 1; min-width: 0; }
+.remote-voice-dialog input[type="text"], .remote-voice-dialog input[type="search"] { box-sizing: border-box; padding: 10px 12px; border: 1px solid #b8dae9; border-radius: 9px; font: inherit; background: var(--input-bg, #f4fbff); color: inherit; }
+.remote-voice-table-scroll { overflow: auto; max-height: 340px; border: 1px solid #cbe6f2; border-radius: 10px; }
+.remote-voice-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.remote-voice-table th { text-align: left; background: var(--input-bg, #eef9ff); position: sticky; top: 0; }
+.remote-voice-table th, .remote-voice-table td { padding: 12px 9px; border-bottom: 1px solid #e2eff5; }
+.remote-voice-id { overflow-wrap: anywhere; font-size: 12px; }
+.remote-voice-table .remote-voice-id { max-width: 220px; }
+.remote-voice-table input[type="radio"] { accent-color: #17a7ff; }
+.remote-voice-manual { display: grid; gap: 16px; }
+.remote-voice-field { display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.remote-voice-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; margin-top: 20px; }
+.remote-voice-status { min-height: 20px; font-size: 14px; overflow-wrap: anywhere; }
+.remote-voice-error, .remote-voice-warning { color: var(--error-color, #b33a2e); }
+.remote-voice-dialog [hidden] { display: none !important; }
+.remote-voice-dialog .btn:disabled { opacity: .5; cursor: not-allowed; }
+.remote-voice-dialog :focus-visible { outline: 3px solid #17a7ff; outline-offset: 2px; }
+@media (max-width: 600px) {
+    .remote-voice-overlay { padding: 10px; }
+    .remote-voice-dialog { padding: 16px; max-height: calc(100dvh - 20px); }
+    .remote-voice-entry { margin-top: 8px; }
+    .remote-voice-provider-controls { flex-wrap: wrap; }
+    .remote-voice-provider-controls > .api-provider-dropdown { min-width: 160px; }
+    .remote-voice-table-scroll { max-height: 260px; }
+    .remote-voice-table { min-width: 570px; }
+}

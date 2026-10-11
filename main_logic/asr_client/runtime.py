@@ -3225,6 +3225,12 @@ class IndependentAsrRuntime:
                     self._asr_input_sample_end = 0
                     self._asr_committed_sample_end = 0
                     self._asr_input_delivery = InputAudioDeliveryLedger()
+                if (frame.delivery is not None and not self._asr_input_delivery.enabled
+                        and not lifecycle.begin_delivery_mapping()):
+                    # No tagged PCM has been accepted. Keep a promised old
+                    # prefix and its turn owner rather than silently dropping
+                    # it or uploading it under another frame's delivery tag.
+                    return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
                 source_start = self._asr_input_sample_end
                 source_end = source_start + len(pcm16) // 2
                 self._asr_input_sample_end = source_end

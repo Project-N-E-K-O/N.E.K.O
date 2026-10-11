@@ -21,6 +21,10 @@ from tests.unit.asr_client.test_candidate_rejection_runtime import (
 class _BoundaryDetector(_RejectionDetector):
     def __init__(self):
         super().__init__()
+        from main_logic.asr_client.endpointing.detector import ProviderCandidateFence
+        self.seal_provider_candidate = AsyncMock(return_value=ProviderCandidateFence(7, 11, 0))
+        self.complete_provider_candidate = AsyncMock(return_value=False)
+        self.discard_provider_successor = AsyncMock(return_value=True)
         self.endpointing_ready = lambda _token: True
         self.release_deferred_turn = AsyncMock()
         self.feed = AsyncMock(return_value=SimpleNamespace(
@@ -253,3 +257,281 @@ async def test_second_gap_entering_during_active_successor_preparation_waits_for
     finally:
         release.set()
         await _cleanup(runtime, boundary, final)
+
+class _DeliveryBoundaryDetector(_BoundaryDetector):
+    """Controlled acoustic IO implements the current provider boundary protocol."""
+
+    def __init__(self):
+        super().__init__()
+        from main_logic.asr_client.endpointing.detector import ProviderCandidateFence
+        self.seal_provider_candidate = AsyncMock(return_value=ProviderCandidateFence(7, 11, 0))
+        self.complete_provider_candidate = AsyncMock(return_value=False)
+        self.discard_provider_successor = AsyncMock(return_value=True)
+
+
+async def _delivery_boundary_fixture():
+    from main_logic.voice_turn.interception_events import InterceptionDeliveryStage as Stage
+
+    callbacks = _callbacks()
+    runtime = IndependentAsrRuntime(callbacks)
+    detector = _DeliveryBoundaryDetector()
+    session, lifecycle, token = _install_active_candidate(runtime, detector)
+    from main_logic.asr_client.provider_policy import resolve_provider_policy
+    runtime._asr_provider = "soniox"
+    lifecycle.provider_policy = resolve_provider_policy("soniox", "manual")
+    sent = []
+
+    async def write(pcm, **kwargs):
+        spans = kwargs.get("delivery_spans", ())
+        sent.append((pcm, spans))
+        for span in spans:
+            span.observe(Stage.TRANSPORT_WRITTEN)
+            span.observe(Stage.TRANSPORT_OWNED)
+
+    session.stream_audio = write
+    session.signal_user_activity_end = AsyncMock()
+    return runtime, callbacks, detector, session, lifecycle, token, sent
+
+
+async def _close_delivery_boundary_fixture(runtime):
+    warm = runtime._asr_warm_expiry_task
+    if warm is not None:
+        warm.cancel()
+        await asyncio.gather(warm, return_exceptions=True)
+    await _cleanup(runtime)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("buffer_case", ["draining", "warm_idle"])
+async def test_first_tagged_transition_drops_unmapped_local_pcm_and_keeps_registered_successor(buffer_case, monkeypatch):
+    from main_logic.asr_client.audio_ranges import AudioSampleSpan
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag, AudioDeliverySpan
+    from main_logic.voice_turn.interception_events import InterceptionDeliveryStage as Stage
+
+    from main_logic.asr_client.input_delivery import InputAudioDeliveryLedger
+    original_spans = InputAudioDeliveryLedger.spans
+    mapping_errors = []
+
+    def record_mapping_failure(ledger, ranges, samples):
+        try:
+            return original_spans(ledger, ranges, samples)
+        except RuntimeError as exc:
+            mapping_errors.append((str(exc), ranges, samples))
+            raise
+
+    # Observe the original mapping, preserving its execution and exceptions.
+    monkeypatch.setattr(InputAudioDeliveryLedger, "spans", record_mapping_failure)
+    runtime, callbacks, detector, session, lifecycle, token, sent = await _delivery_boundary_fixture()
+    prefix = b"\x01\x00" * 1600
+    unmapped = b"\x02\x00" * 400
+    first, second = b"\x03\x00" * 400, b"\x04\x00" * 400
+    receipts = [[], []]
+    tags = [AudioDeliveryTag(400, receipts[i].append) for i in range(2)]
+    try:
+        assert (await runtime.submit(ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        sealed = runtime._asr_sealed_turn_token
+        assert sealed.turn == token
+        assert sent == [(prefix, ())]
+        if buffer_case == "warm_idle":
+            await runtime._handle_independent_asr_final("accepted prefix", runtime._asr_session_epoch, "soniox")
+            await runtime.wait_transcript_idle()
+            assert lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+            detector.feed.return_value = SimpleNamespace(
+                endpointing_available=True, throttle_available=True,
+                throttle_action=ThrottleAction.PROCESS_PCM, events=(),
+            )
+        # This local prefix has not yet been admitted or promised to a turn.
+        detector.feed.return_value = SimpleNamespace(
+            endpointing_available=True, throttle_available=True,
+            throttle_action=ThrottleAction.PROCESS_PCM, events=(),
+        )
+        assert (await runtime.submit(ProcessedVoiceFrame(unmapped, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
+        if buffer_case == "draining":
+            assert lifecycle._pending_turn.spans == (AudioSampleSpan(None, 400),)
+        else:
+            assert lifecycle._pre_roll.spans == (AudioSampleSpan(None, 400),)
+        detector.feed.return_value = SimpleNamespace(
+            endpointing_available=True, throttle_available=True,
+            throttle_action=ThrottleAction.PROCESS_PCM,
+            events=(SpeechActivityEvent.SPEECH_STARTED,),
+        )
+        for pcm, tag in zip((first, second), tags):
+            submitted = await runtime.submit(ProcessedVoiceFrame(pcm, 16000, 1.0, True, delivery=tag), ingress_token=token.ingress)
+            assert submitted.status is AsrSubmitStatus.ACCEPTED, mapping_errors
+        if buffer_case == "draining":
+            # Revoking local untagged PCM cannot reset the already sealed owner.
+            assert runtime._asr_sealed_turn_token == sealed
+            assert lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+            await runtime._handle_independent_asr_final("accepted prefix", runtime._asr_session_epoch, "soniox")
+        await runtime.wait_transcript_idle()
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert b"".join(pcm for pcm, _ in sent) == prefix + first + second
+        mapped = tuple(span for _, spans in sent for span in spans)
+        assert mapped == (AudioDeliverySpan(tags[0], 0, 400), AudioDeliverySpan(tags[1], 0, 400))
+        assert mapping_errors == []
+        assert all(tag.settled for tag in tags)
+        assert all(Stage.TRANSPORT_OWNED in items for items in receipts)
+        assert callbacks.on_final.await_count == 1
+        envelope = callbacks.on_final.await_args.args[0]
+        assert (envelope.text, envelope.turn_token) == ("accepted prefix", token)
+        callbacks.on_turn_abandoned.assert_not_awaited()
+        callbacks.on_failure.assert_not_awaited()
+        assert runtime._asr_session is session
+        assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    finally:
+        await _close_delivery_boundary_fixture(runtime)
+
+
+@pytest.mark.asyncio
+async def test_first_tagged_frame_does_not_reset_or_replay_already_accepted_active_turn():
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag, AudioDeliverySpan
+
+    runtime, callbacks, _detector, session, lifecycle, token, sent = await _delivery_boundary_fixture()
+    prefix, protected = b"\x05\x00" * 1600, b"\x06\x00" * 400
+    tag = AudioDeliveryTag(400, lambda _stage: None)
+    try:
+        assert (await runtime.submit(ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert sent == [(prefix, ())]
+        assert (await runtime.submit(ProcessedVoiceFrame(protected, 16000, 1.0, True, delivery=tag), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert runtime._capture_turn_token(lifecycle) == token
+        assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+        assert sent == [(prefix, ()), (protected, (AudioDeliverySpan(tag, 0, 400),))]
+        assert tag.settled
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime._handle_independent_asr_final("complete accepted turn", runtime._asr_session_epoch, "soniox")
+        await runtime.wait_transcript_idle()
+        assert callbacks.on_final.await_count == 1
+        envelope = callbacks.on_final.await_args.args[0]
+        assert (envelope.text, envelope.turn_token) == ("complete accepted turn", token)
+        callbacks.on_turn_abandoned.assert_not_awaited()
+        callbacks.on_failure.assert_not_awaited()
+        assert runtime._asr_session is session
+    finally:
+        await _close_delivery_boundary_fixture(runtime)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("promise", ["confirmed_pending", "protected_prefix", "active_start"])
+async def test_first_tagged_frame_refuses_to_erase_promised_untagged_pcm(promise):
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag
+    from main_logic.voice_turn.contracts import PreserveUnsentPrefix
+
+    runtime, callbacks, detector, session, lifecycle, token, sent = await _delivery_boundary_fixture()
+    prefix, promised, trigger = b"\x11\x00" * 1600, b"\x12\x00" * 400, b"\x13\x00" * 400
+    tagged = b"\x14\x00" * 400
+    receipts = []
+    tag = AudioDeliveryTag(400, receipts.append)
+    entered, release = asyncio.Event(), asyncio.Event()
+    preparing = None
+    try:
+        assert (await runtime.submit(ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        sealed = runtime._asr_sealed_turn_token
+        if promise == "confirmed_pending":
+            assert (await runtime.submit(ProcessedVoiceFrame(promised, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
+            assert lifecycle.has_pending_turn
+            preserved = lifecycle._pending_turn.peek()
+        else:
+            await runtime._handle_independent_asr_final("first accepted final", runtime._asr_session_epoch, "soniox")
+            await runtime.wait_transcript_idle()
+            detector.feed.return_value = SimpleNamespace(
+                endpointing_available=True, throttle_available=True,
+                throttle_action=ThrottleAction.PROCESS_PCM, events=(),
+            )
+            preserved_prefix = PreserveUnsentPrefix(token.ingress, "activation", 0)
+            assert (await runtime.submit(
+                ProcessedVoiceFrame(promised, 16000, 1.0, True), ingress_token=token.ingress,
+                preserve_prefix=preserved_prefix if promise == "protected_prefix" else None,
+            )).status is AsrSubmitStatus.ACCEPTED
+            detector.feed.return_value = SimpleNamespace(
+                endpointing_available=True, throttle_available=True,
+                throttle_action=ThrottleAction.PROCESS_PCM, events=(SpeechActivityEvent.SPEECH_STARTED,),
+            )
+            if promise == "active_start":
+                async def prepare(_turn):
+                    entered.set()
+                    await release.wait()
+                    return True
+
+                callbacks.on_prepare_turn.side_effect = prepare
+                preparing = asyncio.create_task(runtime.submit(
+                    ProcessedVoiceFrame(trigger, 16000, 1.0, True), ingress_token=token.ingress,
+                ))
+                await asyncio.wait_for(entered.wait(), 1)
+                preserved = lifecycle.peek_active_start_audio()
+                assert preserved == promised
+            else:
+                assert lifecycle.prefix_protected
+                preserved = lifecycle._pending_connect.peek()
+        before_turn = runtime._capture_turn_token(lifecycle)
+        before_state = lifecycle.snapshot
+        rejected = await runtime.submit(ProcessedVoiceFrame(tagged, 16000, 1.0, True, delivery=tag), ingress_token=token.ingress)
+        assert rejected.status is AsrSubmitStatus.UNAVAILABLE
+        assert not runtime._asr_input_delivery.enabled
+        assert receipts == []
+        assert lifecycle.snapshot == before_state
+        assert runtime._capture_turn_token(lifecycle) == before_turn
+        assert sent == [(prefix, ())]
+        if promise == "confirmed_pending":
+            assert runtime._asr_sealed_turn_token == sealed
+            assert lifecycle._pending_turn.peek() == preserved == promised
+            await runtime._handle_independent_asr_final("first accepted final", runtime._asr_session_epoch, "soniox")
+        elif promise == "active_start":
+            assert lifecycle.peek_active_start_audio() == preserved
+            release.set()
+            assert (await preparing).status is AsrSubmitStatus.ACCEPTED
+        else:
+            assert lifecycle.prefix_protected
+            assert lifecycle._pending_connect.peek() == preserved == promised
+            assert runtime._asr_protected_prefix == preserved_prefix
+            assert (await runtime.submit(ProcessedVoiceFrame(trigger, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
+        await runtime.wait_transcript_idle()
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert b"".join(pcm for pcm, _ in sent) == prefix + promised + (b"" if promise == "confirmed_pending" else trigger)
+        assert all(spans == () for _, spans in sent)
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime._handle_independent_asr_final("promised successor final", runtime._asr_session_epoch, "soniox")
+        await runtime.wait_transcript_idle()
+        assert [call.args[0].text for call in callbacks.on_final.await_args_list] == ["first accepted final", "promised successor final"]
+        assert callbacks.on_final.await_args_list[0].args[0].turn_token == token
+        callbacks.on_turn_abandoned.assert_not_awaited()
+        callbacks.on_failure.assert_not_awaited()
+        assert runtime._asr_session is session
+    finally:
+        release.set()
+        if preparing is not None:
+            await asyncio.gather(preparing, return_exceptions=True)
+        await _close_delivery_boundary_fixture(runtime)
+
+
+@pytest.mark.asyncio
+async def test_first_tagged_numeric_admission_prefix_fails_closed_without_mixed_upload():
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag
+    from tests.unit.test_voice_admission_integration import make_runtime, send
+
+    # The real admission gate, detector FIFO and semantic adapter assign source
+    # ranges before any delivery tags. Only VAD/model/provider IO is controlled.
+    runtime, callbacks, session, vad, token = make_runtime(True, smart_turn=True)
+    lifecycle = runtime._asr_lifecycle
+    try:
+        await send(runtime, vad, token, [0.9] * 6)
+        spans = lifecycle._pre_roll.spans + lifecycle._pending_connect.spans
+        assert spans and all(span.start is not None for span in spans)
+        callbacks.on_prepare_turn.assert_not_awaited()
+        tag = AudioDeliveryTag(512, lambda _stage: None)
+        vad.probability = 0.9
+        await runtime.submit(ProcessedVoiceFrame(b"\x19\x00" * 512, 16000, None, delivery=tag), ingress_token=token)
+        detector = runtime._asr_detector
+        if detector is not None:
+            await detector._semantic_adapter.wait_idle()
+        await runtime._asr_detector_dispatcher.wait_idle()
+        await runtime._asr_audio_dispatcher.wait_idle()
+        session.stream_audio.assert_not_awaited()
+        callbacks.on_prepare_turn.assert_not_awaited()
+        callbacks.on_failure.assert_awaited_once()
+        assert callbacks.on_failure.await_args.args[0].code == "ASR_INGRESS_BACKPRESSURE"
+        assert lifecycle.admission_failure_reason == "candidate_audio_range_missing"
+        assert runtime._asr_lifecycle is None
+    finally:
+        await runtime.close()

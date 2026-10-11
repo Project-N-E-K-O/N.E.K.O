@@ -746,6 +746,24 @@ class VoiceInputLifecycleController:
             return
         self._pending_turn.clear()
 
+    def begin_delivery_mapping(self) -> bool:
+        """Fence old local PCM without revoking an active or sealed owner.
+
+        Before the first delivery tag, retained audio has no delivery owner,
+        even when detector admission already assigned numeric sample ranges.
+        It cannot be prefixed to tagged audio. Promised unsent prefixes must
+        finish their handoff first; refusing the switch leaves them intact.
+        """
+        if (self._active_start_audio or self._pending_turn_speech
+                or (self._prefix_protected
+                    and (self.pre_roll_bytes or self.pending_connect_bytes))):
+            return False
+        self._pre_roll.clear()
+        self._pending_connect.clear()
+        self._pending_turn.clear()
+        self.notify_prefix_capacity()
+        return True
+
     def preserve_unconfirmed_pending_audio(self) -> bool:
         """Move an unconfirmed successor into pre-roll after the old final."""
 

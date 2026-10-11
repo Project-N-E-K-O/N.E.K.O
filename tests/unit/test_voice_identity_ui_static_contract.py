@@ -215,11 +215,15 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
             css_color(theme, "voice-focus"),
             css_color(theme, "voice-panel-soft"),
         ) >= 3
-    # Primary-button text sits on a gradient between these two stops.
-    for stop in ("#74d6fa", css_color(light_theme, "voice-blue-strong")):
-        assert _contrast_ratio("#07354d", stop) >= 4.5
+    # Primary actions and current-segment markers share solid fill/text tokens.
+    # Both themes must retain readable text when either token changes.
+    for theme in (light_theme, dark_theme):
+        assert _contrast_ratio(
+            css_color(theme, "voice-progress-current-text"),
+            css_color(theme, "voice-blue-strong"),
+        ) >= 4.5
     assert re.search(
-        r"\.primary-button\s*\{[^}]*color:\s*#07354d[^}]*background:\s*linear-gradient\(100deg,\s*#74d6fa,\s*var\(--voice-blue-strong\)\)",
+        r"\.primary-button\s*\{[^}]*color:\s*var\(--voice-progress-current-text\)[^}]*background:\s*var\(--voice-blue-strong\)",
         stylesheet,
         re.DOTALL,
     )
@@ -236,14 +240,6 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
         css_color(light_theme, "voice-success-text"),
         css_color(light_theme, "voice-panel-soft"),
     ) >= 4.5
-    # The current-segment marker keeps the same blue fill in both themes, so
-    # its text token must pass on that fill and must not be themed away.
-    assert _contrast_ratio(
-        css_color(light_theme, "voice-progress-current-text"),
-        css_color(light_theme, "voice-blue-strong"),
-    ) >= 4.5
-    assert "--voice-progress-current-text" not in dark_theme.group("body")
-    assert "--voice-blue-strong" not in dark_theme.group("body")
     for selector in (r"\.segment-progress\s+span\.active", r"\.segment-progress\s+span\.current"):
         assert re.search(
             selector + r"\s*\{[^}]*color:\s*var\(--voice-progress-current-text\)[^}]*background:\s*var\(--voice-blue-strong\)",
@@ -267,7 +263,11 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     )
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
-    assert "padding: 18px 24px" in stylesheet
+    assert re.search(
+        r"\.voice-identity-header\s*\{[^}]*padding:\s*14px 24px",
+        stylesheet,
+        re.DOTALL,
+    )
     assert "/static/js/voice_identity.js" in template
     assert "/static/css/voice_identity.css" in template
 

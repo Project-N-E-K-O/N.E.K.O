@@ -28,8 +28,8 @@ those branches. Hijack points now ask the registry instead:
   ``is_locked``, which a kind can keep true while its exit flow is still
   running after ``is_active`` has turned false.
 
-``is_character_lifecycle_locked`` is the predicate for a character
-rename / delete guard; no endpoint consults it yet.
+``is_character_lifecycle_locked`` is the predicate of the character
+rename / delete guard (``characters_router/crud.py``).
 
 The registry stores callables only. It lives in ``utils/`` so that
 ``main_logic/`` can consult it without importing ``main_routers/``; route
@@ -162,6 +162,25 @@ def is_external_route_active(lanlan_name: str) -> bool:
     return get_active_external_route(lanlan_name) is not None
 
 
+_mutating_characters: set[str] = set()
+"""Character names a rename / delete transaction holds (no route may start on them meanwhile)."""
+
+
+def begin_character_mutation(*names: str) -> None:
+    """A rename / delete passed its guard: refuse route admission for ``names`` until it ends.
+
+    Called right after ``is_character_lifecycle_locked`` answered False, with
+    no await in between, so a route cannot be admitted between the check and
+    the transaction (callers hold the character-config mutation lock).
+    """
+    _mutating_characters.update(name for name in names if name)
+
+
+def end_character_mutation(*names: str) -> None:
+    """The rename / delete transaction of ``names`` ended (committed or rolled back)."""
+    _mutating_characters.difference_update(names)
+
+
 def is_external_route_locked(
     lanlan_name: str,
     *,
@@ -172,8 +191,12 @@ def is_external_route_locked(
     A kind without ``is_locked`` is locked exactly while it is active. Callers
     starting a route pass their own kind: a same-kind predecessor is replaced
     by that kind's own supersede logic (e.g. one mini-game opening over
-    another), so it must not block the start.
+    another), so it must not block the start. A character whose rename /
+    delete is in progress (:func:`begin_character_mutation`) counts as
+    occupied for every kind.
     """
+    if lanlan_name in _mutating_characters:
+        return True
     for spec in _registered_kinds():
         if exclude_kind is not None and spec.kind == exclude_kind:
             continue
@@ -201,7 +224,7 @@ def is_route_slot_taken(
 
 
 def is_character_lifecycle_locked(lanlan_name: str) -> bool:
-    """Predicate for a character rename / delete guard (no endpoint uses it yet).
+    """Predicate of the character rename / delete guard (``characters_router/crud.py``).
 
     Besides an occupied slot, a kind may still be writing data keyed to this
     character in the background after its route ended. Those tasks would
@@ -449,3 +472,4 @@ def _restore_for_tests(snapshot: Dict[str, ExternalRouteKind]) -> None:
 
 def _reset_for_tests() -> None:
     _kinds.clear()
+    _mutating_characters.clear()

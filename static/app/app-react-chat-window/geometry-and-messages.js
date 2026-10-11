@@ -1464,6 +1464,7 @@
                     payload: action.payload || undefined
                 };
             }).filter(Boolean) : undefined,
+            reaction: message.reaction ? Object.assign({}, message.reaction) : undefined,
             status: message.status,
             sortKey: message.sortKey
         };
@@ -1485,6 +1486,7 @@
         }
 
         var baseAvatarUrl = message.baseAvatarUrl || message.avatarUrl;
+        baseAvatarUrl = fallbackAvatarUrl(message.role || 'assistant', baseAvatarUrl);
         return {
             id: String(message.id),
             role: message.role || 'assistant',
@@ -1497,9 +1499,24 @@
             avatarUrl: resolveCurrentAssistantAvatarUrl(message.role, baseAvatarUrl),
             blocks: Array.isArray(message.blocks) ? message.blocks : [],
             actions: Array.isArray(message.actions) ? message.actions : undefined,
+            reaction: message.reaction ? Object.assign({}, message.reaction) : undefined,
             status: message.status,
             sortKey: typeof message.sortKey === 'number' ? message.sortKey : fallbackSortKey
         };
+    }
+
+    // A persisted custom avatar can be restored away, so it never stays behind as a message's
+    // fallback; the model avatar takes its place.
+    function fallbackAvatarUrl(role, url) {
+        if (role !== 'assistant') return url;
+        try {
+            var state = window.appChatAvatarState;
+            if (url && state && typeof state.isCustomDataUrl === 'function' && state.isCustomDataUrl(url)) {
+                var avatar = window.appChatAvatar;
+                return (avatar && typeof avatar.getModelAvatarDataUrl === 'function' && avatar.getModelAvatarDataUrl()) || '';
+            }
+        } catch (_) {}
+        return url;
     }
 
     function resolveCurrentAssistantAvatarUrl(role, baseAvatarUrl) {
@@ -1516,7 +1533,7 @@
         var changed = false;
         I.state.messages = I.state.messages.map(function (message) {
             if (!message || message.role !== 'assistant') return message;
-            var baseAvatarUrl = message.baseAvatarUrl || message.avatarUrl || '';
+            var baseAvatarUrl = fallbackAvatarUrl('assistant', message.baseAvatarUrl || message.avatarUrl || '');
             var avatarUrl = resolveCurrentAssistantAvatarUrl('assistant', baseAvatarUrl);
             if (message.avatarUrl === avatarUrl && message.baseAvatarUrl === baseAvatarUrl) return message;
             changed = true;

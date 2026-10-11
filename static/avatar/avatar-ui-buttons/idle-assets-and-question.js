@@ -84,39 +84,35 @@ function _isNekoIdleCat1NativeWaylandSelfBallRuntime() {
 function _getNekoIdleReturnAssetUrl(tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const versionSuffix = _getNekoIdleReturnAssetVersionSuffix();
-
-    if (normalizedTier === _NEKO_IDLE_TIER_CAT2) {
-        return `/static/assets/neko-idle/cat-idle-cat2.gif${versionSuffix}`;
-    }
-    if (normalizedTier === _NEKO_IDLE_TIER_CAT3) {
-        return `/static/assets/neko-idle/cat-idle-cat3.gif${versionSuffix}`;
-    }
-    return `/static/assets/neko-idle/cat-idle-cat1.gif${versionSuffix}`;
+    const slot = normalizedTier === _NEKO_IDLE_TIER_CAT2 ? 'idle.cat2' :
+        (normalizedTier === _NEKO_IDLE_TIER_CAT3 ? 'idle.cat3' : 'idle.cat1');
+    const src = _getNekoCatAppearanceUrl(slot, { random: false });
+    return src ? `${src}${versionSuffix}` : '';
 }
 
 function _getNekoIdleReturnClickAssetUrl(tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const versionSuffix = _getNekoIdleReturnAssetVersionSuffix();
 
-    if (normalizedTier === _NEKO_IDLE_TIER_CAT2) {
-        return `/static/assets/neko-idle/cat-idle-cat2-click.gif${versionSuffix}`;
-    }
-    if (normalizedTier === _NEKO_IDLE_TIER_CAT3) {
-        return `/static/assets/neko-idle/cat-idle-cat3-click.gif${versionSuffix}`;
-    }
-    return `/static/assets/neko-idle/cat-idle-cat1-click.gif${versionSuffix}`;
+    const slot = normalizedTier === _NEKO_IDLE_TIER_CAT2 ? 'click.cat2' :
+        (normalizedTier === _NEKO_IDLE_TIER_CAT3 ? 'click.cat3' : 'click.cat1');
+    const src = _getNekoCatAppearanceUrl(slot, { random: false });
+    return src ? `${src}${versionSuffix}` : '';
 }
 
 function _getNekoIdleCat1WalkingAssetUrl() {
-    return `/static/assets/neko-idle/cat-idle-cat4-1.gif${_getNekoIdleReturnAssetVersionSuffix()}`;
+    const src = _getNekoCatAppearanceUrl('movement.cat1.walking', { random: false });
+    return src ? `${src}${_getNekoIdleReturnAssetVersionSuffix()}` : '';
 }
 
 function _getNekoIdleCat1StretchAssetUrl() {
-    return `/static/assets/neko-idle/cat-idle-cat4-2.gif${_getNekoIdleReturnAssetVersionSuffix()}`;
+    const src = _getNekoCatAppearanceUrl('movement.cat1.stretch', { random: false });
+    return src ? `${src}${_getNekoIdleReturnAssetVersionSuffix()}` : '';
 }
 
 function _getNekoIdleCat1InteractiveAssetUrl() {
-    return `/static/assets/neko-idle/cat-idle-cat4-3.gif${_getNekoIdleReturnAssetVersionSuffix()}`;
+    const src = _getNekoCatAppearanceUrl('movement.cat1.interactive', { random: false });
+    return src ? `${src}${_getNekoIdleReturnAssetVersionSuffix()}` : '';
 }
 
 function _getNekoIdleReturnDragAssetUrl(tier) {
@@ -134,12 +130,6 @@ function _pickNekoIdleReturnDragAssetUrl(tier) {
 
 function _getNekoIdleSleepSoundConfig(tier) {
     return _NEKO_IDLE_SLEEP_SOUND_BY_TIER[_normalizeNekoIdleReturnTier(tier)] || null;
-}
-
-function _pickNekoIdleSleepSoundSrc(config) {
-    const srcs = config && config.srcs;
-    if (!srcs || !srcs.length) return '';
-    return srcs[Math.floor(Math.random() * srcs.length)] || srcs[0] || '';
 }
 
 function _buildNekoIdleSoundUrl(src) {
@@ -434,6 +424,37 @@ function _getNekoCatMindCancelResult(reason, finishedReason) {
 function _makeNekoCatMindProviderDecision(allowed, reason, detail = {}) {
     return { allowed: allowed === true, reason: reason || (allowed ? 'allowed' : 'rejected'), detail };
 }
+// The registry is the single source of action-resource dependencies.  Keep this
+// read-only and side-effect free so Cat Mind, manual actions, and local actions
+// can share the same preflight without changing runner lifecycle state.
+function _getNekoCatActionResourceCapability(actionId) {
+    let registry = null;
+    try {
+        registry = typeof window !== 'undefined' ? window.NekoCatResourceRegistry : null;
+    } catch (_) {}
+    if (!registry || typeof registry.getActionCapabilities !== 'function') {
+        return { available: false, reason: 'resource_registry_unavailable', actionId, capability: null };
+    }
+    let capability = null;
+    try {
+        capability = registry.getActionCapabilities(actionId);
+    } catch (_) {
+        return { available: false, reason: 'resource_registry_error', actionId, capability: null };
+    }
+    if (!capability || capability.available !== true) {
+        return {
+            available: false,
+            reason: capability && capability.reason ? capability.reason : 'resource_unavailable',
+            actionId,
+            capability: capability || null
+        };
+    }
+    return { available: true, reason: 'allowed', actionId, capability };
+}
+function _isNekoCatActionResourceAvailable(actionId) {
+    return _getNekoCatActionResourceCapability(actionId).available === true;
+}
+
 function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {}) {
     const result = decision && typeof decision === 'object' ? decision : _makeNekoCatMindProviderDecision(false, 'provider_rejected');
     const tier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
@@ -470,6 +491,7 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         returnPending: _isNekoCatMindReturnPending(button) || _isAnyNekoCatMindReturnPending(),
         transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoCatMindCat1PositionBusy(button),
         independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
         audioEnabled: isNekoIdleCatAudioEnabled(), ambientAudioActive: !!_nekoIdleCat1AmbientSoundState.active,
         playYarnCapability,
@@ -520,8 +542,10 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
     if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK) {
         checks.push({ id: 'audio_enabled', passed: facts.audioEnabled }, { id: 'sleep_tier_matches', passed: facts.tier === tier }, { id: 'sleep_audio_active', passed: facts.sleepTierMatches === true });
     }
+    const resourceCapability = context.resourceCapability || _getNekoCatActionResourceCapability(actionId);
     return _makeNekoCatMindProviderDecision(result.allowed === true, result.reason, Object.assign({}, result.detail || {}, {
-        actionId, facts, checks, failedCheck: result.allowed ? '' : result.reason || 'provider_rejected'
+        actionId, facts, checks, resourceCapability,
+        failedCheck: result.allowed ? '' : result.reason || 'provider_rejected'
     }));
 }
 function _isNekoCatMindButtonContainerVisible(button) {
@@ -594,6 +618,7 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     const facts = { tier: _getActiveNekoIdleReturnTier(), buttonFound: !!button,
         returnBallVisible: _isNekoCatMindButtonContainerVisible(button), returnPending: _isAnyNekoCatMindReturnPending(),
         transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoCatMindCat1PositionBusy(button),
         independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         audioEnabled: isNekoIdleCatAudioEnabled(),
@@ -605,6 +630,7 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     else if (facts.compactSurfaceDragging) reason = 'compact_surface_dragging';
     else if (facts.returnPending) reason = 'return_pending';
     else if (facts.transitionActive) reason = 'transition_active';
+    else if (facts.cat1PositionPresentationBusy) reason = 'cat1_position_presentation_busy';
     else if (facts.independentActionActive) reason = 'active_independent_action';
     else if (!facts.returnBallVisible) reason = 'return_ball_not_visible';
     else if (facts.edgePeekActive) reason = 'edge_peek_active';
@@ -656,6 +682,14 @@ function _dryRunNekoCatMindSleepFeedbackProvider(actionId, context = {}) {
 function _dryRunNekoCatMindActionProvider(actionId, context = {}) {
     if (actionId && typeof actionId === 'object') { context = actionId; actionId = context.actionId; }
     const normalizedActionId = typeof actionId === 'string' ? actionId : '';
+    const resourceCapability = _getNekoCatActionResourceCapability(normalizedActionId);
+    if (!resourceCapability.available) {
+        return _attachNekoCatMindProviderDiagnostics(normalizedActionId,
+            _makeNekoCatMindProviderDecision(false, resourceCapability.reason, {
+                actionId: normalizedActionId, resourceCapability
+            }), Object.assign({}, context, { resourceCapability }));
+    }
+    context = Object.assign({}, context, { resourceCapability });
     let decision;
     if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK) decision = _dryRunNekoCatMindCat1ButtonProvider(normalizedActionId, context.button || _findNekoCatMindVisibleButtonForTier(_NEKO_IDLE_TIER_CAT1));
     else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING) decision = _dryRunNekoCatMindSocialPingProvider(context);
@@ -711,14 +745,25 @@ function _getNekoCatMindYarnRuntimeGateSnapshot() {
         return { yarnDragActive: false, yarnSettling: false };
     }
 }
-function _isNekoIdleCat1PositionPresentationBusy(button) {
-    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
-    if (!state) return false;
-    if (state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) return true;
+function _isNekoIdleCat1PositionStateMoving(state) {
     if (state.paused || state.frame || state.pendingWalkTimer || state.pendingWalkReady ||
         state.pairMovePlan || state.pairMoveFrame) return true;
     if (!state.profile) return true;
     return state.substate !== state.profile.idleSubstate || state.actionSettled !== true;
+}
+function _isNekoIdleCat1PositionPresentationBusy(button) {
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!state) return false;
+    if (state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) return true;
+    return _isNekoIdleCat1PositionStateMoving(state);
+}
+// Cat Mind only yields while the cat is moving or unsettled. A settled compact
+// top-edge perch is a resting spot that the social-ping reaction is built for;
+// desktop-window interactions still treat that perch as occupied (see above).
+function _isNekoCatMindCat1PositionBusy(button) {
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!state) return false;
+    return _isNekoIdleCat1PositionStateMoving(state);
 }
 function _getNekoCatMindRuntimeGateSnapshot() {
     const tier = _getActiveNekoIdleReturnTier(); const button = _findNekoCatMindVisibleButtonForTier(tier);
@@ -726,7 +771,7 @@ function _getNekoCatMindRuntimeGateSnapshot() {
     return Object.freeze({ returnPending: _isAnyNekoCatMindReturnPending(), dragPending: _isAnyNekoIdleReturnDragActionBlocking(), dragging: _isAnyNekoIdleReturnDragActionActive(),
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         transitionActive: _isNekoCatMindTransitionActive(button), activeIndependentAction: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
-        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PositionPresentationBusy(button),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoCatMindCat1PositionBusy(button),
         returnBallVisible: !!button, validCatRuntime: tier !== _NEKO_IDLE_TIER_NONE, chatSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
         yarnDragActive: yarnGate.yarnDragActive, yarnSettling: yarnGate.yarnSettling, tier });
 }

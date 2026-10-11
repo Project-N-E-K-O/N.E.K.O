@@ -33,6 +33,12 @@ from utils.file_utils import atomic_write_json
 from utils.root_state_lock import root_state_transaction
 
 from ._shared import LocalStateDirectoryError, logger
+from .json_update import aupdate_json_config, update_json_config
+
+
+def chat_avatar_directory(config_manager) -> Path:
+    """Resolve local display resources against the currently connected backend root."""
+    return Path(config_manager.app_docs_dir) / "chat_avatars"
 
 
 class StorageRootsMixin:
@@ -159,6 +165,10 @@ class StorageRootsMixin:
         self.docs_dir = self.app_docs_dir.parent
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
+        # Public knowledge packs (registry + raw packs + derived index). Kept
+        # apart from memory; owned by the knowledge subsystem in the Memory
+        # Server and migrated as one top-level entry.
+        self.knowledge_dir = self.app_docs_dir / "knowledge"
         self.plugins_dir = self.app_docs_dir / "plugins"
         self.live2d_dir = self.app_docs_dir / "live2d"
         # VRM模型存储在用户文档目录下（与Live2D保持一致）
@@ -1239,6 +1249,26 @@ class StorageRootsMixin:
             print(f"Error saving {filename}: {e}", file=sys.stderr)
             raise
     
+    def assert_json_config_writable(self, filename):
+        """Run the same write fence as ``save_json_config`` without writing.
+
+        Deliberately a plain mode check, not ``cloudsave_writable_transaction``:
+        an in-process restore holds the cloud-apply process guard for its whole
+        run, so a transaction would queue behind it and then apply a pre-restore
+        snapshot to the restored file instead of being refused.
+        """
+        from utils.cloudsave_runtime import assert_cloudsave_writable
+
+        assert_cloudsave_writable(self, operation="save", target=filename)
+
+    def update_json_config(self, filename, mutator):
+        """Locked read-modify-write of a JSON config; see ``utils.config_manager.json_update``."""
+        return update_json_config(self, filename, mutator)
+
+    async def aupdate_json_config(self, filename, mutator):
+        """Async twin of ``update_json_config``; the locked section runs in a worker thread."""
+        return await aupdate_json_config(self, filename, mutator)
+
     def get_memory_path(self, filename):
         """
         Get a memory file path

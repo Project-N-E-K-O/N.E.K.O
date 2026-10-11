@@ -530,6 +530,23 @@ class VisitRoom:
         self._maybe_finalize_anomalies(eff)
         return eff
 
+    def check_lp(self, lp: Any) -> Optional[str]:
+        """Range / large-regression check of a UI-only event's ``lp`` (``typing``); never moves the clock.
+
+        Returns the violation code (counted as one anomaly) or ``None``.
+        """
+        if not self._lp_in_range(lp):
+            return self._count_anomaly("lp_out_of_range")
+        if lp < self.max_lp_seen - VISIT_LP_REGRESS_MAX:
+            return self._count_anomaly("lp_regress")
+        return None
+
+    def violation_effects(self, kind: str) -> RoomEffects:
+        """Effects of a violation :meth:`observe_lp` already counted (the cutoff included, no second count)."""
+        eff = RoomEffects(violation=kind)
+        self._maybe_finalize_anomalies(eff)
+        return eff
+
     def record_valid_message(self) -> None:
         """A well-formed known message arrived: reset the consecutive streak."""
         self.violation_streak = 0
@@ -854,6 +871,15 @@ class VisitRoom:
             self.pending_reply = None
         return eff
 
+    def incoming_meta_mismatch(self, ev: IncomingLineDone) -> bool:
+        """Whether a final ``text`` contradicts its line's first piece (read only; no state changes).
+
+        For a ``text`` handled outside :meth:`on_incoming_done` (one that
+        arrives once the visit is ending): the same judgement, nothing booked.
+        """
+        opened = self._peer_meta.get(ev.ref.line_id)
+        return opened is not None and self._meta_mismatch(ev, opened)
+
     @staticmethod
     def _meta_mismatch(ev: IncomingLineDone, opened: _PeerLine) -> bool:
         """True when the final ``text`` contradicts what the line's first piece declared."""
@@ -1109,11 +1135,13 @@ class VisitRoom:
         return eff
 
     def on_wrap_up_sent(self, phase: WrapUpPhase, now: float) -> None:
-        """Runtime: one of this side's ``wrap_up`` frames was first transmitted.
+        """Runtime: one of this side's ``wrap_up`` frames was written (any transmission).
 
-        ``begin`` starts the host's 15 s step timer (waiting for the guest's
-        goodbye to start); it does not start before the guest can have
-        received the instruction. Other phases are ignored.
+        The first ``begin`` written starts the host's 15 s step timer
+        (waiting for the guest's goodbye to start); it does not start before
+        the guest can have received the instruction, and later writes
+        (retransmissions) neither restart nor push it back. Other phases are
+        ignored.
         """
         w = self._wrap
         if (phase == "begin" and self.side == "host" and w.step_awaiting_begin

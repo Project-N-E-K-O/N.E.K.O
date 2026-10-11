@@ -79,11 +79,11 @@
       "name": "阿里百炼（推荐）",
       "description": "推荐选择，支持Agent模式，价格适中，国内版",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "conversation_model": "qwen3.8-flash",
+      "conversation_model": "qwen3.8-omni-flash",
       "summary_model": "qwen3.8-flash",
       "correction_model": "qwen3.8-flash",
       "emotion_model": "qwen3.7-flash",
-      "vision_model": "qwen3.8-flash",
+      "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
     "qwen_intl": {
@@ -95,11 +95,11 @@
         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
       ],
-      "conversation_model": "qwen3.8-flash",
+      "conversation_model": "qwen3.8-omni-flash",
       "summary_model": "qwen3.8-flash",
       "correction_model": "qwen3.8-flash",
       "emotion_model": "qwen3.7-flash",
-      "vision_model": "qwen3.8-flash",
+      "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
     "openai": {
@@ -260,12 +260,12 @@
       "description": "Anthropic的强力模型，国内无法使用",
       "openrouter_url": "https://api.anthropic.com/v1",
       "provider_type": "anthropic",
-      "conversation_model": "claude-sonnet-5",
-      "summary_model": "claude-sonnet-5",
-      "correction_model": "claude-sonnet-5",
-      "emotion_model": "claude-haiku-4-5-20251001",
-      "vision_model": "claude-sonnet-5",
-      "agent_model": "claude-sonnet-5"
+      "conversation_model": "claude-sonnet-5-5",
+      "summary_model": "claude-sonnet-5-5",
+      "correction_model": "claude-sonnet-5-5",
+      "emotion_model": "claude-haiku-5-5",
+      "vision_model": "claude-sonnet-5-5",
+      "agent_model": "claude-sonnet-5-5"
     },
     "grok": {
       "key": "grok",
@@ -296,12 +296,12 @@
       "name": "OrcaRouter",
       "description": "第三方 Claude 中转网关，国内版不支持",
       "openrouter_url": "https://api.orcarouter.ai/v1",
-      "conversation_model": "anthropic/claude-sonnet-5",
-      "summary_model": "anthropic/claude-sonnet-5",
-      "correction_model": "anthropic/claude-sonnet-5",
+      "conversation_model": "anthropic/claude-sonnet-5.5",
+      "summary_model": "anthropic/claude-sonnet-5.5",
+      "correction_model": "anthropic/claude-sonnet-5.5",
       "emotion_model": "anthropic/claude-haiku-4.5",
-      "vision_model": "anthropic/claude-sonnet-5",
-      "agent_model": "anthropic/claude-sonnet-5"
+      "vision_model": "anthropic/claude-sonnet-5.5",
+      "agent_model": "anthropic/claude-sonnet-5.5"
     },
     "requesty": {
       "key": "requesty",

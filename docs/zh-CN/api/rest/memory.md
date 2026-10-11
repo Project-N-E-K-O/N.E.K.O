@@ -141,7 +141,11 @@
 { "enabled": true }
 ```
 
+读取会等待正在进行的记忆开关保存结束，再返回落盘值。文件或设置项缺失时默认 `true`。文件不可读、JSON 损坏、配置不是对象或设置值不是布尔值时，返回 HTTP `503` 和 `{"error": "..."}`，不返回 `enabled`。如果仅该设置值无效，响应还包含 `"code": "invalid_memory_setting"`，页面会提供明确的开启/关闭修复选项；合法布尔值 POST 可修复该设置并保留其他字段。
+
 ### `POST /api/memory/review_config`
+
+请求体必须是 JSON 对象，且包含必填的布尔字段 `enabled`；JSON 损坏、字段缺失或类型错误返回 HTTP `400` 和 `{"success": false, "error": "..."}`。读取或保存失败返回 `success: false`，不会用新配置覆盖不可读、JSON 损坏或根类型不是对象的配置文件；只有文件不存在时才创建新配置。两个记忆开关的更新在必要迁移和文件保存完成前串行执行。将强力记忆保存为 `false` 时，只有存量值已为布尔 `false` 才跳过迁移；非法旧值按未知状态处理。
 
 ```json
 { "enabled": false }
@@ -163,7 +167,11 @@
 { "enabled": true }
 ```
 
+读取会等待正在进行的记忆开关保存结束，再返回落盘值。文件或设置项缺失时默认 `true`。文件不可读、JSON 损坏、配置不是对象或设置值不是布尔值时，返回 HTTP `503` 和 `{"error": "..."}`，不返回 `enabled`。如果仅该设置值无效，响应还包含 `"code": "invalid_memory_setting"`，页面会提供明确的开启/关闭修复选项；合法布尔值 POST 可修复该设置并保留其他字段。
+
 ### `POST /api/memory/powerful_memory_config`
+
+请求体必须是 JSON 对象，且包含必填的布尔字段 `enabled`；JSON 损坏、字段缺失或类型错误返回 HTTP `400` 和 `{"success": false, "error": "..."}`。读取或保存失败返回 `success: false`，不会用新配置覆盖不可读、JSON 损坏或根类型不是对象的配置文件；只有文件不存在时才创建新配置。两个记忆开关的更新在必要迁移和文件保存完成前串行执行。将强力记忆保存为 `false` 时，只有存量值已为布尔 `false` 才跳过迁移；非法旧值按未知状态处理。
 
 ```json
 { "enabled": false }

@@ -1489,6 +1489,14 @@ def test_region_sensitive_voice_endpoints_settle_first():
             continue
         calls = {getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
                  for c in ast.walk(node) if isinstance(c, ast.Call)}
+        # 标准线程卸载仍是目录读取；仅识别 asyncio.to_thread 的直接首参。
+        calls.update(
+            getattr(c.args[0], 'attr', None) or getattr(c.args[0], 'id', None)
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call) and c.args
+            and isinstance(c.func, ast.Attribute) and c.func.attr == 'to_thread'
+            and isinstance(c.func.value, ast.Name) and c.func.value.id == 'asyncio'
+        )
         if not (calls & readers):
             continue
         checked.append(node.name)
@@ -1497,6 +1505,23 @@ def test_region_sensitive_voice_endpoints_settle_first():
 
     assert len(checked) >= 2, f'未找到足够的音色目录端点，断言失效: {checked}'
     assert not missing, f'这些端点按区域出音色目录却未先落定: {missing}'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('endpoint', ['get_voices', 'get_voice_preview'])
+def test_voice_catalog_guard_rejects_removing_region_settlement(monkeypatch, endpoint):
+    """Both direct and to_thread readers remain guarded, rather than lowering the count."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2] / 'main_routers' / 'characters_router' / 'voice_preview.py'
+    original_read = Path.read_text
+    text = original_read(source, encoding='utf-8')
+    start = text.index(f'async def {endpoint}(')
+    mutant = text[:start] + text[start:].replace('aensure_region_resolved()', 'unrelated_readiness()', 1)
+    monkeypatch.setattr(Path, 'read_text', lambda path, *args, **kwargs:
+                        mutant if path == source else original_read(path, *args, **kwargs))
+    with pytest.raises(AssertionError, match=endpoint):
+        test_region_sensitive_voice_endpoints_settle_first()
 
 
 def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None, non_mainland=False):

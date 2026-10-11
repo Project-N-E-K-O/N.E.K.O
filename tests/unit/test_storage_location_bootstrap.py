@@ -205,7 +205,7 @@ def test_storage_location_bootstrap_legacy_source_scan_is_best_effort(tmp_path, 
             raise OSError("candidate unreadable")
         return True
 
-    monkeypatch.setattr(storage_location_bootstrap_module, "runtime_root_has_user_content", fake_has_user_content)
+    monkeypatch.setattr(storage_location_bootstrap_module, "root_has_user_content", fake_has_user_content)
 
     payload = build_storage_location_bootstrap_payload(config_manager)
 
@@ -413,3 +413,17 @@ def test_storage_location_bootstrap_payload_marks_cleanup_pending_when_retained_
 
     root_state = reloaded_manager.load_root_state()
     assert root_state["legacy_cleanup_pending"] is True
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_offers_a_legacy_root_holding_only_newer_entries(tmp_path):
+    """The cloud-save probe does not know pngtuber; such an old root still holds data."""
+    config_manager = _DummyConfigManager(tmp_path)
+    legacy_root = tmp_path / "pngtuber-only" / "N.E.K.O"
+    (legacy_root / "pngtuber" / "Alice").mkdir(parents=True)
+    (legacy_root / "pngtuber" / "Alice" / "idle.png").write_bytes(b"png")
+    config_manager.get_legacy_app_root_candidates = lambda: [legacy_root]
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["legacy_sources"] == [str(legacy_root.resolve())]

@@ -140,7 +140,7 @@ cron 每 5 分钟执行一次 `/opt/neko/watchdog.sh`：
 - 健康判据有两项：宿主机请求 `http://127.0.0.1:48911/` 得到 200 或 401，并且容器内直连主服务 `/health` 成功。
 - 容器启动后有 **15 分钟宽限期**。宽限期后连续 2 次不健康才执行 `docker restart`。
 - 同一个容器最多连续自动重启 **3 次**，用完后记录错误并停止主动重启，等人工处理；健康一次即清零。
-- 容器反复崩溃时，`unless-stopped` 会不断重置它的启动时间，看门狗一直处在宽限期内，不会记录任何日志。服务不可用而看门狗日志没有动静时，用 `docker inspect -f '{{.RestartCount}}' neko` 或 `docker ps` 的状态列确认是否在崩溃循环。
+- 容器反复崩溃时，`unless-stopped` 会不断重置它的启动时间，看门狗一直处在宽限期内，不会记录任何日志。服务不可用而看门狗日志没有动静时，用 <code v-pre>docker inspect -f '{{.RestartCount}}' neko</code> 或 `docker ps` 的状态列确认是否在崩溃循环。
 - 状态、锁和日志位于 root 私有的 `/opt/neko/`，日志为 `/opt/neko/watchdog.log`（不会自动轮转），有 `logger` 时也写入 syslog（`journalctl -t neko-watchdog`）。
 
 看门狗通过宿主机 `127.0.0.1:48911` 探测。第 2 节的本机绑定不影响探测；如果改了宿主端口或只发布 HTTPS，探测会失败，并对健康的容器白白重启 3 次。这种情况下先暂停看门狗，修改仓库里的源文件 `docker/watchdog/watchdog.sh` 中的探测地址，重新安装并确认探测成功后再恢复。只改已安装的 `/opt/neko/watchdog.sh` 会在下次重装时被覆盖；源文件的改动是本地补丁，每次 `git pull` 后要核对。

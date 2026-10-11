@@ -1,6 +1,6 @@
 # visit_probe — 猫娘串门 T1~T5 实测脚本
 
-不是产品代码。用于在真实 Electron Pet 窗里复现 `docs/design/visit-infrastructure-t1-t5.md` 的结果。仅支持 Windows。
+不是产品代码。用于在真实 Electron Pet 窗里复现 T1~T5 本地测量。仅支持 Windows。
 
 | 文件 | 作用 |
 | --- | --- |
@@ -9,7 +9,7 @@
 | `drive.mjs` | CDP 驱动，阶段 `env t1 t2 t5 t3 t4 trace blank`（`blank` 只跑黑帧检测，出现黑帧时记录 `blankDiag` 诊断） |
 | `osprobe.py` | 区域截图、`SendInput` 移动鼠标、`WindowFromPoint` 命中判定、透明 / 合成误差计算 |
 | `backdrop.ps1` | T3/T4 用的固定花纹背板窗口（不置顶，位于普通窗口之上、Pet 之下） |
-| `results/{direct,compat}/results.json` | 2026-10-02 实测原始数据（其中引用的区域截图未入库，入库的是 `docs/design/visit-t1-t5/` 的三联图） |
+| `results/{direct,compat}/results.json` | 2026-10-02 实测原始数据；截图及三联图仅保存在仓库外 |
 | `results/compat-2026-10-03/results.json` | 2026-10-03 兼容模式补测（T2 冷启动、T3 不透明像素命中，含屏幕取色） |
 | `results/compat-2026-10-03-blankcheck/*.json` | 2026-10-03 T2 黑帧诊断重测（25 轮约 7700 帧，0 黑帧） |
 

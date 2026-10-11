@@ -1217,7 +1217,7 @@ async def test_restored_tutorial_routes_supply_static_asset_version_to_template(
     from main_routers.shared_state import init_shared_state
 
     class _DummyTemplates:
-        def TemplateResponse(self, template_name, context):
+        def TemplateResponse(self, request, template_name, context):
             return {"template_name": template_name, "context": context}
 
     init_shared_state(

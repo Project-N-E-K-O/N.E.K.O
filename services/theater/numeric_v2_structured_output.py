@@ -31,7 +31,7 @@ def response_format_for(config: Mapping[str, Any], name: str, schema: dict[str, 
             or not endpoint.path.rstrip("/").endswith("/compatible-mode/v1")
             or not (host in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com"}
                     or host.endswith(".maas.aliyuncs.com"))
-            or not any(model == base or model.startswith(base + "-") for base in ("qwen3.8-flash", "qwen3.8-max"))):
+            or not any(model == base or model.startswith(base + "-") for base in ("qwen3.8-flash", "qwen3.8-omni-flash", "qwen3.8-max"))):
         return None
     return {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}}
 
