@@ -1926,10 +1926,12 @@ class NumericV2Runtime:
         }
         narrative_state = outcome.session.narrative_state
         if "narrative_record" not in ledger_event and narrative_state is not None:
-            # 直接 Runtime 调用没有复核记录时，显式标记缺口，不能续用旧状态冒充现状。
+            # Reinvitation only publishes author text; v2 replay preserves prior gaps.
+            control_turn = ledger_event.get("input_source") == "reinvite"
             ledger_event["narrative_record"] = {
-                "schema": "numeric_v2_narrative_record_v1",
-                "coverage": "unrecorded", "events": [], "proposal_count": 0,
+                "schema": "numeric_v2_narrative_record_v2" if control_turn else "numeric_v2_narrative_record_v1",
+                "coverage": "confirmed_no_change" if control_turn else "unrecorded",
+                "events": [], "proposal_count": 0,
             }
         if "narrative_record" in ledger_event:
             narrative_record = deepcopy(ledger_event["narrative_record"])

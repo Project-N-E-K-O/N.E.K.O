@@ -1,4 +1,4 @@
-"""叙事记录与原回合一起提交，冷恢复和分叉只重放已确认来源。"""
+"""Persist narrative records with turns and replay confirmed sources after restore and fork."""
 
 from copy import deepcopy
 from dataclasses import replace
@@ -269,3 +269,44 @@ async def test_public_session_keeps_narrative_state_and_records_on_server(tmp_pa
         assert "narrative_events" not in performance
     assert public["performance_history"][0]["performance"] == "（松开手）好，你先拿着。"
     assert stored.session.narrative_state["entities"]["item:木匣"]["holder"]["value"] == "player"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gap", [False, True])
+async def test_reinvitation_preserves_narrative_certainty_and_replay(tmp_path, monkeypatch, gap):
+    from tests.unit.test_theater_review_round8_invitation import setup_case
+    from tests.unit.test_theater_reinvitation import reinvite
+
+    runtime, _ = await setup_case(tmp_path, monkeypatch, review=True, mode="off")
+    opening = _opening(with_record=True)
+    event = opening["narrative_record"]["events"][0]
+    event["quote"] = "抱着木匣站在柜台旁"
+    event["changes"].append({"entity": "character", "attribute": "position", "value": "柜台旁"})
+    current = await runtime.start_session(session_id="narrative-reinvite", catgirl_binding=_binding(),
+                                          opening_performance=opening)
+    ready = runtime.prepare_turn(current, TurnRequestV2("done", 0, "办好了。"), (),
+        fact_operations=({"op": "set", "key": "scene:start:done", "value": True,
+                          "visibility": "public"},))
+    ready = replace(ready, ledger_event={**ready.ledger_event, "narrative_record": {
+        "schema": "numeric_v2_narrative_record_v2",
+        "coverage": "unrecorded" if gap else "confirmed_no_change",
+        "events": [], "proposal_count": 0,
+    }})
+    current = await runtime.commit_turn(ready, {"performance": "办好了。", "suggested_inputs": []})
+    attributes = deepcopy(current.session.narrative_state["entities"])
+    result = await reinvite(runtime, current)
+    stored = result.stored
+
+    expected = {"schema": "numeric_v2_narrative_record_v2", "coverage": "confirmed_no_change",
+                "events": [], "proposal_count": 0}
+    assert stored.ledger_events[-1]["narrative_record"] == expected
+    assert stored.session.performance_history[-1]["narrative_record"] == expected
+    assert stored.session.narrative_state["entities"] == attributes
+    assert attributes["item:木匣"]["holder"]["current"] is not gap
+    assert attributes["character"]["position"]["current"] is not gap
+    cold = NumericV2Runtime(runtime.engine, tmp_path)
+    assert await cold.restore_session(stored.session.session_id) == stored
+    fork = await cold.fork_session_for_test(stored.session.session_id, session_id="reinvite-fork",
+                                          through_revision=stored.session.revision)
+    assert fork.session.narrative_state == stored.session.narrative_state
+    assert fork.ledger_events[-1]["narrative_record"] == expected

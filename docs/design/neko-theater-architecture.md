@@ -16,6 +16,8 @@
 
 ### 小剧场回合
 
+下图描述同步兼容路径。HTTP 输入回合先执行 Evaluator → Actor → 正文 Review → 原子提交与交付，再后台执行 NarrativeProposer → 独立账本复核 → 结算；pending 恢复和下一轮有限等待见[职责拆分方案](./neko-theater-actor-responsibility-split.md#http-输入回合首字优先交付)。
+
 ```mermaid
 flowchart TD
     UI["选剧页 / 本体胶囊与历史区"] --> API["HTTP Router：身份、revision、幂等校验"]
@@ -70,7 +72,7 @@ flowchart TD
 - 玩家用自然语言决定当下行动；推荐输入只是可选的自然语言快捷输入，不存在正式 Choice；
 - 前置 Evaluator 判断隐藏数值变化、自然收束信号、转场态度、候选结局就绪与事实候选；
 - Actor 在同一次调用中生成旁白、猫娘动作与对白以及推荐输入；
-- 本轮将叙事事件提案移交独立 `NumericV2NarrativeProposer`，仅在既有 Review 实际调用前运行；职责拆分不等于后台交付；
+- 叙事事件由独立 `NumericV2NarrativeProposer` 提案；同步兼容路径在实际正文 Review 前执行，HTTP 输入路径在正文复核与交付后后台提案并独立复核；
 - Runtime 确定性处理数值限幅、选路、结局、邀请锁存、事实账本、Ledger、Session 和原子提交；
 - 隐藏数值、阈值、路线条件和内部判定依据不对玩家公开。
 
@@ -89,7 +91,7 @@ flowchart TD
 | `llm_context.py` | 人格读取、玩家称呼读取和 Prompt 文本截断辅助。 |
 | `numeric_v2_evaluator.py` | 前置判定（计分依据、意图、结局就绪、事实候选）、Guard 快检/争议复查和作者禁令窄判定；只能选择作者声明的枚举，不选路线、不写 Session。 |
 | `numeric_v2_actor.py` | 组装表现上下文与 Prompt，调用 Actor 生成正文、三段转场和推荐；带重复输出来源标签；不提交状态。 |
-| `numeric_v2_narrative_proposer.py` | 独立 `NumericV2NarrativeProposer`：仅在既有 Review 前对同稿提出叙事事件；不改稿、不自审、不提交。 |
+| `numeric_v2_narrative_proposer.py` | 独立 `NumericV2NarrativeProposer`：同步路径在正文 Review 前提案；HTTP 路径在交付后后台提案并由独立调用复核，不改稿、不提交。 |
 | `numeric_v2_actor_output.py`、`numeric_v2_json.py` | 解析 Actor JSON（只解包完整单个围栏）、校验正文/推荐/三段、保护玩家行动归属；不调用模型。 |
 | `numeric_v2_context.py` | Actor/Evaluator/Guard 共用的历史、场景、作者边界（`project_contract_boundaries`）、实际开场与目标幕事实泄露检查。 |
 | `numeric_v2_action_projection.py` | 从玩家原话和已提交结果确定性投影玩家动作结果（离开、签名、交付等）与未来约定；不推断目的地或意图。 |
@@ -99,7 +101,7 @@ flowchart TD
 | `numeric_v2_fixed_narration.py` | 作者固定旁白的校验、触发候选、依赖顺序、逐字交付、交接方向与离幕前必显。 |
 | `numeric_v2_performance.py` | 把演出形状转换为有序内容块（旁白、动作、对白、固定旁白），供历史、恢复与 TTS 坐标使用。 |
 | `numeric_v2_runtime.py` | 确定性状态引擎：限幅、选路、结局、邀请、`story_state` 事实账本、完成合同判定、Ledger 事件、时间线与事实证据投影、版本冲突。 |
-| `numeric_v2_workflow.py` | 回合编排：Evaluator → Runtime 候选 → Actor → 确定性检查 → 既有 Review 前的条件叙事提案 → 条件复核/改稿 → 身份与 revision 复验 → 原子提交；记录分阶段诊断。 |
+| `numeric_v2_workflow.py` | 回合编排：Evaluator → Runtime 候选 → Actor → 确定性检查 → 同步路径的条件叙事提案 → 条件复核/改稿 → 身份与 revision 复验 → 原子提交；记录分阶段诊断。 |
 | `numeric_v2_store.py` | 原子保存/读取 Session、Ledger、演出历史、恢复槽和索引；拒绝重复回合与 stale revision。 |
 | `numeric_v2_storage_transaction.py` | 把最终磁盘变更放进云存档写栅栏；不包住模型等待。 |
 | `numeric_v2_archive.py` | 结束回执、公开单集记忆胶囊、公开冷档案、遗忘事务与冷档案隔离区。 |
@@ -442,8 +444,8 @@ Runtime 已选路线时，Actor 同一回合完成三段并按固定顺序存储
 | 按需历史查找 | 每页 7000，最多两页并发 | 256 / 页 | 总等待 12 秒 |
 
 - 整回合复核时间预算 20 秒：首次快检始终执行；预算耗尽后不再追加争议或改写后复检，未完成当前稿复核的普通及正式回合均回滚。每次复核调用的 timeout 取配置时限与剩余预算的较小值。
-- 常规启用复核且无按需修复的回合为 Evaluator + Actor + NarrativeProposer + Review，共 4 次调用；无实际 Review 不调用提案器，原本不复核的开场不暗加调用。提案使用 `conversation` 槽，本轮正式配置为 `qwen3.8-flash`、关闭 thinking；容量及等待成本待实测，不把新增串行调用描述为提速。
-- 提案不能为满足输入或输出上限中途裁断玩家原话、完整候选正文或事件证据；临界与不完整响应须按失败/缺口合同处理，不能自认为已完整入账。Runtime/Store 原子提交、旧记录重放及现有 TTS 交付不改，正文不提前展示，后台补账和下一轮屏障不在本轮范围。
+- 常规启用复核且无按需修复时，同步兼容路径为 Evaluator + Actor + NarrativeProposer + Review，共 4 次调用；HTTP 路径为前台 Evaluator + Actor + 正文 Review、后台提案 + 独立账本复核，共 5 次调用；无实际 Review 不调用提案器，原本不复核的开场不暗加调用。提案使用 `conversation` 槽，本轮正式配置为 `qwen3.8-flash`、关闭 thinking；容量及等待成本待实测，不把新增串行调用描述为提速。
+- 提案不能为满足输入或输出上限中途裁断玩家原话、完整候选正文或事件证据；临界与不完整响应须按失败/缺口合同处理，不能自认为已完整入账。正文仍先复核并原子提交，旧记录重放和 TTS 交付保持原协议。HTTP 后台结算已实现 pending 恢复、版本/生命周期校验和下一轮至多 1 秒的模型等待屏障；超时取消并记录缺口。
 - 叙事提案受控失败（超时、模型不可用、容量、格式或引文错误）不阻断正文 Review；缺省事件表保留 `unrecorded/partial` 缺口，不以空表冒充无变化。同稿缓存失败，不追加调用，新稿重新提案；回合诊断、日志与 trace 记录失败。正文审核和原子提交仍须成功，取消请求及其它模块错误继续沿用原有处理。
 - Review 发送前装箱超预算且本稿携带叙事事件表时，撤下该表并缓存同稿缺口，再用原生 Review 审核同一完整正文与推荐；作者合同、玩家原话、最新完整历史及已提交账本不裁断。该降级单列诊断，不记为提案失败；无表仍超预算或实际审核失败继续回滚，不增加成功模型请求或复核层。有复核的开场同样适用。Review 最终装箱仍超限时只省略状态投影的属性重复引文，累计 `quotes_omitted`；全部值、来源编号、近期事件及已提交原账本不变。
 - 已审普通稿触发漏判转场补救后，补救 Actor 生成或结构检查失败可复用同一已审普通事务；要求原稿正文和邀请合法、无待触发固定旁白，撤下错误推荐整组，事实、账本及绑定仍经统一提交校验。不复用失败转场内容，不追加调用；正式转场审核、取消及存储失败仍回滚。

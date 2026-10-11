@@ -1,4 +1,4 @@
-"""长期实体账本有界投影，同时保留持物、明确关注对象和认知边界。"""
+"""Project committed narrative state into model inputs without exposing unknown facts."""
 
 from copy import deepcopy
 import json
