@@ -94,9 +94,13 @@ def _serialize_message(record: Mapping[str, object]) -> SerializedMessage:
 
     plugin_value = record.get("plugin_id")
     source_value = record.get("source")
-    # ``description`` was a v1-only human label: v2 has no ``description``
-    # field and every in-repo caller has migrated the label into
-    # ``metadata["description"]``, so the legacy alias is no longer derived.
+    # TODO(v0.9): drop ``description`` from the serialized response together
+    # with the legacy push_message kwarg.  v2 push_message has no
+    # ``description`` field; the synthesised value is empty for native v2
+    # callers and only useful as a label for old plugins that still pass
+    # ``description=``.  See docs/changelog/plugin-push-message-v2.md.
+    description_value = record.get("description")
+
     message_type_value = record.get("message_type")
     fallback_type_value = record.get("type")
     binary_url_value = record.get("binary_url")
@@ -113,6 +117,7 @@ def _serialize_message(record: Mapping[str, object]) -> SerializedMessage:
     return {
         "plugin_id": plugin_value if isinstance(plugin_value, str) else "",
         "source": source_value if isinstance(source_value, str) else "",
+        "description": description_value if isinstance(description_value, str) else "",
         "priority": priority_value if priority_value is not None else 0,
         "message_type": message_type,
         "content": record.get("content"),

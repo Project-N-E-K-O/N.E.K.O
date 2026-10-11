@@ -35,6 +35,7 @@ class SystemConfigResponse(TypedDict):
 class SerializedMessage(TypedDict):
     plugin_id: str
     source: str
+    description: str
     priority: int
     message_type: str
     content: object
