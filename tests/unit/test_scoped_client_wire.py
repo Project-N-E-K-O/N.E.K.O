@@ -38,6 +38,7 @@ import pytest
 
 from memory.scoped_client import (
     SCOPED_WRITE_RETRY_DELAYS_S,
+    ForgetTargetEpochsRequired,
     ScopedMemoryClient,
     ScopedMemoryError,
 )
@@ -557,6 +558,38 @@ async def test_forget_requires_a_forgotten_confirmation(body):
     client, http = _client(_Recorder(responder))
     async with http:
         assert await client.post_forget("Lanlan", subject=_SUBJECT) is False
+
+
+_MISSING_TARGETS = {"detail": {"error": "missing_target_epochs", "missing_target_epochs": ["participant:neko_visit:p1"]}}
+
+
+@pytest.mark.asyncio
+async def test_opted_in_forget_refused_for_missing_targets_raises_with_the_keys():
+    def responder(request):
+        return httpx.Response(409, json=_MISSING_TARGETS)
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        with pytest.raises(ForgetTargetEpochsRequired) as excinfo:
+            await client.post_forget("Lanlan", subject=_SUBJECT, forget_epoch=3, target_epochs={})
+    # 缺了哪些扇出目标原样交给调用方：它据此把这些 key 的代数加 1 再重发
+    assert excinfo.value.missing == ("participant:neko_visit:p1",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opt_in, payload", [
+    (False, _MISSING_TARGETS),
+    (True, {"detail": "some other conflict"}),
+    (True, {"detail": {"error": "missing_target_epochs", "missing_target_epochs": []}}),
+], ids=["not-opted-in", "other-409", "empty-list"])
+async def test_other_409_answers_stay_a_plain_failed_forget(opt_in, payload):
+    def responder(request):
+        return httpx.Response(409, json=payload)
+
+    client, http = _client(_Recorder(responder))
+    extra = {"forget_epoch": 3, "target_epochs": {}} if opt_in else {}
+    async with http:
+        assert await client.post_forget("Lanlan", subject=_SUBJECT, **extra) is False
 
 
 @pytest.mark.asyncio

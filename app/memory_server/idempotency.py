@@ -26,7 +26,9 @@ Three per-character files live under ``memory_dir/<character>/``:
   which Windows file names reject, so the file name is a digest and the key
   itself is stored inside the document).
 * ``scoped_tombstones.json`` -- ``{subject_key: {forgotten_at,
-  forget_epoch}}``, the largest forget epoch each subject ever received.
+  forget_epoch}}``, the largest forget epoch each subject ever received
+  (a fan-out target of a forget is fenced at its own epoch, never at the
+  requested subject's).
 
 Locking contract (see docs/design/visit-infrastructure.md section 4.6):
 
@@ -54,7 +56,7 @@ import os
 import shutil
 import time
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
@@ -510,13 +512,32 @@ async def record_tombstones(
     Monotonic: a smaller epoch never lowers an existing tombstone (a late or
     replayed forget must not reopen a window a newer forget closed).
     """
-    stamp = time.time() if now is None else float(now)
-    keys = sorted({str(key) for key in subject_keys if key})
     epoch = int(forget_epoch)
+    return await record_tombstone_epochs(
+        lanlan_name, {str(key): epoch for key in subject_keys if key}, now=now,
+    )
+
+
+async def record_tombstone_epochs(
+    lanlan_name: str,
+    epochs: Mapping[str, int],
+    *,
+    now: float | None = None,
+) -> dict:
+    """Raise each subject's tombstone to at least its own epoch, in one write.
+
+    Each key keeps its own epoch domain (the client counts per subject key),
+    so a forget that fans out to linked subjects passes each target's own
+    generation instead of copying the requested subject's onto them. Same
+    monotonic rule as :func:`record_tombstones`.
+    """
+    stamp = time.time() if now is None else float(now)
+    wanted = {str(key): int(value) for key, value in epochs.items() if key}
 
     def _mutate(data: dict) -> bool:
         changed = False
-        for subject_key in keys:
+        for subject_key in sorted(wanted):
+            epoch = wanted[subject_key]
             current = data.get(subject_key)
             current_epoch = (
                 current.get("forget_epoch")
