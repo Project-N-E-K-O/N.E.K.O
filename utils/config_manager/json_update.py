@@ -17,10 +17,10 @@ event-loop blocking"):
 * The critical section is pure disk IO plus an in-memory mutator.  Slow work
   (network probes, cross-server HTTP calls) must stay outside: compute the
   result first, then apply it here against the freshly read file.
-* Inside that lock the manager's cloud-save write transaction (if any) is
-  held for the whole sequence, the same pattern the plugin model-config store
-  uses: the in-process lock is taken first, then the cross-process one, and
-  the cross-process lock is acquired without waiting.
+* Cloud-save maintenance is enforced by the manager's write fence, a plain
+  mode check.  ``cloudsave_writable_transaction`` is intentionally not used:
+  an in-process restore holds its process guard for the whole restore, so a
+  writer would queue behind it and then apply a pre-restore snapshot.
 * A missing file starts from ``{}``.  A file that exists but cannot be read
   or parsed, or whose top level is not an object, raises and is left
   untouched -- it is never replaced by a partial document.
@@ -34,7 +34,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -130,26 +129,27 @@ def update_json_config(manager: Any, filename: str, mutator: Callable[[dict], T]
     read from the bundled project fallback (so the user-owned runtime copy is
     materialized).  If ``mutator`` raises, nothing is written.
 
-    When the manager provides ``json_config_write_transaction`` (the real
-    ConfigManager does), the whole read/mutate/write runs inside it: a cloud
-    restore cannot replace the file between our read and our write, and a
-    maintenance-mode request -- including a no-op one -- is refused up front
-    instead of reporting a success that the restore would undo.
+    A write goes through ``save_json_config``'s cloud-save fence.  A no-op
+    update runs the same fence (when the manager has one), so a maintenance-mode
+    request is refused instead of reporting a success a restore would undo.
+    Both are plain mode checks that never wait on an active restore.
     """
     held: set[str] = _held.__dict__.setdefault("filenames", set())
     if filename in held:
         raise RuntimeError(f"nested update of {filename} from inside its own mutator")
-    transaction = getattr(manager, "json_config_write_transaction", None)
     with json_config_lock(filename):
         held.add(filename)
         try:
-            with transaction(filename) if transaction is not None else nullcontext():
-                data = load_json_config_for_update(manager, filename)
-                before = deepcopy(data)
-                result = mutator(data)
-                if not json_values_equal(data, before) or _loaded_from_fallback(manager, filename):
-                    manager.save_json_config(filename, data)
-                return result
+            data = load_json_config_for_update(manager, filename)
+            before = deepcopy(data)
+            result = mutator(data)
+            if not json_values_equal(data, before) or _loaded_from_fallback(manager, filename):
+                manager.save_json_config(filename, data)
+            else:
+                assert_writable = getattr(manager, "assert_json_config_writable", None)
+                if assert_writable is not None:
+                    assert_writable(filename)
+            return result
         finally:
             held.discard(filename)
 

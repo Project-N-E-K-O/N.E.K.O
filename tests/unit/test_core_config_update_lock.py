@@ -90,8 +90,6 @@ def light_manager(tmp_path):
     manager.load_root_state = lambda: {"mode": "normal"}
     manager.config_dir = tmp_path / "config"
     manager.project_config_dir = tmp_path / "project-config"
-    # cloudsave_writable_transaction needs a local state root next to the docs root.
-    manager.anchor_root = tmp_path / "anchor"
     manager.config_dir.mkdir()
     manager.project_config_dir.mkdir()
     return manager
@@ -188,35 +186,51 @@ def test_noop_update_without_any_file_writes_nothing(light_manager):
     assert not (light_manager.config_dir / FILENAME).exists()
 
 
-def test_update_is_refused_while_a_cloud_restore_holds_the_apply_lock(light_manager):
-    """The cloud-save transaction spans read-modify-write, so a restore cannot slip in."""
+@pytest.mark.parametrize("change", [True, False], ids=["write", "no-op"])
+def test_update_is_refused_at_once_during_an_in_process_restore(light_manager, change):
+    """An in-process restore holds the cloud-apply process guard for its whole run.
+
+    A writer must be refused right away, not queue behind that guard: once the
+    restore releases it and resets the mode, a queued writer would apply its
+    pre-restore snapshot to the freshly restored file.
+    """
     from utils.cloudsave_runtime import MaintenanceModeError
-    from utils.cloudsave_runtime.fence import acquire_cloud_apply_lock, release_cloud_apply_lock
+    from utils.cloudsave_runtime.fence import _cloud_apply_process_guard
 
     path = light_manager.config_dir / FILENAME
     before = json.dumps({"a": 1}).encode()
     path.write_bytes(before)
+    light_manager.load_root_state = lambda: {"mode": "maintenance_readonly"}
     held = threading.Event()
     done = threading.Event()
 
     def restore():
-        assert acquire_cloud_apply_lock(light_manager)
-        held.set()
-        done.wait(5)
-        release_cloud_apply_lock(light_manager)
+        with _cloud_apply_process_guard:
+            held.set()
+            done.wait(10)
 
     restorer = threading.Thread(target=restore)
     restorer.start()
+    outcome = []
+
+    def update():
+        try:
+            light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(a=2 if change else 1))
+            outcome.append("ok")
+        except MaintenanceModeError:
+            outcome.append("refused")
+
     try:
         assert held.wait(5)
-        with pytest.raises(MaintenanceModeError):
-            light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(a=2))
+        writer = threading.Thread(target=update)
+        writer.start()
+        writer.join(2)
+        assert not writer.is_alive(), "update queued behind the restore instead of being refused"
+        assert outcome == ["refused"]
         assert path.read_bytes() == before
     finally:
         done.set()
         restorer.join(5)
-    light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(a=2))
-    assert _read(path) == {"a": 2}
 
 
 def test_snapshot_read_never_overlaps_a_locked_write(light_manager):
