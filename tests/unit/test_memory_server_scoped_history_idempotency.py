@@ -3470,6 +3470,61 @@ async def test_fanout_markers_land_before_the_request_subjects(env):
     assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 2
 
 
+async def test_replay_naming_a_newly_linked_target_erases_only_that_target(env):
+    await _forget(env, GROUP, forget_epoch=5)                   # 原擦除已完成，当时还没有关联账号
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))  # 清除之后合法写入的 GROUP 记忆
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, subject=PART, display_name=None))
+    assert _facts_of(env, GROUP) and _facts_of(env, PART)
+    _fan_out_to(env, PART)                                      # 之后 PART 关联进来
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    # 重放带上了新目标的代数：只擦这个还没擦到该代数的目标，不走 duplicate、也不重擦 GROUP
+    assert result.get("duplicate") is None
+    assert _facts_of(env, PART) == [] and _facts_of(env, GROUP)
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
+    again = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    assert again.get("duplicate") is True
+
+
+async def test_recheck_under_the_locks_narrows_to_the_unerased_targets(env):
+    await _forget(env, GROUP, forget_epoch=5)
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, subject=PART, display_name=None))
+    _fan_out_to(env, PART)
+    real_check = env.routes._forget_epoch_already_erased
+    calls = {"n": 0}
+
+    async def check(*args):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return False        # 锁外那次核对发生在请求 subject 的擦除完成之前
+        return await real_check(*args)
+
+    env.monkeypatch.setattr(env.routes, "_forget_epoch_already_erased", check)
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    # 持锁后看到请求 subject 已擦完：只擦还没擦到代数的 PART，GROUP 之后的合法写入不动
+    assert result.get("duplicate") is None and calls["n"] >= 2
+    assert _facts_of(env, PART) == [] and _facts_of(env, GROUP)
+
+
+async def test_failed_generation_keeps_the_fresh_wire_of_a_mixed_batch(env):
+    env.llm.responses = [RuntimeError("model down")]
+    with pytest.raises(RuntimeError):
+        await _post(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
+    assert _key_state(env, KEY_SEGMENTS) == "pending" and not _staging_file(env, KEY_SEGMENTS).exists()
+    _fan_out_to(env, GP, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={GP_KEY: 1, PART_KEY: 2})
+    # 只有记录、没有暂存：GP 早于它的围栏、PART 够新。不能整键取消，只记下 GP
+    assert _key_state(env, KEY_SEGMENTS) == "pending"
+    env.llm.responses = [PART_ONLY_BATCH_FACTS]
+    again = await _post(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
+    assert again.get("duplicate") is None
+    assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
+
+
 @pytest.mark.parametrize("body, detail", [
     ({"subject": GROUP, "target_epochs": {PART_KEY: 1}}, "target_epochs requires forget_epoch"),
     ({"subject": GROUP, "forget_epoch": 3, "target_epochs": {GROUP_KEY: 4}}, "target_epochs disagrees with forget_epoch"),
