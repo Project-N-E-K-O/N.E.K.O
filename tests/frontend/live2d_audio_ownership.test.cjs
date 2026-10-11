@@ -289,6 +289,79 @@ test('late cancellation from a different turn cannot release the current speech'
     assert.equal(f.manager.hasActiveLipSync(), false);
 });
 
+async function checkCharacterSwitchCancellation({ paced = false, speechActive = true, characterTransform = source => source } = {}) {
+    const f = fixture({ paced });
+    let rejectCharacters;
+    const characters = new Promise((resolve, reject) => { rejectCharacters = reject; });
+    const oldSocket = { readyState: 1, close() { throw new Error('early failure must keep the old socket'); } };
+    const requests = [], cancellations = [];
+    f.context.WebSocket = { OPEN: 1, CLOSED: 3, CLOSING: 2 };
+    f.S.socket = oldSocket;
+    f.window.lanlan_config.lanlan_name = 'old-character';
+    f.window.invalidatePendingMusicSearch = () => {};
+    f.manager.pixi_app = { ticker: {
+        started: true, stop() { this.started = false; }, start() { this.started = true; },
+    } };
+    f.context.fetch = url => { requests.push(url); return characters; };
+    f.window.addEventListener('neko-assistant-speech-cancel', event => cancellations.push(event.detail));
+    if (speechActive) f.schedule('audio-turn');
+    const oldFrame = [...f.frames.values()][0];
+
+    // Use the production text-turn and character-switch entry points, not a
+    // synthetic cancellation event. Text can advance before old audio drains.
+    f.run('static/app/app-websocket.js');
+    f.S.assistantTurnId = null;
+    f.S.assistantPendingTurnServerId = 'text-turn';
+    f.S.assistantTurnAwaitingBubble = true;
+    f.window.appWebSocket.ensureAssistantTurnStarted('gemini_response_first_chunk', 'text-turn');
+    assert.equal(f.S.assistantTurnId, 'text-turn');
+    if (speechActive) assert.equal(f.S.assistantSpeechActiveTurnId, 'audio-turn');
+    vm.runInContext(characterTransform(read('static/app/app-character.js')), f.context);
+    const switchTask = f.window.appCharacter.handleCatgirlSwitch('new-character', 'old-character');
+    try {
+        assert.deepEqual(requests, ['/api/characters']);
+        assert.equal(cancellations.length, 1);
+        assert.equal(cancellations[0].source, 'character_switch');
+        assert.equal(f.S.isPlaying, false, 'cancel before waiting for configuration');
+        assert.equal(f.manager.hasActiveLipSync(), false);
+        assert.equal(f.S.lipSyncActive, false);
+        assert.equal(f.frames.size, 0);
+        assert.equal(cancellations[0].turnId, speechActive ? 'audio-turn' : 'text-turn');
+        if (oldFrame) oldFrame();
+        assert.equal(f.frames.size, 0, 'a captured old sample cannot restart after cancellation');
+        rejectCharacters(new Error('characters unavailable'));
+        await switchTask;
+        assert.equal(f.S.isPlaying, false, 'early switch failure must not restore cancelled playback state');
+        assert.equal(f.manager.hasActiveLipSync(), false);
+        assert.equal(f.frames.size, 0);
+        assert.equal(f.S.socket, oldSocket);
+        assert.equal(f.S.isSwitchingCatgirl, false);
+        assert.equal(f.manager.pixi_app.ticker.started, true);
+        assert.equal(f.window.lanlan_config.lanlan_name, 'old-character');
+        assert.ok(f.errors.some(args => args[1]?.message === 'characters unavailable'));
+    } finally {
+        rejectCharacters(new Error('characters unavailable'));
+        await switchTask;
+        await f.window.appAudioPlayback.clearAudioQueue();
+    }
+}
+
+for (const paced of [false, true]) {
+    for (const speechActive of [true, false]) {
+        test(`real character-switch failure cancels ${speechActive ? 'old audio before newer text' : 'text-only turn'} (${paced ? 'paced timer' : 'rAF'})`, () =>
+            checkCharacterSwitchCancellation({ paced, speechActive }));
+    }
+    test(`text-first cancellation mutation fails the real overlapping-turn regression (${paced ? 'paced timer' : 'rAF'})`, async () => {
+        const source = read('static/app/app-character.js');
+        const mutant = source.replace(
+            'var turnId = S.assistantSpeechActiveTurnId || S.assistantTurnId || null;',
+            'var turnId = S.assistantTurnId || S.assistantSpeechActiveTurnId || null;');
+        assert.notEqual(mutant, source, 'mutation must reach the character-switch producer');
+        await assert.rejects(checkCharacterSwitchCancellation({ paced, characterTransform: () => mutant }),
+            { code: 'ERR_ASSERTION', message: 'cancel before waiting for configuration\n\ntrue !== false\n' });
+    });
+}
+
 test('natural source end waits for audio_done; normal finish releases the owner', () => {
     const f = fixture();
     const source = f.schedule();

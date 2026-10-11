@@ -271,7 +271,8 @@
     }
 
     function emitAssistantSpeechCancel(source) {
-        var turnId = S.assistantTurnId || S.assistantSpeechActiveTurnId || null;
+        // 文本可能已进入下一回合；角色切换先取消实际仍在播放的语音。
+        var turnId = S.assistantSpeechActiveTurnId || S.assistantTurnId || null;
         S.assistantTurnId = null;
         S.assistantPendingTurnServerId = null;
         S.assistantTurnAwaitingBubble = false;
