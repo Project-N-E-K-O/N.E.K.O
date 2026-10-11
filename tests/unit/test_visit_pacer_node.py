@@ -363,6 +363,17 @@ const report = {};
   report.reload_ritual_final = h.bySid('ritual').filter((m) => m.ended && m.final).length;
 }
 
+// 断线期间那一场结束、ended 帧丢了：重新 bind 带 active:false 时收掉残留状态，普通语音不再被跟踪（Codex P2）
+{
+  const h = createHarness();
+  h.bind();                                           // started 过的一场
+  h.emit('neko-visit-bound', { socket: h.socket, active: false });
+  h.ctx.currentTime = 10;
+  h.chunk('ordinary', 10, 11);
+  h.advance(2000);
+  report.rebound_inactive_sent = h.bySid('ordinary').length;
+}
+
 // A 结束后的收尾窗口里新一场 B 的开始前帧到达：A 的仪式句仍按 A 回报，B 没开始不认作 B（Codex P2）
 {
   const h = createHarness();
@@ -550,6 +561,10 @@ def test_pre_start_state_frames_do_not_arm_the_pacer(report):
 
 def test_bind_after_a_mid_visit_reload_still_opens_the_post_end_window(report):
     assert report["reload_ritual_final"] == 1
+
+
+def test_rebinding_an_inactive_visit_clears_the_stale_active_state(report):
+    assert report["rebound_inactive_sent"] == 0
 
 
 def test_post_end_window_reports_under_the_visit_that_ended(report):

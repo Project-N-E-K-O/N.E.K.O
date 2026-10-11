@@ -281,6 +281,10 @@
             // 页面在串门途中重载后重新 bind：这一场已经开始过，结束时照样开收尾窗口
             visitActive = true;
             startedVisitId = detail.visit_id || visitId;
+        } else if (detail.active === false) {
+            // 断线期间那一场已经结束、ended 帧没收到：按 bind 的快照收掉残留的进行中状态
+            visitActive = false;
+            startedVisitId = null;
         }
     });
 
