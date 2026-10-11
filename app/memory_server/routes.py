@@ -4860,7 +4860,10 @@ def _stale_record_marks(record: dict, subject_keys: set[str], fences: dict[str, 
     wires = [str(wire) for wire in raw_wires] if isinstance(raw_wires, list) else []
     epochs = record.get("epochs") or {}
     positions = record.get("routed_positions")
-    aligned = isinstance(positions, list) and len(positions) == len(wires)
+    aligned = (
+        isinstance(positions, list) and len(positions) == len(wires)
+        and all(isinstance(position, str) and position for position in positions)
+    )
     marks: set[str] = set()
     for index, wire in enumerate(wires):
         routed = str(positions[index]) if aligned else None
@@ -5644,6 +5647,27 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             if len(still) != len(erase_targets):
                 erase_targets = still
                 erase_keys = _erase_subject_keys(subject, targets, erase_targets, forgotten_subject_keys)
+        if req.forget_epoch is not None:
+            # 锁外读围栏之后、拿到擦除锁之前，别的清除可能又抬高了某个 key 的围栏（扇出到它的清除
+            # 不受本请求的 forget_fence 保护）：本次擦除在它之后进行，完成标记与取消都按擦除前
+            # 最后在位的围栏算，只升不降
+            try:
+                fences_now = await idempotency.read_tombstones(lanlan_name)
+            except idempotency.IdempotencyStateError:
+                fences_now = None
+            if fences_now is not None:
+                fence = _recorded_fence(fences_now, subject.key)
+                if fence is not None and (fence_at_start is None or fence > fence_at_start):
+                    fence_at_start = fence
+                    effective_fence = max(effective_fence, fence)
+                for target_key in list(effective_fanout_fences):
+                    fence = _recorded_fence(fences_now, target_key)
+                    if fence is None:
+                        continue
+                    if fence > fanout_fence_at_start.get(target_key, -1):
+                        fanout_fence_at_start[target_key] = fence
+                    if fence > effective_fanout_fences[target_key]:
+                        effective_fanout_fences[target_key] = fence
         # ALL tombstones open before ANY erase.
         for target in erase_targets:
             await runtime.fact_store.abegin_subject_forget(lanlan_name, target)
@@ -5836,28 +5860,36 @@ def _fanout_target_epochs(req: ScopedForgetRequest, subject, targets) -> dict[st
 async def _targets_still_to_erase(lanlan_name: str, subject, targets, forget_epoch, fanout_epochs) -> list:
     """The fan-out targets this forget still has to erase (empty: a duplicate).
 
-    Every target while the request subject's ``forget_epoch`` is not erased
-    yet. Once it is, only the targets the caller gave an epoch for whose
-    erase has not reached that epoch: typically an account linked after the
-    original erase, which a replay names after the 409. The request subject
-    and the targets already erased are never erased again (that would delete
-    writes made legitimately after them). An unreadable tombstone file counts
-    as "not erased" (bias towards deleting).
+    Each target is judged by its own completion marker: the request subject
+    and every target the caller gave no epoch for go with the request
+    subject's marker for ``forget_epoch``; a target the caller gave its own
+    epoch for is erased only while its own marker is below that epoch. So a
+    replay naming an account linked after the original erase erases just
+    that account, and a retry after a partly recorded completion does not
+    erase again a target whose marker already landed (either would delete
+    writes made legitimately after that erase). An unreadable tombstone file
+    counts as "not erased" (bias towards deleting).
     """
     from . import idempotency
 
-    if forget_epoch is None or not await _forget_epoch_already_erased(lanlan_name, subject.key, forget_epoch):
+    if forget_epoch is None:
         return list(targets)
-    if not fanout_epochs:
+    request_done = await _forget_epoch_already_erased(lanlan_name, subject.key, forget_epoch)
+    if request_done and not fanout_epochs:
         return []
-    try:
-        tombstones = await idempotency.read_tombstones(lanlan_name)
-    except idempotency.IdempotencyStateError:
-        tombstones = {}
+    tombstones: dict = {}
+    if fanout_epochs:
+        try:
+            tombstones = await idempotency.read_tombstones(lanlan_name)
+        except idempotency.IdempotencyStateError:
+            tombstones = {}
     pending = []
     for target in targets:
-        epoch = fanout_epochs.get(target.key)
-        if epoch is None or target.key == subject.key:
+        epoch = None if target.key == subject.key else (fanout_epochs or {}).get(target.key)
+        if epoch is None:
+            # 请求 subject 与没给代数的扇出目标：跟着请求 subject 的完成标记走
+            if not request_done:
+                pending.append(target)
             continue
         done = idempotency.erased_epoch(tombstones, target.key)
         if done is None or done < epoch:

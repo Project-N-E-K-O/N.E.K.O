@@ -3506,6 +3506,59 @@ async def test_partial_replay_does_not_mark_the_request_subject_through_a_higher
     assert retry.get("duplicate") is None and _facts_of(env, GROUP) == []
 
 
+def test_damaged_routed_positions_fall_back_to_the_routed_keys(env):
+    record = {
+        "request": {"wire_keys": [PART_KEY]},
+        "routed_positions": [123],                              # 长度对得上，内容坏了
+        "routed_keys": [GROUP_KEY],
+        "epochs": {PART_KEY: 2},
+    }
+    marks = env.routes._stale_record_marks(record, {GROUP_KEY}, {GROUP_KEY: 5, PART_KEY: 2})
+    # 坏的按位置路由不能当成对齐：退回按 routed_keys 保守标记被清的落点
+    assert GROUP_KEY in marks
+
+
+async def test_retry_after_a_partly_recorded_completion_skips_marked_targets(env):
+    _fan_out_to(env, PART)
+    real_mark = env.idem.mark_tombstone_erased
+
+    async def broken_for_group(name, subject_key, *args, **kwargs):
+        if subject_key == GROUP_KEY:
+            raise OSError("disk full")
+        return await real_mark(name, subject_key, *args, **kwargs)
+
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", broken_for_group)
+    with pytest.raises(HTTPException):
+        await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", real_mark)
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, subject=PART, display_name=None))   # PART 擦完之后的合法写入
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    # 重试补完请求 subject；PART 的完成标记早已落盘，不再重擦它擦完之后的写入
+    assert result.get("duplicate") is None
+    assert _facts_of(env, PART) and env.idem.erased_epoch(_tombstones(env), GROUP_KEY) == 5
+
+
+async def test_fanout_fence_raised_before_the_erase_locks_is_recorded_as_erased(env):
+    _fan_out_to(env, PART)
+    real_plan = env.routes._targets_still_to_erase
+    calls = {"n": 0}
+
+    async def plan(*args):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # 锁外读完围栏之后、擦除之前：另一次清除把 PART 的围栏抬到 6
+            await env.idem.record_tombstones(NAME, {PART_KEY}, 6)
+        return await real_plan(*args)
+
+    env.monkeypatch.setattr(env.routes, "_targets_still_to_erase", plan)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # 本次擦除在围栏 6 之后进行：完成标记按擦除前最后在位的围栏记，6 的重试不再重擦
+    assert calls["n"] == 2
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 6
+
+
 async def test_recheck_under_the_locks_narrows_to_the_unerased_targets(env):
     await _forget(env, GROUP, forget_epoch=5)
     env.llm.responses = [SINGLE_FACTS]
