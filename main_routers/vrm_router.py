@@ -836,13 +836,12 @@ async def update_emotion_mapping(model_name: str, request: Request):
 
 @router.get('/expressions/{model_name}')
 async def get_model_expressions(model_name: str):
-    """Get the expression names supported by a VRM model.
+    """Get fallback expression candidates, supplemented by saved bindings.
 
-    Expression names are read from the model's saved emotion mapping
-    (``static/vrm/configs/{model_name}_emotion.json``), whose values are the
-    expression names configured for that model.  When no mapping exists yet,
-    the common reference list is returned so the emotion editor still has a
-    starting point before the model is loaded on the frontend.
+    Keep the common reference list and append additional names from the model's
+    saved emotion mapping. Bindings must not limit what the editor can select.
+    These candidates are not verified model capabilities; the frontend uses
+    the actual expression list when a model has been loaded.
     """
     common_expressions = [
         "neutral", "happy", "joy", "fun", "smile", "joy_01",
@@ -859,21 +858,24 @@ async def get_model_expressions(model_name: str):
         config_path = _get_emotion_config_path(model_name)
         if config_path and config_path.is_file():
             mapping = await read_json_async(config_path)
-            expressions: list[str] = []
-            seen: set[str] = set()
+            expressions = common_expressions.copy()
+            seen = set(expressions)
             if isinstance(mapping, dict):
                 for value in mapping.values():
                     names = value if isinstance(value, list) else [value]
                     for name in names:
-                        if isinstance(name, str) and name and name not in seen:
+                        if not isinstance(name, str):
+                            continue
+                        name = name.strip()
+                        if name and name not in seen:
                             seen.add(name)
                             expressions.append(name)
-            if expressions:
+            if len(expressions) > len(common_expressions):
                 return {
                     "success": True,
                     "expressions": expressions,
-                    "source": "emotion_mapping",
-                    "note": "来自该模型已保存的情感映射"
+                    "source": "common_with_emotion_mapping",
+                    "note": "通用备用列表已补充保存的表情名称，实际可用表情以模型为准"
                 }
 
         return {
