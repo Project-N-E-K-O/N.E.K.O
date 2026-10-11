@@ -1019,10 +1019,9 @@ async def test_quarantine_rereads_under_the_file_lock_and_spares_a_record_fixed_
 
 async def test_quarantine_rereads_once_after_a_transient_os_error(tmp_path, monkeypatch):
     # 一次偶发读错（被占用 / EIO）不能把读得出的日志连同清除一起放弃；持续读不出的照常隔离
-    import main_logic.visit.forget as forget_mod
     from main_logic.visit.forget import ClearingSentinels, quarantine_unreadable_records
 
-    monkeypatch.setattr(forget_mod, "_QUARANTINE_REREAD_DELAY_S", 0)
+    monkeypatch.setattr("main_logic.visit.forget._QUARANTINE_REREAD_DELAY_S", 0)
     store = ClearingSentinels(tmp_path)
     doc = await store.create(own_uid=OWN_A, scope="chars", own_char_uids=[CHAR_UID_A])
     real_read = ClearingSentinels._read.__func__
@@ -1048,7 +1047,6 @@ async def test_quarantine_rereads_once_after_a_transient_os_error(tmp_path, monk
 
 
 async def test_quarantine_counts_a_symlink_loop_as_failed(tmp_path, monkeypatch):
-    import main_logic.visit.forget as forget_mod
     from main_logic.visit.forget import quarantine_unreadable_records
 
     directory = tmp_path / "visit_revocations"
@@ -1058,6 +1056,6 @@ async def test_quarantine_counts_a_symlink_loop_as_failed(tmp_path, monkeypatch)
     def looping(_path):
         raise RuntimeError("Symlink loop")
 
-    monkeypatch.setattr(forget_mod, "path_lock", looping)
+    monkeypatch.setattr("main_logic.visit.forget.path_lock", looping)
     assert await quarantine_unreadable_records(tmp_path) == ([], 1)
     assert (directory / f"{'0' * 32}.json").exists()
