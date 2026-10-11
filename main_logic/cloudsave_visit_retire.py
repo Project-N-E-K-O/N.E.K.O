@@ -42,9 +42,9 @@ def removed_characters_recorder(
         return None
     config_dir = Path(value)
 
-    def record(removed: list[dict[str, Any]], kept_names: frozenset[str]) -> int:
+    def record(removed: list[dict[str, Any]], kept_local_names: frozenset[str]) -> int:
         from main_logic.visit.char_lifecycle import record_removed_characters_sync
 
-        return record_removed_characters_sync(config_dir, removed, kept_names)
+        return record_removed_characters_sync(config_dir, removed, kept_local_names)
 
     return record

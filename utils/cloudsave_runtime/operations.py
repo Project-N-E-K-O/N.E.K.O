@@ -213,13 +213,18 @@ def _runtime_characters_with_safe_master(config_manager) -> dict[str, Any]:
     return runtime_payload
 
 
-def _removed_local_characters(config_manager, kept_character_map: dict[str, Any]) -> list[dict[str, Any]]:
-    """``{name, character_uid}`` of every character of the runtime ``characters.json`` an import drops.
+def _removed_local_characters(
+    config_manager, kept_character_map: dict[str, Any],
+) -> tuple[list[dict[str, Any]], frozenset[str]]:
+    """What an import does to the characters of the runtime ``characters.json``.
 
-    Read strictly from the file: a missing or unreadable file (where
-    ``load_characters`` falls back to the default profiles) reports nothing,
-    so a default name is never taken for a removed character. A character
-    whose uid is kept under another name was renamed, not removed.
+    Returns the ``{name, character_uid}`` of every local character it drops
+    and the names of the local characters it keeps (a kept name that is new
+    from the snapshot is not among them). Read strictly from the file: a
+    missing or unreadable file (where ``load_characters`` falls back to the
+    default profiles) reports nothing, so a default name is never taken for
+    a removed character. A character whose uid is kept under another name
+    was renamed, not removed.
     """
     from utils.config_manager import get_character_uid
 
@@ -227,10 +232,10 @@ def _removed_local_characters(config_manager, kept_character_map: dict[str, Any]
         with open(config_manager.get_runtime_config_path("characters.json"), "r", encoding="utf-8") as f:
             payload = json.load(f)
     except (OSError, ValueError, RecursionError):
-        return []
+        return [], frozenset()
     local_map = payload.get("猫娘") if isinstance(payload, dict) else None
     if not isinstance(local_map, dict):
-        return []
+        return [], frozenset()
     kept_uids = {get_character_uid(data) for data in kept_character_map.values() if isinstance(data, dict)}
     removed: list[dict[str, Any]] = []
     for name, data in local_map.items():
@@ -240,7 +245,7 @@ def _removed_local_characters(config_manager, kept_character_map: dict[str, Any]
         if uid and uid in kept_uids:
             continue
         removed.append({"name": name, "character_uid": uid})
-    return removed
+    return removed, frozenset(name for name in kept_character_map if name in local_map)
 
 
 def _preserve_local_character_ids(character_map: dict[str, Any], local_character_map: Any) -> None:
@@ -1550,8 +1555,8 @@ def import_local_cloudsave_snapshot(
 
     ``on_characters_removed`` is called with the ``{name, character_uid}`` of
     every local character the import drops (tombstoned, or absent from a
-    full-runtime snapshot) and the character names it keeps, right before
-    the first runtime file is written.
+    full-runtime snapshot) and the names of the local characters it keeps,
+    right before the first runtime file is written.
     Data owned by other layers (the visit roster) can so record what to
     retire before the removal commits. It is not called when nothing is
     removed; whatever it raises is logged and the import goes on.
@@ -1718,10 +1723,10 @@ def import_local_cloudsave_snapshot(
                 characters_payload["当前猫娘"] = applied_character_names[0]
             else:
                 characters_payload["当前猫娘"] = ""
-        removed_characters = (
+        removed_characters, kept_local_names = (
             _removed_local_characters(config_manager, characters_payload["猫娘"])
             if on_characters_removed is not None
-            else []
+            else ([], frozenset())
         )
         apply_time = _utc_now_iso()
         backup_root = config_manager.cloudsave_backups_dir / f"import-{apply_time.replace(':', '').replace('.', '')}"
@@ -1947,7 +1952,7 @@ def import_local_cloudsave_snapshot(
                 if removed_characters:
                     try:
                         # 先于删除落盘：中途崩溃时记录已在，由记录方按落盘后的配置判定是否真删了
-                        on_characters_removed(removed_characters, frozenset(characters_payload["猫娘"]))
+                        on_characters_removed(removed_characters, kept_local_names)
                     except Exception as exc:
                         logger.warning("cloudsave import: removed characters not recorded: %r", exc)
                 for target_path, staged_path in runtime_targets.items():

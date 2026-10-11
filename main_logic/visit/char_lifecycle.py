@@ -486,23 +486,26 @@ def _rename_names_of(marker: Any, name: str, character_uid: str | None) -> tuple
 
 
 def record_removed_characters_sync(
-    config_dir: str | Path, removed: Iterable[Mapping[str, Any]], kept_names: Iterable[str] = (),
+    config_dir: str | Path, removed: Iterable[Mapping[str, Any]], kept_local_names: Iterable[str] = (),
 ) -> int:
     """Add a ``pending_retire`` item for each character a cloudsave import is about to remove.
 
     Called from the import thread right before it commits, with the
     ``{name, character_uid}`` of every local character absent from the
-    snapshot and the names the snapshot keeps. Startup recovery then settles
-    the items against the committed config like any delete (an import that
-    rolled back only drops them). A removed character whose own rename is
-    still pending gets an item for its other name too (unless the snapshot
-    keeps that name): recovery drops the rename marker of a character that
-    is gone, so the entries a failed migration left under that name would
-    otherwise outlive it. Machines without visit data get nothing; returns
-    the number of items added.
+    snapshot and the names of the local characters it keeps. Startup
+    recovery then settles the items against the committed config like any
+    delete (an import that rolled back only drops them). A removed character
+    whose own rename is still pending gets an item for its other name too:
+    recovery drops the rename marker of a character that is gone, so the
+    entries a failed migration left under that name would otherwise outlive
+    it, and a character the snapshot brings under that name would inherit
+    them. Only a name another local character already holds is left alone:
+    its entries are mixed with that character's and cannot be told apart
+    (the same rule as an ordinary delete). Machines without visit data get
+    nothing; returns the number of items added.
     """
     config_dir = Path(config_dir)
-    kept = set(kept_names)
+    kept = set(kept_local_names)
     try:
         rename_marker = read_roster_marker_sync(config_dir, PENDING_RENAME)
     except RosterCorruptError:
