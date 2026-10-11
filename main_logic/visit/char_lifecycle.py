@@ -130,7 +130,7 @@ MARKER_CHANGED = object()
 
 async def reconcile_rename(
     config_dir: Path, names: set[str], uid_of: dict[str, str] | None = None,
-    expected: Any = None,
+    expected: Any = None, *, undo_moves: bool = True,
 ) -> Any:
     """Finish or roll back a pending character rename; return the names still unsettled.
 
@@ -142,6 +142,9 @@ async def reconcile_rename(
     dropped. An empty set means no rename is pending; ``{old, new}`` that
     the marker is kept as genuinely ambiguous (only those two names wait);
     ``None`` that the roster or marker is unreadable (everything waits).
+    ``undo_moves=False`` (the rename transaction itself, which migrates only
+    after it committed) settles a rolled-back rename by clearing the marker
+    without rewriting anything.
     """
     config_dir = Path(config_dir)
     try:
@@ -180,6 +183,10 @@ async def reconcile_rename(
     if forward:
         await roster.rename_char(old, new)
         await VisitSpool.rename_own_char(config_dir, old, new)
+    elif backward and not undo_moves:
+        # 事务自己收尾：迁移只在提交之后做，回滚时什么都没动过。不能反向改写——新名下
+        # 若有已删除角色的残留数据，会被错挂到这个角色名下
+        pass
     elif backward:
         # 改名没生效：把已经改写成新名的场次改回旧名
         await VisitSpool.rename_own_char(config_dir, new, old)
@@ -238,7 +245,7 @@ async def settle_rename(config_dir: str | Path, marker: Mapping[str, Any], load_
     """
     try:
         names, uid_of = await load_names()
-        result = await reconcile_rename(Path(config_dir), names, uid_of, expected=dict(marker))
+        result = await reconcile_rename(Path(config_dir), names, uid_of, expected=dict(marker), undo_moves=False)
     except Exception as exc:  # noqa: BLE001 - 迁移失败不影响已提交的改名，标记留给启动对账
         logger.warning("visit rename: visit data not migrated yet, startup recovery retries: %r", exc)
         return False

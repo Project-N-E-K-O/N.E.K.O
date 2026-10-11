@@ -191,6 +191,20 @@ async def test_rolled_back_rename_moves_nothing_and_clears_the_marker(tmp_path):
     assert "pending_rename" not in _peers(tmp_path)
 
 
+async def test_rolled_back_rename_never_claims_residue_under_the_new_name(tmp_path):
+    roster = await _visit_data(tmp_path)
+    # 新名下有已删除角色留下的旧数据（本 PR 之前删除的角色不会退役）
+    await seed_roster(tmp_path, peer_uid=PEER_Y, tag=TAG_Y, own_char="A2")
+    await make_visit(tmp_path, vid(3), [ln(1)], own_char="A2", own_char_uid=CHAR_UID_B)
+    marker = await lc.begin_rename(tmp_path, "A", "A2", CHAR_UID_A, names={"A"}, uid_of={"A": CHAR_UID_A})
+    assert await lc.settle_rename(tmp_path, marker, _loader({"A"}, {"A": CHAR_UID_A}))
+    # 变异：回滚时照常反向改写必红（残留会被错挂到 A 名下）
+    assert await roster.get_char_entry(PEER_Y, "A") is None
+    assert await roster.get_char_entry(PEER_Y, "A2") is not None
+    assert await _state_char(tmp_path, vid(3)) == "A2"
+    assert "pending_rename" not in _peers(tmp_path)
+
+
 async def test_failed_migration_keeps_the_marker_for_startup_recovery(tmp_path, monkeypatch):
     roster = await _visit_data(tmp_path)
     marker = await lc.begin_rename(tmp_path, "A", "A2", CHAR_UID_A, names={"A"}, uid_of={"A": CHAR_UID_A})
