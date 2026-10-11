@@ -99,7 +99,6 @@
         isVMDPlaying: false,
         isPaused: false,
         savedIdleAnimationUrl: null,
-        savedFbxIdleAnimationUrl: null,
         playRequestId: 0,
         pendingAnimationRequestId: null,
         vrmMotionRuntimeToken: null
