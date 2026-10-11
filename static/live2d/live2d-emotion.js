@@ -1673,7 +1673,8 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
 
         // 表情和动作分别使用独立槽：新表情替换旧表情，动作槽忙时保留当前动作。
         if (!willApplyNewExpression && !shouldPreserveExistingExpression) {
-            this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
+            // 同时撤销 SDK 的加载预约，避免旧任务失效后仍把表情提交到原生队列。
+            this._invalidateExpressionPlayback();
             await Promise.resolve(this._transientExpressionTask).catch(() => false);
             if (this._activeTransientExpression) await this.clearExpression();
         }

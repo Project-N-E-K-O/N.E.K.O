@@ -287,6 +287,69 @@ async function realExpressionManager() {
     return { expressionManager, expression: sdk.Live2DModel.prototype.expression };
 }
 
+async function checkEmotionRetiresPendingNative({ reject = false, residentExpression = false, preserveIdle = false } = {}) {
+    const { expressionManager: native, expression } = await realExpressionManager();
+    const gate = deferred(), entered = deferred();
+    const obsolete = native.createExpression({ Parameters: [{ Id: FORM, Value: -0.4, Blend: 'Overwrite' }] });
+    const residentValue = native.createExpression({ Parameters: [{ Id: FORM, Value: 0.8, Blend: 'Overwrite' }] });
+    native.definitions.push({ Name: 'resident', File: 'resident.exp3.json' });
+    let loads = 0;
+    native._loadExpression = () => {
+        if (++loads === 1) { entered.resolve(); return gate.promise; }
+        return Promise.resolve(residentValue);
+    };
+    const commits = [];
+    const commit = native._setExpression.bind(native);
+    native._setExpression = value => { commits.push(value); return commit(value); };
+    const { manager } = fixture();
+    manager.currentModel.internalModel.motionManager.expressionManager = native;
+    manager.currentModel.expression = expression;
+    // Keep the independent motion slot occupied so this checks expression cancellation.
+    manager.hasActiveActionMotion = () => true;
+    let old, next;
+    try {
+        old = manager.playExpression('happy', 'happy.exp3.json');
+        await entered.promise;
+        if (residentExpression) {
+            manager.persistentExpressionNames = ['resident'];
+            manager.persistentExpressionParamsByName = { resident: [{ Id: FORM, Value: 0.8 }] };
+        }
+        next = manager.setEmotion(preserveIdle ? 'Idle' : 'unmapped');
+        assert.equal(native.reserveExpressionIndex, preserveIdle ? 0 : -1,
+            'a replacing emotion must revoke the SDK reservation before awaiting old work');
+        if (reject) gate.reject(new Error('controlled old expression load failure'));
+        else gate.resolve(obsolete);
+        assert.equal(await old, preserveIdle);
+        await next;
+        assert.equal(manager.currentEmotion, preserveIdle ? 'Idle' : 'unmapped');
+        assert.equal(manager.isEmotionChanging, false);
+        if (preserveIdle) {
+            assert.deepEqual(commits, [obsolete]);
+            assert.equal(manager._activeTransientExpression, true);
+        } else if (residentExpression) {
+            assert.deepEqual(commits, [residentValue], 'only the current resident may enter the real SDK queue');
+            assert.equal(native.currentExpression, residentValue);
+        } else {
+            assert.deepEqual(commits, [], 'obsolete native loading must not publish a motion');
+            assert.equal(native.queueManager._motions.length, 0, 'no obsolete expression remains available for rendering');
+            assert.notEqual(native.currentExpression, obsolete);
+        }
+    } finally {
+        gate.reject(new Error('test teardown'));
+        await Promise.allSettled([old, next]);
+        native.destroy();
+    }
+}
+
+for (const reject of [false, true]) {
+    for (const residentExpression of [false, true]) {
+        test(`emotion without an expression retires pending native ${reject ? 'rejection' : 'completion'} and ${residentExpression ? 'replays current resident' : 'leaves no obsolete motion'}`, () =>
+            checkEmotionRetiresPendingNative({ reject, residentExpression }));
+    }
+}
+test('Idle without a mapped expression preserves the supported pending transient expression', () =>
+    checkEmotionRetiresPendingNative({ preserveIdle: true }));
+
 for (const direction of ['resident-to-transient', 'transient-to-resident']) {
     test(`real SDK cancellation and same-name ${direction} never reuses the old reservation`, async () => {
         const { expressionManager: native, expression } = await realExpressionManager();
