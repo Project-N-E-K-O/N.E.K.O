@@ -33,10 +33,6 @@
     var POST_END_ARM_MS = 180000;
     // 播到头、既没再来音频也没等到结束标记的记录，静置这么久就丢掉（被打断的行）
     var IDLE_FORGET_MS = 60000;
-    // 还没播完却这么久没有新块（AudioContext 被挂起、时钟停住）：丢掉记录，不再无限回报进度
-    var STALLED_FORGET_MS = 120000;
-    // 串门开始之前的阶段（建房 / 等邀请 / 入房 / 等接待）没有串门语音，不跟踪普通对话
-    var PRE_START_ACTIONS = { pending: true, invite_ready: true, joining: true, awaiting_accept: true };
     var CLEAR_REASONS = {
         clear_audio_queue: true,
         clear_audio_queue_without_decoder_reset: true
@@ -45,7 +41,12 @@
     var boundSocket = null;
     var visitId = null;
     var visitActive = false;
+    // 收到过 started 的那一场：只有它之后的状态才让 pacer 跟踪语音，开始之前就中止（邀请过期、
+    // 被拒、入房途中重连）推来的 reconnecting / ending / ended 都不算
+    var startedVisitId = null;
     var armedUntil = 0;
+    // 上一拍的音频时钟：两拍之间没走（AudioContext 被挂起）就只暂停发送、不删记录，恢复后接着报
+    var lastTickAudioTime = null;
     var lastScheduledEnd = 0;
     var speeches = new Map();
     // 已回报过 final 的 speech_id（有界）：之后再到的块 / 结束标记一律不再跟踪
@@ -157,6 +158,8 @@
     function tick() {
         var t = audioNow();
         var wall = wallNow();
+        var clockStalled = lastTickAudioTime !== null && t === lastTickAudioTime;
+        lastTickAudioTime = t;
         speeches.forEach(function (rec, sid) {
             if (rec.finalSent) {
                 speeches.delete(sid);
@@ -165,11 +168,9 @@
             var played = playedMs(rec, t);
             var drained = rec.hadAudio ? t >= rec.scheduledEnd : rec.closed;
             if (!drained) {
-                if (wall - rec.lastActivity > STALLED_FORGET_MS) {
-                    speeches.delete(sid);
-                    return;
-                }
-                if (wall - rec.lastSentAt >= PROGRESS_INTERVAL_MS) send(rec, played, false);
+                // 还没播完（在播或被挂起）都算活跃：静置计时从排空之后才开始
+                rec.lastActivity = wall;
+                if (!clockStalled && wall - rec.lastSentAt >= PROGRESS_INTERVAL_MS) send(rec, played, false);
                 return;
             }
             // 静置检查在发送之前：socket 换了还没重新 bind 时发送一直失败，记录也得能丢掉、定时器才停得下
@@ -263,12 +264,17 @@
     window.addEventListener('neko-visit-frame', function (event) {
         var frame = event && event.detail;
         if (!frame || frame.type !== 'visit_state_change') return;
-        if (typeof frame.visit_id === 'string' && frame.visit_id) visitId = frame.visit_id;
-        if (frame.action === 'ended') {
-            visitActive = false;
-            armedUntil = wallNow() + POST_END_ARM_MS;
-        } else if (PRE_START_ACTIONS[frame.action] !== true) {
+        var frameVisit = typeof frame.visit_id === 'string' ? frame.visit_id : '';
+        if (frameVisit) visitId = frameVisit;
+        if (frame.action === 'started') {
+            startedVisitId = frameVisit || visitId;
             visitActive = true;
+        } else if (frame.action === 'ended') {
+            if (startedVisitId && startedVisitId === (frameVisit || visitId)) {
+                armedUntil = wallNow() + POST_END_ARM_MS;
+            }
+            visitActive = false;
+            startedVisitId = null;
         }
     });
 

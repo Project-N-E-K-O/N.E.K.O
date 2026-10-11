@@ -96,6 +96,7 @@ function createHarness(opts) {
     wall = target;
   }
   function freeze() { frozen = true; }
+  function thaw() { frozen = false; }
   function chunk(sid, start, end, extra) {
     const detail = Object.assign({
       reason: 'chunk_scheduled', speechId: sid, scheduledEndAudioTime: end,
@@ -108,7 +109,7 @@ function createHarness(opts) {
     emit('neko-visit-frame', { type: 'visit_state_change', action: 'started', visit_id: 'V'.repeat(26), side: 'guest' });
   }
   function bySid(sid) { return sent.filter((m) => m.speech_id === sid); }
-  return { win, ctx, sent, pending, emit, advance, chunk, bind, bySid, socket, timers, freeze };
+  return { win, ctx, sent, pending, emit, advance, chunk, bind, bySid, socket, timers, freeze, thaw };
 }
 
 const report = {};
@@ -286,31 +287,44 @@ const report = {};
   report.rebound_needed = h.bySid('later').length;
 }
 
-// AudioContext 被挂起（时钟停住）：不能无限回报 ended:false，静置上限后丢掉、定时器停下
+// AudioContext 被挂起（时钟停住）：暂停回报、不删记录；恢复后接着报，结束标记照常收口
 {
   const h = createHarness();
   h.bind();
   h.ctx.currentTime = 10;
   h.chunk('sid', 10, 12);
   h.advance(500);
+  h.emit('neko-audio-stream-closed', { speechId: 'sid' });
   h.freeze();
+  const before = h.bySid('sid').length;
   h.advance(180000);
-  const tail = h.bySid('sid').filter((m) => m.at >= 10.5);
-  report.frozen_progress_total = tail.length;
-  report.frozen_timers_left = h.timers.length;
+  report.frozen_progress_total = h.bySid('sid').length - before;
+  h.thaw();
+  h.advance(3000);
+  const finals = h.bySid('sid').filter((m) => m.ended && m.final);
+  report.frozen_resumed_finals = finals.length;
+  report.frozen_final_played = finals.length ? finals[0].played_ms : null;
 }
 
-// 串门开始之前（建房 / 等邀请等）收到的状态帧不让 pacer 开始跟踪普通对话
+// 串门开始之前（建房 / 等邀请 / 入房途中重连 / 开始前就中止）收到的状态帧不让 pacer 跟踪普通对话
 {
   const h = createHarness();
   h.emit('neko-visit-bound', { socket: h.socket });
-  for (const action of ['pending', 'invite_ready', 'joining', 'awaiting_accept']) {
-    h.emit('neko-visit-frame', { type: 'visit_state_change', action, visit_id: 'V'.repeat(26) });
+  const V = 'V'.repeat(26);
+  for (const action of ['pending', 'invite_ready', 'joining', 'reconnecting', 'awaiting_accept']) {
+    h.emit('neko-visit-frame', { type: 'visit_state_change', action, visit_id: V });
   }
   h.ctx.currentTime = 10;
   h.chunk('ordinary', 10, 11);
   h.advance(2000);
   report.pre_start_sent = h.sent.length;
+  // 开始之前就中止（邀请过期 / 被拒）：ending / ended 不开收尾窗口
+  for (const action of ['ending', 'ended']) {
+    h.emit('neko-visit-frame', { type: 'visit_state_change', action, visit_id: V });
+  }
+  h.chunk('ordinary2', h.ctx.currentTime, h.ctx.currentTime + 1);
+  h.advance(2000);
+  report.aborted_before_start_sent = h.sent.length;
   h.emit('neko-visit-frame', { type: 'visit_state_change', action: 'started', visit_id: 'V'.repeat(26) });
   h.chunk('line', h.ctx.currentTime, h.ctx.currentTime + 1);
   h.advance(2000);
@@ -457,14 +471,16 @@ def test_post_visit_segments_report_and_socket_swap_needs_rebind(report):
     assert report["rebound_needed"] == 0
 
 
-def test_frozen_audio_clock_stops_reporting_after_the_stall_cap(report):
-    # 120 s 上限、4 Hz：最多约 480 条，之后零回报、定时器停下（不加上限则 180 s 内约 720 条且永不停）
-    assert 0 < report["frozen_progress_total"] <= 490
-    assert report["frozen_timers_left"] == 0
+def test_frozen_audio_clock_pauses_reporting_and_resumes_to_the_final(report):
+    # 时钟停住的 180 s 里零回报（不暂停则约 720 条）；记录不删，恢复后照常报出唯一的 final
+    assert report["frozen_progress_total"] == 0
+    assert report["frozen_resumed_finals"] == 1
+    assert 1900 <= report["frozen_final_played"] <= 2100
 
 
 def test_pre_start_state_frames_do_not_arm_the_pacer(report):
     assert report["pre_start_sent"] == 0
+    assert report["aborted_before_start_sent"] == 0
     assert report["after_start_sent"] is True
 
 

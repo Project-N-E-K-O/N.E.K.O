@@ -112,7 +112,10 @@
         });
     }
 
-    /** 总闸开时显示所有「串门」分组入口（设置弹窗每次创建时调一次）。 */
+    /**
+     * 总闸开时显示所有「串门」分组入口：每次打开设置弹窗（neko-avatar-popup-opening）都调；
+     * 弹窗创建时与本脚本加载时也各调一次，让第一次打开时入口已经就位、不闪一下。
+     */
     function revealEntries() {
         return probe().then(function (result) {
             var entries = document.querySelectorAll('[' + ENTRY_ATTR + ']');
