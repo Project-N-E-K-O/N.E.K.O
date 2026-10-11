@@ -236,6 +236,21 @@ const report = {};
   report.cleared = h.bySid('sid').filter((m) => m.ended).map((m) => [m.final, m.played_ms]);
 }
 
+// 整段还在 lookahead 里就被清掉：只报一次排空，之后不再发进度（Codex P2）
+{
+  const h = createHarness();
+  h.bind();
+  h.ctx.currentTime = 10;
+  h.chunk('sid', 12, 14);
+  h.advance(300);
+  h.emit('neko-speech-playback-state', { reason: 'clear_audio_queue', active: false, audioContextTime: h.ctx.currentTime });
+  h.advance(300);
+  const before = h.bySid('sid').length;
+  report.pre_start_cleared = h.bySid('sid').filter((m) => m.ended).map((m) => [m.final, m.played_ms]);
+  h.advance(3000);
+  report.pre_start_cleared_more = h.bySid('sid').length - before;
+}
+
 // 没 visit_bind：一律不回报；串门未开始：不跟踪
 {
   const h = createHarness();
@@ -379,6 +394,11 @@ def test_cleared_queue_counts_as_a_non_final_drain(report):
     assert len(report["cleared"]) == 1
     final, played = report["cleared"][0]
     assert final is False and 400 <= played <= 600
+
+
+def test_clearing_a_speech_still_in_lookahead_drains_once_and_stops(report):
+    assert report["pre_start_cleared"] == [[False, 0]]
+    assert report["pre_start_cleared_more"] == 0
 
 
 def test_nothing_is_sent_before_bind_or_outside_a_visit(report):

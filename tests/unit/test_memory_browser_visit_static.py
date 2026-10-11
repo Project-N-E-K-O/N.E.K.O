@@ -94,6 +94,7 @@ def test_visit_endpoint_literals_have_no_trailing_slash():
         "/api/visit/memory/peers",
         "/api/visit/memory/forget",
         "/api/visit/memory/forget_all",
+        "/api/visit/memory/forget/discard_unreadable",
         "/api/visit/contacts/block",
         "/api/visit/history",
         "/api/visit/report",
@@ -272,6 +273,33 @@ def test_forget_requests_are_only_sent_after_confirmation():
     assert "body: catgirl ? { catgirl: catgirl } : {}" in forget_all
     html = read(HTML_PATH)
     assert 'id="memory-visit-confirm-scope-checkbox"' in html
+
+
+def test_unreadable_forget_record_offers_the_confirmed_discard_entry():
+    # 读不出的清除记录挡住清除时（503 reason:'forget_record_unreadable'）不提示「稍后重试」，
+    # 而是给出丢弃入口；丢弃请求只在二次确认之后发，带 confirm:true
+    section = visit_section()
+    assert "const VISIT_FORGET_RECORD_UNREADABLE = 'forget_record_unreadable';" in section
+    errors = function_body("visitErrorText")
+    assert errors.index("isVisitForgetRecordUnreadable(result)") < errors.index("result.status === 503")
+    assert "visitText('errorForgetRecordUnreadable'" in errors
+    for submit in ("submitVisitForget", "submitVisitForgetAll"):
+        assert "showVisitDiscardEntry(isVisitForgetRecordUnreadable(result));" in function_body(submit), submit
+    uses = [m.start() for m in re.finditer(r"\bVISIT_DISCARD_UNREADABLE_URL\b", section)]
+    assert len(uses) == 2 and enclosing_function(section, uses[1]) == "submitVisitDiscardUnreadable"
+    callers = {enclosing_function(section, m.start())
+               for m in re.finditer(r"\bsubmitVisitDiscardUnreadable\(", section)} - {"submitVisitDiscardUnreadable"}
+    assert callers == {"confirmVisitAction"}
+    discard = function_body("submitVisitDiscardUnreadable")
+    assert "body: { confirm: true }" in discard
+    assert "visitResultCode(result) === 'discard_failed'" in discard
+    request = function_body("requestVisitDiscardUnreadable")
+    assert "openVisitConfirm({ kind: 'discard_unreadable' });" in request
+    assert "visitRequest(" not in request
+    assert "bind('memory-visit-discard-unreadable', requestVisitDiscardUnreadable);" in function_body(
+        "initVisitMemoryPanel")
+    html = read(HTML_PATH)
+    assert re.search(r'<button[^>]*id="memory-visit-discard-unreadable"[^>]*\bhidden\b', html)
 
 
 # ── CSRF 与错误码 ─────────────────────────────────────────────────────

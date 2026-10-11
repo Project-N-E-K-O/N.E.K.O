@@ -2623,7 +2623,13 @@
             "errorUnknownVisit": "The server has no record of this visit (it may be past the retention period).",
             "errorRetryLater": "The memory service is not available yet (it may still be loading). Please try again later.",
             "errorForbidden": "The request did not pass the local check: visit memories can only be managed from a page opened on this computer. Please refresh the page and try again.",
-            "errorGeneric": "Something went wrong. Please try again later."
+            "errorGeneric": "Something went wrong. Please try again later.",
+            "errorForgetRecordUnreadable": "A damaged clearing record is blocking this, so retrying will not help. Discard the damaged record first, then clear again.",
+            "discardUnreadable": "Discard damaged clearing records",
+            "discardUnreadableConfirm": "This moves the unreadable clearing records into a quarantine folder (the files are not deleted). The clearing they recorded may not have finished; if needed, clear again after discarding.",
+            "confirmDiscard": "Discard",
+            "discardDone": "Discarded {{count}} damaged clearing record(s). You can clear again now.",
+            "errorDiscardFailed": "Some damaged records could not be moved ({{count}} moved). Please try again later."
         }
     },
     "storage": {

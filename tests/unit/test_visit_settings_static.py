@@ -100,7 +100,7 @@ def test_group_entry_starts_hidden_and_follows_the_release_switch():
     assert "visitSettingsBtn.style.display = 'none';" in block
     assert "data-neko-visit-settings-entry" in block
     visit = _read(VISIT_SETTINGS)
-    assert "fetch('/api/visit/state?catgirl=' + encodeURIComponent(catgirl)" in visit
+    assert "var url = '/api/visit/state?catgirl=' + encodeURIComponent(catgirl);" in visit
     assert "body.enabled === true" in visit
     assert "body.default_tier" in visit
     assert "/static/visit/visit-settings.js" in _read(INDEX)
@@ -134,9 +134,11 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const SRC = fs.readFileSync(__SRC__, 'utf8');
 
-async function load(stateBody) {
+async function load(stateBody, opts) {
+  opts = opts || {};
   const opened = [];
   const fetched = [];
+  const refreshed = [];
   const entries = [{ style: { display: 'none' } }, { style: { display: 'none' } }];
   const tiers = [{ textContent: '' }];
   const storage = { data: {}, getItem(k) { return this.data[k] ?? null; }, setItem(k, v) { this.data[k] = String(v); } };
@@ -144,7 +146,11 @@ async function load(stateBody) {
     lanlan_config: { lanlan_name: '小八' },
     addEventListener() {}, dispatchEvent() { return true; },
     openVisitPersonaPreview(name, opts) { opened.push([name, opts]); },
-    nekoLocalMutationSecurity: { async getMutationHeaders() { return { 'X-CSRF-Token': 'tok' }; } },
+    nekoLocalMutationSecurity: {
+      token: opts.staleToken ? 'old' : 'tok',
+      async getMutationHeaders() { return { 'X-CSRF-Token': this.token }; },
+      async refreshToken() { refreshed.push(1); this.token = 'tok'; return this.token; },
+    },
   };
   win.window = win;
   const document = {
@@ -155,12 +161,19 @@ async function load(stateBody) {
   const sandbox = {
     window: win, document, console, localStorage: storage, CustomEvent: class { constructor(t, i) { this.type = t; this.detail = (i || {}).detail; } },
     encodeURIComponent,
-    fetch: async (url, init) => { fetched.push([url, init && init.headers]); return { ok: true, async json() { return stateBody; } }; },
+    fetch: async (url, init) => {
+      fetched.push([url, init && init.headers]);
+      if (init && init.headers && init.headers['X-CSRF-Token'] === 'old') {
+        const body = { ok: false, error_code: 'csrf_validation_failed' };
+        return { ok: false, status: 403, clone() { return this; }, async json() { return body; } };
+      }
+      return { ok: true, status: 200, clone() { return this; }, async json() { return stateBody; } };
+    },
   };
   vm.createContext(sandbox);
   vm.runInContext(SRC, sandbox, { filename: 'visit-settings.js' });
   await win.nekoVisitSettings.revealEntries();
-  return { win, opened, fetched, entries, tiers, storage };
+  return { win, opened, fetched, entries, tiers, storage, refreshed };
 }
 
 (async () => {
@@ -181,6 +194,10 @@ async function load(stateBody) {
   on.win.nekoVisitSettings.setCrop('full');
   on.win.nekoVisitSettings.setCrop('bogus');
   report.crop_after = on.win.nekoVisitSettings.getCrop();
+  const stale = await load({ enabled: true, default_tier: 'sd600' }, { staleToken: true });
+  report.stale_display = stale.entries.map((e) => e.style.display);
+  report.stale_refreshed = stale.refreshed.length;
+  report.stale_fetches = stale.fetched.length;
   process.stdout.write(JSON.stringify(report));
 })().catch((e) => { console.error(e); process.exit(1); });
 """
@@ -205,3 +222,6 @@ def test_release_switch_probe_and_first_enable_persona_prompt():
     # 只在首次打开时弹一次，且要求确认
     assert out["opened"] == [["小八", {"requireConfirm": True}]]
     assert out["crop_default"] == "upper" and out["crop_after"] == "full"
+    # 后端重启后缓存的 CSRF token 失效：刷新一次再探，不把 403 当成总闸关（Codex P2）
+    assert out["stale_display"] == ["", ""]
+    assert out["stale_refreshed"] == 1 and out["stale_fetches"] == 2

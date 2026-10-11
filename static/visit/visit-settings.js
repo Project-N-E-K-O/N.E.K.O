@@ -48,16 +48,43 @@
         return {};
     }
 
+    async function isStaleCsrf(response) {
+        if (response.status !== 403) return false;
+        try {
+            var body = await response.clone().json();
+            return !!(body && body.error_code === 'csrf_validation_failed');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async function refreshCsrfToken() {
+        var security = window.nekoLocalMutationSecurity;
+        if (!security || typeof security.refreshToken !== 'function') return false;
+        try {
+            return !!(await security.refreshToken());
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async function fetchState(catgirl) {
+        var url = '/api/visit/state?catgirl=' + encodeURIComponent(catgirl);
+        var response = await fetch(url, { cache: 'no-store', headers: await requestHeaders() });
+        // 后端重启后页面缓存的 CSRF token 失效：刷新一次再试，不能把 403 当成总闸关
+        if (await isStaleCsrf(response) && await refreshCsrfToken()) {
+            response = await fetch(url, { cache: 'no-store', headers: await requestHeaders() });
+        }
+        return response;
+    }
+
     function probe() {
         if (probePromise) return probePromise;
         probePromise = (async function () {
             var catgirl = currentCatgirl();
             if (!catgirl) return probed;
             try {
-                var response = await fetch('/api/visit/state?catgirl=' + encodeURIComponent(catgirl), {
-                    cache: 'no-store',
-                    headers: await requestHeaders()
-                });
+                var response = await fetchState(catgirl);
                 if (!response.ok) return probed;
                 var body = await response.json();
                 probed = {

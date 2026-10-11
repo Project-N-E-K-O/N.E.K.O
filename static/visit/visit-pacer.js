@@ -102,6 +102,8 @@
             rec = {
                 sid: sid,
                 chunks: [],
+                // 排过音频（哪怕之后整段在开播前被清掉）：之后按排程终点判排空，不再等结束标记
+                hadAudio: false,
                 scheduledEnd: 0,
                 closed: false,
                 drainReported: false,
@@ -157,7 +159,7 @@
                 return;
             }
             var played = playedMs(rec, t);
-            var drained = rec.chunks.length > 0 ? t >= rec.scheduledEnd : rec.closed;
+            var drained = rec.hadAudio ? t >= rec.scheduledEnd : rec.closed;
             if (!drained) {
                 if (wall - rec.lastSentAt >= PROGRESS_INTERVAL_MS) send(rec, played, false);
                 return;
@@ -192,6 +194,7 @@
         if (finalized.has(sid)) return;
         var rec = getRecord(sid);
         rec.chunks.push({ start: Math.min(start, end), end: end });
+        rec.hadAudio = true;
         rec.scheduledEnd = Math.max(rec.scheduledEnd, end);
         rec.drainReported = false;
         rec.lastActivity = wallNow();

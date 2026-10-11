@@ -2623,7 +2623,13 @@
             "errorUnknownVisit": "伺服器上找不到這一場（可能已過保留期）。",
             "errorRetryLater": "記憶服務暫時無法使用（可能還在載入），請稍後重試。",
             "errorForbidden": "請求沒有通過本機驗證：串門記憶只能在這台電腦上開啟的頁面裡管理。請重新整理頁面後重試。",
-            "errorGeneric": "操作失敗，請稍後重試。"
+            "errorGeneric": "操作失敗，請稍後重試。",
+            "errorForgetRecordUnreadable": "有一份損壞的清除紀錄擋住了清除，重試也不會成功。可以先丟棄這份損壞紀錄，再重新清除。",
+            "discardUnreadable": "丟棄損壞的清除紀錄",
+            "discardUnreadableConfirm": "這會把讀不出的清除紀錄移到隔離目錄（不刪除檔案）。損壞紀錄裡那次清除可能沒做完；需要的話，丟棄後請重新清除。",
+            "confirmDiscard": "確認丟棄",
+            "discardDone": "已丟棄 {{count}} 份損壞的清除紀錄，可以重新清除了。",
+            "errorDiscardFailed": "有損壞紀錄沒能移走（已移走 {{count}} 份），請稍後再試。"
         }
     },
     "storage": {

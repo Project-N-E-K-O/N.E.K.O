@@ -2623,7 +2623,13 @@
             "errorUnknownVisit": "服务器上找不到这一场（可能已过保留期）。",
             "errorRetryLater": "记忆服务暂时不可用（可能还在加载），请稍后重试。",
             "errorForbidden": "请求没有通过本机校验：串门记忆只能在这台电脑上打开的页面里管理。请刷新页面后重试。",
-            "errorGeneric": "操作失败，请稍后重试。"
+            "errorGeneric": "操作失败，请稍后重试。",
+            "errorForgetRecordUnreadable": "有一份损坏的清除记录挡住了清除，重试也不会成功。可以先丢弃这份损坏记录，再重新清除。",
+            "discardUnreadable": "丢弃损坏的清除记录",
+            "discardUnreadableConfirm": "这会把读不出的清除记录挪进隔离目录（不删除文件）。损坏记录里那次清除可能没做完；需要的话，丢弃后请重新清除。",
+            "confirmDiscard": "确认丢弃",
+            "discardDone": "已丢弃 {{count}} 份损坏的清除记录，可以重新清除了。",
+            "errorDiscardFailed": "有损坏记录没能挪走（已挪走 {{count}} 份），请稍后再试。"
         }
     },
     "storage": {

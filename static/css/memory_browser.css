@@ -4595,3 +4595,12 @@ body[data-memory-layout="compact"] .editor {
         animation-duration: 1.4s;
     }
 }
+
+#memory-visit-discard-unreadable {
+    align-self: flex-start;
+    margin-top: 8px;
+}
+
+#memory-visit-discard-unreadable[hidden] {
+    display: none;
+}

@@ -316,17 +316,43 @@ def test_peers_survive_a_damaged_cat_record(env):
     assert row["chars"][0]["display_name"] == ""
 
 
-def test_unreadable_sentinel_answers_retryable_503(env):
+@pytest.mark.parametrize("damaged", ["sentinel", "log"])
+def test_unreadable_forget_record_answers_its_reason_not_retry(env, damaged):
+    # 读不出的清除记录：重试永远失败，回带 reason 的不可重试 503，页面据此给出丢弃入口
     client, server, tmp_path, _state = env
     _seed(tmp_path)
     sentinel_dir = tmp_path / "visit_revocations"
     sentinel_dir.mkdir()
-    (sentinel_dir / f"clearing-{'0' * 32}.json").write_text("{torn", encoding="utf-8")
+    name = f"clearing-{'0' * 32}.json" if damaged == "sentinel" else f"{'0' * 32}.json"
+    (sentinel_dir / name).write_text("{torn", encoding="utf-8")
+    for path, body in (("/api/visit/memory/forget", {"catgirl": "A", "peer_uid": PEER_X}),
+                       ("/api/visit/memory/forget_all", {"catgirl": "A"}),
+                       ("/api/visit/memory/forget_all", {})):
+        resp = client.post(path, json=body, headers=GOOD)
+        assert resp.status_code == 503, (path, resp.text)
+        assert resp.json() == {"ok": False, "code": "forget_failed",
+                               "reason": "forget_record_unreadable", "retry": False}
+    assert server.requests == []
+    # 丢弃之后同一次清除照常做完
+    assert client.post("/api/visit/memory/forget/discard_unreadable", json={"confirm": True},
+                       headers=GOOD).json() == {"ok": True, "discarded": 1}
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
+    assert resp.status_code == 200 and resp.json()["ok"] is True
+
+
+def test_other_forget_failures_stay_retryable_without_reason(env, monkeypatch):
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+
+    async def broken(*_args, **_kwargs):
+        raise OSError("disk hiccup")
+
+    monkeypatch.setattr(memory_routes, "forget_person", broken)
+    monkeypatch.setattr(memory_routes, "forget_all", broken)
     for path, body in (("/api/visit/memory/forget", {"catgirl": "A", "peer_uid": PEER_X}),
                        ("/api/visit/memory/forget_all", {"catgirl": "A"})):
         resp = client.post(path, json=body, headers=GOOD)
-        assert resp.status_code == 503 and resp.json()["retry"] is True
-    assert server.requests == []
+        assert resp.status_code == 503 and resp.json() == {"ok": False, "code": "forget_failed", "retry": True}
 
 
 @pytest.mark.parametrize("path,body", [

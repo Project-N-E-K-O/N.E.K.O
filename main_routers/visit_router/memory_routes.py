@@ -299,6 +299,17 @@ async def _nothing_to_forget(
     return not visits
 
 
+def _unreadable_record_refusal(op: str, exc: RevocationLogUnreadable) -> JSONResponse:
+    """503 for a forget blocked by an unreadable forget record: retrying cannot help.
+
+    The way out is ``POST /memory/forget/discard_unreadable`` (the page offers
+    it on ``reason == 'forget_record_unreadable'``); every other failure stays
+    the plain retryable ``forget_failed``.
+    """
+    logger.error("visit %s blocked by an unreadable forget record: %r", op, exc)
+    return _error(503, "forget_failed", reason=memory_bridge.FORGET_REFUSAL_UNREADABLE, retry=False)
+
+
 @router.post("/memory/forget")
 async def forget_memory_peer(request: Request):
     """"Forget this person" under one local character (local visit memory only)."""
@@ -347,7 +358,9 @@ async def forget_memory_peer(request: Request):
         # 拿到守卫时按 uid 解析不出名字：刚被删除与角色配置一时读不出分不清，
         # 回可重试的 503（真删了的话，重试时入口就会回 404）
         return _error(503, "forget_failed", retry=True)
-    except (RosterCorruptError, RevocationLogUnreadable, OSError, ValueError) as exc:
+    except RevocationLogUnreadable as exc:
+        return _unreadable_record_refusal("forget", exc)
+    except (RosterCorruptError, OSError, ValueError) as exc:
         logger.error("visit forget failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)
     if not outcome.done:
@@ -390,7 +403,9 @@ async def forget_all_memory(request: Request):
         )
     except VisitActive:
         return _error(409, "visit_active")
-    except (RosterCorruptError, RevocationLogUnreadable, OSError, ValueError) as exc:
+    except RevocationLogUnreadable as exc:
+        return _unreadable_record_refusal("forget_all", exc)
+    except (RosterCorruptError, OSError, ValueError) as exc:
         logger.error("visit forget_all failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)
     if not outcome.done:

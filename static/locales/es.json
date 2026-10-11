@@ -2623,7 +2623,13 @@
             "errorUnknownVisit": "El servidor no tiene registro de esta visita (puede que haya pasado el periodo de conservación).",
             "errorRetryLater": "El servicio de memoria todavía no está disponible (puede que aún se esté cargando). Inténtalo de nuevo más tarde.",
             "errorForbidden": "La solicitud no superó la comprobación local: los recuerdos de visitas solo se pueden gestionar desde una página abierta en este ordenador. Actualiza la página e inténtalo de nuevo.",
-            "errorGeneric": "No se pudo completar la acción. Inténtalo de nuevo más tarde."
+            "errorGeneric": "No se pudo completar la acción. Inténtalo de nuevo más tarde.",
+            "errorForgetRecordUnreadable": "Un registro de borrado dañado lo está bloqueando, así que reintentar no servirá. Descarta primero el registro dañado y luego vuelve a borrar.",
+            "discardUnreadable": "Descartar registros de borrado dañados",
+            "discardUnreadableConfirm": "Esto mueve los registros de borrado ilegibles a una carpeta de cuarentena (los archivos no se eliminan). El borrado que registraban puede no haber terminado; si hace falta, vuelve a borrar después de descartarlos.",
+            "confirmDiscard": "Descartar",
+            "discardDone": "Se descartaron {{count}} registro(s) de borrado dañado(s). Ya puedes volver a borrar.",
+            "errorDiscardFailed": "Algunos registros dañados no se pudieron mover ({{count}} movidos). Inténtalo de nuevo más tarde."
         }
     },
     "storage": {

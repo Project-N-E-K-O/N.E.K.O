@@ -111,6 +111,8 @@
     const VISIT_PEERS_URL = '/api/visit/memory/peers';
     const VISIT_FORGET_URL = '/api/visit/memory/forget';
     const VISIT_FORGET_ALL_URL = '/api/visit/memory/forget_all';
+    const VISIT_DISCARD_UNREADABLE_URL = '/api/visit/memory/forget/discard_unreadable';
+    const VISIT_FORGET_RECORD_UNREADABLE = 'forget_record_unreadable';
     const VISIT_BLOCK_URL = '/api/visit/contacts/block';
     const VISIT_HISTORY_URL = '/api/visit/history';
     const VISIT_REPORT_URL = '/api/visit/report';
@@ -256,6 +258,11 @@
             return visitText('errorNetwork', '连接本机服务失败，请稍后重试。');
         }
         const code = visitResultCode(result);
+        if (isVisitForgetRecordUnreadable(result)) {
+            // 读不出的清除记录挡住了清除：重试永远失败，出口是丢弃它（见 showVisitDiscardEntry）
+            return visitText('errorForgetRecordUnreadable',
+                '有一份损坏的清除记录挡住了清除，重试也不会成功。可以先丢弃这份损坏记录，再重新清除。');
+        }
         if (code === 'visit_active') {
             return visitText('errorVisitActive', '正在串门中，请先结束这场串门再操作。');
         }
@@ -288,6 +295,15 @@
             return visitText('errorForbidden', '请求没有通过本机校验：串门记忆只能在这台电脑上打开的页面里管理。请刷新页面后重试。');
         }
         return visitText('errorGeneric', '操作失败，请稍后重试。');
+    }
+
+    function isVisitForgetRecordUnreadable(result) {
+        return !!(result && result.payload && result.payload.reason === VISIT_FORGET_RECORD_UNREADABLE);
+    }
+
+    function showVisitDiscardEntry(show) {
+        const button = document.getElementById('memory-visit-discard-unreadable');
+        if (button) button.hidden = !show;
     }
 
     function visitPeerLabel(peer) {
@@ -539,6 +555,10 @@
             scopeLabel.textContent = visitText('forgetAllOnlyCurrent', '只清当前角色「{{name}}」（不勾选则清除这台电脑上所有角色的串门记忆）',
                 { name: action.catgirl });
             ok.textContent = visitText('confirmForget', '确认清除');
+        } else if (action.kind === 'discard_unreadable') {
+            message.textContent = visitText('discardUnreadableConfirm',
+                '这会把读不出的清除记录挪进隔离目录（不删除文件）。损坏记录里那次清除可能没做完；需要的话，丢弃后请重新清除。');
+            ok.textContent = visitText('confirmDiscard', '确认丢弃');
         } else if (action.kind === 'block') {
             const label = visitPeerLabel(action.peer);
             message.textContent = visitText('blockConfirm',
@@ -561,6 +581,11 @@
         openVisitConfirm({ kind: 'forget_all', catgirl: visitMemoryState.catgirl });
     }
 
+    function requestVisitDiscardUnreadable() {
+        if (visitMemoryState.busy) return;
+        openVisitConfirm({ kind: 'discard_unreadable' });
+    }
+
     function requestVisitBlock(peer) {
         if (visitMemoryState.busy) return;
         openVisitConfirm({ kind: 'block', peer: peer });
@@ -578,6 +603,8 @@
             await submitVisitForgetAll(onlyCurrent ? action.catgirl : '');
         } else if (action.kind === 'block') {
             await submitVisitBlock(action.peer, true);
+        } else if (action.kind === 'discard_unreadable') {
+            await submitVisitDiscardUnreadable();
         }
     }
 
@@ -596,6 +623,7 @@
             console.warn('[MemoryBrowser] visit forget request failed:', error);
         }
         setVisitBusy(false);
+        showVisitDiscardEntry(isVisitForgetRecordUnreadable(result));
         if (result && result.status === 200 && result.payload.ok === true) {
             setVisitStatus('memory-visit-status', visitText('forgetPersonDone', '已清除她对这个人的串门记忆（只清本机）。'), 'success');
         } else {
@@ -617,9 +645,37 @@
             console.warn('[MemoryBrowser] visit forget_all request failed:', error);
         }
         setVisitBusy(false);
+        showVisitDiscardEntry(isVisitForgetRecordUnreadable(result));
         if (result && result.status === 200 && result.payload.ok === true) {
             setVisitStatus('memory-visit-status', visitText('forgetAllDone', '已清除 {{count}} 人的串门记忆（只清本机）。',
                 { count: visitCount(result.payload.forgotten) }), 'success');
+        } else {
+            setVisitStatus('memory-visit-status', visitErrorText(result), 'error');
+        }
+        await loadVisitPeers();
+    }
+
+    async function submitVisitDiscardUnreadable() {
+        if (visitMemoryState.busy) return;
+        setVisitBusy(true);
+        setVisitStatus('memory-visit-status', visitText('working', '处理中…'));
+        let result = null;
+        try {
+            result = await visitRequest(VISIT_DISCARD_UNREADABLE_URL, {
+                method: 'POST',
+                body: { confirm: true }
+            });
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit discard_unreadable request failed:', error);
+        }
+        setVisitBusy(false);
+        if (result && result.status === 200 && result.payload.ok === true) {
+            showVisitDiscardEntry(false);
+            setVisitStatus('memory-visit-status', visitText('discardDone', '已丢弃 {{count}} 份损坏的清除记录，可以重新清除了。',
+                { count: visitCount(result.payload.discarded) }), 'success');
+        } else if (result && visitResultCode(result) === 'discard_failed') {
+            setVisitStatus('memory-visit-status', visitText('errorDiscardFailed', '有损坏记录没能挪走（已挪走 {{count}} 份），请稍后再试。',
+                { count: visitCount(result.payload.discarded) }), 'error');
         } else {
             setVisitStatus('memory-visit-status', visitErrorText(result), 'error');
         }
@@ -1090,6 +1146,7 @@
             loadVisitHistory(false);
         });
         bind('memory-visit-forget-all', requestVisitForgetAll);
+        bind('memory-visit-discard-unreadable', requestVisitDiscardUnreadable);
         bind('memory-visit-confirm-cancel', closeVisitConfirm);
         bind('memory-visit-confirm-ok', function () {
             confirmVisitAction();
