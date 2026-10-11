@@ -1902,6 +1902,7 @@
         "motionStopped": "Movimento interrompido",
         "expressionCleared": "Expressão limpa",
         "cannotDeleteBoundModel": "Não é possível excluir o modelo em uso",
+        "deleteSkippedBound": "{{count}} modelo(s) em uso ignorado(s)",
         "modelInUse": "Em uso",
         "pngtuberTalkPreview": "Testar fala",
         "pngtuberStatePreview": "Prévia de estado",

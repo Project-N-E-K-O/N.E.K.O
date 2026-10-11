@@ -1902,6 +1902,7 @@
         "motionStopped": "モーションを停止しました",
         "expressionCleared": "表情をクリアしました",
         "cannotDeleteBoundModel": "現在使用中のモデルは削除できません",
+        "deleteSkippedBound": "使用中のモデル {{count}} 件をスキップしました",
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "発話をテスト",
         "pngtuberStatePreview": "状態プレビュー",

@@ -1902,6 +1902,7 @@
         "motionStopped": "Анимация остановлена",
         "expressionCleared": "Выражение очищено",
         "cannotDeleteBoundModel": "Нельзя удалить модель, которая сейчас используется",
+        "deleteSkippedBound": "Пропущено используемых моделей: {{count}}",
         "modelInUse": "Используется",
         "pngtuberTalkPreview": "Проверить речь",
         "pngtuberStatePreview": "Предпросмотр состояния",

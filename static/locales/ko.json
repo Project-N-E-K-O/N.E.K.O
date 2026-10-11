@@ -1902,6 +1902,7 @@
         "motionStopped": "동작이 중지되었습니다",
         "expressionCleared": "표정이 지워졌습니다",
         "cannotDeleteBoundModel": "현재 사용 중인 모델은 삭제할 수 없습니다",
+        "deleteSkippedBound": "사용 중인 모델 {{count}}개를 건너뛰었습니다",
         "modelInUse": "사용 중",
         "pngtuberTalkPreview": "말하기 테스트",
         "pngtuberStatePreview": "상태 미리보기",

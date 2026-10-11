@@ -1393,22 +1393,76 @@ document.addEventListener('DOMContentLoaded', async () => {
         dispatchModelManagerChange(modelSelect, { suppress: true });
     }
 
+    // PNGTuber 预览世代号：每次 previewPNGTuberConfig 通过入口检查后自增。两个预览重叠时
+    // （A 仍在加载又选了 B，或切走再切回触发新预览），完成顺序没有保证，而 currentModelType
+    // 无法区分同类型的两次预览——旧完成若只查类型，会把 currentModelInfo/成功提示/状态下拉
+    // 覆盖回旧模型，保存时还会混入旧元数据。与 pngtuber-core 的 loadToken 同一模式：
+    // 运行时层丢弃旧加载，页面层用世代号丢弃旧提交。
+    let pngtuberPreviewGeneration = 0;
+
+    // 加载进行中的 PNGTuber 预览记录（入口设置、预览退出时清空）：currentModelInfo 现在
+    // 要到头像加载被接受后才提交，加载窗口内的模型改由它供 deleteSelectedModels 的安全
+    // 检查与删除列表的 isBound 识别，保持与旧「入口即写 currentModelInfo」相同的
+    // 「加载中的模型不可删」保护。
+    let pendingPNGTuberPreview = null;
+
+    // 已在检查点提交、但预览尚未走完（成功收尾/撤销）的 currentModelInfo 条目引用：
+    // metadata fetch 挂起时预览的 finally 永远不执行，离开 pngtuber 的撤销只能由
+    // switchModelDisplay 的离开块按此登记代行（同样按条目对象同一性判定）。
+    let unfinalizedPNGTuberCommit = null;
+
+    // ⚠️ 位置约束：以下两个世代号声明必须位于初始化处第一个
+    // `await switchModelDisplay(savedModelType, savedSubType)` 之前——整个控制器在
+    // DOMContentLoaded 的 async 回调里自上而下顺序执行，函数声明虽被提升、
+    // let 绑定在声明语句执行前却处于 TDZ，提前调用会抛 ReferenceError，
+    // 被初始化处的 catch 吞成「切换显示模式失败」，持久化的模型类型恢复静默失效。
+    // （tests/frontend/pngtuber_preview_type_switch_race.test.cjs 有位置断言钉住。）
+
+    // 切换链世代号：每次 switchModelDisplay 入口自增。链条内部的 await（模型列表
+    // 加载等）期间用户可能切走再切回并选了新模型——旧链恢复后若继续为它的
+    // preferredConfig 发起预览，会给旧模型分配比新选择更新的预览世代号，反向顶掉
+    // 用户的新选择。预览世代号只在预览发起时分配，识别不了「整条切换链已过期」，
+    // 需要这一层链世代号在发起预览前复查。
+    let modelDisplaySwitchGeneration = 0;
+
+    // 用户手动选择世代号：真实的（非 suppress 的）模型下拉选择**被接受**时自增。
+    // 角色配置自动加载链在发起外部请求前捕获它、落地前复查——同模式下的手动选择
+    // （如记忆模式已是 pngtuber、初始化已填充下拉时用户选了 B）不会触发
+    // switchModelDisplay，切换链世代号对它无感知；没有这个世代号，自动加载链
+    // 会在请求返回后以「最新链」的身份预览角色模型 A，反向顶掉用户刚选的 B，
+    // 且后续保存的就是 A。
+    let userModelSelectionGeneration = 0;
+
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
+        // 入口即校验类型：调用链（如角色配置加载）在 await 期间可能已被用户手动切换打断，
+        // 此时不再启动过期预览，省掉一次无谓的 PNG/元数据加载。
+        // 注意自增放在入口检查之后：过期调用不得作废仍在进行的合法预览。
+        if (currentModelType !== 'pngtuber') return false;
+        const previewGeneration = ++pngtuberPreviewGeneration;
+        // 本预览仍是最新一代且类型未切走。中间检查点、catch 静默判定、finally
+        // 登记清理、尾部守卫四处共用同一判定。语义是「未被取消/未过期」而非
+        // 「已成功」——新鲜的加载失败同样满足它（此时照常报错）。
+        const isCurrentPreview = () => previewGeneration === pngtuberPreviewGeneration
+            && currentModelType === 'pngtuber';
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
+        const previewFolder = modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName;
+        // 检查点提交与成功提示共用的本地名称：currentModelInfo 存在按同一性撤销的
+        // 写入者，提示文案不再依赖共享可变状态
+        const committedName = modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber');
         // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
         // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
         // 调用方都已先经过 switchModelDisplay('pngtuber')，单写入者纪律可避免旗标在非 pngtuber 页面
         // 被误置而导致 live2d-init 静默跳过 Live2D/VRM 初始化。
-        currentLive3dSubType = '';
-        currentModelInfo = {
-            name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
-            folder: modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName,
-            path: modelInfo.path || pngtuberConfig.idle_image || '',
-            url: modelInfo.url || pngtuberConfig.idle_image || '',
-            type: 'pngtuber',
-            pngtuber: pngtuberConfig,
-        };
+        // currentModelInfo 也不在入口写入：加载失败或被取代/取消时不能留下 pngtuber 条目，
+        // 提交点在下方的「头像加载被接受」检查点（见该处注释）。
+        // pending 记录带世代号：重叠预览下新预览会覆盖它，旧预览退出时只清理属于自己的记录。
+        pendingPNGTuberPreview = { folder: previewFolder, generation: previewGeneration };
+        // 检查点提交的 currentModelInfo 条目对象引用：撤销判定按「条目同一性」而非
+        // 嵌套的 .pngtuber 同一性——摆放暂存（stageModelManagerPNGTuberPlacement）
+        // 会把 .pngtuber 原地替换成新的合并对象，若比对嵌套引用，暂存过的预览被
+        // 取消时撤销会失配，过期 pngtuber 条目将留在新类型下喂给保存/删除链路。
+        let committedInfo = null;
 
         try {
             if (window.loadPNGTuberAvatar) {
@@ -1416,11 +1470,83 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 throw new Error('PNGTuber runtime not loaded');
             }
-            await loadPNGTuberPreviewControls(pngtuberConfig);
+            // 加载期间可能已有更新的预览发起（同类型重叠），或用户切走了类型：
+            // 被取代的旧预览到此为止，不再加载状态预览控件，也不再提交任何状态。
+            if (!isCurrentPreview()) {
+                return false;
+            }
+            // 检查点：头像已被运行时接受并显示（loadPNGTuberAvatar 内部操作同一容器），
+            // 模型信息在此提交，不能等到状态预览控件的 metadata fetch 之后——该请求可能
+            // 很慢甚至挂起，而期间用户已经能拖拽/缩放 PNG，stageModelManagerPNGTuberPlacement
+            // 会因 !currentModelInfo 拒绝暂存摆放，这些编辑将无法持久化。
+            // 竞态安全性：上面刚复查过世代号+类型；被取代的旧预览到不了这里，更新的预览
+            // 会在它自己的检查点重新提交。
+            currentLive3dSubType = '';
+            committedInfo = {
+                name: committedName,
+                folder: previewFolder,
+                path: modelInfo.path || pngtuberConfig.idle_image || '',
+                url: modelInfo.url || pngtuberConfig.idle_image || '',
+                type: 'pngtuber',
+                pngtuber: pngtuberConfig,
+            };
+            currentModelInfo = committedInfo;
+            unfinalizedPNGTuberCommit = committedInfo;
+            // pending 的删除防护使命随提交结束（此后由 currentModelInfo 接管），
+            // 不陪跑 metadata fetch：该请求是无超时的裸 fetch，一旦挂起，finally
+            // 永远不执行，pending 记录会悬置整个页面会话，让该模型被安全检查
+            // 误拦为「绑定中」而无法删除。
+            if (pendingPNGTuberPreview && pendingPNGTuberPreview.generation === previewGeneration) {
+                pendingPNGTuberPreview = null;
+            }
+            await loadPNGTuberPreviewControls(pngtuberConfig, previewGeneration);
         } catch (error) {
-            console.error('[PNGTuber] preview failed:', error);
-            const message = error && error.message ? error.message : String(error || 'Unknown error');
-            showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
+            // 已被取消/取代的预览（切走类型或被更新预览顶掉）加载失败是预期内事件，
+            // 例如切走后其文件被删除导致 fetch 404——静默丢弃，不在其他类型页面
+            // 弹出无关的 PNGTuber 失败提示。
+            if (isCurrentPreview()) {
+                console.error('[PNGTuber] preview failed:', error);
+                const message = error && error.message ? error.message : String(error || 'Unknown error');
+                showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
+            }
+            return false;
+        } finally {
+            if (pendingPNGTuberPreview && pendingPNGTuberPreview.generation === previewGeneration) {
+                pendingPNGTuberPreview = null;
+            }
+            // 已提交未定稿条目的撤销统一放在出口兜底（正常与异常出口都覆盖），
+            // 但**仅限切走类型**：同类型下被更新预览取代时不撤销——A 已到检查点、
+            // B 尚未提交期间，屏上头像仍是 A，「committed=A + pending=B」正是删除
+            // 防护双槽的设计状态；若在此把 A 清成 null，B 挂起或失败时页面将没有
+            // 任何可保存/可暂存的记录，A 的 folder 也失去删除防护。B 到达自己的
+            // 检查点会覆盖提交。按条目对象同一性判定（摆放暂存会原地替换
+            // .pngtuber，不能比对嵌套引用），绝不触碰其他流程写入的条目。
+            // fetch 挂起时本 finally 不执行，由 switchModelDisplay 离开块按
+            // unfinalizedPNGTuberCommit 登记代行撤销。
+            if (committedInfo && currentModelInfo === committedInfo
+                && currentModelType !== 'pngtuber') {
+                currentModelInfo = null;
+            }
+            if (committedInfo && unfinalizedPNGTuberCommit === committedInfo) {
+                // 登记在「本预览未被取消（仍是最新一代且类型未切走——含新鲜加载
+                // 失败的出口，语义是未过期而非成功）」或「条目已被其他流程覆盖/
+                // 撤销」时清除。被同类型取代且条目仍是 currentModelInfo 时保留——
+                // 否则 B 提交之前用户切走类型，离开块查不到登记、撤销不到 A，
+                // A 的 pngtuber 条目会滞留在新类型下（删除防护 committed 槽持续
+                // 误拦、保存流程读到过期记录）。B 到达自己的检查点会覆盖登记；
+                // 类型切走时上方撤销已把条目清掉，走「已被覆盖」分支清除。
+                if (isCurrentPreview() || currentModelInfo !== committedInfo) {
+                    unfinalizedPNGTuberCommit = null;
+                }
+            }
+        }
+        // 控件加载期间用户可能已切到其他模型类型（pngtuber → live2d/live3d），
+        // 或同类型下已发起更新的预览（A 加载中选了 B）。switchModelDisplay 的新类型分支
+        // 已隐藏 pngtuber 容器并接管显示；pngtuber-core 的 loadPNGTuberAvatar 只保证被
+        // 取代的加载不再 show()，容器可见性与提示的回写发生在这里——迟到的续体必须
+        // 直接退出，否则刚加载完的 PNG 会盖住 live2d/3d 模型，或把旧 PNGTuber 报成当前模型。
+        //（本预览已提交条目的撤销在上方 finally 统一处理。）
+        if (!isCurrentPreview()) {
             return false;
         }
         if (live2dContainer) live2dContainer.style.display = 'none';
@@ -1436,7 +1562,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             pngtuberContainer.classList.remove('hidden');
             pngtuberContainer.style.display = 'block';
         }
-        showStatus(`已加载PNGTuber模型: ${currentModelInfo.name}`, 2000);
+        showStatus(`已加载PNGTuber模型: ${committedName}`, 2000);
 
         if (options.markDirty) {
             window.hasUnsavedChanges = true;
@@ -2038,6 +2164,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
     async function switchModelDisplay(type, subType, options = {}) {
         const previousModelType = currentModelType;
+        const switchGeneration = ++modelDisplaySwitchGeneration;
+        // 离开 pngtuber 时先作废在途预览、再释放其 pending 删除防护：页面层世代号自增
+        // 让迟到完成过不了检查点，运行时层 loadToken 作废让迟到的 loadPNGTuberAvatar
+        // 不再 show()。顺序不能反——若只清防护不作废，「切走→删除在途模型→切回」后
+        // 旧加载完成会把已删除模型重新显示并提交，保存流程还会持久化已不存在的路径；
+        // 若只作废不清防护，挂起的加载会让 pending 悬置、该模型整个会话无法删除。
+        if (previousModelType === 'pngtuber' && type !== 'pngtuber') {
+            pngtuberPreviewGeneration += 1;
+            if (typeof window.cancelPNGTuberAvatarLoads === 'function') {
+                try { window.cancelPNGTuberAvatarLoads(); } catch (_) { /* ignore */ }
+            }
+            pendingPNGTuberPreview = null;
+            // 已在检查点提交、预览却尚未走完的条目离境撤销：metadata fetch 挂起时
+            // 预览自己的 finally 永远不执行，pngtuber 条目会滞留在新类型下——删除
+            // 防护双槽会一直把该 folder 误拦为「绑定中」（整个会话无法删除），保存
+            // 流程也可能复用过期记录。仍按条目对象同一性判定，绝不触碰他人条目。
+            if (unfinalizedPNGTuberCommit && currentModelInfo === unfinalizedPNGTuberCommit) {
+                currentModelInfo = null;
+            }
+            unfinalizedPNGTuberCommit = null;
+        }
         if (previousModelType === 'live2d' && type !== 'live2d' && currentModelInfo && currentModelInfo.type !== 'pngtuber') {
             rememberSelectedLive2DModel(modelSelect?.selectedOptions?.[0]);
         }
@@ -2149,7 +2296,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (pngtuberModelUpload) pngtuberModelUpload.style.display = 'none';
 
             try {
-                await loadPNGTuberModels();
+                // 链过期判定 = 切换链世代号 + 调用方注入的过期条件（如角色自动加载链
+                // 的手动选择世代号复查）。同模式下的手动选择不触发 switchModelDisplay、
+                // 不改链世代号，只靠世代号拦不住「链挂在列表请求时用户选了 B」——
+                // 链内的加载器 DOM 写入与 selectAndPreview 预览都必须认这个合并判定，
+                // 否则链内预览先行提交，调用方返回后的复查为时已晚。
+                const chainStale = () => switchGeneration !== modelDisplaySwitchGeneration
+                    || (typeof options.isStale === 'function' && options.isStale());
+                // 加载器在 DOM 写入前复查链过期：过期链的列表返回不得把共享的
+                // modelSelect 换成 PNGTuber 选项（用户可能已切到 live2d 并由其流程
+                // 填充了下拉，PNGTuber 选项被选中会令 currentModelInfo 被清成 null）
+                await loadPNGTuberModels({ isStale: chainStale });
+                // 切换链过期复查：列表 await 期间用户可能已切走再切回并选了新模型，
+                // 旧链此刻再发起 preferredConfig 预览会拿到更新的预览世代号、反向
+                // 覆盖用户刚做的选择——链已过期则整条放弃（return 触发 finally 的
+                // 教程事件派发，读的是共享 currentModelType，无害）。
+                if (chainStale()) {
+                    return false;
+                }
                 await selectAndPreviewFirstPNGTuberModelAfterModeSwitch(options.preferredPNGTuberConfig || null);
             } catch (error) {
                 console.error('加载PNGTuber模型列表失败:', error);
@@ -2773,6 +2937,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
+        // 链有效性通过返回值传给调用方：角色配置加载（loadCurrentCharacterModel）
+        // 等调用方在自己的 await 返回后可能已「切走又切回并选了新模型」，届时类型
+        // 复查无法识别过期（仍是 pngtuber），调用方必须据此决定是否继续发起预览，
+        // 否则旧链会拿角色模型去领更新的预览世代号、反向覆盖用户的新选择。
+        // 调用方注入的 isStale（手动选择世代号）一并计入。
+        return switchGeneration === modelDisplaySwitchGeneration
+            && !(typeof options.isStale === 'function' && options.isStale());
         } finally {
             _dispatchTutorialEvent();
         }
@@ -3043,9 +3214,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    async function loadPNGTuberModels() {
+    async function loadPNGTuberModels(options = {}) {
+        // 过期判定统一在加载器内做，覆盖所有调用方（切换链传 isStale；上传后/删除后
+        // 的刷新不传参，也至少受类型复查保护）：本加载器直接改写共享的 modelSelect/
+        // 按钮/下拉，过期的列表返回不得把其他类型视图的下拉换成 PNGTuber 选项，
+        // fetch 失败路径同理。
+        const isStale = () => currentModelType !== 'pngtuber'
+            || (typeof options.isStale === 'function' && options.isStale());
         try {
             const data = await RequestHelper.fetchJson('/api/model/pngtuber/models');
+            if (isStale()) return false;
             const models = (data.success && Array.isArray(data.models)) ? data.models : [];
             if (!modelSelect) return;
 
@@ -3069,6 +3247,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateLive2DModelDropdown();
             updateLive2DModelSelectButtonText();
         } catch (error) {
+            if (isStale()) return false;
             console.error('加载 PNGTuber 模型列表失败:', error);
             if (modelSelect) {
                 modelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
@@ -3181,7 +3360,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    async function loadPNGTuberPreviewControls(pngtuberConfig) {
+    async function loadPNGTuberPreviewControls(pngtuberConfig, generation = pngtuberPreviewGeneration) {
         clearPNGTuberPreviewControls();
         if (currentModelType !== 'pngtuber' || !pngtuberPreviewGroup) return;
         pngtuberPreviewGroup.style.display = 'flex';
@@ -3193,6 +3372,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const metadata = await fetchPNGTuberLayeredMetadata(pngtuberConfig || {});
         if (currentModelType !== 'pngtuber') return;
+        // fetch 期间也可能被更新的预览取代：旧 metadata 不再渲染状态下拉，
+        // 避免画面上是新模型、状态预览却是旧模型的状态列表。
+        if (generation !== pngtuberPreviewGeneration) return;
         renderPNGTuberStatePreviewDropdown(metadata);
     }
 
@@ -3260,6 +3442,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     e.target.value = '';
                 }
                 return;
+            }
+
+            // 真实用户的 Live3D 选择且已通过语音检查（被拒绝的选择不计数，
+            // 否则角色自动加载链会误判为已被取代而放弃）
+            if (!isSuppressedModelManagerChangeEvent(e)) {
+                userModelSelectionGeneration += 1;
             }
 
             // Live3D 模式下：检测选中模型的子类型（VRM/MMD）
@@ -6550,6 +6738,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         const selectedOption = e.target[e.target.selectedIndex];
 
         if (currentModelType === 'pngtuber') {
+            // 选择确实会被接受才计为「用户手动选择」。拒绝路径共三条，均不得自增：
+            // ①程序化 dispatch（suppress，链内动作）；②类型切换过渡窗口里下拉残留
+            // 旧 live2d 选项，被 dataset 拒绝；③选项确为 pngtuber 但配置无效——
+            // 后端按 model_type 标记列目录、不做包校验，手工拷贝/遗留的坏包会进
+            // 下拉，previewPNGTuberConfig 会因 idle_image 为空在入口拒绝。
+            // 被拒绝的选择作废角色自动加载链属于误伤。
+            if (!isSuppressedModelManagerChangeEvent(e)
+                && selectedOption && selectedOption.dataset.modelType === 'pngtuber') {
+                let optionHasIdleImage = false;
+                try {
+                    const optionConfig = JSON.parse(selectedOption.getAttribute('data-pngtuber') || '{}');
+                    optionHasIdleImage = !!(optionConfig && optionConfig.idle_image);
+                } catch (_) { /* 解析失败视为无效 */ }
+                if (optionHasIdleImage) {
+                    userModelSelectionGeneration += 1;
+                }
+            }
             await loadSelectedPNGTuberOption(selectedOption, {
                 markDirty: !isSuppressedModelManagerChangeEvent(e)
             });
@@ -6571,6 +6776,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         currentModelInfo = findLive2DModelBySelection(getLive2DOptionSelection(selectedOption));
         if (!currentModelInfo) return;
+        // 选择已通过语音检查、且确实匹配到有效的 Live2D 模型，才计为「用户手动
+        // 选择」：两条拒绝路径（语音模式挡回、类型切换过渡期下拉里残留的其他类型
+        // 旧选项匹配为 null）之前自增，都会让角色自动加载链在世代号复查处误判
+        // 「已被取代」而放弃，启动流程停在记忆/默认模型上
+        if (!isSuppressedModelManagerChangeEvent(e)) {
+            userModelSelectionGeneration += 1;
+        }
 
         // 获取选中的option元素，从中获取item_id
         const modelSteamId = selectedOption ? selectedOption.dataset.itemId : currentModelInfo.item_id;
@@ -8090,8 +8302,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.success) {
                 uploadStatus.textContent = `✓ ${t('live2d.pngtuberImportSuccess', 'PNGTuber model imported successfully.')}`;
                 uploadStatus.style.color = '#28a745';
-                await loadPNGTuberModels();
-                if (result.folder && modelSelect) {
+                const refreshed = await loadPNGTuberModels();
+                // 上传完成时用户可能已切到其他类型：加载器过期退出返回 false（列表
+                // 未重建、也找不到新选项）。此时必须跳过「选中新模型/兜底直载」——
+                // 否则会在后台替换 pngtuberManager 的 runtime config，用户切回
+                // pngtuber 时凭空出现导入的头像，列表刷新再失败时还可能被保存。
+                if (refreshed !== false && result.folder && modelSelect) {
                     const option = Array.from(modelSelect.options).find(opt =>
                         opt.value === result.folder || opt.getAttribute('data-folder') === result.folder
                     );
@@ -8470,6 +8686,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 获取当前使用中的模型标识
             const currentLive2DName = currentModelInfo ? currentModelInfo.name : '';
             const currentLive3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
+            const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();
 
             allUserModels.forEach(model => {
                 const item = document.createElement('div');
@@ -8480,8 +8697,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (model.type === 'live2d') {
                     isBound = currentLive2DName === model.name;
                 } else if (model.type === 'pngtuber') {
-                    isBound = currentModelType === 'pngtuber' && currentModelInfo && (
-                        currentModelInfo.folder === model.folder || currentModelInfo.name === model.name
+                    // 与 deleteSelectedModels 安全检查复用同一判定（含类型门控与
+                    // 已提交/pending 双槽）：被禁用的即会被拦截的，消除「复选框
+                    // 可勾选、确认时却被静默移除」的不一致
+                    isBound = isBoundPNGTuberDeleteKey(
+                        model.deleteKey || model.folder || model.name,
+                        boundPNGTuberKeys.committed,
+                        boundPNGTuberKeys.pending
                     );
                 } else {
                     isBound = currentLive3DUrl === model.url;
@@ -8561,6 +8783,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // 删除防护比对：已提交的当前模型与加载进行中的 pending 预览可能是两个不同模型
+    // （A 正在显示时又选了 B 加载），两者都必须拦删；空 folder 不参与匹配，避免误拦。
+    function isBoundPNGTuberDeleteKey(key, committedFolder, pendingFolder) {
+        if (!key) return false;
+        return (!!committedFolder && key === committedFolder)
+            || (!!pendingFolder && key === pendingFolder);
+    }
+
+    // PNGTuber 的两个「绑定中」标识槽位，删除弹窗 UI 与 deleteSelectedModels 安全检查
+    // 共用，保证复选框禁用态与确认时的拦截永远一致：committed=已提交模型（按类型门控，
+    // folder 缺失时回退 name），pending=加载中的在途预览。
+    function getBoundPNGTuberDeleteKeys() {
+        return {
+            committed: currentModelInfo && currentModelInfo.type === 'pngtuber'
+                ? (currentModelInfo.folder || currentModelInfo.name || '')
+                : '',
+            pending: pendingPNGTuberPreview ? pendingPNGTuberPreview.folder : '',
+        };
+    }
+
     async function deleteSelectedModels() {
         if (selectedDeleteModels.size === 0) return;
 
@@ -8571,16 +8813,30 @@ document.addEventListener('DOMContentLoaded', async () => {
             return { type: id.substring(0, idx), key: id.substring(idx + 1) };
         }
 
-        // 安全防护：移除当前绑定的模型，不允许删除
+        // 安全防护：移除当前绑定的模型，不允许删除。
+        // 加载进行中的 PNGTuber 预览（currentModelInfo 尚未提交）同样视为绑定中，
+        // 否则「预览加载期间删除该模型」会绕过防护，删完预览又把模型显示回来。
+        // 已提交与 pending 是两个槽位（A 正在显示时选了 B 加载），分别比对，
+        // 不能用 || 折叠成单槽——否则加载中的那个会失去防护。
+        //
+        // 绑定状态不是一次性快照：确认框 await showConfirm 等待期间（以及删除循环
+        // 里每个 DELETE 的 await 之间），角色配置重载/跨窗口切换等异步流程可能登记
+        // 新的 pending 预览或提交新的 currentModelInfo，live2d/live3d 的绑定同样会
+        // 变化。因此封装成「每次调用都读取最新状态」的判定，确认前过滤与删除循环
+        // 内的逐项复查共用。
+        const isDeleteBoundModel = (type, key) => {
+            const live2DName = currentModelInfo ? currentModelInfo.name : '';
+            const live3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
+            const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();
+            return (type === 'live2d' && key === live2DName) ||
+                   (type === 'pngtuber' && isBoundPNGTuberDeleteKey(key, boundPNGTuberKeys.committed, boundPNGTuberKeys.pending)) ||
+                   ((type === 'vrm' || type === 'mmd') && key === live3DUrl);
+        };
+        // 确认前快照，仅供下方 Live2D 刷新块的既有引用使用
         const currentLive2DName = currentModelInfo ? currentModelInfo.name : '';
-        const currentLive3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
-        const currentPNGTuberFolder = currentModelInfo && currentModelInfo.type === 'pngtuber' ? currentModelInfo.folder : '';
         for (const modelId of [...selectedDeleteModels]) {
             const { type, key } = parseModelId(modelId);
-            const isBound = (type === 'live2d' && key === currentLive2DName) ||
-                            (type === 'pngtuber' && key === currentPNGTuberFolder) ||
-                            ((type === 'vrm' || type === 'mmd') && key === currentLive3DUrl);
-            if (isBound) {
+            if (isDeleteBoundModel(type, key)) {
                 selectedDeleteModels.delete(modelId);
                 showStatus(t('live2d.cannotDeleteBoundModel', '无法删除当前正在使用的模型'), 2000);
                 updateConfirmDeleteButton();
@@ -8598,13 +8854,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         let successCount = 0;
         let failCount = 0;
+        let skippedBoundCount = 0;
         let lastErrorMessage = '';
         let deletedLive2D = false;
         let deletedLive3D = false;
         let deletedPNGTuber = false;
 
-        for (const modelId of selectedDeleteModels) {
+        // 遍历快照 + 逐项 has() 复查：删除期间弹窗仍可交互（只禁用了确认按钮）——
+        // 用户点取消/关闭（hideDeleteModelModal 会 clear()）或取消勾选时，未访问项
+        // 必须跳过；而删除中途新勾选的项没有经过确认框，不得被访问并删除。
+        // 快照+has() 同时保住这两个语义；循环体自身不修改 Set。
+        for (const modelId of [...selectedDeleteModels]) {
+            if (!selectedDeleteModels.has(modelId)) continue;
             const { type, key } = parseModelId(modelId);
+            // DELETE 发出前用最新绑定状态逐项复查：确认框等待期间异步流程可能已把
+            // 该模型变成「使用中」（新登记的 pending 预览 / 新提交的 currentModelInfo），
+            // 前一个 DELETE 的 await 也给后续项留出了同样的时间窗
+            if (isDeleteBoundModel(type, key)) {
+                skippedBoundCount++;
+                continue;
+            }
             try {
                 let result;
                 if (type === 'live2d') {
@@ -8689,13 +8958,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
+        // 有项被绑定复查拦下时把数量并入结果弹窗：状态条 toast 只有 2 秒且先于
+        // 列表刷新，用户「选了 3 个只删了 2 个」时需要一个持久的说明。文案只计算
+        // 一次，全拦下分支复用同一段；结果弹窗必带跳过数量后，循环后的 2 秒状态条
+        // 属于重复反馈，已移除。
+        const skippedMessage = skippedBoundCount > 0
+            ? t('live2d.deleteSkippedBound', '跳过 {{count}} 个正在使用的模型', { count: skippedBoundCount })
+            : '';
+        const skippedPart = skippedMessage ? `，${skippedMessage}` : '';
         if (successCount > 0) {
-            const successMessage = t('live2d.deleteSuccess', '✓ 成功删除 {{count}} 个模型', { count: successCount }) + (failCount > 0 ? `，${t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount })}` : '');
+            const successMessage = t('live2d.deleteSuccess', '✓ 成功删除 {{count}} 个模型', { count: successCount }) + (failCount > 0 ? `，${t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount })}` : '') + skippedPart;
             await showAlert(successMessage);
-        } else {
+        } else if (failCount > 0) {
             const failedPart = t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount, reason: lastErrorMessage });
             const reasonPart = lastErrorMessage ? `：${lastErrorMessage}` : '';
-            await showAlert(`✗ ${failedPart}${reasonPart}`);
+            await showAlert(`✗ ${failedPart}${reasonPart}${skippedPart}`);
+        } else if (skippedMessage) {
+            // 全部被拦下：不弹「失败 0 个」误报，但弹窗是唯一持久的结果反馈
+            await showAlert(skippedMessage);
         }
     }
 
@@ -9066,6 +9346,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function loadCurrentCharacterModel() {
         try {
             window._modelManagerLoadedFallbackModel = false;
+            // 自动加载链携带的手动选择世代号：本链的任何 await（取角色名、
+            // /api/characters、切换链）期间用户手动选了模型，整条链都应让位——
+            // 同模式选择不会触发 switchModelDisplay，切换链世代号拦不住它
+            const selectionGenerationAtStart = userModelSelectionGeneration;
             // 获取角色名称
             const lanlanName = await getLanlanName();
             if (!lanlanName) {
@@ -9077,6 +9361,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             const catgirlConfig = charactersData['猫娘']?.[lanlanName];
 
             if (!catgirlConfig) {
+                return;
+            }
+
+            // 手动选择世代号复查（在 catgirlConfig 提取之后）：用户已手动选过模型，
+            // 自动加载链整体让位——但休眠 Live2D 绑定仍须记录。当前类型不是 live2d
+            // 时，本链是唯一记录角色 _reserved.avatar.live2d 的路径，漏记会让之后
+            // 切到 live2d 时 reloadSelectedLive2DModelAfterModeSwitch 读到全局单槽里
+            // 跨角色的旧选择，用户再保存就把错误的 Live2D 绑定写进当前角色。
+            // live2d 模式下不补记：让本链失效的那次手选已通过 rememberLive2DSelection
+            // 写入同一全局槽，覆盖会造成「界面显示 B、记忆是 A」的错位。
+            if (selectionGenerationAtStart !== userModelSelectionGeneration) {
+                if (currentModelType !== 'live2d') {
+                    rememberDormantLive2DModelFromCharacterConfig(catgirlConfig, lanlanName);
+                }
                 return;
             }
 
@@ -9109,20 +9407,38 @@ document.addEventListener('DOMContentLoaded', async () => {
             rememberDormantLive2DModelFromCharacterConfig(catgirlConfig, lanlanName);
 
             if (modelType === 'pngtuber' && hasValidPNGTuber) {
-                await switchModelDisplay('pngtuber', '', { preferredPNGTuberConfig: pngtuberConfig });
+                const switchChainValid = await switchModelDisplay('pngtuber', '', {
+                    preferredPNGTuberConfig: pngtuberConfig,
+                    // 手动选择世代号复查随 options 进入切换链内部：链内列表加载器的
+                    // DOM 前复查与发起预览前的复查都会认它，否则链内 selectAndPreview
+                    // 会先为角色模型发起预览，本函数返回后的复查为时已晚
+                    isStale: () => selectionGenerationAtStart !== userModelSelectionGeneration,
+                });
+                // 三种失效都要拦：①await 期间用户切到了其他类型；②用户切走又切回并
+                // 选定了新模型——此时类型复查仍会通过（又是 pngtuber），但本切换链的
+                // 世代号已过期；③switchModelDisplay 期间（列表请求中）用户手动选了
+                // 其他模型——同模式选择不改链世代号，须复查手动选择世代号。任一命中
+                // 都放弃继续预览角色模型，否则会拿到更新的预览世代号反向覆盖用户选择。
+                if (!switchChainValid || currentModelType !== 'pngtuber'
+                    || selectionGenerationAtStart !== userModelSelectionGeneration) return;
                 const matchedOption = findPNGTuberOptionByConfig(pngtuberConfig);
+                let previewed = false;
                 if (matchedOption) {
                     modelSelect.value = matchedOption.value;
-                    await loadSelectedPNGTuberOption(matchedOption, { markDirty: false });
+                    previewed = await loadSelectedPNGTuberOption(matchedOption, { markDirty: false });
                 } else {
-                    await previewPNGTuberConfig(pngtuberConfig, {
+                    previewed = await previewPNGTuberConfig(pngtuberConfig, {
                         name: lanlanName,
                         folder: pngtuberConfig.folder || pngtuberConfig.model_folder || '',
                         path: pngtuberConfig.idle_image,
                         url: pngtuberConfig.idle_image,
                     }, { markDirty: false });
                 }
-                showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
+                // 预览失败或加载期间用户又切走时不再误报成功
+                //（加载失败已有 previewPNGTuberConfig catch 分支的报错提示）。
+                if (previewed && currentModelType === 'pngtuber') {
+                    showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
+                }
                 return;
             }
 
