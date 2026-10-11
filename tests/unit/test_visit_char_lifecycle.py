@@ -404,6 +404,29 @@ async def test_replay_settles_each_item_under_the_config_lock(tmp_path):
     assert seen == [True]
 
 
+async def test_replay_skips_an_item_settled_while_waiting_for_the_lock(tmp_path):
+    await _retire_fixture(tmp_path)
+    item = await lc.begin_retire(tmp_path, "A", CHAR_UID_A)
+    lock = asyncio.Lock()
+    calls: list[str] = []
+
+    async def persona(uid):
+        calls.append(uid)
+
+    await lock.acquire()
+    replay = asyncio.ensure_future(lc.replay_retires(
+        tmp_path, _loader({"B"}, {"B": CHAR_UID_B}), retire_persona=persona, config_lock=lambda: lock))
+    await asyncio.sleep(0.02)
+    # 等锁期间这一项已被别处处理掉，同名新角色也建好并开始串门
+    await remove_roster_marker_item(tmp_path, "pending_retire", item)
+    await seed_roster(tmp_path, peer_uid=PEER_Y, tag=TAG_Y, own_char="A")
+    lock.release()
+    assert await replay is True
+    # 变异：拿着等锁前的快照照样退役必红（会删掉新角色的名册条目）
+    assert await PeerRoster(tmp_path, own_uid=OWN_A).get_char_entry(PEER_Y, "A") is not None
+    assert calls == []
+
+
 async def test_unreadable_roster_does_not_block_creating_a_character(tmp_path):
     (tmp_path / "visit_peers.json").write_text("{broken", encoding="utf-8")
     assert not await lc.is_name_retiring(tmp_path, "A")

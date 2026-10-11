@@ -504,6 +504,30 @@ async def test_rename_own_char_rewrites_header_and_state(tmp_path):
     assert await VisitSpool.rename_own_char(tmp_path, "old", "new") == []
 
 
+async def test_rename_own_char_ignores_other_characters_visits_in_flight(tmp_path):
+    from main_logic.visit.spool import SpoolBusy
+
+    done = await open_spool(tmp_path, vid(1), own_char="old")
+    await done.append(line(1, "body"))
+    await done.close()
+    await done.write_state(state_for(own_char="old"))
+    # 改名在运行期执行：别的角色正在串门（spool 还开着）不能挡住这次迁移（变异：先判 busy 必红）
+    live_other = await open_spool(tmp_path, vid(2), own_char="other")
+    try:
+        assert await VisitSpool.rename_own_char(tmp_path, "old", "new") == [vid(1)]
+        assert (await done.read_state())["own_char"] == "new"
+        # 被改名角色自己的场次还开着：照旧报 busy（别的场次先改完）
+        live_own = await open_spool(tmp_path, vid(3), own_char="new")
+        try:
+            with pytest.raises(SpoolBusy):
+                await VisitSpool.rename_own_char(tmp_path, "new", "newer")
+            assert (await done.read_state())["own_char"] == "newer"
+        finally:
+            await live_own.close()
+    finally:
+        await live_other.close()
+
+
 # ── sweep ──
 
 

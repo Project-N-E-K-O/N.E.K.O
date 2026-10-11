@@ -365,6 +365,15 @@ async def replay_retires(
     clean = True
     for item in marker:
         async with (config_lock() if config_lock is not None else contextlib.nullcontext()):
+            # 锁内重读标记：等锁期间这一项可能已被别处处理掉、同名新角色也已建好，
+            # 拿着旧快照再退役会删掉新角色的名册条目
+            try:
+                current = await read_roster_marker(config_dir, PENDING_RETIRE)
+            except RosterCorruptError:
+                clean = False
+                continue
+            if not isinstance(current, list) or item not in current:
+                continue
             # 锁内重读配置：等锁期间删除事务可能刚提交 / 刚回滚
             names, uid_of = await load_names()
             clean = await settle_retire(config_dir, item, names=names, uid_of=uid_of,
