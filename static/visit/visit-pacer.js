@@ -164,6 +164,11 @@
                 if (wall - rec.lastSentAt >= PROGRESS_INTERVAL_MS) send(rec, played, false);
                 return;
             }
+            // 静置检查在发送之前：socket 换了还没重新 bind 时发送一直失败，记录也得能丢掉、定时器才停得下
+            if (wall - rec.lastActivity > IDLE_FORGET_MS) {
+                speeches.delete(sid);
+                return;
+            }
             var final = rec.closed && t >= rec.scheduledEnd && pendingCount(sid) === 0;
             if (!rec.drainReported || final) {
                 if (send(rec, played, true, final)) {
@@ -173,7 +178,6 @@
                 }
                 return;
             }
-            if (wall - rec.lastActivity > IDLE_FORGET_MS) speeches.delete(sid);
         });
         ensureTick();
     }

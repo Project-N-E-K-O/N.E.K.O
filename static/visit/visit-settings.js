@@ -78,9 +78,12 @@
         return response;
     }
 
+    // 每次打开设置弹窗都重新探：总闸可能在页面开着期间被关掉（后端换了配置重启）。
+    // 只合并同时在途的探测；拿不到确切的「开」一律按关处理
     function probe() {
         if (probePromise) return probePromise;
         probePromise = (async function () {
+            probed = { enabled: false, defaultTier: probed.defaultTier };
             var catgirl = currentCatgirl();
             if (!catgirl) return probed;
             try {
@@ -94,11 +97,11 @@
             } catch (_) { /* 后端没起或网络错：分组保持隐藏 */ }
             return probed;
         })();
-        // 失败不缓存：下次打开设置弹窗再探
-        probePromise.then(function (result) {
-            if (!result.enabled) probePromise = null;
+        var inFlight = probePromise;
+        inFlight.then(function () {
+            if (probePromise === inFlight) probePromise = null;
         });
-        return probePromise;
+        return inFlight;
     }
 
     function applyTier(root) {

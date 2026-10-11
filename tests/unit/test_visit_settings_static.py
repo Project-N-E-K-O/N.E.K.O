@@ -136,6 +136,7 @@ const SRC = fs.readFileSync(__SRC__, 'utf8');
 
 async function load(stateBody, opts) {
   opts = opts || {};
+  const bodies = Array.isArray(stateBody) ? stateBody.slice() : null;
   const opened = [];
   const fetched = [];
   const refreshed = [];
@@ -167,7 +168,8 @@ async function load(stateBody, opts) {
         const body = { ok: false, error_code: 'csrf_validation_failed' };
         return { ok: false, status: 403, clone() { return this; }, async json() { return body; } };
       }
-      return { ok: true, status: 200, clone() { return this; }, async json() { return stateBody; } };
+      const body = bodies ? bodies.shift() : stateBody;
+      return { ok: true, status: 200, clone() { return this; }, async json() { return body; } };
     },
   };
   vm.createContext(sandbox);
@@ -198,6 +200,12 @@ async function load(stateBody, opts) {
   report.stale_display = stale.entries.map((e) => e.style.display);
   report.stale_refreshed = stale.refreshed.length;
   report.stale_fetches = stale.fetched.length;
+  // 总闸在页面开着期间被关掉：下次打开设置弹窗时重新探、入口收起（CodeRabbit）
+  const flip = await load([{ enabled: true, default_tier: 'sd600' }, { enabled: false, default_tier: 'sd600' }]);
+  report.flip_first = flip.entries.map((e) => e.style.display);
+  await flip.win.nekoVisitSettings.revealEntries();
+  report.flip_second = flip.entries.map((e) => e.style.display);
+  report.flip_fetches = flip.fetched.length;
   process.stdout.write(JSON.stringify(report));
 })().catch((e) => { console.error(e); process.exit(1); });
 """
@@ -225,3 +233,5 @@ def test_release_switch_probe_and_first_enable_persona_prompt():
     # 后端重启后缓存的 CSRF token 失效：刷新一次再探，不把 403 当成总闸关（Codex P2）
     assert out["stale_display"] == ["", ""]
     assert out["stale_refreshed"] == 1 and out["stale_fetches"] == 2
+    assert out["flip_first"] == ["", ""] and out["flip_second"] == ["none", "none"]
+    assert out["flip_fetches"] == 2

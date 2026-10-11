@@ -284,6 +284,19 @@ const report = {};
   report.rebound_needed = h.bySid('later').length;
 }
 
+// socket 换了还没重新 bind：发送一直失败，记录静置后丢掉、定时器停下（CodeRabbit）
+{
+  const h = createHarness();
+  h.bind();
+  h.ctx.currentTime = 10;
+  h.chunk('sid', 10, 11);
+  h.advance(300);
+  h.win.appState.socket = { readyState: 1, send(m) { h.sent.push(JSON.parse(m)); } };
+  h.advance(70000);
+  report.unbound_timers_left = h.timers.length;
+  report.unbound_sent_after_swap = h.sent.filter((m) => m.at > 10.3).length;
+}
+
 process.stdout.write(JSON.stringify(report));
 """
 
@@ -409,6 +422,11 @@ def test_nothing_is_sent_before_bind_or_outside_a_visit(report):
 def test_post_visit_segments_report_and_socket_swap_needs_rebind(report):
     assert report["after_end_final"] == 1
     assert report["rebound_needed"] == 0
+
+
+def test_records_unsendable_after_a_socket_swap_are_dropped_and_ticking_stops(report):
+    assert report["unbound_sent_after_swap"] == 0
+    assert report["unbound_timers_left"] == 0
 
 
 def test_pending_audio_count_for_speech_is_a_read_only_query():
