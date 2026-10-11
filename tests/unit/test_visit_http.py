@@ -738,6 +738,16 @@ async def test_state_of_an_idle_character_has_the_same_keys(env):
     assert bad.status_code == 400
 
 
+async def test_state_reports_release_switch_and_default_tier(env, monkeypatch):
+    # 设置页按 enabled 决定是否显示「串门」分组、按 default_tier 显示只读档位（§5 PR-13）
+    async with env.client() as c:
+        on = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
+        monkeypatch.setattr(visit_settings, "VISIT_ENABLED", False)
+        off = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
+    assert on["enabled"] is True and off["enabled"] is False
+    assert on["default_tier"] == off["default_tier"] == "sd600"
+
+
 # ── 转录导出 ───────────────────────────────────────────────────────────
 
 LINES = [
@@ -1126,7 +1136,7 @@ async def test_state_of_another_accounts_visit_only_says_busy(env):
         env.account = "someone-else"     # 共用电脑上换了社区账号
         other = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
     assert mine["visit_id"] is not None
-    assert other == {**http.IDLE_STATE, "active": True, "phase": "pending"}
+    assert other == {**http.IDLE_STATE, "active": True, "phase": "pending", **http.release_info()}
 
 
 async def test_an_upload_stream_that_lost_records_gives_way_to_the_cloud(env):
@@ -1558,7 +1568,7 @@ async def test_state_read_across_an_account_change_only_says_busy(env, monkeypat
     _epochs(monkeypatch, 7, 8)       # 读属主的过程中有过登出 / 换账号
     async with env.client() as c:
         body = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
-    assert body == {**http.IDLE_STATE, "active": True, "phase": "pending"}
+    assert body == {**http.IDLE_STATE, "active": True, "phase": "pending", **http.release_info()}
 
 
 async def test_preview_that_expired_on_the_way_is_410(env):

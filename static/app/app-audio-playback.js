@@ -18,6 +18,9 @@
     let audioReceiveSequence = 0;
     const audioStreamHeaders = new Map();
     let cancelIncomingAudioReceive = null;
+    // 正在解码的那一项（出队之后、解码完成之前它不在任何队列里）；只给
+    // pendingAudioCountForSpeech 这类只读查询看，播放逻辑不读它
+    let processingAudioBlobItem = null;
     const DEFAULT_SPEAKER_DEVICE_ID = C.DEFAULT_SPEAKER_DEVICE_ID || 'default';
     const SELECTED_SPEAKER_STORAGE_KEY = 'neko_selected_speaker';
     let audioPlayerContextSetupPromise = null;
@@ -1808,7 +1811,10 @@
                         playbackTurnId: S.assistantSpeechPlaybackTurnId || null,
                         playbackStartAudioTime: S.assistantSpeechPlaybackStartAudioTime || 0,
                         playbackEndAudioTime: S.assistantSpeechPlaybackEndAudioTime || scheduledEndTime,
-                        scheduledEndAudioTime: S.nextChunkTime
+                        scheduledEndAudioTime: S.nextChunkTime,
+                        // 本块的真开播时刻与时长（串门 pacer 按它换算已播时长；纯加字段）
+                        chunkStartAudioTime: scheduledStartTime,
+                        chunkDurationSec: nextBuffer.duration
                     });
                 } else {
                     break;
@@ -1996,6 +2002,7 @@
             while (S.incomingAudioBlobQueue.length > 0) {
                 var item = S.incomingAudioBlobQueue.shift();
                 S.processingAudioBlobTurnId = null;
+                processingAudioBlobItem = null;
                 if (!item) continue;
                 if (item.epoch !== S.incomingAudioEpoch) {
                     continue;
@@ -2015,6 +2022,7 @@
                 // 出队之后、解码完成之前这个 chunk 不在任何队列里。记下它属于哪一轮，
                 // 让 isAssistantTurnPlaybackDrained 看得见这段空洞。
                 S.processingAudioBlobTurnId = item.turnId || null;
+                processingAudioBlobItem = item;
                 // One cancellation callback per current wait. Completed packets
                 // must not accumulate reactions on an unresolved epoch promise.
                 const cancellation = new Promise(resolve => { cancelIncomingAudioReceive = resolve; });
@@ -2081,6 +2089,7 @@
         } finally {
             cancelIncomingAudioReceive = null;
             S.processingAudioBlobTurnId = null;
+            processingAudioBlobItem = null;
             S.isProcessingIncomingAudioBlob = false;
             maybeFinalizeAssistantSpeech();
             schedulePendingAudioMetaStallCheck();
@@ -2126,6 +2135,36 @@
             console.error('加载扬声器音量设置失败:', err);
             S.speakerVolume = C.DEFAULT_SPEAKER_VOLUME;
         }
+    }
+
+    // ======================== Read-only queries ========================
+
+    /**
+     * 该 speech_id 还没排进播放时间线的音频块数（只读）：音频头已到、blob 未到的
+     * meta，待解码 / 解码中的 blob，待 flush 解码器尾段的 audio_done，已解码待排程
+     * 的 buffer。串门 pacer 用它判「这一行确实没有尾块了」（docs/design/
+     * visit-infrastructure.md §5 PR-13）：结束标记到达时尾块可能还在异步解码。
+     */
+    function pendingAudioCountForSpeech(speechId) {
+        var sid = normalizeAssistantTurnId(speechId);
+        if (!sid) return 0;
+        var epoch = S.incomingAudioEpoch;
+        var count = 0;
+        var matches = function (item) {
+            return !!item && !item.shouldSkip && normalizeAssistantTurnId(item.speechId) === sid;
+        };
+        S.pendingAudioChunkMetaQueue.forEach(function (item) {
+            if (matches(item) && item.epoch === epoch) count += 1;
+        });
+        S.incomingAudioBlobQueue.forEach(function (item) {
+            if (matches(item) && item.epoch === epoch) count += 1;
+        });
+        if (matches(processingAudioBlobItem) && processingAudioBlobItem.epoch === epoch) count += 1;
+        // 已解码的 buffer 不带世代：清队列时整队清空，留在队里的都属当前世代
+        S.audioBufferQueue.forEach(function (item) {
+            if (matches(item)) count += 1;
+        });
+        return count;
     }
 
     // ======================== Window-level backward-compat exports ========================
@@ -2175,6 +2214,8 @@
     mod.schedulePendingAudioMetaStallCheck = schedulePendingAudioMetaStallCheck;
     mod.rememberAssistantAudioSpeechTurn = rememberAssistantAudioSpeechTurn;
     mod.noteAssistantAudioStreamClosed = noteAssistantAudioStreamClosed;
+    mod.pendingAudioCountForSpeech = pendingAudioCountForSpeech;
+    mod.getActiveAvatarModelType = getActiveAvatarModelType;
     mod.ensureAudioPlayerContext = ensureAudioPlayerContext;
     mod.applySpeakerDeviceToContext = applySpeakerDeviceToContext;
     mod.selectSpeakerDevice = selectSpeakerDevice;

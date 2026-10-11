@@ -1,0 +1,265 @@
+/**
+ * visit-pacer.js — 串门台词的已播音频进度回报（docs/design/visit-infrastructure.md
+ * §4.5 visit_speech_progress、§5 PR-13；OD-15 v3 / OD-21 v3）。
+ *
+ * 后端按「这一行已经播了多少音频」放出字幕分片，按 `ended{final:true}` 收口一行。
+ * 本脚本只在 index.html 加载（chat.html 不播串门语音），做三件事：
+ *
+ * 1. 监听播放器的 `neko-speech-playback-state`，按 speech_id 记下每个
+ *    `chunk_scheduled` 块的真开播时刻与终点（同一 speech_id 的后续块只累加、
+ *    不重置开播时刻），换算该 speech_id 已播的音频时长 `played_ms`；
+ *    lookahead 提前排程的块在真开播之前不计入，所以 `played_ms` 不会超前。
+ * 2. 播放期间约 4 Hz 回报 `{action:'visit_speech_progress', speech_id, visit_id,
+ *    played_ms, ended:false}`；每次该 speech_id 的音频播到头（含被清掉）回报一条
+ *    `ended:true`，并带 `final`。
+ * 3. `final:true` 三者同时满足才给：收到该 speech_id 的结束标记
+ *    （`neko-audio-stream-closed`，app-websocket.js 的 audio_done 分支派发）、
+ *    已播过它的排程终点、播放器里它待解码 / 待排程的块数为 0
+ *    （`appAudioPlayback.pendingAudioCountForSpeech`）。每个 speech_id 恰一次。
+ *    不用只带 turnId 的 `neko-assistant-speech-end`：不同台词可能共用同一 turnId。
+ *
+ * 回报只在本页已 visit_bind（`neko-visit-bound`）、且串门进行中或刚结束的
+ * 收尾窗口内（回家仪式句与 debrief 简述也要回报）发出；其余时间不跟踪任何语音。
+ * 排帧只用定时器（本目录禁 rAF，§5 总则静态门）。
+ */
+(function () {
+    'use strict';
+
+    if (window.nekoVisitPacer) return;
+
+    var PROGRESS_INTERVAL_MS = 250;
+    var TICK_MS = 125;
+    // 串门结束后仍回报的窗口：仪式句与简述各有一段 LLM 生成 + 播放，后端另有硬顶兜底
+    var POST_END_ARM_MS = 180000;
+    // 播到头、既没再来音频也没等到结束标记的记录，静置这么久就丢掉（被打断的行）
+    var IDLE_FORGET_MS = 60000;
+    var CLEAR_REASONS = {
+        clear_audio_queue: true,
+        clear_audio_queue_without_decoder_reset: true
+    };
+
+    var boundSocket = null;
+    var visitId = null;
+    var visitActive = false;
+    var armedUntil = 0;
+    var lastScheduledEnd = 0;
+    var speeches = new Map();
+    // 已回报过 final 的 speech_id（有界）：之后再到的块 / 结束标记一律不再跟踪
+    var finalized = new Set();
+    var FINALIZED_CAP = 256;
+    var tickTimer = 0;
+
+    function appState() {
+        return window.appState || null;
+    }
+
+    function wallNow() {
+        return Date.now();
+    }
+
+    function audioNow(fallback) {
+        var S = appState();
+        var ctx = S && S.audioPlayerContext;
+        if (ctx && Number.isFinite(ctx.currentTime)) return ctx.currentTime;
+        return Number.isFinite(fallback) ? fallback : 0;
+    }
+
+    function isArmed() {
+        return visitActive || wallNow() < armedUntil;
+    }
+
+    function liveSocket() {
+        var S = appState();
+        var socket = S && S.socket;
+        if (!socket || socket !== boundSocket) return null;
+        if (typeof WebSocket !== 'undefined' && socket.readyState !== WebSocket.OPEN) return null;
+        if (typeof WebSocket === 'undefined' && socket.readyState !== 1) return null;
+        return socket;
+    }
+
+    function pendingCount(sid) {
+        var player = window.appAudioPlayback;
+        if (player && typeof player.pendingAudioCountForSpeech === 'function') {
+            var n = Number(player.pendingAudioCountForSpeech(sid));
+            return Number.isFinite(n) ? n : 0;
+        }
+        return 0;
+    }
+
+    function playedMs(rec, t) {
+        var total = 0;
+        for (var i = 0; i < rec.chunks.length; i++) {
+            var c = rec.chunks[i];
+            var upto = Math.min(t, c.end);
+            if (upto > c.start) total += upto - c.start;
+        }
+        return Math.max(0, Math.round(total * 1000));
+    }
+
+    function getRecord(sid) {
+        var rec = speeches.get(sid);
+        if (!rec) {
+            rec = {
+                sid: sid,
+                chunks: [],
+                scheduledEnd: 0,
+                closed: false,
+                drainReported: false,
+                finalSent: false,
+                lastSentAt: 0,
+                lastActivity: wallNow()
+            };
+            speeches.set(sid, rec);
+        }
+        return rec;
+    }
+
+    function send(rec, played, ended, final) {
+        var socket = liveSocket();
+        if (!socket) return false;
+        var msg = {
+            action: 'visit_speech_progress',
+            speech_id: rec.sid,
+            visit_id: visitId,
+            played_ms: played,
+            ended: ended
+        };
+        if (ended) msg.final = !!final;
+        try {
+            socket.send(JSON.stringify(msg));
+        } catch (_) {
+            return false;
+        }
+        rec.lastSentAt = wallNow();
+        return true;
+    }
+
+    function markFinal(rec) {
+        rec.finalSent = true;
+        finalized.add(rec.sid);
+        if (finalized.size > FINALIZED_CAP) finalized.delete(finalized.values().next().value);
+    }
+
+    function ensureTick() {
+        if (tickTimer || speeches.size === 0) return;
+        tickTimer = setTimeout(function () {
+            tickTimer = 0;
+            tick();
+        }, TICK_MS);
+    }
+
+    function tick() {
+        var t = audioNow();
+        var wall = wallNow();
+        speeches.forEach(function (rec, sid) {
+            if (rec.finalSent) {
+                speeches.delete(sid);
+                return;
+            }
+            var played = playedMs(rec, t);
+            var drained = rec.chunks.length > 0 ? t >= rec.scheduledEnd : rec.closed;
+            if (!drained) {
+                if (wall - rec.lastSentAt >= PROGRESS_INTERVAL_MS) send(rec, played, false);
+                return;
+            }
+            var final = rec.closed && t >= rec.scheduledEnd && pendingCount(sid) === 0;
+            if (!rec.drainReported || final) {
+                if (send(rec, played, true, final)) {
+                    rec.drainReported = true;
+                    rec.lastActivity = wall;
+                    if (final) markFinal(rec);
+                }
+                return;
+            }
+            if (wall - rec.lastActivity > IDLE_FORGET_MS) speeches.delete(sid);
+        });
+        ensureTick();
+    }
+
+    function onChunkScheduled(state) {
+        var sid = state.speechId ? String(state.speechId) : '';
+        var end = Number(state.scheduledEndAudioTime);
+        if (!sid || !Number.isFinite(end)) return;
+        var start = Number(state.chunkStartAudioTime);
+        if (!Number.isFinite(start)) {
+            var duration = Number(state.chunkDurationSec);
+            start = Number.isFinite(duration)
+                ? end - duration
+                // 复刻播放器的钳位：上一块的排程终点落后于当前时刻时，本块从当前时刻开播
+                : Math.max(lastScheduledEnd, Number(state.audioContextTime) || 0);
+        }
+        lastScheduledEnd = end;
+        if (finalized.has(sid)) return;
+        var rec = getRecord(sid);
+        rec.chunks.push({ start: Math.min(start, end), end: end });
+        rec.scheduledEnd = Math.max(rec.scheduledEnd, end);
+        rec.drainReported = false;
+        rec.lastActivity = wallNow();
+        ensureTick();
+    }
+
+    function onQueueCleared(state) {
+        // 已排程的块被停掉：截到此刻，下一拍按「排空（被清掉）」回报 ended
+        var t = audioNow(Number(state.audioContextTime));
+        lastScheduledEnd = 0;
+        speeches.forEach(function (rec) {
+            if (rec.scheduledEnd <= t) return;
+            rec.chunks = rec.chunks
+                .filter(function (c) { return c.start < t; })
+                .map(function (c) { return { start: c.start, end: Math.min(c.end, t) }; });
+            rec.scheduledEnd = t;
+            rec.drainReported = false;
+            rec.lastActivity = wallNow();
+        });
+        ensureTick();
+    }
+
+    window.addEventListener('neko-speech-playback-state', function (event) {
+        var state = event && event.detail;
+        if (!state || typeof state !== 'object') return;
+        if (CLEAR_REASONS[state.reason] === true) {
+            onQueueCleared(state);
+            return;
+        }
+        if (state.reason !== 'chunk_scheduled' || !isArmed() || !boundSocket) return;
+        onChunkScheduled(state);
+    });
+
+    window.addEventListener('neko-audio-stream-closed', function (event) {
+        var detail = event && event.detail;
+        var sid = detail && detail.speechId ? String(detail.speechId) : '';
+        if (!sid || !isArmed() || !boundSocket || finalized.has(sid)) return;
+        var rec = getRecord(sid);
+        rec.closed = true;
+        rec.lastActivity = wallNow();
+        // 不在这里同步判 final：派发早于播放器把 audio_done 排进接收队列（尾段 flush），
+        // 留到下一拍再查 pendingAudioCountForSpeech
+        ensureTick();
+    });
+
+    window.addEventListener('neko-visit-bound', function (event) {
+        var detail = (event && event.detail) || {};
+        var S = appState();
+        boundSocket = detail.socket || (S && S.socket) || null;
+        if (typeof detail.visit_id === 'string' && detail.visit_id) visitId = detail.visit_id;
+        if (detail.active === true) visitActive = true;
+    });
+
+    window.addEventListener('neko-visit-frame', function (event) {
+        var frame = event && event.detail;
+        if (!frame || frame.type !== 'visit_state_change') return;
+        if (typeof frame.visit_id === 'string' && frame.visit_id) visitId = frame.visit_id;
+        if (frame.action === 'ended') {
+            visitActive = false;
+            armedUntil = wallNow() + POST_END_ARM_MS;
+        } else {
+            visitActive = true;
+        }
+    });
+
+    window.nekoVisitPacer = Object.freeze({
+        isArmed: isArmed,
+        isBound: function () { return !!boundSocket && liveSocket() !== null; },
+        PROGRESS_INTERVAL_MS: PROGRESS_INTERVAL_MS
+    });
+})();

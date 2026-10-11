@@ -487,6 +487,24 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
 
+    // 2.5 串门设置（docs/design/visit-infrastructure.md §5 PR-13）：入口默认隐藏，
+    // static/visit/visit-settings.js 探到 NEKO_VISIT_ENABLED 总闸开着才显示
+    const visitSettingsBtn = manager._createSettingsMenuButton({
+        label: window.t ? window.t('visit.settings.groupTitle') : '串门',
+        labelKey: 'visit.settings.groupTitle'
+    });
+    visitSettingsBtn.style.display = 'none';
+    visitSettingsBtn.setAttribute('data-neko-visit-settings-entry', '');
+    popup.appendChild(visitSettingsBtn);
+
+    const visitSidePanel = manager._createVisitSettingsSidePanel(popup);
+    visitSidePanel._anchorElement = visitSettingsBtn;
+    visitSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(visitSettingsBtn, visitSidePanel);
+    if (window.nekoVisitSettings && typeof window.nekoVisitSettings.revealEntries === 'function') {
+        void window.nekoVisitSettings.revealEntries();
+    }
+
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
@@ -758,6 +776,41 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
     const textGuardContainer = manager._createTextGuardSlider();
     textGuardContainer.style.marginTop = '12px';
     container.appendChild(textGuardContainer);
+
+    document.body.appendChild(container);
+    return container;
+}
+
+/**
+ * 创建串门设置侧边面板：两个开关（visitEnabled / visitVoiceEnabled）+ 构图 / 档位 / 人设入口。
+ * 串门记忆开关是隐藏配置，不在这里出现（OD-09 v3）。
+ */
+function createVisitSettingsSidePanel(manager, prefix, popup) {
+    const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'visit-settings');
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '0';
+    container.style.width = '220px';
+    container.style.minWidth = '0';
+    container.style.padding = '4px 4px';
+
+    const visitToggles = [
+        { id: 'visit-enabled', label: window.t ? window.t('visit.settings.enabled') : '允许串门', labelKey: 'visit.settings.enabled', tooltipKey: 'visit.settings.enabledTooltip', storageKey: 'visitEnabled', alwaysTinted: true },
+        { id: 'visit-voice', label: window.t ? window.t('visit.settings.voice') : '串门时出声', labelKey: 'visit.settings.voice', tooltipKey: 'visit.settings.voiceTooltip', storageKey: 'visitVoiceEnabled', alwaysTinted: true },
+    ];
+
+    visitToggles.forEach(toggle => {
+        const toggleItem = manager._createSettingsToggleItem(toggle);
+        container.appendChild(toggleItem);
+        if (typeof toggleItem._nekoUpdateSettingsToggleStyle === 'function') {
+            toggleItem._nekoUpdateSettingsToggleStyle();
+        }
+    });
+
+    if (window.nekoVisitSettings && typeof window.nekoVisitSettings.appendPanelExtras === 'function') {
+        window.nekoVisitSettings.appendPanelExtras(container);
+    }
 
     document.body.appendChild(container);
     return container;
@@ -1879,6 +1932,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'agent-openclaw-actions',
             'chat-settings',
             'animation-settings',
+            'visit-settings',
             'interval-proactive-chat',
             'interval-proactive-vision',
             'character-settings'
@@ -2540,6 +2594,10 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.focusCognitionEnabled;
     } else if (toggle.id === 'slop-filter' && typeof window.slopFilterEnabled !== 'undefined') {
         checkbox.checked = window.slopFilterEnabled;
+    } else if (toggle.id === 'visit-enabled' && typeof window.visitEnabled !== 'undefined') {
+        checkbox.checked = window.visitEnabled;
+    } else if (toggle.id === 'visit-voice' && typeof window.visitVoiceEnabled !== 'undefined') {
+        checkbox.checked = window.visitVoiceEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
@@ -2697,6 +2755,19 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // （utils/slop_filter.py 读 slopFilterEnabled gate）。promptOnly，
             // 不影响用户看到的原文。
             window.slopFilterEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'visit-enabled') {
+            window.visitEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+            if (window.nekoVisitSettings && typeof window.nekoVisitSettings.onVisitEnabledChanged === 'function') {
+                window.nekoVisitSettings.onVisitEnabledChanged(isChecked);
+            }
+        } else if (toggle.id === 'visit-voice') {
+            window.visitVoiceEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
@@ -2877,6 +2948,10 @@ const AvatarPopupMixin = {
 
         ManagerProto._createChatSettingsSidePanel = function (popup) {
             return createChatSettingsSidePanel(this, prefix, popup);
+        };
+
+        ManagerProto._createVisitSettingsSidePanel = function (popup) {
+            return createVisitSettingsSidePanel(this, prefix, popup);
         };
 
         ManagerProto._createAnimationSettingsSidePanel = function () {
