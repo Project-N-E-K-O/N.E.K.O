@@ -161,6 +161,43 @@
         return !!(window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active);
     }
 
+    // 首页教程抑制期间，十个主动搭话键以教程前的用户真值为准（app-settings
+    // 的持久化护栏 + 收口恢复都不接受抑制期的新改动）：此时弹窗的「接受」
+    // 会被静默回滚。与其丢用户的选择，不如整个抑制期不弹、信号暂存，
+    // 教程收口（active:false 事件）后重放。
+    function _isHomeTutorialSuppressing() {
+        try {
+            if (window.isNekoClickGuideActive === true) return true;
+            const controller = window.NekoHomeTutorialFeatureController;
+            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                return true;
+            }
+            // 头像重载层单独抑制（feature controller begin 之前 / end 之后的
+            // 模型恢复窗口）同样不接受新改动。
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            return !!(reloadController
+                && typeof reloadController.isProactiveSuppressed === 'function'
+                && reloadController.isProactiveSuppressed());
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function _deferActiveContextPromptForTutorial() {
+        // 抑制开始时已有弹窗展示中：撤回并恢复其未弹状态、重新入队。
+        // 「接受」此刻会被护栏回滚，静默丢掉不如不消费这次信号。
+        const context = _activeContext;
+        if (!context) return;
+        if (context === 'play') _shownPlay = false;
+        else if (context === 'work') _shownWork = false;
+        _pendingContexts.add(context);
+        _cancelActivePrompt = true;
+        if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
+            _activePromptOverlay.click();
+        }
+    }
+
     async function handle(context) {
         if (context !== 'play' && context !== 'work') return;
         if (S.gameRouteActive) {
@@ -170,6 +207,11 @@
         }
         // 请她离开模式：所有主动搭话已静默，弹窗无意义
         if (window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active) return;
+        // 教程抑制期间：暂存信号（不标已弹），收口后由 active:false 事件重放。
+        if (_isHomeTutorialSuppressing()) {
+            _pendingContexts.add(context);
+            return;
+        }
         // settings 还没合并就绪（branch 未决议，nekoTelemetryBranch 为 undefined）：暂存
         // 这次事件，等 neko:telemetry-branch-resolved 再重放。不能直接丢——后端一次性推送
         // 不会重发。GET 失败时 branch 永远 undefined、该事件也永不重放，等于 fail-closed
@@ -287,6 +329,23 @@
     window.addEventListener('neko:auto-goodbye:state-change', function (event) {
         if (_isGoodbyeActive()) {
             _dismissActiveContextPromptForGoodbye();
+        }
+    });
+    // 教程抑制开始：撤回展示中的弹窗并重新入队；收口：重放暂存的信号。
+    window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
+        const detail = event && event.detail ? event.detail : {};
+        if (detail.active === true) {
+            _deferActiveContextPromptForTutorial();
+        } else if (detail.active === false) {
+            _drainPending();
+        }
+    });
+    // click-guide（闸门检查的另一教程来源）解除时同样重放：它派发的是
+    // 自己的 active 事件，不走 home-tutorial 事件面。
+    window.addEventListener('neko:click-guide-active', function (event) {
+        const detail = event && event.detail ? event.detail : {};
+        if (detail.active === false) {
+            _drainPending();
         }
     });
 

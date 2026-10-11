@@ -16,11 +16,40 @@
         'proactiveMiniGameInviteEnabled'
     ]);
 
+    function readPersistedProactiveSettings() {
+        // app-settings 的「接受真值」优先（含跨窗口出处校验结果，竞态中被
+        // 拒绝的陈旧持久值不会被当成用户设置）；未加载时回退原始持久层。
+        try {
+            const appSettings = window.appSettings;
+            if (appSettings && typeof appSettings.getProactiveUserTruth === 'function') {
+                const truth = appSettings.getProactiveUserTruth();
+                if (truth && typeof truth === 'object') return truth;
+            }
+        } catch (_) { }
+        try {
+            const storage = window.localStorage || null;
+            const raw = storage ? storage.getItem('project_neko_settings') : null;
+            if (!raw) return null;
+            const settings = JSON.parse(raw);
+            if (!settings || typeof settings !== 'object') return null;
+            return settings;
+        } catch (_) {
+            return null;
+        }
+    }
+
     function snapshotProactiveState() {
         const appState = window.appState || null;
         const snapshot = {};
+        // 持久化设置是用户意图的权威来源：本控制器与 home-tutorial feature
+        // controller 是两层独立抑制，内存值可能已被另一层临时置 false，
+        // 直接快照内存会导致恢复出全关。教程期间设置面板被锁、落盘有护栏，
+        // localStorage 里的值就是教程前的用户真值。
+        const persisted = readPersistedProactiveSettings();
         PROACTIVE_STATE_KEYS.forEach((key) => {
-            if (typeof window[key] !== 'undefined') {
+            if (persisted && typeof persisted[key] === 'boolean') {
+                snapshot[key] = persisted[key];
+            } else if (typeof window[key] !== 'undefined') {
                 snapshot[key] = !!window[key];
             } else if (appState && typeof appState[key] !== 'undefined') {
                 snapshot[key] = !!appState[key];
@@ -93,6 +122,67 @@
         return state;
     }
 
+    function readCurrentProactiveState() {
+        const appState = window.appState || null;
+        const current = {};
+        PROACTIVE_STATE_KEYS.forEach((key) => {
+            if (typeof window[key] !== 'undefined') {
+                current[key] = !!window[key];
+            } else if (appState && typeof appState[key] !== 'undefined') {
+                current[key] = !!appState[key];
+            } else {
+                current[key] = false;
+            }
+        });
+        return current;
+    }
+
+    function dispatchTutorialSuppressionEvent(active) {
+        // 与 home 教程 feature controller 共用同一事件面：抑制开始要撤回
+        // 展示中的情境弹窗（此期间「接受」会被持久化护栏回滚），解除要重放
+        // 暂存的信号（feature controller 的 active:false 先于本层释放发出，
+        // 当时被重新入队的提示靠这条补上）；app-proactive 的事件标志同步。
+        try {
+            // window.CustomEvent 优先：vm 测试沙箱只挂 window 属性，浏览器里
+            // 两者等价。
+            const EventConstructor = window.CustomEvent || CustomEvent;
+            window.dispatchEvent(new EventConstructor('neko:home-tutorial-features-suppressed', {
+                detail: { active: !!active, source: 'avatar-reload-override' }
+            }));
+        } catch (_) { }
+    }
+
+    function resolveRestoredProactiveState(snapshot) {
+        // 教程期间被兄弟窗口修改、且经本窗口出处校验接受的新值（经
+        // applySharedRuntimeSettings 传播：已进接受真值登记表与持久层）是比
+        // begin 快照更新的用户意图：恢复前逐键重读 app-settings 的真值链，
+        // begin 快照只兜真值链缺失的键，避免用旧快照覆盖教程期间的新改动。
+        if (!snapshot || typeof snapshot !== 'object') {
+            return snapshot;
+        }
+        try {
+            const appSettings = window.appSettings;
+            if (!appSettings || typeof appSettings.getProactiveUserTruth !== 'function') {
+                return snapshot;
+            }
+            const truth = appSettings.getProactiveUserTruth();
+            if (!truth || typeof truth !== 'object') {
+                return snapshot;
+            }
+            const resolved = {};
+            PROACTIVE_STATE_KEYS.forEach((key) => {
+                if (typeof truth[key] === 'boolean') {
+                    resolved[key] = truth[key];
+                } else if (typeof snapshot[key] === 'boolean') {
+                    resolved[key] = snapshot[key];
+                }
+            });
+            return resolved;
+        } catch (_) {
+            return snapshot;
+        }
+    }
+
     class TutorialAvatarReloadController {
         constructor(options) {
             const normalizedOptions = options || {};
@@ -114,6 +204,25 @@
 
         hasActiveOverride() {
             return !!this.override;
+        }
+
+        isProactiveSuppressed() {
+            // 仅当 beginOverride 已真正把十个主动搭话键在内存里关闭后才为 true：
+            // override 创建到实际关闭之间隔着 resolveCurrentName/fetchCharacters
+            // 的异步窗口，那段时间内存值仍是用户真值，app-settings 的持久化
+            // 护栏若按 hasActiveOverride 判定就会误 hold（例如把 boot merge 刚
+            // 拿到的服务器新值替换回旧的本地值并上行）。restoreOverride 恢复
+            // 后立即复位。
+            return !!(this.override && this.override.proactiveSuppressed === true);
+        }
+
+        getProactiveUserValues() {
+            // beginOverride 时的用户真值快照（仅本层确在抑制期间有效）：
+            // 供 app-settings 的持久化护栏在持久层缺键时回退。
+            if (!this.override || this.override.proactiveSuppressed !== true) {
+                return null;
+            }
+            return this.override.proactiveSnapshot || null;
         }
 
         getPendingPromise() {
@@ -190,6 +299,8 @@
                 if (!proactiveManagedByTutorialLifecycle) {
                     this.override.proactiveSnapshot = snapshotProactiveState();
                     applyProactiveState(buildDisabledProactiveState());
+                    override.proactiveSuppressed = true;
+                    dispatchTutorialSuppressionEvent(true);
                 }
 
                 if (!skipSourceModelFade) {
@@ -276,6 +387,14 @@
             override.restoring = true;
 
             const restorePromise = Promise.resolve().then(async () => {
+                // 内存恢复与抑制标志释放前置（不排程）：模型恢复的异步窗口里
+                // 设置面板已解锁（teardown 先清了 isInTutorial），用户此时的
+                // 显式改动必须正常落盘生效，不能被持久化护栏回滚丢失。
+                // 调度器启动留在模型恢复完成之后，保住「不对着临时教程模型
+                // 开口」的语义（排程本身是间隔制，窗口内不会有立即触发）。
+                const resolvedProactive = resolveRestoredProactiveState(proactiveSnapshot);
+                applyProactiveState(resolvedProactive);
+                override.proactiveSuppressed = false;
                 try {
                     this.clearViewportWatcher();
                     this.revealPrepared();
@@ -293,7 +412,10 @@
                         } catch (_) {}
                     }
                 } finally {
-                    applyProactiveState(proactiveSnapshot, { restart: true });
+                    // 以当前内存为准重启调度：模型恢复窗口内用户的显式改动
+                    // 优先于恢复时的快照值。
+                    maybeRestartProactiveRuntime(readCurrentProactiveState());
+                    dispatchTutorialSuppressionEvent(false);
                     this.revealPrepared();
                     this.clearViewportWatcher();
                     if (this.override === override) {

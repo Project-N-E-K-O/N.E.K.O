@@ -81,11 +81,40 @@
         }
     }
 
+    function readPersistedProactiveSettings() {
+        // app-settings 的「接受真值」优先（含跨窗口出处校验结果，竞态中被
+        // 拒绝的陈旧持久值不会被当成用户设置）；未加载时回退原始持久层。
+        try {
+            const appSettings = window.appSettings;
+            if (appSettings && typeof appSettings.getProactiveUserTruth === 'function') {
+                const truth = appSettings.getProactiveUserTruth();
+                if (truth && typeof truth === 'object') return truth;
+            }
+        } catch (_) { }
+        try {
+            const storage = window.localStorage || null;
+            const raw = storage ? storage.getItem('project_neko_settings') : null;
+            if (!raw) return null;
+            const settings = JSON.parse(raw);
+            if (!settings || typeof settings !== 'object') return null;
+            return settings;
+        } catch (_) {
+            return null;
+        }
+    }
+
     function snapshotProactiveState() {
         const snapshot = {};
         const appState = window.appState || null;
+        // 持久化设置是用户意图的权威来源：教程抑制是多层的（头像重载控制器会先于
+        // feature controller begin 把这十个键在内存里关掉），直接快照内存会把上一层
+        // 的临时抑制当成用户设置，end() 时"恢复"出全关。教程期间设置面板被锁、
+        // 落盘又有护栏，localStorage 里的值就是教程前的用户真值。
+        const persisted = readPersistedProactiveSettings();
         HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
-            if (typeof window[key] !== 'undefined') {
+            if (persisted && typeof persisted[key] === 'boolean') {
+                snapshot[key] = persisted[key];
+            } else if (typeof window[key] !== 'undefined') {
                 snapshot[key] = !!window[key];
             } else if (appState && typeof appState[key] !== 'undefined') {
                 snapshot[key] = !!appState[key];
@@ -496,6 +525,52 @@
         }));
     }
 
+    function resolveRestoredProactiveState(snapshot) {
+        // 教程期间被兄弟窗口修改、且经本窗口出处校验接受的新值（经
+        // applySharedRuntimeSettings 传播：已进接受真值登记表与持久层）是比
+        // begin 快照更新的用户意图：恢复前逐键重读 app-settings 的真值链，
+        // begin 快照只兜真值链缺失的键，避免用旧快照覆盖教程期间的新改动。
+        if (!snapshot || typeof snapshot !== 'object') {
+            return snapshot;
+        }
+        try {
+            const appSettings = window.appSettings;
+            if (!appSettings || typeof appSettings.getProactiveUserTruth !== 'function') {
+                return snapshot;
+            }
+            const truth = appSettings.getProactiveUserTruth();
+            if (!truth || typeof truth !== 'object') {
+                return snapshot;
+            }
+            const resolved = {};
+            HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
+                if (typeof truth[key] === 'boolean') {
+                    resolved[key] = truth[key];
+                } else if (typeof snapshot[key] === 'boolean') {
+                    resolved[key] = snapshot[key];
+                }
+            });
+            return resolved;
+        } catch (_) {
+            return snapshot;
+        }
+    }
+
+    function isAvatarReloadProactiveSuppressed() {
+        // 头像重载层是否仍持有自己的抑制：prelude 里它先于本 controller
+        // 快照并关闭内存，其 restoreOverride 会在异步模型恢复完成后用
+        // 自己（更早、更纯净）的快照恢复并重排调度。
+        try {
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            return !!(reloadController
+                && typeof reloadController.isProactiveSuppressed === 'function'
+                && reloadController.isProactiveSuppressed());
+        } catch (_) {
+            return false;
+        }
+    }
+
     function endHomeTutorialFeatureSuppression(reason) {
         const suppression = state.featureSuppression;
         if (!suppression.active && !suppression.snapshot) {
@@ -514,9 +589,16 @@
             }
             setGalgameState(!!snapshot.galgameEnabled, { force: true });
         }, 0);
-        if (snapshot.proactive) {
-            applyProactiveState(snapshot.proactive);
-            maybeRestartProactiveSchedule(snapshot.proactive);
+        // 头像重载层仍持有抑制时不抢先恢复：skip/angry-exit 的收口顺序是
+        // 本 end() 先跑、restoreTutorialAvatarOverride 后跑（内部要 await
+        // 模型重载）。若在这里就还原真值并重启调度器，模型恢复完成前的
+        // 异步窗口里主动搭话可能对着仍在展示的临时教程模型开口。让位后
+        // 由重载层 restoreOverride 的 finally 统一恢复并重排（其快照更早、
+        // 对持久层缺失键也更纯净）。
+        if (snapshot.proactive && !isAvatarReloadProactiveSuppressed()) {
+            const restoredProactive = resolveRestoredProactiveState(snapshot.proactive);
+            applyProactiveState(restoredProactive);
+            maybeRestartProactiveSchedule(restoredProactive);
         }
         if (snapshot.agentFlags) {
             void restoreAgentSnapshot(snapshot.agentFlags, restoreToken)
@@ -571,6 +653,16 @@
         enforce: enforceHomeTutorialFeatureSuppression,
         end: endHomeTutorialFeatureSuppression,
         isActive: mod.isHomeTutorialFeatureSuppressionActive,
+        getSuppressedUserValues: function () {
+            // 抑制快照（= 教程开始前的用户真值，持久层缺失的键由 begin 时的
+            // 内存真值兜底）：供 app-settings 的持久化护栏在持久层缺键时回退；
+            // 非抑制期返回 null。
+            const suppression = state.featureSuppression;
+            if (!suppression.active || !suppression.snapshot || !suppression.snapshot.proactive) {
+                return null;
+            }
+            return suppression.snapshot.proactive;
+        },
     };
 
     function computeHomeTutorialInteractionLocked() {
