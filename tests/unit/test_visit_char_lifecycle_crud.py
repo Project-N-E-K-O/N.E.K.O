@@ -510,3 +510,99 @@ async def test_a_crashing_retry_answers_409_not_500(env, monkeypatch):
     # 变异：重试不兜底 → 新建接口 500、工坊同步整个循环中断，必红
     status, body = await _add(cm, "Gone")
     assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
+
+
+# ── 改名迁移没做完时的同名新建 / 删除 ─────────────────────────────────
+
+
+async def _failed_rename(cm, config_dir, monkeypatch):
+    """Old -> New committed with the visit migration failing: the marker stays, Old is free in the config."""
+    roster, uid, persona_path = await _seed(cm, config_dir)
+    original = VisitSpool.rename_own_char
+
+    async def locked(*_a, **_k):
+        raise OSError("spool locked")
+
+    monkeypatch.setattr(VisitSpool, "rename_own_char", locked)
+    status, body = await _rename(cm, "Old", "New")
+    assert status == 200 and body["visit_data_migration_pending"] is True
+    assert _peers(config_dir)["pending_rename"] == {"old": "Old", "new": "New", "uid": uid}
+
+    def unlock():
+        monkeypatch.setattr(VisitSpool, "rename_own_char", original)
+
+    return roster, uid, persona_path, unlock
+
+
+async def test_creating_the_old_name_of_an_unsettled_rename_is_refused(env, monkeypatch):
+    cm, _path, config_dir = env
+    roster, uid, _persona, unlock = await _failed_rename(cm, config_dir, monkeypatch)
+    # 迁移仍做不完：旧名不能被新角色占用（变异：name_blocked 不看改名标记必红）
+    status, body = await _add(cm, "Old")
+    assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
+    assert "Old" not in cm.load_characters()["猫娘"]
+    status, body = await _rename(cm, "Other", "Old")
+    assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
+    assert "Other" in cm.load_characters()["猫娘"]
+    # 迁移能做完了：新建前先在锁内对完账，旧对端跟着 New 走，新的 Old 不继承
+    unlock()
+    status, body = await _add(cm, "Old")
+    assert status == 200 and body["success"] is True
+    assert "pending_rename" not in _peers(config_dir)
+    assert await roster.get_char_entry(PEER_X, "Old") is None
+    assert await roster.get_char_entry(PEER_X, "New") is not None
+    assert (await VisitSpool(config_dir, vid(1)).read_state())["own_char"] == "New"
+    assert _uid(cm, "Old") != uid
+    # 之后的改名不再被这个标记挡住
+    status, body = await _rename(cm, "Other", "Other2")
+    assert status == 200 and body["success"] is True
+
+
+async def test_deleting_the_new_name_of_an_unsettled_rename_retires_both_names(env, monkeypatch):
+    cm, _path, config_dir = env
+    roster, _uid_old, persona_path, unlock = await _failed_rename(cm, config_dir, monkeypatch)
+    # 迁移仍做不完：删除 New 会把 Old 名下的条目留下来，先拒绝（变异：删除不先对账必红）
+    status, body = await _delete(cm, "New")
+    assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
+    assert "New" in cm.load_characters()["猫娘"]
+    assert "pending_retire" not in _peers(config_dir)
+    unlock()
+    status, body = await _delete(cm, "New")
+    assert status == 200 and body["success"] is True and "partial_success" not in body
+    assert "New" not in cm.load_characters()["猫娘"]
+    data = _peers(config_dir)
+    assert "pending_rename" not in data and "pending_retire" not in data
+    assert await roster.get_char_entry(PEER_X, "Old") is None
+    assert await roster.get_char_entry(PEER_X, "New") is None
+    assert await VisitSpool(config_dir, vid(1)).read_state() is None
+    assert not persona_path.exists()
+    # 之后新建 Old 不继承旧对端
+    status, body = await _add(cm, "Old")
+    assert status == 200 and await roster.get_char_entry(PEER_X, "Old") is None
+
+
+async def test_deleting_another_character_ignores_an_unsettled_rename(env, monkeypatch):
+    cm, _path, config_dir = env
+    _roster, uid, _persona, _unlock = await _failed_rename(cm, config_dir, monkeypatch)
+    status, body = await _delete(cm, "Other")
+    assert status == 200 and body["success"] is True
+    assert _peers(config_dir)["pending_rename"] == {"old": "Old", "new": "New", "uid": uid}
+
+
+async def test_unsubscribe_refuses_a_character_whose_rename_cannot_be_settled(tmp_path, monkeypatch):
+    config = _unsubscribe_config(tmp_path)
+    await _seed_lan(config.config_dir, monkeypatch)
+    # Lan 是上一次 Lan0 -> Lan 改名的结果，迁移没做完
+    marker = {"old": "Lan0", "new": "Lan", "uid": LAN_UID}
+    await set_roster_marker(config.config_dir, "pending_rename", marker)
+
+    async def locked(*_a, **_k):
+        raise OSError("spool locked")
+
+    monkeypatch.setattr(VisitSpool, "rename_own_char", locked)
+    before = json.loads(json.dumps(config.characters))
+    (status, body), steam_calls = await _unsubscribe(monkeypatch, config)
+    # 与「标记写不进去」同一条路径：整体中止，不写 characters.json、不发 Steam 退订
+    assert status == 500 and body["code"] == "LOCAL_CONFIG_CLEANUP_FAILED"
+    assert steam_calls == [] and config.saved == [] and config.characters == before
+    assert _peers(config.config_dir)["pending_rename"] == marker

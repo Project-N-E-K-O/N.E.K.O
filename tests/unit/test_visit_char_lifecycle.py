@@ -488,3 +488,155 @@ async def test_startup_recovery_without_markers_reports_clean(tmp_path, _readabl
     report = await _recover(tmp_path, ["A"], {CHAR_UID_A: "A"})
     assert report.retired is True and report.renamed is True
     assert not (tmp_path / "visit_peers.json").exists()
+
+
+# ── 名字占用（退役 / 改名标记） ─────────────────────────────────────────
+
+
+async def test_name_marker_state_covers_both_markers(tmp_path):
+    assert await lc.name_marker_state(tmp_path, "A") == lc.NAME_FREE
+    assert not (tmp_path / "visit_peers.json").exists()
+    await set_roster_marker(tmp_path, "pending_rename", {"old": "A", "new": "A2", "uid": CHAR_UID_A})
+    await add_roster_marker_item(tmp_path, "pending_retire", lc.retire_item("Gone", CHAR_UID_B))
+    # 变异：只看退役标记必红（改名的两个名字都算占用）
+    assert await lc.name_marker_state(tmp_path, "A") == lc.NAME_RENAMING
+    assert await lc.name_marker_state(tmp_path, "A2") == lc.NAME_RENAMING
+    assert await lc.name_marker_state(tmp_path, "Gone") == lc.NAME_RETIRING
+    assert await lc.name_marker_state(tmp_path, "B") == lc.NAME_FREE
+
+
+async def test_name_marker_state_of_an_unreadable_roster_is_unknown_not_held(tmp_path):
+    (tmp_path / "visit_peers.json").write_text("{broken", encoding="utf-8")
+    assert await lc.name_marker_state(tmp_path, "A") == lc.NAME_UNREADABLE
+
+
+# ── 删除时先对账本角色的改名 ──────────────────────────────────────────
+
+
+def _counting_loader(names, uid_of):
+    calls = []
+
+    async def load():
+        calls.append(True)
+        return set(names), dict(uid_of)
+
+    return load, calls
+
+
+async def test_delete_settles_its_own_pending_rename_before_retiring(tmp_path):
+    roster = await _visit_data(tmp_path)
+    # A -> A2 已提交、迁移没做完；现在删 A2
+    await set_roster_marker(tmp_path, "pending_rename", {"old": "A", "new": "A2", "uid": CHAR_UID_A})
+    load, _calls = _counting_loader({"A2", "B"}, {"A2": CHAR_UID_A, "B": CHAR_UID_B})
+    item = await lc.begin_retire(tmp_path, "A2", CHAR_UID_A, load_names=load)
+    assert item == lc.retire_item("A2", CHAR_UID_A)
+    # 迁移先补完：旧名 A 下不再有条目，退役按 A2 就能全部清掉（变异：不先对账必红）
+    assert await roster.get_char_entry(PEER_X, "A") is None
+    assert await roster.get_char_entry(PEER_X, "A2") is not None
+    assert "pending_rename" not in _peers(tmp_path)
+    assert await lc.settle_retire(tmp_path, item, names={"B"}, uid_of={"B": CHAR_UID_B},
+                                  retire_persona=Personas(tmp_path))
+    assert await roster.get_char_entry(PEER_X, "A") is None
+    assert await roster.get_char_entry(PEER_X, "A2") is None
+
+
+async def test_delete_is_refused_while_its_own_rename_cannot_be_settled(tmp_path, monkeypatch):
+    roster = await _visit_data(tmp_path)
+    marker = {"old": "A", "new": "A2", "uid": CHAR_UID_A}
+    await set_roster_marker(tmp_path, "pending_rename", marker)
+
+    async def busy(*_a, **_k):
+        raise OSError("spool locked")
+
+    monkeypatch.setattr(VisitSpool, "rename_own_char", busy)
+    load, _calls = _counting_loader({"A2"}, {"A2": CHAR_UID_A})
+    with pytest.raises(lc.RenamePendingElsewhere):
+        await lc.begin_retire(tmp_path, "A2", CHAR_UID_A, load_names=load)
+    assert _peers(tmp_path)["pending_rename"] == marker
+    assert "pending_retire" not in _peers(tmp_path)
+    # 名册里的迁移（先于 spool）已幂等做了，标记仍在：重启对账会补完
+    assert await roster.get_char_entry(PEER_X, "A2") is not None
+
+
+async def test_delete_is_refused_when_its_own_rename_marker_is_unreadable(tmp_path):
+    await _visit_data(tmp_path)
+    await set_roster_marker(tmp_path, "pending_rename", {"old": "A", "new": "A2", "uid": CHAR_UID_A})
+
+    async def broken():
+        raise OSError("characters.json locked")
+
+    with pytest.raises(lc.RenamePendingElsewhere):
+        await lc.begin_retire(tmp_path, "A2", CHAR_UID_A, load_names=broken)
+
+
+async def test_delete_goes_ahead_when_its_rename_is_ambiguous_for_good(tmp_path):
+    await _visit_data(tmp_path)
+    marker = {"old": "A", "new": "A2", "uid": CHAR_UID_A}
+    await set_roster_marker(tmp_path, "pending_rename", marker)
+    # 旧名 A 已被另一个角色占用：两边的条目分不开，挡住删除只会让两个角色互相卡死
+    load, _calls = _counting_loader({"A", "A2"}, {"A": CHAR_UID_B, "A2": CHAR_UID_A})
+    assert await lc.begin_retire(tmp_path, "A2", CHAR_UID_A, load_names=load) == lc.retire_item("A2", CHAR_UID_A)
+    assert _peers(tmp_path)["pending_rename"] == marker
+    # A2 一删，标记就按「已删除」清掉
+    assert await lc.reconcile_rename(tmp_path, {"A"}, {"A": CHAR_UID_B}) == frozenset()
+
+
+async def test_delete_of_another_character_ignores_the_pending_rename(tmp_path):
+    await _visit_data(tmp_path)
+    marker = {"old": "A", "new": "A2", "uid": CHAR_UID_A}
+    await set_roster_marker(tmp_path, "pending_rename", marker)
+    load, calls = _counting_loader({"A2", "B"}, {"A2": CHAR_UID_A, "B": CHAR_UID_B})
+    assert await lc.begin_retire(tmp_path, "B", CHAR_UID_B, load_names=load) == lc.retire_item("B", CHAR_UID_B)
+    assert calls == [] and _peers(tmp_path)["pending_rename"] == marker
+
+
+async def test_a_rename_marker_without_uid_involves_the_character_by_name(tmp_path):
+    await _visit_data(tmp_path)
+    await set_roster_marker(tmp_path, "pending_rename", {"old": "A", "new": "A2"})
+    load, calls = _counting_loader({"A2"}, {"A2": CHAR_UID_A})
+    await lc.begin_retire(tmp_path, "A2", CHAR_UID_A, load_names=load)
+    assert calls == [True] and "pending_rename" not in _peers(tmp_path)
+
+
+# ── 云快照导入删掉的角色 ──────────────────────────────────────────────
+
+
+def test_import_removal_without_visit_data_writes_nothing(tmp_path):
+    assert lc.record_removed_characters_sync(tmp_path, [{"name": "A", "character_uid": CHAR_UID_A}]) == 0
+    assert not (tmp_path / "visit_peers.json").exists()
+
+
+async def test_import_removal_records_one_retire_item_per_character(tmp_path):
+    await seed_roster(tmp_path, own_char="A")
+    removed = [
+        {"name": "A", "character_uid": CHAR_UID_A},
+        {"name": "Legacy", "character_uid": None},
+        {"name": "", "character_uid": CHAR_UID_B},           # 坏条目跳过
+        {"name": "Bad", "character_uid": 7},
+    ]
+    assert lc.record_removed_characters_sync(tmp_path, removed) == 2
+    assert _peers(tmp_path)["pending_retire"] == [lc.retire_item("A", CHAR_UID_A), lc.retire_item("Legacy", None)]
+    # 重复导入（上次中途失败）不会重复记
+    assert lc.record_removed_characters_sync(tmp_path, removed[:1]) == 0
+    assert len(_peers(tmp_path)["pending_retire"]) == 2
+
+
+async def test_import_removal_is_retired_by_startup_recovery(tmp_path, _readable):
+    spool_dir, _upload, _reports, personas = await _retire_fixture(tmp_path)
+    lc.record_removed_characters_sync(tmp_path, [{"name": "A", "character_uid": CHAR_UID_A}])
+    report = await _recover(tmp_path, ["B"], {CHAR_UID_B: "B"}, retire_persona=personas)
+    assert report.retired is True
+    assert not (spool_dir / f"{vid(1)}.state.json").exists()
+    assert PEER_X not in _peers(tmp_path)["accounts"][OWN_A]["peers"]
+    assert personas.calls == [CHAR_UID_A]
+    assert await read_roster_marker(tmp_path, "pending_retire") is None
+
+
+async def test_import_removal_that_rolled_back_is_only_dropped(tmp_path, _readable):
+    spool_dir, _upload, _reports, personas = await _retire_fixture(tmp_path)
+    lc.record_removed_characters_sync(tmp_path, [{"name": "A", "character_uid": CHAR_UID_A}])
+    # 导入回滚：A 还在配置里
+    report = await _recover(tmp_path, ["A", "B"], {CHAR_UID_A: "A", CHAR_UID_B: "B"}, retire_persona=personas)
+    assert report.retired is True and personas.calls == []
+    assert (spool_dir / f"{vid(1)}.state.json").exists()
+    assert await read_roster_marker(tmp_path, "pending_retire") is None

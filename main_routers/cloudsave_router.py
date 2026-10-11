@@ -27,7 +27,6 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 
 import asyncio
 import logging
-from pathlib import PurePath
 from contextlib import suppress
 
 from fastapi import APIRouter, Request
@@ -318,6 +317,36 @@ async def _force_terminate_session(character_name: str) -> tuple[bool, str]:
     except Exception as exc:
         logger.warning("强制终止角色 %s 会话失败: %s", character_name, exc)
         return False, str(exc)
+
+
+def _character_config_lock():
+    # 晚绑定：测试会把这把模块级锁换成新的
+    from utils import character_memory
+
+    return character_memory.character_config_mutation_lock
+
+
+async def _visit_name_refusal(config_manager, name: str):
+    """409 ``VISIT_DATA_BUSY`` while a pending visit retirement / rename holds a name not configured locally.
+
+    Called under the character-config lock right before the import publishes
+    the character, so no delete or rename can slip in between. Same rule as
+    every other path creating a character: the roster keys entries by name.
+    """
+    from main_routers.visit_router import character_hooks
+
+    characters = await config_manager.aload_characters()
+    if name in ((characters or {}).get("猫娘") or {}):
+        return None
+    if not await character_hooks.name_blocked(config_manager, name):
+        return None
+    return _cloudsave_error_response(
+        "VISIT_DATA_BUSY",
+        "Visit data under this name is still being sorted out (a character with this name was just "
+        "deleted or renamed). Please try again later.",
+        status_code=409,
+        character_name=name,
+    )
 
 
 def _local_character_exists(config_manager, character_name: str) -> bool:
@@ -639,21 +668,6 @@ async def post_cloudsave_character_download(name: str, request: Request):
             character_name=name,
         )
 
-    if not local_exists:
-        # 同名的已删除角色还在退役串门数据（pending_retire）：名册按名字存，这时导入同名角色
-        # 会看到旧角色的对端与摘要、之后的退役又会删掉新角色的条目（与新建角色同一条规则）
-        from main_logic.visit.char_lifecycle import is_name_retiring
-
-        config_dir = getattr(config_manager, "config_dir", None)
-        if isinstance(config_dir, (str, PurePath)) and str(config_dir) and await is_name_retiring(config_dir, name):
-            return _cloudsave_error_response(
-                "VISIT_DATA_BUSY",
-                "A deleted character with the same name is still having its visit data cleaned up. "
-                "Please try again later.",
-                status_code=409,
-                character_name=name,
-            )
-
     block_reason = _active_session_block_reason(name)
     if block_reason:
         if not isinstance(force_val, bool) or not force_val:
@@ -705,15 +719,22 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
                 reason=f"single_character_download:{name}",
             ):
-                result, import_cancelled = await _await_thread_call_to_completion(
-                    import_cloudsave_character_unit,
-                    config_manager,
-                    name,
-                    overwrite=overwrite,
-                    backup_before_overwrite=backup_before_overwrite,
-                    retain_recent_locks=True,
-                    use_cloud_apply_fence=False,
-                )
+                # 判定与发布在角色配置变更锁内完成：否则并发的删除可以在判定之后写下退役标记
+                # 并提交，随后这里照样发布同名角色
+                async with _character_config_lock():
+                    visit_refusal = await _visit_name_refusal(config_manager, name)
+                    if visit_refusal is None:
+                        result, import_cancelled = await _await_thread_call_to_completion(
+                            import_cloudsave_character_unit,
+                            config_manager,
+                            name,
+                            overwrite=overwrite,
+                            backup_before_overwrite=backup_before_overwrite,
+                            retain_recent_locks=True,
+                            use_cloud_apply_fence=False,
+                        )
+                if visit_refusal is not None:
+                    return visit_refusal
                 reload_error_response, completion_cancelled = (
                     await _await_coroutine_to_completion(
                         _complete_cloudsave_character_download(

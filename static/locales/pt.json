@@ -3249,7 +3249,7 @@
             "localCharacterNotFound": "O personagem local não foi encontrado.",
             "cloudCharacterNotFound": "O caractere da nuvem não foi encontrado.",
             "localCharacterExists": "Já existe um personagem local com o mesmo nome.",
-            "visitDataBusy": "Os dados de visitas de um personagem excluído com o mesmo nome ainda estão sendo limpos. Tente novamente mais tarde.",
+            "visitDataBusy": "Os dados de visitas com este nome ainda estão sendo organizados (um personagem com este nome foi excluído ou renomeado há pouco). Tente novamente mais tarde.",
             "cloudCharacterExists": "Já existe um personagem de nuvem com o mesmo nome.",
             "writeFenceActive": "O modo de manutenção de salvamento na nuvem está ativo. Por favor, tente novamente mais tarde.",
             "nameAuditFailed": "O nome do personagem não passou nas regras de validação de salvamento na nuvem.",
