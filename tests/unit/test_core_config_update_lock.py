@@ -6,6 +6,7 @@ parks one writer in the middle of its operation, lets another writer commit,
 then checks that both changes and the unrelated fields survive.
 """
 
+import ast
 import asyncio
 import json
 import threading
@@ -163,6 +164,36 @@ async def test_cancelled_async_update_waits_for_its_worker_before_unwinding(ligh
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 5)
     assert _read(path) == {"unrelated": "keep", "written": True}
+
+
+def test_snapshot_read_never_overlaps_a_locked_write(light_manager):
+    """A decision snapshot waits for an in-flight write instead of racing its os.replace."""
+    path = light_manager.config_dir / FILENAME
+    path.write_text(json.dumps({"a": 1}), encoding="utf-8")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow(cfg):
+        entered.set()
+        assert release.wait(5)
+        cfg["a"] = 2
+
+    writer = threading.Thread(target=light_manager.update_json_config, args=(FILENAME, slow))
+    writer.start()
+    try:
+        assert entered.wait(5)
+        result = []
+        reader = threading.Thread(
+            target=lambda: result.append(json_update.load_json_config_snapshot(light_manager, FILENAME))
+        )
+        reader.start()
+        reader.join(0.2)
+        assert reader.is_alive(), "snapshot read ran while the write was still in progress"
+    finally:
+        release.set()
+        writer.join(5)
+    reader.join(5)
+    assert result == [{"a": 2}]
 
 
 def test_update_distinguishes_true_from_legacy_one(light_manager):
@@ -699,20 +730,93 @@ def test_startup_migration_leaves_a_corrupt_file_alone(config_manager, monkeypat
     assert path.read_bytes() == payload
 
 
+_WRITE_HELPERS = {
+    "save_json_config", "atomic_write_json", "atomic_write_json_async",
+    "atomic_write_text", "atomic_write_text_async", "atomic_write_bytes",
+}
+
+
+def _call_name(func):
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _core_config_writes(source: str) -> list[int]:
+    """Line numbers of write-helper calls whose arguments point at core_config.json.
+
+    A call counts when it is one of ``_WRITE_HELPERS`` (directly, or handed to
+    ``to_thread`` / ``run_in_executor``) and its arguments contain the
+    ``"core_config.json"`` literal or a name assigned that literal anywhere in
+    the module.  A path assembled from a loop variable is beyond a static scan.
+    """
+    tree = ast.parse(source)
+    aliases = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and isinstance(node.value, ast.Constant) and node.value.value == FILENAME
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    }
+
+    def mentions_core_config(nodes):
+        return any(
+            (isinstance(sub, ast.Constant) and sub.value == FILENAME)
+            or (isinstance(sub, ast.Name) and sub.id in aliases)
+            for node in nodes for sub in ast.walk(node)
+        )
+
+    hits = []
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call):
+            continue
+        name = _call_name(call.func)
+        args = [*call.args, *(kw.value for kw in call.keywords)]
+        if name in ("to_thread", "run_in_executor"):
+            fn_index = 0 if name == "to_thread" else 1
+            if len(call.args) <= fn_index or _call_name(call.args[fn_index]) not in _WRITE_HELPERS:
+                continue
+            args = args[fn_index + 1:]
+        elif name not in _WRITE_HELPERS:
+            continue
+        if mentions_core_config(args):
+            hits.append(call.lineno)
+    return hits
+
+
+@pytest.mark.parametrize("snippet,expected", [
+    ("cm.save_json_config('core_config.json', data)", 1),
+    ("CORE = 'core_config.json'; cm.save_json_config(CORE, data)", 1),
+    ("atomic_write_json(cfg_dir / 'core_config.json', data)", 1),
+    ("await asyncio.to_thread(cm.save_json_config, 'core_config.json', data)", 1),
+    ("loop.run_in_executor(None, atomic_write_json, path_for('core_config.json'), d)", 1),
+    ("cm.load_json_config('core_config.json')", 0),
+    ("cm.save_json_config('voice_storage.json', data)", 0),
+    ("await asyncio.to_thread(cm.load_json_config, 'core_config.json')", 0),
+])
+def test_core_config_write_scanner_recognises_bypass_shapes(snippet, expected):
+    """Keep the guard below honest: it must see the usual ways around the entry point."""
+    source = "async def f():" + chr(10) + "    " + snippet + chr(10)
+    assert len(_core_config_writes(source)) == expected
+
+
 def test_every_core_config_writer_goes_through_the_locked_entry_point():
-    """No production code may save core_config.json outside json_update."""
-    import re
+    """No production code may write core_config.json outside json_update."""
     from pathlib import Path
 
     root = Path(json_update.__file__).resolve().parents[2]
-    pattern = re.compile(r"save_json_config\(\s*['\"]core_config\.json['\"]|save_json_config,\s*['\"]core_config\.json['\"]")
     sources = [*root.glob("*.py")]
     for package in ("app", "brain", "config", "main_logic", "main_routers", "memory", "plugin", "utils"):
         sources.extend(path for path in (root / package).rglob("*.py") if "tests" not in path.parts)
     assert len(sources) > 100, "source scan found almost nothing; the guard would pass vacuously"
-    offenders = [
-        path.relative_to(root).as_posix()
-        for path in sources
-        if pattern.search(path.read_text(encoding="utf-8", errors="ignore"))
-    ]
+    offenders = []
+    for path in sources:
+        try:
+            hits = _core_config_writes(path.read_bytes().decode("utf-8-sig"))
+        except (SyntaxError, ValueError, UnicodeDecodeError):
+            continue
+        offenders.extend(f"{path.relative_to(root).as_posix()}:{line}" for line in hits)
     assert offenders == []

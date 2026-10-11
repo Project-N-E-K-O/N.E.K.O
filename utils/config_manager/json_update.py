@@ -82,6 +82,21 @@ def load_json_config_for_update(manager: Any, filename: str) -> dict:
     return data
 
 
+def load_json_config_snapshot(manager: Any, filename: str) -> dict:
+    """``load_json_config_for_update`` taken under the update lock.
+
+    Readers that decide on the snapshot (``/core_api``, the memory toggles)
+    use this so an in-process writer's ``os.replace`` can never overlap the
+    open: on Windows that overlap can fail the read with a sharing violation,
+    which would surface as a misleading "file may be corrupt" refusal.
+    """
+    held: set[str] = _held.__dict__.setdefault("filenames", set())
+    if filename in held:
+        raise RuntimeError(f"snapshot read of {filename} from inside its own mutator")
+    with json_config_lock(filename):
+        return load_json_config_for_update(manager, filename)
+
+
 def update_json_config(manager: Any, filename: str, mutator: Callable[[dict], T]) -> T:
     """Atomically read ``filename``, let ``mutator`` edit it in place, then save.
 

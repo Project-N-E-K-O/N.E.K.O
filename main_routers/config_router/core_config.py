@@ -380,11 +380,11 @@ async def update_core_config(request: Request):
         # 这份快照只用来做决策和算差异，真正落盘见下方 aupdate_json_config。
         from utils.config_manager.json_update import (
             json_values_equal,
-            load_json_config_for_update,
+            load_json_config_snapshot,
         )
         try:
             existing_core_cfg = await asyncio.to_thread(
-                load_json_config_for_update, config_manager, 'core_config.json'
+                load_json_config_snapshot, config_manager, 'core_config.json'
             )
         except Exception as exc:
             logger.warning(f"读取 core_config.json 失败，拒绝保存以免覆盖原文件: {exc}")

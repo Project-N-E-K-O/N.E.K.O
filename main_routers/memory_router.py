@@ -1497,8 +1497,8 @@ class _InvalidMemoryToggleValue(ValueError):
 
 def _load_memory_toggle_config(config_manager):
     """Default a missing file to an empty object without hiding read errors."""
-    from utils.config_manager.json_update import load_json_config_for_update
-    return load_json_config_for_update(config_manager, 'core_config.json')
+    from utils.config_manager.json_update import load_json_config_snapshot
+    return load_json_config_snapshot(config_manager, 'core_config.json')
 
 
 def _load_memory_toggle_enabled(config_manager, key):
