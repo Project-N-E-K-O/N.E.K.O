@@ -1911,7 +1911,7 @@ async def test_cancelled_download_finishes_reload_before_propagating_cancel():
 
 @asynccontextmanager
 async def _visit_download_env(monkeypatch):
-    """Target config (tmp) holding ``本地角色`` with ``云端角色`` exported to its cloud folder.
+    """Target config (tmp) holding one local character, with a cloud character exported to its cloud folder.
 
     The persona retirement is replaced (``retire_state["fail"]`` decides) so a
     retried retirement never resolves the real runtime directory.

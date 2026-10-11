@@ -49,7 +49,7 @@ def _names_on_disk(cm) -> set[str]:
 
 @pytest.fixture
 def pair(tmp_path):
-    """``(source, target)``: the target holds 本地角色 (with a uid), the source a full snapshot of 云端角色."""
+    """``(source, target)``: the target holds one local character (with a uid), the source a cloud one."""
     source_cm = _make_config_manager(tmp_path / "source")
     target_cm = _make_config_manager(tmp_path / "target")
     bootstrap_local_cloudsave_environment(source_cm)
