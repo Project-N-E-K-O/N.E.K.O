@@ -378,6 +378,22 @@ async def test_unreadable_sentinel_without_scope_is_labelled_too(env):
     assert (await _rooms(env)).json()["reason"] == "forget_record_unreadable"
 
 
+async def test_unlistable_record_directory_refuses_without_offering_discard(env):
+    # 目录本身列不出：照样拒（fail closed），但不带 reason——丢弃端点会碰上同一个错误
+    (env.host.config_dir / "visit_revocations").write_text("not a directory", encoding="utf-8")
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json() == {"ok": False, "code": "VISIT_FORGET_IN_PROGRESS"}
+    assert _no_slot()
+    memory_routes.configure_memory_routes(config_dir=lambda: env.host.config_dir)
+    try:
+        async with env.client() as c:
+            discard = await c.post("/api/visit/memory/forget/discard_unreadable", headers=GOOD,
+                                   json={"confirm": True})
+    finally:
+        memory_routes.configure_memory_routes(config_dir=memory_routes._default_config_dir)
+    assert discard.status_code == 503 and discard.json()["code"] == "discard_failed"
+
+
 async def test_real_open_log_is_the_plain_refusal_even_beside_a_damaged_one(env):
     from main_logic.visit.forget_runner import open_person_log
     from tests.unit.visit_memory_test_helpers import seed_roster

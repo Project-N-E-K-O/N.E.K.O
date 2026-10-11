@@ -904,6 +904,34 @@ class QuarantinedRecord:
     error: str
 
 
+_QUARANTINE_REREAD_DELAY_S = 0.2
+"""Pause before the single re-read of a record that failed with ``OSError`` (a transient lock / IO hiccup)."""
+
+
+def _still_unreadable(read: Callable[[Path, str], Any], path: Path, record_id: str) -> str | None:
+    """Name of the error that keeps ``path`` unreadable, or ``None`` when it reads (or is gone).
+
+    Content damage (``ValueError`` / ``RecursionError``) is final. An ``OSError``
+    may be transient (Windows sharing violation, antivirus, one EIO), so the
+    read is retried once: quarantining a readable log would silently abandon a
+    forget the user asked for. A persistent ``OSError`` (a bad sector) still
+    counts, so a damaged disk stays recoverable.
+    """
+    for attempt in range(2):
+        try:
+            read(path, record_id)
+            return None
+        except FileNotFoundError:
+            return None
+        except (ValueError, RecursionError) as exc:
+            return type(exc).__name__
+        except OSError as exc:
+            if attempt:
+                return type(exc).__name__
+            time.sleep(_QUARANTINE_REREAD_DELAY_S)
+    return None
+
+
 def _quarantine_unreadable_sync(config_dir: Path, now: float) -> tuple[list[QuarantinedRecord], int]:
     directory = config_dir / VISIT_REVOCATIONS_DIRNAME
     quarantine = directory / VISIT_REVOCATIONS_QUARANTINE_DIRNAME
@@ -924,16 +952,18 @@ def _quarantine_unreadable_sync(config_dir: Path, now: float) -> tuple[list[Quar
         else:
             continue
         path = directory / name
+        try:
+            lock = path_lock(path)
+        except RuntimeError as exc:
+            # Python 3.11 的 Path.resolve 遇到循环符号链接抛 RuntimeError：记为挪不动，端点回可重试的 503
+            logger.error("visit forget record %s could not be locked: %s", name, exc)
+            failed += 1
+            continue
         # 与所有写入（开日志 / 记完成 / 关日志 / 写删哨兵）同一把文件锁：锁内重读一遍，
         # 只有此刻仍读不出才移走。正在被写好的、读得出的记录一律不碰
-        with path_lock(path):
-            try:
-                read(path, record_id)
-            except FileNotFoundError:
-                continue
-            except (OSError, ValueError, RecursionError) as exc:
-                error = type(exc).__name__
-            else:
+        with lock:
+            error = _still_unreadable(read, path, record_id)
+            if error is None:
                 continue
             # 不删，挪进隔离目录：文件名带时间与随机后缀、不以 .json 结尾，同名不会互相覆盖，
             # 重放与准入闸只列顶层，看不到这里

@@ -184,7 +184,10 @@ FORGET_REFUSAL_IN_PROGRESS = "in_progress"
 """:func:`char_forget_refusal`: an unfinished forget covers the character."""
 
 FORGET_REFUSAL_UNREADABLE = "forget_record_unreadable"
-""":func:`char_forget_refusal`: a forget record cannot be read, so the gate fails closed."""
+""":func:`char_forget_refusal`: a forget record cannot be read, so the gate fails closed (discarding it helps)."""
+
+FORGET_REFUSAL_UNLISTABLE = "records_unlistable"
+""":func:`char_forget_refusal`: the record directory itself cannot be listed (discarding cannot help)."""
 
 
 async def char_forget_refusal(config_dir: str | Path, own_char_uid: str, *, own_uid: str | None) -> str | None:
@@ -199,10 +202,12 @@ async def char_forget_refusal(config_dir: str | Path, own_char_uid: str, *, own_
 
     Returns :data:`FORGET_REFUSAL_IN_PROGRESS` when a readable record covers
     the character, else :data:`FORGET_REFUSAL_UNREADABLE` when the gate can
-    only fail closed: an unreadable revocation log cannot be attributed to a
-    character without its peer, so it counts for every character; an
-    unreadable sentinel counts for whatever scope still parses; a directory
-    that cannot be listed counts as well. A real forget wins over damage, so
+    only fail closed on damaged records: an unreadable revocation log cannot
+    be attributed to a character without its peer, so it counts for every
+    character; an unreadable sentinel counts for whatever scope still parses.
+    A directory that cannot be listed at all fails closed as
+    :data:`FORGET_REFUSAL_UNLISTABLE`: the discard action would hit the same
+    error, so it is not offered. A real forget wins over damage, so
     discarding damaged records is only offered when it would help.
     """
 
@@ -214,8 +219,8 @@ async def char_forget_refusal(config_dir: str | Path, own_char_uid: str, *, own_
         logs, unreadable_logs = await RevocationLog.list_all_open_with_unreadable(config_dir)
         sentinels, hints = await ClearingSentinels(config_dir).list_open_with_unreadable()
     except OSError as exc:
-        logger.warning("visit admission: forget records unreadable, refusing: %s", type(exc).__name__)
-        return FORGET_REFUSAL_UNREADABLE
+        logger.warning("visit admission: forget record directory unreadable, refusing: %s", type(exc).__name__)
+        return FORGET_REFUSAL_UNLISTABLE
     if any(log["own_char_uid"] == own_char_uid and ours(log["own_uid"]) for log in logs):
         return FORGET_REFUSAL_IN_PROGRESS
     if any(ours(doc["own_uid"]) and sentinel_covers(doc, own_char_uid) for doc in sentinels):
