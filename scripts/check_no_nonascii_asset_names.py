@@ -115,10 +115,12 @@ scheme in particular is load-bearing for motion retrieval. So this is a
 ratchet, not a clean-room ban: everything listed in
 ``scripts/nonascii_asset_baseline.txt`` is grandfathered, anything new fails.
 
-TODO: shrink the baseline. Each family needs its own follow-up — rename the
-files to ASCII (stable slug or id) and update the manifest that names them.
-An empty baseline is the goal; when it gets there, delete the file and make
-this a plain ban.
+The baseline is intentionally non-empty: every entry is a product-owned asset
+whose name is part of a lookup contract (VRM motion retrieval reads Chinese
+action-card names; tutorial audio keys are referenced by manifest). Shrinking
+it is therefore a per-family product decision — rename the files to an ASCII
+slug or id and update the manifest that names them. An empty baseline is the
+end state: the file can then be deleted and this becomes a plain ban.
 
 Usage
 -----

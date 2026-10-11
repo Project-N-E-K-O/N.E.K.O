@@ -1167,28 +1167,14 @@
     }
 
     /**
-     * 翻译状态消息
-     * 
-     * TODO: Replace with error code-based translation when backend supports it
-     * This pattern-matching approach is fragile and should be considered temporary.
-     * 
-     * Current limitations:
-     * - If backend error messages change wording, translations fail silently
-     * - Cannot handle errors that don't match the patterns
-     * - Mixes presentation (translation) with error detection logic
-     * - Maintenance burden: every new error requires updating regex patterns
-     * 
-     * Preferred future approach (when backend supports structured errors):
-     * ```javascript
-     * // Backend sends: { code: 'SESSION_TIMEOUT', details: {...} }
-     * // Frontend translates by code:
-     * if (error.code) {
-     *     return i18next.t(`errors.${error.code}`, error.details);
-     * }
-     * ```
-     * 
-     * @param {string|object} message - Error message string or structured error object
-     * @returns {string} Translated message
+     * 判断一条状态消息是否属于「API Key 被拒绝」。
+     *
+     * translateStatusMessage 会对所有输入先调用本函数，结构化错误对象
+     * （{code, details}）也包括在内：命中则直接返回 API_KEY_REJECTED，
+     * 未命中才按 code 走 errors.<code> 翻译。
+     *
+     * @param {string|object} message - 错误文本或结构化错误对象
+     * @returns {boolean}
      */
     function looksLikeApiKeyRejected(message) {
         var parts = [];

@@ -6462,10 +6462,11 @@ def test_jukebox_stale_match_refreshes_before_reporting_failure(mock_page: Page)
 
 @pytest.mark.frontend
 def test_jukebox_fbx_reports_that_no_animation_started(mock_page: Page):
-    """Codex P2: playFBX returned true while its implementation is a TODO.
+    """playFBX must report False whenever no animation actually started.
 
-    playSong then cleared the idle debt as if a replacement animation had taken
-    over, leaving the avatar on the interrupted dance's last frame.
+    A bare manager without ``loadAnimation`` plays nothing, so returning True
+    would let playSong clear the idle debt as if a replacement animation had
+    taken over, leaving the avatar on the interrupted dance's last frame.
     """
     setup_headless_jukebox_page(mock_page)
 
@@ -6482,6 +6483,55 @@ def test_jukebox_fbx_reports_that_no_animation_started(mock_page: Page):
 
     # 一帧都没播，就不能报「起播了」——否则待机欠账会被错误地清掉。
     assert result["started"] is False
+
+
+@pytest.mark.frontend
+def test_jukebox_fbx_failed_load_restores_the_idle_animation(mock_page: Page):
+    """CodeRabbit: stopping the idle animation owed a restore nobody settled.
+
+    playFBX stops the running animation before loading the new one, so the idle
+    restore is skipped on purpose. If the load then fails, nothing brings the
+    idle back and the avatar holds the interrupted frame forever. The debt has
+    to be recorded when the stop happens and settled when the start fails.
+    """
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          J.State.playRequestId = 0;
+          J.State.idleRestorePending = false;
+          J.State.savedFbxIdleAnimationUrl = null;
+
+          const calls = [];
+          window.fbxManager = {
+            currentAnimationUrl: '/idle.fbx',
+            loadAnimation: async (path) => {
+              if (path === '/bad.fbx') throw new Error('boom');
+              calls.push(path);
+            },
+            playAnimation: () => { calls.push('play'); },
+            stopAnimation: () => {},
+          };
+
+          const started = await J.playFBX('/bad.fbx', {});
+          return {
+            started,
+            calls,
+            pending: J.State.idleRestorePending,
+            saved: J.State.savedFbxIdleAnimationUrl,
+          };
+        }
+        """
+    )
+
+    assert result["started"] is False
+    # 失败前先记住待机动画，否则没有可恢复的素材。
+    assert result["saved"] == "/idle.fbx"
+    # 账要结清：既不能挂着，也不能留下僵住的模型。
+    assert result["pending"] is False
+    assert "/idle.fbx" in result["calls"]
 
 
 @pytest.mark.frontend

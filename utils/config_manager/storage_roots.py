@@ -176,6 +176,8 @@ class StorageRootsMixin:
         # MMD模型存储在用户文档目录下
         self.mmd_dir = self.app_docs_dir / "mmd"
         self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
+        self.fbx_dir = self.app_docs_dir / "fbx"
+        self.fbx_animation_dir = self.fbx_dir / "animation"
         self.pngtuber_dir = self.app_docs_dir / "pngtuber"
         self.avatar_tools_dir = self.app_docs_dir / "avatar_tools"
         self.workshop_dir = self.app_docs_dir / "workshop"
@@ -774,6 +776,17 @@ class StorageRootsMixin:
             return True
         except Exception as e:
             print(f"Warning: Failed to create mmd directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_fbx_directory(self):
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.fbx_dir.mkdir(parents=True, exist_ok=True)
+            self.fbx_animation_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create fbx directory: {e}", file=sys.stderr)
             return False
 
     def ensure_pngtuber_directory(self):

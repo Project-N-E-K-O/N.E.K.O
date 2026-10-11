@@ -1943,20 +1943,76 @@ Object.assign(window.Jukebox, {
       return false;
     }
 
-    try {
-      console.log('[Jukebox] 播放 FBX 动画:', fbxPath);
-      // TODO: 实现 FBX 模型的动画播放
-      // 这里需要根据 FBXManager 的实际 API 来实现
-      // await window.fbxManager.loadAnimation(fbxPath);
-      // window.fbxManager.playAnimation();
-      console.warn('[Jukebox] FBX 动画播放尚未实现');
-      // 返回 false：这里一帧都没播。报 true 的话 playSong 会当成「新动画接上了」
-      // 并把待机欠账清掉，于是打断了旧舞蹈、又没有新动画，模型僵在原地。
-      return false;
-    } catch (error) {
-      console.error('[Jukebox] FBX 播放失败:', error);
+    var fbxManager = window.fbxManager;
+    if (typeof fbxManager.loadAnimation !== 'function'
+        || typeof fbxManager.playAnimation !== 'function') {
+      console.warn('[Jukebox] FBX Manager 缺少 loadAnimation/playAnimation，跳过动画');
       return false;
     }
+
+    try {
+      if (!Jukebox.State.savedFbxIdleAnimationUrl && fbxManager.currentAnimationUrl) {
+        Jukebox.State.savedFbxIdleAnimationUrl = fbxManager.currentAnimationUrl;
+      }
+      Jukebox.stopFBX(true);
+      await fbxManager.loadAnimation(fbxPath);
+      if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+      fbxManager.playAnimation('dance');
+      Jukebox.State.isVMDPlaying = true;
+      Jukebox.State.idleRestorePending = false;
+      console.log('[Jukebox] FBX 动画已播放:', fbxPath);
+      return true;
+    } catch (error) {
+      console.error('[Jukebox] FBX 播放失败:', error);
+      if (Jukebox.isPlaybackRequestCurrent(requestId)
+          && Jukebox.State.idleRestorePending) {
+        try {
+          await Jukebox.restoreIdleAnimation();
+        } catch (restoreError) {
+          console.warn('[Jukebox] FBX 待机恢复失败:', restoreError);
+        }
+      }
+      return false;
+    }
+  },
+
+  // 停止 FBX 动画并（可选）恢复保存的待机动画。
+  stopFBX: function(skipIdleRestore) {
+    var manager = window.fbxManager;
+    if (manager && typeof manager.stopAnimation === 'function') {
+      try {
+        manager.stopAnimation();
+      } catch (error) {
+        console.warn('[Jukebox] 停止 FBX 动画失败:', error);
+      }
+    }
+    Jukebox.State.isVMDPlaying = false;
+    if (skipIdleRestore) {
+      Jukebox.State.idleRestorePending = true;
+      return;
+    }
+    Jukebox.restoreIdleAnimation();
+  },
+  restoreFbxIdleAnimation: function(requestId) {
+    var manager = window.fbxManager;
+    var savedUrl = Jukebox.State.savedFbxIdleAnimationUrl;
+    if (!manager || !savedUrl || typeof manager.loadAnimation !== 'function') return false;
+    var pending = manager.loadAnimation(savedUrl);
+    var start = function() {
+      if (Jukebox.isPlaybackRequestCurrent(requestId) &&
+          typeof manager.playAnimation === 'function') manager.playAnimation();
+    };
+    if (pending && typeof pending.then === 'function') {
+      return pending.then(function() {
+        start();
+        return true;
+      }).catch(function(error) {
+        console.warn('[Jukebox] 恢复 FBX 待机动画失败:', error);
+        return false;
+      });
+    }
+    start();
+    return true;
   },
 
   updateVolume: function(value) {
@@ -2252,6 +2308,8 @@ Object.assign(window.Jukebox, {
     var modelType = Jukebox.getModelType();
     if (modelType === 'vrm') {
       if (window.vrmManager) window.vrmManager.stopVRMAAnimation();
+    } else if (modelType === 'fbx') {
+      Jukebox.stopFBX(true);
     } else {
       if (window.mmdManager?.animationModule) {
         // 直接停止动画模块，不通过 stopAnimation()
@@ -2351,6 +2409,15 @@ Object.assign(window.Jukebox, {
     }
 
     if (modelType === 'vrm') return;
+
+    if (modelType === 'fbx') {
+      try {
+        await Jukebox.restoreFbxIdleAnimation();
+      } catch (error) {
+        console.warn('[Jukebox] FBX 待机动画恢复失败:', error);
+      }
+      return;
+    }
 
     if (!window.mmdManager) return;
 
@@ -2693,7 +2760,8 @@ Object.assign(window.Jukebox, {
     if (mt === 'live3d') {
       var sub = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
       if (sub === 'vrm') return 'vrm';
-      return 'mmd'; // live3d 默认走 MMD
+      if (sub === 'fbx') return 'fbx';
+      return 'mmd';
     }
     return mt;
   },

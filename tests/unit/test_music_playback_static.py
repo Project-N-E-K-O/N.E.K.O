@@ -193,7 +193,10 @@ def test_exact_http_allowlist_is_carried_without_enabling_http_proxy():
         encoding="utf-8"
     )
 
-    assert 'metadata={"domains": domains, "http_urls": http_urls, "event_id": event_id}' in pusher_source
+    assert '"http_urls": http_urls,' in pusher_source
+    assert 'allowlist_part["http_urls"] = http_urls' in pusher_source
+    assert '"domains": domains,' in pusher_source
+    assert '"event_id": event_id,' in pusher_source
     assert 'ui_part["http_urls"] = list(md_local["http_urls"])' in schema_source
     assert '"http_urls": list(http_urls)' in bridge_source
     assert '"http_urls": event.get("http_urls")' in runtime_source

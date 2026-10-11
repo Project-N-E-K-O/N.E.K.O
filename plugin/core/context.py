@@ -1210,23 +1210,10 @@ class PluginContext:
                         legacy_mime = mime_obj
                 if legacy_binary_url is not None and legacy_mime is not None:
                     break
-        # ``description`` has no role in v2 (no semantic consumer; only
-        # surfaces as a human label in legacy log lines and the
-        # query_service messages-bus response).  Synthesised here purely
-        # so v1 readers don't see ``None`` during the deprecation window.
-        # Sources, in priority order:
-        #   1. explicit ``description=`` kwarg (legacy v1 callers)
-        #   2. ``metadata["description"]`` (already-migrated v2 callers
-        #      that moved the label there during the migration)
-        #   3. empty string (native v2 callers that never set a label)
-        # TODO(v0.9): drop this field, the kwarg, the metadata fallback,
-        # and the query_service fallback together; new callers should put
-        # any human label in ``metadata`` if they want it surfaced.
-        if isinstance(description, str):
-            legacy_description = description
-        else:
-            md_description = canonical_metadata.get("description")
-            legacy_description = md_description if isinstance(md_description, str) else ""
+        # ``description`` has no role in v2.  It used to be synthesised here so
+        # v1 readers never saw ``None``; callers that want a human label now
+        # put it in ``metadata["description"]``, which already rides the
+        # canonical metadata below.
         # Resolve the legacy delivery/reply pair from the v2 axes so v1
         # consumers that branch on these fields still see a coherent value
         # during the deprecation window.
@@ -1268,7 +1255,6 @@ class PluginContext:
                 "binary_data": legacy_binary_data,
                 "binary_url": legacy_binary_url,
                 "mime": legacy_mime,
-                "description": legacy_description,
                 "unsafe": bool(unsafe),
                 "delivery": legacy_delivery,
                 "reply": legacy_reply,
