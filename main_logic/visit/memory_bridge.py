@@ -66,6 +66,7 @@ from main_logic.visit.forget import (
     ForgetEpochs,
     ForgetEpochsUnsynced,
     RevocationLog,
+    RevocationLogUnreadable,
     sentinel_covers,
     subject_key,
 )
@@ -178,6 +179,39 @@ async def forget_in_progress(
     return any(
         doc["own_uid"] == own_uid and sentinel_covers(doc, own_char_uid, peer_uid) for doc in sentinels
     )
+
+
+async def char_forget_in_progress(config_dir: str | Path, own_char_uid: str, *, own_uid: str | None) -> bool:
+    """Whether an unfinished local forget covers local character ``own_char_uid`` (any peer).
+
+    The admission check of ``POST /rooms`` and ``join`` (design §3.2.1 step 0):
+    the peer is not known yet, so every open revocation log and clearing
+    sentinel naming the character counts. ``own_uid`` narrows them to that
+    community account (rosters and memory subjects are partitioned by
+    account); ``None`` (the account's ``visit_uid`` is not known on this
+    machine) counts every account's. Fails closed: an unreadable revocation
+    log cannot be attributed to a character without its peer, so it counts
+    for every character; an unreadable sentinel counts for whatever scope
+    still parses; a directory that cannot be listed counts as well.
+    """
+
+    def ours(owner: Any) -> bool:
+        return own_uid is None or owner is None or owner == own_uid
+
+    config_dir = Path(config_dir)
+    try:
+        logs = await RevocationLog.list_all_open(config_dir)
+        sentinels, hints = await ClearingSentinels(config_dir).list_open_with_unreadable()
+    except (RevocationLogUnreadable, OSError) as exc:
+        logger.warning("visit admission: forget records unreadable, refusing: %s", type(exc).__name__)
+        return True
+    if any(log["own_char_uid"] == own_char_uid and ours(log["own_uid"]) for log in logs):
+        return True
+    for hint in hints:
+        uids = hint.get("own_char_uids")
+        if ours(hint.get("own_uid")) and (uids is None or own_char_uid in uids):
+            return True
+    return any(ours(doc["own_uid"]) and sentinel_covers(doc, own_char_uid) for doc in sentinels)
 
 
 async def build_visit_memory_block(

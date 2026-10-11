@@ -80,7 +80,7 @@ from main_logic.visit.recovery import (
     sealed_upload_doc_matches_state,
     sealed_upload_doc_usable,
 )
-from main_logic.visit.spool import UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX
+from main_logic.visit.spool import UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX, VisitSpool
 from main_logic.visit.subjects import path_lock
 from main_routers.visit_router import accounts
 from main_routers.visit_router import credentials as cr
@@ -1784,24 +1784,14 @@ def upload_pending_sync(config_dir: Path, visit_id: str) -> bool:
     return any(visit_path(spool_dir, visit_id, s).exists() for s in (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX))
 
 
-def _pending_upload_bytes_sync(config_dir: Path) -> int:
-    total = 0
-    try:
-        entries = list(os.scandir(_spool_dir(config_dir)))
-    except FileNotFoundError:
-        return 0
-    for entry in entries:
-        if entry.name.endswith((UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX)):
-            try:
-                total += entry.stat().st_size
-            except OSError:
-                continue
-    return total
+async def upload_backlog_full(config_dir: Path, *, is_live: Callable[[str], bool] | None = None) -> bool:
+    """True once unreclaimable visit files reach ``VISIT_UPLOAD_PENDING_CAP_BYTES`` (rooms / join refuse).
 
-
-async def upload_backlog_full(config_dir: Path) -> bool:
-    """True once pending transcripts reach ``VISIT_UPLOAD_PENDING_CAP_BYTES`` (rooms / join refuse)."""
-    return await asyncio.to_thread(_pending_upload_bytes_sync, config_dir) >= VISIT_UPLOAD_PENDING_CAP_BYTES
+    Counts pending uploads and unsettled spools alike (``VisitSpool.unreclaimable_bytes``):
+    with uploads succeeding but memory_server down for long, only the spools pile up.
+    """
+    total = await VisitSpool.unreclaimable_bytes(config_dir, is_live=is_live)
+    return total >= VISIT_UPLOAD_PENDING_CAP_BYTES
 
 
 def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None, bool] | None:

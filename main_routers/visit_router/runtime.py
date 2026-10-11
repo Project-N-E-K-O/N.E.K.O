@@ -365,6 +365,16 @@ _account_change_lock: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Lock]] =
 """Serializes account changes (created per event loop: a lock binds to the loop that first waits on it)."""
 
 
+def account_epoch() -> Optional[int]:
+    """The account-change generation, or None while a logout / account switch is in progress.
+
+    Every logout / switch (:func:`account_change`) bumps it, so two equal
+    readings around an await prove no account change happened in between
+    (an A→B→A switch included).
+    """
+    return None if _account_changes else _account_gen
+
+
 def _account_change_mutex() -> asyncio.Lock:
     global _account_change_lock
     loop = asyncio.get_running_loop()
@@ -515,6 +525,7 @@ def _reset_for_tests() -> None:
     _account_changes = 0
     _account_gen = 0
     _account_change_lock = None
+    _credential_requests.clear()
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -648,6 +659,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
         # 凭证与能力门
         self.grant: Optional[cr.VisitGrant] = None
+        # 准入检查（清除进行中、被封缓存）按的社区账号：领到的凭证必须属于它
+        self.admitted_account: Optional[str] = None
+        # 准入时的账号变更代数（account_epoch）：领凭证之前必须仍是它
+        self.admitted_epoch: Optional[int] = None
         self._livekit_codec: Optional[str] = None
         self._creds_task: Optional[asyncio.Task] = None
         self.preflight_ok: Optional[bool] = None
@@ -913,12 +928,24 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.finalizing:
             # 等主对话轮期间这场已被结束：不再去领凭证（guest 会兑掉一次性邀请码、扣配额，且撤不回）
             return False
+        if self.admitted_epoch is not None and account_epoch() != self.admitted_epoch:
+            # 准入之后有过登出 / 换账号（或正在进行）：领凭证撤不回（guest 兑掉一次性邀请码），发请求之前就结束。
+            # 同步判断、紧接着发请求；此后才开始的账号变更会先结束本场、等它收尾，再改本机会话——
+            # 这次请求用的仍是准入时的会话
+            self.request_finalize("busy")
+            return False
+        # 与上面的代数判断之间没有让出：此后开始的账号变更会先等这次请求结束，再改本机会话
+        # 钉在准入账号上：请求取会话快照时若已换成别的账号，凭证客户端不发请求（不会按新账号兑邀请码）
+        request = asyncio.ensure_future(self.deps.fetch_credentials(
+            role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
+            tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
+            invite_code=self.invite_code if self.side == "guest" else None,
+            expect_account=self.admitted_account,
+        ))
+        _credential_requests.add(request)
+        request.add_done_callback(_credential_requests.discard)
         try:
-            creds = await self.deps.fetch_credentials(
-                role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
-                tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
-                invite_code=self.invite_code if self.side == "guest" else None,
-            )
+            creds = await request
         except cr.VisitServersError as exc:
             self._finalize_for_servers_error(exc)
             return False
@@ -935,6 +962,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: account mapping not recorded: %r", self.visit_id[:6], exc)
             # 转录 / 举报上传按这张映射认账号：没写成就一直补写，写成之前上传只是排队等着
             _detach(_retry_record_account(self.deps, creds.account, creds.visit_uid, self.visit_id))
+        if self.admitted_account is not None and creds.account != self.admitted_account:
+            # 准入检查（清除进行中、被封缓存）按的是另一个社区账号：期间换了账号，这份凭证不能用，host 的房间撤掉
+            logger.warning("visit %s: community account changed before credentials", self.visit_id[:6])
+            self.request_finalize("busy")
+            self._cancel_room_once()
+            return False
         if self.side == "host" and not creds.invite_code:
             logger.warning("visit %s: host credentials without an invite code", self.visit_id[:6])
             self.request_finalize("servers_unreachable")
@@ -964,6 +997,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             details["retry_after_s"] = exc.retry_after_s
         if isinstance(exc, cr.VisitRoomEnded):
             self.request_finalize("kicked")
+            return
+        if isinstance(exc, cr.VisitAccountChanged):
+            self.request_finalize("busy")
             return
         if isinstance(exc, cr.VisitLoginRequired):
             reason = "login_required"
@@ -2513,6 +2549,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         rows.sort(key=lambda r: (r["lp"], SIDE_RANK.get(r["side"], 2)))
         return rows
 
+    def transcript_records(self) -> list[dict]:
+        """The in-memory transcript (both sides, ``(lp, side_rank)`` order) for ``GET /transcript``."""
+        return self._replay_lines()
+
     def snapshot(self) -> dict:
         """``GET /api/visit/state`` body for this character (never the invite code)."""
         creds = self.creds
@@ -2707,6 +2747,8 @@ async def start_visit(
             finalize_visit_route_state(name)
         raise
     rt.slot = slot
+    rt.admitted_account = account
+    rt.admitted_epoch = account_gen
     rt.start()
     _pending_visits.pop(key, None)
     return rt
@@ -2841,9 +2883,22 @@ async def account_change(
                     await end_visits_for_account_change(timeout)
                 except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
                     logger.warning("visit: ending live visits before the account change failed: %r", exc)
+            # 还在途的领凭证请求（场次可能已注销、请求仍在后台）读会话时必须仍是旧账号：先等它们结束再改会话
+            await _settle_credential_requests(timeout)
             yield
     finally:
         _account_changes -= 1
+
+
+_credential_requests: set[asyncio.Future] = set()
+"""Servers credential requests in flight: an account change waits for them before the session changes."""
+
+
+async def _settle_credential_requests(timeout: float) -> None:
+    pending = [t for t in _credential_requests if not t.done()]
+    if pending:
+        # 只等不取消：请求已发出时取消也撤不回 Servers 那边的签发（与兑掉的邀请码）
+        await asyncio.wait(pending, timeout=max(0.0, timeout))
 
 
 def _seals_in_background() -> list["VisitRuntime"]:

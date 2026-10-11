@@ -155,20 +155,31 @@ class RecoveryReport:
 
 
 def _read_stream(path: Path) -> list[dict]:
-    data = path.read_bytes()
-    parts = data.split(b"\n")
-    tail = parts.pop()
-    if tail:
-        logger.warning("visit upload stream %s: dropped a partial trailing line", path.name)
+    records, dropped = _read_stream_counted(path)
+    if dropped:
+        logger.warning("visit upload stream %s: dropped %d unreadable record(s)", path.name, dropped)
+    return records
+
+
+_NEWLINE = bytes((10,))
+
+
+def _read_stream_counted(path: Path) -> tuple[list[dict], int]:
+    """``(JSON objects of the stream, records dropped)``: a partial trailing line and unparseable lines count."""
+    parts = path.read_bytes().split(_NEWLINE)
+    dropped = 1 if parts.pop() else 0
     out = []
     for raw in parts:
         try:
             obj = json.loads(raw)
         except (ValueError, RecursionError):
+            dropped += bool(raw.strip())
             continue
         if isinstance(obj, dict):
             out.append(obj)
-    return out
+        else:
+            dropped += 1
+    return out, dropped
 
 
 def _number(value: Any) -> float | None:
@@ -434,6 +445,54 @@ def _stream_doc_sync(
                             fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
 
 
+DROPPED_RECORDS_KEY = "dropped_records"
+"""Envelope key of a recovery-sealed upload: records its crashed stream lost (absent when none)."""
+
+
+def _dropped_line_records(records: list[dict], doc: dict) -> int:
+    """Line records of the stream that ``build_upload_doc`` rejected as malformed."""
+    line_records = sum(1 for record in records[1:] if record.get("kind") == "line")
+    return max(0, line_records - len(doc["request"]["lines"]))
+
+
+def _recorded_drops(doc: dict) -> int:
+    value = doc.get(DROPPED_RECORDS_KEY)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def read_pending_upload_doc_sync(config_dir: Path, visit_id: str) -> tuple[dict, int] | None:
+    """``(upload document, records dropped)`` of a visit whose transcript has not reached Servers yet (read only).
+
+    The sealed ``.upload.json`` when :func:`sealed_upload_doc_usable` (with
+    the drops recovery recorded when it sealed a crashed stream), else the document its ``.upload.jsonl`` stream would seal into
+    (a crashed visit; ``finalized_reason`` ``'crash'``) with the number of
+    records the rebuild had to drop (a partial trailing line, unparseable
+    lines, malformed line records); None when neither exists or is usable.
+    Nothing is written or deleted. Raises ``OSError`` when a file exists but
+    cannot be read right now.
+    """
+    spool_dir = Path(config_dir) / VISIT_SPOOL_DIRNAME
+    try:
+        doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
+    except ValueError:
+        doc = None
+    if sealed_upload_doc_usable(doc, visit_id):
+        return doc, _recorded_drops(doc)
+    try:
+        records, dropped = _read_stream_counted(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX))
+    except FileNotFoundError:
+        return None
+    owner, char_uid = _with_header_fallback(spool_dir, visit_id, None, None)
+    try:
+        doc = build_upload_doc(records, visit_id=visit_id, finalized_reason=None,
+                               fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
+    except ValueError:
+        return None
+    if doc is None:
+        return None
+    return doc, dropped + _dropped_line_records(records, doc)
+
+
 def _write_private_json(path: Path, doc: dict) -> None:
     atomic_write_json(path, doc)
     try:
@@ -455,12 +514,19 @@ def _seal_stream_sync(
     sealed = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
     owner, char_uid = _with_header_fallback(spool_dir, visit_id, owner, char_uid)
     stream_mtime_ns = stream.stat().st_mtime_ns
-    doc = build_upload_doc(_read_stream(stream), visit_id=visit_id, finalized_reason=finalized_reason,
+    records, dropped = _read_stream_counted(stream)
+    doc = build_upload_doc(records, visit_id=visit_id, finalized_reason=finalized_reason,
                            fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
     if doc is None:
         memory_bridge.diag("upload_stream_corrupt", visit_id=visit_id)
         stream.unlink(missing_ok=True)
         return None
+    dropped += _dropped_line_records(records, doc)
+    if dropped:
+        # 封存后流水就删了：丢掉多少条要随文件留下，导出时才知道这份不完整（上传只发 request，不受影响）；
+        # 上传成功后文件也删了，本机日志里留一条诊断
+        doc[DROPPED_RECORDS_KEY] = dropped
+        memory_bridge.diag("upload_stream_dropped_records", visit_id=visit_id, count=dropped)
     if doc["own_char_uid"] is None:
         # 角色 id 哪儿都补不回来（多半是 state.json 一时读不出）：封出来的文件会被当成坏文件
         # 删掉，连同刚删的流水一起丢掉整份转录。不写文件、留着流水，下次启动再封
@@ -1018,6 +1084,16 @@ async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
         # 没有可信的封存文件、state.json 也读不到：本场上传流水的头行记着占房账号
         owner = await asyncio.to_thread(_upload_stream_owner_sync, config_dir / VISIT_SPOOL_DIRNAME, visit_id)
     return owner
+
+
+async def pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
+    """Community ``visit_uid`` owning the visit's pending transcript (the rule uploads follow).
+
+    The sealed upload's own owner, else ``state.json``, else the upload
+    stream header: legacy ownerless files are attributed the same way the
+    upload path backfills them.
+    """
+    return await _pending_upload_owner(Path(config_dir), visit_id)
 
 
 def _upload_stream_owner_sync(spool_dir: Path, visit_id: str) -> str | None:
