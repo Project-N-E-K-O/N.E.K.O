@@ -2109,3 +2109,58 @@ async def test_cloudsave_overwrite_settles_the_local_characters_pending_rename_f
         assert result["success"] is True
         peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
         assert "pending_rename" not in peers
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_rechecks_right_before_publishing(monkeypatch):
+    # 早期检查通过之后、发布之前，并发的删除提交了同名退役标记：发布前锁内的复查必须挡住
+    from main_logic.visit.char_lifecycle import retire_item
+    from main_logic.visit.subjects import add_roster_marker_item
+
+    async with _visit_download_env(monkeypatch) as (target_cm, download, _retire_state):
+        module = importlib.import_module("main_routers.cloudsave_router")
+        real = module._visit_name_refusal
+        calls = []
+
+        async def racing(config_manager, name):
+            result = await real(config_manager, name)
+            calls.append(result)
+            if len(calls) == 1:
+                await add_roster_marker_item(target_cm.config_dir, "pending_retire", retire_item(name, "e" * 32))
+            return result
+
+        monkeypatch.setattr(module, "_visit_name_refusal", racing)
+        # 变异：去掉发布前的复查必红
+        _assert_visit_busy(await download(), target_cm)
+        assert calls[0] is None and len(calls) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_forced_overwrite_keeps_the_session_when_the_name_is_busy(monkeypatch):
+    # 名字被串门标记占着时照样会 409：不能先把用户正在进行的会话强制断掉
+    from main_logic.visit.spool import VisitSpool
+    from main_logic.visit.subjects import set_roster_marker
+
+    async with _visit_download_env(monkeypatch, target_name="云端角色") as (target_cm, _download, _retire_state):
+        target_cm.backfill_character_uids()
+        uid = get_character_uid(target_cm.load_characters()["猫娘"]["云端角色"])
+        await set_roster_marker(target_cm.config_dir, "pending_rename", {"old": "旧名", "new": "云端角色", "uid": uid})
+        module = importlib.import_module("main_routers.cloudsave_router")
+        terminate = AsyncMock(return_value=(True, ""))
+
+        async def locked(*_a, **_k):
+            raise OSError("spool locked")
+
+        with patch.object(module, "_active_session_block_reason", lambda _name: "in a voice session"), \
+             patch.object(module, "_force_terminate_session", terminate), \
+             patch.object(VisitSpool, "rename_own_char", locked):
+            response = await module.post_cloudsave_character_download(
+                "云端角色",
+                _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+            )
+        payload = json.loads(response.body)
+        assert response.status_code == 409 and payload["code"] == "VISIT_DATA_BUSY"
+        # 变异：去掉强制结束会话之前的检查必红
+        terminate.assert_not_awaited()

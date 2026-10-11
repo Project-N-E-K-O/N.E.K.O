@@ -669,6 +669,13 @@ async def post_cloudsave_character_download(name: str, request: Request):
             character_name=name,
         )
 
+    # 先查一次再做强制结束会话 / 释放句柄这些不可撤回的步骤：名字被串门标记占着时下面照样
+    # 会 409，不能先把用户的会话断掉。发布前在锁内还会再查一次
+    async with _character_config_lock():
+        visit_refusal = await _visit_name_refusal(config_manager, name)
+    if visit_refusal is not None:
+        return visit_refusal
+
     block_reason = _active_session_block_reason(name)
     if block_reason:
         if not isinstance(force_val, bool) or not force_val:
