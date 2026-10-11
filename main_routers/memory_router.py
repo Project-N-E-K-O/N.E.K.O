@@ -71,6 +71,12 @@ from memory.external_markdown_import import (
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
+# 记忆开关的「请求级」串行化，和文件级的 core_config.json 写锁不是一回事：
+# - 文件一致性（读→改→写不被别的写入方用旧快照覆盖）由 config_manager 的
+#   aupdate_json_config 统一保证，/core_api 保存、启动迁移走的也是那一把；
+# - 这把锁额外罩住强力记忆关闭时那次最长 10 秒的 memory_server 迁移，让开关
+#   请求之间、以及前端恢复用的 GET 回读，都等进行中的开关操作出最终结果。
+# 慢迁移放在文件锁之外，所以这 10 秒里 /core_api 等其它写入方照常落盘不受阻。
 _memory_toggle_write_lock = asyncio.Lock()
 
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
@@ -1491,14 +1497,8 @@ class _InvalidMemoryToggleValue(ValueError):
 
 def _load_memory_toggle_config(config_manager):
     """Default a missing file to an empty object without hiding read errors."""
-    try:
-        # Omitting default_value prevents the loader from hiding read/parse errors.
-        config_data = config_manager.load_json_config('core_config.json')
-    except FileNotFoundError:
-        return {}
-    if not isinstance(config_data, dict):
-        raise ValueError('Invalid memory configuration')
-    return config_data
+    from utils.config_manager.json_update import load_json_config_snapshot
+    return load_json_config_snapshot(config_manager, 'core_config.json')
 
 
 def _load_memory_toggle_enabled(config_manager, key):
@@ -1544,17 +1544,10 @@ async def update_review_config(request: Request):
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
         async with _memory_toggle_write_lock:
-            config_data = await asyncio.to_thread(
-                _load_memory_toggle_config, config_manager
-            )
+            def _set_review(config_data):
+                config_data['recent_memory_auto_review'] = enabled
 
-            # 更新配置
-            config_data['recent_memory_auto_review'] = enabled
-
-            # 保存配置
-            await asyncio.to_thread(
-                config_manager.save_json_config, 'core_config.json', config_data
-            )
+            await config_manager.aupdate_json_config('core_config.json', _set_review)
 
             logger.info(f"记忆整理配置已更新: enabled={enabled}")
             return {"success": True, "enabled": enabled}
@@ -1611,7 +1604,6 @@ async def update_powerful_memory_config(request: Request):
             )
 
             prev_enabled = config_data.get('powerful_memory_enabled', True)
-            config_data['powerful_memory_enabled'] = enabled
 
             # 开→关切换：先跑 migration（重置所有角色 confirmed reflection 的
             # confirmed_at 到 now，让 time-driven fallback 走完整 14 天计时），
@@ -1657,9 +1649,14 @@ async def update_powerful_memory_config(request: Request):
 
             # Migration 成功（或非 ON→OFF 切换）才落盘配置——保证用户从前端
             # 视角看到的 toggle 状态与 reflection_engine 实际状态一致。
-            await asyncio.to_thread(
-                config_manager.save_json_config, 'core_config.json', config_data
-            )
+            # 上面的 config_data 只用来判 prev_enabled；真正落盘对迁移结束后**重新
+            # 读到的**文件做改写，迁移那几秒里别人保存的字段不会被这份旧快照顶掉。
+            # 这个键只有本路由写，且本路由被 _memory_toggle_write_lock 串行化，
+            # 所以 prev_enabled 在落盘时仍然成立。
+            def _set_powerful(fresh_config):
+                fresh_config['powerful_memory_enabled'] = enabled
+
+            await config_manager.aupdate_json_config('core_config.json', _set_powerful)
 
             logger.info(f"强力记忆配置已更新: enabled={enabled} (prev={prev_enabled})")
             return {"success": True, "enabled": enabled}

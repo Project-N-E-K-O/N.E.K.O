@@ -56,12 +56,19 @@ async def _family_names() -> tuple[str, ...]:
         return ()
 
 
+def _character_config_lock() -> Any:
+    # 晚绑定：测试会把这把模块级锁换成新的
+    from utils import character_memory
+
+    return character_memory.character_config_mutation_lock
+
+
 async def run_startup_recovery() -> Any:
     """One startup recovery pass with the runtime's callbacks (the body of the recovery task)."""
     from config.visit_settings import VISIT_LAST_SUMMARY_MAX_TOKENS, VISIT_LLM_TIMEOUT_S
     from main_logic.visit.forget_runner import default_void_pending
     from main_logic.visit.recovery import visit_spool_recovery
-    from main_routers.visit_router import runtime, transcript_upload
+    from main_routers.visit_router import character_hooks, runtime, transcript_upload
     from main_routers.visit_router.debrief import render_chips
     from main_routers.visit_router.llm import one_shot_llm
 
@@ -79,6 +86,9 @@ async def run_startup_recovery() -> Any:
         void_pending=default_void_pending(config_dir),
         # 清除重放期间挡住改名 / 删除的守卫（与清除端点同一个）
         lifecycle_guard=runtime.hold_character_lifecycle,
+        # 删除退役补完：删掉串门人设；每一项在角色配置变更锁内按配置判定（与删除事务互斥）
+        retire_persona=character_hooks.retire_persona,
+        config_lock=_character_config_lock,
     )
     logger.info("visit recovery done: crashed=%d chips=%d swept=%d", len(report.crashed), len(report.chips),
                 report.swept)

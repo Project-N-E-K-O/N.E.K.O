@@ -906,8 +906,49 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             if theater_preflight_failed:
                 await _discard_uncommitted_purge_intents()
 
-            # 批量写 characters.json（N 个 del → 1 次 atomic write）
+            # 串门残留退役：提交 characters.json 之前逐个记删除标记（pending_retire），提交后才退役；
+            # 没提交成功时按配置判定角色仍在，只撤标记。记不上标记就和剧场预检失败一样整体中止
+            from main_routers.visit_router import character_hooks as visit_hooks
+
+            visit_items: dict[str, dict] = {}
+            visit_marker_failed = False
             if pending_del_names and not theater_preflight_failed:
+                for name in pending_del_names:
+                    try:
+                        item = await visit_hooks.begin_retire(config_mgr, name, pending_avatar_uids.get(name))
+                    except Exception as exc:
+                        logger.error(f"取消订阅同步清理: 串门退役标记写入失败 {name}: {exc!r}")
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "visit_retire_marker",
+                            "error": str(exc),
+                        })
+                        visit_marker_failed = True
+                        break
+                    if item is not None:
+                        visit_items[name] = item
+
+            async def _settle_visit_items() -> None:
+                for item_name, item in visit_items.items():
+                    try:
+                        settled = await visit_hooks.settle_retire(config_mgr, item)
+                    except Exception as exc:  # noqa: BLE001 - 标记留着，启动对账补完
+                        settled = False
+                        logger.warning(f"取消订阅同步清理: 串门数据退役失败 {item_name}: {exc!r}")
+                    if not settled:
+                        cleanup_summary["errors"].append({
+                            "character": item_name,
+                            "stage": "visit_retire",
+                            "error": "visit data retirement pending",
+                        })
+                visit_items.clear()
+
+            if visit_marker_failed:
+                # 不提交：已记的标记在下面的中止分支里按「删除没提交」撤掉
+                await _discard_uncommitted_purge_intents()
+
+            # 批量写 characters.json（N 个 del → 1 次 atomic write）
+            if pending_del_names and not theater_preflight_failed and not visit_marker_failed:
                 try:
                     await config_mgr.asave_characters(characters_mut)
                     cleanup_summary["cleaned_characters"] = list(pending_del_names)
@@ -930,7 +971,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             # 若任一本地配置清理失败（per-name del 或批量写盘），立即中止。
             delete_config_failed = any(
-                err.get("stage") in {"delete_config", "theater_preflight"}
+                err.get("stage") in {"delete_config", "theater_preflight", "visit_retire_marker"}
                 for err in cleanup_summary.get("errors") or []
             )
             if local_config_cleanup_failed or delete_config_failed:
@@ -938,6 +979,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     f"取消订阅同步清理: 本地角色配置清理失败（item_id={item_id_int}），"
                     f"已中止 Steam UnsubscribeItem 请求以避免配置-订阅不一致"
                 )
+                # 标记按配置收口：已提交删除的角色照常退役，没删掉的只撤标记
+                await _settle_visit_items()
                 return JSONResponse({
                     "success": False,
                     "code": "LOCAL_CONFIG_CLEANUP_FAILED",
@@ -1034,6 +1077,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                             "stage": "delete_theater",
                             "error": str(exc),
                         })
+
+            # characters.json 已提交：退役这些角色的串门残留（场次、名册条目、串门人设）
+            await _settle_visit_items()
 
             # 通知 memory_server 重新加载（一次即可）
             try:

@@ -19,7 +19,8 @@ PR-08 ``recovery.py``. :func:`visit_spool_recovery` is started with
 ``asyncio.create_task`` after startup (PR-09b) and runs, in order:
 
 1. the character-rename reconciliation (``visit_peers.json.pending_rename``),
-   first, so forgets resolve roster entries under their current name;
+   first, so forgets resolve roster entries under their current name, then
+   the retirement of deleted characters (``pending_retire``);
 2. unfinished local forgets (clearing sentinels, then revocation logs);
 3. startup cleanup: only leftover ``.outbox.jsonl`` files are deleted;
 4. ``VisitSpool.sweep`` (7 days / 20 MB, pending uploads and unsettled
@@ -48,10 +49,17 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncContextManager
 
 from config.visit_settings import VISIT_REPORTS_DIRNAME, VISIT_SPOOL_DIRNAME, VISIT_SPOOL_RETENTION_DAYS
 from main_logic.visit import local_chars, memory_bridge
+from main_logic.visit.char_lifecycle import (
+    ALL_NAMES as _ALL_NAMES,
+    MARKER_CHANGED as _MARKER_CHANGED,
+    RetirePersona,
+    reconcile_rename as _reconcile_rename,
+    replay_retires,
+)
 from main_logic.visit.forget_runner import LifecycleGuard, VoidPending, replay_forgets
 # 与 identity 票据核验认的传输方式同一个常量：那边加了新传输方式，这里自动认得，不会把
 # 只剩上传文件的场次当损坏删掉
@@ -76,9 +84,7 @@ from main_logic.visit.spool import (
     _read_header_strict,
 )
 from main_logic.visit.subjects import (
-    PeerRoster,
     RosterCorruptError,
-    clear_roster_marker,
     path_lock,
     read_roster_marker,
 )
@@ -131,6 +137,8 @@ class RecoveryReport:
 
     forgets_clean: bool = True
     renamed: bool = False
+    # 删除退役（pending_retire）全部补完；False：标记留到下次启动
+    retired: bool = True
     crashed: list[str] = field(default_factory=list)
     chips: list[str] = field(default_factory=list)
     digests: dict[str, bool] = field(default_factory=dict)
@@ -589,10 +597,6 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
-_ALL_NAMES = None
-"""Sentinel of :func:`_reconcile_rename`: every name-dependent step must wait."""
-
-
 async def _reconcile_rename_guarded(
     config_dir: Path, names: set[str], uid_of: dict[str, str] | None,
     lifecycle_guard: LifecycleGuard | None,
@@ -640,75 +644,6 @@ async def _reconcile_rename_guarded(
             return result
     logger.warning("visit recovery: pending_rename kept changing while waiting for its guard, deferred")
     return _ALL_NAMES
-
-
-_MARKER_CHANGED = object()
-"""Returned by :func:`_reconcile_rename` when the marker is not the one the caller guarded."""
-
-
-async def _reconcile_rename(
-    config_dir: Path, names: set[str], uid_of: dict[str, str] | None = None,
-    expected: Any = None,
-) -> Any:
-    """Finish or roll back a pending character rename; return the names still unsettled.
-
-    The marker is ``{old, new}`` plus, when the rename transaction wrote it,
-    the renamed character's ``uid``: with ``uid_of`` (current name -> uid)
-    the direction is decided by which name that uid has now. Without a uid,
-    by which of the two names exists. When neither name exists the
-    character was deleted (its data is retired by uid): the marker is
-    dropped. An empty set means no rename is pending; ``{old, new}`` that
-    the marker is kept as genuinely ambiguous (only those two names wait);
-    ``None`` that the roster or marker is unreadable (everything waits).
-    """
-    try:
-        marker = await read_roster_marker(config_dir, "pending_rename")
-    except RosterCorruptError as exc:
-        logger.error("visit recovery: roster unreadable, rename not reconciled: %s", exc)
-        return _ALL_NAMES
-    if expected is not None and marker != expected:
-        # 调用方是按另一份标记拿的守卫：这次读到的标记属于别的角色，不能拿着错的守卫去迁
-        return _MARKER_CHANGED
-    if marker is None:
-        return frozenset()
-    old = marker.get("old") if isinstance(marker, dict) else None
-    new = marker.get("new") if isinstance(marker, dict) else None
-    if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
-        # 格式坏了的标记已没有可对账的信息，留着只会永久挡住补录与清除：记诊断后清掉
-        memory_bridge.diag("pending_rename_malformed")
-        logger.error("visit recovery: malformed pending_rename %r dropped", marker)
-        return frozenset() if await clear_roster_marker(config_dir, "pending_rename", marker) else _ALL_NAMES
-    # rename_char 按机器上的角色名改写全部账号分区，与 own_uid 无关
-    roster = PeerRoster(config_dir, own_uid="pending-rename")
-    uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
-    if uid is not None and uid_of is not None:
-        # 有 uid 就按它现在叫什么定方向：新旧两个名字同时存在（旧名被新建角色占用）也分得清
-        current = {name for name, value in uid_of.items() if value == uid}
-        # 另一个名字被别的角色占着（旧名被新建角色复用）：名册条目只按名字存，迁移会把
-        # 两个角色的记录混到一起。分不开就不迁，留着标记、只挡这两个名字
-        reused = (old in uid_of and uid_of[old] != uid) or (new in uid_of and uid_of[new] != uid)
-        forward = new in current and not reused
-        backward = old in current and not forward and not reused
-        deleted = not current
-    else:
-        forward = new in names and old not in names
-        backward = old in names and new not in names
-        deleted = old not in names and new not in names
-    if forward:
-        await roster.rename_char(old, new)
-        await VisitSpool.rename_own_char(config_dir, old, new)
-    elif backward:
-        # 改名没生效：把已经改写成新名的场次改回旧名
-        await VisitSpool.rename_own_char(config_dir, new, old)
-        await roster.rename_char(new, old)
-    elif deleted:
-        # 两个名字都不在：这个角色已被删除，它的名册条目与场次由删除的退役步骤按 uid
-        # 处理。标记不再有可对账的对象，留着只会永远挡住清除与逐场补录
-        logger.warning("visit recovery: pending_rename %r -> %r names a deleted character, dropped", old, new)
-    else:
-        logger.warning("visit recovery: pending_rename %r -> %r is ambiguous, kept", old, new)
-        return frozenset({old, new})
-    return frozenset() if await clear_roster_marker(config_dir, "pending_rename", marker) else _ALL_NAMES
 
 
 def _in_flight(config_dir: Path, visit_id: str, is_live: Callable[[str], bool]) -> bool:
@@ -1406,6 +1341,8 @@ async def visit_spool_recovery(
     resume_diary_commit: ResumeDiaryCommit | None = None,
     void_pending: VoidPending | None = None,
     lifecycle_guard: LifecycleGuard | None = None,
+    retire_persona: RetirePersona | None = None,
+    config_lock: Callable[[], AsyncContextManager[Any]] | None = None,
     client: ScopedMemoryClient | None = None,
     now: float | None = None,
 ) -> RecoveryReport:
@@ -1422,7 +1359,10 @@ async def visit_spool_recovery(
     background upload retry of a visit whose files were transiently
     unreadable. ``summary_llm`` is required for last-visit summaries (without it
     they wait for a later pass). ``lifecycle_guard`` is the clearing
-    endpoints' rename / delete guard, held while forgets are replayed. The
+    endpoints' rename / delete guard, held while forgets are replayed.
+    ``retire_persona`` deletes a deleted character's visit persona and
+    ``config_lock`` is the character-config mutation lock each pending
+    retirement is settled under. The
     other callbacks are optional and their
     steps are skipped (files kept) when missing. Independent of
     ``visitMemoryEnabled`` and of the ``NEKO_VISIT_ENABLED`` release switch.
@@ -1461,6 +1401,18 @@ async def visit_spool_recovery(
         unsettled = _ALL_NAMES
     names_settled = unsettled is not _ALL_NAMES
     report.renamed = unsettled == frozenset()
+    if names_settled:
+        try:
+            # 删除提交后退役没做完（失败 / 崩溃）的角色：补完它的场次、名册条目与串门人设，
+            # 否则同名新角色会收到旧芯片、名字一直被占着
+            report.retired = await replay_retires(
+                config_dir, load_names, retire_persona=retire_persona, config_lock=config_lock,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("visit recovery: retirement replay failed: %r", exc)
+            report.retired = False
+    else:
+        report.retired = False
     if names_settled:
         try:
             # 还没对账清楚的改名只涉及它的两个名字：清除重放对这两个名字自己会推迟
