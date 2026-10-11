@@ -3487,6 +3487,25 @@ async def test_replay_naming_a_newly_linked_target_erases_only_that_target(env):
     assert again.get("duplicate") is True
 
 
+async def test_partial_replay_does_not_mark_the_request_subject_through_a_higher_fence(env):
+    await _forget(env, GROUP, forget_epoch=5)
+    # 围栏 8、完成标记 5：现有写入路径抬围栏时会连完成标记一起重写，这里直接构造这份状态，
+    # 守住「只补擦扇出目标时不碰请求 subject 的完成标记」这条不变量
+    path = Path(env.idem.tombstones_path(NAME))
+    data = _tombstones(env)
+    data[GROUP_KEY] = {"forgotten_at": time.time(), "forget_epoch": 8, "erased_epoch": 5}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))  # 代数 8 本该擦掉的 GROUP 记忆
+    _fan_out_to(env, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    # 这次只补擦了 PART：GROUP 没被擦，它的完成标记不能借已在位的围栏 8 抬上去
+    assert env.idem.erased_epoch(_tombstones(env), GROUP_KEY) == 5
+    retry = await _forget(env, GROUP, forget_epoch=8, target_epochs={PART_KEY: 1})
+    # 代数 8 的重试照常擦除，不走 duplicate 捷径
+    assert retry.get("duplicate") is None and _facts_of(env, GROUP) == []
+
+
 async def test_recheck_under_the_locks_narrows_to_the_unerased_targets(env):
     await _forget(env, GROUP, forget_epoch=5)
     env.llm.responses = [SINGLE_FACTS]

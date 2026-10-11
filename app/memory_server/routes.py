@@ -5762,9 +5762,12 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                     lanlan_name, target_key, target_epoch,
                     covered_epoch=fanout_fence_at_start.get(target_key),
                 )
-            await idempotency.mark_tombstone_erased(
-                lanlan_name, subject.key, req.forget_epoch, covered_epoch=fence_at_start,
-            )
+            if subject.key in erased_keys:
+                # 只补擦了扇出目标时请求 subject 没被擦：它已有的完成标记已经覆盖 forget_epoch，
+                # 不能借 covered_epoch 把一个擦除前就失败的更高围栏一并记成已擦（那次的擦除就再没机会补上）
+                await idempotency.mark_tombstone_erased(
+                    lanlan_name, subject.key, req.forget_epoch, covered_epoch=fence_at_start,
+                )
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:
