@@ -225,6 +225,25 @@ async def _apply_noise_reduction_if_current_locked(enabled: bool) -> None:
             raise
 
 
+async def _saved_visit_enabled() -> object:
+    """The persisted ``visitEnabled`` before this save (None when unreadable or unset)."""
+    try:
+        snapshot = await aload_global_conversation_settings_snapshot()
+    except Exception as exc:  # noqa: BLE001 - 读不出就不认作「从开改成关」
+        logger.warning("visit toggle check: settings unreadable: %s", type(exc).__name__)
+        return None
+    return snapshot.settings.get("visitEnabled")
+
+
+def _end_visits_disabled() -> None:
+    """End live visits after ``visitEnabled`` was switched off (design §3.7.6)."""
+    from main_routers.visit_router import runtime as visit_runtime
+
+    ended = visit_runtime.end_visits_disabled()
+    if ended:
+        logger.info("visitEnabled switched off: ended %d live visit(s)", ended)
+
+
 async def _apply_noise_reduction_if_current(enabled: bool) -> None:
     """Finish the saved transition even if its HTTP caller is cancelled."""
 
@@ -402,6 +421,13 @@ async def save_conversation_settings(request: Request):
                 content={"success": False, "error": str(exc)},
             )
 
+        # 串门开关：只在这次保存把它从开改成关时结束正在进行的串门（§3.7.6）。默认就是关，
+        # 不能因为别的设置项随手一存就把串门掐掉
+        visit_was_enabled = (
+            data.get("visitEnabled") is False
+            and (await _saved_visit_enabled()) is True
+        )
+
         result = await asyncio.to_thread(
             save_global_conversation_settings_versioned,
             data,
@@ -436,6 +462,9 @@ async def save_conversation_settings(request: Request):
                     **response_payload,
                 },
             )
+
+        if visit_was_enabled and result.snapshot.settings.get("visitEnabled") is False:
+            _end_visits_disabled()
 
         if (
             isinstance(data.get("noiseReductionEnabled"), bool)

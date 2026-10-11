@@ -5979,6 +5979,8 @@
                     const current = await response.json();
                     currentCatName = current.current_catgirl || '';
                     syncRepetitionInsightsControls();
+                    // 没有私聊记忆文件的角色也要能用「导入记忆」与「串门记忆」入口（两者都在这里同步）
+                    updateExternalImportButton();
                 } catch (error) {
                     console.warn('[MemoryBrowser] Failed to resolve external-memory target:', error);
                 }

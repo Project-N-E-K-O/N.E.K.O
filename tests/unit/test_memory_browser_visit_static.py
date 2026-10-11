@@ -407,3 +407,14 @@ def test_visit_copy_has_no_dehumanizing_terms():
             lowered = value.lower()
             for term in ("主人", "master", "ご主人", "주인", "хозяин"):
                 assert term not in lowered, (lang, key, term)
+
+
+def test_current_catgirl_fallback_syncs_the_panel_triggers():
+    # 没有私聊记忆文件、只靠 current_catgirl 兜底认出的角色：赋值后要同步「导入记忆」与「串门记忆」入口，
+    # 否则两个入口整页都保持禁用（Codex P2）
+    source = read(JS_PATH)
+    start = source.index("const response = await fetch('/api/characters/current_catgirl');")
+    branch = source[start:source.index("} catch (error) {", start)]
+    assert branch.index("currentCatName = current.current_catgirl || '';") < branch.index("updateExternalImportButton();")
+    sync = source[source.index("function updateExternalImportButton() {"):]
+    assert "syncVisitMemoryTrigger();" in sync[:sync.index("\n    }\n")]

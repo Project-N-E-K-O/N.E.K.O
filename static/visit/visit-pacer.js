@@ -165,11 +165,21 @@
                 speeches.delete(sid);
                 return;
             }
+            if (!rec.hadAudio) {
+                // 一块音频都没排过：结束标记到了、也没有待解码的块，就什么都不报、直接丢掉，交给后端的
+                // 起播超时转估时（任何一条回报都会让后端认作已开播，起播超时就走不到了）
+                if (rec.closed && pendingCount(sid) === 0) speeches.delete(sid);
+                else if (wall - rec.lastActivity > IDLE_FORGET_MS) speeches.delete(sid);
+                return;
+            }
             var played = playedMs(rec, t);
-            var drained = rec.hadAudio ? t >= rec.scheduledEnd : rec.closed;
+            var drained = t >= rec.scheduledEnd;
             if (!drained) {
                 // 还没播完（在播或被挂起）都算活跃：静置计时从排空之后才开始
                 rec.lastActivity = wall;
+                // 第一块真开播之前不报：lookahead 下它可能排在前一行的尾巴后面好几秒，后端收到第一条
+                // 回报就起 3 s 停滞计时，played_ms 一直为 0 会被误判停滞
+                if (rec.chunks.length && t < rec.chunks[0].start) return;
                 if (!clockStalled && wall - rec.lastSentAt >= PROGRESS_INTERVAL_MS) send(rec, played, false);
                 return;
             }
@@ -258,7 +268,11 @@
         var S = appState();
         boundSocket = detail.socket || (S && S.socket) || null;
         if (typeof detail.visit_id === 'string' && detail.visit_id) visitId = detail.visit_id;
-        if (detail.active === true) visitActive = true;
+        if (detail.active === true) {
+            // 页面在串门途中重载后重新 bind：这一场已经开始过，结束时照样开收尾窗口
+            visitActive = true;
+            startedVisitId = detail.visit_id || visitId;
+        }
     });
 
     window.addEventListener('neko-visit-frame', function (event) {

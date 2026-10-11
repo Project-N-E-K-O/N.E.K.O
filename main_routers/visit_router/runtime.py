@@ -280,6 +280,16 @@ def live_runtimes() -> list["VisitRuntime"]:
     return list(_runtimes.values())
 
 
+def end_visits_disabled() -> int:
+    """``visitEnabled`` was switched off: end every live visit now (``visit_disabled``, design §3.7.6).
+
+    A hard end with the fixed farewell line, no natural wrap-up. Visits
+    already running their exit flow are left alone. Returns how many were
+    ended.
+    """
+    return sum(1 for rt in live_runtimes() if rt.request_finalize("visit_disabled"))
+
+
 def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
     return _by_visit.get(visit_id)
 

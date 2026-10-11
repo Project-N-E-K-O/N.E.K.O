@@ -134,7 +134,7 @@ const report = {};
   h.ctx.currentTime = 10;
   h.chunk('sid', 12, 13);
   h.advance(1900);
-  report.lookahead_max_before_start = Math.max(0, ...h.bySid('sid').map((m) => m.played_ms));
+  report.lookahead_sent_before_start = h.bySid('sid').length;
   h.advance(600);           // ctx ≈ 12.5
   const prog = h.bySid('sid').filter((m) => !m.ended);
   report.lookahead_after_start = prog[prog.length - 1].played_ms;
@@ -254,6 +254,25 @@ const report = {};
   report.pre_start_cleared_more = h.bySid('sid').length - before;
 }
 
+// 一块音频都没排过就收到结束标记：什么都不报，交给后端的起播超时（Codex P2）
+{
+  const h = createHarness();
+  h.bind();
+  h.ctx.currentTime = 10;
+  h.emit('neko-audio-stream-closed', { speechId: 'silent' });
+  h.advance(5000);
+  report.no_audio_sent = h.bySid('silent').length;
+  // 结束标记到达时尾块还在解码：等它排上、播完，照常收口
+  h.pending.late = 1;
+  h.emit('neko-audio-stream-closed', { speechId: 'late' });
+  h.advance(500);
+  report.late_before_chunk = h.bySid('late').length;
+  h.pending.late = 0;
+  h.chunk('late', h.ctx.currentTime, h.ctx.currentTime + 0.5);
+  h.advance(2000);
+  report.late_finals = h.bySid('late').filter((m) => m.ended && m.final).length;
+}
+
 // 没 visit_bind：一律不回报；串门未开始：不跟踪
 {
   const h = createHarness();
@@ -329,6 +348,19 @@ const report = {};
   h.chunk('line', h.ctx.currentTime, h.ctx.currentTime + 1);
   h.advance(2000);
   report.after_start_sent = h.bySid('line').length > 0;
+}
+
+// 页面在串门途中重载：bind 带 active:true（没有 started 帧）也算开始过，结束后的仪式句照常回报（云评审第 3 轮）
+{
+  const h = createHarness();
+  const V = 'W'.repeat(26);
+  h.emit('neko-visit-bound', { socket: h.socket, active: true, visit_id: V });
+  h.emit('neko-visit-frame', { type: 'visit_state_change', action: 'ended', visit_id: V });
+  h.ctx.currentTime = 10;
+  h.chunk('ritual', 10, 11);
+  h.emit('neko-audio-stream-closed', { speechId: 'ritual' });
+  h.advance(2000);
+  report.reload_ritual_final = h.bySid('ritual').filter((m) => m.ended && m.final).length;
 }
 
 // socket 换了还没重新 bind：发送一直失败，记录静置后丢掉、定时器停下（CodeRabbit）
@@ -413,7 +445,8 @@ def test_start_time_is_clamped_to_now_when_previous_end_lags(report):
 
 
 def test_lookahead_chunk_does_not_run_played_ms_ahead(report):
-    assert report["lookahead_max_before_start"] == 0
+    # 第一块真开播之前一条都不报（后端收到首条回报就起停滞计时，Codex P1）
+    assert report["lookahead_sent_before_start"] == 0
     assert 250 <= report["lookahead_after_start"] <= 600
 
 
@@ -461,6 +494,12 @@ def test_clearing_a_speech_still_in_lookahead_drains_once_and_stops(report):
     assert report["pre_start_cleared_more"] == 0
 
 
+def test_a_stream_closed_without_any_audio_reports_nothing(report):
+    assert report["no_audio_sent"] == 0
+    assert report["late_before_chunk"] == 0
+    assert report["late_finals"] == 1
+
+
 def test_nothing_is_sent_before_bind_or_outside_a_visit(report):
     assert report["unbound_sent"] == 0
     assert report["unarmed_sent"] == 0
@@ -482,6 +521,10 @@ def test_pre_start_state_frames_do_not_arm_the_pacer(report):
     assert report["pre_start_sent"] == 0
     assert report["aborted_before_start_sent"] == 0
     assert report["after_start_sent"] is True
+
+
+def test_bind_after_a_mid_visit_reload_still_opens_the_post_end_window(report):
+    assert report["reload_ritual_final"] == 1
 
 
 def test_records_unsendable_after_a_socket_swap_are_dropped_and_ticking_stops(report):

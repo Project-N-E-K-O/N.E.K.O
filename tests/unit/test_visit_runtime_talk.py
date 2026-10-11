@@ -2325,3 +2325,30 @@ async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypat
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_switched_mid_visit_applies_from_the_next_line(tmp_path, monkeypatch):
+    # §3.7.6：visitVoiceEnabled 中途切换从下一句生效；单向的 TTS 兜底不被重新读到的值覆盖
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    try:
+        first_ln = host.rt._line.ref.line_id
+        host.settings["visitVoiceEnabled"] = False            # 开场白已按「开」开了语音流
+        hgate.set()
+        ggate.set()
+        await wait_for(lambda: len(_texts(wire, "host")) >= 2, timeout=10)
+        lns = [p["ln"] for p in _texts(wire, "host")]
+        streamed = {s.request_id for s in host.host.streams}
+        assert first_ln in streamed
+        assert not (set(lns) - {first_ln}) & streamed         # 之后的各句都只上屏
+        assert host.rt.voice.enabled is False
+        host.settings["visitVoiceEnabled"] = True
+        host.rt.voice.fallen_back = True
+        await host.rt._refresh_voice_setting()
+        assert host.rt.voice.enabled is True and host.rt.voice.tts_on is False
+        host.settings = {}                                     # 读不出 / 没有这个键：沿用当前值
+        await host.rt._refresh_voice_setting()
+        assert host.rt.voice.enabled is True
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
