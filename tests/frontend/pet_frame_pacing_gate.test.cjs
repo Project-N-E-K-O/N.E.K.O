@@ -333,7 +333,7 @@ test('契约：麦克风音量监测与口型同步循环通过 frame-pacing 排
     assert.match(playback, /function scheduleLipSyncFrame\(animate\)[\s\S]*?_lipSyncPacedCancel = pacing\.requestPacedFrame\(animate\);/);
     assert.match(playback, /const pacedByTimer = scheduleLipSyncFrame\(animate\);/);
     assert.match(playback, /if \(!pacedByTimer && \+\+_lipSyncSkipCounter < LIP_SYNC_EVERY_N_FRAMES\) return;/);
-    assert.match(playback, /function stopLipSync\(model\) \{[\s\S]*?cancelLipSyncFrame\(\);/);
+    assert.match(playback, /function stopLipSync\(model, owner\) \{[\s\S]*?cancelLipSyncFrame\(\);/);
     const lipSyncBody = playback.slice(playback.indexOf('function startLipSync('), playback.indexOf('function stopLipSync('));
     assert.doesNotMatch(lipSyncBody, /S\.animationFrameId = requestAnimationFrame\(animate\)/, 'startLipSync 内不允许直接排 rAF');
 });

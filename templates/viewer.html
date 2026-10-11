@@ -590,6 +590,8 @@
         let lipSyncActive = false;
         let animationFrameId = null;
         let globalAnalyser = null;
+        let lipSyncSession = null;
+        let audioPlaybackEpoch = 0;
 
         function initAudioContext() {
             if (!audioContext) {
@@ -640,12 +642,15 @@
         }
 
         async function playAudioChunk(audioData) {
+            const epoch = audioPlaybackEpoch;
+            let owner;
             initAudioContext();
 
             try {
                 // 将原始 PCM16 数据转换为 WAV 格式
                 const wavData = pcm16ToWav(audioData);
                 const audioBuffer = await audioContext.decodeAudioData(wavData);
+                if (epoch !== audioPlaybackEpoch) return;
                 const source = audioContext.createBufferSource();
                 source.buffer = audioBuffer;
 
@@ -655,30 +660,44 @@
                 // 启动口型同步（只在第一次启动）
                 if (!lipSyncActive && window.LanLan1 && window.LanLan1.live2dModel) {
                     startLipSync(window.LanLan1.live2dModel, globalAnalyser);
-                    lipSyncActive = true;
+                    lipSyncActive = !!lipSyncSession;
                 }
+                owner = lipSyncSession && lipSyncSession.owner;
 
-                return new Promise((resolve) => {
+                return await new Promise((resolve) => {
                     source.onended = () => {
                         // 检查是否还有音频在播放
-                        if (audioQueue.length === 0) {
-                            stopLipSync();
-                            lipSyncActive = false;
+                        if (epoch === audioPlaybackEpoch && audioQueue.length === 0) {
+                            stopLipSync(owner);
                         }
                         resolve();
                     };
                     source.start(0);
                 });
             } catch (error) {
+                if (epoch === audioPlaybackEpoch && owner) stopLipSync(owner);
                 console.error('音频播放错误:', error);
             }
         }
 
         function startLipSync(model, analyser) {
+            stopLipSync();
+            const bridge = window.LanLan1;
+            const owner = {};
+            if (!bridge || !bridge.beginLipSync(owner)) return;
+            const session = { owner, bridge };
+            lipSyncSession = session;
             const dataArray = new Uint8Array(analyser.fftSize);
 
             function animate() {
-                analyser.getByteTimeDomainData(dataArray);
+                if (lipSyncSession !== session) return;
+                try {
+                    analyser.getByteTimeDomainData(dataArray);
+                } catch (error) {
+                    stopLipSync(owner);
+                    console.warn('音频采样失败，释放口型控制:', error);
+                    return;
+                }
                 // 简单求音量（RMS）
                 let sum = 0;
                 for (let i = 0; i < dataArray.length; i++) {
@@ -689,8 +708,9 @@
                 // 映射到嘴巴开合度 0~1
                 const mouthOpen = Math.min(1, rms * 8);
 
-                if (window.LanLan1 && window.LanLan1.live2dModel) {
-                    window.LanLan1.setMouth(mouthOpen);
+                if (bridge.setMouth(mouthOpen, owner) === false) {
+                    stopLipSync(owner);
+                    return;
                 }
 
                 animationFrameId = requestAnimationFrame(animate);
@@ -699,28 +719,33 @@
             animate();
         }
 
-        function stopLipSync() {
+        function stopLipSync(owner) {
+            if (owner !== undefined && (!lipSyncSession || lipSyncSession.owner !== owner)) return;
+            const session = lipSyncSession;
+            lipSyncSession = null;
             if (animationFrameId) {
                 cancelAnimationFrame(animationFrameId);
                 animationFrameId = null;
             }
-            if (window.LanLan1 && window.LanLan1.live2dModel) {
-                window.LanLan1.setMouth(0);
-            }
+            if (session) session.bridge.endLipSync(session.owner);
+            lipSyncActive = false;
         }
 
         async function processAudioQueue() {
             if (isPlaying || audioQueue.length === 0) return;
 
             isPlaying = true;
+            const epoch = audioPlaybackEpoch;
             while (audioQueue.length > 0) {
                 const chunk = audioQueue.shift();
                 await playAudioChunk(chunk);
+                if (epoch !== audioPlaybackEpoch) return;
             }
             isPlaying = false;
         }
 
         function clearAudioQueue() {
+            audioPlaybackEpoch++;
             audioQueue = [];
             if (audioContext) {
                 audioContext.close();

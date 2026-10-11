@@ -1220,6 +1220,11 @@
     }
 
     function stopActiveLipSync() {
+        // 清理创建时的 Live2D owner，不依赖已可能切换的当前模型类型。
+        if (_live2dLipSyncSession) {
+            stopLipSync(_live2dLipSyncSession.model, _live2dLipSyncSession.owner);
+            return;
+        }
         var activeModelType = getActiveAvatarModelType();
         if (activeModelType === 'vrm' && window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
             if (typeof window.vrmManager.animation.stopLipSync === 'function') {
@@ -1249,6 +1254,13 @@
         var normalizedTurnId = normalizeAssistantTurnId(
             turnId || S.assistantSpeechActiveTurnId || S.assistantTurnCompletedId
         );
+        if ((options && options.lipSyncOwner !== undefined &&
+            ((_live2dLipSyncSession && _live2dLipSyncSession.owner !== options.lipSyncOwner) ||
+             (S.assistantSpeechActiveTurnId && S.assistantSpeechActiveTurnId !== normalizedTurnId))) ||
+            (_live2dLipSyncSession && _live2dLipSyncSession.turnId &&
+             _live2dLipSyncSession.turnId !== normalizedTurnId)) {
+            return false;
+        }
         logAudioLifecycle('maybeFinalizeAssistantSpeech:enter', {
             requestedTurnId: normalizedTurnId,
             force: force
@@ -1313,6 +1325,12 @@
         }
         _assistantSpeechLifecycleEventsBound = true;
 
+        window.addEventListener('pagehide', function () {
+            if (_live2dLipSyncSession) {
+                stopLipSync(_live2dLipSyncSession.model, _live2dLipSyncSession.owner);
+            }
+        });
+
         window.addEventListener('neko-assistant-turn-start', function () {
             clearAssistantTurnCompletion();
             logAudioLifecycle('event:turn-start');
@@ -1358,7 +1376,10 @@
             maybeFinalizeAssistantSpeech(turnId);
         });
 
-        window.addEventListener('neko-assistant-speech-cancel', function () {
+        window.addEventListener('neko-assistant-speech-cancel', function (event) {
+            const cancelledTurnId = normalizeAssistantTurnId(event.detail && event.detail.turnId);
+            if (_live2dLipSyncSession && _live2dLipSyncSession.turnId && cancelledTurnId &&
+                _live2dLipSyncSession.turnId !== cancelledTurnId) return;
             clearAssistantTurnCompletion();
             clearStuckSpeakingFallback();
             // [BUGFIX] 切换猫娘后语音模式 mic 永远 skip=focus 的根因：
@@ -1560,6 +1581,7 @@
 
     // 定时器驱动时的取消句柄（rAF 驱动时用 S.animationFrameId）
     let _lipSyncPacedCancel = null;
+    let _live2dLipSyncSession = null;
 
     // 取消已排的口型同步帧：rAF / 定时器两种驱动都覆盖
     function cancelLipSyncFrame() {
@@ -1588,9 +1610,22 @@
         return false;
     }
 
-    function startLipSync(model, analyser) {
+    function startLipSync(model, analyser, turnId) {
         console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
+        if (!analyser || getActiveAvatarModelType() !== 'live2d') return null;
+        if (_live2dLipSyncSession) {
+            stopLipSync(_live2dLipSyncSession.model, _live2dLipSyncSession.owner);
+        }
         cancelLipSyncFrame();
+        const owner = {};
+        const bridge = window.LanLan1;
+        const usesOwnership = !!(bridge && typeof bridge.beginLipSync === 'function');
+        if (usesOwnership && !bridge.beginLipSync(owner)) return null;
+        const session = { owner: owner, bridge: bridge, model: model,
+            usesOwnership: usesOwnership,
+            turnId: normalizeAssistantTurnId(turnId || S.assistantSpeechActiveTurnId || S.assistantTurnId),
+            epoch: S.incomingAudioEpoch };
+        _live2dLipSyncSession = session;
 
         _lastMouthOpen = 0;
         _lipSyncSkipCounter = 0;
@@ -1598,7 +1633,11 @@
         var dataArray = new Uint8Array(analyser.fftSize);
 
         function animate() {
-            if (!analyser) return;
+            if (_live2dLipSyncSession !== session) return;
+            if (session.epoch !== S.incomingAudioEpoch || getActiveAvatarModelType() !== 'live2d') {
+                stopLipSync(model, owner);
+                return;
+            }
             const pacedByTimer = scheduleLipSyncFrame(animate);
 
             // 定时器驱动时周期已经是渲染 tick（≤ 配置帧率），不再隔帧；rAF 驱动才按
@@ -1606,7 +1645,13 @@
             if (!pacedByTimer && ++_lipSyncSkipCounter < LIP_SYNC_EVERY_N_FRAMES) return;
             _lipSyncSkipCounter = 0;
 
-            analyser.getByteTimeDomainData(dataArray);
+            try {
+                analyser.getByteTimeDomainData(dataArray);
+            } catch (error) {
+                stopLipSync(model, owner);
+                console.warn('[LipSync] 音频采样失败，释放口型控制:', error);
+                return;
+            }
 
             var sum = 0;
             for (var i = 0; i < dataArray.length; i++) {
@@ -1619,24 +1664,35 @@
             mouthOpen = _lastMouthOpen * 0.5 + mouthOpen * 0.5;
             _lastMouthOpen = mouthOpen;
 
-            if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
-                window.LanLan1.setMouth(mouthOpen);
+            if (bridge && typeof bridge.setMouth === 'function') {
+                if (usesOwnership && bridge.setMouth(mouthOpen, owner) === false) {
+                    stopLipSync(model, owner);
+                } else if (!usesOwnership) {
+                    bridge.setMouth(mouthOpen);
+                }
             }
         }
 
         animate();
+        return _live2dLipSyncSession === session ? owner : null;
     }
 
-    function stopLipSync(model) {
+    function stopLipSync(model, owner) {
+        const session = _live2dLipSyncSession;
+        if (owner !== undefined && (!session || session.owner !== owner)) return false;
+        _live2dLipSyncSession = null;
         console.log('[LipSync] 停止口型同步');
         cancelLipSyncFrame();
-        if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
+        if (session && session.usesOwnership) {
+            session.bridge.endLipSync(session.owner);
+        } else if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
             window.LanLan1.setMouth(0);
         } else if (model && model.internalModel && model.internalModel.coreModel) {
             // Fallback
             try { model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0); } catch (_) { /* noop */ }
         }
         S.lipSyncActive = false;
+        return true;
     }
 
     // ======================== Audio chunk scheduling ========================
@@ -1714,7 +1770,14 @@
                         dispatchAssistantSpeechStart(source._nekoAssistantTurnId);
                     }
 
-                    if (hasAnalyser && !S.lipSyncActive) {
+                    var startedLipSyncOwner = null;
+                    var activeModelType = hasAnalyser ? getActiveAvatarModelType() : null;
+                    if (_live2dLipSyncSession && activeModelType !== 'live2d') {
+                        stopLipSync(_live2dLipSyncSession.model, _live2dLipSyncSession.owner);
+                    }
+                    var lipSyncTurnChanged = _live2dLipSyncSession && _live2dLipSyncSession.turnId &&
+                        source._nekoAssistantTurnId && _live2dLipSyncSession.turnId !== source._nekoAssistantTurnId;
+                    if (hasAnalyser && (!S.lipSyncActive || lipSyncTurnChanged)) {
                         if (window.DEBUG_AUDIO) {
                             console.log('[Audio] 尝试启动口型同步:', {
                                 hasLanLan1: !!window.LanLan1,
@@ -1727,7 +1790,6 @@
                                 hasAnalyser: hasAnalyser
                             });
                         }
-                        var activeModelType = getActiveAvatarModelType();
                         if (activeModelType === 'vrm' && window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
                             if (typeof window.vrmManager.animation.startLipSync === 'function') {
                                 window.vrmManager.animation.startLipSync(S.globalAnalyser);
@@ -1746,8 +1808,9 @@
                                 console.log('[Audio] PNGTuber lip sync started');
                             }
                         } else if (window.LanLan1 && window.LanLan1.live2dModel) {
-                            startLipSync(window.LanLan1.live2dModel, S.globalAnalyser);
-                            S.lipSyncActive = true;
+                            startedLipSyncOwner = startLipSync(window.LanLan1.live2dModel, S.globalAnalyser,
+                                source._nekoAssistantTurnId);
+                            S.lipSyncActive = !!startedLipSyncOwner;
                         } else {
                             if (window.DEBUG_AUDIO) {
                                 console.warn('[Audio] 无法启动口型同步：没有可用的模型');
@@ -1771,10 +1834,18 @@
                         );
                     }
 
-                    // Precise time scheduling
-                    source.start(scheduledStartTime);
                     source._nekoSpeechId = normalizeAssistantTurnId(item.speechId);
                     source._nekoScheduledEndAudioTime = scheduledEndTime;
+                    source._nekoLipSyncOwner = _live2dLipSyncSession && _live2dLipSyncSession.owner;
+                    source._nekoAudioEpoch = S.incomingAudioEpoch;
+                    // Precise time scheduling. 只回收这个失败 source 刚创建的口型权限。
+                    try {
+                        source.start(scheduledStartTime);
+                    } catch (error) {
+                        if (startedLipSyncOwner) stopLipSync(window.LanLan1.live2dModel, startedLipSyncOwner);
+                        releaseAssistantPlaybackGraph(source);
+                        throw error;
+                    }
 
                     // On-ended callback: handle lip sync stop & cleanup
                     source.onended = (function (src) {
@@ -1784,12 +1855,18 @@
                                 S.scheduledSources.splice(index, 1);
                             }
                             releaseAssistantPlaybackGraph(src);
+                            // 已取消的 source 仍可能迟到 onended；不得收尾接管它的新语音。
+                            if (src._nekoAudioEpoch !== S.incomingAudioEpoch ||
+                                (src._nekoLipSyncOwner &&
+                                 ((_live2dLipSyncSession && _live2dLipSyncSession.owner !== src._nekoLipSyncOwner) ||
+                                  (S.assistantSpeechActiveTurnId && S.assistantSpeechActiveTurnId !== src._nekoAssistantTurnId)))) return;
                             publishSpeechPlaybackState('source_ended', {
                                 active: S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || S.incomingAudioBlobQueue.length > 0,
                                 speechId: S.currentPlayingSpeechId || src._nekoSpeechId || null,
                                 turnId: src._nekoAssistantTurnId || null
                             });
-                            var finalized = maybeFinalizeAssistantSpeech(src._nekoAssistantTurnId);
+                            var finalized = maybeFinalizeAssistantSpeech(src._nekoAssistantTurnId,
+                                src._nekoLipSyncOwner ? { lipSyncOwner: src._nekoLipSyncOwner } : undefined);
                             // 兜底：finalize 没走通（多半是 turn-end 没到），队列已空但 flag 还粘着 → 30s 后强制收尾。
                             if (!finalized) {
                                 maybeArmStuckSpeakingFallback();

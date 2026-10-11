@@ -105,16 +105,24 @@ class AudioManager {
                 fadeGain.gain.linearRampToValueAtTime(0, m.nextTime + buffer.duration);
 
                 // 口型同步 - 支持Live2D和VRM（startLipSync内部会自动检测模型类型）
-                this.startLipSync(modelId, m.analyser);
+                const priorLipSyncSession = m.lipSyncSession;
+                const lipSyncOwner = this.startLipSync(modelId, m.analyser);
 
                 src.onended = () => {
                     m.playingSources.delete(src);
-                    if (m.playingSources.size === 0) this.stopLipSync(modelId);
+                    if (m.playingSources.size === 0) this.stopLipSync(modelId, lipSyncOwner);
                     this._updateDuck();          // 有可能释放优先级
                     this._checkFinished(modelId);
                 };
 
-                src.start(m.nextTime);
+                try {
+                    src.start(m.nextTime);
+                } catch (error) {
+                    if (!priorLipSyncSession && lipSyncOwner) this.stopLipSync(modelId, lipSyncOwner);
+                    try { src.disconnect(); } catch (_) {}
+                    try { fadeGain.disconnect(); } catch (_) {}
+                    throw error;
+                }
                 m.nextTime += buffer.duration;
                 m.playingSources.add(src);
                 this._updateDuck();            // 让优先级立即生效
@@ -182,14 +190,32 @@ class AudioManager {
         if (window[modelId] && window[modelId].live2dModel) {
             // Live2D模型的口型同步
             const model = window[modelId].live2dModel;
+            const modelData = this.models.get(modelId);
+            if (!modelData) return null;
+            // 多个预排音频 chunk 共用一条口型采样链。
+            if (modelData.lipSyncSession) return modelData.lipSyncSession.owner;
+            const bridge = window[modelId];
+            const owner = {};
+            const usesOwnership = typeof bridge.beginLipSync === 'function';
+            if (usesOwnership && !bridge.beginLipSync(owner)) return null;
+            const session = { owner, bridge, model, usesOwnership };
+            modelData.lipSyncSession = session;
             const dataArray = new Uint8Array(analyser.fftSize);
 
             const animate = () => {
+                if (modelData.lipSyncSession !== session) return;
                 // 检查模型是否仍然有效
-                if (!model || model.destroyed || !model.internalModel?.coreModel) {
+                if (!usesOwnership && (!model || model.destroyed || !model.internalModel?.coreModel)) {
+                    this.stopLipSync(modelId, owner);
                     return;
                 }
-                analyser.getByteTimeDomainData(dataArray);
+                try {
+                    analyser.getByteTimeDomainData(dataArray);
+                } catch (error) {
+                    this.stopLipSync(modelId, owner);
+                    console.warn('音频采样失败，释放口型控制:', error);
+                    return;
+                }
                 // 简单求音量（RMS 或最大振幅）
                 let sum = 0;
                 for (let i = 0; i < dataArray.length; i++) {
@@ -200,21 +226,39 @@ class AudioManager {
                 // 这里可以调整映射关系
                 const mouthOpen = Math.min(1, rms * 8); // 放大到 0~1
                 // 设置 Live2D 嘴巴参数
-                model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", mouthOpen);
-                const modelData = this.models.get(modelId);
-                if (modelData) {
-                    modelData.animationFrameId = requestAnimationFrame(animate);
+                if (usesOwnership) {
+                    if (bridge.setMouth(mouthOpen, owner) === false) {
+                        this.stopLipSync(modelId, owner);
+                        return;
+                    }
+                } else {
+                    model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", mouthOpen);
                 }
+                modelData.animationFrameId = requestAnimationFrame(animate);
              }
 
             animate();
+            return modelData.lipSyncSession === session ? owner : null;
         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
             // VRM模型的口型同步
             window.vrmManager.animation.startLipSync(analyser);
         }
     }
 
-    stopLipSync(modelId) {
+    stopLipSync(modelId, owner) {
+        const modelData = this.models.get(modelId);
+        const session = modelData && modelData.lipSyncSession;
+        if (owner && (!session || session.owner !== owner)) return false;
+        if (session) {
+            modelData.lipSyncSession = null;
+            if (modelData.animationFrameId) cancelAnimationFrame(modelData.animationFrameId);
+            modelData.animationFrameId = null;
+            if (session.usesOwnership) session.bridge.endLipSync(session.owner);
+            else if (!session.model.destroyed && session.model.internalModel?.coreModel) {
+                session.model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0);
+            }
+            return true;
+        }
         // 检测是Live2D还是VRM
         if (window[modelId] && window[modelId].live2dModel) {
             // Live2D模型停止口型同步

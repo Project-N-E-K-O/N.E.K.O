@@ -136,7 +136,10 @@
                     } catch (_) {}
                     activeSession.analyserNode = null;
                 }
-                if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
+                if (activeSession.mouthOwner) {
+                    activeSession.mouthBridge.endLipSync(activeSession.mouthOwner);
+                } else if (this.currentMouthMotionSession === null
+                    && window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
                     window.LanLan1.setMouth(0);
                 }
             } catch (error) {
@@ -189,6 +192,16 @@
                     ? new Uint8Array(analyserNode.fftSize)
                     : null
             };
+            const mouthBridge = window.LanLan1;
+            if (typeof mouthBridge.beginLipSync === 'function'
+                && typeof mouthBridge.endLipSync === 'function') {
+                const owner = {};
+                if (mouthBridge.beginLipSync(owner)) {
+                    session.mouthOwner = owner;
+                    session.mouthBridge = mouthBridge;
+                }
+                // 非 Live2D 模型继续走原有的无 owner 口型调度。
+            }
 
             try {
                 const animate = (now) => {
@@ -232,13 +245,14 @@
                         mouthOpen = 0;
                     }
                     session.lastMouthOpen = mouthOpen;
-                    window.LanLan1.setMouth(mouthOpen);
+                    mouthBridge.setMouth(mouthOpen, session.mouthOwner);
                 };
 
                 this.currentMouthMotionSession = session;
                 session.animationFrameId = window.requestAnimationFrame(animate);
                 return session;
             } catch (error) {
+                this.stopGuideMouthMotion(session);
                 console.warn('[YuiGuide] 启动教程嘴部动作失败:', error);
                 return null;
             }
