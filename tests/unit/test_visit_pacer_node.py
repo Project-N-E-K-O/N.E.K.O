@@ -376,6 +376,16 @@ const report = {};
   h.emit('neko-audio-stream-closed', { speechId: 'ritualA' });
   h.advance(2000);
   report.window_visit_ids = Array.from(new Set(h.bySid('ritualA').map((m) => m.visit_id)));
+  // A 的简述还在播时 B 已 started：这一段剩下的回报仍是 A（记录建立时就定下场次）
+  h.chunk('debriefA', h.ctx.currentTime, h.ctx.currentTime + 2);
+  h.advance(600);
+  h.emit('neko-visit-frame', { type: 'visit_state_change', action: 'started', visit_id: B });
+  h.emit('neko-audio-stream-closed', { speechId: 'debriefA' });
+  h.advance(3000);
+  report.debrief_visit_ids = Array.from(new Set(h.bySid('debriefA').map((m) => m.visit_id)));
+  h.chunk('lineB', h.ctx.currentTime, h.ctx.currentTime + 1);
+  h.advance(1500);
+  report.lineB_visit_ids = Array.from(new Set(h.bySid('lineB').map((m) => m.visit_id)));
 }
 
 // socket 换了还没重新 bind：发送一直失败，记录静置后丢掉、定时器停下（CodeRabbit）
@@ -544,6 +554,8 @@ def test_bind_after_a_mid_visit_reload_still_opens_the_post_end_window(report):
 
 def test_post_end_window_reports_under_the_visit_that_ended(report):
     assert report["window_visit_ids"] == ["A" * 26]
+    assert report["debrief_visit_ids"] == ["A" * 26]
+    assert report["lineB_visit_ids"] == ["B" * 26]
 
 
 def test_records_unsendable_after_a_socket_swap_are_dropped_and_ticking_stops(report):

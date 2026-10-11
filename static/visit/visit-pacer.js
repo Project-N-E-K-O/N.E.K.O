@@ -121,7 +121,9 @@
                 drainReported: false,
                 finalSent: false,
                 lastSentAt: 0,
-                lastActivity: wallNow()
+                lastActivity: wallNow(),
+                // 记录建立时就定下属于哪一场：仪式句播到一半新一场开始，剩下的回报也不改场次
+                visitId: reportVisitId()
             };
             speeches.set(sid, rec);
         }
@@ -134,7 +136,7 @@
         var msg = {
             action: 'visit_speech_progress',
             speech_id: rec.sid,
-            visit_id: reportVisitId(),
+            visit_id: rec.visitId || reportVisitId(),
             played_ms: played,
             ended: ended
         };
@@ -290,6 +292,7 @@
         if (frame.action === 'started') {
             startedVisitId = frameVisit || visitId;
             visitActive = true;
+            armedVisitId = null;
         } else if (frame.action === 'ended') {
             if (startedVisitId && startedVisitId === (frameVisit || visitId)) {
                 armedUntil = wallNow() + POST_END_ARM_MS;
