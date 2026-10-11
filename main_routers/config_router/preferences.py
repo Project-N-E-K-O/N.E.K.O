@@ -242,8 +242,21 @@ def _end_visits_disabled() -> None:
         logger.info("visitEnabled switched off: ended %d live visit(s)", ended)
 
 
-def _apply_visit_voice(enabled: bool) -> None:
-    """Push a saved ``visitVoiceEnabled`` to live visits (from their next line, design §3.7.6)."""
+_visit_voice_pushed_revision = -1
+"""Settings revision of the last ``visitVoiceEnabled`` pushed to live visits (pushes run outside the write lock)."""
+
+
+def _apply_visit_voice(enabled: bool, revision: int) -> None:
+    """Push a saved ``visitVoiceEnabled`` to live visits (from their next line, design §3.7.6).
+
+    Two concurrent saves resume from their worker threads in any order: a push
+    older than the last one applied is dropped, so the live value always
+    matches the newest saved revision.
+    """
+    global _visit_voice_pushed_revision
+    if revision <= _visit_voice_pushed_revision:
+        return
+    _visit_voice_pushed_revision = revision
     try:
         from main_routers.visit_router import runtime as visit_runtime
 
@@ -480,7 +493,7 @@ async def save_conversation_settings(request: Request):
             and isinstance(saved_voice, bool)
             and saved_voice != result.previous.settings.get("visitVoiceEnabled")
         ):
-            _apply_visit_voice(saved_voice)
+            _apply_visit_voice(saved_voice, result.snapshot.revision)
 
         if (
             isinstance(data.get("noiseReductionEnabled"), bool)

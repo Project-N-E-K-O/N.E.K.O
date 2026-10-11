@@ -87,8 +87,49 @@ async def test_saving_other_keys_while_on_keeps_the_visit(monkeypatch, tmp_path,
     assert ended == []
 
 
+def test_an_older_voice_push_never_overwrites_a_newer_one(monkeypatch):
+    # 两次并发保存在锁外先后恢复：修订号更旧的那次推送被丢弃（CodeRabbit）
+    pushed = []
+    monkeypatch.setattr(rtm, "apply_voice_setting", lambda enabled: pushed.append(enabled) or 0)
+    monkeypatch.setattr(preferences_router, "_visit_voice_pushed_revision", -1)
+    preferences_router._apply_visit_voice(True, 8)       # B（更新）先恢复
+    preferences_router._apply_visit_voice(False, 7)      # A（更旧）后恢复：丢弃
+    preferences_router._apply_visit_voice(False, 9)
+    assert pushed == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_a_pending_admission_is_refused_when_visits_are_switched_off(tmp_path, monkeypatch):
+    # 入场还挂在 await 上（尚未登记运行时）时用户关掉串门：醒来后不登记（CodeRabbit）
+    import asyncio
+
+    from tests.unit.visit_runtime_harness import VISIT_ID, FakeClock, make_side, patch_admission
+
+    patch_admission(monkeypatch)
+    gate = asyncio.Event()
+
+    async def slow_account():
+        await gate.wait()
+        return "acct"
+
+    monkeypatch.setattr(rtm, "_local_account", slow_account)
+    clock, wall = FakeClock(1000.0), FakeClock(1.7e9)
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    task = asyncio.ensure_future(rtm.start_visit("Host", "host", visit_id=VISIT_ID, host=side.host, deps=side.deps,
+                                                 clock=clock, wall=wall))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert rtm.end_visits_disabled() == 0                  # 还没登记：结束不到它
+    gate.set()
+    with pytest.raises(rtm.VisitRefused) as refused:
+        await task
+    assert refused.value.body.get("reason") == "visit_disabled"
+    assert rtm.get_runtime("Host") is None and not rtm._pending_visits
+
+
 @pytest.mark.asyncio
 async def test_saving_the_voice_switch_pushes_it_to_live_visits(monkeypatch, tmp_path):
+    monkeypatch.setattr(preferences_router, "_visit_voice_pushed_revision", -1)
     pushed = []
     monkeypatch.setattr(rtm, "apply_voice_setting", lambda enabled: pushed.append(enabled) or 0)
     _use_preferences_file(monkeypatch, tmp_path)
