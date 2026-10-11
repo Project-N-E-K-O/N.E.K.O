@@ -327,17 +327,18 @@ def _character_config_lock():
 
 
 async def _visit_name_refusal(config_manager, name: str):
-    """409 ``VISIT_DATA_BUSY`` while a pending visit retirement / rename holds a name not configured locally.
+    """409 ``VISIT_DATA_BUSY`` while a pending visit retirement / rename holds ``name``.
 
     Called under the character-config lock right before the import publishes
     the character, so no delete or rename can slip in between. Same rule as
     every other path creating a character: the roster keys entries by name.
+    An overwrite of a local character is checked too: when that character's
+    own rename is still unreconciled, the import would replace its profile
+    (and uid) first, and recovery could then no longer tell where its
+    entries belong.
     """
     from main_routers.visit_router import character_hooks
 
-    characters = await config_manager.aload_characters()
-    if name in ((characters or {}).get("猫娘") or {}):
-        return None
     if not await character_hooks.name_blocked(config_manager, name):
         return None
     return _cloudsave_error_response(

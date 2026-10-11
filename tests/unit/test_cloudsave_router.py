@@ -1910,7 +1910,7 @@ async def test_cancelled_download_finishes_reload_before_propagating_cancel():
 
 
 @asynccontextmanager
-async def _visit_download_env(monkeypatch):
+async def _visit_download_env(monkeypatch, target_name="本地角色"):
     """Target config (tmp) holding one local character, with a cloud character exported to its cloud folder.
 
     The persona retirement is replaced (``retire_state["fail"]`` decides) so a
@@ -1935,7 +1935,7 @@ async def _visit_download_env(monkeypatch):
         bootstrap_local_cloudsave_environment(source_cm)
         bootstrap_local_cloudsave_environment(target_cm)
         _write_runtime_state(source_cm, character_name="云端角色")
-        _write_runtime_state(target_cm, character_name="本地角色")
+        _write_runtime_state(target_cm, character_name=target_name)
 
         from utils.cloudsave_runtime import export_cloudsave_character_unit
 
@@ -1961,11 +1961,13 @@ async def _visit_download_env(monkeypatch):
             )
             module = importlib.import_module("main_routers.cloudsave_router")
 
-            async def download():
-                with patch.object(module, "_reload_after_character_download", AsyncMock(return_value=(True, ""))):
+            async def download(overwrite=False):
+                with patch.object(module, "_reload_after_character_download", AsyncMock(return_value=(True, ""))), \
+                     patch.object(module, "release_memory_server_character", AsyncMock(return_value=True)), \
+                     patch.object(module, "notify_memory_server_reload", AsyncMock(return_value=True)):
                     return await module.post_cloudsave_character_download(
                         "云端角色",
-                        _DummyRequest({"overwrite": False, "backup_before_overwrite": True}),
+                        _DummyRequest({"overwrite": overwrite, "backup_before_overwrite": True}),
                     )
 
             yield target_cm, download, retire_state
@@ -2074,3 +2076,36 @@ async def test_cloudsave_download_is_not_blocked_by_an_unreadable_visit_roster(m
         assert "云端角色" in (target_cm.load_characters().get("猫娘") or {})
         assert roster_path.read_text(encoding="utf-8") == "{broken"
         assert retire_state["calls"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_overwrite_settles_the_local_characters_pending_rename_first(monkeypatch):
+    # 本地「云端角色」是上一次「旧名 -> 云端角色」改名的结果、迁移没做完：覆盖下载会换掉它的配置
+    # （连同 uid），之后对账再也分不清旧名下的条目属于谁，所以覆盖前也要先对完账
+    from main_logic.visit.spool import VisitSpool
+    from main_logic.visit.subjects import set_roster_marker
+
+    async with _visit_download_env(monkeypatch, target_name="云端角色") as (target_cm, download, _retire_state):
+        target_cm.backfill_character_uids()
+        uid = get_character_uid(target_cm.load_characters()["猫娘"]["云端角色"])
+        assert uid
+        marker = {"old": "旧名", "new": "云端角色", "uid": uid}
+        await set_roster_marker(target_cm.config_dir, "pending_rename", marker)
+
+        async def locked(*_a, **_k):
+            raise OSError("spool locked")
+
+        with patch.object(VisitSpool, "rename_own_char", locked):
+            response = await download(overwrite=True)
+        # 变异：覆盖已有角色时跳过占用判定必红
+        payload = json.loads(response.body)
+        assert response.status_code == 409 and payload["code"] == "VISIT_DATA_BUSY"
+        peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
+        assert peers["pending_rename"] == marker
+        assert get_character_uid(target_cm.load_characters()["猫娘"]["云端角色"]) == uid
+        # 对账能做完了：先迁完再覆盖
+        result = await download(overwrite=True)
+        assert result["success"] is True
+        peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
+        assert "pending_rename" not in peers

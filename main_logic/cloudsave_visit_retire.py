@@ -28,7 +28,9 @@ from pathlib import Path, PurePath
 from typing import Any
 
 
-def removed_characters_recorder(config_manager: Any) -> Callable[[list[dict[str, Any]]], int] | None:
+def removed_characters_recorder(
+    config_manager: Any,
+) -> Callable[[list[dict[str, Any]], frozenset[str]], int] | None:
     """The ``on_characters_removed`` callback recording ``pending_retire`` items under its ``config_dir``.
 
     ``None`` for a config object without a real ``config_dir`` (``str`` /
@@ -40,9 +42,9 @@ def removed_characters_recorder(config_manager: Any) -> Callable[[list[dict[str,
         return None
     config_dir = Path(value)
 
-    def record(removed: list[dict[str, Any]]) -> int:
+    def record(removed: list[dict[str, Any]], kept_names: frozenset[str]) -> int:
         from main_logic.visit.char_lifecycle import record_removed_characters_sync
 
-        return record_removed_characters_sync(config_dir, removed)
+        return record_removed_characters_sync(config_dir, removed, kept_names)
 
     return record

@@ -349,7 +349,7 @@ class CloudSaveManager:
         steamworks=None,
         deadline_monotonic: float | None = None,
         fence_already_active: bool = False,
-        on_characters_removed: Callable[[list[dict[str, Any]]], Any] | None = None,
+        on_characters_removed: Callable[[list[dict[str, Any]], frozenset[str]], Any] | None = None,
     ) -> dict[str, Any]:
         """Download the remote bundle and import the snapshot when startup needs it.
 

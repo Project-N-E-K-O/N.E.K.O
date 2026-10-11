@@ -226,7 +226,7 @@ def _removed_local_characters(config_manager, kept_character_map: dict[str, Any]
     try:
         with open(config_manager.get_runtime_config_path("characters.json"), "r", encoding="utf-8") as f:
             payload = json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return []
     local_map = payload.get("猫娘") if isinstance(payload, dict) else None
     if not isinstance(local_map, dict):
@@ -1544,13 +1544,14 @@ def import_local_cloudsave_snapshot(
     *,
     deadline_monotonic: float | None = None,
     use_cloud_apply_fence: bool = True,
-    on_characters_removed: Callable[[list[dict[str, Any]]], Any] | None = None,
+    on_characters_removed: Callable[[list[dict[str, Any]], frozenset[str]], Any] | None = None,
 ) -> dict[str, Any]:
     """Import the current local cloudsave snapshot back into runtime truth with rollback.
 
     ``on_characters_removed`` is called with the ``{name, character_uid}`` of
     every local character the import drops (tombstoned, or absent from a
-    full-runtime snapshot), right before the first runtime file is written.
+    full-runtime snapshot) and the character names it keeps, right before
+    the first runtime file is written.
     Data owned by other layers (the visit roster) can so record what to
     retire before the removal commits. It is not called when nothing is
     removed; whatever it raises is logged and the import goes on.
@@ -1946,7 +1947,7 @@ def import_local_cloudsave_snapshot(
                 if removed_characters:
                     try:
                         # 先于删除落盘：中途崩溃时记录已在，由记录方按落盘后的配置判定是否真删了
-                        on_characters_removed(removed_characters)
+                        on_characters_removed(removed_characters, frozenset(characters_payload["猫娘"]))
                     except Exception as exc:
                         logger.warning("cloudsave import: removed characters not recorded: %r", exc)
                 for target_path, staged_path in runtime_targets.items():

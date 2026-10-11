@@ -69,6 +69,7 @@ from main_logic.visit.subjects import (
     add_roster_marker_item_sync,
     clear_roster_marker,
     read_roster_marker,
+    read_roster_marker_sync,
     remove_roster_marker_item,
     set_roster_marker,
 )
@@ -284,14 +285,7 @@ async def _settle_own_rename(
     lets the delete go ahead, nothing being separable any more.
     """
     marker = await read_roster_marker(config_dir, PENDING_RENAME)
-    if not isinstance(marker, dict):
-        return
-    marker_uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
-    if marker_uid and character_uid:
-        involved = marker_uid == character_uid
-    else:
-        involved = name in (marker.get("old"), marker.get("new"))
-    if not involved:
+    if not _rename_names_of(marker, name, character_uid):
         return
     try:
         names, uid_of = await load_names()
@@ -479,22 +473,51 @@ async def name_marker_state(config_dir: str | Path, name: str) -> str:
     return NAME_FREE
 
 
-def record_removed_characters_sync(config_dir: str | Path, removed: Iterable[Mapping[str, Any]]) -> int:
+def _rename_names_of(marker: Any, name: str, character_uid: str | None) -> tuple[str, ...]:
+    """The ``old`` / ``new`` names of ``marker`` when it is a pending rename of this character, else ``()``."""
+    if not isinstance(marker, dict):
+        return ()
+    old, new = marker.get("old"), marker.get("new")
+    if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
+        return ()
+    marker_uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
+    involved = marker_uid == character_uid if marker_uid and character_uid else name in (old, new)
+    return (old, new) if involved else ()
+
+
+def record_removed_characters_sync(
+    config_dir: str | Path, removed: Iterable[Mapping[str, Any]], kept_names: Iterable[str] = (),
+) -> int:
     """Add a ``pending_retire`` item for each character a cloudsave import is about to remove.
 
     Called from the import thread right before it commits, with the
     ``{name, character_uid}`` of every local character absent from the
-    snapshot. Startup recovery then settles the items against the committed
-    config like any delete (an import that rolled back only drops them).
-    Machines without visit data get nothing; returns the number of items added.
+    snapshot and the names the snapshot keeps. Startup recovery then settles
+    the items against the committed config like any delete (an import that
+    rolled back only drops them). A removed character whose own rename is
+    still pending gets an item for its other name too (unless the snapshot
+    keeps that name): recovery drops the rename marker of a character that
+    is gone, so the entries a failed migration left under that name would
+    otherwise outlive it. Machines without visit data get nothing; returns
+    the number of items added.
     """
     config_dir = Path(config_dir)
+    kept = set(kept_names)
+    try:
+        rename_marker = read_roster_marker_sync(config_dir, PENDING_RENAME)
+    except RosterCorruptError:
+        rename_marker = None  # 名册读不出：写标记那一步同样会失败，由回调方记日志
     added = 0
     for entry in removed:
         fields = _item_fields(retire_item(entry.get("name"), entry.get("character_uid")))
         if fields is None or not _has_visit_files_sync(config_dir, fields[1]):
             continue
-        added += bool(add_roster_marker_item_sync(config_dir, PENDING_RETIRE, retire_item(*fields)))
+        name, uid = fields
+        names = [name] + [
+            other for other in _rename_names_of(rename_marker, name, uid) if other != name and other not in kept
+        ]
+        for retiring in names:
+            added += bool(add_roster_marker_item_sync(config_dir, PENDING_RETIRE, retire_item(retiring, uid)))
     return added
 
 

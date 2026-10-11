@@ -438,8 +438,12 @@ async def read_roster_marker(config_dir: str | Path, key: str) -> Any:
     ``pending_retire``) that live outside every account partition. Reads
     strictly: an unreadable roster raises :class:`RosterCorruptError`.
     """
-    path = Path(config_dir) / VISIT_PEERS_FILENAME
-    data = await asyncio.to_thread(_read_top_level_sync, path)
+    return await asyncio.to_thread(read_roster_marker_sync, config_dir, key)
+
+
+def read_roster_marker_sync(config_dir: str | Path, key: str) -> Any:
+    """Blocking :func:`read_roster_marker`, for callers already off the event loop (a startup import thread)."""
+    data = _read_top_level_sync(Path(config_dir) / VISIT_PEERS_FILENAME)
     return copy.deepcopy(data.get(key))
 
 
