@@ -127,6 +127,30 @@ async def test_rename_migrates_roster_and_spools(env):
     assert persona_path.exists()                                   # 人设按 uid 存，改名不动
 
 
+async def test_rename_migrates_while_another_character_is_visiting(env):
+    cm, _path, config_dir = env
+    roster, _old_uid, _persona = await _seed(cm, config_dir)
+    # 另一个角色的串门正在写 spool（#3372 之后日常就会碰到）
+    from main_logic.visit.subjects import derive_pair_id, derive_peer_char_id
+    from tests.unit.visit_memory_test_helpers import OWN_A, TAG_X
+
+    live = VisitSpool(config_dir, vid(9))
+    header = {"v": 1, "visit_id": vid(9), "role": "host", "own_uid": OWN_A, "own_char": "Other",
+              "own_char_uid": _uid(cm, "Other"), "pair_id": derive_pair_id(OWN_A, PEER_X), "peer_uid": PEER_X,
+              "peer_char_id": derive_peer_char_id(PEER_X, TAG_X), "peer_char_tag": TAG_X,
+              "started_at": 1000.0, "lang": "zh"}
+    await live.open(header, now=0.0)
+    try:
+        status, body = await _rename(cm, "Old", "New")
+    finally:
+        await live.close()
+    # 变异：别的角色在写时迁移报 busy → partial_success、标记残留，必红
+    assert status == 200 and body["success"] is True and "partial_success" not in body
+    assert await roster.get_char_entry(PEER_X, "New") is not None
+    assert (await VisitSpool(config_dir, vid(1)).read_state())["own_char"] == "New"
+    assert "pending_rename" not in _peers(config_dir)
+
+
 async def test_rolled_back_rename_leaves_visit_data_under_the_old_name(env):
     cm, _path, config_dir = env
     roster, _old_uid, _persona = await _seed(cm, config_dir)
@@ -473,3 +497,16 @@ async def test_card_import_honours_a_pending_retirement_of_the_name(tmp_path, mo
     else:
         assert status == 200
         assert not (tmp_path / "visit_peers.json").exists()
+
+
+async def test_a_crashing_retry_answers_409_not_500(env, monkeypatch):
+    cm, _path, config_dir = env
+    await add_roster_marker_item(config_dir, "pending_retire", lc.retire_item("Gone", "e" * 32))
+
+    async def broken(*_a, **_k):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(lc, "replay_retires", broken)
+    # 变异：重试不兜底 → 新建接口 500、工坊同步整个循环中断，必红
+    status, body = await _add(cm, "Gone")
+    assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"

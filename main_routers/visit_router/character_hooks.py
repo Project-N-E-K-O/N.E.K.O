@@ -107,5 +107,9 @@ async def name_blocked(config_manager: Any, name: str) -> bool:
     config_dir = _config_dir(config_manager)
     if config_dir is None or not await char_lifecycle.is_name_retiring(config_dir, name):
         return False
-    await char_lifecycle.replay_retires(config_dir, names_loader(config_manager), retire_persona=retire_persona)
+    try:
+        await char_lifecycle.replay_retires(config_dir, names_loader(config_manager), retire_persona=retire_persona)
+    except Exception as exc:  # noqa: BLE001 - 重试失败按「仍在退役」处理：409 / 跳过这张卡，不能变成 500
+        logger.warning("visit retire: retry before reusing name %r failed: %r", name, exc)
+        return True
     return await char_lifecycle.is_name_retiring(config_dir, name)

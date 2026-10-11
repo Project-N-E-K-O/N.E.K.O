@@ -1641,7 +1641,14 @@ class VisitSpool:
             # 这场留在已不存在的旧名下。先改完能改的，最后上抛让标记保留、对账重跑
             try:
                 with path_lock(jsonl):
-                    changed |= _rewrite_header(jsonl, fix_header, strict=True)
+                    try:
+                        changed |= _rewrite_header(jsonl, fix_header, strict=True)
+                    except SpoolBusy:
+                        # 正在写的场次：只有它属于被改名的角色才算 busy。改名在运行期执行时，
+                        # 别的角色可能正在串门，不能因为它们把这次迁移卡住
+                        header = _read_header_strict(jsonl, validate=False)
+                        if header is not None and header.get("own_char") == old:
+                            raise
                 with path_lock(state_path):
                     state = _read_state_file(state_path)
                     if state is not None and state["own_char"] == old:
@@ -1668,7 +1675,9 @@ class VisitSpool:
         ``state.json.own_char``. Visits already carrying ``new`` are skipped,
         so the call is idempotent and safe to rerun from startup
         reconciliation (and to run as ``new -> old`` for a rollback). Returns
-        the visit ids that changed. Only allowed while no visit is in flight.
+        the visit ids that changed. Visits of other characters still being
+        written are left alone; one of the renamed character still being
+        written raises :class:`SpoolBusy` after every other visit is handled.
         Raises :class:`SpoolStateUnreadable` (after rewriting every readable
         visit) when some header or ``state.json`` cannot be read.
         """
