@@ -33,6 +33,8 @@ def setting_client(tmp_path, monkeypatch):
     manager.load_root_state = lambda: {"mode": "normal"}
     manager.config_dir = tmp_path / "config"
     manager.project_config_dir = tmp_path / "project-config"
+    # cloudsave_writable_transaction needs a local state root next to the docs root.
+    manager.anchor_root = tmp_path / "anchor"
     manager.config_dir.mkdir()
     manager.project_config_dir.mkdir()
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: manager)

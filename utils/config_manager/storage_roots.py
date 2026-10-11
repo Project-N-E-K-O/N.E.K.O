@@ -1249,11 +1249,15 @@ class StorageRootsMixin:
             print(f"Error saving {filename}: {e}", file=sys.stderr)
             raise
     
-    def assert_json_config_writable(self, filename):
-        """Run the same write fence as ``save_json_config`` without writing."""
-        from utils.cloudsave_runtime import assert_cloudsave_writable
+    def json_config_write_transaction(self, filename):
+        """Keep a cloud restore out for one read-modify-write of ``filename``.
 
-        assert_cloudsave_writable(self, operation="save", target=filename)
+        Refuses up front (``MaintenanceModeError``) while maintenance mode is
+        active, so even a no-op update cannot report a success a restore undoes.
+        """
+        from utils.cloudsave_runtime import cloudsave_writable_transaction
+
+        return cloudsave_writable_transaction(self, operation="save", target=filename)
 
     def update_json_config(self, filename, mutator):
         """Locked read-modify-write of a JSON config; see ``utils.config_manager.json_update``."""

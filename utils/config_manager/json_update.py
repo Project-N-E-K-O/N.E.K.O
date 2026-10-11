@@ -17,6 +17,10 @@ event-loop blocking"):
 * The critical section is pure disk IO plus an in-memory mutator.  Slow work
   (network probes, cross-server HTTP calls) must stay outside: compute the
   result first, then apply it here against the freshly read file.
+* Inside that lock the manager's cloud-save write transaction (if any) is
+  held for the whole sequence, the same pattern the plugin model-config store
+  uses: the in-process lock is taken first, then the cross-process one, and
+  the cross-process lock is acquired without waiting.
 * A missing file starts from ``{}``.  A file that exists but cannot be read
   or parsed, or whose top level is not an object, raises and is left
   untouched -- it is never replaced by a partial document.
@@ -30,7 +34,9 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from contextlib import nullcontext
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
@@ -82,6 +88,24 @@ def load_json_config_for_update(manager: Any, filename: str) -> dict:
     return data
 
 
+def _loaded_from_fallback(manager: Any, filename: str) -> bool:
+    """Whether the document came from the bundled project copy, not the runtime root.
+
+    ``load_json_config`` falls back to ``project_config_dir`` while the runtime
+    file is missing; ``save_json_config`` always writes the runtime copy.  An
+    explicit update must materialize that user-owned copy even when nothing
+    changed, or a later app update to the bundled file would silently change
+    what the user just saved.
+    """
+    get_source = getattr(manager, "get_config_path", None)
+    get_runtime = getattr(manager, "get_runtime_config_path", None)
+    if get_source is None or get_runtime is None:
+        return False
+    if Path(get_runtime(filename)).exists():
+        return False
+    return Path(get_source(filename)).exists()
+
+
 def load_json_config_snapshot(manager: Any, filename: str) -> dict:
     """``load_json_config_for_update`` taken under the update lock.
 
@@ -102,28 +126,30 @@ def update_json_config(manager: Any, filename: str, mutator: Callable[[dict], T]
 
     ``mutator`` receives the current document and must be synchronous and
     quick; it must not touch the same file again.  Its return value is
-    returned.  The file is written only when the document actually changed.
-    A no-op update still goes through the manager's write fence (when it has
-    one), so a maintenance-mode request is refused exactly like a real write
-    instead of reporting a success that a pending restore would undo.
-    If ``mutator`` raises, nothing is written.
+    returned.  The file is written when the document changed, or when it was
+    read from the bundled project fallback (so the user-owned runtime copy is
+    materialized).  If ``mutator`` raises, nothing is written.
+
+    When the manager provides ``json_config_write_transaction`` (the real
+    ConfigManager does), the whole read/mutate/write runs inside it: a cloud
+    restore cannot replace the file between our read and our write, and a
+    maintenance-mode request -- including a no-op one -- is refused up front
+    instead of reporting a success that the restore would undo.
     """
     held: set[str] = _held.__dict__.setdefault("filenames", set())
     if filename in held:
         raise RuntimeError(f"nested update of {filename} from inside its own mutator")
+    transaction = getattr(manager, "json_config_write_transaction", None)
     with json_config_lock(filename):
         held.add(filename)
         try:
-            data = load_json_config_for_update(manager, filename)
-            before = deepcopy(data)
-            result = mutator(data)
-            if not json_values_equal(data, before):
-                manager.save_json_config(filename, data)
-            else:
-                assert_writable = getattr(manager, "assert_json_config_writable", None)
-                if assert_writable is not None:
-                    assert_writable(filename)
-            return result
+            with transaction(filename) if transaction is not None else nullcontext():
+                data = load_json_config_for_update(manager, filename)
+                before = deepcopy(data)
+                result = mutator(data)
+                if not json_values_equal(data, before) or _loaded_from_fallback(manager, filename):
+                    manager.save_json_config(filename, data)
+                return result
         finally:
             held.discard(filename)
 

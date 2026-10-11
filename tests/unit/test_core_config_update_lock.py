@@ -90,6 +90,8 @@ def light_manager(tmp_path):
     manager.load_root_state = lambda: {"mode": "normal"}
     manager.config_dir = tmp_path / "config"
     manager.project_config_dir = tmp_path / "project-config"
+    # cloudsave_writable_transaction needs a local state root next to the docs root.
+    manager.anchor_root = tmp_path / "anchor"
     manager.config_dir.mkdir()
     manager.project_config_dir.mkdir()
     return manager
@@ -164,6 +166,57 @@ async def test_cancelled_async_update_waits_for_its_worker_before_unwinding(ligh
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 5)
     assert _read(path) == {"unrelated": "keep", "written": True}
+
+
+def test_noop_update_still_materializes_the_runtime_copy_of_a_project_fallback(light_manager):
+    """Saving a value equal to the bundled project config must still pin the user's copy:
+    otherwise a later app update to the bundled file silently changes the saved setting."""
+    project = light_manager.project_config_dir / FILENAME
+    runtime = light_manager.config_dir / FILENAME
+    project.write_text(json.dumps({"recent_memory_auto_review": False, "a": 1}), encoding="utf-8")
+    before = project.read_bytes()
+
+    light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(recent_memory_auto_review=False))
+
+    assert _read(runtime) == {"recent_memory_auto_review": False, "a": 1}
+    assert project.read_bytes() == before
+
+
+def test_noop_update_without_any_file_writes_nothing(light_manager):
+    light_manager.update_json_config(FILENAME, lambda cfg: cfg.get("a"))
+
+    assert not (light_manager.config_dir / FILENAME).exists()
+
+
+def test_update_is_refused_while_a_cloud_restore_holds_the_apply_lock(light_manager):
+    """The cloud-save transaction spans read-modify-write, so a restore cannot slip in."""
+    from utils.cloudsave_runtime import MaintenanceModeError
+    from utils.cloudsave_runtime.fence import acquire_cloud_apply_lock, release_cloud_apply_lock
+
+    path = light_manager.config_dir / FILENAME
+    before = json.dumps({"a": 1}).encode()
+    path.write_bytes(before)
+    held = threading.Event()
+    done = threading.Event()
+
+    def restore():
+        assert acquire_cloud_apply_lock(light_manager)
+        held.set()
+        done.wait(5)
+        release_cloud_apply_lock(light_manager)
+
+    restorer = threading.Thread(target=restore)
+    restorer.start()
+    try:
+        assert held.wait(5)
+        with pytest.raises(MaintenanceModeError):
+            light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(a=2))
+        assert path.read_bytes() == before
+    finally:
+        done.set()
+        restorer.join(5)
+    light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(a=2))
+    assert _read(path) == {"a": 2}
 
 
 def test_snapshot_read_never_overlaps_a_locked_write(light_manager):
