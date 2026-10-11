@@ -1,6 +1,6 @@
 pkgbase = n.e.k.o-bin
 	pkgdesc = N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
-	pkgver = 0.8.3
+	pkgver = 0.9.0.1
 	pkgrel = 1
 	url = https://github.com/Project-N-E-K-O/N.E.K.O
 	arch = x86_64
@@ -12,7 +12,7 @@ pkgbase = n.e.k.o-bin
 	depends = xdg-utils
 	provides = n.e.k.o
 	conflicts = n.e.k.o
-	source = n.e.k.o-bin-0.8.3.tar.gz::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v0.8.3/N.E.K.O_0.8.3_linux.tar.gz
-	sha256sums = 769b99970c13248129fd625c22e65b442fa6829ced2599347a8c7242a0fb6257
+	source = n.e.k.o-bin-0.9.0.1.AppImage::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v0.9.0/N.E.K.O_v0.9.0.1_x86_linux.AppImage
+	sha256sums = 8d8c9c3b79ac2b35db56ed0bbdf58b901b2ec980cb2d318b6511133c763fa618
 
 pkgname = n.e.k.o-bin

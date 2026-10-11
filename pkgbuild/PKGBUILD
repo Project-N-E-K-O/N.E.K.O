@@ -1,5 +1,5 @@
 pkgname=n.e.k.o-bin
-pkgver=0.8.3
+pkgver=0.9.0.1
 pkgrel=1
 provides=('n.e.k.o')
 conflicts=('n.e.k.o')
@@ -9,35 +9,61 @@ url="https://github.com/Project-N-E-K-O/N.E.K.O"
 license=('Apache-2.0')
 depends=('gtk3' 'nss' 'libxtst' 'libsecret' 'xdg-utils')
 makedepends=()
-source=("$pkgname-$pkgver.tar.gz::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v$pkgver/N.E.K.O_${pkgver}_linux.tar.gz")
-sha256sums=('769b99970c13248129fd625c22e65b442fa6829ced2599347a8c7242a0fb6257')
+# 注意：上游文件名写的是 x86，这里照抄
+source=("$pkgname-$pkgver.AppImage::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v0.9.0/N.E.K.O_v${pkgver}_x86_linux.AppImage")
+# 请将 SKIP 替换为你刚刚在 PowerShell 里算出来的真实哈希
+sha256sums=('8d8c9c3b79ac2b35db56ed0bbdf58b901b2ec980cb2d318b6511133c763fa618')
 
 package() {
   cd "$srcdir"
-  local _srcdir="N.E.K.O_${pkgver}_linux"
-  cd "$_srcdir"
 
-  # 1. 将所有内容（二进制+资源）安装到 /usr/lib/neko
+  # 1. 解包 AppImage
+  chmod +x "$pkgname-$pkgver.AppImage"
+  ./"$pkgname-$pkgver.AppImage" --appimage-extract
+  # 解包后生成 squashfs-root
+
+  # 2. 将解包内容全部复制到 /usr/lib/neko
   mkdir -p "$pkgdir/usr/lib/neko"
-  cp -r -p . "$pkgdir/usr/lib/neko/"
+  cp -r -p squashfs-root/* "$pkgdir/usr/lib/neko/"
 
-  # 2. 给二进制文件添加可执行权限
-  chmod +x "$pkgdir/usr/lib/neko/n.e.k.o"
+  # 3. 动态寻找主程序（防止它不叫 AppRun 或者 n.e.k.o）
+  # 大部分 AppImage 的入口是根目录的 AppRun
+  local _exec_bin="AppRun"
+  if [ ! -f "$pkgdir/usr/lib/neko/AppRun" ]; then
+      # 如果根目录没有 AppRun，尝试找 usr/bin 下的可执行文件
+      _exec_bin=$(find "$pkgdir/usr/lib/neko" -type f -executable -name "n.e.k.o" -o -executable -name "N.E.K.O" | head -n 1)
+      if [ -z "$_exec_bin" ]; then
+          # 最后兜底，取 usr/bin 目录下的第一个可执行文件
+          _exec_bin=$(find "$pkgdir/usr/lib/neko" -type f -executable -path "*/usr/bin/*" | head -n 1)
+      fi
+      _exec_bin="${_exec_bin#$pkgdir/usr/lib/neko/}" # 去除绝对路径，保留相对路径
+  fi
+  # 如果还是找不到，只能写死报错提醒
+  if [ -z "$_exec_bin" ] || [ "$_exec_bin" = "$pkgdir/usr/lib/neko/" ]; then
+      echo "错误：无法自动定位主程序。请手动检查 squashfs-root 目录！" >&2
+      return 1
+  fi
 
-  # 3. 创建启动脚本（命令执行层面的别名）并解决相对路径问题
+  # 4. 创建启动脚本
   mkdir -p "$pkgdir/usr/bin"
-
-  # 主脚本：用户输入 n.e.k.o 时执行
-  cat > "$pkgdir/usr/bin/n.e.k.o" << 'EOF'
+  cat > "$pkgdir/usr/bin/n.e.k.o" << EOF
 #!/bin/sh
 cd /usr/lib/neko
-exec ./n.e.k.o "$@"
+exec ./${_exec_bin} "\$@"
 EOF
   chmod +x "$pkgdir/usr/bin/n.e.k.o"
 
-  # 4. 创建 .desktop 菜单项
+  # 5. 动态寻找并安装 .desktop 文件
   mkdir -p "$pkgdir/usr/share/applications"
-  cat > "$pkgdir/usr/share/applications/$pkgname.desktop" << EOF
+  local _desktop_file=$(find "$pkgdir/usr/lib/neko" -name "*.desktop" | head -n 1)
+  
+  if [ -n "$_desktop_file" ]; then
+      # 如果 AppImage 自带 desktop 文件，替换其 Exec 路径并复制
+      sed -i -e "s|Exec=.*|Exec=n.e.k.o|g" -e "s|^Icon=.*|Icon=neko-bin|" "$_desktop_file"
+      install -Dm644 "$_desktop_file" "$pkgdir/usr/share/applications/$pkgname.desktop"
+  else
+      # 如果没找到，沿用你之前的写法
+      cat > "$pkgdir/usr/share/applications/$pkgname.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Project N.E.K.O
@@ -45,24 +71,20 @@ Comment=N.E.K.O., a digital life that yearns to understand, connect, and grow wi
 Exec=n.e.k.o
 Icon=neko-bin
 Categories=Utility;
-# 分类暂时分到 Utility，后面再看
 Terminal=false
 StartupNotify=true
 EOF
+  fi
 
-  # 5. 自动提取资源中的图标并安装到 pixmaps
-  #    优先查找常见图标文件名（支持 png/svg/ico）
-  ICON_FILE="resources/icon.png"
+  # 6. 动态寻找并安装图标
+  local _icon_file=$(find "$pkgdir/usr/lib/neko" -type f \( -name "*.png" -o -name "*.svg" \) | grep -i "icon" | head -n 1)
+  if [ -z "$_icon_file" ]; then
+      # 没找到带有 icon 字样的，就找第一个 png/svg
+      _icon_file=$(find "$pkgdir/usr/lib/neko" -type f \( -name "*.png" -o -name "*.svg" \) | head -n 1)
+  fi
 
-  if [ -f "$ICON_FILE" ]; then
-    # 根据文件扩展名决定目标名称
-    EXT="${ICON_FILE##*.}"
-    install -Dm644 "$ICON_FILE" "$pkgdir/usr/share/pixmaps/neko-bin.${EXT}"
-  else
-    # 如果没找到特定名称，随便找一张图片作为图标（如第一张 png）
-    FALLBACK_ICON=$(find "$pkgdir/usr/lib/neko" -type f -iname "*.png" -print -quit)
-    if [ -n "$FALLBACK_ICON" ]; then
-      install -Dm644 "$FALLBACK_ICON" "$pkgdir/usr/share/pixmaps/neko-bin.png"
-    fi
+  if [ -n "$_icon_file" ]; then
+    EXT="${_icon_file##*.}"
+    install -Dm644 "$_icon_file" "$pkgdir/usr/share/pixmaps/neko-bin.${EXT}"
   fi
 }

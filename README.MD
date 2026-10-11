@@ -531,6 +531,16 @@ curl -k https://localhost:48912
 
 </details>
 
+### 从 AUR 安装（Arch Linux）
+
+Arch 用户可以从 AUR（Arch User Repository）安装 N.E.K.O。
+
+```bash
+yay -S n.e.k.o-bin
+# 或者使用其他 AUR 助手
+# paru -S n.e.k.o-bin
+```
+
 ### 源码开发
 
 <details>
