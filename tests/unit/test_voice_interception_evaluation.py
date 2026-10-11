@@ -219,6 +219,125 @@ def test_cli_never_overwrites_frozen_evidence(tmp_path):
         evaluation.main(["dataset", "--manifest", str(manifest), "--output", str(output)])
 
 
+def test_existing_output_refuses_before_resource_sampling(tmp_path, monkeypatch):
+    output = tmp_path / "existing.json"
+    original = b'{"prior":"preserved"}\n'
+    output.write_bytes(original)
+    calls = []
+    monkeypatch.setattr(evaluation, "measure_process_tree", lambda *_args, **_kwargs: calls.append(True) or {})
+    with pytest.raises(SystemExit):
+        evaluation.main(["resources", "--pid", "7", "--seconds", "7200", "--hardware-id", "fixture", "--output", str(output)])
+    assert calls == []
+    assert output.read_bytes() == original
+
+
+def test_cli_claims_output_before_sampling_and_cleans_failed_placeholder(tmp_path, monkeypatch):
+    output = tmp_path / "claimed.json"
+    observed = []
+
+    def fail_measure(*_args, **_kwargs):
+        observed.append(output.exists() and output.read_bytes() == b"")
+        raise evaluation.EvidenceError("sampling failed")
+
+    monkeypatch.setattr(evaluation, "measure_process_tree", fail_measure)
+    with pytest.raises(SystemExit):
+        evaluation.main(["resources", "--pid", "7", "--seconds", "1", "--hardware-id", "fixture", "--output", str(output)])
+    assert observed == [True]
+    assert not output.exists()
+
+
+def test_cli_failure_preserves_replacement_output(tmp_path, monkeypatch):
+    output = tmp_path / "shared.json"
+    replacement = b'{"other_writer":"preserve"}\n'
+
+    def fail_measure(*_args, **_kwargs):
+        # A second writer may modify the claimed inode without replacing it
+        # even on Windows while its original handle is still open.
+        output.write_bytes(replacement)
+        raise evaluation.EvidenceError("sampling failed")
+
+    monkeypatch.setattr(evaluation, "measure_process_tree", fail_measure)
+    with pytest.raises(SystemExit):
+        evaluation.main(["resources", "--pid", "7", "--seconds", "1", "--hardware-id", "fixture", "--output", str(output)])
+    assert output.read_bytes() == replacement
+
+
+def test_cli_serialization_failure_cleans_owned_placeholder(tmp_path, monkeypatch):
+    output = tmp_path / "nonfinite.json"
+    monkeypatch.setattr(evaluation, "measure_process_tree", lambda *_args, **_kwargs: {"value": float("nan")})
+    with pytest.raises(SystemExit):
+        evaluation.main(["resources", "--pid", "7", "--seconds", "1", "--hardware-id", "fixture", "--output", str(output)])
+    assert not output.exists()
+
+
+def test_cli_partial_write_failure_cleans_only_own_output(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    output = tmp_path / "partial.json"
+    original_open = Path.open
+    monkeypatch.setattr(evaluation, "measure_process_tree", lambda *_args, **_kwargs: {"value": "result"})
+
+    class PartialWriter:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def fileno(self):
+            return self.handle.fileno()
+
+        def write(self, payload):
+            self.handle.write(payload[:5])
+            self.handle.flush()
+            raise OSError("partial output write")
+
+    def controlled_open(path, mode="r", *args, **kwargs):
+        handle = original_open(path, mode, *args, **kwargs)
+        return PartialWriter(handle) if path == output and mode == "x" else handle
+
+    monkeypatch.setattr(Path, "open", controlled_open)
+    with pytest.raises(SystemExit):
+        evaluation.main(["resources", "--pid", "7", "--seconds", "1", "--hardware-id", "fixture", "--output", str(output)])
+    assert not output.exists()
+
+
+def test_cli_success_refuses_replaced_output_path(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    output = tmp_path / "replaced.json"
+    replacement = tmp_path / "other-writer.json"
+    foreign_bytes = b'{"other_writer":"preserve"}\n'
+    replacement.write_bytes(foreign_bytes)
+    original_open = Path.open
+    monkeypatch.setattr(evaluation, "measure_process_tree", lambda *_args, **_kwargs: {"value": "result"})
+
+    class ReplacingWriter:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self.handle.__enter__()
+
+        def __exit__(self, *args):
+            result = self.handle.__exit__(*args)
+            replacement.replace(output)
+            return result
+
+    def controlled_open(path, mode="r", *args, **kwargs):
+        handle = original_open(path, mode, *args, **kwargs)
+        return ReplacingWriter(handle) if path == output and mode == "x" else handle
+
+    monkeypatch.setattr(Path, "open", controlled_open)
+    with pytest.raises(SystemExit):
+        evaluation.main(["resources", "--pid", "7", "--seconds", "1", "--hardware-id", "fixture", "--output", str(output)])
+    assert output.read_bytes() == foreign_bytes
+
+
 def test_cli_freeze_evaluate_and_receiver_write_distinct_artifacts(tmp_path):
     package = frozen(tmp_path)
     data = dataset(tmp_path)

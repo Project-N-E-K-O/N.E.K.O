@@ -80,8 +80,16 @@ def retire_interval_deliveries(
                 evidence.pending_intervals[key] = retained
             else:
                 del evidence.pending_intervals[key]
+    first_error: Exception | None = None
     for span, stage in outcomes:
-        span.observe(stage)
+        try:
+            span.observe(stage)
+        except Exception as exc:
+            # One owner cannot prevent independent spans from receiving their
+            # outcome. Its rejected receipt keeps the exact replay fence.
+            if first_error is None:
+                first_error = exc
+            continue
         if span.tag.settled:
             # A complete NOT_SENT/transport-owned receipt leaves the replay
             # fence on the tag itself. Retaining another strong reference
@@ -91,6 +99,8 @@ def retire_interval_deliveries(
             # removing this duplicate fence cannot resurrect old spans.
             with evidence.interval_lock:
                 evidence.retired_tags.discard(span.tag)
+    if first_error is not None:
+        raise first_error
 
 
 def delivery_evidence(queue: object) -> TransportDeliveryEvidence:

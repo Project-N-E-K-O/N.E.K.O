@@ -595,6 +595,8 @@ class AsrRuntimeMixin:
             self._interception_output_cursor = None
         if not hasattr(self, "_interception_failure_generation"):
             self._interception_failure_generation = None
+        if not hasattr(self, "_interception_degraded_generation"):
+            self._interception_degraded_generation = None
         if not hasattr(self, "_interception_segment_owner"):
             self._interception_segment_owner = None
         if not hasattr(self, "_normal_capture_end_owner"):
@@ -4318,7 +4320,7 @@ class AsrRuntimeMixin:
                     self._asr_route_mode == "independent",
                     bool(getattr(self, "session_closed_by_server", False)),
                 )
-        self._interception_capture_is_terminal(self._capture_voice_session_activation_generation())
+        self._recover_interception_capture(self._capture_voice_session_activation_generation())
         if self._voice_session_activation_degraded:
             return True
         factory = self._voice_session_activation_factory
@@ -4542,9 +4544,11 @@ class AsrRuntimeMixin:
             preview_isolation_registry.is_manager_isolated(self)
             or frame.generation != generation
             or self._capture_voice_session_activation_generation() != generation
-            or self._interception_capture_is_terminal(generation)
-            or self._voice_session_activation_degraded
         ):
+            return OutputCommit.NOT_SENT
+        self._recover_interception_capture(generation)
+        if (self._interception_capture_is_terminal(generation)
+                or self._voice_session_activation_degraded):
             return OutputCommit.NOT_SENT
         context = frame.context
         if not isinstance(context, VoiceSessionActivationRouteContext):
@@ -4582,7 +4586,10 @@ class AsrRuntimeMixin:
                 ActivationState.UNAVAILABLE,
                 f"interception_unavailable:{interception_result.reason}",
             )
+            owns_degraded = not self._voice_session_activation_degraded
             self._voice_session_activation_degraded = True
+            if owns_degraded:
+                self._interception_degraded_generation = generation
             self._interception_failure_generation = generation
             self._voice_activation_delivery_revision += 1
             self._voice_session_activation_status = (generation, decision.state, decision.reason)
@@ -4673,28 +4680,29 @@ class AsrRuntimeMixin:
             )
         return committed
 
+    @property
+    def _voice_session_activation_degraded(self) -> bool:
+        return self._voice_session_activation_degraded_value
+
+    @_voice_session_activation_degraded.setter
+    def _voice_session_activation_degraded(self, degraded: bool) -> None:
+        # Every existing writer, including readiness control, owns its own
+        # update. An old interception failure may not undo that later update.
+        self._voice_session_activation_degraded_value = degraded
+        self._interception_degraded_generation = None
+
+    def _recover_interception_capture(self, generation: ActivationGeneration) -> None:
+        failed = self._interception_failure_generation
+        if (failed is None or failed == generation
+                or self._capture_voice_session_activation_generation() != generation):
+            return
+        self._interception_failure_generation = None
+        if self._interception_degraded_generation == failed:
+            self._voice_session_activation_degraded = False
+
     def _interception_capture_is_terminal(self, generation: ActivationGeneration) -> bool:
         failed = self._interception_failure_generation
-        if failed is None:
-            return False
-        if failed == generation:
-            return True
-        status = self._voice_session_activation_status
-        if (status is not None and status[1] is ActivationState.UNAVAILABLE
-                and (status[0] != failed or not (
-                    status[2].startswith("interception_unavailable:") or status[2] == "output_unknown"
-                ))):
-            # A separately published DSP/activation failure superseded the old
-            # model failure. New capture identity does not authorize recovery
-            # of that other cause.
-            self._interception_failure_generation = None
-            return False
-        # Only the currently authorized replacement capture may release this
-        # particular failure fence. Other degraded causes remain unchanged.
-        if self._capture_voice_session_activation_generation() == generation:
-            self._interception_failure_generation = None
-            self._voice_session_activation_degraded = False
-        return False
+        return failed is not None and failed == generation
 
     async def _route_interception_events(
         self, result: InterceptionResult, generation: ActivationGeneration,

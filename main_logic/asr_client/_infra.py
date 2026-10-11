@@ -229,7 +229,13 @@ class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
                 raise ValueError("ASR_DELIVERY_MAPPING_INVALID")
             register_interval_delivery(self, (request.generation, request.buffer_epoch, request.utterance_id), request.delivery_spans)
         elif request.kind == "clear":
-            retire_interval_deliveries(self, keep_scope=(request.generation, request.buffer_epoch))
+            try:
+                retire_interval_deliveries(self, keep_scope=(request.generation, request.buffer_epoch))
+            except Exception:
+                # Clear remains a required worker command even if one receipt
+                # owner rejects retirement. Returning normally also lets
+                # asyncio.Queue account for this enqueued control request.
+                logger.exception("ASR delivery observer failed during clear")
         super()._put(request)
 
     def hold_dequeued_audio(

@@ -3126,6 +3126,8 @@ class IndependentAsrRuntime:
                 # No prepared/accepted turn exists. These buffers are explicitly
                 # local; discard observers settle their exact unsent ranges.
                 lifecycle.invalidate_audio()
+                self._asr_pending_speech_confirmed = False
+                self._asr_pending_speech_onset_at = None
             await detector.reset()
             check_current()
             # Old semantic completions were invalidated by detector.reset().
@@ -3225,6 +3227,7 @@ class IndependentAsrRuntime:
                     self._asr_input_sample_end = 0
                     self._asr_committed_sample_end = 0
                     self._asr_input_delivery = InputAudioDeliveryLedger()
+                    lifecycle.set_audio_discard_observer(self._asr_input_delivery.discard)
                 if (frame.delivery is not None and not self._asr_input_delivery.enabled
                         and not lifecycle.begin_delivery_mapping()):
                     # No tagged PCM has been accepted. Keep a promised old

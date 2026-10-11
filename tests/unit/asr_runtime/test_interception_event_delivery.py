@@ -548,3 +548,188 @@ async def test_real_capture_end_control_finishes_before_lease_revocation():
     # END is locally applied and has no model audio-delivery debt.
     assert not model.receipts
     core._asr_runtime.wait_input_settled.assert_awaited_once()
+
+
+async def _failed_core_for_degraded_recovery():
+    core = _Runtime()
+    core._asr_route_mode = "independent"
+    core._voice_input_accepts_pcm = lambda: True
+    core._send_voice_session_activation_status = AsyncMock()
+    model = _EventRuntime(InterceptionResult(InterceptionDecision.UNAVAILABLE, reason="model_failed"))
+    await core.set_active_session_interception_factory(_Factory(model))
+    generation = core._capture_voice_session_activation_generation()
+    assert await core._route_voice_session_activation_output(_frame(core, generation, b"\x01\x00" * 4), generation) is OutputCommit.UNKNOWN
+    assert core._interception_failure_generation == generation
+    assert core._voice_session_activation_degraded
+    return core, generation
+
+
+async def _close_degraded_recovery_core(core):
+    runtime = core._voice_session_activation_runtime
+    if runtime is not None:
+        await runtime.close()
+    bridge = core._active_session_interception_bridge
+    if bridge is not None:
+        await bridge.close()
+    while core._core_asr_cleanup_tasks:
+        await asyncio.gather(*tuple(core._core_asr_cleanup_tasks), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_interception_predicate_is_observation_only():
+    core, failed = await _failed_core_for_degraded_recovery()
+    try:
+        core._audio_stream_epoch += 1
+        current = core._capture_voice_session_activation_generation()
+        assert not core._interception_capture_is_terminal(current)
+        assert core._interception_failure_generation == failed
+        assert core._voice_session_activation_degraded
+    finally:
+        await _close_degraded_recovery_core(core)
+
+
+@pytest.mark.asyncio
+async def test_old_interception_failure_cannot_reopen_required_authority():
+    core, failed = await _failed_core_for_degraded_recovery()
+    try:
+        core.require_voice_session_activation(activation_generation="replacement-required")
+        assert core._capture_voice_session_activation_generation() != failed
+        assert core._voice_session_activation_status is None
+        await core._route_microphone_audio(b"\x02\x00" * 4, sample_rate_hz=16000)
+        assert core._voice_session_activation_degraded
+        assert core._voice_session_activation_required
+        assert core._voice_session_activation_factory is None
+    finally:
+        await _close_degraded_recovery_core(core)
+
+
+@pytest.mark.asyncio
+async def test_old_interception_failure_cannot_reopen_pending_prefix_cleanup():
+    from tests.support.asr_fakes import _CoreActivationFactory
+    from main_logic.asr_client import VoiceIdentityActivationResult
+
+    core, failed = await _failed_core_for_degraded_recovery()
+    completion = asyncio.get_running_loop().create_future()
+    # Production prefix revocation publishes this receipt sidecar. Match the
+    # existing prefix-revocation fixture while controlling its completion.
+    core._voice_activation_prefix_cleanup = (core._asr_runtime, completion)
+    factory = _CoreActivationFactory()
+    setter = asyncio.create_task(core.set_voice_session_activation_factory(factory, activation_generation="profile"))
+    try:
+        for _ in range(50):
+            if core._capture_voice_session_activation_generation() != failed:
+                break
+            await asyncio.sleep(0)
+        assert not setter.done() and not completion.done()
+        assert core._voice_session_activation_status is None
+        await core._route_microphone_audio(b"\x03\x00" * 4, sample_rate_hz=16000)
+        assert core._voice_session_activation_degraded
+        assert factory.runtimes == []
+        assert not completion.done()
+        completion.set_result(None)
+        assert await setter is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    finally:
+        if not completion.done():
+            completion.set_result(None)
+        await asyncio.gather(setter, return_exceptions=True)
+        await _close_degraded_recovery_core(core)
+
+
+@pytest.mark.asyncio
+async def test_stale_activation_output_cannot_release_capture_failure():
+    core, failed = await _failed_core_for_degraded_recovery()
+    try:
+        frame = _frame(core, failed, b"\x04\x00" * 4)
+        core._audio_stream_epoch += 1
+        assert await core._route_voice_session_activation_output(frame, failed) is OutputCommit.NOT_SENT
+        assert core._interception_failure_generation == failed
+        assert core._voice_session_activation_degraded
+    finally:
+        await _close_degraded_recovery_core(core)
+
+
+@pytest.mark.asyncio
+async def test_interception_failure_does_not_claim_concurrent_activation_failure():
+    from main_logic.voice_input.activation import ActivationDecision, ActivationState
+
+    core = _Runtime()
+    core._asr_route_mode = "independent"
+    core._voice_input_accepts_pcm = lambda: True
+    core._send_voice_session_activation_status = AsyncMock()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class DelayedFailure(_EventRuntime):
+        async def process(self, *_args, **_kwargs):
+            entered.set()
+            await release.wait()
+            return self.result
+
+    model = DelayedFailure(InterceptionResult(InterceptionDecision.UNAVAILABLE, reason="model_failed"))
+    await core.set_active_session_interception_factory(_Factory(model))
+    generation = core._capture_voice_session_activation_generation()
+    task = asyncio.create_task(core._route_voice_session_activation_output(_frame(core, generation, b"\x05\x00" * 4), generation))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        core._voice_session_activation_runtime = SimpleNamespace(close=AsyncMock())
+        core._on_voice_session_activation_status(generation, ActivationDecision(ActivationState.UNAVAILABLE, "other_prepare_failure"))
+        assert core._voice_session_activation_degraded
+        release.set()
+        assert await task is OutputCommit.UNKNOWN
+        core._voice_session_activation_runtime = None
+        core._audio_stream_epoch += 1
+        await core._route_microphone_audio(b"\x06\x00" * 4, sample_rate_hz=16000)
+        assert core._voice_session_activation_degraded
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await _close_degraded_recovery_core(core)
+
+
+@pytest.mark.asyncio
+async def test_readiness_retry_owns_degradation_while_old_interception_failure_is_retired():
+    from main_logic.core.voice_readiness import VoiceReadinessControl
+    from tests.support.asr_fakes import _CoreActivationFactory
+
+    core, _failed = await _failed_core_for_degraded_recovery()
+    entered, release = asyncio.Event(), asyncio.Event()
+    factory = _CoreActivationFactory()
+    factory.enforce = True
+    core._voice_session_activation_factory = factory
+
+    async def close_old():
+        entered.set()
+        await release.wait()
+
+    core._voice_session_activation_runtime = SimpleNamespace(close=close_old)
+    generation = core._capture_voice_session_activation_generation()
+    message = dict(session_id=generation.session_id, microphone_generation=generation.microphone,
+                   route_generation=generation.route, profile_revision=generation.profile,
+                   permission_revision=generation.permission)
+    task = asyncio.create_task(VoiceReadinessControl._retry(core, message, {}, core._voice_lease_connection_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert core._voice_session_activation_status is None
+        await core._route_microphone_audio(b"\x07\x00" * 4, sample_rate_hz=16000)
+        assert core._voice_session_activation_degraded
+        assert factory.runtimes == []
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await _close_degraded_recovery_core(core)
+
+
+def test_degraded_property_is_initialized_by_partial_core_ensure():
+    core = object.__new__(_Runtime)
+    assert not hasattr(core, "_voice_session_activation_degraded")
+    core._ensure_asr_runtime_state()
+    assert core._voice_session_activation_degraded is False
+    core._voice_session_activation_degraded = True
+    core._ensure_asr_runtime_state()
+    assert core._voice_session_activation_degraded is True
+
+
+def test_degraded_property_does_not_hide_missing_required_state():
+    core = _Runtime()
+    del core._voice_session_activation_degraded_value
+    with pytest.raises(AttributeError):
+        _ = core._voice_session_activation_degraded

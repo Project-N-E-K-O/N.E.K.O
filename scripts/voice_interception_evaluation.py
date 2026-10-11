@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -396,6 +397,15 @@ def measure_process_tree(pid: int, *, seconds: float, interval: float, hardware_
             "scope": "sampled PID tree after observation start; not ownership proof, launch peak, GPU memory, ASR content or audible latency acceptance"}
 
 
+def _output_matches_claim(path: Path, claim: os.stat_result) -> bool:
+    try:
+        current = path.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return ((current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns)
+            == (claim.st_dev, claim.st_ino, claim.st_size, claim.st_mtime_ns, claim.st_ctime_ns))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -418,23 +428,48 @@ def main(argv: list[str] | None = None) -> int:
     resources.add_argument("--hardware-id", required=True)
     resources.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+    claim = None
+    payload = None
+    completed = False
     try:
-        if args.command == "dataset":
-            result = validate_dataset(load_document(args.manifest), args.manifest.parent)
-        elif args.command == "receiver":
-            result = audit_receiver(load_document(args.manifest), args.manifest.parent)
-        elif args.command == "freeze":
-            result = freeze_contract(load_document(args.contract), load_document(args.dataset), args.dataset.parent)
-        elif args.command == "evaluate":
-            result = evaluate_observations(load_document(args.frozen), load_document(args.observations))
-        else:
-            result = measure_process_tree(args.pid, seconds=args.seconds, interval=args.interval, hardware_id=args.hardware_id)
-        # Do not replace a frozen contract or prior evaluation silently.
-        with args.output.open("x", encoding="utf-8") as handle:
-            json.dump(result, handle, indent=2, sort_keys=True, allow_nan=False)
-            handle.write("\n")
+        # Claim before potentially long sampling. Exclusive creation preserves
+        # previous evidence and gives this invocation its own cleanup identity.
+        with args.output.open("x", encoding="utf-8", newline="\n") as handle:
+            claim = os.fstat(handle.fileno())
+            if args.command == "dataset":
+                result = validate_dataset(load_document(args.manifest), args.manifest.parent)
+            elif args.command == "receiver":
+                result = audit_receiver(load_document(args.manifest), args.manifest.parent)
+            elif args.command == "freeze":
+                result = freeze_contract(load_document(args.contract), load_document(args.dataset), args.dataset.parent)
+            elif args.command == "evaluate":
+                result = evaluate_observations(load_document(args.frozen), load_document(args.observations))
+            else:
+                result = measure_process_tree(args.pid, seconds=args.seconds, interval=args.interval, hardware_id=args.hardware_id)
+            payload = (json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+            if not _output_matches_claim(args.output, claim):
+                raise EvidenceError("output changed during evaluation")
+            try:
+                handle.write(payload.decode("utf-8"))
+                handle.flush()
+            finally:
+                claim = os.fstat(handle.fileno())
+        if (not _output_matches_claim(args.output, claim)
+                or args.output.read_bytes() != payload):
+            raise EvidenceError("output changed before completion")
+        completed = True
     except (EvidenceError, OSError, ValueError, KeyError, TypeError) as exc:
         parser.error(str(exc))
+    finally:
+        if not completed and claim is not None and _output_matches_claim(args.output, claim):
+            try:
+                current = args.output.read_bytes()
+                if not current or (payload is not None and payload.startswith(current)):
+                    args.output.unlink()
+            except OSError:
+                # Failed cleanup must never replace the original error or
+                # remove a path whose identity/content no longer belongs here.
+                pass
     return 0
 
 

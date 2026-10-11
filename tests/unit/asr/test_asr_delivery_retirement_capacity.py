@@ -134,3 +134,74 @@ def test_rejected_not_sent_observation_does_not_free_replay_fence():
     assert tag in delivery_evidence(queue).retired_tags
     with pytest.raises(RuntimeError, match="ASR_DELIVERY_RETIRED"):
         queue.put_nowait(item)
+
+
+@pytest.mark.parametrize("attempted", [False, True])
+def test_retirement_observer_failure_processes_all_spans_and_keeps_failed_debt(attempted):
+    queue = _AsrRequestQueue()
+    first_error = RuntimeError("first receipt observer failed")
+    later_error = RuntimeError("later receipt observer failed")
+    receipts = [[], [], []]
+    terminal = Stage.UNKNOWN if attempted else Stage.NOT_SENT
+
+    def observer(index, error=None):
+        def observe(stage):
+            receipts[index].append(stage)
+            if stage is terminal and error is not None:
+                raise error
+        return observe
+
+    items = [_request(AudioDeliveryTag(1, observer(index, error)))
+             for index, error in enumerate((first_error, later_error, None))]
+    for item in items:
+        _dequeue(queue, item)
+        if attempted:
+            begin_transport_write(queue, delivery_spans=item.delivery_spans)
+    with pytest.raises(RuntimeError) as caught:
+        retire_interval_deliveries(queue)
+    assert caught.value is first_error
+    assert receipts == [[Stage.QUEUED, terminal]] * 3
+    evidence = delivery_evidence(queue)
+    assert evidence.pending_intervals == {}
+    assert evidence.attempted_intervals == set()
+    for item in items[:2]:
+        assert not item.delivery_spans[0].tag.settled
+        assert item.delivery_spans[0].tag in evidence.retired_tags
+        with pytest.raises(RuntimeError, match="ASR_DELIVERY_RETIRED"):
+            queue.put_nowait(item)
+    good_tag = items[2].delivery_spans[0].tag
+    assert good_tag.settled is (not attempted)
+    assert (good_tag in evidence.retired_tags) is attempted
+    with pytest.raises(RuntimeError, match="ASR_DELIVERY_RETIRED"):
+        queue.put_nowait(items[2])
+
+
+@pytest.mark.asyncio
+async def test_clear_observer_failure_preserves_control_queue_accounting(caplog):
+    import asyncio
+
+    queue = _AsrRequestQueue()
+    failed_receipts, healthy_receipts = [], []
+    def rejected(stage):
+        failed_receipts.append(stage)
+        if stage is Stage.NOT_SENT:
+            raise RuntimeError("controlled clear observer failure")
+    first = _request(AudioDeliveryTag(1, rejected))
+    second = _request(AudioDeliveryTag(1, healthy_receipts.append))
+    queue.put_nowait(first)
+    queue.put_nowait(second)
+    clear = _AsrWorkerRequest("clear", 7, 4)
+    queue.put_nowait(clear)
+    assert queue.qsize() == 3
+    assert queue._unfinished_tasks == 3
+    assert "controlled clear observer failure" in caplog.text
+    assert healthy_receipts == [Stage.QUEUED, Stage.NOT_SENT]
+    assert not first.delivery_spans[0].tag.settled
+    assert first.delivery_spans[0].tag in delivery_evidence(queue).retired_tags
+    assert second.delivery_spans[0].tag.settled
+    for item in (first, second, clear):
+        assert queue.get_nowait() is item
+        queue.task_done()
+    await asyncio.wait_for(queue.join(), timeout=1)
+    assert queue.qsize() == 0
+    assert queue._unfinished_tasks == 0
