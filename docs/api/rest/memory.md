@@ -165,7 +165,11 @@ Returns whether automatic review and correction of recent memory is enabled. The
 { "enabled": true }
 ```
 
+Reads wait for pending memory-toggle writes before returning the persisted value. Missing files or setting keys default to `true`. Unreadable files, malformed JSON, a non-object configuration, or a non-boolean setting return HTTP `503` with `{"error": "..."}` and no `enabled` value. An invalid setting value additionally returns `"code": "invalid_memory_setting"`; the browser offers an explicit on/off repair choice. A valid boolean POST can repair that setting while preserving other fields.
+
 ### `POST /api/memory/review_config`
+
+The body must be a JSON object with a required boolean `enabled`; malformed JSON, a missing field, or any other type returns HTTP `400` with `{"success": false, "error": "..."}`. Read or save failures return `success: false` without replacing an unreadable, malformed, or non-object configuration. Only a missing file starts a new configuration. The two memory-toggle updates are serialized through any required migration and file save. When saving powerful memory as `false`, migration runs unless the stored value is already the boolean `false`; an invalid legacy value is treated as unknown.
 
 ```json
 { "enabled": false }
@@ -187,7 +191,11 @@ Returns the `powerful_memory_enabled` setting. The default is `true` for existin
 { "enabled": true }
 ```
 
+Reads wait for pending memory-toggle writes before returning the persisted value. Missing files or setting keys default to `true`. Unreadable files, malformed JSON, a non-object configuration, or a non-boolean setting return HTTP `503` with `{"error": "..."}` and no `enabled` value. An invalid setting value additionally returns `"code": "invalid_memory_setting"`; the browser offers an explicit on/off repair choice. A valid boolean POST can repair that setting while preserving other fields.
+
 ### `POST /api/memory/powerful_memory_config`
+
+The body must be a JSON object with a required boolean `enabled`; malformed JSON, a missing field, or any other type returns HTTP `400` with `{"success": false, "error": "..."}`. Read or save failures return `success: false` without replacing an unreadable, malformed, or non-object configuration. Only a missing file starts a new configuration. The two memory-toggle updates are serialized through any required migration and file save. When saving powerful memory as `false`, migration runs unless the stored value is already the boolean `false`; an invalid legacy value is treated as unknown.
 
 ```json
 { "enabled": false }

@@ -89,32 +89,70 @@ from utils.visit_wire import require_visit_id
 
 logger = get_module_logger(__name__, "Main")
 
-_INVITE_PATH_MARK = "/api/visit/invites/"
+_INVITE_PATH_MARK = "/invites/"
+_INVITE_PATH_RE = re.compile(r"(/invites/)[^/?#\s\"']+")
 
 
-class _InviteUrlLogFilter(logging.Filter):
-    """Drop httpx request log lines whose URL carries an invite code.
+def redact_invite_paths(text: str) -> str:
+    """``.../invites/<code>[/...]`` → ``.../invites/***[/...]`` (anything else unchanged).
 
-    The preview path embeds the one-time code; httpx logs every request URL
-    at INFO. Installed on the ``httpx`` logger itself, so it holds in every
-    process layout (the main-server entry point's own httpx filter does not
-    run in merged mode).
+    Any path segment after ``/invites/`` is rewritten, not only the preview
+    route: a probe or a mistyped path still carries a redeemable code.
+    """
+    if _INVITE_PATH_MARK not in text:
+        return text
+    return _INVITE_PATH_RE.sub(r"\1***", text)
+
+
+class InviteCodeLogRedactor(logging.Filter):
+    """Rewrite invite codes out of log records (§4.6 invite preview: the code stays redeemable 10 min).
+
+    One filter for both hops: the inbound uvicorn access log (``args[2]`` is
+    the request path) and the outbound httpx request log (the URL is an
+    ``httpx.URL`` argument). Only the arguments are rewritten, never their
+    number: uvicorn's access formatter unpacks ``args`` positionally.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
-            return _INVITE_PATH_MARK not in record.getMessage()
-        except Exception:  # noqa: BLE001 - 格式化失败的记录不拦
-            return True
+            if isinstance(record.msg, str):
+                record.msg = redact_invite_paths(record.msg)
+            args = record.args
+            if isinstance(args, tuple):
+                record.args = tuple(self._redact_arg(a) for a in args)
+            elif isinstance(args, Mapping):
+                record.args = {k: self._redact_arg(v) for k, v in args.items()}
+        except Exception:  # noqa: BLE001 - 改写失败也不能把这一行日志弄丢
+            pass
+        return True
+
+    @staticmethod
+    def _redact_arg(value: Any) -> Any:
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        text = value if isinstance(value, str) else str(value)
+        if _INVITE_PATH_MARK not in text:
+            return value
+        return redact_invite_paths(text)
 
 
-def _install_httpx_invite_filter() -> None:
-    httpx_logger = logging.getLogger("httpx")
-    if not any(isinstance(f, _InviteUrlLogFilter) for f in httpx_logger.filters):
-        httpx_logger.addFilter(_InviteUrlLogFilter())
+INVITE_LOGGERS = ("httpx", "uvicorn.access")
+"""Loggers that can see an invite preview path (outbound client, inbound access log)."""
 
 
-_install_httpx_invite_filter()
+def install_invite_log_redactor() -> None:
+    """Attach :class:`InviteCodeLogRedactor` to every logger of :data:`INVITE_LOGGERS` (idempotent).
+
+    Installed on the loggers themselves, so it holds in every process layout
+    (the main-server entry point's own filters do not run in merged mode).
+    """
+    for name in INVITE_LOGGERS:
+        target = logging.getLogger(name)
+        if not any(isinstance(f, InviteCodeLogRedactor) for f in target.filters):
+            target.addFilter(InviteCodeLogRedactor())
+
+
+install_invite_log_redactor()
 
 ROLES = ("host", "guest")
 TRANSPORTS = ("trtc", "livekit")
@@ -210,6 +248,13 @@ class VisitInviteInvalid(VisitServersError):
     """
 
     code = "VISIT_INVITE_INVALID"
+    http_status = 409
+
+
+class VisitAccountChanged(VisitServersError):
+    """The signed-in community account is not the one the request was admitted for (no request was sent)."""
+
+    code = "VISIT_E_BUSY"
     http_status = 409
 
 
@@ -808,8 +853,14 @@ async def fetch_visit_credentials(
     tier: str = VISIT_VIDEO_TIER_DEFAULT,
     display_name: str | None = None,
     invite_code: str | None = None,
+    expect_account: str | None = None,
 ) -> VisitCredentials:
     """``POST {social_base}/api/visit/credentials`` and validate the reply (§4.7).
+
+    ``expect_account`` pins the request to one community account: the session
+    snapshot this request is sent with (its bearer) must belong to it, else
+    :class:`VisitAccountChanged` is raised before anything is sent (a logout /
+    switch landed meanwhile; a guest must not redeem the invite as another account).
 
     ``char_tag`` is the character's stable ``character_uid`` (see
     :func:`resolve_char_tag`), never derived from the name. A guest must pass
@@ -830,6 +881,9 @@ async def fetch_visit_credentials(
         raise ValueError("a host does not redeem an invite code")
 
     session = await _servers_session()
+    if expect_account is not None and session.account != expect_account:
+        # 请求用的就是这份会话快照：快照已经是别的账号的，就一个字节都不发
+        raise VisitAccountChanged("account_change")
     body: dict[str, Any] = {
         "role": role,
         "visit_id": visit_id,

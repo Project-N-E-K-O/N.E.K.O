@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并自定义聊天头像与上游声纹提示，刷新八语言客户端缓存。
-    const LOCALE_VERSION = '2026-10-09-pr3340-avatar-wake-hints-rebase';
+    // PNGTuber 删除跳过提示（本分支）与记忆开关修复提示（上游）合并，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-11-pngtuber-skipped-bound-memory-toggle-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

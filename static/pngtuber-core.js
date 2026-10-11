@@ -239,6 +239,7 @@
             this._renderingPaused = false;
             this._loadGeneration = 0;
             this._latestLifecycleLoadToken = 0;
+            this._inFlightLoadGeneration = 0;
         }
 
         setMouseTrackingEnabled(enabled) {
@@ -3934,11 +3935,33 @@
             }, delayMs);
         }
 
+        // 取消在途 load()：推进内部世代号与生命周期 token，让 isCurrentLoad 不再通过——
+        // 挂起的 setupLayeredAdapter 解析后不会再 setState('idle') 把旧图片写进已可见的
+        // 容器，也不会挂拖拽监听/悬浮按钮/锁标。
+        // config 只在确有在途加载（含抛错未清标记的）时才丢弃：保存流程读
+        // pngtuberManager.config 作最高优先级 runtime 配置，被取消模型的路径不能再被
+        // 合并进 Save；空对象走 stateToSrc / getActivePlacement 等既有兜底链，不会抛错。
+        // 已完成加载写入的 config 则是切回 pngtuber 后拖拽/状态/保存的数据来源——
+        // 无条件清空会让「切回 + 列表接口慢/失败」的窗口（PNG 分支先显示容器再
+        // await 列表与重新预览）退回默认摆放与占位图。
+        cancelInFlightLoad() {
+            this._loadGeneration = (Number(this._loadGeneration) || 0) + 1;
+            this._latestLifecycleLoadToken = Math.max(
+                Number(this._latestLifecycleLoadToken) || 0,
+                pngtuberLoadSequence
+            );
+            if (this._inFlightLoadGeneration) {
+                this.config = {};
+                this._inFlightLoadGeneration = 0;
+            }
+        }
+
         async load(config, options = {}) {
             const loadToken = Number(options.loadToken) || 0;
             if (loadToken && loadToken < this._latestLifecycleLoadToken) return false;
             if (loadToken) this._latestLifecycleLoadToken = loadToken;
             const loadGeneration = ++this._loadGeneration;
+            this._inFlightLoadGeneration = loadGeneration;
             const isCurrentLoad = () => (
                 loadGeneration === this._loadGeneration
                 && (!loadToken || loadToken === this._latestLifecycleLoadToken)
@@ -3952,6 +3975,9 @@
                 detail: { loadToken }
             }));
             await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });
+            // 唯一挂起点已过，本次加载不再「在途」。抛错的加载保留标记：其半写状态
+            // 的 config 应随下一次取消一并丢弃。
+            if (this._inFlightLoadGeneration === loadGeneration) this._inFlightLoadGeneration = 0;
             if (!isCurrentLoad()) return false;
             this.ensureContainer();
             this.preloadImages();
@@ -5108,10 +5134,20 @@
 
     installPNGTuberFloatingButtons();
 
-    async function hideOtherAvatarRuntimesForPNGTuber() {
-        if (document.body?.classList.contains('model-manager-page')
-            && window._modelManagerCurrentAvatarType
-            && window._modelManagerCurrentAvatarType !== 'pngtuber') {
+    async function hideOtherAvatarRuntimesForPNGTuber(options = {}) {
+        const loadToken = Number(options.loadToken) || 0;
+        // 过期判定：本次加载已被更新的序列号/取消作废，或模型管理页已切走类型。
+        // removeModel 的 await 之后必须复查——挂起期间用户可能已切到 live2d
+        // （离开块作废了本次 token、live2d 分支已显示容器并加载模型），过期调用
+        // 若继续写 DOM 会把刚显示的 Live2D 容器与画布隐藏掉。主 app 调用方不传
+        // loadToken，行为与既往一致。
+        const isStaleCall = () => {
+            if (loadToken && loadToken !== pngtuberLoadSequence) return true;
+            return !!(document.body?.classList.contains('model-manager-page')
+                && window._modelManagerCurrentAvatarType
+                && window._modelManagerCurrentAvatarType !== 'pngtuber');
+        };
+        if (isStaleCall()) {
             return;
         }
 
@@ -5127,6 +5163,11 @@
             } catch (error) {
                 console.warn('[PNGTuber] 清理 Live2D runtime 失败:', error);
             }
+        }
+
+        // await 归来复查（下方全部是同步 DOM 写入，复查一次即可覆盖）
+        if (isStaleCall()) {
+            return;
         }
 
         const live2dContainer = document.getElementById('live2d-container');
@@ -5165,7 +5206,7 @@
             detail: { loadToken }
         }));
         try {
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
             if (!window.pngtuberManager) {
                 window.pngtuberManager = new PNGTuberManager();
@@ -5178,10 +5219,10 @@
                 window.pngtuberManager.hide();
                 return window.pngtuberManager;
             }
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             window.pngtuberManager.show();
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
                 detail: { loadToken }
@@ -5201,8 +5242,24 @@
         return window.pngtuberManager.playLayeredAnimation(target, options);
     }
 
+    // 作废所有在途的 loadPNGTuberAvatar：自增序列号，让在途调用完成时因 loadToken
+    // 过期而不再 show()、不再派发 pngtuber-model-loaded（网络请求本身不中断，
+    // 完成即丢弃）。同时穿透到 PNGTuberManager.load() 的内部有效性判定
+    // （isCurrentLoad 只看 _loadGeneration/_latestLifecycleLoadToken，外层序列号
+    // 对它不可见），否则挂起的内部加载解析后仍会 setState 把旧图片写进已可见容器、
+    // 并把被取消模型的 config 留给保存流程。模型管理页离开 pngtuber 类型时调用，
+    // 配合页面层的预览世代号一起丢弃在途预览，之后才能安全释放删除防护。
+    function cancelPNGTuberAvatarLoads() {
+        pngtuberLoadSequence += 1;
+        const manager = window.pngtuberManager;
+        if (manager && typeof manager.cancelInFlightLoad === 'function') {
+            try { manager.cancelInFlightLoad(); } catch (_) { /* ignore */ }
+        }
+    }
+
     window.PNGTuberManager = PNGTuberManager;
     window.hideOtherAvatarRuntimesForPNGTuber = hideOtherAvatarRuntimesForPNGTuber;
     window.loadPNGTuberAvatar = loadPNGTuberAvatar;
     window.playPNGTuberAnimation = playPNGTuberAnimation;
+    window.cancelPNGTuberAvatarLoads = cancelPNGTuberAvatarLoads;
 })();

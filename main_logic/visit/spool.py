@@ -1939,6 +1939,51 @@ class VisitSpool:
         return deleted
 
     @classmethod
+    def _unreclaimable_bytes_sync(cls, config_dir: Path, live_ids: frozenset[str]) -> int:
+        by_visit: dict[str, list[tuple[str, os.stat_result]]] = {}
+        for visit_id, suffix, path in _list_names(_spool_dir(config_dir)):
+            if suffix == OUTBOX_SUFFIX or visit_id in live_ids:
+                continue
+            try:
+                st = path.stat()
+            except FileNotFoundError:
+                continue
+            # 其余 stat 错误（共享冲突、权限）上抛：大小不明的文件不能当作不占额度，调用方按已满拒绝
+            by_visit.setdefault(visit_id, []).append((suffix, st))
+        total = 0
+        for visit_id, files in by_visit.items():
+            if not any(suffix in _UPLOAD_SUFFIXES for suffix, _st in files):
+                state = _try_read_state(visit_path(_spool_dir(config_dir), visit_id, STATE_SUFFIX))
+                if state is not None and transcript_releasable(state):
+                    # 已结清：容量回收会删它，不占准入额度；日记提交中 / 失败待处理的场次只留 state.json
+                    if debrief_pins_state(state):
+                        total += sum(st.st_size for suffix, st in files if suffix == STATE_SUFFIX)
+                    continue
+            total += sum(st.st_size for _suffix, st in files)
+        return total
+
+    @classmethod
+    async def unreclaimable_bytes(
+        cls, config_dir: str | Path, *, is_live: Callable[[str], bool] | None = None,
+    ) -> int:
+        """Bytes the size-based sweep (step 2 of :meth:`sweep`) may never reclaim.
+
+        Every file (outbox streams aside) of a visit with a pending upload or
+        whose ``state.json`` is missing, unreadable or not
+        :func:`transcript_releasable`: pending uploads plus unsettled spools,
+        the admission cap ``VISIT_UPLOAD_PENDING_CAP_BYTES`` bounds them. Visits
+        for which ``is_live`` answers True are left out (the visit in flight
+        has its own per-file limits); ``is_live`` runs on the event loop only.
+        Raises ``OSError`` when a counted file cannot be ``stat``-ed (unknown
+        size: the admission check fails closed).
+        """
+        live_ids: frozenset[str] = frozenset()
+        if is_live is not None:
+            candidates = await asyncio.to_thread(cls._visit_ids, _spool_dir(config_dir), _KNOWN_SUFFIXES)
+            live_ids = frozenset(visit_id for visit_id in candidates if _ask_is_live(is_live, visit_id))
+        return await asyncio.to_thread(cls._unreclaimable_bytes_sync, Path(config_dir), live_ids)
+
+    @classmethod
     async def sweep(
         cls, config_dir: str | Path, now: float, *, is_live: Callable[[str], bool] | None = None,
         uploads: str = "all",
