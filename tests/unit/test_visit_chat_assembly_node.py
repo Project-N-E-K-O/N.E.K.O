@@ -35,6 +35,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHAT_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window" / "visit-chat.js"
 PACER_PATH = PROJECT_ROOT / "static" / "visit" / "visit-pacer.js"
 
+# 前端「清洗后是否为空」的预判要与后端 sanitize.strip_control_chars + strip() 一致
+RELAY_SAMPLES = [
+    "\u200b", "\u200b\u202e\ufeff", " \u2066 ", "\u200d", "\u200c\u200d", "a\u200b", "\x07\x1b",
+    "\t\n", "\u2028", "\u00ad", "\U0001F468\u200d\U0001F469", "\u061c", "x",
+]
+
 HARNESS = r"""
 'use strict';
 const fs = require('node:fs');
@@ -43,6 +49,7 @@ const CHAT_SRC = fs.readFileSync(__CHAT_PATH__, 'utf8');
 const PACER_SRC = fs.readFileSync(__PACER_PATH__, 'utf8');
 const VID = 'AAAAAAAAAAAAAAAAAAAAAA';
 const VID2 = 'BBBBBBBBBBBBBBBBBBBBBB';
+const RELAY_SAMPLES = __RELAY_SAMPLES__;
 
 class CustomEventLike {
   constructor(type, init) { this.type = type; this.detail = (init || {}).detail; }
@@ -164,7 +171,7 @@ function createHarness(opts) {
     setInterval(fn, ms) { const id = nextId++; timers.push({ id, at: wall + ms, fn, every: ms }); return id; },
     clearInterval(id) { const i = timers.findIndex((t) => t.id === id); if (i >= 0) timers.splice(i, 1); },
     Map, Set, Number, Math, JSON, Object, Array, String, Promise, Infinity, RegExp, Error,
-    localStorage: (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
+    localStorage: opts.noStorage ? undefined : (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
   };
   vm.createContext(sandbox);
   if (opts.withPacer) vm.runInContext(PACER_SRC, sandbox, { filename: 'visit-pacer.js' });
@@ -779,6 +786,54 @@ const report = {};
     report.probe_retry_after = h.chat.isActive();
     report.probe_retry_calls = calls;
   }
+  // ── 只剩会被后端清洗掉的字符：不发、文字放回输入框 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    const accepted = h.I.submitVisitChatText({ text: '​‮​', requestId: 'z1' });
+    h.advance(1);
+    report.invisible_accepted = accepted;
+    report.invisible_sent = h.sendCalls.length;
+    report.invisible_rollback = h.rollbacks.slice();
+    report.invisible_bubbles = h.messages.filter((m) => m.id === 'visit-local-z1').length;
+    report.clean_samples = RELAY_SAMPLES.map((x) => h.chat._test.relayCleanIsEmpty(x));
+  }
+  // ── 举报没保存下来：框留着、内容还在，再点一次成功才关 ──
+  {
+    const replies = [{ status: 503, body: {} }, { status: 200, body: { ok: true, report_id: 'r' } }];
+    const routes = { '/api/visit/report': async () => replies.shift() };
+    const h = createHarness({ routes });
+    const msg = { id: 'visit-ended-' + VID, blocks: [{ type: 'buttons', buttons: [{ id: 'report', label: '举报', action: 'visit_report', payload: { visit_id: VID } }] }] };
+    h.messages.push(msg);
+    h.win.dispatchEvent(new CustomEventLike('react-chat-window:action', { detail: { message: msg, action: msg.blocks[0].buttons[0] } }));
+    await h.settle();
+    const d = h.dialogs()[0];
+    const note = d.all((n) => n.tagName === 'TEXTAREA')[0];
+    note.value = '详细经过';
+    h.buttonsOf(d).find((b) => b.attrs['data-visit-dialog-button'] === 'submit').click();
+    await h.settle();
+    report.report_fail_open = h.dialogs().length;
+    report.report_fail_note = h.dialogs()[0] ? h.dialogs()[0].all((n) => n.tagName === 'TEXTAREA')[0].value : null;
+    report.report_fail_enabled = h.dialogs()[0] ? h.buttonsOf(h.dialogs()[0]).every((b) => !b.disabled) : false;
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'submit').click();
+    await h.settle();
+    report.report_retry_closed = h.dialogs().length;
+    report.report_bodies = h.fetches.filter((f) => f.url === '/api/visit/report').map((f) => f.body.note);
+  }
+  // ── 晚到快照补结束消息时一并记下本侧：导出按「我 / 对方」标 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'guest', enabled: true } }; } };
+    const h = createHarness({ routes, noStorage: true });   // 本地存储不可用：只能靠 lastEnded 认本侧
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.chat.handleFrame({ type: 'visit_state_change', action: 'ended', visit_id: VID, ts: 1 });
+    release();
+    await probe;
+    const doc = { source: 'memory', visit_id: VID, lines: [{ line_id: 'x', lp: 1, side: 'guest', speaker_kind: 'cat', ts: 1, text: '甲', truncated: false }] };
+    report.late_ended_export = h.chat._test.buildTranscriptText(doc).split('\n')[1].replace(/^\[[^\]]*\] /, '').split('：')[0];
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -796,7 +851,8 @@ def _run(script: str) -> dict:
 @pytest.fixture(scope="module")
 def report() -> dict:
     return _run(HARNESS.replace("__CHAT_PATH__", json.dumps(str(CHAT_PATH)))
-                .replace("__PACER_PATH__", json.dumps(str(PACER_PATH))))
+                .replace("__PACER_PATH__", json.dumps(str(PACER_PATH)))
+                .replace("__RELAY_SAMPLES__", json.dumps(RELAY_SAMPLES)))
 
 
 def test_out_of_order_pieces_land_by_index_and_gaps_stay_placeholders(report):
@@ -1020,3 +1076,29 @@ def test_failed_state_probe_retries(report):
     assert report["probe_retry_before"] is False
     assert report["probe_retry_after"] is True
     assert report["probe_retry_calls"] == 2
+
+
+def test_invisible_only_input_is_kept_and_not_sent(report):
+    assert report["invisible_accepted"] is False
+    assert report["invisible_sent"] == 0
+    assert report["invisible_rollback"] == ["z1"]
+    assert report["invisible_bubbles"] == 0
+
+
+def test_frontend_empty_check_matches_the_backend_sanitizer(report):
+    from main_logic.visit.sanitize import strip_control_chars
+
+    expected = [not strip_control_chars(sample).strip() for sample in RELAY_SAMPLES]
+    assert report["clean_samples"] == expected
+
+
+def test_failed_report_keeps_the_dialog_and_draft_for_retry(report):
+    assert report["report_fail_open"] == 1
+    assert report["report_fail_note"] == "详细经过"
+    assert report["report_fail_enabled"] is True
+    assert report["report_retry_closed"] == 0
+    assert report["report_bodies"] == ["详细经过", "详细经过"]
+
+
+def test_late_ended_message_also_records_the_side(report):
+    assert report["late_ended_export"] == "我家猫娘"

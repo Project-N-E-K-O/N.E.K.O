@@ -481,6 +481,14 @@
         return null;
     }
 
+    // 与后端 sanitize.strip_control_chars 同一规则：删 Cc / Cs（留 \n \t）与 Cf（留 ZWNJ / ZWJ），再看剩下的是否全是空白
+    function relayCleanIsEmpty(text) {
+        var cleaned = String(text || '')
+            .replace(/[\p{Cc}\p{Cs}]/gu, function (ch) { return ch === '\n' || ch === '\t' ? ch : ''; })
+            .replace(/\p{Cf}/gu, function (ch) { return ch === '\u200c' || ch === '\u200d' ? ch : ''; });
+        return !cleaned.trim();
+    }
+
     function refusalToast(code) {
         if (code === 'VISIT_INPUT_REFUSED_WRAPUP') return t('visit.wrapUp.toastRefused', '她们正在道别，这句没有发出去');
         return t('visit.status.' + code, '');
@@ -515,6 +523,11 @@
         var text = detail && typeof detail.text === 'string' ? detail.text : '';
         var requestId = detail && detail.requestId ? String(detail.requestId) : ('req-' + now());
         if (!text.trim()) return false;
+        if (relayCleanIsEmpty(text)) {
+            // 只剩零宽空格 / 双向控制符这类会被后端清洗掉的字符：发出去后端会静默丢掉，本地气泡永远等不到回显
+            setTimeout(function () { restoreDraft(requestId); }, 0);
+            return false;
+        }
         var refused = blockReason();
         if (refused) {
             toast(refusalToast(refused));
@@ -895,6 +908,7 @@
         var exists = messagesSnapshot().some(function (m) { return m && m.id === endedMessageId(ended.visitId); });
         if (!exists) {
             if (ended.side) rememberSide(ended.visitId, ended.side);
+            lastEnded = ended;
             appendEndedMessage(ended);
         }
     }
@@ -1173,6 +1187,7 @@
         body.appendChild(select);
         body.appendChild(note);
         body.appendChild(includeLabel);
+        var submit;
         var dialog = openDialog({
             title: t('visit.report.title', '举报这场串门'),
             lines: [],
@@ -1182,35 +1197,55 @@
                 { id: 'submit', label: t('visit.report.submit', '提交举报'), variant: 'danger', onClick: function (handle) { submit(handle); } }
             ]
         });
-        var submit = async function (handle) {
-            handle.setButtons([{ id: 'cancel', label: t('visit.common.cancel', '取消'), disabled: true }]);
+        var submitButtons = function (busy) {
+            return [
+                { id: 'cancel', label: t('visit.common.cancel', '取消'), disabled: busy },
+                { id: 'submit', label: t('visit.report.submit', '提交举报'), variant: 'danger', disabled: busy,
+                  onClick: function (h) { submit(h); } }
+            ];
+        };
+        submit = async function (handle) {
+            handle.setButtons(submitButtons(true));
             var result = await api('POST', '/api/visit/report', {
                 visit_id: visitId,
                 reason: select.value,
                 note: String(note.value || '').slice(0, REPORT_NOTE_MAX),
                 include_transcript: !!include.checked
             });
-            handle.close('done');
+            if (handle.closed) return;
+            var code = bodyCode(result);
+            var queuedLogin = result.status === 409 && code === 'VISIT_LOGIN_REQUIRED' && result.body && result.body.queued === true;
+            var terminal = true;
             if (result.status === 200) {
                 toast(t('visit.report.done', '举报已提交'));
                 markReportButton(sourceMessage, t('visit.report.doneButton', '已举报'));
             } else if (result.status === 202 && result.body && result.body.queued === true) {
                 toast(t('visit.report.queued', '举报已记录，网络恢复后自动提交'), 6000);
                 markReportButton(sourceMessage, t('visit.report.queuedButton', '已排队'));
-            } else if (result.status === 409 && bodyCode(result) === 'already_queued') {
+            } else if (result.status === 409 && code === 'already_queued') {
                 toast(t('visit.report.already', '这场已经举报过了'));
                 markReportButton(sourceMessage, t('visit.report.queuedButton', '已排队'));
-            } else if (result.status === 409 && bodyCode(result) === 'VISIT_LOGIN_REQUIRED' && result.body && result.body.queued === true) {
+            } else if (queuedLogin) {
                 // 已先落盘排队，只是要原账号重新登录才能送出
                 toast(t('visit.report.queuedLogin', '举报已记录，重新登录原来的账号后会自动提交'), 6000);
                 markReportButton(sourceMessage, t('visit.report.queuedButton', '已排队'));
-            } else if (result.status === 409 && bodyCode(result) === 'VISIT_LOGIN_REQUIRED') {
-                toast(t('visit.status.VISIT_LOGIN_REQUIRED', '请先登录'));
             } else if (result.status === 404) {
                 toast(t('visit.details.notFound', '找不到这场串门的记录'));
             } else {
-                toast(t('visit.report.persistFailed', '举报没能保存，请重试'), 6000);
+                terminal = false;
             }
+            if (terminal) {
+                handle.close('done');
+                return;
+            }
+            // 没保存下来（网络 / 403 / 5xx / 没登录）：框留着，选的原因和补充说明都还在，可以直接再提交
+            handle.setLines([{
+                text: result.status === 409 && code === 'VISIT_LOGIN_REQUIRED'
+                    ? t('visit.status.VISIT_LOGIN_REQUIRED', '请先登录')
+                    : t('visit.report.persistFailed', '举报没能保存，请重试'),
+                tone: 'warning'
+            }]);
+            handle.setButtons(submitButtons(false));
         };
         return dialog;
     }
@@ -2108,6 +2143,7 @@
             assembleClauses: assembleClauses,
             buildTranscriptText: buildTranscriptText,
             normalizeInviteCode: normalizeInviteCode,
+            relayCleanIsEmpty: relayCleanIsEmpty,
             openDetails: openDetails,
             joinWithCode: joinWithCode,
             startInvite: startInvite,
