@@ -1578,6 +1578,33 @@ def test_screen_subwindow_return_close_respects_panel_zone(page: Page) -> None:
 
 
 @pytest.mark.frontend
+def test_screen_subwindow_closes_after_row_stop_then_menu_whitespace(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    screen.hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    panel = page.locator(".neko-mic-subwindow")
+    panel.hover()
+    page.wait_for_timeout(100)
+    # Returning onto the screen row and staying past the debounce must not
+    # consume the close decision: the watcher keeps watching while the
+    # pointer rests on the row.
+    screen.hover()
+    page.wait_for_timeout(400)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    # Drifting from the row to menu whitespace then closes the panel — no
+    # new mouseenter fires inside the menu, so the watcher is the only way
+    # to see this.
+    page.locator(".mic-gain-container").hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+
+
+@pytest.mark.frontend
 def test_screen_subwindow_survives_menu_edge_grazing(page: Page) -> None:
     install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(

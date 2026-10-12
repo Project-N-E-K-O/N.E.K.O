@@ -4379,6 +4379,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var MIC_ACTION_HOVER_COLLAPSE_MS = 260;
             var MIC_ACTION_HOVER_KEEP_ZONE_PX = 16;
             var MIC_SCREEN_RETURN_CLOSE_DELAY_MS = 220;
+            var MIC_SCREEN_RETURN_RECHECK_MS = 90;
             var activeMicActionKey = null;
             var micActionHoverCollapseTimer = null;
             var micActionHoverOpenGeneration = 0;
@@ -4611,19 +4612,37 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     document.addEventListener('pointermove', rememberMicScreenReturnPointer, true);
                     micScreenReturnTracking = true;
                 }
-                micScreenReturnCloseTimer = setTimeout(function () {
-                    cancelMicScreenReturnCloseTimer();
-                    if (voiceControlsDisposed || activeMicActionKey !== 'screen') return;
+                // 去抖一拍后进入驻留观察：每拍都用实时指针位置重新判定。
+                // 停在屏幕行上不能只看一眼就放行——之后挪到菜单留白处不会
+                // 再有任何事件重新安排关闭（行的 mouseleave 对 screen 豁免），
+                // 面板会永久开着；所以行上要保持观察，直到指针落到留白处
+                // （关闭）、回到面板/走廊或离开菜单（停止观察，重进菜单会
+                // 重新安排）。
+                micScreenReturnCloseTimer = setTimeout(function tick() {
+                    micScreenReturnCloseTimer = null;
+                    if (voiceControlsDisposed || activeMicActionKey !== 'screen') {
+                        cancelMicScreenReturnCloseTimer();
+                        return;
+                    }
                     var currentPanel = getOwnedMicSubwindow();
-                    if (!currentPanel || !currentPanel.isConnected) return;
-                    // 用实时指针位置做几何判定（与其他面板的收起判定同一套
-                    // 保持区语义）：指针仍在面板周边（外扩区/过渡走廊）或屏幕
-                    // 行上不算「回到菜单」；真正停回菜单留白处才关闭。
-                    if (isPointerNearMicPanelZone(micScreenReturnPointer)) return;
+                    if (!currentPanel || !currentPanel.isConnected || !micScreenReturnPointer) {
+                        cancelMicScreenReturnCloseTimer();
+                        return;
+                    }
                     var screenRow = leftColumn.querySelector('[data-neko-mic-main-action-row="screen"]')
                         || leftColumn.querySelector('[data-neko-mic-main-action="screen"]');
-                    if (screenRow && micHoverPointInRect(micScreenReturnPointer, screenRow.getBoundingClientRect())) return;
-                    if (!micHoverPointInRect(micScreenReturnPointer, leftColumn.getBoundingClientRect())) return;
+                    if (screenRow && micHoverPointInRect(micScreenReturnPointer, screenRow.getBoundingClientRect())) {
+                        micScreenReturnCloseTimer = setTimeout(tick, MIC_SCREEN_RETURN_RECHECK_MS);
+                        return;
+                    }
+                    if (isPointerNearMicPanelZone(micScreenReturnPointer)) {
+                        cancelMicScreenReturnCloseTimer();
+                        return;
+                    }
+                    if (!micHoverPointInRect(micScreenReturnPointer, leftColumn.getBoundingClientRect())) {
+                        cancelMicScreenReturnCloseTimer();
+                        return;
+                    }
                     closeMicSubwindow();
                     leftColumn.querySelectorAll(
                         '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
