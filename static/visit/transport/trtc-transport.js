@@ -12,8 +12,8 @@
 
   var NVT = root.NekoVisitTransport = root.NekoVisitTransport || {};
   var REMOTE_RETRY_BASE_MS = 2000;    // startRemoteVideo 失败后的首次重试间隔，之后翻倍
-  var REMOTE_RETRY_MAX_MS = 30000;
-  var SUPERSEDED_EXIT_MS = 15000;     // 拆掉后兜底退出旧房间的延迟（留给接替的页面入房顶号）    // 重试间隔上限（一直重试到取消订阅 / 对端视频不可用 / 离房）
+  var REMOTE_RETRY_MAX_MS = 30000;    // 重试间隔上限（一直重试到取消订阅 / 对端视频不可用 / 离房）
+  var SUPERSEDED_EXIT_MS = 15000;     // 拆掉后兜底退出旧房间的延迟（留给接替的页面入房顶号）
 
   function createTrtcAdapter(opts) {
     var TRTC = opts.sdk;

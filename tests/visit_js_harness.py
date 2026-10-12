@@ -120,7 +120,7 @@ class FakeCanvas extends FakeElement {
 class FakeDocument {
   constructor() { this.byId = new Map(); this.body = new FakeElement('body', this); this.head = new FakeElement('head', this); this.created = []; }
   createElement(tag) { const el = tag === 'canvas' ? new FakeCanvas(this) : new FakeElement(tag, this); this.created.push(el); return el; }
-  getElementById(id) { return this.byId.get(id) || null; }
+  getElementById(id) { const el = this.byId.get(id); return el && el.id === id && !el.removed ? el : null; }
   _attach(el) { if (el.id) this.byId.set(el.id, el); }
   _detach(el) { if (el.id && this.byId.get(el.id) === el) this.byId.delete(el.id); }
 }

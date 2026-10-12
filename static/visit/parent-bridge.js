@@ -6,12 +6,13 @@
  *   pointer-events:none——命中测试永远落在本家画布上，Pet 窗穿透不变（T3 实测：只靠
  *   transparent-overlay 类会让直通模式整窗可点）。guest 侧 1×1 放在视口外，只当传输。
  * - 同任务取帧：Live2D 在 renderer 的 postrender 里、VRM / MMD 在 render 之后（各一行钩子）、
- *   PNGTuber 用 nekoFramePacing.requestPacedFrame 30 Hz 采样，同步调 iframe 的
+ *   PNGTuber 在取帧期间用 nekoFramePacing.requestPacedFrame 跑节拍（定时器驱动时是定时器帧率，否则是
+ *   显示器刷新率的 rAF），再由下面的累加器抽成目标帧率；同步调 iframe 的
  *   __nekoVisitFrameSink.onFrame——不能走 postMessage（异步任务里后备缓冲已被合成清空）。
  * - 分数累加器把任意源帧率抽成目标帧率：直通 30 fps、兼容模式（--disable-gpu-compositing，
  *   WebGL 源快照回读每帧约 8 ms）15 fps。
  * - 可见性 = 帧饥饿检测：>1 s 没有成功的 onFrame 就告诉 iframe hidden，不看页面可见性事件。
- * 本文件没有每帧循环、不自起动画帧、不建 WebSocket。
+ * 除 PNGTuber 取帧期间的节拍外，本文件没有每帧循环、不自起动画帧、不建 WebSocket。
  */
 (function (root) {
   'use strict';
@@ -32,9 +33,10 @@
   var TOKEN_LOOKUP_TIMEOUT_MS = 5000;   // 取 CSRF token 卡住时按失败处理
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
-  var RECOVER_TOKEN_WINDOW_MS = 12000;
-  var RECOVER_NAME_WINDOW_MS = 8000;
-  var PAGE_CONFIG_WAIT_MS = 4000;       // 等 pageConfigReady 的上限，到点不管它落没落定都开始重载恢复    // 重载后取不到角色名时重拉页面配置的总时限（与取 token 合计仍在 20 s 宽限内）  // 重载恢复取 token 的总时限（页面重载宽限 20 s 之内）
+  var RECOVER_TOKEN_WINDOW_MS = 12000;  // 重载恢复取 token 的时限（另受 RECOVER_TOTAL_MS 约束）
+  var RECOVER_NAME_WINDOW_MS = 8000;    // 重载后取不到角色名时重拉页面配置的时限（另受 RECOVER_TOTAL_MS 约束）
+  var PAGE_CONFIG_WAIT_MS = 4000;       // 等 pageConfigReady 的上限，到点不管它落没落定都开始重载恢复
+  var ENDED_LEAVE_WAIT_MS = 2000;       // ended 后等传输页自己离房（报 closed）的上限，到点再移除 iframe
   var PEER_AWAY_OPACITY = '0.6';
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图
   var HOST_FRAME_STYLE = 'position:fixed;z-index:4;border:0;background:transparent;pointer-events:none;' +
@@ -133,7 +135,8 @@
       peerBadge: null,
       firstFrame: null,
       publishing: false,
-      stats: null,
+      closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
+      retiring: null,        // ended 后等它离房的旧 iframe {frame, timer}
       portraitWrapped: false,
     };
 
@@ -319,14 +322,51 @@
       }, READY_TIMEOUT_MS);
     }
 
-    function removeFrame() {
+    /**
+     * ended 时不立刻移除：先告诉传输页 ended（它据此主动离房、断开传输 WS——后端断着收不到 stop
+     * 时对端也能马上看到离开），iframe 立即隐藏、脱离父页状态，等它报 closed 或最多 ENDED_LEAVE_WAIT_MS 再移除。
+     */
+    function retireFrame() {
+      var f = state.frame;
+      if (!f) {
+        removeFrame();
+        return;
+      }
+      post({ t: 'visit_state', phase: 'ended' });
+      removeFrame({ keepElement: true });
+      try {
+        f.style.visibility = 'hidden';
+        f.id = '';   // 让新场次的 iframe 用回 #visit-frame
+      } catch (_) {
+        // 已卸载
+      }
+      if (state.retiring) finishRetire(state.retiring);
+      var r = { frame: f, timer: null };
+      r.timer = setTimeoutFn(function () { finishRetire(r); }, ENDED_LEAVE_WAIT_MS);
+      state.retiring = r;
+    }
+
+    function finishRetire(r) {
+      if (r.timer !== null) clearTimeoutFn(r.timer);
+      r.timer = null;
+      try {
+        r.frame.remove();
+      } catch (_) {
+        // 已移除
+      }
+      if (state.retiring === r) state.retiring = null;
+    }
+
+    /** opts.keepAway：保留 guest 的离家样式（场次没结束）；opts.keepElement：不从 DOM 移除（ended 退场）。 */
+    function removeFrame(opts) {
+      opts = opts || {};
       stopCapture();
       stopTick();
       if (state.readyTimer !== null) clearTimeoutFn(state.readyTimer);
       state.readyTimer = null;
       if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
       state.authTimer = null;
-      if (state.frame) {
+      if (state.frame && !opts.keepElement) {
         try {
           state.frame.remove();
         } catch (_) {
@@ -344,7 +384,7 @@
       state.lastOkAt = null;
       setPeerHidden(false);
       removePeerBadge();
-      setAway(false);
+      if (!opts.keepAway) setAway(false);
     }
 
     function logFrame(level, msg) {
@@ -396,22 +436,15 @@
       });
     }
 
+    /** 重试退避：1 s 起翻倍，上限 TOKEN_RETRY_MAX_MS（取 token / 重拉页面配置 / 查快照共用）。 */
+    function backoffMs(attempt) {
+      return Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
+    }
+
+    /** 单次取 token：最多 TOKEN_LOOKUP_TIMEOUT_MS（也不超过 maxMs）；卡住 / 失败 / 非字符串都给空串。 */
     function boundedToken(lookup, maxMs) {
       var wait = typeof maxMs === 'number' ? Math.max(0, Math.min(TOKEN_LOOKUP_TIMEOUT_MS, maxMs)) : TOKEN_LOOKUP_TIMEOUT_MS;
-      return new Promise(function (resolve) {
-        var done = false;
-        var timer = setTimeoutFn(function () {
-          if (done) return;
-          done = true;
-          resolve('');
-        }, wait);
-        Promise.resolve(lookup).then(function (t) { return t; }, function () { return ''; }).then(function (t) {
-          if (done) return;
-          done = true;
-          clearTimeoutFn(timer);
-          resolve(typeof t === 'string' ? t : '');
-        });
-      });
+      return withTimeout(lookup, wait, '').then(function (t) { return typeof t === 'string' ? t : ''; });
     }
 
     /**
@@ -422,7 +455,7 @@
       boundedToken(attempt === 0 ? getToken() : refreshTokenLookup()).then(function (token) {
         if (state.frame !== f || gen !== state.authGen) return;
         if (!token) {
-          var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
+          var delay = backoffMs(attempt);
           if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
           state.authTimer = setTimeoutFn(function () {
             state.authTimer = null;
@@ -446,12 +479,20 @@
     }
 
     function onFrameMessage(event) {
+      var r = state.retiring;
+      if (r && event.source === r.frame.contentWindow && event.origin === win.location.origin) {
+        if (event.data && event.data.t === 'closed') finishRetire(r);
+        return;
+      }
       var f = state.frame;
       if (!f || event.source !== f.contentWindow || event.origin !== win.location.origin) return;
       var data = event.data;
       if (!data || typeof data !== 'object' || typeof data.t !== 'string') return;
       if (data.t === 'ready') {
         if (data.visit_id !== state.visitId || data.side !== state.side) return;
+        // 页面已经加载出来：之后取 token 慢也不算「没报 ready」，不再重新加载它
+        if (state.readyTimer !== null) clearTimeoutFn(state.readyTimer);
+        state.readyTimer = null;
         var sink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
         if (!sink || typeof sink.setAuthToken !== 'function') return;
         // iframe 每报一次 ready 就重新交一次 token（它重载过就要新的）；旧的重试作废
@@ -473,13 +514,14 @@
           state.firstFrame = data.dataURL;
           dispatch('neko-visit-first-frame', { visitId: state.visitId, dataURL: data.dataURL });
         }
-      } else if (data.t === 'stats') {
-        state.stats = { fps: data.fps, kbps: data.kbps, rtt_ms: data.rtt_ms, hidden: data.hidden };
       } else if (data.t === 'log') {
         logFrame(data.level, String(data.msg || '').slice(0, 500) + (data.code ? ' (' + data.code + ')' : ''));
       } else if (data.t === 'closed') {
-        // 传输页进入终态（4403 / 4404 / 4409 / 重连超时）：它已离房，移除
-        removeFrame();
+        // 传输页进入终态（4403 / 4404 / 4409 / 重连超时）：它已离房，移除。场次本身还没结束（等后端的
+        // ended）：记住这个 visit_id，之后的 wrap_up / ending 不再补建 iframe，guest 的离家样式也留到 ended
+        var closedId = state.visitId;
+        removeFrame({ keepAway: true });
+        state.closedVisitId = closedId;
       }
     }
 
@@ -897,15 +939,17 @@
       if (action === 'ended' || PHASE_OF_ACTION[action]) state.liveGen += 1;
       if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.peerCrop = msg.peer_crop;
       if (action === 'pending') {
+        state.closedVisitId = null;
         ensureFrame(msg.side, msg.visit_id);
       } else if (state.visitId && msg.visit_id && msg.visit_id !== state.visitId) {
         return;
-      } else if (!state.frame && action !== 'ended' && PHASE_OF_ACTION[action] && msg.side && msg.visit_id) {
+      } else if (!state.frame && action !== 'ended' && PHASE_OF_ACTION[action] && msg.side && msg.visit_id &&
+          msg.visit_id !== state.closedVisitId) {
         // 页面重载后没收到 pending：按在飞场次补建
         ensureFrame(msg.side, msg.visit_id);
       }
       var phase = PHASE_OF_ACTION[action];
-      if (phase) {
+      if (phase && action !== 'ended') {
         state.phase = phase;
         post({ t: 'visit_state', phase: phase });
       }
@@ -914,7 +958,8 @@
       else if (action === 'peer_visible') setPeerHidden(false);
       else if (action === 'peer_crop') state.place = null;
       if (action === 'ended') {
-        removeFrame();
+        state.closedVisitId = null;
+        retireFrame();
         state.phase = null;
         return;
       }
@@ -922,7 +967,6 @@
       tick(true);
     }
 
-    /** 页面重载后：GET /api/visit/state 得知在飞场次就重建 iframe（20 s 页面重载宽限内重入房）。 */
     /**
      * 有限次重取 token：页面配置一时没就绪时先给空结果，按退避经 refreshToken 再取，
      * 截止时间内仍取不到就给空（调用方按失败处理）。
@@ -930,7 +974,7 @@
     function acquireToken(attempt, deadline) {
       return boundedToken(attempt === 0 ? getToken() : refreshTokenLookup(), deadline - now()).then(function (token) {
         if (token) return token;
-        var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
+        var delay = backoffMs(attempt);
         if (now() + delay >= deadline) return '';
         return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
           return acquireToken(attempt + 1, deadline);
@@ -953,7 +997,7 @@
       var wait = Math.max(0, Math.min(RECOVER_FETCH_TIMEOUT_MS, deadline - now()));
       return withTimeout(request, wait, NO_RESPONSE).then(function (snap) {
         if (snap !== NO_RESPONSE) return snap;
-        var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
+        var delay = backoffMs(attempt);
         if (now() + delay >= deadline) return null;
         return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
           return fetchSnapshot(lanlanName, token, attempt + 1, deadline);
@@ -961,7 +1005,10 @@
       });
     }
 
-    /** overall：整个恢复的绝对截止时刻（不传就不额外限制）；每一步的窗口都不超过它。 */
+    /**
+     * 页面重载后：GET /api/visit/state 得知在飞场次就重建 iframe（20 s 页面重载宽限内重入房）。
+     * overall：整个恢复的绝对截止时刻（不传就不额外限制）；每一步的窗口都不超过它。
+     */
     function recoverAfterReload(lanlanName, overall) {
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
       var cap = typeof overall === 'number' ? overall : Infinity;
@@ -1003,7 +1050,7 @@
         deadline = now() + RECOVER_NAME_WINDOW_MS;
         if (typeof overall === 'number') deadline = Math.min(deadline, overall);
       }
-      var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
+      var delay = backoffMs(attempt);
       if (now() + delay >= deadline) return Promise.resolve(false);
       return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
         var reload = win.reloadPageConfig;

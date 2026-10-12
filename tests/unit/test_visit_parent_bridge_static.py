@@ -106,3 +106,11 @@ def test_badges_are_localized_in_every_locale():
         data = json.loads(path.read_text(encoding="utf-8"))
         frame = data.get("visitFrame") or {}
         assert frame.get("peerAway") and frame.get("visitingAway"), path.name
+
+
+def test_fps_popup_dispatches_before_saving():
+    src = (ROOT / "static" / "avatar" / "avatar-ui-popup.js").read_text(encoding="utf-8")
+    i = src.index("fpsSlider.addEventListener('change'")
+    block = src[i:src.index("});", i)]
+    # 先派发撤掉串门的临时帧率，保存时才存用户新选的值
+    assert block.index("neko-frame-rate-changed") < block.index("saveNEKOSettings")

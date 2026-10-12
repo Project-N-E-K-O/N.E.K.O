@@ -659,3 +659,86 @@ def test_reload_recovery_shares_one_overall_deadline():
     # 各步各算窗口时会拖到 ~22 s（超过 20 s 页面宽限）；共用总截止时间后 10 s 内收尾，给重建 iframe 与入房留出另一半
     assert out["reloads"] >= 2 and out["tokenTries"] is True
     assert out["elapsed"] is not None and out["elapsed"] <= 10000
+
+
+def test_closed_transport_is_not_rebuilt_and_keeps_away_until_ended():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        const box = h.ctx.document.createElement('div');
+        box.id = 'live2d-container';
+        h.ctx.document.body.appendChild(box);
+        await open(h, 'guest');
+        change(h, 'started');
+        change(h, 'departed');
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 4409 } });
+        const afterClosed = { frame: !!h.ctx.document.getElementById('visit-frame'), away: box.classList.contains('visiting-away') };
+        change(h, 'wrap_up');
+        change(h, 'ending');
+        const afterWrap = { frame: !!h.ctx.document.getElementById('visit-frame'), away: box.classList.contains('visiting-away') };
+        change(h, 'ended');
+        const afterEnded = { away: box.classList.contains('visiting-away') };
+        change(h, 'pending');                        // 新场次照常建
+        const next = !!h.ctx.document.getElementById('visit-frame');
+        change(h, 'ended');
+        await advance(2100);
+        return { afterClosed, afterWrap, afterEnded, next };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"afterClosed": {"frame": False, "away": True}, "afterWrap": {"frame": False, "away": True},
+                   "afterEnded": {"away": False}, "next": True}
+
+
+def test_ended_lets_the_transport_leave_before_removing_it():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        await open(h, 'host');
+        change(h, 'started');
+        const frame = h.frame;
+        h.child.posted.length = 0;
+        change(h, 'ended');
+        const toIframe = h.child.posted.map((m) => m.t === 'visit_state' ? m.phase : m.t);
+        const right = { removed: frame.removed, hidden: frame.style.visibility, lookup: !!h.ctx.document.getElementById('visit-frame') };
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 0 } });
+        const onClosed = frame.removed;
+        // 传输页一直不报 closed：最多 2 s 后照样移除
+        const h2 = makeBridge();
+        await open(h2, 'host');
+        change(h2, 'started');
+        const f2 = h2.frame;
+        change(h2, 'ended');
+        await advance(1900);
+        const early = f2.removed;
+        await advance(200);
+        return { toIframe, right, onClosed, early, late: f2.removed };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["toIframe"] == ["ended"]
+    assert out["right"] == {"removed": False, "hidden": "hidden", "lookup": False}
+    assert out["onClosed"] is True
+    assert out["early"] is False and out["late"] is True
+
+
+def test_ready_iframe_is_not_reloaded_while_the_token_is_slow():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge({ getToken: () => new Promise(() => {}) });   // token 一直取不到
+        h.side = 'guest';
+        change(h, 'pending');
+        const frame = h.ctx.document.getElementById('visit-frame');
+        frame.contentWindow = h.child;
+        let loads = 0;
+        let src = frame.src;
+        Object.defineProperty(frame, 'src', { get: () => src, set: (v) => { loads += 1; src = v; } });
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'ready', v: 1, side: 'guest', visit_id: VISIT_ID } });
+        await advance(20000);
+        change(h, 'ended');
+        await advance(2100);
+        return loads;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == 0
