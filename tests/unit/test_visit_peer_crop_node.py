@@ -552,6 +552,8 @@ def test_recovery_waits_for_page_config_within_the_overall_deadline():
           const ready = makeReady();
           ready.catch(() => {});
           const h = makeBridge();
+          const navStart = clock.now;
+          h.ctx.performance = { now: () => clock.now - navStart };   // performance.now() 从导航开始计时
           let starts = 0;
           h.bridge.recoverFromPageConfig = () => { starts += 1; return Promise.resolve(false); };
           h.ctx.pageConfigReady = ready;
@@ -629,6 +631,8 @@ def test_reload_recovery_shares_one_overall_deadline():
         _BRIDGE_JS + """
         let calls = 0;
         const h = makeBridge({ getToken: () => { calls += 1; return new Promise(() => {}); } });   // token 每次都挂住
+        const navStart = clock.now;
+        h.ctx.performance = { now: () => clock.now - navStart };     // performance.now() 从导航开始计时
         h.ctx.lanlan_config = { lanlan_name: '' };
         // 首屏页面配置 3 s 后才给出角色名（启动闸放行得晚）：等页面配置也从同一个总预算里扣
         h.ctx.pageConfigReady = new Promise((r) => setTimeoutF(() => { h.ctx.lanlan_config.lanlan_name = 'Neko'; r(true); }, 3000));
@@ -1038,7 +1042,8 @@ def test_recovery_deadline_counts_from_navigation_start():
         const cases = [['slow6s_ready5s', 6000, 5000], ['slow6s_ready3s', 6000, 3000], ['slow20s_ready2s', 20000, 2000], ['slow20s_ready4s', 20000, 4000]];
         for (const [label, elapsed, readyAt] of cases) {
           const h = makeBridge();
-          h.ctx.performance = { now: () => clock.now, timeOrigin: clock.now - elapsed };   // 环境里的 Date.now() 走同一个时钟
+          const navStart = clock.now - elapsed;
+          h.ctx.performance = { now: () => clock.now - navStart };   // performance.now() 从导航开始计时
           let starts = 0;
           h.bridge.recoverFromPageConfig = () => { starts += 1; return Promise.resolve(false); };
           h.ctx.pageConfigReady = new Promise((r) => setTimeoutF(() => r(true), readyAt));

@@ -1137,18 +1137,17 @@
     }
   }
 
+  /** 这次导航开始到现在的毫秒数：performance.now() 从导航开始计时（单调时钟，不受系统时间调整影响）。 */
+  function sinceNavigation(win) {
+    var perf = win.performance;
+    var t = perf && typeof perf.now === 'function' ? perf.now() : 0;
+    return typeof t === 'number' && isFinite(t) ? Math.max(0, t) : 0;
+  }
+
   /**
    * 首屏页面配置落定（成功或失败）后启动重载恢复。到总截止时间还没落定（启动闸一直没放行、page_config 请求挂住）
    * 就放弃：这一场按页面没开处理（后端 20 s 页面宽限后以 local_page_lost 结束）。
    */
-  /** 这次导航开始到现在的毫秒数（拿不到导航起点时按 0）。 */
-  function sinceNavigation(win) {
-    var perf = win.performance;
-    var origin = perf && perf.timeOrigin;
-    if (typeof origin !== 'number' || !isFinite(origin)) return 0;
-    return Math.max(0, Date.now() - origin);
-  }
-
   function startRecoveryWhenReady(bridge, win, setTimeoutFn) {
     var started = false;
     // 总截止时间在脚本加载时就定下：等首屏页面配置、取 token、查快照都从同一个预算里扣。
