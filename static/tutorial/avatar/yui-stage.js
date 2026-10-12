@@ -952,7 +952,7 @@
         };
     }
 
-    function acquireYuiGuidePerformanceLock(key, capabilities) {
+    function acquireYuiGuidePerformanceLock(key, capabilities, force = true) {
         const lockKey = String(key || 'home-yui-guide').trim() || 'home-yui-guide';
         const existing = activePerformanceLocks.get(lockKey);
         if (existing) {
@@ -982,7 +982,7 @@
                 avatarId: YUI_GUIDE_AVATAR_ID,
                 characterId: YUI_GUIDE_CHARACTER_ID,
                 priority: YUI_GUIDE_PERFORMANCE_PRIORITY,
-                force: true,
+                force: force,
                 capabilities: Array.isArray(capabilities) ? capabilities.slice() : [],
                 onRelease: function (releasedSession) {
                     const current = activePerformanceLocks.get(lockKey);
@@ -2297,10 +2297,56 @@
         });
     }
 
+    // Resistance pauses an existing pose; ordinary replacement and angry exit
+    // retire it. Capture this receipt before coordinator preemption cancels its lock.
+    function suspendDirectPoseOwners(interruption) {
+        const owners = interruption.manager._avatarPerformanceSessionOwners;
+        const previous = new Set((interruption.performanceLockCapabilities || []).map(capability => owners?.get(capability)));
+        interruption.suspendedPoseOwners = [];
+        previous.forEach(session => {
+            const state = session?.parameterRestoreState;
+            if (!state || !session.active || session.finished || !ownsDirectPoseParameters(session)) return;
+            interruption.suspendedPoseOwners.push({ session, state, lock: session.performanceLock });
+            state.suspendedBy = interruption;
+            session.interruptSuspendedAt = performance.now();
+        });
+    }
+
+    function resumeDirectPoseOwners(interruption, stillOwned) {
+        const receipts = interruption.suspendedPoseOwners || [];
+        interruption.suspendedPoseOwners = [];
+        const interruptedCapabilities = interruption.parameterRestoreState?.capabilities || [];
+        receipts.forEach(({ session, state, lock }) => {
+            if (state.suspendedBy !== interruption) return;
+            state.suspendedBy = null;
+            const owners = state.manager._avatarPerformanceSessionOwners;
+            if (!stillOwned || !session.active || session.finished || state.lost
+                || session.parameterRestoreState !== state || session.performanceLock !== lock
+                || getCurrentLive2DModel(state.manager) !== state.model || state.model.destroyed
+                || state.model.internalModel !== state.internalModel || state.internalModel.coreModel !== state.core
+                || (state.poseEntry && state.manager._temporaryPoseOverrides?.get(session.poseOverrideSource) !== state.poseEntry)
+                || !state.capabilities.every(capability => interruptedCapabilities.includes(capability)
+                    ? !owners.has(capability) : owners.get(capability) === session)
+                || activePerformanceLocks.has(session.performanceLockKey)) return;
+            // A pause ending may not evict a third party that acquired a lock meanwhile.
+            const coordinator = getAvatarPerformanceCoordinator();
+            if (coordinator && state.capabilities.some(capability => coordinator.isCapabilityLocked(YUI_GUIDE_AVATAR_ID, capability))) return;
+            const resumedLock = acquireYuiGuidePerformanceLock(session.performanceLockKey, session.performanceLockCapabilities, false);
+            if (coordinator && !resumedLock.id) return;
+            session.performanceLock = resumedLock;
+            state.capabilities.forEach(capability => owners.set(capability, session));
+        });
+    }
+
     function restoreDirectEyeBlink(session) {
         const state = session.parameterRestoreState;
         if (!state || state.manager._avatarPerformanceEyeBlinkOwner !== state) return;
-        if (ownsDirectPoseParameters(session)) state.manager._suspendEyeBlinkOverride = state.previousValue;
+        // Blink has its own receipt: a parameter-only interruption does not own
+        // it, and cancellation must still repay this session's suspension.
+        if (getCurrentLive2DModel(state.manager) === state.model && !state.model.destroyed
+            && state.model.internalModel === state.internalModel && state.internalModel.coreModel === state.core) {
+            state.manager._suspendEyeBlinkOverride = state.previousValue;
+        }
         state.manager._avatarPerformanceEyeBlinkOwner = null;
     }
 
@@ -4682,6 +4728,7 @@
                 return false;
             }
             this.resolvePointerMeta();
+            suspendDirectPoseOwners(this);
             this.performanceLock = acquireYuiGuidePerformanceLock(
                 this.performanceLockKey,
                 this.performanceLockCapabilities
@@ -4726,7 +4773,8 @@
             }
             this.restoreCapturedParams();
             this.restoreModelFrame();
-            restoreLive2DOverlayAnchors(this.frozenOverlayAnchors);
+            const stillOwned = ownsDirectPoseParameters(this);
+            if (stillOwned) restoreLive2DOverlayAnchors(this.frozenOverlayAnchors);
             this.frozenOverlayAnchors = null;
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
                 retireDirectPoseParameters(this);
@@ -4734,6 +4782,7 @@
                 this.performanceLock = null;
             }
             retireDirectPoseParameters(this);
+            resumeDirectPoseOwners(this, stillOwned);
         }
 
         cancel(reason) {

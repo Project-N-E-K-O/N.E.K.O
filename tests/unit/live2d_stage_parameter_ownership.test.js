@@ -105,8 +105,9 @@ async function fixture(options = {}) {
     const stageSource = read('static/avatar/avatar-performance-stage.js');
     vm.runInContext(options.transformStage ? options.transformStage(stageSource) : stageSource, runtime.context,
         { filename: sourcePath(options.transformStage ? 'mutation/avatar-performance-stage.js' : 'static/avatar/avatar-performance-stage.js') });
-    vm.runInContext(read('static/tutorial/avatar/yui-stage.js'), runtime.context,
-        { filename: sourcePath('static/tutorial/avatar/yui-stage.js') });
+    const yuiSource = read('static/tutorial/avatar/yui-stage.js');
+    vm.runInContext(options.transformYui ? options.transformYui(yuiSource) : yuiSource, runtime.context,
+        { filename: sourcePath(options.transformYui ? 'mutation/yui-stage.js' : 'static/tutorial/avatar/yui-stage.js') });
     runtime.context.__YuiGuideDirector = {};
     vm.runInContext(read('static/tutorial/yui-guide/director/emotion-bridge.js'), runtime.context,
         { filename: sourcePath('static/tutorial/yui-guide/director/emotion-bridge.js') });
@@ -970,5 +971,155 @@ test('failed bridge registration preserves old Stage expression cleanup authorit
         assert.equal(f.manager._activeExpressionParamIds, null);
         assert.equal(f.manager._activeTransientExpression, false);
         assert.equal(f.value('ParamAngleX'), 0);
+    } finally { f.release(); }
+});
+
+test('public resistance resumes the paused greeting with its configuration and coordinator lock', async () => {
+    const f = await fixture();
+    try {
+        f.apply({ ParamAngleX: 2 });
+        const api = f.runtime.context.YuiGuideAvatarStage;
+        const greeting = api.playIntroGreetingHug({ readyWaitMs: 0, approachMs: 1000, settleMs: 1000, releaseMs: 1000 });
+        await new Promise(resolve => setImmediate(resolve));
+        const original = f.manager._avatarPerformanceSessionOwners.get('params');
+        const interruption = api.playInterruptResist({ readyWaitMs: 0, reducedMotion: true });
+        await new Promise(resolve => setImmediate(resolve));
+        await flushFrames(f, 150);
+        assert.equal(original.active, true, 'greeting pauses while resistance plays');
+        f.apply({ ParamAngleX: 3 });
+        await flushFrames(f, 2000);
+        await interruption;
+        await flushFrames(f, 2050);
+        assert.equal(original.active, true, 'paused greeting must resume instead of ending model_changed');
+        assert.equal(original.isCurrentModel(), true);
+        assert.equal(original.performanceLock.isCurrent(), true);
+        assert.equal(f.manager._avatarPerformanceSessionOwners.get('params'), original);
+        await flushFrames(f, 10000);
+        await flushFrames(f, 10050);
+        assert.equal((await greeting).result, 'played');
+        assert.equal(f.value('ParamAngleX'), 3);
+        assert.equal(f.manager._temporaryPoseOverrides.size, 0);
+        assert.equal(f.manager._avatarPerformanceSessionOwners.size, 0);
+    } finally { f.release(); }
+});
+
+for (const name of ['Live2DWakeupSession', 'Live2DIntroGiftHeartSession', 'Live2DSettingsPeekPanicSession']) {
+    test(`resistance returns its temporary claims to ${name}`, async () => {
+        const f = await fixture();
+        try {
+            const api = f.runtime.context.YuiGuideAvatarStage;
+            const original = new api[name]({ manager: f.manager, model: f.model, coreModel: f.core }, { token: name });
+            assert.equal(original.start(), true);
+            const interruption = api.playInterruptResist({ readyWaitMs: 0, reducedMotion: true });
+            await new Promise(resolve => setImmediate(resolve));
+            await flushFrames(f, 150);
+            f.apply({});
+            await flushFrames(f, 2000);
+            await interruption;
+            assert.equal(original.isCurrentModel(), true);
+            assert.equal(original.performanceLock.isCurrent(), true);
+            const stopped = original.stop('cancelled');
+            if (stopped?.then) { await flushFrames(f, 3000); await stopped; }
+            assert.equal(f.manager._avatarPerformanceSessionOwners.size, 0);
+            assert.equal(!!f.manager._suspendEyeBlinkOverride, false);
+        } finally { f.release(); }
+    });
+}
+
+for (const takeover of ['session', 'core', 'lock', 'cancel']) {
+    test(`resistance cannot revive a paused pose after ${takeover} takeover`, async () => {
+        const f = await fixture();
+        const nextCore = takeover === 'core' ? createMao(f.runtime) : null;
+        try {
+            const api = f.runtime.context.YuiGuideAvatarStage;
+            const original = api.createWakeupSession({ manager: f.manager, model: f.model, coreModel: f.core }, {});
+            assert.equal(original.start(), true);
+            const interruption = api.playInterruptResist({ readyWaitMs: 0, reducedMotion: true });
+            await new Promise(resolve => setImmediate(resolve));
+            await flushFrames(f, 150);
+            let successor;
+            const coordinator = f.runtime.context.AvatarPerformance.getDefaultCoordinator();
+            if (takeover === 'session') {
+                successor = f.stage.acquire('successor');
+                f.stage.setTemporaryParam('ParamAngleX', 7);
+            } else if (takeover === 'core') {
+                f.model.internalModel.coreModel = nextCore.core;
+                nextCore.core.setParameterValueById('ParamAngleX', 7);
+            } else if (takeover === 'lock') {
+                successor = coordinator.acquire({ owner: 'successor', avatarId: 'main-live2d', force: true, capabilities: ['motion'] });
+            } else {
+                original.stop('cancelled');
+            }
+            await flushFrames(f, 2000);
+            await interruption;
+            assert.equal(f.manager._avatarPerformanceSessionOwners.get('params') === original, false);
+            if (takeover === 'session') {
+                assert.equal(f.driver.ownsSession(successor), true);
+                assert.equal(f.value('ParamAngleX'), 7);
+                f.stage.release(successor.id);
+            } else if (takeover === 'core') {
+                assert.equal(nextCore.value('ParamAngleX'), 7);
+                f.model.internalModel.coreModel = f.core;
+            } else if (takeover === 'lock') {
+                assert.equal(successor.cancelled, false, 'resume must not force-preempt a successor lock');
+                coordinator.release(successor);
+            }
+            original.stop('cancelled');
+            assert.equal(!!f.manager._suspendEyeBlinkOverride, false);
+        } finally { f.release(); nextCore?.release(); }
+    });
+}
+
+for (const mutation of ['restore', 'lock']) {
+    test(`removing the resistance ${mutation} guard reproduces its regression`, async () => {
+        const marker = mutation === 'restore'
+            ? 'state.capabilities.forEach(capability => owners.set(capability, session));'
+            : 'if (coordinator && state.capabilities.some(capability => coordinator.isCapabilityLocked(YUI_GUIDE_AVATAR_ID, capability))) return;';
+        const f = await fixture({ transformYui(source) {
+            assert.equal(source.split(marker).length, 2, 'mutation must remove exactly one live guard');
+            return source.replace(marker, '/* removed guard */');
+        } });
+        try {
+            const api = f.runtime.context.YuiGuideAvatarStage;
+            const original = api.createWakeupSession({ manager: f.manager, model: f.model, coreModel: f.core }, {});
+            assert.equal(original.start(), true);
+            const interruption = api.playInterruptResist({ readyWaitMs: 0, reducedMotion: true });
+            await new Promise(resolve => setImmediate(resolve));
+            await flushFrames(f, 150);
+            const coordinator = f.runtime.context.AvatarPerformance.getDefaultCoordinator();
+            const successor = mutation === 'lock'
+                ? coordinator.acquire({ owner: 'new motion', avatarId: 'main-live2d', capabilities: ['motion'] }) : null;
+            await flushFrames(f, 2000);
+            await interruption;
+            if (mutation === 'restore') assert.equal(original.isCurrentModel(), false, 'the normal resume assertion fails without restoration');
+            else assert.equal(successor.cancelled, true, 'priority-based acquisition evicts the successor without the guard');
+            original.stop('cancelled');
+            if (successor) coordinator.release(successor);
+        } finally { f.release(); }
+    });
+}
+
+test('a retired resistance cannot unfreeze overlay tickers owned by a successor', async () => {
+    const f = await fixture();
+    try {
+        const ticks = new Set();
+        let calls = 0;
+        const anchor = () => { calls++; };
+        f.manager._floatingButtonsTicker = anchor;
+        f.manager.pixi_app = { ticker: { add: tick => ticks.add(tick), remove: tick => ticks.delete(tick) } };
+        ticks.add(anchor);
+        const api = f.runtime.context.YuiGuideAvatarStage;
+        const context = { manager: f.manager, model: f.model, coreModel: f.core };
+        const old = new api.Live2DInterruptResistSession(context, { reducedMotion: true });
+        assert.equal(old.start(), true);
+        const successor = new api.Live2DSettingsPeekPanicSession(context, { reducedMotion: true });
+        assert.equal(successor.start(), true);
+        old.stop('replaced');
+        assert.equal(ticks.has(anchor), false);
+        assert.equal(calls, 0, 'stale stop must not invoke a shared anchor callback');
+        assert.equal(successor.isCurrentModel(), true);
+        await successor.stop('cancelled');
+        assert.equal(ticks.has(anchor), true);
+        assert.equal(calls, 1);
     } finally { f.release(); }
 });
