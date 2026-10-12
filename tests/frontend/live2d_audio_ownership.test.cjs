@@ -856,6 +856,88 @@ for (const paced of [false, true]) {
     });
 }
 
+for (const paced of [false, true]) {
+    test(`guide interruption survives an A-B-A producer interleaving (${paced ? 'paced timer' : 'rAF'})`, async () => {
+        const f = streamingAudioFixture({ paced });
+        try {
+            f.header('assistant'); await f.blob();
+            const session = f.handoff();
+            f.header('successor'); await f.blob();
+            const successor = f.sources[1];
+            const published = f.window.NekoSpeechPlaybackState;
+            f.header('assistant'); await f.blob();
+            assert.equal(f.sources.length, 2, 'an interrupted producer cannot become a fresh speech after B');
+            assert.equal(f.S.currentPlayingSpeechId, 'successor');
+            assert.equal(f.window.NekoSpeechPlaybackState, published);
+            assert.notEqual(successor.stopped, true);
+            f.S.socket.onmessage({ data: JSON.stringify({ type: 'audio_done', speech_id: 'assistant' }) });
+            assert.equal(f.window.appAudioPlayback.isAssistantSpeechInterrupted('assistant'), false, 'the terminal releases the cancellation record');
+            assert.equal(f.S.assistantSpeechActiveTurnId, 'successor', 'old completion cannot end B');
+            f.queue.stopGuideMouthMotion(session);
+            assert.equal(f.manager.hasActiveLipSync(), true);
+        } finally { await f.cleanup(); }
+    });
+
+    test(`multiple guide interruptions stay fenced across a successor (${paced ? 'paced timer' : 'rAF'})`, async () => {
+        const f = streamingAudioFixture({ paced });
+        try {
+            f.header('assistant'); await f.blob(); f.handoff();
+            f.header('second'); await f.blob(); const session = f.handoff();
+            f.header('successor'); await f.blob();
+            for (const speech of ['assistant', 'second', 'assistant']) {
+                f.header(speech); await f.blob();
+                assert.equal(f.sources.length, 3, 'all cancelled identities survive later handoffs');
+                assert.equal(f.S.currentPlayingSpeechId, 'successor');
+                assert.equal(f.window.appAudioPlayback.isAssistantSpeechInterrupted(speech), true);
+            }
+            for (const speech of ['second', 'assistant']) {
+                f.S.socket.onmessage({ data: JSON.stringify({ type: 'audio_done', speech_id: speech }) });
+                assert.equal(f.window.appAudioPlayback.isAssistantSpeechInterrupted(speech), false);
+            }
+            assert.equal(f.S.assistantSpeechActiveTurnId, 'successor');
+            f.queue.stopGuideMouthMotion(session);
+            assert.equal(f.manager.hasActiveLipSync(), true);
+        } finally { await f.cleanup(); }
+    });
+}
+
+test('guide cancellation records without audio_done belong only to their socket', async () => {
+    const f = streamingAudioFixture();
+    try {
+        f.header('assistant'); await f.blob(); f.handoff();
+        f.header('successor'); await f.blob();
+        const oldSocket = f.S.socket;
+        assert.equal(f.window.appAudioPlayback.isAssistantSpeechInterrupted('assistant'), true);
+        oldSocket.readyState = 3;
+        oldSocket.onclose({ code: 1000, reason: 'controlled reconnect' });
+        assert.equal(f.window.appAudioPlayback.isAssistantSpeechInterrupted('assistant'), false, 'close releases records even while the old socket is referenced');
+        f.window.appWebSocket.connectWebSocket();
+        assert.notEqual(f.S.socket, oldSocket);
+        assert.equal(f.window.appAudioPlayback.isAssistantSpeechInterrupted('assistant'), false);
+        // A stale socket cannot release a cancellation registered on its successor.
+        f.header('assistant'); await f.blob(); f.handoff();
+        oldSocket.onmessage({ data: JSON.stringify({ type: 'audio_done', speech_id: 'assistant' }) });
+        assert.equal(f.window.appAudioPlayback.isAssistantSpeechInterrupted('assistant'), true);
+        f.header('successor'); await f.blob();
+        const count = f.sources.length;
+        f.header('assistant'); await f.blob();
+        assert.equal(f.sources.length, count);
+    } finally { await f.cleanup(); }
+});
+
+test('guide interruption need not retain a producer that already sent audio_done', async () => {
+    const f = streamingAudioFixture();
+    try {
+        f.header('assistant'); await f.blob();
+        f.S.socket.onmessage({ data: JSON.stringify({ type: 'audio_done', speech_id: 'assistant' }) });
+        assert.equal(f.S.isPlaying, true, 'the producer may finish while its source is still playing');
+        f.handoff();
+        f.header('successor'); await f.blob();
+        assert.equal(f.sources.length, 2);
+        assert.equal(f.window.appAudioPlayback.isAssistantSpeechInterrupted('assistant'), false);
+    } finally { await f.cleanup(); }
+});
+
 test('MMD guide legacy dispatch does not interrupt real assistant playback', async () => {
     const f = streamingAudioFixture();
     const morphs = [];

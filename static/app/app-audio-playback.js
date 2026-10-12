@@ -20,6 +20,9 @@
     let audioPlayerContextSetupPromise = null;
     let speakerTransitionPromise = Promise.resolve();
     let localSpeakerPreferenceRevision = 0;
+    // Local guide cancellation outlives a successor speech, but not its socket.
+    // Keep only identities, never audio; terminal signals release open producers.
+    const locallyInterruptedSpeeches = new WeakMap();
 
     function normalizeAssistantPlaybackGain(value) {
         var gain = Number(value);
@@ -929,6 +932,12 @@
     // 后端权威信号：该 speech_id 的音频流已关闭，之后不会再有属于它的 chunk。
     function noteAssistantAudioStreamClosed(speechId) {
         var sid = normalizeAssistantTurnId(speechId);
+        var interrupted = S.socket && locallyInterruptedSpeeches.get(S.socket);
+        if (interrupted && interrupted.delete(sid)) {
+            if (interrupted.size === 0) locallyInterruptedSpeeches.delete(S.socket);
+            // A cancelled producer's completion belongs to no current playback.
+            return false;
+        }
         var mapped = (sid && S.assistantAudioTurnBySpeechId)
             ? S.assistantAudioTurnBySpeechId[sid]
             : null;
@@ -1462,6 +1471,16 @@
         // Note: decoder is NOT reset here.
     }
 
+    function isAssistantSpeechInterrupted(speechId) {
+        var interrupted = S.socket && locallyInterruptedSpeeches.get(S.socket);
+        return !!speechId && (speechId === S.interruptedSpeechId ||
+            !!(interrupted && interrupted.has(speechId)));
+    }
+
+    function clearLocalAssistantSpeechInterruptions(socket) {
+        if (socket) locallyInterruptedSpeeches.delete(socket);
+    }
+
     // A local handoff must retire accepted audio, including its first chunk
     // before playback starts. WebSocket headers reject later chunks by speech;
     // the epoch fences blob reads/decodes that already crossed an await.
@@ -1472,6 +1491,15 @@
             if (!turnId || isAssistantTurnPlaybackDrained(turnId)) return false;
         }
         S.interruptedSpeechId = S.currentPlayingSpeechId || null;
+        var speechTurnId = S.assistantAudioTurnBySpeechId[S.interruptedSpeechId];
+        if (S.socket && S.interruptedSpeechId && !isAssistantAudioStreamClosed(speechTurnId)) {
+            var interrupted = locallyInterruptedSpeeches.get(S.socket);
+            if (!interrupted) {
+                interrupted = new Set();
+                locallyInterruptedSpeeches.set(S.socket, interrupted);
+            }
+            interrupted.add(S.interruptedSpeechId);
+        }
         S.pendingDecoderReset = true;
         S.skipNextAudioBlob = false;
         S.incomingAudioEpoch += 1;
@@ -2179,6 +2207,8 @@
     mod.clearAudioQueue = clearAudioQueue;
     mod.clearAudioQueueWithoutDecoderReset = clearAudioQueueWithoutDecoderReset;
     mod.interruptCurrentAssistantSpeech = interruptCurrentAssistantSpeech;
+    mod.isAssistantSpeechInterrupted = isAssistantSpeechInterrupted;
+    mod.clearLocalAssistantSpeechInterruptions = clearLocalAssistantSpeechInterruptions;
     mod.initializeGlobalAnalyser = initializeGlobalAnalyser;
     mod.startLipSync = startLipSync;
     mod.stopLipSync = stopLipSync;

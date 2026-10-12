@@ -3577,7 +3577,10 @@
                     if (!Number.isFinite(playbackGain)) playbackGain = 1;
                     playbackGain = Math.max(0, Math.min(2, playbackGain));
 
-                    if (speechId && S.interruptedSpeechId && speechId === S.interruptedSpeechId) {
+                    if (speechId && ((S.interruptedSpeechId && speechId === S.interruptedSpeechId) ||
+                        (window.appAudioPlayback &&
+                            typeof window.appAudioPlayback.isAssistantSpeechInterrupted === 'function' &&
+                            window.appAudioPlayback.isAssistantSpeechInterrupted(speechId)))) {
                         if (window.DEBUG_AUDIO) {
                             console.log(window.t('console.discardInterruptedAudio'), speechId);
                         }
@@ -6014,6 +6017,10 @@
             S.independentAsrActive = false;
             S.independentAsrProvider = '';
             clearAssistantLifecycleOnDisconnect('socket_close');
+            if (window.appAudioPlayback &&
+                typeof window.appAudioPlayback.clearLocalAssistantSpeechInterruptions === 'function') {
+                window.appAudioPlayback.clearLocalAssistantSpeechInterruptions(_thisSocket);
+            }
 
             // Clear heartbeat
             if (S.heartbeatInterval) {
