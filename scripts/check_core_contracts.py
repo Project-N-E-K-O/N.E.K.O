@@ -3324,6 +3324,7 @@ def run(root: Path) -> list[Violation]:
             public_methods = {
                 "__init__",
                 "display_name",
+                "supports_interception_delivery",
                 "close",
                 "capture_ingress_token",
                 "suspend",

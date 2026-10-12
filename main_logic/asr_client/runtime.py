@@ -256,6 +256,17 @@ class IndependentAsrRuntime:
     def display_name(self) -> str:
         return self._callbacks.display_name()
 
+    @property
+    def supports_interception_delivery(self) -> bool:
+        """Read the published route's capability, independent of warm transport.
+
+        The lifecycle retains its policy between physical transport attempts;
+        admission must not confuse a supported sleeping route with an
+        unsupported route. No published lifecycle grants no capability.
+        """
+        lifecycle = self._asr_lifecycle
+        return lifecycle is not None and lifecycle.provider_policy.supports_interception_delivery
+
     async def close(self) -> None:
         self._ensure_asr_runtime_state()
         close_task = self._asr_runtime_close_task

@@ -12,6 +12,8 @@ from main_logic.asr_client._infra import (
 )
 from main_logic.asr_client.delivery import begin_transport_write, complete_transport_write, delivery_evidence
 from main_logic.asr_client.provider_policy import resolve_provider_policy
+from main_logic.asr_client.runtime import IndependentAsrRuntime
+from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.workers.qwen import _QwenConnectionState, _qwen_sender
 from main_logic.voice_input.activation import OutputCommit
 from main_logic.voice_input.interception import InterceptionDecision, InterceptionResult
@@ -20,9 +22,82 @@ from main_logic.voice_turn.interception_events import InterceptionDeliveryStage 
 from tests.unit.asr_runtime.test_active_session_interception import _frame
 from tests.unit.asr_runtime.test_interception_event_delivery import _core, _event, _EventRuntime, _Factory
 from tests.unit.asr_runtime.test_interception_receipt_cleanup import _output
+from tests.unit.asr_client.test_candidate_rejection_runtime import _callbacks, _install_active_candidate
+from tests.unit.asr_runtime.test_candidate_receiver_integration import Detector
 
 
 pytestmark = pytest.mark.runtime
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["qwen", "openai", "step", "grok", "soniox"])
+async def test_unsupported_route_is_rejected_before_model_and_dispatcher_admission(provider):
+    core, generation = _core()
+    callbacks = _callbacks()
+    independent = IndependentAsrRuntime(callbacks)
+    _old_session, lifecycle, token = _install_active_candidate(independent, Detector())
+    dispatcher = independent._asr_audio_dispatcher
+    worker = dispatcher._worker
+    await dispatcher.wait_idle()
+    dispatcher.abort()
+    policy = resolve_provider_policy(provider, "provider")
+    lifecycle.provider_policy = policy
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=AsyncMock(), api_key="fixture", config=AsrSessionConfig(endpointing_mode="provider"),
+        provider_policy=policy, on_input_transcript=AsyncMock(), on_connection_error=AsyncMock(),
+    )
+    session._state = _SessionState.READY
+    independent._asr_session = session
+    independent._asr_provider = provider
+    assert dispatcher.activate(token, session, b"")
+    await dispatcher.wait_idle()
+    core._asr_runtime = independent
+    core._independent_asr_provider = provider
+    core._voice_lease_connection_id = token.ingress.connection_id
+    core._voice_lease_generation = token.ingress.lease_generation
+    core._microphone_route_generation = token.ingress.route_generation
+    audio = _event(0, 0, 4)
+    model = _EventRuntime(InterceptionResult(InterceptionDecision.KEEP, audio.pcm16, events=(audio,)))
+    model.process = AsyncMock(wraps=model.process)
+    await core.set_active_session_interception_factory(_Factory(model))
+    try:
+        result = await core._route_voice_session_activation_output(_frame(core, generation, bytes(8)), generation)
+        await asyncio.wait_for(dispatcher.wait_idle(), 1)
+        assert result is OutputCommit.UNKNOWN
+        assert core._voice_session_activation_degraded
+        assert core._voice_session_activation_status[2] == "interception_unavailable:interception_delivery_unsupported"
+        model.process.assert_not_awaited()
+        assert model.receipts == []  # Neither local acceptance nor UNKNOWN debt.
+        assert independent._asr_input_sample_end == 0
+        assert session._request_queue is None
+        assert session._input_sample_rate_hz is None
+        callbacks.on_failure.assert_not_awaited()
+    finally:
+        if worker is not None:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        await independent.close()
+        await asyncio.gather(*tuple(dispatcher._failure_tasks), return_exceptions=True)
+        await asyncio.gather(*tuple(independent._asr_close_tasks), return_exceptions=True)
+        await session.close()
+        await core._active_session_interception_bridge.close()
+        await asyncio.gather(*tuple(core._core_asr_cleanup_tasks), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_interception_capability_follows_published_runtime_lifecycle():
+    runtime = IndependentAsrRuntime(_callbacks())
+    assert not runtime.supports_interception_delivery
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"), shadow_mode=False,
+    )
+    assert runtime.supports_interception_delivery
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "provider"), shadow_mode=False,
+    )
+    assert not runtime.supports_interception_delivery
+    await runtime.close()
+    assert not runtime.supports_interception_delivery
 
 
 def _request(spans):

@@ -17,6 +17,8 @@ from main_logic.voice_input.activation import (
 )
 from main_logic.core.asr_runtime import VoiceSessionActivationRouteContext
 from main_logic.voice_turn.contracts import AsrSubmitResult, AsrSubmitStatus
+from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
+from main_logic.asr_client.provider_policy import resolve_provider_policy
 
 
 class _FakeRuntime:
@@ -76,6 +78,11 @@ class _HangingFactory(_FakeFactory):
 class _Runtime(AsrRuntimeMixin):
     def __init__(self) -> None:
         self._init_asr_runtime_state()
+        # This protocol harness represents an installed supported manual route.
+        # Tests using a real ASR runtime replace it with that route's lifecycle.
+        self._asr_runtime._asr_lifecycle = VoiceInputLifecycleController(
+            provider_policy=resolve_provider_policy("qwen", "manual"), shadow_mode=False,
+        )
         self._voice_lease_synchronized = True
         self._voice_lease_owner = "core"
         self._voice_input_suppressed = False

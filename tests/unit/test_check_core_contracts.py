@@ -2947,6 +2947,8 @@ def test_interception_boundary_methods_keep_an_explicit_allowlist(
     component.parent.mkdir()
     component.write_text(
         "class IndependentAsrRuntime:\n"
+        "    @property\n"
+        "    def supports_interception_delivery(self):\n        return False\n"
         "    async def discontinue_input(self):\n        pass\n"
         "    async def wait_input_settled(self):\n        pass\n"
         "    async def restart_from_raw(self):\n        pass\n",

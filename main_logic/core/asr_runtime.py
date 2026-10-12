@@ -1763,9 +1763,11 @@ class AsrRuntimeMixin:
             if self._active_session_interception_required:
                 return None
             return InterceptionResult(InterceptionDecision.KEEP, pcm16=frame.pcm)
-        if self._asr_route_mode != "independent":
+        if (self._asr_route_mode != "independent"
+                or not self._asr_runtime.supports_interception_delivery):
             # Ordinary native input remains available without interception.
-            # This route cannot settle intercepted source intervals yet.
+            # Reject unsupported routes before model output or local admission;
+            # session.stream_audio keeps its independent dispatch-time guard.
             await bridge.retire("interception_delivery_unsupported")
             return InterceptionResult(
                 InterceptionDecision.UNAVAILABLE, reason="interception_delivery_unsupported",
