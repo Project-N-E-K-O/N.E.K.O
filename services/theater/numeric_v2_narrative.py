@@ -410,16 +410,41 @@ def project_narrative_state(session: Any, *, focus: str = "") -> dict[str, Any] 
             metadata.update(retained_entities=count, omitted_entities=len(visible) - count,
                             omitted_essential_entities=len(essential) - count)
 
-        # Search priority prefixes instead of retokenizing for every held item.
-        low, high = 0, len(prioritized)
-        while low < high:
-            middle = (low + high + 1) // 2
-            retain_prefix(middle)
-            if tokens() <= 1568:
-                low = middle
+        def fit_prefix() -> int:
+            # Search priority prefixes without retokenizing for every held item.
+            low, high = 0, len(prioritized)
+            while low < high:
+                middle = (low + high + 1) // 2
+                retain_prefix(middle)
+                if tokens() <= 1568:
+                    low = middle
+                else:
+                    high = middle - 1
+            retain_prefix(low)
+            return low
+
+        count = fit_prefix()
+        retained = prioritized[:count]
+        remaining = 1568 - tokens()
+        # A large entity must not hide smaller entities after it. Tokenize only
+        # each new fragment, rather than the whole retained projection per item.
+        for entity in prioritized[count:]:
+            add_entity(entity)
+            cost = 2 + sum(count_tokens(json.dumps(
+                {entity: result[view][entity]}, ensure_ascii=False, separators=(",", ":"),
+            )) for view in ("current", "last_known") if entity in result[view])
+            if cost <= remaining:
+                retained.append(entity)
+                remaining -= cost
             else:
-                high = middle - 1
-        retain_prefix(low)
+                result["current"].pop(entity, None)
+                result["last_known"].pop(entity, None)
+        if len(retained) > count:
+            prioritized = retained
+            retain_prefix(len(retained))
+            # Fragment sums are estimates; validate the actual assembled text.
+            if tokens() > 1568:
+                fit_prefix()
     optional = sorted(set(visible) - essential, key=lambda entity: (
         any(data["source_node_id"] == session.current_node_id for data in visible[entity].values()),
         max(data["source_revision"] for data in visible[entity].values()), entity,

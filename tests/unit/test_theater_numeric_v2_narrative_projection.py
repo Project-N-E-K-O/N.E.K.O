@@ -176,15 +176,65 @@ def test_overflow_packing_uses_logarithmic_whole_projection_tokenizations(monkey
     from services.theater import numeric_v2_narrative as narrative
 
     session = _session(all_player=True)
-    calls = []
+    calls, fragments = [], []
 
     def counted(text):
-        calls.append(len(text))
+        (calls if "projection" in json.loads(text) else fragments).append(len(text))
         return count_tokens(text)
 
     monkeypatch.setattr(narrative, "count_tokens", counted)
     projection = narrative.project_narrative_state(session, focus="旧信匣")
     assert len(calls) <= 20
+    assert len(fragments) <= 301
     assert count_tokens(json.dumps(projection, ensure_ascii=False, separators=(",", ":"))) <= 1600
     assert projection["current"]["item:旧信匣"]["holder"]["value"] == "player"
     assert projection["projection"]["omitted_essential_entities"] > 0
+
+
+@pytest.mark.parametrize("blocking_entity,focus", [
+    ("player", "出山前检查旧信匣"), ("item:巨匣", "放学前检查巨匣"),
+])
+def test_oversized_entity_does_not_hide_later_character_or_held_items(blocking_entity, focus):
+    from services.theater.numeric_v2_narrative import ATTRIBUTES, validate_narrative_state
+
+    state = _append(None, "旧信匣", "player")
+    prototype = state["entities"]["item:旧信匣"]["holder"]
+    state["entities"][blocking_entity] = {
+        attribute: {**deepcopy(prototype), "value": "龘" * 120}
+        for attribute in ATTRIBUTES - {"holder"}
+    }
+    state["entities"]["character"] = {
+        "position": {**deepcopy(prototype), "value": "门口"},
+    }
+    validate_narrative_state(state)
+    original = deepcopy(state)
+    session = SimpleNamespace(narrative_state=state, current_node_id="old")
+    projection = project_narrative_state(session, focus=focus)
+
+    assert blocking_entity not in _entities(projection)
+    assert projection["current"]["character"]["position"]["value"] == "门口"
+    assert projection["current"]["item:旧信匣"]["holder"]["value"] == "player"
+    assert projection["projection"]["omitted_essential_entities"] == 1
+    assert projection["projection"]["omitted_entities"] == 1
+    assert count_tokens(json.dumps(projection, ensure_ascii=False, separators=(",", ":"))) <= 1600
+    assert state == original
+
+
+def test_large_entity_that_only_exceeds_remaining_budget_is_skipped():
+    state = _append(None, "旧信匣", "player")
+    prototype = state["entities"]["item:旧信匣"]["holder"]
+    state["entities"]["player"] = {
+        attribute: {**deepcopy(prototype), "value": "龘" * 120}
+        for attribute in ("position", "condition", "location", "choice", "commitment")
+    }
+    state["entities"]["item:巨匣"] = {
+        attribute: {**deepcopy(prototype), "value": "龘" * 120}
+        for attribute in ("condition", "location", "choice", "commitment", "arrangement")
+    }
+    session = SimpleNamespace(narrative_state=state, current_node_id="old")
+    projection = project_narrative_state(session, focus="检查巨匣")
+    assert "player" in _entities(projection)
+    assert "item:巨匣" not in _entities(projection)
+    assert projection["current"]["item:旧信匣"]["holder"]["value"] == "player"
+    assert projection["projection"]["omitted_essential_entities"] == 1
+    assert count_tokens(json.dumps(projection, ensure_ascii=False, separators=(",", ":"))) <= 1600
