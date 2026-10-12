@@ -3602,6 +3602,32 @@ async def test_partial_retry_still_cancels_a_stale_journal_of_a_completed_target
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
 
 
+async def test_partial_replay_does_not_mark_a_target_through_its_own_higher_fence(env):
+    group = MemorySubject.create(GROUP["subject_kind"], GROUP["subject_id"])
+    part = MemorySubject.create(PART["subject_kind"], PART["subject_id"])
+    # GROUP 与 PART 互为扇出（同一个参与者）
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", lambda subject: sorted(
+        [group, part], key=lambda t: (t.key, t.scope),
+    ))
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})         # 1. GROUP=5、PART=1
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))                    # 2. GROUP 之后合法写入
+    real_begin = env.fs.abegin_subject_forget
+
+    async def fail_once(name, subject):
+        raise RuntimeError("erase failed before it started")
+
+    env.monkeypatch.setattr(env.fs, "abegin_subject_forget", fail_once)
+    with pytest.raises(HTTPException):
+        await _forget(env, PART, forget_epoch=10)                                 # 3. PART 围栏 10，擦除前失败
+    env.monkeypatch.setattr(env.fs, "abegin_subject_forget", real_begin)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})         # 4. 重放：只补擦 PART
+    # PART 只按自己这次的代数记完成标记，不借那次擦除前就失败的围栏 10
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
+    retry = await _forget(env, PART, forget_epoch=10)                              # 5. 重试 PART 那次清除
+    assert retry.get("duplicate") is None and _facts_of(env, GROUP) == []
+
+
 async def test_replay_after_unlink_still_cancels_a_stale_journal_of_the_former_target(env):
     original = env.routes._forget_fanout_targets
     _fan_out_to(env, PART)

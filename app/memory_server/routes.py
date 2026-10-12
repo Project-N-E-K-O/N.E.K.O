@@ -5826,12 +5826,16 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
             # 擦除与两遍取消都完成之后才记「这个代数擦完了」。扇出目标先记、请求 subject 最后记：
             # 重复清除的捷径只看请求 subject 的完成标记，它落盘时每个目标的标记都已经在了
             erased_keys = {target.key for target in erase_targets}
+            # 部分擦除没重擦请求 subject 和已擦过的目标：不能借已在位的更高围栏把目标记成已擦。
+            # 那次更高代数的清除（以这个目标为请求 subject、扇出到整个参与者）还没擦完，借了
+            # 它重试时就走 duplicate 捷径，参与者里其余账号期间写入的内容漏擦
+            full_erase = len(erase_targets) == len(targets)
             for target_key, target_epoch in sorted((fanout_epochs or {}).items()):
                 if target_key not in erased_keys:
                     continue
                 await idempotency.mark_tombstone_erased(
                     lanlan_name, target_key, target_epoch,
-                    covered_epoch=fanout_fence_at_start.get(target_key),
+                    covered_epoch=fanout_fence_at_start.get(target_key) if full_erase else None,
                 )
             if subject.key in erased_keys:
                 # 只补擦了扇出目标时请求 subject 没被擦：它已有的完成标记已经覆盖 forget_epoch，
