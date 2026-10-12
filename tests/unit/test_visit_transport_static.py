@@ -2392,7 +2392,8 @@ def test_stuck_sdk_chain_still_destroys_and_reports_cleanup_done():
     out = run_visit_js(
         """
         const runs = {};
-        // stop：发布一直不落定（离房排在它后面同样卡住）→ 5 s 收线后不再等，立刻销毁
+        // stop：发布一直不落定（离房排在它后面同样卡住）→ 5 s 收线后不再等操作链；
+        // 已发出的退房还在路上，再等它最多 8 s 才销毁、报 cleanup_done（父页据此才移除 iframe）
         {
           const h = await joinedController('guest');
           h.trtc.startLocalVideo = () => new Promise(() => {});
@@ -2403,7 +2404,10 @@ def test_stuck_sdk_chain_still_destroys_and_reports_cleanup_done():
           await settle();
           await advance(5100);
           await settle();
-          runs.stop = { destroyed: kinds(h.log).includes('destroy'), done: h.posted.some((m) => m.t === 'cleanup_done') };
+          const at5 = { destroyed: kinds(h.log).includes('destroy'), done: h.posted.some((m) => m.t === 'cleanup_done') };
+          await advance(8000);
+          await settle();
+          runs.stop = { at5, destroyed: kinds(h.log).includes('destroy'), done: h.posted.some((m) => m.t === 'cleanup_done') };
         }
         // 4409 被顶号：在途发布一直不落定 → 最多等 2 s 就交给适配器（15 s 兜底退房、退房本身最多 8 s）
         {
@@ -2421,4 +2425,43 @@ def test_stuck_sdk_chain_still_destroys_and_reports_cleanup_done():
         return runs;
         """
     )
-    assert out == {"stop": {"destroyed": True, "done": True}, "superseded": {"destroyed": True, "done": True}}
+    assert out == {"stop": {"at5": {"destroyed": False, "done": False}, "destroyed": True, "done": True},
+                   "superseded": {"destroyed": True, "done": True}}
+
+
+def test_livekit_destroy_waits_for_a_disconnect_still_in_flight():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const LKV = ctx.NekoVisitTransport.vendors.livekit;
+        const LK = makeFakeLK([]);
+        const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 560, fps: 30 } };
+        // leave 发出的 disconnect 还没落定时拆适配器：等它做完才算清理完成
+        const a = LKV.createAdapter({ sdk: LK, handlers });
+        await a.join(creds);
+        let finishDisconnect;
+        LK.Room.last.disconnect = () => new Promise((res) => { finishDisconnect = res; });
+        a.leave();
+        let cleaned = false;
+        a.destroy().then(() => { cleaned = true; });
+        await advance(3000);
+        const before = cleaned;
+        finishDisconnect();
+        await settle();
+        const after = cleaned;
+        // 一直不落定：最多 8 s
+        const b = LKV.createAdapter({ sdk: LK, handlers });
+        await b.join(creds);
+        LK.Room.last.disconnect = () => new Promise(() => {});
+        b.leave();
+        let cleanedB = false;
+        b.destroy().then(() => { cleanedB = true; });
+        await advance(7900);
+        const early = cleanedB;
+        await advance(200);
+        return { before, after, early, late: cleanedB };
+        """
+    )
+    assert out == {"before": False, "after": True, "early": False, "late": True}

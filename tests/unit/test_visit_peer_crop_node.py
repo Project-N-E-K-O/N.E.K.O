@@ -702,24 +702,27 @@ def test_ended_lets_the_transport_leave_before_removing_it():
         change(h, 'ended');
         const toIframe = h.child.posted.map((m) => m.t === 'visit_state' ? m.phase : m.t);
         const right = { removed: frame.removed, hidden: frame.style.visibility, lookup: !!h.ctx.document.getElementById('visit-frame') };
+        // 报 closed 还不移除（离房等超时后也会报 closed，退房可能还在路上）；报 cleanup_done 才移除
         h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 0 } });
         const onClosed = frame.removed;
-        // 传输页一直不报 closed：最多 6 s（不短于传输页 5 s 的离房等待）后照样移除
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'cleanup_done' } });
+        const onDone = frame.removed;
+        // 传输页一直不报 cleanup_done：最多 15 s（离房 5 s + 退房 / 断开 8 s 再留余量）后照样移除
         const h2 = makeBridge();
         await open(h2, 'host');
         change(h2, 'started');
         const f2 = h2.frame;
         change(h2, 'ended');
-        await advance(5900);
+        await advance(14900);
         const early = f2.removed;
         await advance(200);
-        return { toIframe, right, onClosed, early, late: f2.removed };
+        return { toIframe, right, onClosed, onDone, early, late: f2.removed };
         """,
         files=BRIDGE_FILES,
     )
     assert out["toIframe"] == ["ended"]
     assert out["right"] == {"removed": False, "hidden": "hidden", "lookup": False}
-    assert out["onClosed"] is True
+    assert out["onClosed"] is False and out["onDone"] is True
     assert out["early"] is False and out["late"] is True
 
 
@@ -834,13 +837,27 @@ def test_superseded_frame_is_kept_until_its_fallback_cleanup_ran():
         await open(h2, 'guest');
         change(h2, 'started');
         const f2 = h2.frame;
+        // 其它终态（4403 / 重连超时等）同样等清理做完：报 cleanup_done 就移除，最多 12 s
         h2.bridge._onFrameMessage({ source: h2.child, origin: h2.ctx.location.origin, data: { t: 'closed', code: 4403 } });
-        return { right, at20, onDone, before25, at25: f3.removed, other: f2.removed };
+        const other = { removed: f2.removed, lookup: !!h2.ctx.document.getElementById('visit-frame') };
+        h2.bridge._onFrameMessage({ source: h2.child, origin: h2.ctx.location.origin, data: { t: 'cleanup_done' } });
+        other.onDone = f2.removed;
+        const h4 = makeBridge();
+        await open(h4, 'guest');
+        change(h4, 'started');
+        const f4 = h4.frame;
+        h4.bridge._onFrameMessage({ source: h4.child, origin: h4.ctx.location.origin, data: { t: 'closed', code: 1006 } });
+        await advance(11900);
+        other.before12 = f4.removed;
+        await advance(200);
+        other.at12 = f4.removed;
+        return { right, at20, onDone, before25, at25: f3.removed, other };
         """,
         files=BRIDGE_FILES,
     )
     assert out == {"right": {"removed": False, "lookup": False}, "at20": False, "onDone": True,
-                   "before25": False, "at25": True, "other": True}
+                   "before25": False, "at25": True,
+                   "other": {"removed": False, "lookup": False, "onDone": True, "before12": False, "at12": True}}
 
 def test_stale_visit_crop_does_not_touch_the_current_visit():
     out = run_visit_js(

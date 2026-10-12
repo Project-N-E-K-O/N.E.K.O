@@ -15,6 +15,14 @@
   var SUPERSEDED_DISCONNECT_MS = 15000;   // 拆掉后兜底断开旧房间对象的延迟（留给接替的页面入房顶号）
   var CLEANUP_BOUND_MS = 8000;            // 兜底断开最多等这么久（父页按 2 + 15 + 8 s 再留余量保留 iframe）
 
+  /** 等退房 / 断开做完，但最多 CLEANUP_BOUND_MS：网络坏着时它可能一直不落定（失败也算完）。 */
+  function boundCleanup(p) {
+    return Promise.race([
+      Promise.resolve(p).then(null, function () {}),
+      new Promise(function (resolve) { setTimeout(resolve, CLEANUP_BOUND_MS); }),
+    ]).then(function () {});
+  }
+
   function reasonName(LK, reason) {
     var table = LK && LK.DisconnectReason;
     if (table && typeof table[reason] === 'string') return table[reason];
@@ -48,6 +56,7 @@
     var creds = null;
     var joined = false;
     var leaving = false;
+    var departing = null;   // leave 发出的 disconnect：destroy 时还没落定就等它做完（有上限）
     var publication = null;
     var publishedTrack = null;
     // 发布 / 撤销按顺序执行：有发布在途时，停止排在它之后、新的发布再排在停止之后，
@@ -402,6 +411,7 @@
         clearSubRetry();
         if (!room) return Promise.resolve();
         var disconnecting = room.disconnect(false).catch(function () {});
+        departing = disconnecting;
         return Promise.all([disconnecting, opChain, entering]).then(function () {});
       },
       /**
@@ -413,16 +423,14 @@
       destroy: function () {
         var r = room;
         room = null;
-        if (!r || leaving) return Promise.resolve();   // 已经离过房：没有要兜底的
+        if (!r) return Promise.resolve();
+        // 已经发出过离房：离房等超时后才拆时断开可能还在路上，等它做完再算清理完成（父页据此才移除 iframe）
+        if (leaving) return boundCleanup(departing);
         return new Promise(function (resolve) {
           setTimeout(resolve, SUPERSEDED_DISCONNECT_MS);
         }).then(function () {
-          // 断开本身也有上限：网络坏着时 disconnect 可能一直不落定
-          return Promise.race([
-            Promise.resolve().then(function () { return r.disconnect(false); }).then(null, function () {}),
-            new Promise(function (resolve) { setTimeout(resolve, CLEANUP_BOUND_MS); }),
-          ]);
-        }).then(function () {});
+          return boundCleanup(Promise.resolve().then(function () { return r.disconnect(false); }));
+        });
       },
       remoteVideoAvailable: function () {
         return !!remotePublication;

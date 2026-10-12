@@ -16,6 +16,14 @@
   var SUPERSEDED_EXIT_MS = 15000;     // 拆掉后兜底退出旧房间的延迟（留给接替的页面入房顶号）
   var CLEANUP_BOUND_MS = 8000;        // 兜底退房最多等这么久（父页按 2 + 15 + 8 s 再留余量保留 iframe）
 
+  /** 等退房 / 断开做完，但最多 CLEANUP_BOUND_MS：网络坏着时它可能一直不落定（失败也算完）。 */
+  function boundCleanup(p) {
+    return Promise.race([
+      Promise.resolve(p).then(null, function () {}),
+      new Promise(function (resolve) { setTimeout(resolve, CLEANUP_BOUND_MS); }),
+    ]).then(function () {});
+  }
+
   function createTrtcAdapter(opts) {
     var TRTC = opts.sdk;
     var handlers = opts.handlers;
@@ -23,6 +31,7 @@
     var creds = null;
     var joined = false;
     var leaving = false;
+    var departing = null;   // leave 发出的 exitRoom：destroy 时还没落定就等它做完（有上限）
     var publishing = false;
     var publishedTrack = null;
     // 发布 / 撤销按顺序执行：有发布在途时，停止排在它之后、新的发布再排在停止之后，
@@ -323,6 +332,7 @@
         // exitRoom 立即发出；交给重连的「离房完成」还要等在途的发布 / 撤销跑完，
         // 免得旧的 SDK 调用与新一次 enterRoom 交错
         var exiting = trtc.exitRoom().catch(function () {});
+        departing = exiting;
         return Promise.all([exiting, opChain, entering]).then(function () {});
       },
       /**
@@ -340,18 +350,16 @@
             // 已销毁
           }
         };
-        if (leaving || !(joined || entering)) {
+        // 已经发出过离房：离房等超时后才拆时 exitRoom 可能还在路上，等它做完再销毁（TRTC 要求先退房）、再算清理完成
+        if (leaving) return boundCleanup(departing).then(destroyNow);
+        if (!(joined || entering)) {
           destroyNow();
           return Promise.resolve();
         }
         return new Promise(function (resolve) {
           setTimeout(resolve, SUPERSEDED_EXIT_MS);
         }).then(function () {
-          // 退房本身也有上限：网络坏着时 exitRoom 可能一直不落定
-          return Promise.race([
-            Promise.resolve().then(function () { return t.exitRoom(); }).then(null, function () {}),
-            new Promise(function (resolve) { setTimeout(resolve, CLEANUP_BOUND_MS); }),
-          ]);
+          return boundCleanup(Promise.resolve().then(function () { return t.exitRoom(); }));
         }).then(destroyNow);
       },
       remoteVideoAvailable: function () {

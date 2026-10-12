@@ -39,7 +39,9 @@
   var CLOSE_UNKNOWN_VISIT = 4404;      // 传输 WS 关闭码：后端不认这个场次（与 backend-ws.js 同值）
   var CLOSE_SUPERSEDED = 4409;         // 传输 WS 关闭码：被同 vid 的新传输连接顶掉（与 backend-ws.js 同值）
   // 移除 iframe 会把它里面还在跑的清理一起掐掉：父页至少等到子页的清理时限
-  var ENDED_LEAVE_WAIT_MS = 6000;       // ended 后等传输页离房（报 closed）的上限；不短于 backend-ws 的 5 s 离房等待
+  var ENDED_LEAVE_WAIT_MS = 15000;      // ended 后等传输页清理做完（报 cleanup_done）的上限：离房最多等 5 s、
+                                        // 超时后拆适配器时再等在路上的退房 / 断开最多 8 s
+  var CLOSED_KEEP_MS = 12000;           // 传输页报 closed（终态）后等它清理做完的上限：拆适配器前最多 2 s、退房 / 断开最多 8 s
   var SUPERSEDED_KEEP_MS = 27000;       // 4409 被顶号后最多保留 iframe 的时长：传输页拆适配器前最多等 2 s 在途操作，
                                         // 适配器 15 s 后兜底退房 / 断开、本身再最多 8 s，
                                         // 正常由传输页清理做完后报 cleanup_done 提前移除
@@ -143,7 +145,7 @@
       publishing: false,
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       endedVisitId: null,    // 最近结束的场次：它迟到的 wrap_up / ending 不再补建 iframe（只拦补建，不参与场次过滤）
-      retiring: [],          // 已脱离父页、等它把清理做完的旧 iframe [{frame, timer, endOn}]
+      retiring: [],          // 已脱离父页、等它把清理做完（报 cleanup_done）的旧 iframe [{frame, timer}]
       auxGen: { crop: 0, hidden: 0, away: 0 },   // 实时辅助状态各自的更新计数：重载快照只不覆盖查询期间更新过的那几项
       away: false,           // guest 离家样式当前是否打着
       reloadInFlight: null,  // 重载恢复里在路上的 reloadPageConfig（同时只发一个）
@@ -334,9 +336,8 @@
 
     /**
      * ended 时不立刻移除：先告诉传输页 ended（它据此主动离房、断开传输 WS——后端断着收不到 stop
-     * 时对端也能马上看到离开），iframe 立即隐藏、脱离父页状态，最多等 ENDED_LEAVE_WAIT_MS 再移除。
-     * 传输 WS 还连着时它离房后经 onclose 报 closed，收到就提前移除；WS 断着（这条保险针对的情形）报不出 closed，
-     * 会等满这段时间。
+     * 时对端也能马上看到离开），iframe 立即隐藏、脱离父页状态，等它报 cleanup_done（离房与拆适配器做完）、
+     * 最多 ENDED_LEAVE_WAIT_MS 再移除。不按 closed 提前移除：离房等超时后它照样报 closed，退房 / 断开却可能还在路上。
      */
     function retireFrame() {
       var f = state.frame;
@@ -346,21 +347,21 @@
       }
       post({ t: 'visit_state', phase: 'ended' });
       removeFrame({ keepElement: true });
-      retireElement(f, ENDED_LEAVE_WAIT_MS, 'closed');
+      retireElement(f, ENDED_LEAVE_WAIT_MS);
     }
 
     /**
      * 已脱离父页状态的旧 iframe 先隐藏、留在 DOM 里，让它把离房 / 兜底断开做完再移除：
-     * 它报 endOn 指定的消息（closed：离房做完；cleanup_done：兜底清理做完）就提前移除，否则到点移除。
+     * 它报 cleanup_done（离房 / 兜底退房与拆适配器做完）就提前移除，否则到点移除。
      */
-    function retireElement(f, waitMs, endOn) {
+    function retireElement(f, waitMs) {
       try {
         f.style.visibility = 'hidden';
         f.id = '';   // 让新场次的 iframe 用回 #visit-frame
       } catch (_) {
         // 已卸载
       }
-      var r = { frame: f, timer: null, endOn: endOn };
+      var r = { frame: f, timer: null };
       r.timer = setTimeoutFn(function () { finishRetire(r); }, waitMs);
       state.retiring.push(r);
     }
@@ -509,7 +510,7 @@
       var r = findRetiring(event.source);
       if (r && event.origin === win.location.origin) {
         var d = event.data;
-        if (d && (d.t === r.endOn || d.t === 'cleanup_done')) finishRetire(r);
+        if (d && d.t === 'cleanup_done') finishRetire(r);
         // 退场期间的离房日志照常记下（离房出错时要能排查）
         else if (d && d.t === 'log') logFrame(d.level, String(d.msg || '').slice(0, 500) + (d.code ? ' (' + d.code + ')' : ''));
         return;
@@ -547,14 +548,13 @@
       } else if (data.t === 'log') {
         logFrame(data.level, String(data.msg || '').slice(0, 500) + (data.code ? ' (' + data.code + ')' : ''));
       } else if (data.t === 'closed') {
-        // 传输页进入终态（4403 / 4404 / 4409 / 重连超时）：它已离房，移除。记住这个 visit_id，之后的
+        // 传输页进入终态（4403 / 4404 / 4409 / 重连超时）：脱离父页状态、隐藏，等它清理做完再移除。记住这个 visit_id，之后的
         // wrap_up / ending 不再补建 iframe。场次还在、只是这个传输页没了（4409 被顶掉、4403、重连超时）时
         // guest 的离家样式留到 ended；4404 是后端已经不认这个场次了，可能再也等不到 ended，照旧清掉
-        // 被同 vid 顶掉（4409）时没离房：它的适配器 15 s 后兜底退房 / 断开，iframe 要留到那之后
+        // 离房等超时后才报 closed 时退房 / 断开可能还在路上；被同 vid 顶掉（4409）时没离房，适配器 15 s 后才兜底退房 / 断开
         var closedId = state.visitId;
-        var superseded = data.code === CLOSE_SUPERSEDED;
-        removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT, keepElement: superseded });
-        if (superseded) retireElement(f, SUPERSEDED_KEEP_MS, 'cleanup_done');
+        removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT, keepElement: true });
+        retireElement(f, data.code === CLOSE_SUPERSEDED ? SUPERSEDED_KEEP_MS : CLOSED_KEEP_MS);
         state.closedVisitId = closedId;
       }
     }
