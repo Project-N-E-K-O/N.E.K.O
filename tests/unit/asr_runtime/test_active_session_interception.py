@@ -17,6 +17,8 @@ from main_logic.voice_input.activation import (
 )
 from main_logic.core.asr_runtime import VoiceSessionActivationRouteContext
 from main_logic.voice_turn.contracts import AsrSubmitResult, AsrSubmitStatus
+from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
+from main_logic.asr_client.provider_policy import resolve_provider_policy
 
 
 class _FakeRuntime:
@@ -76,6 +78,11 @@ class _HangingFactory(_FakeFactory):
 class _Runtime(AsrRuntimeMixin):
     def __init__(self) -> None:
         self._init_asr_runtime_state()
+        # This protocol harness represents an installed supported manual route.
+        # Tests using a real ASR runtime replace it with that route's lifecycle.
+        self._asr_runtime._asr_lifecycle = VoiceInputLifecycleController(
+            provider_policy=resolve_provider_policy("qwen", "manual"), shadow_mode=False,
+        )
         self._voice_lease_synchronized = True
         self._voice_lease_owner = "core"
         self._voice_input_suppressed = False
@@ -173,10 +180,13 @@ async def test_common_activation_output_sends_filtered_bytes_to_receiver_only(ro
     )
     frame = _frame(runtime, generation, b"mixed" * 40)
     result = await runtime._route_voice_session_activation_output(frame, generation)
-    assert result is OutputCommit.LOCAL_ACCEPTED
     if route_mode == "native":
-        sent = runtime.session.stream_audio.await_args.args[0]
+        assert result is OutputCommit.UNKNOWN
+        runtime.session.stream_audio.assert_not_awaited()
+        await asyncio.gather(*tuple(runtime._core_asr_cleanup_tasks), return_exceptions=True)
+        return
     else:
+        assert result is OutputCommit.LOCAL_ACCEPTED
         sent = runtime._asr_runtime.submit.await_args.args[0].pcm16
     assert sent == filtered
     assert sent != frame.pcm
@@ -184,7 +194,7 @@ async def test_common_activation_output_sends_filtered_bytes_to_receiver_only(ro
 
 async def test_common_activation_output_drops_pending_without_raw_fallback():
     runtime = _Runtime()
-    runtime._asr_route_mode = "native"
+    runtime._asr_route_mode = "independent"
     runtime._voice_session_activation_degraded = False
     runtime._voice_activation_handoff = None
     generation = ActivationGeneration("session", 1, 1, 1, 1, "core")

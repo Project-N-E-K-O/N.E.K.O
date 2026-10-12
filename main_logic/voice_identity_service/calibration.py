@@ -18,6 +18,12 @@ CALIBRATION_SCHEMA_VERSION = 1
 DATASET_SCHEMA_VERSION = 1
 CALIBRATION_MAX_AUDIO_MS = 4_000.0
 TERMINAL_SHORT_SCOPE = "terminal_short_v1"
+CONTINUOUS_INTERCEPTION_SCOPE = "continuous_interception_v1"
+CONTINUOUS_DATA_PROTOCOL = "continuous_range_identity_v1"
+_CONTINUOUS_PROTOCOL_FIELDS = {
+    "scoring_sample_counts", "scoring_parameters_digest", "data_protocol",
+    "decision_sample_ranges",
+}
 TERMINAL_SHORT_MINIMUM_AUDIO_MS = 45.0
 TERMINAL_SHORT_MAXIMUM_AUDIO_MS_EXCLUSIVE = 1_500.0
 REFERENCE_FORMATION_PROTOCOL = "three_normalized_embeddings_centroid_v1"
@@ -128,6 +134,12 @@ class CalibrationProtocol:
     application_scope: str = TERMINAL_SHORT_SCOPE
     minimum_audio_ms: float = TERMINAL_SHORT_MINIMUM_AUDIO_MS
     maximum_audio_ms_exclusive: float = TERMINAL_SHORT_MAXIMUM_AUDIO_MS_EXCLUSIVE
+    scoring_sample_counts: tuple[int, ...] = ()
+    scoring_parameters_digest: str | None = None
+    data_protocol: str | None = None
+    # Exactly one calibrated decision geometry per scoring length. Offsets are
+    # relative to the scoring start; absolute stream positions may advance.
+    decision_sample_ranges: tuple[tuple[int, int, int], ...] = ()
 
     def __post_init__(self) -> None:
         _nonempty("model_id", self.model_id)
@@ -149,6 +161,37 @@ class CalibrationProtocol:
             raise CalibrationError("calibration application audio range is invalid")
         object.__setattr__(self, "minimum_audio_ms", minimum)
         object.__setattr__(self, "maximum_audio_ms_exclusive", maximum)
+        if self.application_scope == CONTINUOUS_INTERCEPTION_SCOPE:
+            counts = self.scoring_sample_counts
+            if (
+                type(counts) is not tuple or not counts
+                or any(type(count) is not int or count <= 0 for count in counts)
+                or tuple(sorted(set(counts))) != counts
+            ):
+                raise CalibrationError("continuous scoring lengths must be a positive increasing tuple")
+            if any(not minimum <= count / 16 < maximum for count in counts) or counts[-1] > 64_000:
+                raise CalibrationError("continuous scoring length is outside the application domain")
+            _validated_artifact_sha256("scoring_parameters_digest", self.scoring_parameters_digest)
+            if self.data_protocol != CONTINUOUS_DATA_PROTOCOL:
+                raise CalibrationError("continuous calibration requires its range data protocol")
+            layouts = self.decision_sample_ranges
+            if (
+                type(layouts) is not tuple or len(layouts) != len(counts)
+                or any(
+                    type(layout) is not tuple or len(layout) != 3
+                    or any(type(value) is not int for value in layout)
+                    or not 0 <= layout[1] < layout[2] <= layout[0]
+                    for layout in layouts
+                )
+                or tuple(layout[0] for layout in layouts) != counts
+            ):
+                raise CalibrationError("continuous decision ranges must bind every scoring length")
+        elif (
+            type(self.scoring_sample_counts) is not tuple or self.scoring_sample_counts != ()
+            or self.scoring_parameters_digest is not None or self.data_protocol is not None
+            or type(self.decision_sample_ranges) is not tuple or self.decision_sample_ranges != ()
+        ):
+            raise CalibrationError("continuous fields require the continuous application scope")
 
     @property
     def has_supported_reference_formation(self) -> bool:
@@ -166,17 +209,52 @@ class CalibrationProtocol:
             == TERMINAL_SHORT_MAXIMUM_AUDIO_MS_EXCLUSIVE
         )
 
+    @property
+    def has_supported_application_domain(self) -> bool:
+        return self.has_supported_terminal_short_domain or (
+            self.application_scope == CONTINUOUS_INTERCEPTION_SCOPE
+            and self.data_protocol == CONTINUOUS_DATA_PROTOCOL
+            and bool(self.scoring_sample_counts)
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+        result = {
+            name: getattr(self, name) for name in self.__dataclass_fields__
+            if name not in _CONTINUOUS_PROTOCOL_FIELDS
+        }
+        if self.application_scope == CONTINUOUS_INTERCEPTION_SCOPE:
+            result.update(
+                scoring_sample_counts=list(self.scoring_sample_counts),
+                scoring_parameters_digest=self.scoring_parameters_digest,
+                data_protocol=self.data_protocol,
+                decision_sample_ranges=[list(layout) for layout in self.decision_sample_ranges],
+            )
+        return result
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> CalibrationProtocol:
         if type(value) is not dict:
             raise CalibrationError("calibration protocol must be a JSON object")
-        expected = set(cls.__dataclass_fields__)
+        expected = set(cls.__dataclass_fields__) - _CONTINUOUS_PROTOCOL_FIELDS
+        continuous = value.get("application_scope") == CONTINUOUS_INTERCEPTION_SCOPE
+        if continuous:
+            expected |= _CONTINUOUS_PROTOCOL_FIELDS
         if set(value) != expected:
             raise CalibrationError("calibration protocol fields do not match schema")
-        return cls(**value)
+        converted = dict(value)
+        if continuous:
+            if type(converted["scoring_sample_counts"]) is not list:
+                raise CalibrationError("scoring_sample_counts must be a JSON array")
+            converted["scoring_sample_counts"] = tuple(converted["scoring_sample_counts"])
+            if (
+                type(converted["decision_sample_ranges"]) is not list
+                or any(type(layout) is not list for layout in converted["decision_sample_ranges"])
+            ):
+                raise CalibrationError("decision_sample_ranges must be a JSON array of arrays")
+            converted["decision_sample_ranges"] = tuple(
+                tuple(layout) for layout in converted["decision_sample_ranges"]
+            )
+        return cls(**converted)
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +287,7 @@ class CalibrationPackage:
         _nonempty("package_revision", self.package_revision)
         if not self.protocol.has_supported_reference_formation:
             raise CalibrationError("package uses an unsupported reference formation protocol")
-        if not self.protocol.has_supported_terminal_short_domain:
+        if not self.protocol.has_supported_application_domain:
             raise CalibrationError("package uses an unsupported calibration application domain")
         if tuple(self.feature_order) != CALIBRATION_MODEL_FEATURE_ORDER:
             raise CalibrationError("package feature order does not match the fixed contract")
@@ -258,6 +336,11 @@ class CalibrationPackage:
             < self.protocol.maximum_audio_ms_exclusive
         ):
             return CalibrationResult(CalibrationOutcome.UNSUPPORTED, None, "outside_application_domain")
+        if (
+            self.protocol.application_scope == CONTINUOUS_INTERCEPTION_SCOPE
+            and features.audio_ms * 16 not in self.protocol.scoring_sample_counts
+        ):
+            return CalibrationResult(CalibrationOutcome.UNSUPPORTED, None, "outside_scoring_length_plan")
         try:
             normalized = tuple(
                 (value - center) / scale
@@ -376,7 +459,7 @@ def register_calibration_package(
     expected = _validated_artifact_sha256("expected_digest", expected_digest)
     if (
         not package.protocol.has_supported_reference_formation
-        or not package.protocol.has_supported_terminal_short_domain
+        or not package.protocol.has_supported_application_domain
     ):
         raise CalibrationError("calibration package protocol is not registered for this application")
     actual = calibration_package_artifact_sha256(package)
@@ -405,6 +488,8 @@ class CalibrationExample:
     label: CalibrationOutcome
     protocol: CalibrationProtocol
     features: CalibrationFeatures
+    scoring_range_samples: tuple[int, int] | None = None
+    decision_range_samples: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -450,7 +535,28 @@ class CalibrationExample:
             <= self.features.audio_ms
             < self.protocol.maximum_audio_ms_exclusive
         ):
-            raise CalibrationError("calibration example is outside terminal-short audio domain")
+            domain = "terminal-short" if self.protocol.application_scope == TERMINAL_SHORT_SCOPE else "continuous"
+            raise CalibrationError(f"calibration example is outside {domain} audio domain")
+        if self.protocol.application_scope == CONTINUOUS_INTERCEPTION_SCOPE:
+            for span in (self.scoring_range_samples, self.decision_range_samples):
+                if (
+                    type(span) is not tuple or len(span) != 2
+                    or any(type(bound) is not int for bound in span)
+                    or span[0] < 0 or span[1] <= span[0]
+                ):
+                    raise CalibrationError("continuous examples require real scoring and decision ranges")
+            start, end = self.scoring_range_samples
+            decision_start, decision_end = self.decision_range_samples
+            if not start <= decision_start < decision_end <= end:
+                raise CalibrationError("continuous decision range must be inside scoring range")
+            if end - start not in self.protocol.scoring_sample_counts:
+                raise CalibrationError("continuous example scoring length is not declared")
+            if (end - start, decision_start - start, decision_end - start) not in self.protocol.decision_sample_ranges:
+                raise CalibrationError("continuous example decision range is not calibrated")
+            if not math.isclose(self.features.audio_ms * 16, end - start, rel_tol=0, abs_tol=1e-8):
+                raise CalibrationError("continuous example duration must equal its real scoring range")
+        elif self.scoring_range_samples is not None or self.decision_range_samples is not None:
+            raise CalibrationError("continuous ranges require the continuous application scope")
         speakers_match = self.candidate_speaker_id == self.reference_speaker_id
         if (self.label == CalibrationOutcome.OWNER) != speakers_match:
             raise CalibrationError("label is inconsistent with opaque speaker identities")
@@ -458,7 +564,7 @@ class CalibrationExample:
             raise CalibrationError("candidate session must be independent from reference sessions")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "example_id": self.example_id,
             "group_id": self.group_id,
             "reference_speaker_id": self.reference_speaker_id,
@@ -474,12 +580,21 @@ class CalibrationExample:
             "protocol": self.protocol.to_dict(),
             "features": self.features.to_dict(),
         }
+        if self.protocol.application_scope == CONTINUOUS_INTERCEPTION_SCOPE:
+            result.update(
+                scoring_range_samples=list(self.scoring_range_samples),
+                decision_range_samples=list(self.decision_range_samples),
+            )
+        return result
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> CalibrationExample:
         if type(value) is not dict:
             raise CalibrationError("calibration example must be a JSON object")
-        expected = set(cls.__dataclass_fields__)
+        expected = set(cls.__dataclass_fields__) - {"scoring_range_samples", "decision_range_samples"}
+        protocol = CalibrationProtocol.from_dict(value.get("protocol"))
+        if protocol.application_scope == CONTINUOUS_INTERCEPTION_SCOPE:
+            expected |= {"scoring_range_samples", "decision_range_samples"}
         if set(value) != expected:
             raise CalibrationError("calibration example fields do not match schema")
         converted = dict(value)
@@ -493,7 +608,12 @@ class CalibrationExample:
             converted[name] = tuple(converted[name])
         converted["split"] = DatasetSplit(converted["split"])
         converted["label"] = CalibrationOutcome(converted["label"])
-        converted["protocol"] = CalibrationProtocol.from_dict(converted["protocol"])
+        converted["protocol"] = protocol
+        if protocol.application_scope == CONTINUOUS_INTERCEPTION_SCOPE:
+            for name in ("scoring_range_samples", "decision_range_samples"):
+                if type(converted[name]) is not list:
+                    raise CalibrationError(f"{name} must be a JSON array")
+                converted[name] = tuple(converted[name])
         converted["features"] = CalibrationFeatures.from_dict(converted["features"])
         return cls(**converted)
 
@@ -505,7 +625,7 @@ def validate_fit_dataset(examples: Iterable[CalibrationExample]) -> tuple[Calibr
     protocol = records[0].protocol
     if not protocol.has_supported_reference_formation:
         raise CalibrationError("dataset reference formation protocol is unsupported")
-    if not protocol.has_supported_terminal_short_domain:
+    if not protocol.has_supported_application_domain:
         raise CalibrationError("dataset calibration application domain is unsupported")
     groups: dict[str, DatasetSplit] = {}
     recordings: dict[str, DatasetSplit] = {}
@@ -547,6 +667,15 @@ def validate_fit_dataset(examples: Iterable[CalibrationExample]) -> tuple[Calibr
         labels = {item.label for item in records if item.split == split}
         if labels != {CalibrationOutcome.OWNER, CalibrationOutcome.NONOWNER}:
             raise CalibrationError(f"{split.value} split requires both owner and nonowner examples")
+        if protocol.application_scope == CONTINUOUS_INTERCEPTION_SCOPE:
+            for count in protocol.scoring_sample_counts:
+                length_labels = {
+                    item.label for item in records
+                    if item.split == split
+                    and item.scoring_range_samples[1] - item.scoring_range_samples[0] == count
+                }
+                if length_labels != {CalibrationOutcome.OWNER, CalibrationOutcome.NONOWNER}:
+                    raise CalibrationError(f"{split.value} split requires both labels at scoring length {count}")
     return tuple(sorted(records, key=lambda item: item.example_id))
 
 

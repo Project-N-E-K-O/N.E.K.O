@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 import hashlib
 import re
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .packages import PackageGateway, PackageError as NekoV2BridgeError, PackageWarning as NekoV2Warning
 from .numeric_v2_analysis import analyze_numeric_v2_story
@@ -223,6 +223,33 @@ def _is_actionable_player_exit(value: Any) -> bool:
     if text in _NON_ACTIONABLE_PLAYER_EXIT_EXACT:
         return False
     return not any(phrase in text for phrase in _NON_ACTIONABLE_PLAYER_EXIT_PHRASES)
+
+
+def final_dialogue_policy(initial_policy: Any, changes: Iterable[Any]) -> str:
+    """Fold explicit speech policies in order; unchanged or absent fields keep the prior policy."""
+
+    policy = initial_policy if initial_policy in ("required", "optional", "forbidden") else "required"
+    for after in changes:
+        if after in ("required", "optional", "forbidden"):
+            policy = after
+    return policy
+
+
+def has_dialogue_policy_conflict(policy: Any, ordered_goals: Any) -> bool:
+    """Check the node-wide speech envelope using declared author fields, without executing goals."""
+
+    rows = ordered_goals if isinstance(ordered_goals, list) else []
+    for goal in rows:
+        if not isinstance(goal, Mapping):
+            continue
+        after = goal.get("dialogue_policy_after", "unchanged")
+        if policy == "required" and after in ("optional", "forbidden"):
+            return True
+        if policy == "forbidden" and (
+            after in ("required", "optional") or goal.get("delivery_type") == "catgirl_dialogue"
+        ):
+            return True
+    return False
 
 
 def acting_contract_to_package(value: Mapping[str, Any]) -> dict[str, Any]:

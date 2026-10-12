@@ -4838,6 +4838,17 @@
         }
     },
     "vrmEmotionManager": {
+        "waitingForModel": "Carregando o modelo selecionado. Aguarde…",
+        "retryLoad": "Tentar carregar novamente",
+        "loadTimeout": "O carregamento excedeu o tempo limite. Tente novamente; a configuração salva não foi alterada.",
+        "saveTimeout": "O salvamento excedeu o tempo limite; o resultado não foi confirmado. Confira a configuração antes de tentar novamente.",
+        "recoveryBlocked": "Dois carregamentos de modelos ainda não terminaram. Aguarde a conclusão ou reabra a janela de gerenciamento de modelos antes de tentar novamente.",
+        "sourceUnavailable": "Abra esta página pelo Gerenciador de Modelos e mantenha essa janela aberta.",
+        "invalidModel": "Este modelo não está mais disponível. Selecione-o novamente.",
+        "modelLoadFailed": "Não foi possível carregar o modelo selecionado. Tente novamente.",
+        "sourceChanged": "O modelo de prévia mudou ou está indisponível. Tente carregar o modelo selecionado novamente.",
+        "noConfigurableExpressions": "O modelo foi carregado, mas não possui expressões configuráveis.",
+        "retainedBindings": "Estas associações salvas estão indisponíveis neste modelo e serão preservadas sem prévia:",
         "title": "Gerente de mapeamento de emoções VRM - Projeto N.E.K.O.",
         "pageTitle": "Gerenciador de mapeamento de emoções VRM",
         "subtitle": "Configure mapeamentos de expressão para diferentes emoções",

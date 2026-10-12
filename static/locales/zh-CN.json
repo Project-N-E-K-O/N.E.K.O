@@ -4838,6 +4838,17 @@
         }
     },
     "vrmEmotionManager": {
+        "waitingForModel": "正在加载所选模型，请稍候…",
+        "retryLoad": "重试加载",
+        "loadTimeout": "加载超时，请重试；原配置未修改",
+        "saveTimeout": "保存超时，结果未确认；请检查配置后再重试",
+        "recoveryBlocked": "两次模型加载仍未结束，请等待完成或重新打开模型管理窗口后重试",
+        "sourceUnavailable": "请从模型管理窗口打开此页面，并保持该窗口开启",
+        "invalidModel": "模型已不可用，请重新选择模型",
+        "modelLoadFailed": "所选模型未成功加载，请重试",
+        "sourceChanged": "预览模型已改变或不可用，请重试加载所选模型",
+        "noConfigurableExpressions": "模型已加载，但没有可配置的表情",
+        "retainedBindings": "以下已有绑定在当前模型中不可配置，保留但不参与预览：",
         "title": "VRM 情感映射管理器 - Project N.E.K.O.",
         "pageTitle": "VRM 情感映射管理器",
         "subtitle": "配置不同情绪对应的表情映射",

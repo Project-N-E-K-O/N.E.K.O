@@ -342,6 +342,7 @@ def _parse_output(
         raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json") from exc
     if not isinstance(payload, dict):
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
+    # 正文形状兼容旧 narrative_events 字段，但不解析或采纳；补推荐的严格形状不变。
     if transition_suggestions_only:
         # 转场补推荐把接受路径独立成字段，代码再确定性放到第一位；
         # 这样模型不能把“先核对/再看看”等暂缓选项误排为默认接受路径。
@@ -371,7 +372,7 @@ def _parse_output(
     if opening_required:
         expected_fields = {"scene_narration", "performance"}
         # 推荐或转场字段缺失时交给一次轻量补推荐；已合法的正文不会被丢弃。
-        tolerated_fields = {*expected_fields, "suggested_inputs", "transition_offered"}
+        tolerated_fields = {*expected_fields, "suggested_inputs", "transition_offered", "narrative_events"}
         # Optional fields degrade independently (missing suggestions == an invalid
         # container, missing transition_offered == False), so any subset is safe.
         if not expected_fields <= set(payload) <= tolerated_fields:
@@ -396,7 +397,7 @@ def _parse_output(
         # Runtime 仍确定段位和顺序；旁白按真实历史生成，缺字段不能退回会复演的作者原文。
         expected_fields = {"source_performance", "target_performance",
                            "bridge_scene_narration", "target_scene_narration"}
-        tolerated_fields = {*expected_fields, "suggested_inputs", "source_scene_narration"}
+        tolerated_fields = {*expected_fields, "suggested_inputs", "source_scene_narration", "narrative_events"}
         if not expected_fields.issubset(payload) or set(payload) - tolerated_fields:
             raise NumericV2ActorOutputError("numeric_v2_actor_transition_required")
         result = {
@@ -430,6 +431,7 @@ def _parse_output(
         "suggested_inputs",
         "transition_offered",
         "fact_candidates",
+        "narrative_events",
     }
     # Every optional field is parsed independently below and degrades on its own
     # when absent, so any combination of them is a valid ordinary-turn shape.

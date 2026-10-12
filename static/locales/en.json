@@ -4838,6 +4838,17 @@
         }
     },
     "vrmEmotionManager": {
+        "waitingForModel": "Loading the selected model. Please wait…",
+        "retryLoad": "Retry loading",
+        "loadTimeout": "Loading timed out. Please retry; your saved configuration is unchanged.",
+        "saveTimeout": "Saving timed out; the result is unconfirmed. Check your configuration before retrying.",
+        "recoveryBlocked": "Two model loads are still waiting. Wait for them to finish or reopen the model manager before retrying.",
+        "sourceUnavailable": "Open this page from Model Manager and keep that window open.",
+        "invalidModel": "This model is no longer available. Please select it again.",
+        "modelLoadFailed": "The selected model did not load successfully. Please retry.",
+        "sourceChanged": "The preview model changed or is unavailable. Retry loading the selected model.",
+        "noConfigurableExpressions": "The model loaded, but has no configurable expressions.",
+        "retainedBindings": "These saved bindings are unavailable on this model and are preserved without preview:",
         "title": "VRM Emotion Mapping Manager - Project N.E.K.O.",
         "pageTitle": "VRM Emotion Mapping Manager",
         "subtitle": "Configure expression mappings for different emotions",

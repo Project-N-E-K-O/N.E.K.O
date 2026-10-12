@@ -1,5 +1,6 @@
 """Give the transition Actor the complete source-interaction direction rather than making it infer reactions from chapter titles."""
 
+from dataclasses import replace
 import json
 import pytest
 
@@ -8,6 +9,108 @@ from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('invitation', ['我们去长街找旧信，好吗？', '我们去轨道站核对星图，好吗？'])
+@pytest.mark.parametrize('withdrawn', [False, True])
+async def test_transition_binds_original_invitation_beyond_recent_window(tmp_path, invitation, withdrawn):
+    from services.theater.numeric_v2_performance import performance_content_blocks
+    from tests.unit.test_theater_numeric_v2_pending_offer import _commit
+
+    runtime = NumericV2Runtime(_engine(ordinary=True), tmp_path)
+    stored = await runtime.start_session(session_id='authorization_origin', catgirl_binding=_binding(),
+                                         opening_performance=_opening())
+    stored = await _commit(runtime, stored, invitation, offer=True)
+    original = stored.session.performance_history[-1]
+    if withdrawn:
+        stored = await _commit(runtime, stored, '好，先不去。', intent='reject')
+    for _ in range(14):
+        stored = await _commit(runtime, stored, '门口还有一张椅子，你也可以坐坐。')
+    request = TurnRequestV2('accept_original', stored.session.revision, '好，按原来的安排出发。')
+    outcome = runtime.prepare_turn(stored, request, (), transition_intent='accept')
+    messages = _turn_messages(runtime.engine, stored.session, outcome, request.message,
+                             '克制。', '小岚', '你', recent_ledger_events=stored.ledger_events)
+    data = json.loads(messages[1].content.split('\n', 1)[1])
+    assert data['transition']['transition_intent'] == 'accept'
+    assert data['transition']['pending_invitation'] == {
+        'revision': original['revision'], 'content': performance_content_blocks(original),
+    }
+    assert invitation not in json.dumps(data['recent_context'], ensure_ascii=False)
+    assert data['player_input'] == request.message
+
+
+@pytest.mark.asyncio
+async def test_transition_uses_new_offer_after_rejection(tmp_path):
+    from tests.unit.test_theater_numeric_v2_pending_offer import _commit
+
+    runtime = NumericV2Runtime(_engine(ordinary=True), tmp_path)
+    stored = await runtime.start_session(session_id='authorization_refresh', catgirl_binding=_binding(),
+                                         opening_performance=_opening())
+    stored = await _commit(runtime, stored, '我们先去旧码头，好吗？', offer=True)
+    stored = await _commit(runtime, stored, '好，先不去。', intent='reject')
+    stored = await _commit(runtime, stored, '改去门外的平台看看，好吗？', offer=True)
+    request = TurnRequestV2('accept_new', stored.session.revision, '好，就去平台。')
+    outcome = runtime.prepare_turn(stored, request, (), transition_intent='accept')
+    messages = _turn_messages(runtime.engine, stored.session, outcome, request.message,
+                             '克制。', '小岚', '你', recent_ledger_events=stored.ledger_events)
+    data = json.loads(messages[1].content.split('\n', 1)[1])
+    assert data['transition']['pending_invitation']['revision'] == stored.session.revision
+    assert '改去门外的平台看看' in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
+    assert '旧码头' not in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_transition_preserves_runtime_names_in_committed_invitation(tmp_path):
+    from services.theater.numeric_v2_performance import performance_content_blocks
+    from tests.unit.test_theater_numeric_v2_pending_offer import _commit
+
+    engine = _engine(ordinary=True)
+    engine.story['intro'].update(player_name='小岚', catgirl_name='叶晴')
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id='authorization_names',
+        catgirl_binding={**_binding(), 'catgirl_name': '小岚'}, opening_performance=_opening())
+    stored = await _commit(runtime, stored, '（小岚抬眼）我们去走廊看看，好吗？', offer=True)
+    original = stored.session.performance_history[-1]
+    request = TurnRequestV2('accept_names', stored.session.revision, '好，就去走廊。')
+    outcome = runtime.prepare_turn(stored, request, (), transition_intent='accept')
+    data = json.loads(_turn_messages(engine, stored.session, outcome, request.message,
+        '克制。', '小岚', '哥哥', recent_ledger_events=stored.ledger_events)[1].content.split('\n', 1)[1])
+    assert data['transition']['pending_invitation']['content'] == performance_content_blocks(original)
+    assert '小岚抬眼' in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
+    assert '哥哥抬眼' not in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
+
+
+def test_formal_authorization_does_not_invent_a_pending_invitation():
+    engine = _engine(ordinary=True)
+    session = engine.create_session(session_id='authorization_missing', catgirl_binding=_binding(),
+                                    opening_performance=_opening())
+    session = replace(session, transition_offered=True)
+    outcome = engine.resolve_turn(session, TurnRequestV2('accept', 0, '好。'), (), transition_intent='accept')
+    data = json.loads(_turn_messages(engine, session, outcome, '好。', '克制。', '小岚', '你')[1].content.split('\n', 1)[1])
+    assert data['transition']['pending_invitation'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['initiate', 'natural_ending'])
+async def test_other_transition_modes_do_not_reuse_an_old_invitation(tmp_path, mode):
+    from tests.unit.test_theater_numeric_v2_pending_offer import _commit
+
+    runtime = NumericV2Runtime(_engine(ordinary=mode == 'initiate'), tmp_path)
+    stored = await runtime.start_session(session_id='authorization_mode', catgirl_binding=_binding(),
+                                         opening_performance=_opening())
+    stored = await _commit(runtime, stored, '我们去走廊看看，好吗？', offer=True)
+    stored = await _commit(runtime, stored, '好，先不去。', intent='reject')
+    request = TurnRequestV2('other_mode', stored.session.revision,
+                           '现在去走廊。' if mode == 'initiate' else '最后一条船也安全了。')
+    outcome = runtime.prepare_turn(stored, request, (),
+        transition_intent='initiate' if mode == 'initiate' else 'unclear',
+        scene_complete=mode == 'natural_ending', natural_ending_ready=mode == 'natural_ending')
+    messages = _turn_messages(runtime.engine, stored.session, outcome, request.message,
+                             '克制。', '小岚', '你', recent_ledger_events=stored.ledger_events)
+    data = json.loads(messages[1].content.split('\n', 1)[1])
+    assert data['transition']['transition_intent'] == ('initiate' if mode == 'initiate' else 'unclear')
+    assert 'pending_invitation' not in data['transition']
 
 
 def test_transition_keeps_source_direction_separate_from_history_and_target():

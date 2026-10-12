@@ -27,7 +27,7 @@ from collections.abc import Mapping
 from typing import Any, TypeAlias
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
-from ..delivery import begin_transport_write, complete_transport_write
+from ..delivery import begin_transport_write, complete_transport_write, interval_delivery_spans, retire_interval_deliveries
 from ._shared import MAX_SEGMENT_PCM_BYTES, encode_pcm16_wav, is_auth_rejection
 
 
@@ -162,9 +162,10 @@ async def gemini_asr_worker(
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _transcribe(key: _UtteranceKey, pcm16: bytes) -> None:
+        delivery_spans = interval_delivery_spans(request_queue, key)
         try:
             wav_audio = encode_pcm16_wav(pcm16)
-            evidence = begin_transport_write(request_queue)
+            evidence = begin_transport_write(request_queue, delivery_spans=delivery_spans)
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
                     model=_GEMINI_MODEL,
@@ -183,6 +184,7 @@ async def gemini_asr_worker(
                         }
                     ],
                     config={
+                        **({"http_options": {"retry_options": {"attempts": 1}}} if delivery_spans else {}),
                         "temperature": 0,
                         "response_mime_type": "application/json",
                         "response_json_schema": _GEMINI_RESPONSE_SCHEMA,
@@ -193,6 +195,7 @@ async def gemini_asr_worker(
             complete_transport_write(
                 evidence, len(pcm16), generation=key[0],
                 buffer_epoch=key[1], provider="gemini",
+            delivery_spans=delivery_spans, takes_ownership=True,
             )
             transcript = _response_transcript(response)
         except asyncio.CancelledError:
@@ -245,6 +248,9 @@ async def gemini_asr_worker(
                     )
                 )
             return
+
+        finally:
+            retire_interval_deliveries(request_queue, only_spans=delivery_spans)
 
         if _is_current(key) and inflight.get(key) is asyncio.current_task():
             await response_queue.put(

@@ -67,7 +67,7 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
                   diagnostics_sink=diagnostics)
     rejected = mode in ('invalid_offer', 'reject', 'timeout', 'protocol')
     offer_repaired_before_dispute = not formal and mode in ('offer', 'invalid_offer')
-    result = await workflow.execute_numeric_v2_turn(**kwargs)
+    result = await workflow.execute_numeric_v2_turn(**kwargs, background_narrative=(rejected and mode != 'invalid_offer'))
     assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
     assert result.stored.session.current_node_id == ('ending_leave' if formal else 'start')
@@ -77,6 +77,8 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
     if rejected or offer_repaired_before_dispute:
         assert '第1版回应' not in str(saved)
     assert await NumericV2Runtime(engine, tmp_path).restore_session('dispute') == result.stored
+    if rejected and mode != 'invalid_offer':
+        assert 'narrative_pending' not in result.stored.ledger_events[-1]
     assert diagnostics['semantic_review_fallback'] is rejected
     assert diagnostics['semantic_review_fallback_phase'] == (('transition' if formal else 'ordinary') if rejected else '')
     if mode == 'invalid_offer' and not formal:
