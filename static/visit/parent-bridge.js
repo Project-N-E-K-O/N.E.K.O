@@ -40,7 +40,8 @@
   var CLOSE_SUPERSEDED = 4409;         // 传输 WS 关闭码：被同 vid 的新传输连接顶掉（与 backend-ws.js 同值）
   // 移除 iframe 会把它里面还在跑的清理一起掐掉：父页至少等到子页的清理时限
   var ENDED_LEAVE_WAIT_MS = 6000;       // ended 后等传输页离房（报 closed）的上限；不短于 backend-ws 的 5 s 离房等待
-  var SUPERSEDED_KEEP_MS = 25000;       // 4409 被顶号后最多保留 iframe 的时长：适配器 15 s 后兜底退房 / 断开、本身再最多 8 s，
+  var SUPERSEDED_KEEP_MS = 27000;       // 4409 被顶号后最多保留 iframe 的时长：传输页拆适配器前最多等 2 s 在途操作，
+                                        // 适配器 15 s 后兜底退房 / 断开、本身再最多 8 s，
                                         // 正常由传输页清理做完后报 cleanup_done 提前移除
   var PEER_AWAY_OPACITY = '0.6';
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图

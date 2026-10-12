@@ -13,7 +13,7 @@
   var SUB_RETRY_BASE_MS = 2000;      // 订阅失败后的首次重试间隔，之后翻倍
   var SUB_RETRY_MAX_MS = 30000;
   var SUPERSEDED_DISCONNECT_MS = 15000;   // 拆掉后兜底断开旧房间对象的延迟（留给接替的页面入房顶号）
-  var CLEANUP_BOUND_MS = 8000;            // 兜底断开最多等这么久（父页按 15 + 8 s 再留余量保留 iframe）
+  var CLEANUP_BOUND_MS = 8000;            // 兜底断开最多等这么久（父页按 2 + 15 + 8 s 再留余量保留 iframe）
 
   function reasonName(LK, reason) {
     var table = LK && LK.DisconnectReason;

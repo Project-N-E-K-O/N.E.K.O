@@ -820,13 +820,13 @@ def test_superseded_frame_is_kept_until_its_fallback_cleanup_ran():
         // 传输页报 cleanup_done（兜底退房 / 断开做完）就移除
         h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'cleanup_done' } });
         const onDone = frame.removed;
-        // 一直不报 cleanup_done：最多 25 s 后照样移除
+        // 一直不报 cleanup_done：最多 27 s 后照样移除
         const h3 = makeBridge();
         await open(h3, 'guest');
         change(h3, 'started');
         const f3 = h3.frame;
         h3.bridge._onFrameMessage({ source: h3.child, origin: h3.ctx.location.origin, data: { t: 'closed', code: 4409 } });
-        await advance(24900);
+        await advance(26900);
         const before25 = f3.removed;
         await advance(200);
         // 已经离房的终态（4403）照旧立即移除

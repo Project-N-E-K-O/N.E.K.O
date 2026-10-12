@@ -245,7 +245,8 @@ def test_superseded_4409_is_terminal_and_does_not_leave():
         h.log.length = 0;
         const n = h.sockets.length;
         h.ws.serverClose(4409);
-        await advance(30000);
+        // 被顶号时不立刻离房（接替的页面已经入房）；15 s 后的兜底退房另有测试覆盖
+        await advance(14000);
         // 新 iframe 同 vid 入房把这里顶下线：不触发任何上报
         h.trtc.emit('KICKED_OUT', { reason: 'kick' });
         return { kinds: kinds(h.log), newSockets: h.sockets.length - n, closed: h.posted.filter((m) => m.t === 'closed') };
@@ -2385,3 +2386,39 @@ def test_stop_finishes_even_when_the_vendor_leave_never_settles():
         """
     )
     assert out == {"early": {"closedWith": None}, "closedWith": 1000, "lastState": "left"}
+
+
+def test_stuck_sdk_chain_still_destroys_and_reports_cleanup_done():
+    out = run_visit_js(
+        """
+        const runs = {};
+        // stop：发布一直不落定（离房排在它后面同样卡住）→ 5 s 收线后不再等，立刻销毁
+        {
+          const h = await joinedController('guest');
+          h.trtc.startLocalVideo = () => new Promise(() => {});
+          h.trtc.exitRoom = () => new Promise(() => {});
+          h.ws.serverSend({ type: 'media', publish: true, crop: 'upper', ladder: 0 });
+          await settle();
+          h.ws.serverSend({ type: 'stop', reason: 'route_end' });
+          await settle();
+          await advance(5100);
+          await settle();
+          runs.stop = { destroyed: kinds(h.log).includes('destroy'), done: h.posted.some((m) => m.t === 'cleanup_done') };
+        }
+        // 4409 被顶号：在途发布一直不落定 → 最多等 2 s 就交给适配器（15 s 兜底退房、退房本身最多 8 s）
+        {
+          const h = await joinedController('guest');
+          h.trtc.startLocalVideo = () => new Promise(() => {});
+          h.trtc.exitRoom = () => new Promise(() => {});
+          h.ws.serverSend({ type: 'media', publish: true, crop: 'upper', ladder: 0 });
+          await settle();
+          h.ws.serverClose(4409);
+          await settle();
+          await advance(2100 + 15000 + 8000);
+          await settle();
+          runs.superseded = { destroyed: kinds(h.log).includes('destroy'), done: h.posted.some((m) => m.t === 'cleanup_done') };
+        }
+        return runs;
+        """
+    )
+    assert out == {"stop": {"destroyed": True, "done": True}, "superseded": {"destroyed": True, "done": True}}

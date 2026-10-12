@@ -31,6 +31,7 @@
   var PUBLISH_RETRY_BASE_MS = 2000;   // SDK 拒绝发布后的首次重试间隔，之后翻倍
   var PUBLISH_RETRY_MAX_MS = 30000;
   var STOP_LEAVE_WAIT_MS = 5000;      // 收到 stop 后等离房的上限（与 backend-ws 终止时同值；父页 ended 后最多留 iframe 6 s）
+  var TEARDOWN_IDLE_WAIT_MS = 2000;   // 拆适配器前等在途 SDK 操作的上限（父页对被顶号的 iframe 按 2 + 15 + 8 s 再留余量）
   // 后端判自己断线是断开后 25 s：手动重新入房失败时在这个窗口内按退避再试，不让一次暂时性失败拖到判死
   var REJOIN_RETRY_WINDOW_MS = 20000;
   var REJOIN_RETRY_BASE_MS = 1000;
@@ -690,17 +691,18 @@
     var leaving = this.adapter ? this.adapter.leave() : Promise.resolve();
     // 离房最多等 STOP_LEAVE_WAIT_MS（失败也算完）：网络坏着时 leave 可能一直不落定，收线与拆适配器不能跟着挂住
     var done = false;
-    var finish = function () {
+    var finish = function (timedOut) {
       if (done) return;
       done = true;
       self.vendorState = 'left';
       self.peerPresent = false;
       self.reportState({});
       self.link.close();
-      self.teardown();
+      // leave 排在同一条 SDK 操作链上：它等超时了，链本身就是卡住的，不再等，直接拆（赶在父页移除 iframe 之前）
+      self.teardown(timedOut ? 0 : undefined);
     };
-    setTimeout(finish, STOP_LEAVE_WAIT_MS);
-    Promise.resolve(leaving).then(finish, finish);
+    setTimeout(function () { finish(true); }, STOP_LEAVE_WAIT_MS);
+    Promise.resolve(leaving).then(function () { finish(false); }, function () { finish(false); });
   };
 
   P.onTerminal = function (code) {
@@ -709,7 +711,8 @@
     this.post({ t: 'closed', code: typeof code === 'number' ? code : 0 });
   };
 
-  P.teardown = function () {
+  /** 收掉计时器与采集轨、拆适配器；idleWaitMs 是拆之前等在途 SDK 操作的上限（缺省 TEARDOWN_IDLE_WAIT_MS）。 */
+  P.teardown = function (idleWaitMs) {
     this.cancelPublishRetry();
     this.cancelProfileRetry();
     this.cancelRejoinRetry(false);
@@ -727,9 +730,16 @@
     var adapter = this.adapter;
     var post = this.post;
     var destroy = function () { return adapter.destroy(); };
-    var cleaned = adapter
-      ? Promise.resolve(typeof adapter.idle === 'function' ? adapter.idle() : null).then(destroy, destroy)
-      : Promise.resolve();
+    var cleaned = Promise.resolve();
+    if (adapter) {
+      // 在途的发布 / 档位更新可能一直不落定：最多等这么久就拆，否则销毁与 cleanup_done 永远不发生
+      var wait = typeof idleWaitMs === 'number' ? idleWaitMs : TEARDOWN_IDLE_WAIT_MS;
+      var idle = typeof adapter.idle === 'function' ? adapter.idle() : null;
+      cleaned = Promise.race([
+        Promise.resolve(idle),
+        new Promise(function (resolve) { setTimeout(resolve, wait); }),
+      ]).then(destroy, destroy);
+    }
     // 适配器的清理（含 4409 被顶号后 15 s 的兜底退房 / 断开）都在这个 iframe 里跑：做完了才告诉父页可以移除
     cleaned.then(null, function () {}).then(function () { post({ t: 'cleanup_done' }); });
   };
