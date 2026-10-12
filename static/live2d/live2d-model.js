@@ -346,6 +346,10 @@ const Easing = {
 };
 
 Live2DManager.prototype.removeModel = async function(options = {}) {
+    this._invalidateParameterReloadTickets();
+    // Stop old performance drivers before the first asynchronous teardown.
+    if (this._avatarPerformanceSessionOwners) this._avatarPerformanceSessionOwners.clear();
+    this._avatarPerformanceEyeBlinkOwner = null;
     const shouldSkipCloseWindows = options.skipCloseWindows === true;
     const activeModel = this.currentModel || null;
     const stage = this.pixi_app && this.pixi_app.stage;
@@ -817,7 +821,37 @@ Live2DManager.prototype._loadModelDirectoryParameters = async function(modelName
         : {};
 };
 
-Live2DManager.prototype._applyEffectiveModelParameters = function(model, modelDirectoryParameters, userPreferenceParameters) {
+Live2DManager.prototype._invalidateParameterReloadTickets = function() {
+    this._parameterReloadSequence = (this._parameterReloadSequence || 0) + 1;
+};
+
+Live2DManager.prototype._createParameterReloadTicket = function(model = this.currentModel) {
+    this._invalidateParameterReloadTickets();
+    return {
+        sequence: this._parameterReloadSequence,
+        configRevision: this._parameterConfigRevision || 0,
+        model,
+        internalModel: model?.internalModel,
+        coreModel: model?.internalModel?.coreModel,
+        modelName: this.modelName,
+        modelPath: this._normalizeModelPreferencePath(this._lastLoadedModelPath)
+    };
+};
+
+Live2DManager.prototype._getParameterReloadTicketStatus = function(ticket) {
+    if (!ticket) return 'superseded';
+    if (this.currentModel !== ticket.model
+        || this.currentModel?.internalModel !== ticket.internalModel
+        || ticket.internalModel?.coreModel !== ticket.coreModel
+        || this.modelName !== ticket.modelName
+        || this._normalizeModelPreferencePath(this._lastLoadedModelPath) !== ticket.modelPath) {
+        return 'model_mismatch';
+    }
+    return this._parameterReloadSequence === ticket.sequence
+        && (this._parameterConfigRevision || 0) === ticket.configRevision ? 'active' : 'superseded';
+};
+
+Live2DManager.prototype._applyEffectiveModelParameters = function(model, modelDirectoryParameters, userPreferenceParameters, reloadTicket) {
     const coreModel = model?.internalModel?.coreModel;
     const effectiveParameters = this._mergeEffectiveModelParameters(
         modelDirectoryParameters,
@@ -829,6 +863,10 @@ Live2DManager.prototype._applyEffectiveModelParameters = function(model, modelDi
     this.effectiveModelParameters = effectiveParameters;
     this.savedModelParameters = hasEffectiveParameters ? effectiveParameters : null;
     this._shouldApplySavedParams = hasEffectiveParameters && this._parameterEditingMode !== true;
+    // Publishing a config retires readers even when subsequent SDK writes or
+    // override installation fail. Revision does not certify visual success.
+    this._parameterConfigRevision = (this._parameterConfigRevision || 0) + 1;
+    if (reloadTicket) reloadTicket.configRevision = this._parameterConfigRevision;
 
     if (hasEffectiveParameters) {
         this.applyModelParameters(model, effectiveParameters);
@@ -854,29 +892,37 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
         return { applied: false, reason: 'model_mismatch' };
     }
 
-    let modelDirectoryParameters = {};
+    const ticket = this._createParameterReloadTicket(model);
+    const staleResult = () => ({ applied: false, reason: this._getParameterReloadTicketStatus(ticket) });
     try {
-        modelDirectoryParameters = await this._loadModelDirectoryParameters(this.modelName);
+        let modelDirectoryParameters = {};
+        try {
+            modelDirectoryParameters = await this._loadModelDirectoryParameters(ticket.modelName);
+        } catch (error) {
+            if (this._getParameterReloadTicketStatus(ticket) !== 'active') return staleResult();
+            console.warn('[Live2D] 热刷新模型目录参数失败，将继续使用用户偏好:', error);
+        }
+        if (this._getParameterReloadTicketStatus(ticket) !== 'active') return staleResult();
+
+        const preferences = await this.loadUserPreferences();
+        if (this._getParameterReloadTicketStatus(ticket) !== 'active') return staleResult();
+        const preference = this._findModelPreference(preferences, ticket.modelPath);
+        if (!preference || !preference.parameters || typeof preference.parameters !== 'object') {
+            throw new Error('未找到当前模型的用户偏好参数');
+        }
+        const effectiveParameters = this._applyEffectiveModelParameters(
+            model, modelDirectoryParameters, preference.parameters, ticket
+        );
+        if (this._getParameterReloadTicketStatus(ticket) !== 'active') return staleResult();
+        return { applied: true, parameters: effectiveParameters };
     } catch (error) {
-        console.warn('[Live2D] 热刷新模型目录参数失败，将继续使用用户偏好:', error);
+        if (this._getParameterReloadTicketStatus(ticket) !== 'active') return staleResult();
+        // The message handler rechecks this receipt before entering fallback:
+        // another request can take over between this throw and its catch.
+        const failure = error instanceof Error ? error : new Error(String(error));
+        failure._parameterReloadTicket = ticket;
+        throw failure;
     }
-
-    const preferences = await this.loadUserPreferences();
-    if (this.currentModel !== model) {
-        return { applied: false, reason: 'model_mismatch' };
-    }
-    const preference = this._findModelPreference(preferences, this._lastLoadedModelPath);
-    if (!preference || !preference.parameters || typeof preference.parameters !== 'object') {
-        throw new Error('未找到当前模型的用户偏好参数');
-    }
-    const userPreferenceParameters = preference && preference.parameters;
-    const effectiveParameters = this._applyEffectiveModelParameters(
-        model,
-        modelDirectoryParameters,
-        userPreferenceParameters
-    );
-
-    return { applied: true, parameters: effectiveParameters };
 };
 
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
@@ -902,6 +948,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
     // 设置加载锁
     this._isLoadingModel = true;
+    this._invalidateParameterReloadTickets();
     const loadToken = ++this._activeLoadToken;
     this._modelLoadState = 'preparing';
     this._isModelReadyForInteraction = false;
@@ -1030,13 +1077,18 @@ Live2DManager.prototype.setTemporaryPoseOverride = function(source, apply, optio
     return true;
 };
 
-Live2DManager.prototype.clearTemporaryPoseOverride = function(source) {
+Live2DManager.prototype.clearTemporaryPoseOverride = function(source, expectedEntry) {
     const overrides = this._temporaryPoseOverrides;
     const active = this._temporaryPoseOverride;
     if ((!overrides || typeof overrides.delete !== 'function' || overrides.size === 0) && !active) {
         return;
     }
     const normalizedSource = arguments.length === 0 ? '' : String(source);
+    if (arguments.length > 1) {
+        const current = overrides && typeof overrides.get === 'function'
+            ? overrides.get(normalizedSource) : active;
+        if (!expectedEntry || current !== expectedEntry || expectedEntry.source !== normalizedSource) return;
+    }
     if (overrides && typeof overrides.clear === 'function' && (overrides.size > 0 || !active)) {
         if (normalizedSource === '') {
             overrides.clear();
@@ -1086,13 +1138,7 @@ Live2DManager.prototype._applyTemporaryPoseOverride = function(coreModel) {
             entry.apply(coreModel, context);
         } catch (error) {
             console.warn('[Live2D] 临时姿态覆盖执行失败，已清理:', error);
-            if (this._temporaryPoseOverrides && typeof this._temporaryPoseOverrides.delete === 'function') {
-                this._temporaryPoseOverrides.delete(entry.source);
-                const remaining = Array.from(this._temporaryPoseOverrides.values());
-                this._temporaryPoseOverride = remaining.length ? remaining[remaining.length - 1] : null;
-            } else {
-                this._temporaryPoseOverride = null;
-            }
+            this.clearTemporaryPoseOverride(entry.source, entry);
         }
     });
     if (this._temporaryPoseOverrides && this._temporaryPoseOverrides.size > 0) {
@@ -1103,6 +1149,10 @@ Live2DManager.prototype._applyTemporaryPoseOverride = function(coreModel) {
 
 // 重置模型相关的派生元数据（用于加载新模型前清理旧状态）
 Live2DManager.prototype._resetDerivedModelMetadata = function() {
+    this._invalidateParameterReloadTickets();
+    this._parameterConfigRevision = (this._parameterConfigRevision || 0) + 1;
+    if (this._avatarPerformanceSessionOwners) this._avatarPerformanceSessionOwners.clear();
+    this._avatarPerformanceEyeBlinkOwner = null;
     this._randomLookAtAffectsHead = false; // 是否允许随机视线影响头部角度
     this._displayInfo = null;
     this._autoNamedHitAreaIds = new Set();
@@ -1903,8 +1953,10 @@ Live2DManager.prototype.suspendTemporaryMotions = function(source, model) {
     return true;
 };
 
-Live2DManager.prototype.resumeTemporaryMotions = function(source) {
+Live2DManager.prototype.resumeTemporaryMotions = function(source, expectedModel) {
     const token = String(source || 'temporary_motion_suspend');
+    if (arguments.length > 1 && (this.currentModel !== expectedModel
+        || this._temporaryMotionSuspendToken !== token)) return false;
     if (this._temporaryMotionSuspendToken && this._temporaryMotionSuspendToken !== token) {
         return false;
     }
@@ -2195,6 +2247,10 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.modelRootPath = '/static';
         this.modelName = null;
     }
+    // A hot parameter refresh can take over while this load is awaiting
+    // resources. Only its older parameter publication is skipped, not the
+    // still-valid model load and its visual initialization.
+    const parameterTicket = this._createParameterReloadTicket(model);
 
     // 在模型加入舞台、mask framebuffer 延迟创建之前校正 vendor clipping。
     // 不可再次调用 initialize()：该版本会向已有映射追加重复项。
@@ -2460,21 +2516,26 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 
     // 用户偏好是权威来源，模型目录 parameters.json 仅作为兼容镜像。
     let modelDirectoryParameters = {};
-    if (this.modelName && model.internalModel && model.internalModel.coreModel) {
+    if (parameterTicket.modelName && model.internalModel && model.internalModel.coreModel) {
         try {
-            modelDirectoryParameters = await this._loadModelDirectoryParameters(this.modelName);
+            modelDirectoryParameters = await this._loadModelDirectoryParameters(parameterTicket.modelName);
         } catch (error) {
-            console.error('加载模型参数失败:', error);
+            if (this._isLoadTokenActive(loadToken)
+                && this._getParameterReloadTicketStatus(parameterTicket) === 'active') {
+                console.error('加载模型参数失败:', error);
+            }
         }
     }
     // 无论目录参数加载成功或失败，都必须阻止过期加载继续写入当前模型。
     if (!this._isLoadTokenActive(loadToken)) return;
 
     const userPreferenceParameters = options.preferences && options.preferences.parameters;
-    try {
-        this._applyEffectiveModelParameters(model, modelDirectoryParameters, userPreferenceParameters);
-    } catch (e) {
-        console.error('应用有效模型参数或安装口型覆盖失败:', e);
+    if (this._getParameterReloadTicketStatus(parameterTicket) === 'active') {
+        try {
+            this._applyEffectiveModelParameters(model, modelDirectoryParameters, userPreferenceParameters, parameterTicket);
+        } catch (e) {
+            console.error('应用有效模型参数或安装口型覆盖失败:', e);
+        }
     }
     
     // 移除原本的 setInterval 定时器逻辑，改用 installMouthOverride 中的逐帧叠加逻辑

@@ -672,12 +672,14 @@ def test_stale_load_token_is_checked_after_directory_parameter_failure():
     configure_end = source.index("Live2DManager.prototype._applyTextureQuality", configure_start)
     configure_source = source[configure_start:configure_end]
 
-    load_index = configure_source.index("await this._loadModelDirectoryParameters(this.modelName)")
+    load_index = configure_source.index("await this._loadModelDirectoryParameters(parameterTicket.modelName)")
     catch_index = configure_source.index("console.error('加载模型参数失败:'", load_index)
     token_index = configure_source.index("if (!this._isLoadTokenActive(loadToken)) return;", load_index)
     apply_index = configure_source.index("this._applyEffectiveModelParameters(", load_index)
 
     assert load_index < catch_index < token_index < apply_index
+    assert "this._getParameterReloadTicketStatus(parameterTicket) === 'active'" in configure_source[load_index:catch_index]
+    assert "this._getParameterReloadTicketStatus(parameterTicket) === 'active'" in configure_source[token_index:apply_index]
     assert "模型目录参数 > 用户偏好参数" not in configure_source
 
 
