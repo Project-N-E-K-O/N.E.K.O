@@ -5455,6 +5455,10 @@ class ScopedForgetRequest(BaseModel):
     # requested subject is fenced, exactly as before. Present but missing a
     # fan-out target: 409 listing the missing keys, before anything is
     # written or erased, so the caller bumps those counters and resends.
+    # A NEW forget must bump EVERY target's counter, not only the missing
+    # ones: a target whose own completion marker already reaches the epoch
+    # given for it is treated as a replay and is not erased again, so reusing
+    # its last epoch leaves the rows routed into its pile since then.
     target_epochs: dict[str, Annotated[int, Field(ge=0)]] | None = None
 
 

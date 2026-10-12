@@ -148,7 +148,8 @@ def _check_target_epochs(subject: dict, forget_epoch: int | None, target_epochs:
             raise ValueError("invalid target_epochs key")
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError("target_epochs values must be non-negative integers")
-    subject_key = f"{subject.get('subject_kind')}:{subject.get('subject_id')}"
+    # 与服务端 MemorySubject.create 同样去掉首尾空白，否则 key 对不上、这条校验查不出来
+    subject_key = f"{str(subject.get('subject_kind') or '').strip()}:{str(subject.get('subject_id') or '').strip()}"
     if subject_key in target_epochs and target_epochs[subject_key] != forget_epoch:
         raise ValueError("target_epochs disagrees with forget_epoch")
 
@@ -457,7 +458,10 @@ class ScopedMemoryClient:
         Opting in means the server refuses (HTTP 409, nothing erased) a map
         that misses a fan-out target; that answer raises
         :class:`ForgetTargetEpochsRequired` carrying the missing keys, so the
-        caller can bump those counters and resend. A ``target_epochs`` the
+        caller can bump those counters and resend. A NEW forget must bump
+        EVERY target's own counter (not only the missing ones): a target
+        whose completion marker already reaches the epoch sent for it is
+        treated as a replay and is not erased again. A ``target_epochs`` the
         server always refuses (no ``forget_epoch``, a value for this subject
         that differs from ``forget_epoch``, too many or malformed keys or
         epochs) raises ``ValueError`` before anything is sent.

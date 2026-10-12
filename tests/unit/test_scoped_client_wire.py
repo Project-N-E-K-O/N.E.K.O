@@ -600,6 +600,18 @@ async def test_target_epochs_without_forget_epoch_is_a_caller_error(forget_epoch
 
 
 @pytest.mark.asyncio
+async def test_disagreeing_epoch_is_caught_for_a_subject_id_with_padding():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    padded = {**_SUBJECT, "subject_id": f"  {_SUBJECT['subject_id']} "}
+    async with http:
+        with pytest.raises(ValueError):
+            # 服务端会先去掉首尾空白再拼 key：客户端要按同样的 key 查出代数不一致
+            await client.post_forget("Lanlan", subject=padded, forget_epoch=3, target_epochs={_SUBJECT_KEY: 4})
+    assert recorder.requests == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("opt_in, payload", [
     (False, _MISSING_TARGETS),
     (True, {"detail": "some other conflict"}),
