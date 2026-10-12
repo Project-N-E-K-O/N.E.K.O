@@ -44,17 +44,23 @@
                 : DEFAULT_TIMEOUT_MS;
 
             let payload = null;
+            let controller = null;
+            let timer = null;
             try {
                 const url = '/api/model/vrm/physics_profile/' + encodeURIComponent(modelName);
                 const options = { cache: 'no-store' };
-                if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-                    options.signal = AbortSignal.timeout(limit);
+                if (typeof AbortController === 'function') {
+                    controller = new AbortController();
+                    options.signal = controller.signal;
+                    timer = setTimeout(() => controller.abort(), limit);
                 }
                 const response = await fetch(url, options);
                 if (!response.ok) return null;
                 payload = await response.json();
             } catch (error) {
                 payload = null;
+            } finally {
+                if (timer !== null) clearTimeout(timer);
             }
 
             if (seq !== this._requestSeq) return null;
@@ -72,6 +78,29 @@
             const bone = collider && collider.bone;
             if (bone && typeof bone.name === 'string' && bone.name) return bone.name;
             return '';
+        }
+
+        _vecKey(v) {
+            if (!v) return '';
+            let x;
+            let y;
+            let z;
+            if (Array.isArray(v)) {
+                x = v[0];
+                y = v[1];
+                z = v[2];
+            } else {
+                x = v.x;
+                y = v.y;
+                z = v.z;
+            }
+            if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return '';
+            const round = (n) => Math.round(n * 1000) / 1000;
+            return round(x) + ',' + round(y) + ',' + round(z);
+        }
+
+        _geometryKey(shapeName, offset, tail) {
+            return (shapeName || '') + '|' + this._vecKey(offset) + '|' + this._vecKey(tail);
         }
 
         _colliderIndex() {
@@ -109,8 +138,17 @@
                 ? Array.from(springBoneManager.colliders)
                 : [];
             const index = this._colliderIndex();
-            const cursors = new Map();
+            const used = new Map();
             let applied = 0;
+
+            const take = (boneName, entry) => {
+                if (!used.has(boneName)) used.set(boneName, new Set());
+                used.get(boneName).add(entry);
+            };
+            const isUsed = (boneName, entry) => {
+                const set = used.get(boneName);
+                return !!set && set.has(entry);
+            };
 
             for (let i = 0; i < colliders.length; i++) {
                 const collider = colliders[i];
@@ -122,12 +160,36 @@
 
                 const boneName = this._boneNameOfCollider(collider);
                 const entries = boneName ? index.get(boneName) : null;
-                const cursor = entries ? (cursors.get(boneName) || 0) : 0;
-                const entry = entries && cursor < entries.length ? entries[cursor] : null;
-                if (entries) cursors.set(boneName, cursor + 1);
+                let entry = null;
+
+                if (entries) {
+                    const shapeName = collider.shape.type || '';
+                    const runtimeKey = this._geometryKey(
+                        shapeName,
+                        collider.shape.offset,
+                        collider.shape.tail
+                    );
+                    for (let k = 0; k < entries.length; k++) {
+                        const candidate = entries[k];
+                        if (isUsed(boneName, candidate)) continue;
+                        if (this._geometryKey(candidate.shape, candidate.offset, candidate.tail) === runtimeKey) {
+                            entry = candidate;
+                            break;
+                        }
+                    }
+                    if (!entry) {
+                        for (let k = 0; k < entries.length; k++) {
+                            if (!isUsed(boneName, entries[k])) {
+                                entry = entries[k];
+                                break;
+                            }
+                        }
+                    }
+                    if (entry) take(boneName, entry);
+                }
 
                 let target;
-                if (entry && typeof entry.radius === 'number' && entry.radius > 0) {
+                if (entry && typeof entry.radius === 'number' && Number.isFinite(entry.radius) && entry.radius >= 0) {
                     target = entry.radius;
                     applied++;
                 } else {
@@ -180,11 +242,22 @@
 
         apply(springBoneManager) {
             if (!springBoneManager) {
-                return { colliders: 0, joints: 0, source: this.source };
+                return { colliders: 0, joints: 0, source: this.source, reset: false };
             }
             const colliders = this.applyColliders(springBoneManager);
             const joints = this.applyJoints(springBoneManager);
-            return { colliders: colliders, joints: joints, source: this.source };
+            const reset = this.resetSpringState(springBoneManager);
+            return { colliders: colliders, joints: joints, source: this.source, reset: reset };
+        }
+
+        resetSpringState(springBoneManager) {
+            if (!springBoneManager || typeof springBoneManager.reset !== 'function') return false;
+            try {
+                springBoneManager.reset();
+                return true;
+            } catch (error) {
+                return false;
+            }
         }
 
         applyDefaultReduction(springBoneManager) {

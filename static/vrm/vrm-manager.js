@@ -1534,7 +1534,7 @@ class VRMManager {
                     console.log('[VRM] Scene rotation Y:', sceneRotY);
 
                     const profileResult = this._applyPhysicsProfile(springBoneManager, modelUrl);
-                    console.log(`[VRM] Physics profile: source=${profileResult.source}, colliders=${profileResult.colliders}, joints=${profileResult.joints}`);
+                    console.log(`[VRM] Physics profile: source=${profileResult.source}, colliders=${profileResult.colliders}, joints=${profileResult.joints}, reset=${profileResult.reset === true}`);
                 }
 
                 this.currentModel.vrm.scene.visible = true;
@@ -1855,7 +1855,12 @@ class VRMManager {
 
         if (usable) {
             const applied = this._physicsProfile.apply(springBoneManager);
-            return { source: applied.source, colliders: applied.colliders, joints: applied.joints };
+            return {
+                source: applied.source,
+                colliders: applied.colliders,
+                joints: applied.joints,
+                reset: applied.reset
+            };
         }
 
         let applied = 0;
@@ -1879,7 +1884,7 @@ class VRMManager {
                 }
             });
         }
-        return { source: 'default', colliders: applied, joints: 0 };
+        return { source: 'default', colliders: applied, joints: 0, reset: false };
     }
 
     async loadPhysicsProfile(modelUrl) {

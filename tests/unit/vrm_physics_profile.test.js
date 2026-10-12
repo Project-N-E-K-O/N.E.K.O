@@ -239,3 +239,119 @@ test('the model name is decoded out of the quoted URL before lookup', () => {
         assert.equal(resolve(input), expected, `resolve(${JSON.stringify(input)})`);
     }
 });
+
+test('the request is aborted when the fetch stalls', async () => {
+    const { VrmPhysicsProfile } = loadProfileClass({
+        AbortController: AbortController,
+        setTimeout: setTimeout,
+        clearTimeout: clearTimeout,
+        fetch: (url, options) => new Promise((resolve, reject) => {
+            assert.ok(options && options.signal, 'a signal must be attached to the request');
+            options.signal.addEventListener('abort', () => {
+                const err = new Error('aborted');
+                err.name = 'AbortError';
+                reject(err);
+            });
+        })
+    });
+    const profile = new VrmPhysicsProfile();
+    const started = Date.now();
+    const result = await profile.load('stalled_model', 60);
+    const elapsed = Date.now() - started;
+    assert.equal(result, null);
+    assert.equal(profile.hasProfile, false);
+    assert.ok(elapsed < 2000, `load must return promptly, took ${elapsed}ms`);
+});
+
+test('the request still carries a signal when AbortSignal.timeout is unavailable', async () => {
+    let sawSignal = false;
+    const { VrmPhysicsProfile } = loadProfileClass({
+        AbortController: AbortController,
+        AbortSignal: undefined,
+        setTimeout: setTimeout,
+        clearTimeout: clearTimeout,
+        fetch: async (url, options) => {
+            sawSignal = !!(options && options.signal);
+            return { ok: true, json: async () => ({ success: true, config: null }) };
+        }
+    });
+    const profile = new VrmPhysicsProfile();
+    await profile.load('model_a');
+    assert.equal(sawSignal, true);
+});
+
+test('a zero radius in the profile disables the collider instead of falling back', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [{ bone: 'J_Bip_C_Head', shape: 'sphere', radius: 0 }],
+        chains: []
+    };
+    const collider = makeCollider('J_Bip_C_Head', 0.2);
+    const applied = profile.applyColliders(makeManager([collider]));
+    assert.equal(applied, 1);
+    assert.equal(collider.shape.radius, 0);
+});
+
+test('two colliders on one bone are matched by geometry, not by list position', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [
+            { bone: 'J_Bip_C_Head', shape: 'capsule', radius: 0.11, offset: [0, 0, 0], tail: [0, 0.2, 0] },
+            { bone: 'J_Bip_C_Head', shape: 'sphere', radius: 0.04, offset: [0, 0, 0], tail: null }
+        ],
+        chains: []
+    };
+    const sphere = makeCollider('J_Bip_C_Head', 0.5);
+    sphere.shape.type = 'sphere';
+    sphere.shape.offset = { x: 0, y: 0, z: 0 };
+    const capsule = makeCollider('J_Bip_C_Head', 0.5);
+    capsule.shape.type = 'capsule';
+    capsule.shape.offset = { x: 0, y: 0, z: 0 };
+    capsule.shape.tail = { x: 0, y: 0.2, z: 0 };
+    const applied = profile.applyColliders(makeManager([sphere, capsule]));
+    assert.equal(applied, 2);
+    assert.equal(sphere.shape.radius, 0.04);
+    assert.equal(capsule.shape.radius, 0.11);
+});
+
+test('a profile entry missing from the runtime does not shift the other radii', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [
+            { bone: 'J_Bip_C_Head', shape: 'sphere', radius: 0.04, offset: [0, 0, 0] },
+            { bone: 'J_Bip_C_Head', shape: 'sphere', radius: 0.09, offset: [0, 0.1, 0] }
+        ],
+        chains: []
+    };
+    const runtime = makeCollider('J_Bip_C_Head', 0.5);
+    runtime.shape.type = 'sphere';
+    runtime.shape.offset = { x: 0, y: 0.1, z: 0 };
+    const applied = profile.applyColliders(makeManager([runtime]));
+    assert.equal(applied, 1);
+    assert.equal(runtime.shape.radius, 0.09);
+});
+
+test('spring state is reinitialized after the profile is applied', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = { colliders: [], chains: [] };
+    let resetCalls = 0;
+    const manager = makeManager([], []);
+    manager.reset = () => {
+        resetCalls += 1;
+    };
+    const result = profile.apply(manager);
+    assert.equal(resetCalls, 1);
+    assert.equal(result.reset, true);
+});
+
+test('a manager without reset does not break the apply path', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = { colliders: [], chains: [] };
+    const result = profile.apply(makeManager([], []));
+    assert.equal(result.reset, false);
+});
