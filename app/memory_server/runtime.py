@@ -100,6 +100,8 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "scoped_history",
     "scoped_forget",
     "scoped_mentions",
+    # 串门「记成日记」的事实写入（OD-16 v4）
+    "visit_facts",
     # 剧场遗忘会同时改 recent 与时间索引，角色删除期间也必须进入同一围栏。
     "theater/forget",
     # Retracting a declined archive capsule writes recent and the time index too.

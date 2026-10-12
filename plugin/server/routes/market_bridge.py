@@ -263,8 +263,14 @@ def _cleanup_one_time_codes(now: float | None = None) -> None:
 def _consume_one_time_code(code: str) -> bool:
     now = time.time()
     _cleanup_one_time_codes(now)
+    # compare_digest rejects non-ASCII str; compare bytes so a crafted code
+    # gets a 403 instead of a 500. A lone surrogate cannot be encoded.
+    try:
+        supplied = code.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
     for stored_code, expires_at in list(_ONE_TIME_CODES.items()):
-        if expires_at > now and secrets.compare_digest(stored_code, code):
+        if expires_at > now and secrets.compare_digest(stored_code.encode("utf-8"), supplied):
             _ONE_TIME_CODES.pop(stored_code, None)
             return True
     return False
@@ -483,7 +489,7 @@ class MarketInstalledResponse(BaseModel):
 
 class MarketTokenExchangeRequest(BaseModel):
     """用于 neko:// 回调后交换 token 的请求。"""
-    one_time_code: str
+    one_time_code: str = Field(min_length=1, max_length=128)
 
 
 class MarketTokenExchangeResponse(BaseModel):
@@ -3218,6 +3224,105 @@ async def _probe_market_user(access_token: Any) -> _MarketUserProbe:
     )
 
 
+_download_count_tasks: set[asyncio.Task[None]] = set()
+
+
+def _market_numeric_plugin_id(plugin_id: str | None) -> str | None:
+    text = str(plugin_id or "").strip()
+    # str.isdigit() accepts superscripts and other non-ASCII digits.
+    if not text.isascii() or not text.isdigit():
+        return None
+    return text
+
+
+def _client_download_params(
+    *,
+    version: str | None,
+    channel: str | None,
+    package_sha256: str | None,
+) -> dict[str, str]:
+    params = {"source": "client"}
+    if version and version.strip():
+        params["version"] = version.strip()[:50]
+    if channel and channel.strip():
+        params["channel"] = channel.strip()[:16]
+    digest = str(package_sha256 or "").strip().lower()
+    if len(digest) == 64 and all(character in "0123456789abcdef" for character in digest):
+        params["package_sha256"] = digest
+    return params
+
+
+async def _post_market_download_count(
+    market_id: str,
+    *,
+    version: str | None,
+    channel: str | None,
+    package_sha256: str | None,
+) -> None:
+    base_url = _normalized_base_url(MARKET_API_URL)
+    if not base_url:
+        return
+    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
+    started_at = time.monotonic()
+    try:
+        # Phase timeouts do not bound a response that keeps trickling in.
+        async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
+            async with _market_catalog_client() as client:
+                response = await client.post(
+                    url,
+                    params=_client_download_params(
+                        version=version,
+                        channel=channel,
+                        package_sha256=package_sha256,
+                    ),
+                )
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        if response.status_code >= 400:
+            logger.info(
+                "[market-download-count] rejected status={} plugin_id={} elapsed_ms={}",
+                response.status_code,
+                market_id,
+                elapsed_ms,
+            )
+    except Exception as exc:
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        logger.info(
+            "[market-download-count] request failed plugin_id={} error={} elapsed_ms={}",
+            market_id,
+            type(exc).__name__,
+            elapsed_ms,
+        )
+
+
+def _record_market_download_best_effort(
+    payload: MarketInstallRequest,
+) -> None:
+    """Count a finished first install without a Market login.
+
+    Only ``mode="install"`` counts. Upgrades, reinstalls and replacing a
+    built-in copy keep a plugin the user already had, so they do not add to
+    the public download count. The HTTP call runs in the background so a slow
+    or failed Market does not delay the local install result.
+    """
+
+    if payload.mode != "install":
+        return
+    market_id = _market_numeric_plugin_id(payload.plugin_id)
+    if market_id is None:
+        return
+    task = asyncio.create_task(
+        _post_market_download_count(
+            market_id,
+            version=payload.version,
+            channel=payload.channel,
+            package_sha256=payload.package_sha256,
+        ),
+        name="market-download-count",
+    )
+    _download_count_tasks.add(task)
+    task.add_done_callback(_download_count_tasks.discard)
+
+
 async def _report_market_install_best_effort(
     payload: MarketInstallRequest,
     task: dict[str, Any],
@@ -3226,14 +3331,14 @@ async def _report_market_install_best_effort(
     if not token_data or not token_data.get("access_token"):
         return
 
-    try:
-        market_plugin_id = int(str(payload.plugin_id or ""))
-    except ValueError:
+    market_plugin_id_text = _market_numeric_plugin_id(payload.plugin_id)
+    if market_plugin_id_text is None:
         logger.debug(
             "Skip Market install report: plugin_id is not a Market numeric id: {}",
             payload.plugin_id,
         )
         return
+    market_plugin_id = int(market_plugin_id_text)
 
     result = task.get("result") if isinstance(task.get("result"), dict) else {}
     install = result.get("install") if isinstance(result, dict) else {}
@@ -3397,6 +3502,7 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
                 code="invalid_mode",
                 message=f"unknown mode: {payload.mode}",
             )
+        _record_market_download_best_effort(payload)
         await _report_market_install_best_effort(payload, task)
         _finalize_task_success(task, started_at, log_ctx)
     except _TaskCancelled as exc:

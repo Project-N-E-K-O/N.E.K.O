@@ -3154,9 +3154,13 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
         reason="launcher_phase0_bootstrap",
     ):
         bootstrap_result = bootstrap_local_cloudsave_environment(config_manager)
+        from main_logic.cloudsave_visit_retire import removed_characters_recorder
+
         import_result = get_cloudsave_manager(config_manager).import_if_needed(
             reason="launcher_phase0_prelaunch_import",
             fence_already_active=True,
+            # 导入删掉的本地角色记成串门退役项，由主服务启动对账补完退役
+            on_characters_removed=removed_characters_recorder(config_manager),
         )
 
     # 同上：判定和写不能被别的线程插进来，整段进锁。

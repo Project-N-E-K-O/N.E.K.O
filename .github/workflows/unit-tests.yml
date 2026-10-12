@@ -219,3 +219,7 @@ jobs:
 
       - name: Run click-guide and seven-day tutorial regression suites
         run: node --test --test-force-exit tests/frontend/click-guide.test.cjs tests/frontend/tutorial-seven-day-state.test.cjs
+
+      - name: Run VRM emotion load-state regression suites
+        timeout-minutes: 5
+        run: node --test tests/frontend/vrm_emotion_manager.test.cjs tests/frontend/vrm_emotion_source.test.cjs

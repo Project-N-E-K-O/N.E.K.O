@@ -595,6 +595,48 @@ class FactStore:
             raise RuntimeError(f"facts of {name!r} is not a list")
         return len(data)
 
+    def load_facts_strict(self, name: str, *, include_archive: bool = False) -> list[dict]:
+        """Active facts (plus archived ones) read from disk, raising ``RuntimeError`` when unreadable.
+
+        For keyed writes deciding "was this already written": the lenient
+        :meth:`load_facts` caches an unreadable active pool as empty (a later
+        save would erase it) and :meth:`load_facts_full` reads an unreadable
+        archive as absent. Nothing is cached. Absent files read as empty; a
+        row present in both files (an interrupted archive commit) counts once,
+        as in :meth:`load_facts_full`.
+        """
+        from utils.file_utils import read_json_tolerating_replace
+
+        rows: list[dict] = []
+        paths = [self._facts_path(name)]
+        if include_archive:
+            paths.append(self._facts_archive_path(name))
+        active_ids: set = set()
+        for index, path in enumerate(paths):
+            if not os.path.exists(path):
+                continue
+            try:
+                data = read_json_tolerating_replace(path)
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+                raise RuntimeError(f"{os.path.basename(path)} of {name!r} unreadable: {e}") from e
+            if not isinstance(data, list):
+                raise RuntimeError(f"{os.path.basename(path)} of {name!r} is not a list")
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                fid = _readable_fact_id(row)
+                if index == 0:
+                    if fid is not None:
+                        active_ids.add(fid)
+                elif fid is not None and fid in active_ids:
+                    # 与 load_facts_full 同一规则：归档两文件提交被打断时同一行在两边，以活跃池那份为准
+                    continue
+                rows.append(row)
+        return rows
+
+    async def aload_facts_strict(self, name: str, *, include_archive: bool = False) -> list[dict]:
+        return await asyncio.to_thread(self.load_facts_strict, name, include_archive=include_archive)
+
     def _read_archived_effect_keys(self, name: str) -> set[str]:
         """Effect keys stamped on archived rows (keyed scoped writes only).
 
@@ -3413,6 +3455,13 @@ class FactStore:
         if isinstance(event_date, str) and event_date:
             entry['event_start_at'] = f"{event_date}T00:00:00"
 
+    @staticmethod
+    def _apply_visit_origin(entry: dict, visit_origin: dict) -> None:
+        """Stamp visit provenance onto a NEW fact entry: ``origin='neko_visit'``, ``visit_id``, ``absorbed=True``."""
+        entry['origin'] = 'neko_visit'
+        entry['visit_id'] = str(visit_origin['visit_id'])
+        entry['absorbed'] = True
+
     async def _apersist_new_facts(
         self, lanlan_name: str, extracted: list[dict],
         *,
@@ -3423,6 +3472,7 @@ class FactStore:
         expected_subject_generation: int | None = None,
         reconciled_facts: list[dict] | None = None,
         effect_keys: list[str | None] | None = None,
+        visit_origin: dict | None = None,
     ) -> list[dict]:
         # 近重复配对在锁内只收集，出锁之后才投递：投递要拿
         # FactDedupResolver 的 per-character 锁，而 aresolve 是反着来的——
@@ -3465,6 +3515,10 @@ class FactStore:
                     {"effect_keys": effect_keys}
                     if effect_keys is not None else {}
                 ),
+                **(
+                    {"visit_origin": visit_origin}
+                    if visit_origin is not None else {}
+                ),
             )
         if near_dup_pairs:
             await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
@@ -3505,6 +3559,7 @@ class FactStore:
         reconciled_facts: list[dict] | None = None,
         near_dup_pairs_out: list | None = None,
         effect_keys: list[str | None] | None = None,
+        visit_origin: dict | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -4060,6 +4115,10 @@ class FactStore:
 
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
+            if visit_origin is not None:
+                # 串门「记成日记」的事实（只有 visit_facts 端点传这个参数，绝不读模型产出的字段）：
+                # 只盖在新建行上，精确去重命中的旧事实不升级。absorbed=True 让 reflection 永不合成它们
+                self._apply_visit_origin(fact_entry, visit_origin)
             if effect_key is not None:
                 fact_entry['effect_key'] = effect_key
                 existing_effect_keys.add(effect_key)

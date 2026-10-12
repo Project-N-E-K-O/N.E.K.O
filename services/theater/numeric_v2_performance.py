@@ -215,9 +215,32 @@ def valid_scene_narration(
     )
 
 
+def is_silent_invitation_control(event: Mapping[str, Any], performance: Mapping[str, Any]) -> bool:
+    """Allow an empty body only for a program-issued button-only control turn."""
+    receipt = event.get("program_invitation")
+    return bool(
+        event.get("input_source") == "reinvite"
+        and event.get("from_node_id") == event.get("to_node_id")
+        and isinstance(receipt, Mapping) and receipt.get("silent") is True
+        and receipt.get("offer") == "" and receipt.get("performance") == ""
+        and receipt.get("revision") == event.get("result_revision")
+        and isinstance(receipt.get("route_id"), str) and receipt["route_id"]
+        and isinstance(receipt.get("accept_input"), str) and receipt["accept_input"].strip()
+        and receipt.get("visible_blocks") == []
+        and performance.get("performance") == ""
+        and not any(key in performance for key in ("scene_narration", "scene_update", "segments", "content", "fixed_narrations"))
+        and performance.get("suggested_inputs") == [receipt["accept_input"]]
+        and performance.get("transition_offered") is True
+        and event.get("transition_offered") is True
+        and performance.get("transition_offer_presented") is True
+        and event.get("transition_offer_presented") is True
+    )
+
+
 __all__ = [
     "MAX_CONTENT_BLOCKS",
     "content_blocks",
+    "is_silent_invitation_control",
     "mixed_performance_blocks",
     "performance_content_blocks",
     "transition_source_dialogue_policy",

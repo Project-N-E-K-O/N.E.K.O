@@ -9,6 +9,7 @@ import pytest
 from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from services.theater.numeric_v2_structured_output import review_output_schema
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
@@ -198,3 +199,176 @@ async def test_fact_approval_uses_one_existing_call_and_existing_output_allowanc
     assert calls[0]["max_retries"] == 0
     data = json.loads(requests[0][1].content.split("：", 1)[1])
     assert data["evaluator_fact_claims"][0]["evidence"] == claims[0]["evidence"]
+
+
+def _actor_fact():
+    return {
+        "key": "scene:start:ready", "value": True,
+        "evidence_quote": "线路已经接通，指示灯亮起。",
+    }
+
+
+def test_actor_fact_approval_preserves_independent_extraction_without_actor_candidates():
+    candidate = _actor_fact()
+    review = evaluator._parse_transition_judge_output(
+        json.dumps(_payload(fact_candidates=[candidate])), completion_fact_review=True,
+    )
+    assert review.fact_candidates == (candidate,)
+
+
+@pytest.mark.parametrize("approved", [None, False, 0, "0", {}, [True], [-1], [1], [0, 0], [0, "1"]])
+def test_invalid_actor_fact_approval_preserves_body_review_and_approves_nothing(approved):
+    candidate = _actor_fact()
+    review = evaluator._parse_transition_judge_output(
+        json.dumps(_payload(
+            approved_actor_fact_indexes=approved, fact_candidates=[candidate],
+            body_violations=["player_action"],
+        )),
+        completion_fact_review=True, actor_fact_candidates=(candidate,),
+    )
+    assert review.fact_candidates == ()
+    assert review.body_violations == ("player_action",)
+    assert review.unsafe_suggestion_indexes == (1,)
+
+
+def test_missing_actor_approval_cannot_be_replaced_by_independent_same_key_candidate():
+    candidate = _actor_fact()
+    review = evaluator._parse_transition_judge_output(
+        json.dumps(_payload(fact_candidates=[candidate])),
+        completion_fact_review=True, actor_fact_candidates=(candidate,),
+    )
+    assert review.fact_candidates == ()
+    assert review.unsafe_suggestion_indexes == (1,)
+
+
+@pytest.mark.parametrize("approved", [[], [0]])
+def test_actor_approval_uses_original_quote_and_preserves_other_independent_key(approved):
+    candidate = _actor_fact()
+    changed = {**candidate, "evidence_quote": "旧回合只说过线路正在连接。"}
+    other = {"key": "scene:start:reported", "value": True, "evidence_quote": "结果已向调度员报告。"}
+    supplied = (candidate,)
+    original = deepcopy(supplied)
+    review = evaluator._parse_transition_judge_output(
+        json.dumps(_payload(approved_actor_fact_indexes=approved, fact_candidates=[changed, other])),
+        completion_fact_review=True, actor_fact_candidates=supplied,
+    )
+    assert supplied == original
+    assert other in review.fact_candidates
+    same_key = [item for item in review.fact_candidates if item["key"] == candidate["key"]]
+    assert same_key == ([candidate] if approved else [])
+    assert changed not in review.fact_candidates
+
+
+def test_actor_approval_and_independent_candidates_share_the_existing_total_limit():
+    actor = tuple({"key": f"scene:start:actor_{i}", "value": True,
+                   "evidence_quote": f"线路{i}已经接通。"} for i in range(4))
+    independent = [{"key": f"scene:start:other_{i}", "value": True,
+                    "evidence_quote": f"结果{i}已报告。"} for i in range(4)]
+    review = evaluator._parse_transition_judge_output(
+        json.dumps(_payload(approved_actor_fact_indexes=[0, 1, 2], fact_candidates=independent)),
+        completion_fact_review=True, actor_fact_candidates=actor,
+    )
+    assert review.fact_candidates == (*actor[:3], independent[0])
+
+
+@pytest.mark.parametrize("invalid", [
+    {"evidence_quote": "上一回合的连接已经结束。"},
+    {"value": 1},
+    {"value": False},
+    {"key": "scene:other:ready"},
+])
+def test_actor_fact_prompt_prefilters_current_quote_type_and_scope_without_mutation(invalid):
+    engine, session, _ = _context()
+    candidate = _actor_fact()
+    supplied = {"performance": candidate["evidence_quote"], "suggested_inputs": [],
+                "fact_candidates": [candidate, {**candidate, **invalid}]}
+    original = deepcopy(supplied)
+    messages, _ = evaluator._build_transition_judge_messages(
+        engine, session, actor_performance=supplied, player_input="请确认指示灯。",
+    )
+    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    assert data["actor_fact_candidates"] == [{
+        **candidate, "index": 0,
+        "description": engine.fact_contract[candidate["key"]]["description"],
+    }]
+    assert "approved_actor_fact_indexes" in messages[0].content
+    assert supplied == original
+
+
+@pytest.mark.parametrize("formal", [False, True])
+def test_actor_fact_table_and_approval_contract_are_only_for_ordinary_drafts(formal):
+    engine, session, _ = _context()
+    candidate = _actor_fact()
+    outcome = engine.resolve_turn(
+        session, TurnRequestV2("actor_fact_turn", 0, "带路吧。"), (),
+        transition_intent="initiate",
+    ) if formal else None
+    supplied = {"performance": candidate["evidence_quote"], "suggested_inputs": [],
+                "fact_candidates": [candidate]}
+    messages, _ = evaluator._build_transition_judge_messages(
+        engine, session, actor_performance=supplied, player_input="带路吧。",
+        route_changed=formal, transition_outcome=outcome,
+    )
+    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    assert ("actor_fact_candidates" in data) == (not formal)
+    assert ("approved_actor_fact_indexes" in messages[0].content) == (not formal)
+
+
+@pytest.mark.parametrize("actor_facts", [False, True])
+def test_actor_fact_schema_requests_indexes_only_when_candidates_are_supplied(actor_facts):
+    schema = review_output_schema(completion_facts=True, actor_facts=actor_facts)
+    assert ("approved_actor_fact_indexes" in schema["properties"]) == actor_facts
+    assert ("approved_actor_fact_indexes" in schema["required"]) == actor_facts
+    assert "fact_candidates" in schema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_actor_fact_approval_uses_same_call_budget_and_no_new_thinking_setting(monkeypatch):
+    engine, session, _ = _context()
+    candidate = _actor_fact()
+    supplied = {"performance": candidate["evidence_quote"], "suggested_inputs": [],
+                "fact_candidates": [candidate]}
+    original = deepcopy(supplied)
+    calls = []
+    requests = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def ainvoke(self, messages, **kwargs):
+            requests.append((messages, kwargs))
+            return SimpleNamespace(content=json.dumps(_payload(
+                approved_actor_fact_indexes=[0], fact_candidates=[],
+            )))
+
+    async def config(_):
+        return {"model": "qwen3.8-flash", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"}
+
+    async def factory(*args, **kwargs):
+        calls.append(kwargs)
+        return Client()
+
+    def unexpected_thinking(_):
+        raise AssertionError("ordinary fact approval must not enable thinking")
+
+    monkeypatch.setattr(evaluator, "_model_config", config)
+    monkeypatch.setattr(evaluator, "create_chat_llm_async", factory)
+    monkeypatch.setattr(evaluator, "focus_extra_body", unexpected_thinking)
+    review = await evaluator.NumericV2MetricEvaluator(object()).validate_transition_offer(
+        engine=engine, session=session, message="请确认指示灯。", actor_performance=supplied,
+    )
+    assert review.fact_candidates == (candidate,)
+    assert len(calls) == len(requests) == 1
+    assert calls[0]["max_completion_tokens"] == 350
+    assert calls[0]["max_retries"] == 0
+    assert "extra_body" not in calls[0]
+    assert calls[0]["timeout"] == evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
+    schema = requests[0][1]["response_format"]["json_schema"]["schema"]
+    assert "approved_actor_fact_indexes" in schema["properties"]
+    data = json.loads(requests[0][0][1].content[requests[0][0][1].content.index("{"):])
+    assert data["actor_fact_candidates"][0]["evidence_quote"] == candidate["evidence_quote"]
+    assert supplied == original

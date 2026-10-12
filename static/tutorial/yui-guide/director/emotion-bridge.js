@@ -400,11 +400,14 @@
             if (typeof manager.softClearEmotionEffects === 'function') {
                 this.handleAsyncFailure(
                     manager.softClearEmotionEffects({
-                        preserveExpression: true
+                        preserveExpression: true,
+                        duration: 220
                     }),
                     '[YuiGuide] 平滑清理 Live2D 教程动作失败:'
                 );
-                handled = true;
+                // softClear already fades and then resets the motion parameters.
+                // Starting another reset would invalidate that pending cleanup.
+                return true;
             } else if (typeof manager.clearEmotionEffects === 'function') {
                 this.handleAsyncFailure(
                     manager.clearEmotionEffects(),

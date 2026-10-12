@@ -240,7 +240,9 @@ def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
     )
 
     side_index = target_block.index("const minimizedSideTarget = _getNekoIdleCat1SideTarget(container, chatRect);")
-    return_side_index = target_block.index("return minimizedSideTarget;")
+    return_side_index = target_block.index(
+        "return window.NekoDesktopWindowGravity?.constrainTarget(container, minimizedSideTarget) || minimizedSideTarget;"
+    )
     compact_index = target_block.index("const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();")
     assert side_index < return_side_index < compact_index
     assert "return null;" in target_block

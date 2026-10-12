@@ -29,7 +29,7 @@ from typing import Any, Protocol
 import httpx
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
-from ..delivery import begin_transport_write, complete_transport_write
+from ..delivery import begin_transport_write, complete_transport_write, interval_delivery_spans, retire_interval_deliveries
 from ._shared import (
     MAX_SEGMENT_PCM_BYTES,
     PCM16_SAMPLE_WIDTH_BYTES,
@@ -74,9 +74,10 @@ async def _transcribe(
     request_queue: asyncio.Queue[_AsrWorkerRequest],
 ) -> _AsrWorkerEvent:
     generation, buffer_epoch, utterance_id = key
+    delivery_spans = interval_delivery_spans(request_queue, key)
     try:
         wav_audio = encode_pcm16_wav(pcm16)
-        evidence = begin_transport_write(request_queue)
+        evidence = begin_transport_write(request_queue, delivery_spans=delivery_spans)
         response = await client.post(
             GLM_ASR_URL,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -86,6 +87,7 @@ async def _transcribe(
         complete_transport_write(
             evidence, len(pcm16), generation=generation,
             buffer_epoch=buffer_epoch, provider="glm",
+            delivery_spans=delivery_spans, takes_ownership=True,
         )
         response.raise_for_status()
     except asyncio.CancelledError:
@@ -110,6 +112,9 @@ async def _transcribe(
             "ASR_GLM_WORKER_FAILED",
             "GLM transcription request failed",
         ) from exc
+
+    finally:
+        retire_interval_deliveries(request_queue, only_spans=delivery_spans)
 
     try:
         payload = response.json()

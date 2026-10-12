@@ -188,14 +188,23 @@ jobs:
             VENV_PYTHON=".venv/Scripts/python.exe"
           fi
           "$VENV_PYTHON" - <<'PY'
+          import tomllib
           from importlib import metadata
 
+          # 期望版本取自 pyproject.toml 的精确 pin，不在这里再写一份字面量：
+          # 之前写死 18.0.0a1，依赖升到 18.0.0a2 后这一步连续把 nightly 判红。
+          with open("pyproject.toml", "rb") as f:
+              deps = tomllib.load(f)["project"]["dependencies"]
+          pins = [d.split("==", 1)[1].split(";", 1)[0].strip()
+                  for d in deps if d.replace(" ", "").startswith("bilibili-api-dev==")]
+          if len(pins) != 1:
+              raise SystemExit(f"Expected exactly one bilibili-api-dev== pin in pyproject.toml, found {pins}")
           installed = {
               str(dist.metadata.get("Name", "")).lower(): dist.version
               for dist in metadata.distributions()
               if "bilibili-api" in str(dist.metadata.get("Name", "")).lower()
           }
-          expected = {"bilibili-api-dev": "18.0.0a1"}
+          expected = {"bilibili-api-dev": pins[0]}
           if installed != expected:
               raise SystemExit(
                   "Bilibili SDK environment is not clean: "

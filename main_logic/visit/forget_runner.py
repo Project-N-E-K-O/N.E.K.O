@@ -62,7 +62,12 @@ from main_logic.visit.spool import (
     VisitSpool,
     STATE_SUFFIX,
 )
-from main_logic.visit.subjects import PeerRoster, RosterCorruptError, read_roster_marker
+from main_logic.visit.subjects import (
+    PeerRoster,
+    RosterCorruptError,
+    pending_rename_names,
+    read_roster_markers,
+)
 from memory.scoped_client import ScopedMemoryClient
 from utils.logger_config import get_module_logger
 
@@ -91,16 +96,17 @@ async def _refuse_pending_rename(config_dir: str | Path, names: Iterable[str]) -
     # 改名崩在「配置已是新名、名册还在旧名」之间：此时按新名展开会找不到条目，
     # 清除会「成功」地什么都没删，之后补录又把旧名下没清的数据搬出来。等启动补录对账完。
     # 只挡涉及改名两端名字的清除：别的角色的名册条目与这次改名无关，不能被一个
-    # 一时对不上账的标记连带挡住
-    marker = await read_roster_marker(config_dir, "pending_rename")
-    if marker is None:
+    # 一时对不上账的标记连带挡住。排在队里的改名（云快照一次改了几个角色）同样没对完账：
+    # 配置已是新名、条目还在旧名下，一起算
+    slot, queued = await read_roster_markers(config_dir, "pending_rename", "pending_rename_queue")
+    if slot is None and queued is None:
         return
-    old, new = (marker.get("old"), marker.get("new")) if isinstance(marker, dict) else (None, None)
-    if not (isinstance(old, str) and old and isinstance(new, str) and new):
-        # 字段缺失 / 不是非空字符串：认不出涉及哪两个名字，不能当作「与这次清除无关」放行；
+    held = pending_rename_names(slot, queued)
+    if held is None:
+        # 字段缺失 / 不是非空字符串：认不出涉及哪些名字，不能当作「与这次清除无关」放行；
         # 列表之类不可哈希的值也不能在下面拼集合时抛 TypeError 让接口 500
         raise RenamePending("a malformed rename marker is pending")
-    if {old, new} & set(names):
+    if held & set(names):
         raise RenamePending("a rename of this character is not reconciled yet")
 
 # 「清除这个人」时这些还没写任何私聊记忆的 debrief 一律作废（改记「不记」）：

@@ -461,8 +461,8 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
     assert result.diagnostics['transition_judge_degraded'] is (mode == 'fast_failure')
     assert result.diagnostics['dispute_review_degraded'] is (mode == 'dispute_timeout')
     if mode == 'buttons':
-        # 本轮不安全推荐被删除后，仍保留此前已公开的原始接受按钮。
-        assert result.performance['suggested_inputs'] == ['好，就按这个安排。']
+        # 原邀请仍有效，但本次送审整组被否定，接受按钮不能在复核后绕回。
+        assert result.performance['suggested_inputs'] == []
     assert await runtime.restore_session(current.session.session_id) == result.stored
     # A fallback response ends the invitation; reviewed safe replies retain it.
     accepted = runtime.prepare_turn(result.stored, TurnRequestV2('accept', result.stored.session.revision, '好，现在出发。'), (),
@@ -803,11 +803,19 @@ async def test_narration_location_is_not_rewritten_when_review_denies_its_own_of
 @pytest.mark.asyncio
 @pytest.mark.parametrize('destination', ['长街继续调查', '轨道站核对星图'])
 @pytest.mark.parametrize('known', [False, True])
-@pytest.mark.parametrize('departed', [False, True])
+@pytest.mark.parametrize('reject_fallback', [False, True, 'service_error'])
+@pytest.mark.parametrize('message,departed', [
+    ('接下来怎么办？', False),
+    ('（点头致意，转身推门离开）谢谢，明天见。', True),
+    ('（背起书包走向门口）嗯，明天见。', True),
+    ('（提起工具箱走向门口）嗯，下次见。', True),
+    ('（走向门口，又折回柜台）先不走了。', False),
+    ('（走向门口，又折回控制台）先不走了。', False),
+])
 async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no_offer(
-    tmp_path, monkeypatch, destination, known, departed,
+    tmp_path, monkeypatch, destination, known, message, departed, reject_fallback,
 ):
-    """完成合同已满足且复核确认正文安全但没有邀请时，零调用追加作者原文。"""  # noqa: DOCSTRING_CJK
+    """作者兜底拼接后必须通过复核；技术失败回滚，正文拒绝则保留原稿。"""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 
@@ -891,6 +899,13 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
 
     async def review(self, **kwargs):
         reviews.append(kwargs)
+        if projected_offer in kwargs['actor_performance']['performance']:
+            if reject_fallback == 'service_error':
+                raise ev.NumericV2EvaluatorError('numeric_v2_transition_review_failed')
+            return ev.NumericV2TransitionOfferReview(
+                offer_present=True, valid=not reject_fallback,
+                body_violations=(), unsafe_suggestion_indexes=(), offer_quote=projected_offer,
+            )
         return ev.NumericV2TransitionOfferReview(
             offer_present=False,
             valid=False,
@@ -903,19 +918,38 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
 
+    if reject_fallback == 'service_error' and not departed:
+        path = runtime.store._path(current.session.session_id)
+        previous_bytes = path.read_bytes()
+        with pytest.raises(workflow.NumericV2ActorOutputError):
+            await workflow.execute_numeric_v2_turn(
+                config_manager=object(), runtime=runtime, current=current,
+                turn=TurnRequestV2('ask_next', current.session.revision, message),
+                ensure_current_binding=lambda _: _binding(),
+            )
+        assert len(generations) == 1 and len(reviews) == 2
+        assert path.read_bytes() == previous_bytes
+        assert await runtime.restore_session(current.session.session_id) == current
+        return
     result = await workflow.execute_numeric_v2_turn(
         config_manager=object(),
         runtime=runtime,
         current=current,
-        turn=TurnRequestV2('ask_next', current.session.revision,
-            '（点头致意，转身推门离开）谢谢，明天见。' if departed else '接下来怎么办？'),
+        turn=TurnRequestV2('ask_next', current.session.revision, message),
         ensure_current_binding=lambda _: _binding(),
     )
 
     assert len(generations) == 1
-    assert len(reviews) == 1
+    assert len(reviews) == (1 if departed else 2)
     if departed:
         assert result.diagnostics['completion_fallback_offer_applied'] == 0
+        assert projected_offer not in result.performance['performance']
+        assert result.performance['transition_offered'] is False
+        assert result.stored.session.transition_offered is False
+        return
+    if reject_fallback:
+        assert result.diagnostics['completion_fallback_offer_applied'] == 0
+        assert result.diagnostics['completion_fallback_offer_skipped'] == 1
         assert projected_offer not in result.performance['performance']
         assert result.performance['transition_offered'] is False
         assert result.stored.session.transition_offered is False

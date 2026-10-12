@@ -515,7 +515,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
 def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     source = _read_avatar_ui_buttons_source()
 
-    assert "function _getNekoIdleCat1PlaygroundPointerVelocity(samples)" in source
+    assert "function _getNekoIdleCat1PlaygroundPointerVelocity(state, cancelled = false, releasedAt = Date.now())" in source
     assert "function _handleNekoIdleCat1PlaygroundCatClick(button, event)" in source
     assert "function _handleNekoIdleCat1PlaygroundPointerDownForBody(button, body, event)" in source
     assert "function _handleNekoIdleCat1PlaygroundDesktopPointerEvent(event)" in source
@@ -574,6 +574,16 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     )
     assert "if (!state.draggingBodyId) {" in pointer_up_block
     assert "state.pointerBodyId = '';" in pointer_up_block
+    _assert_source_order(
+        pointer_up_block,
+        "playground yarn only activates on a completed click and waits for desktop confirmation",
+        "const cancelled = !!(event && event.type === 'pointercancel');",
+        "if (!cancelled && !state.pendingYarnActivationId && (body.id === 'yarn' || body.id === 'desktop-yarn')) {",
+        "const activationResult = _dispatchNekoIdleCat1PlaygroundYarnActivate",
+        "if (activationResult === true) {",
+        "_removeNekoIdleCat1PlaygroundYarnBody(button);",
+        "state.pendingYarnActivationId = activationResult;",
+    )
     assert "state.phase = 'ballistic';" in pointer_up_block
     assert "state.suppressClickBodyId = body.id;" in pointer_up_block
     assert "body.angularVelocity = _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state);" in pointer_up_block
@@ -614,6 +624,14 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "_dispatchNekoIdleReturnClickFromButton(button);" not in question_click_block
 
     assert "function _suppressNekoIdleCat1PlaygroundNonCatNativeEvent(event)" in source
+    assert "function _removeNekoIdleCat1PlaygroundYarnBody(button)" in source
+    assert "function _dispatchNekoIdleCat1PlaygroundYarnActivate(detail)" in source
+    assert "activationId," in source
+    assert "neko:idle-cat1-playground-yarn-activate" in source
+    assert "neko:idle-cat1-playground-yarn-activation-ack" in source
+    assert "if (detail.confirmed === true) _removeNekoIdleCat1PlaygroundYarnBody(button);" in source
+    assert "return window.__NEKO_DESKTOP_RUNTIME__ ? activationId : dispatched;" in source
+    assert "action: 'idle_cat1_playground_yarn_activate'" in source
     assert "function _bindNekoIdleCat1PlaygroundBodyInput(button, body, bind)" in source
 
     body_input_block = _source_slice_between(
@@ -715,6 +733,8 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
 
     assert "case 'idle_cat1_playground_yarn_request':" in interpage_source
     assert "function dispatchIdleCat1PlaygroundYarnRequest(detail)" in interpage_source
+    assert "case 'idle_cat1_playground_yarn_activate':" in interpage_source
+    assert "function dispatchIdleCat1PlaygroundYarnActivate(detail)" in interpage_source
     interpage_yarn_block = _source_slice_between(
         interpage_source,
         "function dispatchIdleCat1PlaygroundYarnRequest(detail)",
@@ -757,6 +777,8 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
 
     assert "function _handleIdleCat1PlaygroundYarnRequest(event)" in app_source
     assert "window.addEventListener('neko:idle-cat1-playground-yarn-request', _handleIdleCat1PlaygroundYarnRequest);" in app_source
+    assert "function _handleIdleCat1PlaygroundYarnActivate(event)" in app_source
+    assert "window.addEventListener('neko:idle-cat1-playground-yarn-activate', _handleIdleCat1PlaygroundYarnActivate);" in app_source
     app_block = _source_slice_between(
         app_source,
         "function _handleIdleCat1PlaygroundYarnRequest(event)",
@@ -765,6 +787,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     )
     assert "setChatSurfaceMode('minimized')" in app_block
     assert "getCurrentChatSurfaceMode() === 'minimized'" in app_block
+    assert "window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel'" in app_block
     assert "detail.reason" not in app_block
     assert "cat1-playground-entry" not in app_block
 
@@ -1126,7 +1149,7 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
     assert "!_isNekoGoodbyeIdleBallButton(button)" in dispatch_click_block
     auto_goodbye_listener_block = _source_slice_between(
         avatar_source,
-        "window.addEventListener('neko:auto-goodbye:state-change'",
+        "window.addEventListener('neko:auto-goodbye:state-change', (event) => {",
         "window.addEventListener('neko:goodbye-idle-appearance'",
         "auto goodbye visual tier listener",
     )
@@ -2024,7 +2047,10 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     mmd_source = MMD_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "function _isNekoNativeReturnBallDragDisabled()" in avatar_source
-    assert "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled())" in avatar_source
+    assert (
+        "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()"
+        "\n                || window.__NEKO_DESKTOP_RUNTIME__?.platform === 'win32')"
+    ) in avatar_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in avatar_source
     assert "Live2DManager.prototype.setupReturnButtonContainerDrag = function(container)" in live2d_source
     assert "this.setupReturnButtonContainerDrag(returnButtonContainer)" not in live2d_source
@@ -3791,7 +3817,10 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "'return-ball-drag-end'" in app_ui_source
     assert "movedDistancePx: movedDistancePx" in app_ui_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in source
-    assert "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled())" in source
+    assert (
+        "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()"
+        "\n                || window.__NEKO_DESKTOP_RUNTIME__?.platform === 'win32')"
+    ) in source
 
 
 def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():

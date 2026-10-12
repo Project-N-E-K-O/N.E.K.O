@@ -125,6 +125,7 @@ def open_workshop(config_manager, *, model_config=None, model_call=None) -> "Wor
     """Explicitly open/reuse this process's writer. Call on a worker in async code."""
     from services.theater.numeric_v2_identity import numeric_v2_authoring_names
     from utils.cloudsave_runtime import cloudsave_writable_transaction
+    from utils.tokenize import count_tokens
 
     app_root = canonical_root(config_manager.app_docs_dir)
     project_root = app_root / "theater" / "workshop" / "projects"
@@ -150,6 +151,7 @@ def open_workshop(config_manager, *, model_config=None, model_call=None) -> "Wor
             control_root=Path(config_manager.local_state_dir), gateway=InProcessPackageGateway(),
             model_call=model_call if model_call is not None else NekoWorkshopModel(model_config),
             write_transaction=write_transaction,
+            token_counter=count_tokens,
             authoring_names=lambda: numeric_v2_authoring_names(config_manager), owner=config_manager)
         if not hasattr(sdk, "_neko_host"):
             sdk._neko_host = WorkshopHost(sdk, app_root)

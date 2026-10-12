@@ -132,6 +132,15 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
     return user_msgs
 
 
+def _is_keyed_diary(msg: dict) -> bool:
+    """Whether a stored message is a visit diary entry (an AI message keyed ``visit-debrief:*``)."""
+    from utils.llm_client import message_metadata
+    from utils.recent_file import RECENT_IDEMPOTENCY_META_KEY, VISIT_DIARY_KEY_RE
+
+    key = message_metadata(msg).get(RECENT_IDEMPOTENCY_META_KEY)
+    return msg.get('type') == 'ai' and isinstance(key, str) and VISIT_DIARY_KEY_RE.fullmatch(key) is not None
+
+
 def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
     """Full-message extraction for Path B — keeps both user + ai types and outputs a
     message_dict list fed directly into ``convert_to_messages``.
@@ -159,6 +168,10 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
             # 小剧场角色台词属于虚构演绎，不能进入现实人格的 user_observation
             # 或 ai_disclosure 提取；原文仍保留在 recent 与 time-indexed 中。
             if is_theater_memory_message(msg):
+                continue
+            # 带幂等键写入的串门日记（OD-16 v4）：长期事实只经用户逐字确认过的
+            # visit_facts 写入，周期抽取不能再从日记正文里抽出未经预览的事实
+            if _is_keyed_diary(msg):
                 continue
             msg_type = msg.get('type')
             if msg_type not in ('human', 'ai'):

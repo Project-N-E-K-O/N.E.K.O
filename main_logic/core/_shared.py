@@ -200,6 +200,15 @@ def _load_locale_messages(locale_code: str) -> dict:
 
 
 def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
+    return get_locale_text(language, 'chat.' + key, fallback)
+
+
+def get_locale_text(language: str | None, dotted_key: str, fallback: str) -> str:
+    """Look up ``dotted_key`` (e.g. ``visit.debrief.question``) in ``static/locales``; ``fallback`` when absent.
+
+    Language chain: explicit ``language`` (else the global full code), its
+    short code, ``en``, ``zh-CN`` (``zh-TW`` is kept, issue #2500).
+    """
     # ⚠️ 兜底必须取 full。下面的 format='full' 只能保住已有的字形，救不回
     # 已经丢掉的：get_global_language() 返回短码，繁中在进这个函数之前就成了
     # zh，format='full' 再把它扩成 zh-CN，static/locales/zh-TW.json 永远读不到
@@ -221,7 +230,7 @@ def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
 
     for locale_code in candidates:
         cursor = _load_locale_messages(locale_code)
-        for part in ('chat', key):
+        for part in dotted_key.split('.'):
             if not isinstance(cursor, dict):
                 cursor = None
                 break

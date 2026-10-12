@@ -113,7 +113,7 @@ def test_actor_and_guard_pack_the_same_retrieved_original_with_fixed_budgets():
     actor = _turn_messages(engine, session, outcome, '那件事呢？', '温和', '测试猫娘', '哥哥', history_lookup=lookup)
     guard = evaluator._build_transition_judge_messages(engine, session, player_input='那件事呢？',
         actor_performance={'performance': '日记继续保密。'}, history_lookup=lookup)[0]
-    for messages, limit in [(actor, 10000), (guard, 6000)]:
+    for messages, limit in [(actor, 10000), (guard, 8500)]:
         assert fact['text'] in messages[1].content
         assert '按需查找 Session 演绎原文' in messages[0].content
         assert sum(history.count_tokens(m.content) for m in messages) <= limit

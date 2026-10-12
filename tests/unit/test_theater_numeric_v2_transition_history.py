@@ -173,6 +173,8 @@ def test_transition_review_keeps_source_history_and_actual_destination():
     engine = _engine()
     # 来源幕已经过了公开开场；只有目标开场的临时限制在这次换幕生效。
     engine.nodes['start']['story_beat']['opening_only_boundaries'] = ['来源开场不得披露姓名。']
+    ending_direction = '回应获准的最后互动，完整收束本次告别。'
+    engine.nodes['ending_leave']['story_beat']['narrative_summary'] = ending_direction
     session = engine.create_session(session_id='review_data', catgirl_binding=_binding(), opening_performance=_opening())
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '谢谢。'), (), scene_complete=True, natural_ending_ready=True)
     candidate = engine.finalize_transition_performance(outcome, _candidate(), target_opening='旧开场。')
@@ -187,8 +189,104 @@ def test_transition_review_keeps_source_history_and_actual_destination():
             for segment in data['candidate_segments']] == candidate['segments']
     from services.theater.numeric_v2_context import scene_opening_text
     assert data['target_scene']['opening_situation'] == scene_opening_text(engine.nodes[outcome.session.current_node_id]['story_beat'])
+    assert data['target_scene']['story_direction'] == ending_direction
+    assert 'story_direction 是作者模板，不是待播正文' in messages[0].content
     assert data['scene_context']
     assert 'next_scene_direction' not in data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('place,destination', [('档案接待台', '阅览室'), ('维修平台', '观察舱')])
+@pytest.mark.parametrize('intent', ['accept', 'initiate'])
+async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp_path, place, destination, intent):
+    """Review the authorized entrance with all safety evidence, then restore the full direction after its native commit."""
+    from copy import deepcopy
+    from services.theater.numeric_v2_evaluator import _build_transition_judge_messages
+    from services.theater.numeric_v2_performance import performance_content_blocks
+    from services.theater.numeric_v2_runtime import NumericV2Runtime
+    from tests.unit.test_theater_numeric_v2_pending_offer import _commit
+    from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
+
+    case = initiation_case(place, destination, message=f'请带我到{destination}入口。')
+    engine = case['engine']
+    target = engine.nodes['ending_leave']['story_beat']
+    future = f'之后由玩家选择是否查看{destination}中的资料，确认后才开始操作。'
+    target.update(summary=future, narrative_summary=future,
+        opening_only_boundaries=['入幕时后续操作尚未开始。'],
+        character_state={'catgirl_state': '猫娘站在入口，拿着自己的包。',
+                         'player_state': '玩家仍持有自己的登记卡。',
+                         'scene_boundaries': ['不得改变玩家登记卡的持有者。']},
+        acting_contract={'allowed_behaviors': ['猫娘可以介绍入口标识。'],
+                         'assertable_self_facts': ['猫娘保留自己的包。'],
+                         'forbidden_behaviors': ['不得替玩家选择查阅内容。']})
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id='review_entry', catgirl_binding=_binding(),
+                                        opening_performance=case['session'].opening_performance)
+    invitation = f'我们去{destination}入口，好吗？'
+    if intent == 'accept':
+        # 锁存并提交真实邀请；仅给 Session 设置布尔值不能提供原公开邀请。
+        stored = await _commit(runtime, stored, invitation, offer=True)
+    message = f'好，我们去{destination}入口。' if intent == 'accept' else case['message']
+    outcome = runtime.prepare_turn(stored, TurnRequestV2('enter', stored.session.revision, message), (),
+                                   transition_intent=intent)
+    assert outcome.session.status != 'ended'
+    candidate = engine.finalize_transition_performance(outcome, {
+        'source_performance': '（拿好自己的包）跟我来。',
+        'bridge_scene_narration': f'两人沿左侧走廊来到{destination}。',
+        'target_scene_narration': target['opening_scene'],
+        'target_performance': '（看向入口标识）这里就是入口。', 'suggested_inputs': [],
+    }, target_opening=target['opening_scene'])
+    before = deepcopy((engine.story, stored.session, outcome, candidate))
+    public_quote = f'左侧走廊通往{destination}，通道已经开放。'
+    messages = _build_transition_judge_messages(engine, stored.session, player_input=message,
+        actor_performance=candidate, transition_outcome=outcome, public_destination_quote=public_quote)[0]
+    data = json.loads(messages[1].content.split('：', 1)[1])
+    assert 'story_direction' not in data['target_scene']
+    assert future not in '\n'.join(part.content for part in messages)
+    # An excluded template cannot consume packing budget or evict history.
+    target.update(summary=future * 10000, narrative_summary=future * 10000)
+    try:
+        enlarged = _build_transition_judge_messages(engine, stored.session, player_input=message,
+            actor_performance=candidate, transition_outcome=outcome, public_destination_quote=public_quote)[0]
+        assert [part.content for part in enlarged] == [part.content for part in messages]
+    finally:
+        target.update(summary=future, narrative_summary=future)
+    context = data['target_scene']
+    assert context['opening_situation'] == target['opening_scene']
+    assert context['character_state']['catgirl_state'] == target['character_state']['catgirl_state']
+    assert context['character_state']['player_state'] == target['character_state']['player_state']
+    assert context['acting_contract']['allowed_behaviors'] == target['acting_contract']['allowed_behaviors']
+    assert context['acting_contract']['assertable_self_facts'] == target['acting_contract']['assertable_self_facts']
+    assert {'入幕时后续操作尚未开始。', '不得改变玩家登记卡的持有者。',
+            '不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
+    assert data['player_input'] == message
+    assert data['transition_contract'] == outcome.transition_contract
+    assert data['transition_authorization']['transition_intent'] == intent
+    if intent == 'accept':
+        original = data['transition_authorization']['pending_invitation']
+        assert original['revision'] == stored.session.revision
+        assert invitation in json.dumps(original, ensure_ascii=False)
+    else:
+        assert data['transition_authorization']['public_destination_quote'] == public_quote
+    assert data['scene_context'][-1]['revision'] == stored.session.revision
+    latest = (stored.session.performance_history[-1] if stored.session.performance_history
+              else stored.session.opening_performance)
+    assert [(part['type'], part['text']) for part in data['scene_context'][-1]['content']] == [
+        (part['type'], part['text']) for part in performance_content_blocks(latest)]
+    assert [{key: value for key, value in segment.items() if key != 'performer'}
+            for segment in data['candidate_segments']] == candidate['segments']
+    assert (engine.story, stored.session, outcome, candidate) == before
+
+    # 构造已提交的入口历史以验证下一普通回合装箱，不预置任何模型复核判决。
+    committed = await runtime.commit_turn(outcome, candidate)
+    restored = await NumericV2Runtime(engine, tmp_path).restore_session('review_entry')
+    assert restored == committed
+    ordinary = _build_transition_judge_messages(engine, restored.session, player_input='先看看入口标识。',
+        actor_performance={'performance': '（指向标识）可以先看看这里。', 'suggested_inputs': []})[0]
+    ordinary_data = json.loads(ordinary[1].content.split('：', 1)[1])
+    assert ordinary_data['current_scene']['story_direction'] == future
+    assert 'target_scene' not in ordinary_data
+    assert (engine.story, stored.session, outcome, candidate) == before
 
 
 @pytest.mark.asyncio

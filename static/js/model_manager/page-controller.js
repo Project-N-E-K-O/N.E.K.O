@@ -3425,24 +3425,77 @@ document.addEventListener('DOMContentLoaded', async () => {
     // VRM模型选择按钮点击事件已由 DropdownManager 处理
 
     // VRM 模型选择事件
+    let vrmSelectionLoad = null;
+    // A pending voice check cannot revoke initialization owned by an admitted load.
+    let vrmAdmittedSelectionLoad = null;
+    // Selection, editor recovery and upload probes share two unfinished slots;
+    // superseded work keeps its
+    // slot until it settles because the underlying parser cannot be aborted.
+    const vrmSelectionLoads = new Set();
+    let vrmSelectionLoadsDisposed = false;
+    function disposeVrmSelectionLoads(event) {
+        // A cached document is frozen and may resume with the same bounded jobs.
+        if (event?.persisted) return;
+        vrmSelectionLoadsDisposed = true;
+        vrmSelectionLoad = null;
+        vrmAdmittedSelectionLoad = null;
+        vrmSelectionLoads.clear();
+        vrmModelSelect?.removeEventListener('change', loadSelectedVrmModel);
+        window.removeEventListener('pagehide', disposeVrmSelectionLoads);
+    }
+    window.addEventListener('pagehide', disposeVrmSelectionLoads);
+    async function loadSelectedVrmModel(e, previousValue = vrmAdmittedSelectionLoad?.modelUrl || currentModelInfo?.url || vrmManager?.currentModel?.url || '') {
+        if (vrmSelectionLoadsDisposed) return {
+            error: t('vrmEmotionManager.sourceUnavailable', '请从模型管理窗口打开此页面，并保持该窗口开启'),
+            errorCode: 'sourceUnavailable'
+        };
+        const previousOption = Array.from(vrmModelSelect?.options || []).find(opt => opt.value && previousValue
+            && new URL(opt.value, window.location.href).href === new URL(previousValue, window.location.href).href);
+        if (vrmSelectionLoads.size >= 2) {
+            e.target.value = vrmSelectionLoad?.modelUrl || previousOption?.value || '';
+            updateVRMModelSelectButtonText();
+            const error = t('vrmEmotionManager.recoveryBlocked', '两次模型加载仍未结束，请等待完成或重新打开模型管理窗口后重试');
+            showStatus(error, 3000);
+            return { error, errorCode: 'recoveryBlocked' };
+        }
+        const job = { modelUrl: e.target.value, startedAt: Date.now(), settled: false };
+        vrmSelectionLoads.add(job);
+        vrmSelectionLoad = job;
+        try {
+            return await handleSelectedVrmModel(e, () => vrmSelectionLoads.has(job)
+                && (job.admitted ? vrmAdmittedSelectionLoad === job : vrmSelectionLoad === job), previousOption?.value || '', job);
+        } finally {
+            job.settled = true;
+            vrmSelectionLoads.delete(job);
+            if (vrmAdmittedSelectionLoad === job) vrmAdmittedSelectionLoad = null;
+            if (vrmSelectionLoad === job) {
+                vrmSelectionLoad = job.vetoed && vrmSelectionLoads.has(vrmAdmittedSelectionLoad)
+                    ? vrmAdmittedSelectionLoad : null;
+            }
+        }
+    }
     if (vrmModelSelect) {
-        vrmModelSelect.addEventListener('change', async (e) => {
+        vrmModelSelect.addEventListener('change', loadSelectedVrmModel);
+    }
+    async function handleSelectedVrmModel(e, isCurrentSelection, previousValue, selectionJob) {
             updateVRMModelSelectButtonText();
             const modelPath = e.target.value;
             if (!modelPath) return;
 
             // 检查语音模式状态
             const voiceStatus = await checkVoiceModeStatus();
+            if (!isCurrentSelection()) return;
             if (voiceStatus.isCurrent && voiceStatus.isVoiceMode) {
                 showStatus(t('live2d.cannotChangeModelInVoiceMode', '语音模式下无法切换模型，请先停止语音对话'), 3000);
                 // 恢复之前的选择
-                if (currentModelInfo && currentModelInfo.name) {
-                    e.target.value = currentModelInfo.name;
-                } else {
-                    e.target.value = '';
-                }
-                return;
+                selectionJob.vetoed = true;
+                e.target.value = vrmAdmittedSelectionLoad?.modelUrl || previousValue;
+                updateVRMModelSelectButtonText();
+                return { error: t('live2d.cannotChangeModelInVoiceMode', '语音模式下无法切换模型，请先停止语音对话') };
             }
+
+            selectionJob.admitted = true;
+            vrmAdmittedSelectionLoad = selectionJob;
 
             // 真实用户的 Live3D 选择且已通过语音检查（被拒绝的选择不计数，
             // 否则角色自动加载链会误判为已被取代而放弃）
@@ -3469,6 +3522,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 localStorage.setItem('live3dSubType', 'mmd');
                 if (!wasAlreadyMmd) {
                     await switchModelDisplay('live3d', 'mmd');
+                    if (!isCurrentSelection()) return;
                 }
 
                 // switchModelDisplay 重建了 vrmModelSelect，需要重新选中当前模型
@@ -3530,6 +3584,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             localStorage.setItem('live3dSubType', 'vrm');
             if (needsSwitch) {
                 await switchModelDisplay('live3d', 'vrm');
+                if (!isCurrentSelection()) return;
                 // switchModelDisplay 重建了 vrmModelSelect，需要重新选中当前模型
                 if (vrmModelSelect) {
                     const reselect = Array.from(vrmModelSelect.options).find(opt => opt.value === modelPath);
@@ -3573,7 +3628,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 等待 VRM 模块加载（带超时和错误处理）
                     try {
                         await waitForVRM();
+                        if (!isCurrentSelection()) return;
                     } catch (error) {
+                        if (!isCurrentSelection()) return;
                         // 如果是超时错误，显示更友好的提示
                         if (error.message && error.message.includes('Timeout')) {
                             showStatus(t('live2d.vrmModuleTimeout', 'VRM 模块加载超时，请刷新页面重试'), 5000);
@@ -3597,14 +3654,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     if (!vrmManager._isInitialized && (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer)) {
                         await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                        if (!isCurrentSelection()) return;
                     }
 
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                 } catch (error) {
+                    if (!isCurrentSelection()) return;
                     console.error('VRM 管理器初始化失败:', error);
                     const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
                     showStatus(t('live2d.vrmInitFailed', `VRM 管理器初始化失败: ${errMsg}`, { error: errMsg }));
-                    return;
+                    return { error: errMsg };
                 }
             }
 
@@ -3613,21 +3672,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log('[模型管理] VRM 场景未完全初始化，正在初始化...');
                 try {
                     await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                    if (!isCurrentSelection()) return;
                     // 再次验证初始化是否成功
                     if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
                         throw new Error('场景初始化后仍缺少必要组件');
                     }
                     console.log('[模型管理] VRM 场景初始化成功');
                 } catch (initError) {
+                    if (!isCurrentSelection()) return;
                     console.error('[模型管理] 场景初始化失败:', initError);
                     const errMsg = (initError && typeof initError.message === 'string') ? initError.message : String(initError ?? 'Unknown error');
                     showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${errMsg}`, { error: errMsg }), 5000);
-                    return;
+                    return { error: errMsg };
                 }
             }
 
             // 获取选中的option，获取原始路径和文件名
-            const selectedOption = vrmModelSelect.options[vrmModelSelect.selectedIndex];
+            const selectedOption = Array.from(vrmModelSelect.options).find(opt => opt.value === modelPath);
             let originalPath = selectedOption ? selectedOption.getAttribute('data-path') : null;
             const filename = selectedOption ? selectedOption.getAttribute('data-filename') : null;
 
@@ -3739,7 +3800,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await loadVrmModelWithCatalogReset(vrmMotionCatalogPlayer, vrmManager, modelUrl, {
                     addShadow: false,
                     idleAnimation: '/static/vrm/animation/wait03.vrma.gz'
-                });
+                }, selectionJob);
+                if (!isCurrentSelection()) return;
                 // 加载新模型后，重置播放状态
                 isVrmAnimationPlaying = false;
                 updateVRMAnimationPlayButtonIcon();
@@ -3776,24 +3838,47 @@ document.addEventListener('DOMContentLoaded', async () => {
                 animationsLoaded = false;
                 // 主动加载动作列表，解开下拉菜单的锁定状态
                 await loadVRMAnimations();
+                if (!isCurrentSelection()) return;
 
                 // 自动加载角色的打光配置
                 await loadCharacterLighting();
+                if (!isCurrentSelection()) return;
 
                 showStatus(t('live2d.vrmModelLoaded', `VRM 模型 ${modelPath} 加载成功`, { model: modelPath }));
             } catch (error) {
+                if (!isCurrentSelection()) return;
                 console.error('加载 VRM 模型失败:', error);
                 const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
                 showStatus(t('live2d.vrmModelLoadFailed', `加载 VRM 模型失败: ${errMsg}。您仍可以保存模型设置。`, { error: errMsg }));
                 // 即使模型加载失败，也尝试加载动作列表（可能用户想预览其他动作）
                 try {
                     await loadVRMAnimations(false);
+                    if (!isCurrentSelection()) return;
                 } catch (animError) {
                     console.warn('加载动作列表失败:', animError);
                 }
+                return { error: errMsg };
             }
-        });
     }
+
+    // Reuse the full selection pipeline, including voice-mode checks and animation reset.
+    window.VRMEmotionSource = window.createVrmEmotionSource({
+        getManager: () => vrmManager,
+        getSelectedUrl: () => vrmSelectionLoad && !vrmSelectionLoad.admitted
+            ? currentModelInfo?.url || vrmManager?.currentModel?.url || ''
+            : vrmModelSelect?.value || '',
+        getLoadingTask: () => vrmSelectionLoad,
+        getLoadingTasks: () => [...vrmSelectionLoads],
+        loadModel: (info) => {
+            const option = Array.from(vrmModelSelect?.options || []).find(opt =>
+                new URL(opt.value, window.location.href).href === new URL(info.url, window.location.href).href
+                && opt.getAttribute('data-sub-type') !== 'mmd');
+            if (!option) throw new Error(t('vrmEmotionManager.invalidModel', '模型已不可用，请重新选择模型'));
+            const previousValue = vrmModelSelect.value;
+            vrmModelSelect.value = option.value;
+            return loadSelectedVrmModel({ target: vrmModelSelect }, previousValue);
+        }
+    });
 
 
     function currentMotionLocale() {
@@ -3839,12 +3924,118 @@ document.addEventListener('DOMContentLoaded', async () => {
         return availableValues && availableValues.has(compressed) ? compressed : value;
     }
 
-    async function loadVrmModelWithCatalogReset(catalogPlayer, manager, modelUrl, options) {
-        vrmAnimationPlaybackRequestId += 1;
-        if (catalogPlayer) {
-            catalogPlayer.cancel('model_manager_model_load', { resume: false });
+    async function loadVrmModelWithCatalogReset(catalogPlayer, manager, modelUrl, options, selectionJob) {
+        const unavailable = () => Object.assign(new Error(t('vrmEmotionManager.sourceUnavailable',
+            '请从模型管理窗口打开此页面，并保持该窗口开启')), { errorCode: 'sourceUnavailable' });
+        if (vrmSelectionLoadsDisposed || (selectionJob && !vrmSelectionLoads.has(selectionJob))) throw unavailable();
+        // A selection already owns a slot through voice checks and initialization.
+        // Upload orientation probes use this same wrapper without a selection job.
+        if (!selectionJob && vrmSelectionLoads.size >= 2) {
+            throw Object.assign(new Error(t('vrmEmotionManager.recoveryBlocked',
+                '两次模型加载仍未结束，请等待完成或重新打开模型管理窗口后重试')), { errorCode: 'recoveryBlocked' });
         }
-        return manager.loadModel(modelUrl, options);
+        const job = selectionJob || { modelUrl, startedAt: Date.now(), settled: false };
+        if (!selectionJob) vrmSelectionLoads.add(job);
+        try {
+            vrmAnimationPlaybackRequestId += 1;
+            if (catalogPlayer) {
+                catalogPlayer.cancel('model_manager_model_load', { resume: false });
+            }
+            const result = await manager.loadModel(modelUrl, options);
+            if (vrmSelectionLoadsDisposed || !vrmSelectionLoads.has(job)) throw unavailable();
+            return result;
+        } finally {
+            if (!selectionJob) {
+                job.settled = true;
+                vrmSelectionLoads.delete(job);
+            }
+        }
+    }
+
+    async function detectUploadedVrmOrientation(modelUrl) {
+        const manager = window.vrmManager;
+        const isAlive = () => !vrmSelectionLoadsDisposed && !manager?._isDisposed && window.vrmManager === manager;
+        if (!manager) return false;
+        if (!isAlive()) return null;
+        if (!manager.scene) {
+            await manager.initThreeJS('vrm-canvas', 'vrm-container');
+            if (!isAlive()) return null;
+        }
+        // The manager increments its token synchronously when this call starts.
+        const loading = loadVrmModelWithCatalogReset(vrmMotionCatalogPlayer, manager, modelUrl,
+            { autoPlay: false, addShadow: false });
+        const loadToken = manager._activeLoadToken;
+        let result;
+        try {
+            result = await loading;
+        } catch (error) {
+            if (!isAlive() || manager._activeLoadToken !== loadToken) return null;
+            throw error;
+        }
+        if (!isAlive() || manager._activeLoadToken !== loadToken) return null;
+        if (!result?.vrm) return false;
+        if (manager.currentModel?.vrm !== result.vrm) return null;
+        // An owned fallback asset is a real identity failure, not supersession.
+        if (new URL(manager.currentModel.url, window.location.href).href !== new URL(modelUrl, window.location.href).href) return false;
+        const isCurrent = () => isAlive() && manager._activeLoadToken === loadToken && Boolean(result?.vrm)
+            && manager.currentModel?.vrm === result.vrm
+            && new URL(manager.currentModel.url, window.location.href).href === new URL(modelUrl, window.location.href).href;
+        if (!isCurrent()) return null;
+        for (let i = 0; i < 3; i++) {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            if (!isCurrent()) return null;
+        }
+        const vrm = result.vrm;
+        const detectedRotation = { x: vrm.scene.rotation.x, y: vrm.scene.rotation.y, z: vrm.scene.rotation.z };
+        window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        if (!isCurrent()) return null;
+        if (manager.core && typeof manager.core.saveUserPreferences === 'function') {
+            const position = vrm.scene.position.clone();
+            const scale = vrm.scene.scale.clone();
+            let saveSuccess;
+            try {
+                saveSuccess = await manager.core.saveUserPreferences(modelUrl,
+                    { x: position.x, y: position.y, z: position.z },
+                    { x: scale.x, y: scale.y, z: scale.z }, detectedRotation, null);
+            } catch (error) {
+                if (!isCurrent()) return null;
+                throw error;
+            }
+            // A dispatched save may finish, but must never clean up a newer model.
+            if (!isCurrent()) return null;
+            if (saveSuccess) {
+                const rotationDegrees = (detectedRotation.y * 180 / Math.PI).toFixed(1);
+                uploadStatus.textContent = t('live2d.vrmUpload.orientationFixed',
+                    `✓ 模型朝向已修正并保存 (${rotationDegrees}度)`, { degrees: rotationDegrees });
+            } else {
+                uploadStatus.textContent = t('live2d.vrmUpload.orientationFixedButSaveFailed', '⚠ 朝向已修正但保存失败');
+                console.error(`[上传检测] 保存失败: ${modelUrl}`);
+            }
+        } else {
+            uploadStatus.textContent = t('live2d.vrmUpload.cannotSaveOrientation', '⚠ 无法保存朝向配置');
+            console.error('[上传检测] saveUserPreferences方法不存在');
+        }
+        if (!isCurrent()) return null;
+        manager.scene.remove(vrm.scene);
+        manager.core.disposeVRM();
+        manager.currentModel = null;
+        return true;
+    }
+
+    async function detectAndReportUploadedVrmOrientation(modelUrl) {
+        try {
+            const detected = await detectUploadedVrmOrientation(modelUrl);
+            if (detected === false && !vrmSelectionLoadsDisposed) {
+                uploadStatus.textContent = t('live2d.vrmUpload.orientationDetectionFailed', '⚠ 朝向检测失败，但模型已上传');
+            }
+            return detected;
+        } catch (orientationError) {
+            if (vrmSelectionLoadsDisposed) return null;
+            console.warn('检测模型朝向时出错，将继续添加到列表:', orientationError);
+            uploadStatus.textContent = t('live2d.vrmUpload.orientationDetectionFailed', '⚠ 朝向检测失败，但模型已上传');
+            return false;
+        }
     }
 
     function mergeVrmAnimationLists(importedAnimations, catalogAnimations) {
@@ -7652,6 +7843,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Live3D 情感配置按钮（VRM/MMD 统一）
+    function openVrmEmotionManagerWindow(url, winName, features) {
+        const editor = typeof window.openOrFocusWindow === 'function'
+            ? window.openOrFocusWindow(url, winName, features, {
+                // Obtain a real handle rather than a shared named-window proxy.
+                navigateOnReuse: true, shouldNavigateOnReuse: () => false
+            })
+            : window.open(url, winName, features);
+        try {
+            if (editor && !editor.closed && 'opener' in editor && editor.opener !== window) {
+                // Reusing a named context preserves its original opener. Replace
+                // that one context so recovery binds to this model manager.
+                editor.close();
+                return window.open(url, winName, features);
+            }
+        } catch (_) {
+            // A cross-origin context cannot supply trusted model capabilities.
+        }
+        return editor;
+    }
     const live3dEmotionConfigBtn = document.getElementById('live3d-emotion-config-btn');
     if (live3dEmotionConfigBtn) {
         live3dEmotionConfigBtn.addEventListener('click', () => {
@@ -7674,7 +7884,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
-            if (typeof window.openOrFocusWindow === 'function') {
+            if (winName === 'vrmEmotionManager') {
+                openVrmEmotionManagerWindow(url, winName, features);
+            } else if (typeof window.openOrFocusWindow === 'function') {
                 window.openOrFocusWindow(url, winName, features);
             } else {
                 window.open(url, winName, features);
@@ -8432,80 +8644,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         // 使用 ModelPathHelper 标准化路径（处理 Windows 路径、相对路径等）
                         modelUrl = ModelPathHelper.normalizeModelPath(modelUrl, 'model');
 
-                        // 初始化Three.js（如果还没初始化）
-                        if (!window.vrmManager.scene) {
-                            await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
-                        }
-
-                        // 临时加载模型
-                        await loadVrmModelWithCatalogReset(
-                            vrmMotionCatalogPlayer,
-                            window.vrmManager,
-                            modelUrl,
-                            { autoPlay: false, addShadow: false }
-                        );
-
-                        // 等待几帧，确保模型完全加载、骨骼位置计算完成
-                        for (let i = 0; i < 3; i++) {
-                            await new Promise(resolve => requestAnimationFrame(resolve));
-                        }
-
-                        // 保存加载管线处理后的朝向到 preferences
-                        if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
-                            const vrm = window.vrmManager.currentModel.vrm;
-
-                            // loadModel 已经完成 VRM0.x 版本兼容和启发式朝向处理。
-                            // 这里保存最终旋转，避免上传流程再次用旧启发式覆盖加载结果。
-                            const detectedRotation = {
-                                x: vrm.scene.rotation.x,
-                                y: vrm.scene.rotation.y,
-                                z: vrm.scene.rotation.z
-                            };
-
-                            // 应用旋转
-                            window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
-
-                            // 等待一帧，确保旋转已应用
-                            await new Promise(resolve => requestAnimationFrame(resolve));
-
-                            // 保存到preferences（使用与vrm-core.js相同的逻辑）
-                            if (window.vrmManager.core && typeof window.vrmManager.core.saveUserPreferences === 'function') {
-                                const currentPosition = vrm.scene.position.clone();
-                                const currentScale = vrm.scene.scale.clone();
-
-                                const saveSuccess = await window.vrmManager.core.saveUserPreferences(
-                                    modelUrl,
-                                    { x: currentPosition.x, y: currentPosition.y, z: currentPosition.z },
-                                    { x: currentScale.x, y: currentScale.y, z: currentScale.z },
-                                    detectedRotation,
-                                    null
-                                );
-
-                                if (saveSuccess) {
-                                    const rotationDegrees = (detectedRotation.y * 180 / Math.PI).toFixed(1);
-                                    uploadStatus.textContent = t('live2d.vrmUpload.orientationFixed', `✓ 模型朝向已修正并保存 (${rotationDegrees}度)`, { degrees: rotationDegrees });
-                                } else {
-                                    uploadStatus.textContent = t('live2d.vrmUpload.orientationFixedButSaveFailed', '⚠ 朝向已修正但保存失败');
-                                    console.error(`[上传检测] 保存失败: ${modelUrl}`);
-                                }
-                            } else {
-                                uploadStatus.textContent = t('live2d.vrmUpload.cannotSaveOrientation', '⚠ 无法保存朝向配置');
-                                console.error(`[上传检测] saveUserPreferences方法不存在`);
-                            }
-
-                            // 清理临时加载的模型
-                            if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
-                                window.vrmManager.scene.remove(window.vrmManager.currentModel.vrm.scene);
-                                window.vrmManager.core.disposeVRM();
-                                window.vrmManager.currentModel = null;
-                            }
-                        } else {
-                            uploadStatus.textContent = t('live2d.vrmUpload.cannotGetModelInstance', '⚠ 无法获取模型实例');
-                            console.error(`[上传检测] 无法获取模型实例`);
-                        }
+                        await detectAndReportUploadedVrmOrientation(modelUrl);
                     } catch (orientationError) {
                         console.warn('检测模型朝向时出错，将继续添加到列表:', orientationError);
-                        uploadStatus.textContent = t('live2d.vrmUpload.orientationDetectionFailed', '⚠ 朝向检测失败，但模型已上传');
+                        if (!vrmSelectionLoadsDisposed) {
+                            uploadStatus.textContent = t('live2d.vrmUpload.orientationDetectionFailed', '⚠ 朝向检测失败，但模型已上传');
+                        }
                     }
                 }
 

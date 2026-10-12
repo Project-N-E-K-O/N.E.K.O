@@ -64,6 +64,30 @@ def _payload(messages):
     return json.loads(messages[1].content.split("：\n", 1)[1])
 
 
+@pytest.mark.parametrize("formal", [False, True])
+def test_actor_keeps_per_turn_action_projection_after_system_rules(formal):
+    engine = _ending_engine()
+    session = _session(engine)
+    systems = []
+    marker = "\n本轮 Runtime 玩家动作结果投影（仅为约束，不是新增剧情）："
+    for player_input in ("我先看看。", "（推门离开）明天见。"):
+        outcome = engine.resolve_turn(
+            session, TurnRequestV2("prefix", 0, player_input), (),
+            scene_complete=formal, natural_ending_ready=formal,
+        )
+        messages = _turn_messages(
+            engine, session, outcome, player_input, "克制", "测试猫娘", "哥哥",
+        )
+        system = messages[0].content
+        assert system.count(marker) == 1
+        prefix, projection = system.split(marker)
+        assert projection.endswith("。")
+        assert json.loads(projection[:-1]) == project_player_action_result(player_input)
+        assert _payload(messages)["player_input"] == player_input
+        systems.append(prefix)
+    assert systems[0] == systems[1]
+
+
 @pytest.mark.parametrize("response", ["刚才已经尝过水了。", "星纹已经接好，可以继续了。"])
 @pytest.mark.parametrize("trim_history", [False, True])
 def test_actor_evidence_dedup_follows_final_retained_history(response, trim_history):
@@ -245,7 +269,8 @@ def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
     assert "提问、准备、假设与尝试不证明完成" in messages[0].content
     assert "完整回应不等于必须满足请求" in messages[0].content
     assert "先明确承认问题并暂缓披露" in messages[0].content
-    assert "不得替玩家补出未表达的行动、选择或心理" in messages[0].content
+    assert "不得替玩家补出未经授权的重要状态变化、选择、承诺或关系立场" in messages[0].content
+    assert "不补心理，不交换玩家与猫娘的行动主体" in messages[0].content
     assert "不扩展到其他对象、额外操作或后续承诺" in messages[0].content
     assert "剩余同质过程之间没有" in messages[0].content
     assert "真实选择" in messages[0].content

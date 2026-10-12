@@ -30,14 +30,21 @@ Both helpers block on file IO. Call them from a worker thread
 
 from __future__ import annotations
 
+import json
+import math
 import os
+import re
 import threading
+import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
 from utils.file_utils import atomic_write_json
 
 __all__ = [
+    "RECENT_IDEMPOTENCY_META_KEY",
+    "RETIRED_KEYS_FILENAME",
+    "VISIT_DIARY_KEY_RE",
     "RecentFileDeletedError",
     "RecentGenerationConflictError",
     "acquire_recent_file_locks",
@@ -46,6 +53,13 @@ __all__ = [
     "clear_recent_deletions",
     "clear_recent_redirects",
     "fence_recent_deletions_and_clear_redirects",
+    "keyed_entry_keys",
+    "prune_retired_keys",
+    "read_keyed_payload",
+    "strip_idempotency_metadata",
+    "read_retired_keys",
+    "read_retired_keys_unlocked",
+    "retire_removed_keyed_entries",
     "get_recent_pending",
     "get_recent_pending_unlocked",
     "get_recent_content_version_unlocked",
@@ -452,7 +466,14 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
     is the last statement in ``atomic_write_text`` and everything after it only
     cleans up the temp file. Callers rely on that to retry a failed batch without
     any deduplication.
+
+    Every rewrite of a recent file goes through here, so this is also where
+    keyed entries leaving the file are recorded: before the replace, the keys
+    of keyed entries present in the old file and absent from ``payload`` are
+    written to the ``RETIRED_KEYS_FILENAME`` sidecar
+    (:func:`retire_removed_keyed_entries`).
     """
+    retire_removed_keyed_entries(path, None, payload)
     atomic_write_json(path, payload, indent=2, ensure_ascii=False)
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
@@ -488,3 +509,170 @@ def write_recent_payload(
     ) as resolved_path:
         write_recent_payload_unlocked(resolved_path, payload)
         set_recent_pending_unlocked(resolved_path, [])
+
+
+# ── keyed entries leaving recent.json ─────────────────────────────────────
+# 带幂等键写进来的条目（串门「记成日记」）被移出 recent.json（压缩、裁剪、整表清空、
+# 记忆浏览器保存、云存档替换……）时，它的键记进旁路文件：这是「这条确实写过、只是
+# 已被移出」的正面证据，memory_server 的带键 /cache 重试据此判为已写、不把它补写回去。
+# recent.json 的 list 根格式不变。
+
+RETIRED_KEYS_FILENAME = "recent.retired_keys.json"
+"""Sidecar ``{key: retired_at}`` of keyed entries that left this recent file."""
+
+RECENT_IDEMPOTENCY_META_KEY = "idempotency_key"
+"""Message metadata key carrying the idempotency key of a keyed ``/cache`` write."""
+
+VISIT_DIARY_KEY_RE = re.compile(r"^visit-debrief:[A-Za-z0-9_-]{22}$")
+"""The only keyed recent entries: one visit's diary (an assistant message), ``visit-debrief:{visit_id}``."""
+
+_KEY_MARKER = '"' + RECENT_IDEMPOTENCY_META_KEY + '"'
+
+
+def _entry_key(entry: Any) -> str | None:
+    # 只认串门日记：AI 消息、键格式完整。普通消息里调用方带的同名 metadata 不是写过的证据
+    if not isinstance(entry, dict):
+        return None
+    meta = entry.get("metadata")
+    if not isinstance(meta, dict):
+        data = entry.get("data")
+        meta = data.get("metadata") if isinstance(data, dict) else None
+    key = meta.get(RECENT_IDEMPOTENCY_META_KEY) if isinstance(meta, dict) else None
+    kind = entry.get("type") or ("ai" if entry.get("role") == "assistant" else entry.get("role"))
+    if kind != "ai" or not isinstance(key, str) or VISIT_DIARY_KEY_RE.fullmatch(key) is None:
+        return None
+    return key
+
+
+def strip_idempotency_metadata(messages: Any) -> None:
+    """Drop the reserved ``idempotency_key`` metadata from caller-supplied messages (in place).
+
+    Only the keyed ``/cache`` path stamps it, on the server side; anything a
+    caller sent on another write path would otherwise read as "this diary was
+    already written" and settle a later real keyed write without storing it.
+    """
+    for message in messages or ():
+        if isinstance(message, dict):
+            # 与 _entry_key 认的形态对齐：顶层 metadata，或落盘形态的 data.metadata（本模块是叶子，不引 llm_client）
+            data = message.get("data")
+            metas = [message.get("metadata"), data.get("metadata") if isinstance(data, dict) else None]
+        else:
+            metas = [getattr(message, "metadata", None)]
+        for meta in metas:
+            if isinstance(meta, dict):
+                meta.pop(RECENT_IDEMPOTENCY_META_KEY, None)
+
+
+def keyed_entry_keys(payload: Any) -> set[str]:
+    """Idempotency keys of the keyed entries in a recent payload (a list of stored messages)."""
+    if not isinstance(payload, list):
+        return set()
+    return {key for key in (_entry_key(entry) for entry in payload) if key is not None}
+
+
+def _read_current_payload_unlocked(path: Any) -> Any:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError):
+        # 旧文件读不出 / 不是合法 UTF-8：比对不出移出了哪些键，但不能因此挡住替换它的写入
+        # （云存档下载正是用来覆盖坏掉的 recent.json）
+        return []
+    if _KEY_MARKER not in text:
+        # 绝大多数文件没有带键条目：不解析就知道没有要退役的键
+        return []
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError):
+        # 旧文件已坏：比对不出移出了哪些键，照常写（坏文件本来就读不出任何条目）
+        return []
+
+
+def read_keyed_payload(path: Any) -> Any:
+    """A recent payload read only for its keyed entries (``[]`` when absent, unreadable or without any).
+
+    No lock: for files outside the live recent path (e.g. a staged cloud copy).
+    """
+    return _read_current_payload_unlocked(path)
+
+
+def read_retired_keys_unlocked(path: Any) -> dict[str, float]:
+    """The retired-key sidecar of ``path`` (``{}`` when absent). The caller MUST hold the lock.
+
+    Raises ``ValueError`` when the sidecar exists but is not a JSON object,
+    and ``OSError`` when it cannot be read: callers deciding "was this key
+    ever written" must not read a damaged file as "never".
+    """
+    sidecar = recent_sidecar_path(path, RETIRED_KEYS_FILENAME)
+    try:
+        with open(sidecar, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{RETIRED_KEYS_FILENAME} is not an object")
+    for key, stamp in data.items():
+        # 条目畸形（键不是串门日记键、时间不是有限数）同样按「坏了」处理：不把它当成「写过」的证据
+        if (
+            not isinstance(key, str) or VISIT_DIARY_KEY_RE.fullmatch(key) is None
+            or isinstance(stamp, bool) or not isinstance(stamp, (int, float))
+            # int 一律有限（超大整数交给 math.isfinite 会抛 OverflowError、挡住 recent.json 写入）；只查 float
+            or (isinstance(stamp, float) and not math.isfinite(stamp))
+        ):
+            raise ValueError(f"{RETIRED_KEYS_FILENAME} has a malformed entry")
+    return data
+
+
+def read_retired_keys(path: Any) -> dict[str, float]:
+    """:func:`read_retired_keys_unlocked` under the file lock."""
+    with recent_file_access(path) as resolved_path:
+        return read_retired_keys_unlocked(resolved_path)
+
+
+def retire_removed_keyed_entries(path: Any, old: Any, new: Any) -> list[str]:
+    """Record the keys of keyed entries in ``old`` but not in ``new``. The caller MUST hold the lock.
+
+    ``old=None`` reads the current file. The sidecar is written atomically
+    BEFORE the caller replaces (or deletes, ``new=[]``) the recent file: a
+    crash between the two leaves the key recorded and the entry possibly
+    still there, both evidence that it was written. A key already recorded
+    keeps its first ``retired_at``. A sidecar that cannot be read is left
+    untouched (its readers keep failing closed) rather than replaced by an
+    incomplete one. Returns the newly retired keys.
+    """
+    if old is None:
+        old = _read_current_payload_unlocked(path)
+    removed = keyed_entry_keys(old) - keyed_entry_keys(new)
+    if not removed:
+        return []
+    try:
+        data = read_retired_keys_unlocked(path)
+    except (OSError, ValueError, RecursionError):
+        # 旁路坏了 / 读不出：不挡 recent.json 的写入，但也不拿一份只含这几条的新旁路盖掉它——
+        # 那会丢掉旧键的证据，之后同键重试就把已移出的日记写回去。保留原样，带键读取继续 fail closed
+        return []
+    now = time.time()
+    added = sorted(key for key in removed if key not in data)
+    if not added:
+        return []
+    for key in added:
+        data[key] = now
+    write_recent_sidecar_unlocked(path, RETIRED_KEYS_FILENAME, data)
+    return added
+
+
+def prune_retired_keys(path: Any, should_drop) -> list[str]:
+    """Drop sidecar records for which ``should_drop(key, retired_at)`` is true (under the file lock)."""
+    with recent_file_access(path) as resolved_path:
+        sidecar = recent_sidecar_path(resolved_path, RETIRED_KEYS_FILENAME)
+        if not os.path.exists(sidecar):
+            return []
+        data = read_retired_keys_unlocked(resolved_path)
+        dropped = [key for key, stamp in data.items() if should_drop(key, stamp)]
+        if dropped:
+            for key in dropped:
+                data.pop(key, None)
+            write_recent_sidecar_unlocked(resolved_path, RETIRED_KEYS_FILENAME, data)
+        return dropped

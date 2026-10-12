@@ -503,6 +503,14 @@ function _getNekoCatVoiceUrls(slot) {
     const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getVoice(slot, { random: false });
     return result && result.available ? result.urls : [];
 }
+function _isNekoCatAppearanceWideArtUrl(slot, assetUrl) {
+    const normalizedAssetUrl = String(assetUrl || '').split(/[?#]/, 1)[0];
+    if (!normalizedAssetUrl) return false;
+    const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getAppearance(slot, { random: false });
+    if (!result || !result.available || !result.metadata || result.metadata.wideArt !== true) return false;
+    const urls = Array.isArray(result.urls) ? result.urls : [];
+    return urls.some((url) => String(url || '').split(/[?#]/, 1)[0] === normalizedAssetUrl);
+}
 const _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = _getNekoCatAppearanceUrl('drag.rapid', { random: false });
 const _NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS = 5000;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_WINDOW_MS = 1100;

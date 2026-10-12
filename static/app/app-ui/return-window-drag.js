@@ -441,6 +441,7 @@
             const edgeButton = (container.classList && container.classList.contains('neko-idle-return-btn'))
                 ? container : (container.querySelector && container.querySelector('.neko-idle-return-btn'));
             if (window.NekoEdgePeekController && window.NekoEdgePeekController.shouldBlockReturnBallDrag(edgeButton, container)) return;
+            if (window.NekoDesktopWindowGravity?.usesContinuousDrag?.(container)) return;
             I.clearMultiWindowReturnBallDeferredWork(state);
             state.dragSessionToken += 1;
             const dragToken = state.dragSessionToken;
@@ -458,7 +459,11 @@
             window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                 detail: {
                     reason: 'return-ball-drag-start',
-                    container: container
+                    container: container,
+                    dragSessionId: dragToken,
+                    screenX,
+                    screenY,
+                    timestamp: Date.now()
                 }
             }));
             state.isDragging = true;
@@ -578,7 +583,8 @@
                 window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                     detail: {
                         reason: 'return-ball-drag-active',
-                        container: container
+                        container: container,
+                        dragSessionId: state.dragSessionToken
                     }
                 }));
             }
@@ -587,6 +593,7 @@
                     detail: {
                         reason: 'return-ball-drag-motion',
                         container: container,
+                        dragSessionId: state.dragSessionToken,
                         clientX: sourcePoint && Number.isFinite(sourcePoint.clientX) ? sourcePoint.clientX : screenX,
                         clientY: sourcePoint && Number.isFinite(sourcePoint.clientY) ? sourcePoint.clientY : screenY,
                         screenX: screenX,
@@ -624,6 +631,8 @@
                 displacementPx: 0,
                 durationMs: 0
             };
+            dragActivityFacts.dragSessionId = dragToken;
+            dragActivityFacts.releasedAt = Date.now();
             I.clearReturnBallDragRecoveryTimer(state);
             I.clearMultiWindowReturnBallDeferredWork(state);
 
@@ -839,6 +848,7 @@
                 event.stopImmediatePropagation();
                 return;
             }
+            if (window.NekoDesktopWindowGravity?.usesContinuousDrag?.(container)) return;
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
             event.preventDefault();
@@ -853,6 +863,10 @@
             updateDrag(point.x, point.y, event.touches[0]);
         };
         state.handleTouchEnd = (event) => {
+            if (event && event.type === 'touchcancel') {
+                cancelActiveDrag('touchcancel');
+                return;
+            }
             const point = getTouchScreenPoint(event.changedTouches && event.changedTouches[0]);
             void finishDrag(
                 point ? point.x : state.releaseScreenX,
