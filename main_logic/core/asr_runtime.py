@@ -109,6 +109,7 @@ from main_logic.voice_input.interception import (
     InterceptionDeliveryStage,
 )
 from main_logic.voice_turn.audio_delivery import AudioDeliveryTag
+from main_logic.voice_input.interception_output_state import InterceptionOutputState
 
 
 @dataclass(eq=False, slots=True)
@@ -389,9 +390,8 @@ class AsrRuntimeMixin:
         self._active_session_interception_installation: InterceptionInstallation | None = None
         self._active_session_interception_retiring_bridge: ActiveSessionInterceptionBridge | None = None
         self._active_session_interception_retirement: asyncio.Task | None = None
-        self._interception_output_cursor = None
+        self._interception_output_state = InterceptionOutputState()
         self._interception_failure_generation = None
-        self._interception_segment_owner = None
         self._normal_capture_end_owner = None
         self._last_microphone_dsp_context = None
         self._voice_session_activation_factory: VoiceSessionActivationFactory | None = None
@@ -591,14 +591,12 @@ class AsrRuntimeMixin:
             self._active_session_interception_retirement = None
         if not hasattr(self, "_active_session_interception_retiring_bridge"):
             self._active_session_interception_retiring_bridge = None
-        if not hasattr(self, "_interception_output_cursor"):
-            self._interception_output_cursor = None
+        if not hasattr(self, "_interception_output_state"):
+            self._interception_output_state = InterceptionOutputState()
         if not hasattr(self, "_interception_failure_generation"):
             self._interception_failure_generation = None
         if not hasattr(self, "_interception_degraded_generation"):
             self._interception_degraded_generation = None
-        if not hasattr(self, "_interception_segment_owner"):
-            self._interception_segment_owner = None
         if not hasattr(self, "_normal_capture_end_owner"):
             self._normal_capture_end_owner = None
         if not hasattr(self, "_last_microphone_dsp_context"):
@@ -4715,6 +4713,8 @@ class AsrRuntimeMixin:
         )
         operation = self._capture_core_asr_operation_identity()
         revision = self._voice_activation_delivery_revision
+        output_state = self._interception_output_state
+        owner = (bridge, generation)
 
         def current() -> bool:
             return bool(
@@ -4732,20 +4732,9 @@ class AsrRuntimeMixin:
                 def report(stage, event=event):
                     callback(InterceptionDeliveryReceipt(event, stage, time.monotonic()))
 
-                cursor = self._interception_output_cursor
-                if cursor is not None and cursor[:2] == (bridge, generation):
-                    _, _, identity, sequence, sample, ended = cursor
-                    valid = (not ended and event.identity == identity
-                             and event.sequence == sequence + 1 and event.start_sample == sample)
-                else:
-                    valid = event.sequence == 0 and event.start_sample == 0
-                if not valid or not current():
+                if not current() or not output_state.accept_event(owner, event):
                     report(InterceptionDeliveryStage.NOT_SENT)
                     return OutputCommit.UNKNOWN
-                self._interception_output_cursor = (
-                    bridge, generation, event.identity, event.sequence, event.end_sample,
-                    event.kind is InterceptionOutputKind.END,
-                )
                 report(InterceptionDeliveryStage.LOCAL_ACCEPTED)
                 remaining.pop(0)
                 if event.kind is InterceptionOutputKind.AUDIO:
@@ -4771,9 +4760,9 @@ class AsrRuntimeMixin:
                     if committed is OutputCommit.UNKNOWN or not current():
                         tag.observe(0, tag.sample_count, InterceptionDeliveryStage.UNKNOWN)
                         return OutputCommit.UNKNOWN
-                    self._interception_segment_owner = (bridge, generation)
+                    output_state.mark_audio_accepted(owner)
                 else:
-                    if self._interception_segment_owner == (bridge, generation):
+                    if output_state.has_open_segment(owner):
                         if self._asr_route_mode != "independent":
                             report(InterceptionDeliveryStage.NOT_SENT)
                             # Native providers without an explicit, proven boundary
@@ -4795,7 +4784,7 @@ class AsrRuntimeMixin:
                         if not current():
                             report(InterceptionDeliveryStage.UNKNOWN)
                             return OutputCommit.UNKNOWN
-                        self._interception_segment_owner = None
+                        output_state.mark_boundary_applied(owner)
                     # A control boundary is locally applied; never pretend that a
                     # provider confirmed a PCM item or invented silence.
                     report(InterceptionDeliveryStage.QUEUED)

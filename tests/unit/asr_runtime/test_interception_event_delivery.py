@@ -425,8 +425,9 @@ async def test_core_bridge_real_prewire_factory_applies_gap_and_end_without_audi
             assert await core._route_voice_session_activation_output(frame, generation) is OutputCommit.LOCAL_ACCEPTED
         assert received
         assert core._asr_runtime.discontinue_input.await_count >= 1
+        boundaries_before_finish = core._asr_runtime.discontinue_input.await_count
         assert await core.finish_active_session_interception(generation=generation, context=frame.context) is OutputCommit.LOCAL_ACCEPTED
-        assert core._interception_output_cursor[-1] is True
+        assert core._asr_runtime.discontinue_input.await_count == boundaries_before_finish + 1
         runtime = factory._runtimes[0]
         assert not runtime._delivery_events
         # This real model runtime rejects control receipts by design. The
@@ -733,3 +734,73 @@ def test_degraded_property_does_not_hide_missing_required_state():
     del core._voice_session_activation_degraded_value
     with pytest.raises(AttributeError):
         _ = core._voice_session_activation_degraded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [
+    pytest.param(_event(0, 0, 4), id="duplicate"),
+    pytest.param(_event(2, 4, 8), id="skipped-sequence"),
+    pytest.param(_event(1, 5, 9), id="sample-hole"),
+    pytest.param(replace(_event(1, 4, 8), identity=replace(IDENTITY, profile_generation="other")), id="changed-identity"),
+])
+async def test_rejected_output_event_does_not_send_or_consume_successor_position(invalid):
+    core, generation = _core()
+    audio = _event(0, 0, 4)
+    model = _EventRuntime(InterceptionResult(InterceptionDecision.KEEP, audio.pcm16, events=(audio,)))
+    core._asr_runtime.submit = AsyncMock(return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED))
+    await core.set_active_session_interception_factory(_Factory(model))
+    frame = _frame(core, generation, audio.pcm16)
+    try:
+        assert await core._route_voice_session_activation_output(frame, generation) is OutputCommit.LOCAL_ACCEPTED
+        model.result = InterceptionResult(InterceptionDecision.KEEP, invalid.pcm16, events=(invalid,))
+        assert await core._route_voice_session_activation_output(frame, generation) is OutputCommit.UNKNOWN
+        assert core._asr_runtime.submit.await_count == 1
+        assert model.receipts[-1].event == invalid
+        assert model.receipts[-1].stage is InterceptionDeliveryStage.NOT_SENT
+
+        successor = _event(1, 4, 8)
+        model.result = InterceptionResult(InterceptionDecision.KEEP, successor.pcm16, events=(successor,))
+        assert await core._route_voice_session_activation_output(frame, generation) is OutputCommit.LOCAL_ACCEPTED
+        assert core._asr_runtime.submit.await_count == 2
+    finally:
+        await core._active_session_interception_bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_end_rejects_late_audio_and_replacement_bridge_starts_its_own_segment():
+    core, generation = _core()
+    audio = _event(0, 0, 4)
+    end = _event(1, 4, 4, InterceptionOutputKind.END)
+    model = _EventRuntime(InterceptionResult(InterceptionDecision.KEEP, audio.pcm16, events=(audio, end)))
+    core._asr_runtime.submit = AsyncMock(return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED))
+    core._asr_runtime.discontinue_input = AsyncMock()
+    await core.set_active_session_interception_factory(_Factory(model))
+    frame = _frame(core, generation, audio.pcm16)
+    try:
+        assert await core._route_voice_session_activation_output(frame, generation) is OutputCommit.LOCAL_ACCEPTED
+        assert core._asr_runtime.submit.await_count == 1
+        core._asr_runtime.discontinue_input.assert_awaited_once()
+
+        late = _event(2, 4, 8)
+        model.result = InterceptionResult(InterceptionDecision.KEEP, late.pcm16, events=(late,))
+        assert await core._route_voice_session_activation_output(frame, generation) is OutputCommit.UNKNOWN
+        assert core._asr_runtime.submit.await_count == 1
+
+        gap = _event(0, 0, 4, InterceptionOutputKind.GAP)
+        successor = _event(1, 4, 8)
+        replacement = _EventRuntime(InterceptionResult(InterceptionDecision.KEEP, successor.pcm16, events=(gap, successor)))
+        assert await core.set_active_session_interception_factory(_Factory(replacement))
+        assert await core._route_voice_session_activation_output(frame, generation) is OutputCommit.LOCAL_ACCEPTED
+        assert core._asr_runtime.submit.await_count == 2
+        # A leading gap has no accepted audio to seal for this owner.
+        core._asr_runtime.discontinue_input.assert_awaited_once()
+
+        another = _EventRuntime(InterceptionResult(InterceptionDecision.KEEP, successor.pcm16, events=(gap, successor)))
+        assert await core.set_active_session_interception_factory(_Factory(another))
+        assert await core._route_voice_session_activation_output(frame, generation) is OutputCommit.LOCAL_ACCEPTED
+        assert core._asr_runtime.submit.await_count == 3
+        # The previous bridge still had an open segment. Its marker cannot
+        # cause the replacement's leading gap to seal that previous segment.
+        core._asr_runtime.discontinue_input.assert_awaited_once()
+    finally:
+        await core._active_session_interception_bridge.close()
