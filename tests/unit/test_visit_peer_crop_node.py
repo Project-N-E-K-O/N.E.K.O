@@ -909,3 +909,27 @@ def test_reload_snapshot_does_not_overwrite_newer_live_auxiliary_state():
         files=BRIDGE_FILES,
     )
     assert out == {"result": True, "crop": "full", "badge": False}
+
+
+def test_reload_snapshot_keeps_fields_that_were_not_updated_live():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        let respond;
+        h.ctx.fetch = () => new Promise((r) => { respond = r; });
+        h.bridge.recoverAfterReload('Neko');
+        await settle();
+        // 查询期间只来了 peer_visible：快照里的 peer_crop 照常采用
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'peer_visible', side: 'host', visit_id: VISIT_ID });
+        respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side: 'host', phase: 'active',
+                                                           room: { peer_crop: 'full' }, peer: { hidden: true } }) });
+        await settle();
+        const out = { crop: h.bridge._state.peerCrop, hidden: h.bridge._state.peerHidden === true };
+        h.side = 'host';
+        change(h, 'ended');
+        await advance(6100);
+        return out;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"crop": "full", "hidden": False}

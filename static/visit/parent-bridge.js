@@ -143,7 +143,7 @@
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       endedVisitId: null,    // 最近结束的场次：它迟到的 wrap_up / ending 不再补建 iframe（只拦补建，不参与场次过滤）
       retiring: [],          // 已脱离父页、等它把清理做完的旧 iframe [{frame, timer, endOn}]
-      auxGen: 0,             // 每收到一条 peer_crop / peer_hidden / peer_visible / departed 加一：重载快照不覆盖更新过的这些状态
+      auxGen: { crop: 0, hidden: 0, away: 0 },   // 实时辅助状态各自的更新计数：重载快照只不覆盖查询期间更新过的那几项
       portraitWrapped: false,
     };
 
@@ -972,8 +972,9 @@
       // 只有能建 / 拆 iframe 的生命周期事件才让在途的重载恢复快照作废；peer_hidden / peer_crop /
       // departed 这类辅助事件不建 iframe，不能让快照白白丢掉
       if (action === 'ended' || PHASE_OF_ACTION[action]) state.liveGen += 1;
-      if (msg.peer_crop === 'upper' || msg.peer_crop === 'full' || action === 'peer_hidden' || action === 'peer_visible' ||
-          action === 'departed') state.auxGen += 1;
+      if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.auxGen.crop += 1;
+      if (action === 'peer_hidden' || action === 'peer_visible') state.auxGen.hidden += 1;
+      if (action === 'departed') state.auxGen.away += 1;
       if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.peerCrop = msg.peer_crop;
       if (action === 'pending') {
         state.closedVisitId = null;
@@ -1051,7 +1052,7 @@
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
       var cap = typeof overall === 'number' ? overall : Infinity;
       var gen = state.liveGen;
-      var auxGen = state.auxGen;
+      var auxGen = { crop: state.auxGen.crop, hidden: state.auxGen.hidden, away: state.auxGen.away };
       // /api/visit/state 要 CSRF：重载后页面配置一时取不到 token 时不能直接空着头去请求（403 后就再也不恢复）
       return acquireToken(0, Math.min(now() + RECOVER_TOKEN_WINDOW_MS, cap)).then(function (token) {
         if (!token) return null;
@@ -1066,13 +1067,11 @@
         if (!action) return false;
         ensureFrame(snap.side, snap.visit_id);
         state.phase = snap.phase;
-        // 查询期间实时通道已经推过对端构图 / 显隐 / 出门：那些比快照新，快照里的这几项不再覆盖
-        if (auxGen === state.auxGen) {
-          var room = snap.room || {};
-          if (room.peer_crop === 'upper' || room.peer_crop === 'full') state.peerCrop = room.peer_crop;
-          if (snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
-          if (snap.peer && snap.peer.hidden) setPeerHidden(true);
-        }
+        // 查询期间实时通道推过的对端构图 / 显隐 / 出门比快照新：只有没更新过的那几项才用快照
+        var room = snap.room || {};
+        if (auxGen.crop === state.auxGen.crop && (room.peer_crop === 'upper' || room.peer_crop === 'full')) state.peerCrop = room.peer_crop;
+        if (auxGen.away === state.auxGen.away && snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
+        if (auxGen.hidden === state.auxGen.hidden && snap.peer && snap.peer.hidden) setPeerHidden(true);
         return true;
       }).catch(function () {
         return false;
