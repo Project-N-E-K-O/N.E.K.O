@@ -2129,3 +2129,31 @@ def test_livekit_destroy_disconnects_a_lingering_room_later():
         """
     )
     assert out == {"immediately": 0, "later": 1}
+
+
+def test_track_attached_during_context_loss_is_attached_after_restore():
+    out = run_visit_js(
+        """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const doc = ctx.document;
+        const canvas = doc.createElement('canvas');
+        const listeners = {};
+        canvas.addEventListener = (type, fn) => { listeners[type] = fn; };
+        let lost = false;
+        const realGet = canvas.getContext.bind(canvas);
+        canvas.getContext = (kind) => (kind === 'webgl' && lost ? null : realGet(kind));
+        const video = doc.createElement('video');
+        video.play = () => Promise.resolve();
+        const u = new ctx.NekoVisitTransport.unpack.Unpacker({ video, canvas });
+        lost = true;
+        listeners.webglcontextlost({ preventDefault() {} });
+        const track = { id: 'remote' };
+        u.attach(track);
+        const during = { track: u.track, pending: u.pendingTrack && u.pendingTrack.id };
+        lost = false;
+        listeners.webglcontextrestored({});
+        return { during, after: u.track && u.track.id, pending: u.pendingTrack };
+        """
+    )
+    assert out == {"during": {"track": None, "pending": "remote"}, "after": "remote", "pending": None}

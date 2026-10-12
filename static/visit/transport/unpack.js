@@ -84,6 +84,7 @@
     this.gl = null;
     this.glState = null;
     this.track = null;
+    this.pendingTrack = null;   // WebGL 上下文丢失期间收到的远端轨：恢复后再接上
     this.firstFrameSent = false;
     this.lastRvfcAt = 0;
     this.presented = 0;
@@ -103,12 +104,17 @@
         self.glState = null;
       }, false);
       canvas.addEventListener('webglcontextrestored', function () {
-        if (!self.track) return;
+        if (!self.track && !self.pendingTrack) return;
         try {
           self._ensureGl();
         } catch (_) {
           self.gl = null;
           self.glState = null;
+        }
+        if (self.gl && self.pendingTrack) {
+          var pending = self.pendingTrack;
+          self.pendingTrack = null;
+          self.attach(pending);
         }
       }, false);
     }
@@ -129,9 +135,14 @@
   };
 
   Unpacker.prototype.attach = function (track) {
-    if (this.track === track) return;
+    if (this.track === track || (track && this.pendingTrack === track)) return;
     this.detach();
-    if (!track || !this._ensureGl()) return;
+    if (!track) return;
+    if (!this._ensureGl()) {
+      // 上下文正丢着：先记下这条轨，webglcontextrestored 时接上（之后不保证还有新的订阅事件）
+      this.pendingTrack = track;
+      return;
+    }
     this.track = track;
     var gen = ++this.generation;
     this.video.muted = true;
@@ -276,6 +287,7 @@
     if (this.watchdogTimer !== null) clearTimeout(this.watchdogTimer);
     this.watchdogTimer = null;
     this.track = null;
+    this.pendingTrack = null;
     this.statsMark = null;
     if (this.video) {
       try {

@@ -32,10 +32,11 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .shared_state import get_templates
+from .visit_router.local_guard import require_visit_enabled
 
 router = APIRouter(tags=["pages"])
 
@@ -499,7 +500,8 @@ async def get_chat_page(request: Request):
     })
 
 
-@router.get("/visit/transport", response_class=HTMLResponse)
+# Behind the same NEKO_VISIT_ENABLED release switch as the transport WebSocket: 404 while visits are off
+@router.get("/visit/transport", response_class=HTMLResponse, dependencies=[Depends(require_visit_enabled)])
 async def get_visit_transport_page(request: Request):
     """Same-origin transport iframe of a visit (vendor SDK, frame packing, peer layer)."""
     templates = get_templates()
