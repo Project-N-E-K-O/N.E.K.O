@@ -90,13 +90,22 @@ export default defineConfig({
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false,
-        // The bridge accepts only same-origin local pages. A request this
-        // proxy forwards is the manager page's own, so it reaches the backend
-        // as same-origin; the backend never has to trust the Vite port, which
-        // any other local page on 5173 could also use.
+        // The bridge accepts only same-origin local pages. A request from the
+        // manager page this server serves reaches the backend as same-origin,
+        // so the backend never has to trust the Vite port. Only that page's
+        // own requests are rewritten: one another local site sends here
+        // cross-origin keeps its Origin and is refused by the backend.
         configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            if (proxyReq.getHeader('origin')) proxyReq.setHeader('origin', BACKEND_ORIGIN)
+          proxy.on('proxyReq', (proxyReq, req) => {
+            const origin = req.headers.origin
+            if (!origin) return
+            let sameOrigin = false
+            try {
+              sameOrigin = new URL(origin).host === req.headers.host
+            } catch {
+              sameOrigin = false
+            }
+            if (sameOrigin) proxyReq.setHeader('origin', BACKEND_ORIGIN)
           })
         },
       },

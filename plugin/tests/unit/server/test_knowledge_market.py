@@ -231,6 +231,32 @@ async def test_pruned_job_with_only_the_previous_release_installed_is_a_failure(
     assert task["status"] == "failed" and task["error_code"] == "job_not_found"
 
 
+async def test_pruned_job_reconciliation_waits_out_an_unreadable_registry(env):
+    main = env["main"]
+    main.on("POST", "subscriptions/apply", {"ok": True, "job_id": "j1", "state": "queued"})
+    main.on("GET", "packs/jobs", {"ok": True, "jobs": []})
+    main.on(
+        "GET",
+        "packs",
+        km._TaskError("main_server_unavailable", "x", retryable=True),
+        {"ok": False, "reason": "knowledge_busy"},
+        {"ok": True, "packs": [_installed()]},
+    )
+    task = await _finished(env["http"], await _subscribe(env["http"]))
+    assert task["status"] == "completed"
+    assert task["result"]["activation"]["reconciled"] == "registry"
+
+
+async def test_pruned_job_with_only_a_broken_pack_installed_is_a_failure(env):
+    main = env["main"]
+    main.on("POST", "subscriptions/apply", {"ok": True, "job_id": "j1", "state": "queued"})
+    main.on("GET", "packs/jobs", {"ok": True, "jobs": []})
+    broken = {**_installed(), "broken": True}
+    main.on("GET", "packs", {"ok": True, "packs": [broken]})
+    task = await _finished(env["http"], await _subscribe(env["http"]))
+    assert task["status"] == "failed" and task["error_code"] == "job_not_found"
+
+
 async def test_busy_answers_are_retried_then_succeed(env):
     main = env["main"]
     main.on(
@@ -693,17 +719,60 @@ def test_pair_code_origin_gate_and_main_port(monkeypatch, origin, status):
         assert response.json()["one_time_code"]
 
 
+EXPECTED = {"pack_id": "market-memes", "provider_package_id": "42", "remote_id": "knowledge/market-memes"}
+
+
+async def test_a_forgotten_removal_whose_subscription_is_gone_counts_as_committed(env):
+    """The Memory Server restarted after committing: it no longer knows the id, the registry does."""
+    main = env["main"]
+    main.on("GET", "packs/remove/status", {"ok": False, "reason": "unknown_operation", "operation_status": "unknown"})
+    main.on("GET", "packs", {"ok": True, "packs": [{"pack_id": "local-pack", "subscription": None}]})
+    result = await km._removal_status("op-forgotten-00001", EXPECTED, timeout=1.0)
+    assert result["operation_status"] == "committed" and result["ok"] is True
+    # Still installed: genuinely unknown (it may not have arrived yet).
+    main.on("GET", "packs", {"ok": True, "packs": [_installed()]})
+    assert (await km._removal_status("op-forgotten-00001", EXPECTED, timeout=1.0))["operation_status"] == "unknown"
+    # A failed read is no answer at all.
+    main.on("GET", "packs", {"ok": False, "reason": "memory_server_unreachable"})
+    assert (await km._removal_status("op-forgotten-00001", EXPECTED, timeout=1.0))["operation_status"] == "unreachable"
+    main.on("GET", "packs/remove/status", km._TaskError("main_server_unavailable", "x", retryable=True))
+    assert (await km._removal_status("op-forgotten-00001", EXPECTED, timeout=1.0))["operation_status"] == "unreachable"
+
+
+async def test_drain_outlasts_unanswered_readings_and_reports_the_commit(env, monkeypatch):
+    monkeypatch.setattr(km, "_REMOVAL_UNKNOWN_GIVE_UP_SECONDS", 0)  # already past give-up
+    main = env["main"]
+    unreachable = km._TaskError("main_server_unavailable", "x", retryable=True)
+    main.on("GET", "packs/remove/status", *([unreachable] * 8), {"ok": True, "operation_status": "committed"})
+    km._unsubscribing[42] = asyncio.current_task()
+    km._start_removal_drain(42, "op-drain-unreach-01", EXPECTED, asyncio.get_running_loop().time())
+    drain = km._unsubscribing[42]
+    result = await asyncio.wait_for(drain, 5)
+    assert result["operation_status"] == "committed"
+    assert env["reports"] == [("unsubscribe", 42)]
+
+
+async def test_drain_stops_when_the_removal_never_arrived(env, monkeypatch):
+    monkeypatch.setattr(km, "_REMOVAL_UNKNOWN_GIVE_UP_SECONDS", 0)
+    main = env["main"]
+    main.on("GET", "packs/remove/status", {"ok": False, "reason": "unknown_operation", "operation_status": "unknown"})
+    main.on("GET", "packs", {"ok": True, "packs": [_installed()]})
+    km._unsubscribing[42] = asyncio.current_task()
+    km._start_removal_drain(42, "op-never-arrived-01", EXPECTED, asyncio.get_running_loop().time())
+    drain = km._unsubscribing[42]
+    result = await asyncio.wait_for(drain, 5)
+    assert result["operation_status"] == "unknown"
+    assert env["reports"] == []
+    assert 42 not in km._unsubscribing
+
+
 async def test_confirmation_polls_at_a_fixed_interval_unless_draining(env):
     pending = {"ok": False, "operation_status": "pending"}
     env["main"].on("GET", "packs/remove/status", pending)
     loop = asyncio.get_running_loop()
 
-    await km._confirm_removal("op-sync-000000001", deadline=loop.time() + 0.5)
+    await km._confirm_removal("op-sync-000000001", EXPECTED, deadline=loop.time() + 0.5)
     waiting = list(env["sleeps"])
     assert len(waiting) >= 3
     # The request is waiting: every full interval is the short one.
     assert waiting[:3] == [km._REMOVAL_STATUS_POLL_SECONDS] * 3
-
-    env["sleeps"].clear()
-    await km._confirm_removal("op-drain-00000001", deadline=loop.time() + 1.5, max_poll_seconds=1.0)
-    assert env["sleeps"][:4] == [0.25, 0.5, 1.0, 1.0]

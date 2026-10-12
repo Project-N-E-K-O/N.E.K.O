@@ -578,9 +578,15 @@ async def _wait_for_job(task: dict[str, Any], *, job_id: str, subscription: dict
                 # Terminal jobs are pruned, so an activated one can vanish
                 # between two polls. The installed registry is the durable
                 # record: accept it only for this exact package, pack and artifact.
-                if await _installed_pack_matches(subscription):
+                matched = await _installed_pack_matches(subscription)
+                if matched:
                     return {"job_id": job_id, "state": "active", "reconciled": "registry"}
-                raise _TaskError("job_not_found", "知识包导入任务已不存在")
+                if matched is False:
+                    raise _TaskError("job_not_found", "知识包导入任务已不存在")
+                # The registry could not be read: no answer yet, keep polling.
+                await _sleep(delay)
+                delay = min(delay * 2, _JOB_POLL_MAX_SECONDS)
+                continue
             state = str(job.get("state") or "")
             if state == "active":
                 return job
@@ -601,23 +607,38 @@ def _market_subscription(pack: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-async def _installed_pack_matches(expected: dict[str, str]) -> bool:
-    """Whether the installed registry holds exactly this subscription, every field.
-
-    The pack id and bytes alone are not enough: after a removal another
-    package could have installed the same bytes under the same pack id, and
-    an update that republishes the same bytes as a new version or channel
-    would otherwise match the record it was meant to replace.
-    """
+async def _installed_packs(timeout: float | None = None) -> list[dict[str, Any]] | None:
+    """The installed packs, or None when the registry could not be read."""
     try:
-        payload = await _main_call("GET", "packs")
+        payload = await _main_call("GET", "packs", timeout=timeout)
     except _TaskError:
-        return False
-    for pack in payload.get("packs", ()):
-        if isinstance(pack, dict) and pack.get("pack_id") == expected["pack_id"]:
+        return None
+    if payload.get("ok") is not True:
+        return None
+    return [pack for pack in payload.get("packs", ()) if isinstance(pack, dict)]
+
+
+async def _installed_pack_matches(expected: dict[str, str]) -> bool | None:
+    """Whether the installed registry holds exactly this subscription, usable.
+
+    Every field must match: the pack id and bytes alone are not enough (after
+    a removal another package could have installed the same bytes under the
+    same pack id, and an update that republishes the same bytes as a new
+    version or channel would otherwise match the record it was meant to
+    replace). A matching pack marked broken does not count: a failed reinstall
+    of the same release leaves exactly that record behind.
+    None when the registry could not be read: not an answer either way.
+    """
+    packs = await _installed_packs()
+    if packs is None:
+        return None
+    for pack in packs:
+        if pack.get("pack_id") == expected["pack_id"]:
             installed = _market_subscription(pack)
-            return installed is not None and all(
-                installed.get(field) == value for field, value in expected.items()
+            return (
+                installed is not None
+                and not pack.get("broken")
+                and all(installed.get(field) == value for field, value in expected.items())
             )
     return False
 
@@ -816,6 +837,7 @@ async def _settle_unsubscribe(payload: KnowledgeUnsubscribeRequest, deadline: fl
     if _remaining(deadline) <= 0:
         raise _unsubscribe_error("knowledge_busy", 503, retryable=True)
     operation_id = secrets.token_urlsafe(24)
+    expected = {"pack_id": pack_id, "provider_package_id": str(payload.package_id), "remote_id": remote_id}
     request = {
         "pack_id": pack_id,
         "expected_subscription": {
@@ -835,9 +857,9 @@ async def _settle_unsubscribe(payload: KnowledgeUnsubscribeRequest, deadline: fl
     if result.get("ok") is not True and result.get("reason") in _OUTCOME_UNKNOWN_REASONS:
         # The request or its answer was lost on the way; the removal may
         # still run (the Memory Server finishes it once it arrived). Ask.
-        result = await _confirm_removal(operation_id, deadline=deadline)
+        result = await _confirm_removal(operation_id, expected, deadline=deadline)
         if result.get("operation_status") not in ("committed", "failed"):
-            _start_removal_drain(payload.package_id, operation_id, sent_at)
+            _start_removal_drain(payload.package_id, operation_id, expected, sent_at)
             raise _unsubscribe_error("removal_pending", 503, operation_id=operation_id, retryable=True)
     return await _finish_removal(payload.package_id, result)
 
@@ -973,41 +995,65 @@ async def _resolve_owned_pack(
     return str(pack["pack_id"]), str(pack["subscription"].get("remote_id") or "")
 
 
-async def _confirm_removal(
-    operation_id: str, *, deadline: float, max_poll_seconds: float | None = None
-) -> dict[str, Any]:
-    """Poll a removal's outcome until it is decided or ``deadline`` passes.
+async def _removal_status(operation_id: str, expected: dict[str, str], timeout: float) -> dict[str, Any]:
+    """One reading of a tracked removal's outcome.
 
-    Without ``max_poll_seconds`` the interval stays short (the request is
-    waiting); with it the interval doubles up to that cap (background drain).
+    ``operation_status`` is ``committed`` / ``failed`` (decided), ``pending``,
+    ``unknown`` (the Memory Server answered that it does not know the id, and
+    the subscription is still installed) or ``unreachable`` (no answer at all,
+    which says nothing about the removal).
+
+    An id the Memory Server does not know either never reached it or was
+    forgotten when it restarted (outcomes are kept in memory), so the durable
+    registry decides: a subscription that is no longer installed was removed.
     """
-    poll = _REMOVAL_STATUS_POLL_SECONDS
-    last: dict[str, Any] = {"ok": False, "operation_status": "unknown"}
+    try:
+        reply = await _main_call(
+            "GET", "packs/remove/status", params={"operation_id": operation_id}, timeout=timeout
+        )
+    except _TaskError:
+        return {"ok": False, "operation_status": "unreachable"}
+    status = reply.get("operation_status")
+    if status not in ("committed", "failed", "pending", "unknown"):
+        # Main's hop failed, or the Memory Server is starting: no answer.
+        return {**reply, "ok": False, "operation_status": "unreachable"}
+    if status != "unknown":
+        return reply
+    packs = await _installed_packs(timeout=timeout)
+    if packs is None:
+        return {"ok": False, "operation_status": "unreachable"}
+    still_installed = any(
+        pack.get("pack_id") == expected["pack_id"]
+        and (installed := _market_subscription(pack)) is not None
+        and installed.get("provider_package_id") == expected["provider_package_id"]
+        and installed.get("remote_id") == expected["remote_id"]
+        for pack in packs
+    )
+    if not still_installed:
+        return {"ok": True, "pack_id": expected["pack_id"], "operation_status": "committed", "reconciled": "registry"}
+    return reply
+
+
+async def _confirm_removal(operation_id: str, expected: dict[str, str], *, deadline: float) -> dict[str, Any]:
+    """Poll a removal's outcome at a short fixed interval while the request waits."""
+    last: dict[str, Any] = {"ok": False, "operation_status": "unreachable"}
     while _remaining(deadline) > 0:
-        try:
-            last = await _main_call(
-                "GET",
-                "packs/remove/status",
-                params={"operation_id": operation_id},
-                timeout=max(min(_MAIN_READ_TIMEOUT_SECONDS, _remaining(deadline)), 0.5),
-            )
-        except _TaskError:
-            last = {"ok": False, "operation_status": "unknown"}
+        last = await _removal_status(
+            operation_id, expected, timeout=max(min(_MAIN_READ_TIMEOUT_SECONDS, _remaining(deadline)), 0.5)
+        )
         if last.get("operation_status") in ("committed", "failed"):
             return last
-        await _sleep(min(poll, _remaining(deadline)))
-        if max_poll_seconds is not None:
-            poll = min(poll * 2, max_poll_seconds)
-    return last if last.get("operation_status") else {**last, "operation_status": "unknown"}
+        await _sleep(min(_REMOVAL_STATUS_POLL_SECONDS, _remaining(deadline)))
+    return last
 
 
-def _start_removal_drain(package_id: int, operation_id: str, sent_at: float) -> None:
+def _start_removal_drain(package_id: int, operation_id: str, expected: dict[str, str], sent_at: float) -> None:
     """Keep confirming a removal after the request answered; report it once committed."""
     current = asyncio.current_task()
     if current is None or _unsubscribing.get(package_id) is not current:
         return
     drain = asyncio.create_task(
-        _drain_removal(package_id, operation_id, sent_at),
+        _drain_removal(package_id, operation_id, expected, sent_at),
         name=f"market-knowledge-remove-drain-{package_id}",
     )
     # Hand the package's "unsubscribing" mark to the drain, so a new subscribe
@@ -1016,24 +1062,34 @@ def _start_removal_drain(package_id: int, operation_id: str, sent_at: float) -> 
     drain.add_done_callback(lambda done, *, package_id=package_id: _unsubscribe_done(package_id, done))
 
 
-async def _drain_removal(package_id: int, operation_id: str, sent_at: float) -> dict[str, Any]:
+async def _drain_removal(
+    package_id: int, operation_id: str, expected: dict[str, str], sent_at: float
+) -> dict[str, Any]:
+    """Confirm in the background, backing off, until the outcome is decided.
+
+    Only a definite answer ends it early: committed or failed, or the Memory
+    Server still not knowing the removal (with the subscription still
+    installed) well after any request carrying it would have timed out.
+    Unanswered readings do not count toward that; only the overall bound
+    ends a drain that never gets an answer.
+    """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _REMOVAL_DRAIN_SECONDS
     unknown_until = sent_at + _REMOVAL_UNKNOWN_GIVE_UP_SECONDS
+    poll = _REMOVAL_STATUS_POLL_SECONDS
     result: dict[str, Any] = {}
     while loop.time() < deadline:
-        # Short bounded rounds, so an "unknown" that outlives the give-up
-        # point ends the drain instead of polling for the whole hour.
-        round_end = min(deadline, max(unknown_until, loop.time()) + _REMOVAL_DRAIN_MAX_POLL_SECONDS)
-        result = await _confirm_removal(
-            operation_id, deadline=round_end, max_poll_seconds=_REMOVAL_DRAIN_MAX_POLL_SECONDS
-        )
+        result = await _removal_status(operation_id, expected, timeout=_MAIN_READ_TIMEOUT_SECONDS)
         status = result.get("operation_status")
         if status in ("committed", "failed"):
             break
         if status == "unknown" and loop.time() >= unknown_until:
             logger.info("knowledge removal {} never reached the Memory Server", operation_id)
             break
+        await _sleep(poll)
+        poll = min(poll * 2, _REMOVAL_DRAIN_MAX_POLL_SECONDS)
+    else:
+        logger.warning("knowledge removal {} got no definite answer before giving up", operation_id)
     if result.get("operation_status") == "committed" and result.get("ok") is True:
         # Once the pack is gone from the registry a later unsubscribe can no
         # longer resolve it, so this is the only chance to tell the market.
