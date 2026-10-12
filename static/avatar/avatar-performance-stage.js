@@ -2133,7 +2133,7 @@
                     }
                 }
                 const applied = await this.playOwnedExpression(
-                    () => this.withPerformanceBypass(() => manager.setEmotion(emotionName)), state);
+                    () => this.withPerformanceBypass(() => manager.setEmotion(emotionName, { isCurrent })), state);
                 if (!isCurrent()) return false;
                 return applied !== false;
             }

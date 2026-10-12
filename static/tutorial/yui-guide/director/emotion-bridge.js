@@ -158,7 +158,7 @@
                 }
 
                 if (typeof manager.setEmotion === 'function') {
-                    await manager.setEmotion(targetEmotion);
+                    await manager.setEmotion(targetEmotion, { isCurrent });
                     return;
                 }
                 if (typeof manager.playMotion === 'function') {

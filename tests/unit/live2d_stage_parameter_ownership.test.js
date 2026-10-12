@@ -5,6 +5,141 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { read, loadRuntime, createMao, deferred } = require('./fixtures/live2d_runtime_fixture.cjs');
 
+async function runCancelledEmotion(options = {}) {
+    const f = await fixture(options);
+    try {
+        f.apply({ ParamAngleX: 2 });
+        f.motionManager.state.currentPriority = 0;
+        f.manager.resolveAssetPath = file => file;
+        f.manager.emotionMapping = { expressions: { happy: ['happy.exp3.json'] } };
+        f.manager.fileReferences = { Expressions: [{ Name: 'happy', File: 'happy.exp3.json' }] };
+        const entered = deferred(), gate = deferred(), motions = [];
+        let persistentCalls = 0;
+        // Delegate the real setEmotion and expression loader. Only observe its
+        // downstream motion admission and persistent reapply boundaries.
+        f.manager.playMotion = async emotion => { motions.push(emotion); return true; };
+        f.manager.applyPersistentExpressionsNative = async () => { persistentCalls++; };
+        f.runtime.context.fetch = async () => {
+            if (f.manager.isEmotionChanging) { entered.resolve(); await gate.promise; }
+            return { ok: true, json: async () => ({ Parameters: [{ Id: 'ParamAngleX', Value: 7 }] }) };
+        };
+        const old = f.stage.acquire('old-emotion');
+        const pending = f.stage.applyEmotion('happy');
+        await entered.promise;
+        assert.equal(f.manager.isEmotionChanging, true, 'reach the real manager await, not driver preflight');
+        f.apply({ ParamAngleX: 3 });
+        f.stage.release(old.id, 'cancelled');
+        const next = f.stage.acquire('successor');
+        gate.resolve();
+        const result = await pending;
+        assert.equal(result, false);
+        assert.equal(f.manager._avatarPerformanceSessionOwners.get('motion'), next);
+        assert.equal(f.manager.savedModelParameters.ParamAngleX, 3);
+        assert.equal(f.value('ParamAngleX'), 3);
+        assert.equal(f.model.internalModel.events.listenerCount('beforeModelUpdate'), 0);
+        assert.equal(f.manager.isEmotionChanging, false);
+        f.motionManager.update(0);
+        f.core.update();
+        assert.ok(f.coreCalls > 0);
+        f.stage.release(next.id, 'test_cleanup');
+        return { motions, persistentCalls };
+    } finally { f.release(); }
+}
+
+test('cancelled Stage emotion cannot admit a motion or persistent reapply after its real expression wait', async () => {
+    const result = await runCancelledEmotion();
+    assert.deepEqual(result, { motions: [], persistentCalls: 0 });
+});
+
+test('removing the Stage emotion continuation receipt reproduces the retired motion', async () => {
+    const result = await runCancelledEmotion({ transformStage(source) {
+        const guarded = 'manager.setEmotion(emotionName, { isCurrent })';
+        assert.ok(source.includes(guarded));
+        return source.replace(guarded, 'manager.setEmotion(emotionName)');
+    } });
+    assert.deepEqual(result.motions, ['happy']);
+    assert.equal(result.persistentCalls, 1);
+});
+
+test('a newer bridge emotion supersedes the already entered manager request before motion admission', async () => {
+    const f = await fixture();
+    try {
+        const bridge = new f.runtime.context.__YuiGuideDirector.YuiGuideEmotionBridge();
+        const entered = deferred(), gate = deferred(), motions = [];
+        f.motionManager.state.currentPriority = 0;
+        f.manager.resolveAssetPath = file => file;
+        f.manager.emotionMapping = { expressions: { happy: ['happy.exp3.json'], sad: ['sad.exp3.json'] } };
+        f.manager.fileReferences = { Expressions: [] };
+        f.manager.playMotion = async emotion => { motions.push(emotion); return true; };
+        f.manager.applyPersistentExpressionsNative = async () => {};
+        f.runtime.context.fetch = async file => {
+            if (file === 'happy.exp3.json') { entered.resolve(); await gate.promise; }
+            return { ok: true, json: async () => ({ Parameters: [{ Id: 'ParamAngleX', Value: 3 }] }) };
+        };
+        const first = bridge.queueLive2DEmotionApply('happy');
+        await entered.promise;
+        assert.equal(f.manager.isEmotionChanging, true);
+        const latest = bridge.queueLive2DEmotionApply('sad');
+        gate.resolve();
+        await first;
+        await latest;
+        assert.deepEqual(motions, ['sad']);
+        assert.equal(f.manager.currentEmotion, 'sad');
+        assert.equal(f.manager.isEmotionChanging, false);
+    } finally { f.release(); }
+});
+
+test('ordinary emotion calls also fence Core replacement after the real expression loader', async () => {
+    const f = await fixture(), next = createMao(f.runtime);
+    try {
+        const entered = deferred(), gate = deferred();
+        let motions = 0, persistentCalls = 0;
+        f.motionManager.state.currentPriority = 0;
+        f.manager.resolveAssetPath = file => file;
+        f.manager.emotionMapping = { expressions: { happy: ['happy.exp3.json'] } };
+        f.manager.fileReferences = { Expressions: [] };
+        f.manager.playMotion = async () => { motions++; };
+        f.manager.applyPersistentExpressionsNative = async () => { persistentCalls++; };
+        f.runtime.context.fetch = async () => {
+            entered.resolve(); await gate.promise;
+            return { ok: true, json: async () => ({ Parameters: [{ Id: 'ParamAngleX', Value: 3 }] }) };
+        };
+        const pending = f.manager.setEmotion('happy');
+        await entered.promise;
+        assert.equal(f.manager.isEmotionChanging, true);
+        f.model.internalModel.coreModel = next.core;
+        next.core.setParameterValueById('ParamAngleX', 9);
+        gate.resolve();
+        assert.equal(await pending, false);
+        assert.equal(motions, 0);
+        assert.equal(persistentCalls, 0);
+        assert.equal(next.value('ParamAngleX'), 9);
+        assert.equal(f.manager.isEmotionChanging, false);
+    } finally { f.release(); next.release(); }
+});
+
+test('a live ordinary emotion retains expression, motion and persistent reapply behavior', async () => {
+    const f = await fixture();
+    try {
+        const motions = []; let persistentCalls = 0;
+        f.motionManager.state.currentPriority = 0;
+        f.manager.resolveAssetPath = file => file;
+        f.manager.emotionMapping = { expressions: { happy: ['happy.exp3.json'] } };
+        f.manager.fileReferences = { Expressions: [] };
+        f.manager.playMotion = async emotion => { motions.push(emotion); return true; };
+        f.manager.applyPersistentExpressionsNative = async () => { persistentCalls++; };
+        f.runtime.context.fetch = async () => ({ ok: true,
+            json: async () => ({ Parameters: [{ Id: 'ParamAngleX', Value: 3 }] }) });
+        assert.notEqual(await f.manager.setEmotion('happy'), false);
+        assert.deepEqual(motions, ['happy']);
+        // Existing behavior reapplies once in _playExpressionNow and once in setEmotion.
+        assert.equal(persistentCalls, 2);
+        assert.equal(f.model.internalModel.events.listenerCount('beforeModelUpdate'), 1);
+        assert.equal(f.manager.isEmotionChanging, false);
+        f.manager._removeManualExpressionOverride();
+    } finally { f.release(); }
+});
+
 test('an accepted SDK expression queued behind a fetch cannot start on a replacement Core', async () => {
     const f = await fixture();
     const next = createMao(f.runtime);
