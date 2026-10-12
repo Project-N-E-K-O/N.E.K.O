@@ -143,9 +143,9 @@
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       endedVisitId: null,    // 最近结束的场次：它迟到的 wrap_up / ending 不再补建 iframe（只拦补建，不参与场次过滤）
       retiring: [],          // 已脱离父页、等它把清理做完的旧 iframe [{frame, timer, endOn}]
-      auxGen: { crop: 0, hidden: 0, away: 0 },
+      auxGen: { crop: 0, hidden: 0, away: 0 },   // 实时辅助状态各自的更新计数：重载快照只不覆盖查询期间更新过的那几项
       away: false,           // guest 离家样式当前是否打着
-      reloadInFlight: null,  // 重载恢复里在路上的 reloadPageConfig（同时只发一个）   // 实时辅助状态各自的更新计数：重载快照只不覆盖查询期间更新过的那几项
+      reloadInFlight: null,  // 重载恢复里在路上的 reloadPageConfig（同时只发一个）
       portraitWrapped: false,
     };
 
