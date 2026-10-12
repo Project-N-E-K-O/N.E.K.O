@@ -240,6 +240,10 @@ _task_workers: dict[str, asyncio.Task[None]] = {}
 # request that reached Main may already have staged an import, so whoever
 # cancels must learn its result rather than guess.
 _installations: dict[str, asyncio.Task[dict[str, Any]]] = {}
+# A task's report of its subscription to the market, shielded for the same
+# reason: once sent, the market may record it whatever happens here, so an
+# unsubscribe must let it settle before reporting the unsubscribe.
+_subscription_reports: dict[str, asyncio.Task[None]] = {}
 _active_package_tasks: dict[int, str] = {}
 _unsubscribing: dict[int, asyncio.Task[Any]] = {}
 # Background reports to the market (held so they are not collected mid-flight).
@@ -499,7 +503,16 @@ async def _execute_subscription(task_id: str, payload: KnowledgeSubscribeRequest
             message="知识包订阅完成",
             completed_at=time.time(),
         )
-        await _report_subscription_best_effort(descriptor, result)
+        report = asyncio.create_task(
+            _report_subscription_best_effort(descriptor, result), name=f"market-knowledge-report-{task_id}"
+        )
+        _subscription_reports[task_id] = report
+        report.add_done_callback(
+            lambda done, *, task_id=task_id: _subscription_reports.pop(task_id, None)
+            if _subscription_reports.get(task_id) is done
+            else None
+        )
+        await asyncio.shield(report)
     except asyncio.CancelledError:
         # Cancelled after completing (while reporting to the market, or at
         # shutdown): the subscription did land, so the record stays completed.
@@ -530,11 +543,37 @@ async def _install_with_retry(
         reason = str(result.get("reason") or "install_failed")
         if reason not in _BUSY_REASONS:
             raise _TaskError(reason, "本地知识库拒绝了该知识包")
+        if reason == "job_in_progress":
+            # Perhaps our own earlier apply staged it and only its answer was
+            # lost: then follow that job (activation may take far longer than
+            # the busy window) instead of retrying until giving up.
+            own = await _own_staged_job(subscription)
+            if own is not None:
+                return {"ok": True, "pack_id": subscription["pack_id"], "adopted": True, **own}
         if loop.time() + delay > give_up_at:
             raise _TaskError("knowledge_busy", "本地知识库正忙，请稍后重试", retryable=True)
         task["message"] = "本地知识库正忙，稍后自动重试"
         await _sleep(delay)
         delay = min(delay * 2, _BUSY_RETRY_MAX_SECONDS)
+
+
+async def _own_staged_job(subscription: dict[str, str]) -> dict[str, Any] | None:
+    """The queued / building import carrying exactly this subscription, if any."""
+    try:
+        payload = await _main_call("GET", "packs/jobs")
+    except _TaskError:
+        return None
+    if payload.get("ok") is not True:
+        return None
+    for job in payload.get("jobs", ()):
+        if (
+            isinstance(job, dict)
+            and job.get("state") in ("queued", "building")
+            and job.get("job_id")
+            and job.get("subscription") == subscription
+        ):
+            return {"job_id": str(job["job_id"]), "state": str(job["state"])}
+    return None
 
 
 async def _shielded_install(task_id: str, subscription: dict[str, str], raw: bytes) -> dict[str, Any]:
@@ -1013,11 +1052,12 @@ async def _stop_active_subscription(payload: KnowledgeUnsubscribeRequest, deadli
                 await asyncio.gather(worker, return_exceptions=True)
         except TimeoutError as exc:
             raise _unsubscribe_error("knowledge_busy", 503, retryable=True) from exc
-    installation = _installations.get(task_id)
-    if installation is not None:
+    for pending in (_installations.get(task_id), _subscription_reports.get(task_id)):
+        if pending is None:
+            continue
         try:
             async with asyncio.timeout(_remaining(deadline)):
-                await asyncio.gather(asyncio.shield(installation), return_exceptions=True)
+                await asyncio.gather(asyncio.shield(pending), return_exceptions=True)
         except TimeoutError as exc:
             raise _unsubscribe_error("knowledge_busy", 503, retryable=True) from exc
     return True
@@ -1207,7 +1247,11 @@ async def _drain_removal(
         poll = min(poll * 2, _REMOVAL_DRAIN_MAX_POLL_SECONDS)
     else:
         logger.warning("knowledge removal {} got no definite answer before giving up", operation_id)
-    if result.get("operation_status") == "committed" and result.get("ok") is True:
+    committed = result.get("operation_status") == "committed" and result.get("ok") is True
+    # A removal that failed because the pack was already gone (removed
+    # locally meanwhile) leaves nothing installed either: same as committed.
+    already_gone = result.get("operation_status") == "failed" and result.get("reason") == "not_found"
+    if committed or already_gone:
         # Once the pack is gone from the registry a later unsubscribe can no
         # longer resolve it, so this is the only chance to tell the market.
         await _report_unsubscribe_best_effort(package_id)

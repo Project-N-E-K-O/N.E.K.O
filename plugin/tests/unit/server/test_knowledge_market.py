@@ -95,7 +95,7 @@ class FakeMain:
 def env(monkeypatch):
     for state in (
         km._tasks, km._task_workers, km._installations, km._active_package_tasks,
-        km._unsubscribing, km._background, km._mirror_cache,
+        km._unsubscribing, km._background, km._mirror_cache, km._subscription_reports,
     ):
         state.clear()
     main = FakeMain()
@@ -133,7 +133,7 @@ def env(monkeypatch):
     app.include_router(km.router)
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1")
     yield {"http": http, "main": main, "sleeps": sleeps, "tagged": tagged, "reports": reports}
-    for worker in list(km._task_workers.values()) + list(km._unsubscribing.values()):
+    for worker in [*km._task_workers.values(), *km._unsubscribing.values(), *km._subscription_reports.values()]:
         worker.cancel()
 
 
@@ -258,6 +258,32 @@ async def test_pruned_job_with_only_a_broken_pack_installed_is_a_failure(env):
     main.on("GET", "packs", {"ok": True, "packs": [broken]})
     task = await _finished(env["http"], await _subscribe(env["http"]))
     assert task["status"] == "failed" and task["error_code"] == "job_not_found"
+
+
+async def test_a_job_staged_by_a_lost_apply_answer_is_followed(env):
+    main = env["main"]
+    own = {**_installed()["subscription"]}
+    main.on("POST", "subscriptions/apply", {"ok": False, "reason": "job_in_progress"})
+    main.on(
+        "GET",
+        "packs/jobs",
+        {"ok": True, "jobs": [{"job_id": "lost", "state": "building", "subscription": own}]},
+        {"ok": True, "jobs": [{"job_id": "lost", "state": "active", "subscription": own}]},
+    )
+    task = await _finished(env["http"], await _subscribe(env["http"]))
+    assert task["status"] == "completed", task
+    assert task["result"]["adopted"] is True and task["result"]["activation"]["state"] == "active"
+    assert main.paths().count("POST subscriptions/apply") == 1
+
+
+async def test_a_job_in_progress_for_someone_else_is_still_waited_out(env, monkeypatch):
+    monkeypatch.setattr(km, "_BUSY_RETRY_WINDOW_SECONDS", 0.0)
+    main = env["main"]
+    other = {**_installed()["subscription"], "version": "0.9.0"}
+    main.on("POST", "subscriptions/apply", {"ok": False, "reason": "job_in_progress"})
+    main.on("GET", "packs/jobs", {"ok": True, "jobs": [{"job_id": "other", "state": "queued", "subscription": other}]})
+    task = await _finished(env["http"], await _subscribe(env["http"]))
+    assert task["status"] == "failed" and task["error_code"] == "knowledge_busy"
 
 
 async def test_busy_answers_are_retried_then_succeed(env):
@@ -400,7 +426,7 @@ async def test_a_cancel_after_completion_keeps_the_task_completed(env, monkeypat
 
     async def slow_report(descriptor, result):
         reporting.set()
-        await asyncio.sleep(3600)
+        await asyncio.sleep(3600)  # cancelled by the fixture
 
     monkeypatch.setattr(km, "_report_subscription_best_effort", slow_report)
     env["main"].on("POST", "subscriptions/apply", {"ok": True, "pack_id": "market-memes", "unchanged": True, "state": "active"})
@@ -439,6 +465,43 @@ async def test_resubscribe_waits_until_the_unsubscribe_report_has_landed(env, mo
     await asyncio.gather(*km._background)
     assert 42 not in km._unsubscribing
     assert (await http.post("/market/knowledge/subscribe", params=TOKEN, json=body)).status_code == 200
+
+
+async def test_unsubscribe_lets_an_in_flight_subscription_report_land_first(env, monkeypatch):
+    release = asyncio.Event()
+
+    async def slow_subscribe_report(descriptor, result):
+        await release.wait()
+        env["reports"].append(("subscribe", descriptor.package_id))
+
+    monkeypatch.setattr(km, "_report_subscription_best_effort", slow_subscribe_report)
+    main = env["main"]
+    main.on("POST", "subscriptions/apply", {"ok": True, "pack_id": "market-memes", "unchanged": True, "state": "active"})
+    main.on("GET", "packs", {"ok": True, "packs": [_installed()]})
+    main.on("POST", "packs/remove", {"ok": True, "pack_id": "market-memes", "operation_status": "committed"})
+    task_id = await _subscribe(env["http"])
+    for _ in range(200):
+        if task_id in km._subscription_reports:
+            break
+        await asyncio.sleep(0.005)
+    unsubscribing = asyncio.create_task(_unsubscribe(env["http"]))
+    await asyncio.sleep(0.05)
+    # The market may still be recording the subscription: nothing removed yet.
+    assert "POST packs/remove" not in main.paths()
+    release.set()
+    response = await asyncio.wait_for(unsubscribing, 5)
+    assert response.status_code == 200
+    assert env["reports"] == [("subscribe", 42), ("unsubscribe", 42)]
+
+
+async def test_a_drained_removal_that_finds_the_pack_gone_still_clears_the_market(env):
+    env["main"].on(
+        "GET", "packs/remove/status", {"ok": False, "reason": "not_found", "operation_status": "failed"}
+    )
+    km._unsubscribing[42] = asyncio.current_task()
+    km._start_removal_drain(42, "op-drain-notfound-1", EXPECTED, asyncio.get_running_loop().time())
+    await asyncio.wait_for(km._unsubscribing[42], 5)
+    assert env["reports"] == [("unsubscribe", 42)]
 
 
 async def test_unsubscribe_refuses_a_pack_it_does_not_own(env):
@@ -766,20 +829,19 @@ async def test_download_sources_follow_the_speed_test(monkeypatch):
 
 async def test_concurrent_workers_share_one_mirror_measurement(monkeypatch):
     km._mirror_cache.clear()
-    calls = 0
+    calls: list[int] = []
 
     async def measure():
-        nonlocal calls
-        calls += 1
+        calls.append(1)
         await asyncio.sleep(0.05)
         return ({"id": "github-direct", "url": "https://github.com/", "available": True, "latency_ms": 10},)
 
     monkeypatch.setattr(km, "_measure_github_proxy_sources", measure)
     results = await asyncio.gather(*(km._measured_github_sources() for _ in range(4)))
-    assert calls == 1
+    assert len(calls) == 1
     assert all(result == results[0] for result in results)
     await km._measured_github_sources()  # still fresh: no new measurement
-    assert calls == 1
+    assert len(calls) == 1
     km._mirror_cache.clear()
 
 
