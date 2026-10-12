@@ -1645,7 +1645,7 @@
         && S.gameVoiceSttGateActive !== true) {
         console.log('[App] independent ASR blocked; stopping the microphone');
         if (typeof window.stopMicCapture === 'function') {
-            Promise.resolve(window.stopMicCapture()).catch(function (micTeardownErr) {
+            Promise.resolve(window.stopMicCapture({ normalEnd: false })).catch(function (micTeardownErr) {
                 console.warn('[App] blocked-ASR microphone teardown failed:', micTeardownErr);
             });
         } else if (typeof window.stopRecording === 'function') {
@@ -3592,7 +3592,10 @@
                     if (!Number.isFinite(playbackGain)) playbackGain = 1;
                     playbackGain = Math.max(0, Math.min(2, playbackGain));
 
-                    if (speechId && S.interruptedSpeechId && speechId === S.interruptedSpeechId) {
+                    if (speechId && ((S.interruptedSpeechId && speechId === S.interruptedSpeechId) ||
+                        (window.appAudioPlayback &&
+                            typeof window.appAudioPlayback.isAssistantSpeechInterrupted === 'function' &&
+                            window.appAudioPlayback.isAssistantSpeechInterrupted(speechId)))) {
                         if (window.DEBUG_AUDIO) {
                             console.log(window.t('console.discardInterruptedAudio'), speechId);
                         }
@@ -6036,6 +6039,10 @@
             S.independentAsrActive = false;
             S.independentAsrProvider = '';
             clearAssistantLifecycleOnDisconnect('socket_close');
+            if (window.appAudioPlayback &&
+                typeof window.appAudioPlayback.clearLocalAssistantSpeechInterruptions === 'function') {
+                window.appAudioPlayback.clearLocalAssistantSpeechInterruptions(_thisSocket);
+            }
 
             // Clear heartbeat
             if (S.heartbeatInterval) {

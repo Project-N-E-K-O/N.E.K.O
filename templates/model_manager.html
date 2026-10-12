@@ -16,7 +16,7 @@
         window.VRM_DEFAULT_LIGHTING = Object.freeze(JSON.parse(vrmDefaultLightingData?.textContent || '{}'));
     </script>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/common_dialogs.js"></script>
     <script src="/static/js/model_manager/named-window-registration.js?v={{ static_asset_version | default('0') }}"></script>
     <link rel="stylesheet" href="/static/css/model_manager.css?v={{ static_asset_version | default('0') }}">
@@ -688,6 +688,7 @@
     <script src="/static/js/model_manager/page-bridge.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/card-face.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/path-request-fullscreen.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/vrm-emotion-source.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/page-controller.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/background-model-drag.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/window-lifecycle.js?v={{ static_asset_version | default('0') }}"></script>

@@ -103,7 +103,15 @@ from main_logic.voice_input.interception import (
     InterceptionDecision,
     InterceptionInstallation,
     InterceptionInstallationState,
+    InterceptionResult,
+    InterceptionOutputKind,
+    InterceptionDeliveryReceipt,
+    InterceptionDeliveryStage,
 )
+from main_logic.voice_turn.audio_delivery import (
+    AudioDeliveryTag, AudioDeliverySpan, observe_delivery_spans, notify_delivery_observers,
+)
+from main_logic.voice_input.interception_output_state import InterceptionOutputState
 
 
 @dataclass(eq=False, slots=True)
@@ -227,6 +235,9 @@ class _AudioDurationQueue:
 
     def task_done(self) -> None:
         self._queue.task_done()
+
+    async def join(self) -> None:
+        await self._queue.join()
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +392,10 @@ class AsrRuntimeMixin:
         self._active_session_interception_installation: InterceptionInstallation | None = None
         self._active_session_interception_retiring_bridge: ActiveSessionInterceptionBridge | None = None
         self._active_session_interception_retirement: asyncio.Task | None = None
+        self._interception_output_state = InterceptionOutputState()
+        self._interception_failure_generation = None
+        self._normal_capture_end_owner = None
+        self._last_microphone_dsp_context = None
         self._voice_session_activation_factory: VoiceSessionActivationFactory | None = None
         # ``factory is None`` is intentionally not the policy bit.  It can mean
         # either that the user disabled Owner activation or that protection was
@@ -578,6 +593,16 @@ class AsrRuntimeMixin:
             self._active_session_interception_retirement = None
         if not hasattr(self, "_active_session_interception_retiring_bridge"):
             self._active_session_interception_retiring_bridge = None
+        if not hasattr(self, "_interception_output_state"):
+            self._interception_output_state = InterceptionOutputState()
+        if not hasattr(self, "_interception_failure_generation"):
+            self._interception_failure_generation = None
+        if not hasattr(self, "_interception_degraded_generation"):
+            self._interception_degraded_generation = None
+        if not hasattr(self, "_normal_capture_end_owner"):
+            self._normal_capture_end_owner = None
+        if not hasattr(self, "_last_microphone_dsp_context"):
+            self._last_microphone_dsp_context = None
         if not hasattr(self, "_voice_session_activation_required"):
             self._voice_session_activation_required = False
         if not hasattr(self, "_voice_session_activation_policy_revision"):
@@ -1684,6 +1709,9 @@ class AsrRuntimeMixin:
             self._active_session_interception_bridge = ActiveSessionInterceptionBridge(
                 factory,
                 required=interception_required,
+                # Once ASR delivery owns a capture, failures end that capture;
+                # only its lifecycle owner may authorize another generation.
+                terminal_on_unavailable=True,
             )
         except Exception:
             self._active_session_interception_required = True
@@ -1721,19 +1749,29 @@ class AsrRuntimeMixin:
         frame: AudioFrame,
         generation: ActivationGeneration,
         context: VoiceSessionActivationRouteContext,
-    ) -> bytes | None:
-        """Return only model-approved PCM for the common ASR outlet.
+    ) -> InterceptionResult | None:
+        """Return the model's explicit result for the common ASR outlet.
 
-        ``None`` means pending/drop/unavailable/stale.  In particular, this
-        helper never returns ``frame.pcm`` as a fallback when the bridge or
-        TSE-backed runtime is unavailable.
+        ``None`` means required interception has no installed bridge. Disabled
+        interception wraps original PCM in a legacy KEEP result. With a bridge,
+        preserve its events and decision; unavailable models never fall back
+        to the original mixed input.
         """
 
         bridge = self._active_session_interception_bridge
         if bridge is None:
             if self._active_session_interception_required:
                 return None
-            return frame.pcm
+            return InterceptionResult(InterceptionDecision.KEEP, pcm16=frame.pcm)
+        if (self._asr_route_mode != "independent"
+                or not self._asr_runtime.supports_interception_delivery):
+            # Ordinary native input remains available without interception.
+            # Reject unsupported routes before model output or local admission;
+            # session.stream_audio keeps its independent dispatch-time guard.
+            await bridge.retire("interception_delivery_unsupported")
+            return InterceptionResult(
+                InterceptionDecision.UNAVAILABLE, reason="interception_delivery_unsupported",
+            )
         result = await bridge.process(
             frame.pcm,
             sample_rate_hz=frame.sample_rate,
@@ -1748,9 +1786,7 @@ class AsrRuntimeMixin:
                 else context.captured_at
             ),
         )
-        if result.decision is not InterceptionDecision.KEEP:
-            return None
-        return result.pcm16
+        return result
 
     def require_voice_session_activation(
         self,
@@ -3643,6 +3679,8 @@ class AsrRuntimeMixin:
 
     async def _enqueue_audio_stream_data(self, message: dict) -> None:
         self._ensure_asr_runtime_state()
+        if self._normal_capture_end_owner is not None:
+            return
         if (
             self._voice_session_activation_required
             and self._voice_session_activation_factory is None
@@ -4170,6 +4208,11 @@ class AsrRuntimeMixin:
                 or self._voice_input_audio_pipeline is not pipeline_ref
             )
             activation_guarded = self._voice_session_activation_factory is not None
+            self._last_microphone_dsp_context = (
+                pipeline_ref, ingress_token, processed_frame.speech_probability,
+                processed_frame.rnnoise_available, processed_frame.rnnoise_evidence,
+                audio_captured_at,
+            )
             if activation_guarded:
                 # Keep local activity/idle decisions alive while the transport
                 # writer is paused. There is only one PCM owner in this mode:
@@ -4286,6 +4329,7 @@ class AsrRuntimeMixin:
                     self._asr_route_mode == "independent",
                     bool(getattr(self, "session_closed_by_server", False)),
                 )
+        self._recover_interception_capture(self._capture_voice_session_activation_generation())
         if self._voice_session_activation_degraded:
             return True
         factory = self._voice_session_activation_factory
@@ -4509,8 +4553,11 @@ class AsrRuntimeMixin:
             preview_isolation_registry.is_manager_isolated(self)
             or frame.generation != generation
             or self._capture_voice_session_activation_generation() != generation
-            or self._voice_session_activation_degraded
         ):
+            return OutputCommit.NOT_SENT
+        self._recover_interception_capture(generation)
+        if (self._interception_capture_is_terminal(generation)
+                or self._voice_session_activation_degraded):
             return OutputCommit.NOT_SENT
         context = frame.context
         if not isinstance(context, VoiceSessionActivationRouteContext):
@@ -4521,11 +4568,18 @@ class AsrRuntimeMixin:
         interception_bridge = self._active_session_interception_bridge
         output_identity = self._capture_core_asr_operation_identity()
         delivery_revision = self._voice_activation_delivery_revision
-        filtered_pcm = await self._intercept_active_session_frame(
+        interception_result = await self._intercept_active_session_frame(
             frame,
             generation,
             context,
         )
+        if interception_result is not None and interception_result.events:
+            # The batch has already left its model owner. The event sink must
+            # settle its exact intervals even when authority changed during
+            # extraction; returning NOT_SENT here would replay original PCM.
+            return await self._route_interception_events(
+                interception_result, generation, context, interception_bridge,
+            )
         if (
             self._capture_voice_session_activation_generation() != generation
             or self._active_session_interception_bridge is not interception_bridge
@@ -4533,6 +4587,33 @@ class AsrRuntimeMixin:
             or self._voice_activation_delivery_revision != delivery_revision
         ):
             return OutputCommit.NOT_SENT
+        if (interception_result is not None
+                and interception_result.decision is InterceptionDecision.UNAVAILABLE):
+            # A model failure terminates this capture. LOCAL_ACCEPTED would
+            # hide it and permit the same source axis to be rebuilt implicitly.
+            decision = ActivationDecision(
+                ActivationState.UNAVAILABLE,
+                f"interception_unavailable:{interception_result.reason}",
+            )
+            owns_degraded = not self._voice_session_activation_degraded
+            self._voice_session_activation_degraded = True
+            if owns_degraded:
+                self._interception_degraded_generation = generation
+            self._interception_failure_generation = generation
+            self._voice_activation_delivery_revision += 1
+            self._voice_session_activation_status = (generation, decision.state, decision.reason)
+            self._voice_session_activation_status_revision += 1
+            AsrRuntimeMixin._schedule_core_asr_cleanup(
+                self, self._send_voice_session_activation_status(
+                    generation, decision, self._voice_session_activation_status_revision,
+                ), name="voice-session-interception-unavailable",
+            )
+            return OutputCommit.UNKNOWN
+        filtered_pcm = (
+            interception_result.pcm16
+            if interception_result is not None and interception_result.decision is InterceptionDecision.KEEP
+            else None
+        )
         if filtered_pcm is None:
             # The local interception owner consumed this original input.  A
             # pending interval is retained there; a terminal gap is discarded
@@ -4607,6 +4688,248 @@ class AsrRuntimeMixin:
                 else committed
             )
         return committed
+
+    @property
+    def _voice_session_activation_degraded(self) -> bool:
+        return self._voice_session_activation_degraded_value
+
+    @_voice_session_activation_degraded.setter
+    def _voice_session_activation_degraded(self, degraded: bool) -> None:
+        # Every existing writer, including readiness control, owns its own
+        # update. An old interception failure may not undo that later update.
+        self._voice_session_activation_degraded_value = degraded
+        self._interception_degraded_generation = None
+
+    def _recover_interception_capture(self, generation: ActivationGeneration) -> None:
+        failed = self._interception_failure_generation
+        if (failed is None or failed == generation
+                or self._capture_voice_session_activation_generation() != generation):
+            return
+        self._interception_failure_generation = None
+        if self._interception_degraded_generation == failed:
+            self._voice_session_activation_degraded = False
+
+    def _interception_capture_is_terminal(self, generation: ActivationGeneration) -> bool:
+        failed = self._interception_failure_generation
+        return failed is not None and failed == generation
+
+    async def _route_interception_events(
+        self, result: InterceptionResult, generation: ActivationGeneration,
+        context: VoiceSessionActivationRouteContext,
+        bridge: ActiveSessionInterceptionBridge,
+    ) -> OutputCommit:
+        """Deliver ordered intervals once, retaining their true delivery owner."""
+        callback = bridge.delivery_callback(
+            result, generation=generation, ingress_token=context.ingress_token,
+        )
+        operation = self._capture_core_asr_operation_identity()
+        revision = self._voice_activation_delivery_revision
+        output_state = self._interception_output_state
+        owner = (bridge, generation)
+
+        def current() -> bool:
+            return bool(
+                self._active_session_interception_bridge is bridge
+                and self._capture_voice_session_activation_generation() == generation
+                and self._interception_failure_generation != generation
+                and not self._voice_session_activation_degraded
+                and self._core_asr_operation_identity_matches(operation)
+                and self._voice_activation_delivery_revision == revision
+            )
+
+        remaining = list(result.events)
+        try:
+            if self._asr_route_mode != "independent":
+                return OutputCommit.UNKNOWN
+            for event in result.events:
+                def report(stage, event=event):
+                    callback(InterceptionDeliveryReceipt(event, stage, time.monotonic()))
+
+                if not current() or not output_state.accept_event(owner, event):
+                    notify_delivery_observers((lambda: report(InterceptionDeliveryStage.NOT_SENT),),
+                                              context="interception stale output")
+                    return OutputCommit.UNKNOWN
+                if notify_delivery_observers((lambda: report(InterceptionDeliveryStage.LOCAL_ACCEPTED),),
+                                             context="interception admission") is not None:
+                    return OutputCommit.UNKNOWN
+                remaining.pop(0)
+                if event.kind is InterceptionOutputKind.AUDIO:
+                    tag = AudioDeliveryTag(event.end_sample - event.start_sample, report)
+                    spans = (AudioDeliverySpan(tag, 0, tag.sample_count),)
+                    try:
+                        committed = await self._route_microphone_audio_unfiltered(
+                            event.pcm16, sample_rate_hz=event.sample_rate_hz,
+                            speech_probability=context.speech_probability,
+                            rnnoise_available=context.rnnoise_available,
+                            rnnoise_evidence=context.rnnoise_evidence,
+                            ingress_token=context.ingress_token, captured_at=context.captured_at,
+                            require_output_commit=True, interception_bridge=bridge,
+                            delivery=tag,
+                        )
+                    except BaseException:
+                        observe_delivery_spans(spans, InterceptionDeliveryStage.UNKNOWN,
+                                               context="interception output failure")
+                        raise
+                    if committed is OutputCommit.NOT_SENT:
+                        observe_delivery_spans(spans, InterceptionDeliveryStage.NOT_SENT,
+                                               context="interception output refusal")
+                        # The original frame was already consumed by interception;
+                        # NOT_SENT here would retry it and duplicate the sample axis.
+                        return OutputCommit.UNKNOWN
+                    if committed is OutputCommit.UNKNOWN or not current():
+                        observe_delivery_spans(spans, InterceptionDeliveryStage.UNKNOWN,
+                                               context="interception output uncertainty")
+                        return OutputCommit.UNKNOWN
+                    output_state.mark_audio_accepted(owner)
+                else:
+                    if output_state.has_open_segment(owner):
+                        if self._asr_route_mode != "independent":
+                            notify_delivery_observers((lambda: report(InterceptionDeliveryStage.NOT_SENT),),
+                                                      context="interception boundary refusal")
+                            # Native providers without an explicit, proven boundary
+                            # cannot safely append audio across an interception hole.
+                            await bridge.retire("interception_native_boundary_unsupported")
+                            return OutputCommit.UNKNOWN
+                        try:
+                            await self._asr_runtime.discontinue_input(
+                                ingress_token=context.ingress_token or self._capture_ingress_token(),
+                                deadline=asyncio.get_running_loop().time() + 1.0,
+                            )
+                        except asyncio.CancelledError:
+                            notify_delivery_observers((lambda: report(InterceptionDeliveryStage.UNKNOWN),),
+                                                      context="interception boundary cancellation")
+                            raise
+                        except Exception:
+                            notify_delivery_observers((lambda: report(InterceptionDeliveryStage.UNKNOWN),),
+                                                      context="interception boundary failure")
+                            await bridge.retire("interception_segment_boundary_failed")
+                            return OutputCommit.UNKNOWN
+                        if not current():
+                            notify_delivery_observers((lambda: report(InterceptionDeliveryStage.UNKNOWN),),
+                                                      context="interception stale boundary")
+                            return OutputCommit.UNKNOWN
+                        output_state.mark_boundary_applied(owner)
+                    # A control boundary is locally applied; never pretend that a
+                    # provider confirmed a PCM item or invented silence.
+                    if notify_delivery_observers((lambda: report(InterceptionDeliveryStage.QUEUED),),
+                                                 context="interception boundary admission") is not None:
+                        return OutputCommit.UNKNOWN
+        finally:
+            # These intervals were handed out by the original interception
+            # owner but never attempted downstream. Settle that exact batch,
+            # even if cancellation or authority replacement stopped its prefix.
+            notify_delivery_observers((
+                lambda unsent=unsent: callback(InterceptionDeliveryReceipt(
+                        unsent, InterceptionDeliveryStage.NOT_SENT, time.monotonic(),
+                    ))
+                for unsent in remaining if unsent.kind is InterceptionOutputKind.AUDIO
+            ), context="interception remaining output")
+        return OutputCommit.LOCAL_ACCEPTED
+
+    async def finish_active_session_interception(
+        self, *, generation: ActivationGeneration,
+        context: VoiceSessionActivationRouteContext,
+    ) -> OutputCommit:
+        """Explicit normal capture end, before permission/route revocation.
+
+        The caller first stops capture and drains the activation writer. Mute,
+        cancellation and authority replacement use immediate retirement instead.
+        """
+        bridge = self._active_session_interception_bridge
+        if (bridge is None or self._capture_voice_session_activation_generation() != generation
+                or self._voice_session_activation_degraded):
+            return OutputCommit.NOT_SENT
+        result = await bridge.finish(generation=generation, ingress_token=context.ingress_token)
+        if result.events:
+            return await self._route_interception_events(result, generation, context, bridge)
+        if (self._active_session_interception_bridge is not bridge
+                or self._capture_voice_session_activation_generation() != generation):
+            return OutputCommit.UNKNOWN
+        if result.decision is InterceptionDecision.DROP and result.reason == "capture_finished":
+            return OutputCommit.LOCAL_ACCEPTED
+        return OutputCommit.UNKNOWN
+
+    async def _finish_normal_microphone_capture(self) -> bool:
+        """Drain the real stop control before a following lease/pause revokes it."""
+        bridge = self._active_session_interception_bridge
+        if bridge is None:
+            return True
+        if self._normal_capture_end_owner is not None:
+            return False
+        owner = object()
+        self._normal_capture_end_owner = owner
+        generation = self._capture_voice_session_activation_generation()
+        ingress = self._capture_ingress_token()
+        operation = self._capture_core_asr_operation_identity()
+        deadline = asyncio.get_running_loop().time() + 2.0
+
+        def current() -> bool:
+            return bool(
+                self._normal_capture_end_owner is owner
+                and self._active_session_interception_bridge is bridge
+                and self._capture_voice_session_activation_generation() == generation
+                and self._core_asr_operation_identity_matches(operation)
+            )
+
+        activation = None
+        succeeded = False
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self._audio_stream_queue.join()
+                if not current():
+                    return False
+                latest = self._last_microphone_dsp_context
+                if latest is None or latest[1] != ingress:
+                    return False
+                pipeline, _, probability, rnnoise, evidence, captured = latest
+                if pipeline is not self._voice_input_audio_pipeline:
+                    return False
+                tail = await pipeline.finalize_stream()
+                if not current():
+                    return False
+                if tail:
+                    await self._route_microphone_audio(
+                        tail, sample_rate_hz=16_000, speech_probability=probability,
+                        rnnoise_available=rnnoise, rnnoise_evidence=evidence,
+                        ingress_token=ingress, captured_at=captured,
+                    )
+                activation = self._voice_session_activation_runtime
+                if activation is None or not current():
+                    return False
+                # Capture is now fenced, so this bounded join cannot be extended
+                # by new microphone frames. It includes first-activation replay.
+                while (activation.output_inflight or activation.pending_output_bytes
+                       or activation.verification_inflight):
+                    await asyncio.sleep(0.005)
+                    if not current() or self._voice_session_activation_runtime is not activation:
+                        return False
+                if not await activation.pause_output(owner, deadline=deadline) or not current():
+                    return False
+                committed = await self.finish_active_session_interception(
+                    generation=generation,
+                    context=VoiceSessionActivationRouteContext(
+                        probability, rnnoise, evidence, ingress, captured,
+                    ),
+                )
+                if committed not in {OutputCommit.LOCAL_ACCEPTED, OutputCommit.TRANSPORT_WRITTEN}:
+                    return False
+                if self._asr_route_mode == "independent":
+                    await self._asr_runtime.wait_input_settled(ingress_token=ingress, deadline=deadline)
+                succeeded = current()
+                return succeeded
+        except asyncio.CancelledError:
+            if current():
+                await bridge.retire("normal_capture_end_cancelled")
+            raise
+        except Exception:
+            return False
+        finally:
+            # A normal stop never reopens capture. The subsequent lease change
+            # owns cleanup; a failed end is explicitly fail closed here.
+            if current() and activation is not None:
+                await activation.fail_output(owner, "capture_ended")
+            if current() and not succeeded:
+                await bridge.retire("normal_capture_end_failed")
 
     async def _reconnect_native_voice_session_for_activation(
         self,
@@ -4805,6 +5128,7 @@ class AsrRuntimeMixin:
         preserve_prefix: PreserveUnsentPrefix | None = None,
         require_output_commit: bool = False,
         interception_bridge: ActiveSessionInterceptionBridge | None = None,
+        delivery: AudioDeliveryTag | None = None,
     ) -> OutputCommit:
         if self._active_session_interception_required or self._active_session_interception_bridge is not None:
             # Only the authorized ACTIVE output callback carries the current
@@ -4880,8 +5204,13 @@ class AsrRuntimeMixin:
                 if not native_send_is_current():
                     return OutputCommit.UNKNOWN
                 if require_output_commit and written is None:
+                    if delivery is not None:
+                        delivery.observe(0, delivery.sample_count, InterceptionDeliveryStage.LOCAL_ACCEPTED)
                     return OutputCommit.LOCAL_ACCEPTED
                 self._record_omni_microphone_audio(len(pcm16))
+                if delivery is not None:
+                    delivery.observe(0, delivery.sample_count, InterceptionDeliveryStage.TRANSPORT_WRITTEN)
+                    delivery.observe(0, delivery.sample_count, InterceptionDeliveryStage.TRANSPORT_OWNED)
                 return OutputCommit.TRANSPORT_WRITTEN
             except asyncio.CancelledError:
                 raise
@@ -4952,6 +5281,7 @@ class AsrRuntimeMixin:
                 speech_probability=speech_probability,
                 rnnoise_available=bool(rnnoise_available),
                 rnnoise_evidence=rnnoise_evidence,
+                delivery=delivery,
             ),
             ingress_token=token,
             **submit_options,
@@ -5589,6 +5919,7 @@ class AsrRuntimeMixin:
             return False
         normalized_event = str(event or "").strip().lower()
         if normalized_event not in {
+            "capture_end",
             "lease_sync",
             "hard_mute",
             "hard_unmute",
@@ -5598,6 +5929,9 @@ class AsrRuntimeMixin:
             "game_release",
         }:
             return False
+        if normalized_event == "capture_end":
+            return await self._finish_normal_microphone_capture()
+        self._normal_capture_end_owner = None
         if normalized_event == "lease_sync":
             normalized_owner = str(owner or "").strip().lower()
             if normalized_owner not in {"none", "core", "game"}:

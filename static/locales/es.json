@@ -4838,6 +4838,17 @@
         }
     },
     "vrmEmotionManager": {
+        "waitingForModel": "Cargando el modelo seleccionado. Espera…",
+        "retryLoad": "Reintentar carga",
+        "loadTimeout": "La carga agotó el tiempo de espera. Reinténtalo; la configuración guardada no ha cambiado.",
+        "saveTimeout": "El guardado agotó el tiempo de espera; el resultado no está confirmado. Comprueba la configuración antes de reintentarlo.",
+        "recoveryBlocked": "Dos cargas de modelos siguen pendientes. Espera a que terminen o vuelve a abrir la ventana del gestor de modelos antes de reintentarlo.",
+        "sourceUnavailable": "Abre esta página desde el Administrador de Modelos y mantén esa ventana abierta.",
+        "invalidModel": "Este modelo ya no está disponible. Vuelve a seleccionarlo.",
+        "modelLoadFailed": "No se pudo cargar el modelo seleccionado. Reinténtalo.",
+        "sourceChanged": "El modelo de vista previa cambió o no está disponible. Reintenta cargar el modelo seleccionado.",
+        "noConfigurableExpressions": "El modelo se ha cargado, pero no tiene expresiones configurables.",
+        "retainedBindings": "Estas asignaciones guardadas no están disponibles en este modelo y se conservarán sin vista previa:",
         "title": "Gerente de Mapeo de Emociones VRM - Proyecto N.E.K.O.",
         "pageTitle": "Administrador de mapeo de emociones VRM",
         "subtitle": "Configurar asignaciones de expresiones para diferentes emociones.",

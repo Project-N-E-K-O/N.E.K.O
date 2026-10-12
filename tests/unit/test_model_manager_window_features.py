@@ -128,6 +128,7 @@ MODEL_MANAGER_PART_NAMES = (
     "page-bridge.js",
     "card-face.js",
     "path-request-fullscreen.js",
+    "vrm-emotion-source.js",
     "page-controller.js",
     "background-model-drag.js",
     "window-lifecycle.js",
@@ -253,7 +254,11 @@ const vm = require('node:vm');
 const options = [], items = [];
 const models = [{{name: 'Avatar', filename: 'Avatar.vrm'}}, {{name: 'Avatar', filename: 'Avatar.VRM'}}, {{name: 'Other', filename: 'Other.vrm'}}];
 const context = vm.createContext({{
-    fetch: async () => ({{ok: true, json: async () => ({{success: true, models}})}}),
+    modelListController: null, disposed: false, AbortController,
+    fetch: async (_url, init) => {{
+        assert.equal(init.signal.aborted, false);
+        return {{ok: true, json: async () => ({{success: true, models}})}};
+    }},
     document: {{createElement: () => ({{dataset: {{}}, setAttribute() {{}}, addEventListener() {{}}}})}},
     modelSelect: {{appendChild(option) {{ options.push(option); }}}}, modelSingleselectOptions: {{appendChild(item) {{ items.push(item); }}}},
     modelSingleselectText: {{}}, t: (_, fallback) => fallback, console,
@@ -265,6 +270,7 @@ vm.runInContext({json.dumps(loader)}, context);
     assert.deepEqual(options.map(o => o.value), ['Avatar', 'Other']);
     assert.equal(JSON.parse(options[0].dataset.info).filename, 'Avatar.vrm');
     assert.equal(items.length, 2);
+    assert.equal(context.modelListController, null);
 }})().catch(error => {{ console.error(error); process.exit(1); }});
 """
     run_model_manager_node(script)
@@ -446,7 +452,9 @@ def test_vrm_catalog_player_resets_before_loading_a_new_model():
     script = f"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const context = {{ vrmAnimationPlaybackRequestId: 7 }};
+const context = {{ vrmAnimationPlaybackRequestId: 7,
+  vrmSelectionLoads: new Set(), vrmSelectionLoadsDisposed: false,
+  t: (_key, fallback) => fallback }};
 vm.runInNewContext({json.dumps(function_source)}, context);
 (async function () {{
   const calls = [];
@@ -464,6 +472,7 @@ vm.runInNewContext({json.dumps(function_source)}, context);
   );
   assert.equal(result, 'loaded');
   assert.equal(context.vrmAnimationPlaybackRequestId, 8);
+  assert.equal(context.vrmSelectionLoads.size, 0);
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0], ['cancel', 'model_manager_model_load', false]);
   assert.deepEqual(calls[1], ['load', '/user_vrm/model.vrm']);

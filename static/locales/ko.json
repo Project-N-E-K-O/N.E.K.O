@@ -4838,6 +4838,17 @@
         }
     },
     "vrmEmotionManager": {
+        "waitingForModel": "선택한 모델을 불러오는 중입니다. 잠시 기다려 주세요…",
+        "retryLoad": "불러오기 다시 시도",
+        "loadTimeout": "불러오기 시간이 초과되었습니다. 다시 시도해 주세요. 저장된 설정은 변경되지 않았습니다.",
+        "saveTimeout": "저장 시간이 초과되어 결과를 확인할 수 없습니다. 설정을 확인한 후 다시 시도해 주세요.",
+        "recoveryBlocked": "두 모델 로딩이 아직 끝나지 않았습니다. 완료를 기다리거나 모델 관리 창을 다시 연 후 시도해 주세요.",
+        "sourceUnavailable": "모델 관리자에서 이 페이지를 열고 해당 창을 유지해 주세요.",
+        "invalidModel": "이 모델을 더 이상 사용할 수 없습니다. 다시 선택해 주세요.",
+        "modelLoadFailed": "선택한 모델을 불러오지 못했습니다. 다시 시도해 주세요.",
+        "sourceChanged": "미리보기 모델이 변경되었거나 사용할 수 없습니다. 선택한 모델을 다시 불러와 주세요.",
+        "noConfigurableExpressions": "모델을 불러왔지만 설정할 수 있는 표정이 없습니다.",
+        "retainedBindings": "다음 저장된 매핑은 이 모델에서 사용할 수 없으며 미리보기 없이 유지됩니다:",
         "title": "VRM 감정 매핑 관리자 - Project N.E.K.O.",
         "pageTitle": "VRM 감정 매핑 관리자",
         "subtitle": "각 감정에 해당하는 표정 매핑을 설정합니다",

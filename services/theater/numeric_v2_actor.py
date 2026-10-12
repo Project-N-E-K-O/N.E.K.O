@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import difflib
 import inspect
 import json
@@ -21,6 +22,7 @@ from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 from .numeric_v2_usage import invoke_with_usage
 from .numeric_v2_structured_output import actor_output_schema, response_format_for
+from .numeric_v2_narrative import project_narrative_state
 from .numeric_v2_trace import trace_event
 from utils.tokenize import count_tokens, truncate_head_tail_tokens, truncate_to_tokens
 
@@ -78,9 +80,9 @@ from .numeric_v2_runtime import (
 
 
 NUMERIC_V2_ACTOR_TIMEOUT_SECONDS = 35.0
-NUMERIC_V2_ACTOR_TURN_MAX_OUTPUT_TOKENS = 700
-NUMERIC_V2_ACTOR_OPENING_MAX_OUTPUT_TOKENS = 900
-NUMERIC_V2_ACTOR_TRANSITION_MAX_OUTPUT_TOKENS = 1200
+NUMERIC_V2_ACTOR_TURN_MAX_OUTPUT_TOKENS = 1000
+NUMERIC_V2_ACTOR_OPENING_MAX_OUTPUT_TOKENS = 1200
+NUMERIC_V2_ACTOR_TRANSITION_MAX_OUTPUT_TOKENS = 1700
 NUMERIC_V2_ACTOR_SUGGESTION_FILL_MAX_OUTPUT_TOKENS = 260
 NUMERIC_V2_ACTOR_SLOW_CALL_SECONDS = 15.0
 NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_BLOCKS = 2
@@ -122,7 +124,7 @@ def _output_schema_instruction(phase: str) -> str:
             "仅当 transition.bridge_required 为 false 时，bridge_scene_narration 可以填空字符串，"
             "不为凑过场补写动作；为 true 时必须交付必要桥段。"
             "两个 performance 写猫娘表演；桥段和目标旁白只写场景事实。"
-            "不要输出 segments、phase 或 opening_scene。"
+            "不要输出顶层 segments、phase 或 opening_scene。"
         )
     elif phase == "suggestion_fill":
         shape = "顶层字段必须且只能是 suggested_inputs:string[]。"
@@ -1796,6 +1798,23 @@ def _transition_contract_for_actor(
     }
 
 
+_PLAYER_AUTHORIZATION_RULE = (
+    "玩家已授权事项只按本轮player_input、实际历史及原公开邀请确定；不因角色本稿的新请求扩大范围。"
+    "允许顺着玩家已表达意图补足点头、抬眼、转身等轻微衔接，前提是不改变实际位置、持物、任务结果或关系立场；"
+    "不得补出未经授权的重要状态变化、选择或承诺。"
+    "角色本稿新提出的邀请、请求或建议只证明角色说过；没有玩家本轮对应授权，"
+    "后段不能写成玩家已经回应或实施。玩家已授权动作、角色必要配合及获准桥段的直接结果照常交付。"
+)
+
+
+_COMMITTED_NARRATIVE_STATE_RULE = (
+    "narrative_state是已提交动态账本：current是当前确认状态，last_known只是最后已知状态，不证明当前仍成立。"
+    "该投影只作写作依据，本调用不生成叙事事件或更新该账本。"
+    "projection标明本轮投影裁剪，未发送的实体不等于不存在，不得据此重新分配持物或补造结果。"
+    "保留原始历史作为依据，stage_result不替代作者幕完成合同。"
+)
+
+
 # 普通回应与正式转场共用表达要求；只影响措辞，不新增剧情任务或运行时完成条件。
 _ACTOR_RESPONSE_RULE = (
     "从玩家本轮的选择、提问或行动中抓住一个影响当前互动的具体细节，说明角色对此的判断或它为何令她在意；"
@@ -1834,6 +1853,9 @@ def _system_prompt(
             # 收束不强制追加微动作；已答过的问题只需承接其意义，避免换词重复。
             "若玩家确认已经说定的安排或决定，承接该选择对角色的意义，不再复述同一句约定，也不为求新硬加动作。"
             "bridge_scene_narration 承接来源回应；target_scene_narration 建立目标场景，target_performance 写其后的即时反应。"
+            "后段承接前段已完成结果，不重做或重分配归属。"
+            "transition.authorized只表示本次转场获准；transition_intent=accept时，"
+            "pending_invitation是被接受的原公开邀请，结合player_input确定范围，后续澄清仍按recent_context核对。"
             # 用户允许所有转场适配历史；事实合同保持，已发生动作改写为结果状态。
             "作者桥段与 opening_situation 是时空、必要结果和边界约束，不是必须逐字播放的文字。"
             "根据 recent_context 与 player_input 改写两段旁白，保留作者必要事实、因果顺序与阶段边界；"
@@ -1859,11 +1881,12 @@ def _system_prompt(
             f"{_output_schema_instruction(phase)}{phase_structure_rule}"
             f"{_ACTOR_RESPONSE_RULE}"
             "recent_context 是已发生事实，story_context.runtime_scene_facts 是 Runtime 已提交的场景进入/离开事件，player_input 是本轮玩家原话。"
+            f"{_COMMITTED_NARRATIVE_STATE_RULE}"
             f"{PLAYER_ACTION_PROJECTION_RULE}"
-            f"{PLAYER_ACTION_LANGUAGE_RULE}{SCENE_ENTRY_STATE_RULE}"
+            f"{PLAYER_ACTION_LANGUAGE_RULE}{_PLAYER_AUTHORIZATION_RULE}{SCENE_ENTRY_STATE_RULE}"
             "玩家对可执行动作的直接表态已授权动作完成；只考虑、准备、尝试不证明完成。"
             "source_performance 回应玩家的具体选择或动作带来的直接结果；不要把同一操作交给猫娘再做一遍。"
-            "猫娘确有尚未完成的必要配合才写自己的动作，不能替玩家新增行动、承诺或外部未知结果。"
+            "猫娘确有尚未完成的必要配合才写自己的动作，不扩展玩家授权范围或补造外部未知结果。"
             "source_performance 与 target_performance 都只扮演猫娘；括号内是猫娘动作，括号外是她的对白。"
             "本轮直接询问在场 NPC 时，在 source_scene_narration 给出他的具体答复、明确拒绝或说明未知；"
             "不能只写他的神情、感受或动作而省略答复内容。"
@@ -1913,12 +1936,13 @@ def _system_prompt(
             f"{_ACTOR_RESPONSE_RULE}"
             "\n事实与授权：role 约束人格、认知和关系；current_scene 区分开场事实与导演方向；story_so_far 是已提交历史；其中 Runtime 场景事件只证明已提交的进入/离开，不复制当前位置权威；"
             "next_scene 仅供提出未来行动，不授权提前演出。必须承认此前说过的话、已做动作与实体状态；"
+            f"{_COMMITTED_NARRATIVE_STATE_RULE}"
             f"{PLAYER_ACTION_PROJECTION_RULE}"
             "承认自己先前说错并更正安排不等于否认说过，不能为了维持旧回应继续兑现错误邀请。"
             "导演方向不是任务清单，未发生内容不能当作角色知识、环境事实或完成结果；作者给出的因果先后不能倒置。"
-            f"{PLAYER_ACTION_LANGUAGE_RULE}{SCENE_ENTRY_STATE_RULE}"
+            f"{PLAYER_ACTION_LANGUAGE_RULE}{_PLAYER_AUTHORIZATION_RULE}{SCENE_ENTRY_STATE_RULE}"
             "完整回应不等于必须满足请求：答案未知或受限时先明确承认问题并暂缓披露，再继续已授权因果。"
-            "不得替玩家补出未表达的行动、选择或心理，也不得交换玩家与猫娘的行动主体。"
+            "不得替玩家补出未经授权的重要状态变化、选择、承诺或关系立场，不补心理，不交换玩家与猫娘的行动主体。"
             "玩家已实施的幕内动作从外部回应开始，不重演、不转给猫娘重做；保持实体的持有者、位置和最新状态。"
             "\n当前演绎：已开始的幕内因果单元若剩余同质过程之间没有真实选择，概括过程并交付已知事实支持的结果；"
             "遇到新风险、不可逆选择或阶段边界停下。不得索要等价微调、重复准备或移动终点。"
@@ -1954,6 +1978,7 @@ def _system_prompt(
         f"{NUMERIC_V2_ACTOR_OPENING_NARRATION_INSTRUCTION}"
         f"{phase_structure_rule}"
         "story_context 提供剧本背景，current_story_beat 提供本次开场，acting_context 约束角色与关系。"
+        f"{_COMMITTED_NARRATIVE_STATE_RULE}"
         "visible_player_history 为空，不得假定玩家此前说过话、做过选择或完成主动行动。"
         "作者角色状态是开场演完后的起点，按本次开场建立，不当作整幕完成结果。"
         "开场处境只建立背景，完整剧情方向决定因果重心；边缘细节没有得到方向支持时，不得扩成新机制、阻碍或多轮任务。"
@@ -2065,6 +2090,22 @@ def _fit_turn_prompt_data(
         fitted["recent_context"] = list(history)
 
     if tokens() > max_tokens:
+        story_context = fitted.get("story_context")
+        state = story_context.get("narrative_state") if isinstance(story_context, dict) else None
+        if isinstance(state, dict):
+            state = deepcopy(state)
+            omitted_quotes = 0
+            for view in ("current", "last_known"):
+                for attributes in state.get(view, {}).values():
+                    for attribute in attributes.values():
+                        if "quote" in attribute:
+                            attribute.pop("quote")
+                            omitted_quotes += 1
+            if omitted_quotes:
+                state["projection"]["quotes_omitted"] += omitted_quotes
+                fitted["story_context"] = {**story_context, "narrative_state": state}
+
+    if tokens() > max_tokens:
         # 当前玩家输入、稳定背景、目标幕合同和角色上下文都不可静默删除或裁成半句。
         raise NumericV2ActorError("numeric_v2_actor_fixed_context_budget_exceeded")
     return finish()
@@ -2081,6 +2122,8 @@ def _fit_simple_turn_prompt_data(
     evidence_text: str = "",
     evidence_records: Sequence[Mapping[str, Any]] = (),
     fact_index: Callable[[], str] | None = None,
+    pending_offer_text: str = "",
+    narrative_state: Mapping[str, Any] | None = None,
     diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """只从较早完整回合开始压缩六块 Prompt，绝不截断当前输入或当前回合。"""  # noqa: DOCSTRING_CJK
@@ -2153,6 +2196,41 @@ def _fit_simple_turn_prompt_data(
         # 保留最新一条真实记录，较早回合只按整条记录淘汰。
         history.pop(0)
         refresh_story()
+    if tokens() > max_tokens and pending_offer_text and history:
+        latest_parts = history[-1].get("segments")
+        latest_parts = latest_parts if isinstance(latest_parts, list) else [history[-1]]
+        latest_performances = [
+            str(part.get("performance") or "").strip()
+            for part in latest_parts
+            if isinstance(part, Mapping) and part.get("phase") != "previous_scene_tail"
+            and part.get("performance")
+        ]
+        offer_marker = f"当前待确认提议原文（只证明此前说过，不证明安排正确）：{pending_offer_text}"
+        if (latest_performances and pending_offer_text in latest_performances[-1]
+                and str(fitted.get("pacing") or "").count(offer_marker) == 1):
+            fitted["pacing"] = fitted["pacing"].replace(
+                offer_marker,
+                "当前待确认提议原文（只证明此前说过，不证明安排正确）：见 story_so_far 最新完整猫娘原文。",
+                1,
+            )
+    if tokens() > max_tokens and narrative_state is not None:
+        # 普通六块与正式转场采用同一容量边界；账本的值、出处和近期事件仍完整保留。
+        state = deepcopy(narrative_state)
+        omitted_quotes = 0
+        for view in ("current", "last_known"):
+            for attributes in state.get(view, {}).values():
+                for attribute in attributes.values():
+                    if "quote" in attribute:
+                        attribute.pop("quote")
+                        omitted_quotes += 1
+        marker = "\nnarrative_state（已提交动态叙事账本）："
+        original = marker + json.dumps(narrative_state, ensure_ascii=False, separators=(",", ":"))
+        current_scene = str(fitted.get("current_scene") or "")
+        if omitted_quotes and current_scene.count(original) == 1:
+            state["projection"]["quotes_omitted"] += omitted_quotes
+            fitted["current_scene"] = current_scene.replace(
+                original, marker + json.dumps(state, ensure_ascii=False, separators=(",", ":")), 1,
+            )
     if tokens() > max_tokens:
         # 固定角色、两幕摘要和玩家本轮输入都不能被裁成半句。
         raise NumericV2ActorError("numeric_v2_actor_fixed_context_budget_exceeded")
@@ -2241,11 +2319,18 @@ def _transition_prompt_data(
         "must_preserve": list(transition_contract.get("must_preserve") or []),
         "tone": str(transition_contract.get("tone") or ""),
     }
+    source_author_fields = {
+        "current_scene_state": "source_author_entry_situation",
+        "character_state": "source_author_entry_state",
+    }
     return {
         "story_context": dict(story_context),
         "player_address": str(player_address or "你"),
             "recent_context": list(recent_context),
-        "acting_context": dict(acting_context),
+        "acting_context": {
+            source_author_fields.get(key, key): value
+            for key, value in acting_context.items()
+        },
         "player_input": str(player_input or ""),
         "transition": transition,
     }
@@ -2375,7 +2460,7 @@ def _turn_messages(
         if player_action_projection is not None
         else project_player_action_result(current_player_input)
     )
-    system_prompt += (
+    player_action_note = (
         "\n本轮 Runtime 玩家动作结果投影（仅为约束，不是新增剧情）："
         + json.dumps(projected_player_action, ensure_ascii=False, separators=(",", ":"))
         + "。"
@@ -2390,7 +2475,7 @@ def _turn_messages(
             system_prompt += f"\n{label}固定旁白说明：\n{fixed_note}"
     if source["story_beat"].get("fixed_narrations"):
         system_prompt += "\n已展示的作者原文可能含往事、书信或屏幕日志；其中的地点、伤情和敌人不自动成为当前现场状态。"
-    human_prefix = "以下 JSON 是已确定性结算的本回合数据：\n"
+    human_prefix = "以下 JSON 是本次获准转场的上下文；已提交事实与待演作者要求分开使用：\n"
     # 暂缓边界复用本次场景访问的邀请记录，不另存闲聊或冷却状态。
     withdrawn_offer = (
         not session.transition_offered
@@ -2416,6 +2501,18 @@ def _turn_messages(
         ),
     )
     story_context["runtime_scene_facts"] = project_scene_facts(session)
+    narrative_state = project_narrative_state(session, focus=player_input)
+    if route_changed and narrative_state is not None:
+        story_context["narrative_state"] = narrative_state
+        if "knowledge_scope" in story_context:
+            story_context["knowledge_scope"] = (
+                "只把current_story_beat、recent_context、player_input与acting_context明确允许的可观察状态，"
+                "以及story_context.narrative_state中已过滤为角色可知的投影视为已知；其余身份、历史和关系未知。"
+            )
+        system_prompt += (
+            "\n正式转场继承current中已确认的持物和已完成结果；静态作者方向不得重新决定这些状态。"
+            "后段承接前段实际完成的结果，只有本轮明确的新变化依据才能在演出中改变既有状态；last_known仍只表示最后已知状态。"
+        )
     actor_budget = numeric_v2_actor_budget(session.actor_budget_profile)
     # 原文只来自已提交历史；路线理由仅作检索线索，不会被拼成已发生事实。
     preview_route = engine.preview_route(session.current_node_id, session.metrics)
@@ -2514,6 +2611,15 @@ def _turn_messages(
         if evidence:
             data["history_evidence"] = evidence
         final_transition = data.pop("transition")
+        final_transition["transition_intent"] = str(outcome.ledger_event.get("transition_intent") or "unclear")
+        if final_transition["transition_intent"] == "accept":
+            invitation = pending_transition_record(
+                session, ledger_events=recent_ledger_events, include_withdrawn=True,
+            )
+            final_transition["pending_invitation"] = (
+                {"revision": invitation.get("revision"), "content": performance_content_blocks(invitation)}
+                if invitation is not None else None
+            )
         if outcome.session.status == "ended":
             # 普通目标只交付开场，整幕方向留到后续回合；终局没有后续输入，保留收束材料。
             final_transition["target_scene"]["story_direction"] = str(
@@ -2545,6 +2651,7 @@ def _turn_messages(
                 "不声称玩家接受了未提出的邀请，不补写玩家新行动、承诺，不再发出结束确认或后续任务。"
             )
         data["transition"] = final_transition
+        system_prompt += player_action_note
         packing_diagnostics: dict[str, Any] = {}
         data = _fit_turn_prompt_data(
             system_prompt=system_prompt,
@@ -2598,6 +2705,12 @@ def _turn_messages(
         )
     else:
         current_scene_summary = current_scene_opening
+    if narrative_state is not None:
+        # 放在固定当前幕块中，不能随着旧整轮历史的预算淘汰而丢失。
+        current_scene_summary += (
+            "\nnarrative_state（已提交动态叙事账本）："
+            + json.dumps(narrative_state, ensure_ascii=False, separators=(",", ":"))
+        )
     completion_fact_context = _completion_fact_prompt_context(
         engine,
         source,
@@ -2737,6 +2850,7 @@ def _turn_messages(
         pacing_text += (
             "只有旧提议仍符合实际出口时，第一条推荐才可接受并亲自执行该提议，第二条拒绝、暂缓或留在本幕。"
         )
+    system_prompt += player_action_note
     if retry_hint:
         # 纠错任务放在完整合同之后，不再叠加本轮的推进压力；作者边界和真实输入仍然有效。
         system_prompt += f"\n本轮是输出重试：{retry_hint}"
@@ -2744,6 +2858,7 @@ def _turn_messages(
             f"当前是第 {int(soft_pacing['current_turn'])} 回合，本幕推荐 "
             f"{int(soft_pacing['recommended_turns'])} 回合。本轮先修正未提交输出，不为节奏补出动作或结果。"
         )
+    pending_offer_text = ""
     invalidated_invitation = outcome.ledger_event.get("transition_offer_invalidated") is True
     if session.transition_offered or invalidated_invitation:
         # 原始邀请属于已公开事实，改写撤掉节奏压力时仍应保留；Ledger 区分拒绝后重提。
@@ -2757,6 +2872,7 @@ def _turn_messages(
                     "这不是仍待接受的邀请，不能继续催促出发、暗示仍能兑现旧安排或把错误归给玩家。"
                 )
             else:
+                pending_offer_text = pending_offer
                 pacing_text += f"当前待确认提议原文（只证明此前说过，不证明安排正确）：{pending_offer}"
             # 原提议也可能来自旧的错误演出，不能为了承接它换成另一个出口或责怪玩家误记。
             pacing_text += (
@@ -2793,6 +2909,8 @@ def _turn_messages(
         evidence_text=runtime_scene_facts,
         evidence_records=evidence,
         fact_index=lambda: _current_scene_fact_index_text(session),
+        pending_offer_text=pending_offer_text,
+        narrative_state=narrative_state,
         diagnostics=packing_diagnostics,
     )
     packing_diagnostics["history_available_revisions"] = (

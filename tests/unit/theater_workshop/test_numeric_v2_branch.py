@@ -734,6 +734,82 @@ def test_branch_path_rejects_missing_or_generic_accept_input():
         service.finish_path(plan, result)
 
 
+def _silent_exit_path(position, initial, changes):
+    project = branchable_project()
+    if position == "source":
+        beat = next(node for node in project["story"]["nodes"] if node["id"] == "main_3")["story_beat"]
+        beat["acting_contract"] = {**_character_state()["acting_contract"], "dialogue_policy": initial}
+        beat["acting_contract"].pop("assertable_self_facts")
+        base = beat["goals"][0]
+        beat["goals"] = [
+            {**deepcopy(base), "id": f"main_3_goal_{index + 1:02d}",
+             "evidence": {"mode": "semantic", "anchors": []},
+             "delivery": {**base["delivery"], "type": "catgirl_action", "output_field": "performance_action",
+                          **({"state_effects": {"dialogue_policy": policy}} if policy != "unchanged" else {})}}
+            for index, policy in enumerate(changes)
+        ]
+    service = NumericV2BranchService(id_factory=iter(["scene", "r0", "r1", "draft"]).__next__)
+    options = service.options(project, "main_3")
+    plan = service.prepare_path(project, source_node_id="main_3", endpoint_mode="mainline",
+        endpoint_node_id="main_4", direction="根据当前证据继续核对。", length=1,
+        condition_selection={"mode": "fixed", "key": options["condition_candidates"][0]["key"]})
+    result = _path_result(plan)
+    if position == "scene":
+        scene = result["scenes"][0]
+        scene["character_state"]["acting_contract"]["dialogue_policy"] = initial
+        scene["ordered_goals"] = [
+            {**_ordered_goal("猫娘收好已经展示的证据"), "delivery_type": "catgirl_action",
+             "dialogue_policy_after": policy}
+            for policy in changes
+        ]
+    index = 0 if position == "source" else 1
+    result["transitions"][index].pop("fallback_offer")
+    return project, service, plan, result, index
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("initial,changes,allowed", [
+    ("optional", ["forbidden"], True),
+    ("forbidden", ["unchanged"], True),
+    ("optional", ["forbidden", "unchanged"], True),
+    ("optional", ["forbidden", "required"], False),
+    ("optional", ["forbidden", "optional"], False),
+    ("optional", ["unchanged"], False),
+])
+def test_branch_missing_fallback_requires_final_typed_forbidden_policy(position, initial, changes, allowed):
+    project, service, plan, result, index = _silent_exit_path(position, initial, changes)
+    if not allowed:
+        with pytest.raises(NumericV2BranchError, match="branch_transition_fallback_offer_required"):
+            service.finish_path(plan, result)
+        return
+
+    draft = service.finish_path(plan, result)
+    story, _, _ = service.build_story(project, draft)
+    node_id = "main_3" if position == "source" else "node_branch_scene"
+    node = next(node for node in story["nodes"] if node["id"] == node_id)
+    contract = node["route_gates"][-1 if position == "source" else 0]["transition_contract"]
+
+    assert "fallback_offer" not in contract
+    assert contract["accept_input"] == result["transitions"][index]["accept_input"]
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("field,missing,code", [
+    ("accept_input", True, "branch_transition_accept_input_required"),
+    ("fallback_offer", False, "branch_transition_fallback_offer_required"),
+])
+def test_branch_forbidden_exit_keeps_acceptance_and_present_value_validation(position, field, missing, code):
+    _, service, plan, result, index = _silent_exit_path(position, "optional", ["forbidden"])
+    if missing:
+        result["transitions"][index].pop(field)
+    else:
+        result["transitions"][index][field] = None
+
+    with pytest.raises(NumericV2BranchError, match=code):
+        service.finish_path(plan, result)
+
+
 @pytest.mark.parametrize("opening_transfer", [False, True])
 def test_branch_scene_persists_key_prop_state_change_on_stable_node_id(opening_transfer):
     project = branchable_project()

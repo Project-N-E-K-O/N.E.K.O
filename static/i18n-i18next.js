@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 串门 PR-14a 复盘日记（本分支）与云下载改名提示 / 串门 PR-13/15 文案（上游）合并，刷新八语言客户端缓存。
-    const LOCALE_VERSION = '2026-10-12-pr14a-debrief-ambiguous-names-merge';
+    // 串门 PR-14a 复盘日记（本分支）与 VRM 表情编辑按模型真实表情（上游 #3398）合并，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-12-pr14a-debrief-pr3398-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
