@@ -143,6 +143,90 @@ test('compact mirror messages carry wide-art metadata from the active registry',
   assert.match(mirrorSource, /detail && detail\.wideArt === true/);
 });
 
+function createCompactMirrorProducer(registry, idleUrl) {
+  const coreSource = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'static/avatar/avatar-ui-buttons/core.js'),
+    'utf8',
+  );
+  const helperStart = coreSource.indexOf('function _isNekoCatAppearanceWideArtUrl(');
+  const helperEnd = coreSource.indexOf('\nconst _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL', helperStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart, 'missing wide-art producer helper');
+  const source = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js'),
+    'utf8',
+  );
+  const start = source.indexOf('function _getNekoIdleScreenRectFromCompactSurfaceRect(');
+  const end = source.indexOf('function _deactivateNekoIdleCat1CompactMirrors(', start);
+  assert.ok(start >= 0 && end > start, 'missing compact mirror producer');
+  const events = [];
+  const window = {
+    dispatchEvent(event) {
+      events.push(event.detail);
+      return true;
+    },
+    appInterpage: null,
+  };
+  const context = vm.createContext({
+    _NEKO_CAT_RESOURCE_REGISTRY: registry,
+    _NEKO_IDLE_TIER_CAT1: 'cat1',
+    _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX: 28,
+    _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX: 12,
+    _getNekoIdleReturnAssetUrl: () => idleUrl,
+    _normalizeNekoIdleScreenRect: (rect) => rect,
+    _getNekoDesktopVirtualViewportOrigin: () => ({ x: 0, y: 0 }),
+    _getNekoDesktopVirtualElementRect: () => ({ width: 80, height: 80 }),
+    _getNekoIdleCurrentLanlanName: () => '',
+    clearTimeout: () => {},
+    setTimeout: () => 1,
+    CustomEvent: function CustomEvent(type, init) {
+      this.type = type;
+      this.detail = init.detail;
+    },
+    Date,
+    console,
+    window,
+  });
+  vm.runInContext(
+    `${coreSource.slice(helperStart, helperEnd)}\n${source.slice(start, end)}\nthis.producer = _setNekoIdleCat1CompactMirrorActive;`,
+    context,
+  );
+  const producer = context.producer;
+  const makeContainer = () => ({
+    id: 'cat1',
+    classList: { add() {}, remove() {} },
+  });
+  return {
+    events,
+    producer,
+    makeContainer,
+  };
+}
+
+test('compact mirror producer marks only the actual wide-art asset', () => {
+  const playYarnUrl = '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif';
+  const idleUrl = '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif';
+  const producer = createCompactMirrorProducer({
+    getAppearance(slot) {
+      if (slot === 'action.cat1.play_yarn') {
+        return { available: true, urls: [playYarnUrl], metadata: { wideArt: true } };
+      }
+      return { available: true, urls: [idleUrl], metadata: {} };
+    },
+  }, idleUrl);
+
+  assert.equal(producer.producer(null, producer.makeContainer(), true, {
+    surfaceRect: { left: 0, top: 0, width: 100, height: 100 },
+    assetUrl: playYarnUrl,
+  }), true);
+  assert.equal(producer.events.at(-1).wideArt, true);
+
+  assert.equal(producer.producer(null, producer.makeContainer(), true, {
+    surfaceRect: { left: 0, top: 0, width: 100, height: 100 },
+    assetUrl: idleUrl,
+  }), true);
+  assert.equal(producer.events.at(-1).wideArt, false);
+});
+
 
 test('every registered action exposes the design dependency matrix', () => {
   const registry = loadRegistry();
