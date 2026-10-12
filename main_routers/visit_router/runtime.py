@@ -61,6 +61,7 @@ from config.visit_settings import (
     VISIT_CAPS_PREFLIGHT_TIMEOUT_S,
     VISIT_CAPS_SDK_TIMEOUT_S,
     VISIT_CROP_DEFAULT,
+    VISIT_ENABLED_DEFAULT,
     VISIT_ENDING_SOON_S,
     VISIT_IDLE_TIMEOUT_S,
     VISIT_INBOX_HANDOFF_ABS_MAX_S,
@@ -2692,6 +2693,22 @@ class VisitRefused(Exception):
         self.body = body
 
 
+VISIT_SWITCH_OFF = "VISIT_DISABLED"
+"""409 code of a room / join while the user's ``visitEnabled`` setting is off (design §3.7.6)."""
+
+
+async def visit_switch_refusal(deps: Optional[RuntimeDeps] = None) -> Optional[VisitRefused]:
+    """The refusal of a room / join while ``visitEnabled`` is off, else None.
+
+    Read once per request from the conversation settings; settings that cannot
+    be read fall back to the default (off), so an unreadable file refuses.
+    """
+    settings = await (deps or runtime_deps()).settings()
+    if settings.get("visitEnabled", VISIT_ENABLED_DEFAULT) is True:
+        return None
+    return VisitRefused(409, {"code": VISIT_SWITCH_OFF, "reason": "visit_disabled"})
+
+
 async def start_visit(
     lanlan_name: str,
     side: str,
@@ -2723,6 +2740,10 @@ async def start_visit(
     disabled_gen = _disabled_gen
     if _account_changes:
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
+    # 用户的串门开关（visitEnabled）关着：拒绝一切邀请、也不能出门（§3.7.6）；在人设闸之前，不触发人设重生成
+    switch_off = await visit_switch_refusal(deps)
+    if switch_off is not None:
+        raise switch_off
     gate = await persona_gate(name)
     if not gate.ok:
         raise VisitRefused(409, {"code": "VISIT_PERSONA_UNREVIEWED", "state": gate.state})

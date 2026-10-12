@@ -340,6 +340,10 @@ async def join_room(request: Request, visit_id: str):
         return _servers_error(cr.VisitInviteFormat())
     if payload.get("confirm") is not True:
         return _error(400, "confirm_required")
+    # 串门开关关着：在代转预览之前就拒（不出网）；start_visit 里还会再查一次
+    switch_off = await runtime.visit_switch_refusal()
+    if switch_off is not None:
+        return _refused(switch_off.status, switch_off.body)
     refused = await _refuse_before_admission(request)
     if refused is not None:
         return refused
