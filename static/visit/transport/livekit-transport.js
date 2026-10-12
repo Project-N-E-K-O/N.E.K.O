@@ -12,6 +12,7 @@
   var NVT = root.NekoVisitTransport = root.NekoVisitTransport || {};
   var SUB_RETRY_BASE_MS = 2000;      // 订阅失败后的首次重试间隔，之后翻倍
   var SUB_RETRY_MAX_MS = 30000;
+  var SUPERSEDED_DISCONNECT_MS = 15000;   // 拆掉后兜底断开旧房间对象的延迟（留给接替的页面入房顶号）
 
   function reasonName(LK, reason) {
     var table = LK && LK.DisconnectReason;
@@ -402,8 +403,18 @@
         var disconnecting = room.disconnect(false).catch(function () {});
         return Promise.all([disconnecting, opChain, entering]).then(function () {});
       },
+      /**
+       * 拆掉适配器。被同 vid 的新页面顶掉（4409）时不离房：新页面入房会把这边顶下线；但新页面若
+       * 没能入房（SDK 加载 / 能力门 / 连接失败），旧连接会一直占着房间——过一会儿兜底断开它。
+       * 已经离过房或已被顶下线时再断开一次是空操作。
+       */
       destroy: function () {
+        var r = room;
         room = null;
+        if (!r) return;
+        setTimeout(function () {
+          Promise.resolve().then(function () { return r.disconnect(false); }).then(null, function () {});
+        }, SUPERSEDED_DISCONNECT_MS);
       },
       remoteVideoAvailable: function () {
         return !!remotePublication;

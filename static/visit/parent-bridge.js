@@ -25,7 +25,8 @@
   var TOKEN_LOOKUP_TIMEOUT_MS = 5000;   // 取 CSRF token 卡住时按失败处理
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
-  var RECOVER_TOKEN_WINDOW_MS = 12000;  // 重载恢复取 token 的总时限（页面重载宽限 20 s 之内）
+  var RECOVER_TOKEN_WINDOW_MS = 12000;
+  var RECOVER_NAME_WINDOW_MS = 8000;    // 重载后取不到角色名时重拉页面配置的总时限（与取 token 合计仍在 20 s 宽限内）  // 重载恢复取 token 的总时限（页面重载宽限 20 s 之内）
   var PEER_AWAY_OPACITY = '0.6';
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图
   var HOST_FRAME_STYLE = 'position:fixed;z-index:4;border:0;background:transparent;pointer-events:none;' +
@@ -919,6 +920,27 @@
       });
     }
 
+    /**
+     * 重载恢复的入口：页面配置一时失败时角色名为空，按退避重拉页面配置（window.reloadPageConfig）
+     * 直到拿到角色名或超时，再走 recoverAfterReload。
+     */
+    function recoverFromPageConfig(attempt, deadline) {
+      var cfg = win.lanlan_config;
+      var name = cfg && cfg.lanlan_name;
+      if (name) return recoverAfterReload(name);
+      attempt = attempt || 0;
+      if (deadline === undefined) deadline = now() + RECOVER_NAME_WINDOW_MS;
+      var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
+      if (now() + delay >= deadline) return Promise.resolve(false);
+      return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
+        var reload = win.reloadPageConfig;
+        if (typeof reload !== 'function') return null;
+        return Promise.resolve().then(function () { return reload(); }).then(null, function () { return null; });
+      }).then(function () {
+        return recoverFromPageConfig(attempt + 1, deadline);
+      });
+    }
+
     var bridge = {
       onStateChange: onStateChange,
       /** VRM / MMD 在 render 之后调用（同一任务）。 */
@@ -932,6 +954,7 @@
         if (state.sink && typeof state.sink.suspend === 'function') state.sink.suspend(state.suspended);
       },
       recoverAfterReload: recoverAfterReload,
+      recoverFromPageConfig: function () { return recoverFromPageConfig(0); },
       firstFrameDataURL: function () { return state.firstFrame; },
       _state: state,
       _tick: tick,
@@ -961,8 +984,7 @@
     root.nekoVisitParentBridge = bridge;
     var ready = root.pageConfigReady;
     var startRecover = function () {
-      var cfg = root.lanlan_config;
-      bridge.recoverAfterReload(cfg && cfg.lanlan_name);
+      bridge.recoverFromPageConfig();
     };
     if (ready && typeof ready.then === 'function') ready.then(startRecover, function () {});
     else root.addEventListener('load', startRecover);

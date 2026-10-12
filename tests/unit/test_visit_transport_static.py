@@ -2085,3 +2085,47 @@ def test_terminal_close_waits_for_the_vendor_leave():
     assert out["before"] is None
     assert out["after"] is not None and out["after"] >= 1000
     assert out["capped"] is not None and 4900 <= out["capped"] <= 5100
+
+
+def test_slow_stats_judge_freshness_at_completion_time():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.ws.serverSend({ type: 'media', publish: true, crop: 'upper', ladder: 0 });
+        await settle();
+        const seen = [];
+        h.c.stepLadder = (t) => seen.push(t);
+        h.c.checkSoftenc = () => {};
+        let release;
+        h.c.adapter.senderStats = () => new Promise((r) => { release = r; });
+        const startedAt = clock.now;
+        h.c.collectStats();
+        clock.now += 9000;              // getStats 拖了 9 s
+        release(null);
+        await settle();
+        return seen[0] - startedAt;
+        """
+    )
+    assert out == 9000
+
+
+def test_livekit_destroy_disconnects_a_lingering_room_later():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const LKV = ctx.NekoVisitTransport.vendors.livekit;
+        const LK = makeFakeLK([]);
+        let disconnects = 0;
+        LK.Room.prototype.disconnect = function () { disconnects += 1; return Promise.resolve(); };
+        const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+        const a = LKV.createAdapter({ sdk: LK, handlers });
+        await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp9' } });
+        a.destroy();                    // 4409：不离房直接拆
+        await settle();
+        const immediately = disconnects;
+        await advance(15100);
+        return { immediately, later: disconnects };
+        """
+    )
+    assert out == {"immediately": 0, "later": 1}

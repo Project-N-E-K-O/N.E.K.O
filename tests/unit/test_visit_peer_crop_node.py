@@ -492,3 +492,27 @@ def test_reload_snapshot_is_ignored_once_live_state_moved_on():
         files=BRIDGE_FILES,
     )
     assert out == {"result": False, "frame": False}
+
+
+def test_reload_recovery_reloads_page_config_until_the_name_appears():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        for (const [label, fillAt] of [['late', 2], ['never', 99]]) {
+          const h = makeBridge();
+          let reloads = 0;
+          h.ctx.lanlan_config = { lanlan_name: '' };
+          h.ctx.reloadPageConfig = () => { reloads += 1; if (reloads >= fillAt) h.ctx.lanlan_config.lanlan_name = 'Neko'; return Promise.resolve(reloads >= fillAt); };
+          const asked = [];
+          h.ctx.fetch = (url) => { asked.push(url); return Promise.resolve({ ok: true, json: () => Promise.resolve({ active: false }) }); };
+          let result;
+          h.bridge.recoverFromPageConfig().then((r) => { result = r; });
+          for (let i = 0; i < 25; i++) await advance(1000);
+          runs[label] = { reloads, asked: asked.length, result };
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["late"] == {"reloads": 2, "asked": 1, "result": False}
+    assert out["never"]["asked"] == 0 and out["never"]["result"] is False and 1 <= out["never"]["reloads"] <= 3

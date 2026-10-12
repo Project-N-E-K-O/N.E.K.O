@@ -792,8 +792,10 @@
         });
         if (typeof extra.qlr === 'string') out.qlr = extra.qlr;
       }
-      self.checkSoftenc(out, now);
-      self.stepLadder(now);
+      // 取样可能拖了好几秒：新鲜度与持续时长按完成的时刻算，不按发起的时刻
+      var doneAt = self.now();
+      self.checkSoftenc(out, doneAt);
+      self.stepLadder(doneAt);
       self.sendBackend(out);
       self.post({ t: 'stats', fps: finiteOr(out.tx_fps, finiteOr(out.rx_fps, 0)), kbps: Math.round(finiteOr(out.tx_kbps, finiteOr(out.rx_kbps, 0))), rtt_ms: Math.round(finiteOr(out.rtt_ms, 0)), hidden: self.hidden });
     };
