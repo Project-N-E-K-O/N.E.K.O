@@ -2369,3 +2369,19 @@ def test_livekit_destroy_after_leave_needs_no_fallback():
         """
     )
     assert out == {"immediate": True, "disconnects": 1}
+
+
+def test_stop_finishes_even_when_the_vendor_leave_never_settles():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.trtc.exitRoom = () => new Promise(() => {});      // 网络坏着：离房一直不落定
+        h.ws.serverSend({ type: 'stop', reason: 'route_end' });
+        await settle();
+        await advance(4900);
+        const early = { closedWith: h.ws.closedWith || null };
+        await advance(200);
+        return { early, closedWith: h.ws.closedWith, lastState: h.ws.sent.filter((m) => m.type === 'state').pop().state };
+        """
+    )
+    assert out == {"early": {"closedWith": None}, "closedWith": 1000, "lastState": "left"}
