@@ -95,6 +95,45 @@ async def test_replacing_an_installed_plugin_is_not_counted(
     assert calls == []
 
 
+def test_unpaired_surrogate_pairing_code_is_rejected() -> None:
+    assert market_bridge._consume_one_time_code("\ud800") is False
+
+
+async def test_unicode_digits_are_not_a_market_plugin_id(monkeypatch) -> None:
+    calls = []
+
+    async def post(url, params=None):
+        calls.append(url)
+
+        class Response:
+            status_code = 200
+
+        return Response()
+
+    _install_market_client(monkeypatch, post)
+    await market_bridge._record_market_download_best_effort(_payload(plugin_id="²1"))
+    await _drain_download_tasks()
+
+    assert calls == []
+
+
+async def test_slow_download_count_stops_at_the_total_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(market_bridge, "_MARKET_RELEASE_CHECK_TIMEOUT", 0.05)
+
+    async def post(url, params=None):
+        await asyncio.sleep(5)
+
+        class Response:
+            status_code = 200
+
+        return Response()
+
+    _install_market_client(monkeypatch, post)
+    await market_bridge._record_market_download_best_effort(_payload(plugin_id="24"))
+    await asyncio.wait_for(_drain_download_tasks(), timeout=1)
+    assert market_bridge._download_count_tasks == set()
+
+
 async def test_non_market_plugin_id_is_not_counted(monkeypatch) -> None:
     calls = []
 

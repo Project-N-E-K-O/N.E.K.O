@@ -264,8 +264,11 @@ def _consume_one_time_code(code: str) -> bool:
     now = time.time()
     _cleanup_one_time_codes(now)
     # compare_digest rejects non-ASCII str; compare bytes so a crafted code
-    # gets a 403 instead of a 500.
-    supplied = code.encode("utf-8")
+    # gets a 403 instead of a 500. A lone surrogate cannot be encoded.
+    try:
+        supplied = code.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
     for stored_code, expires_at in list(_ONE_TIME_CODES.items()):
         if expires_at > now and secrets.compare_digest(stored_code.encode("utf-8"), supplied):
             _ONE_TIME_CODES.pop(stored_code, None)
@@ -3226,7 +3229,10 @@ _download_count_tasks: set[asyncio.Task[None]] = set()
 
 def _market_numeric_plugin_id(plugin_id: str | None) -> str | None:
     text = str(plugin_id or "").strip()
-    return text if text.isdigit() else None
+    # str.isdigit() accepts superscripts and other non-ASCII digits.
+    if not text.isascii() or not text.isdigit():
+        return None
+    return text
 
 
 def _client_download_params(
@@ -3258,15 +3264,17 @@ async def _post_market_download_count(
         return
     url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
     try:
-        async with _market_catalog_client() as client:
-            response = await client.post(
-                url,
-                params=_client_download_params(
-                    version=version,
-                    channel=channel,
-                    package_sha256=package_sha256,
-                ),
-            )
+        # Phase timeouts do not bound a response that keeps trickling in.
+        async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
+            async with _market_catalog_client() as client:
+                response = await client.post(
+                    url,
+                    params=_client_download_params(
+                        version=version,
+                        channel=channel,
+                        package_sha256=package_sha256,
+                    ),
+                )
         if response.status_code >= 400:
             logger.info(
                 "[market-download-count] rejected status={} plugin_id={}",
