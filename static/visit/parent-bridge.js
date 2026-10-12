@@ -460,7 +460,7 @@
       });
     }
 
-    /** 重试退避：1 s 起翻倍，上限 TOKEN_RETRY_MAX_MS（取 token / 重拉页面配置 / 查快照共用）。 */
+    /** 重试退避：1 s 起翻倍，上限 TOKEN_RETRY_MAX_MS（取 token / 查快照共用）。 */
     function backoffMs(attempt) {
       return Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
     }
@@ -1142,7 +1142,7 @@
    */
   function startRecoveryWhenReady(bridge, win, setTimeoutFn) {
     var started = false;
-    // 总截止时间在脚本加载时就定下：等页面配置、补角色名、取 token、查快照都从同一个预算里扣
+    // 总截止时间在脚本加载时就定下：等首屏页面配置、取 token、查快照都从同一个预算里扣
     var overall = bridge.now() + RECOVER_TOTAL_MS;
     var go = function () {
       if (started) return;
