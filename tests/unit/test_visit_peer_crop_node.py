@@ -828,3 +828,24 @@ def test_superseded_frame_is_kept_until_its_fallback_cleanup_ran():
         files=BRIDGE_FILES,
     )
     assert out == {"right": {"removed": False, "lookup": False}, "at16": False, "at17": True, "other": True}
+
+
+def test_stale_visit_crop_does_not_touch_the_current_visit():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        await open(h, 'host');
+        change(h, 'started', { peer_crop: 'upper' });
+        const gen = h.bridge._state.liveGen;
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'peer_crop', side: 'host', visit_id: 'OtherVisit000000000000', peer_crop: 'full' });
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'ended', side: 'host', visit_id: 'OtherVisit000000000000' });
+        const crop = h.bridge._state.peerCrop;
+        const frame = !!h.ctx.document.getElementById('visit-frame');
+        const sameGen = h.bridge._state.liveGen === gen;
+        change(h, 'ended');
+        await advance(6100);
+        return { crop, frame, sameGen };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"crop": "upper", "frame": True, "sameGen": True}

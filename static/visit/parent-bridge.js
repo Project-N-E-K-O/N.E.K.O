@@ -962,6 +962,10 @@
     function onStateChange(msg) {
       if (!msg || msg.type !== 'visit_state_change') return;
       var action = msg.action;
+      // 别的场次迟到的事件在改任何状态之前就丢掉（closed 之后 visitId 已空，按记下的 closedVisitId 过滤）；
+      // pending 开的是新场次，照常处理
+      var current = state.visitId || state.closedVisitId;
+      if (action !== 'pending' && current && msg.visit_id && msg.visit_id !== current) return;
       // 只有能建 / 拆 iframe 的生命周期事件才让在途的重载恢复快照作废；peer_hidden / peer_crop /
       // departed 这类辅助事件不建 iframe，不能让快照白白丢掉
       if (action === 'ended' || PHASE_OF_ACTION[action]) state.liveGen += 1;
@@ -969,9 +973,6 @@
       if (action === 'pending') {
         state.closedVisitId = null;
         ensureFrame(msg.side, msg.visit_id);
-      } else if ((state.visitId || state.closedVisitId) && msg.visit_id && msg.visit_id !== (state.visitId || state.closedVisitId)) {
-        // 别的场次迟到的事件（closed 之后 visitId 已空，按记下的 closedVisitId 过滤）
-        return;
       } else if (!state.frame && action !== 'ended' && PHASE_OF_ACTION[action] && msg.side && msg.visit_id &&
           msg.visit_id !== state.closedVisitId) {
         // 页面重载后没收到 pending：按在飞场次补建
