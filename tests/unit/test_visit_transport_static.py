@@ -2465,3 +2465,55 @@ def test_livekit_destroy_waits_for_a_disconnect_still_in_flight():
         """
     )
     assert out == {"before": False, "after": True, "early": False, "late": True}
+
+
+def test_stop_timeout_with_async_socket_close_reports_cleanup_once():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.trtc.exitRoom = () => new Promise(() => {});        // 网络坏着：退房一直不落定
+        // 真浏览器里 ws.close() 的 onclose 是异步派发的：在拆适配器之后才走离房 → onTerminal → teardown
+        const ws = h.ws;
+        const syncClose = ws.close.bind(ws);
+        ws.close = (code) => { setTimeoutF(() => syncClose(code), 0); };
+        h.ws.serverSend({ type: 'stop', reason: 'route_end' });
+        await settle();
+        const done = () => h.posted.filter((m) => m.t === 'cleanup_done').length;
+        await advance(10500);
+        await settle();
+        const at10 = done();
+        await advance(3000);
+        await settle();
+        return { at10, at13: done(), destroys: kinds(h.log).filter((k) => k === 'destroy').length };
+        """
+    )
+    # 第一次拆在等退房（最多 8 s）：第二次 teardown 不能在这期间抢先报 cleanup_done
+    assert out == {"at10": 0, "at13": 1, "destroys": 1}
+
+
+def test_stale_manual_rejoin_does_not_join_after_a_socket_replacement():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        const exits = [];
+        h.trtc.exitRoom = () => new Promise((r) => { exits.push(r); });
+        const enters = () => kinds(h.log).filter((k) => k === 'enterRoom').length;
+        h.c.rejoin();                                   // 手动重新入房：离房还在路上
+        await settle();
+        h.ws.serverClose(1006);                         // 这时传输 WS 断了 → 换连接代，断线这次也发出离房
+        await settle();
+        exits[1]();                                      // 断线那次离房先落定 → 重连
+        await settle();
+        await advance(1100);
+        const ws2 = sockets[sockets.length - 1];
+        ws2.serverOpen();
+        ws2.serverSend(credsFor('guest'));               // 新连接拿到凭证后自己入房
+        await settle();
+        const afterReconnect = enters();
+        exits[0]();                                      // 手动重新入房那次离房迟到落定
+        await settle();
+        await settle();
+        return { exits: exits.length, replaced: ws2 !== h.ws, reconnectJoined: afterReconnect > 1, extra: enters() - afterReconnect };
+        """
+    )
+    assert out == {"exits": 2, "replaced": True, "reconnectJoined": True, "extra": 0}

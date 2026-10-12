@@ -500,10 +500,12 @@
     this.rejoinUntil = this.now() + REJOIN_RETRY_WINDOW_MS;
     this.rejoinAttempts = 0;
     var self = this;
+    // 离房期间传输 WS 断开重连：新连接拿到凭证后自己入房，这里迟到的续接不能再入一次（同一实例并发 enterRoom / 换掉新房间）
+    var gen = this.connGen;
     this.stopAllMedia();
     this.adapter.leave().then(function () {
       self.rejoining = false;
-      if (!self.stopped && self.link.ws) self.join();
+      if (!self.stopped && gen === self.connGen && self.link.ws) self.join();
     });
   };
 
@@ -713,6 +715,10 @@
 
   /** 收掉计时器与采集轨、拆适配器；idleWaitMs 是拆之前等在途 SDK 操作的上限（缺省 TEARDOWN_IDLE_WAIT_MS）。 */
   P.teardown = function (idleWaitMs) {
+    // 只做一次：stop 超时收线时浏览器的 onclose 是异步的，它再走离房 → onTerminal → teardown；第二次拆会对着已清空的
+    // 适配器立刻报 cleanup_done，父页据此提前移除 iframe、把第一次还在等的退房 / 断开一起掐掉
+    if (this.tornDown) return;
+    this.tornDown = true;
     this.cancelPublishRetry();
     this.cancelProfileRetry();
     this.cancelRejoinRetry(false);

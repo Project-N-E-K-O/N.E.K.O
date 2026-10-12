@@ -993,3 +993,57 @@ def test_live_hidden_and_away_survive_frame_creation_during_recovery():
     assert out["host"]["hidden"] is True and out["host"]["dim"] not in ("", None)
     assert out["guest"] == {"away": True}
 
+
+
+def test_page_config_recovery_waits_for_the_storage_location_barrier():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        // 哨兵一直没放行（存储位置提示还开着）：不重拉，到截止时间放弃恢复
+        {
+          const h = makeBridge();
+          let reloads = 0;
+          h.ctx.lanlan_config = { lanlan_name: '' };
+          h.ctx.__nekoStorageLocationStartupBarrier = new Promise(() => {});
+          h.ctx.reloadPageConfig = () => { reloads += 1; return Promise.resolve(true); };
+          let result = 'pending';
+          h.bridge.recoverFromPageConfig().then((r) => { result = r; });
+          for (let i = 0; i < 20; i++) await advance(1000);
+          runs.pending = { reloads, result };
+        }
+        // 哨兵被拒绝（存储未批准）：不重拉，直接放弃
+        {
+          const h = makeBridge();
+          let reloads = 0;
+          h.ctx.lanlan_config = { lanlan_name: '' };
+          const rejected = Promise.reject(new Error('declined'));
+          rejected.catch(() => {});
+          h.ctx.__nekoStorageLocationStartupBarrier = rejected;
+          h.ctx.reloadPageConfig = () => { reloads += 1; return Promise.resolve(true); };
+          let result = 'pending';
+          h.bridge.recoverFromPageConfig().then((r) => { result = r; });
+          for (let i = 0; i < 5; i++) await advance(1000);
+          runs.rejected = { reloads, result };
+        }
+        // 哨兵放行后照常重拉
+        {
+          const h = makeBridge();
+          let reloads = 0;
+          let release;
+          h.ctx.lanlan_config = { lanlan_name: '' };
+          h.ctx.__nekoStorageLocationStartupBarrier = new Promise((r) => { release = r; });
+          h.ctx.reloadPageConfig = () => { reloads += 1; return Promise.resolve(true); };
+          h.bridge.recoverFromPageConfig();
+          await advance(2000);
+          const before = reloads;
+          release();
+          await settle();
+          await advance(1000);
+          runs.released = { before, after: reloads > 0 };
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"pending": {"reloads": 0, "result": False}, "rejected": {"reloads": 0, "result": False},
+                   "released": {"before": 0, "after": True}}

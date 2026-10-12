@@ -1102,6 +1102,28 @@
       var delay = backoffMs(attempt);
       if (now() + delay >= deadline) return Promise.resolve(false);
       return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
+        // 存储位置首屏哨兵放行之前不重拉：reloadPageConfig 直接 fetch、不经 startPageConfigLoad 的等待，抢跑会读到
+        // 未批准 / 错误存储位置的角色与模型配置（与 live2d-init.js 的自愈重取一致）。重载恢复在每次打开主页时都会跑，
+        // 和串门开关无关；哨兵被拒绝或到截止时间还没放行就放弃恢复
+        return withTimeout(storageBarrier().then(function () { return true; }, function () { return false; }),
+          Math.max(0, deadline - now()), false);
+      }).then(function (allowed) {
+        if (!allowed) return false;
+        return reloadOnce(deadline).then(function () {
+          return recoverFromPageConfig(attempt + 1, deadline, overall);
+        });
+      });
+    }
+
+    /** 存储位置首屏哨兵（没有就当已放行）。 */
+    function storageBarrier() {
+      var barrier = win.__nekoStorageLocationStartupBarrier;
+      return barrier && typeof barrier.then === 'function' ? Promise.resolve(barrier) : Promise.resolve();
+    }
+
+    /** 重拉一次页面配置：同时只发一个，每次最多等 RELOAD_ATTEMPT_MS（不超过截止时间）。 */
+    function reloadOnce(deadline) {
+      return Promise.resolve().then(function () {
         var reload = win.reloadPageConfig;
         if (typeof reload !== 'function') return null;
         // reloadPageConfig 里的 fetch 没有超时：每次最多等 RELOAD_ATTEMPT_MS（也不超过截止时间）。等超时并不取消它，
@@ -1114,8 +1136,6 @@
         }
         var left = Math.max(0, Math.min(RELOAD_ATTEMPT_MS, deadline - now()));
         return withTimeout(state.reloadInFlight, left, null);
-      }).then(function () {
-        return recoverFromPageConfig(attempt + 1, deadline, overall);
       });
     }
 
