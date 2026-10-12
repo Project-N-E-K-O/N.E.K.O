@@ -5583,7 +5583,9 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             return await _forget_duplicate_after_cancel(
                 lanlan_name, subject, targets, effective_fence, effective_fanout_fences,
             )
-    erase_keys = _erase_subject_keys(subject, targets, erase_targets, forgotten_subject_keys)
+    erase_keys = _erase_subject_keys(
+        subject, targets, erase_targets, forgotten_subject_keys, effective_fanout_fences,
+    )
     # 擦除之前先取消一遍已有的带键暂存 / 记录（此时手上没有任何别的锁，不会与
     # 正在应用的同键请求成环）：之后同键重试只会得到 duplicate，不会在擦除完成、
     # 下面那遍取消扫描到达之前抢先用清除之后的 generation 把旧产物写回
@@ -5642,7 +5644,9 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                 )
             if len(still) != len(erase_targets):
                 erase_targets = still
-                erase_keys = _erase_subject_keys(subject, targets, erase_targets, forgotten_subject_keys)
+                erase_keys = _erase_subject_keys(
+                    subject, targets, erase_targets, forgotten_subject_keys, effective_fanout_fences,
+                )
         if req.forget_epoch is not None:
             # 锁外读围栏之后、拿到擦除锁之前，别的清除可能又抬高了某个 key 的围栏（扇出到它的清除
             # 不受本请求的 forget_fence 保护）：本次擦除在它之后进行，完成标记与取消都按擦除前
@@ -5891,16 +5895,22 @@ async def _targets_still_to_erase(lanlan_name: str, subject, targets, forget_epo
     return pending
 
 
-def _erase_subject_keys(subject, targets, erase_targets, forgotten_subject_keys: set[str]) -> set[str]:
+def _erase_subject_keys(
+    subject, targets, erase_targets, forgotten_subject_keys: set[str], fenced_keys,
+) -> set[str]:
     """Subject keys the cancellation passes match for this erase.
 
-    The whole fan-out for a full erase; for a partial one (the request
-    subject was already erased) the request subject plus the targets erased
-    now, the same set the duplicate path cancels for.
+    The whole fan-out for a full erase. For a partial one (some targets
+    were erased already) the erase scope is narrower, but cancellation is
+    not: the request subject, the targets erased now, and every fan-out
+    target with a comparable fence (``fenced_keys``), the same set the
+    duplicate path cancels for. A pre-forget journal of an already erased
+    target that staged after its marker landed is cancelled too, while a
+    fresh one survives the per-key fence comparison.
     """
     if len(erase_targets) == len(targets):
         return set(forgotten_subject_keys)
-    return {subject.key} | {target.key for target in erase_targets}
+    return {subject.key} | {target.key for target in erase_targets} | set(fenced_keys)
 
 
 def _raise_fanout_fences(tombstones, effective: dict[str, int], at_start: dict[str, int]) -> None:

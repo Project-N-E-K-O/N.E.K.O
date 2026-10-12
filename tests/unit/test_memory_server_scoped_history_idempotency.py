@@ -3579,6 +3579,29 @@ async def test_retry_after_a_partly_recorded_completion_skips_marked_targets(env
     assert _facts_of(env, PART) and env.idem.erased_epoch(_tombstones(env), GROUP_KEY) == 5
 
 
+async def test_partial_retry_still_cancels_a_stale_journal_of_a_completed_target(env):
+    _fan_out_to(env, PART)
+    real_mark = env.idem.mark_tombstone_erased
+
+    async def broken_for_group(name, subject_key, *args, **kwargs):
+        if subject_key == GROUP_KEY:
+            raise OSError("disk full")
+        return await real_mark(name, subject_key, *args, **kwargs)
+
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", broken_for_group)
+    with pytest.raises(HTTPException):
+        await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", real_mark)
+    # PART 的完成标记已落盘之后，一份清除前（代数 1）的 PART 请求落了暂存就崩溃
+    env.llm.responses = [SINGLE_FACTS]
+    await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # 这次只补擦 GROUP，但取消扫描仍覆盖带了代数的 PART：留着明文的旧暂存被取消
+    assert result.get("duplicate") is None
+    assert [s["subject_id"] for s in result["erased_subjects"]] == [GROUP["subject_id"]]
+    assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
+
+
 async def test_fanout_fence_raised_before_the_erase_locks_is_recorded_as_erased(env):
     _fan_out_to(env, PART)
     real_plan = env.routes._targets_still_to_erase
