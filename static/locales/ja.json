@@ -719,6 +719,7 @@
         "occupied": "カメラが他のアプリに占有されています？QRコード/写真アプリを閉じて再試行してください"
     },
     "chat": {
+        "visitBarAriaLabel": "おでかけ",
         "messageReaction": "{{author}} が {{emoji}} でリアクションしました",
         "cardActionFailed": "プラグインの操作に失敗しました",
         "cardActionRunning": "実行中…",
@@ -6641,7 +6642,208 @@
             "persona": "訪問用の自己紹介"
         },
         "stream": {
-            "ttsFallback": "いまは音声が使えないため、この訪問ではテキストで話します"
+            "ttsFallback": "いまは音声が使えないため、この訪問ではテキストで話します",
+            "truncated": "（途中で中断）"
+        },
+        "bar": {
+            "entry": "おでかけ",
+            "invite": "お客さんを招く",
+            "goVisit": "よその家へ行く",
+            "close": "閉じる",
+            "preparingInvite": "招待を準備中…",
+            "joining": "おでかけ準備中…",
+            "waitingGuest": "お客さんを待っています",
+            "guestArriving": "お客さんが向かっています",
+            "atTheDoor": "{{name}} が玄関に来ました",
+            "waitingDoor": "相手が開けてくれるのを待っています",
+            "hosting": "{{name}} が遊びに来ています",
+            "away": "{{name}} の家にいます",
+            "peerHidden": "少し席を外しています",
+            "reconnecting": "接続が不安定です。再接続中",
+            "endingSoon": "そろそろ時間です",
+            "ending": "おひらき中",
+            "inviteCode": "招待コード {{code}}",
+            "copy": "コピー",
+            "copied": "招待コードをコピーしました",
+            "copyFailed": "コピーできませんでした。コードを書き写してください",
+            "seeOff": "お見送りする",
+            "recall": "呼び戻す",
+            "endNow": "今すぐ終わる",
+            "toGuest": "{{name}} へ",
+            "toOwn": "{{name}} へ",
+            "typing": "{{name}} が入力中…"
+        },
+        "common": {
+            "cancel": "キャンセル",
+            "close": "閉じる",
+            "confirmTitle": "確認",
+            "ok": "OK"
+        },
+        "choice": {
+            "expired": "このおでかけの記録は期限切れです",
+            "retryLater": "今はまとめられませんでした。少ししてからもう一度どうぞ"
+        },
+        "details": {
+            "open": "詳細を見る",
+            "title": "このおでかけの詳細",
+            "loading": "読み込み中…",
+            "duration": "時間：{{m}} 分 {{s}} 秒",
+            "freeMinutes": "使った無料分数：{{n}}",
+            "usage": "使用量：入力 {{in}} トークン、出力 {{out}} トークン／音声 {{req}} 回・{{chars}} 文字",
+            "usageNone": "使用量：まだ記録がありません",
+            "uploadedPartial": "今のところ片方の記録しか届いていません",
+            "transcript": "全文記録",
+            "status": {
+                "agree": "両方一致",
+                "onlyHost": "招いた側だけの記録",
+                "onlyGuest": "訪ねた側だけの記録",
+                "differ": "記録が食い違っています"
+            },
+            "hostCopy": "招いた側の記録",
+            "guestCopy": "訪ねた側の記録",
+            "nextPage": "次のページ",
+            "forbidden": "このおでかけの参加者ではないため見られません",
+            "notFound": "このおでかけの記録が見つかりません",
+            "unavailable": "おでかけサービスに接続できません。しばらくしてからお試しください"
+        },
+        "ended": {
+            "body": "おでかけが終わりました",
+            "bodyWith": "{{name}} とのおでかけが終わりました",
+            "more": "その他…"
+        },
+        "error": {
+            "disabled": "「おでかけを許可」がオフです。先に設定でオンにしてください",
+            "generic": "うまくいきませんでした。しばらくしてからお試しください",
+            "unreachable": "ローカルサービスに接続できません",
+            "voiceSession": "音声通話を終えてからおでかけしてください",
+            "alreadyVisiting": "すでにおでかけ中です",
+            "insecure_context": "カスタムのバックエンドアドレスでは https か localhost が必要です"
+        },
+        "export": {
+            "button": "記録を書き出す",
+            "fileTitle": "おでかけの記録",
+            "gone": "端末内のコピーは削除済みです。ログインしてオンラインならクラウドから書き出せます",
+            "incomplete": "クラウドの記録が不完全なため、今は書き出せません",
+            "failed": "書き出しに失敗しました。しばらくしてからお試しください",
+            "ownCat": "うちの子",
+            "peerCat": "相手の子",
+            "ownHuman": "わたし",
+            "peerHuman": "相手の家族"
+        },
+        "input": {
+            "notDelivered": "届きませんでした",
+            "placeholderAway": "おでかけ中です。呼び戻すこともできます",
+            "placeholderWaiting": "お客さんが着いてから話せます",
+            "placeholderReconnecting": "再接続中です。少々お待ちください",
+            "placeholderToGuest": "{{name}} に話しかける…",
+            "placeholderToOwn": "{{name}} に話しかける…"
+        },
+        "invite": {
+            "title": "お客さんが来ました",
+            "body": "{{name}}（{{code}}）が遊びに来ました。迎え入れますか？",
+            "countdown": "{{s}} 秒後に自動でお断りします",
+            "accept": "迎え入れる",
+            "decline": "お断りする",
+            "expired": "応答できる時間が過ぎました"
+        },
+        "join": {
+            "title": "よその家へおでかけ",
+            "codeLabel": "相手からもらった 10 文字の招待コードを入力してください",
+            "codeFormat": "招待コードは英字と数字 2〜7 の 10 文字です",
+            "next": "次へ",
+            "confirmTitle": "おでかけさせますか？",
+            "confirmBody": "{{cat}} を {{host}}（{{code}}）の家へおでかけさせますか？",
+            "crossRegion": "相手は別の地域にいるため、接続が不安定になるかもしれません",
+            "blocked": "この人をブロックしています",
+            "confirm": "おでかけする"
+        },
+        "persona": {
+            "title": "おでかけ用の自己紹介",
+            "intro": "よその家へ行くときに持っていく自己紹介です。あなたの情報は含みません。相手の子はこれを読めて、内容を話すこともあります。",
+            "editHint": "性格や趣味、話し方など、数行で紹介してください",
+            "loading": "読み込み中…",
+            "generating": "おでかけ用の自己紹介を作成中…",
+            "saveConfirm": "保存して確認",
+            "confirm": "確認",
+            "regenerate": "作り直す",
+            "reviewed": "確認済みです。おでかけできます",
+            "cardChanged": "キャラクターカードが変更されています。新しいカードで作り直しますか？",
+            "privateOverlap": "自動生成した自己紹介に私的な内容が混ざりました。ご自身で書いてください",
+            "privateHits": "次の内容は私的な情報のようです。削除してから保存してください：{{hits}}",
+            "privateSections": "元のカードのこの部分はおでかけに持っていきません：",
+            "scanIncomplete": "自動チェックが完全ではありません。私的な情報がないかご自身でも確認してください",
+            "llmUnavailable": "今は自動生成できませんでした。自分で書くか、あとで作り直してください",
+            "tooLong": "長すぎます。短くしてください",
+            "changed": "内容が更新されたため読み直しました。もう一度確認してください",
+            "saveFailed": "保存できませんでした。しばらくしてからお試しください",
+            "unavailable": "おでかけ用の自己紹介を読み込めません。しばらくしてからお試しください",
+            "unknownCatgirl": "このキャラクターが見つかりません",
+            "unreviewed": "おでかけ前に自己紹介を確認してください。確認後におでかけできます"
+        },
+        "preview": {
+            "invalid": "招待コードが無効です",
+            "expired": "招待コードの期限が切れています",
+            "banned": "現在、あなたのおでかけ機能は制限されています",
+            "rateLimited": "試行回数が多すぎます。少し待ってからお試しください",
+            "unreachable": "おでかけサービスに接続できません。しばらくしてからお試しください"
+        },
+        "report": {
+            "button": "通報",
+            "title": "このおでかけを通報",
+            "reason": {
+                "harassment": "嫌がらせ",
+                "sexual": "性的な内容",
+                "privacy": "プライバシーの侵害",
+                "spam": "スパム",
+                "other": "その他"
+            },
+            "notePlaceholder": "補足（任意、500 文字まで）",
+            "includeTranscript": "このおでかけの会話記録を添付する",
+            "submit": "通報する",
+            "done": "通報しました",
+            "doneButton": "通報済み",
+            "queued": "通報を記録しました。ネットワークが戻ると自動で送信します",
+            "queuedButton": "送信待ち",
+            "already": "このおでかけはすでに通報済みです",
+            "persistFailed": "通報を保存できませんでした。もう一度お試しください"
+        },
+        "speaker": {
+            "ownCat": "うちの子",
+            "peerCat": "相手の子",
+            "peerHuman": "相手の家族",
+            "you": "あなた",
+            "toArrow": "{{from}} → {{to}}"
+        },
+        "status": {
+            "VISIT_E_UNAUTHORIZED": "このページではおでかけを使えません（この端末からの直接アクセスのみ対応）",
+            "VISIT_VOICE_UNAVAILABLE": "おでかけ中は音声入力が使えません。文字で入力してください",
+            "VISIT_INPUT_REFUSED_AWAY": "よその家にいるので、ここからの言葉は届きません。呼び戻すことはできます",
+            "VISIT_INPUT_REFUSED_NOT_READY": "お客さんがまだ来ていません。おでかけが始まってから話しましょう",
+            "VISIT_INPUT_REFUSED_RATE": "送信が早すぎます。少し待ってから送ってください",
+            "VISIT_E_BUSY": "今は送れませんでした。文字は入力欄に残っています。少ししてからどうぞ",
+            "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "この端末では今のところおでかけできません",
+            "VISIT_LOGIN_REQUIRED": "おでかけにはコミュニティアカウントへのログインが必要です",
+            "VISIT_BANNED": "現在、あなたのおでかけ機能は制限されています",
+            "VISIT_QUOTA_EXCEEDED": "今日のおでかけ時間を使い切りました",
+            "VISIT_TIER_NOT_ENTITLED": "この画質は利用できません",
+            "VISIT_FORGET_IN_PROGRESS": "おでかけの記憶を消去中です。少ししてからどうぞ",
+            "VISIT_UPLOAD_BACKLOG": "未送信のおでかけ記録があります。オンラインにしてからお試しください",
+            "VISIT_CROSS_REGION_UNSUPPORTED": "地域をまたぐおでかけにはまだ対応していません",
+            "VISIT_INVITE_INVALID": "招待コードが無効か、期限切れです",
+            "VISIT_SERVERS_UNREACHABLE": "おでかけサービスに接続できません。しばらくしてからお試しください",
+            "VISIT_PROTO_MISMATCH": "相手とバージョンが合いません。お互いに更新してください",
+            "VISIT_PEER_IDENTITY_REJECTED": "相手の身元を確認できなかったため、おでかけを取りやめました",
+            "VISIT_PEER_LOST": "相手との接続が切れました",
+            "VISIT_RELAY_LOST": "おでかけの接続が切れました",
+            "VISIT_KICKED": "おでかけはサーバー側で終了されました",
+            "VISIT_INTERRUPTED_LAST_TIME": "前回のおでかけが途中で中断されました",
+            "VISIT_MEMORY_RETRY_LATER": "記憶サービスが混み合っています。あとで自動で再試行します"
+        },
+        "wrapUp": {
+            "badge": "お別れ中",
+            "toastRefused": "お別れの挨拶中なので、このメッセージは送られませんでした",
+            "recallAlready": "もうお別れの挨拶をしています",
+            "composerPlaceholder": "お別れの挨拶中…"
         }
     }
 }

@@ -27,6 +27,9 @@ const messageActionSchema = z.object({
 const textBlockSchema = z.object({
   type: z.literal('text'),
   text: z.string(),
+  // 纯文本渲染（串门台词等不可信来源）：不进 SmartTextBlock / ReactMarkdown，链接 / 图片语法原样显示、
+  // 不加载远程图片。必须在 schema 里声明——z.object 默认剥掉未声明的键，不声明就到不了渲染层
+  plain_text: z.boolean().optional(),
 });
 
 const imageBlockSchema = z.object({
@@ -153,6 +156,22 @@ const choicePromptSchema = z.object({
   options: z.array(choiceOptionSchema).min(1),
   sessionId: z.string().optional(),
   gameType: z.string().optional(),
+}).nullable();
+
+// 串门工具条（compact 输入框上方）：宿主给状态文字与按钮，点按钮回传 id；不含任何业务逻辑
+const visitBarActionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  variant: z.enum(['primary', 'secondary', 'danger']).optional(),
+  disabled: z.boolean().optional(),
+  pressed: z.boolean().optional(),
+});
+
+const visitBarSchema = z.object({
+  badge: z.string().optional(),
+  tone: z.enum(['idle', 'waiting', 'active', 'warning']).optional(),
+  detail: z.string().optional(),
+  actions: z.array(visitBarActionSchema).max(6),
 }).nullable();
 
 const avatarToolMenuOpenRequestSchema = z.object({
@@ -367,6 +386,11 @@ export const chatWindowPropsSchema = z.object({
     .args()
     .returns(z.void())
     .optional(),
+  visitBar: visitBarSchema.optional(),
+  onVisitBarAction: z.function()
+    .args(z.string())
+    .returns(z.void())
+    .optional(),
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),
   onChoiceSelect: z.function()
@@ -393,6 +417,8 @@ export type TheaterPresentation = z.infer<typeof theaterPresentationSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];
+export type VisitBar = NonNullable<z.infer<typeof visitBarSchema>>;
+export type VisitBarAction = z.infer<typeof visitBarActionSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type MessageReaction = z.infer<typeof messageReactionSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;

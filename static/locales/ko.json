@@ -719,6 +719,7 @@
         "occupied": "카메라가 다른 앱에 의해 사용 중입니다. QR코드/사진 앱을 닫고 다시 시도하세요"
     },
     "chat": {
+        "visitBarAriaLabel": "방문",
         "messageReaction": "{{author}}님이 {{emoji}}로 반응했습니다",
         "cardActionFailed": "플러그인 작업 실패",
         "cardActionRunning": "실행 중…",
@@ -6641,7 +6642,208 @@
             "persona": "방문용 자기소개"
         },
         "stream": {
-            "ttsFallback": "지금은 음성을 쓸 수 없어서 이번 방문에서는 글로 이야기해요"
+            "ttsFallback": "지금은 음성을 쓸 수 없어서 이번 방문에서는 글로 이야기해요",
+            "truncated": "(중간에 끊김)"
+        },
+        "bar": {
+            "entry": "방문",
+            "invite": "손님 초대",
+            "goVisit": "다른 집 방문",
+            "close": "닫기",
+            "preparingInvite": "초대를 준비하는 중…",
+            "joining": "나가는 중…",
+            "waitingGuest": "손님을 기다리는 중",
+            "guestArriving": "손님이 오는 중",
+            "atTheDoor": "{{name}}이(가) 문 앞에 왔어요",
+            "waitingDoor": "상대가 문을 열어주길 기다리는 중",
+            "hosting": "{{name}}이(가) 놀러 와 있어요",
+            "away": "{{name}}네 집에 가 있어요",
+            "peerHidden": "잠깐 자리를 비웠어요",
+            "reconnecting": "연결이 불안정해 다시 연결하는 중",
+            "endingSoon": "곧 시간이 다 돼요",
+            "ending": "마무리하는 중",
+            "inviteCode": "초대 코드 {{code}}",
+            "copy": "복사",
+            "copied": "초대 코드를 복사했어요",
+            "copyFailed": "복사하지 못했어요. 코드를 직접 적어 주세요",
+            "seeOff": "손님 배웅하기",
+            "recall": "집으로 부르기",
+            "endNow": "지금 끝내기",
+            "toGuest": "{{name}}에게",
+            "toOwn": "{{name}}에게",
+            "typing": "{{name}}이(가) 입력 중…"
+        },
+        "common": {
+            "cancel": "취소",
+            "close": "닫기",
+            "confirmTitle": "확인",
+            "ok": "확인"
+        },
+        "choice": {
+            "expired": "이번 방문 기록은 기한이 지났어요",
+            "retryLater": "지금은 정리하지 못했어요. 잠시 뒤 다시 눌러 주세요"
+        },
+        "details": {
+            "open": "자세히 보기",
+            "title": "이번 방문 상세",
+            "loading": "불러오는 중…",
+            "duration": "시간: {{m}}분 {{s}}초",
+            "freeMinutes": "사용한 무료 시간(분): {{n}}",
+            "usage": "사용량: 입력 {{in}} 토큰, 출력 {{out}} 토큰 / 음성 {{req}}회, {{chars}}자",
+            "usageNone": "사용량: 아직 기록이 없어요",
+            "uploadedPartial": "아직 한쪽 기록만 올라왔어요",
+            "transcript": "전체 대화 기록",
+            "status": {
+                "agree": "양쪽 일치",
+                "onlyHost": "초대한 쪽만 기록함",
+                "onlyGuest": "방문한 쪽만 기록함",
+                "differ": "양쪽 기록이 달라요"
+            },
+            "hostCopy": "초대한 쪽 기록",
+            "guestCopy": "방문한 쪽 기록",
+            "nextPage": "다음 페이지",
+            "forbidden": "이 방문의 참여자가 아니라서 볼 수 없어요",
+            "notFound": "이 방문 기록을 찾을 수 없어요",
+            "unavailable": "방문 서비스에 연결할 수 없어요. 잠시 후 다시 시도해 주세요"
+        },
+        "ended": {
+            "body": "방문이 끝났어요",
+            "bodyWith": "{{name}}와(과)의 방문이 끝났어요",
+            "more": "더보기…"
+        },
+        "error": {
+            "disabled": "'방문 허용'이 꺼져 있어요. 먼저 설정에서 켜 주세요",
+            "generic": "완료하지 못했어요. 잠시 후 다시 시도해 주세요",
+            "unreachable": "로컬 서비스에 연결할 수 없어요",
+            "voiceSession": "음성 대화를 끝낸 뒤 방문해 주세요",
+            "alreadyVisiting": "이미 방문 중이에요",
+            "insecure_context": "사용자 지정 백엔드 주소는 https 또는 localhost여야 방문할 수 있어요"
+        },
+        "export": {
+            "button": "대화 기록 내보내기",
+            "fileTitle": "방문 대화 기록",
+            "gone": "기기 사본이 정리됐어요. 로그인 후 온라인 상태에서 클라우드로 내보낼 수 있어요",
+            "incomplete": "클라우드 기록이 완전하지 않아 지금은 내보낼 수 없어요",
+            "failed": "내보내지 못했어요. 잠시 후 다시 시도해 주세요",
+            "ownCat": "우리 집 고양이 소녀",
+            "peerCat": "상대 집 고양이 소녀",
+            "ownHuman": "나",
+            "peerHuman": "상대 가족"
+        },
+        "input": {
+            "notDelivered": "전달되지 않음",
+            "placeholderAway": "지금 방문 중이에요. 집으로 부를 수 있어요",
+            "placeholderWaiting": "손님이 도착하면 대화할 수 있어요",
+            "placeholderReconnecting": "다시 연결하는 중이에요. 잠시만요",
+            "placeholderToGuest": "{{name}}에게 말하기…",
+            "placeholderToOwn": "{{name}}에게 말하기…"
+        },
+        "invite": {
+            "title": "손님이 왔어요",
+            "body": "{{name}}({{code}})이(가) 놀러 왔어요. 맞이할까요?",
+            "countdown": "{{s}}초 뒤 자동으로 거절돼요",
+            "accept": "맞이하기",
+            "decline": "거절하기",
+            "expired": "응답할 수 있는 시간이 지났어요"
+        },
+        "join": {
+            "title": "다른 집 방문하기",
+            "codeLabel": "받은 10자리 초대 코드를 입력해 주세요",
+            "codeFormat": "초대 코드는 영문자와 숫자 2–7로 된 10자리예요",
+            "next": "다음",
+            "confirmTitle": "외출시킬까요?",
+            "confirmBody": "{{cat}}을(를) {{host}}({{code}})네 집에 보낼까요?",
+            "crossRegion": "상대가 다른 지역에 있어 연결이 불안정할 수 있어요",
+            "blocked": "이 사람을 차단했어요",
+            "confirm": "보내기"
+        },
+        "persona": {
+            "title": "방문용 자기소개",
+            "intro": "다른 집에 갈 때 가져가는 자기소개예요. 당신에 대한 정보는 들어 있지 않아요. 상대 고양이 소녀가 볼 수 있고 내용을 말할 수도 있어요.",
+            "editHint": "성격, 취미, 말투 등을 몇 줄로 소개해 주세요",
+            "loading": "불러오는 중…",
+            "generating": "방문용 자기소개를 쓰는 중…",
+            "saveConfirm": "저장하고 확인",
+            "confirm": "확인",
+            "regenerate": "다시 생성",
+            "reviewed": "확인됐어요. 방문할 수 있어요",
+            "cardChanged": "캐릭터 카드가 바뀌었어요. 새 카드로 다시 생성할까요?",
+            "privateOverlap": "자동 생성된 자기소개에 개인적인 내용이 섞였어요. 직접 써 주세요",
+            "privateHits": "개인 정보로 보이는 내용이 있어요. 지운 뒤 다시 저장해 주세요: {{hits}}",
+            "privateSections": "원래 카드의 이 부분은 가져가지 않아요:",
+            "scanIncomplete": "자동 검사가 완전하지 않아요. 개인 정보가 없는지 직접 한 번 더 봐 주세요",
+            "llmUnavailable": "지금은 자동 생성하지 못했어요. 직접 쓰거나 나중에 다시 생성해 주세요",
+            "tooLong": "너무 길어요. 조금 줄여 주세요",
+            "changed": "방금 내용이 바뀌어서 다시 불러왔어요. 한 번 더 확인해 주세요",
+            "saveFailed": "저장하지 못했어요. 잠시 후 다시 시도해 주세요",
+            "unavailable": "방문용 자기소개를 불러오지 못했어요. 잠시 후 다시 시도해 주세요",
+            "unknownCatgirl": "이 캐릭터를 찾을 수 없어요",
+            "unreviewed": "방문 전에 자기소개를 먼저 확인해 주세요. 확인해야 방문할 수 있어요"
+        },
+        "preview": {
+            "invalid": "유효하지 않은 초대 코드예요",
+            "expired": "초대 코드가 만료됐어요",
+            "banned": "현재 방문 기능이 제한되어 있어요",
+            "rateLimited": "너무 자주 시도했어요. 잠시 후 다시 해 주세요",
+            "unreachable": "방문 서비스에 연결할 수 없어요. 잠시 후 다시 시도해 주세요"
+        },
+        "report": {
+            "button": "신고",
+            "title": "이 방문 신고하기",
+            "reason": {
+                "harassment": "괴롭힘",
+                "sexual": "성적인 내용",
+                "privacy": "사생활 침해",
+                "spam": "스팸",
+                "other": "기타"
+            },
+            "notePlaceholder": "추가 설명(선택, 최대 500자)",
+            "includeTranscript": "이번 방문 대화 기록 첨부",
+            "submit": "신고 제출",
+            "done": "신고가 접수됐어요",
+            "doneButton": "신고함",
+            "queued": "신고를 기록했어요. 네트워크가 돌아오면 자동으로 제출돼요",
+            "queuedButton": "대기 중",
+            "already": "이 방문은 이미 신고했어요",
+            "persistFailed": "신고를 저장하지 못했어요. 다시 시도해 주세요"
+        },
+        "speaker": {
+            "ownCat": "우리 아이",
+            "peerCat": "상대 집 고양이 소녀",
+            "peerHuman": "상대 가족",
+            "you": "나",
+            "toArrow": "{{from}} → {{to}}"
+        },
+        "status": {
+            "VISIT_E_UNAUTHORIZED": "이 페이지에서는 방문 기능을 쓸 수 없어요(이 기기에서 직접 접속할 때만 지원)",
+            "VISIT_VOICE_UNAVAILABLE": "방문 중에는 음성 입력을 쓸 수 없어요. 글자로 입력해 주세요",
+            "VISIT_INPUT_REFUSED_AWAY": "다른 집에 가 있어서 여기서 한 말은 전달되지 않아요. 집으로 부를 수 있어요",
+            "VISIT_INPUT_REFUSED_NOT_READY": "아직 손님이 오지 않았어요. 방문이 시작되면 이야기해요",
+            "VISIT_INPUT_REFUSED_RATE": "너무 빨리 보내고 있어요. 잠시 후 보내 주세요",
+            "VISIT_E_BUSY": "지금은 보내지 못했어요. 글은 입력창에 남아 있으니 잠시 후 다시 보내 주세요",
+            "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "이 기기에서는 지금 방문 기능을 쓸 수 없어요",
+            "VISIT_LOGIN_REQUIRED": "방문하려면 커뮤니티 계정에 로그인해 주세요",
+            "VISIT_BANNED": "현재 방문 기능이 제한되어 있어요",
+            "VISIT_QUOTA_EXCEEDED": "오늘 방문 시간을 다 썼어요",
+            "VISIT_TIER_NOT_ENTITLED": "이 화질은 사용할 수 없어요",
+            "VISIT_FORGET_IN_PROGRESS": "방문 기억을 지우는 중이에요. 조금 뒤에 방문해 주세요",
+            "VISIT_UPLOAD_BACKLOG": "아직 올라가지 않은 방문 기록이 있어요. 온라인 상태에서 다시 해 주세요",
+            "VISIT_CROSS_REGION_UNSUPPORTED": "다른 지역 간 방문은 아직 지원하지 않아요",
+            "VISIT_INVITE_INVALID": "초대 코드가 유효하지 않거나 만료됐어요",
+            "VISIT_SERVERS_UNREACHABLE": "방문 서비스에 연결할 수 없어요. 잠시 후 다시 시도해 주세요",
+            "VISIT_PROTO_MISMATCH": "상대와 버전이 호환되지 않아요. 둘 다 업데이트해 주세요",
+            "VISIT_PEER_IDENTITY_REJECTED": "상대의 신원을 확인하지 못해 방문을 취소했어요",
+            "VISIT_PEER_LOST": "상대와 연결이 끊겼어요",
+            "VISIT_RELAY_LOST": "방문 연결이 끊겼어요",
+            "VISIT_KICKED": "서버에서 방문을 종료했어요",
+            "VISIT_INTERRUPTED_LAST_TIME": "지난 방문이 예기치 않게 중단됐어요",
+            "VISIT_MEMORY_RETRY_LATER": "기억 서비스가 바빠요. 잠시 후 자동으로 다시 시도해요"
+        },
+        "wrapUp": {
+            "badge": "작별 인사 중",
+            "toastRefused": "작별 인사 중이라 이 메시지는 보내지 않았어요",
+            "recallAlready": "이미 작별 인사를 하고 있어요",
+            "composerPlaceholder": "작별 인사 중…"
         }
     }
 }

@@ -719,6 +719,7 @@
         "occupied": "¿La cámara está ocupada por otra aplicación? Cierra las aplicaciones de códigos QR/fotos e inténtalo de nuevo."
     },
     "chat": {
+        "visitBarAriaLabel": "Visita",
         "messageReaction": "{{author}} reaccionó con {{emoji}}",
         "cardActionFailed": "Error en la acción del plugin",
         "cardActionRunning": "Ejecutando…",
@@ -6641,7 +6642,208 @@
             "persona": "Presentación para visitas"
         },
         "stream": {
-            "ttsFallback": "La voz no está disponible ahora; en esta visita hablará por texto"
+            "ttsFallback": "La voz no está disponible ahora; en esta visita hablará por texto",
+            "truncated": "(interrumpido)"
+        },
+        "bar": {
+            "entry": "Visitas",
+            "invite": "Invitar a alguien",
+            "goVisit": "Ir de visita",
+            "close": "Cerrar",
+            "preparingInvite": "Preparando la invitación…",
+            "joining": "Saliendo…",
+            "waitingGuest": "Esperando visita",
+            "guestArriving": "La visita está en camino",
+            "atTheDoor": "{{name}} está en la puerta",
+            "waitingDoor": "Esperando a que abran",
+            "hosting": "{{name}} está de visita",
+            "away": "Está en casa de {{name}}",
+            "peerHidden": "Se ausentó un momento",
+            "reconnecting": "Conexión inestable, reconectando",
+            "endingSoon": "Ya casi es hora",
+            "ending": "Terminando",
+            "inviteCode": "Código de invitación {{code}}",
+            "copy": "Copiar",
+            "copied": "Código copiado",
+            "copyFailed": "No se pudo copiar. Anota el código a mano",
+            "seeOff": "Despedir a la visita",
+            "recall": "Llamarla a casa",
+            "endNow": "Terminar ya",
+            "toGuest": "Para {{name}}",
+            "toOwn": "Para {{name}}",
+            "typing": "{{name}} está escribiendo…"
+        },
+        "common": {
+            "cancel": "Cancelar",
+            "close": "Cerrar",
+            "confirmTitle": "Confirmar",
+            "ok": "Aceptar"
+        },
+        "choice": {
+            "expired": "El registro de esta visita ha caducado",
+            "retryLater": "No se pudo preparar ahora. Inténtalo de nuevo en un momento"
+        },
+        "details": {
+            "open": "Ver detalles",
+            "title": "Detalles de la visita",
+            "loading": "Cargando…",
+            "duration": "Duración: {{m}} min {{s}} s",
+            "freeMinutes": "Minutos gratuitos usados: {{n}}",
+            "usage": "Uso: {{in}} tokens de entrada, {{out}} de salida; voz {{req}} solicitudes, {{chars}} caracteres",
+            "usageNone": "Uso: aún sin registro",
+            "uploadedPartial": "Por ahora solo se ha subido el registro de una parte",
+            "transcript": "Transcripción completa",
+            "status": {
+                "agree": "Coinciden",
+                "onlyHost": "Solo lo registró quien invitó",
+                "onlyGuest": "Solo lo registró quien visitó",
+                "differ": "Los registros difieren"
+            },
+            "hostCopy": "Registro de quien invitó",
+            "guestCopy": "Registro de quien visitó",
+            "nextPage": "Página siguiente",
+            "forbidden": "No participaste en esta visita, así que no puedes verla",
+            "notFound": "No se encontró el registro de esta visita",
+            "unavailable": "No se puede conectar con el servicio de visitas. Inténtalo más tarde"
+        },
+        "ended": {
+            "body": "La visita ha terminado",
+            "bodyWith": "La visita con {{name}} ha terminado",
+            "more": "Más…"
+        },
+        "error": {
+            "disabled": "\"Permitir visitas\" está desactivado. Actívalo primero en Ajustes",
+            "generic": "No se pudo completar. Inténtalo más tarde",
+            "unreachable": "No se puede conectar con el servicio local",
+            "voiceSession": "Termina la llamada de voz antes de la visita",
+            "alreadyVisiting": "Ya está de visita",
+            "insecure_context": "Con una dirección de backend personalizada, las visitas requieren https o localhost"
+        },
+        "export": {
+            "button": "Exportar transcripción",
+            "fileTitle": "Transcripción de la visita",
+            "gone": "La copia local ya se borró. Inicia sesión y conéctate para exportarla desde la nube",
+            "incomplete": "El registro en la nube está incompleto y no se puede exportar ahora",
+            "failed": "No se pudo exportar. Inténtalo más tarde",
+            "ownCat": "Mi chica gato",
+            "peerCat": "Su chica gato",
+            "ownHuman": "Yo",
+            "peerHuman": "Su familia"
+        },
+        "input": {
+            "notDelivered": "No entregado",
+            "placeholderAway": "Está de visita. Puedes llamarla a casa",
+            "placeholderWaiting": "Podrás hablar cuando llegue la visita",
+            "placeholderReconnecting": "Reconectando, un momento",
+            "placeholderToGuest": "Dile algo a {{name}}…",
+            "placeholderToOwn": "Dile algo a {{name}}…"
+        },
+        "invite": {
+            "title": "Ha llegado una visita",
+            "body": "{{name}} ({{code}}) vino de visita. ¿La recibes?",
+            "countdown": "Se rechazará automáticamente en {{s}} s",
+            "accept": "Recibir",
+            "decline": "Rechazar",
+            "expired": "Ya pasó el tiempo para responder"
+        },
+        "join": {
+            "title": "Ir de visita",
+            "codeLabel": "Escribe el código de invitación de 10 caracteres",
+            "codeFormat": "El código tiene 10 caracteres: letras y los dígitos 2–7",
+            "next": "Siguiente",
+            "confirmTitle": "¿La dejas ir?",
+            "confirmBody": "¿Dejas que {{cat}} visite a {{host}} ({{code}})?",
+            "crossRegion": "Está en otra región; la conexión puede ser menos estable",
+            "blocked": "Has bloqueado a esta persona",
+            "confirm": "Ir"
+        },
+        "persona": {
+            "title": "Presentación para visitas",
+            "intro": "Es la presentación que lleva cuando va de visita. No incluye nada sobre ti. La otra chica gato puede verla y repetir su contenido.",
+            "editHint": "Unas líneas sobre ella: personalidad, aficiones, forma de hablar",
+            "loading": "Cargando…",
+            "generating": "Escribiendo su presentación para visitas…",
+            "saveConfirm": "Guardar y confirmar",
+            "confirm": "Confirmar",
+            "regenerate": "Regenerar",
+            "reviewed": "Confirmado. Ya puede ir de visita",
+            "cardChanged": "La ficha del personaje cambió. ¿Regenerar con la nueva?",
+            "privateOverlap": "La presentación generada incluyó datos privados. Escribe una tú",
+            "privateHits": "Esto parece información privada. Quítalo y vuelve a guardar: {{hits}}",
+            "privateSections": "Estas partes de la ficha original se quedan en casa:",
+            "scanIncomplete": "La revisión automática no fue completa. Revisa tú si hay datos privados",
+            "llmUnavailable": "No se pudo generar ahora. Escríbela tú o regenérala más tarde",
+            "tooLong": "Es demasiado largo. Acórtalo un poco",
+            "changed": "Se acaba de actualizar y se volvió a cargar. Confirma otra vez",
+            "saveFailed": "No se pudo guardar. Inténtalo más tarde",
+            "unavailable": "No se pudo cargar la presentación. Inténtalo más tarde",
+            "unknownCatgirl": "No se encontró este personaje",
+            "unreviewed": "Revisa primero su presentación; podrá ir de visita cuando la confirmes"
+        },
+        "preview": {
+            "invalid": "El código de invitación no es válido",
+            "expired": "El código de invitación caducó",
+            "banned": "Las visitas están restringidas en tu cuenta por ahora",
+            "rateLimited": "Demasiados intentos. Espera un poco",
+            "unreachable": "No se puede conectar con el servicio de visitas. Inténtalo más tarde"
+        },
+        "report": {
+            "button": "Denunciar",
+            "title": "Denunciar esta visita",
+            "reason": {
+                "harassment": "Acoso",
+                "sexual": "Contenido sexual",
+                "privacy": "Violación de la privacidad",
+                "spam": "Spam",
+                "other": "Otro"
+            },
+            "notePlaceholder": "Detalles (opcional, hasta 500 caracteres)",
+            "includeTranscript": "Adjuntar la transcripción de esta visita",
+            "submit": "Enviar denuncia",
+            "done": "Denuncia enviada",
+            "doneButton": "Denunciado",
+            "queued": "Denuncia guardada. Se enviará automáticamente cuando vuelva la conexión",
+            "queuedButton": "En cola",
+            "already": "Esta visita ya fue denunciada",
+            "persistFailed": "No se pudo guardar la denuncia. Inténtalo de nuevo"
+        },
+        "speaker": {
+            "ownCat": "Ella",
+            "peerCat": "Su chica gato",
+            "peerHuman": "Su familia",
+            "you": "Tú",
+            "toArrow": "{{from}} → {{to}}"
+        },
+        "status": {
+            "VISIT_E_UNAUTHORIZED": "Esta página no puede usar las visitas (solo acceso local)",
+            "VISIT_VOICE_UNAVAILABLE": "Durante las visitas no hay entrada de voz. Escribe",
+            "VISIT_INPUT_REFUSED_AWAY": "Está de visita y lo que digas aquí no le llega. Puedes llamarla a casa",
+            "VISIT_INPUT_REFUSED_NOT_READY": "La visita aún no llegó. Espera a que empiece",
+            "VISIT_INPUT_REFUSED_RATE": "Demasiados mensajes seguidos. Espera un momento",
+            "VISIT_E_BUSY": "No se pudo enviar ahora. Tu texto sigue en el cuadro; inténtalo luego",
+            "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "Este dispositivo no admite visitas por ahora",
+            "VISIT_LOGIN_REQUIRED": "Inicia sesión en tu cuenta de la comunidad para visitar",
+            "VISIT_BANNED": "Las visitas están restringidas en tu cuenta por ahora",
+            "VISIT_QUOTA_EXCEEDED": "Ya usaste el tiempo de visitas de hoy",
+            "VISIT_TIER_NOT_ENTITLED": "Este nivel de calidad no está disponible",
+            "VISIT_FORGET_IN_PROGRESS": "Se están borrando los recuerdos de visitas. Inténtalo en un rato",
+            "VISIT_UPLOAD_BACKLOG": "Hay registros de visitas sin subir. Conéctate y vuelve a intentarlo",
+            "VISIT_CROSS_REGION_UNSUPPORTED": "Aún no se admiten visitas entre regiones",
+            "VISIT_INVITE_INVALID": "El código de invitación no es válido o caducó",
+            "VISIT_SERVERS_UNREACHABLE": "No se puede conectar con el servicio de visitas. Inténtalo más tarde",
+            "VISIT_PROTO_MISMATCH": "Las versiones no son compatibles. Actualicen los dos",
+            "VISIT_PEER_IDENTITY_REJECTED": "No se pudo verificar la identidad de la otra parte; la visita se canceló",
+            "VISIT_PEER_LOST": "Se perdió la conexión con la otra parte",
+            "VISIT_RELAY_LOST": "Se perdió la conexión de la visita",
+            "VISIT_KICKED": "El servidor terminó la visita",
+            "VISIT_INTERRUPTED_LAST_TIME": "La última visita se interrumpió inesperadamente",
+            "VISIT_MEMORY_RETRY_LATER": "El servicio de memoria está ocupado; se reintentará solo"
+        },
+        "wrapUp": {
+            "badge": "Despidiéndose",
+            "toastRefused": "Se están despidiendo; este mensaje no se envió",
+            "recallAlready": "Ya se están despidiendo",
+            "composerPlaceholder": "Despidiéndose…"
         }
     }
 }

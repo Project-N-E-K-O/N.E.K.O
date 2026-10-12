@@ -719,6 +719,7 @@
         "occupied": "攝影機被其他應用程式佔用？關閉掃碼/拍照應用程式後重試"
     },
     "chat": {
+        "visitBarAriaLabel": "串門",
         "messageReaction": "{{author}} 貼了 {{emoji}}",
         "cardActionFailed": "外掛操作失敗",
         "cardActionRunning": "正在執行…",
@@ -6641,7 +6642,208 @@
             "persona": "串門自我介紹"
         },
         "stream": {
-            "ttsFallback": "語音暫時無法使用，這場串門她先用文字說話"
+            "ttsFallback": "語音暫時無法使用，這場串門她先用文字說話",
+            "truncated": "（被打斷）"
+        },
+        "bar": {
+            "entry": "串門",
+            "invite": "邀請客人",
+            "goVisit": "去別人家",
+            "close": "收起",
+            "preparingInvite": "正在準備邀請…",
+            "joining": "正在出門…",
+            "waitingGuest": "等客人來",
+            "guestArriving": "客人在路上",
+            "atTheDoor": "{{name}} 到門口了",
+            "waitingDoor": "等對方開門",
+            "hosting": "{{name}} 在做客",
+            "away": "她在 {{name}} 家",
+            "peerHidden": "離開了一下",
+            "reconnecting": "連線不穩，正在重新連線",
+            "endingSoon": "快到時間了",
+            "ending": "正在收尾",
+            "inviteCode": "邀請碼 {{code}}",
+            "copy": "複製",
+            "copied": "邀請碼已複製",
+            "copyFailed": "沒能複製，請手動抄下邀請碼",
+            "seeOff": "送客",
+            "recall": "叫她回來",
+            "endNow": "立即結束",
+            "toGuest": "傳給 {{name}}",
+            "toOwn": "傳給 {{name}}",
+            "typing": "{{name}} 正在輸入…"
+        },
+        "common": {
+            "cancel": "取消",
+            "close": "關閉",
+            "confirmTitle": "確認",
+            "ok": "確定"
+        },
+        "choice": {
+            "expired": "這次串門的紀錄已經過期了",
+            "retryLater": "這會兒沒整理出來，稍後再點一次"
+        },
+        "details": {
+            "open": "查看詳情",
+            "title": "這場串門的詳情",
+            "loading": "正在讀取…",
+            "duration": "時長：{{m}} 分 {{s}} 秒",
+            "freeMinutes": "扣減的免費分鐘：{{n}}",
+            "usage": "用量：輸入 {{in}} tokens，輸出 {{out}} tokens；語音 {{req}} 次、{{chars}} 字",
+            "usageNone": "用量：暫無紀錄",
+            "uploadedPartial": "目前只有一方的紀錄傳上來了",
+            "transcript": "完整逐字稿",
+            "status": {
+                "agree": "兩邊一致",
+                "onlyHost": "只有邀請方紀錄了",
+                "onlyGuest": "只有來訪方紀錄了",
+                "differ": "兩邊紀錄不同"
+            },
+            "hostCopy": "邀請方紀錄",
+            "guestCopy": "來訪方紀錄",
+            "nextPage": "下一頁",
+            "forbidden": "你不是這場串門的參與者，無法查看",
+            "notFound": "找不到這場串門的紀錄",
+            "unavailable": "暫時連不上串門服務，稍後再試"
+        },
+        "ended": {
+            "body": "這場串門結束了",
+            "bodyWith": "和 {{name}} 的串門結束了",
+            "more": "更多…"
+        },
+        "error": {
+            "disabled": "「允許串門」還沒有開啟，請先到設定開啟",
+            "generic": "沒能完成，請稍後再試",
+            "unreachable": "連不上本機服務",
+            "voiceSession": "先結束語音通話再串門",
+            "alreadyVisiting": "她已經在串門了",
+            "insecure_context": "自訂後端位址需要 https 或 localhost 才能串門"
+        },
+        "export": {
+            "button": "匯出逐字稿",
+            "fileTitle": "串門逐字稿",
+            "gone": "本機副本已清理，登入並連網後可從雲端匯出",
+            "incomplete": "雲端紀錄不完整，暫時無法匯出",
+            "failed": "匯出失敗，請稍後再試",
+            "ownCat": "我家貓娘",
+            "peerCat": "對方的貓娘",
+            "ownHuman": "我",
+            "peerHuman": "對方的家人"
+        },
+        "input": {
+            "notDelivered": "未送達",
+            "placeholderAway": "她出門了，可以叫她回來",
+            "placeholderWaiting": "等客人到了才能說話",
+            "placeholderReconnecting": "正在重新連線，稍等一下",
+            "placeholderToGuest": "對 {{name}} 說…",
+            "placeholderToOwn": "對 {{name}} 說…"
+        },
+        "invite": {
+            "title": "有客人來了",
+            "body": "{{name}}（{{code}}）來串門了，要接待嗎？",
+            "countdown": "{{s}} 秒後自動婉拒",
+            "accept": "接待",
+            "decline": "婉拒",
+            "expired": "接待時間已經過了"
+        },
+        "join": {
+            "title": "去別人家串門",
+            "codeLabel": "輸入對方給你的 10 位邀請碼",
+            "codeFormat": "邀請碼是 10 位，由字母和數字 2–7 組成",
+            "next": "下一步",
+            "confirmTitle": "讓她出門嗎？",
+            "confirmBody": "讓 {{cat}} 去 {{host}}（{{code}}）家串門？",
+            "crossRegion": "對方在另一個地區，連線可能不太穩定",
+            "blocked": "你已封鎖此人",
+            "confirm": "出門"
+        },
+        "persona": {
+            "title": "串門自我介紹",
+            "intro": "這是她去別人家時帶的自我介紹，不含你的資訊；對方的貓娘看得到，也可能轉述其中內容。",
+            "editHint": "用幾句話介紹她自己：個性、喜好、說話的樣子",
+            "loading": "正在讀取…",
+            "generating": "正在為她寫串門自我介紹…",
+            "saveConfirm": "儲存並確認",
+            "confirm": "確認",
+            "regenerate": "重新產生",
+            "reviewed": "已確認，可以去串門",
+            "cardChanged": "角色卡已經改過，要依新卡重新產生嗎？",
+            "privateOverlap": "自動產生的自我介紹裡混進了私人內容，請自己寫一段",
+            "privateHits": "這些內容像是私人資訊，請刪掉再儲存：{{hits}}",
+            "privateSections": "這些原卡內容不會帶出門：",
+            "scanIncomplete": "自動檢查不完整，請自己再看一遍有沒有私人資訊",
+            "llmUnavailable": "暫時沒能自動產生，可以自己寫，也可以稍後重新產生",
+            "tooLong": "太長了，請寫短一點",
+            "changed": "這段內容剛剛被更新過，已重新讀取，請再確認一次",
+            "saveFailed": "沒能儲存，請稍後再試",
+            "unavailable": "暫時讀不到串門自我介紹，稍後再試",
+            "unknownCatgirl": "找不到這個角色",
+            "unreviewed": "出門前先看一眼她的串門自我介紹，確認後才能串門"
+        },
+        "preview": {
+            "invalid": "邀請碼無效",
+            "expired": "邀請碼已過期",
+            "banned": "你的串門功能暫時受限",
+            "rateLimited": "試得太頻繁了，過一會兒再試",
+            "unreachable": "暫時連不上串門服務，稍後再試"
+        },
+        "report": {
+            "button": "檢舉",
+            "title": "檢舉這場串門",
+            "reason": {
+                "harassment": "騷擾",
+                "sexual": "色情內容",
+                "privacy": "侵犯隱私",
+                "spam": "垃圾訊息",
+                "other": "其他"
+            },
+            "notePlaceholder": "補充說明（選填，最多 500 字）",
+            "includeTranscript": "附上這場的對話紀錄",
+            "submit": "送出檢舉",
+            "done": "檢舉已送出",
+            "doneButton": "已檢舉",
+            "queued": "檢舉已記錄，網路恢復後自動送出",
+            "queuedButton": "已排隊",
+            "already": "這場已經檢舉過了",
+            "persistFailed": "檢舉沒能儲存，請重試"
+        },
+        "speaker": {
+            "ownCat": "她",
+            "peerCat": "對方的貓娘",
+            "peerHuman": "對方的家人",
+            "you": "你",
+            "toArrow": "{{from}} → {{to}}"
+        },
+        "status": {
+            "VISIT_E_UNAUTHORIZED": "這個頁面沒有串門權限（只支援本機直接存取）",
+            "VISIT_VOICE_UNAVAILABLE": "串門時不能用語音輸入，請打字",
+            "VISIT_INPUT_REFUSED_AWAY": "她在別人家做客，這裡說的話傳不過去；可以叫她回來",
+            "VISIT_INPUT_REFUSED_NOT_READY": "客人還沒到，等串門開始再說吧",
+            "VISIT_INPUT_REFUSED_RATE": "說得太快了，歇一會兒再傳",
+            "VISIT_E_BUSY": "這會兒傳不出去，文字還在輸入框裡，稍後再試",
+            "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "這台裝置暫時不支援串門",
+            "VISIT_LOGIN_REQUIRED": "串門需要先登入社群帳號",
+            "VISIT_BANNED": "你的串門功能暫時受限",
+            "VISIT_QUOTA_EXCEEDED": "今天的串門時間用完了",
+            "VISIT_TIER_NOT_ENTITLED": "這個畫質等級暫不可用",
+            "VISIT_FORGET_IN_PROGRESS": "正在清除串門記憶，稍後再串門",
+            "VISIT_UPLOAD_BACKLOG": "有串門紀錄還沒傳上去，連網後再來",
+            "VISIT_CROSS_REGION_UNSUPPORTED": "暫不支援跨地區串門",
+            "VISIT_INVITE_INVALID": "邀請碼無效或已過期",
+            "VISIT_SERVERS_UNREACHABLE": "暫時連不上串門服務，稍後再試",
+            "VISIT_PROTO_MISMATCH": "對方版本不相容，請雙方更新",
+            "VISIT_PEER_IDENTITY_REJECTED": "沒能確認對方的身分，串門已取消",
+            "VISIT_PEER_LOST": "和對方中斷了連線",
+            "VISIT_RELAY_LOST": "串門連線中斷了",
+            "VISIT_KICKED": "串門被伺服器結束了",
+            "VISIT_INTERRUPTED_LAST_TIME": "上次串門意外中斷了",
+            "VISIT_MEMORY_RETRY_LATER": "記憶服務暫時忙碌，稍後會自動再試"
+        },
+        "wrapUp": {
+            "badge": "道別中",
+            "toastRefused": "她們正在道別，這句沒有傳出去",
+            "recallAlready": "她們已經在道別了",
+            "composerPlaceholder": "她們正在道別…"
         }
     }
 }

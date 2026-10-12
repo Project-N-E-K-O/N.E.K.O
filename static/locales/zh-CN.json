@@ -719,6 +719,7 @@
         "occupied": "摄像头被其它应用占用？关闭扫码/拍照应用后重试"
     },
     "chat": {
+        "visitBarAriaLabel": "串门",
         "messageReaction": "{{author}} 贴了 {{emoji}}",
         "cardActionFailed": "插件操作失败",
         "cardActionRunning": "正在执行…",
@@ -6641,7 +6642,208 @@
             "persona": "串门自我介绍"
         },
         "stream": {
-            "ttsFallback": "语音暂时用不了，这场串门她先用文字说话"
+            "ttsFallback": "语音暂时用不了，这场串门她先用文字说话",
+            "truncated": "（被打断）"
+        },
+        "bar": {
+            "entry": "串门",
+            "invite": "邀请客人",
+            "goVisit": "去别人家",
+            "close": "收起",
+            "preparingInvite": "正在准备邀请…",
+            "joining": "正在出门…",
+            "waitingGuest": "等客人来",
+            "guestArriving": "客人在路上",
+            "atTheDoor": "{{name}} 到门口了",
+            "waitingDoor": "等对方开门",
+            "hosting": "{{name}} 在做客",
+            "away": "她在 {{name}} 家",
+            "peerHidden": "离开了一下",
+            "reconnecting": "连接不稳，正在重连",
+            "endingSoon": "快到时间了",
+            "ending": "正在收尾",
+            "inviteCode": "邀请码 {{code}}",
+            "copy": "复制",
+            "copied": "邀请码已复制",
+            "copyFailed": "没能复制，请手动抄下邀请码",
+            "seeOff": "送客",
+            "recall": "叫她回来",
+            "endNow": "立即结束",
+            "toGuest": "发给 {{name}}",
+            "toOwn": "发给 {{name}}",
+            "typing": "{{name}} 正在输入…"
+        },
+        "common": {
+            "cancel": "取消",
+            "close": "关闭",
+            "confirmTitle": "确认",
+            "ok": "确定"
+        },
+        "choice": {
+            "expired": "这次串门的记录已经过期了",
+            "retryLater": "这会儿没整理出来，稍后再点一次"
+        },
+        "details": {
+            "open": "查看详情",
+            "title": "这场串门的详情",
+            "loading": "正在读取…",
+            "duration": "时长：{{m}} 分 {{s}} 秒",
+            "freeMinutes": "扣减的免费分钟：{{n}}",
+            "usage": "用量：输入 {{in}} tokens，输出 {{out}} tokens；语音 {{req}} 次、{{chars}} 字",
+            "usageNone": "用量：暂无记录",
+            "uploadedPartial": "目前只有一方的记录传上来了",
+            "transcript": "完整转录",
+            "status": {
+                "agree": "两边一致",
+                "onlyHost": "只有邀请方记录了",
+                "onlyGuest": "只有来访方记录了",
+                "differ": "两边记录不同"
+            },
+            "hostCopy": "邀请方记录",
+            "guestCopy": "来访方记录",
+            "nextPage": "下一页",
+            "forbidden": "你不是这场串门的参与者，看不了",
+            "notFound": "找不到这场串门的记录",
+            "unavailable": "暂时连不上串门服务，稍后再试"
+        },
+        "ended": {
+            "body": "这场串门结束了",
+            "bodyWith": "和 {{name}} 的串门结束了",
+            "more": "更多…"
+        },
+        "error": {
+            "disabled": "「允许串门」还没有打开，请先在设置里打开",
+            "generic": "没能完成，请稍后再试",
+            "unreachable": "连不上本机服务",
+            "voiceSession": "先结束语音通话再串门",
+            "alreadyVisiting": "她已经在串门了",
+            "insecure_context": "自定义后端地址需要 https 或 localhost 才能串门"
+        },
+        "export": {
+            "button": "导出转录",
+            "fileTitle": "串门转录",
+            "gone": "本机副本已清理，登录并联网后可从云端导出",
+            "incomplete": "云端记录不完整，暂时没法导出",
+            "failed": "导出失败，请稍后再试",
+            "ownCat": "我家猫娘",
+            "peerCat": "对方的猫娘",
+            "ownHuman": "我",
+            "peerHuman": "对方的家里人"
+        },
+        "input": {
+            "notDelivered": "未送达",
+            "placeholderAway": "她出门了，可以叫她回来",
+            "placeholderWaiting": "等客人到了才能说话",
+            "placeholderReconnecting": "正在重连，稍等一下",
+            "placeholderToGuest": "对 {{name}} 说…",
+            "placeholderToOwn": "对 {{name}} 说…"
+        },
+        "invite": {
+            "title": "有客人来了",
+            "body": "{{name}}（{{code}}）来串门了，要接待吗？",
+            "countdown": "{{s}} 秒后自动婉拒",
+            "accept": "接待",
+            "decline": "婉拒",
+            "expired": "接待时间已经过了"
+        },
+        "join": {
+            "title": "去别人家串门",
+            "codeLabel": "输入对方给你的 10 位邀请码",
+            "codeFormat": "邀请码是 10 位，由字母和数字 2–7 组成",
+            "next": "下一步",
+            "confirmTitle": "让她出门吗？",
+            "confirmBody": "让 {{cat}} 去 {{host}}（{{code}}）家串门？",
+            "crossRegion": "对方在另一个地区，连接可能不太稳定",
+            "blocked": "你已屏蔽此人",
+            "confirm": "出门"
+        },
+        "persona": {
+            "title": "串门自我介绍",
+            "intro": "这是她去别人家时带的自我介绍，不含你的信息；对方的猫娘能看到，也可能复述其中内容。",
+            "editHint": "用几句话介绍她自己：性格、爱好、说话的样子",
+            "loading": "正在读取…",
+            "generating": "正在为她写串门自我介绍…",
+            "saveConfirm": "保存并确认",
+            "confirm": "确认",
+            "regenerate": "重新生成",
+            "reviewed": "已确认，可以去串门",
+            "cardChanged": "角色卡已经改过，要按新卡重新生成吗？",
+            "privateOverlap": "自动生成的自我介绍里混进了私人内容，请自己写一段",
+            "privateHits": "这些内容像是私人信息，请删掉再保存：{{hits}}",
+            "privateSections": "这些原卡内容不会带出门：",
+            "scanIncomplete": "自动检查不完整，请自己再看一遍有没有私人信息",
+            "llmUnavailable": "暂时没能自动生成，可以自己写，也可以稍后重新生成",
+            "tooLong": "太长了，请写短一点",
+            "changed": "这段内容刚刚被更新过，已重新读取，请再确认一次",
+            "saveFailed": "没能保存，请稍后再试",
+            "unavailable": "暂时读不到串门自我介绍，稍后再试",
+            "unknownCatgirl": "找不到这个角色",
+            "unreviewed": "出门前先看一眼她的串门自我介绍，确认后才能串门"
+        },
+        "preview": {
+            "invalid": "邀请码无效",
+            "expired": "邀请码已过期",
+            "banned": "你的串门功能暂时受限",
+            "rateLimited": "试得太频繁了，过一会儿再试",
+            "unreachable": "暂时连不上串门服务，稍后再试"
+        },
+        "report": {
+            "button": "举报",
+            "title": "举报这场串门",
+            "reason": {
+                "harassment": "骚扰",
+                "sexual": "色情内容",
+                "privacy": "侵犯隐私",
+                "spam": "垃圾信息",
+                "other": "其他"
+            },
+            "notePlaceholder": "补充说明（可选，最多 500 字）",
+            "includeTranscript": "附上这场的对话记录",
+            "submit": "提交举报",
+            "done": "举报已提交",
+            "doneButton": "已举报",
+            "queued": "举报已记录，网络恢复后自动提交",
+            "queuedButton": "已排队",
+            "already": "这场已经举报过了",
+            "persistFailed": "举报没能保存，请重试"
+        },
+        "speaker": {
+            "ownCat": "她",
+            "peerCat": "对方的猫娘",
+            "peerHuman": "对方的家里人",
+            "you": "你",
+            "toArrow": "{{from}} → {{to}}"
+        },
+        "status": {
+            "VISIT_E_UNAUTHORIZED": "这个页面没有串门权限（只支持本机直接访问）",
+            "VISIT_VOICE_UNAVAILABLE": "串门时不能用语音输入，请打字",
+            "VISIT_INPUT_REFUSED_AWAY": "她在别人家做客，这里说的话传不过去；可以叫她回来",
+            "VISIT_INPUT_REFUSED_NOT_READY": "客人还没到，等串门开始再说吧",
+            "VISIT_INPUT_REFUSED_RATE": "说得太快了，歇一会儿再发",
+            "VISIT_E_BUSY": "这会儿发不出去，文字还在输入框里，稍后再试",
+            "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "这台设备暂时不支持串门",
+            "VISIT_LOGIN_REQUIRED": "串门需要先登录社区账号",
+            "VISIT_BANNED": "你的串门功能暂时受限",
+            "VISIT_QUOTA_EXCEEDED": "今天的串门时间用完了",
+            "VISIT_TIER_NOT_ENTITLED": "这个画质档位暂不可用",
+            "VISIT_FORGET_IN_PROGRESS": "正在清除串门记忆，稍后再串门",
+            "VISIT_UPLOAD_BACKLOG": "有串门记录还没传上去，联网后再来",
+            "VISIT_CROSS_REGION_UNSUPPORTED": "暂不支持跨地区串门",
+            "VISIT_INVITE_INVALID": "邀请码无效或已过期",
+            "VISIT_SERVERS_UNREACHABLE": "暂时连不上串门服务，稍后再试",
+            "VISIT_PROTO_MISMATCH": "对方版本不兼容，请双方更新",
+            "VISIT_PEER_IDENTITY_REJECTED": "没能确认对方的身份，串门已取消",
+            "VISIT_PEER_LOST": "和对方断开了连接",
+            "VISIT_RELAY_LOST": "串门连接断开了",
+            "VISIT_KICKED": "串门被服务端结束了",
+            "VISIT_INTERRUPTED_LAST_TIME": "上次串门意外中断了",
+            "VISIT_MEMORY_RETRY_LATER": "记忆服务暂时忙，稍后会自动再试"
+        },
+        "wrapUp": {
+            "badge": "道别中",
+            "toastRefused": "她们正在道别，这句没有发出去",
+            "recallAlready": "她们已经在道别了",
+            "composerPlaceholder": "她们正在道别…"
         }
     }
 }

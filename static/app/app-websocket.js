@@ -2125,6 +2125,94 @@
         return S.socket && S.socket.readyState === WebSocket.OPEN;
     };
 
+    // ========================  串门：visit_bind 与状态码  ========================
+
+    // §4.5 status.code 全集：每个码一条 8 语提示（static/locales 的 visit.status.<code>）。
+    // 键必须是线上原样的大写常量（tests/unit/test_visit_chat_static.py 钉住与设计稿集合相等）。
+    var VISIT_STATUS_TOAST_KEYS = {
+        VISIT_E_UNAUTHORIZED: 'visit.status.VISIT_E_UNAUTHORIZED',
+        VISIT_VOICE_UNAVAILABLE: 'visit.status.VISIT_VOICE_UNAVAILABLE',
+        VISIT_INPUT_REFUSED_AWAY: 'visit.status.VISIT_INPUT_REFUSED_AWAY',
+        VISIT_INPUT_REFUSED_WRAPUP: 'visit.wrapUp.toastRefused',
+        VISIT_INPUT_REFUSED_NOT_READY: 'visit.status.VISIT_INPUT_REFUSED_NOT_READY',
+        VISIT_INPUT_REFUSED_RATE: 'visit.status.VISIT_INPUT_REFUSED_RATE',
+        VISIT_E_BUSY: 'visit.status.VISIT_E_BUSY',
+        VISIT_RECALL_ALREADY: 'visit.wrapUp.recallAlready',
+        VISIT_TTS_FALLBACK: 'visit.stream.ttsFallback',
+        VISIT_UNSUPPORTED_ON_THIS_MACHINE: 'visit.status.VISIT_UNSUPPORTED_ON_THIS_MACHINE',
+        VISIT_LOGIN_REQUIRED: 'visit.status.VISIT_LOGIN_REQUIRED',
+        VISIT_BANNED: 'visit.status.VISIT_BANNED',
+        VISIT_QUOTA_EXCEEDED: 'visit.status.VISIT_QUOTA_EXCEEDED',
+        VISIT_TIER_NOT_ENTITLED: 'visit.status.VISIT_TIER_NOT_ENTITLED',
+        VISIT_FORGET_IN_PROGRESS: 'visit.status.VISIT_FORGET_IN_PROGRESS',
+        VISIT_UPLOAD_BACKLOG: 'visit.status.VISIT_UPLOAD_BACKLOG',
+        VISIT_CROSS_REGION_UNSUPPORTED: 'visit.status.VISIT_CROSS_REGION_UNSUPPORTED',
+        VISIT_INVITE_INVALID: 'visit.status.VISIT_INVITE_INVALID',
+        VISIT_SERVERS_UNREACHABLE: 'visit.status.VISIT_SERVERS_UNREACHABLE',
+        VISIT_PROTO_MISMATCH: 'visit.status.VISIT_PROTO_MISMATCH',
+        VISIT_PEER_IDENTITY_REJECTED: 'visit.status.VISIT_PEER_IDENTITY_REJECTED',
+        VISIT_PEER_LOST: 'visit.status.VISIT_PEER_LOST',
+        VISIT_RELAY_LOST: 'visit.status.VISIT_RELAY_LOST',
+        VISIT_KICKED: 'visit.status.VISIT_KICKED',
+        VISIT_INTERRUPTED_LAST_TIME: 'visit.status.VISIT_INTERRUPTED_LAST_TIME',
+        VISIT_MEMORY_RETRY_LATER: 'visit.status.VISIT_MEMORY_RETRY_LATER'
+    };
+
+    function _dispatchVisitBound(detail) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko-visit-bound', { detail: detail }));
+        } catch (_) { /* noop */ }
+    }
+
+    async function _visitCsrfToken() {
+        var security = window.nekoLocalMutationSecurity;
+        if (!security || typeof security.getToken !== 'function') return '';
+        try {
+            var token = await security.getToken();
+            return typeof token === 'string' ? token : '';
+        } catch (_) {
+            return '';
+        }
+    }
+
+    /**
+     * display socket 每次连上后第一件事：{action:'visit_bind', csrf_token}（token 与本机 HTTP 变更端点
+     * 同一个，§4.5；index.html 与 chat.html 都发）。发出之后交给 visit-chat.js 读一次 state，
+     * 再派发 neko-visit-bound（pacer 据此决定回报给哪条连接、这一场是否在进行）。
+     */
+    async function _sendVisitBind(socket) {
+        var token = await _visitCsrfToken();
+        if (!token || S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        try {
+            socket.send(JSON.stringify({ action: 'visit_bind', csrf_token: token }));
+        } catch (_) {
+            return;
+        }
+        if (window.nekoVisitChat && typeof window.nekoVisitChat.afterBind === 'function') {
+            window.nekoVisitChat.afterBind(socket, getWebSocketLanlanName());
+        } else {
+            _dispatchVisitBound({ socket: socket });
+        }
+    }
+
+    function _showVisitStatus(code, details) {
+        var verdict = true;
+        if (window.nekoVisitChat && typeof window.nekoVisitChat.handleStatus === 'function') {
+            try { verdict = window.nekoVisitChat.handleStatus(code, details); } catch (_) { verdict = true; }
+        }
+        if (verdict === false || typeof window.showStatusToast !== 'function') return;
+        var key = VISIT_STATUS_TOAST_KEYS[code];
+        var text = typeof verdict === 'string' && verdict ? verdict : (window.t ? window.t(key) : '');
+        if (!text || text === key) text = code;
+        window.showStatusToast(text, 5000);
+    }
+
+    // 多窗口的 chat 跟随窗只渲染台词与芯片，不建访客 iframe（Pet 窗也带多窗口标记，必须看路径）
+    function _isVisitChatFollowerWindow() {
+        return window.__NEKO_MULTI_WINDOW__ === true
+            && /^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
+    }
+
     // ========================  ensureWebSocketOpen  ========================
 
     // 区分"字段未注入"和"字段注入为空串"：未注入返回 null（继续等待 page config 注入），
@@ -2854,6 +2942,9 @@
                 detail: { socket: _thisSocket }
             }));
 
+            // 串门：先 visit_bind（index.html 与 chat.html 都发；未绑定的连接收不到任何串门消息）
+            void _sendVisitBind(_thisSocket);
+
             // Recover a VMC enable that happened while this page was away.
             // vmc_state_changed is a one-shot broadcast, so a plugin enabling
             // VMC before the page loaded (or during a reconnect gap) would
@@ -3162,8 +3253,33 @@
                     // notifications that never depended on a session, and they
                     // were gone for good if the user never started another
                     // one (Codex).
+                    // 串门芯片 / 预览块 / 失败块：按 request_id 去重，渲染后回 visit_debrief_chip_ack
+                    if (window.nekoVisitChat && typeof window.nekoVisitChat.handleChatBlocks === 'function'
+                            && window.nekoVisitChat.handleChatBlocks(response)) {
+                        return;
+                    }
                     if (typeof window.appendReactChatBlocks === 'function') {
                         window.appendReactChatBlocks(response);
+                    }
+                    return;
+                }
+
+                // 串门帧（§4.5 全部 visit_* 下行）：交给聊天面；visit_state_change 另交父页取帧桥
+                if (response.type === 'visit_state_change'
+                        || response.type === 'visit_invite'
+                        || response.type === 'visit_line'
+                        || response.type === 'visit_line_delta'
+                        || response.type === 'visit_line_abort'
+                        || response.type === 'visit_typing'
+                        || response.type === 'visit_debrief') {
+                    if (response.type === 'visit_state_change') {
+                        if (!_isVisitChatFollowerWindow() && window.nekoVisitParentBridge
+                                && typeof window.nekoVisitParentBridge.onStateChange === 'function') {
+                            try { window.nekoVisitParentBridge.onStateChange(response); } catch (_) { /* noop */ }
+                        }
+                    }
+                    if (window.nekoVisitChat && typeof window.nekoVisitChat.handleFrame === 'function') {
+                        window.nekoVisitChat.handleFrame(response);
                     }
                     return;
                 }
@@ -3801,6 +3917,11 @@
                             statusDetails = statusPayload.details;
                         }
                     } catch (_) { }
+
+                    if (statusCode && Object.prototype.hasOwnProperty.call(VISIT_STATUS_TOAST_KEYS, statusCode)) {
+                        _showVisitStatus(statusCode, statusDetails || {});
+                        return;
+                    }
 
                     if (['ASR_RECOVERY_STARTED', 'ASR_RECOVERY_READY', 'ASR_RECOVERY_FAILED',
                         'ASR_TURN_INCOMPLETE'].includes(statusCode)) {

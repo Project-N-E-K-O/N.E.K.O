@@ -408,6 +408,14 @@
         }
         I.state.rollbackDraft = '';
 
+        // 串门接管了输入框（visit-chat.js）：按阶段先拦、带收件人发出；被拦下时文字留在输入框
+        if (typeof I.isVisitChatActive === 'function' && I.isVisitChatActive()) {
+            if (typeof I.submitVisitChatText === 'function' && I.submitVisitChatText(detail)) {
+                requestAutoCollapseAfterAcceptedEnter(detail);
+            }
+            return;
+        }
+
         if (I.state.choicePrompt && I.state.choicePrompt.source === 'new_user_icebreaker') {
             var prompt = I.state.choicePrompt;
             var icebreakerDetail = {

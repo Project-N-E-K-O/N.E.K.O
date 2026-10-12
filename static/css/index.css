@@ -4726,3 +4726,155 @@ body.chat-export-modal-open {
 .is-cat1-edge-peek-locked .neko-idle-return-btn > .neko-idle-return-art,
 .neko-idle-return-btn.is-cat1-edge-peek-locked > .neko-idle-return-art { transition: opacity 160ms ease; }
 .neko-idle-return-btn > .neko-idle-return-art.is-cat1-edge-peek-locked-hover-fade { opacity: 0.12; }
+
+/* ---------- 串门（docs/design/visit-infrastructure.md §3.6.6 / OD-19） ---------- */
+
+/* 访客猫娘与对方家里人的台词复用 role 'tool'：暖色气泡与头像，与她自己的气泡一眼分开 */
+#react-chat-window-root .message-bubble-tool {
+    background: linear-gradient(180deg, #fff8ee 0%, #fdeedc 100%);
+    color: #47331d;
+    border: 1px solid rgba(232, 170, 96, 0.35);
+}
+
+#react-chat-window-root .avatar-tool {
+    color: #fff;
+    background: linear-gradient(135deg, #ffb86b 0%, #f08a3c 100%);
+}
+
+[data-theme="dark"] #react-chat-window-root .message-bubble-tool {
+    background: linear-gradient(180deg, #3a2f24 0%, #33281d 100%);
+    color: #f3e3cf;
+    border-color: rgba(232, 170, 96, 0.28);
+}
+
+/* 串门对话框（出门确认、接待确认、邀请码、查看详情、举报、串门人设）：宿主页 DOM，文字一律 textContent */
+.visit-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100050;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(20, 28, 40, 0.32);
+}
+
+.visit-dialog {
+    box-sizing: border-box;
+    width: min(440px, 100%);
+    max-height: min(80vh, 720px);
+    overflow: auto;
+    padding: 18px 18px 14px;
+    border-radius: 16px;
+    background: #fff;
+    color: #273042;
+    box-shadow: 0 12px 36px rgba(30, 50, 80, 0.22);
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.visit-dialog-title {
+    margin-bottom: 8px;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.visit-dialog-line {
+    margin: 4px 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.visit-dialog-line.is-warning { color: #b4561d; }
+.visit-dialog-line.is-success { color: #1f7a4a; }
+.visit-dialog-line.is-muted { color: #8a94a6; font-size: 12px; }
+
+.visit-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.visit-dialog-btn {
+    padding: 6px 14px;
+    border: 1px solid #c8d3e2;
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.visit-dialog-btn.is-primary { border-color: #44b7fe; background: #44b7fe; color: #fff; }
+.visit-dialog-btn.is-danger { border-color: #e06060; color: #c03838; }
+.visit-dialog-btn:disabled { opacity: 0.5; cursor: default; }
+
+.visit-join-code,
+.visit-report-reason,
+.visit-report-note,
+.visit-persona-text {
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid #c8d3e2;
+    border-radius: 10px;
+    background: #fff;
+    color: inherit;
+    font: inherit;
+}
+
+.visit-join-code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 18px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.visit-report-note,
+.visit-persona-text {
+    min-height: 96px;
+    resize: vertical;
+}
+
+.visit-report-include {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.visit-persona-private-title { margin: 8px 0 2px; font-size: 12px; color: #6b7487; }
+.visit-persona-private-list { margin: 0; padding-left: 18px; font-size: 12px; color: #6b7487; }
+
+.visit-details-summary p { margin: 2px 0; }
+.visit-details-heading { margin-top: 10px !important; font-weight: 600; }
+
+.visit-details-row {
+    margin: 6px 0;
+    padding: 6px 8px;
+    border-radius: 10px;
+    background: #f4f7fb;
+}
+
+.visit-details-row.is-differ { background: #fff4e6; }
+.visit-details-mark { font-size: 11px; color: #8a94a6; }
+.visit-details-copy { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 2px; }
+.visit-details-copy-label { font-size: 11px; color: #b4561d; }
+.visit-details-from { font-weight: 600; }
+.visit-details-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+[data-theme="dark"] .visit-dialog,
+[data-theme="dark"] .visit-join-code,
+[data-theme="dark"] .visit-report-reason,
+[data-theme="dark"] .visit-report-note,
+[data-theme="dark"] .visit-persona-text {
+    background: #1f2633;
+    color: #e6ebf2;
+    border-color: #3a4558;
+}
+
+[data-theme="dark"] .visit-details-row { background: #283041; }
+[data-theme="dark"] .visit-details-row.is-differ { background: #3a2f24; }

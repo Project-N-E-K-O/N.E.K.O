@@ -3135,8 +3135,11 @@
                 requestChatAutoCollapseAfterAcceptedEnter(options, requestId);
             }
 
+            // 串门台词（visit-chat.js）：本地气泡由串门那边出（纯文本、带收件人），这里不再出普通用户气泡
+            var isVisitLine = options.visitLine === true;
+
             function shouldAppendLegacyUserMessage() {
-                return !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
+                return !isVisitLine && !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
             }
 
             function updateReactOptimisticMessageStatus(status) {
@@ -3420,7 +3423,8 @@
                         // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。
                         // 首 chunk 进来后会被 clearPendingAssistantTurnStart 在 turn-end 路径清零；
                         // 同时有 15s freshness ceiling 防止漏清永远卡 true。
-                        S.pendingTextTurnSubmitAt = Date.now();
+                        // 串门台词不开普通回复轮：不标「回复在途」
+                        if (!isVisitLine) S.pendingTextTurnSubmitAt = Date.now();
                     }
 
                     // Reset proactive chat timer
