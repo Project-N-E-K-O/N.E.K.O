@@ -662,7 +662,6 @@
     this.core.reset();
   };
 
-  /** 离开 vendor 房间（同 vid 之后可再入房）。 */
   /** 收发统计的差分基准与在途取样一起作废（离开在房状态、传输 WS 断开时）。 */
   P.resetStatsBaselines = function () {
     this.statsGen += 1;
@@ -671,6 +670,7 @@
     if (this.adapter && typeof this.adapter.resetStats === 'function') this.adapter.resetStats();
   };
 
+  /** 离开 vendor 房间（同 vid 之后可再入房）。 */
   P.leaveRoom = function () {
     // 传输 WS 断了：这一代连接上还没跑完的 SDK 加载 / 能力门不能再去入房（重连后按新凭证重来）
     this.connGen += 1;
