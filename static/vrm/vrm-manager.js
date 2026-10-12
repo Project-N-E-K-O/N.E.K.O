@@ -59,6 +59,8 @@ class VRMManager {
         this._animationFrameId = null;
         this._uiUpdateLoopId = null;
         this.enablePhysics = true;
+        this._physicsProfile = null;
+        this._physicsProfileModel = '';
         this._lookAtTarget = null;
         this._mouseMoveHandler = null;
         this._mouseRaycaster = null;
@@ -1531,9 +1533,7 @@ class VRMManager {
                     const sceneRotY = this.currentModel.vrm.scene.rotation.y;
                     console.log('[VRM] Scene rotation Y:', sceneRotY);
 
-                    // 优先使用每模型物理配置（由 Unity 侧工具产出），
-                    // 缺失时回退到经验性 50% 缩减（UniVRM #673 导出 bug）
-                    const profileResult = this._applyPhysicsProfile(springBoneManager);
+                    const profileResult = this._applyPhysicsProfile(springBoneManager, modelUrl);
                     console.log(`[VRM] Physics profile: source=${profileResult.source}, colliders=${profileResult.colliders}, joints=${profileResult.joints}`);
                 }
 
@@ -1846,41 +1846,42 @@ class VRMManager {
         this.setModelScale(scale, scale, scale);
     }
 
-    /**
-     * 应用每模型物理配置；无配置时回退到经验性 50% 碰撞体缩减
-     * 同步执行，配置须先由 loadPhysicsProfile 预加载
-     * @param {object} springBoneManager - three-vrm 的 SpringBone 管理器
-     * @returns {{source:string, colliders:number, joints:number}}
-     */
-    _applyPhysicsProfile(springBoneManager) {
-        if (this._physicsProfile && this._physicsProfile.hasProfile) {
+    _applyPhysicsProfile(springBoneManager, modelUrl) {
+        const modelName = this._resolvePhysicsProfileModelName(modelUrl);
+        const usable = this._physicsProfile
+            && this._physicsProfile.hasProfile
+            && modelName
+            && this._physicsProfileModel === modelName;
+
+        if (usable) {
             const applied = this._physicsProfile.apply(springBoneManager);
             return { source: applied.source, colliders: applied.colliders, joints: applied.joints };
         }
 
-        const collidersSet = springBoneManager.colliders;
-        const colliders = collidersSet ? Array.from(collidersSet) : [];
-        const reduction = window.VrmPhysicsProfile
-            ? window.VrmPhysicsProfile.DEFAULT_REDUCTION
-            : 0.5;
-        colliders.forEach(collider => {
-            if (collider.shape?.radius !== undefined) {
-                if (collider._rawOriginalRadius === undefined) {
-                    collider._rawOriginalRadius = collider.shape.radius;
+        let applied = 0;
+        if (this._physicsProfile) {
+            applied = this._physicsProfile.applyDefaultReduction(springBoneManager);
+        } else {
+            const collidersSet = springBoneManager.colliders;
+            const colliders = collidersSet ? Array.from(collidersSet) : [];
+            const reduction = window.VrmPhysicsProfile
+                ? window.VrmPhysicsProfile.DEFAULT_REDUCTION
+                : 0.5;
+            colliders.forEach(collider => {
+                if (collider.shape?.radius !== undefined) {
+                    if (collider._rawOriginalRadius === undefined) {
+                        collider._rawOriginalRadius = collider.shape.radius;
+                    }
+                    const reducedRadius = collider._rawOriginalRadius * reduction;
+                    collider.shape.radius = reducedRadius;
+                    collider._originalRadius = reducedRadius;
+                    applied++;
                 }
-                const reducedRadius = collider._rawOriginalRadius * reduction;
-                collider.shape.radius = reducedRadius;
-                collider._originalRadius = reducedRadius;
-            }
-        });
-        return { source: 'default', colliders: 0, joints: 0 };
+            });
+        }
+        return { source: 'default', colliders: applied, joints: 0 };
     }
 
-    /**
-     * 预加载当前模型的物理配置（异步阶段调用）
-     * @param {string} [modelUrl] - 模型 URL，缺省时从 currentModel 推导
-     * @returns {Promise<boolean>} 是否加载到配置
-     */
     async loadPhysicsProfile(modelUrl) {
         const modelName = this._resolvePhysicsProfileModelName(modelUrl);
         if (!window.VrmPhysicsProfile || !modelName) {
@@ -1894,16 +1895,14 @@ class VRMManager {
         if (this._physicsProfileModel === modelName && this._physicsProfile.hasProfile) {
             return true;
         }
-        await this._physicsProfile.load(modelName);
-        this._physicsProfileModel = modelName;
-        return this._physicsProfile.hasProfile;
+        const loaded = await this._physicsProfile.load(modelName);
+        if (loaded && this._physicsProfile.hasProfile && this._physicsProfile.lastModel === modelName) {
+            this._physicsProfileModel = modelName;
+            return true;
+        }
+        return false;
     }
 
-    /**
-     * 推导物理配置对应的模型名（不含扩展名）
-     * @param {string} [modelUrl] - 可选，缺省时读取 currentModel.url
-     * @returns {string}
-     */
     _resolvePhysicsProfileModelName(modelUrl) {
         const url = modelUrl || this.currentModel?.url || '';
         if (!url || typeof url !== 'string') return '';
@@ -1911,7 +1910,13 @@ class VRMManager {
         const last = cleaned.substring(cleaned.lastIndexOf('/') + 1);
         if (!last) return '';
         const dot = last.lastIndexOf('.');
-        return dot > 0 ? last.substring(0, dot) : last;
+        const stem = dot > 0 ? last.substring(0, dot) : last;
+        if (!stem) return '';
+        try {
+            return decodeURIComponent(stem);
+        } catch (error) {
+            return '';
+        }
     }
 
     /**
@@ -2136,6 +2141,8 @@ class VRMManager {
 
         // 12. 重置引用和状态
         this.currentModel = null;
+        this._physicsProfile = null;
+        this._physicsProfileModel = '';
         this.animationMixer = null;
         this.scene = null;
         this.camera = null;

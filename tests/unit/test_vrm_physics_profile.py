@@ -12,6 +12,8 @@ if str(ROOT) not in sys.path:
 
 from main_routers import vrm_router
 
+pytestmark = pytest.mark.unit_fast
+
 
 @pytest.fixture()
 def client():
@@ -84,20 +86,22 @@ def test_physics_profile_corrupt_json_falls_back(client, config_dir):
     assert payload["source"] == "corrupt"
 
 
-@pytest.mark.parametrize("bad", ["../evil", "a/b", "with space", "semi;colon"])
-def test_physics_profile_rejects_unsafe_names(client, config_dir, bad):
+@pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b"])
+def test_physics_profile_rejects_path_syntax(client, config_dir, bad):
     response = client.get(f"/api/model/vrm/physics_profile/{bad}")
     assert response.status_code in (400, 404)
 
 
-def test_physics_profile_accepts_unicode_names(client, config_dir):
-    stored = {"version": 1, "model": "小春", "colliders": [], "chains": []}
-    (config_dir / "小春_physics.json").write_text(json.dumps(stored), encoding="utf-8")
-    response = client.get("/api/model/vrm/physics_profile/小春")
+@pytest.mark.parametrize("name", ["My Avatar", "semi;colon", "小春", "model(1)"])
+def test_physics_profile_accepts_every_valid_vrm_stem(client, config_dir, name):
+    stored = {"version": 1, "model": name, "colliders": [], "chains": []}
+    (config_dir / f"{name}_physics.json").write_text(json.dumps(stored), encoding="utf-8")
+    response = client.get(f"/api/model/vrm/physics_profile/{name}")
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
-    assert payload["config"]["model"] == "小春"
+    assert payload["source"] == "file"
+    assert payload["config"]["model"] == name
 
 
 def test_physics_config_path_is_inside_config_dir(tmp_path, monkeypatch):
@@ -118,6 +122,19 @@ def test_physics_config_path_rejects_traversal(tmp_path, monkeypatch):
     monkeypatch.setattr(vrm_router, "get_config_manager", lambda: _Mgr())
     assert vrm_router._get_physics_config_path("../escape") is None
     assert vrm_router._get_physics_config_path("") is None
+    assert vrm_router._get_physics_config_path("..") is None
+
+
+def test_physics_config_path_matches_the_model_name_validator(tmp_path, monkeypatch):
+    class _Mgr:
+        project_root = tmp_path
+
+    monkeypatch.setattr(vrm_router, "get_config_manager", lambda: _Mgr())
+    for name in ["My Avatar", "model(1)", "小春", "with space"]:
+        assert vrm_router._is_valid_vrm_model_name(name) is True
+        resolved = vrm_router._get_physics_config_path(name)
+        assert resolved is not None, name
+        assert resolved.name == f"{name}_physics.json"
 
 
 def test_physics_endpoint_differs_from_emotion_endpoint(client, config_dir):

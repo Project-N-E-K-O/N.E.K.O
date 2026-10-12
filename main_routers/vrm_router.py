@@ -609,8 +609,7 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
 
 def _get_physics_config_path(model_name: str) -> Path | None:
     """Get the physics profile config file path for a model."""
-    safe_name = re.sub(r'[^\w.\-]', '', model_name, flags=re.UNICODE)
-    if not safe_name or safe_name != model_name:
+    if not _is_valid_vrm_model_name(model_name):
         logger.warning(f"无效的模型名称: {model_name!r}")
         return None
 
@@ -619,7 +618,7 @@ def _get_physics_config_path(model_name: str) -> Path | None:
     config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = config_dir / f"{safe_name}_physics.json"
+    config_path = config_dir / f"{model_name}_physics.json"
 
     try:
         config_path.resolve().relative_to(config_dir.resolve())
