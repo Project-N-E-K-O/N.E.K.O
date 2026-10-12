@@ -48,7 +48,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.visit_settings import VISIT_INVITE_PREVIEW_REUSE_S
+from config.visit_settings import VISIT_INVITE_PREVIEW_REUSE_S, VISIT_VIDEO_TIER_DEFAULT
 from main_logic.visit import local_chars, memory_bridge
 from main_logic.visit.limits import Blocklist
 from main_logic.visit.memory_commit import SIDE_RANK
@@ -65,7 +65,7 @@ from main_routers.visit_router.local_context import (
     protected_display_names,
     speaker_label,
 )
-from main_routers.visit_router.local_guard import http_denied
+from main_routers.visit_router.local_guard import http_denied, visit_enabled
 from utils.logger_config import get_module_logger
 from utils.visit_wire import VISIT_ID_RE
 
@@ -281,7 +281,12 @@ async def _admit(
             return _refused(409, {"reason": "busy"})
         if uid:
             own_uid = await accounts.lookup_visit_uid(account)
-            if await memory_bridge.char_forget_in_progress(_config_dir(), uid, own_uid=own_uid):
+            refusal = await memory_bridge.char_forget_refusal(_config_dir(), uid, own_uid=own_uid)
+            if refusal == memory_bridge.FORGET_REFUSAL_UNREADABLE:
+                # 同一个码（旧前端照旧认得），多带 reason：挡住的是读不出的清除记录，不是真在清除，
+                # 前端据此引导到「丢弃损坏的清除记录」（POST /api/visit/memory/forget/discard_unreadable）
+                return _error(409, "VISIT_FORGET_IN_PROGRESS", reason=refusal)
+            if refusal is not None:
                 return _error(409, "VISIT_FORGET_IN_PROGRESS")
         try:
             rt = await runtime.start_visit(name, side, **kwargs)
@@ -448,6 +453,16 @@ IDLE_STATE: Mapping[str, Any] = {
 """``GET /state`` of a character that is not visiting (same keys as ``VisitRuntime.snapshot``)."""
 
 
+def release_info() -> dict:
+    """Keys every ``GET /state`` answer carries on top of the snapshot.
+
+    ``enabled`` is the ``NEKO_VISIT_ENABLED`` release switch (the settings
+    page hides its visit group while it is off) and ``default_tier`` the
+    published video tier the settings page shows read-only (design §5 PR-13).
+    """
+    return {"enabled": visit_enabled(), "default_tier": VISIT_VIDEO_TIER_DEFAULT}
+
+
 @data_router.get("/state")
 async def visit_state(request: Request, catgirl: str = ""):
     """The character's visit as the page needs it after a reload (never the invite code)."""
@@ -458,12 +473,13 @@ async def visit_state(request: Request, catgirl: str = ""):
         return _error(400, "catgirl_required")
     rt = runtime.get_runtime(catgirl)
     if rt is None:
-        return JSONResponse(dict(IDLE_STATE))
+        return JSONResponse({**IDLE_STATE, **release_info()})
     snapshot = rt.snapshot()
     if not await _owned_by_current_account(rt):
         # 共用电脑上已换成别的社区账号：只说这个角色正在串门，不给这一场的对端、房间与台词
-        return JSONResponse({**IDLE_STATE, "active": snapshot["active"], "phase": snapshot["phase"]})
-    return JSONResponse(snapshot)
+        return JSONResponse({**IDLE_STATE, "active": snapshot["active"], "phase": snapshot["phase"],
+                             **release_info()})
+    return JSONResponse({**snapshot, **release_info()})
 
 
 def _local_line(line_id: Any, record: Mapping[str, Any], frame: Optional[Mapping[str, Any]] = None) -> dict:

@@ -40,10 +40,39 @@ def test_parenthetical_departure_can_coexist_with_future_follow_up():
     assert projection["future_references"][0]["kind"] == "future_return_or_follow_up"
 
 
-def test_parenthetical_exit_to_door_is_a_completed_departure():
+def test_parenthetical_exit_to_door_is_not_a_completed_departure():
     projection = project_player_action_result("（背起书包走向门口）嗯，明天见。")
 
-    assert projection["player_left_current_scene"] is True
+    assert projection["player_left_current_scene"] is False
+    assert projection["player_departure_pending"] is True
+
+
+@pytest.mark.parametrize("message", [
+    "（走向门口，停在门内）我还有个问题。",
+    "（提起工具箱走向门口，停在气闸内侧）我再核对一下仪表。",
+    "（走向巷口，停在巷口前）等一下。",
+    "我们走向门口。",
+    "我先走向巷口。",
+])
+def test_approaching_an_exit_does_not_claim_boundary_crossing(message):
+    projection = project_player_action_result(message)
+
+    assert projection["player_left_current_scene"] is False
+    assert projection["player_departure_pending"] is True
+    assert normalize_player_action_projection(projection)["player_departure_pending"] is True
+
+
+@pytest.mark.parametrize("message", [
+    "（走向门口，又折回柜台）先不走了。",
+    "（走向门口，又折回控制台）先不走了。",
+    "我准备走向门口。",
+    "我可以走向门口吗？",
+])
+def test_cancelled_or_uncommitted_departure_does_not_suppress_new_offer(message):
+    projection = project_player_action_result(message)
+
+    assert projection["player_left_current_scene"] is False
+    assert projection["player_departure_pending"] is False
 
 
 def test_questions_and_plans_do_not_become_completed_actions():
@@ -183,3 +212,9 @@ async def test_runtime_persists_projection_for_replay_but_public_record_can_filt
     assert "player_action_projection" not in _public_performance(
         committed.session.performance_history[-1]
     )
+
+
+def test_approach_does_not_hide_a_subsequent_explicit_departure():
+    projection = project_player_action_result("我们走向门口，我离开这里。")
+    assert projection["player_left_current_scene"] is True
+    assert projection["player_departure_pending"] is False

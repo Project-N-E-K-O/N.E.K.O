@@ -1810,8 +1810,8 @@ async def test_rename_marker_swapped_while_reloading_names_retakes_the_guard(tmp
 
     async def load():
         loads["n"] += 1
-        if loads["n"] == 2:
-            # 守卫内重读名单期间，标记被另一个角色（B → D）的改名换掉
+        if loads["n"] == 3:
+            # 守卫内重读名单期间（第 1 次是启动读名单，第 2 次是退役重放之后的重读），标记被另一个角色（B → D）的改名换掉
             data = json.loads(peers_path.read_text(encoding="utf-8"))
             data["pending_rename"] = {"old": "B", "new": "D", "uid": CHAR_UID_B}
             peers_path.write_text(json.dumps(data), encoding="utf-8")

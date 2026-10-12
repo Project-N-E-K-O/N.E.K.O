@@ -220,10 +220,12 @@ async def _post(env, body: dict):
     return await env.routes.process_scoped_history(NAME, req)
 
 
-async def _forget(env, subject: dict, forget_epoch: int | None = None):
+async def _forget(env, subject: dict, forget_epoch: int | None = None, target_epochs: dict | None = None):
     body = {"subject": subject}
     if forget_epoch is not None:
         body["forget_epoch"] = forget_epoch
+    if target_epochs is not None:
+        body["target_epochs"] = target_epochs
     req = env.routes.ScopedForgetRequest.model_validate(body)
     return await env.routes.forget_scoped_subject(NAME, req)
 
@@ -1898,7 +1900,7 @@ async def test_tombstone_removed_during_the_erase_is_rebuilt_with_the_completion
         # 擦除期间墓碑被清理移走（这里直接不落盘来模拟）
         return {}
 
-    env.monkeypatch.setattr(env.idem, "record_tombstones", tombstone_vanishes)
+    env.monkeypatch.setattr(env.idem, "record_tombstone_epochs", tombstone_vanishes)
     result = await _forget(env, GROUP, forget_epoch=4)
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     tombstones = await env.idem.read_tombstones(NAME)
@@ -3312,3 +3314,476 @@ async def test_duplicate_reply_removes_a_terminal_keys_leftover_staging(env):
     result = await _post(env, _single_body())
     # 持着键锁回 duplicate 时顺手删掉：不必等下次启动清理（它遇到被占的键锁会跳过）
     assert result["duplicate"] is True and not _staging_file(env, KEY_GROUP).exists()
+
+
+# ── fan-out targets fenced at their own epochs (target_epochs) ─────────────
+
+def _fan_out_to(env, *linked_subjects: dict) -> None:
+    """Make every forget's identity expansion also erase ``linked_subjects``."""
+    original = env.routes._forget_fanout_targets
+    linked = [MemorySubject.create(s["subject_kind"], s["subject_id"]) for s in linked_subjects]
+
+    def fanout(subject):
+        base = list(original(subject))
+        keys = {target.key for target in base}
+        extra = [target for target in linked if target.key not in keys]
+        return sorted(base + extra, key=lambda item: (item.key, item.scope))
+
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", fanout)
+
+
+def _tombstones(env) -> dict:
+    path = Path(env.idem.tombstones_path(NAME))
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+async def _stage_then_crash(env, body: dict) -> None:
+    """Leave a pending key with its staging on disk, nothing applied."""
+    real_apply = env.routes._apply_keyed_staging
+
+    async def crash(*_args, **_kwargs):
+        raise RuntimeError("process killed before applying")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash)
+    with pytest.raises(HTTPException):
+        await _post(env, body)
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+
+
+async def test_opted_in_forget_missing_a_fanout_target_is_409_before_anything(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    _fan_out_to(env, PART)
+    with pytest.raises(HTTPException) as excinfo:
+        await _forget(env, GROUP, forget_epoch=7, target_epochs={})
+    # 带了 target_epochs 却漏了扇出目标：列出缺的 key，墓碑一行不写、记忆一条不擦
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail == {"error": "missing_target_epochs", "missing_target_epochs": [PART_KEY]}
+    assert _tombstones(env) == {} and _facts_of(env, GROUP)
+
+
+async def test_forget_without_target_epochs_keeps_the_old_behaviour(env):
+    _fan_out_to(env, PART)
+    result = await _forget(env, GROUP, forget_epoch=7)
+    # 没带 target_epochs：不 409，扇出目标照常擦、只是不记墓碑（与改动前一致）
+    assert result["status"] == "forgotten"
+    assert set(_tombstones(env)) == {GROUP_KEY}
+
+
+async def test_fanout_target_is_fenced_at_its_own_epoch_against_a_delayed_write(env):
+    _fan_out_to(env, PART)
+    full = await _forget(env, GROUP, forget_epoch=7, target_epochs={PART_KEY: 2})
+    # 完整擦除：实际擦除的就是整个扇出
+    assert full["erased_subjects"] == full["forgotten_subjects"]
+    tombstones = _tombstones(env)
+    # 每个 key 各记自己的代数：扇出目标是 2，不是请求 subject 的 7；擦完都记上完成标记
+    assert tombstones[GROUP_KEY]["forget_epoch"] == 7 and tombstones[GROUP_KEY]["erased_epoch"] == 7
+    assert tombstones[PART_KEY]["forget_epoch"] == 2 and tombstones[PART_KEY]["erased_epoch"] == 2
+    # 清除之前就开了轮、服务端从没见过的 PART digest（代数 1）在清除之后才到：键记录 / 暂存都没有，
+    # 取消扫描看不到它，generation 也是清除之后的，只有 PART 自己的墓碑挡得住
+    env.llm.responses = [SINGLE_FACTS]
+    late = "visit-digest:LateLateLateLateLateLa:0:group:0"
+    await _post(env, _single_body(key=late, subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
+    assert _facts_of(env, PART) == []
+    # 清除之后开的新一轮（客户端已把 PART 加到 2）照常写入，不被请求 subject 的 7 挡下
+    fresh = "visit-digest:FreshFreshFreshFreshFr:0:group:0"
+    await _post(env, _single_body(key=fresh, subject=PART, display_name=None, subject_epochs={PART_KEY: 2}))
+    assert len(_facts_of(env, PART)) == len(SINGLE_FACTS)
+
+
+async def test_fanout_fence_is_durable_before_the_erase_finishes(env):
+    _fan_out_to(env, PART)
+
+    async def marker_lost(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", marker_lost)
+    with pytest.raises(HTTPException):
+        await _forget(env, GROUP, forget_epoch=7, target_epochs={PART_KEY: 2})
+    # 擦完了、完成标记没落盘（调用方还没重试）：扇出目标的墓碑必须早在擦除之前就落盘了，
+    # 这期间到达的清除前写入照样被挡，不能等完成标记顺手把墓碑补出来
+    assert _tombstones(env)[PART_KEY]["forget_epoch"] == 2
+    env.llm.responses = [SINGLE_FACTS]
+    late = "visit-digest:LateLateLateLateLateLa:0:group:0"
+    await _post(env, _single_body(key=late, subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
+    assert _facts_of(env, PART) == []
+
+
+async def test_target_epochs_outside_the_fanout_are_not_recorded(env):
+    await _forget(env, GROUP, forget_epoch=3, target_epochs={PART_KEY: 9})
+    # 两次请求之间解绑了：多给的 key 不在这次擦除面上，不给它记墓碑
+    assert set(_tombstones(env)) == {GROUP_KEY}
+
+
+@pytest.mark.parametrize("staged_epoch, kept", [(2, True), (1, False)])
+async def test_fanout_target_staging_is_judged_by_its_own_fence(env, staged_epoch, kept):
+    env.llm.responses = [SINGLE_FACTS]
+    await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: staged_epoch}))
+    _fan_out_to(env, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # wire 是扇出目标、代数够它自己的围栏：清除之后的合法写入，不取消；早于围栏的照常取消
+    assert _staging_file(env, KEY_GROUP).exists() is kept
+    assert _key_state(env, KEY_GROUP) == ("pending" if kept else "cancelled")
+
+
+async def test_mixed_batch_drops_only_the_stale_fanout_segment(env):
+    env.llm.responses = [BATCH_FACTS]
+    await _stage_then_crash(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
+    _fan_out_to(env, GP, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={GP_KEY: 1, PART_KEY: 2})
+    # GP 段早于它的围栏（0 < 1）被丢，PART 段够新（2 >= 2）留着：键仍 pending，不整键取消
+    assert _key_state(env, KEY_SEGMENTS) == "pending"
+    again = await _post(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
+    assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
+    assert again.get("duplicate") is None and env.llm.calls == 1
+
+
+@pytest.mark.parametrize("staged_epoch, kept", [(2, True), (1, False)])
+async def test_duplicate_forget_cancels_late_fanout_staging_by_its_own_fence(env, staged_epoch, kept):
+    _fan_out_to(env, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})   # 原擦除已完成
+    env.llm.responses = [SINGLE_FACTS]
+    await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: staged_epoch}))
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # 重放走 duplicate 捷径：扇出目标有可比的代数，早于它围栏的残留暂存一并取消，够新的留着
+    assert result.get("duplicate") is True
+    assert _staging_file(env, KEY_GROUP).exists() is kept
+    assert _key_state(env, KEY_GROUP) == ("pending" if kept else "cancelled")
+
+
+async def test_fanout_markers_land_before_the_request_subjects(env):
+    _fan_out_to(env, PART)
+    real_mark = env.idem.mark_tombstone_erased
+
+    async def broken_for_part(name, subject_key, *args, **kwargs):
+        if subject_key == PART_KEY:
+            raise OSError("disk full")
+        return await real_mark(name, subject_key, *args, **kwargs)
+
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", broken_for_part)
+    with pytest.raises(HTTPException) as excinfo:
+        await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    assert excinfo.value.status_code == 500
+    # 扇出目标的完成标记没落盘时，请求 subject 的也不能先落：否则重试走 duplicate 捷径，目标再也补不上
+    assert env.idem.erased_epoch(_tombstones(env), GROUP_KEY) is None
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", real_mark)
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    assert result.get("duplicate") is None
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 2
+
+
+async def test_replay_naming_a_newly_linked_target_erases_only_that_target(env):
+    await _forget(env, GROUP, forget_epoch=5)                   # 原擦除已完成，当时还没有关联账号
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))  # 清除之后合法写入的 GROUP 记忆
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, subject=PART, display_name=None))
+    assert _facts_of(env, GROUP) and _facts_of(env, PART)
+    _fan_out_to(env, PART)                                      # 之后 PART 关联进来
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    # 重放带上了新目标的代数：只擦这个还没擦到该代数的目标，不走 duplicate、也不重擦 GROUP
+    assert result.get("duplicate") is None
+    assert _facts_of(env, PART) == [] and _facts_of(env, GROUP)
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
+    # 回执分得出补擦：这次只擦了 PART，forgotten_subjects 仍列出整个扇出
+    assert [s["subject_id"] for s in result["erased_subjects"]] == [PART["subject_id"]]
+    assert {s["subject_id"] for s in result["forgotten_subjects"]} == {GROUP["subject_id"], PART["subject_id"]}
+    again = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    assert again.get("duplicate") is True and again["erased_subjects"] == []
+
+
+async def test_partial_replay_does_not_mark_the_request_subject_through_a_higher_fence(env):
+    await _forget(env, GROUP, forget_epoch=5)
+    # 围栏 8、完成标记 5：现有写入路径抬围栏时会连完成标记一起重写，这里直接构造这份状态，
+    # 守住「只补擦扇出目标时不碰请求 subject 的完成标记」这条不变量
+    path = Path(env.idem.tombstones_path(NAME))
+    data = _tombstones(env)
+    data[GROUP_KEY] = {"forgotten_at": time.time(), "forget_epoch": 8, "erased_epoch": 5}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))  # 代数 8 本该擦掉的 GROUP 记忆
+    _fan_out_to(env, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    # 这次只补擦了 PART：GROUP 没被擦，它的完成标记不能借已在位的围栏 8 抬上去
+    assert env.idem.erased_epoch(_tombstones(env), GROUP_KEY) == 5
+    retry = await _forget(env, GROUP, forget_epoch=8, target_epochs={PART_KEY: 1})
+    # 代数 8 的重试照常擦除，不走 duplicate 捷径
+    assert retry.get("duplicate") is None and _facts_of(env, GROUP) == []
+
+
+async def test_unfenced_wire_routed_into_the_forgotten_subject_is_marked_without_staging(env):
+    idem = env.idem
+    await idem.update_key(NAME, KEY_SEGMENTS, idem.transition(
+        "pending",
+        request={"shape": "segments", "wire_keys": [GROUP_KEY, PART_KEY], "content_hash": "h"},
+        routed_keys=[GROUP_KEY], routed_positions=[GROUP_KEY, GROUP_KEY],
+        epochs={GROUP_KEY: 5},
+    ))
+    # 只有记录、没有暂存：GROUP 这个 wire 够新，PART 早已解绑、不在扇出里，却按位置路由进了 GROUP
+    await env.routes._cancel_staged_writes_for_subjects(
+        NAME, {GROUP_KEY}, request_subject_key=GROUP_KEY, forget_epoch=5,
+    )
+    record = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_SEGMENTS]
+    # 不能因为 GROUP 够新就整条放过：经路由写进被清 subject 的 PART 必须记下，重试时丢掉它那段
+    assert record["state"] == "pending"
+    assert record.get("forgotten_keys") == [PART_KEY]
+
+
+async def test_tombstones_are_raised_per_key_at_their_own_epochs(env):
+    idem = env.idem
+    await idem.record_tombstone_epochs(NAME, {GROUP_KEY: 7, PART_KEY: 2})
+    await idem.record_tombstone_epochs(NAME, {GROUP_KEY: 3, PART_KEY: 4})
+    rows = _tombstones(env)
+    # 各 key 各自单调：GROUP 不被较小的 3 拉低，PART 被抬到 4，互不影响
+    assert rows[GROUP_KEY]["forget_epoch"] == 7 and rows[PART_KEY]["forget_epoch"] == 4
+    path = Path(idem.tombstones_path(NAME))
+    damaged = {**rows, GP_KEY: {"forget_epoch": "9"}}
+    path.write_text(json.dumps(damaged), encoding="utf-8")
+    await idem.record_tombstone_epochs(NAME, {GP_KEY: 1, PART_KEY: 5})
+    rows = _tombstones(env)
+    # 坏行原样保留（读路径对它 fail closed），同一次写入里的其它 key 照常抬高
+    assert rows[GP_KEY] == {"forget_epoch": "9"} and rows[PART_KEY]["forget_epoch"] == 5
+
+
+def test_damaged_routed_positions_fall_back_to_the_routed_keys(env):
+    record = {
+        "request": {"wire_keys": [PART_KEY]},
+        "routed_positions": [123],                              # 长度对得上，内容坏了
+        "routed_keys": [GROUP_KEY],
+        "epochs": {PART_KEY: 2},
+    }
+    marks = env.routes._stale_record_marks(record, {GROUP_KEY}, {GROUP_KEY: 5, PART_KEY: 2})
+    # 坏的按位置路由不能当成对齐：退回按 routed_keys 保守标记被清的落点
+    assert GROUP_KEY in marks
+
+
+async def test_retry_after_a_partly_recorded_completion_skips_marked_targets(env):
+    _fan_out_to(env, PART)
+    real_mark = env.idem.mark_tombstone_erased
+
+    async def broken_for_group(name, subject_key, *args, **kwargs):
+        if subject_key == GROUP_KEY:
+            raise OSError("disk full")
+        return await real_mark(name, subject_key, *args, **kwargs)
+
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", broken_for_group)
+    with pytest.raises(HTTPException):
+        await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", real_mark)
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, subject=PART, display_name=None))   # PART 擦完之后的合法写入
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    # 重试补完请求 subject；PART 的完成标记早已落盘，不再重擦它擦完之后的写入
+    assert result.get("duplicate") is None
+    assert _facts_of(env, PART) and env.idem.erased_epoch(_tombstones(env), GROUP_KEY) == 5
+
+
+async def test_partial_retry_still_cancels_a_stale_journal_of_a_completed_target(env):
+    _fan_out_to(env, PART)
+    real_mark = env.idem.mark_tombstone_erased
+
+    async def broken_for_group(name, subject_key, *args, **kwargs):
+        if subject_key == GROUP_KEY:
+            raise OSError("disk full")
+        return await real_mark(name, subject_key, *args, **kwargs)
+
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", broken_for_group)
+    with pytest.raises(HTTPException):
+        await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", real_mark)
+    # PART 的完成标记已落盘之后，一份清除前（代数 1）的 PART 请求落了暂存就崩溃
+    env.llm.responses = [SINGLE_FACTS]
+    await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # 这次只补擦 GROUP，但取消扫描仍覆盖带了代数的 PART：留着明文的旧暂存被取消
+    assert result.get("duplicate") is None
+    assert [s["subject_id"] for s in result["erased_subjects"]] == [GROUP["subject_id"]]
+    assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_partial_replay_does_not_mark_a_target_through_its_own_higher_fence(env):
+    group = MemorySubject.create(GROUP["subject_kind"], GROUP["subject_id"])
+    part = MemorySubject.create(PART["subject_kind"], PART["subject_id"])
+    # GROUP 与 PART 互为扇出（同一个参与者）
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", lambda subject: sorted(
+        [group, part], key=lambda t: (t.key, t.scope),
+    ))
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})         # 1. GROUP=5、PART=1
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))                    # 2. GROUP 之后合法写入
+    real_begin = env.fs.abegin_subject_forget
+
+    async def fail_once(name, subject):
+        raise RuntimeError("erase failed before it started")
+
+    env.monkeypatch.setattr(env.fs, "abegin_subject_forget", fail_once)
+    with pytest.raises(HTTPException):
+        await _forget(env, PART, forget_epoch=10)                                 # 3. PART 围栏 10，擦除前失败
+    env.monkeypatch.setattr(env.fs, "abegin_subject_forget", real_begin)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})         # 4. 重放：只补擦 PART
+    # PART 只按自己这次的代数记完成标记，不借那次擦除前就失败的围栏 10
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
+    retry = await _forget(env, PART, forget_epoch=10)                              # 5. 重试 PART 那次清除
+    assert retry.get("duplicate") is None and _facts_of(env, GROUP) == []
+
+
+async def test_replay_after_unlink_still_cancels_a_stale_journal_of_the_former_target(env):
+    original = env.routes._forget_fanout_targets
+    _fan_out_to(env, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})   # 原擦除：PART 的围栏是 2
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", original)  # 之后 PART 解绑
+    env.llm.responses = [SINGLE_FACTS]
+    await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # PART 已不在扇出里，不再擦它；但它以前被围过：清除前（代数 1）的残留明文暂存照样取消
+    assert result.get("duplicate") is True
+    assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_never_fenced_key_outside_the_fanout_is_not_cancelled(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # PART 从没被清除围过、也不在这次扇出里：它自己的写入是合法的，不能按调用方给的代数取消
+    assert _key_state(env, KEY_GROUP) == "pending" and _staging_file(env, KEY_GROUP).exists()
+    assert PART_KEY not in _tombstones(env)
+
+
+async def test_overlapping_alias_forgets_serialize_until_markers_land(env):
+    _fan_out_to(env, PART)                                      # GROUP 与 GP 的扇出都含 PART
+    entered, gate = asyncio.Event(), asyncio.Event()
+    real_cancel = env.routes._cancel_staged_writes_for_subjects
+
+    async def slow_post_erase_cancel(*args, **kwargs):
+        if not kwargs.get("best_effort") and not entered.is_set():
+            entered.set()
+            await gate.wait()
+        return await real_cancel(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_cancel_staged_writes_for_subjects", slow_post_erase_cancel)
+    begun: list[str] = []
+    real_begin = env.fs.abegin_subject_forget
+
+    async def spy_begin(name, subject):
+        begun.append(subject.key)
+        return await real_begin(name, subject)
+
+    env.monkeypatch.setattr(env.fs, "abegin_subject_forget", spy_begin)
+    first = asyncio.create_task(_forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2}))
+    await asyncio.wait_for(entered.wait(), timeout=5)           # 第一次已擦完、放了擦除锁，完成标记还没写
+    second = asyncio.create_task(_forget(env, GP, forget_epoch=3, target_epochs={PART_KEY: 2}))
+    await asyncio.sleep(0.05)
+    # 第二次清除点名的是另一个别名，但与第一次共享 PART：第一次写完完成标记之前它不能动手
+    assert begun.count(PART_KEY) == 1 and GP_KEY not in begun
+    gate.set()
+    await asyncio.wait_for(first, timeout=5)
+    result = await asyncio.wait_for(second, timeout=5)
+    # 它看到 PART 已擦到 2：只擦自己的 GP，不再重擦 PART（否则会删掉两次之间合法写入的记忆）
+    assert begun.count(PART_KEY) == 1
+    assert [s["subject_id"] for s in result["erased_subjects"]] == [GP["subject_id"]]
+
+
+async def test_fanout_growing_while_fences_are_taken_retakes_them(env):
+    linked = MemorySubject.create(PART["subject_kind"], PART["subject_id"])
+    original = env.routes._forget_fanout_targets
+    calls = {"n": 0}
+
+    def growing_fanout(subject):
+        calls["n"] += 1
+        base = list(original(subject))
+        # 第一次（外层拿栅栏时）还没关联 PART，之后关联上了
+        return base if calls["n"] == 1 else sorted(base + [linked], key=lambda t: (t.key, t.scope))
+
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", growing_fanout)
+    fenced: list[str] = []
+    real_fence = env.idem.forget_fence
+
+    def spy_fence(name, subject_key):
+        fenced.append(subject_key)
+        return real_fence(name, subject_key)
+
+    env.monkeypatch.setattr(env.idem, "forget_fence", spy_fence)
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # 扇出在拿栅栏期间多出了 PART：放掉重拿，PART 的栅栏也拿到之后才擦
+    assert result["status"] == "forgotten" and PART_KEY in fenced
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 2
+
+
+async def test_fanout_fence_raised_before_the_erase_locks_is_recorded_as_erased(env):
+    _fan_out_to(env, PART)
+    real_plan = env.routes._targets_still_to_erase
+    calls = {"n": 0}
+
+    async def plan(*args):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # 锁外读完围栏之后、擦除之前：另一次清除把 PART 的围栏抬到 6
+            await env.idem.record_tombstones(NAME, {PART_KEY}, 6)
+        return await real_plan(*args)
+
+    env.monkeypatch.setattr(env.routes, "_targets_still_to_erase", plan)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # 本次擦除在围栏 6 之后进行：完成标记按擦除前最后在位的围栏记，6 的重试不再重擦
+    assert calls["n"] == 2
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 6
+
+
+async def test_recheck_under_the_locks_narrows_to_the_unerased_targets(env):
+    await _forget(env, GROUP, forget_epoch=5)
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, subject=PART, display_name=None))
+    _fan_out_to(env, PART)
+    real_check = env.routes._forget_epoch_already_erased
+    calls = {"n": 0}
+
+    async def check(*args):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return False        # 锁外那次核对发生在请求 subject 的擦除完成之前
+        return await real_check(*args)
+
+    env.monkeypatch.setattr(env.routes, "_forget_epoch_already_erased", check)
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
+    # 持锁后看到请求 subject 已擦完：只擦还没擦到代数的 PART，GROUP 之后的合法写入不动
+    assert result.get("duplicate") is None and calls["n"] >= 2
+    assert _facts_of(env, PART) == [] and _facts_of(env, GROUP)
+
+
+async def test_failed_generation_keeps_the_fresh_wire_of_a_mixed_batch(env):
+    env.llm.responses = [RuntimeError("model down")]
+    with pytest.raises(RuntimeError):
+        await _post(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
+    assert _key_state(env, KEY_SEGMENTS) == "pending" and not _staging_file(env, KEY_SEGMENTS).exists()
+    _fan_out_to(env, GP, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={GP_KEY: 1, PART_KEY: 2})
+    # 只有记录、没有暂存：GP 早于它的围栏、PART 够新。不能整键取消，只记下 GP
+    assert _key_state(env, KEY_SEGMENTS) == "pending"
+    env.llm.responses = [PART_ONLY_BATCH_FACTS]
+    again = await _post(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
+    assert again.get("duplicate") is None
+    assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
+
+
+@pytest.mark.parametrize("body, detail", [
+    ({"subject": GROUP, "target_epochs": {PART_KEY: 1}}, "target_epochs requires forget_epoch"),
+    ({"subject": GROUP, "forget_epoch": 3, "target_epochs": {GROUP_KEY: 4}}, "target_epochs disagrees with forget_epoch"),
+    ({"subject": GROUP, "forget_epoch": 3, "target_epochs": {f"participant:neko_visit:p{i}": 1 for i in range(65)}},
+     "invalid target_epochs keys"),
+    ({"subject": GROUP, "forget_epoch": 3, "target_epochs": {"": 1}}, "invalid target_epochs keys"),
+], ids=["no-forget-epoch", "disagrees", "too-many", "empty-key"])
+async def test_unusable_target_epochs_are_422(env, body, detail):
+    req = env.routes.ScopedForgetRequest.model_validate(body)
+    with pytest.raises(HTTPException) as excinfo:
+        await env.routes.forget_scoped_subject(NAME, req)
+    assert excinfo.value.status_code == 422 and excinfo.value.detail == detail
+    assert _tombstones(env) == {}
+
+
+def test_target_epochs_reject_negative_values(env):
+    with pytest.raises(Exception):
+        env.routes.ScopedForgetRequest.model_validate(
+            {"subject": GROUP, "forget_epoch": 1, "target_epochs": {PART_KEY: -1}},
+        )

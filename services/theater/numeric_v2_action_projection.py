@@ -23,9 +23,10 @@ _ACTION_TERMS = (
     "整理", "收拾", "确认", "按下", "接过", "还给", "递给", "读", "看",
 )
 _DEPARTURE_TERMS = (
-    "先回去", "先回家", "先走", "走了", "离开这里", "离开", "回家", "走向门口",
-    "走向巷口", "走出门", "走出去", "推门离开", "转身离开", "起身离开", "那我走", "我们走",
+    "先回去", "先回家", "先走", "走了", "离开这里", "离开", "回家",
+    "走出门", "走出去", "推门离开", "转身离开", "起身离开", "那我走", "我们走",
 )
+_EXIT_APPROACH_TERMS = ("走向门口", "走向巷口")
 _QUESTION_MARKERS = ("？", "?", "吗", "能不能", "可以吗", "要不要", "是否", "有没有")
 _UNCOMMITTED_MARKERS = (
     "想", "希望", "准备", "打算", "考虑", "计划", "可能", "也许", "如果", "尝试", "试试",
@@ -131,6 +132,12 @@ def _explicit_action_clause(text: str, *, departure: bool = False) -> str:
         if departure:
             has_term = any(
                 not _negated_at(clause, start)
+                and not any(
+                    start < approach_start + len(approach)
+                    and start + len(term) > approach_start
+                    for approach in _EXIT_APPROACH_TERMS
+                    for approach_start in _term_starts(clause, approach)
+                )
                 for term in terms
                 for start in _term_starts(clause, term)
             )
@@ -147,6 +154,17 @@ def _explicit_action_clause(text: str, *, departure: bool = False) -> str:
 
 def _departure_is_explicit(text: str) -> bool:
     return bool(_explicit_action_clause(text, departure=True))
+
+
+def _exit_approach_clause(text: str) -> str:
+    # 明确取消离开时，不用前面的接近动作压制新的邀请；不猜折返目的地。
+    if any(_negated_at(text, start) for term in _DEPARTURE_TERMS
+           for start in _term_starts(text, term)):
+        return ""
+    for clause in _clauses(text):
+        if any(term in clause for term in _EXIT_APPROACH_TERMS) and _explicit_action_clause(clause):
+            return clause
+    return ""
 
 
 def _action_is_explicit(text: str) -> bool:
@@ -190,8 +208,16 @@ def project_player_action_result(
             "source": "player_input",
             "evidence_quote": text,
         })
+    approach_clause = _exit_approach_clause(text) if not confirmed else ""
     action_clause = _explicit_action_clause(text)
-    if text and not confirmed and _action_is_explicit(action_clause):
+    if approach_clause:
+        confirmed.append({
+            "kind": "approach_scene_exit",
+            "status": "performed",
+            "source": "player_input",
+            "evidence_quote": approach_clause,
+        })
+    elif text and not confirmed and _action_is_explicit(action_clause):
         confirmed.append({
             "kind": "player_action",
             "status": "performed",
@@ -239,6 +265,9 @@ def project_player_action_result(
         ),
         "player_left_current_scene": any(
             row.get("kind") == "leave_current_scene" for row in confirmed
+        ),
+        "player_departure_pending": any(
+            row.get("kind") == "approach_scene_exit" for row in confirmed
         ),
     }
 
@@ -295,6 +324,9 @@ def normalize_player_action_projection(value: Any) -> dict[str, Any]:
         ),
         "player_left_current_scene": any(
             row.get("kind") == "leave_current_scene" for row in normalized_confirmed
+        ),
+        "player_departure_pending": any(
+            row.get("kind") == "approach_scene_exit" for row in normalized_confirmed
         ),
     }
 

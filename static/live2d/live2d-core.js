@@ -30,8 +30,7 @@ let isEmotionChanging = false; // 防止快速连续点击的标志
 // Electron Pet 窗口永不进入手机模式（本文件早于 common_ui.js 加载，故用 flag 内联判断）。
 const isMobileWidth = () => !window.__LANLAN_IS_ELECTRON_PET__ && window.innerWidth <= 768;
 
-// 口型同步参数列表常量
-// 这些参数用于控制模型的嘴部动作，在处理表情和常驻表情时需要跳过，以避免覆盖实时的口型同步
+// 运行时嘴部参数保护范围：保存外观时仍需排除嘴形，避免把动态表情固化。
 window.LIPSYNC_PARAMS = [
     'ParamMouthOpenY',
     'ParamMouthForm',
@@ -42,6 +41,9 @@ window.LIPSYNC_PARAMS = [
     'ParamE',
     'ParamO'
 ];
+
+// 语音振幅只驱动开合；嘴形交给表情和动作。保留上面的外观保护范围。
+window.LIPSYNC_AMPLITUDE_PARAMS = window.LIPSYNC_PARAMS.filter(id => id !== 'ParamMouthForm');
 
 // 模型偏好验证常量
 const MODEL_PREFERENCES = {
@@ -179,6 +181,11 @@ class Live2DManager {
 
         // 口型同步
         this.mouthValue = 0; // 0~1 (嘴巴开合值)
+        this._lipSyncOwner = null;
+        this._mouthOverrideToken = null;
+        this._mouthMotionManagerRef = null;
+        this._cachedMouthIndices = null;
+        this._cachedMouthIndicesModel = null;
         this.mouthParameterId = null; // 例如 'ParamMouthOpenY' 或 'ParamO'
         this._mouthOverrideInstalled = false;
         this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法

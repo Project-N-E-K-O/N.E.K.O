@@ -14,6 +14,8 @@ from .numeric_v2 import (
     _GOAL_DELIVERY_OUTPUTS,
     goals_to_package,
     acting_contract_to_package,
+    has_dialogue_policy_conflict,
+    final_dialogue_policy,
     character_state_to_package,
     scene_turn_budget,
 )
@@ -529,10 +531,9 @@ class NumericV2BranchService:
             "transition_contract": self._transition_contract(
                 first_transition,
                 source_ids=[self._last_goal_fact_id(source)],
-                # 来源幕带有 completion_contract 时，编译器要求每条普通出口都提供
-                # 可直接展示的邀请和对应接受输入；支线也必须沿用同一换场合同。
+                # 完成后禁言可以不拼接邀请，但普通出口仍保留对应接受输入。
                 fallback_offer=(
-                    str(first_transition["fallback_offer"]).strip()
+                    str(first_transition.get("fallback_offer") or "").strip() or None
                 ),
                 accept_input=(
                     str(first_transition["accept_input"]).strip()
@@ -622,7 +623,7 @@ class NumericV2BranchService:
                             None
                             if target_is_terminal
                             else (
-                                str(outgoing_transition["fallback_offer"]).strip()
+                                str(outgoing_transition.get("fallback_offer") or "").strip() or None
                             )
                         ),
                         accept_input=(
@@ -1753,6 +1754,7 @@ class NumericV2BranchService:
                 scene.get("character_state"),
                 path=f"scenes[{index}].character_state",
                 cast_names=plan["context"]["global"]["intro"],
+                ordered_goals=scene["ordered_goals"],
             )
             normalized_scenes.append(scene)
 
@@ -1760,6 +1762,12 @@ class NumericV2BranchService:
         if not isinstance(transitions, list) or len(transitions) != plan["length"] + 1:
             raise NumericV2BranchError("branch_transition_count_mismatch")
         normalized_transitions = []
+        source_beat = ((plan.get("context") or {}).get("source") or {}).get("story_beat") or {}
+        source_policy = final_dialogue_policy(
+            (source_beat.get("acting_contract") or {}).get("dialogue_policy"),
+            (((goal.get("delivery") or {}).get("state_effects") or {}).get("dialogue_policy")
+             for goal in source_beat.get("goals") or [] if isinstance(goal, Mapping)),
+        )
         for index, raw in enumerate(transitions):
             if not isinstance(raw, Mapping):
                 raise NumericV2BranchError("invalid_branch_generation")
@@ -1772,8 +1780,17 @@ class NumericV2BranchService:
                 transition[field] = self._required_text(transition.get(field), f"transitions[{index}].{field}")
             ordinary_exit = index < len(normalized_scenes) or plan.get("endpoint_mode") == "mainline"
             if ordinary_exit:
+                source_scene = normalized_scenes[index - 1] if index else None
+                completion_policy = source_policy if source_scene is None else final_dialogue_policy(
+                    source_scene["character_state"]["acting_contract"]["dialogue_policy"],
+                    (goal.get("dialogue_policy_after") for goal in source_scene["ordered_goals"]),
+                )
                 for field in ("fallback_offer", "accept_input"):
                     value = transition.get(field)
+                    if (field == "fallback_offer" and completion_policy == "forbidden"
+                            and (field not in transition or isinstance(value, str) and not value.strip())):
+                        transition.pop(field, None)
+                        continue
                     if not isinstance(value, str) or not value.strip():
                         raise NumericV2BranchError(
                             "branch_transition_accept_input_required"
@@ -1927,6 +1944,7 @@ class NumericV2BranchService:
     @classmethod
     def _validate_character_state(
         cls, value: Any, *, path: str, cast_names: Mapping[str, str] | None = None,
+        ordered_goals: Any = None,
     ) -> dict[str, Any]:
         """Branches reuse the mainline state-arc contract; free text must not omit character subjects."""
 
@@ -1954,6 +1972,11 @@ class NumericV2BranchService:
         if not isinstance(contract, Mapping):
             raise NumericV2BranchError("invalid_branch_generation", {"path": f"{path}.acting_contract"})
         normalized_contract = deepcopy(dict(contract))
+        if has_dialogue_policy_conflict(normalized_contract.get("dialogue_policy"), ordered_goals):
+            raise NumericV2BranchError("invalid_branch_generation", {
+                "path": f"{path}.acting_contract.dialogue_policy",
+                "issue_code": "node_dialogue_policy_conflict",
+            })
         for field, allowed in _ACTING_ENUMS.items():
             if normalized_contract.get(field) not in allowed:
                 raise NumericV2BranchError("invalid_branch_generation", {"path": f"{path}.acting_contract.{field}"})
@@ -2055,8 +2078,9 @@ class NumericV2BranchService:
             ))
         # 普通幕出口的邀请由作者侧合同负责，不能等 Runtime 临时拼接；终点为结局
         # 的路线不传这两个字段，继续遵守“进入结局即结束”的合同。
-        if fallback_offer is not None or accept_input is not None:
-            contract["fallback_offer"] = str(fallback_offer or "").strip()
+        if fallback_offer:
+            contract["fallback_offer"] = str(fallback_offer).strip()
+        if accept_input is not None:
             contract["accept_input"] = str(accept_input or "").strip()
         return contract
 

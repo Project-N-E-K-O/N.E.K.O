@@ -280,6 +280,33 @@ def live_runtimes() -> list["VisitRuntime"]:
     return list(_runtimes.values())
 
 
+def end_visits_disabled() -> int:
+    """``visitEnabled`` was switched off: end every live visit now (``visit_disabled``, design §3.7.6).
+
+    A hard end with the fixed farewell line, no natural wrap-up. Visits
+    already running their exit flow are left alone. Returns how many were
+    ended.
+    """
+    global _disabled_gen
+    _disabled_gen += 1  # 还挂在入场途中的 start_visit 醒来后看到它就不登记
+    return sum(1 for rt in live_runtimes() if rt.request_finalize("visit_disabled"))
+
+
+def apply_voice_setting(enabled: bool) -> int:
+    """``visitVoiceEnabled`` was saved: live visits use it from their next line (design §3.7.6).
+
+    Pushed by the settings save instead of re-read before each line, so the
+    reply runner keeps no await between its admission check and taking the
+    line; the home-coming line and debrief summary follow it as well. The
+    one-way TTS fallback (``voice.fallen_back``) is kept. Returns how many
+    runtimes were updated.
+    """
+    runtimes = live_runtimes()
+    for rt in runtimes:
+        rt.voice.enabled = bool(enabled)
+    return len(runtimes)
+
+
 def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
     return _by_visit.get(visit_id)
 
@@ -360,6 +387,10 @@ _account_changes = 0
 
 _account_gen = 0
 """Bumped when an account change starts: a ``start_visit`` that was awaiting meanwhile does not register."""
+
+_disabled_gen = 0
+"""Bumped by :func:`end_visits_disabled`: a ``start_visit`` still awaiting when the user switched visits off
+does not register (it is not in ``_runtimes`` yet, so ending live visits cannot reach it)."""
 
 _account_change_lock: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = None
 """Serializes account changes (created per event loop: a lock binds to the loop that first waits on it)."""
@@ -521,9 +552,10 @@ def _reset_for_tests() -> None:
     _room_cancels.clear()
     _outbox_cleanups.clear()
     _awaited_writes.clear()
-    global _account_changes, _account_gen, _account_change_lock
+    global _account_changes, _account_gen, _account_change_lock, _disabled_gen
     _account_changes = 0
     _account_gen = 0
+    _disabled_gen = 0
     _account_change_lock = None
     _credential_requests.clear()
     _runtimes.clear()
@@ -2688,6 +2720,7 @@ async def start_visit(
         raise ValueError("side must be 'host' or 'guest'")
     stop_gen = _stop_gen
     account_gen = _account_gen
+    disabled_gen = _disabled_gen
     if _account_changes:
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
     gate = await persona_gate(name)
@@ -2726,6 +2759,9 @@ async def start_visit(
         if _stop_gen != stop_gen or _stopping:
             # 入场途中 stop_all 跑过 / 正在跑（它只看得到已登记的运行时）：不再登记、不再起传输
             raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "shutdown"})
+        if _disabled_gen != disabled_gen:
+            # 入场途中用户在设置里关掉了串门（关闭钩子只结束已登记的运行时）：不再登记
+            raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "visit_disabled"})
         # 查账号期间（还没登记运行时、输入还不归串门）语音会话 / 热切换可能已经起来、manager 也可能被换掉：再查一次
         if not host.is_current():
             raise VisitRefused(409, {"reason": "busy"})

@@ -17,6 +17,7 @@ import portalocker
 
 from .numeric_v2_archive import _retry_windows_permission_error
 from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
+from .numeric_v2_narrative import apply_narrative_record, narrative_body_fingerprint
 from .numeric_v2_performance import (
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
@@ -901,6 +902,54 @@ class NumericV2SessionStore:
 
             return await self._mutate(commit_turn)
 
+    async def settle_narrative(
+        self, expected: NumericV2StoredSession, record: Mapping[str, Any] | None,
+    ) -> bool:
+        """Settle only the pending tail; never advance or rewrite delivered story state."""
+        path = self._path(expected.session.session_id)
+        async with _lock(path):
+            def settle() -> bool:
+                if not path.is_file():
+                    return False
+                current = self._load_validated(path)
+                if current is None or not current.ledger_events:
+                    return False
+                pending = current.ledger_events[-1].get("narrative_pending")
+                if (not pending or pending != expected.ledger_events[-1].get("narrative_pending")
+                        or current.session.revision != expected.session.revision
+                        or current.session.lifecycle_revision != expected.session.lifecycle_revision
+                        or current.session.status != expected.session.status
+                        or current.session.forgotten_through_revision != expected.session.forgotten_through_revision
+                        or pending["body"] != narrative_body_fingerprint(current.session.performance_history[-1])):
+                    return False
+                events = deepcopy(list(current.ledger_events))
+                history = deepcopy(list(current.session.performance_history))
+                events[-1].pop("narrative_pending")
+                if record is not None:
+                    events[-1]["narrative_record"] = deepcopy(dict(record))
+                    history[-1]["narrative_record"] = deepcopy(dict(record))
+                # Rebuild the derived projection from the durable sequence. Both
+                # copies of the record and the Session move in one atomic write.
+                state = None
+                opening = current.session.opening_performance
+                node = str(self.engine.story["start_node_id"])
+                if "narrative_record" in opening:
+                    state = apply_narrative_record(None, opening["narrative_record"], revision=0,
+                        node_id=node, from_node_id=node, performance=opening, message="")
+                for event, performance in zip(events, history):
+                    if "narrative_record" in event:
+                        state = apply_narrative_record(state, event["narrative_record"],
+                            revision=event["result_revision"], node_id=event["to_node_id"],
+                            from_node_id=event["from_node_id"], performance=performance,
+                            message=event["input_text"])
+                stored = NumericV2StoredSession(replace(current.session,
+                    narrative_state=state, performance_history=tuple(history)), tuple(events))
+                self._validate_chain(stored)
+                self._write(path, stored)
+                return True
+
+            return await self._mutate(settle)
+
     async def end_session(
         self,
         session_id: str,
@@ -1173,12 +1222,22 @@ class NumericV2SessionStore:
             session_id=stored.session.session_id,
             catgirl_binding=stored.session.catgirl_binding,
             opening_performance={key: value for key, value in stored.session.opening_performance.items()
-                                 if key != "fixed_narrations"},
+                                 if key not in {"fixed_narrations", "narrative_record"}},
             actor_budget_profile=stored.session.actor_budget_profile,
         )
         # Delivery was validated above against its captured names. Renaming must
         # not rewrite already displayed text while replaying the ledger.
         replay_session = replace(replay_session, opening_performance=stored.session.opening_performance)
+        if "narrative_record" in stored.session.opening_performance:
+            try:
+                narrative_state = apply_narrative_record(
+                    None, stored.session.opening_performance["narrative_record"], revision=0,
+                    node_id=expected_node, from_node_id=expected_node,
+                    performance=stored.session.opening_performance, message="",
+                )
+            except ValueError as exc:
+                raise NumericV2StoreError("numeric_narrative_replay_invalid") from exc
+            replay_session = replace(replay_session, narrative_state=narrative_state)
         if len(stored.session.performance_history) != len(events):
             raise NumericV2StoreError("numeric_performance_history_mismatch")
         for event_index, event in enumerate(events):
@@ -1248,6 +1307,19 @@ class NumericV2SessionStore:
                 performance = stored.session.performance_history[event_index]
                 if not isinstance(performance, Mapping):
                     raise ValueError("performance_record_shape")
+                if "narrative_pending" in event:
+                    pending = event["narrative_pending"]
+                    if (event_index != len(events) - 1 or not isinstance(pending, Mapping)
+                            or set(pending) != {"job_id", "body", "lifecycle_revision", "forgotten_through_revision"}
+                            or not isinstance(pending["job_id"], str) or len(pending["job_id"]) != 32
+                            or any(c not in "0123456789abcdef" for c in pending["job_id"])
+                            or pending["body"] != narrative_body_fingerprint(performance)
+                            or type(pending["lifecycle_revision"]) is not int
+                            or not 0 <= pending["lifecycle_revision"] <= stored.session.lifecycle_revision
+                            or type(pending["forgotten_through_revision"]) is not int
+                            or not -1 <= pending["forgotten_through_revision"] <= stored.session.forgotten_through_revision
+                            or event.get("narrative_record", {}).get("coverage") != "unrecorded"):
+                        raise NumericV2StoreError("numeric_narrative_pending_invalid")
                 validate_delivery(self.engine.story, performance, session=replay_session)
             except Exception as exc:
                 raise NumericV2StoreError("numeric_ledger_replay_invalid") from exc
@@ -1405,6 +1477,21 @@ class NumericV2SessionStore:
                     != ["source_response", "transition_bridge", "target_opening"]
                 ):
                     raise NumericV2StoreError("numeric_transition_performance_invalid")
+            if ("narrative_record" in event) != ("narrative_record" in performance):
+                raise NumericV2StoreError("numeric_narrative_record_mismatch")
+            if "narrative_record" in event:
+                if event["narrative_record"] != performance["narrative_record"]:
+                    raise NumericV2StoreError("numeric_narrative_record_mismatch")
+                try:
+                    narrative_state = apply_narrative_record(
+                        replay_session.narrative_state, event["narrative_record"],
+                        revision=expected_revision, node_id=str(expected_event["to_node_id"]),
+                        from_node_id=str(expected_event["from_node_id"]),
+                        performance=performance, message=request.message,
+                    )
+                except ValueError as exc:
+                    raise NumericV2StoreError("numeric_narrative_replay_invalid") from exc
+                replayed_session = replace(replayed_session, narrative_state=narrative_state)
             # 重放时同步补回正式正文历史，供后续上下文继续使用。
             replay_session = replace(
                 replayed_session,
@@ -1433,6 +1520,7 @@ class NumericV2SessionStore:
             or replay_session.dialogue_policy != stored.session.dialogue_policy
             or replay_session.transition_offered != stored.session.transition_offered
             or replay_session.story_state != stored.session.story_state
+            or replay_session.narrative_state != stored.session.narrative_state
         ):
             raise NumericV2StoreError("numeric_session_scene_progress_mismatch")
 

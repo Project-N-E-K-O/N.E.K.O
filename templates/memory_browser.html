@@ -301,6 +301,76 @@
                     </div>
                     </div>
                 </section>
+                <section id="memory-visit-panel" class="memory-aux-panel" role="dialog" aria-modal="true" aria-labelledby="memory-visit-panel-title" tabindex="-1" hidden>
+                    <div class="memory-aux-panel-header">
+                        <h3 id="memory-visit-panel-title" data-i18n="memory.visit.panelTitle">串门记忆</h3>
+                        <button type="button" class="memory-aux-panel-close" data-memory-panel-close data-i18n-aria="memory.closePanel" aria-label="关闭面板">
+                            <img src="/static/icons/close_button.png" alt="" aria-hidden="true" draggable="false">
+                        </button>
+                    </div>
+                    <div class="memory-aux-panel-body memory-visit-body">
+                        <div id="memory-visit-main" class="memory-visit-main">
+                            <p class="memory-visit-description" data-i18n="memory.visit.intro">串门记忆区与私聊记忆分开存放；这里只管理串门记忆，不提供查看或编辑记忆内容。</p>
+                            <ul class="memory-visit-facts">
+                                <li data-i18n="memory.visit.factLocalOnly">所有清除只作用于这台电脑；对方机器上的副本无法远程清除。</li>
+                                <li data-i18n="memory.visit.factLinkable">同一个社区账号在所有对方机器上是同一个 id，两位对方可以对照确认是同一个人（跨对可关联是设计如此）。</li>
+                                <li data-i18n="memory.visit.factNoCloudSave">串门的本机临时记录不会进入 Steam 云存档。</li>
+                            </ul>
+                            <div id="memory-visit-status" class="memory-visit-status" role="status" aria-live="polite" aria-atomic="true"></div>
+                            <button type="button" id="memory-visit-discard-unreadable" class="memory-visit-button memory-visit-danger" data-i18n="memory.visit.discardUnreadable" hidden>丢弃损坏的清除记录</button>
+                            <div id="memory-visit-confirm" class="memory-visit-confirm" role="group" aria-labelledby="memory-visit-confirm-message" hidden>
+                                <p id="memory-visit-confirm-message"></p>
+                                <label id="memory-visit-confirm-scope" class="memory-visit-confirm-scope" for="memory-visit-confirm-scope-checkbox" hidden>
+                                    <input type="checkbox" id="memory-visit-confirm-scope-checkbox" checked>
+                                    <span id="memory-visit-confirm-scope-label"></span>
+                                </label>
+                                <div class="memory-visit-confirm-actions">
+                                    <button type="button" id="memory-visit-confirm-cancel" class="memory-visit-button" data-i18n="memory.visit.cancel">取消</button>
+                                    <button type="button" id="memory-visit-confirm-ok" class="memory-visit-button memory-visit-danger"></button>
+                                </div>
+                            </div>
+                            <section class="memory-visit-section" aria-labelledby="memory-visit-peers-title">
+                                <div class="memory-visit-section-header">
+                                    <h4 id="memory-visit-peers-title">串过门的人</h4>
+                                    <button type="button" id="memory-visit-refresh" class="memory-visit-link" data-i18n="memory.visit.refresh">刷新</button>
+                                </div>
+                                <ul id="memory-visit-peers" class="memory-visit-list"></ul>
+                                <p id="memory-visit-peers-empty" class="memory-visit-empty" hidden></p>
+                            </section>
+                            <details id="memory-visit-blocklist" class="memory-visit-section memory-visit-blocklist">
+                                <summary data-i18n="memory.visit.blocklistTitle">黑名单</summary>
+                                <p class="memory-visit-note" data-i18n="memory.visit.blocklistNote">拉黑不是记忆：清除串门记忆不会解除拉黑，拉黑也不会清除记忆。黑名单对这台电脑上的所有社区账号都生效。这里只列出与当前角色串过门、仍在名册里的人。</p>
+                                <ul id="memory-visit-blocklist-list" class="memory-visit-list"></ul>
+                                <p id="memory-visit-blocklist-empty" class="memory-visit-empty" hidden></p>
+                            </details>
+                            <section class="memory-visit-section" aria-labelledby="memory-visit-history-title">
+                                <h4 id="memory-visit-history-title" data-i18n="memory.visit.historyTitle">每场记录</h4>
+                                <p class="memory-visit-note" data-i18n="memory.visit.historyNote">列表来自串门服务器，只含当前社区账号参与过、仍在保留期内的场次。</p>
+                                <ul id="memory-visit-history" class="memory-visit-list"></ul>
+                                <p id="memory-visit-history-empty" class="memory-visit-empty" hidden></p>
+                                <button type="button" id="memory-visit-history-more" class="memory-visit-button" data-i18n="memory.visit.historyMore" hidden>加载更多</button>
+                            </section>
+                            <div class="memory-visit-footer">
+                                <button type="button" id="memory-visit-forget-all" class="memory-visit-button memory-visit-danger memory-visit-mutation" data-i18n="memory.visit.forgetAll">清除全部串门记忆</button>
+                            </div>
+                        </div>
+                        <div id="memory-visit-details" class="memory-visit-details" hidden>
+                            <div class="memory-visit-section-header">
+                                <h4 id="memory-visit-details-title" data-i18n="memory.visit.detailsTitle">串门详情</h4>
+                                <button type="button" id="memory-visit-details-back" class="memory-visit-link" data-i18n="memory.visit.back">返回</button>
+                            </div>
+                            <div id="memory-visit-details-status" class="memory-visit-status" role="status" aria-live="polite" aria-atomic="true"></div>
+                            <dl id="memory-visit-details-summary" class="memory-visit-details-summary"></dl>
+                            <h5 class="memory-visit-details-subtitle" data-i18n="memory.visit.detailsTranscript">转录</h5>
+                            <ol id="memory-visit-details-lines" class="memory-visit-transcript"></ol>
+                            <div class="memory-visit-details-pager">
+                                <button type="button" id="memory-visit-details-prev" class="memory-visit-button" data-i18n="memory.visit.detailsPrev" hidden>上一页</button>
+                                <span id="memory-visit-details-page" class="memory-visit-note"></span>
+                                <button type="button" id="memory-visit-details-next" class="memory-visit-button" data-i18n="memory.visit.detailsNext" hidden>下一页</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
                 <section id="memory-settings-panel" class="memory-aux-panel" role="dialog" aria-modal="true" aria-labelledby="memory-settings-panel-title" tabindex="-1" hidden>
                     <div class="memory-aux-panel-header">
                         <h3 id="memory-settings-panel-title" data-i18n="memory.settingsDialogTitle">记忆设置</h3>
@@ -383,9 +453,14 @@
                         <div class="memory-editor-context">
                             <div class="editor-title" data-i18n="memory.chatHistory">聊天记录</div>
                         </div>
-                        <button type="button" id="memory-import-trigger" class="memory-editor-action" data-memory-panel-trigger="import" aria-controls="memory-import-panel" aria-expanded="false" disabled>
-                            <span data-i18n="memory.openExternalImport">导入记忆</span>
-                        </button>
+                        <div class="memory-editor-header-actions">
+                            <button type="button" id="memory-visit-trigger" class="memory-editor-action" data-memory-panel-trigger="visit" aria-controls="memory-visit-panel" aria-expanded="false" disabled>
+                                <span data-i18n="memory.visit.trigger">串门记忆</span>
+                            </button>
+                            <button type="button" id="memory-import-trigger" class="memory-editor-action" data-memory-panel-trigger="import" aria-controls="memory-import-panel" aria-expanded="false" disabled>
+                                <span data-i18n="memory.openExternalImport">导入记忆</span>
+                            </button>
+                        </div>
                     </div>
                     <div id="memory-chat-edit"></div>
                     <div class="editor-actions" id="save-row" style="display:none;">

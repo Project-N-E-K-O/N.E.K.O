@@ -393,6 +393,16 @@ def _after_attempt(retry_after_s: int | None) -> float:
     return float(max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], retry_after_s or 0))
 
 
+def _queued_login_required() -> JSONResponse:
+    """``VISIT_LOGIN_REQUIRED`` for a report that is already queued (``queued: true``).
+
+    Unlike a report refused before it was queued, re-submitting it only gets
+    ``already_queued``; the page shows it as queued and asks to sign in.
+    """
+    status, body = cr.VisitLoginRequired().to_local_error()
+    return JSONResponse({"ok": False, **body, "queued": True}, status_code=status)
+
+
 async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
     visit_id = doc["visit_id"]
     if doc["include_transcript"]:
@@ -422,8 +432,8 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
                 tu.schedule_visit_retry(visit_id, config_dir=config_dir,
                                         initial_delay_s=_after_attempt(upload.retry_after_s))
             if upload.login_required:
-                # 已排队，但转录因登录失效传不上去：提示重新登录
-                return _cloud_error(cr.VisitLoginRequired())
+                # 已排队，但转录因登录失效传不上去：提示重新登录，并带 queued 让页面按已排队显示
+                return _queued_login_required()
             return JSONResponse({"queued": True}, status_code=202)
         # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上；
         # 没能写进文件（磁盘 / 权限）时原因在 upload.unavailable 里，提交的这份照样带上
@@ -444,7 +454,7 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
     tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(result.retry_after_s))
     if result.login_required:
         # 已排队，但登录失效：提示重新登录（原账号回来后由后台 / 启动补录接着提交）
-        return _cloud_error(cr.VisitLoginRequired())
+        return _queued_login_required()
     return JSONResponse({"queued": True}, status_code=202)
 
 

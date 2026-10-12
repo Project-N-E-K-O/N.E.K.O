@@ -4795,36 +4795,91 @@ def _staging_identity(document: dict) -> dict:
     return {"shape": None, "wire_keys": sorted(_staged_subject_keys(document)), "content_hash": None}
 
 
-def _staged_after_forget(
-    document: dict, subject_keys: set[str], request_subject_key: str | None, forget_epoch: int | None,
-) -> bool:
+def _forget_fences(
+    request_subject_key: str | None, forget_epoch: int | None, fanout_fences: dict[str, int] | None,
+) -> dict[str, int]:
+    """``{wire key: forget epoch}`` a staged write's own epochs can be compared against."""
+    fences = dict(fanout_fences or {})
+    if request_subject_key is not None and forget_epoch is not None:
+        fences[request_subject_key] = forget_epoch
+    return fences
+
+
+def _wire_after_forget(wire_key: object, epochs: object, fences: dict[str, int]) -> bool:
+    """Whether a write stamped for ``wire_key`` was started after that key's forget fence."""
+    if not isinstance(wire_key, str) or wire_key not in fences or not isinstance(epochs, dict):
+        return False
+    epoch = epochs.get(wire_key)
+    return isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= fences[wire_key]
+
+
+def _staged_after_forget(document: dict, subject_keys: set[str], fences: dict[str, int]) -> bool:
     """Whether a staged write was started knowing this forget (so it must not be cancelled).
 
-    Only decidable for a forget with ``forget_epoch``, and only when the
-    request subject is the sole forgotten subject the staging touches (fan-out
-    subjects keep their own counters): the staging's epoch for it is at least
-    ``forget_epoch``, the same rule that lets such a write pass the tombstone.
+    Decided per segment, each against the fence of its OWN wire key (the same
+    rule that lets the segment pass the tombstone): every segment touching a
+    forgotten subject must carry an epoch at or above that wire key's fence.
+    ``fences`` holds the request subject's epoch plus, when the caller sent
+    them, each fan-out target's own epoch; a wire key without a fence (a
+    fan-out target nobody gave an epoch for, or an unrelated account routed
+    into the erased subject) has no comparable epoch and counts as before.
     """
-    if forget_epoch is None or request_subject_key is None:
+    if not fences:
         return False
     epochs = document.get("epochs")
-    epoch = epochs.get(request_subject_key) if isinstance(epochs, dict) else None
-    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < forget_epoch:
-        return False
-    # 按段判断：涉及被清 subject 的每一段，它的 wire subject 都必须正是这次请求的 subject
-    # （路由后的 subject 只是同一个 wire 的落点，wire 的代数够新它就是清除之后的合法写入）。
-    # 扇出目标作为 wire 的段有它自己的代数域，比不了，按「清除之前」处理
+    # 按段判断：涉及被清 subject 的每一段，都按它自己 wire key 的围栏比（路由后的 subject 只是
+    # 同一个 wire 的落点，wire 的代数够新它就是清除之后的合法写入）。没有围栏的 wire 比不了，
+    # 按「清除之前」处理
     segments = document.get("segments")
     if isinstance(segments, list) and segments:
-        return all(
-            isinstance(segment, dict) and segment.get("wire_key") == request_subject_key
-            for segment in segments
-            if _segment_subject_keys(segment) & subject_keys
+        touching = [segment for segment in segments if _segment_subject_keys(segment) & subject_keys]
+        return bool(touching) and all(
+            isinstance(segment, dict) and _wire_after_forget(segment.get("wire_key"), epochs, fences)
+            for segment in touching
         )
     wires = document.get("wire_keys")
     if not isinstance(wires, list):
         return False
-    return all(str(wire) == request_subject_key for wire in wires if str(wire) in subject_keys)
+    touching_wires = [str(wire) for wire in wires if str(wire) in subject_keys]
+    return bool(touching_wires) and all(_wire_after_forget(wire, epochs, fences) for wire in touching_wires)
+
+
+def _stale_record_marks(record: dict, subject_keys: set[str], fences: dict[str, int]) -> set[str]:
+    """Keys to journal as ``forgotten_keys`` on a pending record that has no staging yet.
+
+    Position by position (the record keeps the wire keys and, aligned with
+    them, ``routed_positions``): a position touching a forgotten subject
+    through its wire or its routed destination is marked by its WIRE key,
+    unless that wire was started after its own fence. The retry drops every
+    segment whose wire OR routed destination is a marked key, so marking the
+    wire (not the shared destination) spares a fresh wire routed to the same
+    forgotten subject; a fresh wire routed onto a stale wire's own key is
+    still dropped (over-dropping, never under-erasing). A record without
+    aligned positions (older records) also marks the forgotten routed keys,
+    as before.
+    """
+    request = record.get("request")
+    raw_wires = request.get("wire_keys") if isinstance(request, dict) else None
+    wires = [str(wire) for wire in raw_wires] if isinstance(raw_wires, list) else []
+    epochs = record.get("epochs") or {}
+    positions = record.get("routed_positions")
+    aligned = (
+        isinstance(positions, list) and len(positions) == len(wires)
+        and all(isinstance(position, str) and position for position in positions)
+    )
+    marks: set[str] = set()
+    for index, wire in enumerate(wires):
+        routed = str(positions[index]) if aligned else None
+        if wire not in subject_keys and routed not in subject_keys:
+            continue
+        if _wire_after_forget(wire, epochs, fences):
+            continue
+        marks.add(wire)
+    if not aligned:
+        routed_keys = record.get("routed_keys")
+        if isinstance(routed_keys, list):
+            marks |= subject_keys.intersection(str(k) for k in routed_keys)
+    return marks
 
 
 def _staged_subject_keys(document: dict) -> set[str]:
@@ -4870,21 +4925,30 @@ def _applied_seqs_valid(applied: list, item_count: int) -> bool:
     ) and len(set(seqs)) == len(seqs)
 
 
-def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
+def _drop_forgotten_segments(
+    document: dict, subject_keys: set[str], fences: dict[str, int] | None = None,
+) -> bool:
     """Drop only the forgotten segments of a partly affected multi-segment journal.
 
-    Returns False (nothing changed) when no segment or every segment touches
-    ``subject_keys``: the whole key is cancelled then. Otherwise every
-    not-yet-applied item of an affected segment is journaled as
-    ``dropped_forget`` and every item of such a segment loses its extracted
-    content, so a retry applies only the untouched segments.
+    A segment is affected when it touches ``subject_keys`` and was not started
+    after its own wire key's fence (``fences``, see :func:`_staged_after_forget`).
+    Returns False (nothing changed) when no segment or every segment is
+    affected: the whole key is cancelled then. Otherwise every not-yet-applied
+    item of an affected segment is journaled as ``dropped_forget`` and every
+    item of such a segment loses its extracted content, so a retry applies
+    only the remaining segments.
     """
     segments = document.get("segments")
     if not isinstance(segments, list) or not segments:
         return False
+    epochs = document.get("epochs")
     affected = {
         index for index, segment in enumerate(segments)
         if _segment_subject_keys(segment) & subject_keys
+        and not (
+            isinstance(segment, dict)
+            and _wire_after_forget(segment.get("wire_key"), epochs, fences or {})
+        )
     }
     if not affected or len(affected) == len(segments):
         return False
@@ -5052,6 +5116,7 @@ async def _cancel_staged_writes_for_subjects(
     *,
     request_subject_key: str | None = None,
     forget_epoch: int | None = None,
+    fanout_fences: dict[str, int] | None = None,
     best_effort: bool = False,
 ) -> int:
     """Cancel every staged keyed write that touches one of ``subject_keys``.
@@ -5061,7 +5126,9 @@ async def _cancel_staged_writes_for_subjects(
     raises instead, so the forget is retried.
 
     A staging started with an epoch at or above ``forget_epoch`` for the
-    request subject was issued after this forget and is left alone.
+    request subject was issued after this forget and is left alone; so is a
+    segment whose wire key is a fan-out target stamped at or above that
+    target's own fence in ``fanout_fences``.
 
     Runs after the erase, holding no other lock: each affected key's lock is
     taken on its own (an in-flight apply of the same key finishes first; an
@@ -5072,6 +5139,7 @@ async def _cancel_staged_writes_for_subjects(
     """
     from . import idempotency
 
+    fences = _forget_fences(request_subject_key, forget_epoch, fanout_fences)
     cancelled = 0
     async def _cancel_one_document(path, document) -> None:
         nonlocal cancelled
@@ -5099,11 +5167,9 @@ async def _cancel_staged_writes_for_subjects(
             return
         async with idempotency.key_lock(lanlan_name, key):
             current = await idempotency.read_staging(lanlan_name, key)
-            if current is None or _staged_after_forget(
-                current, subject_keys, request_subject_key, forget_epoch,
-            ):
+            if current is None or _staged_after_forget(current, subject_keys, fences):
                 return
-            if _drop_forgotten_segments(current, subject_keys):
+            if _drop_forgotten_segments(current, subject_keys, fences):
                 # 多段批次只有部分段涉及被清的 subject：只把这些段未应用的项记为丢弃、
                 # 抹掉它们的抽取原文，键保持 pending、暂存留着，重试照常补写其余段
                 await idempotency.write_staging(lanlan_name, key, current)
@@ -5187,11 +5253,12 @@ async def _cancel_staged_writes_for_subjects(
         peek_touched = _staged_subject_keys(peek) | set(wire_keys) if peek is not None else set(wire_keys)
         if not subject_keys.intersection(peek_touched):
             return
-        if peek is None and _staged_after_forget(
-            {"wire_keys": wire_only, "epochs": record.get("epochs") or {}},
-            subject_keys, request_subject_key, forget_epoch,
-        ):
-            # 还没有暂存、但记录里的请求代数说明它是知道这次清除之后才发起的：合法的新写入
+        # 没有暂存时只能按记录逐个位置判断：早于自己围栏的 wire 才记进 forgotten_keys，
+        # 够新的 wire 留给重试照常写入（不能把整个请求归成一个布尔值一起丢）。经路由写进被清
+        # subject、本身没有围栏的 wire 也按位置算进来，不能只看 wire 本身是不是被清的 key
+        stale_marks = _stale_record_marks(record, subject_keys, fences)
+        if peek is None and not stale_marks:
+            # 还没有暂存、也没有早于围栏的位置：全是知道这次清除之后才发起的合法新写入
             return
         def _mark_forgotten(touched: set[str]):
             def _mark(old, touched=touched):
@@ -5224,9 +5291,9 @@ async def _cancel_staged_writes_for_subjects(
             # 还没有暂存、键锁被占着：持锁的请求正在调 LLM，不排在它后面。只在记录上持久记下
             # 被清的 subject（字符锁下原子改一条记录）：它生成完落暂存前、或生成失败 / 进程被杀
             # 之后同键重试重新生成时，都据此丢弃这些段，不会用清除之后的 generation 写回旧内容
-            await idempotency.update_key(
-                lanlan_name, key, _mark_forgotten(subject_keys.intersection(peek_touched)),
-            )
+            if not stale_marks:
+                return
+            await idempotency.update_key(lanlan_name, key, _mark_forgotten(stale_marks))
             cancelled += 1
             return
         async with idempotency.key_lock(lanlan_name, key):
@@ -5244,23 +5311,23 @@ async def _cancel_staged_writes_for_subjects(
                 # 清除（每次都 500），也不能留着——同键重试读它只会 fail closed，修好后
                 # 又会应用。按记录认领：标 cancelled 再删掉这份坏暂存
                 logger.warning(f"[scoped_forget] {lanlan_name}: 暂存不可读，按键记录取消: {unreadable}")
-            if staged is not None and _staged_after_forget(
-                staged, subject_keys, request_subject_key, forget_epoch,
-            ):
+            if staged is not None and _staged_after_forget(staged, subject_keys, fences):
                 # 带着这次清除之后的代数发起的新请求：它的产物是合法的新记忆，不取消
                 return
-            if staged is not None and _drop_forgotten_segments(staged, subject_keys):
+            if staged is not None and _drop_forgotten_segments(staged, subject_keys, fences):
                 # 同上面的暂存扫描：多段批次只丢涉及被清 subject 的段，其余段留给重试
                 await idempotency.write_staging(lanlan_name, key, staged)
                 cancelled += 1
                 return
-            if staged is None and unreadable is None and not set(wire_keys) <= subject_keys:
-                # 没有暂存（生成失败 / 进程被杀后键锁已放开）、请求里还有没被清的 subject：与键锁
-                # 被占时同一处理，只在记录上记下被清的 subject，同键重试重新生成时只丢这些段。
-                # 整键取消会让其余段的记忆永久写不进去（客户端拿到 duplicate 不会重发）
-                await idempotency.update_key(
-                    lanlan_name, key, _mark_forgotten(subject_keys.intersection(touched)),
-                )
+            if staged is None and unreadable is None and (
+                not set(wire_keys) <= subject_keys or not set(wire_only) <= stale_marks
+            ):
+                # 没有暂存（生成失败 / 进程被杀后键锁已放开）、请求里还有没被清的 subject 或够新的
+                # wire：与键锁被占时同一处理，只在记录上记下早于围栏的 wire，同键重试重新生成时只丢
+                # 这些段。整键取消会让其余段的记忆永久写不进去（客户端拿到 duplicate 不会重发）
+                if not stale_marks:
+                    return
+                await idempotency.update_key(lanlan_name, key, _mark_forgotten(stale_marks))
                 cancelled += 1
                 return
             # 不论暂存在不在都在键级锁下取消：上面那遍扫描只是快照，扫描之后才写成的
@@ -5382,6 +5449,20 @@ class ScopedForgetRequest(BaseModel):
     # keyed scoped_history whose ``subject_epochs`` for that subject is lower
     # is dropped at apply time. Absent: no tombstone is written.
     forget_epoch: int | None = Field(default=None, ge=0)
+    # Optional ``{MemorySubject.key: forget_epoch}`` of every OTHER subject
+    # identity expansion erases along with the requested one, each from its
+    # own per-key counter (requires ``forget_epoch``). Absent: only the
+    # requested subject is fenced, exactly as before. Present but missing a
+    # fan-out target: 409 listing the missing keys, before anything is
+    # written or erased, so the caller bumps those counters and resends.
+    # A NEW forget must bump EVERY target's counter, not only the missing
+    # ones: a target whose own completion marker already reaches the epoch
+    # given for it is treated as a replay and is not erased again, so reusing
+    # its last epoch leaves the rows routed into its pile since then.
+    target_epochs: dict[str, Annotated[int, Field(ge=0)]] | None = None
+
+
+_FORGET_TARGET_EPOCHS_MAX = 64
 
 
 @app.post("/internal/memory/{lanlan_name}/scoped_forget")
@@ -5392,21 +5473,60 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     cancellation passes and the completion marker: without it an older
     forget could recheck after a newer one released its erase locks but
     before it published its completed epoch, and erase again.
+
+    The fence is taken for the requested subject AND every fan-out target,
+    all of them in sorted key order before any other lock: two forgets that
+    name different linked aliases share targets, and one must not recheck
+    or raise a shared target's fence between the other's erase and its
+    completion markers. When the fan-out changes while the fences are being
+    taken, they are released and taken again for the new set.
     """
     if req.forget_epoch is None:
         return await _run_forget(lanlan_name, req)
+    import contextlib
+
     from . import idempotency
 
     try:
-        fence_key = req.subject.to_domain().key
+        subject = req.subject.to_domain()
         fence_name = validate_lanlan_name(lanlan_name)
     except Exception:  # noqa: BLE001 - 非法请求交给下面的实现照常报错
         return await _run_forget(lanlan_name, req)
-    async with idempotency.forget_fence(fence_name, fence_key):
-        return await _run_forget(lanlan_name, req)
+    for _attempt in range(_FORGET_FENCE_ATTEMPTS):
+        fence_keys = _forget_fence_keys(subject)
+        async with contextlib.AsyncExitStack() as stack:
+            # 按 key 排序一次拿齐：所有清除都按同一顺序拿栅栏，不会互等
+            for fence_key in fence_keys:
+                await stack.enter_async_context(idempotency.forget_fence(fence_name, fence_key))
+            try:
+                return await _run_forget(lanlan_name, req, fenced_keys=frozenset(fence_keys))
+            except _FanoutChangedUnderFence:
+                # 拿栅栏期间身份关联变了，扇出多出了没拿栅栏的目标：放掉重拿（此时还没写任何东西）
+                continue
+    raise HTTPException(
+        status_code=503,
+        detail="identity links kept changing during the scoped forget; retry",
+    )
 
 
-async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
+_FORGET_FENCE_ATTEMPTS = 3
+
+
+class _FanoutChangedUnderFence(Exception):
+    """The fan-out grew a target whose forget fence this request does not hold."""
+
+
+def _forget_fence_keys(subject) -> list[str]:
+    """Sorted subject keys whose forget fences an epoch-tagged forget of ``subject`` takes."""
+    from memory import trust_store as _trust_store
+
+    if not _trust_store.trust_snapshot().loaded:
+        # 身份池读不出时清除本身会 503（不做部分擦除），只拿请求 subject 自己的栅栏
+        return [subject.key]
+    return sorted({subject.key} | {target.key for target in _forget_fanout_targets(subject)})
+
+
+async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, fenced_keys=None):
     """Delete every stored memory of one exact (subject, scope) domain.
 
     撤回入口：删好友/退群之后，该 subject 的 facts（活跃 + 归档）、
@@ -5429,6 +5549,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
     subject = req.subject.to_domain()
+    _validate_target_epochs(req, subject)
     from memory import trust_store as _trust_store
     if not _trust_store.trust_snapshot().loaded:
         # FAIL CLOSED. With the pool unreadable the fan-out set is unknown, and
@@ -5448,14 +5569,23 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             ),
         )
     targets = _forget_fanout_targets(subject)
+    if fenced_keys is not None and not {target.key for target in targets} <= fenced_keys:
+        # 扇出里有本请求没拿栅栏的目标：在写墓碑、擦除之前交回外层重拿栅栏
+        raise _FanoutChangedUnderFence()
     forgotten_subject_keys = {subject.key} | {target.key for target in targets}
     default_scope = subject.scope == subject.key
     if req.forget_epoch is not None and not default_scope:
         # 代数、墓碑、已擦标记都按 kind:id 记：非默认 scope 带代数会让同一 key 的另一个
         # scope 被当成「已擦过」跳过（漏删）。带代数的清除只用于默认 scope
         raise HTTPException(status_code=422, detail="forget_epoch requires the default subject scope")
+    # 扇出目标各自的代数（客户端带了 target_epochs 才有）：缺了哪个目标就在写任何东西之前 409
+    fanout_epochs = _fanout_target_epochs(req, subject, targets)
     fence_at_start = None
     effective_fence = req.forget_epoch
+    erase_targets = list(targets)
+    # 扇出目标：擦除开始前已在位的围栏 / 取消暂存用的有效围栏，都按各自的 key 记
+    fanout_fence_at_start: dict[str, int] = {}
+    effective_fanout_fences = dict(fanout_epochs or {})
     if req.forget_epoch is not None:
         # 墓碑必须先于任何擦除落盘：应用阶段「先取代数、再查墓碑」，所以
         # 墓碑落盘之后才开始的应用必然看见它，之前已过墓碑检查的那一项则
@@ -5463,20 +5593,28 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         from . import idempotency
 
         try:
-            # 代数只属于请求里这个 subject（客户端按 MemorySubject.key 各自计数）：
-            # 不抄给扇出的关联 subject，否则它们自己较小的代数会被永久挡下。
-            # 扇出目标上在飞的写入由事实存储的 forget generation 兜住
-            recorded = await idempotency.record_tombstones(
-                lanlan_name, {subject.key}, req.forget_epoch,
+            # 代数按 MemorySubject.key 各自计数：请求 subject 用 forget_epoch，扇出目标只用
+            # 客户端为它给出的代数，绝不抄请求 subject 的（否则它们自己较小的代数会被永久挡下）。
+            # 没带 target_epochs 时扇出目标不记墓碑，在飞写入仍只由事实存储的 forget generation 兜住
+            recorded = await idempotency.record_tombstone_epochs(
+                lanlan_name, {**effective_fanout_fences, subject.key: req.forget_epoch},
             )
             # 擦除开始前已在位的围栏（更新的清除可能已抬高它、却没擦就失败了）：本次擦除
             # 在它之后进行，完成时一并记为已擦到这个代数
-            fence_row = recorded.get(subject.key) if isinstance(recorded, dict) else None
-            fence_at_start = fence_row.get("forget_epoch") if isinstance(fence_row, dict) else None
-            if isinstance(fence_at_start, int) and not isinstance(fence_at_start, bool) and fence_at_start > effective_fence:
+            fence_at_start = _recorded_fence(recorded, subject.key)
+            if fence_at_start is not None and fence_at_start > effective_fence:
                 # 取消暂存按已在位的有效围栏比，不按这次（可能是陈旧重放的）较低代数：早于围栏的
                 # 暂存都该取消
                 effective_fence = fence_at_start
+            _raise_fanout_fences(recorded, effective_fanout_fences, fanout_fence_at_start)
+            # 调用方给了代数、却已不在当前扇出里的 key（两次请求之间解绑了）：不给它写新墓碑，
+            # 但它以前被清除擦过（墓碑里已有围栏）时，按那个已存的围栏一并参与取消扫描，
+            # 否则它在原擦除之后落下的清除前暂存会带着明文一直挂在 pending 上。只认已存的围栏：
+            # 按这次给的代数比会误取消它解绑之后自己的合法写入
+            for retained_key in _retained_target_keys(req, subject, targets):
+                fence = _recorded_fence(recorded, retained_key)
+                if fence is not None:
+                    effective_fanout_fences[retained_key] = fence
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:
@@ -5490,9 +5628,18 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                 detail="scoped forget failed; retry is safe and idempotent",
             ) from exc
         # 这个代数（或更新的）的擦除已经完成过：重放 / 迟到的旧清除不再擦一遍，否则
-        # 会把之后带着新代数合法写入的记忆一并删掉。拿到擦除事务锁之后还会再核一次
-        if await _forget_epoch_already_erased(lanlan_name, subject.key, req.forget_epoch):
-            return await _forget_duplicate_after_cancel(lanlan_name, subject, targets, effective_fence)
+        # 会把之后带着新代数合法写入的记忆一并删掉。但这次带了代数、还没擦到这个代数的扇出
+        # 目标（上次擦除之后才关联进来的）照样要擦：只擦它们。拿到擦除事务锁之后还会再核一次
+        erase_targets = await _targets_still_to_erase(
+            lanlan_name, subject, targets, req.forget_epoch, fanout_epochs,
+        )
+        if not erase_targets:
+            return await _forget_duplicate_after_cancel(
+                lanlan_name, subject, targets, effective_fence, effective_fanout_fences,
+            )
+    erase_keys = _erase_subject_keys(
+        subject, targets, erase_targets, forgotten_subject_keys, effective_fanout_fences,
+    )
     # 擦除之前先取消一遍已有的带键暂存 / 记录（此时手上没有任何别的锁，不会与
     # 正在应用的同键请求成环）：之后同键重试只会得到 duplicate，不会在擦除完成、
     # 下面那遍取消扫描到达之前抢先用清除之后的 generation 把旧产物写回
@@ -5500,9 +5647,9 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         if default_scope:
             # 带键写入只有默认 scope：清的是别的 scope 时与它们无关，不能按 kind:id 误取消
             await _cancel_staged_writes_for_subjects(
-                lanlan_name, forgotten_subject_keys,
+                lanlan_name, erase_keys,
                 request_subject_key=subject.key, forget_epoch=effective_fence,
-                best_effort=True,
+                fanout_fences=effective_fanout_fences, best_effort=True,
             )
     except MaintenanceModeError:
         raise
@@ -5529,7 +5676,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     # arguments ("delete canonical last") are not enough.
     await runtime._reload_lock.acquire()
     try:
-        for target in targets:
+        for target in erase_targets:
             lock = runtime.fact_store._get_subject_forget_transaction_lock(
                 lanlan_name, target,
             )
@@ -5537,21 +5684,47 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             acquired_locks.append(lock)
         # 并发的新旧清除可能都在锁外通过了上面的核对：较新的那个擦完、放锁之后，
         # 旧的这个才拿到锁。持锁之后再核一次，免得把较新清除之后的合法写入擦掉
-        if req.forget_epoch is not None and await _forget_epoch_already_erased(
-            lanlan_name, subject.key, req.forget_epoch,
-        ):
-            # 放锁之后再跑与外层相同的那遍取消：持锁等待期间写下的清除前暂存同样要取消
-            raise _ForgetAlreadyErased(lanlan_name, subject, targets, effective_fence)
+        if req.forget_epoch is not None:
+            # 已擦标记只增不减：持锁后还要擦的只会是锁外算出那一组的子集
+            still = await _targets_still_to_erase(
+                lanlan_name, subject, targets, req.forget_epoch, fanout_epochs,
+            )
+            locked = {(target.key, target.scope) for target in erase_targets}
+            still = [target for target in still if (target.key, target.scope) in locked]
+            if not still:
+                # 放锁之后再跑与外层相同的那遍取消：持锁等待期间写下的清除前暂存同样要取消
+                raise _ForgetAlreadyErased(
+                    lanlan_name, subject, targets, effective_fence, effective_fanout_fences,
+                )
+            if len(still) != len(erase_targets):
+                erase_targets = still
+                erase_keys = _erase_subject_keys(
+                    subject, targets, erase_targets, forgotten_subject_keys, effective_fanout_fences,
+                )
+        if req.forget_epoch is not None:
+            # 锁外读围栏之后、拿到擦除锁之前，别的清除可能又抬高了某个 key 的围栏（扇出到它的清除
+            # 不受本请求的 forget_fence 保护）：本次擦除在它之后进行，完成标记与取消都按擦除前
+            # 最后在位的围栏算，只升不降
+            try:
+                fences_now = await idempotency.read_tombstones(lanlan_name)
+            except idempotency.IdempotencyStateError:
+                fences_now = None
+            if fences_now is not None:
+                fence = _recorded_fence(fences_now, subject.key)
+                if fence is not None and (fence_at_start is None or fence > fence_at_start):
+                    fence_at_start = fence
+                    effective_fence = max(effective_fence, fence)
+                _raise_fanout_fences(fences_now, effective_fanout_fences, fanout_fence_at_start)
         # ALL tombstones open before ANY erase.
-        for target in targets:
+        for target in erase_targets:
             await runtime.fact_store.abegin_subject_forget(lanlan_name, target)
             fact_forget_started.append(target)
-        for target in targets:
+        for target in erase_targets:
             await runtime.reflection_engine.abegin_subject_forget(
                 lanlan_name, target,
             )
             reflection_forget_started.append(target)
-        for target in targets:
+        for target in erase_targets:
             # SUM, never replace. Every store returns the same counter keys, so
             # a per-target ``update`` reports only the LAST account's numbers —
             # if the first account deleted rows and a later one deleted none,
@@ -5597,7 +5770,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         # would leave that account's archived shards restorable through event
         # replay — i.e. a "left the group, wiped my data" request that quietly
         # keeps a copy.
-        for target in targets:
+        for target in erase_targets:
             await runtime.fact_store.afinalize_subject_forget(
                 lanlan_name, target,
             )
@@ -5634,8 +5807,9 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     try:
         if default_scope:
             await _cancel_staged_writes_for_subjects(
-                lanlan_name, forgotten_subject_keys,
+                lanlan_name, erase_keys,
                 request_subject_key=subject.key, forget_epoch=effective_fence,
+                fanout_fences=effective_fanout_fences,
             )
     except MaintenanceModeError:
         raise
@@ -5649,10 +5823,26 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         from . import idempotency
 
         try:
-            # 擦除与两遍取消都完成之后才记「这个代数擦完了」
-            await idempotency.mark_tombstone_erased(
-                lanlan_name, subject.key, req.forget_epoch, covered_epoch=fence_at_start,
-            )
+            # 擦除与两遍取消都完成之后才记「这个代数擦完了」。扇出目标先记、请求 subject 最后记：
+            # 重复清除的捷径只看请求 subject 的完成标记，它落盘时每个目标的标记都已经在了
+            erased_keys = {target.key for target in erase_targets}
+            # 部分擦除没重擦请求 subject 和已擦过的目标：不能借已在位的更高围栏把目标记成已擦。
+            # 那次更高代数的清除（以这个目标为请求 subject、扇出到整个参与者）还没擦完，借了
+            # 它重试时就走 duplicate 捷径，参与者里其余账号期间写入的内容漏擦
+            full_erase = len(erase_targets) == len(targets)
+            for target_key, target_epoch in sorted((fanout_epochs or {}).items()):
+                if target_key not in erased_keys:
+                    continue
+                await idempotency.mark_tombstone_erased(
+                    lanlan_name, target_key, target_epoch,
+                    covered_epoch=fanout_fence_at_start.get(target_key) if full_erase else None,
+                )
+            if subject.key in erased_keys:
+                # 只补擦了扇出目标时请求 subject 没被擦：它已有的完成标记已经覆盖 forget_epoch，
+                # 不能借 covered_epoch 把一个擦除前就失败的更高围栏一并记成已擦（那次的擦除就再没机会补上）
+                await idempotency.mark_tombstone_erased(
+                    lanlan_name, subject.key, req.forget_epoch, covered_epoch=fence_at_start,
+                )
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:
@@ -5677,8 +5867,136 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         "forgotten_subjects": [
             target.as_entry_fields() for target in targets
         ],
+        # 这一次真正擦除的 subject：重放只补擦新关联目标时它比 forgotten_subjects 少，
+        # 隐私清除唯一的回执要能分辨「补擦」和「完整擦除」
+        "erased_subjects": [
+            target.as_entry_fields() for target in erase_targets
+        ],
         **stats,
     }
+
+
+def _validate_target_epochs(req: ScopedForgetRequest, subject) -> None:
+    """422 for a ``target_epochs`` map that cannot be honoured as sent."""
+    target_epochs = req.target_epochs
+    if target_epochs is None:
+        return
+    if req.forget_epoch is None:
+        raise HTTPException(status_code=422, detail="target_epochs requires forget_epoch")
+    if len(target_epochs) > _FORGET_TARGET_EPOCHS_MAX or any(
+        not key or len(key) > 512 or not key.isprintable() for key in target_epochs
+    ):
+        raise HTTPException(status_code=422, detail="invalid target_epochs keys")
+    if subject.key in target_epochs and target_epochs[subject.key] != req.forget_epoch:
+        # 请求 subject 的代数只有一个来源：两处写的不一样时不知道该信哪个
+        raise HTTPException(status_code=422, detail="target_epochs disagrees with forget_epoch")
+
+
+def _fanout_target_epochs(req: ScopedForgetRequest, subject, targets) -> dict[str, int] | None:
+    """``{fan-out target key: its own epoch}``, or None when the caller did not opt in.
+
+    Raises 409 (before anything is written or erased) listing every fan-out
+    target the caller gave no epoch for: the server cannot pick one for it,
+    since a copied or guessed epoch either blocks that subject's own later
+    writes or lets its delayed pre-forget writes through.
+    """
+    if req.target_epochs is None:
+        return None
+    fanout_keys = sorted({target.key for target in targets} - {subject.key})
+    missing = [key for key in fanout_keys if key not in req.target_epochs]
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "missing_target_epochs", "missing_target_epochs": missing},
+        )
+    # 扇出集合之外多给的 key（两次请求之间解绑了）不记墓碑：它不在这次擦除面上
+    return {key: int(req.target_epochs[key]) for key in fanout_keys}
+
+
+async def _targets_still_to_erase(lanlan_name: str, subject, targets, forget_epoch, fanout_epochs) -> list:
+    """The fan-out targets this forget still has to erase (empty: a duplicate).
+
+    Each target is judged by its own completion marker: the request subject
+    and every target the caller gave no epoch for go with the request
+    subject's marker for ``forget_epoch``; a target the caller gave its own
+    epoch for is erased only while its own marker is below that epoch. So a
+    replay naming an account linked after the original erase erases just
+    that account, and a retry after a partly recorded completion does not
+    erase again a target whose marker already landed (either would delete
+    writes made legitimately after that erase). An unreadable tombstone file
+    counts as "not erased" (bias towards deleting).
+    """
+    from . import idempotency
+
+    if forget_epoch is None:
+        return list(targets)
+    request_done = await _forget_epoch_already_erased(lanlan_name, subject.key, forget_epoch)
+    if request_done and not fanout_epochs:
+        return []
+    tombstones: dict = {}
+    if fanout_epochs:
+        try:
+            tombstones = await idempotency.read_tombstones(lanlan_name)
+        except idempotency.IdempotencyStateError:
+            tombstones = {}
+    pending = []
+    for target in targets:
+        epoch = None if target.key == subject.key else (fanout_epochs or {}).get(target.key)
+        if epoch is None:
+            # 请求 subject 与没给代数的扇出目标：跟着请求 subject 的完成标记走
+            if not request_done:
+                pending.append(target)
+            continue
+        done = idempotency.erased_epoch(tombstones, target.key)
+        if done is None or done < epoch:
+            pending.append(target)
+    return pending
+
+
+def _erase_subject_keys(
+    subject, targets, erase_targets, forgotten_subject_keys: set[str], fenced_keys,
+) -> set[str]:
+    """Subject keys the cancellation passes match for this erase.
+
+    The whole fan-out for a full erase. For a partial one (some targets
+    were erased already) the erase scope is narrower, but cancellation is
+    not: the request subject, the targets erased now, and every key with a
+    comparable fence (``fenced_keys``), the same set the duplicate path
+    cancels for. ``fenced_keys`` also holds keys the caller named that left
+    the fan-out but were fenced by an earlier erase. A pre-forget journal
+    of an already erased key that staged after its marker landed is
+    cancelled too, while a fresh one survives the per-key fence comparison.
+    """
+    if len(erase_targets) == len(targets):
+        return set(forgotten_subject_keys) | set(fenced_keys)
+    return {subject.key} | {target.key for target in erase_targets} | set(fenced_keys)
+
+
+def _retained_target_keys(req: ScopedForgetRequest, subject, targets) -> list[str]:
+    """Keys the caller gave an epoch for that are no longer in the current fan-out (unlinked since)."""
+    current = {target.key for target in targets} | {subject.key}
+    return sorted(set(req.target_epochs or {}) - current)
+
+
+def _raise_fanout_fences(tombstones, effective: dict[str, int], at_start: dict[str, int]) -> None:
+    """Raise each fan-out target's fences to the tombstone epoch now stored for it (never lowers)."""
+    for target_key in list(effective):
+        fence = _recorded_fence(tombstones, target_key)
+        if fence is None:
+            continue
+        if fence > at_start.get(target_key, -1):
+            at_start[target_key] = fence
+        if fence > effective[target_key]:
+            effective[target_key] = fence
+
+
+def _recorded_fence(recorded, subject_key: str) -> int | None:
+    """The tombstone epoch now stored for ``subject_key`` (None when absent or damaged)."""
+    row = recorded.get(subject_key) if isinstance(recorded, dict) else None
+    fence = row.get("forget_epoch") if isinstance(row, dict) else None
+    if isinstance(fence, int) and not isinstance(fence, bool) and fence >= 0:
+        return fence
+    return None
 
 
 async def _forget_epoch_already_erased(lanlan_name: str, subject_key: str, forget_epoch: int) -> bool:
@@ -5696,24 +6014,30 @@ async def _forget_epoch_already_erased(lanlan_name: str, subject_key: str, forge
 class _ForgetAlreadyErased(Exception):
     """Raised under the erase locks when the epoch turns out to be erased already."""
 
-    def __init__(self, lanlan_name, subject, targets, effective_fence) -> None:
+    def __init__(self, lanlan_name, subject, targets, effective_fence, fanout_fences=None) -> None:
         super().__init__("forget epoch already erased")
-        self.args_for_cancel = (lanlan_name, subject, targets, effective_fence)
+        self.args_for_cancel = (lanlan_name, subject, targets, effective_fence, fanout_fences)
 
 
-async def _forget_duplicate_after_cancel(lanlan_name, subject, targets, effective_fence) -> dict:
-    """Answer an already-erased forget after cancelling pre-forget staging of the request subject.
+async def _forget_duplicate_after_cancel(
+    lanlan_name, subject, targets, effective_fence, fanout_fences=None,
+) -> dict:
+    """Answer an already-erased forget after cancelling pre-forget staging of the fenced subjects.
 
     The store is not erased again, but a pre-forget keyed request that arrived
     after the original erase may have staged plaintext and crashed; pending,
-    it is never swept by the TTL. Only the request subject itself is
-    matched: a fan-out target's later keyed write carries that target's own
-    epoch, which cannot be compared to this one, and is legitimate.
+    it is never swept by the TTL. Only subjects with a comparable epoch are
+    matched: the request subject, plus each fan-out target the caller gave
+    its own epoch for (``fanout_fences``). A target without one is left
+    alone: its later keyed write carries an epoch from another counter that
+    cannot be compared to this forget's, and is legitimate.
     """
+    fanout_fences = dict(fanout_fences or {})
     try:
         await _cancel_staged_writes_for_subjects(
-            lanlan_name, {subject.key},
+            lanlan_name, {subject.key} | set(fanout_fences),
             request_subject_key=subject.key, forget_epoch=effective_fence,
+            fanout_fences=fanout_fences,
         )
     except MaintenanceModeError:
         raise
@@ -5726,9 +6050,9 @@ async def _forget_duplicate_after_cancel(lanlan_name, subject, targets, effectiv
     return _forget_duplicate_response(subject, targets)
 
 
-async def _run_forget(lanlan_name: str, req: ScopedForgetRequest):
+async def _run_forget(lanlan_name: str, req: ScopedForgetRequest, *, fenced_keys=None):
     try:
-        return await _forget_scoped_subject(lanlan_name, req)
+        return await _forget_scoped_subject(lanlan_name, req, fenced_keys=fenced_keys)
     except _ForgetAlreadyErased as done:
         return await _forget_duplicate_after_cancel(*done.args_for_cancel)
 
@@ -5738,6 +6062,7 @@ def _forget_duplicate_response(subject, targets) -> dict:
         "status": "forgotten",
         "subject": subject.as_entry_fields(),
         "forgotten_subjects": [target.as_entry_fields() for target in targets],
+        "erased_subjects": [],
         "duplicate": True,
     }
 

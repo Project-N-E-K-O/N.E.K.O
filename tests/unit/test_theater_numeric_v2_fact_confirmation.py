@@ -1,5 +1,9 @@
 """Uncommitted fact claims cannot become history or bypass the final review."""
 
+import asyncio
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from services.theater import numeric_v2_evaluator as evaluator
@@ -171,3 +175,103 @@ async def test_actor_candidate_cannot_bypass_enabled_review(tmp_path, monkeypatc
     )
     assert (key in result.stored.session.story_state["facts"]) == (approved or not review_on)
     assert "fact_candidates" not in result.performance
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("genre", ["校园值日", "飞船检修"])
+@pytest.mark.parametrize("scenario", ["approve", "veto", "missing", "invalid_index", "rewrite", "timeout"])
+async def test_actor_completion_handoff_uses_only_this_drafts_reviewed_quote(tmp_path, monkeypatch, genre, scenario):
+    story = numeric_v2_story()
+    key = "scene:start:ready"
+    texts = ({"first": "台面已经擦净，清洁工具也已收好。", "second": "清洁工具已归位，台面确认干净。"}
+             if genre == "校园值日" else
+             {"first": "供电线路已接通，指示灯也已亮起。", "second": "指示灯亮起，供电线路确认接通。"})
+    story["fact_contract"] = {"facts": {
+        key: {"value_type": "bool", "visibility": "public", "description": texts["first"]},
+        "scene:start:later": {"value_type": "bool", "visibility": "public", "description": "另一项工作完成。"},
+    }}
+    story["nodes"][0]["completion_contract"] = {"all": [
+        {"key": key, "equals": True}, {"key": "scene:start:later", "equals": True},
+    ]}
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    current = await runtime.start_session(
+        session_id="actor_handoff", catgirl_binding=_binding(),
+        opening_performance={"performance": "还需要做完眼前的工作。", "suggested_inputs": []},
+    )
+    original_bytes = runtime.store._path(current.session.session_id).read_bytes()
+    generations = []
+    requests = []
+    client_settings = []
+
+    async def options():
+        return {"evaluator": True, "review": True, "dispute": False}
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        text = texts["second"] if generations else texts["first"]
+        generations.append(text)
+        return {"performance": text, "suggested_inputs": [], "transition_offered": False,
+                "fact_candidates": [{"key": key, "value": True, "evidence_quote": text}]}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def ainvoke(self, messages):
+            data = json.loads(messages[1].content[messages[1].content.index("{"):])
+            requests.append(data)
+            if scenario == "timeout":
+                raise asyncio.TimeoutError
+            first_rewrite = scenario == "rewrite" and len(requests) == 1
+            payload = {"offer_present": False, "valid": False, "body_violations": ["author_boundary"] if first_rewrite else [],
+                       "unsafe_suggestion_indexes": [], "failure_reason": "当前稿须改写。" if first_rewrite else "",
+                       "fact_candidates": []}
+            if scenario != "missing":
+                payload["approved_actor_fact_indexes"] = [0] if scenario == "approve" or first_rewrite else [True] if scenario == "invalid_index" else []
+            # An unapproved Actor key cannot be reintroduced through independent extraction.
+            if scenario in {"veto", "missing", "invalid_index"}:
+                payload["fact_candidates"] = [{"key": key, "value": True, "evidence_quote": data["actor_performance"]}]
+            return SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+
+    async def factory(*args, **kwargs):
+        client_settings.append(kwargs)
+        return Client()
+
+    async def config(_):
+        return {"model": "test", "base_url": "http://test.invalid"}
+
+    monkeypatch.setattr(workflow, "aload_theater_module_options", options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
+    monkeypatch.setattr(evaluator, "_model_config", config)
+    monkeypatch.setattr(evaluator, "create_chat_llm_async", factory)
+    if scenario == "timeout":
+        with pytest.raises(workflow.NumericV2ActorOutputError, match="transition_review_failed"):
+            await workflow.execute_numeric_v2_turn(
+                config_manager=object(), runtime=runtime, current=current,
+                turn=TurnRequestV2("handoff", 0, "请把这项工作完成并核对结果。"), ensure_current_binding=lambda _: _binding(),
+            )
+        assert runtime.store._path(current.session.session_id).read_bytes() == original_bytes
+        assert await runtime.restore_session(current.session.session_id) == current
+        return
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("handoff", 0, "请把这项工作完成并核对结果。"), ensure_current_binding=lambda _: _binding(),
+    )
+    assert (key in result.stored.session.story_state["facts"]) == (scenario == "approve")
+    assert result.performance["performance"] == generations[-1]
+    assert "fact_candidates" not in result.performance
+    assert len(requests) == len(generations) == (2 if scenario == "rewrite" else 1)
+    for request, text in zip(requests, generations):
+        assert request["actor_fact_candidates"] == [{"index": 0, "key": key, "value": True,
+                                                     "evidence_quote": text, "description": texts["first"]}]
+    # Missed-initiation check (+96) and the separate narrative table approval (+90)
+    # share the existing Review; neither changes fact approval or SDK retries.
+    assert all(settings["max_completion_tokens"] == 536 and settings["max_retries"] == 0 for settings in client_settings)
+    assert await runtime.restore_session(current.session.session_id) == result.stored

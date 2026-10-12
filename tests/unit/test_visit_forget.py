@@ -980,3 +980,82 @@ async def test_replay_goes_on_past_an_unreadable_revocation_log(tmp_path):
     assert clean is False and broken.exists()
     assert not (tmp_path / "visit_revocations" / f"{rev_id}.json").exists()
     assert server.calls("scoped_forget")
+
+
+async def test_quarantine_rereads_under_the_file_lock_and_spares_a_record_fixed_meanwhile(tmp_path):
+    # 与写入同一把文件锁：列目录时读不出、拿到锁时已被写好的记录不能被挪走
+    import asyncio
+    import threading
+
+    from main_logic.visit.forget import ClearingSentinels, quarantine_unreadable_records
+    from main_logic.visit.subjects import path_lock
+
+    store = ClearingSentinels(tmp_path)
+    doc = await store.create(own_uid=OWN_A, scope="chars", own_char_uids=[CHAR_UID_A])
+    path = store.path_for(doc["op_id"])
+    good = path.read_text(encoding="utf-8")
+    path.write_text("{torn", encoding="utf-8")
+    held, release = threading.Event(), threading.Event()
+
+    def writer():
+        with path_lock(path):
+            held.set()
+            release.wait(5)
+            path.write_text(good, encoding="utf-8")
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    held.wait(5)
+    task = asyncio.ensure_future(quarantine_unreadable_records(tmp_path))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    release.set()
+    moved, failed = await task
+    thread.join(5)
+    assert (moved, failed) == ([], 0)
+    assert path.read_text(encoding="utf-8") == good
+    assert await store.list_open() == [doc]
+
+
+async def test_quarantine_rereads_once_after_a_transient_os_error(tmp_path, monkeypatch):
+    # 一次偶发读错（被占用 / EIO）不能把读得出的日志连同清除一起放弃；持续读不出的照常隔离
+    from main_logic.visit.forget import ClearingSentinels, quarantine_unreadable_records
+
+    monkeypatch.setattr("main_logic.visit.forget._QUARANTINE_REREAD_DELAY_S", 0)
+    store = ClearingSentinels(tmp_path)
+    doc = await store.create(own_uid=OWN_A, scope="chars", own_char_uids=[CHAR_UID_A])
+    real_read = ClearingSentinels._read.__func__
+    calls = []
+
+    def flaky(cls, path, op_id):
+        calls.append(op_id)
+        if len(calls) == 1:
+            raise PermissionError("sharing violation")
+        return real_read(cls, path, op_id)
+
+    monkeypatch.setattr(ClearingSentinels, "_read", classmethod(flaky))
+    assert await quarantine_unreadable_records(tmp_path) == ([], 0)
+    assert len(calls) == 2 and await store.list_open() == [doc]
+
+    def broken(cls, path, op_id):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(ClearingSentinels, "_read", classmethod(broken))
+    moved, failed = await quarantine_unreadable_records(tmp_path)
+    assert failed == 0 and [(m.kind, m.error) for m in moved] == [("clearing_sentinel", "OSError")]
+    assert not store.path_for(doc["op_id"]).exists()
+
+
+async def test_quarantine_counts_a_symlink_loop_as_failed(tmp_path, monkeypatch):
+    from main_logic.visit.forget import quarantine_unreadable_records
+
+    directory = tmp_path / "visit_revocations"
+    directory.mkdir()
+    (directory / f"{'0' * 32}.json").write_text("{torn", encoding="utf-8")
+
+    def looping(_path):
+        raise RuntimeError("Symlink loop")
+
+    monkeypatch.setattr("main_logic.visit.forget.path_lock", looping)
+    assert await quarantine_unreadable_records(tmp_path) == ([], 1)
+    assert (directory / f"{'0' * 32}.json").exists()

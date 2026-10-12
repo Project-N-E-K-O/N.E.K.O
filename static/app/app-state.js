@@ -292,6 +292,10 @@
         // 自然表达（slop reduction）总开关，默认开。promptOnly：仅改喂回模型的
         // 历史副本，用户看到的原文与持久化历史都不动（后端 utils/slop_filter.py）。
         slopFilterEnabled: true,
+        // 串门（docs/design/visit-infrastructure.md §3.7.6 / OD-15 v3）：visitEnabled 默认关；
+        // visitVoiceEnabled 默认开（她在邻居家说话、你在自家听见）
+        visitEnabled: false,
+        visitVoiceEnabled: true,
         renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
         screenshotCounter: 0,
@@ -606,7 +610,7 @@
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
         'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
-        'slopFilterEnabled',
+        'slopFilterEnabled', 'visitEnabled', 'visitVoiceEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];
 

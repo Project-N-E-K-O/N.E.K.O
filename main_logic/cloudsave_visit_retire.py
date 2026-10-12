@@ -1,0 +1,86 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Startup cloudsave import -> visit retirement of the local characters it removes (design OD-13, PR-09b).
+
+The import lives in ``utils`` and may not reach the visit layer, so both
+startup callers (the launcher's pre-launch import and main_server's
+``import_if_needed``) hand it :func:`removed_characters_recorder`. This
+module stays import-light: ``main_logic.visit`` (about half a second to
+import) is loaded only when an import really removes a character.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Mapping
+from types import MappingProxyType
+from pathlib import Path, PurePath
+from typing import Any
+
+
+def removed_characters_recorder(
+    config_manager: Any,
+) -> Callable[[list[dict[str, Any]], frozenset[str], list[dict[str, str]]], int] | None:
+    """The ``on_characters_removed`` callback recording the visit markers under its ``config_dir``.
+
+    ``pending_retire`` items for the removed characters, then a
+    ``pending_rename`` for a character the snapshot renamed, then the names
+    handed to new characters on the pending renames still holding them.
+
+    ``None`` for a config object without a real ``config_dir`` (``str`` /
+    ``Path``; the application's ``ConfigManager`` always has one): it has no
+    visit data, and the import then runs without a callback.
+    """
+    value = getattr(config_manager, "config_dir", None)
+    if not isinstance(value, (str, PurePath)) or not str(value):
+        return None
+    config_dir = Path(value)
+
+    def record(
+        removed: list[dict[str, Any]], kept_local_names: frozenset[str], renamed: list[dict[str, str]],
+        fresh_names: Mapping[str, str | None] = MappingProxyType({}),
+        replaced: Iterable[dict[str, Any]] = (),
+    ) -> int:
+        replaced = list(replaced)
+        if not removed and not renamed and not replaced and not (config_dir / "visit_peers.json").exists():
+            # 只带来了新角色、这台机器又没有串门名册：没有要标的改名，不加载串门模块
+            return 0
+        from main_logic.visit.char_lifecycle import (
+            record_handed_over_names_sync,
+            record_removed_characters_sync,
+            record_renamed_characters_sync,
+        )
+
+        # 先记删除：它要读当前的改名标记，判断被删角色的另一个名字。两步互不连累：
+        # 一步写盘失败（文件被短暂占住）不能让另一步也不记，失败最后再交给导入方记日志
+        recorded = 0
+        failure: Exception | None = None
+        try:
+            recorded += record_removed_characters_sync(config_dir, removed, kept_local_names, replaced)
+        except Exception as exc:  # noqa: BLE001
+            failure = exc
+        try:
+            recorded += record_renamed_characters_sync(config_dir, renamed)
+        except Exception as exc:  # noqa: BLE001
+            failure = failure or exc
+        try:
+            # 最后标交出去的名字：刚写下的改名标记与之前没对完账的都要看
+            recorded += record_handed_over_names_sync(config_dir, fresh_names, [*removed, *replaced])
+        except Exception as exc:  # noqa: BLE001
+            failure = failure or exc
+        if failure is not None:
+            raise failure
+        return recorded
+
+    return record

@@ -2325,3 +2325,39 @@ async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypat
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+def test_reply_runner_has_no_await_between_admission_and_taking_the_line():
+    # 准入检查与 self._line = line 之间不能有 await：否则等待期间另一个 runner 也能准入，两行同时开口
+    import inspect
+    import re
+
+    runner = inspect.getsource(rtm_talk.TalkMixin._reply_runner)
+    # 准入成功（break 出准入循环）之后到进入 speak_line 之间；循环里的 sleep 会回到准入检查，不算
+    after = runner[runner.index("if self._reply_task is me:"):]
+    assert re.findall(r"\bawait\b", after[:after.index("await self.speak_line(")]) == []
+    speak = inspect.getsource(rtm_talk.TalkMixin.speak_line)
+    assert "await" not in speak[:speak.index("self._line = line")]
+
+
+async def test_voice_switched_mid_visit_applies_from_the_next_line(tmp_path, monkeypatch):
+    # §3.7.6：visitVoiceEnabled 中途切换从下一句生效；单向的 TTS 兜底不被重新读到的值覆盖
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    try:
+        first_ln = host.rt._line.ref.line_id
+        assert rtm.apply_voice_setting(False) == 2            # 开场白已按「开」开了语音流
+        hgate.set()
+        ggate.set()
+        await wait_for(lambda: len(_texts(wire, "host")) >= 2, timeout=10)
+        lns = [p["ln"] for p in _texts(wire, "host")]
+        streamed = {s.request_id for s in host.host.streams}
+        assert first_ln in streamed
+        assert not (set(lns) - {first_ln}) & streamed         # 之后的各句都只上屏
+        assert host.rt.voice.enabled is False
+        host.rt.voice.fallen_back = True
+        rtm.apply_voice_setting(True)
+        assert host.rt.voice.enabled is True and host.rt.voice.tts_on is False   # 兜底不被改回
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

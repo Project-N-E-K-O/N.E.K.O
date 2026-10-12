@@ -18,9 +18,11 @@ Design: ``docs/design/visit-infrastructure.md`` section 3.7.3 item 7 and
 PR-08 ``recovery.py``. :func:`visit_spool_recovery` is started with
 ``asyncio.create_task`` after startup (PR-09b) and runs, in order:
 
-1. the character-rename reconciliation (``visit_peers.json.pending_rename``),
-   first, so forgets resolve roster entries under their current name, then
-   the retirement of deleted characters (``pending_retire``);
+1. the retirement of deleted characters (``pending_retire``), then the
+   character-rename reconciliation (``visit_peers.json.pending_rename``, then
+   each rename a cloudsave import queued in ``pending_rename_queue``), so
+   a rename never moves entries into a name whose leftovers are still to be
+   retired, and forgets resolve roster entries under their current name;
 2. unfinished local forgets (clearing sentinels, then revocation logs);
 3. startup cleanup: only leftover ``.outbox.jsonl`` files are deleted;
 4. ``VisitSpool.sweep`` (7 days / 20 MB, pending uploads and unsettled
@@ -57,6 +59,8 @@ from main_logic.visit.char_lifecycle import (
     ALL_NAMES as _ALL_NAMES,
     MARKER_CHANGED as _MARKER_CHANGED,
     RetirePersona,
+    drop_deleted_queued_renames,
+    reconcile_renames,
     reconcile_rename as _reconcile_rename,
     replay_retires,
 )
@@ -86,7 +90,9 @@ from main_logic.visit.spool import (
 from main_logic.visit.subjects import (
     RosterCorruptError,
     path_lock,
+    pending_rename_names,
     read_roster_marker,
+    read_roster_markers,
 )
 from memory.scoped_client import ScopedMemoryClient
 from utils.file_utils import atomic_write_json
@@ -1395,24 +1401,54 @@ async def visit_spool_recovery(
         names, uid_of = await load_names()
         # 本机其他猫的名字同样受保护：对端把自己叫成「本机的另一只猫」时不能顶替成说话人标签
         local_names = frozenset(names)
-        unsettled = await _reconcile_rename_guarded(config_dir, names, uid_of, lifecycle_guard, load_names)
     except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
-        logger.error("visit recovery: rename reconciliation failed: %r", exc)
-        unsettled = _ALL_NAMES
-    names_settled = unsettled is not _ALL_NAMES
-    report.renamed = unsettled == frozenset()
-    if names_settled:
+        logger.error("visit recovery: character config unreadable, rename / retirement deferred: %r", exc)
+        load_names = None
+    if load_names is not None:
         try:
             # 删除提交后退役没做完（失败 / 崩溃）的角色：补完它的场次、名册条目与串门人设，
-            # 否则同名新角色会收到旧芯片、名字一直被占着
+            # 否则同名新角色会收到旧芯片、名字一直被占着。先于改名对账：改名（含云快照导入
+            # 带来的改名）可能把别的角色的条目迁进这个名字，之后再按名字退役会把它们一起删掉
             report.retired = await replay_retires(
                 config_dir, load_names, retire_persona=retire_persona, config_lock=config_lock,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("visit recovery: retirement replay failed: %r", exc)
             report.retired = False
+        try:
+            # 退役重放按项拿放角色配置锁、可能耗时：期间云下载可能把某个角色以第三个名字恢复回来。
+            # 锁内重读名单再判断哪些排队改名属于已删除的角色，旧快照会把它的改名当成「已删」丢掉
+            if config_lock is not None:
+                async with config_lock():
+                    names, uid_of = await load_names()
+                    await drop_deleted_queued_renames(config_dir, uid_of)
+            else:
+                names, uid_of = await load_names()
+                await drop_deleted_queued_renames(config_dir, uid_of)
+            # 云快照一次改了几个角色的名字：其余的排在队列里依次轮到（同一套规则，每笔在各自角色的守卫下对账）
+            unsettled = await reconcile_renames(
+                config_dir, names, uid_of,
+                reconcile=lambda: _reconcile_rename_guarded(config_dir, names, uid_of, lifecycle_guard, load_names),
+                # 上面已在锁内按重读的名单撤过；锁外再按同一份名单撤一次，会把锁释放后新记下的排队改名当成已删除
+                drop_deleted=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
+            logger.error("visit recovery: rename reconciliation failed: %r", exc)
+            unsettled = _ALL_NAMES
     else:
         report.retired = False
+        unsettled = _ALL_NAMES
+    if unsettled is not _ALL_NAMES:
+        # 位置上那笔对不完账时，后面排队的改名也还没轮到：它们的名字同样没对完账，清除重放与
+        # 逐场补录都得跳过（按新名找不到还在旧名下的条目，会「成功」地什么都没做）
+        try:
+            held = pending_rename_names(*await read_roster_markers(
+                config_dir, "pending_rename", "pending_rename_queue"))
+        except RosterCorruptError:
+            held = None
+        unsettled = _ALL_NAMES if held is None else frozenset(unsettled | held)
+    names_settled = unsettled is not _ALL_NAMES
+    report.renamed = unsettled == frozenset()
     if names_settled:
         try:
             # 还没对账清楚的改名只涉及它的两个名字：清除重放对这两个名字自己会推迟

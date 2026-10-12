@@ -405,6 +405,8 @@ class ConversationSettingsWriteResult:
     success: bool
     conflict: bool
     snapshot: ConversationSettingsSnapshot
+    # 同一把锁里读到的保存前快照（只有成功写入时才有），供调用方判断某个开关的前后转换
+    previous: Optional[ConversationSettingsSnapshot] = None
 
 
 def _normalize_conversation_settings_revision(value: Any) -> int:
@@ -886,7 +888,7 @@ def save_global_conversation_settings_versioned(
 
             snapshot = _snapshot_from_preferences_data(data) if changed else current
             return ConversationSettingsWriteResult(
-                success=True, conflict=False, snapshot=snapshot
+                success=True, conflict=False, snapshot=snapshot, previous=current
             )
     except MaintenanceModeError:
         raise
