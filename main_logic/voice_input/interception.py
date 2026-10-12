@@ -10,10 +10,11 @@ fail closed while keeping model code below the Core layer.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from enum import Enum
 import math
-from typing import Any, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from main_logic.voice_turn.interception_events import (
     InterceptionDeliveryReceipt, InterceptionDeliveryStage,
@@ -122,6 +123,18 @@ class ActiveSessionInterceptionRuntime(Protocol):
     def record_delivery(self, receipt: InterceptionDeliveryReceipt) -> None: ...
 
     async def close(self, reason: str = "retired") -> None: ...
+
+
+class InterceptionRetirementPending(RuntimeError):
+    """A factory's occupied slot, with an owner-local retirement wait only.
+
+    Waiting must not close another owner's runtime or cancel its physical
+    cleanup. The bridge supplies its existing absolute close deadline.
+    """
+
+    def __init__(self, wait_retired: Callable[[float], Awaitable[bool]]) -> None:
+        super().__init__("previous_runtime_retirement_pending")
+        self.wait_retired = wait_retired
 
 
 class ActiveSessionInterceptionFactory(Protocol):
@@ -367,10 +380,12 @@ class ActiveSessionInterceptionBridge:
             else:
                 if (InterceptionDeliveryStage.UNKNOWN in stages and receipt.stage in {
                     InterceptionDeliveryStage.TRANSPORT_WRITTEN, InterceptionDeliveryStage.TRANSPORT_OWNED,
+                    InterceptionDeliveryStage.PARTIALLY_DELIVERED,
                 }):
                     raise ValueError("uncertain interception output cannot acquire late local ownership")
                 if (InterceptionDeliveryStage.NOT_SENT in stages and receipt.stage in {
                     InterceptionDeliveryStage.TRANSPORT_WRITTEN, InterceptionDeliveryStage.TRANSPORT_OWNED,
+                    InterceptionDeliveryStage.PARTIALLY_DELIVERED,
                     InterceptionDeliveryStage.PROVIDER_CONFIRMED,
                 }):
                     raise ValueError("unsent interception output cannot become written")
@@ -387,8 +402,9 @@ class ActiveSessionInterceptionBridge:
                 raise RuntimeError("interception_runtime_retirement_timeout")
 
     async def close(self, reason: str = "closed") -> None:
+        # Revoke admission before waiting for a startup/retirement lock.
+        self._closed = True
         async with self._lock:
-            self._closed = True
             await self._retire_runtime(reason)
             if not await self._wait_retirement():
                 raise RuntimeError("interception_runtime_retirement_timeout")
@@ -398,15 +414,34 @@ class ActiveSessionInterceptionBridge:
             # previous runtime has physically retired.
 
     async def _replace_runtime(self, generation: object, ingress_token: object | None) -> bool:
+        deadline = asyncio.get_running_loop().time() + self._close_timeout_s
         await self._retire_runtime("generation_replaced")
-        if not await self._wait_retirement():
+        if not await self._wait_retirement(deadline=deadline):
             return False
-        if self._closed:
+        if self._closed or self._terminal_identity == (generation, ingress_token):
             return False
         try:
             if getattr(self._factory, "is_available", True) is not True:
                 raise RuntimeError("interception_factory_unavailable")
             runtime = self._factory.create(generation, ingress_token=ingress_token)
+        except InterceptionRetirementPending as pending:
+            logging.getLogger(__name__).debug("Waiting for interception startup slot retirement")
+            try:
+                retired = await asyncio.wait_for(
+                    pending.wait_retired(deadline),
+                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                )
+                if (retired is not True or self._closed
+                        or self._terminal_identity == (generation, ingress_token)
+                        or getattr(self._factory, "is_available", True) is not True):
+                    runtime = None
+                else:
+                    # Only a proven physical retirement permits one new
+                    # allocation. Another claimant/failure stays terminal.
+                    runtime = self._factory.create(generation, ingress_token=ingress_token)
+            except Exception:
+                logging.getLogger(__name__).debug("Interception startup slot did not become available")
+                runtime = None
         except Exception:
             runtime = None
         if runtime is None:
@@ -437,7 +472,7 @@ class ActiveSessionInterceptionBridge:
             name="active-session-interception-retire",
         )
 
-    async def _wait_retirement(self) -> bool:
+    async def _wait_retirement(self, *, deadline: float | None = None) -> bool:
         runtime = self._retiring_runtime
         if runtime is None:
             return True
@@ -450,7 +485,9 @@ class ActiveSessionInterceptionBridge:
                 name="active-session-interception-retire",
             )
             self._retirement_task = task
-        done, _ = await asyncio.wait({task}, timeout=self._close_timeout_s)
+        timeout = (self._close_timeout_s if deadline is None
+                   else max(0.0, deadline - asyncio.get_running_loop().time()))
+        done, _ = await asyncio.wait({task}, timeout=timeout)
         complete = bool(done) and not task.cancelled() and task.exception() is None and task.result()
         if complete and self._retiring_runtime is runtime and self._retirement_task is task:
             self._retirement_task = None
@@ -496,6 +533,7 @@ __all__ = [
     "ActiveSessionInterceptionBridge",
     "ActiveSessionInterceptionFactory",
     "ActiveSessionInterceptionRuntime",
+    "InterceptionRetirementPending",
     "InterceptionDecision",
     "InterceptionResult",
     "InterceptionDeliveryReceipt", "InterceptionDeliveryStage",

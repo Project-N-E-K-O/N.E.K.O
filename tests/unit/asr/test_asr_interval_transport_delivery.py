@@ -77,8 +77,10 @@ def test_whole_tag_is_not_written_until_every_exact_subspan_has_written():
     assert Stage.TRANSPORT_WRITTEN not in stages
     assert interval_delivery_spans(requests, (7, 3, 1)) == second.delivery_spans
     retire_interval_deliveries(requests)
-    assert stages == [Stage.QUEUED, Stage.UNKNOWN]
-    assert not tag.settled
+    # The first half is explicitly owned, the never-attempted second half
+    # explicitly discarded. No full write or provider ACK is inferred.
+    assert stages == [Stage.QUEUED, Stage.PARTIALLY_DELIVERED]
+    assert tag.settled
 
 
 def test_no_byte_count_guessing_and_successor_scope_retirement():

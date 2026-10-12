@@ -55,7 +55,8 @@ class AudioDeliveryTag:
 
     All ranges are relative to this tag, never inferred from cumulative wire
     byte counters. Only complete interval evidence produces WRITTEN/NOT_SENT.
-    A partly written and partly discarded interval remains UNKNOWN.
+    Exact discard plus transport ownership can settle a mixed interval;
+    a genuinely uncertain attempt remains UNKNOWN and cannot be revived.
     """
 
     sample_count: int
@@ -76,6 +77,7 @@ class AudioDeliveryTag:
     def settled(self) -> bool:
         return bool(self._reported & {
             InterceptionDeliveryStage.TRANSPORT_OWNED,
+            InterceptionDeliveryStage.PARTIALLY_DELIVERED,
             InterceptionDeliveryStage.NOT_SENT,
         })
 
@@ -86,6 +88,12 @@ class AudioDeliveryTag:
             raise TypeError("audio delivery stage required")
         if stage is InterceptionDeliveryStage.PROVIDER_CONFIRMED:
             raise ValueError("audio writes cannot infer provider confirmation")
+        if stage is InterceptionDeliveryStage.PARTIALLY_DELIVERED:
+            raise ValueError("mixed settlement requires exact subrange evidence")
+        if (InterceptionDeliveryStage.PARTIALLY_DELIVERED in self._reported and stage in {
+            InterceptionDeliveryStage.NOT_SENT, InterceptionDeliveryStage.UNKNOWN,
+        }):
+            return
         if (InterceptionDeliveryStage.UNKNOWN in self._reported and stage in {
             InterceptionDeliveryStage.TRANSPORT_WRITTEN, InterceptionDeliveryStage.TRANSPORT_OWNED,
         }):
@@ -99,6 +107,11 @@ class AudioDeliveryTag:
             raise ValueError("discarded audio cannot acquire transport write evidence")
         if (self._written == [(0, self.sample_count)]
                 and stage in {InterceptionDeliveryStage.NOT_SENT, InterceptionDeliveryStage.UNKNOWN}):
+            return
+        if stage is InterceptionDeliveryStage.NOT_SENT and any(
+            left < end_sample and right > start_sample for left, right in self._written
+        ):
+            self._report(InterceptionDeliveryStage.UNKNOWN)
             return
         if stage is InterceptionDeliveryStage.TRANSPORT_OWNED and not any(
             left <= start_sample and right >= end_sample for left, right in self._written
@@ -117,10 +130,16 @@ class AudioDeliveryTag:
                 InterceptionDeliveryStage.TRANSPORT_OWNED: self._owned,
             }[stage]
             _add_range(target, start_sample, end_sample)
+            if (self._dropped and self._owned
+                    and InterceptionDeliveryStage.UNKNOWN not in self._reported):
+                accounted: list[tuple[int, int]] = []
+                for left, right in (*self._dropped, *self._owned):
+                    _add_range(accounted, left, right)
+                if accounted == [(0, self.sample_count)]:
+                    self._report(InterceptionDeliveryStage.PARTIALLY_DELIVERED)
+                    return
             complete = target == [(0, self.sample_count)]
             if not complete:
-                if self._written and self._dropped:
-                    self._report(InterceptionDeliveryStage.UNKNOWN)
                 return
             if stage is InterceptionDeliveryStage.NOT_SENT and self._written:
                 self._report(InterceptionDeliveryStage.UNKNOWN)

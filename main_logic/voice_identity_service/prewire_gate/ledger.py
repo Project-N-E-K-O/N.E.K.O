@@ -58,6 +58,7 @@ _COMMIT_TRANSITIONS = {
     PrewireCommitStage.SELECTED: {PrewireCommitStage.ENQUEUED},
     PrewireCommitStage.ENQUEUED: {
         PrewireCommitStage.WRITTEN,
+        PrewireCommitStage.PARTIALLY_DELIVERED,
         PrewireCommitStage.UNKNOWN,
         PrewireCommitStage.LOCAL_CANCELLED,
     },
@@ -472,6 +473,7 @@ class PrewireIntervalLedger:
                 # Eviction forgets interval detail, never the consumed cursor;
                 # late acknowledgements then fail exact identity lookup.
                 PrewireCommitStage.TRANSPORT_OWNED,
+                PrewireCommitStage.PARTIALLY_DELIVERED,
                 PrewireCommitStage.REMOTE_CONFIRMED,
                 PrewireCommitStage.LOCAL_CANCELLED,
             }

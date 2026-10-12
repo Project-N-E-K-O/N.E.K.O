@@ -33,6 +33,9 @@ class PrewireCommitStage(str, Enum):
     # A real writer has accepted the post-write lifecycle and irrevocably
     # forbidden replay. This transfers local debt; it is not a provider ACK.
     TRANSPORT_OWNED = "transport-owned"
+    # Disjoint local discard + transport ownership cover the original range.
+    # Terminal local accounting, without claiming a full write/provider ACK.
+    PARTIALLY_DELIVERED = "partially-delivered"
     REMOTE_CONFIRMED = "remote-confirmed"
     UNKNOWN = "unknown"
 

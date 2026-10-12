@@ -106,9 +106,12 @@ def test_partial_tag_retirement_preserves_exact_unsettled_evidence(written):
             delivery_spans=first.delivery_spans, takes_ownership=True,
         )
         retire_interval_deliveries(queue, only_spans=second.delivery_spans)
-        assert stages == [Stage.QUEUED, Stage.UNKNOWN]
-        assert not tag.settled
-        assert tag in evidence.retired_tags
+        assert stages == [Stage.QUEUED, Stage.PARTIALLY_DELIVERED]
+        assert tag.settled
+        assert tag not in evidence.retired_tags
+        assert evidence.pending_intervals == {}
+        with pytest.raises(RuntimeError, match="ASR_DELIVERY_RETIRED"):
+            queue.put_nowait(second)
     else:
         retire_interval_deliveries(queue, only_spans=first.delivery_spans)
         assert not tag.settled

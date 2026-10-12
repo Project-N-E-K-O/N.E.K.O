@@ -24,6 +24,9 @@ class InterceptionDeliveryStage(str, Enum):
     QUEUED = "queued"
     TRANSPORT_WRITTEN = "transport_written"
     TRANSPORT_OWNED = "transport_owned"
+    # Every sample is either locally discarded or written and transport-owned;
+    # neither the whole interval nor the discarded prefix was sent/confirmed.
+    PARTIALLY_DELIVERED = "partially_delivered"
     PROVIDER_CONFIRMED = "provider_confirmed"
     UNKNOWN = "unknown"
 

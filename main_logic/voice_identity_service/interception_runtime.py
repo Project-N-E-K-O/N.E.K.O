@@ -24,6 +24,7 @@ from main_logic.voice_input.interception import (
     ActiveSessionInterceptionRuntime,
     InterceptionDecision,
     InterceptionResult,
+    InterceptionRetirementPending,
 )
 from main_logic.voice_turn.interception_events import (
     InterceptionDeliveryReceipt,
@@ -61,6 +62,10 @@ from .tse.contracts import (
 
 class InterceptionRuntimeError(RuntimeError):
     """The session cannot safely continue releasing audio."""
+
+
+class _RuntimeRetirementPending(InterceptionRetirementPending, InterceptionRuntimeError):
+    """Keep the domain error type while exposing the neutral startup contract."""
 
 
 class QualityAnalyzer(Protocol):
@@ -879,6 +884,17 @@ class PrewireInterceptionRuntime(ActiveSessionInterceptionRuntime):
             if current is PrewireCommitStage.ENQUEUED:
                 self._gate.advance_delivery(identity, expected=current, next_stage=PrewireCommitStage.WRITTEN)
             return current in {PrewireCommitStage.ENQUEUED, PrewireCommitStage.WRITTEN}
+        if stage is InterceptionDeliveryStage.PARTIALLY_DELIVERED:
+            if current is PrewireCommitStage.PARTIALLY_DELIVERED:
+                return True
+            if current is not PrewireCommitStage.ENQUEUED:
+                return False
+            self._gate.advance_delivery(
+                identity, expected=current, next_stage=PrewireCommitStage.PARTIALLY_DELIVERED,
+            )
+            self._owned_delivery_events[event.interval_id] = retained
+            del self._delivery_events[event.interval_id]
+            return True
         if stage is InterceptionDeliveryStage.TRANSPORT_OWNED:
             if current is PrewireCommitStage.TRANSPORT_OWNED:
                 return True
@@ -1049,6 +1065,25 @@ class PrewireInterceptionRuntime(ActiveSessionInterceptionRuntime):
         task = self._component_retirement_task
         return self._closed and self.retirement_confirmed and not self._outgoing_audio and not self._outgoing_events and (task is None or task.done())
 
+    async def wait_retired(self, deadline: float) -> bool:
+        """Observe already-started cleanup without retiring/cancelling its owner."""
+        if not self._closed:
+            return False
+        while not self.retired:
+            tasks = {task for task in (
+                self._component_retirement_task, self._gate_close_task,
+                self._tse_close_task, self._candidate_close_task, *self._operations,
+            ) if task is not None and not task.done()}
+            if not tasks:
+                return False  # Missing/negative physical evidence is not readiness.
+            done, _ = await asyncio.wait(
+                tasks, timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                return False
+        return True
+
     async def close(self, reason: str = "retired") -> None:
         # Fence output before waiting for a process that may be stalled in an
         # injected model await. The owner-local cleanup task has its own budget.
@@ -1133,7 +1168,7 @@ class PrewireInterceptionFactory(ActiveSessionInterceptionFactory):
         _scoring_plan_for_config(self._config)
         self._runtimes = [existing for existing in self._runtimes if not existing.retired]
         if self._runtimes:
-            raise InterceptionRuntimeError("previous_runtime_retirement_pending")
+            raise _RuntimeRetirementPending(self._runtimes[0].wait_retired)
         # This application-owned factory survives capture restarts. Source
         # axes and event sequence numbers restart, so each capture needs a
         # distinct identity, including a failed construction attempt.
