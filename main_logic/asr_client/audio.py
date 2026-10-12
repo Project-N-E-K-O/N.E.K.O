@@ -176,6 +176,29 @@ def _log_hint_failure(error: BaseException) -> None:
     )
 
 
+def _observe_delivery_spans(
+    spans: tuple[AudioDeliverySpan, ...],
+    stage: InterceptionDeliveryStage,
+    *,
+    context: str,
+) -> Exception | None:
+    """Notify independent owners; retain the first error for the caller's policy."""
+    first_error = None
+    for span in spans:
+        try:
+            span.observe(stage)
+        except Exception as exc:
+            # A rejected tag keeps its debt. Cleanup must reach other owners,
+            # and a notification cannot replace a send failure or cancellation.
+            if first_error is None:
+                first_error = exc
+            logging.getLogger(__name__).error(
+                "ASR delivery observer failed during %s: type=%s",
+                context, type(exc).__name__,
+            )
+    return first_error
+
+
 class AsrAudioDispatcher:
     """Serialize all writes for one logical turn before its seal barrier."""
 
@@ -333,16 +356,10 @@ class AsrAudioDispatcher:
         for command in discarded:
             try:
                 if isinstance(command, (AsrActivateCommand, AsrAudioCommand)):
-                    for span in command.delivery_spans:
-                        try:
-                            span.observe(InterceptionDeliveryStage.NOT_SENT)
-                        except Exception as exc:
-                            # The tag retains rejected/unknown debt. Report the
-                            # failure without suppressing other owners' receipts.
-                            logging.getLogger(__name__).error(
-                                "ASR delivery observer failed during audio abort: type=%s",
-                                type(exc).__name__,
-                            )
+                    _observe_delivery_spans(
+                        command.delivery_spans, InterceptionDeliveryStage.NOT_SENT,
+                        context="audio abort",
+                    )
                 if isinstance(command, AsrPauseHintCommand) and not command.completed.done():
                     command.completed.set_result(False)
             finally:
@@ -463,8 +480,10 @@ class AsrAudioDispatcher:
                     )
                 if not self._command_is_current(command):
                     if isinstance(command, (AsrActivateCommand, AsrAudioCommand)):
-                        for span in command.delivery_spans:
-                            span.observe(InterceptionDeliveryStage.NOT_SENT)
+                        _observe_delivery_spans(
+                            command.delivery_spans, InterceptionDeliveryStage.NOT_SENT,
+                            context="stale command",
+                        )
                     continue
                 if isinstance(command, AsrPauseHintCommand):
                     if not command.completed.cancelled() and command.revision == self._pause_hint_revision:
@@ -513,10 +532,12 @@ class AsrAudioDispatcher:
                 max_bytes = command.sample_rate_hz * 2
                 for offset in range(0, len(payload), max_bytes):
                     if not self._command_is_current(command):
-                        for span in slice_delivery_spans(
-                            command.delivery_spans, offset // 2, (len(payload) - offset) // 2,
-                        ):
-                            span.observe(InterceptionDeliveryStage.NOT_SENT)
+                        _observe_delivery_spans(
+                            slice_delivery_spans(
+                                command.delivery_spans, offset // 2, (len(payload) - offset) // 2,
+                            ),
+                            InterceptionDeliveryStage.NOT_SENT, context="unsent remainder",
+                        )
                         break
                     chunk = payload[offset : offset + max_bytes]
                     spans = slice_delivery_spans(command.delivery_spans, offset // 2, len(chunk) // 2)
@@ -526,22 +547,32 @@ class AsrAudioDispatcher:
                             **({"delivery_spans": spans} if spans else {}),
                         )
                     except BaseException:
-                        for span in spans:
-                            span.observe(InterceptionDeliveryStage.UNKNOWN)
-                        for span in slice_delivery_spans(
-                            command.delivery_spans, (offset + len(chunk)) // 2,
-                            (len(payload) - offset - len(chunk)) // 2,
-                        ):
-                            span.observe(InterceptionDeliveryStage.NOT_SENT)
+                        _observe_delivery_spans(
+                            spans, InterceptionDeliveryStage.UNKNOWN, context="failed send",
+                        )
+                        _observe_delivery_spans(
+                            slice_delivery_spans(
+                                command.delivery_spans, (offset + len(chunk)) // 2,
+                                (len(payload) - offset - len(chunk)) // 2,
+                            ),
+                            InterceptionDeliveryStage.NOT_SENT, context="unsent remainder",
+                        )
                         raise
-                    for span in spans:
-                        span.observe(InterceptionDeliveryStage.QUEUED)
-                    if not self._command_is_current(command):
-                        for span in slice_delivery_spans(
-                            command.delivery_spans, (offset + len(chunk)) // 2,
-                            (len(payload) - offset - len(chunk)) // 2,
-                        ):
-                            span.observe(InterceptionDeliveryStage.NOT_SENT)
+                    receipt_error = _observe_delivery_spans(
+                        spans, InterceptionDeliveryStage.QUEUED, context="queued send",
+                    )
+                    if receipt_error is not None or not self._command_is_current(command):
+                        _observe_delivery_spans(
+                            slice_delivery_spans(
+                                command.delivery_spans, (offset + len(chunk)) // 2,
+                                (len(payload) - offset - len(chunk)) // 2,
+                            ),
+                            InterceptionDeliveryStage.NOT_SENT, context="unsent remainder",
+                        )
+                        if receipt_error is not None:
+                            # Admission rejection still fails closed. Only the
+                            # independent notifications are made best-effort.
+                            raise receipt_error
                         break
                     self.provider_wire_sequence += 1
                     await self._on_wire_audio(

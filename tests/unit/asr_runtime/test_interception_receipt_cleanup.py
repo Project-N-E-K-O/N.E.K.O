@@ -1,6 +1,7 @@
 """Real receipt owners cannot prevent independent ASR retirement."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from functools import partial
 from unittest.mock import AsyncMock
 
@@ -113,6 +114,192 @@ async def test_runtime_cleanup_survives_unknown_owner_rejecting_not_sent(action,
             await session.close()
         if bridge is not None:
             await bridge.close()
+
+
+@asynccontextmanager
+async def _dispatch_case():
+    runtime = IndependentAsrRuntime(_callbacks())
+    detector = _RejectionDetector()
+    detector.endpointing_ready = lambda token: True
+    session, _, turn = _install_active_candidate(runtime, detector)
+    dispatcher = runtime._asr_audio_dispatcher
+    bridges = []
+    worker = dispatcher._worker
+    try:
+        await dispatcher.wait_idle()
+
+        async def output(*, long=False):
+            payload, tags = b"", []
+            while not tags or (long and len(payload) <= 32_000):
+                bridge, result, group = await _output(turn.ingress)
+                bridges.append(bridge)
+                payload += result.pcm16
+                tags.extend(group)
+            return payload, tags, tuple(AudioDeliverySpan(tag, 0, tag.sample_count) for tag in tags)
+
+        yield dispatcher, session, turn, output
+    finally:
+        # close() transfers its worker reference locally. Retain this case's
+        # task so even a failing cancellation regression can reclaim it.
+        if worker is not None:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        await dispatcher.close()
+        await asyncio.gather(*tuple(dispatcher._failure_tasks), return_exceptions=True)
+        runtime._asr_transcript_dispatcher.invalidate_all()
+        await runtime._asr_detector_dispatcher.close()
+        await detector.close()
+        await session.close()
+        for bridge in bridges:
+            await bridge.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("point", ["stale_queue", "after_send", "before_next"])
+@pytest.mark.parametrize("unknown", [False, True])
+async def test_handover_notifies_every_unsent_owner(point, unknown, caplog):
+    async with _dispatch_case() as (dispatcher, session, turn, output):
+        entered, release = asyncio.Event(), asyncio.Event()
+        sent = []
+
+        async def send(pcm, **kwargs):
+            sent.append(len(pcm))
+            if point != "before_next":
+                entered.set()
+                await release.wait()
+
+        async def wire(*args):
+            if point == "before_next":
+                entered.set()
+                await release.wait()
+
+        session.stream_audio = send
+        dispatcher._on_wire_audio = wire
+        try:
+            if point == "stale_queue":
+                assert dispatcher.enqueue_audio(turn, session, b"\x01\x00",
+                                                sample_rate_hz=16000, sequence_no=1)
+                await asyncio.wait_for(entered.wait(), 1)
+            payload, tags, spans = await output(long=point != "stale_queue")
+            unsent = 0 if point == "stale_queue" else 32_000 // (tags[0].sample_count * 2)
+            if unknown:
+                tags[unsent].observe(0, tags[unsent].sample_count, Stage.UNKNOWN)
+            assert dispatcher.enqueue_audio(
+                turn, session, payload, sample_rate_hz=16000,
+                sequence_no=2 if point == "stale_queue" else 1, delivery_spans=spans,
+            )
+            if point != "stale_queue":
+                await asyncio.wait_for(entered.wait(), 1)
+            assert dispatcher.activate(turn, session, b"")
+            release.set()
+            await asyncio.wait_for(dispatcher.wait_idle(), 1)
+            assert sent == ([2] if point == "stale_queue" else [32_000])
+            assert tags[unsent].settled is (not unknown)
+            assert all(tag.settled for tag in tags[unsent + 1:])
+            assert dispatcher.active_turn == turn  # old cleanup cannot abort the successor
+            if unknown:
+                assert "ASR delivery observer failed" in caplog.text
+        finally:
+            release.set()
+
+
+@pytest.mark.asyncio
+async def test_send_failure_preserves_original_error_and_notifies_all_ranges():
+    async with _dispatch_case() as (dispatcher, session, turn, output):
+        entered, release, failed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        original = OSError("controlled send failure")
+        errors = []
+
+        async def send(pcm, **kwargs):
+            entered.set()
+            await release.wait()
+            raise original
+
+        async def failure(token, error):
+            errors.append(error)
+            failed.set()
+
+        session.stream_audio = send
+        dispatcher._on_failure = failure
+        try:
+            payload, tags, spans = await output(long=True)
+            assert dispatcher.enqueue_audio(turn, session, payload, sample_rate_hz=16000,
+                                            sequence_no=1, delivery_spans=spans)
+            await asyncio.wait_for(entered.wait(), 1)
+            # The controlled sink has not admitted or written PCM. Its owner
+            # may retire that interval before the suspended operation returns.
+            tags[0].observe(0, tags[0].sample_count, Stage.NOT_SENT)
+            release.set()
+            await asyncio.wait_for(failed.wait(), 1)
+            await asyncio.wait_for(dispatcher.wait_idle(), 1)
+            assert errors == [original]
+            assert Stage.UNKNOWN in tags[1]._reported
+            assert not tags[1].settled
+            assert tags[-1].settled
+            assert dispatcher.active_turn is None
+        finally:
+            release.set()
+
+
+@pytest.mark.asyncio
+async def test_receipt_rejection_does_not_replace_worker_cancellation():
+    async with _dispatch_case() as (dispatcher, session, turn, output):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def send(pcm, **kwargs):
+            entered.set()
+            await release.wait()
+
+        session.stream_audio = send
+        try:
+            payload, tags, spans = await output()
+            assert dispatcher.enqueue_audio(turn, session, payload, sample_rate_hz=16000,
+                                            sequence_no=1, delivery_spans=spans)
+            await asyncio.wait_for(entered.wait(), 1)
+            tags[0].observe(0, tags[0].sample_count, Stage.NOT_SENT)
+            worker = dispatcher._worker
+            await asyncio.wait_for(dispatcher.close(), 1)
+            await asyncio.wait_for(dispatcher.close(), 1)
+            assert worker.cancelled()
+            assert Stage.UNKNOWN in tags[1]._reported
+            assert not tags[1].settled
+        finally:
+            release.set()
+
+
+@pytest.mark.asyncio
+async def test_queued_receipt_rejection_still_fails_closed_after_notifying_other_owners():
+    async with _dispatch_case() as (dispatcher, session, turn, output):
+        stages = []
+
+        def reject_queued(stage):
+            stages.append(stage)
+            return stage is not Stage.QUEUED
+
+        payload, tags, spans = await output(long=True)
+        tags[0] = AudioDeliveryTag(tags[0].sample_count, reject_queued)
+        spans = tuple(AudioDeliverySpan(tag, 0, tag.sample_count) for tag in tags)
+        sent, errors, failed = [], [], asyncio.Event()
+
+        async def send(pcm, **kwargs):
+            sent.append(len(pcm))
+
+        async def failure(token, error):
+            errors.append(error)
+            failed.set()
+
+        session.stream_audio = send
+        dispatcher._on_failure = failure
+        assert dispatcher.enqueue_audio(turn, session, payload, sample_rate_hz=16000,
+                                        sequence_no=1, delivery_spans=spans)
+        await asyncio.wait_for(failed.wait(), 1)
+        await asyncio.wait_for(dispatcher.wait_idle(), 1)
+        assert sent == [32_000]
+        assert len(errors) == 1 and type(errors[0]) is RuntimeError
+        assert stages == [Stage.QUEUED]
+        assert Stage.QUEUED in tags[1]._reported
+        assert tags[-1].settled
+        assert dispatcher.active_turn is None
 
 
 @pytest.mark.asyncio
