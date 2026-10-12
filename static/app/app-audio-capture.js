@@ -4403,13 +4403,13 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             // 行↔面板的过渡走廊：面板可能被按钮禁区推离菜单（间隔较宽），
             // 用梯形连接两者的相对边，覆盖横穿途中的停留。与包围盒不同，
             // 梯形不会把远处的空白区也判定为悬停。
-            function isPointerInMicHoverBridge() {
+            function isPointerInMicHoverBridge(point) {
                 var panel = getOwnedMicSubwindow();
                 var action = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]');
-                if (!panel || !action || !micHoverPointer) return false;
+                if (!panel || !action || !point) return false;
                 var a = action.getBoundingClientRect();
                 var b = panel.getBoundingClientRect();
-                var p = micHoverPointer;
+                var p = point;
                 var padding = MIC_ACTION_HOVER_KEEP_ZONE_PX;
                 function between(value, start, end) { return value >= start && value <= end; }
                 function corridor(value, cross, start, end, lowStart, highStart, lowEnd, highEnd) {
@@ -4425,21 +4425,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return false;
             }
 
-            // 悬停保持判定：指针停在语音菜单本体上、贴着子面板（外扩一圈，
-            // 覆盖菜单漂移时的边缘停留）、或仍在行↔面板的过渡走廊里，一律
-            // 视为仍在悬停。菜单会随模型呼吸/鼠标跟随在指针下方持续漂移，
-            // 布局变化会让浏览器补发合成的 mouseleave；行间移动或停回菜单
-            // 留白处也不是「离开」——面板跟随菜单会话，指针移出后才收起。
-            function isPointerInMicHoverKeepZone() {
-                if (!micHoverPointer) return false;
+            // 面板周边保持区：面板本体、外扩一圈（覆盖菜单漂移时的边缘停留）
+            // 以及行↔面板过渡走廊，但不含菜单本体。
+            function isPointerNearMicPanelZone(point) {
+                if (!point) return false;
                 var panel = getOwnedMicSubwindow();
                 if (!panel || !panel.isConnected) return false;
-                if (micPopup.isConnected && micHoverPointInRect(micHoverPointer, micPopup.getBoundingClientRect())) {
-                    return true;
-                }
                 var pad = MIC_ACTION_HOVER_KEEP_ZONE_PX;
                 var rect = panel.getBoundingClientRect();
-                if (micHoverPointInRect(micHoverPointer, {
+                if (micHoverPointInRect(point, {
                     left: rect.left - pad,
                     right: rect.right + pad,
                     top: rect.top - pad,
@@ -4447,7 +4441,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 })) {
                     return true;
                 }
-                return isPointerInMicHoverBridge();
+                return isPointerInMicHoverBridge(point);
+            }
+
+            // 收起判定用：菜单会随模型呼吸/鼠标跟随在指针下方持续漂移，布局
+            // 变化会让浏览器补发合成的 mouseleave；指针停在语音菜单本体上、
+            // 贴着面板或仍在过渡走廊里一律视为仍在悬停，移出后才收起。
+            function isPointerInMicHoverKeepZone(point) {
+                if (!point) return false;
+                if (micPopup.isConnected && micHoverPointInRect(point, micPopup.getBoundingClientRect())) {
+                    return true;
+                }
+                return isPointerNearMicPanelZone(point);
             }
 
             function getOwnedMicSubwindow() {
@@ -4461,11 +4466,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (!panel || panel.dataset.nekoMicActionKey !== 'screen') return false;
                 var list = panel.querySelector('.neko-mic-popup-screen-sources');
                 if (!list) return false;
-                // 枚举中途被切走的「加载中」面板不复用：那次枚举会在面板
-                // 脱离文档后放弃，复用会把加载态永久定格。
+                // 两类中途面板不复用：①枚举未完成（连列表都没有）——那次枚举
+                // 会在面板脱离文档后放弃，复用会把加载态永久定格；②缩略图第
+                // 二阶段还在途（存在 loading 占位）——填充同样会在脱离后放弃。
                 return !!(
-                    list.querySelector('.screen-source-option')
-                    || list.querySelector('[data-neko-screen-source-deferred-load]')
+                    (
+                        list.querySelector('.screen-source-option')
+                        || list.querySelector('[data-neko-screen-source-deferred-load]')
+                    )
+                    && !list.querySelector('.screen-source-thumbnail-loading')
                 );
             }
 
@@ -4573,7 +4582,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     // 立即关闭。原先按 mouseleave 起算的固定宽限会在用户中途
                     // 停顿、或菜单随模型呼吸在指针下漂移时把面板收走，表现为
                     // 「悬停展开后一停就关」。
-                    if (isPointerInMicHoverKeepZone()) {
+                    if (isPointerInMicHoverKeepZone(micHoverPointer)) {
                         micActionHoverCollapseTimer = setTimeout(attemptCollapse, 90);
                         return;
                     }
@@ -4607,9 +4616,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     if (voiceControlsDisposed || activeMicActionKey !== 'screen') return;
                     var currentPanel = getOwnedMicSubwindow();
                     if (!currentPanel || !currentPanel.isConnected) return;
-                    // 用实时指针位置做几何判定：指针已回到面板或屏幕行上一律
-                    // 不关；真正停回菜单留白处才算「回到菜单」，关闭面板。
-                    if (micHoverPointInRect(micScreenReturnPointer, currentPanel.getBoundingClientRect())) return;
+                    // 用实时指针位置做几何判定（与其他面板的收起判定同一套
+                    // 保持区语义）：指针仍在面板周边（外扩区/过渡走廊）或屏幕
+                    // 行上不算「回到菜单」；真正停回菜单留白处才关闭。
+                    if (isPointerNearMicPanelZone(micScreenReturnPointer)) return;
                     var screenRow = leftColumn.querySelector('[data-neko-mic-main-action-row="screen"]')
                         || leftColumn.querySelector('[data-neko-mic-main-action="screen"]');
                     if (screenRow && micHoverPointInRect(micScreenReturnPointer, screenRow.getBoundingClientRect())) return;
@@ -5461,6 +5471,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 screenSummary.title = currentScreenSourceLabel;
                 // 选择、自动回退和其他窗口的选择都会派发该事件。
                 addVoiceWindowListener('neko:screen-source-changed', function () {
+                    // 缓存中的屏幕面板收不到这些 document 级刷新（选中高亮、
+                    // 当前来源摘要、记住窗口开关），丢弃缓存让下次打开重新
+                    // 枚举，避免复用出过期状态。
+                    discardCachedScreenMicSubwindow();
                     var nextLabel = getCurrentScreenSourceLabel();
                     screenSummary.textContent = nextLabel;
                     screenSummary.title = nextLabel;

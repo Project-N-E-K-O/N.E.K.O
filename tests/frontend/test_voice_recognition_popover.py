@@ -1458,6 +1458,126 @@ def test_screen_subwindow_is_reused_when_row_hover_returns(page: Page) -> None:
 
 
 @pytest.mark.frontend
+def test_screen_subwindow_cache_invalidates_on_source_change(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    device = page.locator('[data-neko-mic-main-action="device"]')
+    screen.hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    device.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'device';
+        }"""
+    )
+    # Selections, auto fallback and other windows' changes all dispatch this
+    # event; the detached cached panel misses those document-wide refreshes,
+    # so the cache must be dropped instead of reattached stale.
+    page.evaluate(
+        """() => window.dispatchEvent(new CustomEvent('neko:screen-source-changed',
+            { detail: { sourceId: 'window:9', sourceLabel: 'Other' } }))"""
+    )
+    screen.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'screen';
+        }"""
+    )
+    assert page.evaluate("window.__screenRenderOptions.length") == 2
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+
+@pytest.mark.frontend
+def test_screen_subwindow_with_pending_thumbnails_is_not_cached(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            window.__screenThumbnailsComplete = false;
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    device = page.locator('[data-neko-mic-main-action="device"]')
+    screen.hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    # Switching away while phase-two thumbnails are pending must drop the
+    # panel: the pending fill aborts once detached, and reattaching it would
+    # show loading thumbnails forever.
+    device.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'device';
+        }"""
+    )
+    screen.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'screen';
+        }"""
+    )
+    assert page.evaluate("window.__screenRenderOptions.length") == 2
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+    # Once thumbnails settled the reuse path engages again: switching rows
+    # and coming back must not re-enumerate.
+    page.evaluate("() => window.__settleScreenThumbnails()")
+    page.evaluate("() => { window.__screenThumbnailsComplete = true; }")
+    device.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'device';
+        }"""
+    )
+    screen.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'screen';
+        }"""
+    )
+    assert page.evaluate("window.__screenRenderOptions.length") == 2
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.locator(".screen-source-thumbnail-loading").count() == 0
+
+
+@pytest.mark.frontend
+def test_screen_subwindow_return_close_respects_panel_zone(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    screen.hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    popup_box = page.evaluate(
+        "() => { const r = window.__voicePopoverTest.popup().getBoundingClientRect();"
+        " return { left: r.left, right: r.right, top: r.top }; }"
+    )
+    # Entering the menu arms the delayed return close; drifting back out to a
+    # point still inside the panel's keep zone (just outside the menu edge)
+    # must not close the panel.
+    page.locator(".mic-gain-container").hover()
+    page.mouse.move(popup_box["right"] + 4, popup_box["top"] + 10)
+    page.wait_for_timeout(400)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    # Settling on non-action menu area still dismisses it.
+    page.locator(".mic-gain-container").hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+
+
+@pytest.mark.frontend
 def test_screen_subwindow_survives_menu_edge_grazing(page: Page) -> None:
     install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(
