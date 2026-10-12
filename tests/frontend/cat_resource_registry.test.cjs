@@ -137,8 +137,9 @@ test('compact mirror messages carry wide-art metadata from the active registry',
     path.join(PROJECT_ROOT, 'static/app/app-react-chat-window/bootstrap-state-and-geometry.js'),
     'utf8',
   );
-  assert.match(coreSource, /function _getNekoCatAppearanceMetadata\(slot\)/);
-  assert.match(dragSource, /wideArt:\s*_getNekoCatAppearanceMetadata\('action\.cat1\.play_yarn'\)\.wideArt === true/);
+  assert.match(coreSource, /function _isNekoCatAppearanceWideArtUrl\(slot, assetUrl\)/);
+  assert.match(dragSource, /const assetUrl = options\.assetUrl \|\| _getNekoIdleReturnAssetUrl\(_NEKO_IDLE_TIER_CAT1\)/);
+  assert.match(dragSource, /wideArt:\s*_isNekoCatAppearanceWideArtUrl\('action\.cat1\.play_yarn', assetUrl\)/);
   assert.match(mirrorSource, /detail && detail\.wideArt === true/);
 });
 
