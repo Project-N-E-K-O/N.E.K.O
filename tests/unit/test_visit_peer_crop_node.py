@@ -563,3 +563,74 @@ def test_recovery_starts_even_if_page_config_never_settles():
         files=BRIDGE_FILES,
     )
     assert out == {"hang": {"early": 0, "total": 1}, "fail": {"early": 1, "total": 1}, "ok": {"early": 1, "total": 1}}
+
+
+def test_page_config_reload_attempts_are_bounded():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        let reloads = 0;
+        h.ctx.lanlan_config = { lanlan_name: '' };
+        h.ctx.reloadPageConfig = () => { reloads += 1; return new Promise(() => {}); };   // fetch 挂住
+        let result = 'pending';
+        h.bridge.recoverFromPageConfig().then((r) => { result = r; });
+        for (let i = 0; i < 20; i++) await advance(1000);
+        return { reloads, result };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["result"] is False and out["reloads"] >= 2
+
+
+def test_visit_state_request_is_bounded_and_retried():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        let calls = 0;
+        h.ctx.fetch = () => {
+          calls += 1;
+          if (calls === 1) return new Promise(() => {});                    // 第一次挂住
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side: 'guest', phase: 'active' }) });
+        };
+        let result = 'pending';
+        h.bridge.recoverAfterReload('Neko').then((r) => { result = r; });
+        for (let i = 0; i < 8; i++) await advance(1000);
+        const frame = !!h.ctx.document.getElementById('visit-frame');
+        h.side = 'guest';
+        change(h, 'ended');
+        // 有回应但不是 2xx：不重试
+        const h2 = makeBridge();
+        let calls2 = 0;
+        h2.ctx.fetch = () => { calls2 += 1; return Promise.resolve({ ok: false, status: 404 }); };
+        let result2 = 'pending';
+        h2.bridge.recoverAfterReload('Neko').then((r) => { result2 = r; });
+        for (let i = 0; i < 15; i++) await advance(1000);
+        return { calls, result, frame, calls2, result2 };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"calls": 2, "result": True, "frame": True, "calls2": 1, "result2": False}
+
+
+def test_iframe_that_never_becomes_ready_is_reloaded():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        h.side = 'guest';
+        change(h, 'pending');
+        const frame = h.ctx.document.getElementById('visit-frame');
+        let loads = 0;
+        let src = frame.src;
+        Object.defineProperty(frame, 'src', { get: () => src, set: (v) => { loads += 1; src = v; } });
+        await advance(8100);
+        const first = loads;
+        await advance(8100);
+        await advance(8100);
+        await advance(8100);
+        const total = loads;
+        change(h, 'ended');
+        return { first, total, sameUrl: src.indexOf('/visit/transport?') === 0 };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"first": 1, "total": 2, "sameUrl": True}

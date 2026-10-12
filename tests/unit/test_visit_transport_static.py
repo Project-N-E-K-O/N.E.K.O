@@ -2194,3 +2194,30 @@ def test_track_is_kept_when_the_lost_context_object_is_still_returned():
         """
     )
     assert out == {"during": "remote", "thrown": "remote2", "after": "remote2"}
+
+
+def test_livekit_receive_bitrate_uses_report_timestamps():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const LKV = ctx.NekoVisitTransport.vendors.livekit;
+        const LK = makeFakeLK([]);
+        const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+        const a = LKV.createAdapter({ sdk: LK, handlers });
+        await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp9' } });
+        await a.setSubscribe(true);
+        let report = null;
+        const receiver = { getStats: () => Promise.resolve(new Map([['in', report]])) };
+        const pub = { kind: 'video', setSubscribed() {} };
+        LK.Room.last.emit('TrackPublished', pub, { identity: 'g_peer' });
+        LK.Room.last.emit('TrackSubscribed', { kind: 'video', mediaStreamTrack: {}, receiver }, pub, { identity: 'g_peer' });
+        report = { type: 'inbound-rtp', kind: 'video', bytesReceived: 0, packetsReceived: 0, packetsLost: 0, timestamp: 1000 };
+        await a.receiverStats(0);
+        // 第二次发起时间只隔 5 s，但报告本身隔了 10 s：按报告时间算是 280 kbps，不是 560
+        report = { type: 'inbound-rtp', kind: 'video', bytesReceived: 350000, packetsReceived: 0, packetsLost: 0, timestamp: 11000 };
+        const second = await a.receiverStats(5000);
+        return second.rx_kbps;
+        """
+    )
+    assert out == 280

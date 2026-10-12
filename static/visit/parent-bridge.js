@@ -21,7 +21,11 @@
   var TICK_MS = 300;                    // 摆位 / 裁剪刷新节拍
   var CROP_REFRESH_MS = 600;            // VISIT_CROP_REFRESH_MS 区间内
   var STARVATION_MS = 1000;             // VISIT_FRAME_STARVATION_S
-  var READY_TIMEOUT_MS = 15000;
+  var READY_TIMEOUT_MS = 8000;          // iframe 这么久没报 ready 就重新加载一次（本机页面正常 <1 s）
+  var READY_RETRIES = 2;
+  var RECOVER_FETCH_TIMEOUT_MS = 4000;  // 重载恢复查 /api/visit/state 单次的上限
+  var RECOVER_FETCH_WINDOW_MS = 12000;  // 查询失败（超时 / 网络错）时重试的总时限
+  var RELOAD_ATTEMPT_MS = 3000;         // 重拉页面配置单次的上限
   var TOKEN_LOOKUP_TIMEOUT_MS = 5000;   // 取 CSRF token 卡住时按失败处理
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
@@ -98,6 +102,7 @@
       sink: null,
       ready: false,
       readyTimer: null,
+      readyRetries: 0,
       portraitExports: 0,
       liveGen: 0,   // 每收到一条实时 visit_state_change 加一：重载恢复的快照若早于它就作废
       authTimer: null,
@@ -290,12 +295,25 @@
       state.captureFps = isCompatMode() ? CAPTURE_FPS_COMPAT : CAPTURE_FPS_DIRECT;
       state.sampler.setTarget(state.captureFps);
       state.sampler.reset();
+      state.readyRetries = 0;
       doc.body.appendChild(f);
+      armReadyTimer(f);
+      startTick();
+    }
+
+    /** iframe 一直不报 ready（页面或本地脚本一时没加载出来）：同一个 iframe 重新加载，最多 READY_RETRIES 次。 */
+    function armReadyTimer(f) {
+      if (state.readyTimer !== null) clearTimeoutFn(state.readyTimer);
       state.readyTimer = setTimeoutFn(function () {
         state.readyTimer = null;
-        if (state.frame === f && !state.ready) logFrame('warn', 'transport iframe never became ready');
+        if (state.frame !== f || state.ready) return;
+        logFrame('warn', 'transport iframe never became ready');
+        if (state.readyRetries >= READY_RETRIES) return;
+        state.readyRetries += 1;
+        var src = f.src;
+        f.src = src;
+        armReadyTimer(f);
       }, READY_TIMEOUT_MS);
-      startTick();
     }
 
     function removeFrame() {
@@ -350,6 +368,29 @@
       var sec = win.nekoLocalMutationSecurity;
       if (sec && typeof sec.refreshToken === 'function') return Promise.resolve(sec.refreshToken()).then(function (t) { return t || ''; });
       return getToken();
+    }
+
+    /** 等 p 最多 ms：超时或失败都给 fallback。 */
+    function withTimeout(p, ms, fallback) {
+      return new Promise(function (resolve) {
+        var done = false;
+        var timer = setTimeoutFn(function () {
+          if (done) return;
+          done = true;
+          resolve(fallback);
+        }, ms);
+        Promise.resolve(p).then(function (v) {
+          if (done) return;
+          done = true;
+          clearTimeoutFn(timer);
+          resolve(v);
+        }, function () {
+          if (done) return;
+          done = true;
+          clearTimeoutFn(timer);
+          resolve(fallback);
+        });
+      });
     }
 
     function boundedToken(lookup) {
@@ -893,16 +934,35 @@
       });
     }
 
+    /**
+     * 查 /api/visit/state：单次最多 RECOVER_FETCH_TIMEOUT_MS；没回应（超时 / 网络错）就按退避重试到截止时间。
+     * 有回应但不是 2xx（比如串门开关关着的 404）不重试。
+     */
+    function fetchSnapshot(lanlanName, token, attempt, deadline) {
+      var NO_RESPONSE = {};
+      var request = Promise.resolve().then(function () {
+        return win.fetch('/api/visit/state?catgirl=' + encodeURIComponent(lanlanName), { headers: { 'X-CSRF-Token': token }, cache: 'no-store', credentials: 'same-origin' });
+      }).then(function (res) {
+        if (!res) return NO_RESPONSE;
+        return res.ok ? res.json() : null;
+      });
+      return withTimeout(request, RECOVER_FETCH_TIMEOUT_MS, NO_RESPONSE).then(function (snap) {
+        if (snap !== NO_RESPONSE) return snap;
+        var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
+        if (now() + delay >= deadline) return null;
+        return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
+          return fetchSnapshot(lanlanName, token, attempt + 1, deadline);
+        });
+      });
+    }
+
     function recoverAfterReload(lanlanName) {
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
       var gen = state.liveGen;
       // /api/visit/state 要 CSRF：重载后页面配置一时取不到 token 时不能直接空着头去请求（403 后就再也不恢复）
       return acquireToken(0, now() + RECOVER_TOKEN_WINDOW_MS).then(function (token) {
         if (!token) return null;
-        var headers = { 'X-CSRF-Token': token };
-        return win.fetch('/api/visit/state?catgirl=' + encodeURIComponent(lanlanName), { headers: headers, cache: 'no-store', credentials: 'same-origin' });
-      }).then(function (res) {
-        return res && res.ok ? res.json() : null;
+        return fetchSnapshot(lanlanName, token, 0, now() + RECOVER_FETCH_WINDOW_MS);
       }).then(function (snap) {
         if (!snap || !snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
         // 查询期间实时通道已经推过新状态（比如已经结束）：这份快照过时了，不能拿它重建
@@ -938,7 +998,9 @@
       return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
         var reload = win.reloadPageConfig;
         if (typeof reload !== 'function') return null;
-        return Promise.resolve().then(function () { return reload(); }).then(null, function () { return null; });
+        // reloadPageConfig 里的 fetch 没有超时：每次最多等 RELOAD_ATTEMPT_MS（也不超过截止时间），挂住了还能再试
+        var left = Math.max(0, Math.min(RELOAD_ATTEMPT_MS, deadline - now()));
+        return withTimeout(Promise.resolve().then(function () { return reload(); }), left, null);
       }).then(function () {
         return recoverFromPageConfig(attempt + 1, deadline);
       });

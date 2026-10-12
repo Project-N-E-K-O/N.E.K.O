@@ -450,7 +450,9 @@
             if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded') && typeof r.currentRoundTripTime === 'number') rttS = r.currentRoundTripTime;
           });
           if (!inbound) return null;
-          var mark = { at: nowMs, bytes: inbound.bytesReceived || 0, lost: inbound.packetsLost || 0, recv: inbound.packetsReceived || 0 };
+          // 差分的时间用报告自己的 timestamp（getStats 完成时间参差时按发起时间算会把码率算偏）；没有才退回调用时刻
+          var at = typeof inbound.timestamp === 'number' && isFinite(inbound.timestamp) ? inbound.timestamp : nowMs;
+          var mark = { at: at, bytes: inbound.bytesReceived || 0, lost: inbound.packetsLost || 0, recv: inbound.packetsReceived || 0 };
           var prev = rxMark;
           // 慢回来的旧取样（比当前基准还早）不覆盖基准
           if (prev && !(mark.at > prev.at)) return null;
