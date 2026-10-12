@@ -444,38 +444,55 @@ def test_a_script_that_merely_runs_long_still_fails_its_deadline(runner):
     )
 
 
-def test_a_heavy_synchronous_top_level_does_not_push_the_watchdog_past_the_ceiling(
-    monkeypatch,
-):
-    """The deadline is measured from node start, not from when the watchdog arms.
+def test_a_heavy_synchronous_top_level_does_not_push_the_watchdog_past_the_ceiling():
+    """The deadline is measured from script start, not from the end of the top level.
 
-    The watchdog is appended, so it arms only after the script's synchronous top
-    level finishes - but the outer ceiling has been running since the spawn. Arm
-    for the full deadline and the two clocks drift apart by exactly that top
-    level; any top level heavier than the slack and the ceiling fires first,
+    A timer cannot fire until the script's synchronous top level finishes. Arm
+    the watchdog only then and the deadline drifts by exactly that top level;
+    any top level heavier than the slack and the outer ceiling fires first,
     taking the diagnosis with it.
 
-    Driven with a shrunken slack so the case costs ~2s instead of ~9s.
+    Timed inside node, from the first statement to exit, not against the outer
+    ceiling. The ceiling also covers node bootstrap, which the budget leaves out
+    on purpose, and a Windows runner under ``-n auto`` can spend over a second
+    there: an earlier version shrank the slack to 1s and was killed by the
+    ceiling while the code under test was correct. With the real slack absorbing
+    bootstrap, the difference is in-process: ~2.0s to exit when correct, ~3.5s
+    when armed after the top level.
     """
     node_path = _node_or_skip()
-    monkeypatch.setattr(node_harness, "_SPAWN_SLACK_SECONDS", 1.0)
 
-    # 2s of synchronous top level - twice the slack - and then a leaked timer.
+    # 2s of synchronous top level, longer than the 1.5s budget, then a leaked
+    # timer. The exit hook reports how long after the first statement node left.
     script = (
+        "var t0 = process.hrtime.bigint();\n"
+        "process.on('exit', function () {\n"
+        "  var ms = Number((process.hrtime.bigint() - t0) / 1000000n);\n"
+        "  require('fs').writeSync(1, '\\nelapsed_ms=' + ms + '\\n');\n"
+        "});\n"
         "var until = Date.now() + 2000;\n"
         "while (Date.now() < until) {}\n"
         "setInterval(function () {}, 1000);\n"
         "process.stdout.write('started');\n"
     )
     result = run_node_script(
-        node_path, script, capture_output=True, check=False, timeout=2
+        node_path, script, capture_output=True, check=False, timeout=1.5
     )
 
     assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (
-        "同步 top-level 吃掉的时间必须算进 deadline，否则 watchdog 会被外层 ceiling "
-        f"抢先杀掉、诊断全丢：rc={result.returncode} stderr={result.stderr!r}"
+        f"泄漏的 setInterval 应由 watchdog 判死：rc={result.returncode} "
+        f"stderr={result.stderr!r}"
     )
     assert "[node_harness]" in result.stderr
+    match = re.search(r"elapsed_ms=(\d+)", result.stdout)
+    assert match, f"脚本的 exit 钩子没跑到：stdout={result.stdout!r}"
+    elapsed_ms = int(match.group(1))
+    # Correct: top level 2000ms, then the overdue watchdog fires at once.
+    # Arming after the top level: 2000 + 1500ms. The bound sits midway.
+    assert elapsed_ms < 2750, (
+        "同步 top-level 吃掉的时间必须算进 deadline，否则 watchdog 要等 top-level "
+        f"跑完再计满一整个 deadline，会被外层 ceiling 抢先杀掉、诊断全丢：elapsed_ms={elapsed_ms}"
+    )
 
 
 def test_the_spawn_ceiling_sits_above_the_script_deadline(monkeypatch):
