@@ -370,7 +370,10 @@ async def test_uncooperative_async_backend_fences_scheduler_without_overlap(
     backend = _AsyncUncooperativeBackend()
     scheduler = _scheduler(
         backend,
-        deadline_seconds=0.01 if trigger == "timeout" else 1.0,
+        # The active job must start before its deadline; with 10ms a slow
+        # Windows worker (15.6ms monotonic ticks) expired it in the queue and
+        # ran the queued job instead.
+        deadline_seconds=0.5 if trigger == "timeout" else 1.0,
         close_timeout_seconds=0.01,
     )
     active = scheduler.submit(_request("uncooperative-active"))

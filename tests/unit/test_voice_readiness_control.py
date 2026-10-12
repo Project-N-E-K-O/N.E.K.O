@@ -97,6 +97,33 @@ def trial_api(monkeypatch):
     return app, service
 
 
+PROTOCOL_HARNESS = Path(__file__).parents[1] / "frontend" / "voice_preview_protocol.cjs"
+
+
+async def start_protocol(args):
+    """Spawn the Node harness and return it with its first request line.
+
+    The harness writes that line about 0.1s after startup. Windows runners
+    occasionally leave a fresh Node child silent with no output at all, so a
+    stalled start is retried once; a protocol regression fails both attempts.
+    """
+    for attempt in range(2):
+        process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            return process, await asyncio.wait_for(process.stdout.readline(), 10)
+        except asyncio.TimeoutError:
+            process.kill()
+            _output, errors = await process.communicate()
+            if attempt:
+                raise AssertionError("protocol harness wrote no request: "
+                    + errors.decode(errors="replace")) from None
+        except BaseException:
+            process.kill()
+            await process.communicate()
+            raise
+
+
 def trial_client(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
         base_url="http://testserver", headers={
@@ -119,14 +146,11 @@ async def test_actual_core_api_and_frontend_keep_successful_trial_proof(registry
     app, service = trial_api
     websocket = _EventWebSocket([])
     operation_before = value._asr_route_operation_generation
-    process = await asyncio.create_subprocess_exec(node,
-        str(Path(__file__).parents[1] / "frontend" / "voice_preview_protocol.cjs"),
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    process, line = await start_protocol([node, str(PROTOCOL_HARNESS)])
     channels = []
     try:
         async with trial_client(app) as client:
             while True:
-                line = await asyncio.wait_for(process.stdout.readline(), 10)
                 assert line, (await process.stderr.read()).decode()
                 request = json.loads(line)
                 channels.append(request["channel"])
@@ -156,6 +180,7 @@ async def test_actual_core_api_and_frontend_keep_successful_trial_proof(registry
                     assert registry._ticket is None  # The actual API has already released it.
                 process.stdin.write((json.dumps({"id": request["id"], "payload": result}) + "\n").encode())
                 await process.stdin.drain()
+                line = await asyncio.wait_for(process.stdout.readline(), 10)
         assert channels == ["control", "audio-check", "control", "result"]
         assert frontend["canStart"] is cleanup_token_valid
         assert frontend["audioContract"] == ("owner-campplus-desktop-v1" if cleanup_token_valid else None)
@@ -209,11 +234,10 @@ vm.runInContext = function (source, context, options) {
 };
 """, encoding="utf-8")
         args.extend(["--require", str(preload)])
-    args.append(str(Path(__file__).parents[1] / "frontend" / "voice_preview_protocol.cjs"))
-    process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    args.append(str(PROTOCOL_HARNESS))
+    process, line = await start_protocol(args)
     try:
-        request = json.loads(await asyncio.wait_for(process.stdout.readline(), 20))
+        request = json.loads(line)
         assert request["channel"] == "control" and request["payload"]["event"] == "preview_begin"
         if failure == "pipe_closed":
             process.stdin.close()
