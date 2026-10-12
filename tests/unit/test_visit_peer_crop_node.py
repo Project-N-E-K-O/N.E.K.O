@@ -742,3 +742,62 @@ def test_ready_iframe_is_not_reloaded_while_the_token_is_slow():
         files=BRIDGE_FILES,
     )
     assert out == 0
+
+
+def test_closed_4404_clears_away_but_still_does_not_rebuild():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        const box = h.ctx.document.createElement('div');
+        box.id = 'live2d-container';
+        h.ctx.document.body.appendChild(box);
+        await open(h, 'guest');
+        change(h, 'started');
+        change(h, 'departed');
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 4404 } });
+        const away = box.classList.contains('visiting-away');
+        change(h, 'wrap_up');
+        return { away, frame: !!h.ctx.document.getElementById('visit-frame') };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"away": False, "frame": False}
+
+
+def test_late_event_of_another_visit_after_closed_is_ignored():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        const box = h.ctx.document.createElement('div');
+        box.id = 'live2d-container';
+        h.ctx.document.body.appendChild(box);
+        await open(h, 'guest');
+        change(h, 'started');
+        change(h, 'departed');
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 4409 } });
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'ended', side: 'guest', visit_id: 'OtherVisit000000000000' });
+        const away = box.classList.contains('visiting-away');
+        change(h, 'wrap_up');
+        return { away, frame: !!h.ctx.document.getElementById('visit-frame'), closedKept: h.bridge._state.closedVisitId === VISIT_ID };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"away": True, "frame": False, "closedKept": True}
+
+
+def test_logs_from_a_retiring_frame_are_kept():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        const logs = [];
+        h.ctx.console = { warn: (m) => logs.push(m), error: (m) => logs.push(m), info: (m) => logs.push(m), log: (m) => logs.push(m) };
+        await open(h, 'host');
+        change(h, 'started');
+        change(h, 'ended');
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'log', level: 'warn', msg: 'exit failed', code: 'leave_failed' } });
+        await advance(2100);
+        return logs.some((m) => String(m).indexOf('exit failed') >= 0);
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out is True

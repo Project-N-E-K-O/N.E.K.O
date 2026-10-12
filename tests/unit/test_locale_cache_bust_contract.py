@@ -85,7 +85,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-11-pr14a-visit-debrief",
         "2026-10-11-visit-pr13-pr15-settings-memory-panel",
         "2026-10-11-visit-pr13-pr15-forget-record-discard",
-        "2026-10-11-visit-pr13-pr15-report-queued-login",
         "2026-10-12-visit-frame-badges",
         "2026-10-11-pngtuber-skipped-bound-memory-toggle-main-merge",
         "2026-10-10-pngtuber-delete-skipped-bound",

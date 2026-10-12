@@ -36,6 +36,7 @@
   var RECOVER_TOKEN_WINDOW_MS = 12000;  // 重载恢复取 token 的时限（另受 RECOVER_TOTAL_MS 约束）
   var RECOVER_NAME_WINDOW_MS = 8000;    // 重载后取不到角色名时重拉页面配置的时限（另受 RECOVER_TOTAL_MS 约束）
   var PAGE_CONFIG_WAIT_MS = 4000;       // 等 pageConfigReady 的上限，到点不管它落没落定都开始重载恢复
+  var CLOSE_UNKNOWN_VISIT = 4404;      // 传输 WS 关闭码：后端不认这个场次（与 backend-ws.js 同值）
   var ENDED_LEAVE_WAIT_MS = 2000;       // ended 后等传输页自己离房（报 closed）的上限，到点再移除 iframe
   var PEER_AWAY_OPACITY = '0.6';
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图
@@ -324,7 +325,9 @@
 
     /**
      * ended 时不立刻移除：先告诉传输页 ended（它据此主动离房、断开传输 WS——后端断着收不到 stop
-     * 时对端也能马上看到离开），iframe 立即隐藏、脱离父页状态，等它报 closed 或最多 ENDED_LEAVE_WAIT_MS 再移除。
+     * 时对端也能马上看到离开），iframe 立即隐藏、脱离父页状态，最多等 ENDED_LEAVE_WAIT_MS 再移除。
+     * 传输 WS 还连着时它离房后经 onclose 报 closed，收到就提前移除；WS 断着（这条保险针对的情形）报不出 closed，
+     * 会等满这段时间。
      */
     function retireFrame() {
       var f = state.frame;
@@ -481,7 +484,10 @@
     function onFrameMessage(event) {
       var r = state.retiring;
       if (r && event.source === r.frame.contentWindow && event.origin === win.location.origin) {
-        if (event.data && event.data.t === 'closed') finishRetire(r);
+        var d = event.data;
+        if (d && d.t === 'closed') finishRetire(r);
+        // 退场期间的离房日志照常记下（离房出错时要能排查）
+        else if (d && d.t === 'log') logFrame(d.level, String(d.msg || '').slice(0, 500) + (d.code ? ' (' + d.code + ')' : ''));
         return;
       }
       var f = state.frame;
@@ -517,10 +523,11 @@
       } else if (data.t === 'log') {
         logFrame(data.level, String(data.msg || '').slice(0, 500) + (data.code ? ' (' + data.code + ')' : ''));
       } else if (data.t === 'closed') {
-        // 传输页进入终态（4403 / 4404 / 4409 / 重连超时）：它已离房，移除。场次本身还没结束（等后端的
-        // ended）：记住这个 visit_id，之后的 wrap_up / ending 不再补建 iframe，guest 的离家样式也留到 ended
+        // 传输页进入终态（4403 / 4404 / 4409 / 重连超时）：它已离房，移除。记住这个 visit_id，之后的
+        // wrap_up / ending 不再补建 iframe。场次还在、只是这个传输页没了（4409 被顶掉、4403、重连超时）时
+        // guest 的离家样式留到 ended；4404 是后端已经不认这个场次了，可能再也等不到 ended，照旧清掉
         var closedId = state.visitId;
-        removeFrame({ keepAway: true });
+        removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT });
         state.closedVisitId = closedId;
       }
     }
@@ -941,7 +948,8 @@
       if (action === 'pending') {
         state.closedVisitId = null;
         ensureFrame(msg.side, msg.visit_id);
-      } else if (state.visitId && msg.visit_id && msg.visit_id !== state.visitId) {
+      } else if ((state.visitId || state.closedVisitId) && msg.visit_id && msg.visit_id !== (state.visitId || state.closedVisitId)) {
+        // 别的场次迟到的事件（closed 之后 visitId 已空，按记下的 closedVisitId 过滤）
         return;
       } else if (!state.frame && action !== 'ended' && PHASE_OF_ACTION[action] && msg.side && msg.visit_id &&
           msg.visit_id !== state.closedVisitId) {
