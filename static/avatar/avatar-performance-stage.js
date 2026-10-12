@@ -1449,11 +1449,17 @@
             const owned = state && state.expression;
             if (!owned) return;
             const manager = state.manager;
+            if (owned.resource && (manager._manualExpressionListener !== owned.listener
+                || manager._manualExpressionResource !== owned.resource)) {
+                manager._retireManualExpressionResource(owned.resource);
+                state.expression = null;
+                return;
+            }
             if (manager.currentModel !== state.model || state.model.destroyed ||
                 state.model.internalModel !== state.internalModel || state.internalModel.coreModel !== state.coreModel) {
                 if (owned.listener && manager._manualExpressionListener === owned.listener &&
                     manager._manualExpressionEmitter === owned.emitter) {
-                    manager._removeManualExpressionOverride(owned.listener, owned.emitter);
+                    manager._removeManualExpressionOverride(owned.listener, owned.emitter, { retire: true });
                 }
                 return;
             }
@@ -1471,7 +1477,11 @@
                 return;
             }
             if (owned.listener && typeof manager._removeManualExpressionOverride === 'function') {
-                manager._removeManualExpressionOverride(owned.listener, owned.emitter);
+                manager._removeManualExpressionOverride(owned.listener, owned.emitter, { retire: true });
+            }
+            if (manager._manualExpressionListener && manager._manualExpressionListener !== owned.listener) {
+                state.expression = null;
+                return;
             }
             const expressionManager = state.model.internalModel.motionManager?.expressionManager;
             if (expressionManager && typeof expressionManager.stopAllExpressions === 'function') {
@@ -1500,7 +1510,7 @@
                     || resource.model !== state.model || resource.internalModel !== state.internalModel
                     || resource.coreModel !== state.coreModel) return;
                 Object.assign(owned, { generation: resource.generation, listener: resource.listener,
-                    emitter: resource.emitter, paramIds: resource.paramIds, pending: false });
+                    emitter: resource.emitter, paramIds: resource.paramIds, resource: resource.resource, pending: false });
                 if (owned.paramIds && typeof owned.paramIds.forEach === 'function') {
                     this.trackParameterWrites(Array.from(owned.paramIds));
                 }
@@ -1705,12 +1715,36 @@
                 manager._avatarPerformanceBypassLocks = nextDepth > 0 || restoreExternalBypass;
             };
             try {
-                return Promise.resolve(callback()).finally(() => {
-                    restore();
-                });
+                // Permission covers synchronous admission only. Async manager
+                // work carries an explicit session receipt, never a global flag.
+                const result = callback();
+                restore();
+                return Promise.resolve(result);
             } catch (error) {
                 restore();
                 throw error;
+            }
+        }
+
+        async runOwnedOperation(state, callback) {
+            if (!state) return callback({});
+            if (!this.isCurrentState(state) || state.session.cancelled) return false;
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            state.operationController.signal.addEventListener('abort', abort, { once: true });
+            const timer = setTimeout(abort, 15000);
+            const options = { signal: controller.signal, lifetimeSignal: state.operationController.signal,
+                performanceOwner: state.session };
+            let onAbort;
+            const cancelled = new Promise(resolve => {
+                onAbort = () => resolve(false);
+                controller.signal.addEventListener('abort', onAbort, { once: true });
+            });
+            try { return await Promise.race([Promise.resolve(callback(options)), cancelled]); }
+            finally {
+                clearTimeout(timer);
+                controller.signal.removeEventListener('abort', onAbort);
+                state.operationController.signal.removeEventListener('abort', abort);
             }
         }
 
@@ -1821,6 +1855,7 @@
 
             const state = snapshot.session && snapshot.session._live2dDriverState;
             if (!state || state.driver !== this) return false;
+            state.operationController.abort();
             Array.from(state.timelines || []).forEach((finish) => finish('cancelled', 'session_release'));
             // Retirement always cleans only this state's resources, even after takeover.
             if (state.lookAtEntry && typeof state.manager.clearTemporaryPoseOverride === 'function') {
@@ -1911,6 +1946,7 @@
                 model: snapshot && snapshot.model || this.getModel(),
                 internalModel: snapshot && snapshot.internalModel || this.getModel()?.internalModel,
                 coreModel: snapshot && snapshot.coreModel || this.getCoreModel(), params: {}, expression: null,
+                operationController: new AbortController(),
                 timelines: new Set(), parameterOwners: new Map(), capabilities: normalizeCapabilities(session && session.capabilities)
                     .filter(capability => CONTRACTS.capabilities.includes(capability)) };
             this.sessionState = state;
@@ -1947,6 +1983,7 @@
         releaseSession(session) {
             const state = session && session._live2dDriverState;
             if (!state || state.driver !== this) return;
+            state.operationController.abort();
             if (state.manager && state.manager.currentModel === state.model &&
                 state.model.internalModel === state.internalModel && state.internalModel?.coreModel === state.coreModel &&
                 state.manager._temporaryMotionSuspendToken === state.motionSuspendSource && state.motionSuspendSource) {
@@ -2046,6 +2083,11 @@
         }
 
         async playMotion(motion, options) {
+            return this.runOwnedOperation(this.sessionState,
+                operation => this.playMotionOwned(motion, Object.assign({}, options, operation)));
+        }
+
+        async playMotionOwned(motion, options) {
             const manager = this.getManager();
             const model = this.getModel();
             const state = this.sessionState;
@@ -2066,7 +2108,7 @@
 
                 if (groupName && explicitIndex !== null && typeof manager.playActionMotion === 'function') {
                     try {
-                        const played = await this.withPerformanceBypass(() => manager.playActionMotion(groupName, explicitIndex));
+                        const played = await this.withPerformanceBypass(() => manager.playActionMotion(groupName, explicitIndex, Object.assign({}, options, { isCurrent })));
                         if (!isCurrent()) return false;
                         if (played !== false) {
                             return true;
@@ -2078,7 +2120,7 @@
                     const runtimeRef = this.findMotionRuntimeReference(groupName, file);
                     if (runtimeRef) {
                         try {
-                            const played = await this.withPerformanceBypass(() => manager.playActionMotion(runtimeRef.group, runtimeRef.index));
+                            const played = await this.withPerformanceBypass(() => manager.playActionMotion(runtimeRef.group, runtimeRef.index, Object.assign({}, options, { isCurrent })));
                             if (!isCurrent()) return false;
                             if (played !== false) {
                                 return true;
@@ -2088,7 +2130,7 @@
                 }
 
                 if (groupName && this.hasMotion(groupName, options) && typeof manager.playMotion === 'function') {
-                    const played = await this.withPerformanceBypass(() => manager.playMotion(groupName, { isCurrent }));
+                    const played = await this.withPerformanceBypass(() => manager.playMotion(groupName, Object.assign({}, options, { isCurrent })));
                     if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;
@@ -2099,6 +2141,11 @@
         }
 
         async applyEmotion(emotion, options) {
+            return this.runOwnedOperation(this.sessionState,
+                operation => this.applyEmotionOwned(emotion, Object.assign({}, options, operation)));
+        }
+
+        async applyEmotionOwned(emotion, options) {
             const manager = this.getManager();
             const state = this.sessionState;
             if ((options && options.session && !this.ownsSession(options.session)) ||
@@ -2140,13 +2187,13 @@
                         this.mergeExpressionParamSnapshot(this.captureParams(Object.keys(params)));
                     }
                     if (file) {
-                        const captured = await this.captureExpressionParamsFromFile(file);
+                        const captured = await this.captureExpressionParamsFromFile(file, normalized);
                         if (!isCurrent()) return false;
                         this.mergeExpressionParamSnapshot(captured);
                     }
                 }
                 const applied = await this.playOwnedExpression(
-                    onApplied => this.withPerformanceBypass(() => manager.setEmotion(emotionName, { isCurrent, onApplied })), state);
+                    onApplied => this.withPerformanceBypass(() => manager.setEmotion(emotionName, Object.assign({}, normalized, { isCurrent, onApplied }))), state);
                 if (!isCurrent()) return false;
                 return applied !== false;
             }
@@ -2240,7 +2287,7 @@
             return candidates;
         }
 
-        async captureExpressionParamsFromFile(file) {
+        async captureExpressionParamsFromFile(file, options = {}) {
             const manager = this.getManager();
             if (!file || !manager || typeof fetch !== 'function' || typeof manager.resolveAssetPath !== 'function') {
                 return {};
@@ -2258,12 +2305,14 @@
                 pushCandidate('expressions/' + baseName);
             }
             for (let index = 0; index < candidates.length; index += 1) {
+                if (options.signal?.aborted) return {};
                 try {
-                    const response = await fetch(manager.resolveAssetPath(candidates[index]));
+                    const response = await fetch(manager.resolveAssetPath(candidates[index]), { signal: options.signal });
                     if (!response.ok) {
                         continue;
                     }
                     const data = await response.json();
+                    if (options.signal?.aborted) return {};
                     const paramIds = Array.isArray(data.Parameters)
                         ? data.Parameters.map((param) => param && param.Id).filter(Boolean)
                         : [];
@@ -2329,6 +2378,11 @@
         }
 
         async applyExpression(expression, options) {
+            return this.runOwnedOperation(this.sessionState,
+                operation => this.applyExpressionOwned(expression, Object.assign({}, options, operation)));
+        }
+
+        async applyExpressionOwned(expression, options) {
             const manager = this.getManager();
             const state = this.sessionState;
             if ((options && options.session && !this.ownsSession(options.session)) ||
@@ -2369,11 +2423,11 @@
                 }
 
                 if (file && this.hasExpressionFile(file) && typeof manager.playExpression === 'function') {
-                    const captured = await this.captureExpressionParamsFromFile(file);
+                    const captured = await this.captureExpressionParamsFromFile(file, options);
                     if (!isCurrent()) return false;
                     this.mergeExpressionParamSnapshot(captured);
                     const played = await this.playOwnedExpression(
-                        onApplied => this.withPerformanceBypass(() => manager.playExpression(candidateName || file, file, { isCurrent, onApplied })), state);
+                        onApplied => this.withPerformanceBypass(() => manager.playExpression(candidateName || file, file, Object.assign({}, options, { isCurrent, onApplied }))), state);
                     if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;
@@ -2382,7 +2436,7 @@
 
                 if (candidateName && this.hasExpressionName(candidateName) && typeof manager.playExpression === 'function') {
                     const played = await this.playOwnedExpression(
-                        onApplied => this.withPerformanceBypass(() => manager.playExpression(candidateName, null, { isCurrent, onApplied })), state);
+                        onApplied => this.withPerformanceBypass(() => manager.playExpression(candidateName, null, Object.assign({}, options, { isCurrent, onApplied }))), state);
                     if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;

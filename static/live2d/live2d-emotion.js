@@ -45,13 +45,19 @@ function live2dExpressionOwnsAmplitude(manager, paramId, coreModel) {
 // SDK 用数字索引预约 expression。按 SDK manager 串行提交，避免取消后同名
 // 新请求复用该索引，让旧加载误认自己仍有预约（ABA）。切模型不等待旧队列。
 const live2dNativeExpressionTasks = new WeakMap();
+const live2dNativeExpressionRunning = new WeakMap();
 const live2dRetiredExpressionManagers = new WeakSet();
 const LIVE2D_NATIVE_EXPRESSION_TIMEOUT_MS = 15000;
-async function live2dPlayNativeExpression(model, name, isCurrent) {
+async function live2dPlayNativeExpression(model, name, isCurrent, operation) {
     const expressionManager = model.internalModel?.motionManager?.expressionManager;
     const owner = expressionManager || model;
     if (live2dRetiredExpressionManagers.has(owner)) return false;
     const previous = live2dNativeExpressionTasks.get(owner);
+    const retire = () => {
+        if (live2dNativeExpressionRunning.get(owner) !== entry) return;
+        live2dRetiredExpressionManagers.add(owner);
+        if (expressionManager && 'reserveExpressionIndex' in expressionManager) expressionManager.reserveExpressionIndex = -1;
+    };
     if (previous && !previous.isCurrent() && expressionManager && 'reserveExpressionIndex' in expressionManager) {
         expressionManager.reserveExpressionIndex = -1;
     }
@@ -60,6 +66,7 @@ async function live2dPlayNativeExpression(model, name, isCurrent) {
         // SDK loader 没有请求期限。超时后只走手动回退，不再复用其数字预约，
         // 否则未取消的旧加载仍可能接管同名新请求。重新加载模型可恢复 native。
         return new Promise((resolve, reject) => {
+            live2dNativeExpressionRunning.set(owner, entry);
             const timer = setTimeout(() => {
                 live2dRetiredExpressionManagers.add(owner);
                 if (expressionManager && 'reserveExpressionIndex' in expressionManager) {
@@ -71,9 +78,11 @@ async function live2dPlayNativeExpression(model, name, isCurrent) {
             try {
                 Promise.resolve(model.expression(name)).then(result => {
                     clearTimeout(timer);
+                    if (live2dNativeExpressionRunning.get(owner) === entry) live2dNativeExpressionRunning.delete(owner);
                     resolve(result);
                 }, error => {
                     clearTimeout(timer);
+                    if (live2dNativeExpressionRunning.get(owner) === entry) live2dNativeExpressionRunning.delete(owner);
                     reject(error);
                 });
             } catch (error) {
@@ -83,11 +92,13 @@ async function live2dPlayNativeExpression(model, name, isCurrent) {
         });
     });
     const entry = { task, isCurrent };
+    if (operation) operation.signal.addEventListener('abort', retire, { once: true });
     live2dNativeExpressionTasks.set(owner, entry);
     try {
-        const result = await task;
+        const result = await (operation ? operation.wait(task) : task);
         return isCurrent() ? result : false;
     } finally {
+        if (operation) operation.signal.removeEventListener('abort', retire);
         if (live2dNativeExpressionTasks.get(owner) === entry) live2dNativeExpressionTasks.delete(owner);
     }
 }
@@ -908,6 +919,8 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
     const model = this.currentModel;
     const emitter = model.internalModel;
     const coreModel = emitter.coreModel;
+    this._retryRetiredManualExpressions(emitter);
+    if (Array.from(this._retiredManualExpressions || []).some(record => record.emitter === emitter)) return false;
     if (options.generation !== undefined) {
         if ((this._transientExpressionGeneration || 0) !== options.generation) return false;
     }
@@ -923,8 +936,10 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
 
     const self = this;
     const startTime = performance.now();
+    const resource = { emitter, listener: null, active: true, attempts: 0, timer: null };
 
     const onBeforeUpdate = function() {
+        if (!resource.active) return;
         if (self._manualExpressionListener !== onBeforeUpdate) return;
         if (self.currentModel !== model || model.destroyed || model.internalModel !== emitter
             || emitter.coreModel !== coreModel) {
@@ -953,13 +968,14 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
             } catch (e) {}
         }
     };
+    resource.listener = onBeforeUpdate;
 
     // Publish only a registered listener. A failed registration leaves no
     // pointer or protection set that a guide cannot later retire.
     try {
         emitter.on('beforeModelUpdate', onBeforeUpdate);
     } catch (error) {
-        try { emitter.off('beforeModelUpdate', onBeforeUpdate); } catch (_) {}
+        this._retireManualExpressionResource(resource);
         throw error;
     }
     if (this.currentModel !== model || model.internalModel !== emitter || emitter.coreModel !== coreModel
@@ -987,6 +1003,7 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
     this._manualExpressionEmitter = emitter;
     this._manualExpressionParams = params;
     this._manualExpressionListener = onBeforeUpdate;
+    this._manualExpressionResource = resource;
     console.log(`[ManualExpression] 安装手动表情覆盖，${params.length}个参数，淡入 ${fadeInDuration}ms`);
     return true;
 };
@@ -994,19 +1011,59 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
 /**
  * 移除手动表情覆盖
  */
-Live2DManager.prototype._removeManualExpressionOverride = function(expectedListener, expectedEmitter) {
+Live2DManager.prototype._retryRetiredManualExpressions = function(expectedEmitter) {
+    Array.from(this._retiredManualExpressions || []).forEach(resource => {
+        if (expectedEmitter && resource.emitter !== expectedEmitter) return;
+        try {
+            if (typeof resource.emitter.listeners !== 'function'
+                || resource.emitter.listeners('beforeModelUpdate').includes(resource.listener)) {
+                resource.emitter.off('beforeModelUpdate', resource.listener);
+            }
+            clearTimeout(resource.timer);
+            this._retiredManualExpressions.delete(resource);
+        } catch (_) {
+            // At most three scheduled retries; the inactive receipt stays available
+            // for explicit retry/next installation, without a permanent timer.
+            if (!resource.timer && resource.attempts < 3) {
+                resource.attempts++;
+                resource.timer = setTimeout(() => {
+                    resource.timer = null; this._retryRetiredManualExpressions(resource.emitter);
+                }, resource.attempts * 100);
+            }
+        }
+    });
+};
+
+Live2DManager.prototype._retireManualExpressionResource = function(resource) {
+    resource.active = false;
+    try { resource.emitter.off('beforeModelUpdate', resource.listener); return true; }
+    catch (_) {
+        if (!this._retiredManualExpressions) this._retiredManualExpressions = new Set();
+        this._retiredManualExpressions.add(resource);
+        this._retryRetiredManualExpressions(resource.emitter);
+        return false;
+    }
+};
+
+Live2DManager.prototype._removeManualExpressionOverride = function(expectedListener, expectedEmitter, options = {}) {
     if (arguments.length > 0 && (this._manualExpressionListener !== expectedListener
         || (expectedEmitter && this._manualExpressionEmitter !== expectedEmitter))) return false;
     const listener = this._manualExpressionListener;
     const emitter = this._manualExpressionEmitter || (this.currentModel && this.currentModel.internalModel);
-    if (listener && emitter) emitter.off('beforeModelUpdate', listener);
+    const resource = this._manualExpressionResource;
+    const retire = options.retire === true && resource?.listener === listener;
+    let removed = true;
+    if (retire) removed = this._retireManualExpressionResource(resource);
+    else if (listener && emitter) emitter.off('beforeModelUpdate', listener);
     // An emitter hook may synchronously install a successor while removing us.
     if (this._manualExpressionListener === listener) {
         this._manualExpressionListener = null;
         this._manualExpressionEmitter = null;
         this._manualExpressionParams = null;
+        if (resource) resource.active = false;
+        this._manualExpressionResource = null;
     }
-    return true;
+    return removed;
 };
 
 Live2DManager.prototype.playExpression = function(emotion, specifiedExpressionFile = null, options = {}) {
@@ -1015,6 +1072,8 @@ Live2DManager.prototype.playExpression = function(emotion, specifiedExpressionFi
     if (!model) return Promise.resolve(false);
     const internalModel = model.internalModel;
     const coreModel = internalModel?.coreModel;
+    if (!this._allowsAvatarOperation(options, 'expression')) return Promise.resolve(false);
+    const operation = live2dCreateAvatarOperation(this, options);
 
     this._invalidateExpressionPlayback(true);
     this._cancelSmoothReset();
@@ -1022,7 +1081,7 @@ Live2DManager.prototype.playExpression = function(emotion, specifiedExpressionFi
     const generation = (this._transientExpressionGeneration || 0) + 1;
     this._transientExpressionGeneration = generation;
     const previousTask = this._transientExpressionTask || Promise.resolve(false);
-    const task = previousTask.catch(() => false).then(async () => {
+    const task = operation.wait(previousTask.catch(() => false)).then(async () => {
         if (this.currentModel !== model || model.internalModel !== internalModel
             || internalModel?.coreModel !== coreModel || this._transientExpressionGeneration !== generation
             || (typeof options.isCurrent === 'function' && !options.isCurrent())) {
@@ -1036,10 +1095,11 @@ Live2DManager.prototype.playExpression = function(emotion, specifiedExpressionFi
                 return false;
             }
         }
-        return this._playExpressionNow(emotion, specifiedExpressionFile, model, generation, options);
-    });
+        return this._playExpressionNow(emotion, specifiedExpressionFile, model, generation, Object.assign({}, options, { operation }));
+    }).catch(error => { if (!operation.isCurrent() || error.name === 'AbortError') return false; throw error; });
     this._transientExpressionTask = task;
     return task.finally(() => {
+        operation.dispose();
         if (this._transientExpressionTask === task) this._transientExpressionTask = null;
     });
 };
@@ -1052,6 +1112,7 @@ Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedEx
         && expressionModel?.internalModel === expressionInternalModel
         && expressionInternalModel?.coreModel === expressionCoreModel
         && (this._transientExpressionGeneration || 0) === generation
+        && (!options.operation || options.operation.isCurrent())
         && (typeof options.isCurrent !== 'function' || options.isCurrent());
     // Publish the actual resource before resident-expression or motion awaits.
     // Its owner can then release an installed expression while this task waits.
@@ -1059,7 +1120,8 @@ Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedEx
         if (typeof options.onApplied === 'function') options.onApplied({
             model: expressionModel, internalModel: expressionInternalModel, coreModel: expressionCoreModel,
             generation, listener: this._manualExpressionListener || null,
-            emitter: this._manualExpressionEmitter || null, paramIds: this._activeExpressionParamIds
+            emitter: this._manualExpressionEmitter || null, paramIds: this._activeExpressionParamIds,
+            resource: this._manualExpressionResource || null
         });
     };
     if (!isCurrent()) return false;
@@ -1068,9 +1130,7 @@ Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedEx
         return false;
     }
     if (
-        this._avatarPerformanceBypassLocks !== true
-        && typeof this.isAvatarPerformanceCapabilityLocked === 'function'
-        && this.isAvatarPerformanceCapabilityLocked('expression')
+        !this._allowsAvatarOperation(options, 'expression')
     ) {
         return false;
     }
@@ -1148,13 +1208,13 @@ Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedEx
         for (const candidateFile of candidateFiles) {
             try {
                 const expressionPath = this.resolveAssetPath(candidateFile);
-                const response = await fetch(expressionPath);
+                const response = await options.operation.wait(fetch(expressionPath, { signal: options.operation.signal }));
                 if (!isCurrent()) return false;
                 if (!response.ok) {
                     lastFetchError = new Error(`Failed to load expression: ${response.statusText}`);
                     continue;
                 }
-                expressionData = await response.json();
+                expressionData = await options.operation.wait(response.json());
                 if (!isCurrent()) return false;
                 loadedExpressionFile = candidateFile;
                 break;
@@ -1199,14 +1259,14 @@ Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedEx
                 
                 console.log(`尝试使用原生API播放expression: ${expressionName} (file: ${loadedExpressionFile})`);
                 
-                const expression = await live2dPlayNativeExpression(expressionModel, expressionName, isCurrent);
+                const expression = await live2dPlayNativeExpression(expressionModel, expressionName, isCurrent, options.operation);
                 if (!isCurrent()) return false;
                 if (expression) {
                     this._activeTransientExpression = true;
                     publishAppliedExpression();
                     console.log(`成功使用原生API播放expression: ${expressionName}`);
                     try {
-                        await this.applyPersistentExpressionsNative(true, { isCurrent });
+                        await this.applyPersistentExpressionsNative(true, Object.assign({}, options, { isCurrent, signal: options.operation.signal }));
                     } catch (e) {
                         console.warn('重新应用常驻表情失败:', e);
                     }
@@ -1242,21 +1302,30 @@ Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedEx
     // 重放常驻表情，确保不被覆盖
     // skipBackup=true 因为只是重新应用，不需要再次备份
     if (!isCurrent()) return false;
-    try { await this.applyPersistentExpressionsNative(true, { isCurrent }); } catch (e) {}
+    try { await this.applyPersistentExpressionsNative(true, Object.assign({}, options, { isCurrent, signal: options.operation.signal })); } catch (e) {}
     return isCurrent() && this.expressionApplied === true;
 };
 
 // 播放动作
 Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
+    if (!this._allowsAvatarOperation(options, 'motion')) return false;
+    const operation = live2dCreateAvatarOperation(this, options);
+    try {
+        return await operation.wait(this._playMotionNow(emotion, Object.assign({}, options, {
+            operation, signal: operation.signal, lifetimeSignal: options.lifetimeSignal || options.signal
+        })));
+    } catch (error) { if (!operation.isCurrent() || error.name === 'AbortError') return false; throw error; }
+    finally { operation.dispose(); }
+};
+
+Live2DManager.prototype._playMotionNow = async function(emotion, options = {}) {
     if (typeof options.isCurrent === 'function' && !options.isCurrent()) return false;
     if (!this.currentModel) {
         console.warn('无法播放动作：模型未加载');
         return false;
     }
     if (
-        this._avatarPerformanceBypassLocks !== true
-        && typeof this.isAvatarPerformanceCapabilityLocked === 'function'
-        && this.isAvatarPerformanceCapabilityLocked('motion')
+        !this._allowsAvatarOperation(options, 'motion')
     ) {
         return false;
     }
@@ -1275,6 +1344,7 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
         && playMotionModel?.internalModel === playMotionInternalModel
         && playMotionInternalModel?.coreModel === playMotionCoreModel
         && this._playMotionInvocationGeneration === playMotionInvocationGeneration
+        && !options.signal?.aborted
         && (typeof options.isCurrent !== 'function' || options.isCurrent())
     );
 
@@ -1348,10 +1418,12 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
     // setEmotion() 会先应用本轮表情再播放动作；单独调用 playMotion()
     // 时也应保留用户当前表情，只清掉上一条 motion 的残留。
     this._actionMotionRequestPendingModel = playMotionModel;
+    this._actionMotionRequestPendingOperation = options.operation;
     try {
-        await this.resetTransientMotionAndExpressionState({ preserveExpression: true, isCurrent: isCurrentPlayMotionInvocation });
+        await this.resetTransientMotionAndExpressionState(Object.assign({}, options, { preserveExpression: true, isCurrent: isCurrentPlayMotionInvocation }));
     } finally {
-        if (this._actionMotionRequestPendingModel === playMotionModel) {
+        if (this._actionMotionRequestPendingOperation === options.operation) {
+            this._actionMotionRequestPendingOperation = null;
             this._actionMotionRequestPendingModel = null;
         }
     }
@@ -1392,17 +1464,20 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
     const motionParamTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     this._motionParameterTrackGeneration = motionParamTrackGeneration;
     const motionTimerGuardGeneration = this._motionTimerGeneration || 0;
+    let admittedOperation = null;
     const isCurrentMotionInvocation = () => (
         isCurrentPlayMotionInvocation()
         && this.currentModel === motionParamTrackModel
         && this._motionParameterTrackGeneration === motionParamTrackGeneration
         && this._isCurrentMotionTimerGeneration(motionTimerGuardGeneration)
+        && (!admittedOperation || this._activeActionMotionOperation === admittedOperation)
     );
     const clearTrackedMotionParamsIfCurrent = () => {
         if (
             isCurrentPlayMotionInvocation()
             && this.currentModel === motionParamTrackModel
             && this._motionParameterTrackGeneration === motionParamTrackGeneration
+            && (!admittedOperation || this._activeActionMotionOperation === admittedOperation)
         ) {
             this._activeMotionParamIds = null;
         }
@@ -1423,7 +1498,8 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
                     // 使用运行时 motion group/index 播放，确保播放文件和追踪清理文件一致。
                     console.log(`尝试使用motion组播放motion: ${runtimeChoice.group}[${runtimeChoice.index}]`);
 
-                    const motion = await this.playActionMotion(runtimeChoice.group, runtimeChoice.index);
+                    const motion = await this.playActionMotion(runtimeChoice.group, runtimeChoice.index, Object.assign({}, options, { isCurrent: isCurrentPlayMotionInvocation }));
+                    admittedOperation = this._activeActionMotionOperation;
                     if (!isCurrentMotionInvocation()) return false;
 
                     if (motion) {
@@ -1434,9 +1510,9 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
 
                         // 尝试从motion文件获取持续时间
                         try {
-                            const response = await fetch(motionPath);
+                            const response = await options.operation.wait(fetch(motionPath, { signal: options.signal }));
                             if (response.ok) {
-                                const motionData = await response.json();
+                                const motionData = await options.operation.wait(response.json());
                                 if (
                                     isCurrentMotionInvocation()
                                     && this.currentModel === motionParamTrackModel
@@ -1469,6 +1545,7 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
                         // 设置定时器在motion结束后清理motion参数（但保留expression）
                         const generation = this._nextMotionTimerGeneration();
                         const motionEndTimer = setTimeout(() => {
+                            if (this._activeActionMotionOperation !== admittedOperation) return;
                             if (!this._isCurrentMotionTimerGeneration(generation)) return;
                             if (playMotionModel?.internalModel !== playMotionInternalModel
                                 || playMotionInternalModel?.coreModel !== playMotionCoreModel) return;
@@ -1480,7 +1557,7 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
                             this.motionTimer = null;
                             this.clearEmotionEffects(); // 只清除motion参数，不清除expression
                         }, motionDuration);
-                        this.motionTimer = { type: 'timeout', id: motionEndTimer, generation };
+                        this.motionTimer = { type: 'timeout', id: motionEndTimer, generation, operation: admittedOperation };
 
                         return true; // 成功播放，直接返回
                     } else {
@@ -1642,12 +1719,7 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
         return false;
     }
     if (
-        this._avatarPerformanceBypassLocks !== true
-        && typeof this.isAvatarPerformanceCapabilityLocked === 'function'
-        && (
-            this.isAvatarPerformanceCapabilityLocked('expression')
-            || this.isAvatarPerformanceCapabilityLocked('motion')
-        )
+        !this._allowsAvatarOperation(options, 'expression') || !this._allowsAvatarOperation(options, 'motion')
     ) {
         return false;
     }
@@ -1655,14 +1727,24 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
     const emotionModel = this.currentModel;
     const emotionInternalModel = emotionModel?.internalModel;
     const emotionCoreModel = emotionInternalModel?.coreModel;
-    const operation = {};
+    if (typeof options.isCurrent === 'function' && !options.isCurrent()) return false;
+    const operation = live2dCreateAvatarOperation(this, options);
     const isOwnerCurrent = () => this.currentModel === emotionModel
         && emotionModel?.internalModel === emotionInternalModel
         && emotionInternalModel?.coreModel === emotionCoreModel
-        && (typeof options.isCurrent !== 'function' || options.isCurrent());
+        && operation.isCurrent();
     const isCurrent = () => this._emotionChangeOperation === operation && isOwnerCurrent();
-    if (typeof options.isCurrent === 'function' && !options.isCurrent()) return false;
     this._emotionChangeOperation = operation;
+    const childOptions = Object.assign({}, options, { signal: operation.signal,
+        lifetimeSignal: options.lifetimeSignal || options.signal });
+    const retire = () => {
+        if (this._emotionChangeOperation !== operation) return;
+        this.isEmotionChanging = false; this._emotionChangeOperation = null;
+        if (this._actionMotionRequestPendingOperation === operation) {
+            this._actionMotionRequestPendingOperation = null; this._actionMotionRequestPendingModel = null;
+        }
+    };
+    operation.signal.addEventListener('abort', retire, { once: true });
     
     // 清除点击效果的 ID，这样点击效果的恢复定时器会检测到并跳过恢复
     // 避免点击效果的恢复覆盖正常的情感表达
@@ -1718,14 +1800,14 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
             // 相同情绪且相同表情，保留原有的50%概率随机播放动作机制
             if (shouldAttemptMotion && Math.random() < 0.5) {
                 console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，仅随机播放motion`);
-                await this.playMotion(emotion, { isCurrent: isOwnerCurrent });
+                await operation.wait(this.playMotion(emotion, Object.assign({}, childOptions, { isCurrent: isOwnerCurrent })));
                 if (!isCurrent()) return false;
             } else {
                 console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，跳过播放`);
             }
             if (!isCurrent()) return false;
             try {
-                await this.applyPersistentExpressionsNative(true, { isCurrent });
+                await operation.wait(this.applyPersistentExpressionsNative(true, Object.assign({}, childOptions, { isCurrent })));
                 if (!isCurrent()) return false;
             } catch (e) {
                 console.warn('重新应用常驻表情失败:', e);
@@ -1733,6 +1815,7 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
         } catch (error) {
             console.error(`设置相同情感 ${emotion} 失败:`, error);
         } finally {
+            operation.dispose();
             if (this._emotionChangeOperation === operation) {
                 this.isEmotionChanging = false;
                 this._emotionChangeOperation = null;
@@ -1751,6 +1834,7 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
     // 设置标志，防止快速连续点击
     this.isEmotionChanging = true;
     if (shouldAttemptMotion) this._actionMotionRequestPendingModel = emotionModel;
+    if (shouldAttemptMotion) this._actionMotionRequestPendingOperation = operation;
     
     try {
         console.log(`开始设置新情感: ${emotion}`);
@@ -1759,7 +1843,7 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
         if (!willApplyNewExpression && !shouldPreserveExistingExpression) {
             // 同时撤销 SDK 的加载预约，避免旧任务失效后仍把表情提交到原生队列。
             this._invalidateExpressionPlayback();
-            await Promise.resolve(this._transientExpressionTask).catch(() => false);
+            await operation.wait(Promise.resolve(this._transientExpressionTask).catch(() => false));
             if (!isCurrent()) return false;
             if (this._activeTransientExpression) await this.clearExpression();
             if (!isCurrent()) return false;
@@ -1772,7 +1856,7 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
 
         // 播放表情（使用确定的表情文件以保持一致性）。
         if (willApplyNewExpression) {
-            await this.playExpression(emotion, targetExpressionFile, { isCurrent, onApplied: options.onApplied });
+            await operation.wait(this.playExpression(emotion, targetExpressionFile, Object.assign({}, childOptions, { isCurrent, onApplied: options.onApplied })));
             if (!isCurrent()) return false;
         } else if (shouldPreserveExistingExpression) {
             console.log(`Idle 未配置新表情，保留当前表情`);
@@ -1785,9 +1869,11 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
             shouldAttemptMotion
             && this.currentModel === emotionModel
             && this._actionMotionRequestPendingModel === emotionModel
+            && this._actionMotionRequestPendingOperation === operation
         ) {
             this._actionMotionRequestPendingModel = null;
-            await this.playMotion(emotion, { isCurrent: isOwnerCurrent });
+            this._actionMotionRequestPendingOperation = null;
+            await operation.wait(this.playMotion(emotion, Object.assign({}, childOptions, { isCurrent: isOwnerCurrent })));
             if (!isCurrent()) return false;
         } else {
             console.log(`[Live2D] 情感 ${emotion} 触发时动作槽已占用，仅替换表情`);
@@ -1796,7 +1882,7 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
         if (!isCurrent()) return false;
         // reset/cleanup 后补回常驻表情；没有新 expression 时这一步也不影响当前表情保护。
         try {
-            await this.applyPersistentExpressionsNative(true, { isCurrent });
+            await operation.wait(this.applyPersistentExpressionsNative(true, Object.assign({}, childOptions, { isCurrent })));
             if (!isCurrent()) return false;
         } catch (e) {
             console.warn('重新应用常驻表情失败:', e);
@@ -1804,10 +1890,13 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
 
         console.log(`情感 ${emotion} 设置完成`);
     } catch (error) {
+        if (!isCurrent()) return false;
         console.error(`设置情感 ${emotion} 失败:`, error);
     } finally {
+        operation.dispose();
         if (this._emotionChangeOperation === operation) {
-            if (shouldAttemptMotion && this._actionMotionRequestPendingModel === emotionModel) {
+            if (shouldAttemptMotion && this._actionMotionRequestPendingOperation === operation) {
+                this._actionMotionRequestPendingOperation = null;
                 this._actionMotionRequestPendingModel = null;
             }
             // Only the operation that raised the busy flag may lower it.
@@ -1969,6 +2058,7 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
     const model = this.currentModel;
     const internalModel = model.internalModel;
     const core = internalModel && internalModel.coreModel;
+    const operation = live2dCreateAvatarOperation(this, options);
     const names = this.persistentExpressionNames;
     const paramsByName = this.persistentExpressionParamsByName;
     const generation = (this._persistentExpressionApplyGeneration || 0) + 1;
@@ -1978,6 +2068,7 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
         && this.persistentExpressionNames === names
         && this.persistentExpressionParamsByName === paramsByName
         && this._persistentExpressionApplyGeneration === generation
+        && operation.isCurrent()
         && (typeof options.isCurrent !== 'function' || options.isCurrent());
     
     // 在应用常驻表情前，备份将要修改的参数的当前值
@@ -2023,10 +2114,10 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
             try { core.setParameterValueById(p.Id, p.Value); } catch (_) {}
         }
     };
-    for (const name of names || []) {
+    try { for (const name of names || []) {
         if (!isCurrent()) return false;
         try {
-            const maybe = typeof model.expression === 'function' ? await live2dPlayNativeExpression(model, name, isCurrent) : false;
+            const maybe = typeof model.expression === 'function' ? await live2dPlayNativeExpression(model, name, isCurrent, operation) : false;
             if (!isCurrent()) return false;
             if (!maybe) applyFallback(paramsByName && paramsByName[name]);
         } catch (e) {
@@ -2035,4 +2126,5 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
         }
     }
     return isCurrent();
+    } finally { operation.dispose(); }
 };

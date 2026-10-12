@@ -275,12 +275,82 @@ Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentMod
         || Number(state.reservePriority || 0) > LIVE2D_MOTION_PRIORITY.IDLE;
 };
 
-Live2DManager.prototype.playActionMotion = async function(groupName, index) {
+// Observe actual SDK reservations, including direct editor/preview calls.
+// Quarantine only the cancellation settlement window: a same-index successor
+// cannot make a retired SDK continuation believe it still owns the reservation.
+const live2dMotionOwners = new WeakMap();
+function live2dRetireMotionMetadata(operation, resetParameters = false) {
+    const manager = operation && operation.manager;
+    if (!manager || manager._activeActionMotionOperation !== operation) return;
+    manager._activeActionMotionOperation = null;
+    if (resetParameters && manager.currentModel === operation.model
+        && operation.model.internalModel === operation.internalModel
+        && operation.internalModel.coreModel === operation.core) {
+        if (typeof manager._resetActiveMotionParameters === 'function') manager._resetActiveMotionParameters({ preserveExpression: true });
+        if (typeof manager._resetExplicitMotionParameters === 'function') manager._resetExplicitMotionParameters({ preserveExpression: true });
+    }
+    if (manager.motionTimer?.operation === operation) manager._clearMotionTimer();
+    if (typeof manager._clearActiveMotionParamIds === 'function') manager._clearActiveMotionParamIds();
+}
+function live2dGetMotionOwners(motionManager) {
+    let owners = live2dMotionOwners.get(motionManager);
+    if (owners) return owners;
+    owners = { reservation: null, active: null, invocation: null, quarantine: new Set() };
+    live2dMotionOwners.set(motionManager, owners);
+    const state = motionManager.state;
+    if (state && typeof state.reserve === 'function') {
+        const reserve = state.reserve;
+        state.reserve = function(...args) {
+            if (owners.quarantine.size) return false;
+            const accepted = reserve.apply(this, args);
+            if (accepted) {
+                owners.reservation = { operation: owners.invocation, group: args[0], index: args[1] };
+                if (owners.invocation) owners.invocation.reservation = owners.reservation;
+            }
+            return accepted;
+        };
+        const reset = state.reset;
+        state.reset = function(...args) {
+            const pending = owners.reservation?.operation, active = owners.active?.operation;
+            owners.reservation = null; owners.active = null;
+            const result = reset.apply(this, args);
+            if (pending) pending.abort();
+            if (active) { live2dRetireMotionMetadata(active, true); active.dispose(); }
+            return result;
+        };
+        motionManager.on('motionStart', () => {
+            if (owners.active?.operation) {
+                live2dRetireMotionMetadata(owners.active.operation); owners.active.operation.dispose();
+            }
+            owners.active = owners.reservation; owners.reservation = null;
+            if (owners.active?.operation) owners.active.operation.manager._activeActionMotionOperation = owners.active.operation;
+        });
+        motionManager.on('motionFinish', () => {
+            if (Number(state.currentPriority || 0) > LIVE2D_MOTION_PRIORITY.IDLE) return;
+            if (owners.active?.operation) {
+                live2dRetireMotionMetadata(owners.active.operation, true); owners.active.operation.dispose();
+            }
+            owners.active = null;
+        });
+    }
+    return owners;
+}
+
+Live2DManager.prototype.playActionMotion = async function(groupName, index, options = {}) {
     const model = this.currentModel;
     const motionManager = model?.internalModel?.motionManager;
     if (!model || typeof model.motion !== 'function' || !motionManager) return false;
+    if (!this._allowsAvatarOperation(options, 'motion')) return false;
+    const operation = live2dCreateAvatarOperation(this, options);
+    const owners = live2dGetMotionOwners(motionManager);
+    if (owners.quarantine.size) {
+        try { await operation.wait(Promise.all(Array.from(owners.quarantine, item => item.nativeDone))); }
+        catch (_) { operation.dispose(); return false; }
+    }
+    if (!operation.isCurrent()) { operation.dispose(); return false; }
     if (this.hasActiveActionMotion(model)) {
         console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
+        operation.dispose();
         return false;
     }
 
@@ -307,27 +377,96 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
     }
 
     this._actionMotionRequestPendingModel = model;
+    this._actionMotionRequestPendingOperation = operation;
     let started;
+    let nativeSettled = false, finishNative;
+    operation.nativeDone = new Promise(resolve => { finishNative = resolve; });
+    const retire = () => {
+        let audioDisposedBySdk = false;
+        if (!nativeSettled) owners.quarantine.add(operation);
+        if (owners.reservation === operation.reservation && operation.reservation) {
+            owners.reservation = null;
+            motionManager.state.setReserved(undefined, undefined, LIVE2D_MOTION_PRIORITY.NONE);
+        }
+        if (owners.active?.operation === operation) {
+            if (owners.reservation && owners.reservation.operation !== operation) {
+                // A force/preview request owns the pending transition already.
+                owners.active = null; operation.dispose();
+            } else {
+                const stopSpeaking = motionManager.stopSpeaking;
+                const preserveSpeaking = motionManager.currentAudio && motionManager.currentAudio !== operation.audio;
+                const keepSpeaking = () => {};
+                if (preserveSpeaking) motionManager.stopSpeaking = keepSpeaking;
+                try {
+                    audioDisposedBySdk = !!operation.audio && motionManager.currentAudio === operation.audio;
+                    motionManager.stopAllMotions();
+                }
+                finally { if (motionManager.stopSpeaking === keepSpeaking) motionManager.stopSpeaking = stopSpeaking; }
+            }
+        }
+        if (operation.audio && !audioDisposedBySdk && typeof PIXI.live2d.SoundManager?.dispose === 'function') {
+            PIXI.live2d.SoundManager.dispose(operation.audio);
+            if (motionManager.currentAudio === operation.audio) motionManager.currentAudio = undefined;
+        }
+        live2dRetireMotionMetadata(operation);
+        if (this._actionMotionRequestPendingOperation === operation) {
+            this._actionMotionRequestPendingOperation = null;
+            this._actionMotionRequestPendingModel = null;
+        }
+    };
+    operation.signal.addEventListener('abort', retire, { once: true });
     try {
-        started = await model.motion(groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
+        const load = motionManager.loadMotion;
+        const guardedLoad = (...args) => operation.wait(load.apply(motionManager, args)).then(motion => {
+            if (operation.reservation && owners.reservation !== operation.reservation) {
+                throw Object.assign(new Error('Motion reservation superseded'), { name: 'AbortError' });
+            }
+            return motion;
+        });
+        // Bundled SDK enters its loader synchronously, before model.motion
+        // returns a promise. Restore the hook immediately, not after an await.
+        owners.invocation = operation;
+        if (typeof load === 'function') motionManager.loadMotion = guardedLoad;
+        let nativeTask;
+        const previousAudio = motionManager.currentAudio;
+        try {
+            nativeTask = model.motion(groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
+            operation.audio = motionManager.currentAudio !== previousAudio ? motionManager.currentAudio : null;
+        }
+        finally {
+            if (motionManager.loadMotion === guardedLoad) motionManager.loadMotion = load;
+            if (owners.invocation === operation) owners.invocation = null;
+        }
+        started = await nativeTask;
+        if (!operation.isCurrent()) { retire(); return false; }
         if (started === true) {
+            this._activeActionMotionOperation = operation;
             this._actionMotionGeneration = (this._actionMotionGeneration || 0) + 1;
+            operation.clearDeadline();
         }
         return started;
+    } catch (error) {
+        if (error.name === 'AbortError' || !operation.isCurrent()) return false;
+        throw error;
     } finally {
+        nativeSettled = true; owners.quarantine.delete(operation); finishNative();
         if (started !== true && restoreCachedMotionLoop) {
             restoreCachedMotionLoop();
         }
         if (
             started !== true
+            && owners.reservation === operation.reservation && operation.reservation
             && motionManager.state?.reservedGroup === groupName
             && (index == null || motionManager.state?.reservedIndex === index)
         ) {
             motionManager.state.setReserved(undefined, undefined, LIVE2D_MOTION_PRIORITY.NONE);
+            owners.reservation = null;
         }
-        if (this._actionMotionRequestPendingModel === model) {
+        if (this._actionMotionRequestPendingOperation === operation) {
+            this._actionMotionRequestPendingOperation = null;
             this._actionMotionRequestPendingModel = null;
         }
+        if (started !== true || owners.active?.operation !== operation) operation.dispose();
     }
 };
 
@@ -346,6 +485,7 @@ const Easing = {
 };
 
 Live2DManager.prototype.removeModel = async function(options = {}) {
+    this._cancelAvatarOperations();
     this._invalidateParameterReloadTickets();
     // Stop old performance drivers before the first asynchronous teardown.
     if (this._avatarPerformanceSessionOwners) this._avatarPerformanceSessionOwners.clear();
@@ -418,6 +558,8 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._activeExpressionParamIds = null;
     this._activeMotionParamIds = null;
     this._actionMotionRequestPendingModel = null;
+    this._actionMotionRequestPendingOperation = null;
+    this._activeActionMotionOperation = null;
     this._simpleMotionActive = false;
     if (typeof this._cancelTouchSetExpressionRestore === 'function') {
         this._cancelTouchSetExpressionRestore();
@@ -1149,6 +1291,7 @@ Live2DManager.prototype._applyTemporaryPoseOverride = function(coreModel) {
 
 // 重置模型相关的派生元数据（用于加载新模型前清理旧状态）
 Live2DManager.prototype._resetDerivedModelMetadata = function() {
+    this._cancelAvatarOperations();
     this._invalidateParameterReloadTickets();
     this._parameterConfigRevision = (this._parameterConfigRevision || 0) + 1;
     if (this._avatarPerformanceSessionOwners) this._avatarPerformanceSessionOwners.clear();

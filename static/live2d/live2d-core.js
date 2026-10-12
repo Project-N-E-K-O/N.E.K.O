@@ -5616,6 +5616,65 @@ class Live2DManager {
 
 // 导出
 window.Live2DModel = Live2DModel;
+// Avatar operation lifecycle
+// Operations are bounded and retire only their own promises/commit authority.
+// A Stage lifetime signal also remains attached to an admitted SDK action.
+function live2dCreateAvatarOperation(manager, options = {}) {
+    const model = manager.currentModel, internalModel = model?.internalModel, core = internalModel?.coreModel;
+    const controller = new AbortController();
+    const sources = Array.from(new Set([options.signal, options.lifetimeSignal].filter(Boolean)));
+    const abort = () => {
+        controller.abort();
+        if (manager._actionMotionRequestPendingOperation === operation) {
+            manager._actionMotionRequestPendingOperation = null; manager._actionMotionRequestPendingModel = null;
+        }
+        if (manager._emotionChangeOperation === operation) {
+            manager._emotionChangeOperation = null; manager.isEmotionChanging = false;
+        }
+    };
+    const operation = { manager, model, internalModel, core, signal: controller.signal, abort,
+        isCurrent: () => !controller.signal.aborted && manager.currentModel === model && !model?.destroyed
+            && model?.internalModel === internalModel && internalModel?.coreModel === core
+            && (typeof options.isCurrent !== 'function' || options.isCurrent()) };
+    if (!manager._avatarOperations) manager._avatarOperations = new Set();
+    manager._avatarOperations.add(operation);
+    let timer = setTimeout(abort, 15000), disposed = false;
+    operation.clearDeadline = () => { clearTimeout(timer); timer = null; };
+    operation.dispose = () => {
+        if (disposed) return;
+        disposed = true; operation.clearDeadline();
+        sources.forEach(signal => signal.removeEventListener('abort', abort));
+        manager._avatarOperations.delete(operation);
+    };
+    sources.forEach(signal => { if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true }); });
+    operation.wait = (promise) => new Promise((resolve, reject) => {
+        const rejectRetired = () => reject(Object.assign(new Error('Live2D operation retired'), { name: 'AbortError' }));
+        if (!operation.isCurrent()) { Promise.resolve(promise).catch(() => false); rejectRetired(); return; }
+        const retired = () => { controller.signal.removeEventListener('abort', retired); rejectRetired(); };
+        controller.signal.addEventListener('abort', retired, { once: true });
+        Promise.resolve(promise).then(value => {
+            controller.signal.removeEventListener('abort', retired);
+            if (!operation.isCurrent()) rejectRetired(); else resolve(value);
+        }, error => { controller.signal.removeEventListener('abort', retired); reject(error); });
+    });
+    return operation;
+}
+
+Live2DManager.prototype._allowsAvatarOperation = function(options, capability) {
+    if (options?.signal?.aborted) return false;
+    const owner = options && options.performanceOwner;
+    if (owner && !owner.cancelled && this._avatarPerformanceSessionOwners?.get(capability) === owner
+        && (typeof options.isCurrent !== 'function' || options.isCurrent())) return true;
+    return this._avatarPerformanceBypassLocks === true
+        || typeof this.isAvatarPerformanceCapabilityLocked !== 'function'
+        || !this.isAvatarPerformanceCapabilityLocked(capability);
+};
+
+Live2DManager.prototype._cancelAvatarOperations = function() {
+    Array.from(this._avatarOperations || []).forEach(operation => operation.abort());
+};
+
+// End avatar operation lifecycle
 window.Live2DManager = Live2DManager;
 window.isMobileWidth = isMobileWidth;
 

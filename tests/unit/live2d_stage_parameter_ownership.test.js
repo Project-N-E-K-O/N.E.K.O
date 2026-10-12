@@ -51,14 +51,14 @@ test('cancelled Stage emotion cannot admit a motion or persistent reapply after 
     assert.deepEqual(result, { motions: [], persistentCalls: 0 });
 });
 
-test('removing the Stage emotion continuation receipt reproduces the retired motion', async () => {
+test('a cancelled Stage signal also protects the manager when the explicit continuation callback is removed', async () => {
     const result = await runCancelledEmotion({ transformStage(source) {
-        const guarded = 'manager.setEmotion(emotionName, { isCurrent, onApplied })';
+        const guarded = 'Object.assign({}, normalized, { isCurrent, onApplied })';
         assert.ok(source.includes(guarded));
-        return source.replace(guarded, 'manager.setEmotion(emotionName, { onApplied })');
+        return source.replace(guarded, 'Object.assign({}, normalized, { onApplied })');
     } });
-    assert.deepEqual(result.motions, ['happy']);
-    assert.equal(result.persistentCalls, 1);
+    assert.deepEqual(result.motions, []);
+    assert.equal(result.persistentCalls, 0);
 });
 
 test('a newer bridge emotion supersedes the already entered manager request before motion admission', async () => {
@@ -229,7 +229,7 @@ test('SDK manual fallback reports unapplied when registration loses its Core own
 });
 
 async function fixture(options = {}) {
-    const runtime = await loadRuntime();
+    const runtime = await loadRuntime({ transformModelSource: options.transformModelSource });
     const frames = new Map();
     let frameId = 0;
     runtime.context.requestAnimationFrame = callback => { frames.set(++frameId, callback); return frameId; };
@@ -346,7 +346,7 @@ test('retired combined emotion leaves a successor expression installed while its
     assert.deepEqual(await runInnerCancellation({ successorExpression: true }), { admissions: 0, removedAtRelease: true });
 });
 
-test('removing the inner motion continuation guard admits a cancelled action despite the outer false result', async () => {
+test('operation cancellation also protects motion admission after an inner continuation callback is removed', async () => {
     const result = await runInnerCancellation({ transformEmotion(source) {
         const begin = source.indexOf('Live2DManager.prototype.playMotion =');
         const end = source.indexOf('Live2DManager.prototype.playSimpleMotion', begin);
@@ -355,7 +355,7 @@ test('removing the inner motion continuation guard admits a cancelled action des
         assert.ok(section.includes(guard));
         return source.slice(0, begin) + section.replace(guard, '') + source.slice(end);
     } });
-    assert.deepEqual(result, { admissions: 1, removedAtRelease: true });
+    assert.deepEqual(result, { admissions: 0, removedAtRelease: true });
 });
 
 test('removing early expression resource publication reproduces the installed listener leak', async () => {

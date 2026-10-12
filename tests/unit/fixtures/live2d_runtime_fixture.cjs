@@ -17,7 +17,7 @@ async function loadRuntime({ transformModelSource = source => source } = {}) {
             debug() {}, info() {}, groupCollapsed() {}, groupEnd() {},
             assert(value, message) { assert.ok(value, message); } },
         setTimeout, clearTimeout, setInterval, clearInterval, performance,
-        TextDecoder, TextEncoder, atob, btoa,
+        TextDecoder, TextEncoder, atob, btoa, AbortController,
         document: { currentScript: { src: 'http://localhost/static/libs/live2dcubismcore.min.js' },
             body: { classList: { contains() { return false; } } }, getElementById() { return null; } },
         navigator: { userAgent: 'node' }, addEventListener() {}, removeEventListener() {},
@@ -108,6 +108,16 @@ function deferred() {
     return { promise, resolve, reject };
 }
 
+function installAvatarOperationRuntime(context) {
+    const source = read('static/live2d/live2d-core.js');
+    const start = source.indexOf('// Avatar operation lifecycle');
+    const end = source.indexOf('// End avatar operation lifecycle', start);
+    assert.ok(start >= 0 && end > start, 'operation runtime source markers');
+    vm.runInContext(source.slice(start, end), context, {
+        filename: path.join(projectRoot, 'fixtures/avatar-operation-runtime.js')
+    });
+}
+
 function compareModels(actual, reference, label) {
     const equal = (a, b, name) => assert.ok(Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(
         Buffer.from(b.buffer, b.byteOffset, b.byteLength)), `${label}: ${name}`);
@@ -120,4 +130,4 @@ function compareModels(actual, reference, label) {
     }
 }
 
-module.exports = { read, loadRuntime, createMao, deferred, compareModels };
+module.exports = { read, loadRuntime, createMao, deferred, compareModels, installAvatarOperationRuntime };

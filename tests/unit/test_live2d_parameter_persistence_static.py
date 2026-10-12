@@ -43,11 +43,16 @@ def _manager_harness(body: str) -> str:
           Live2DManager: function Live2DManager() {{}},
           fetch: async () => {{ throw new Error('unexpected fetch'); }},
           performance: {{ now() {{ return 0; }} }},
-          setTimeout, clearTimeout, setInterval, clearInterval,
+          AbortController, setTimeout, clearTimeout, setInterval, clearInterval,
         }};
         context.global = context;
         context.window.Live2DManager = context.Live2DManager;
         vm.createContext(context);
+        const coreSource = fs.readFileSync({json.dumps(str(PROJECT_ROOT / 'static' / 'live2d' / 'live2d-core.js'))}, 'utf8');
+        const lifecycleStart = coreSource.indexOf('// Avatar operation lifecycle');
+        const lifecycleEnd = coreSource.indexOf('// End avatar operation lifecycle', lifecycleStart);
+        assert(lifecycleStart >= 0 && lifecycleEnd > lifecycleStart);
+        vm.runInContext(coreSource.slice(lifecycleStart, lifecycleEnd), context);
         vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_MODEL_PATH))}, 'utf8'), context);
         vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_EMOTION_PATH))}, 'utf8'), context);
         {body}
@@ -556,11 +561,12 @@ def test_live2d_action_and_expression_slots_are_exclusive():
     script = _manager_harness(
         """
         (async () => {
-          const state = { currentPriority: 0, reservePriority: 0, setReserved() {}, setReservedIdle() {} };
+          const state = { currentPriority: 0, reservePriority: 0, setReserved() {}, setReservedIdle() {},
+            reserve(group, index, priority) { this.setReserved(group, index, priority); return true; }, reset() {} };
           let finishAction;
           const manager = new context.Live2DManager();
           manager.currentModel = {
-            internalModel: { motionManager: { state, motionGroups: {
+            internalModel: { motionManager: { state, on() {}, motionGroups: {
               Tap: [{
                 _loop: true,
                 isLoop() { return this._loop; },
@@ -591,7 +597,7 @@ def test_live2d_action_and_expression_slots_are_exclusive():
           };
           tapMotion._loop = true;
           manager.currentModel.motion = async () => {
-            state.setReserved('Tap', 0, 2);
+            state.reserve('Tap', 0, 2);
             return false;
           };
           assert.strictEqual(await manager.playActionMotion('Tap', 0), false);

@@ -37,7 +37,7 @@ function createHarness({
     const context = {
         Live2DManager,
         console,
-        setTimeout,
+        setTimeout, AbortController,
         clearTimeout,
         performance: {
             now: () => 0
@@ -322,7 +322,7 @@ function createCoreHarness({
 } = {}) {
     const context = {
         console,
-        setTimeout,
+        setTimeout, AbortController,
         clearTimeout,
         PIXI: {
             live2d: {
@@ -2520,7 +2520,7 @@ test('performance frame session markers clear on restore and remain for committe
     };
     let currentContainer = container;
     const context = {
-        console,
+        console, AbortController,
         document: {
             getElementById: (id) => id === 'live2d-container' ? container : null
         },
@@ -2529,7 +2529,7 @@ test('performance frame session markers clear on restore and remain for committe
             matchMedia: () => ({ matches: false }),
             requestAnimationFrame: () => 1,
             cancelAnimationFrame: () => {},
-            setTimeout
+            setTimeout, AbortController
         }
     };
     context.globalThis = context;
