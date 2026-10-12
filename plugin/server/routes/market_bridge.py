@@ -3263,6 +3263,7 @@ async def _post_market_download_count(
     if not base_url:
         return
     url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
+    started_at = time.monotonic()
     try:
         # Phase timeouts do not bound a response that keeps trickling in.
         async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
@@ -3275,20 +3276,25 @@ async def _post_market_download_count(
                         package_sha256=package_sha256,
                     ),
                 )
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         if response.status_code >= 400:
             logger.info(
-                "[market-download-count] rejected status={} plugin_id={}",
+                "[market-download-count] rejected status={} plugin_id={} elapsed_ms={}",
                 response.status_code,
                 market_id,
+                elapsed_ms,
             )
-    except Exception:
+    except Exception as exc:
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.info(
-            "[market-download-count] request failed plugin_id={}",
+            "[market-download-count] request failed plugin_id={} error={} elapsed_ms={}",
             market_id,
+            type(exc).__name__,
+            elapsed_ms,
         )
 
 
-async def _record_market_download_best_effort(
+def _record_market_download_best_effort(
     payload: MarketInstallRequest,
 ) -> None:
     """Count a finished first install without a Market login.
@@ -3325,14 +3331,14 @@ async def _report_market_install_best_effort(
     if not token_data or not token_data.get("access_token"):
         return
 
-    try:
-        market_plugin_id = int(str(payload.plugin_id or ""))
-    except ValueError:
+    market_plugin_id_text = _market_numeric_plugin_id(payload.plugin_id)
+    if market_plugin_id_text is None:
         logger.debug(
             "Skip Market install report: plugin_id is not a Market numeric id: {}",
             payload.plugin_id,
         )
         return
+    market_plugin_id = int(market_plugin_id_text)
 
     result = task.get("result") if isinstance(task.get("result"), dict) else {}
     install = result.get("install") if isinstance(result, dict) else {}
@@ -3496,7 +3502,7 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
                 code="invalid_mode",
                 message=f"unknown mode: {payload.mode}",
             )
-        await _record_market_download_best_effort(payload)
+        _record_market_download_best_effort(payload)
         await _report_market_install_best_effort(payload, task)
         _finalize_task_success(task, started_at, log_ctx)
     except _TaskCancelled as exc:

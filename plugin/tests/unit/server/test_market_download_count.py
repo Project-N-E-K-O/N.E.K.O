@@ -12,6 +12,13 @@ from plugin.server.routes import market_bridge
 pytestmark = pytest.mark.plugin_unit
 
 
+@pytest.fixture(autouse=True)
+def _clear_download_count_tasks():
+    market_bridge._download_count_tasks.clear()
+    yield
+    market_bridge._download_count_tasks.clear()
+
+
 def _download_params(**extra):
     params = {
         "source": "client",
@@ -66,7 +73,7 @@ async def test_successful_client_install_counts_one_download(monkeypatch) -> Non
         return Response()
 
     _install_market_client(monkeypatch, post)
-    await market_bridge._record_market_download_best_effort(_payload())
+    market_bridge._record_market_download_best_effort(_payload())
     await _drain_download_tasks()
 
     assert calls == [
@@ -89,7 +96,7 @@ async def test_replacing_an_installed_plugin_is_not_counted(
         return Response()
 
     _install_market_client(monkeypatch, post)
-    await market_bridge._record_market_download_best_effort(_payload(mode=mode))
+    market_bridge._record_market_download_best_effort(_payload(mode=mode))
     await _drain_download_tasks()
 
     assert calls == []
@@ -111,7 +118,7 @@ async def test_unicode_digits_are_not_a_market_plugin_id(monkeypatch) -> None:
         return Response()
 
     _install_market_client(monkeypatch, post)
-    await market_bridge._record_market_download_best_effort(_payload(plugin_id="²1"))
+    market_bridge._record_market_download_best_effort(_payload(plugin_id="²1"))
     await _drain_download_tasks()
 
     assert calls == []
@@ -129,7 +136,7 @@ async def test_slow_download_count_stops_at_the_total_timeout(monkeypatch) -> No
         return Response()
 
     _install_market_client(monkeypatch, post)
-    await market_bridge._record_market_download_best_effort(_payload(plugin_id="24"))
+    market_bridge._record_market_download_best_effort(_payload(plugin_id="24"))
     await asyncio.wait_for(_drain_download_tasks(), timeout=1)
     assert market_bridge._download_count_tasks == set()
 
@@ -146,7 +153,7 @@ async def test_non_market_plugin_id_is_not_counted(monkeypatch) -> None:
         return Response()
 
     _install_market_client(monkeypatch, post)
-    await market_bridge._record_market_download_best_effort(
+    market_bridge._record_market_download_best_effort(
         _payload(plugin_id="war-thunder-mod")
     )
     await _drain_download_tasks()
@@ -157,22 +164,33 @@ async def test_non_market_plugin_id_is_not_counted(monkeypatch) -> None:
 async def test_market_rejection_or_outage_does_not_fail_the_count_helper(
     monkeypatch,
 ) -> None:
+    calls = []
+
     async def reject(url, params=None):
+        calls.append(url)
+
         class Response:
             status_code = 429
 
         return Response()
 
     _install_market_client(monkeypatch, reject)
-    await market_bridge._record_market_download_best_effort(_payload(plugin_id="22"))
+    market_bridge._record_market_download_best_effort(_payload(plugin_id="22"))
     await _drain_download_tasks()
 
     async def offline(url, params=None):
+        calls.append("offline")
         raise ConnectionError("market down")
 
     _install_market_client(monkeypatch, offline)
-    await market_bridge._record_market_download_best_effort(_payload(plugin_id="23"))
+    market_bridge._record_market_download_best_effort(_payload(plugin_id="23"))
     await _drain_download_tasks()
+
+    assert calls == [
+        "https://market.test/api/v1/plugins/22/download",
+        "offline",
+    ]
+    assert market_bridge._download_count_tasks == set()
 
 
 async def test_failed_or_cancelled_install_does_not_count(monkeypatch) -> None:
@@ -184,7 +202,7 @@ async def test_failed_or_cancelled_install_does_not_count(monkeypatch) -> None:
     async def fail(_task, _payload, _log_ctx):
         raise market_bridge._TaskError(code="verify_failed", message="bad package")
 
-    async def count(payload):
+    def count(payload):
         counted.append(("count", payload.plugin_id))
 
     async def report(_payload, _task):
@@ -227,7 +245,7 @@ async def test_successful_install_task_counts_before_the_login_report(
         task["message"] = "installed"
         task["result"] = {"install": {}}
 
-    async def count(payload):
+    def count(payload):
         order.append(f"count:{payload.plugin_id}")
 
     async def report(_payload, _task):
