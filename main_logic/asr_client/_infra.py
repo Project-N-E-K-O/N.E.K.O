@@ -229,13 +229,7 @@ class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
                 raise ValueError("ASR_DELIVERY_MAPPING_INVALID")
             register_interval_delivery(self, (request.generation, request.buffer_epoch, request.utterance_id), request.delivery_spans)
         elif request.kind == "clear":
-            try:
-                retire_interval_deliveries(self, keep_scope=(request.generation, request.buffer_epoch))
-            except Exception:
-                # Clear remains a required worker command even if one receipt
-                # owner rejects retirement. Returning normally also lets
-                # asyncio.Queue account for this enqueued control request.
-                logger.exception("ASR delivery observer failed during clear")
+            retire_interval_deliveries(self, keep_scope=(request.generation, request.buffer_epoch))
         super()._put(request)
 
     def hold_dequeued_audio(
@@ -711,6 +705,8 @@ class _RealtimeAsrSessionImpl:
             if delivery_spans:
                 if effective_rate != 16000 or sum(span.samples for span in delivery_spans) * 2 != len(audio_chunk):
                     raise ValueError("ASR_DELIVERY_MAPPING_UNSUPPORTED: tagged audio requires exact 16kHz input")
+                if self._provider_policy is None or not self._provider_policy.supports_interception_delivery:
+                    raise ValueError("ASR_DELIVERY_MAPPING_UNSUPPORTED: route cannot settle intercepted input")
             if len(audio_chunk) > effective_rate * 2:
                 raise ValueError(
                     "ASR_AUDIO_CHUNK_TOO_LARGE: one chunk may contain at most one second"

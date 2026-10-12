@@ -3,9 +3,40 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
+from collections.abc import Iterable
 from typing import Callable
 
 from main_logic.voice_turn.interception_events import InterceptionDeliveryStage
+
+
+def notify_delivery_observers(
+    notifications: Iterable[Callable[[], object]], *, context: str,
+) -> Exception | None:
+    """Reach independent owners; the caller decides whether refusal is fatal.
+
+    A refused receipt retains its debt. Only observer exceptions are isolated;
+    cancellation and failures in the operation itself keep their semantics.
+    """
+    first_error = None
+    for notify in notifications:
+        try:
+            notify()
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+            logging.getLogger(__name__).error(
+                "Delivery observer failed during %s: type=%s", context, type(exc).__name__,
+            )
+    return first_error
+
+
+def observe_delivery_spans(
+    spans: tuple[AudioDeliverySpan, ...], stage: InterceptionDeliveryStage, *, context: str,
+) -> Exception | None:
+    return notify_delivery_observers(
+        (lambda span=span: span.observe(stage) for span in spans), context=context,
+    )
 
 
 def _add_range(ranges: list[tuple[int, int]], start: int, end: int) -> None:
@@ -147,4 +178,5 @@ def slice_delivery_spans(
     return tuple(result)
 
 
-__all__ = ["AudioDeliveryTag", "AudioDeliverySpan", "slice_delivery_spans"]
+__all__ = ["AudioDeliveryTag", "AudioDeliverySpan", "slice_delivery_spans",
+           "notify_delivery_observers", "observe_delivery_spans"]

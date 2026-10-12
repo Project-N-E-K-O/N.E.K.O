@@ -9,7 +9,9 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
-from main_logic.voice_turn.audio_delivery import AudioDeliverySpan, slice_delivery_spans
+from main_logic.voice_turn.audio_delivery import (
+    AudioDeliverySpan, slice_delivery_spans, observe_delivery_spans as _observe_delivery_spans,
+)
 from main_logic.voice_turn.interception_events import InterceptionDeliveryStage
 
 if TYPE_CHECKING:
@@ -174,29 +176,6 @@ def _log_hint_failure(error: BaseException) -> None:
         "backpressure_or_not_ready" if expected else "session_error",
         type(error).__name__,
     )
-
-
-def _observe_delivery_spans(
-    spans: tuple[AudioDeliverySpan, ...],
-    stage: InterceptionDeliveryStage,
-    *,
-    context: str,
-) -> Exception | None:
-    """Notify independent owners; retain the first error for the caller's policy."""
-    first_error = None
-    for span in spans:
-        try:
-            span.observe(stage)
-        except Exception as exc:
-            # A rejected tag keeps its debt. Cleanup must reach other owners,
-            # and a notification cannot replace a send failure or cancellation.
-            if first_error is None:
-                first_error = exc
-            logging.getLogger(__name__).error(
-                "ASR delivery observer failed during %s: type=%s",
-                context, type(exc).__name__,
-            )
-    return first_error
 
 
 class AsrAudioDispatcher:

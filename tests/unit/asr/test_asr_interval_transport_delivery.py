@@ -206,7 +206,8 @@ def test_unknown_cannot_become_late_ownership_or_be_replayed():
 async def test_physical_segment_split_preserves_source_coordinates():
     from main_logic.asr_client._infra import _SessionState
     from main_logic.asr_client.provider_policy import AsrProviderPolicy
-    policy = AsrProviderPolicy("segmented", "smart_turn", True, 20, 0, "none")
+    policy = AsrProviderPolicy("segmented", "smart_turn", True, 20, 0, "none",
+                               supports_interception_delivery=True)
     session = _RealtimeAsrSessionImpl(worker_fn=AsyncMock(), api_key="key", config=AsrSessionConfig(),
                                     on_input_transcript=AsyncMock(), on_connection_error=AsyncMock(), provider_policy=policy)
     session._state = _SessionState.READY

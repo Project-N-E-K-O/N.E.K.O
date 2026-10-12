@@ -12,7 +12,9 @@ import uuid
 from dataclasses import dataclass, field
 
 from main_logic.voice_turn.interception_events import InterceptionDeliveryStage
-from main_logic.voice_turn.audio_delivery import AudioDeliverySpan, AudioDeliveryTag
+from main_logic.voice_turn.audio_delivery import (
+    AudioDeliverySpan, AudioDeliveryTag, observe_delivery_spans, notify_delivery_observers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +46,27 @@ def register_interval_delivery(
             raise RuntimeError("ASR_DELIVERY_METADATA_CAPACITY")
         evidence.protected = True
         evidence.pending_intervals.setdefault(key, []).extend(spans)
-    for span in spans:
-        span.observe(InterceptionDeliveryStage.QUEUED)
+    error = observe_delivery_spans(spans, InterceptionDeliveryStage.QUEUED, context="queue admission")
+    if error is not None:
+        # No request was admitted. Roll back only this registration, preserving
+        # older contributions sharing its key and any observer replay fences.
+        with evidence.interval_lock:
+            pending = evidence.pending_intervals.get(key, [])
+            for span in reversed(spans):
+                for index in range(len(pending) - 1, -1, -1):
+                    if pending[index] is span:
+                        del pending[index]
+                        break
+            if not pending:
+                evidence.pending_intervals.pop(key, None)
+            live_tags = {span.tag for items in evidence.pending_intervals.values() for span in items}
+            evidence.retired_tags.update(span.tag for span in spans if span.tag not in live_tags)
+        observe_delivery_spans(spans, InterceptionDeliveryStage.NOT_SENT, context="queue admission rollback")
+        with evidence.interval_lock:
+            for span in spans:
+                if span.tag.settled:
+                    evidence.retired_tags.discard(span.tag)
+        raise error
 
 
 def interval_delivery_spans(queue: object, key: tuple[int, int, int | None]) -> tuple[AudioDeliverySpan, ...]:
@@ -58,7 +79,7 @@ def interval_delivery_spans(queue: object, key: tuple[int, int, int | None]) -> 
 def retire_interval_deliveries(
     queue: object, *, keep_scope: tuple[int, int] | None = None,
     only_spans: tuple[AudioDeliverySpan, ...] | None = None,
-) -> None:
+) -> Exception | None:
     """Dispose only this queue's records; an entered send remains unknown."""
     evidence = delivery_evidence(queue)
     outcomes = []
@@ -80,16 +101,11 @@ def retire_interval_deliveries(
                 evidence.pending_intervals[key] = retained
             else:
                 del evidence.pending_intervals[key]
-    first_error: Exception | None = None
-    for span, stage in outcomes:
-        try:
-            span.observe(stage)
-        except Exception as exc:
-            # One owner cannot prevent independent spans from receiving their
-            # outcome. Its rejected receipt keeps the exact replay fence.
-            if first_error is None:
-                first_error = exc
-            continue
+    first_error = notify_delivery_observers(
+        (lambda span=span, stage=stage: span.observe(stage) for span, stage in outcomes),
+        context="interval retirement",
+    )
+    for span, _stage in outcomes:
         if span.tag.settled:
             # A complete NOT_SENT/transport-owned receipt leaves the replay
             # fence on the tag itself. Retaining another strong reference
@@ -99,8 +115,7 @@ def retire_interval_deliveries(
             # removing this duplicate fence cannot resurrect old spans.
             with evidence.interval_lock:
                 evidence.retired_tags.discard(span.tag)
-    if first_error is not None:
-        raise first_error
+    return first_error
 
 
 def delivery_evidence(queue: object) -> TransportDeliveryEvidence:
@@ -153,10 +168,20 @@ def complete_transport_write(
                 evidence.pending_intervals[key] = retained
             else:
                 del evidence.pending_intervals[key]
-    for span in current_spans:
-        span.observe(InterceptionDeliveryStage.TRANSPORT_WRITTEN)
-        if takes_ownership:
-            span.observe(InterceptionDeliveryStage.TRANSPORT_OWNED)
+    def notify_write(span):
+        try:
+            span.observe(InterceptionDeliveryStage.TRANSPORT_WRITTEN)
+            if takes_ownership:
+                span.observe(InterceptionDeliveryStage.TRANSPORT_OWNED)
+        except Exception:
+            # The physical write succeeded but this owner refused evidence.
+            # Retain its queue-local replay fence as well as the owner's debt.
+            with evidence.interval_lock:
+                evidence.retired_tags.add(span.tag)
+            raise
+
+    notify_delivery_observers((lambda span=span: notify_write(span) for span in current_spans),
+                              context="transport write")
     if first and audio_bytes:
         logger.info(
             "ASR delivery trace=%s phase=transport_written provider=%s generation=%s "

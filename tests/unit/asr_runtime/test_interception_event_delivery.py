@@ -105,7 +105,7 @@ async def test_gap_is_explicit_boundary_and_only_filtered_intervals_reach_receiv
 
 
 @pytest.mark.asyncio
-async def test_native_without_boundary_stops_before_successor_audio():
+async def test_native_without_delivery_capability_stops_before_first_audio():
     core, generation = _core()
     core._asr_route_mode = "native"
     core.session.stream_audio = AsyncMock()
@@ -119,12 +119,10 @@ async def test_native_without_boundary_stops_before_successor_audio():
         _frame(core, generation, b"\xff\x7f" * 14), generation,
     )
     assert result is OutputCommit.UNKNOWN
-    assert core.session.stream_audio.await_count == 1
-    assert core.session.stream_audio.await_args.args[0] == audio.pcm16
-    assert model.closed == ["interception_native_boundary_unsupported"]
-    assert [(r.event, r.stage) for r in model.receipts if r.event == successor] == [
-        (successor, InterceptionDeliveryStage.NOT_SENT),
-    ]
+    core.session.stream_audio.assert_not_awaited()
+    assert model.receipts == []
+    assert model.closed == []  # No model runtime was created on this route.
+    await asyncio.gather(*tuple(core._core_asr_cleanup_tasks), return_exceptions=True)
 
 
 @pytest.mark.asyncio

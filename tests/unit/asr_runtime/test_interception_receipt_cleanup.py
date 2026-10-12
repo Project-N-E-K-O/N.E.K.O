@@ -198,7 +198,7 @@ async def test_handover_notifies_every_unsent_owner(point, unknown, caplog):
             assert all(tag.settled for tag in tags[unsent + 1:])
             assert dispatcher.active_turn == turn  # old cleanup cannot abort the successor
             if unknown:
-                assert "ASR delivery observer failed" in caplog.text
+                assert "Delivery observer failed" in caplog.text
         finally:
             release.set()
 
@@ -335,7 +335,7 @@ async def test_glm_close_retires_tasks_without_forgiving_unknown_delivery(unknow
             assert tag.settled is (not unknown)
             assert (tag in evidence.retired_tags) is unknown
             if unknown:
-                assert "observer failed during shutdown" in caplog.text
+                assert "observer failed during interval retirement" in caplog.text
         finally:
             tasks = [getattr(session, name) for name in (
                 "_worker_task", "_response_task", "_callback_task", "_close_task",

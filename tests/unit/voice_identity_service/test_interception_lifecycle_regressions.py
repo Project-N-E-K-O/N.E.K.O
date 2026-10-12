@@ -313,7 +313,7 @@ async def test_same_factory_registration_reinstalls_revoked_core_bridge():
 
 
 @pytest.mark.parametrize("route", ["native", "independent"])
-async def test_both_core_receivers_get_exact_ordered_target_pcm(route):
+async def test_supported_receiver_gets_target_pcm_and_native_rejects_interception(route):
     core = CoreHarness()
     core._asr_route_mode = route
     core._voice_session_activation_degraded = False
@@ -342,9 +342,15 @@ async def test_both_core_receivers_get_exact_ordered_target_pcm(route):
             )
             await core._route_voice_session_activation_output(frame, generation)
         received = b"".join(call.args[0] if route == "native" else call.args[0].pcm16 for call in receiver.await_args_list)
-        assert received == b"".join(pcm(value * 100 - 1) for value in range(1, 16))
+        if route == "native":
+            assert received == b""
+            assert factory._runtimes == []
+            assert core._voice_session_activation_degraded
+        else:
+            assert received == b"".join(pcm(value * 100 - 1) for value in range(1, 16))
     finally:
         await core.set_active_session_interception_factory(None, interception_required=False)
+        await asyncio.gather(*tuple(core._core_asr_cleanup_tasks), return_exceptions=True)
 
 
 async def test_pending_audio_metadata_capacity_fails_closed():

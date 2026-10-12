@@ -127,8 +127,7 @@ def test_rejected_not_sent_observation_does_not_free_replay_fence():
         return stage is not Stage.NOT_SENT
     item = _request(AudioDeliveryTag(1, observer))
     _dequeue(queue, item)
-    with pytest.raises(RuntimeError, match="owner rejected"):
-        retire_interval_deliveries(queue)
+    assert isinstance(retire_interval_deliveries(queue), RuntimeError)
     tag = item.delivery_spans[0].tag
     assert not tag.settled
     assert tag in delivery_evidence(queue).retired_tags
@@ -157,9 +156,7 @@ def test_retirement_observer_failure_processes_all_spans_and_keeps_failed_debt(a
         _dequeue(queue, item)
         if attempted:
             begin_transport_write(queue, delivery_spans=item.delivery_spans)
-    with pytest.raises(RuntimeError) as caught:
-        retire_interval_deliveries(queue)
-    assert caught.value is first_error
+    assert retire_interval_deliveries(queue) is first_error
     assert receipts == [[Stage.QUEUED, terminal]] * 3
     evidence = delivery_evidence(queue)
     assert evidence.pending_intervals == {}
@@ -194,7 +191,8 @@ async def test_clear_observer_failure_preserves_control_queue_accounting(caplog)
     queue.put_nowait(clear)
     assert queue.qsize() == 3
     assert queue._unfinished_tasks == 3
-    assert "controlled clear observer failure" in caplog.text
+    assert "observer failed during interval retirement: type=RuntimeError" in caplog.text
+    assert "controlled clear observer failure" not in caplog.text
     assert healthy_receipts == [Stage.QUEUED, Stage.NOT_SENT]
     assert not first.delivery_spans[0].tag.settled
     assert first.delivery_spans[0].tag in delivery_evidence(queue).retired_tags

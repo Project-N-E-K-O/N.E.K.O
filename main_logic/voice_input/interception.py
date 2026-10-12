@@ -226,6 +226,12 @@ class ActiveSessionInterceptionBridge:
                 return InterceptionResult(InterceptionDecision.STALE, reason="bridge_closed")
             if self._terminal_identity == (generation, ingress_token):
                 return InterceptionResult(InterceptionDecision.UNAVAILABLE, reason=self._terminal_reason)
+            if (self._terminal_on_unavailable and self._has_identity
+                    and self._generation == generation and self._ingress_token == ingress_token
+                    and getattr(self._runtime, "is_closed", False) is True):
+                # An ASR capture cannot silently acquire a new source identity
+                # after its runtime's background deadline closed the old one.
+                return self._unavailable(generation, ingress_token, "interception_runtime_closed")
             if (not self._has_identity or self._generation != generation
                     or self._ingress_token != ingress_token
                     or getattr(self._runtime, "is_closed", False) is True):

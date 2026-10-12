@@ -35,6 +35,7 @@ def _frame(core, *, age=0.0, origin=OutputOrigin.LIVE, samples=2000, sequence=0)
 
 async def _core(worker=None, **config_changes):
     core = CoreHarness()
+    core._asr_route_mode = "independent"
     factory = PrewireInterceptionFactory(
         replace(_config(), **config_changes), score_backend=_Scorer(), classifier=_Classifier(),
         tse_factory=lambda _: worker or _Tse(),
@@ -217,6 +218,7 @@ async def test_authorized_activation_replays_old_prefix_through_real_core_gate()
 
 async def test_replay_provenance_still_requires_owner_identity():
     core = CoreHarness()
+    core._asr_route_mode = "independent"
     factory = PrewireInterceptionFactory(
         _config(), score_backend=_Scorer(), classifier=_Classifier(), tse_factory=lambda _: _Tse(),
     )

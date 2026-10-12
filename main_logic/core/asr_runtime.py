@@ -108,7 +108,9 @@ from main_logic.voice_input.interception import (
     InterceptionDeliveryReceipt,
     InterceptionDeliveryStage,
 )
-from main_logic.voice_turn.audio_delivery import AudioDeliveryTag
+from main_logic.voice_turn.audio_delivery import (
+    AudioDeliveryTag, AudioDeliverySpan, observe_delivery_spans, notify_delivery_observers,
+)
 from main_logic.voice_input.interception_output_state import InterceptionOutputState
 
 
@@ -1761,6 +1763,13 @@ class AsrRuntimeMixin:
             if self._active_session_interception_required:
                 return None
             return InterceptionResult(InterceptionDecision.KEEP, pcm16=frame.pcm)
+        if self._asr_route_mode != "independent":
+            # Ordinary native input remains available without interception.
+            # This route cannot settle intercepted source intervals yet.
+            await bridge.retire("interception_delivery_unsupported")
+            return InterceptionResult(
+                InterceptionDecision.UNAVAILABLE, reason="interception_delivery_unsupported",
+            )
         result = await bridge.process(
             frame.pcm,
             sample_rate_hz=frame.sample_rate,
@@ -4728,17 +4737,23 @@ class AsrRuntimeMixin:
 
         remaining = list(result.events)
         try:
+            if self._asr_route_mode != "independent":
+                return OutputCommit.UNKNOWN
             for event in result.events:
                 def report(stage, event=event):
                     callback(InterceptionDeliveryReceipt(event, stage, time.monotonic()))
 
                 if not current() or not output_state.accept_event(owner, event):
-                    report(InterceptionDeliveryStage.NOT_SENT)
+                    notify_delivery_observers((lambda: report(InterceptionDeliveryStage.NOT_SENT),),
+                                              context="interception stale output")
                     return OutputCommit.UNKNOWN
-                report(InterceptionDeliveryStage.LOCAL_ACCEPTED)
+                if notify_delivery_observers((lambda: report(InterceptionDeliveryStage.LOCAL_ACCEPTED),),
+                                             context="interception admission") is not None:
+                    return OutputCommit.UNKNOWN
                 remaining.pop(0)
                 if event.kind is InterceptionOutputKind.AUDIO:
                     tag = AudioDeliveryTag(event.end_sample - event.start_sample, report)
+                    spans = (AudioDeliverySpan(tag, 0, tag.sample_count),)
                     try:
                         committed = await self._route_microphone_audio_unfiltered(
                             event.pcm16, sample_rate_hz=event.sample_rate_hz,
@@ -4750,21 +4765,25 @@ class AsrRuntimeMixin:
                             delivery=tag,
                         )
                     except BaseException:
-                        tag.observe(0, tag.sample_count, InterceptionDeliveryStage.UNKNOWN)
+                        observe_delivery_spans(spans, InterceptionDeliveryStage.UNKNOWN,
+                                               context="interception output failure")
                         raise
                     if committed is OutputCommit.NOT_SENT:
-                        tag.observe(0, tag.sample_count, InterceptionDeliveryStage.NOT_SENT)
+                        observe_delivery_spans(spans, InterceptionDeliveryStage.NOT_SENT,
+                                               context="interception output refusal")
                         # The original frame was already consumed by interception;
                         # NOT_SENT here would retry it and duplicate the sample axis.
                         return OutputCommit.UNKNOWN
                     if committed is OutputCommit.UNKNOWN or not current():
-                        tag.observe(0, tag.sample_count, InterceptionDeliveryStage.UNKNOWN)
+                        observe_delivery_spans(spans, InterceptionDeliveryStage.UNKNOWN,
+                                               context="interception output uncertainty")
                         return OutputCommit.UNKNOWN
                     output_state.mark_audio_accepted(owner)
                 else:
                     if output_state.has_open_segment(owner):
                         if self._asr_route_mode != "independent":
-                            report(InterceptionDeliveryStage.NOT_SENT)
+                            notify_delivery_observers((lambda: report(InterceptionDeliveryStage.NOT_SENT),),
+                                                      context="interception boundary refusal")
                             # Native providers without an explicit, proven boundary
                             # cannot safely append audio across an interception hole.
                             await bridge.retire("interception_native_boundary_unsupported")
@@ -4775,28 +4794,34 @@ class AsrRuntimeMixin:
                                 deadline=asyncio.get_running_loop().time() + 1.0,
                             )
                         except asyncio.CancelledError:
-                            report(InterceptionDeliveryStage.UNKNOWN)
+                            notify_delivery_observers((lambda: report(InterceptionDeliveryStage.UNKNOWN),),
+                                                      context="interception boundary cancellation")
                             raise
                         except Exception:
-                            report(InterceptionDeliveryStage.UNKNOWN)
+                            notify_delivery_observers((lambda: report(InterceptionDeliveryStage.UNKNOWN),),
+                                                      context="interception boundary failure")
                             await bridge.retire("interception_segment_boundary_failed")
                             return OutputCommit.UNKNOWN
                         if not current():
-                            report(InterceptionDeliveryStage.UNKNOWN)
+                            notify_delivery_observers((lambda: report(InterceptionDeliveryStage.UNKNOWN),),
+                                                      context="interception stale boundary")
                             return OutputCommit.UNKNOWN
                         output_state.mark_boundary_applied(owner)
                     # A control boundary is locally applied; never pretend that a
                     # provider confirmed a PCM item or invented silence.
-                    report(InterceptionDeliveryStage.QUEUED)
+                    if notify_delivery_observers((lambda: report(InterceptionDeliveryStage.QUEUED),),
+                                                 context="interception boundary admission") is not None:
+                        return OutputCommit.UNKNOWN
         finally:
             # These intervals were handed out by the original interception
             # owner but never attempted downstream. Settle that exact batch,
             # even if cancellation or authority replacement stopped its prefix.
-            for unsent in remaining:
-                if unsent.kind is InterceptionOutputKind.AUDIO:
-                    callback(InterceptionDeliveryReceipt(
+            notify_delivery_observers((
+                lambda unsent=unsent: callback(InterceptionDeliveryReceipt(
                         unsent, InterceptionDeliveryStage.NOT_SENT, time.monotonic(),
                     ))
+                for unsent in remaining if unsent.kind is InterceptionOutputKind.AUDIO
+            ), context="interception remaining output")
         return OutputCommit.LOCAL_ACCEPTED
 
     async def finish_active_session_interception(
