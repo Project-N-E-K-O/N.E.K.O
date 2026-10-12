@@ -49,7 +49,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from config.visit_settings import VISIT_INVITE_PREVIEW_REUSE_S, VISIT_VIDEO_TIER_DEFAULT
-from main_logic.visit import local_chars, memory_bridge
+from main_logic.visit import char_lifecycle, local_chars, memory_bridge
 from main_logic.visit.limits import Blocklist
 from main_logic.visit.memory_commit import SIDE_RANK
 from main_logic.visit.recovery import pending_upload_owner, read_pending_upload_doc_sync
@@ -254,6 +254,52 @@ async def _resolve_uid(name: str) -> Optional[str]:
         raise _CharacterLookupFailed from exc
 
 
+async def _strict_local_names() -> tuple[set[str], dict[str, str] | None]:
+    """The configured names and uids, read strictly (unreadable or missing: raises).
+
+    Only called while a handover marker exists, which proves the machine has
+    characters: a missing file must not let the loader fall back to the seed
+    profiles (reconciliation would take the marker's character for deleted).
+    """
+    config = local_chars.get_config_manager()
+    runtime_path = getattr(config, "get_runtime_config_path", None)
+    # 要查的是运行时目录里那份：get_config_path 在运行时文件不在时会退回项目自带的种子文件
+    path = runtime_path("characters.json") if callable(runtime_path) else config.get_config_path("characters.json")
+    await local_chars.ensure_characters_file_readable(path, missing_ok=False)
+    uid_of = await local_chars.load_local_characters()
+    return set(uid_of), uid_of
+
+
+async def _handover_pending(name: str, uid: str) -> bool:
+    """Whether a visit of this character must wait for the rename that handed its name over to settle.
+
+    A cloudsave import gave ``name`` to this character while another
+    character's rename still owns the entries under it: roster entries and
+    spools a visit writes now would migrate to that character. The
+    character-config lock (to reconcile first) is only taken when such a
+    rename is pending, and not while the startup recovery runs: it
+    reconciles that rename under the renamed character's guard, not under
+    this lock, and is about to settle it. A failed check refuses (retry later).
+    """
+    config_dir = _config_dir()
+    try:
+        if not await char_lifecycle.handover_pending(config_dir, name, uid):
+            return False
+        from main_routers.visit_router import background
+        from utils import character_memory
+
+        if background.startup_recovery_running():
+            # 启动对账在被改名角色的守卫里迁这笔改名、不拿配置锁：这里再对一遍会和它并发改同一份标记，
+            # 它清标记失败就把这次启动的清除重放与逐场补录推到下次启动。它马上会迁完，先拒绝
+            return True
+
+        async with character_memory.character_config_mutation_lock:
+            return await char_lifecycle.handover_blocks_visit(config_dir, name, uid, _strict_local_names)
+    except Exception as exc:  # noqa: BLE001 - 判不出就先不接这场串门，下一次再试
+        logger.warning("visit: handover check failed: %s", type(exc).__name__)
+        return True
+
+
 async def _admit(
     name: str, side: str, *, expect_account: Optional[str] = None, expect_epoch: Optional[int] = None,
     **kwargs: Any,
@@ -269,6 +315,10 @@ async def _admit(
         uid = await _resolve_uid(name)
     except _CharacterLookupFailed:
         return _refused(409, {"reason": "busy"})
+    if uid and await _handover_pending(name, uid):
+        # 云快照刚把这个名字交给这个角色，原角色的改名还没迁完：现在写下的名册条目与场次会随迁移
+        # 归到原角色。等启动对账迁完再串门（通常几秒）
+        return _refused(409, {"reason": "handover_pending"})
     # 没有这个角色（uid 为 None）：不取锁，交给人设闸回 VISIT_PERSONA_UNREVIEWED{state:'missing'}
     async with (char_admission_lock(uid) if uid else contextlib.nullcontext()):
         epoch = runtime.account_epoch()

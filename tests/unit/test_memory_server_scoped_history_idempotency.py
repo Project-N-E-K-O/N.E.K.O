@@ -699,7 +699,7 @@ async def test_startup_cleanup_drops_expired_staging_and_tombstones_only(env):
         await idem.update_key(NAME, key, idem.transition(state))
         # 让记录本身也「很旧」：键记录无论多旧都不清。
     report = await idem.cleanup_expired([NAME], ttl_s=ttl, now=now)
-    assert report == {"staging_removed": 1, "tombstones_removed": 1}
+    assert report == {"staging_removed": 1, "tombstones_removed": 1, "retired_removed": 0}
     assert not Path(idem.staging_path(NAME, "old-key")).exists()
     assert Path(idem.staging_path(NAME, "new-key")).exists()
     assert set(await idem.read_tombstones(NAME)) == {"a:new"}
@@ -709,7 +709,7 @@ async def test_startup_cleanup_drops_expired_staging_and_tombstones_only(env):
     }
     report = await idem.cleanup_expired([NAME], ttl_s=0, now=now + 10**9)
     # 再过很久：剩下的暂存与墓碑都过期被清，键记录仍一字不动
-    assert report == {"staging_removed": 1, "tombstones_removed": 1}
+    assert report == {"staging_removed": 1, "tombstones_removed": 1, "retired_removed": 0}
     records_after = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))
     assert records_after == records
 
@@ -1002,7 +1002,7 @@ async def test_startup_cleanup_skips_a_character_being_released(env):
     await idem.record_tombstones(NAME, ["a:old"], 1, now=now - 500)
     env.monkeypatch.setattr(env.runtime, "_begin_character_request", lambda name: None)
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
-    assert report == {"staging_removed": 0, "tombstones_removed": 0}
+    assert report == {"staging_removed": 0, "tombstones_removed": 0, "retired_removed": 0}
     assert set(await idem.read_tombstones(NAME)) == {"a:old"}
 
 

@@ -710,7 +710,7 @@ async def cleanup_expired(
         ttl_s = MEMORY_IDEMPOTENCY_TTL_S
     current = time.time() if now is None else float(now)
     cutoff = current - float(ttl_s)
-    report = {"staging_removed": 0, "tombstones_removed": 0}
+    report = {"staging_removed": 0, "tombstones_removed": 0, "retired_removed": 0}
     from . import runtime
 
     for name in lanlan_names:
@@ -723,11 +723,12 @@ async def cleanup_expired(
             await _cleanup_one(name, cutoff, report)
         finally:
             runtime._end_character_request(name, lease)
-    if report["staging_removed"] or report["tombstones_removed"]:
+    if report["staging_removed"] or report["tombstones_removed"] or report["retired_removed"]:
         logger.info(
-            "[Idempotency] 启动清理：暂存 %d、墓碑 %d",
+            "[Idempotency] 启动清理：暂存 %d、墓碑 %d、recent 退役记录 %d",
             report["staging_removed"],
             report["tombstones_removed"],
+            report["retired_removed"],
         )
     return report
 
@@ -736,6 +737,7 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
     protected: set[str] = set()
     if not await asyncio.to_thread(os.path.isdir, _character_dir(name)):
         return
+    await _cleanup_retired_keys(name, cutoff, report)
     try:
         # 按文件名反查它属于哪个键：文件名是键的摘要，内容里的键可能坏了 / 被改过，
         # 只有键记录能说明这份暂存还是不是某个 pending 键唯一的副本
@@ -836,6 +838,47 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
         report["tombstones_removed"] += len(removed)
     except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
         logger.warning(f"[Idempotency] {name}: 墓碑清理失败（跳过）: {exc}")
+
+
+async def _cleanup_retired_keys(name: str, cutoff: float, report: dict) -> None:
+    """Drop ``recent.retired_keys.json`` records older than the cutoff whose key is terminal.
+
+    A record of a key still ``pending`` (or without any key record) is kept
+    however old: it is the only proof that a keyed diary entry reached
+    ``recent.json`` before being moved out, and a later same-key retry would
+    otherwise write it back.
+    """
+    from utils.recent_file import RETIRED_KEYS_FILENAME, prune_retired_keys, recent_sidecar_path
+
+    recent_path = os.path.join(_character_dir(name), "recent.json")
+    if not await asyncio.to_thread(os.path.exists, recent_sidecar_path(recent_path, RETIRED_KEYS_FILENAME)):
+        return
+    loaded: dict[str, dict] = {}
+
+    def _records() -> dict:
+        # 在 recent 文件锁内读（prune 持锁调用 _drop）：云存档恢复持同一把锁替换 recent 并删键记录，
+        # 用锁外的旧快照会把恢复之后仍需保留的退役记录删掉
+        if "records" not in loaded:
+            loaded["records"] = _read_json_object(keys_path(name))
+        return loaded["records"]
+
+    def _drop(key: str, stamp: Any) -> bool:
+        record = _records().get(key)
+        terminal = isinstance(record, dict) and record.get("state") in TERMINAL_KEY_STATES
+        return (
+            terminal
+            and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
+            and stamp < cutoff
+        )
+
+    try:
+        assert_cloudsave_writable(_config_manager(), operation="save", target=_cloudsave_target(
+            os.path.join(_character_dir(name), RETIRED_KEYS_FILENAME)))
+        dropped = await asyncio.to_thread(prune_retired_keys, recent_path, _drop)
+    except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort（键记录读不出：一条都不删）
+        logger.warning(f"[Idempotency] {name}: recent 退役记录清理失败（跳过）: {exc}")
+        return
+    report["retired_removed"] += len(dropped)
 
 
 def _staged_subjects(document: Any) -> set[str]:

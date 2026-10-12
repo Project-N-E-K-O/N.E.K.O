@@ -6640,6 +6640,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "이번 방문을 일기로 남길까요?",
+            "choiceDiary": "일기로 남기기",
+            "choiceForget": "남기지 않기",
+            "savedDiary": "일기로 남겼어요",
+            "forgot": "알겠어요, 이번에는 남기지 않을게요",
+            "askLaterHint": "선택지는 7일 동안 남아 있어요. 언제든 고를 수 있어요",
+            "previewTitle": "이 내용을 남길까요?",
+            "previewFactsLabel": "기억해 둘 내용:",
+            "previewConfirm": "저장",
+            "previewVoided": "이 기록은 폐기되어 저장되지 않았어요",
+            "generating": "정리하는 중…",
+            "committing": "저장하는 중… 아직 저장되지 않았다면 자동으로 다시 시도해요",
+            "commitFailed": "기억에 저장하지 못했어요: 기억 서비스가 이번 저장을 거부해서 자동 재시도를 멈췄어요.",
+            "commitFailedPartial": "사실은 저장됐지만 일기는 아직 저장되지 않았어요.",
+            "commitRetry": "다시 시도",
+            "commitAbandon": "포기",
+            "abandonPartialConfirm": "사실은 이미 저장되어 되돌릴 수 없고, 일기는 저장되지 않았어요. 포기하면 이 일기는 저장되지 않아요. 포기할까요?",
+            "abandoned": "포기했어요. 저장된 내용은 없어요",
+            "abandonedPartial": "포기했어요: 사실은 저장됐고 일기는 저장되지 않았어요",
+            "commitFailedUnknown": "일부가 이미 기억에 저장됐을 수 있지만 확인하지 못했어요.",
+            "abandonUnknownConfirm": "일부가 이미 기억에 저장됐지만 확인하지 못했을 수 있어요. 포기해도 되돌려지지 않아요. 포기할까요?",
+            "abandonedUnknown": "포기했어요: 일부가 저장됐을 수 있지만 확인하지 못했어요"
+        },
         "settings": {
             "groupTitle": "방문",
             "enabled": "방문 허용",

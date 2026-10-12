@@ -177,6 +177,14 @@ class SpoolStateUnreadable(RuntimeError):
         super().__init__(f"unreadable visit state: {', '.join(self.visit_ids)}")
 
 
+class _NotApplied(Exception):
+    """Raised inside a state mutation to abort it without writing; carries the state it saw (``update_state_if``)."""
+
+    def __init__(self, state: dict) -> None:
+        super().__init__("debrief_choice moved on")
+        self.state = state
+
+
 class SpoolBusy(RuntimeError):
     """Raised when a header rewrite targets a spool that is still open for appends."""
 
@@ -1393,6 +1401,29 @@ class VisitSpool:
 
         await asyncio.to_thread(self._update_state_sync, mutate)
         return changed
+
+    async def update_state_if(self, expected_choice: Any, **changes: Any) -> tuple[bool, dict]:
+        """Apply ``changes`` only while ``debrief_choice`` is still ``expected_choice`` (a value or a tuple of values).
+
+        Returns ``(True, new state)``, or ``(False, the state found)`` without
+        writing when the choice moved on.
+
+        For transitions that race with writers outside the debrief lock (the
+        void step of "forget this person" turns undecided debriefs into
+        ``forget``): an unconditional write after a long await would overwrite
+        that newer terminal choice.
+        """
+        expected = expected_choice if isinstance(expected_choice, tuple) else (expected_choice,)
+
+        def mutate(state: dict) -> None:
+            if state["debrief_choice"] not in expected:
+                raise _NotApplied(copy.deepcopy(state))
+            state.update(copy.deepcopy(changes))
+
+        try:
+            return True, await asyncio.to_thread(self._update_state_sync, mutate)
+        except _NotApplied as lost:
+            return False, lost.state
 
     async def update_state(self, **changes: Any) -> dict:
         """Read-modify-write ``state.json`` with ``changes``; the result is validated."""

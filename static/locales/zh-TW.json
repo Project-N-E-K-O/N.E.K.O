@@ -6640,6 +6640,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "要把這次串門記成日記嗎？",
+            "choiceDiary": "記成日記",
+            "choiceForget": "不記",
+            "savedDiary": "已記成日記",
+            "forgot": "好的，這次不記",
+            "askLaterHint": "這兩個選項會保留 7 天，隨時可以點",
+            "previewTitle": "要記下這些嗎？",
+            "previewFactsLabel": "她會記住這幾件事：",
+            "previewConfirm": "寫入",
+            "previewVoided": "這份紀錄已作廢，沒有寫入",
+            "generating": "正在整理…",
+            "committing": "正在記…暫時沒寫進去會自動再試",
+            "commitFailed": "沒能寫進記憶：記憶服務拒絕了這次寫入，已停止自動重試。",
+            "commitFailedPartial": "其中事實已經寫入，日記還沒寫入。",
+            "commitRetry": "重試",
+            "commitAbandon": "放棄",
+            "abandonPartialConfirm": "事實已經寫入，撤不回來；日記沒有寫入。放棄後不會再寫這篇日記，確定放棄嗎？",
+            "abandoned": "已放棄，沒有寫入",
+            "abandonedPartial": "已放棄：事實已寫入，日記沒有寫入",
+            "commitFailedUnknown": "有一部分可能已經寫進記憶，但沒能確認。",
+            "abandonUnknownConfirm": "有一部分可能已經寫進記憶、沒能確認，放棄後也不會撤回。確定放棄嗎？",
+            "abandonedUnknown": "已放棄：有一部分可能已寫入，未能確認"
+        },
         "settings": {
             "groupTitle": "串門",
             "enabled": "允許串門",

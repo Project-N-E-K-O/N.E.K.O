@@ -69,7 +69,7 @@ async def run_startup_recovery() -> Any:
     from main_logic.visit.forget_runner import default_void_pending
     from main_logic.visit.recovery import visit_spool_recovery
     from main_routers.visit_router import character_hooks, runtime, transcript_upload
-    from main_routers.visit_router.debrief import render_chips
+    from main_routers.visit_router.debrief import render_chips, resume_diary_commit
     from main_routers.visit_router.llm import one_shot_llm
 
     config_dir = runtime.runtime_deps().config_dir()
@@ -84,6 +84,8 @@ async def run_startup_recovery() -> Any:
         submit_report=transcript_upload.submit_queued_report,
         retry_later=transcript_upload.schedule_visit_retry,
         void_pending=default_void_pending(config_dir),
+        # 「记成日记」两步写入中的场次：按持久化的 next_at 排上退避重试
+        resume_diary_commit=resume_diary_commit,
         # 清除重放期间挡住改名 / 删除的守卫（与清除端点同一个）
         lifecycle_guard=runtime.hold_character_lifecycle,
         # 删除退役补完：删掉串门人设；每一项在角色配置变更锁内按配置判定（与删除事务互斥）
@@ -115,6 +117,11 @@ def start_visit_background_tasks() -> None:
         _recovery_task = asyncio.create_task(_recover_in_background(), name="visit-recovery")
 
 
+def startup_recovery_running() -> bool:
+    """Whether the startup recovery task is still running (it reconciles pending renames under their guards)."""
+    return _recovery_task is not None and not _recovery_task.done()
+
+
 def _cancel(task: Optional[asyncio.Task]) -> None:
     if task is not None and not task.done():
         task.cancel()
@@ -143,6 +150,10 @@ async def stop_visit_background_tasks() -> None:
     from main_routers.visit_router import transcript_upload
 
     workers = transcript_upload.cancel_retry_workers()
+    # 「记成日记」的退避重试同样取消：没写完的留在 state.json，下次启动按 next_at 再排
+    from main_routers.visit_router import debrief
+
+    workers = list(workers or []) + debrief.cancel_commit_timers()
     if workers:
         await asyncio.wait(workers, timeout=_RECOVERY_STOP_WAIT_S)
 
@@ -160,4 +171,7 @@ def cancel_visit_background_tasks() -> None:
     # 补录排下的转录补传 / 举报重试与它派生的 digest / 摘要写入都是独立任务：回滚后不能留着上传、
     # 改 spool，与下次初始化重叠
     transcript_upload.cancel_retry_workers()
+    from main_routers.visit_router import debrief
+
+    debrief.cancel_commit_timers()
     runtime.cancel_background_writes()

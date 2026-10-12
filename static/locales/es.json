@@ -6640,6 +6640,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "¿Guardar esta visita en su diario?",
+            "choiceDiary": "Guardar en el diario",
+            "choiceForget": "No guardar",
+            "savedDiary": "Guardado en su diario",
+            "forgot": "De acuerdo, esta vez no se guarda",
+            "askLaterHint": "Estas opciones se quedan 7 días; puedes elegir cuando quieras",
+            "previewTitle": "¿Guardar esto?",
+            "previewFactsLabel": "Recordará esto:",
+            "previewConfirm": "Guardar",
+            "previewVoided": "Este registro se descartó; no se guardó nada",
+            "generating": "Redactando…",
+            "committing": "Guardando… si todavía no se guarda, se volverá a intentar automáticamente",
+            "commitFailed": "No se pudo guardar en la memoria: el servicio de memoria rechazó esta escritura y se detuvieron los reintentos automáticos.",
+            "commitFailedPartial": "Los hechos se guardaron, pero la entrada del diario todavía no.",
+            "commitRetry": "Reintentar",
+            "commitAbandon": "Abandonar",
+            "abandonPartialConfirm": "Los hechos ya se guardaron y no se pueden deshacer; la entrada del diario no se guardó. Si abandonas, esta entrada no se guardará. ¿Abandonar?",
+            "abandoned": "Abandonado; no se guardó nada",
+            "abandonedPartial": "Abandonado: los hechos se guardaron, la entrada del diario no",
+            "commitFailedUnknown": "Puede que una parte ya esté en la memoria, pero no se pudo confirmar.",
+            "abandonUnknownConfirm": "Puede que una parte ya esté en la memoria sin confirmar; abandonar no lo deshace. ¿Abandonar?",
+            "abandonedUnknown": "Abandonado: puede que una parte se haya guardado, pero no se pudo confirmar"
+        },
         "settings": {
             "groupTitle": "Visitas",
             "enabled": "Permitir visitas",

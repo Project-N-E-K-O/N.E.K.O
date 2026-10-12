@@ -6640,6 +6640,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "今回の訪問を日記に残しますか？",
+            "choiceDiary": "日記に残す",
+            "choiceForget": "残さない",
+            "savedDiary": "日記に残しました",
+            "forgot": "わかりました。今回は残しません",
+            "askLaterHint": "選択肢は 7 日間残ります。いつでも選べます",
+            "previewTitle": "これを残しますか？",
+            "previewFactsLabel": "覚えておくこと：",
+            "previewConfirm": "書き込む",
+            "previewVoided": "この記録は破棄されました。書き込まれていません",
+            "generating": "まとめています…",
+            "committing": "書き込み中…まだ書き込めていない場合は自動で再試行します",
+            "commitFailed": "記憶に書き込めませんでした：記憶サービスがこの書き込みを拒否したため、自動再試行を停止しました。",
+            "commitFailedPartial": "事実は書き込まれましたが、日記はまだ書き込まれていません。",
+            "commitRetry": "再試行",
+            "commitAbandon": "あきらめる",
+            "abandonPartialConfirm": "事実はすでに書き込まれていて取り消せません。日記は書き込まれていません。あきらめるとこの日記は書き込まれません。あきらめますか？",
+            "abandoned": "あきらめました。何も書き込まれていません",
+            "abandonedPartial": "あきらめました：事実は書き込まれ、日記は書き込まれていません",
+            "commitFailedUnknown": "一部がすでに記憶に書き込まれた可能性がありますが、確認できませんでした。",
+            "abandonUnknownConfirm": "一部がすでに記憶に書き込まれ、確認できていない可能性があります。あきらめても取り消されません。あきらめますか？",
+            "abandonedUnknown": "あきらめました：一部が書き込まれた可能性がありますが、確認できませんでした"
+        },
         "settings": {
             "groupTitle": "訪問",
             "enabled": "訪問を許可",

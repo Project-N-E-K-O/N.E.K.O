@@ -6640,6 +6640,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "Keep this visit in her diary?",
+            "choiceDiary": "Keep as diary",
+            "choiceForget": "Don't keep",
+            "savedDiary": "Kept in her diary",
+            "forgot": "Okay, not keeping this one",
+            "askLaterHint": "These choices stay for 7 days; tap any time",
+            "previewTitle": "Keep these?",
+            "previewFactsLabel": "She will remember these:",
+            "previewConfirm": "Save",
+            "previewVoided": "This record was discarded; nothing was saved",
+            "generating": "Writing it up…",
+            "committing": "Saving… if it doesn't go through yet, it will retry automatically",
+            "commitFailed": "Couldn't save to memory: the memory service rejected this write. Automatic retries have stopped.",
+            "commitFailedPartial": "The facts were saved, but the diary entry wasn't.",
+            "commitRetry": "Retry",
+            "commitAbandon": "Give up",
+            "abandonPartialConfirm": "The facts are already saved and can't be taken back; the diary entry wasn't saved. Giving up means this entry won't be written. Give up?",
+            "abandoned": "Gave up; nothing was saved",
+            "abandonedPartial": "Gave up: the facts were saved, the diary entry wasn't",
+            "commitFailedUnknown": "Part of it may already be in memory, but that couldn't be confirmed.",
+            "abandonUnknownConfirm": "Part of it may already be in memory and couldn't be confirmed; giving up won't undo it. Give up?",
+            "abandonedUnknown": "Gave up: part of it may have been saved, but that couldn't be confirmed"
+        },
         "settings": {
             "groupTitle": "Visits",
             "enabled": "Allow visits",

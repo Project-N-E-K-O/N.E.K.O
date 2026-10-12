@@ -6640,6 +6640,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "要把这次串门记成日记吗？",
+            "choiceDiary": "记成日记",
+            "choiceForget": "不记",
+            "savedDiary": "已记成日记",
+            "forgot": "好的，这次不记",
+            "askLaterHint": "这两个选项会保留 7 天，随时可以点",
+            "previewTitle": "要记下这些吗？",
+            "previewFactsLabel": "她会记住这几件事：",
+            "previewConfirm": "写入",
+            "previewVoided": "这份记录已作废，没有写入",
+            "generating": "正在整理…",
+            "committing": "正在记…暂时没写进去会自动再试",
+            "commitFailed": "没能写进记忆：记忆服务拒绝了这次写入，已停止自动重试。",
+            "commitFailedPartial": "其中事实已经写入，日记还没写入。",
+            "commitRetry": "重试",
+            "commitAbandon": "放弃",
+            "abandonPartialConfirm": "事实已经写入，撤不回来；日记没有写入。放弃后不会再写这篇日记，确定放弃吗？",
+            "abandoned": "已放弃，没有写入",
+            "abandonedPartial": "已放弃：事实已写入，日记没有写入",
+            "commitFailedUnknown": "有一部分可能已经写进记忆，但没能确认。",
+            "abandonUnknownConfirm": "有一部分可能已经写进记忆、没能确认，放弃后也不会撤回。确定放弃吗？",
+            "abandonedUnknown": "已放弃：有一部分可能已写入，未能确认"
+        },
         "settings": {
             "groupTitle": "串门",
             "enabled": "允许串门",

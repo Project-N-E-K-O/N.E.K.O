@@ -108,9 +108,11 @@ _LINE_FIELDS = ("lp", "side", "from", "ts", "text", "truncated")
 RenderChips = Callable[..., Awaitable[bool]]
 """``render_chips(visit_id, *, own_char, status) -> bool``: try to show the debrief block now.
 
-``status`` is ``'interrupted'`` for a crashed visit, else ``None``. The
-return value is only whether it reached a connected display; the pending
-flag in ``state.json`` stays until the user decides either way."""
+``status`` is ``'interrupted'`` for a crashed visit, else ``None``; the
+callback shows the notice only with the chips (not with a preview or a
+failure block). The return value is only whether it reached a connected
+display; the pending flag in ``state.json`` stays until the user decides
+either way."""
 
 UploadTranscript = Callable[[str, dict], Awaitable["bool | str"]]
 """``upload_transcript(visit_id, upload_doc) -> bool | str``: upload one pending transcript.
