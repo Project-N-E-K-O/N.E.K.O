@@ -162,21 +162,22 @@ def build_claims(
         raise DevMintError(f"role must be one of {ROLES}")
     if transport not in TRANSPORTS:
         raise DevMintError(f"transport must be one of {TRANSPORTS}")
-    if visit_id and not VISIT_ID_RE.fullmatch(visit_id):
+    # 显式给了就校验（含空串）；只有没给（None）时才生成
+    if visit_id is not None and not VISIT_ID_RE.fullmatch(visit_id):
         # The transport page and the backend session both require this format; never sign an unusable ticket
         raise DevMintError("visit_id must be 22 characters of [A-Za-z0-9_-]")
-    if visit_uid and not VISIT_UID_RE.fullmatch(visit_uid):
+    if visit_uid is not None and not VISIT_UID_RE.fullmatch(visit_uid):
         raise DevMintError("visit_uid must be 24 lowercase hex characters")
-    if vid and not re.fullmatch(rf"{role[0]}_[0-9a-f]{{24}}", vid):
+    if vid is not None and not re.fullmatch(rf"{role[0]}_[0-9a-f]{{24}}", vid):
         raise DevMintError(f"vid must be '{role[0]}_' followed by 24 lowercase hex characters for role {role}")
-    if char_tag and not CHAR_TAG_RE.fullmatch(char_tag):
+    if char_tag is not None and not CHAR_TAG_RE.fullmatch(char_tag):
         raise DevMintError("char_tag must be 32 lowercase hex characters")
-    if jti and not JTI_RE.fullmatch(jti):
+    if jti is not None and not JTI_RE.fullmatch(jti):
         raise DevMintError("jti must be 22 characters of [A-Za-z0-9_-]")
     if display_name is not None and len(display_name) > DISPLAY_NAME_MAX:
         raise DevMintError(f"display_name must be at most {DISPLAY_NAME_MAX} characters")
-    visit_id = visit_id or secrets.token_urlsafe(16)
-    visit_uid = visit_uid or secrets.token_hex(12)
+    visit_id = visit_id if visit_id is not None else secrets.token_urlsafe(16)
+    visit_uid = visit_uid if visit_uid is not None else secrets.token_hex(12)
     iat = int(time.time()) if iat is None else int(iat)
     ttl = identity.ticket_ttl_s(role) if ttl_s is None else int(ttl_s)
     if ttl <= 0:
@@ -191,14 +192,14 @@ def build_claims(
         "aud": visit_settings.VISIT_TICKET_AUD,
         "kid": visit_settings.VISIT_DEV_KID,
         "sub": visit_uid,
-        "vid": vid or derive_vid(role, visit_uid, visit_id),
+        "vid": vid if vid is not None else derive_vid(role, visit_uid, visit_id),
         "visit_id": visit_id,
         "role": role,
         "transport": transport,
-        "char_tag": char_tag or secrets.token_hex(16),
+        "char_tag": char_tag if char_tag is not None else secrets.token_hex(16),
         "iat": iat,
         "exp": iat + ttl,
-        "jti": jti or secrets.token_urlsafe(16),
+        "jti": jti if jti is not None else secrets.token_urlsafe(16),
     }
     if display_name is not None:
         claims["display_name"] = display_name

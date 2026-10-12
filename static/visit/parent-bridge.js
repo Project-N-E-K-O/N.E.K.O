@@ -140,6 +140,7 @@
       firstFrame: null,
       publishing: false,
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
+      endedVisitId: null,    // 最近结束的场次：它迟到的 wrap_up / ending 不再补建 iframe（只拦补建，不参与场次过滤）
       retiring: [],          // 已脱离父页、等它把清理做完的旧 iframe [{frame, timer, endOnClosed}]
       portraitWrapped: false,
     };
@@ -972,9 +973,10 @@
       if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.peerCrop = msg.peer_crop;
       if (action === 'pending') {
         state.closedVisitId = null;
+        if (msg.visit_id === state.endedVisitId) state.endedVisitId = null;
         ensureFrame(msg.side, msg.visit_id);
       } else if (!state.frame && action !== 'ended' && PHASE_OF_ACTION[action] && msg.side && msg.visit_id &&
-          msg.visit_id !== state.closedVisitId) {
+          msg.visit_id !== state.closedVisitId && msg.visit_id !== state.endedVisitId) {
         // 页面重载后没收到 pending：按在飞场次补建
         ensureFrame(msg.side, msg.visit_id);
       }
@@ -988,6 +990,8 @@
       else if (action === 'peer_visible') setPeerHidden(false);
       else if (action === 'peer_crop') state.place = null;
       if (action === 'ended') {
+        // 记下结束的场次（不放进 closedVisitId：那个还参与场次过滤，会把同页新场次不经 pending 的事件挡掉）
+        state.endedVisitId = msg.visit_id || state.visitId || state.closedVisitId || null;
         state.closedVisitId = null;
         retireFrame();
         state.phase = null;

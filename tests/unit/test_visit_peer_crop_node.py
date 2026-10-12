@@ -849,3 +849,25 @@ def test_stale_visit_crop_does_not_touch_the_current_visit():
         files=BRIDGE_FILES,
     )
     assert out == {"crop": "upper", "frame": True, "sameGen": True}
+
+
+def test_late_lifecycle_event_of_an_ended_visit_does_not_rebuild():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        await open(h, 'guest');
+        change(h, 'started');
+        change(h, 'ended');
+        change(h, 'wrap_up');                    // 已结束场次迟到的事件
+        change(h, 'ending');
+        const rebuilt = !!h.ctx.document.getElementById('visit-frame');
+        // 同一页面里新场次的事件（即使没先收到 pending）照常补建
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'started', side: 'guest', visit_id: 'NewVisit00000000000000' });
+        const fresh = !!h.ctx.document.getElementById('visit-frame');
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'ended', side: 'guest', visit_id: 'NewVisit00000000000000' });
+        await advance(6100);
+        return { rebuilt, fresh };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"rebuilt": False, "fresh": True}

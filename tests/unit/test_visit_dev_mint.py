@@ -240,3 +240,11 @@ def test_overlong_display_name_is_refused(mint_mod):
     assert ok["display_name"] == "N" * 64
     with pytest.raises(mint_mod.DevMintError):
         mint_mod.build_claims(role="guest", visit_id=VISIT_ID, visit_uid=VISIT_UID, iat=NOW, display_name="N" * 65)
+
+
+@pytest.mark.parametrize("field", ("visit_id", "visit_uid", "vid", "char_tag", "jti"))
+def test_empty_explicit_identifier_is_refused_not_regenerated(mint_mod, field):
+    kwargs = {"role": "guest", "visit_id": VISIT_ID, "visit_uid": VISIT_UID, "iat": NOW}
+    kwargs[field] = ""
+    with pytest.raises(mint_mod.DevMintError):
+        mint_mod.build_claims(**kwargs)
