@@ -442,7 +442,17 @@ async def test_unsubscribe_refuses_a_pack_it_does_not_own(env):
     main = env["main"]
     main.on("GET", "packs", {"ok": True, "packs": [_installed()]})
     assert (await _unsubscribe(env["http"], pack_id="someone-else")).status_code == 409
-    assert (await _unsubscribe(env["http"], package_id=7)).status_code == 404
+    assert "POST packs/remove" not in main.paths()
+
+
+async def test_unsubscribe_of_a_pack_not_installed_here_still_clears_the_market(env):
+    """Removed locally from the management page: the market's record must still go."""
+    main = env["main"]
+    main.on("GET", "packs", {"ok": True, "packs": [_installed()]})
+    response = await _unsubscribe(env["http"], package_id=7, pack_id="gone-pack")
+    assert response.status_code == 200
+    assert response.json()["not_installed"] is True and response.json()["removed"] is False
+    assert env["reports"] == [("unsubscribe", 7)]
     assert "POST packs/remove" not in main.paths()
 
 
@@ -689,6 +699,64 @@ async def test_unsubscribe_cancels_an_import_whose_install_answer_was_lost(env):
 )
 def test_artifact_hosts_are_allowlisted(url, final, allowed):
     assert km._artifact_url_allowed(url, final=final) is allowed
+
+
+RELEASE = "https://github.com/o/r/releases/download/v1/p.neko-knowledge.json"
+
+
+def test_mirror_hosts_of_the_plugin_install_path_are_allowlisted():
+    assert km._artifact_url_allowed(f"https://gh-proxy.com/{RELEASE}", final=True)
+    assert not km._artifact_url_allowed(f"https://gh-proxy.evil.example/{RELEASE}", final=True)
+
+
+async def test_download_sources_follow_the_speed_test(monkeypatch):
+    async def measured():
+        return (
+            {"id": "gh-proxy-com", "url": "https://gh-proxy.com/", "available": True, "latency_ms": 50},
+            {"id": "github-direct", "url": "https://github.com/", "available": True, "latency_ms": 200},
+            {"id": "gh-proxy-org", "url": "https://gh-proxy.org/", "available": False, "latency_ms": None},
+        )
+
+    monkeypatch.setattr(km, "_measured_github_sources", measured)
+    sources = await km._artifact_sources(RELEASE)
+    assert sources[:2] == [f"https://gh-proxy.com/{RELEASE}", RELEASE]
+    # Every allowlisted mirror is still tried, unmeasured ones after the measured.
+    assert set(sources) == {RELEASE, *(f"{prefix}{RELEASE}" for prefix in km._GITHUB_MIRROR_PREFIXES)}
+    assert len(sources) == len(set(sources))
+    # Not a GitHub Release asset: downloaded as published only.
+    assert await km._artifact_sources("https://objects.githubusercontent.com/x.neko-knowledge.json") == [
+        "https://objects.githubusercontent.com/x.neko-knowledge.json"
+    ]
+
+
+async def test_download_falls_through_failing_and_tampering_sources(monkeypatch):
+    sources = [f"https://gh-proxy.com/{RELEASE}", f"https://gh-proxy.org/{RELEASE}", RELEASE]
+    tried: list[str] = []
+
+    async def fake_sources(url):
+        return list(sources)
+
+    async def fake_download(url, httpx_module):
+        tried.append(url)
+        if url == sources[0]:
+            raise httpx.ConnectError("unreachable")
+        if url == sources[1]:
+            return ARTIFACT.replace(b"1", b"2")  # same size, other bytes
+        return ARTIFACT
+
+    monkeypatch.setattr(km, "_artifact_sources", fake_sources)
+    monkeypatch.setattr(km, "_download", fake_download)
+    descriptor = km.KnowledgeArtifactDescriptor(url=RELEASE, sha256=SHA, bytes=len(ARTIFACT))
+    assert await km._download_verified_artifact(descriptor) == ARTIFACT
+    assert tried == sources
+
+    async def always_tampered(url, httpx_module):
+        return ARTIFACT.replace(b"1", b"2")
+
+    monkeypatch.setattr(km, "_download", always_tampered)
+    with pytest.raises(km._TaskError) as excinfo:
+        await km._download_verified_artifact(descriptor)
+    assert excinfo.value.code == "artifact_hash_mismatch"
 
 
 async def test_redirect_off_the_allowlist_is_refused(monkeypatch):

@@ -63,7 +63,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from plugin.logging_config import get_logger
 from plugin.server.routes.knowledge_bridge import _client, main_write_headers
 from plugin.server.routes.market_bridge import (
+    _GITHUB_PROXY_SOURCES,
     _ensure_valid_oauth_token,
+    _measure_github_proxy_sources,
     _main_server_port,
     _verify_token,
 )
@@ -89,10 +91,22 @@ _TASK_MAX_ENTRIES = 200
 _ARTIFACT_DOWNLOAD_TIMEOUT_SECONDS = 180.0
 _MAX_ARTIFACT_REDIRECTS = 5
 _ARTIFACT_REDIRECT_STATUSES = frozenset((301, 302, 303, 307, 308))
+# GitHub Release mirrors the plugin install path already uses (same list, so
+# one place decides which third parties are trusted to relay bytes; the bytes
+# are checked against the market's size and SHA-256 either way).
+_GITHUB_MIRROR_PREFIXES = tuple(
+    base_url for source_id, base_url in _GITHUB_PROXY_SOURCES if source_id != "github-direct"
+)
 _ALLOWED_ARTIFACT_HOSTS = frozenset(
     {"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
+    | {(urlparse(prefix).hostname or "").lower() for prefix in _GITHUB_MIRROR_PREFIXES}
 )
 _ARTIFACT_SUFFIX = ".neko-knowledge.json"
+# Each download source gets at most this long; the whole download keeps
+# _ARTIFACT_DOWNLOAD_TIMEOUT_SECONDS.
+_ARTIFACT_SOURCE_TIMEOUT_SECONDS = 60.0
+# How long a mirror speed test stays good for ordering download sources.
+_MIRROR_MEASURE_TTL_SECONDS = 10 * 60
 
 _MAIN_READ_TIMEOUT_SECONDS = 15.0
 _MAIN_WRITE_TIMEOUT_SECONDS = 45.0
@@ -689,24 +703,96 @@ def _artifact_url_allowed(url: str, *, final: bool) -> bool:
     return not final or parsed.path.lower().endswith(_ARTIFACT_SUFFIX)
 
 
+_mirror_measure: tuple[float, tuple[dict[str, object], ...]] | None = None
+
+
+async def _measured_github_sources() -> tuple[dict[str, object], ...]:
+    """Latest mirror speed test (shared with the plugin install path), reused for a while."""
+    global _mirror_measure
+    loop = asyncio.get_running_loop()
+    if _mirror_measure is not None and loop.time() - _mirror_measure[0] < _MIRROR_MEASURE_TTL_SECONDS:
+        return _mirror_measure[1]
+    measured = await _measure_github_proxy_sources()
+    _mirror_measure = (loop.time(), measured)
+    return measured
+
+
+def _is_github_release_asset(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.hostname == "github.com" and "/releases/download/" in parsed.path
+
+
+async def _artifact_sources(url: str) -> list[str]:
+    """Where to try downloading ``url`` from, best first.
+
+    A GitHub Release asset is also tried through the mirrors the plugin install
+    path uses (GitHub is often unreachable from mainland China), ordered by the
+    latest speed test, with GitHub itself among them and, failing a usable
+    test, last. Any other URL is downloaded as published.
+    """
+    if not _is_github_release_asset(url):
+        return [url]
+    try:
+        measured = await _measured_github_sources()
+    except Exception as exc:
+        logger.info("mirror speed test failed: {}", type(exc).__name__)
+        measured = ()
+    usable = sorted(
+        (item for item in measured if item.get("available") and isinstance(item.get("latency_ms"), int)),
+        key=lambda item: item["latency_ms"],
+    )
+    sources: list[str] = []
+    for item in usable:
+        base = str(item.get("url") or "")
+        source = url if item.get("id") == "github-direct" else f"{base}{url}"
+        if (base in _GITHUB_MIRROR_PREFIXES or item.get("id") == "github-direct") and source not in sources:
+            sources.append(source)
+    for source in (*(f"{prefix}{url}" for prefix in _GITHUB_MIRROR_PREFIXES), url):
+        if source not in sources:
+            sources.append(source)
+    return sources
+
+
 async def _download_verified_artifact(descriptor: KnowledgeArtifactDescriptor) -> bytes:
+    """Download the artifact from the first source that delivers exactly its bytes.
+
+    A source that fails, redirects off the allowlist, or serves other bytes
+    (size or SHA-256 differing from the market's record) is skipped for the
+    next one; a mirror can therefore never substitute content.
+    """
     if descriptor.bytes > MAX_ARTIFACT_BYTES:
         raise _TaskError("artifact_too_large", "知识包超过大小限制")
     if not _artifact_url_allowed(descriptor.url, final=True):
         raise _TaskError("unsafe_artifact_url", "知识包地址不受信任")
     httpx = await ensure_httpx()
-    try:
-        async with asyncio.timeout(_ARTIFACT_DOWNLOAD_TIMEOUT_SECONDS):
-            raw = await _download(descriptor.url, httpx)
-    except TimeoutError as exc:
-        raise _TaskError("download_timeout", "知识包下载超时", retryable=True) from exc
-    except httpx.HTTPError as exc:
-        raise _TaskError("download_failed", "知识包下载失败", retryable=True) from exc
-    if len(raw) != descriptor.bytes:
-        raise _TaskError("artifact_size_mismatch", "知识包大小与市场登记不一致")
-    if not secrets.compare_digest(hashlib.sha256(raw).hexdigest(), descriptor.sha256):
-        raise _TaskError("artifact_hash_mismatch", "知识包摘要校验失败")
-    return raw
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _ARTIFACT_DOWNLOAD_TIMEOUT_SECONDS
+    last = _TaskError("download_failed", "知识包下载失败", retryable=True)
+    for source in await _artifact_sources(descriptor.url):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            last = _TaskError("download_timeout", "知识包下载超时", retryable=True)
+            break
+        try:
+            async with asyncio.timeout(min(remaining, _ARTIFACT_SOURCE_TIMEOUT_SECONDS)):
+                raw = await _download(source, httpx)
+        except TimeoutError:
+            last = _TaskError("download_timeout", "知识包下载超时", retryable=True)
+            continue
+        except httpx.HTTPError:
+            last = _TaskError("download_failed", "知识包下载失败", retryable=True)
+            continue
+        except _TaskError as exc:
+            last = exc
+            continue
+        if len(raw) != descriptor.bytes:
+            last = _TaskError("artifact_size_mismatch", "知识包大小与市场登记不一致")
+            continue
+        if not secrets.compare_digest(hashlib.sha256(raw).hexdigest(), descriptor.sha256):
+            last = _TaskError("artifact_hash_mismatch", "知识包摘要校验失败")
+            continue
+        return raw
+    raise last
 
 
 async def _download(url: str, httpx: Any) -> bytes:
@@ -805,6 +891,10 @@ def _unsubscribe_error(code: str, status_code: int = 409, **extra: Any) -> HTTPE
     return HTTPException(status_code=status_code, detail={"code": code, **extra})
 
 
+def _not_installed_result() -> dict[str, Any]:
+    return {"ok": True, "removed": False, "not_installed": True, "removed_entries": 0, "remote_report": "scheduled"}
+
+
 def _cancelled_result() -> dict[str, Any]:
     return {"ok": True, "cancelled": True, "removed": False, "removed_entries": 0, "remote_report": "scheduled"}
 
@@ -837,11 +927,14 @@ async def _settle_unsubscribe(payload: KnowledgeUnsubscribeRequest, deadline: fl
     # Always, not only after stopping a worker this process remembers: after a
     # restart the Memory Server may still hold an import staged before it.
     cancelled = await _cancel_package_imports(payload.package_id, payload.pack_id, deadline) or stopped
-    pack_id, remote_id = await _resolve_owned_pack(payload, deadline, cancelled=cancelled)
+    pack_id, remote_id = await _resolve_owned_pack(payload, deadline)
     if not pack_id:
-        # Only an install that never landed was stopped; there is nothing to remove.
+        # Nothing installed here to remove: an install that never landed was
+        # stopped, or the pack was already removed locally (the management
+        # page does not tell the market). Either way the market's record must
+        # go, or every later unsubscribe would fail the same way.
         _report_unsubscribe_later(payload.package_id)
-        return _cancelled_result()
+        return _cancelled_result() if cancelled else _not_installed_result()
     if _remaining(deadline) <= 0:
         raise _unsubscribe_error("knowledge_busy", 503, retryable=True)
     operation_id = secrets.token_urlsafe(24)
@@ -971,10 +1064,8 @@ async def _cancel_package_imports(package_id: int, pack_id: str, deadline: float
     raise _unsubscribe_error("knowledge_busy", 503, retryable=True)
 
 
-async def _resolve_owned_pack(
-    payload: KnowledgeUnsubscribeRequest, deadline: float, *, cancelled: bool
-) -> tuple[str, str]:
-    """(pack id, remote id) of the installed pack this package owns, or ("", "") after a cancel."""
+async def _resolve_owned_pack(payload: KnowledgeUnsubscribeRequest, deadline: float) -> tuple[str, str]:
+    """(pack id, remote id) of the installed pack this package owns, or ("", "") if none is."""
     try:
         response = await _main_call("GET", "packs", timeout=max(_remaining(deadline), 0.5))
     except _TaskError as exc:
@@ -994,9 +1085,7 @@ async def _resolve_owned_pack(
     if len(matches) > 1:
         raise _unsubscribe_error("subscription_ownership_unverifiable")
     if not matches:
-        if cancelled:
-            return "", ""
-        raise _unsubscribe_error("subscription_not_found", 404)
+        return "", ""
     pack = matches[0]
     if pack.get("pack_id") != payload.pack_id:
         raise _unsubscribe_error("subscription_identity_mismatch")
