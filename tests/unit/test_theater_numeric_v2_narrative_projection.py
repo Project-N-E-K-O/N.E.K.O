@@ -99,17 +99,34 @@ def test_private_item_and_event_do_not_leak_through_focus_or_omission_counts(lar
         assert focused["projection"][field] == public["projection"][field]
 
 
-def test_mandatory_player_items_survive_soft_budget_without_silent_loss():
+@pytest.mark.parametrize("focus", ["出山前检查旧信匣", "放学前检查木匣0001号"])
+def test_many_held_items_are_bounded_with_explicit_omissions(focus):
     session = _session(all_player=True)
-    projection = project_narrative_state(session)
+    original = deepcopy(session.narrative_state)
+    projection = project_narrative_state(session, focus=focus)
+    metadata = projection["projection"]
+    retained = _entities(projection)
 
-    assert projection["projection"]["over_budget"] is True
-    assert projection["projection"]["retained_entities"] == 301
-    assert projection["projection"]["omitted_entities"] == 0
-    for name in ["旧信匣", *(f"木匣{index:04d}号" for index in range(1, 301))]:
-        holder = projection["current"][f"item:{name}"]["holder"]
-        assert holder["value"] == "player"
+    assert count_tokens(json.dumps(projection, ensure_ascii=False, separators=(",", ":"))) <= 1600
+    assert metadata["over_budget"] is False
+    assert metadata["retained_entities"] == len(retained)
+    assert metadata["omitted_entities"] == 301 - len(retained)
+    assert metadata["omitted_essential_entities"] == metadata["omitted_entities"] > 0
+    name = "旧信匣" if "旧信匣" in focus else "木匣0001号"
+    assert projection["current"][f"item:{name}"]["holder"]["value"] == "player"
+    for entity in retained:
+        holder = projection["current"][entity]["holder"]
         assert holder["source_event"]
+        assert "quote" not in holder
+    assert session.narrative_state == original
+    from services.theater.numeric_v2_actor import _fit_turn_prompt_data
+    data = {"story_context": {"narrative_state": projection}, "player_input": focus,
+            "recent_context": [{"revision": session.narrative_state["revision"],
+                                "player_input": focus, "performance": "请继续。"}]}
+    packed = _fit_turn_prompt_data(system_prompt="system", human_prefix="context:",
+                                  data=data, max_tokens=4800)
+    assert packed["story_context"]["narrative_state"] == projection
+    assert packed["player_input"] == focus
 
 
 def test_legacy_partial_current_flag_is_exposed_only_as_last_known():
@@ -121,3 +138,35 @@ def test_legacy_partial_current_flag_is_exposed_only_as_last_known():
     assert projection["last_known"]["item:旧信匣"]["holder"]["value"] == "player"
     assert projection["recent_events"]
     assert state == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("focus", ["出山前检查旧信匣", "放学前检查木匣0001号"])
+async def test_next_actor_turn_generates_after_held_items_overflow(monkeypatch, focus):
+    from dataclasses import replace
+    from services.theater.numeric_v2_actor import NumericV2Actor
+    from services.theater.numeric_v2_runtime import TurnRequestV2
+    from tests.unit.test_theater_numeric_v2_natural_ending import _engine
+    from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
+
+    state = _session(all_player=True).narrative_state
+    engine = _engine(ordinary=True)
+    session = engine.create_session(session_id="overflow", catgirl_binding=_binding(),
+                                    opening_performance=_opening())
+    session = replace(session, revision=state["revision"], narrative_state=state,
+                      story_state={**session.story_state, "revision": state["revision"]})
+    outcome = engine.resolve_turn(session, TurnRequestV2("next", session.revision, focus), ())
+    sent = []
+
+    async def invoke(self, messages, **kwargs):
+        assert sum(count_tokens(part.content) for part in messages) <= kwargs["max_input_tokens"]
+        sent.append(messages)
+        return {"performance": "我陪你检查信匣的外壳。", "suggested_inputs": []}
+
+    monkeypatch.setattr(NumericV2Actor, "_invoke", invoke)
+    result = await NumericV2Actor(object()).generate_turn(engine=engine, session=session,
+        outcome=outcome, player_input=focus, character_profile="温和。", allow_suggestion_fill=False)
+    assert result["performance"] == "我陪你检查信匣的外壳。"
+    assert len(sent) == 1
+    assert "omitted_essential_entities" in sent[0][1].content
+    assert session.narrative_state == state

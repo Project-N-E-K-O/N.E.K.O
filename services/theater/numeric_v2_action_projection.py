@@ -132,6 +132,12 @@ def _explicit_action_clause(text: str, *, departure: bool = False) -> str:
         if departure:
             has_term = any(
                 not _negated_at(clause, start)
+                and not any(
+                    start < approach_start + len(approach)
+                    and start + len(term) > approach_start
+                    for approach in _EXIT_APPROACH_TERMS
+                    for approach_start in _term_starts(clause, approach)
+                )
                 for term in terms
                 for start in _term_starts(clause, term)
             )

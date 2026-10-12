@@ -163,9 +163,9 @@ async def test_pending_marker_must_match_tail_body(tmp_path, monkeypatch):
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     path = runtime.store._path(result.stored.session.session_id)
-    raw = json.loads(path.read_text())
+    raw = json.loads(path.read_text(encoding="utf-8"))
     raw["ledger_events"][-1]["narrative_pending"]["body"] = "wrong-body"
-    path.write_text(json.dumps(raw))
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(ValueError, match="numeric_ledger_replay_invalid"):
         await runtime.restore_session(result.stored.session.session_id)
 

@@ -14,10 +14,27 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    def forbidden(*args, **kwargs):
+    connect = socket.socket.connect
+
+    def forbidden(sock, address):
+        # Windows Proactor creates a loopback socket pair for its own wakeups.
+        if isinstance(address, tuple) and address[0] in {"127.0.0.1", "::1", "localhost"}:
+            return connect(sock, address)
         raise AssertionError("These regression drafts must never use network")
     monkeypatch.setattr(socket.socket, "connect", forbidden)
     monkeypatch.setattr("utils.tokenize._get_encoder", lambda encoding: None)
+
+
+def test_network_guard_allows_local_wakeups_but_blocks_external_connections():
+    with socket.socket() as listener, socket.socket() as client:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        client.connect(listener.getsockname())
+        connection, _ = listener.accept()
+        connection.close()
+    with socket.socket() as client:
+        with pytest.raises(AssertionError, match="must never use network"):
+            client.connect(("192.0.2.1", 443))
 
 
 CASES = {

@@ -51,6 +51,8 @@ def test_parenthetical_exit_to_door_is_not_a_completed_departure():
     "（走向门口，停在门内）我还有个问题。",
     "（提起工具箱走向门口，停在气闸内侧）我再核对一下仪表。",
     "（走向巷口，停在巷口前）等一下。",
+    "我们走向门口。",
+    "我先走向巷口。",
 ])
 def test_approaching_an_exit_does_not_claim_boundary_crossing(message):
     projection = project_player_action_result(message)
@@ -210,3 +212,9 @@ async def test_runtime_persists_projection_for_replay_but_public_record_can_filt
     assert "player_action_projection" not in _public_performance(
         committed.session.performance_history[-1]
     )
+
+
+def test_approach_does_not_hide_a_subsequent_explicit_departure():
+    projection = project_player_action_result("我们走向门口，我离开这里。")
+    assert projection["player_left_current_scene"] is True
+    assert projection["player_departure_pending"] is False

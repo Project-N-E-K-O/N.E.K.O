@@ -242,6 +242,14 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     data = json.loads(messages[1].content.split('：', 1)[1])
     assert 'story_direction' not in data['target_scene']
     assert future not in '\n'.join(part.content for part in messages)
+    # An excluded template cannot consume packing budget or evict history.
+    target.update(summary=future * 10000, narrative_summary=future * 10000)
+    try:
+        enlarged = _build_transition_judge_messages(engine, stored.session, player_input=message,
+            actor_performance=candidate, transition_outcome=outcome, public_destination_quote=public_quote)[0]
+        assert [part.content for part in enlarged] == [part.content for part in messages]
+    finally:
+        target.update(summary=future, narrative_summary=future)
     context = data['target_scene']
     assert context['opening_situation'] == target['opening_scene']
     assert context['character_state']['catgirl_state'] == target['character_state']['catgirl_state']

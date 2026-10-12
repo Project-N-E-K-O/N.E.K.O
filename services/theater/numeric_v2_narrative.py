@@ -361,7 +361,8 @@ def project_narrative_state(session: Any, *, focus: str = "") -> dict[str, Any] 
         or (entity.partition(":")[2] and entity.partition(":")[2] in focus)
     }
     metadata = {"retained_entities": len(essential), "omitted_entities": len(visible) - len(essential),
-                "omitted_recent_events": 0, "quotes_omitted": 0, "over_budget": False}
+                "omitted_recent_events": 0, "quotes_omitted": 0, "over_budget": False,
+                "omitted_essential_entities": 0}
     result = {"revision": state["revision"], "coverage_from": state["coverage_from"],
               "coverage": state["coverage"], "current_node_id": session.current_node_id,
               "current": {}, "last_known": {}, "recent_events": [], "projection": metadata}
@@ -370,24 +371,46 @@ def project_narrative_state(session: Any, *, focus: str = "") -> dict[str, Any] 
     def add_entity(entity: str) -> None:
         for attribute, data in visible[entity].items():
             view = result["current"] if data["current"] and current_confirmed else result["last_known"]
-            view.setdefault(entity, {})[attribute] = {
+            projected = {
                 "value": data["value"], "source_event": data["source_event"], "quote": data["quote"],
             }
+            if metadata["quotes_omitted"]:
+                projected.pop("quote")
+            view.setdefault(entity, {})[attribute] = projected
 
     def tokens() -> int:
         return count_tokens(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
 
     for entity in sorted(essential):
         add_entity(entity)
-    # Quotes repeat the immutable Ledger source. If necessary keep every critical
-    # value and event reference; do not silently drop an early held item.
+    # Quotes repeat the immutable Ledger source; remove repetition first.
     if tokens() > 1600:
         for view in (result["current"], result["last_known"]):
             for attributes in view.values():
                 for data in attributes.values():
                     data.pop("quote")
                     metadata["quotes_omitted"] += 1
-        metadata["over_budget"] = tokens() > 1600
+    if tokens() > 1600:
+        # The full ledger remains intact. Explicitly report overflow rather than
+        # making every later turn fail its fixed input budget.
+        result["current"].clear()
+        result["last_known"].clear()
+        metadata.update(retained_entities=0, omitted_entities=len(visible),
+                        omitted_essential_entities=len(essential))
+        prioritized = sorted(essential, key=lambda entity: (
+            entity in {"player", "character"},
+            bool(entity.partition(":")[2] and entity.partition(":")[2] in focus),
+            max(data["source_revision"] for data in visible[entity].values()), entity,
+        ), reverse=True)
+        for entity in prioritized:
+            add_entity(entity)
+            if tokens() > 1568:
+                result["current"].pop(entity, None)
+                result["last_known"].pop(entity, None)
+            else:
+                metadata["retained_entities"] += 1
+                metadata["omitted_entities"] -= 1
+                metadata["omitted_essential_entities"] -= 1
     optional = sorted(set(visible) - essential, key=lambda entity: (
         any(data["source_node_id"] == session.current_node_id for data in visible[entity].values()),
         max(data["source_revision"] for data in visible[entity].values()), entity,

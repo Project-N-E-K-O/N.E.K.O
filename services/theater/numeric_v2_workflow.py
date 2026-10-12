@@ -3002,7 +3002,8 @@ async def _execute_numeric_v2_turn(
     )
     performance.pop("narrative_events", None)
     outcome = replace(outcome, ledger_event={**outcome.ledger_event, "narrative_record": narrative_record})
-    if background_narrative and module_options.get("review") and final_fixed_review is not None:
+    if (background_narrative and module_options.get("review")
+            and final_fixed_review is not None and not final_fixed_review.body_violations):
         outcome = replace(outcome, ledger_event={**outcome.ledger_event, "narrative_pending": {
             "job_id": uuid4().hex,
             "body": narrative_body_fingerprint(performance),
