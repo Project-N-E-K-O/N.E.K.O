@@ -846,6 +846,31 @@ async def test_accept_forwards_to_the_matching_host_runtime(env):
     assert bad.status_code == 400
 
 
+async def test_accept_true_is_refused_once_the_user_switch_is_off(env):
+    # 「允许串门」已关、关闭钩子还没结束这一场：不接待；婉拒照常放行
+    calls = []
+
+    class Stub:
+        visit_id, creds, admitted_account = VISIT_ID, None, "acct"
+
+        async def accept(self, accept):
+            calls.append(accept)
+            return 200, {"ok": True}
+
+    env.host.settings["visitEnabled"] = False
+    rtm._runtimes["Host"] = Stub()
+    try:
+        async with env.client() as c:
+            refused = await c.post(f"/api/visit/rooms/{VISIT_ID}/accept", headers=GOOD,
+                                   json={"catgirl": "Host", "accept": True})
+            declined = await c.post(f"/api/visit/rooms/{VISIT_ID}/accept", headers=GOOD,
+                                    json={"catgirl": "Host", "accept": False})
+    finally:
+        del rtm._runtimes["Host"]
+    assert refused.status_code == 409 and refused.json()["code"] == "VISIT_DISABLED"
+    assert declined.status_code == 200 and calls == [False]
+
+
 async def test_accept_before_the_guest_arrived_is_404(env):
     visit_id = (await _rooms(env)).json()["visit_id"]
     async with env.client() as c:

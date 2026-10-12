@@ -306,6 +306,14 @@
     var reconnectTimer = 0;
     var peerAvatarUrl = '';
     var inviteDialog = null;     // {visitId, handle, timer}
+    var endedVisitIds = [];      // 本页见过 ended 的场次（最多 32 个）
+    var previewedPeer = null;    // 出门确认时预览到的对端 {visitId, name, shortCode, crossRegion}
+
+    function markEnded(visitId) {
+        if (!visitId || endedVisitIds.indexOf(visitId) !== -1) return;
+        endedVisitIds.push(visitId);
+        if (endedVisitIds.length > 32) endedVisitIds.shift();
+    }
 
     function blankVisit() {
         return {
@@ -732,13 +740,20 @@
             if (!catgirl) return;
             var result = await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(catgirl));
             var body = result.body;
-            if (result.status === 200 && body && body.visit_id === visit.visitId && body.reconnecting === false) {
-                visit.reconnecting = false;
-                render();
-                return;
+            if (result.status === 200 && body && typeof body === 'object' && visit.reconnecting) {
+                // ended 帧可能在断线里丢了：快照说没在串门（或已是另一场）就收掉这一场；同一场则按快照校正阶段
+                applyState(body, false);
             }
             if (visit.reconnecting) pollReconnect();
         }, RECONNECT_POLL_MS);
+    }
+
+    // guest 侧的状态帧不带对端身份：出门确认时预览到的显示名 / 短码按场次带进来
+    function applyPreviewedPeer() {
+        if (!previewedPeer || previewedPeer.visitId !== visit.visitId) return;
+        if (!visit.peerName && previewedPeer.name) visit.peerName = previewedPeer.name;
+        if (!visit.peerShortId && previewedPeer.shortCode) visit.peerShortId = previewedPeer.shortCode;
+        if (previewedPeer.crossRegion) visit.crossRegion = true;
     }
 
     function onStateChange(frame) {
@@ -750,6 +765,8 @@
         if (visit.visitId !== visitId) {
             visit = blankVisit();
             visit.visitId = visitId;
+            peerAvatarUrl = '';
+            applyPreviewedPeer();
             lines.forEach(function (entry) { if (entry.stallTimer) clearTimeout(entry.stallTimer); });
             lines.clear();
             pendingLocal = [];
@@ -763,6 +780,7 @@
         if (typeof frame.peer_human_label === 'string' && frame.peer_human_label) visit.peerHumanLabel = frame.peer_human_label;
         if (typeof frame.cross_region === 'boolean') visit.crossRegion = frame.cross_region;
         visit.ownName = currentCatgirl();
+        applyPreviewedPeer();
         entryMenuOpen = false;
         switch (action) {
         case 'invite_ready':
@@ -813,6 +831,9 @@
     }
 
     function onEnded(frame) {
+        markEnded(frame.visit_id);
+        peerAvatarUrl = '';
+        if (previewedPeer && previewedPeer.visitId === frame.visit_id) previewedPeer = null;
         closeInviteDialog(frame.visit_id);
         clearReconnectPoll();
         var ended = {
@@ -1312,6 +1333,10 @@
         var data = await previewThenConfirm(inviteCode);
         if (!data) return null;
         var visitId = String(data.visit_id);
+        previewedPeer = {
+            visitId: visitId, name: String(data.host_display_name || ''),
+            shortCode: String(data.host_short_code || ''), crossRegion: data.cross_region === true
+        };
         var result = await withPersonaRetry(function () {
             return api('POST', '/api/visit/rooms/' + encodeURIComponent(visitId) + '/join', {
                 catgirl: catgirl, invite_code: inviteCode, confirm: true
@@ -1851,7 +1876,8 @@
 
     window.addEventListener('neko-visit-first-frame', function (event) {
         var detail = event && event.detail;
-        if (detail && typeof detail.dataURL === 'string' && detail.dataURL.indexOf('data:image/') === 0) {
+        if (detail && typeof detail.dataURL === 'string' && detail.dataURL.indexOf('data:image/') === 0
+                && (!detail.visitId || detail.visitId === visit.visitId)) {
             peerAvatarUrl = detail.dataURL;
         }
     });
@@ -1900,6 +1926,7 @@
             // 期间到的帧若没定下阶段（peer_hidden / ending_soon / reconnecting 等），阶段仍按快照补上；
             // 帧已定下的阶段（更新）不覆盖
             if (visit.phase === null && state.active === true && state.visit_id && phaseFromState(state.phase)
+                    && endedVisitIds.indexOf(state.visit_id) === -1
                     && (!visit.visitId || visit.visitId === state.visit_id)) {
                 visit.visitId = state.visit_id;
                 visit.side = state.side || state.role || visit.side;
@@ -1910,7 +1937,8 @@
             return;
         }
         var phase = state.phase;
-        if (state.active === true && typeof state.visit_id === 'string' && state.visit_id) {
+        if (state.active === true && typeof state.visit_id === 'string' && state.visit_id
+                && endedVisitIds.indexOf(state.visit_id) === -1) {
             if (visit.visitId !== state.visit_id) {
                 visit = blankVisit();
                 visit.visitId = state.visit_id;

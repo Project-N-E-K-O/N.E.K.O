@@ -124,6 +124,7 @@ function createHarness(opts) {
     nekoLocalMutationSecurity: { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'tok' }) },
     appChat: {
       renderVisitLine(spec) {
+        win.__lastAvatar = spec.avatarUrl || '';
         const blocks = [{ type: 'text', text: spec.text, plain_text: true }];
         if (spec.notice) blocks.push({ type: 'status', text: spec.notice });
         const existing = messages.find((x) => x.id === spec.messageId);
@@ -605,6 +606,53 @@ const report = {};
     report.escape_after = h.dialogs().length;
     report.escape_joins = h.fetches.filter((f) => f.url.indexOf('/join') !== -1).length;
   }
+  // ── 读 state 期间先到了 ended：迟到的旧快照不把这一场救活 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true } }; } };
+    const h = createHarness({ routes });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.chat.handleFrame({ type: 'visit_state_change', action: 'ended', visit_id: VID, side: 'host', ts: 1 });
+    release();
+    await probe;
+    report.ended_race_active = h.chat.isActive();
+    report.ended_race_phase = h.chat._test.state().visit.phase;
+  }
+  // ── guest：预览到的对端名带进本场；换场清访客头像 ──
+  {
+    const routes = {
+      '/api/visit/invites/*': async () => ({ status: 200, body: { visit_id: VID2, host_display_name: '邻居家', host_short_code: 'ABCDEF', cross_region: false, expires_at: 9e9, locally_blocked: false } }),
+    };
+    routes['/api/visit/rooms/' + VID2 + '/join'] = async () => ({ status: 202, body: { ok: true } });
+    const h = createHarness({ routes });
+    h.win.dispatchEvent(new CustomEventLike('neko-visit-first-frame', { detail: { dataURL: 'data:image/png;base64,OLD' } }));
+    const p = h.chat._test.joinWithCode('ABCDEFGH23');
+    await h.settle();
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'go').click();
+    await p;
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'guest', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'departed', visit_id: VID2, side: 'guest', ts: 1 });
+    report.guest_badge = h.I.getVisitChatView().bar.badge;
+    h.frame({ type: 'visit_line', visit_id: VID2, line_id: 'z1', text: '你好', final: true, truncated: false,
+      speaker: { side: 'host', kind: 'cat', name: '小黑', self: false } });
+    const m = h.messages.find((x) => x.id === 'visit-line-z1');
+    report.stale_avatar_used = !!(m && m.avatarUrl);
+    report.renderVisitLine_avatar = h.win.__lastAvatar || '';
+  }
+  // ── 重连轮询读到「没在串门」：收掉这一场，输入框还给普通聊天 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.state('reconnecting');
+    report.recon_before = h.I.getVisitChatView().composerDisabled;
+    h.advance(5100);
+    await h.settle();
+    report.recon_after_active = h.chat.isActive();
+    report.recon_after_disabled = h.I.getVisitChatView().composerDisabled;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -786,3 +834,19 @@ def test_escape_closes_a_dismissible_dialog(report):
     assert report["escape_before"] == 1
     assert report["escape_after"] == 0
     assert report["escape_joins"] == 0
+
+
+def test_a_late_snapshot_never_revives_a_visit_that_already_ended(report):
+    assert report["ended_race_active"] is False
+    assert report["ended_race_phase"] is None
+
+
+def test_guest_keeps_the_previewed_host_name_and_drops_the_old_avatar(report):
+    assert "邻居家" in report["guest_badge"]
+    assert report["renderVisitLine_avatar"] == ""
+
+
+def test_reconnect_poll_applies_an_ended_snapshot(report):
+    assert report["recon_before"] is True
+    assert report["recon_after_active"] is False
+    assert report["recon_after_disabled"] is False

@@ -1478,7 +1478,7 @@ iframe 是**无状态转发器**：后端经 4.3 的 `send{cmd, payload}` 给它
 #### POST /api/visit/rooms/{visit_id}/accept
 - 方向: host 前端 → host 后端
 - 面: 本机 HTTP
-- 字段: req `{catgirl:str, accept:bool, _csrf_token?}` → 200 `{ok:true}` | 404 `no_pending_invite` | 409 `already_decided`
+- 字段: req `{catgirl:str, accept:bool, _csrf_token?}` → 200 `{ok:true}` | 404 `no_pending_invite` | 409 `already_decided` | 409 `{code:'VISIT_DISABLED'}`（仅 `accept:true`：「允许串门」已关、关闭钩子还没结束这一场时不接待；婉拒照常）
 - 上限: `accept:true` → **先初始化、最后发 `ready`**：建隔离 `OmniOfflineClient` + `_park_proactive_for_goodbye()`（`main_logic/core/proactive.py:82`）+ 打开 spool / 内存转录 + `VisitRoom` 置 ACTIVE + 接待前闸门切到 active → 数据通道 `ready`（必达，入 outbox）→ **之后才** `media{subscribe:true}`（§3.2.3 / §4.2：host 发出 `ready` 后才订阅；改过的 guest 提前发布视频，host 也不会在点头信号发出之前就收看）→ `visit_state_change{started}`；`false` → `leave{declined}` + finalize；60 s 内未调用视为 `false`
 
 #### POST /api/visit/route/end

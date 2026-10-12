@@ -450,6 +450,11 @@ async def accept_guest(request: Request, visit_id: str):
     # 共用电脑上已换成别的社区账号：这份邀请不是它的，不能替原账号接待 / 婉拒
     if rt is None or rt.visit_id != visit_id or not await _owned_by_current_account(rt):
         return JSONResponse({"ok": False, "error": "no_pending_invite"}, status_code=404)
+    if accept:
+        # 「允许串门」已关、关闭钩子还没结束这一场：不接待（婉拒照常放行）
+        switch_off = await runtime.visit_switch_refusal()
+        if switch_off is not None:
+            return _refused(switch_off.status, switch_off.body)
     status, body = await rt.accept(accept)
     return JSONResponse(body, status_code=status)
 
