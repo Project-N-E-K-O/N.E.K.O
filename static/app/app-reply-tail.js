@@ -9,9 +9,30 @@
     var currentCaptionTurn = '';
     var scheduled = false;
     var MAX_ENTRIES = 128;
+    var REPLY_TAIL_EXPIRY_MS = 120000;
 
     function trim(map) {
         while (map.size > MAX_ENTRIES) map.delete(map.keys().next().value);
+    }
+
+    function dropPending(key, entry) {
+        window.clearTimeout(entry.expiryTimer);
+        pending.delete(key);
+    }
+
+    function expire(key, entry) {
+        if (Date.now() - entry.created < REPLY_TAIL_EXPIRY_MS) return false;
+        console.warn('[ReplyTail] pending image expired, dropping');
+        dropPending(key, entry);
+        return true;
+    }
+
+    function scheduleExpiry(key, entry) {
+        entry.expiryTimer = window.setTimeout(function () {
+            if (pending.get(key) !== entry) return;
+            // Timers reclaim memory even when background RAF is suspended.
+            if (!expire(key, entry)) scheduleExpiry(key, entry);
+        }, Math.max(1, REPLY_TAIL_EXPIRY_MS - (Date.now() - entry.created) + 1));
     }
 
     function changed() {
@@ -62,15 +83,12 @@
     }
 
     function drain() {
+        pending.forEach(function (entry, key) { expire(key, entry); });
         var host = window.reactChatWindowHost;
         if (!host || typeof host.getState !== 'function') return;
         var messages = host.getState().messages || [];
         pending.forEach(function (entry, key) {
             var tail = entry.payload.reply_tail;
-            if (Date.now() - entry.created > 120000) {
-                pending.delete(key);
-                return;
-            }
             var state = requests.get(String(tail.request_id));
             if (!state || !state.ended) return;
             var queue = window._realisticGeminiQueue || [];
@@ -80,7 +98,7 @@
             });
             if (!anchors.length) {
                 // An evicted original must never attach to the newest reply.
-                if (messages.length >= 50) pending.delete(key);
+                if (messages.length >= 50) dropPending(key, entry);
                 return;
             }
             var ownsCaption = compact && state.turns.has(currentCaptionTurn);
@@ -109,7 +127,7 @@
             });
             if (accepted) {
                 state.lastTailSortKey = sortKey;
-                pending.delete(key);
+                dropPending(key, entry);
                 seen.add(key);
                 trim(seen);
                 messages = host.getState().messages || [];
@@ -126,14 +144,16 @@
             var key = JSON.stringify([tail.reply_id, tail.call_id || '', tail.registration_id]);
             if (seen.has(key) || pending.has(key)) return true;
             if (pending.size >= MAX_ENTRIES) return false;
-            pending.set(key, { payload: payload, created: Date.now() });
+            var entry = { payload: payload, created: Date.now() };
+            pending.set(key, entry);
+            scheduleExpiry(key, entry);
             changed();
             return true;
         },
         reset: function () {
             requests.clear();
             captions.clear();
-            pending.clear();
+            pending.forEach(function (entry, key) { dropPending(key, entry); });
             seen.clear();
             currentCaptionTurn = '';
         },

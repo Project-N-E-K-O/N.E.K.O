@@ -285,6 +285,10 @@ class ReplyTailRegistry:
                 self._settle(item, "uncertain", "submission_timeout")
                 self.cancel_reply(reply, "submission_timeout")
                 return
+            except asyncio.CancelledError:
+                self._settle(item, "uncertain", "submission_interrupted")
+                self.cancel_reply(reply, "transport_interrupted")
+                raise
             except BaseException:
                 self._settle(item, "failed", "submission_uncertain")
                 self.cancel_reply(reply, "transport_interrupted")

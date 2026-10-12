@@ -431,7 +431,53 @@ async def test_interrupted_submission_settles_other_unsent_images(chain):
     chain.manager.websocket.send_json.side_effect = asyncio.CancelledError()
     with pytest.raises(asyncio.CancelledError):
         await finish(chain)
-    assert chain.registry.status(chain.context, "first", plugin_id="stickers")["reason"] == "submission_uncertain"
+    result = chain.registry.status(chain.context, "first", plugin_id="stickers")
+    assert result == {
+        "accepted": False, "status": "uncertain", "reason": "submission_interrupted",
+    }
+    assert chain.registry.cancel(chain.context, "first", plugin_id="stickers") == result
+    assert (await register(chain, registration_id="first")) == {**result, "duplicate": True}
+    await finish(chain)
+    chain.manager.websocket.send_json.assert_awaited_once()
+    assert chain.registry.status(chain.context, "second", plugin_id="stickers")["status"] == "cancelled"
+    assert chain.registry._retained_bytes == 0
+
+
+async def test_external_cancellation_during_write_reports_unknown_delivery(chain):
+    await register(chain, registration_id="first")
+    await register(chain, registration_id="second")
+    started = asyncio.Event()
+    delivered = []
+
+    async def send(payload):
+        delivered.append(payload)
+        started.set()
+        await asyncio.Event().wait()
+
+    chain.manager.websocket.send_json.side_effect = send
+    task = asyncio.create_task(finish(chain))
+    await asyncio.wait_for(started.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(delivered) == 1
+    assert chain.registry.status(chain.context, "first", plugin_id="stickers") == {
+        "accepted": False, "status": "uncertain", "reason": "submission_interrupted",
+    }
+    assert chain.registry.status(chain.context, "second", plugin_id="stickers")["status"] == "cancelled"
+    assert chain.registry._retained_bytes == 0
+    assert all(not item.blocks for item in chain.registry._registrations.values())
+
+
+async def test_other_base_exception_keeps_existing_failure_semantics(chain):
+    await register(chain, registration_id="first")
+    await register(chain, registration_id="second")
+    chain.manager.render_chat_blocks = AsyncMock(side_effect=BaseException("test transport abort"))
+    with pytest.raises(BaseException, match="test transport abort"):
+        await finish(chain)
+    assert chain.registry.status(chain.context, "first", plugin_id="stickers") == {
+        "accepted": False, "status": "failed", "reason": "submission_uncertain",
+    }
     assert chain.registry.status(chain.context, "second", plugin_id="stickers")["status"] == "cancelled"
     assert chain.registry._retained_bytes == 0
 

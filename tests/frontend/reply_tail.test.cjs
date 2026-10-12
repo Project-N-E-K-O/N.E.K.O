@@ -19,9 +19,19 @@ function harness() {
     const visible = new Set();
     const captionVisible = new Set();
     const attachments = [];
+    const timers = new Map();
+    const warnings = [];
+    let now = 1791676800000;
+    let timerId = 0;
     const window = {
         _realisticGeminiQueue: [],
         requestAnimationFrame(cb) { frames.push(cb); },
+        setTimeout(cb, delay) {
+            const id = ++timerId;
+            timers.set(id, { cb, due: now + delay });
+            return id;
+        },
+        clearTimeout(id) { timers.delete(id); },
         addEventListener(type, cb) { listeners.set(type, cb); },
         reactChatWindowHost: { getState() { return { messages }; } },
         appendReactChatBlocks(payload, placement) {
@@ -43,7 +53,10 @@ function harness() {
             }));
         },
     };
-    vm.runInNewContext(source, { window, document, Map, Set, Date, Promise });
+    vm.runInNewContext(source, {
+        window, document, Map, Set, Date: { now: () => now }, Promise,
+        console: { warn(...args) { warnings.push(args); } },
+    });
     function emit(type, detail) { listeners.get(type)?.({ detail }); }
     function flush() { frames.splice(0).forEach(cb => cb()); }
     function assistant(id, turnId, sortKey) {
@@ -64,7 +77,14 @@ function harness() {
             reply_tail: { version: 1, reply_id: 'reply-A', request_id, registration_id, call_id },
         });
     }
-    return { window, messages, attachments, visible, captionVisible, emit, flush, assistant, start, end, enqueue };
+    function advance(ms) {
+        now += ms;
+        for (const [id, timer] of Array.from(timers)) {
+            if (timer.due <= now && timers.delete(id)) timer.cb();
+        }
+    }
+    return { window, messages, attachments, visible, captionVisible, emit, flush, assistant,
+        start, end, enqueue, advance, timers, warnings };
 }
 
 test('generation end waits for the last queued sentence and actual render', () => {
@@ -267,4 +287,105 @@ test('an unrepresentable insertion never crosses the next message', () => {
     h.flush();
     assert.equal(h.attachments.length, 0);
     assert.equal(h.messages.length, 2);
+});
+
+test('unplaceable images expire without chat events or animation frames, freeing capacity', () => {
+    const h = harness();
+    const base = 1791676800000;
+    h.start();
+    h.assistant('original', 'turn-A', base);
+    h.end();
+    h.messages.push({ id: 'next', role: 'user', sortKey: base + 0.000244140625 });
+    for (let index = 0; index < 128; index++) assert.equal(h.enqueue(`image-${index}`), true);
+    assert.equal(h.enqueue('overflow'), false);
+    h.flush();
+    h.advance(119999);
+    assert.equal(h.warnings.length, 0);
+    assert.equal(h.enqueue('overflow'), false);
+    h.advance(2);
+    assert.equal(h.warnings.length, 128);
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.attachments.length, 0);
+    assert.equal(h.enqueue('overflow'), true);
+});
+
+for (const reason of ['hidden-history', 'missing-host']) {
+    test(`${reason} pending images expire without later rendering`, () => {
+        const h = harness();
+        h.start();
+        h.assistant('original', 'turn-A', 1);
+        h.end();
+        h.visible.clear();
+        if (reason === 'missing-host') h.window.reactChatWindowHost = null;
+        h.enqueue();
+        h.flush();
+        h.advance(120001);
+        assert.equal(h.warnings.length, 1);
+        assert.equal(h.timers.size, 0);
+        h.visible.add('original');
+        h.window.reactChatWindowHost = { getState: () => ({ messages: h.messages }) };
+        h.window.nekoReplyTail.changed();
+        h.flush();
+        assert.equal(h.attachments.length, 0);
+    });
+}
+
+test('successful display and reconnect clear timers; duplicate packets do not add timers', () => {
+    const h = harness();
+    h.start();
+    h.assistant('original', 'turn-A', 1);
+    h.enqueue('first');
+    h.enqueue('first');
+    assert.equal(h.timers.size, 1);
+    h.end();
+    h.flush();
+    assert.equal(h.attachments.length, 1);
+    assert.equal(h.timers.size, 0);
+    h.visible.clear();
+    h.enqueue('second');
+    assert.equal(h.timers.size, 1);
+    h.window.nekoReplyTail.reset();
+    assert.equal(h.timers.size, 0);
+    h.advance(120001);
+    assert.equal(h.warnings.length, 0);
+});
+
+test('removing a blocking next message still allows a pending image before expiry', () => {
+    const h = harness();
+    h.start();
+    h.assistant('original', 'turn-A', 1);
+    h.end();
+    h.enqueue('first');
+    h.flush();
+    const firstKey = h.attachments[0].placement.sortKey;
+    h.messages.push({ id: 'blocker', role: 'system', sortKey: firstKey + 0.0001 });
+    h.enqueue('second');
+    h.flush();
+    assert.equal(h.attachments.length, 1);
+    assert.equal(h.timers.size, 1);
+    h.advance(30000);
+    h.messages.splice(h.messages.findIndex(message => message.id === 'blocker'), 1);
+    h.window.nekoReplyTail.changed();
+    h.flush();
+    assert.equal(h.attachments.length, 2);
+    assert.equal(h.timers.size, 0);
+    assert.ok(h.attachments[1].placement.sortKey > firstKey);
+});
+
+test('a stale timer after reset cannot expire a new registration with the same identity', () => {
+    const h = harness();
+    h.enqueue();
+    const oldCallback = Array.from(h.timers.values())[0].cb;
+    h.window.nekoReplyTail.reset();
+    h.advance(60000);
+    h.enqueue();
+    h.advance(60001);
+    oldCallback();
+    assert.equal(h.warnings.length, 0);
+    assert.equal(h.timers.size, 1);
+    h.start();
+    h.assistant('original', 'turn-A', 1);
+    h.end();
+    h.flush();
+    assert.equal(h.attachments.length, 1);
 });
