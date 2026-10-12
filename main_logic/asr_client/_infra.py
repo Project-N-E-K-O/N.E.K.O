@@ -2056,7 +2056,12 @@ class _RealtimeAsrSessionImpl:
 
     async def _shutdown(self) -> None:
         if self._request_queue is not None:
-            retire_interval_deliveries(self._request_queue)
+            try:
+                retire_interval_deliveries(self._request_queue)
+            except Exception as exc:
+                # Rejected receipts retain their replay fence and capacity debt;
+                # they must not prevent physical connection/task retirement.
+                logger.error("ASR delivery observer failed during shutdown: type=%s", type(exc).__name__)
         registry = (
             connection_registry(self._request_queue)
             if self._request_queue is not None

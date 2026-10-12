@@ -313,27 +313,40 @@ class AsrAudioDispatcher:
     def abort(self, turn_token: VoiceTurnToken | None = None) -> None:
         if turn_token is not None and self._turn_token != turn_token:
             return
+        # Fence the writer before notifying receipt owners. A rejected receipt
+        # cannot leave this generation active or block independent cleanup.
+        self._generation += 1
+        self._turn_token = None
+        self._session_ref = None
+        self._state = "aborted"
+        self._last_sequence = 0
         self.cancel_pending_pause_hints()
-        discarded = 0
+        discarded = []
         while True:
             try:
                 command = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             self._enqueued_at.pop(id(command), None)
-            if isinstance(command, (AsrActivateCommand, AsrAudioCommand)):
-                for span in command.delivery_spans:
-                    span.observe(InterceptionDeliveryStage.NOT_SENT)
-            if isinstance(command, AsrPauseHintCommand) and not command.completed.done():
-                command.completed.set_result(False)
-            self._queue.task_done()
-            discarded += 1
-        self.asr_abort_discarded_command_count += discarded
-        self._generation += 1
-        self._turn_token = None
-        self._session_ref = None
-        self._state = "aborted"
-        self._last_sequence = 0
+            discarded.append(command)
+        self.asr_abort_discarded_command_count += len(discarded)
+        for command in discarded:
+            try:
+                if isinstance(command, (AsrActivateCommand, AsrAudioCommand)):
+                    for span in command.delivery_spans:
+                        try:
+                            span.observe(InterceptionDeliveryStage.NOT_SENT)
+                        except Exception as exc:
+                            # The tag retains rejected/unknown debt. Report the
+                            # failure without suppressing other owners' receipts.
+                            logging.getLogger(__name__).error(
+                                "ASR delivery observer failed during audio abort: type=%s",
+                                type(exc).__name__,
+                            )
+                if isinstance(command, AsrPauseHintCommand) and not command.completed.done():
+                    command.completed.set_result(False)
+            finally:
+                self._queue.task_done()
 
     async def wait_idle(self) -> None:
         await self._queue.join()
