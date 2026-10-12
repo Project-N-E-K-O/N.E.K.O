@@ -111,7 +111,13 @@ async def start_protocol(args):
         process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            return process, await asyncio.wait_for(process.stdout.readline(), 10)
+            line = await asyncio.wait_for(process.stdout.readline(), 10)
+            if not line:
+                # Exiting before the first request is a crash, not a stall.
+                _output, errors = await process.communicate()
+                raise AssertionError("protocol harness exited before its first request: "
+                    + errors.decode(errors="replace"))
+            return process, line
         except asyncio.TimeoutError:
             process.kill()
             _output, errors = await process.communicate()
@@ -119,8 +125,9 @@ async def start_protocol(args):
                 raise AssertionError("protocol harness wrote no request: "
                     + errors.decode(errors="replace")) from None
         except BaseException:
-            process.kill()
-            await process.communicate()
+            if process.returncode is None:
+                process.kill()
+                await process.communicate()
             raise
 
 
