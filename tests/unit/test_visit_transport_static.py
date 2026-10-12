@@ -2272,3 +2272,43 @@ def test_trtc_destroy_exits_a_superseded_room_later():
     assert out["before"] == [] and out["immediately"] == []
     assert out["later"] == ["exitRoom", "destroy"]
     assert out["normal"] == ["exitRoom", "destroy"] and out["normalLater"] == ["exitRoom", "destroy"]
+
+
+def test_backend_socket_drop_invalidates_pending_stats():
+    out = run_visit_js(
+        """
+        const h = await joinedController('host');
+        h.c.media.subscribe = true;
+        let release;
+        h.c.adapter.receiverStats = () => new Promise((r) => { release = r; });
+        let resets = 0;
+        h.c.adapter.resetStats = () => { resets += 1; };
+        h.c.collectStats();
+        const old = h.ws;
+        h.ws.serverClose(1006);          // 传输 WS 直接断（vendor 没先报 reconnecting）
+        release({ rx_kbps: 10 });
+        await settle();
+        return { sent: old.sent.filter((m) => m.type === 'stats').length, resets, mark: h.c.statsMark };
+        """
+    )
+    assert out == {"sent": 0, "resets": 1, "mark": None}
+
+
+def test_receive_fps_is_sampled_when_async_stats_complete():
+    out = run_visit_js(
+        """
+        const h = await joinedController('host');
+        h.c.media.subscribe = true;
+        let release;
+        h.c.adapter.receiverStats = () => new Promise((r) => { release = r; });
+        const sampledAt = [];
+        h.c.unpacker.stats = (t) => { sampledAt.push(t); return { rx_fps: 25 }; };
+        const start = clock.now;
+        h.c.collectStats();
+        clock.now += 7000;
+        release({ rx_kbps: 10 });
+        await settle();
+        return sampledAt.map((t) => t - start);
+        """
+    )
+    assert out == [7000]

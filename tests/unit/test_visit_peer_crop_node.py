@@ -681,7 +681,7 @@ def test_closed_transport_is_not_rebuilt_and_keeps_away_until_ended():
         change(h, 'pending');                        // 新场次照常建
         const next = !!h.ctx.document.getElementById('visit-frame');
         change(h, 'ended');
-        await advance(2100);
+        await advance(6100);
         return { afterClosed, afterWrap, afterEnded, next };
         """,
         files=BRIDGE_FILES,
@@ -703,13 +703,13 @@ def test_ended_lets_the_transport_leave_before_removing_it():
         const right = { removed: frame.removed, hidden: frame.style.visibility, lookup: !!h.ctx.document.getElementById('visit-frame') };
         h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 0 } });
         const onClosed = frame.removed;
-        // 传输页一直不报 closed：最多 2 s 后照样移除
+        // 传输页一直不报 closed：最多 6 s（不短于传输页 5 s 的离房等待）后照样移除
         const h2 = makeBridge();
         await open(h2, 'host');
         change(h2, 'started');
         const f2 = h2.frame;
         change(h2, 'ended');
-        await advance(1900);
+        await advance(5900);
         const early = f2.removed;
         await advance(200);
         return { toIframe, right, onClosed, early, late: f2.removed };
@@ -736,7 +736,7 @@ def test_ready_iframe_is_not_reloaded_while_the_token_is_slow():
         h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'ready', v: 1, side: 'guest', visit_id: VISIT_ID } });
         await advance(20000);
         change(h, 'ended');
-        await advance(2100);
+        await advance(6100);
         return loads;
         """,
         files=BRIDGE_FILES,
@@ -795,9 +795,36 @@ def test_logs_from_a_retiring_frame_are_kept():
         change(h, 'started');
         change(h, 'ended');
         h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'log', level: 'warn', msg: 'exit failed', code: 'leave_failed' } });
-        await advance(2100);
+        await advance(6100);
         return logs.some((m) => String(m).indexOf('exit failed') >= 0);
         """,
         files=BRIDGE_FILES,
     )
     assert out is True
+
+
+def test_superseded_frame_is_kept_until_its_fallback_cleanup_ran():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        await open(h, 'guest');
+        change(h, 'started');
+        const frame = h.frame;
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 4409 } });
+        const right = { removed: frame.removed, lookup: !!h.ctx.document.getElementById('visit-frame') };
+        // 它再报一次 closed 也不提前移除（兜底退房还没跑）
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 4409 } });
+        await advance(16000);
+        const at16 = frame.removed;
+        await advance(1100);
+        // 已经离房的终态（4403）照旧立即移除
+        const h2 = makeBridge();
+        await open(h2, 'guest');
+        change(h2, 'started');
+        const f2 = h2.frame;
+        h2.bridge._onFrameMessage({ source: h2.child, origin: h2.ctx.location.origin, data: { t: 'closed', code: 4403 } });
+        return { right, at16, at17: frame.removed, other: f2.removed };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"right": {"removed": False, "lookup": False}, "at16": False, "at17": True, "other": True}

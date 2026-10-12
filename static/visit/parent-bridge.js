@@ -37,7 +37,10 @@
   var RECOVER_NAME_WINDOW_MS = 8000;    // 重载后取不到角色名时重拉页面配置的时限（另受 RECOVER_TOTAL_MS 约束）
   var PAGE_CONFIG_WAIT_MS = 4000;       // 等 pageConfigReady 的上限，到点不管它落没落定都开始重载恢复
   var CLOSE_UNKNOWN_VISIT = 4404;      // 传输 WS 关闭码：后端不认这个场次（与 backend-ws.js 同值）
-  var ENDED_LEAVE_WAIT_MS = 2000;       // ended 后等传输页自己离房（报 closed）的上限，到点再移除 iframe
+  var CLOSE_SUPERSEDED = 4409;         // 传输 WS 关闭码：被同 vid 的新传输连接顶掉（与 backend-ws.js 同值）
+  // 移除 iframe 会把它里面还在跑的清理一起掐掉：父页至少等到子页的清理时限
+  var ENDED_LEAVE_WAIT_MS = 6000;       // ended 后等传输页离房（报 closed）的上限；不短于 backend-ws 的 5 s 离房等待
+  var SUPERSEDED_KEEP_MS = 17000;       // 4409 被顶号后保留 iframe 的时长；不短于适配器 15 s 后的兜底退房 / 断开
   var PEER_AWAY_OPACITY = '0.6';
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图
   var HOST_FRAME_STYLE = 'position:fixed;z-index:4;border:0;background:transparent;pointer-events:none;' +
@@ -137,7 +140,7 @@
       firstFrame: null,
       publishing: false,
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
-      retiring: null,        // ended 后等它离房的旧 iframe {frame, timer}
+      retiring: [],          // 已脱离父页、等它把清理做完的旧 iframe [{frame, timer, endOnClosed}]
       portraitWrapped: false,
     };
 
@@ -337,16 +340,30 @@
       }
       post({ t: 'visit_state', phase: 'ended' });
       removeFrame({ keepElement: true });
+      retireElement(f, ENDED_LEAVE_WAIT_MS, true);
+    }
+
+    /**
+     * 已脱离父页状态的旧 iframe 先隐藏、留在 DOM 里，让它把离房 / 兜底断开做完再移除：
+     * endOnClosed 时它报 closed（离房做完）就提前移除，否则到点移除。
+     */
+    function retireElement(f, waitMs, endOnClosed) {
       try {
         f.style.visibility = 'hidden';
         f.id = '';   // 让新场次的 iframe 用回 #visit-frame
       } catch (_) {
         // 已卸载
       }
-      if (state.retiring) finishRetire(state.retiring);
-      var r = { frame: f, timer: null };
-      r.timer = setTimeoutFn(function () { finishRetire(r); }, ENDED_LEAVE_WAIT_MS);
-      state.retiring = r;
+      var r = { frame: f, timer: null, endOnClosed: endOnClosed };
+      r.timer = setTimeoutFn(function () { finishRetire(r); }, waitMs);
+      state.retiring.push(r);
+    }
+
+    function findRetiring(source) {
+      for (var i = 0; i < state.retiring.length; i++) {
+        if (state.retiring[i].frame.contentWindow === source) return state.retiring[i];
+      }
+      return null;
     }
 
     function finishRetire(r) {
@@ -357,7 +374,8 @@
       } catch (_) {
         // 已移除
       }
-      if (state.retiring === r) state.retiring = null;
+      var i = state.retiring.indexOf(r);
+      if (i >= 0) state.retiring.splice(i, 1);
     }
 
     /** opts.keepAway：保留 guest 的离家样式（场次没结束）；opts.keepElement：不从 DOM 移除（ended 退场）。 */
@@ -482,10 +500,10 @@
     }
 
     function onFrameMessage(event) {
-      var r = state.retiring;
-      if (r && event.source === r.frame.contentWindow && event.origin === win.location.origin) {
+      var r = findRetiring(event.source);
+      if (r && event.origin === win.location.origin) {
         var d = event.data;
-        if (d && d.t === 'closed') finishRetire(r);
+        if (d && d.t === 'closed' && r.endOnClosed) finishRetire(r);
         // 退场期间的离房日志照常记下（离房出错时要能排查）
         else if (d && d.t === 'log') logFrame(d.level, String(d.msg || '').slice(0, 500) + (d.code ? ' (' + d.code + ')' : ''));
         return;
@@ -526,8 +544,11 @@
         // 传输页进入终态（4403 / 4404 / 4409 / 重连超时）：它已离房，移除。记住这个 visit_id，之后的
         // wrap_up / ending 不再补建 iframe。场次还在、只是这个传输页没了（4409 被顶掉、4403、重连超时）时
         // guest 的离家样式留到 ended；4404 是后端已经不认这个场次了，可能再也等不到 ended，照旧清掉
+        // 被同 vid 顶掉（4409）时没离房：它的适配器 15 s 后兜底退房 / 断开，iframe 要留到那之后
         var closedId = state.visitId;
-        removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT });
+        var superseded = data.code === CLOSE_SUPERSEDED;
+        removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT, keepElement: superseded });
+        if (superseded) retireElement(f, SUPERSEDED_KEEP_MS, false);
         state.closedVisitId = closedId;
       }
     }

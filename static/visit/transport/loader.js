@@ -517,10 +517,7 @@
       if (this.ladder) this.ladder.reset(this.ladder.crop, this.ladder.level);
       // 收发统计的差分基准也作废：重连后第一拍若拿断线前的基准算，间隔里含断线期，帧率 / 码率偏低；
       // 已经在路上的那一拍统计同样丢掉
-      this.statsGen += 1;
-      this.statsMark = null;
-      if (this.unpacker) this.unpacker.resetStats();
-      if (this.adapter && typeof this.adapter.resetStats === 'function') this.adapter.resetStats();
+      this.resetStatsBaselines();
     }
     if (state === 'kicked') {
       // 被踢 / 被同 vid 顶号：停掉自己的媒体；是否结束整场由后端按 vendor_reason 判
@@ -666,9 +663,19 @@
   };
 
   /** 离开 vendor 房间（同 vid 之后可再入房）。 */
+  /** 收发统计的差分基准与在途取样一起作废（离开在房状态、传输 WS 断开时）。 */
+  P.resetStatsBaselines = function () {
+    this.statsGen += 1;
+    this.statsMark = null;
+    if (this.unpacker) this.unpacker.resetStats();
+    if (this.adapter && typeof this.adapter.resetStats === 'function') this.adapter.resetStats();
+  };
+
   P.leaveRoom = function () {
     // 传输 WS 断了：这一代连接上还没跑完的 SDK 加载 / 能力门不能再去入房（重连后按新凭证重来）
     this.connGen += 1;
+    // vendor 不一定先报 reconnecting：断开前发出的统计取样与差分基准在这里同样作废
+    this.resetStatsBaselines();
     this.cancelRejoinRetry(false);
     this.peerPresent = false;
     this.vendorState = 'left';
@@ -776,10 +783,6 @@
       if (typeof out.enc_fps !== 'number' && typeof out.tx_fps === 'number') out.enc_fps = out.tx_fps;
       if (this.creds && this.creds.publish && this.creds.publish.codec) out.enc = this.creds.publish.codec;
     }
-    if (this.unpacker) {
-      var rx = this.unpacker.stats(now);
-      for (var k in rx) out[k] = rx[k];
-    }
     var finish = function (extra) {
       if (gen !== self.statsGen) return;   // 取样期间离开了在房状态：这拍作废
       // 比这拍更新的取样已经发出：慢回来的旧拍不再发、不喂阶梯（比较的是已发出的最新序号，
@@ -794,6 +797,11 @@
       }
       // 取样可能拖了好几秒：新鲜度与持续时长按完成的时刻算，不按发起的时刻
       var doneAt = self.now();
+      if (self.unpacker) {
+        // 接收帧率在异步统计完成时取样：等待期间画面停住 / 恢复，发出去的都是当下的值
+        var rx = self.unpacker.stats(doneAt);
+        for (var k in rx) out[k] = rx[k];
+      }
       self.checkSoftenc(out, doneAt);
       self.stepLadder(doneAt);
       self.sendBackend(out);
