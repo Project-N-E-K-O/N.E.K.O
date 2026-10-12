@@ -663,11 +663,15 @@ def test_superseded_while_publish_in_flight_still_stops_before_destroy():
         finish();
         await settle();
         await settle();
-        return kinds(h.log).filter((k) => ['start-pending', 'stopLocalVideo', 'exitRoom', 'destroy'].includes(k));
+        const soon = kinds(h.log).filter((k) => ['start-pending', 'stopLocalVideo', 'exitRoom', 'destroy'].includes(k));
+        await advance(15100);
+        await settle();
+        return { soon, later: kinds(h.log).filter((k) => ['start-pending', 'stopLocalVideo', 'exitRoom', 'destroy'].includes(k)) };
         """
     )
-    # 被顶掉（4409）不离房，但在途的发布完成后必须停掉，然后才销毁实例
-    assert out == ["start-pending", "stopLocalVideo", "destroy"]
+    # 被顶掉（4409）不立刻离房，但在途的发布完成后必须停掉；接替页面若没入房，15 s 后兜底退房再销毁实例
+    assert out["soon"] == ["start-pending", "stopLocalVideo"]
+    assert out["later"] == ["start-pending", "stopLocalVideo", "exitRoom", "destroy"]
 
 
 def test_publish_requested_during_join_is_applied_after_join():
@@ -2221,3 +2225,50 @@ def test_livekit_receive_bitrate_uses_report_timestamps():
         """
     )
     assert out == 280
+
+
+def test_trtc_receiver_stats_use_downlink_loss():
+    out = run_visit_js(
+        """
+        const host = await joinedController('host');
+        await host.c.adapter.setSubscribe(true);
+        host.trtc.emit('NETWORK_QUALITY', { uplinkLoss: 1, downlinkLoss: 30, uplinkRTT: 50 });
+        host.trtc.emit('STATISTICS', { rtt: 50, upLoss: 2, downLoss: 25, localStatistics: {}, remoteStatistics: [] });
+        const hostLoss = host.c.adapter.stats().loss_pct;
+        const guest = await joinedController('guest');
+        guest.trtc.emit('NETWORK_QUALITY', { uplinkLoss: 7, downlinkLoss: 40, uplinkRTT: 50 });
+        guest.trtc.emit('STATISTICS', { rtt: 50, upLoss: 6, downLoss: 35, localStatistics: {}, remoteStatistics: [] });
+        // 只有 STATISTICS、还没有 NETWORK_QUALITY 时同样按侧位取
+        const host2 = await joinedController('host');
+        await host2.c.adapter.setSubscribe(true);
+        host2.trtc.emit('STATISTICS', { rtt: 50, upLoss: 2, downLoss: 25, localStatistics: {}, remoteStatistics: [] });
+        return { hostLoss, guestLoss: guest.c.adapter.stats().loss_pct, statsOnly: host2.c.adapter.stats().loss_pct };
+        """
+    )
+    assert out == {"hostLoss": 30, "guestLoss": 7, "statsOnly": 25}
+
+
+def test_trtc_destroy_exits_a_superseded_room_later():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        const before = kinds(h.log).filter((k) => k === 'exitRoom' || k === 'destroy');
+        h.c.adapter.destroy();                 // 4409：不离房直接拆
+        await settle();
+        const immediately = kinds(h.log).filter((k) => k === 'exitRoom' || k === 'destroy');
+        await advance(15100);
+        await settle();
+        const later = kinds(h.log).filter((k) => k === 'exitRoom' || k === 'destroy');
+        // 正常离房后再拆：立刻 destroy，不再补退
+        const h2 = await joinedController('guest');
+        await h2.c.adapter.leave();
+        h2.c.adapter.destroy();
+        await settle();
+        const normal = kinds(h2.log).filter((k) => k === 'exitRoom' || k === 'destroy');
+        await advance(15100);
+        return { before, immediately, later, normal, normalLater: kinds(h2.log).filter((k) => k === 'exitRoom' || k === 'destroy') };
+        """
+    )
+    assert out["before"] == [] and out["immediately"] == []
+    assert out["later"] == ["exitRoom", "destroy"]
+    assert out["normal"] == ["exitRoom", "destroy"] and out["normalLater"] == ["exitRoom", "destroy"]

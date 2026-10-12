@@ -643,7 +643,7 @@ def test_reload_recovery_shares_one_overall_deadline():
         const h = makeBridge({ getToken: () => { calls += 1; return new Promise(() => {}); } });   // token 每次都挂住
         let reloads = 0;
         h.ctx.lanlan_config = { lanlan_name: '' };
-        h.ctx.reloadPageConfig = () => { reloads += 1; if (reloads >= 3) h.ctx.lanlan_config.lanlan_name = 'Neko'; return Promise.resolve(true); };
+        h.ctx.reloadPageConfig = () => { reloads += 1; if (reloads >= 2) h.ctx.lanlan_config.lanlan_name = 'Neko'; return Promise.resolve(true); };
         h.ctx.pageConfigReady = new Promise(() => {});           // 页面配置挂住：靠 4 s 上限启动
         h.ctx.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ active: false }) });
         const start = clock.now;
@@ -656,6 +656,6 @@ def test_reload_recovery_shares_one_overall_deadline():
         """,
         files=BRIDGE_FILES,
     )
-    # 各步各算窗口时会拖到 ~22 s（超过 20 s 页面宽限）；共用总截止时间后 18 s 内收尾
-    assert out["reloads"] >= 3 and out["tokenTries"] is True
-    assert out["elapsed"] is not None and out["elapsed"] <= 18000
+    # 各步各算窗口时会拖到 ~22 s（超过 20 s 页面宽限）；共用总截止时间后 10 s 内收尾，给重建 iframe 与入房留出另一半
+    assert out["reloads"] >= 2 and out["tokenTries"] is True
+    assert out["elapsed"] is not None and out["elapsed"] <= 10000

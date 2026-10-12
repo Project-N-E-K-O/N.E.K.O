@@ -12,7 +12,8 @@
 
   var NVT = root.NekoVisitTransport = root.NekoVisitTransport || {};
   var REMOTE_RETRY_BASE_MS = 2000;    // startRemoteVideo 失败后的首次重试间隔，之后翻倍
-  var REMOTE_RETRY_MAX_MS = 30000;    // 重试间隔上限（一直重试到取消订阅 / 对端视频不可用 / 离房）
+  var REMOTE_RETRY_MAX_MS = 30000;
+  var SUPERSEDED_EXIT_MS = 15000;     // 拆掉后兜底退出旧房间的延迟（留给接替的页面入房顶号）    // 重试间隔上限（一直重试到取消订阅 / 对端视频不可用 / 离房）
 
   function createTrtcAdapter(opts) {
     var TRTC = opts.sdk;
@@ -323,15 +324,28 @@
         var exiting = trtc.exitRoom().catch(function () {});
         return Promise.all([exiting, opChain, entering]).then(function () {});
       },
+      /**
+       * 拆掉适配器。TRTC 的 destroy 要求先 exitRoom：被同 vid 的新页面顶掉（4409）时不离房、
+       * 留给接替页面入房顶号；接替页面没能入房时，过一会儿兜底 exitRoom 再 destroy，旧实例不一直占着房间。
+       */
       destroy: function () {
-        if (trtc) {
+        var t = trtc;
+        trtc = null;
+        if (!t) return;
+        var destroyNow = function () {
           try {
-            trtc.destroy();
+            t.destroy();
           } catch (_) {
             // 已销毁
           }
+        };
+        if (leaving || !(joined || entering)) {
+          destroyNow();
+          return;
         }
-        trtc = null;
+        setTimeout(function () {
+          Promise.resolve().then(function () { return t.exitRoom(); }).then(null, function () {}).then(destroyNow);
+        }, SUPERSEDED_EXIT_MS);
       },
       remoteVideoAvailable: function () {
         return !!remoteVideoUser;
@@ -355,9 +369,11 @@
           var rv = remote && (remote.video || []).filter(function (v) { return v.videoType === 'big'; })[0];
           if (rv) out.rx_kbps = rv.bitrate;
           out.rtt_ms = lastStats.rtt;
-          out.loss_pct = lastStats.upLoss;
+          // 订阅方（host）报的是接收样本：用服务端→本端的下行丢包；发布方（guest）用上行丢包
+          out.loss_pct = subscribeWanted ? lastStats.downLoss : lastStats.upLoss;
         }
-        if (lastNetwork && typeof lastNetwork.uplinkLoss === 'number') out.loss_pct = lastNetwork.uplinkLoss;
+        var netLoss = lastNetwork && (subscribeWanted ? lastNetwork.downlinkLoss : lastNetwork.uplinkLoss);
+        if (typeof netLoss === 'number') out.loss_pct = netLoss;
         return out;
       },
     };

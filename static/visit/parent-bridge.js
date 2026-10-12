@@ -26,8 +26,9 @@
   var RECOVER_FETCH_TIMEOUT_MS = 4000;  // 重载恢复查 /api/visit/state 单次的上限
   var RECOVER_FETCH_WINDOW_MS = 12000;  // 查询失败（超时 / 网络错）时重试的总时限
   var RELOAD_ATTEMPT_MS = 3000;         // 重拉页面配置单次的上限
-  // 重载恢复的总时限：从页面脚本加载起算，补角色名、取 token、查快照三步共用，留在后端 20 s 页面宽限之内
-  var RECOVER_TOTAL_MS = 18000;
+  // 重载恢复（补角色名、取 token、查快照）的总时限：从页面脚本加载起算。后端的 20 s 页面宽限还要容下
+  // 之后重建 iframe、加载脚本、鉴权、领凭证、加载 SDK、入房并报 joined，这里只用一半，给后面留够时间
+  var RECOVER_TOTAL_MS = 10000;
   var TOKEN_LOOKUP_TIMEOUT_MS = 5000;   // 取 CSRF token 卡住时按失败处理
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
