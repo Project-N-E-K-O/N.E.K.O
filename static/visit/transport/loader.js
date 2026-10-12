@@ -718,10 +718,13 @@
       }
     }
     var adapter = this.adapter;
-    if (adapter) {
-      var idle = typeof adapter.idle === 'function' ? adapter.idle() : null;
-      Promise.resolve(idle).then(function () { adapter.destroy(); }, function () { adapter.destroy(); });
-    }
+    var post = this.post;
+    var destroy = function () { return adapter.destroy(); };
+    var cleaned = adapter
+      ? Promise.resolve(typeof adapter.idle === 'function' ? adapter.idle() : null).then(destroy, destroy)
+      : Promise.resolve();
+    // 适配器的清理（含 4409 被顶号后 15 s 的兜底退房 / 断开）都在这个 iframe 里跑：做完了才告诉父页可以移除
+    cleaned.then(null, function () {}).then(function () { post({ t: 'cleanup_done' }); });
   };
 
   // ── 父页消息 ──────────────────────────────────────────────────────────

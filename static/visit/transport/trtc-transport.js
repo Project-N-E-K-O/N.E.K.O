@@ -14,6 +14,7 @@
   var REMOTE_RETRY_BASE_MS = 2000;    // startRemoteVideo 失败后的首次重试间隔，之后翻倍
   var REMOTE_RETRY_MAX_MS = 30000;    // 重试间隔上限（一直重试到取消订阅 / 对端视频不可用 / 离房）
   var SUPERSEDED_EXIT_MS = 15000;     // 拆掉后兜底退出旧房间的延迟（留给接替的页面入房顶号）
+  var CLEANUP_BOUND_MS = 8000;        // 兜底退房最多等这么久（父页按 15 + 8 s 再留余量保留 iframe）
 
   function createTrtcAdapter(opts) {
     var TRTC = opts.sdk;
@@ -325,7 +326,7 @@
         return Promise.all([exiting, opChain, entering]).then(function () {});
       },
       /**
-       * 拆掉适配器。TRTC 的 destroy 要求先 exitRoom：被同 vid 的新页面顶掉（4409）时不离房、
+       * 拆掉适配器，返回清理做完的 promise。TRTC 的 destroy 要求先 exitRoom：被同 vid 的新页面顶掉（4409）时不离房、
        * 留给接替页面入房顶号；接替页面没能入房时，过一会儿兜底 exitRoom 再 destroy，旧实例不一直占着房间。
        */
       destroy: function () {
@@ -341,11 +342,17 @@
         };
         if (leaving || !(joined || entering)) {
           destroyNow();
-          return;
+          return Promise.resolve();
         }
-        setTimeout(function () {
-          Promise.resolve().then(function () { return t.exitRoom(); }).then(null, function () {}).then(destroyNow);
-        }, SUPERSEDED_EXIT_MS);
+        return new Promise(function (resolve) {
+          setTimeout(resolve, SUPERSEDED_EXIT_MS);
+        }).then(function () {
+          // 退房本身也有上限：网络坏着时 exitRoom 可能一直不落定
+          return Promise.race([
+            Promise.resolve().then(function () { return t.exitRoom(); }).then(null, function () {}),
+            new Promise(function (resolve) { setTimeout(resolve, CLEANUP_BOUND_MS); }),
+          ]);
+        }).then(destroyNow);
       },
       remoteVideoAvailable: function () {
         return !!remoteVideoUser;

@@ -814,21 +814,32 @@ def test_superseded_frame_is_kept_until_its_fallback_cleanup_ran():
         const right = { removed: frame.removed, lookup: !!h.ctx.document.getElementById('visit-frame') };
         // 它再报一次 closed 也不提前移除（兜底退房还没跑）
         h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 4409 } });
-        await advance(16000);
-        const at16 = frame.removed;
-        await advance(1100);
+        await advance(20000);
+        const at20 = frame.removed;
+        // 传输页报 cleanup_done（兜底退房 / 断开做完）就移除
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'cleanup_done' } });
+        const onDone = frame.removed;
+        // 一直不报 cleanup_done：最多 25 s 后照样移除
+        const h3 = makeBridge();
+        await open(h3, 'guest');
+        change(h3, 'started');
+        const f3 = h3.frame;
+        h3.bridge._onFrameMessage({ source: h3.child, origin: h3.ctx.location.origin, data: { t: 'closed', code: 4409 } });
+        await advance(24900);
+        const before25 = f3.removed;
+        await advance(200);
         // 已经离房的终态（4403）照旧立即移除
         const h2 = makeBridge();
         await open(h2, 'guest');
         change(h2, 'started');
         const f2 = h2.frame;
         h2.bridge._onFrameMessage({ source: h2.child, origin: h2.ctx.location.origin, data: { t: 'closed', code: 4403 } });
-        return { right, at16, at17: frame.removed, other: f2.removed };
+        return { right, at20, onDone, before25, at25: f3.removed, other: f2.removed };
         """,
         files=BRIDGE_FILES,
     )
-    assert out == {"right": {"removed": False, "lookup": False}, "at16": False, "at17": True, "other": True}
-
+    assert out == {"right": {"removed": False, "lookup": False}, "at20": False, "onDone": True,
+                   "before25": False, "at25": True, "other": True}
 
 def test_stale_visit_crop_does_not_touch_the_current_visit():
     out = run_visit_js(
@@ -871,3 +882,30 @@ def test_late_lifecycle_event_of_an_ended_visit_does_not_rebuild():
         files=BRIDGE_FILES,
     )
     assert out == {"rebuilt": False, "fresh": True}
+
+
+def test_reload_snapshot_does_not_overwrite_newer_live_auxiliary_state():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        let respond;
+        h.ctx.fetch = () => new Promise((r) => { respond = r; });
+        let result;
+        h.bridge.recoverAfterReload('Neko').then((r) => { result = r; });
+        await settle();
+        // 查询期间实时通道推来更新的对端构图与显隐
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'peer_crop', side: 'host', visit_id: VISIT_ID, peer_crop: 'full' });
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'peer_visible', side: 'host', visit_id: VISIT_ID });
+        respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side: 'host', phase: 'active',
+                                                           room: { peer_crop: 'upper' }, peer: { hidden: true } }) });
+        await settle();
+        const crop = h.bridge._state.peerCrop;
+        const badge = h.bridge._state.peerHidden === true;
+        h.side = 'host';
+        change(h, 'ended');
+        await advance(6100);
+        return { result, crop, badge };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"result": True, "crop": "full", "badge": False}

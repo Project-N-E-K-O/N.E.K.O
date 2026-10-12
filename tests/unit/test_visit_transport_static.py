@@ -2312,3 +2312,60 @@ def test_receive_fps_is_sampled_when_async_stats_complete():
         """
     )
     assert out == [7000]
+
+
+def test_superseded_teardown_reports_cleanup_done_after_the_fallback_exit():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.ws.serverClose(4409);
+        await settle();
+        const early = h.posted.filter((m) => m.t === 'cleanup_done').length;
+        await advance(15100);
+        await settle();
+        return { early, done: h.posted.filter((m) => m.t === 'cleanup_done').length,
+                 order: kinds(h.log).filter((k) => k === 'exitRoom' || k === 'destroy') };
+        """
+    )
+    assert out == {"early": 0, "done": 1, "order": ["exitRoom", "destroy"]}
+
+
+def test_fallback_exit_is_bounded_when_the_sdk_hangs():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.trtc.exitRoom = () => { h.log.push(['exitRoom-hang']); return new Promise(() => {}); };
+        h.ws.serverClose(4409);
+        await settle();
+        await advance(15100);
+        const during = h.posted.filter((m) => m.t === 'cleanup_done').length;
+        await advance(8100);
+        await settle();
+        return { during, after: h.posted.filter((m) => m.t === 'cleanup_done').length, destroyed: kinds(h.log).includes('destroy') };
+        """
+    )
+    assert out == {"during": 0, "after": 1, "destroyed": True}
+
+
+def test_livekit_destroy_after_leave_needs_no_fallback():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const LKV = ctx.NekoVisitTransport.vendors.livekit;
+        const LK = makeFakeLK([]);
+        let disconnects = 0;
+        LK.Room.prototype.disconnect = function () { disconnects += 1; return Promise.resolve(); };
+        const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+        const a = LKV.createAdapter({ sdk: LK, handlers });
+        await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp9' } });
+        await a.leave();
+        let done = false;
+        a.destroy().then(() => { done = true; });
+        await settle();
+        const immediate = done;
+        await advance(16000);
+        return { immediate, disconnects };
+        """
+    )
+    assert out == {"immediate": True, "disconnects": 1}

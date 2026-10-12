@@ -40,7 +40,8 @@
   var CLOSE_SUPERSEDED = 4409;         // 传输 WS 关闭码：被同 vid 的新传输连接顶掉（与 backend-ws.js 同值）
   // 移除 iframe 会把它里面还在跑的清理一起掐掉：父页至少等到子页的清理时限
   var ENDED_LEAVE_WAIT_MS = 6000;       // ended 后等传输页离房（报 closed）的上限；不短于 backend-ws 的 5 s 离房等待
-  var SUPERSEDED_KEEP_MS = 17000;       // 4409 被顶号后保留 iframe 的时长；不短于适配器 15 s 后的兜底退房 / 断开
+  var SUPERSEDED_KEEP_MS = 25000;       // 4409 被顶号后最多保留 iframe 的时长：适配器 15 s 后兜底退房 / 断开、本身再最多 8 s，
+                                        // 正常由传输页清理做完后报 cleanup_done 提前移除
   var PEER_AWAY_OPACITY = '0.6';
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图
   var HOST_FRAME_STYLE = 'position:fixed;z-index:4;border:0;background:transparent;pointer-events:none;' +
@@ -141,7 +142,8 @@
       publishing: false,
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       endedVisitId: null,    // 最近结束的场次：它迟到的 wrap_up / ending 不再补建 iframe（只拦补建，不参与场次过滤）
-      retiring: [],          // 已脱离父页、等它把清理做完的旧 iframe [{frame, timer, endOnClosed}]
+      retiring: [],          // 已脱离父页、等它把清理做完的旧 iframe [{frame, timer, endOn}]
+      auxGen: 0,             // 每收到一条 peer_crop / peer_hidden / peer_visible / departed 加一：重载快照不覆盖更新过的这些状态
       portraitWrapped: false,
     };
 
@@ -341,21 +343,21 @@
       }
       post({ t: 'visit_state', phase: 'ended' });
       removeFrame({ keepElement: true });
-      retireElement(f, ENDED_LEAVE_WAIT_MS, true);
+      retireElement(f, ENDED_LEAVE_WAIT_MS, 'closed');
     }
 
     /**
      * 已脱离父页状态的旧 iframe 先隐藏、留在 DOM 里，让它把离房 / 兜底断开做完再移除：
-     * endOnClosed 时它报 closed（离房做完）就提前移除，否则到点移除。
+     * 它报 endOn 指定的消息（closed：离房做完；cleanup_done：兜底清理做完）就提前移除，否则到点移除。
      */
-    function retireElement(f, waitMs, endOnClosed) {
+    function retireElement(f, waitMs, endOn) {
       try {
         f.style.visibility = 'hidden';
         f.id = '';   // 让新场次的 iframe 用回 #visit-frame
       } catch (_) {
         // 已卸载
       }
-      var r = { frame: f, timer: null, endOnClosed: endOnClosed };
+      var r = { frame: f, timer: null, endOn: endOn };
       r.timer = setTimeoutFn(function () { finishRetire(r); }, waitMs);
       state.retiring.push(r);
     }
@@ -504,7 +506,7 @@
       var r = findRetiring(event.source);
       if (r && event.origin === win.location.origin) {
         var d = event.data;
-        if (d && d.t === 'closed' && r.endOnClosed) finishRetire(r);
+        if (d && (d.t === r.endOn || d.t === 'cleanup_done')) finishRetire(r);
         // 退场期间的离房日志照常记下（离房出错时要能排查）
         else if (d && d.t === 'log') logFrame(d.level, String(d.msg || '').slice(0, 500) + (d.code ? ' (' + d.code + ')' : ''));
         return;
@@ -549,7 +551,7 @@
         var closedId = state.visitId;
         var superseded = data.code === CLOSE_SUPERSEDED;
         removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT, keepElement: superseded });
-        if (superseded) retireElement(f, SUPERSEDED_KEEP_MS, false);
+        if (superseded) retireElement(f, SUPERSEDED_KEEP_MS, 'cleanup_done');
         state.closedVisitId = closedId;
       }
     }
@@ -970,6 +972,8 @@
       // 只有能建 / 拆 iframe 的生命周期事件才让在途的重载恢复快照作废；peer_hidden / peer_crop /
       // departed 这类辅助事件不建 iframe，不能让快照白白丢掉
       if (action === 'ended' || PHASE_OF_ACTION[action]) state.liveGen += 1;
+      if (msg.peer_crop === 'upper' || msg.peer_crop === 'full' || action === 'peer_hidden' || action === 'peer_visible' ||
+          action === 'departed') state.auxGen += 1;
       if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.peerCrop = msg.peer_crop;
       if (action === 'pending') {
         state.closedVisitId = null;
@@ -1047,6 +1051,7 @@
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
       var cap = typeof overall === 'number' ? overall : Infinity;
       var gen = state.liveGen;
+      var auxGen = state.auxGen;
       // /api/visit/state 要 CSRF：重载后页面配置一时取不到 token 时不能直接空着头去请求（403 后就再也不恢复）
       return acquireToken(0, Math.min(now() + RECOVER_TOKEN_WINDOW_MS, cap)).then(function (token) {
         if (!token) return null;
@@ -1061,10 +1066,13 @@
         if (!action) return false;
         ensureFrame(snap.side, snap.visit_id);
         state.phase = snap.phase;
-        var room = snap.room || {};
-        if (room.peer_crop === 'upper' || room.peer_crop === 'full') state.peerCrop = room.peer_crop;
-        if (snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
-        if (snap.peer && snap.peer.hidden) setPeerHidden(true);
+        // 查询期间实时通道已经推过对端构图 / 显隐 / 出门：那些比快照新，快照里的这几项不再覆盖
+        if (auxGen === state.auxGen) {
+          var room = snap.room || {};
+          if (room.peer_crop === 'upper' || room.peer_crop === 'full') state.peerCrop = room.peer_crop;
+          if (snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
+          if (snap.peer && snap.peer.hidden) setPeerHidden(true);
+        }
         return true;
       }).catch(function () {
         return false;

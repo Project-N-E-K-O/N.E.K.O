@@ -13,6 +13,7 @@
   var SUB_RETRY_BASE_MS = 2000;      // 订阅失败后的首次重试间隔，之后翻倍
   var SUB_RETRY_MAX_MS = 30000;
   var SUPERSEDED_DISCONNECT_MS = 15000;   // 拆掉后兜底断开旧房间对象的延迟（留给接替的页面入房顶号）
+  var CLEANUP_BOUND_MS = 8000;            // 兜底断开最多等这么久（父页按 15 + 8 s 再留余量保留 iframe）
 
   function reasonName(LK, reason) {
     var table = LK && LK.DisconnectReason;
@@ -408,13 +409,20 @@
        * 没能入房（SDK 加载 / 能力门 / 连接失败），旧连接会一直占着房间——过一会儿兜底断开它。
        * 已经离过房或已被顶下线时再断开一次是空操作。
        */
+      /** 返回清理做完的 promise（传输页据此告诉父页可以移除 iframe）。 */
       destroy: function () {
         var r = room;
         room = null;
-        if (!r) return;
-        setTimeout(function () {
-          Promise.resolve().then(function () { return r.disconnect(false); }).then(null, function () {});
-        }, SUPERSEDED_DISCONNECT_MS);
+        if (!r || leaving) return Promise.resolve();   // 已经离过房：没有要兜底的
+        return new Promise(function (resolve) {
+          setTimeout(resolve, SUPERSEDED_DISCONNECT_MS);
+        }).then(function () {
+          // 断开本身也有上限：网络坏着时 disconnect 可能一直不落定
+          return Promise.race([
+            Promise.resolve().then(function () { return r.disconnect(false); }).then(null, function () {}),
+            new Promise(function (resolve) { setTimeout(resolve, CLEANUP_BOUND_MS); }),
+          ]);
+        }).then(function () {});
       },
       remoteVideoAvailable: function () {
         return !!remotePublication;
