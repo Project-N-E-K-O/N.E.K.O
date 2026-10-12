@@ -607,6 +607,29 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
     return config_path
 
 
+def _get_physics_config_path(model_name: str) -> Path | None:
+    """Get the physics profile config file path for a model."""
+    safe_name = re.sub(r'[^\w.\-]', '', model_name, flags=re.UNICODE)
+    if not safe_name or safe_name != model_name:
+        logger.warning(f"无效的模型名称: {model_name!r}")
+        return None
+
+    config_mgr = get_config_manager()
+
+    config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = config_dir / f"{safe_name}_physics.json"
+
+    try:
+        config_path.resolve().relative_to(config_dir.resolve())
+    except ValueError:
+        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
+        return None
+
+    return config_path
+
+
 def _get_model_path(model_name: str) -> tuple[Path | None, str]:
     """Get the VRM model file path; returns (path, url_prefix)."""
     if not _is_valid_vrm_model_name(model_name):
@@ -751,6 +774,38 @@ async def get_emotion_mapping(model_name: str):
 
     except Exception as e:
         logger.error(f"获取VRM情感映射配置失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.get('/physics_profile/{model_name}')
+async def get_physics_profile(model_name: str):
+    """Get the spring bone physics profile of a VRM model."""
+    try:
+        config_path = _get_physics_config_path(model_name)
+
+        if config_path is None:
+            error_msg = f"Invalid model name: {model_name!r}"
+            logger.error(f"获取VRM物理配置失败: {error_msg}")
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": error_msg}
+            )
+
+        if not config_path.exists():
+            return {"success": True, "config": None, "source": "absent"}
+
+        config = await read_json_async(config_path)
+        return {"success": True, "config": config, "source": "file"}
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"物理配置文件 JSON 损坏，回退到默认行为: {e}")
+        return {"success": True, "config": None, "source": "corrupt"}
+
+    except Exception as e:
+        logger.error(f"获取VRM物理配置失败: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
