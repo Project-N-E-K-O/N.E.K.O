@@ -30,8 +30,8 @@
   var SOFTENC_FPS_RATIO = 0.9;        // 27 / 30：编码帧率低于目标帧率的 90 % 算软编跟不上
   var PUBLISH_RETRY_BASE_MS = 2000;   // SDK 拒绝发布后的首次重试间隔，之后翻倍
   var PUBLISH_RETRY_MAX_MS = 30000;
-  // 后端判自己断线是断开后 25 s：手动重新入房失败时在这个窗口内按退避再试，不让一次暂时性失败拖到判死
   var STOP_LEAVE_WAIT_MS = 5000;      // 收到 stop 后等离房的上限（与 backend-ws 终止时同值；父页 ended 后最多留 iframe 6 s）
+  // 后端判自己断线是断开后 25 s：手动重新入房失败时在这个窗口内按退避再试，不让一次暂时性失败拖到判死
   var REJOIN_RETRY_WINDOW_MS = 20000;
   var REJOIN_RETRY_BASE_MS = 1000;
   var VISIT_ID_RE = /^[A-Za-z0-9_-]{22}$/;
