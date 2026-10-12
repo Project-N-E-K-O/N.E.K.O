@@ -713,6 +713,72 @@ const report = {};
     await h.settle();
     report.recover_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
   }
+  // ── abort 的 i_done 比收到的片多：补占位，迟片还能落位 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    const sp = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'A1', i: 0, text: 'A', speaker: sp });
+    h.frame({ type: 'visit_line_abort', visit_id: VID, line_id: 'A1', i_done: 3, reason: 'human_interrupt' });
+    report.abort_extend = h.lineText('A1').split('|')[0];
+    h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'A1', i: 1, text: 'B', speaker: sp });
+    report.abort_extend_late = h.lineText('A1').split('|')[0];
+  }
+  // ── 入房失败原因在 details.reason ──
+  {
+    const routes = {
+      '/api/visit/invites/*': async () => ({ status: 200, body: { visit_id: VID2, host_display_name: '邻居', host_short_code: 'ABCDEF', cross_region: false, expires_at: 9e9, locally_blocked: false } }),
+    };
+    routes['/api/visit/rooms/' + VID2 + '/join'] = async () => ({ status: 409, body: { ok: false, code: 'VISIT_INVITE_INVALID', details: { reason: 'peer_blocked' } } });
+    const h = createHarness({ routes });
+    const p = h.chat._test.joinWithCode('ABCDEFGH23');
+    await h.settle();
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'go').click();
+    await p;
+    report.join_reason_toast = h.toasts[h.toasts.length - 1];
+  }
+  // ── 接待回 VISIT_DISABLED：框留着，还能婉拒 ──
+  {
+    const replies = [{ status: 409, body: { ok: false, code: 'VISIT_DISABLED' } }, { status: 200, body: { ok: true } }];
+    const routes = {};
+    routes['/api/visit/rooms/' + VID + '/accept'] = async () => replies.shift();
+    const h = createHarness({ routes });
+    h.state('pending');
+    h.frame({ type: 'visit_invite', visit_id: VID, peer_name: '小白', peer_short_id: 'QWERTY', cross_region: false, expires_at: 1700000000 + 60 });
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'accept').click();
+    await h.settle();
+    report.disabled_open = h.dialogs().length;
+    report.disabled_text = h.dialogs()[0] ? h.dialogs()[0].textContent : '';
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'decline').click();
+    await h.settle();
+    report.disabled_declined = h.fetches.filter((f) => f.url.endsWith('/accept')).map((f) => f.body.accept);
+  }
+  // ── ended 先到、快照说这场开始过：补上结束消息，但不复活 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'host', enabled: true, peer: { cat_name: '小白' } } }; } };
+    const h = createHarness({ routes });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.chat.handleFrame({ type: 'visit_state_change', action: 'ended', visit_id: VID, side: 'host', ts: 1 });
+    release();
+    await probe;
+    report.late_ended_message = h.messages.filter((m) => m.id === 'visit-ended-' + VID).length;
+    report.late_ended_active = h.chat.isActive();
+  }
+  // ── bind 后读 state 失败：隔一会儿重试，读到了就恢复 ──
+  {
+    let calls = 0;
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { calls += 1; return calls === 1 ? { status: 503, body: {} } : { status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true } }; } };
+    const h = createHarness({ routes });
+    await h.chat.afterBind(h.socket, '咪咪');
+    report.probe_retry_before = h.chat.isActive();
+    h.advance(2100);
+    await h.settle();
+    report.probe_retry_after = h.chat.isActive();
+    report.probe_retry_calls = calls;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -928,3 +994,29 @@ def test_snapshot_visit_switch_resets_line_and_avatar_caches(report):
 
 def test_snapshot_recovery_of_an_ended_visit_keeps_its_ended_message(report):
     assert report["recover_ended_message"] is True
+
+
+def test_abort_extends_to_i_done_with_placeholders(report):
+    assert report["abort_extend"] == "A……"
+    assert report["abort_extend_late"] == "AB…"
+
+
+def test_join_reads_the_nested_refusal_reason(report):
+    assert report["join_reason_toast"] == "你已屏蔽此人"
+
+
+def test_disabled_accept_keeps_the_invitation_open_for_a_decline(report):
+    assert report["disabled_open"] == 1
+    assert "允许串门" in report["disabled_text"]
+    assert report["disabled_declined"] == [True, False]
+
+
+def test_late_snapshot_restores_the_ended_message_without_reviving(report):
+    assert report["late_ended_message"] == 1
+    assert report["late_ended_active"] is False
+
+
+def test_failed_state_probe_retries(report):
+    assert report["probe_retry_before"] is False
+    assert report["probe_retry_after"] is True
+    assert report["probe_retry_calls"] == 2

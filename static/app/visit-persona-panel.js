@@ -156,6 +156,7 @@
         function close(confirmed) {
             if (panel.closed) return;
             panel.closed = true;
+            if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onKeydown, true);
             if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
             if (openPanel === panel) openPanel = null;
             settle(confirmed === true);
@@ -266,8 +267,18 @@
                 }
                 var data = result.body;
                 if (data.state === 'missing' && !data.error && attempt === 0) {
-                    // 还没有：触发一次生成，之后轮询
-                    await request('POST', regenerateUrl(catgirl), {});
+                    // 还没有：触发一次生成，之后轮询；生成没起来（网络 / 403 / 5xx）就别空等，给重试
+                    var started = await request('POST', regenerateUrl(catgirl), {});
+                    if (panel.closed) return false;
+                    if (started.status !== 202 && codeOf(started) !== 'persona_generating') {
+                        setNotice([{ text: t('visit.persona.unavailable', '暂时读不到串门自我介绍，稍后再试'), tone: 'warning' }]);
+                        textarea.disabled = false;
+                        setButtons([closeButton(), {
+                            id: 'regenerate', label: t('visit.persona.regenerate', '重新生成'),
+                            onClick: function () { regenerate(); }
+                        }]);
+                        return false;
+                    }
                     setNotice([t('visit.persona.generating', '正在为她写串门自我介绍…')]);
                     await wait(POLL_MS);
                     continue;
@@ -337,9 +348,13 @@
             editingButtons();
         }
 
-        overlay.addEventListener('keydown', function (event) {
+        // 焦点可能还在打开面板的按钮上：Escape 挂在 document 上，关面板时摘掉
+        function onKeydown(event) {
             if (event.key === 'Escape') close(false);
-        });
+        }
+        if (typeof document.addEventListener === 'function') document.addEventListener('keydown', onKeydown, true);
+        dialog.tabIndex = -1;
+        try { dialog.focus(); } catch (_) { /* noop */ }
         load();
         return panel.result;
     };

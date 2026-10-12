@@ -356,3 +356,11 @@ def test_no_dehumanizing_address_in_visit_copy():
 def test_persona_panel_warns_about_a_stale_private_section_list():
     panel = _read(PERSONA)
     assert "data.sections_outdated === true" in _function_body(panel, "renderPrivate")
+
+
+def test_persona_panel_escape_and_failed_first_generation():
+    panel = _read(PERSONA)
+    assert "document.addEventListener('keydown', onKeydown, true)" in panel
+    assert "document.removeEventListener('keydown', onKeydown, true)" in panel
+    load = _function_body(panel, "load")
+    assert "started.status !== 202 && codeOf(started) !== 'persona_generating'" in load

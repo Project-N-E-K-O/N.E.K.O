@@ -682,7 +682,7 @@
         if (!entry || entry.final) return;  // 收口之后迟到的片不再动气泡
         var i = Number(frame.i);
         if (!Number.isInteger(i) || i < 0 || i > 4096) return;
-        if (entry.aborted && i >= entry.clauses.length) return;
+        if (entry.aborted && i >= entry.clauses.length) return;   // 截断点之后的片不再上屏
         entry.clauses[i] = String(frame.text || '');
         entry.text = assembleClauses(entry.clauses);
         if (typing && frame.speaker && frame.speaker.name === typing.name) typing = null;
@@ -706,7 +706,8 @@
         if (!entry || entry.final) return;
         if (entry.stallTimer) { clearTimeout(entry.stallTimer); entry.stallTimer = 0; }
         var done = Number(frame.i_done);
-        if (Number.isInteger(done) && done >= 0 && done < entry.clauses.length) entry.clauses.length = done;
+        // 分片可丢：i_done 比本页收到的多时补齐长度，缺的片照样显示占位，之后到的迟片还能落位
+        if (Number.isInteger(done) && done >= 0 && done <= 4096) entry.clauses.length = done;
         entry.aborted = true;
         entry.truncated = true;
         entry.text = assembleClauses(entry.clauses);
@@ -888,6 +889,14 @@
             ],
             status: 'sent'
         });
+    }
+
+    function ensureEndedMessage(ended) {
+        var exists = messagesSnapshot().some(function (m) { return m && m.id === endedMessageId(ended.visitId); });
+        if (!exists) {
+            if (ended.side) rememberSide(ended.visitId, ended.side);
+            appendEndedMessage(ended);
+        }
     }
 
     function expandEndedMessage(message, visitId) {
@@ -1244,11 +1253,12 @@
         if (result.status === 0) return t('visit.error.unreachable', '连不上本机服务');
         if (code === 'VISIT_DISABLED') return t('visit.error.disabled', '「允许串门」还没有打开，请先在设置里打开');
         if (code === 'VISIT_PERSONA_UNREVIEWED') return t('visit.persona.unreviewed', '出门前先看一眼她的串门自我介绍');
-        if (code === 'VISIT_UNSUPPORTED_ON_THIS_MACHINE' && body.reason === 'insecure_context') {
+        if (code === 'VISIT_UNSUPPORTED_ON_THIS_MACHINE'
+                && ((body.details && body.details.reason) || body.reason) === 'insecure_context') {
             return t('visit.error.insecure_context', '自定义后端地址需要 https 或 localhost 才能串门');
         }
         if (code === 'VISIT_INVITE_INVALID') {
-            var reason = body.reason || '';
+            var reason = (body.details && body.details.reason) || body.reason || '';
             if (reason === 'invite_expired') return t('visit.preview.expired', '邀请码已过期');
             if (reason === 'peer_blocked') return t('visit.join.blocked', '你已屏蔽此人');
             return t('visit.preview.invalid', '邀请码无效');
@@ -1441,7 +1451,7 @@
                 name: String(frame.peer_name || peerCatName()), code: String(frame.peer_short_id || '')
             })];
             if (frame.cross_region === true) out.push({ text: t('visit.join.crossRegion', '对方在另一个地区，连接可能不太稳定'), tone: 'warning' });
-            if (failed) out.push({ text: t('visit.error.generic', '没能完成，请稍后再试'), tone: 'warning' });
+            if (failed) out.push({ text: failedText || t('visit.error.generic', '没能完成，请稍后再试'), tone: 'warning' });
             out.push({ text: t('visit.invite.countdown', '{{s}} 秒后自动婉拒', { s: left }), tone: 'muted' });
             return out;
         };
@@ -1452,13 +1462,19 @@
             ];
         };
         var failed = false;
+        var failedText = '';
         var answer = async function (h, accept) {
             h.setButtons(inviteButtons(true));
             var result = await answerInvite(visitId, accept);
             if (h.closed) return;
-            if (result.status === 200 || result.status === 404 || result.status === 409) {
+            var answerCode = bodyCode(result);
+            if (result.status === 200 || result.status === 404 || (result.status === 409 && answerCode !== 'VISIT_DISABLED')) {
                 h.close(accept ? 'accept' : 'decline');
                 return;
+            }
+            if (answerCode === 'VISIT_DISABLED') {
+                // 「允许串门」已关：不接待，但邀请还没定，婉拒照样能点
+                failedText = t('visit.error.disabled', '「允许串门」还没有打开，请先在设置里打开');
             }
             // 本机请求一时失败（网络 / 5xx）：框留着、按钮恢复，期限内可以再点
             failed = true;
@@ -1950,6 +1966,12 @@
         releaseEnabled = state.enabled === true;
         var snapshotVisit = state.active === true && typeof state.visit_id === 'string' && state.visit_id
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
+        if (state.active === true && endedVisitIds.indexOf(state.visit_id) !== -1
+                && ['active', 'wrap_up', 'ending'].indexOf(state.phase) !== -1) {
+            // ended 帧先到时本页还不知道这场开始过（没留结束消息）：按快照补上，不复活这一场
+            ensureEndedMessage({ visitId: state.visit_id, side: state.side || state.role || null,
+                peerName: state.peer && state.peer.cat_name ? String(state.peer.cat_name) : '' });
+        }
         if (stale) {
             // 读的期间到过 visit_state_change：帧定下的阶段为准；帧没定下阶段（peer_hidden / ending_soon /
             // reconnecting 等）时按快照补上。同一场的对端信息与台词照样并进来
@@ -1998,7 +2020,7 @@
      * 迟到的旧快照不能盖掉帧刚驱动的状态（例如 started 已到、快照还是 awaiting_accept）。
      * Pet 窗（不画界面）照样要派发：pacer 就在那一页。
      */
-    async function afterBind(socket, catgirl) {
+    async function afterBind(socket, catgirl, retryAttempt) {
         var seqAtSend = stateFrameSeq;
         var name = catgirl || currentCatgirl();
         var result = name
@@ -2009,6 +2031,16 @@
         var state = result.status === 200 && result.body && typeof result.body === 'object' ? result.body : null;
         if (!state) {
             dispatchBound({ socket: socket });
+            // 进行中的场次重载后不会被 bind 重放阶段：读不到就隔一会儿再读，免得一直停在普通聊天
+            var attempt = typeof retryAttempt === 'number' ? retryAttempt : 0;
+            var delays = [2000, 5000, 10000];
+            if (attempt < delays.length) {
+                setTimeout(function () {
+                    var S2 = window.appState;
+                    if (S2 && S2.socket && S2.socket !== socket) return;
+                    afterBind(socket, catgirl, attempt + 1);
+                }, delays[attempt]);
+            }
             return;
         }
         var stale = stateFrameSeq !== seqAtSend;
