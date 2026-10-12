@@ -634,3 +634,28 @@ def test_iframe_that_never_becomes_ready_is_reloaded():
         files=BRIDGE_FILES,
     )
     assert out == {"first": 1, "total": 2, "sameUrl": True}
+
+
+def test_reload_recovery_shares_one_overall_deadline():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        let calls = 0;
+        const h = makeBridge({ getToken: () => { calls += 1; return new Promise(() => {}); } });   // token 每次都挂住
+        let reloads = 0;
+        h.ctx.lanlan_config = { lanlan_name: '' };
+        h.ctx.reloadPageConfig = () => { reloads += 1; if (reloads >= 3) h.ctx.lanlan_config.lanlan_name = 'Neko'; return Promise.resolve(true); };
+        h.ctx.pageConfigReady = new Promise(() => {});           // 页面配置挂住：靠 4 s 上限启动
+        h.ctx.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ active: false }) });
+        const start = clock.now;
+        let doneAt = null;
+        const orig = h.bridge.recoverFromPageConfig;
+        h.bridge.recoverFromPageConfig = (o) => orig(o).then((r) => { doneAt = clock.now; return r; });
+        h.ctx.NekoVisitParentBridge.startRecoveryWhenReady(h.bridge, h.ctx, (fn, ms) => setTimeoutF(fn, ms));
+        for (let i = 0; i < 40 && doneAt === null; i++) await advance(1000);
+        return { elapsed: doneAt === null ? null : doneAt - start, reloads, tokenTries: calls > 0 };
+        """,
+        files=BRIDGE_FILES,
+    )
+    # 各步各算窗口时会拖到 ~22 s（超过 20 s 页面宽限）；共用总截止时间后 18 s 内收尾
+    assert out["reloads"] >= 3 and out["tokenTries"] is True
+    assert out["elapsed"] is not None and out["elapsed"] <= 18000

@@ -26,6 +26,8 @@
   var RECOVER_FETCH_TIMEOUT_MS = 4000;  // 重载恢复查 /api/visit/state 单次的上限
   var RECOVER_FETCH_WINDOW_MS = 12000;  // 查询失败（超时 / 网络错）时重试的总时限
   var RELOAD_ATTEMPT_MS = 3000;         // 重拉页面配置单次的上限
+  // 重载恢复的总时限：从页面脚本加载起算，补角色名、取 token、查快照三步共用，留在后端 20 s 页面宽限之内
+  var RECOVER_TOTAL_MS = 18000;
   var TOKEN_LOOKUP_TIMEOUT_MS = 5000;   // 取 CSRF token 卡住时按失败处理
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
@@ -393,14 +395,15 @@
       });
     }
 
-    function boundedToken(lookup) {
+    function boundedToken(lookup, maxMs) {
+      var wait = typeof maxMs === 'number' ? Math.max(0, Math.min(TOKEN_LOOKUP_TIMEOUT_MS, maxMs)) : TOKEN_LOOKUP_TIMEOUT_MS;
       return new Promise(function (resolve) {
         var done = false;
         var timer = setTimeoutFn(function () {
           if (done) return;
           done = true;
           resolve('');
-        }, TOKEN_LOOKUP_TIMEOUT_MS);
+        }, wait);
         Promise.resolve(lookup).then(function (t) { return t; }, function () { return ''; }).then(function (t) {
           if (done) return;
           done = true;
@@ -924,7 +927,7 @@
      * 截止时间内仍取不到就给空（调用方按失败处理）。
      */
     function acquireToken(attempt, deadline) {
-      return boundedToken(attempt === 0 ? getToken() : refreshTokenLookup()).then(function (token) {
+      return boundedToken(attempt === 0 ? getToken() : refreshTokenLookup(), deadline - now()).then(function (token) {
         if (token) return token;
         var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
         if (now() + delay >= deadline) return '';
@@ -946,7 +949,8 @@
         if (!res) return NO_RESPONSE;
         return res.ok ? res.json() : null;
       });
-      return withTimeout(request, RECOVER_FETCH_TIMEOUT_MS, NO_RESPONSE).then(function (snap) {
+      var wait = Math.max(0, Math.min(RECOVER_FETCH_TIMEOUT_MS, deadline - now()));
+      return withTimeout(request, wait, NO_RESPONSE).then(function (snap) {
         if (snap !== NO_RESPONSE) return snap;
         var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
         if (now() + delay >= deadline) return null;
@@ -956,13 +960,15 @@
       });
     }
 
-    function recoverAfterReload(lanlanName) {
+    /** overall：整个恢复的绝对截止时刻（不传就不额外限制）；每一步的窗口都不超过它。 */
+    function recoverAfterReload(lanlanName, overall) {
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
+      var cap = typeof overall === 'number' ? overall : Infinity;
       var gen = state.liveGen;
       // /api/visit/state 要 CSRF：重载后页面配置一时取不到 token 时不能直接空着头去请求（403 后就再也不恢复）
-      return acquireToken(0, now() + RECOVER_TOKEN_WINDOW_MS).then(function (token) {
+      return acquireToken(0, Math.min(now() + RECOVER_TOKEN_WINDOW_MS, cap)).then(function (token) {
         if (!token) return null;
-        return fetchSnapshot(lanlanName, token, 0, now() + RECOVER_FETCH_WINDOW_MS);
+        return fetchSnapshot(lanlanName, token, 0, Math.min(now() + RECOVER_FETCH_WINDOW_MS, cap));
       }).then(function (snap) {
         if (!snap || !snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
         // 查询期间实时通道已经推过新状态（比如已经结束）：这份快照过时了，不能拿它重建
@@ -987,12 +993,15 @@
      * 重载恢复的入口：页面配置一时失败时角色名为空，按退避重拉页面配置（window.reloadPageConfig）
      * 直到拿到角色名或超时，再走 recoverAfterReload。
      */
-    function recoverFromPageConfig(attempt, deadline) {
+    function recoverFromPageConfig(attempt, deadline, overall) {
       var cfg = win.lanlan_config;
       var name = cfg && cfg.lanlan_name;
-      if (name) return recoverAfterReload(name);
+      if (name) return recoverAfterReload(name, overall);
       attempt = attempt || 0;
-      if (deadline === undefined) deadline = now() + RECOVER_NAME_WINDOW_MS;
+      if (deadline === undefined) {
+        deadline = now() + RECOVER_NAME_WINDOW_MS;
+        if (typeof overall === 'number') deadline = Math.min(deadline, overall);
+      }
       var delay = Math.min(TOKEN_RETRY_MAX_MS, TOKEN_RETRY_BASE_MS * Math.pow(2, attempt));
       if (now() + delay >= deadline) return Promise.resolve(false);
       return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
@@ -1002,7 +1011,7 @@
         var left = Math.max(0, Math.min(RELOAD_ATTEMPT_MS, deadline - now()));
         return withTimeout(Promise.resolve().then(function () { return reload(); }), left, null);
       }).then(function () {
-        return recoverFromPageConfig(attempt + 1, deadline);
+        return recoverFromPageConfig(attempt + 1, deadline, overall);
       });
     }
 
@@ -1019,7 +1028,9 @@
         if (state.sink && typeof state.sink.suspend === 'function') state.sink.suspend(state.suspended);
       },
       recoverAfterReload: recoverAfterReload,
-      recoverFromPageConfig: function () { return recoverFromPageConfig(0); },
+      /** overall：重载恢复的绝对截止时刻（startRecoveryWhenReady 在脚本加载时定下）。 */
+      recoverFromPageConfig: function (overall) { return recoverFromPageConfig(0, undefined, overall); },
+      now: now,
       firstFrameDataURL: function () { return state.firstFrame; },
       _state: state,
       _tick: tick,
@@ -1048,10 +1059,12 @@
    */
   function startRecoveryWhenReady(bridge, win, setTimeoutFn) {
     var started = false;
+    // 总截止时间在脚本加载时就定下：等页面配置、补角色名、取 token、查快照都从同一个预算里扣
+    var overall = bridge.now() + RECOVER_TOTAL_MS;
     var go = function () {
       if (started) return;
       started = true;
-      bridge.recoverFromPageConfig();
+      bridge.recoverFromPageConfig(overall);
     };
     var ready = win.pageConfigReady;
     if (ready && typeof ready.then === 'function') {
