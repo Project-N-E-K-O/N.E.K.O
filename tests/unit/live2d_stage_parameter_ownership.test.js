@@ -53,9 +53,9 @@ test('cancelled Stage emotion cannot admit a motion or persistent reapply after 
 
 test('removing the Stage emotion continuation receipt reproduces the retired motion', async () => {
     const result = await runCancelledEmotion({ transformStage(source) {
-        const guarded = 'manager.setEmotion(emotionName, { isCurrent })';
+        const guarded = 'manager.setEmotion(emotionName, { isCurrent, onApplied })';
         assert.ok(source.includes(guarded));
-        return source.replace(guarded, 'manager.setEmotion(emotionName)');
+        return source.replace(guarded, 'manager.setEmotion(emotionName, { onApplied })');
     } });
     assert.deepEqual(result.motions, ['happy']);
     assert.equal(result.persistentCalls, 1);
@@ -235,8 +235,9 @@ async function fixture(options = {}) {
     runtime.context.requestAnimationFrame = callback => { frames.set(++frameId, callback); return frameId; };
     runtime.context.cancelAnimationFrame = id => frames.delete(id);
     const sourcePath = file => path.resolve(__dirname, '../../', file);
-    vm.runInContext(read('static/live2d/live2d-emotion.js'), runtime.context,
-        { filename: sourcePath('static/live2d/live2d-emotion.js') });
+    const emotionSource = read('static/live2d/live2d-emotion.js');
+    vm.runInContext(options.transformEmotion ? options.transformEmotion(emotionSource) : emotionSource, runtime.context,
+        { filename: sourcePath(options.transformEmotion ? 'mutation/live2d-emotion.js' : 'static/live2d/live2d-emotion.js') });
     const stageSource = read('static/avatar/avatar-performance-stage.js');
     vm.runInContext(options.transformStage ? options.transformStage(stageSource) : stageSource, runtime.context,
         { filename: sourcePath(options.transformStage ? 'mutation/avatar-performance-stage.js' : 'static/avatar/avatar-performance-stage.js') });
@@ -267,6 +268,174 @@ async function fixture(options = {}) {
     f.frames = frames;
     return f;
 }
+
+async function runInnerCancellation({ standalone = false, native = false, successorExpression = false, checkCleanup = true, ...options } = {}) {
+    const f = await fixture(options), entered = deferred(), gate = deferred(), admissions = [];
+    try {
+        f.apply({ ParamAngleX: 2 });
+        f.motionManager.state.currentPriority = 0;
+        f.manager.resolveAssetPath = file => file;
+        f.manager.emotionMapping = { expressions: { happy: ['happy.exp3.json'] } };
+        f.manager.fileReferences = { Motions: { happy: [{ File: 'happy.motion3.json' }] }, Expressions: [] };
+        f.model.motion = async (...args) => { admissions.push(args); return true; };
+        if (native) {
+            f.model.expression = async () => true;
+            f.manager.fileReferences.Expressions = [{ Name: 'happy', File: 'happy.exp3.json' }];
+        }
+        f.runtime.context.fetch = async () => ({ ok: true, json: async () => ({
+            Parameters: [{ Id: 'ParamAngleX', Value: 7 }], Meta: { Duration: 1 }, Curves: []
+        }) });
+        const reset = f.manager.resetTransientMotionAndExpressionState;
+        let preparingMotion = false;
+        f.manager.resetTransientMotionAndExpressionState = async function(...args) {
+            preparingMotion = true;
+            try { return await reset.apply(this, args); } finally { preparingMotion = false; }
+        };
+        const persistent = f.manager.applyPersistentExpressionsNative;
+        let blocked = false;
+        f.manager.applyPersistentExpressionsNative = async function(...args) {
+            const result = await persistent.apply(this, args);
+            if (!blocked && (standalone || preparingMotion)) { blocked = true; entered.resolve(); await gate.promise; }
+            return result;
+        };
+        const old = f.stage.acquire('inner-wait');
+        const pending = standalone ? f.stage.applyExpression('happy') : f.stage.applyEmotion('happy');
+        await entered.promise;
+        assert.equal(f.manager._activeTransientExpression, true, 'reach installed expression, not preflight');
+        if (!native) assert.ok(f.manager._manualExpressionListener);
+        const oldListener = f.manager._manualExpressionListener;
+        f.apply({ ParamAngleX: 3 });
+        f.stage.release(old.id, 'cancelled');
+        const removedAtRelease = !f.manager._manualExpressionListener;
+        const next = f.stage.acquire('successor');
+        let nextListener;
+        if (successorExpression) {
+            f.manager._installManualExpressionOverride([{ Id: 'ParamAngleX', Value: 9 }], 0);
+            nextListener = f.manager._manualExpressionListener;
+            assert.notEqual(nextListener, oldListener);
+        }
+        gate.resolve();
+        assert.equal(await pending, false);
+        assert.equal(f.manager._avatarPerformanceSessionOwners.get('motion'), next);
+        assert.equal(f.manager.savedModelParameters.ParamAngleX, 3);
+        if (successorExpression) assert.equal(f.manager._manualExpressionListener, nextListener);
+        else if (checkCleanup) {
+            assert.equal(f.manager._activeTransientExpression, false);
+            assert.equal(f.model.internalModel.events.listenerCount('beforeModelUpdate'), 0);
+            assert.equal(f.value('ParamAngleX'), 3);
+        }
+        f.stage.release(next.id, 'test_cleanup');
+        f.manager._removeManualExpressionOverride();
+        return { admissions: admissions.length, removedAtRelease };
+    } finally { gate.resolve(); f.release(); }
+}
+
+test('cancel after expression install during real motion preparation cleans its listener and admits no action', async () => {
+    assert.deepEqual(await runInnerCancellation(), { admissions: 0, removedAtRelease: true });
+});
+
+test('independent manual expression can be released during its resident-expression wait', async () => {
+    assert.deepEqual(await runInnerCancellation({ standalone: true }), { admissions: 0, removedAtRelease: true });
+});
+
+test('independent native expression publishes ownership before its resident-expression wait', async () => {
+    assert.deepEqual(await runInnerCancellation({ standalone: true, native: true }), { admissions: 0, removedAtRelease: true });
+});
+
+test('retired combined emotion leaves a successor expression installed while its motion preparation settles', async () => {
+    assert.deepEqual(await runInnerCancellation({ successorExpression: true }), { admissions: 0, removedAtRelease: true });
+});
+
+test('removing the inner motion continuation guard admits a cancelled action despite the outer false result', async () => {
+    const result = await runInnerCancellation({ transformEmotion(source) {
+        const begin = source.indexOf('Live2DManager.prototype.playMotion =');
+        const end = source.indexOf('Live2DManager.prototype.playSimpleMotion', begin);
+        const section = source.slice(begin, end);
+        const guard = "&& (typeof options.isCurrent !== 'function' || options.isCurrent())";
+        assert.ok(section.includes(guard));
+        return source.slice(0, begin) + section.replace(guard, '') + source.slice(end);
+    } });
+    assert.deepEqual(result, { admissions: 1, removedAtRelease: true });
+});
+
+test('removing early expression resource publication reproduces the installed listener leak', async () => {
+    const result = await runInnerCancellation({ checkCleanup: false, transformEmotion(source) {
+        assert.ok(source.includes('publishAppliedExpression();'));
+        return source.replaceAll('publishAppliedExpression();', '/* ownership publication removed */');
+    } });
+    assert.deepEqual(result, { admissions: 0, removedAtRelease: false });
+});
+
+test('a completed live emotion still allows its motion end timer to clear the admitted motion', async () => {
+    const f = await fixture();
+    try {
+        f.motionManager.state.currentPriority = 0;
+        f.manager.resolveAssetPath = file => file;
+        f.manager.fileReferences = { Motions: { happy: [{ File: 'happy.motion3.json' }] } };
+        f.manager.emotionMapping = { expressions: {} };
+        f.model.motion = async () => true;
+        f.runtime.context.fetch = async () => ({ ok: true, json: async () => ({ Meta: { Duration: 1 }, Curves: [] }) });
+        let requestCurrent = true;
+        await f.manager.setEmotion('happy', { isCurrent: () => requestCurrent });
+        assert.equal(f.manager.isEmotionChanging, false);
+        assert.equal(f.manager._emotionChangeOperation, null);
+        const timer = f.manager.motionTimer;
+        assert.ok(timer && timer.id.callback, 'ordinary emotion must actually admit a motion and end timer');
+        let cleanups = 0;
+        f.manager.clearEmotionEffects = () => { cleanups++; };
+        // A newer emotion can replace the expression while retaining an already
+        // admitted busy motion. Its timer owns that motion by generation.
+        requestCurrent = false;
+        timer.id.callback();
+        assert.equal(cleanups, 1, 'motion cleanup survives successful outer operation completion');
+    } finally { f.release(); }
+});
+
+test('motion metadata decoded after a Core replacement cannot publish tracked IDs or an end timer', async () => {
+    const f = await fixture(), next = createMao(f.runtime), entered = deferred(), gate = deferred();
+    try {
+        f.motionManager.state.currentPriority = 0;
+        f.manager.resolveAssetPath = file => file;
+        f.manager.fileReferences = { Motions: { happy: [{ File: 'happy.motion3.json' }] } };
+        f.manager.emotionMapping = { expressions: {} };
+        let admissions = 0;
+        f.model.motion = async () => { admissions++; return true; };
+        f.runtime.context.fetch = async () => ({ ok: true, json: async () => {
+            entered.resolve(); await gate.promise;
+            return { Meta: { Duration: 1 }, Curves: [{ Target: 'Parameter', Id: 'ParamAngleX' }] };
+        } });
+        const pending = f.manager.setEmotion('happy');
+        await entered.promise;
+        assert.equal(admissions, 1, 'reach metadata decode after actual manager admission');
+        f.model.internalModel.coreModel = next.core;
+        const successorIds = new Set(['ParamAngleY']);
+        f.manager._activeMotionParamIds = successorIds;
+        next.core.setParameterValueById('ParamAngleX', 9);
+        gate.resolve();
+        assert.equal(await pending, false);
+        assert.equal(f.manager._activeMotionParamIds, successorIds);
+        assert.equal(f.manager.motionTimer, null);
+        assert.equal(next.value('ParamAngleX'), 9);
+    } finally { gate.resolve(); f.release(); next.release(); }
+});
+
+test('resident expression fallback after Core replacement writes neither the retired Core nor its successor', async () => {
+    const f = await fixture(), next = createMao(f.runtime), entered = deferred(), gate = deferred();
+    try {
+        f.core.setParameterValueById('ParamAngleX', 2);
+        f.manager.persistentExpressionNames = ['resident'];
+        f.manager.persistentExpressionParamsByName = { resident: [{ Id: 'ParamAngleX', Value: 8 }] };
+        f.model.expression = async () => { entered.resolve(); await gate.promise; return false; };
+        const pending = f.manager.applyPersistentExpressionsNative(true);
+        await entered.promise;
+        f.model.internalModel.coreModel = next.core;
+        next.core.setParameterValueById('ParamAngleX', 9);
+        gate.resolve();
+        assert.equal(await pending, false);
+        assert.equal(f.value('ParamAngleX'), 2);
+        assert.equal(next.value('ParamAngleX'), 9);
+    } finally { gate.resolve(); f.release(); next.release(); }
+});
 
 test('a capture without temporary writes never rewinds model parameters or configuration', async () => {
     const f = await fixture();

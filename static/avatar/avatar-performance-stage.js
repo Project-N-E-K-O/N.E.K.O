@@ -1460,7 +1460,8 @@
             if ((manager._transientExpressionGeneration || 0) !== owned.generation) return;
             if (owned.listener && manager._manualExpressionListener !== owned.listener) return;
             if (owned.paramIds && manager._activeExpressionParamIds !== owned.paramIds) return;
-            if (!owned.listener && manager._manualExpressionListener !== owned.previousListener) return;
+            if (owned.pending && !owned.listener && manager._manualExpressionListener !== owned.previousListener) return;
+            if (!owned.pending && (manager._manualExpressionListener || null) !== owned.listener) return;
             // Cancel our pending request only while no newer manual owner has
             // taken over. The earlier listener is left installed.
             if (typeof manager._invalidateExpressionPlayback === 'function') manager._invalidateExpressionPlayback();
@@ -1490,15 +1491,27 @@
             if (!this.isCurrentState(state) || state.session.cancelled) return false;
             const previousListener = state.manager._manualExpressionListener;
             const previousParamIds = state.manager._activeExpressionParamIds;
-            const pending = callback();
             const owned = { generation: state.manager._transientExpressionGeneration || 0,
                 listener: null, emitter: null, paramIds: null, pending: true,
                 previousListener: previousListener, previousParamIds: previousParamIds };
             state.expression = owned;
+            const onApplied = (resource) => {
+                if (!this.isCurrentState(state) || state.session.cancelled || state.expression !== owned
+                    || resource.model !== state.model || resource.internalModel !== state.internalModel
+                    || resource.coreModel !== state.coreModel) return;
+                Object.assign(owned, { generation: resource.generation, listener: resource.listener,
+                    emitter: resource.emitter, paramIds: resource.paramIds, pending: false });
+                if (owned.paramIds && typeof owned.paramIds.forEach === 'function') {
+                    this.trackParameterWrites(Array.from(owned.paramIds));
+                }
+            };
+            const pending = callback(onApplied);
+            if (owned.pending) owned.generation = state.manager._transientExpressionGeneration || 0;
             const result = await pending;
             if (!this.isCurrentState(state) || state.session.cancelled || state.expression !== owned) return false;
             if ((state.manager._transientExpressionGeneration || 0) !== owned.generation) return false;
             if (result === false) return false;
+            if (!owned.pending) return result;
             owned.listener = state.manager._manualExpressionListener !== previousListener
                 ? state.manager._manualExpressionListener : null;
             owned.emitter = state.manager._manualExpressionEmitter;
@@ -2075,7 +2088,7 @@
                 }
 
                 if (groupName && this.hasMotion(groupName, options) && typeof manager.playMotion === 'function') {
-                    const played = await this.withPerformanceBypass(() => manager.playMotion(groupName));
+                    const played = await this.withPerformanceBypass(() => manager.playMotion(groupName, { isCurrent }));
                     if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;
@@ -2133,7 +2146,7 @@
                     }
                 }
                 const applied = await this.playOwnedExpression(
-                    () => this.withPerformanceBypass(() => manager.setEmotion(emotionName, { isCurrent })), state);
+                    onApplied => this.withPerformanceBypass(() => manager.setEmotion(emotionName, { isCurrent, onApplied })), state);
                 if (!isCurrent()) return false;
                 return applied !== false;
             }
@@ -2360,7 +2373,7 @@
                     if (!isCurrent()) return false;
                     this.mergeExpressionParamSnapshot(captured);
                     const played = await this.playOwnedExpression(
-                        () => this.withPerformanceBypass(() => manager.playExpression(candidateName || file, file)), state);
+                        onApplied => this.withPerformanceBypass(() => manager.playExpression(candidateName || file, file, { isCurrent, onApplied })), state);
                     if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;
@@ -2369,7 +2382,7 @@
 
                 if (candidateName && this.hasExpressionName(candidateName) && typeof manager.playExpression === 'function') {
                     const played = await this.playOwnedExpression(
-                        () => this.withPerformanceBypass(() => manager.playExpression(candidateName)), state);
+                        onApplied => this.withPerformanceBypass(() => manager.playExpression(candidateName, null, { isCurrent, onApplied })), state);
                     if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;
