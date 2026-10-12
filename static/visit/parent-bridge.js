@@ -143,7 +143,9 @@
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       endedVisitId: null,    // 最近结束的场次：它迟到的 wrap_up / ending 不再补建 iframe（只拦补建，不参与场次过滤）
       retiring: [],          // 已脱离父页、等它把清理做完的旧 iframe [{frame, timer, endOn}]
-      auxGen: { crop: 0, hidden: 0, away: 0 },   // 实时辅助状态各自的更新计数：重载快照只不覆盖查询期间更新过的那几项
+      auxGen: { crop: 0, hidden: 0, away: 0 },
+      away: false,           // guest 离家样式当前是否打着
+      reloadInFlight: null,  // 重载恢复里在路上的 reloadPageConfig（同时只发一个）   // 实时辅助状态各自的更新计数：重载快照只不覆盖查询期间更新过的那几项
       portraitWrapped: false,
     };
 
@@ -936,6 +938,7 @@
 
     /** A 侧：她出门了——模型容器 .visiting-away（半透明）+ 徽标；不用 .minimized（会断水印坐标链）。 */
     function setAway(on) {
+      state.away = !!on;
       MODEL_CONTAINER_IDS.forEach(function (id) {
         var el = doc.getElementById(id);
         if (el && el.classList) el.classList.toggle('visiting-away', !!on);
@@ -1065,13 +1068,17 @@
         var actionByPhase = { pending: 'pending', invite_ready: 'invite_ready', joining: 'joining', awaiting_accept: 'awaiting_accept', active: 'started', wrap_up: 'wrap_up' };
         var action = actionByPhase[snap.phase];
         if (!action) return false;
+        // 建 iframe 会清掉显隐 / 离家样式：先记下查询期间实时推来的值，建完再套回去
+        var live = { hidden: !!state.peerHidden, away: !!state.away };
         ensureFrame(snap.side, snap.visit_id);
         state.phase = snap.phase;
-        // 查询期间实时通道推过的对端构图 / 显隐 / 出门比快照新：只有没更新过的那几项才用快照
+        // 查询期间实时通道推过的对端构图 / 显隐 / 出门比快照新：更新过的用实时值，没更新过的才用快照
         var room = snap.room || {};
         if (auxGen.crop === state.auxGen.crop && (room.peer_crop === 'upper' || room.peer_crop === 'full')) state.peerCrop = room.peer_crop;
-        if (auxGen.away === state.auxGen.away && snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
-        if (auxGen.hidden === state.auxGen.hidden && snap.peer && snap.peer.hidden) setPeerHidden(true);
+        if (auxGen.away !== state.auxGen.away) setAway(live.away);
+        else if (snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
+        if (auxGen.hidden !== state.auxGen.hidden) setPeerHidden(live.hidden);
+        else if (snap.peer && snap.peer.hidden) setPeerHidden(true);
         return true;
       }).catch(function () {
         return false;
@@ -1096,9 +1103,16 @@
       return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
         var reload = win.reloadPageConfig;
         if (typeof reload !== 'function') return null;
-        // reloadPageConfig 里的 fetch 没有超时：每次最多等 RELOAD_ATTEMPT_MS（也不超过截止时间），挂住了还能再试
+        // reloadPageConfig 里的 fetch 没有超时：每次最多等 RELOAD_ATTEMPT_MS（也不超过截止时间）。等超时并不取消它，
+        // 上一次还在路上就接着等它、不再另发——否则慢的旧请求晚落定会把新结果（角色名 / 模型配置）覆盖掉或清空
+        if (!state.reloadInFlight) {
+          var p = Promise.resolve().then(function () { return reload(); });
+          state.reloadInFlight = p;
+          var clear = function () { if (state.reloadInFlight === p) state.reloadInFlight = null; };
+          p.then(clear, clear);
+        }
         var left = Math.max(0, Math.min(RELOAD_ATTEMPT_MS, deadline - now()));
-        return withTimeout(Promise.resolve().then(function () { return reload(); }), left, null);
+        return withTimeout(state.reloadInFlight, left, null);
       }).then(function () {
         return recoverFromPageConfig(attempt + 1, deadline, overall);
       });

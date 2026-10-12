@@ -571,7 +571,8 @@ def test_page_config_reload_attempts_are_bounded():
         const h = makeBridge();
         let reloads = 0;
         h.ctx.lanlan_config = { lanlan_name: '' };
-        h.ctx.reloadPageConfig = () => { reloads += 1; return new Promise(() => {}); };   // fetch 挂住
+        // fetch 挂住：每次尝试仍有上限、总截止时间照样生效；挂着的那次不重复发（晚落定的旧请求会覆盖新结果）
+        h.ctx.reloadPageConfig = () => { reloads += 1; return new Promise(() => {}); };
         let result = 'pending';
         h.bridge.recoverFromPageConfig().then((r) => { result = r; });
         for (let i = 0; i < 20; i++) await advance(1000);
@@ -579,7 +580,7 @@ def test_page_config_reload_attempts_are_bounded():
         """,
         files=BRIDGE_FILES,
     )
-    assert out["result"] is False and out["reloads"] >= 2
+    assert out == {"reloads": 1, "result": False}
 
 
 def test_visit_state_request_is_bounded_and_retried():
@@ -933,3 +934,45 @@ def test_reload_snapshot_keeps_fields_that_were_not_updated_live():
         files=BRIDGE_FILES,
     )
     assert out == {"crop": "full", "hidden": False}
+
+
+def test_live_hidden_and_away_survive_frame_creation_during_recovery():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        // host：查询期间来了 peer_hidden，快照说没隐藏 → 建完 iframe 仍是隐藏
+        {
+          const h = makeBridge();
+          let respond;
+          h.ctx.fetch = () => new Promise((r) => { respond = r; });
+          h.bridge.recoverAfterReload('Neko');
+          await settle();
+          h.bridge.onStateChange({ type: 'visit_state_change', action: 'peer_hidden', side: 'host', visit_id: VISIT_ID });
+          respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side: 'host', phase: 'active', room: {}, peer: { hidden: false } }) });
+          await settle();
+          runs.host = { hidden: h.bridge._state.peerHidden === true, dim: h.ctx.document.getElementById('visit-frame').style.opacity };
+          h.side = 'host'; change(h, 'ended'); await advance(6100);
+        }
+        // guest：查询期间来了 departed，快照阶段不是 active → 建完 iframe 仍打着离家样式
+        {
+          const h = makeBridge();
+          const box = h.ctx.document.createElement('div');
+          box.id = 'live2d-container';
+          h.ctx.document.body.appendChild(box);
+          let respond;
+          h.ctx.fetch = () => new Promise((r) => { respond = r; });
+          h.bridge.recoverAfterReload('Neko');
+          await settle();
+          h.bridge.onStateChange({ type: 'visit_state_change', action: 'departed', side: 'guest', visit_id: VISIT_ID });
+          respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side: 'guest', phase: 'joining' }) });
+          await settle();
+          runs.guest = { away: box.classList.contains('visiting-away') };
+          h.side = 'guest'; change(h, 'ended'); await advance(6100);
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["host"]["hidden"] is True and out["host"]["dim"] not in ("", None)
+    assert out["guest"] == {"away": True}
+
