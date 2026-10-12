@@ -1191,6 +1191,18 @@
         return t('visit.error.generic', '没能完成，请稍后再试');
     }
 
+    // 构图偏好由设置分组（visit-settings.js，只在 index.html）写进 localStorage；chat.html 直接读同一个键
+    function readCrop() {
+        if (window.nekoVisitSettings && typeof window.nekoVisitSettings.getCrop === 'function') {
+            return window.nekoVisitSettings.getCrop();
+        }
+        try {
+            var value = localStorage.getItem('nekoVisitCrop');
+            if (value === 'upper' || value === 'full') return value;
+        } catch (_) { /* noop */ }
+        return 'upper';
+    }
+
     async function startInvite() {
         var catgirl = currentCatgirl();
         if (!catgirl || starting) return;
@@ -1198,8 +1210,7 @@
         entryMenuOpen = false;
         render();
         try {
-            var crop = window.nekoVisitSettings && typeof window.nekoVisitSettings.getCrop === 'function'
-                ? window.nekoVisitSettings.getCrop() : 'upper';
+            var crop = readCrop();
             var result = await withPersonaRetry(function () {
                 return api('POST', '/api/visit/rooms', { catgirl: catgirl, crop: crop });
             });
