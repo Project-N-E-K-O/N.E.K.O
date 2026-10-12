@@ -638,7 +638,7 @@ function streamingAudioFixture({ paced = false } = {}) {
     const f = fixture({ paced, playbackTransform(source) {
         const call = 'void processIncomingAudioBlobQueue();';
         assert.ok(source.includes(call), 'observe the real queue task without replacing its implementation');
-        return source.replace(call, 'window.testIncomingAudioTask = processIncomingAudioBlobQueue();');
+        return source.replaceAll(call, 'window.testIncomingAudioTask = processIncomingAudioBlobQueue();');
     } });
     class AudioBlob {
         constructor(readBuffer) { this.readBuffer = readBuffer; }
@@ -748,9 +748,11 @@ for (const paced of [false, true]) {
                 await entered;
                 assert.equal(f.S.processingAudioBlobTurnId, 'assistant');
                 const session = f.handoff();
-                f.header('successor'); f.blob(); // queued behind the old worker, before it completes
+                f.header('successor');
+                const successorTask = f.blob(); // may queue behind or take over the retired worker
                 release(phase === 'blob-read' ? f.pcm() : decoded);
                 await pending;
+                await successorTask;
                 assert.equal(f.sources.length, 2, 'only the new speech may publish after the old decode');
                 assert.equal(f.sources[1]._nekoSpeechId, 'successor');
                 assert.equal(f.S.audioBufferQueue.length, 0);
