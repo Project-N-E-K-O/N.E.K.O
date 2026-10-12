@@ -1608,7 +1608,7 @@ def _build_transition_judge_messages(
             + '}。offer_present、valid 固定 false；违规枚举只允许 player_action、scene_boundary、author_boundary；按钮索引从0开始。'
             "先只读 candidate_segments，确定正文实际写出了什么，再查历史和作者约束。"
             "正文违规必须引用 candidate_segments 中确实存在的文字；"
-            "target_scene 的 character_state、opening_situation 是作者模板，不是待播正文，不能把其断言报成正文违规。"
+            "target_scene 的 character_state、opening_situation 与 story_direction 是作者模板，不是待播正文，不能把其断言报成正文违规。"
             "历史已公开的状态即为本轮起点；本次不追溯处罚旧稿，即使旧稿曾跳过作者计划，也不能要求本轮重演或否认已提交结果。"
             # 原样保留解析器策略，通过输出合同降低“理由拒绝、数组放行”的自相矛盾。
             "先确定违规数组，再写对应理由；理由认定未授权就必须把player_action写入body_violations，不能只写在理由里。"

@@ -402,15 +402,24 @@ def project_narrative_state(session: Any, *, focus: str = "") -> dict[str, Any] 
             bool(entity.partition(":")[2] and entity.partition(":")[2] in focus),
             max(data["source_revision"] for data in visible[entity].values()), entity,
         ), reverse=True)
-        for entity in prioritized:
-            add_entity(entity)
-            if tokens() > 1568:
-                result["current"].pop(entity, None)
-                result["last_known"].pop(entity, None)
+        def retain_prefix(count: int) -> None:
+            result["current"].clear()
+            result["last_known"].clear()
+            for entity in prioritized[:count]:
+                add_entity(entity)
+            metadata.update(retained_entities=count, omitted_entities=len(visible) - count,
+                            omitted_essential_entities=len(essential) - count)
+
+        # Search priority prefixes instead of retokenizing for every held item.
+        low, high = 0, len(prioritized)
+        while low < high:
+            middle = (low + high + 1) // 2
+            retain_prefix(middle)
+            if tokens() <= 1568:
+                low = middle
             else:
-                metadata["retained_entities"] += 1
-                metadata["omitted_entities"] -= 1
-                metadata["omitted_essential_entities"] -= 1
+                high = middle - 1
+        retain_prefix(low)
     optional = sorted(set(visible) - essential, key=lambda entity: (
         any(data["source_node_id"] == session.current_node_id for data in visible[entity].values()),
         max(data["source_revision"] for data in visible[entity].values()), entity,

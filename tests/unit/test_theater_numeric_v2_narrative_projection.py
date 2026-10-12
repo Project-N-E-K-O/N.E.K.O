@@ -170,3 +170,21 @@ async def test_next_actor_turn_generates_after_held_items_overflow(monkeypatch, 
     assert len(sent) == 1
     assert "omitted_essential_entities" in sent[0][1].content
     assert session.narrative_state == state
+
+
+def test_overflow_packing_uses_logarithmic_whole_projection_tokenizations(monkeypatch):
+    from services.theater import numeric_v2_narrative as narrative
+
+    session = _session(all_player=True)
+    calls = []
+
+    def counted(text):
+        calls.append(len(text))
+        return count_tokens(text)
+
+    monkeypatch.setattr(narrative, "count_tokens", counted)
+    projection = narrative.project_narrative_state(session, focus="旧信匣")
+    assert len(calls) <= 20
+    assert count_tokens(json.dumps(projection, ensure_ascii=False, separators=(",", ":"))) <= 1600
+    assert projection["current"]["item:旧信匣"]["holder"]["value"] == "player"
+    assert projection["projection"]["omitted_essential_entities"] > 0

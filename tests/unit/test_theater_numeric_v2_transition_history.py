@@ -190,6 +190,7 @@ def test_transition_review_keeps_source_history_and_actual_destination():
     from services.theater.numeric_v2_context import scene_opening_text
     assert data['target_scene']['opening_situation'] == scene_opening_text(engine.nodes[outcome.session.current_node_id]['story_beat'])
     assert data['target_scene']['story_direction'] == ending_direction
+    assert 'story_direction 是作者模板，不是待播正文' in messages[0].content
     assert data['scene_context']
     assert 'next_scene_direction' not in data
 
