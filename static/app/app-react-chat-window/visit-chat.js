@@ -738,14 +738,28 @@
             if (!visit.reconnecting) return;
             var catgirl = currentCatgirl();
             if (!catgirl) return;
+            var polledVisitId = visit.visitId;
             var result = await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(catgirl));
             var body = result.body;
+            // 请求在路上时这一场已经结束、新一场开始：旧请求的快照不能拿来收新一场
+            if (visit.visitId !== polledVisitId) return;
             if (result.status === 200 && body && typeof body === 'object' && visit.reconnecting) {
                 // ended 帧可能在断线里丢了：快照说没在串门（或已是另一场）就收掉这一场；同一场则按快照校正阶段
                 applyState(body, false);
             }
             if (visit.reconnecting) pollReconnect();
         }, RECONNECT_POLL_MS);
+    }
+
+    // 换到另一场：清掉上一场的状态、台词拼接、待认领的本地气泡与访客头像（line_id 按场次计数）
+    function startNewVisit(visitId) {
+        visit = blankVisit();
+        visit.visitId = visitId;
+        peerAvatarUrl = '';
+        applyPreviewedPeer();
+        lines.forEach(function (entry) { if (entry.stallTimer) clearTimeout(entry.stallTimer); });
+        lines.clear();
+        pendingLocal = [];
     }
 
     // guest 侧的状态帧不带对端身份：出门确认时预览到的显示名 / 短码按场次带进来
@@ -762,15 +776,7 @@
         var action = String(frame.action || '');
         // 另一场的迟到帧（这一场还在进行）：不动
         if (visit.visitId && visit.visitId !== visitId && inVisit() && action !== 'pending') return;
-        if (visit.visitId !== visitId) {
-            visit = blankVisit();
-            visit.visitId = visitId;
-            peerAvatarUrl = '';
-            applyPreviewedPeer();
-            lines.forEach(function (entry) { if (entry.stallTimer) clearTimeout(entry.stallTimer); });
-            lines.clear();
-            pendingLocal = [];
-        }
+        if (visit.visitId !== visitId) startNewVisit(visitId);
         if (frame.side === 'host' || frame.side === 'guest') {
             visit.side = frame.side;
             rememberSide(visitId, frame.side);
@@ -1919,50 +1925,58 @@
             ? phase : null;
     }
 
+    // 快照里的对端信息与重载前的台词并进这一场；onlyFill：只填空缺字段（帧带来的更新不覆盖）
+    function mergeSnapshotDetails(state, onlyFill) {
+        var peer = state.peer;
+        if (peer && typeof peer === 'object') {
+            if (peer.cat_name && (!onlyFill || !visit.peerName)) visit.peerName = String(peer.cat_name);
+            if (peer.short_id && (!onlyFill || !visit.peerShortId)) visit.peerShortId = String(peer.short_id);
+            if (peer.human_label && (!onlyFill || !visit.peerHumanLabel)) visit.peerHumanLabel = String(peer.human_label);
+            if (!onlyFill) visit.peerHidden = peer.hidden === true;
+        }
+        if (onlyFill) {
+            if (state.cross_region === true) visit.crossRegion = true;
+        } else {
+            visit.crossRegion = state.cross_region === true;
+        }
+        // 重载前的台词按 visit_line 同形重放（已有的 line_id 不重复上屏）
+        (Array.isArray(state.transcript) ? state.transcript : []).forEach(function (frame) {
+            if (frame && frame.type === 'visit_line' && !lines.has(String(frame.line_id || ''))) onLineFinal(frame);
+        });
+    }
+
     function applyState(state, stale) {
         if (!state || typeof state !== 'object') return;
         releaseEnabled = state.enabled === true;
+        var snapshotVisit = state.active === true && typeof state.visit_id === 'string' && state.visit_id
+            && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
         if (stale) {
-            // 期间到的帧若没定下阶段（peer_hidden / ending_soon / reconnecting 等），阶段仍按快照补上；
-            // 帧已定下的阶段（更新）不覆盖
-            if (visit.phase === null && state.active === true && state.visit_id && phaseFromState(state.phase)
-                    && endedVisitIds.indexOf(state.visit_id) === -1
-                    && (!visit.visitId || visit.visitId === state.visit_id)) {
-                visit.visitId = state.visit_id;
-                visit.side = state.side || state.role || visit.side;
-                visit.phase = phaseFromState(state.phase);
+            // 读的期间到过 visit_state_change：帧定下的阶段为准；帧没定下阶段（peer_hidden / ending_soon /
+            // reconnecting 等）时按快照补上。同一场的对端信息与台词照样并进来
+            if (snapshotVisit && (!visit.visitId || visit.visitId === snapshotVisit)) {
+                if (!visit.visitId) startNewVisit(snapshotVisit);
+                if (visit.phase === null && phaseFromState(state.phase)) {
+                    visit.side = state.side || state.role || visit.side;
+                    visit.phase = phaseFromState(state.phase);
+                }
                 visit.ownName = currentCatgirl();
+                mergeSnapshotDetails(state, true);
             }
             render();
             return;
         }
-        var phase = state.phase;
-        if (state.active === true && typeof state.visit_id === 'string' && state.visit_id
-                && endedVisitIds.indexOf(state.visit_id) === -1) {
-            if (visit.visitId !== state.visit_id) {
-                visit = blankVisit();
-                visit.visitId = state.visit_id;
-            }
+        if (snapshotVisit) {
+            if (visit.visitId !== snapshotVisit) startNewVisit(snapshotVisit);
             visit.side = state.side || state.role || visit.side;
-            visit.phase = phase === 'active' ? 'active' : phase;
+            if (visit.side) rememberSide(snapshotVisit, visit.side);
+            visit.phase = phaseFromState(state.phase) || visit.phase;
             visit.reconnecting = state.reconnecting === true;
-            visit.crossRegion = state.cross_region === true;
             visit.ownName = currentCatgirl();
-            var peer = state.peer;
-            if (peer && typeof peer === 'object') {
-                if (peer.cat_name) visit.peerName = String(peer.cat_name);
-                if (peer.short_id) visit.peerShortId = String(peer.short_id);
-                if (peer.human_label) visit.peerHumanLabel = String(peer.human_label);
-                visit.peerHidden = peer.hidden === true;
-            }
+            mergeSnapshotDetails(state, false);
             if (visit.reconnecting) pollReconnect();
-            // 重载前的台词按 visit_line 同形重放（已有的 line_id 不重复上屏）
-            (Array.isArray(state.transcript) ? state.transcript : []).forEach(function (frame) {
-                if (frame && frame.type === 'visit_line' && !lines.has(String(frame.line_id || ''))) onLineFinal(frame);
-            });
-        } else if (inVisit() && state.active !== true) {
-            // 断线期间那一场已经结束、ended 帧没收到
-            visit = blankVisit();
+        } else if (inVisit() && (state.active !== true || state.visit_id !== visit.visitId)) {
+            // 断线期间那一场已经结束、ended 帧没收到：走与 ended 帧同一个收尾（留下查看详情 / 导出 / 举报）
+            onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
         }
         render();
     }

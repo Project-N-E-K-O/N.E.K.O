@@ -653,6 +653,66 @@ const report = {};
     report.recon_after_active = h.chat.isActive();
     report.recon_after_disabled = h.I.getVisitChatView().composerDisabled;
   }
+  // ── 重连轮询的旧请求回来时已换成新一场：不拿旧快照收新一场 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }; } };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.state('reconnecting');
+    h.advance(5100);          // 轮询请求发出、挂起
+    await h.settle();
+    h.frame({ type: 'visit_state_change', action: 'ended', visit_id: VID, side: 'host', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'started', visit_id: VID2, side: 'host', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'reconnecting', visit_id: VID2, side: 'host', ts: 1 });
+    release();
+    await h.settle();
+    report.old_poll_new_visit = h.chat._test.state().visit.visitId === VID2 && h.chat.isActive();
+  }
+  // ── 读快照期间被非阶段帧抢先：对端名与重载前台词照样并进来 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: {
+      active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true, peer: { cat_name: '小白', short_id: 'QWERTY' },
+      transcript: [{ type: 'visit_line', visit_id: VID, line_id: 'old1', text: '重载前的话', final: true, truncated: false,
+        speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } }] } }; } };
+    const h = createHarness({ routes });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.chat.handleFrame({ type: 'visit_state_change', action: 'peer_hidden', visit_id: VID, side: 'host', ts: 1 });
+    release();
+    await probe;
+    report.stale_merge_peer = h.chat._test.state().visit.peerName;
+    report.stale_merge_line = h.lineText('old1');
+  }
+  // ── 快照带来另一场：清掉上一场的台词拼接与访客头像 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: {
+      active: true, visit_id: VID2, phase: 'active', side: 'host', enabled: true,
+      transcript: [{ type: 'visit_line', visit_id: VID2, line_id: 'L1', text: '新一场的第一句', final: true, truncated: false,
+        speaker: { side: 'guest', kind: 'cat', name: '小黑', self: false } }] } }) };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'L1', text: '旧一场的第一句', final: true, truncated: false,
+      speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } });
+    h.win.dispatchEvent(new CustomEventLike('neko-visit-first-frame', { detail: { dataURL: 'data:image/png;base64,OLD' } }));
+    await h.chat.afterBind(h.socket, '咪咪');
+    report.snapshot_switch_line = h.chat._test.state().lines.get('L1').text;
+    report.snapshot_switch_avatar = h.win.__lastAvatar || '';
+  }
+  // ── 重连轮询发现已结束：照样留下该场的结束消息（查看详情 / 导出 / 举报） ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.state('reconnecting');
+    h.advance(5100);
+    await h.settle();
+    report.recover_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -850,3 +910,21 @@ def test_reconnect_poll_applies_an_ended_snapshot(report):
     assert report["recon_before"] is True
     assert report["recon_after_active"] is False
     assert report["recon_after_disabled"] is False
+
+
+def test_an_old_reconnect_poll_does_not_clear_the_next_visit(report):
+    assert report["old_poll_new_visit"] is True
+
+
+def test_stale_snapshot_still_merges_peer_and_history(report):
+    assert report["stale_merge_peer"] == "小白"
+    assert report["stale_merge_line"] == "重载前的话"
+
+
+def test_snapshot_visit_switch_resets_line_and_avatar_caches(report):
+    assert report["snapshot_switch_line"] == "新一场的第一句"
+    assert report["snapshot_switch_avatar"] == ""
+
+
+def test_snapshot_recovery_of_an_ended_visit_keeps_its_ended_message(report):
+    assert report["recover_ended_message"] is True
