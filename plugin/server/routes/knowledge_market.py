@@ -703,17 +703,27 @@ def _artifact_url_allowed(url: str, *, final: bool) -> bool:
     return not final or parsed.path.lower().endswith(_ARTIFACT_SUFFIX)
 
 
-_mirror_measure: tuple[float, tuple[dict[str, object], ...]] | None = None
+# "at" / "sources": the latest result; "task": the measurement in flight.
+_mirror_cache: dict[str, Any] = {}
 
 
 async def _measured_github_sources() -> tuple[dict[str, object], ...]:
-    """Latest mirror speed test (shared with the plugin install path), reused for a while."""
-    global _mirror_measure
+    """Latest mirror speed test (shared with the plugin install path), reused for a while.
+
+    Workers that find no fresh result share one measurement instead of each
+    probing every mirror.
+    """
     loop = asyncio.get_running_loop()
-    if _mirror_measure is not None and loop.time() - _mirror_measure[0] < _MIRROR_MEASURE_TTL_SECONDS:
-        return _mirror_measure[1]
-    measured = await _measure_github_proxy_sources()
-    _mirror_measure = (loop.time(), measured)
+    at = _mirror_cache.get("at")
+    if at is not None and loop.time() - at < _MIRROR_MEASURE_TTL_SECONDS:
+        return _mirror_cache["sources"]
+    task = _mirror_cache.get("task")
+    if task is None or task.done():
+        task = asyncio.create_task(_measure_github_proxy_sources(), name="knowledge-mirror-measure")
+        _mirror_cache["task"] = task
+    measured = await asyncio.shield(task)
+    if _mirror_cache.get("task") is task:
+        _mirror_cache.update(at=loop.time(), sources=measured, task=None)
     return measured
 
 
@@ -970,6 +980,11 @@ async def _finish_removal(package_id: int, result: dict[str, Any]) -> dict[str, 
         reason = str(result.get("reason") or "subscription_removal_failed")
         if reason in _BUSY_REASONS:
             raise _unsubscribe_error("knowledge_busy", 503, retryable=True)
+        if reason == "not_found":
+            # Removed locally between resolving it and removing it: nothing
+            # left here, and the market's record must go all the same.
+            _report_unsubscribe_later(package_id)
+            return _not_installed_result()
         raise _unsubscribe_error(reason)
     _report_unsubscribe_later(package_id)
     return {**result, "removed": True, "remote_report": "scheduled"}
@@ -1052,13 +1067,18 @@ async def _cancel_package_imports(package_id: int, pack_id: str, deadline: float
                 if job_id and job_id not in cancelled:
                     cancelled.add(job_id)
                     try:
-                        await _main_call(
+                        reply = await _main_call(
                             "POST",
                             "packs/jobs/cancel",
                             json_body={"job_id": job_id},
                             timeout=max(_remaining(deadline), 0.5),
                         )
                     except _TaskError:
+                        reply = {"ok": False, "reason": "main_server_unavailable"}
+                    if reply.get("ok") is not True and reply.get("reason"):
+                        # Not answered (a hop failed, the service was busy): try
+                        # again next round. A plain refusal without a reason is
+                        # a job past its commit point, which lands on its own.
                         cancelled.discard(job_id)
         await _sleep(min(_REMOVAL_STATUS_POLL_SECONDS, _remaining(deadline)))
     raise _unsubscribe_error("knowledge_busy", 503, retryable=True)

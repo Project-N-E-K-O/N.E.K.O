@@ -93,7 +93,10 @@ class FakeMain:
 
 @pytest.fixture
 def env(monkeypatch):
-    for state in (km._tasks, km._task_workers, km._installations, km._active_package_tasks, km._unsubscribing, km._background):
+    for state in (
+        km._tasks, km._task_workers, km._installations, km._active_package_tasks,
+        km._unsubscribing, km._background, km._mirror_cache,
+    ):
         state.clear()
     main = FakeMain()
     sleeps: list[float] = []
@@ -660,6 +663,38 @@ async def test_unsubscribe_waits_for_an_import_that_is_not_a_job_yet(env):
     assert state["cancelled"] is True
 
 
+async def test_an_unanswered_cancel_is_sent_again(env):
+    main = env["main"]
+    state = {"job": "queued"}
+
+    async def jobs():
+        return {"ok": True, "jobs": [_job("j7", state["job"])], "admitting": []}
+
+    replies = iter([{"ok": False, "reason": "memory_server_unreachable"}, {"ok": True, "job_id": "j7"}])
+
+    async def cancel():
+        reply = next(replies)
+        if reply["ok"]:
+            state["job"] = "cancelled"
+        return reply
+
+    main.on("GET", "packs/jobs", jobs)
+    main.on("POST", "packs/jobs/cancel", cancel)
+    main.on("GET", "packs", {"ok": True, "packs": []})
+    response = await _unsubscribe(env["http"])
+    assert response.status_code == 200 and response.json()["cancelled"] is True
+    assert main.paths().count("POST packs/jobs/cancel") == 2
+
+
+async def test_a_pack_removed_locally_meanwhile_is_not_an_unsubscribe_error(env):
+    main = env["main"]
+    main.on("GET", "packs", {"ok": True, "packs": [_installed()]})
+    main.on("POST", "packs/remove", {"ok": False, "reason": "not_found"})
+    response = await _unsubscribe(env["http"])
+    assert response.status_code == 200 and response.json()["not_installed"] is True
+    assert env["reports"] == [("unsubscribe", 42)]
+
+
 async def test_unsubscribe_cancels_an_import_whose_install_answer_was_lost(env):
     main = env["main"]
     # The install request reached Main and staged a job, but no answer came back.
@@ -727,6 +762,25 @@ async def test_download_sources_follow_the_speed_test(monkeypatch):
     assert await km._artifact_sources("https://objects.githubusercontent.com/x.neko-knowledge.json") == [
         "https://objects.githubusercontent.com/x.neko-knowledge.json"
     ]
+
+
+async def test_concurrent_workers_share_one_mirror_measurement(monkeypatch):
+    km._mirror_cache.clear()
+    calls = 0
+
+    async def measure():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return ({"id": "github-direct", "url": "https://github.com/", "available": True, "latency_ms": 10},)
+
+    monkeypatch.setattr(km, "_measure_github_proxy_sources", measure)
+    results = await asyncio.gather(*(km._measured_github_sources() for _ in range(4)))
+    assert calls == 1
+    assert all(result == results[0] for result in results)
+    await km._measured_github_sources()  # still fresh: no new measurement
+    assert calls == 1
+    km._mirror_cache.clear()
 
 
 async def test_download_falls_through_failing_and_tampering_sources(monkeypatch):
