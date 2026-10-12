@@ -205,11 +205,10 @@
 
             try {
                 // A displaced assistant sampler cannot resume after this owner ends.
-                // Retire its audible sources at the actual Live2D handoff, without
-                // resetting the shared decoder or adding an asynchronous startup gap.
-                if (session.mouthOwner && window.appState && window.appState.isPlaying
-                    && typeof window.clearAudioQueueWithoutDecoderReset === 'function') {
-                    window.clearAudioQueueWithoutDecoderReset();
+                // Retire its current speech at the actual Live2D handoff, including
+                // later chunks and in-flight decode, without a startup await.
+                if (session.mouthOwner && window.appAudioPlayback) {
+                    window.appAudioPlayback.interruptCurrentAssistantSpeech();
                 }
                 const animate = (now) => {
                     if (this.currentMouthMotionSession !== session) {

@@ -206,24 +206,6 @@ test('real Live2D bridge still acquires and releases guide ownership', () => {
     assert.equal(f.state().owner, null); assert.equal(f.state().opening, 0);
 });
 
-for (const modelType of ['mmd', 'live2d']) {
-    test(`guide handoff does not clear assistant playback for ${modelType === 'mmd' ? 'MMD legacy dispatch' : 'an idle assistant'}`, () => {
-        const f = fixture({ realBridge: true, modelType });
-        f.window.appState = { isPlaying: modelType === 'mmd' };
-        let clears = 0;
-        f.window.clearAudioQueueWithoutDecoderReset = () => { clears++; };
-        const session = f.queue.startGuideMouthMotion('guide', { analyser: f.analyser });
-        try {
-            assert.ok(session);
-            f.sample(session);
-            assert.equal(clears, 0);
-            assert.ok(f.state().opening > 0);
-            if (modelType === 'mmd') assert.equal(session.mouthOwner, undefined);
-            else assert.ok(session.mouthOwner);
-        } finally { f.queue.stopGuideMouthMotion(session); }
-    });
-}
-
 function playbackFixture(mode, failStart = false) {
     let signalStarted;
     const started = new Promise(resolve => { signalStarted = resolve; });

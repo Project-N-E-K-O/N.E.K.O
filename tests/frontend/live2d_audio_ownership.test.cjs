@@ -634,6 +634,194 @@ test('AudioManager failed source start releases its new owner', () => {
     assert.equal(f.frames.size, 0);
 });
 
+function streamingAudioFixture({ paced = false } = {}) {
+    const f = fixture({ paced, playbackTransform(source) {
+        const call = 'void processIncomingAudioBlobQueue();';
+        assert.ok(source.includes(call), 'observe the real queue task without replacing its implementation');
+        return source.replace(call, 'window.testIncomingAudioTask = processIncomingAudioBlobQueue();');
+    } });
+    class AudioBlob {
+        constructor(readBuffer) { this.readBuffer = readBuffer; }
+        arrayBuffer() { return this.readBuffer(); }
+    }
+    const signals = [];
+    class Socket {
+        static OPEN = 1;
+        constructor(url) { this.url = url; this.readyState = 1; }
+        send(data) { signals.push(JSON.parse(data)); }
+    }
+    f.context.Blob = AudioBlob;
+    f.context.WebSocket = Socket;
+    f.context.Node = { ELEMENT_NODE: 1 };
+    let decoderResets = 0;
+    f.window.resetOggOpusDecoder = async () => { decoderResets++; };
+    f.window.t = key => key;
+    f.window.location.protocol = 'http:';
+    f.window.location.host = 'localhost:48911';
+    f.window.lanlan_config.lanlan_name = '';
+    f.S.audioPlayerContext.createBuffer = (_, length, sampleRate) => ({
+        duration: length / sampleRate, sampleRate,
+        copyToChannel(data) { this.pcm = [...data]; },
+    });
+    f.run('static/app/app-websocket.js');
+    f.window.appWebSocket.connectWebSocket();
+    f.window.__YuiGuideDirector = {
+        shouldGuideAudioDriveMouth: () => true,
+        clamp: (value, low, high) => Math.max(low, Math.min(high, value)),
+    };
+    f.run('static/tutorial/yui-guide/director/voice-queue.js');
+    const queue = new f.window.__YuiGuideDirector.YuiGuideVoiceQueue();
+    const header = (speechId, turnId = speechId) => f.S.socket.onmessage({
+        data: JSON.stringify({ type: 'audio_chunk', speech_id: speechId, turn_id: turnId }),
+    });
+    const pcm = () => new Int16Array([1000, 2000, 3000, 4000]).buffer;
+    const blob = readBuffer => {
+        f.window.testIncomingAudioTask = null;
+        f.S.socket.onmessage({ data: new AudioBlob(readBuffer || (async () => pcm())) });
+        return f.window.testIncomingAudioTask || Promise.resolve();
+    };
+    const handoff = () => queue.startGuideMouthMotion('guide', { analyserNode: f.analyser });
+    const cleanup = async () => {
+        queue.stop(); f.window.appWebSocket.cancelAutoReconnect();
+        await f.window.appAudioPlayback.clearAudioQueue();
+    };
+    return { ...f, queue, signals, header, blob, pcm, handoff, cleanup,
+        decoderResets: () => decoderResets };
+}
+
+for (const paced of [false, true]) {
+    test(`guide handoff rejects remaining chunks of the interrupted speech but accepts a new speech (${paced ? 'paced timer' : 'rAF'})`, async () => {
+        const f = streamingAudioFixture({ paced });
+        try {
+            f.header('assistant'); await f.blob();
+            assert.equal(f.sources.length, 1, 'initial PCM goes through the real websocket, queue and decoder');
+            const old = f.sources[0];
+            const epoch = f.S.incomingAudioEpoch;
+            const session = f.handoff();
+            assert.ok(session?.mouthOwner);
+            assert.equal(old.stopped, true);
+            f.header('assistant'); await f.blob();
+            assert.equal(f.sources.length, 1, 'remaining audio of the interrupted speech must not restart');
+            assert.equal(f.S.isPlaying, false);
+            assert.equal(f.S.interruptedSpeechId, 'assistant');
+            assert.ok(f.S.incomingAudioEpoch > epoch);
+            assert.equal(f.window.LanLan1.setMouth(.5, session.mouthOwner), true);
+            assert.equal(f.signals.filter(signal => signal.action === 'voice_play_start').length, 1);
+            assert.equal(f.signals.filter(signal => signal.action === 'voice_play_end').length, 1);
+            f.queue.stopGuideMouthMotion(session);
+            f.header('assistant'); await f.blob();
+            assert.equal(f.sources.length, 1, 'guide end does not revive the cancelled speech');
+            f.header('successor'); await f.blob();
+            assert.equal(f.sources.length, 2);
+            assert.equal(f.S.isPlaying, true);
+            assert.equal(f.S.interruptedSpeechId, null);
+            assert.equal(f.S.currentPlayingSpeechId, 'successor');
+            assert.equal(f.decoderResets(), 1, 'the next speech reaches the normal decoder-reset handshake');
+            assert.equal(f.S.pendingDecoderReset, false);
+            assert.equal(f.S.decoderResetPromise, null);
+            const published = f.window.NekoSpeechPlaybackState;
+            old.onended();
+            assert.equal(f.window.NekoSpeechPlaybackState, published);
+            assert.equal(f.manager.hasActiveLipSync(), true);
+        } finally { await f.cleanup(); }
+    });
+
+    for (const phase of ['blob-read', 'ogg-decode']) {
+        test(`guide handoff invalidates assistant ${phase} already in flight (${paced ? 'paced timer' : 'rAF'})`, async () => {
+            const f = streamingAudioFixture({ paced });
+            let enteredResolve, release;
+            const entered = new Promise(resolve => { enteredResolve = resolve; });
+            const gate = new Promise(resolve => { release = resolve; });
+            const ogg = new Uint8Array([79, 103, 103, 83, 0, 0, 0, 0]).buffer;
+            const decoded = { float32Data: new Float32Array([.2, .3]), sampleRate: 48000 };
+            let pending;
+            try {
+                f.header('assistant'); await f.blob();
+                f.header('assistant');
+                if (phase === 'ogg-decode') f.context.decodeOggOpusChunk = bytes => {
+                    assert.equal(bytes[0], 79); enteredResolve(); return gate;
+                };
+                pending = f.blob(() => {
+                    if (phase === 'blob-read') { enteredResolve(); return gate; }
+                    return Promise.resolve(ogg);
+                });
+                await entered;
+                assert.equal(f.S.processingAudioBlobTurnId, 'assistant');
+                const session = f.handoff();
+                f.header('successor'); f.blob(); // queued behind the old worker, before it completes
+                release(phase === 'blob-read' ? f.pcm() : decoded);
+                await pending;
+                assert.equal(f.sources.length, 2, 'only the new speech may publish after the old decode');
+                assert.equal(f.sources[1]._nekoSpeechId, 'successor');
+                assert.equal(f.S.audioBufferQueue.length, 0);
+                assert.equal(f.S.isPlaying, true);
+                assert.equal(f.S.currentPlayingSpeechId, 'successor');
+                assert.equal(f.window.LanLan1.setMouth(.5, session.mouthOwner), false);
+                f.queue.stopGuideMouthMotion(session);
+                assert.equal(f.manager.hasActiveLipSync(), true, 'retired guide cleanup preserves the new speech');
+            } finally {
+                release(phase === 'blob-read' ? f.pcm() : decoded);
+                if (pending) await pending;
+                await f.cleanup();
+            }
+        });
+    }
+}
+
+for (const paced of [false, true]) {
+    test(`a different speech can still take ownership during guide narration (${paced ? 'paced timer' : 'rAF'})`, async () => {
+        const f = streamingAudioFixture({ paced });
+        try {
+            f.header('assistant'); await f.blob();
+            const session = f.handoff();
+            f.header('assistant'); await f.blob();
+            assert.equal(f.sources.length, 1);
+            f.header('successor'); await f.blob();
+            assert.equal(f.sources.length, 2);
+            assert.equal(f.S.isPlaying, true);
+            assert.equal(f.window.LanLan1.setMouth(.5, session.mouthOwner), false);
+            f.queue.stopGuideMouthMotion(session);
+            assert.equal(f.manager.hasActiveLipSync(), true);
+            assert.equal(f.frames.size, 1);
+        } finally { await f.cleanup(); }
+    });
+}
+
+test('MMD guide legacy dispatch does not interrupt real assistant playback', async () => {
+    const f = streamingAudioFixture();
+    const morphs = [];
+    f.window.lanlan_config = { model_type: 'live3d', live3d_sub_type: 'mmd' };
+    f.window.mmdManager = { currentModel: {}, animationModule: { startLipSync() {}, stopLipSync() {} },
+        expression: { setMorphWeight(id, value) { morphs.push([id, value]); } } };
+    try {
+        f.header('assistant'); await f.blob();
+        const source = f.sources[0], epoch = f.S.incomingAudioEpoch;
+        const session = f.handoff();
+        assert.ok(session);
+        assert.equal(session.mouthOwner, undefined);
+        f.frame();
+        assert.ok(morphs.some(([, value]) => value > 0));
+        assert.notEqual(source.stopped, true);
+        assert.equal(f.S.isPlaying, true);
+        assert.equal(f.S.incomingAudioEpoch, epoch);
+        assert.equal(f.S.interruptedSpeechId, null);
+    } finally { await f.cleanup(); }
+});
+
+test('Live2D guide with an idle assistant does not alter interruption state', async () => {
+    const f = streamingAudioFixture();
+    const snapshot = () => [f.S.interruptedSpeechId, f.S.incomingAudioEpoch, f.S.pendingDecoderReset];
+    try {
+        const before = snapshot();
+        const session = f.handoff();
+        assert.ok(session.mouthOwner);
+        assert.deepEqual(snapshot(), before);
+        assert.equal(f.S.isPlaying, false);
+        assert.equal(f.sources.length, 0);
+        assert.equal(f.window.LanLan1.setMouth(.5, session.mouthOwner), true);
+    } finally { await f.cleanup(); }
+});
+
 test('viewer adapters fence decode completion and late end after clear', async () => {
     const f = fixture();
     const viewer = read('templates/viewer.html');

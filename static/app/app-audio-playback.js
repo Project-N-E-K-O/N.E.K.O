@@ -1462,6 +1462,19 @@
         // Note: decoder is NOT reset here.
     }
 
+    // A local handoff must retire both the audible nodes and the rest of their
+    // speech. WebSocket headers use interruptedSpeechId to reject later chunks;
+    // the epoch fences blob reads/decodes that already crossed an await.
+    function interruptCurrentAssistantSpeech() {
+        if (!S.isPlaying) return false;
+        S.interruptedSpeechId = S.currentPlayingSpeechId || null;
+        S.pendingDecoderReset = true;
+        S.skipNextAudioBlob = false;
+        S.incomingAudioEpoch += 1;
+        clearAudioQueueWithoutDecoderReset();
+        return true;
+    }
+
     // ======================== Global analyser initialisation ========================
 
     function initializeGlobalAnalyser() {
@@ -2161,6 +2174,7 @@
 
     mod.clearAudioQueue = clearAudioQueue;
     mod.clearAudioQueueWithoutDecoderReset = clearAudioQueueWithoutDecoderReset;
+    mod.interruptCurrentAssistantSpeech = interruptCurrentAssistantSpeech;
     mod.initializeGlobalAnalyser = initializeGlobalAnalyser;
     mod.startLipSync = startLipSync;
     mod.stopLipSync = stopLipSync;
