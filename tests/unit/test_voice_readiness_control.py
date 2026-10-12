@@ -107,7 +107,8 @@ async def start_protocol(args):
     occasionally leave a fresh Node child silent with no output at all, so a
     stalled start is retried once; a protocol regression fails both attempts.
     """
-    for attempt in range(2):
+    errors = b""
+    for _attempt in range(2):
         process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
@@ -121,14 +122,12 @@ async def start_protocol(args):
         except asyncio.TimeoutError:
             process.kill()
             _output, errors = await process.communicate()
-            if attempt:
-                raise AssertionError("protocol harness wrote no request: "
-                    + errors.decode(errors="replace")) from None
         except BaseException:
             if process.returncode is None:
                 process.kill()
                 await process.communicate()
             raise
+    raise AssertionError("protocol harness wrote no request: " + errors.decode(errors="replace"))
 
 
 def trial_client(app):
