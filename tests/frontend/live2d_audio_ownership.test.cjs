@@ -471,6 +471,151 @@ test('AudioManager chunks share one sampler and old frame cannot revive after st
     assert.equal(f.frames.size, 0);
 });
 
+for (const mode of ['context', 'element']) {
+    for (const paced of [false, true]) {
+        test(`real guide ${mode} playback retires assistant audio when taking Live2D ownership (${paced ? 'paced timer' : 'rAF'})`, async () => {
+            const f = fixture({ paced });
+            const old = f.schedule('assistant');
+            const oldFrame = [...f.frames.values()][0];
+            let decoderResets = 0;
+            f.context.resetOggOpusDecoder = async () => { decoderResets++; };
+            let resolveStarted, releaseStart;
+            const started = new Promise(resolve => { resolveStarted = resolve; });
+            const startGate = new Promise(resolve => { releaseStart = resolve; });
+            f.window.__YuiGuideDirector = {
+                shouldGuideAudioDriveMouth: key => typeof key === 'string' && !!key.trim(),
+                clamp: (value, low, high) => Math.max(low, Math.min(high, value)),
+                wait: () => startGate,
+                estimateSpeechDurationMs: () => 100,
+                guideAudioSrc: () => '/controlled-guide.wav',
+                resumeKnownAudioContexts: async () => {},
+                fetchWithTimeout: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) }),
+            };
+            f.S.audioPlayerContext.createAnalyser = () => f.analyser;
+            f.S.audioPlayerContext.createMediaElementSource = () => ({ connect() {}, disconnect() {} });
+            f.S.audioPlayerContext.decodeAudioData = async () => ({ duration: 1 });
+            const createSource = f.S.audioPlayerContext.createBufferSource;
+            f.S.audioPlayerContext.createBufferSource = () => {
+                const source = createSource();
+                source.start = () => resolveStarted(source);
+                return source;
+            };
+            f.analyser.disconnect = () => {};
+            f.context.Audio = class {
+                play() { resolveStarted(this); return Promise.resolve(); }
+                pause() {} removeAttribute() {} load() {}
+            };
+            f.run('static/tutorial/yui-guide/director/voice-queue.js');
+            const queue = new f.window.__YuiGuideDirector.YuiGuideVoiceQueue();
+            if (mode === 'element') f.S.audioPlayerContext.decodeAudioData = async () => {
+                throw new Error('controlled context decode failure');
+            };
+            const playing = queue.speak('Guide narration', { voiceKey: 'guide' });
+            try {
+                assert.notEqual(old.stopped, true, 'startup delay has not taken the mouth owner');
+                releaseStart();
+                const guide = await started;
+                assert.equal(old.stopped, true, 'the displaced assistant must not remain audible');
+                assert.equal(old.disconnected, true);
+                assert.equal(f.S.isPlaying, false);
+                assert.equal(f.S.scheduledSources.length, 0);
+                assert.equal(f.S.lipSyncActive, false);
+                assert.equal(decoderResets, 0, 'handoff does not reset the shared decoder');
+                const session = queue.currentMouthMotionSession;
+                assert.ok(session?.mouthOwner, 'the guide must retain the newer owner');
+                oldFrame(); old.onended();
+                assert.equal(f.manager.hasActiveLipSync(), true);
+                assert.equal(f.frames.size, 1);
+                f.frame();
+                assert.ok(f.render()[0] > 0);
+                guide.onended();
+                await playing;
+                assert.equal(f.manager.hasActiveLipSync(), false);
+                assert.equal(f.frames.size, 0);
+                f.schedule('next-assistant');
+                oldFrame(); old.onended();
+                assert.equal(f.manager.hasActiveLipSync(), true);
+                assert.equal(f.S.isPlaying, true);
+                assert.equal(f.frames.size, 1);
+            } finally {
+                releaseStart(); queue.stop(); await playing;
+                await f.window.appAudioPlayback.clearAudioQueue();
+            }
+        });
+    }
+}
+
+for (const paced of [false, true]) {
+    test(`cancel during guide startup leaves assistant audio and owner intact (${paced ? 'paced timer' : 'rAF'})`, async () => {
+        const f = fixture({ paced });
+        const source = f.schedule('assistant');
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        f.window.__YuiGuideDirector = { wait: () => gate };
+        f.run('static/tutorial/yui-guide/director/voice-queue.js');
+        const queue = new f.window.__YuiGuideDirector.YuiGuideVoiceQueue();
+        const playing = queue.speak('Cancelled guide', { voiceKey: 'guide' });
+        try {
+            queue.stop(); release(); await playing;
+            assert.notEqual(source.stopped, true);
+            assert.equal(f.S.isPlaying, true);
+            assert.equal(f.S.scheduledSources[0], source);
+            assert.equal(f.manager.hasActiveLipSync(), true);
+            assert.equal(f.frames.size, 1);
+        } finally { release(); queue.stop(); await playing; await f.window.appAudioPlayback.clearAudioQueue(); }
+    });
+
+    test(`cancel during guide decode does not interrupt the assistant (${paced ? 'paced timer' : 'rAF'})`, async () => {
+        const f = fixture({ paced });
+        const source = f.schedule('assistant');
+        let enter, release;
+        const entered = new Promise(resolve => { enter = resolve; });
+        const gate = new Promise(resolve => { release = resolve; });
+        f.window.__YuiGuideDirector = {
+            resumeKnownAudioContexts: async () => {},
+            fetchWithTimeout: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) }),
+        };
+        f.S.audioPlayerContext.decodeAudioData = () => { enter(); return gate; };
+        f.run('static/tutorial/yui-guide/director/voice-queue.js');
+        const queue = new f.window.__YuiGuideDirector.YuiGuideVoiceQueue();
+        const playing = queue.playPreviewAudioThroughContext('/controlled.wav', 0, 0, { voiceKey: 'guide' });
+        try {
+            await entered;
+            queue.stop(); release({ duration: 1 });
+            assert.equal(await playing, true);
+            assert.notEqual(source.stopped, true);
+            assert.equal(f.S.isPlaying, true);
+            assert.equal(f.S.scheduledSources[0], source);
+            assert.equal(f.manager.hasActiveLipSync(), true);
+            assert.equal(f.frames.size, 1);
+        } finally {
+            release({ duration: 1 }); queue.stop(); await playing;
+            await f.window.appAudioPlayback.clearAudioQueue();
+        }
+    });
+
+    test(`guide frame startup failure releases the acquired owner after retiring assistant sources (${paced ? 'paced timer' : 'rAF'})`, async () => {
+        const f = fixture({ paced });
+        const source = f.schedule('assistant');
+        const oldFrame = [...f.frames.values()][0];
+        f.window.__YuiGuideDirector = { shouldGuideAudioDriveMouth: () => true };
+        f.run('static/tutorial/yui-guide/director/voice-queue.js');
+        const queue = new f.window.__YuiGuideDirector.YuiGuideVoiceQueue();
+        f.window.requestAnimationFrame = () => { throw new Error('controlled guide frame failure'); };
+        try {
+            assert.equal(queue.startGuideMouthMotion('guide', { analyserNode: f.analyser }), null);
+            assert.equal(source.stopped, true);
+            assert.equal(source.disconnected, true);
+            assert.equal(f.manager.hasActiveLipSync(), false);
+            assert.equal(f.frames.size, 0);
+            assert.equal(f.S.isPlaying, false);
+            oldFrame(); source.onended();
+            assert.equal(f.frames.size, 0);
+            assert.equal(f.manager.hasActiveLipSync(), false);
+        } finally { queue.stop(); await f.window.appAudioPlayback.clearAudioQueue(); }
+    });
+}
+
 test('AudioManager failed source start releases its new owner', () => {
     const f = fixture();
     f.run('static/audio-loader.js');
