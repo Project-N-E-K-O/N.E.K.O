@@ -3602,6 +3602,66 @@ async def test_partial_retry_still_cancels_a_stale_journal_of_a_completed_target
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
 
 
+async def test_overlapping_alias_forgets_serialize_until_markers_land(env):
+    _fan_out_to(env, PART)                                      # GROUP 与 GP 的扇出都含 PART
+    entered, gate = asyncio.Event(), asyncio.Event()
+    real_cancel = env.routes._cancel_staged_writes_for_subjects
+
+    async def slow_post_erase_cancel(*args, **kwargs):
+        if not kwargs.get("best_effort") and not entered.is_set():
+            entered.set()
+            await gate.wait()
+        return await real_cancel(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_cancel_staged_writes_for_subjects", slow_post_erase_cancel)
+    begun: list[str] = []
+    real_begin = env.fs.abegin_subject_forget
+
+    async def spy_begin(name, subject):
+        begun.append(subject.key)
+        return await real_begin(name, subject)
+
+    env.monkeypatch.setattr(env.fs, "abegin_subject_forget", spy_begin)
+    first = asyncio.create_task(_forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2}))
+    await asyncio.wait_for(entered.wait(), timeout=5)           # 第一次已擦完、放了擦除锁，完成标记还没写
+    second = asyncio.create_task(_forget(env, GP, forget_epoch=3, target_epochs={PART_KEY: 2}))
+    await asyncio.sleep(0.05)
+    # 第二次清除点名的是另一个别名，但与第一次共享 PART：第一次写完完成标记之前它不能动手
+    assert begun.count(PART_KEY) == 1 and GP_KEY not in begun
+    gate.set()
+    await asyncio.wait_for(first, timeout=5)
+    result = await asyncio.wait_for(second, timeout=5)
+    # 它看到 PART 已擦到 2：只擦自己的 GP，不再重擦 PART（否则会删掉两次之间合法写入的记忆）
+    assert begun.count(PART_KEY) == 1
+    assert [s["subject_id"] for s in result["erased_subjects"]] == [GP["subject_id"]]
+
+
+async def test_fanout_growing_while_fences_are_taken_retakes_them(env):
+    linked = MemorySubject.create(PART["subject_kind"], PART["subject_id"])
+    original = env.routes._forget_fanout_targets
+    calls = {"n": 0}
+
+    def growing_fanout(subject):
+        calls["n"] += 1
+        base = list(original(subject))
+        # 第一次（外层拿栅栏时）还没关联 PART，之后关联上了
+        return base if calls["n"] == 1 else sorted(base + [linked], key=lambda t: (t.key, t.scope))
+
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", growing_fanout)
+    fenced: list[str] = []
+    real_fence = env.idem.forget_fence
+
+    def spy_fence(name, subject_key):
+        fenced.append(subject_key)
+        return real_fence(name, subject_key)
+
+    env.monkeypatch.setattr(env.idem, "forget_fence", spy_fence)
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # 扇出在拿栅栏期间多出了 PART：放掉重拿，PART 的栅栏也拿到之后才擦
+    assert result["status"] == "forgotten" and PART_KEY in fenced
+    assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 2
+
+
 async def test_fanout_fence_raised_before_the_erase_locks_is_recorded_as_erased(env):
     _fan_out_to(env, PART)
     real_plan = env.routes._targets_still_to_erase

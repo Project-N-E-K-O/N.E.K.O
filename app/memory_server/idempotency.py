@@ -142,7 +142,10 @@ def forget_fence(lanlan_name: str, subject_key: str) -> asyncio.Lock:
     Held from the completed-epoch check through the erase, both cancellation
     passes and the completion marker, so the next forget of the subject only
     checks once the previous one has published (or failed to publish) its
-    completed epoch. Taken before any other lock, by forgets only.
+    completed epoch. Taken before any other lock, by forgets only; a forget
+    takes the fences of every subject it may erase (the requested one and
+    its fan-out targets) in sorted key order, so overlapping forgets never
+    wait on each other in a cycle.
     """
     # 独立的登记表：客户端的幂等键可以是任意合法字符串，借用键锁的命名空间会让
     # 某个键恰好与栅栏同名，清除拿着栅栏再去拿同名键锁就会自己等自己

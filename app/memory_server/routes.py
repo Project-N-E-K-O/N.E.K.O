@@ -5473,21 +5473,60 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     cancellation passes and the completion marker: without it an older
     forget could recheck after a newer one released its erase locks but
     before it published its completed epoch, and erase again.
+
+    The fence is taken for the requested subject AND every fan-out target,
+    all of them in sorted key order before any other lock: two forgets that
+    name different linked aliases share targets, and one must not recheck
+    or raise a shared target's fence between the other's erase and its
+    completion markers. When the fan-out changes while the fences are being
+    taken, they are released and taken again for the new set.
     """
     if req.forget_epoch is None:
         return await _run_forget(lanlan_name, req)
+    import contextlib
+
     from . import idempotency
 
     try:
-        fence_key = req.subject.to_domain().key
+        subject = req.subject.to_domain()
         fence_name = validate_lanlan_name(lanlan_name)
     except Exception:  # noqa: BLE001 - 非法请求交给下面的实现照常报错
         return await _run_forget(lanlan_name, req)
-    async with idempotency.forget_fence(fence_name, fence_key):
-        return await _run_forget(lanlan_name, req)
+    for _attempt in range(_FORGET_FENCE_ATTEMPTS):
+        fence_keys = _forget_fence_keys(subject)
+        async with contextlib.AsyncExitStack() as stack:
+            # 按 key 排序一次拿齐：所有清除都按同一顺序拿栅栏，不会互等
+            for fence_key in fence_keys:
+                await stack.enter_async_context(idempotency.forget_fence(fence_name, fence_key))
+            try:
+                return await _run_forget(lanlan_name, req, fenced_keys=frozenset(fence_keys))
+            except _FanoutChangedUnderFence:
+                # 拿栅栏期间身份关联变了，扇出多出了没拿栅栏的目标：放掉重拿（此时还没写任何东西）
+                continue
+    raise HTTPException(
+        status_code=503,
+        detail="identity links kept changing during the scoped forget; retry",
+    )
 
 
-async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
+_FORGET_FENCE_ATTEMPTS = 3
+
+
+class _FanoutChangedUnderFence(Exception):
+    """The fan-out grew a target whose forget fence this request does not hold."""
+
+
+def _forget_fence_keys(subject) -> list[str]:
+    """Sorted subject keys whose forget fences an epoch-tagged forget of ``subject`` takes."""
+    from memory import trust_store as _trust_store
+
+    if not _trust_store.trust_snapshot().loaded:
+        # 身份池读不出时清除本身会 503（不做部分擦除），只拿请求 subject 自己的栅栏
+        return [subject.key]
+    return sorted({subject.key} | {target.key for target in _forget_fanout_targets(subject)})
+
+
+async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, fenced_keys=None):
     """Delete every stored memory of one exact (subject, scope) domain.
 
     撤回入口：删好友/退群之后，该 subject 的 facts（活跃 + 归档）、
@@ -5530,6 +5569,9 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             ),
         )
     targets = _forget_fanout_targets(subject)
+    if fenced_keys is not None and not {target.key for target in targets} <= fenced_keys:
+        # 扇出里有本请求没拿栅栏的目标：在写墓碑、擦除之前交回外层重拿栅栏
+        raise _FanoutChangedUnderFence()
     forgotten_subject_keys = {subject.key} | {target.key for target in targets}
     default_scope = subject.scope == subject.key
     if req.forget_epoch is not None and not default_scope:
@@ -5989,9 +6031,9 @@ async def _forget_duplicate_after_cancel(
     return _forget_duplicate_response(subject, targets)
 
 
-async def _run_forget(lanlan_name: str, req: ScopedForgetRequest):
+async def _run_forget(lanlan_name: str, req: ScopedForgetRequest, *, fenced_keys=None):
     try:
-        return await _forget_scoped_subject(lanlan_name, req)
+        return await _forget_scoped_subject(lanlan_name, req, fenced_keys=fenced_keys)
     except _ForgetAlreadyErased as done:
         return await _forget_duplicate_after_cancel(*done.args_for_cancel)
 
