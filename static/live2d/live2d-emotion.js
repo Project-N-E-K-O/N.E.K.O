@@ -980,21 +980,21 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
     }
     if (this.currentModel !== model || model.internalModel !== emitter || emitter.coreModel !== coreModel
         || (this._transientExpressionGeneration || 0) !== generation) {
-        emitter.off('beforeModelUpdate', onBeforeUpdate);
+        this._retireManualExpressionResource(resource);
         return false;
     }
     try {
         if (!this._removeManualExpressionOverride(previousListener, previousEmitter)) {
-            emitter.off('beforeModelUpdate', onBeforeUpdate);
+            this._retireManualExpressionResource(resource);
             return false;
         }
     } catch (error) {
-        try { emitter.off('beforeModelUpdate', onBeforeUpdate); } catch (_) {}
+        this._retireManualExpressionResource(resource);
         throw error;
     }
     if (this.currentModel !== model || model.internalModel !== emitter || emitter.coreModel !== coreModel
         || (this._transientExpressionGeneration || 0) !== generation) {
-        emitter.off('beforeModelUpdate', onBeforeUpdate);
+        this._retireManualExpressionResource(resource);
         return false;
     }
     // A failed registration is not a takeover. Retire older SDK requests only

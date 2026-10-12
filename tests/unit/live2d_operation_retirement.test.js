@@ -356,6 +356,26 @@ test('physical cleanup retry stops scheduling after its budget but leaves the re
     } finally { f.release(); }
 });
 
+test('a registered but unpublished listener retains its cleanup receipt when ownership changes and off fails', async () => {
+    const f = await fixture();
+    try {
+        const emitter = f.model.internalModel, on = emitter.on, off = emitter.off;
+        emitter.on = (event, listener) => {
+            on(event, listener);
+            f.manager._transientExpressionGeneration = (f.manager._transientExpressionGeneration || 0) + 1;
+        };
+        emitter.off = () => { throw Error('unpublished off failure'); };
+        assert.equal(f.manager._installManualExpressionOverride([{ Id: 'ParamAngleX', Value: 7 }], 50), false);
+        assert.equal(f.manager._manualExpressionListener || null, null);
+        assert.equal(f.manager._retiredManualExpressions.size, 1);
+        f.core.setParameterValueById('ParamAngleX', 3); emitter.events.emit('beforeModelUpdate');
+        assert.equal(f.value('ParamAngleX'), 3);
+        emitter.on = on; emitter.off = off; f.manager._retryRetiredManualExpressions(emitter);
+        assert.equal(emitter.events.listenerCount('beforeModelUpdate'), 0);
+        assert.equal(f.manager._retiredManualExpressions.size, 0);
+    } finally { f.release(); }
+});
+
 test('retiring a native action also cancels its manager end timer and prevents a later successor stop', async () => {
     const f = await fixture();
     try {
