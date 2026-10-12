@@ -26,7 +26,8 @@
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
   var RECOVER_TOKEN_WINDOW_MS = 12000;
-  var RECOVER_NAME_WINDOW_MS = 8000;    // 重载后取不到角色名时重拉页面配置的总时限（与取 token 合计仍在 20 s 宽限内）  // 重载恢复取 token 的总时限（页面重载宽限 20 s 之内）
+  var RECOVER_NAME_WINDOW_MS = 8000;
+  var PAGE_CONFIG_WAIT_MS = 4000;       // 等 pageConfigReady 的上限，到点不管它落没落定都开始重载恢复    // 重载后取不到角色名时重拉页面配置的总时限（与取 token 合计仍在 20 s 宽限内）  // 重载恢复取 token 的总时限（页面重载宽限 20 s 之内）
   var PEER_AWAY_OPACITY = '0.6';
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图
   var HOST_FRAME_STYLE = 'position:fixed;z-index:4;border:0;background:transparent;pointer-events:none;' +
@@ -845,8 +846,10 @@
 
     function onStateChange(msg) {
       if (!msg || msg.type !== 'visit_state_change') return;
-      state.liveGen += 1;
       var action = msg.action;
+      // 只有能建 / 拆 iframe 的生命周期事件才让在途的重载恢复快照作废；peer_hidden / peer_crop /
+      // departed 这类辅助事件不建 iframe，不能让快照白白丢掉
+      if (action === 'ended' || PHASE_OF_ACTION[action]) state.liveGen += 1;
       if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.peerCrop = msg.peer_crop;
       if (action === 'pending') {
         ensureFrame(msg.side, msg.visit_id);
@@ -977,16 +980,31 @@
     }
   }
 
-  root.NekoVisitParentBridge = { createSampler: createSampler, createParentBridge: createParentBridge };
+  /**
+   * 页面配置就绪后启动重载恢复；pageConfigReady 一直不落定（page_config 请求挂住）或失败时，
+   * 最多等 PAGE_CONFIG_WAIT_MS 也要启动，否则 20 s 页面宽限过去整场按 local_page_lost 结束。
+   */
+  function startRecoveryWhenReady(bridge, win, setTimeoutFn) {
+    var started = false;
+    var go = function () {
+      if (started) return;
+      started = true;
+      bridge.recoverFromPageConfig();
+    };
+    var ready = win.pageConfigReady;
+    if (ready && typeof ready.then === 'function') {
+      ready.then(go, go);
+      setTimeoutFn(go, PAGE_CONFIG_WAIT_MS);
+    } else {
+      win.addEventListener('load', go);
+    }
+  }
+
+  root.NekoVisitParentBridge = { createSampler: createSampler, createParentBridge: createParentBridge, startRecoveryWhenReady: startRecoveryWhenReady };
 
   if (root.document && root.addEventListener && !root.nekoVisitParentBridge) {
     var bridge = createParentBridge({ window: root, document: root.document, assetVersion: assetVersionFromScript(root.document) });
     root.nekoVisitParentBridge = bridge;
-    var ready = root.pageConfigReady;
-    var startRecover = function () {
-      bridge.recoverFromPageConfig();
-    };
-    if (ready && typeof ready.then === 'function') ready.then(startRecover, function () {});
-    else root.addEventListener('load', startRecover);
+    startRecoveryWhenReady(bridge, root, function (fn, ms) { return root.setTimeout(fn, ms); });
   }
 })(typeof window !== 'undefined' ? window : globalThis);

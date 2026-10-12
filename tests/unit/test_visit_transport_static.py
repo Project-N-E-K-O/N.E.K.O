@@ -2157,3 +2157,40 @@ def test_track_attached_during_context_loss_is_attached_after_restore():
         """
     )
     assert out == {"during": {"track": None, "pending": "remote"}, "after": "remote", "pending": None}
+
+
+def test_track_is_kept_when_the_lost_context_object_is_still_returned():
+    out = run_visit_js(
+        """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const doc = ctx.document;
+        const canvas = doc.createElement('canvas');
+        const listeners = {};
+        canvas.addEventListener = (type, fn) => { listeners[type] = fn; };
+        let lost = false;
+        const realGet = canvas.getContext.bind(canvas);
+        // 第一种：初始化不抛错，但对象自己报「已丢失」——只能靠 isContextLost 判
+        const quietLost = new Proxy(realGet('webgl'), { get: (t, p) => (p === 'isContextLost' ? () => true : t[p]) });
+        // 第二种：不报丢失，但初始化抛错
+        const throwing = { isContextLost: () => false, createProgram() { throw new Error('context lost'); } };
+        let lostGl = quietLost;
+        canvas.getContext = (kind) => (kind === 'webgl' && lost ? lostGl : realGet(kind));
+        const video = doc.createElement('video');
+        video.play = () => Promise.resolve();
+        const u = new ctx.NekoVisitTransport.unpack.Unpacker({ video, canvas });
+        lost = true;
+        listeners.webglcontextlost({ preventDefault() {} });
+        u.attach({ id: 'remote' });
+        const during = u.pendingTrack && u.pendingTrack.id;
+        // 只抛异常、不报 isContextLost 的实现同样走待接
+        u.detach();
+        lostGl = throwing;
+        u.attach({ id: 'remote2' });
+        const thrown = u.pendingTrack && u.pendingTrack.id;
+        lost = false;
+        listeners.webglcontextrestored({});
+        return { during, thrown, after: u.track && u.track.id };
+        """
+    )
+    assert out == {"during": "remote", "thrown": "remote2", "after": "remote2"}

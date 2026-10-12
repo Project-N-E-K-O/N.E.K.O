@@ -120,12 +120,19 @@
     }
   }
 
+  /** 建 / 取解包用的 WebGL 状态；上下文丢着（含浏览器仍返回那个已丢失的上下文对象）或初始化失败都返回 false。 */
   Unpacker.prototype._ensureGl = function () {
     if (this.gl) return true;
     var gl = this.canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false, preserveDrawingBuffer: false });
     if (!gl) return false;
+    if (typeof gl.isContextLost === 'function' && gl.isContextLost() === true) return false;
+    try {
+      this.glState = compile(gl);
+    } catch (_) {
+      this.glState = null;
+      return false;
+    }
     this.gl = gl;
-    this.glState = compile(gl);
     return true;
   };
 

@@ -516,3 +516,50 @@ def test_reload_recovery_reloads_page_config_until_the_name_appears():
     )
     assert out["late"] == {"reloads": 2, "asked": 1, "result": False}
     assert out["never"]["asked"] == 0 and out["never"]["result"] is False and 1 <= out["never"]["reloads"] <= 3
+
+
+def test_auxiliary_state_events_do_not_void_the_reload_snapshot():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        let respond;
+        h.ctx.fetch = () => new Promise((r) => { respond = r; });
+        let result;
+        h.bridge.recoverAfterReload('Neko').then((r) => { result = r; });
+        await settle();
+        h.side = 'guest';
+        change(h, 'peer_hidden');
+        change(h, 'peer_crop', { peer_crop: 'full' });
+        respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side: 'guest', phase: 'active' }) });
+        await settle();
+        const frame = !!h.ctx.document.getElementById('visit-frame');
+        change(h, 'ended');
+        return { result, frame };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"result": True, "frame": True}
+
+
+def test_recovery_starts_even_if_page_config_never_settles():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        for (const [label, makeReady] of [['hang', () => new Promise(() => {})], ['fail', () => Promise.reject(new Error('x'))], ['ok', () => Promise.resolve(true)]]) {
+          const ready = makeReady();
+          ready.catch(() => {});
+          const h = makeBridge();
+          let starts = 0;
+          h.bridge.recoverFromPageConfig = () => { starts += 1; return Promise.resolve(false); };
+          h.ctx.pageConfigReady = ready;
+          h.ctx.NekoVisitParentBridge.startRecoveryWhenReady(h.bridge, h.ctx, (fn, ms) => setTimeoutF(fn, ms));
+          await settle();
+          const early = starts;
+          await advance(4100);
+          runs[label] = { early, total: starts };
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"hang": {"early": 0, "total": 1}, "fail": {"early": 1, "total": 1}, "ok": {"early": 1, "total": 1}}
