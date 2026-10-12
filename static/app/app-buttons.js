@@ -3099,8 +3099,11 @@
 
             // Store last submitted text for rollback on RESPONSE_TOO_LONG.
             // Clear stale text for pure-screenshot submissions.
-            window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
-            window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
+            // 串门台词走自己的拒绝 / 恢复路径（visit-chat.js），不写普通回复轮的回滚状态
+            if (options.visitLine !== true) {
+                window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
+                window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
+            }
             var isReactWindowSource = options.source === 'react-chat-window';
             var messageSource = typeof options.source === 'string' ? options.source.trim() : '';
             var reactOptimisticMessageId = '';

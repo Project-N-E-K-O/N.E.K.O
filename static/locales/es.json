@@ -6766,7 +6766,11 @@
             "ownCat": "Mi chica gato",
             "peerCat": "Su chica gato",
             "ownHuman": "Yo",
-            "peerHuman": "Su familia"
+            "peerHuman": "Su familia",
+            "hostCat": "Chica gato de quien invitó",
+            "hostHuman": "Familia de quien invitó",
+            "guestCat": "Chica gato de quien visitó",
+            "guestHuman": "Familia de quien visitó"
         },
         "input": {
             "notDelivered": "No entregado",
@@ -6816,7 +6820,8 @@
             "saveFailed": "No se pudo guardar. Inténtalo más tarde",
             "unavailable": "No se pudo cargar la presentación. Inténtalo más tarde",
             "unknownCatgirl": "No se encontró este personaje",
-            "unreviewed": "Revisa primero su presentación; podrá ir de visita cuando la confirmes"
+            "unreviewed": "Revisa primero su presentación; podrá ir de visita cuando la confirmes",
+            "sectionsOutdated": "Esta lista de partes privadas es de la ficha anterior al cambio; lo añadido después no aparece. Revísala tú"
         },
         "preview": {
             "invalid": "El código de invitación no es válido",
@@ -6843,7 +6848,8 @@
             "queued": "Denuncia guardada. Se enviará automáticamente cuando vuelva la conexión",
             "queuedButton": "En cola",
             "already": "Esta visita ya fue denunciada",
-            "persistFailed": "No se pudo guardar la denuncia. Inténtalo de nuevo"
+            "persistFailed": "No se pudo guardar la denuncia. Inténtalo de nuevo",
+            "queuedLogin": "Denuncia guardada. Se enviará cuando vuelvas a iniciar sesión con la cuenta original"
         },
         "speaker": {
             "ownCat": "Ella",

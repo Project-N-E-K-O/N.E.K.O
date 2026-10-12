@@ -6766,7 +6766,11 @@
             "ownCat": "Minha garota-gato",
             "peerCat": "A garota-gato da outra pessoa",
             "ownHuman": "Eu",
-            "peerHuman": "A família da outra pessoa"
+            "peerHuman": "A família da outra pessoa",
+            "hostCat": "Garota-gato de quem convidou",
+            "hostHuman": "Família de quem convidou",
+            "guestCat": "Garota-gato de quem visitou",
+            "guestHuman": "Família de quem visitou"
         },
         "input": {
             "notDelivered": "Não entregue",
@@ -6816,7 +6820,8 @@
             "saveFailed": "Não foi possível salvar. Tente mais tarde",
             "unavailable": "Não foi possível carregar a apresentação. Tente mais tarde",
             "unknownCatgirl": "Personagem não encontrada",
-            "unreviewed": "Confira primeiro a apresentação dela; as visitas liberam depois da confirmação"
+            "unreviewed": "Confira primeiro a apresentação dela; as visitas liberam depois da confirmação",
+            "sectionsOutdated": "Esta lista de trechos pessoais é da ficha antes da mudança; o que foi adicionado depois não aparece. Confira você mesmo"
         },
         "preview": {
             "invalid": "Código de convite inválido",
@@ -6843,7 +6848,8 @@
             "queued": "Denúncia salva. Será enviada automaticamente quando a conexão voltar",
             "queuedButton": "Na fila",
             "already": "Esta visita já foi denunciada",
-            "persistFailed": "Não foi possível salvar a denúncia. Tente de novo"
+            "persistFailed": "Não foi possível salvar a denúncia. Tente de novo",
+            "queuedLogin": "Denúncia salva. Será enviada quando você entrar de novo na conta original"
         },
         "speaker": {
             "ownCat": "Ela",

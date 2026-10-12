@@ -2164,11 +2164,15 @@
         } catch (_) { /* noop */ }
     }
 
-    async function _visitCsrfToken() {
+    // CSRF token 与本机 HTTP 变更端点同一个：nekoLocalMutationSecurity 只对外给 getMutationHeaders / refreshToken
+    async function _visitCsrfToken(refresh) {
         var security = window.nekoLocalMutationSecurity;
-        if (!security || typeof security.getToken !== 'function') return '';
+        if (!security) return '';
         try {
-            var token = await security.getToken();
+            if (refresh && typeof security.refreshToken === 'function') await security.refreshToken();
+            if (typeof security.getMutationHeaders !== 'function') return '';
+            var headers = await security.getMutationHeaders();
+            var token = headers && headers['X-CSRF-Token'];
             return typeof token === 'string' ? token : '';
         } catch (_) {
             return '';
@@ -2181,7 +2185,13 @@
      * 再派发 neko-visit-bound（pacer 据此决定回报给哪条连接、这一场是否在进行）。
      */
     async function _sendVisitBind(socket) {
-        var token = await _visitCsrfToken();
+        var token = '';
+        // 首次取不到（page_config 一时没回来）：刷新后再试，最多 3 次、间隔递增；连接已换就作罢
+        for (var attempt = 0; attempt < 3 && !token; attempt++) {
+            if (attempt > 0) await new Promise(function (resolve) { setTimeout(resolve, 1000 * attempt); });
+            if (S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+            token = await _visitCsrfToken(attempt > 0);
+        }
         if (!token || S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
         try {
             socket.send(JSON.stringify({ action: 'visit_bind', csrf_token: token }));

@@ -6766,7 +6766,11 @@
             "ownCat": "우리 집 고양이 소녀",
             "peerCat": "상대 집 고양이 소녀",
             "ownHuman": "나",
-            "peerHuman": "상대 가족"
+            "peerHuman": "상대 가족",
+            "hostCat": "초대한 쪽 고양이 소녀",
+            "hostHuman": "초대한 쪽 가족",
+            "guestCat": "방문한 쪽 고양이 소녀",
+            "guestHuman": "방문한 쪽 가족"
         },
         "input": {
             "notDelivered": "전달되지 않음",
@@ -6816,7 +6820,8 @@
             "saveFailed": "저장하지 못했어요. 잠시 후 다시 시도해 주세요",
             "unavailable": "방문용 자기소개를 불러오지 못했어요. 잠시 후 다시 시도해 주세요",
             "unknownCatgirl": "이 캐릭터를 찾을 수 없어요",
-            "unreviewed": "방문 전에 자기소개를 먼저 확인해 주세요. 확인해야 방문할 수 있어요"
+            "unreviewed": "방문 전에 자기소개를 먼저 확인해 주세요. 확인해야 방문할 수 있어요",
+            "sectionsOutdated": "이 개인 단락 목록은 바뀌기 전 카드를 기준으로 해서 새로 추가된 내용은 빠져 있어요. 직접 한 번 더 확인해 주세요"
         },
         "preview": {
             "invalid": "유효하지 않은 초대 코드예요",
@@ -6843,7 +6848,8 @@
             "queued": "신고를 기록했어요. 네트워크가 돌아오면 자동으로 제출돼요",
             "queuedButton": "대기 중",
             "already": "이 방문은 이미 신고했어요",
-            "persistFailed": "신고를 저장하지 못했어요. 다시 시도해 주세요"
+            "persistFailed": "신고를 저장하지 못했어요. 다시 시도해 주세요",
+            "queuedLogin": "신고를 기록했어요. 원래 계정으로 다시 로그인하면 자동으로 제출돼요"
         },
         "speaker": {
             "ownCat": "우리 아이",

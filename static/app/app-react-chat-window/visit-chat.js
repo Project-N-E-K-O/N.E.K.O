@@ -225,6 +225,7 @@
             close: function (value) {
                 if (handle.closed) return;
                 handle.closed = true;
+                if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onKeydown, true);
                 if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
                 var index = openDialogs.indexOf(handle);
                 if (index >= 0) openDialogs.splice(index, 1);
@@ -264,20 +265,21 @@
                 if (event.target === overlay) handle.close(null);
             });
         }
-        overlay.addEventListener('keydown', function (event) {
-            if (event.key === 'Escape' && spec.dismissible !== false) handle.close(null);
-        });
+        // 焦点留在对话框后面的页面上时 overlay 收不到按键：Escape 挂在 document 上（只认最上面那个对话框）
+        function onKeydown(event) {
+            if (event.key !== 'Escape' || spec.dismissible === false) return;
+            if (openDialogs[openDialogs.length - 1] !== handle) return;
+            handle.close(null);
+        }
+        if (typeof document.addEventListener === 'function') document.addEventListener('keydown', onKeydown, true);
         (document.body || document.documentElement).appendChild(overlay);
         openDialogs.push(handle);
+        // 焦点移进对话框（有输入框的由调用方再聚焦到输入框）
+        var firstButton = actions.firstChild;
+        if (firstButton && typeof firstButton.focus === 'function') {
+            try { firstButton.focus(); } catch (_) { /* noop */ }
+        }
         return handle;
-    }
-
-    function alertDialog(title, text) {
-        return openDialog({
-            title: title,
-            lines: [text],
-            buttons: [{ id: 'ok', label: t('visit.common.close', '关闭'), variant: 'primary' }]
-        }).result;
     }
 
     function confirmDialog(text, options) {
@@ -460,7 +462,8 @@
 
     // ── 亲人打字 ────────────────────────────────────────────────────
 
-    var pendingLocal = [];   // [{requestId, messageId, text}] 已发出、还没等到回显的本地气泡（先进先出）
+    var pendingLocal = [];   // [{requestId, messageId, text, submitSeq}] 已发出、还没等到回显的本地气泡（先进先出）
+    var submitSeq = 0;       // 每次交出去一句 +1：被拒那句之后又提交过，就不把旧文字塞回输入框
 
     function blockReason() {
         if (!I.isVisitChatActive()) return null;
@@ -523,20 +526,21 @@
         if (host && typeof host.appendMessage === 'function') {
             host.appendMessage(localBubbleMessage(messageId, text.trim(), 'sending'));
         }
-        pendingLocal.push({ requestId: requestId, messageId: messageId, text: text.trim() });
+        submitSeq += 1;
+        pendingLocal.push({ requestId: requestId, messageId: messageId, text: text.trim(), submitSeq: submitSeq });
         try {
-            var result = send(text, {
+            Promise.resolve(send(text, {
                 source: 'neko_visit:' + visit.recipient,
                 requestId: requestId,
+                // 串门只收文字：待发截图留在输入区，不上传、不清掉
+                ignoreComposerAttachments: true,
                 submitMethod: detail.submitMethod,
                 visitLine: true,
                 skipAvatarInteractionDeferral: true
-            });
-            if (result && typeof result.then === 'function') {
-                result.then(function (ok) {
-                    if (ok === false) markNotDelivered(requestId, true);
-                }, function () { markNotDelivered(requestId, true); });
-            }
+            })).then(function (ok) {
+                // 前端自己没发出去（会话没起来 / WS 未连等）：同样标「未送达」
+                if (ok === false) markNotDelivered(requestId, true);
+            }, function () { markNotDelivered(requestId, true); });
         } catch (_) {
             markNotDelivered(requestId, true);
         }
@@ -559,7 +563,12 @@
             message.blocks.push({ type: 'status', tone: 'warning', text: t('visit.input.notDelivered', '未送达') });
             host.updateMessage(entry.messageId, { blocks: message.blocks, status: 'failed' });
         }
-        if (restore) restoreDraft(requestId);
+        // 之后又提交过别的句子：输入框空着也不是「没动过」，不恢复（React 侧另外只填空输入框）
+        if (restore && entry.submitSeq === submitSeq) {
+            restoreDraft(requestId);
+        } else if (typeof I.clearPendingRollbackDraft === 'function') {
+            I.clearPendingRollbackDraft(requestId);
+        }
         return true;
     }
 
@@ -745,7 +754,10 @@
             lines.clear();
             pendingLocal = [];
         }
-        if (frame.side === 'host' || frame.side === 'guest') visit.side = frame.side;
+        if (frame.side === 'host' || frame.side === 'guest') {
+            visit.side = frame.side;
+            rememberSide(visitId, frame.side);
+        }
         if (typeof frame.peer_name === 'string' && frame.peer_name) visit.peerName = frame.peer_name;
         if (typeof frame.peer_short_id === 'string' && frame.peer_short_id) visit.peerShortId = frame.peer_short_id;
         if (typeof frame.peer_human_label === 'string' && frame.peer_human_label) visit.peerHumanLabel = frame.peer_human_label;
@@ -882,7 +894,7 @@
         return role === 'host' ? t('visit.details.hostCopy', '邀请方记录') : t('visit.details.guestCopy', '来访方记录');
     }
 
-    function rowNode(row) {
+    function rowNode(row, requesterRole) {
         var box = document.createElement('div');
         box.className = 'visit-details-row is-' + String(row.status || '');
         var mark = document.createElement('span');
@@ -904,7 +916,7 @@
             }
             var who = document.createElement('span');
             who.className = 'visit-details-from';
-            who.textContent = transcriptSpeakerLabel(row.side, copy.from, role);
+            who.textContent = transcriptSpeakerLabel(row.side, copy.from, requesterRole);
             item.appendChild(who);
             var text = document.createElement('span');
             text.className = 'visit-details-text';
@@ -931,6 +943,7 @@
             body: body,
             buttons: [{ id: 'close', label: t('visit.common.close', '关闭') }]
         });
+        var requesterRole = null;
         var loadPage = async function (cursor) {
             var result = await api('GET', detailsUrl(visitId, cursor));
             if (dialog.closed) return;
@@ -939,6 +952,7 @@
                 return;
             }
             var data = result.body;
+            if (data.requester_role === 'host' || data.requester_role === 'guest') requesterRole = data.requester_role;
             if (!cursor) {
                 dialog.setLines([]);
                 var duration = Math.max(0, Number(data.duration_s) || 0);
@@ -967,7 +981,7 @@
                 summary.appendChild(heading);
             }
             (Array.isArray(data.lines) ? data.lines : []).forEach(function (row) {
-                list.appendChild(rowNode(row || {}));
+                list.appendChild(rowNode(row || {}, requesterRole));
             });
             var next = typeof data.next_cursor === 'string' && data.next_cursor ? data.next_cursor : '';
             var buttons = [];
@@ -988,6 +1002,11 @@
 
     function transcriptSpeakerLabel(side, from, mySide) {
         var kind = String(from || '').indexOf('human') !== -1 ? 'human' : 'cat';
+        if (mySide !== 'host' && mySide !== 'guest') {
+            // 不知道本侧是哪边：不猜「我 / 对方」，按邀请方 / 来访方标
+            if (side === 'host') return kind === 'cat' ? t('visit.export.hostCat', '邀请方的猫娘') : t('visit.export.hostHuman', '邀请方的家里人');
+            return kind === 'cat' ? t('visit.export.guestCat', '来访方的猫娘') : t('visit.export.guestHuman', '来访方的家里人');
+        }
         var mine = side === mySide;
         if (kind === 'cat') return mine ? t('visit.export.ownCat', '我家猫娘') : t('visit.export.peerCat', '对方的猫娘');
         return mine ? t('visit.export.ownHuman', '我') : t('visit.export.peerHuman', '对方的家里人');
@@ -1010,7 +1029,7 @@
         var full = doc && (doc.source === 'spool' || doc.source === 'memory');
         if (full) {
             // 本地完整形态：没有 role，本侧是 speaker_kind 所在一侧的反面无从得知——按记录里本侧亲人 / 猫娘标记判断
-            var mySide = doc.side || inferLocalSide(lines);
+            var mySide = doc.side || sideOfVisit(doc.visit_id);
             lines.forEach(function (line) {
                 var label = transcriptSpeakerLabel(line.side, line.speaker_kind === 'human' ? 'human' : 'cat', mySide);
                 var stamp = formatTs(line.ts);
@@ -1029,11 +1048,32 @@
         return out.join('\n');
     }
 
-    function inferLocalSide(lines) {
-        // 本地完整形态没带本侧：取 lastEnded / 当前场次的 side，取不到就按第一行
-        if (lastEnded && lastEnded.side) return lastEnded.side;
-        if (visit.side) return visit.side;
-        return lines.length ? lines[0].side : null;
+    // 本侧按场次记（本地完整形态的转录不带本侧）：页面上见过的每场记一笔，最多留 64 场
+    var SIDES_KEY = 'nekoVisitSides';
+
+    function rememberSide(visitId, side) {
+        if (!VISIT_ID_RE.test(String(visitId || '')) || (side !== 'host' && side !== 'guest')) return;
+        try {
+            var map = JSON.parse(localStorage.getItem(SIDES_KEY) || '{}') || {};
+            if (map[visitId] === side) return;
+            delete map[visitId];
+            map[visitId] = side;
+            var keys = Object.keys(map);
+            while (keys.length > 64) delete map[keys.shift()];
+            localStorage.setItem(SIDES_KEY, JSON.stringify(map));
+        } catch (_) { /* noop */ }
+    }
+
+    function sideOfVisit(visitId) {
+        if (visit.visitId === visitId && visit.side) return visit.side;
+        if (lastEnded && lastEnded.visitId === visitId && lastEnded.side) return lastEnded.side;
+        try {
+            var map = JSON.parse(localStorage.getItem(SIDES_KEY) || '{}') || {};
+            var side = map[visitId];
+            return side === 'host' || side === 'guest' ? side : null;
+        } catch (_) {
+            return null;
+        }
     }
 
     async function exportTranscript(visitId) {
@@ -1123,6 +1163,10 @@
                 markReportButton(sourceMessage, t('visit.report.queuedButton', '已排队'));
             } else if (result.status === 409 && bodyCode(result) === 'already_queued') {
                 toast(t('visit.report.already', '这场已经举报过了'));
+                markReportButton(sourceMessage, t('visit.report.queuedButton', '已排队'));
+            } else if (result.status === 409 && bodyCode(result) === 'VISIT_LOGIN_REQUIRED' && result.body && result.body.queued === true) {
+                // 已先落盘排队，只是要原账号重新登录才能送出
+                toast(t('visit.report.queuedLogin', '举报已记录，重新登录原来的账号后会自动提交'), 6000);
                 markReportButton(sourceMessage, t('visit.report.queuedButton', '已排队'));
             } else if (result.status === 409 && bodyCode(result) === 'VISIT_LOGIN_REQUIRED') {
                 toast(t('visit.status.VISIT_LOGIN_REQUIRED', '请先登录'));
@@ -1340,7 +1384,6 @@
             catgirl: currentCatgirl(), accept: !!accept
         });
         if (result.status === 404) toast(t('visit.invite.expired', '接待时间已经过了'));
-        else if (result.status !== 200 && result.status !== 409) toast(t('visit.error.generic', '没能完成，请稍后再试'));
         return result;
     }
 
@@ -1367,17 +1410,35 @@
                 name: String(frame.peer_name || peerCatName()), code: String(frame.peer_short_id || '')
             })];
             if (frame.cross_region === true) out.push({ text: t('visit.join.crossRegion', '对方在另一个地区，连接可能不太稳定'), tone: 'warning' });
+            if (failed) out.push({ text: t('visit.error.generic', '没能完成，请稍后再试'), tone: 'warning' });
             out.push({ text: t('visit.invite.countdown', '{{s}} 秒后自动婉拒', { s: left }), tone: 'muted' });
             return out;
+        };
+        var inviteButtons = function (busy) {
+            return [
+                { id: 'decline', label: t('visit.invite.decline', '婉拒'), disabled: busy, onClick: function (h) { answer(h, false); } },
+                { id: 'accept', label: t('visit.invite.accept', '接待'), variant: 'primary', disabled: busy, onClick: function (h) { answer(h, true); } }
+            ];
+        };
+        var failed = false;
+        var answer = async function (h, accept) {
+            h.setButtons(inviteButtons(true));
+            var result = await answerInvite(visitId, accept);
+            if (h.closed) return;
+            if (result.status === 200 || result.status === 404 || result.status === 409) {
+                h.close(accept ? 'accept' : 'decline');
+                return;
+            }
+            // 本机请求一时失败（网络 / 5xx）：框留着、按钮恢复，期限内可以再点
+            failed = true;
+            h.setLines(lineList());
+            h.setButtons(inviteButtons(false));
         };
         var handle = openDialog({
             title: t('visit.invite.title', '有客人来了'),
             lines: lineList(),
             dismissible: false,
-            buttons: [
-                { id: 'decline', label: t('visit.invite.decline', '婉拒') },
-                { id: 'accept', label: t('visit.invite.accept', '接待'), variant: 'primary' }
-            ]
+            buttons: inviteButtons(false)
         });
         var entry = { visitId: visitId, handle: handle, timer: 0 };
         entry.timer = setInterval(function () {
@@ -1388,12 +1449,11 @@
             handle.setLines(lineList());
         }, 1000);
         inviteDialog = entry;
-        handle.result.then(function (answer) {
+        handle.result.then(function () {
             if (inviteDialog === entry) {
                 if (entry.timer) clearInterval(entry.timer);
                 inviteDialog = null;
             }
-            if (answer === 'accept' || answer === 'decline') answerInvite(visitId, answer === 'accept');
         });
     }
 
@@ -1828,10 +1888,27 @@
      * app-websocket.js 在 visit_bind 之后读一次 state 交给这里。``stale``：读的期间已经收到过
      * visit_state_change，阶段交给帧驱动，只补对端信息。
      */
+    function phaseFromState(phase) {
+        return ['pending', 'invite_ready', 'joining', 'awaiting_accept', 'active', 'wrap_up', 'ending'].indexOf(phase) !== -1
+            ? phase : null;
+    }
+
     function applyState(state, stale) {
         if (!state || typeof state !== 'object') return;
         releaseEnabled = state.enabled === true;
-        if (stale) { render(); return; }
+        if (stale) {
+            // 期间到的帧若没定下阶段（peer_hidden / ending_soon / reconnecting 等），阶段仍按快照补上；
+            // 帧已定下的阶段（更新）不覆盖
+            if (visit.phase === null && state.active === true && state.visit_id && phaseFromState(state.phase)
+                    && (!visit.visitId || visit.visitId === state.visit_id)) {
+                visit.visitId = state.visit_id;
+                visit.side = state.side || state.role || visit.side;
+                visit.phase = phaseFromState(state.phase);
+                visit.ownName = currentCatgirl();
+            }
+            render();
+            return;
+        }
         var phase = state.phase;
         if (state.active === true && typeof state.visit_id === 'string' && state.visit_id) {
             if (visit.visitId !== state.visit_id) {

@@ -6766,7 +6766,11 @@
             "ownCat": "我家貓娘",
             "peerCat": "對方的貓娘",
             "ownHuman": "我",
-            "peerHuman": "對方的家人"
+            "peerHuman": "對方的家人",
+            "hostCat": "邀請方的貓娘",
+            "hostHuman": "邀請方的家人",
+            "guestCat": "來訪方的貓娘",
+            "guestHuman": "來訪方的家人"
         },
         "input": {
             "notDelivered": "未送達",
@@ -6816,7 +6820,8 @@
             "saveFailed": "沒能儲存，請稍後再試",
             "unavailable": "暫時讀不到串門自我介紹，稍後再試",
             "unknownCatgirl": "找不到這個角色",
-            "unreviewed": "出門前先看一眼她的串門自我介紹，確認後才能串門"
+            "unreviewed": "出門前先看一眼她的串門自我介紹，確認後才能串門",
+            "sectionsOutdated": "這份私人段落清單基於改動之前的角色卡，新加的內容沒有列進來，請自己再看一遍"
         },
         "preview": {
             "invalid": "邀請碼無效",
@@ -6843,7 +6848,8 @@
             "queued": "檢舉已記錄，網路恢復後自動送出",
             "queuedButton": "已排隊",
             "already": "這場已經檢舉過了",
-            "persistFailed": "檢舉沒能儲存，請重試"
+            "persistFailed": "檢舉沒能儲存，請重試",
+            "queuedLogin": "檢舉已記錄，重新登入原本的帳號後會自動送出"
         },
         "speaker": {
             "ownCat": "她",

@@ -91,8 +91,10 @@ def test_onopen_sends_visit_bind_with_the_csrf_token():
     assert "_sendVisitBind(_thisSocket)" in onopen
     bind = _function_body(source, "_sendVisitBind")
     assert "action: 'visit_bind'" in bind and "csrf_token: token" in bind
-    # token 与本机 HTTP 变更端点同一个来源（page_config 的 autostart_csrf_token）
-    assert "nekoLocalMutationSecurity" in _function_body(source, "_visitCsrfToken")
+    # token 与本机 HTTP 变更端点同一个来源；nekoLocalMutationSecurity 对外只有 getMutationHeaders / refreshToken
+    token = _function_body(source, "_visitCsrfToken")
+    assert "security.getMutationHeaders()" in token and "security.refreshToken()" in token
+    assert "getToken" not in token
 
 
 def test_every_visit_downlink_type_is_dispatched():
@@ -349,3 +351,8 @@ def test_no_dehumanizing_address_in_visit_copy():
             low = str(node).lower()
             for word in banned:
                 assert word.lower() not in low, (lang, key, node)
+
+
+def test_persona_panel_warns_about_a_stale_private_section_list():
+    panel = _read(PERSONA)
+    assert "data.sections_outdated === true" in _function_body(panel, "renderPrivate")

@@ -6766,7 +6766,11 @@
             "ownCat": "我家猫娘",
             "peerCat": "对方的猫娘",
             "ownHuman": "我",
-            "peerHuman": "对方的家里人"
+            "peerHuman": "对方的家里人",
+            "hostCat": "邀请方的猫娘",
+            "hostHuman": "邀请方的家里人",
+            "guestCat": "来访方的猫娘",
+            "guestHuman": "来访方的家里人"
         },
         "input": {
             "notDelivered": "未送达",
@@ -6816,7 +6820,8 @@
             "saveFailed": "没能保存，请稍后再试",
             "unavailable": "暂时读不到串门自我介绍，稍后再试",
             "unknownCatgirl": "找不到这个角色",
-            "unreviewed": "出门前先看一眼她的串门自我介绍，确认后才能串门"
+            "unreviewed": "出门前先看一眼她的串门自我介绍，确认后才能串门",
+            "sectionsOutdated": "这份私人段落清单基于改动之前的角色卡，新加的内容没有列进来，请自己再看一遍"
         },
         "preview": {
             "invalid": "邀请码无效",
@@ -6843,7 +6848,8 @@
             "queued": "举报已记录，网络恢复后自动提交",
             "queuedButton": "已排队",
             "already": "这场已经举报过了",
-            "persistFailed": "举报没能保存，请重试"
+            "persistFailed": "举报没能保存，请重试",
+            "queuedLogin": "举报已记录，重新登录原来的账号后会自动提交"
         },
         "speaker": {
             "ownCat": "她",

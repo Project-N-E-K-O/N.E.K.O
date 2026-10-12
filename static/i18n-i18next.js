@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 串门 PR-12（聊天面与知情同意）与上游（重力猫、访问复盘、VRM 情绪设置）合并，刷新客户端 locale 缓存。
-    const LOCALE_VERSION = '2026-10-13-visit-pr12-chat-consent-main-merge';
+    const LOCALE_VERSION = '2026-10-13-visit-pr12-review-round1';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

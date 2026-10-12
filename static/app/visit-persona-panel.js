@@ -194,6 +194,9 @@
                 sections.forEach(function (section) { list.appendChild(el('li', '', String(section))); });
                 privateBox.appendChild(list);
             }
+            if (data && data.sections_outdated === true) {
+                privateBox.appendChild(el('p', 'visit-dialog-line is-warning', t('visit.persona.sectionsOutdated', '这份私人段落清单基于改动之前的角色卡，新加的内容没有列进来，请自己再看一遍')));
+            }
             if (data && data.scan_complete === false) {
                 privateBox.appendChild(el('p', 'visit-dialog-line is-warning', t('visit.persona.scanIncomplete', '自动检查不完整，请自己再看一遍有没有私人信息')));
             }
@@ -275,7 +278,7 @@
                     continue;
                 }
                 show(data);
-                return;
+                return true;
             }
             if (!panel.closed) {
                 setNotice([{ text: t('visit.persona.unavailable', '暂时读不到串门自我介绍，稍后再试'), tone: 'warning' }]);
@@ -319,9 +322,11 @@
             } else if (code === 'persona_too_long') {
                 message = t('visit.persona.tooLong', '太长了，请写短一点');
             } else if (code === 'persona_changed' || code === 'persona_card_changed') {
-                message = t('visit.persona.changed', '这段内容刚刚被更新过，已重新读取，请再确认一次');
-                await load();
-                setNotice([{ text: message, tone: 'warning' }]);
+                // 重新读取成功后在原有提示后面追加；读失败时 load 自己的错误提示保留
+                if (await load()) {
+                    notice.appendChild(el('p', 'visit-dialog-line is-warning',
+                        t('visit.persona.changed', '这段内容刚刚被更新过，已重新读取，请再确认一次')));
+                }
                 return;
             } else if (code === 'persona_generating') {
                 message = t('visit.persona.generating', '正在为她写串门自我介绍…');

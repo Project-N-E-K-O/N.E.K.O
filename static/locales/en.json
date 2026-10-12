@@ -6766,7 +6766,11 @@
             "ownCat": "My catgirl",
             "peerCat": "Their catgirl",
             "ownHuman": "Me",
-            "peerHuman": "Their family"
+            "peerHuman": "Their family",
+            "hostCat": "Inviting side's catgirl",
+            "hostHuman": "Inviting side's family",
+            "guestCat": "Visiting side's catgirl",
+            "guestHuman": "Visiting side's family"
         },
         "input": {
             "notDelivered": "Not delivered",
@@ -6816,7 +6820,8 @@
             "saveFailed": "Couldn't save. Try again later",
             "unavailable": "Couldn't load the visit introduction. Try again later",
             "unknownCatgirl": "This character wasn't found",
-            "unreviewed": "Look over her visit introduction first. Visits start once you confirm it"
+            "unreviewed": "Look over her visit introduction first. Visits start once you confirm it",
+            "sectionsOutdated": "This list of private sections is from the card before it changed; anything added since is not listed. Please check it yourself"
         },
         "preview": {
             "invalid": "That invite code isn't valid",
@@ -6843,7 +6848,8 @@
             "queued": "Report saved. It will be sent automatically once you're back online",
             "queuedButton": "Queued",
             "already": "This visit has already been reported",
-            "persistFailed": "The report couldn't be saved. Please try again"
+            "persistFailed": "The report couldn't be saved. Please try again",
+            "queuedLogin": "Report saved. It will be sent once you sign back in to the original account"
         },
         "speaker": {
             "ownCat": "Her",

@@ -92,10 +92,14 @@ function createHarness(opts) {
   const sendCalls = [];
   const socket = { readyState: 1, send(m) { sent.push(JSON.parse(m)); } };
   const body = new Node('body');
+  const docListeners = [];
   const documentShim = {
     body: body, documentElement: body,
     createElement: (tag) => new Node(tag),
+    addEventListener(type, fn) { docListeners.push({ type, fn }); },
+    removeEventListener(type, fn) { const i = docListeners.findIndex((l) => l.type === type && l.fn === fn); if (i >= 0) docListeners.splice(i, 1); },
   };
+  function pressKey(key) { docListeners.filter((l) => l.type === 'keydown').slice().forEach((l) => l.fn({ key })); }
   const host = {
     appendMessage(m) { messages.push(JSON.parse(JSON.stringify(m))); return m; },
     updateMessage(id, patch) { const m = messages.find((x) => x.id === id); if (m) Object.assign(m, JSON.parse(JSON.stringify(patch))); },
@@ -159,6 +163,7 @@ function createHarness(opts) {
     setInterval(fn, ms) { const id = nextId++; timers.push({ id, at: wall + ms, fn, every: ms }); return id; },
     clearInterval(id) { const i = timers.findIndex((t) => t.id === id); if (i >= 0) timers.splice(i, 1); },
     Map, Set, Number, Math, JSON, Object, Array, String, Promise, Infinity, RegExp, Error,
+    localStorage: (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
   };
   vm.createContext(sandbox);
   if (opts.withPacer) vm.runInContext(PACER_SRC, sandbox, { filename: 'visit-pacer.js' });
@@ -185,7 +190,7 @@ function createHarness(opts) {
   function dialogs() { return body.all((n) => n.className && n.className.indexOf('visit-dialog ') === 0 || n.className === 'visit-dialog'); }
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
   function lineText(id) { const m = messages.find((x) => x.id === 'visit-line-' + id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, timers };
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, timers, pressKey };
 }
 
 const report = {};
@@ -505,6 +510,101 @@ const report = {};
     report.idle_active = bound2[0].active;
     report.idle_bar_entry = h2.I.getVisitChatView().bar.actions.map((a) => a.id);
   }
+  // ── 被拒那句之后又提交过：不把旧文字塞回输入框，气泡照样标「未送达」 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    h.I.submitVisitChatText({ text: '第一句', requestId: 'r1' });
+    h.I.submitVisitChatText({ text: '第二句', requestId: 'r2' });
+    h.chat.handleStatus('VISIT_E_BUSY', { visit_id: VID, request_id: 'r1' });
+    report.later_submit_rollbacks = h.rollbacks.slice();
+    report.later_submit_m1 = h.messages.find((m) => m.id === 'visit-local-r1').status;
+    report.attachments_ignored = h.sendCalls.every((c) => c.options.ignoreComposerAttachments === true);
+  }
+  // ── 详情：说话人一律按请求者一侧标（guest 看 host 记的那份也一样） ──
+  {
+    const routes = {};
+    routes['/api/visit/details/*'] = async () => ({ status: 200, body: { visit_id: VID, requester_role: 'guest', duration_s: 1, free_minutes_deducted: 0, usage: null,
+      uploaded: { host: true, guest: true }, lines: [
+        { lp: 1, side: 'host', host: { from: 'own_cat', ts: 1, text: 'a', truncated: false }, guest: { from: 'peer_cat', ts: 1, text: 'a', truncated: false }, status: 'agree' },
+        { lp: 2, side: 'guest', host: { from: 'peer_cat', ts: 2, text: 'b', truncated: false }, guest: { from: 'own_cat', ts: 2, text: 'c', truncated: false }, status: 'differ' },
+      ] } });
+    const h = createHarness({ routes });
+    const dialog = await h.chat._test.openDetails(VID);
+    await h.settle();
+    report.details_labels = dialog.root.all((n) => n.className === 'visit-details-from').map((n) => n.textContent);
+  }
+  // ── 导出：本侧未知 → 邀请方 / 来访方；见过这一场 → 我 / 对方 ──
+  {
+    const h = createHarness();
+    const local = { source: 'memory', visit_id: VID2, lines: [
+      { line_id: 'x', lp: 1, side: 'host', speaker_kind: 'cat', ts: 1, text: '甲', truncated: false },
+      { line_id: 'y', lp: 1, side: 'guest', speaker_kind: 'human', ts: 1, text: '乙', truncated: false },
+    ] };
+    const label = (text) => text.split('\n').slice(1).map((l) => l.replace(/^\[[^\]]*\] /, '').split('：')[0]);
+    report.export_unknown = label(h.chat._test.buildTranscriptText(local));
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'guest', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'ended', visit_id: VID2, side: 'guest', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID, side: 'host', ts: 1 });
+    report.export_known = label(h.chat._test.buildTranscriptText(local));
+  }
+  // ── 读 state 期间到了不带阶段的帧：阶段仍按快照补上 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true } }; } };
+    const h = createHarness({ routes });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.chat.handleFrame({ type: 'visit_state_change', action: 'peer_hidden', visit_id: VID, side: 'host', ts: 1 });
+    release();
+    await probe;
+    report.nonphase_phase = h.chat._test.state().visit.phase;
+    report.nonphase_active = h.chat.isActive();
+  }
+  // ── 接待请求一时失败：框不关、按钮恢复；再点成功才关 ──
+  {
+    const replies = [{ status: 500, body: {} }, { status: 200, body: { ok: true } }];
+    const routes = {};
+    routes['/api/visit/rooms/' + VID + '/accept'] = async () => replies.shift();
+    const h = createHarness({ routes });
+    h.state('pending');
+    h.frame({ type: 'visit_invite', visit_id: VID, peer_name: '小白', peer_short_id: 'QWERTY', cross_region: false, expires_at: 1700000000 + 60 });
+    const d = h.dialogs()[0];
+    h.buttonsOf(d).find((b) => b.attrs['data-visit-dialog-button'] === 'accept').click();
+    await h.settle();
+    report.invite_after_fail_open = h.dialogs().length;
+    report.invite_after_fail_enabled = h.buttonsOf(h.dialogs()[0]).every((b) => !b.disabled);
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'accept').click();
+    await h.settle();
+    report.invite_after_ok_open = h.dialogs().length;
+    report.invite_posts = h.fetches.filter((f) => f.url.endsWith('/accept')).map((f) => f.body.accept);
+  }
+  // ── 举报：409 要登录但已排队 → 按已排队 ──
+  {
+    const routes = { '/api/visit/report': async () => ({ status: 409, body: { ok: false, code: 'VISIT_LOGIN_REQUIRED', queued: true } }) };
+    const h = createHarness({ routes });
+    const msg = { id: 'visit-ended-' + VID, blocks: [{ type: 'buttons', buttons: [{ id: 'report', label: '举报', action: 'visit_report', payload: { visit_id: VID } }] }] };
+    h.messages.push(msg);
+    h.win.dispatchEvent(new CustomEventLike('react-chat-window:action', { detail: { message: msg, action: msg.blocks[0].buttons[0] } }));
+    await h.settle();
+    const d = h.dialogs()[0];
+    h.buttonsOf(d).find((b) => b.attrs['data-visit-dialog-button'] === 'submit').click();
+    await h.settle();
+    report.report_queued_button = msg.blocks[0].buttons[0].disabled === true;
+  }
+  // ── Escape 关得掉可关闭的对话框（焦点不在对话框里也行） ──
+  {
+    const routes = { '/api/visit/invites/*': async () => ({ status: 200, body: { visit_id: VID2, host_display_name: '邻居', host_short_code: 'ABCDEF', cross_region: false, expires_at: 9e9, locally_blocked: false } }) };
+    const h = createHarness({ routes });
+    const p = h.chat._test.joinWithCode('ABCDEFGH23');
+    await h.settle();
+    report.escape_before = h.dialogs().length;
+    h.pressKey('Escape');
+    await p;
+    report.escape_after = h.dialogs().length;
+    report.escape_joins = h.fetches.filter((f) => f.url.indexOf('/join') !== -1).length;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -648,3 +748,41 @@ def test_reload_mid_visit_binds_active_and_idle_binds_inactive(report):
     assert report["reload_chat_phase"] == "active"
     assert report["idle_active"] is False
     assert report["idle_bar_entry"] == ["entry"]
+
+
+def test_a_later_submission_keeps_an_old_refused_text_out_of_the_composer(report):
+    assert report["later_submit_rollbacks"] == []
+    assert report["later_submit_m1"] == "failed"
+    assert report["attachments_ignored"] is True
+
+
+def test_details_label_speakers_from_the_requester_side(report):
+    # 请求者是 guest：host 侧的是对方，guest 侧的是我；differ 行两份同一口径
+    assert report["details_labels"] == ["对方的猫娘", "我家猫娘", "我家猫娘"]
+
+
+def test_export_uses_the_side_of_that_visit_or_neutral_labels(report):
+    assert report["export_unknown"] == ["邀请方的猫娘", "来访方的家里人"]
+    assert report["export_known"] == ["对方的猫娘", "我"]
+
+
+def test_snapshot_phase_survives_a_non_phase_frame_during_the_probe(report):
+    assert report["nonphase_phase"] == "active"
+    assert report["nonphase_active"] is True
+
+
+def test_invitation_stays_answerable_after_a_failed_accept(report):
+    assert report["invite_after_fail_open"] == 1
+    assert report["invite_after_fail_enabled"] is True
+    assert report["invite_after_ok_open"] == 0
+    assert report["invite_posts"] == [True, True]
+
+
+def test_login_blocked_report_that_was_queued_shows_as_queued(report):
+    assert report["report_queued_button"] is True
+
+
+def test_escape_closes_a_dismissible_dialog(report):
+    assert report["escape_before"] == 1
+    assert report["escape_after"] == 0
+    assert report["escape_joins"] == 0
