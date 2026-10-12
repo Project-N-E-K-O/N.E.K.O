@@ -3602,6 +3602,28 @@ async def test_partial_retry_still_cancels_a_stale_journal_of_a_completed_target
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
 
 
+async def test_replay_after_unlink_still_cancels_a_stale_journal_of_the_former_target(env):
+    original = env.routes._forget_fanout_targets
+    _fan_out_to(env, PART)
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})   # 原擦除：PART 的围栏是 2
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", original)  # 之后 PART 解绑
+    env.llm.responses = [SINGLE_FACTS]
+    await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
+    result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # PART 已不在扇出里，不再擦它；但它以前被围过：清除前（代数 1）的残留明文暂存照样取消
+    assert result.get("duplicate") is True
+    assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_never_fenced_key_outside_the_fanout_is_not_cancelled(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
+    # PART 从没被清除围过、也不在这次扇出里：它自己的写入是合法的，不能按调用方给的代数取消
+    assert _key_state(env, KEY_GROUP) == "pending" and _staging_file(env, KEY_GROUP).exists()
+    assert PART_KEY not in _tombstones(env)
+
+
 async def test_overlapping_alias_forgets_serialize_until_markers_land(env):
     _fan_out_to(env, PART)                                      # GROUP 与 GP 的扇出都含 PART
     entered, gate = asyncio.Event(), asyncio.Event()

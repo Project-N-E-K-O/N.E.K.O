@@ -5607,6 +5607,14 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
                 # 暂存都该取消
                 effective_fence = fence_at_start
             _raise_fanout_fences(recorded, effective_fanout_fences, fanout_fence_at_start)
+            # 调用方给了代数、却已不在当前扇出里的 key（两次请求之间解绑了）：不给它写新墓碑，
+            # 但它以前被清除擦过（墓碑里已有围栏）时，按那个已存的围栏一并参与取消扫描，
+            # 否则它在原擦除之后落下的清除前暂存会带着明文一直挂在 pending 上。只认已存的围栏：
+            # 按这次给的代数比会误取消它解绑之后自己的合法写入
+            for retained_key in _retained_target_keys(req, subject, targets):
+                fence = _recorded_fence(recorded, retained_key)
+                if fence is not None:
+                    effective_fanout_fences[retained_key] = fence
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:
@@ -5948,15 +5956,22 @@ def _erase_subject_keys(
 
     The whole fan-out for a full erase. For a partial one (some targets
     were erased already) the erase scope is narrower, but cancellation is
-    not: the request subject, the targets erased now, and every fan-out
-    target with a comparable fence (``fenced_keys``), the same set the
-    duplicate path cancels for. A pre-forget journal of an already erased
-    target that staged after its marker landed is cancelled too, while a
-    fresh one survives the per-key fence comparison.
+    not: the request subject, the targets erased now, and every key with a
+    comparable fence (``fenced_keys``), the same set the duplicate path
+    cancels for. ``fenced_keys`` also holds keys the caller named that left
+    the fan-out but were fenced by an earlier erase. A pre-forget journal
+    of an already erased key that staged after its marker landed is
+    cancelled too, while a fresh one survives the per-key fence comparison.
     """
     if len(erase_targets) == len(targets):
-        return set(forgotten_subject_keys)
+        return set(forgotten_subject_keys) | set(fenced_keys)
     return {subject.key} | {target.key for target in erase_targets} | set(fenced_keys)
+
+
+def _retained_target_keys(req: ScopedForgetRequest, subject, targets) -> list[str]:
+    """Keys the caller gave an epoch for that are no longer in the current fan-out (unlinked since)."""
+    current = {target.key for target in targets} | {subject.key}
+    return sorted(set(req.target_epochs or {}) - current)
 
 
 def _raise_fanout_fences(tombstones, effective: dict[str, int], at_start: dict[str, int]) -> None:
