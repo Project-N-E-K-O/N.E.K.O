@@ -1486,20 +1486,16 @@ def _account_limit_guard(
         account_id for account_id in incoming
         if account_platform(account_id) == platform
     )
-    limit = min(
-        IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM,
-        IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM.get(
-            platform, IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM,
-        ),
-    )
+    limit, reason = IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM, None
+    override = IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM.get(platform)
+    if override is not None and override[0] < limit:
+        limit, reason = override
     if len(existing) <= limit:
         return
-    if platform in IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM:
-        # 按平台收紧的上限各有原因（见配置注释），报错要说清楚，不能只报一个数字
+    if reason:
+        # 按平台收紧的上限各有原因，报错要说清楚，不能只报一个数字
         raise TrustIdentityError(
-            f"{platform} 平台的 account 暂不支持与同平台其它 account 关联"
-            f"（每个实体最多 {limit} 个）：清除的扇出目标还没有持久墓碑，"
-            f"见 issue #3405",
+            f"{platform} 平台每个实体最多 {limit} 个 account，无法再关联：{reason}",
             status_code=409,
         )
     raise TrustIdentityError(
