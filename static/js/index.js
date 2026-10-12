@@ -248,24 +248,9 @@ async function loadPageConfig() {
     }
 }
 
-// 同一时刻只发一个页面配置请求：首屏加载、多窗口回退、模型自愈重取、串门重载恢复共用在路上的那一个。
-// loadPageConfig 落定时会改写角色名 / 模型路径等全局（失败分支还会清空）：两个请求交叠时晚落定的旧请求会覆盖新结果。
-let pageConfigInFlight = null;
-function loadPageConfigShared() {
-    if (!pageConfigInFlight) {
-        const request = loadPageConfig();
-        pageConfigInFlight = request;
-        const clear = function () {
-            if (pageConfigInFlight === request) pageConfigInFlight = null;
-        };
-        request.then(clear, clear);
-    }
-    return pageConfigInFlight;
-}
-
 // 暴露给模型初始化层做"模型路径缺失"时的有界自愈重取（live2d-init.js scheduleLive2DConfigRetry）。
 // 重新拉取 page_config 并刷新 window.cubism4Model / window.vrmModel 等全局，再由调用方重试初始化。
-window.reloadPageConfig = loadPageConfigShared;
+window.reloadPageConfig = loadPageConfig;
 
 let resolvePageConfigReady = null;
 window.pageConfigReady = new Promise(function (resolve) {
@@ -370,7 +355,7 @@ function startMultiWindowPageConfigLoad() {
             }
             window.removeEventListener('neko:config-injected', handler);
             console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
-            loadPageConfigShared().then(resolve);
+            loadPageConfig().then(resolve);
         }, 5000);
     });
 }
@@ -399,7 +384,7 @@ window.startPageConfigLoad = function startPageConfigLoad() {
                 return resolvePageConfig(await startMultiWindowPageConfigLoad());
             }
 
-            return resolvePageConfig(await loadPageConfigShared());
+            return resolvePageConfig(await loadPageConfig());
         } catch (error) {
             console.warn('[主页] 页面配置加载失败，继续使用回退配置:', error);
             return resolvePageConfig(false);

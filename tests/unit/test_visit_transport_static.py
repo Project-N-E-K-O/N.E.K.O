@@ -2517,3 +2517,32 @@ def test_stale_manual_rejoin_does_not_join_after_a_socket_replacement():
         """
     )
     assert out == {"exits": 2, "replaced": True, "reconnectJoined": True, "extra": 0}
+
+
+def test_stalled_sdk_script_fails_the_capability_gate_in_time():
+    out = run_visit_js(
+        """
+        const ctx = makeContext({ search: '?v=1&side=guest&visit_id=' + VISIT_ID });
+        load(ctx, FILES);
+        const NVT = ctx.NekoVisitTransport;
+        const doc = ctx.document;
+        // 不注入 loadSdk：走真实的脚本插入，fake DOM 里脚本既不报 load 也不报 error（请求卡住）
+        const c = new NVT.loader.VisitTransportController({
+          window: ctx, document: doc, side: 'guest', visitId: VISIT_ID, post: () => {}, log: () => {},
+          video: doc.createElement('video'), canvas: doc.createElement('canvas'),
+        });
+        c.preflight = { ok: true };
+        c.onAuthToken('tok');
+        const ws = sockets[sockets.length - 1];
+        ws.serverOpen();
+        ws.serverSend(credsFor('guest'));
+        await settle();
+        const caps = () => ws.sent.filter((m) => m.type === 'caps' && m.stage === 'sdk');
+        await advance(9900);
+        const early = caps().length;
+        await advance(200);
+        const script = doc.created.find((el) => el.tagName === 'SCRIPT');
+        return { early, caps: caps().map((m) => ({ ok: m.transport_ok, reason: m.reason })), removed: !!(script && script.removed) };
+        """
+    )
+    assert out == {"early": 0, "caps": [{"ok": False, "reason": "sdk_load_failed"}], "removed": True}

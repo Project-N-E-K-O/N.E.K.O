@@ -26,16 +26,13 @@
   var READY_RETRIES = 2;
   var RECOVER_FETCH_TIMEOUT_MS = 4000;  // 重载恢复查 /api/visit/state 单次的上限
   var RECOVER_FETCH_WINDOW_MS = 12000;  // 查询失败（超时 / 网络错）时重试的总时限
-  var RELOAD_ATTEMPT_MS = 3000;         // 重拉页面配置单次的上限
-  // 重载恢复（补角色名、取 token、查快照）的总时限：从页面脚本加载起算。后端的 20 s 页面宽限还要容下
+  // 重载恢复（等首屏页面配置、取 token、查快照）的总时限：从页面脚本加载起算。后端的 20 s 页面宽限还要容下
   // 之后重建 iframe、加载脚本、鉴权、领凭证、加载 SDK、入房并报 joined，这里只用一半，给后面留够时间
   var RECOVER_TOTAL_MS = 10000;
   var TOKEN_LOOKUP_TIMEOUT_MS = 5000;   // 取 CSRF token 卡住时按失败处理
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
   var RECOVER_TOKEN_WINDOW_MS = 12000;  // 重载恢复取 token 的时限（另受 RECOVER_TOTAL_MS 约束）
-  var RECOVER_NAME_WINDOW_MS = 8000;    // 重载后取不到角色名时重拉页面配置的时限（另受 RECOVER_TOTAL_MS 约束）
-  var PAGE_CONFIG_WAIT_MS = 4000;       // 等 pageConfigReady 的上限，到点不管它落没落定都开始重载恢复
   var CLOSE_UNKNOWN_VISIT = 4404;      // 传输 WS 关闭码：后端不认这个场次（与 backend-ws.js 同值）
   var CLOSE_SUPERSEDED = 4409;         // 传输 WS 关闭码：被同 vid 的新传输连接顶掉（与 backend-ws.js 同值）
   // 移除 iframe 会把它里面还在跑的清理一起掐掉：父页至少等到子页的清理时限
@@ -148,7 +145,6 @@
       retiring: [],          // 已脱离父页、等它把清理做完（报 cleanup_done）的旧 iframe [{frame, timer}]
       auxGen: { crop: 0, hidden: 0, away: 0 },   // 实时辅助状态各自的更新计数：重载快照只不覆盖查询期间更新过的那几项
       away: false,           // guest 离家样式当前是否打着
-      reloadInFlight: null,  // 重载恢复里在路上的 reloadPageConfig（同时只发一个）
       portraitWrapped: false,
     };
 
@@ -609,7 +605,8 @@
     /** 串门期间用户自己改了帧率：以新值为准（恢复时不再回到旧值），低于取帧帧率就重新拉高。 */
     function onFrameRateChanged(event) {
       var detail = event && event.detail;
-      if ((detail && detail.source === 'visit') || state.savedFps === null) return;
+      if (detail && detail.source === 'visit') return;
+      // 原来没拉高（用户目标不低于取帧帧率）时也要看：用户改低之后同样要拉到取帧帧率
       state.savedFps = null;
       win.nekoTargetFrameRateHold = null;
       if (captureWanted()) holdFrameRate();
@@ -973,6 +970,9 @@
       // pending 开的是新场次，照常处理
       var current = state.visitId || state.closedVisitId;
       if (action !== 'pending' && current && msg.visit_id && msg.visit_id !== current) return;
+      // 已结束场次迟到的事件同样丢掉：结束时 visitId / closedVisitId 都已清空，只剩 endedVisitId 记着它
+      // （迟到的 departed 会把本机模型一直打成离家样式、peer_crop 会带进下一场的构图）
+      if (action !== 'pending' && msg.visit_id && msg.visit_id === state.endedVisitId) return;
       // 只有能建 / 拆 iframe 的生命周期事件才让在途的重载恢复快照作废；peer_hidden / peer_crop /
       // departed 这类辅助事件不建 iframe，不能让快照白白丢掉
       if (action === 'ended' || PHASE_OF_ACTION[action]) state.liveGen += 1;
@@ -1087,56 +1087,15 @@
     }
 
     /**
-     * 重载恢复的入口：页面配置一时失败时角色名为空，按退避重拉页面配置（window.reloadPageConfig）
-     * 直到拿到角色名或超时，再走 recoverAfterReload。
+     * 重载恢复的入口：读首屏页面配置给出的角色名，有就走 recoverAfterReload，没有就放弃。
+     * 不自己重拉页面配置：首页启动流程（startPageConfigLoad）前面有存储位置、七日引导、悬浮头像等好几道闸，
+     * 重载恢复在每次打开主页时都会跑（与串门开关无关），绕开任何一道都会影响所有用户。
      */
-    function recoverFromPageConfig(attempt, deadline, overall) {
+    function recoverFromPageConfig(overall) {
       var cfg = win.lanlan_config;
       var name = cfg && cfg.lanlan_name;
-      if (name) return recoverAfterReload(name, overall);
-      attempt = attempt || 0;
-      if (deadline === undefined) {
-        deadline = now() + RECOVER_NAME_WINDOW_MS;
-        if (typeof overall === 'number') deadline = Math.min(deadline, overall);
-      }
-      var delay = backoffMs(attempt);
-      if (now() + delay >= deadline) return Promise.resolve(false);
-      return new Promise(function (resolve) { setTimeoutFn(resolve, delay); }).then(function () {
-        // 存储位置首屏哨兵放行之前不重拉：reloadPageConfig 直接 fetch、不经 startPageConfigLoad 的等待，抢跑会读到
-        // 未批准 / 错误存储位置的角色与模型配置（与 live2d-init.js 的自愈重取一致）。重载恢复在每次打开主页时都会跑，
-        // 和串门开关无关；哨兵被拒绝或到截止时间还没放行就放弃恢复
-        return withTimeout(storageBarrier().then(function () { return true; }, function () { return false; }),
-          Math.max(0, deadline - now()), false);
-      }).then(function (allowed) {
-        if (!allowed) return false;
-        return reloadOnce(deadline).then(function () {
-          return recoverFromPageConfig(attempt + 1, deadline, overall);
-        });
-      });
-    }
-
-    /** 存储位置首屏哨兵（没有就当已放行）。 */
-    function storageBarrier() {
-      var barrier = win.__nekoStorageLocationStartupBarrier;
-      return barrier && typeof barrier.then === 'function' ? Promise.resolve(barrier) : Promise.resolve();
-    }
-
-    /** 重拉一次页面配置：同时只发一个，每次最多等 RELOAD_ATTEMPT_MS（不超过截止时间）。 */
-    function reloadOnce(deadline) {
-      return Promise.resolve().then(function () {
-        var reload = win.reloadPageConfig;
-        if (typeof reload !== 'function') return null;
-        // reloadPageConfig 里的 fetch 没有超时：每次最多等 RELOAD_ATTEMPT_MS（也不超过截止时间）。等超时并不取消它，
-        // 上一次还在路上就接着等它、不再另发——否则慢的旧请求晚落定会把新结果（角色名 / 模型配置）覆盖掉或清空
-        if (!state.reloadInFlight) {
-          var p = Promise.resolve().then(function () { return reload(); });
-          state.reloadInFlight = p;
-          var clear = function () { if (state.reloadInFlight === p) state.reloadInFlight = null; };
-          p.then(clear, clear);
-        }
-        var left = Math.max(0, Math.min(RELOAD_ATTEMPT_MS, deadline - now()));
-        return withTimeout(state.reloadInFlight, left, null);
-      });
+      if (!name) return Promise.resolve(false);
+      return recoverAfterReload(name, overall);
     }
 
     var bridge = {
@@ -1153,7 +1112,7 @@
       },
       recoverAfterReload: recoverAfterReload,
       /** overall：重载恢复的绝对截止时刻（startRecoveryWhenReady 在脚本加载时定下）。 */
-      recoverFromPageConfig: function (overall) { return recoverFromPageConfig(0, undefined, overall); },
+      recoverFromPageConfig: recoverFromPageConfig,
       now: now,
       firstFrameDataURL: function () { return state.firstFrame; },
       _state: state,
@@ -1178,8 +1137,8 @@
   }
 
   /**
-   * 页面配置就绪后启动重载恢复；pageConfigReady 一直不落定（page_config 请求挂住）或失败时，
-   * 最多等 PAGE_CONFIG_WAIT_MS 也要启动，否则 20 s 页面宽限过去整场按 local_page_lost 结束。
+   * 首屏页面配置落定（成功或失败）后启动重载恢复。到总截止时间还没落定（启动闸一直没放行、page_config 请求挂住）
+   * 就放弃：这一场按页面没开处理（后端 20 s 页面宽限后以 local_page_lost 结束）。
    */
   function startRecoveryWhenReady(bridge, win, setTimeoutFn) {
     var started = false;
@@ -1193,7 +1152,7 @@
     var ready = win.pageConfigReady;
     if (ready && typeof ready.then === 'function') {
       ready.then(go, go);
-      setTimeoutFn(go, PAGE_CONFIG_WAIT_MS);
+      setTimeoutFn(function () { started = true; }, RECOVER_TOTAL_MS);
     } else {
       win.addEventListener('load', go);
     }

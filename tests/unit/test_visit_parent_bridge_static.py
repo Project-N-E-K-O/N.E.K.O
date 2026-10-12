@@ -114,33 +114,3 @@ def test_fps_popup_dispatches_before_saving():
     block = src[i:src.index("});", i)]
     # 先派发撤掉串门的临时帧率，保存时才存用户新选的值
     assert block.index("neko-frame-rate-changed") < block.index("saveNEKOSettings")
-
-
-def test_page_config_requests_are_shared_across_callers():
-    import json
-    from tests.visit_js_harness import run_visit_js
-    src = (ROOT / "static" / "js" / "index.js").read_text(encoding="utf-8")
-    start = src.index("let pageConfigInFlight = null;")
-    end = src.index("window.reloadPageConfig = loadPageConfigShared;")
-    snippet = src[start:end]
-    # 首屏加载与多窗口回退也走共用的那个，不直接调 loadPageConfig
-    assert "await loadPageConfig()" not in src and "loadPageConfig().then" not in src
-    assert "window.reloadPageConfig = loadPageConfig;" not in src and "const request = loadPageConfig();" in src
-    out = run_visit_js(
-        """
-        const resolvers = [];
-        let calls = 0;
-        const loadPageConfig = () => { calls += 1; return new Promise((r) => resolvers.push(r)); };
-        const shared = new Function('loadPageConfig', SNIPPET + '; return loadPageConfigShared;')(loadPageConfig);
-        const a = shared();
-        const b = shared();                 // 第一个还在路上：共用，不另发
-        const same = a === b;
-        resolvers[0](true);
-        await a;
-        await Promise.resolve();
-        shared();                           // 落定之后再调：重新发
-        return { same, calls };
-        """.replace("SNIPPET", json.dumps(snippet)),
-        files=[],
-    )
-    assert out == {"same": True, "calls": 2}

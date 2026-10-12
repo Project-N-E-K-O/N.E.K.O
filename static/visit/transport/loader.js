@@ -30,6 +30,7 @@
   var SOFTENC_FPS_RATIO = 0.9;        // 27 / 30：编码帧率低于目标帧率的 90 % 算软编跟不上
   var PUBLISH_RETRY_BASE_MS = 2000;   // SDK 拒绝发布后的首次重试间隔，之后翻倍
   var PUBLISH_RETRY_MAX_MS = 30000;
+  var SDK_LOAD_TIMEOUT_MS = 10000;    // 本地 SDK 脚本加载的上限：一直不报 load / error 时按加载失败上报（后端首次入房留了 25 s）
   var STOP_LEAVE_WAIT_MS = 5000;      // 收到 stop 后等离房的上限（与 backend-ws 终止时同值；父页 ended 后最多留 iframe 6 s）
   var TEARDOWN_IDLE_WAIT_MS = 2000;   // 拆适配器前等在途 SDK 操作的上限（父页对被顶号的 iframe 按 2 + 15 + 8 s 再留余量）
   // 后端判自己断线是断开后 25 s：手动重新入房失败时在这个窗口内按退避再试，不让一次暂时性失败拖到判死
@@ -104,11 +105,22 @@
       s.integrity = SDK_INTEGRITY[transport];
       s.crossOrigin = 'anonymous';
       s.async = true;
+      // 请求卡住时 load / error 都不来：到点按加载失败处理，能力门照常上报，不让这一场等到后端的入房时限
+      var timer = setTimeout(function () {
+        s.onload = null;
+        s.onerror = null;
+        if (typeof s.remove === 'function') s.remove();
+        reject(new Error('sdk load timeout'));
+      }, SDK_LOAD_TIMEOUT_MS);
       s.onload = function () {
+        clearTimeout(timer);
         if (win[vendor.globalName]) resolve(win[vendor.globalName]);
         else reject(new Error('sdk global missing'));
       };
-      s.onerror = function () { reject(new Error('sdk load failed')); };
+      s.onerror = function () {
+        clearTimeout(timer);
+        reject(new Error('sdk load failed'));
+      };
       win.document.head.appendChild(s);
     });
   }

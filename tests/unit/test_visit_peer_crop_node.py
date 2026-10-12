@@ -494,28 +494,24 @@ def test_reload_snapshot_is_ignored_once_live_state_moved_on():
     assert out == {"result": False, "frame": False}
 
 
-def test_reload_recovery_reloads_page_config_until_the_name_appears():
+def test_reload_recovery_never_fetches_page_config_itself():
     out = run_visit_js(
         _BRIDGE_JS + """
-        const runs = {};
-        for (const [label, fillAt] of [['late', 2], ['never', 99]]) {
-          const h = makeBridge();
-          let reloads = 0;
-          h.ctx.lanlan_config = { lanlan_name: '' };
-          h.ctx.reloadPageConfig = () => { reloads += 1; if (reloads >= fillAt) h.ctx.lanlan_config.lanlan_name = 'Neko'; return Promise.resolve(reloads >= fillAt); };
-          const asked = [];
-          h.ctx.fetch = (url) => { asked.push(url); return Promise.resolve({ ok: true, json: () => Promise.resolve({ active: false }) }); };
-          let result;
-          h.bridge.recoverFromPageConfig().then((r) => { result = r; });
-          for (let i = 0; i < 25; i++) await advance(1000);
-          runs[label] = { reloads, asked: asked.length, result };
-        }
-        return runs;
+        const h = makeBridge();
+        let reloads = 0;
+        h.ctx.lanlan_config = { lanlan_name: '' };
+        // 首屏页面配置没给出角色名：不自己重拉（首页启动闸都由 startPageConfigLoad 负责），直接放弃
+        h.ctx.reloadPageConfig = () => { reloads += 1; return Promise.resolve(true); };
+        const asked = [];
+        h.ctx.fetch = (url) => { asked.push(url); return Promise.resolve({ ok: true, json: () => Promise.resolve({ active: false }) }); };
+        let result = 'pending';
+        h.bridge.recoverFromPageConfig().then((r) => { result = r; });
+        for (let i = 0; i < 12; i++) await advance(1000);
+        return { reloads, asked: asked.length, result };
         """,
         files=BRIDGE_FILES,
     )
-    assert out["late"] == {"reloads": 2, "asked": 1, "result": False}
-    assert out["never"]["asked"] == 0 and out["never"]["result"] is False and 1 <= out["never"]["reloads"] <= 3
+    assert out == {"reloads": 0, "asked": 0, "result": False}
 
 
 def test_auxiliary_state_events_do_not_void_the_reload_snapshot():
@@ -541,11 +537,18 @@ def test_auxiliary_state_events_do_not_void_the_reload_snapshot():
     assert out == {"result": True, "frame": True}
 
 
-def test_recovery_starts_even_if_page_config_never_settles():
+def test_recovery_waits_for_page_config_within_the_overall_deadline():
     out = run_visit_js(
         _BRIDGE_JS + """
         const runs = {};
-        for (const [label, makeReady] of [['hang', () => new Promise(() => {})], ['fail', () => Promise.reject(new Error('x'))], ['ok', () => Promise.resolve(true)]]) {
+        const cases = [
+          ['hang', () => new Promise(() => {})],
+          ['fail', () => Promise.reject(new Error('x'))],
+          ['ok', () => Promise.resolve(true)],
+          ['late', () => new Promise((r) => setTimeoutF(() => r(true), 6000))],     // 启动闸放行得晚，仍在截止时间内
+          ['tooLate', () => new Promise((r) => setTimeoutF(() => r(true), 10500))], // 过了总截止时间才落定
+        ];
+        for (const [label, makeReady] of cases) {
           const ready = makeReady();
           ready.catch(() => {});
           const h = makeBridge();
@@ -555,32 +558,16 @@ def test_recovery_starts_even_if_page_config_never_settles():
           h.ctx.NekoVisitParentBridge.startRecoveryWhenReady(h.bridge, h.ctx, (fn, ms) => setTimeoutF(fn, ms));
           await settle();
           const early = starts;
-          await advance(4100);
+          await advance(12000);
           runs[label] = { early, total: starts };
         }
         return runs;
         """,
         files=BRIDGE_FILES,
     )
-    assert out == {"hang": {"early": 0, "total": 1}, "fail": {"early": 1, "total": 1}, "ok": {"early": 1, "total": 1}}
-
-
-def test_page_config_reload_attempts_are_bounded():
-    out = run_visit_js(
-        _BRIDGE_JS + """
-        const h = makeBridge();
-        let reloads = 0;
-        h.ctx.lanlan_config = { lanlan_name: '' };
-        // fetch 挂住：每次尝试仍有上限、总截止时间照样生效；挂着的那次不重复发（晚落定的旧请求会覆盖新结果）
-        h.ctx.reloadPageConfig = () => { reloads += 1; return new Promise(() => {}); };
-        let result = 'pending';
-        h.bridge.recoverFromPageConfig().then((r) => { result = r; });
-        for (let i = 0; i < 20; i++) await advance(1000);
-        return { reloads, result };
-        """,
-        files=BRIDGE_FILES,
-    )
-    assert out == {"reloads": 1, "result": False}
+    # 只等首屏结果、不自己拉：一直没落定或过了截止时间才落定就放弃
+    assert out == {"hang": {"early": 0, "total": 0}, "fail": {"early": 1, "total": 1}, "ok": {"early": 1, "total": 1},
+                   "late": {"early": 0, "total": 1}, "tooLate": {"early": 0, "total": 0}}
 
 
 def test_visit_state_request_is_bounded_and_retried():
@@ -642,10 +629,9 @@ def test_reload_recovery_shares_one_overall_deadline():
         _BRIDGE_JS + """
         let calls = 0;
         const h = makeBridge({ getToken: () => { calls += 1; return new Promise(() => {}); } });   // token 每次都挂住
-        let reloads = 0;
         h.ctx.lanlan_config = { lanlan_name: '' };
-        h.ctx.reloadPageConfig = () => { reloads += 1; if (reloads >= 2) h.ctx.lanlan_config.lanlan_name = 'Neko'; return Promise.resolve(true); };
-        h.ctx.pageConfigReady = new Promise(() => {});           // 页面配置挂住：靠 4 s 上限启动
+        // 首屏页面配置 3 s 后才给出角色名（启动闸放行得晚）：等页面配置也从同一个总预算里扣
+        h.ctx.pageConfigReady = new Promise((r) => setTimeoutF(() => { h.ctx.lanlan_config.lanlan_name = 'Neko'; r(true); }, 3000));
         h.ctx.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ active: false }) });
         const start = clock.now;
         let doneAt = null;
@@ -653,12 +639,12 @@ def test_reload_recovery_shares_one_overall_deadline():
         h.bridge.recoverFromPageConfig = (o) => orig(o).then((r) => { doneAt = clock.now; return r; });
         h.ctx.NekoVisitParentBridge.startRecoveryWhenReady(h.bridge, h.ctx, (fn, ms) => setTimeoutF(fn, ms));
         for (let i = 0; i < 40 && doneAt === null; i++) await advance(1000);
-        return { elapsed: doneAt === null ? null : doneAt - start, reloads, tokenTries: calls > 0 };
+        return { elapsed: doneAt === null ? null : doneAt - start, tokenTries: calls > 0 };
         """,
         files=BRIDGE_FILES,
     )
     # 各步各算窗口时会拖到 ~22 s（超过 20 s 页面宽限）；共用总截止时间后 10 s 内收尾，给重建 iframe 与入房留出另一半
-    assert out["reloads"] >= 2 and out["tokenTries"] is True
+    assert out["tokenTries"] is True
     assert out["elapsed"] is not None and out["elapsed"] <= 10000
 
 
@@ -994,56 +980,51 @@ def test_live_hidden_and_away_survive_frame_creation_during_recovery():
     assert out["guest"] == {"away": True}
 
 
-
-def test_page_config_recovery_waits_for_the_storage_location_barrier():
+def test_late_auxiliary_events_of_an_ended_visit_are_ignored():
     out = run_visit_js(
         _BRIDGE_JS + """
-        const runs = {};
-        // 哨兵一直没放行（存储位置提示还开着）：不重拉，到截止时间放弃恢复
-        {
-          const h = makeBridge();
-          let reloads = 0;
-          h.ctx.lanlan_config = { lanlan_name: '' };
-          h.ctx.__nekoStorageLocationStartupBarrier = new Promise(() => {});
-          h.ctx.reloadPageConfig = () => { reloads += 1; return Promise.resolve(true); };
-          let result = 'pending';
-          h.bridge.recoverFromPageConfig().then((r) => { result = r; });
-          for (let i = 0; i < 20; i++) await advance(1000);
-          runs.pending = { reloads, result };
-        }
-        // 哨兵被拒绝（存储未批准）：不重拉，直接放弃
-        {
-          const h = makeBridge();
-          let reloads = 0;
-          h.ctx.lanlan_config = { lanlan_name: '' };
-          const rejected = Promise.reject(new Error('declined'));
-          rejected.catch(() => {});
-          h.ctx.__nekoStorageLocationStartupBarrier = rejected;
-          h.ctx.reloadPageConfig = () => { reloads += 1; return Promise.resolve(true); };
-          let result = 'pending';
-          h.bridge.recoverFromPageConfig().then((r) => { result = r; });
-          for (let i = 0; i < 5; i++) await advance(1000);
-          runs.rejected = { reloads, result };
-        }
-        // 哨兵放行后照常重拉
-        {
-          const h = makeBridge();
-          let reloads = 0;
-          let release;
-          h.ctx.lanlan_config = { lanlan_name: '' };
-          h.ctx.__nekoStorageLocationStartupBarrier = new Promise((r) => { release = r; });
-          h.ctx.reloadPageConfig = () => { reloads += 1; return Promise.resolve(true); };
-          h.bridge.recoverFromPageConfig();
-          await advance(2000);
-          const before = reloads;
-          release();
-          await settle();
-          await advance(1000);
-          runs.released = { before, after: reloads > 0 };
-        }
-        return runs;
+        const h = makeBridge();
+        const box = h.ctx.document.createElement('div');
+        box.id = 'live2d-container';
+        h.ctx.document.body.appendChild(box);
+        await open(h, 'guest');
+        change(h, 'started');
+        change(h, 'ended');
+        const cropBefore = h.bridge._state.peerCrop;
+        // 已结束场次迟到的出门 / 构图
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'departed', side: 'guest', visit_id: VISIT_ID });
+        h.bridge.onStateChange({ type: 'visit_state_change', action: 'peer_crop', side: 'guest', visit_id: VISIT_ID,
+                                 peer_crop: cropBefore === 'full' ? 'upper' : 'full' });
+        const out = { away: box.classList.contains('visiting-away'), cropKept: h.bridge._state.peerCrop === cropBefore };
+        await advance(15100);
+        return out;
         """,
         files=BRIDGE_FILES,
     )
-    assert out == {"pending": {"reloads": 0, "result": False}, "rejected": {"reloads": 0, "result": False},
-                   "released": {"before": 0, "after": True}}
+    assert out == {"away": False, "cropKept": True}
+
+
+def test_lowering_fps_during_capture_reapplies_the_hold():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        h.ctx.targetFrameRate = 60;                     // 串门开始时用户目标不低于取帧帧率：不用拉高
+        await open(h, 'guest');
+        change(h, 'started');
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'publish', on: true } });
+        await settle();
+        const before = { fps: h.ctx.targetFrameRate, hold: h.ctx.nekoTargetFrameRateHold || null };
+        // 串门中途用户把帧率调到 15：照样拉到取帧帧率，用户的值记进 hold（保存设置时存它）
+        h.ctx.targetFrameRate = 15;
+        h.ctx.dispatchEvent(new h.ctx.CustomEvent('neko-frame-rate-changed', { detail: { fps: 15 } }));
+        await settle();
+        const after = { fps: h.ctx.targetFrameRate, hold: h.ctx.nekoTargetFrameRateHold };
+        change(h, 'ended');
+        await advance(15100);
+        return { before, after, restored: h.ctx.targetFrameRate };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["before"] == {"fps": 60, "hold": None}
+    assert out["after"]["fps"] >= 15 and out["after"]["hold"] == {"userFps": 15, "heldFps": out["after"]["fps"]}
+    assert out["after"]["fps"] > 15 and out["restored"] == 15
