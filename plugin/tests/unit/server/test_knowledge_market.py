@@ -410,6 +410,34 @@ async def test_a_cancel_after_completion_keeps_the_task_completed(env, monkeypat
     assert task["status"] == "completed"
 
 
+async def test_resubscribe_waits_until_the_unsubscribe_report_has_landed(env, monkeypatch):
+    landed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_report(package_id, *, timeout=10.0):
+        await release.wait()
+        landed.set()
+        return True
+
+    monkeypatch.setattr(km, "_report_unsubscribe_best_effort", slow_report)
+    main = env["main"]
+    main.on("GET", "packs", {"ok": True, "packs": [_installed()]})
+    main.on("POST", "packs/remove", {"ok": True, "pack_id": "market-memes", "operation_status": "committed"})
+    http = env["http"]
+    response = await http.post(
+        "/market/knowledge/unsubscribe", params=TOKEN, json={"package_id": 42, "pack_id": "market-memes"}
+    )
+    assert response.status_code == 200
+    body = {"package_id": 42, "version": "1.0.0", "channel": "stable", "pack_id": "market-memes"}
+    # The market is still being told about the unsubscribe: a new subscribe could overtake it.
+    assert (await http.post("/market/knowledge/subscribe", params=TOKEN, json=body)).status_code == 409
+    release.set()
+    await asyncio.wait_for(landed.wait(), 5)
+    await asyncio.gather(*km._background)
+    assert 42 not in km._unsubscribing
+    assert (await http.post("/market/knowledge/subscribe", params=TOKEN, json=body)).status_code == 200
+
+
 async def test_unsubscribe_refuses_a_pack_it_does_not_own(env):
     main = env["main"]
     main.on("GET", "packs", {"ok": True, "packs": [_installed()]})

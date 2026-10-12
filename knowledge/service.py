@@ -655,7 +655,13 @@ class KnowledgeService:
             # could ask for it.
             raise KnowledgeUnavailable("knowledge_busy")
         self._note_removal(operation_id, "pending", target=target)
-        removal = asyncio.ensure_future(self._remove_pack_tracked(pack_id, expected_identity, operation_id))
+        # The request's place in the order is taken now, as it arrives: the
+        # removal itself runs in its own task, and an import arriving after
+        # this request must not get an earlier number before that task starts.
+        self._request_seq += 1
+        removal = asyncio.ensure_future(
+            self._remove_pack_tracked(pack_id, expected_identity, operation_id, self._request_seq)
+        )
         self._detached.add(removal)
         removal.add_done_callback(self._detached.discard)
         removal.add_done_callback(_consume)
@@ -694,10 +700,10 @@ class KnowledgeService:
         return {**(item["result"] or {}), "operation_id": operation_id, "operation_status": item["status"]}
 
     async def _remove_pack_tracked(
-        self, pack_id: str, expected_identity: tuple[str, str, str] | None, operation_id: str
+        self, pack_id: str, expected_identity: tuple[str, str, str] | None, operation_id: str, seq: int
     ) -> dict[str, Any]:
         try:
-            result = await self._remove_pack_locked(pack_id, expected_identity)
+            result = await self._remove_pack_locked(pack_id, expected_identity, seq)
         except KnowledgeUnavailable as exc:
             self._note_removal(operation_id, "failed", {"ok": False, "reason": exc.reason})
             raise
@@ -708,7 +714,7 @@ class KnowledgeService:
         return {**result, "operation_id": operation_id, "operation_status": "committed"}
 
     async def _remove_pack_locked(
-        self, pack_id: str, expected_identity: tuple[str, str, str] | None
+        self, pack_id: str, expected_identity: tuple[str, str, str] | None, seq: int | None = None
     ) -> dict[str, Any]:
         # Nothing is marked up front, so a failed removal has nothing to undo.
         # While this removal is pending, earlier imports of the pack yield (one
@@ -722,8 +728,10 @@ class KnowledgeService:
             raise KnowledgeUnavailable("not_found")
         if not self._identity_matches(pack_id, expected_identity):
             raise KnowledgeUnavailable("subscription_identity_mismatch")
-        self._request_seq += 1
-        my_seq = self._request_seq
+        if seq is None:
+            self._request_seq += 1
+            seq = self._request_seq
+        my_seq = seq
         self._pending_removals[pack_id] = self._pending_removals.get(pack_id, frozenset()) | {my_seq}
 
         async def run() -> dict[str, Any]:

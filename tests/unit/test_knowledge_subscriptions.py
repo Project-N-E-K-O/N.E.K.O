@@ -386,6 +386,30 @@ async def test_removal_outcome_is_tracked_and_never_repeated(tmp_path):
         await service.stop()
 
 
+async def test_a_tracked_removal_takes_its_place_in_the_order_when_it_arrives(tmp_path):
+    """An update that arrives after the unsubscribe is the newer request and must stand."""
+    service = await _started(tmp_path)
+    try:
+        await _subscribe(service)
+        await service._write_lock.acquire()  # the removal waits for the lock
+        removal = asyncio.create_task(
+            service.remove_pack("market-memes", expected_identity=IDENTITY, operation_id="op-order-000000001")
+        )
+        updated = _raw(_pack(content="A newer note about the kotatsu."))
+        importing = asyncio.create_task(
+            service.import_pack(updated, subscription=_subscription(updated, version="2.0.0"))
+        )
+        await asyncio.sleep(0.05)
+        service._write_lock.release()
+        assert (await removal)["operation_status"] == "committed"
+        job = await _settle(service, await importing)
+        assert job["state"] == "active"
+        (pack,) = await service.list_packs()
+        assert pack["subscription"]["version"] == "2.0.0"
+    finally:
+        await service.stop()
+
+
 async def test_tracked_removal_settles_even_when_the_caller_stops_waiting(tmp_path):
     service = await _started(tmp_path)
     try:

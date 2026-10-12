@@ -822,6 +822,14 @@ def _report_unsubscribe_later(package_id: int) -> None:
     )
     _background.add(report)
     report.add_done_callback(_background.discard)
+    # The report takes over the package's "unsubscribing" mark: a subscribe
+    # sent right after could otherwise report to the market before this
+    # delayed unsubscribe report lands, leaving the market believing the
+    # reinstalled package was unsubscribed. Refused (409) until it settles.
+    current = asyncio.current_task()
+    if current is not None and _unsubscribing.get(package_id) is current:
+        _unsubscribing[package_id] = report
+        report.add_done_callback(lambda done, *, package_id=package_id: _unsubscribe_done(package_id, done))
 
 
 async def _settle_unsubscribe(payload: KnowledgeUnsubscribeRequest, deadline: float) -> dict[str, Any]:
