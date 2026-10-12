@@ -93,7 +93,7 @@ class FakeMain:
 
 @pytest.fixture
 def env(monkeypatch):
-    for state in (km._tasks, km._task_workers, km._installations, km._active_package_tasks, km._unsubscribing):
+    for state in (km._tasks, km._task_workers, km._installations, km._active_package_tasks, km._unsubscribing, km._background):
         state.clear()
     main = FakeMain()
     sleeps: list[float] = []
@@ -322,9 +322,12 @@ async def test_same_request_joins_and_a_different_one_conflicts(env, monkeypatch
 
 
 async def _unsubscribe(http, package_id: int = 42, pack_id: str = "market-memes"):
-    return await http.post(
+    response = await http.post(
         "/market/knowledge/unsubscribe", params=TOKEN, json={"package_id": package_id, "pack_id": pack_id}
     )
+    # The market is told in the background; let that finish before asserting on it.
+    await asyncio.gather(*km._background)
+    return response
 
 
 async def test_unsubscribe_removes_only_the_owned_subscription(env):
@@ -335,6 +338,7 @@ async def test_unsubscribe_removes_only_the_owned_subscription(env):
     response = await _unsubscribe(env["http"])
     assert response.status_code == 200
     assert response.json()["removed"] is True
+    assert response.json()["remote_report"] == "scheduled"
     _method, _path, kwargs = main.calls[-1]
     assert kwargs["json_body"]["expected_subscription"] == {
         "provider": "plugin-market",
@@ -343,6 +347,41 @@ async def test_unsubscribe_removes_only_the_owned_subscription(env):
     }
     assert kwargs["json_body"]["operation_id"]
     assert env["reports"] == [("unsubscribe", 42)]
+
+
+async def test_unsubscribe_reports_with_its_own_timeout_not_the_request_budget(env, monkeypatch):
+    seen: list[float] = []
+
+    async def report(package_id, *, timeout=10.0):
+        seen.append(timeout)
+        return True
+
+    monkeypatch.setattr(km, "_report_unsubscribe_best_effort", report)
+    monkeypatch.setattr(km, "_UNSUBSCRIBE_BUDGET_SECONDS", 0.01)
+    main = env["main"]
+    main.on("GET", "packs", {"ok": True, "packs": [_installed()]})
+    main.on("POST", "packs/remove", {"ok": True, "pack_id": "market-memes", "operation_status": "committed"})
+    response = await _unsubscribe(env["http"])
+    assert response.status_code == 200
+    assert seen == [10.0]  # the report's own default, however little of the budget was left
+
+
+async def test_a_cancel_after_completion_keeps_the_task_completed(env, monkeypatch):
+    reporting = asyncio.Event()
+
+    async def slow_report(descriptor, result):
+        reporting.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(km, "_report_subscription_best_effort", slow_report)
+    env["main"].on("POST", "subscriptions/apply", {"ok": True, "pack_id": "market-memes", "unchanged": True, "state": "active"})
+    task_id = await _subscribe(env["http"])
+    await asyncio.wait_for(reporting.wait(), 5)
+    worker = km._task_workers[task_id]
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+    task = (await env["http"].get(f"/market/knowledge/tasks/{task_id}", params=TOKEN)).json()
+    assert task["status"] == "completed"
 
 
 async def test_unsubscribe_refuses_a_pack_it_does_not_own(env):
@@ -626,23 +665,23 @@ def test_subscription_routes_come_before_the_bridge_catch_all():
 
 
 @pytest.mark.parametrize(
-    "origin, dev_allowed, status",
+    "origin, status",
     [
-        ("http://127.0.0.1:48911", True, 200),  # manager served by Main (packaged)
-        ("http://127.0.0.1:48916", True, 200),  # manager served by this server
-        ("http://localhost:5173", True, 200),  # Vite dev server, running from source
-        ("http://localhost:5173", False, 403),  # ...but never in a packaged build
-        ("http://127.0.0.1:3000", True, 403),  # another local page
-        ("https://market.example.com", True, 403),
+        ("http://127.0.0.1:48911", 200),  # manager served by Main (packaged)
+        ("http://127.0.0.1:48916", 200),  # manager served by this server, or via the Vite proxy
+        # Never trusted: the Vite proxy rewrites the Origin of what it forwards,
+        # so a request still carrying 5173 came from some other page on that port.
+        ("http://localhost:5173", 403),
+        ("http://127.0.0.1:3000", 403),  # another local page
+        ("https://market.example.com", 403),
     ],
 )
-def test_pair_code_origin_gate_and_main_port(monkeypatch, origin, dev_allowed, status):
+def test_pair_code_origin_gate_and_main_port(monkeypatch, origin, status):
     from fastapi.testclient import TestClient
 
     from plugin.server.routes import market_bridge
 
     monkeypatch.setattr(market_bridge, "_main_server_port", lambda: 48911)
-    monkeypatch.setattr(market_bridge, "_ALLOW_PLUGIN_MANAGER_DEV_ORIGIN", dev_allowed)
     app = FastAPI()
     app.include_router(market_bridge.router)
     with TestClient(app, base_url="http://127.0.0.1:48916", client=("127.0.0.1", 50000)) as client:

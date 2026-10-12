@@ -17,7 +17,6 @@ import hashlib
 import hmac
 import json
 import secrets
-import sys
 import time
 import tomllib
 from datetime import UTC, datetime
@@ -93,16 +92,6 @@ _MARKET_RELEASE_CHECK_TIMEOUT = 10.0
 # 短期一次性配对码；成功交换后立即消费。
 _ONE_TIME_CODES: dict[str, float] = {}
 _ONE_TIME_CODE_TTL_SECONDS = 5 * 60
-_PLUGIN_MANAGER_DEV_PORT = 5173
-# The repository's Vite dev server (plugin-manager `npm run dev`) proxies
-# /market/* with the browser's Origin intact, so the bridge accepts 5173
-# while developing. A packaged build never runs that server, and there any
-# unrelated local page on 5173 (another project's dev server) would otherwise
-# be able to read the bridge token. Nuitka marks compiled modules with
-# __compiled__, PyInstaller sets sys.frozen.
-_ALLOW_PLUGIN_MANAGER_DEV_ORIGIN = not (
-    bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
-)
 
 # OAuth 登录状态存储在本机用户目录，仅供本地插件面板使用。
 _OAUTH_CLIENT_ID = NEKO_AUTH_CLIENT_ID
@@ -215,10 +204,11 @@ def _require_local_bridge_token_access(request: Request) -> None:
     Remote Market origins are intentionally excluded here even when CORS trusts
     them; remote pages must pair through /token-exchange instead.
 
-    The manager page is served by Main (packaged), by this server directly, or
-    by the repository's Vite dev server; a POST carries its Origin, so the
-    origin may be Main's port, the port this request reached, or (only when
-    running from source) the Vite port.
+    The manager page is served by Main (packaged) or by this server
+    directly; a POST carries its Origin, so the origin may be Main's port or
+    the port this request reached. The Vite dev server (5173) is not trusted:
+    its proxy rewrites the Origin of the requests it forwards to the backend's
+    own, so any other page on that port is still refused.
     """
 
     if request.scope.get("neko.market_remote_authorized") or has_forwarding_metadata(request.headers):
@@ -238,8 +228,6 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     origin = request.headers.get("origin")
     expected_ports = {request_port, _main_server_port()}
-    if _ALLOW_PLUGIN_MANAGER_DEV_ORIGIN:
-        expected_ports.add(_PLUGIN_MANAGER_DEV_PORT)
     if origin and not _is_local_bridge_origin(origin, expected_ports):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 

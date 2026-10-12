@@ -61,6 +61,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from plugin.logging_config import get_logger
+from plugin.server.routes.knowledge_bridge import _client, main_write_headers
 from plugin.server.routes.market_bridge import (
     _ensure_valid_oauth_token,
     _main_server_port,
@@ -227,12 +228,10 @@ _task_workers: dict[str, asyncio.Task[None]] = {}
 _installations: dict[str, asyncio.Task[dict[str, Any]]] = {}
 _active_package_tasks: dict[int, str] = {}
 _unsubscribing: dict[int, asyncio.Task[Any]] = {}
+# Background reports to the market (held so they are not collected mid-flight).
+_background: set[asyncio.Task[Any]] = set()
 # Every wait between polls and retries goes through here (tests record them).
 _sleep = asyncio.sleep
-
-
-def _verify_bridge_token(token: str) -> None:
-    _verify_token(token)
 
 
 # ── Main's knowledge proxy ──────────────────────────────────────────
@@ -243,19 +242,7 @@ def _main_url(path: str) -> str:
 
 
 def _write_headers() -> dict[str, str]:
-    import config
-
-    return {
-        "Accept": "application/json",
-        "Origin": f"http://127.0.0.1:{_main_server_port()}",
-        "X-CSRF-Token": str(config.AUTOSTART_CSRF_TOKEN),
-    }
-
-
-def _client() -> Any:
-    from utils.http.internal_client import get_internal_http_client
-
-    return get_internal_http_client()
+    return {"Accept": "application/json", **main_write_headers(_main_server_port())}
 
 
 async def _main_call(
@@ -311,7 +298,7 @@ async def _main_call(
 
 @router.post("/subscribe")
 async def subscribe_knowledge_package(payload: KnowledgeSubscribeRequest, token: str = Query(...)):
-    _verify_bridge_token(token)
+    _verify_token(token)
     _cleanup_tasks()
     if payload.package_id in _unsubscribing:
         raise HTTPException(status_code=409, detail={"code": "knowledge_subscription_conflict"})
@@ -367,7 +354,7 @@ async def subscribe_knowledge_package(payload: KnowledgeSubscribeRequest, token:
 
 @router.get("/tasks/{task_id}", response_model=KnowledgeTaskResponse)
 async def get_knowledge_task(task_id: str, token: str = Query(...)):
-    _verify_bridge_token(token)
+    _verify_token(token)
     _cleanup_tasks()
     task = _tasks.get(task_id)
     if task is None:
@@ -377,7 +364,7 @@ async def get_knowledge_task(task_id: str, token: str = Query(...)):
 
 @router.get("/subscriptions")
 async def list_knowledge_subscriptions(token: str = Query(...)):
-    _verify_bridge_token(token)
+    _verify_token(token)
     try:
         payload = await _main_call("GET", "packs")
     except _TaskError as exc:
@@ -396,7 +383,7 @@ async def list_knowledge_subscriptions(token: str = Query(...)):
 
 @router.post("/unsubscribe")
 async def unsubscribe_knowledge_package(payload: KnowledgeUnsubscribeRequest, token: str = Query(...)):
-    _verify_bridge_token(token)
+    _verify_token(token)
     if payload.package_id in _unsubscribing:
         raise HTTPException(status_code=409, detail={"code": "knowledge_subscription_conflict"})
     loop = asyncio.get_running_loop()
@@ -500,7 +487,10 @@ async def _execute_subscription(task_id: str, payload: KnowledgeSubscribeRequest
         )
         await _report_subscription_best_effort(descriptor, result)
     except asyncio.CancelledError:
-        _mark_cancelled(task)
+        # Cancelled after completing (while reporting to the market, or at
+        # shutdown): the subscription did land, so the record stays completed.
+        if task.get("completed_at") is None:
+            _mark_cancelled(task)
         raise
     except _TaskError as exc:
         _fail(task, exc.code, exc.message, retryable=exc.retryable)
@@ -542,11 +532,7 @@ async def _shielded_install(task_id: str, subscription: dict[str, str], raw: byt
     def settled(done: asyncio.Task[dict[str, Any]], *, task_id: str = task_id) -> None:
         if _installations.get(task_id) is done:
             _installations.pop(task_id, None)
-        task = _tasks.get(task_id)
-        if task is not None and not done.cancelled() and done.exception() is None:
-            # Remembered for an unsubscribe that cancelled the worker meanwhile.
-            task["_installation_result"] = done.result()
-        elif not done.cancelled():
+        if not done.cancelled():
             done.exception()
 
     installation.add_done_callback(settled)
@@ -799,7 +785,22 @@ def _unsubscribe_error(code: str, status_code: int = 409, **extra: Any) -> HTTPE
 
 
 def _cancelled_result() -> dict[str, Any]:
-    return {"ok": True, "cancelled": True, "removed": False, "removed_entries": 0}
+    return {"ok": True, "cancelled": True, "removed": False, "removed_entries": 0, "remote_report": "scheduled"}
+
+
+def _report_unsubscribe_later(package_id: int) -> None:
+    """Tell the market in the background, with the report's own timeout.
+
+    Not out of the request's budget: whatever cancelling and removing left of
+    it can be too little for a public TLS request, and once the pack is gone a
+    later unsubscribe can no longer resolve it, so the report gets no second
+    chance. Not awaited either, so the answer is not delayed past Main's proxy.
+    """
+    report = asyncio.create_task(
+        _report_unsubscribe_best_effort(package_id), name=f"market-knowledge-unsubscribe-report-{package_id}"
+    )
+    _background.add(report)
+    report.add_done_callback(_background.discard)
 
 
 async def _settle_unsubscribe(payload: KnowledgeUnsubscribeRequest, deadline: float) -> dict[str, Any]:
@@ -810,7 +811,7 @@ async def _settle_unsubscribe(payload: KnowledgeUnsubscribeRequest, deadline: fl
     pack_id, remote_id = await _resolve_owned_pack(payload, deadline, cancelled=cancelled)
     if not pack_id:
         # Only an install that never landed was stopped; there is nothing to remove.
-        await _report_unsubscribe_best_effort(payload.package_id, timeout=max(_remaining(deadline), 0.5))
+        _report_unsubscribe_later(payload.package_id)
         return _cancelled_result()
     if _remaining(deadline) <= 0:
         raise _unsubscribe_error("knowledge_busy", 503, retryable=True)
@@ -838,17 +839,17 @@ async def _settle_unsubscribe(payload: KnowledgeUnsubscribeRequest, deadline: fl
         if result.get("operation_status") not in ("committed", "failed"):
             _start_removal_drain(payload.package_id, operation_id, sent_at)
             raise _unsubscribe_error("removal_pending", 503, operation_id=operation_id, retryable=True)
-    return await _finish_removal(payload.package_id, result, deadline)
+    return await _finish_removal(payload.package_id, result)
 
 
-async def _finish_removal(package_id: int, result: dict[str, Any], deadline: float) -> dict[str, Any]:
+async def _finish_removal(package_id: int, result: dict[str, Any]) -> dict[str, Any]:
     if result.get("ok") is not True:
         reason = str(result.get("reason") or "subscription_removal_failed")
         if reason in _BUSY_REASONS:
             raise _unsubscribe_error("knowledge_busy", 503, retryable=True)
         raise _unsubscribe_error(reason)
-    reported = await _report_unsubscribe_best_effort(package_id, timeout=max(_remaining(deadline), 0.5))
-    return {**result, "removed": True, "remote_reported": reported}
+    _report_unsubscribe_later(package_id)
+    return {**result, "removed": True, "remote_report": "scheduled"}
 
 
 async def _stop_active_subscription(payload: KnowledgeUnsubscribeRequest, deadline: float) -> bool:

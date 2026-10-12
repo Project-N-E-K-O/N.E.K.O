@@ -48,7 +48,7 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from starlette.datastructures import UploadFile
+from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartParser
 
 from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
@@ -370,21 +370,28 @@ async def knowledge_settings(request: Request):
     return await _call(lambda svc: svc.set_enabled(payload["enabled"]))
 
 
-async def _pack_from_multipart(request: Request, body: bytes) -> bytes | None:
-    """Return the uploaded file of a ``multipart/form-data`` import body.
-
-    The ``pack`` field wins; otherwise the only uploaded file is used.
-    """
+async def _parse_form(request: Request, body: bytes) -> FormData | None:
+    """Parse an already size-capped ``multipart/form-data`` body: one file, a few small fields."""
 
     async def stream():
         yield body
 
     try:
-        form = await MultiPartParser(
+        return await MultiPartParser(
             request.headers, stream(), max_files=1, max_fields=8,
             max_part_size=_JSON_BODY_MAX_BYTES,
         ).parse()
     except Exception:
+        return None
+
+
+async def _pack_from_multipart(request: Request, body: bytes) -> bytes | None:
+    """Return the uploaded file of a ``multipart/form-data`` import body.
+
+    The ``pack`` field wins; otherwise the only uploaded file is used.
+    """
+    form = await _parse_form(request, body)
+    if form is None:
         return None
     try:
         uploads = [value for value in form.values() if isinstance(value, UploadFile)]
@@ -534,16 +541,8 @@ async def _subscription_from_multipart(
     request: Request, body: bytes
 ) -> tuple[bytes, KnowledgeSubscription] | str:
     """The pack file and subscription metadata of an apply body, or a refusal reason."""
-
-    async def stream():
-        yield body
-
-    try:
-        form = await MultiPartParser(
-            request.headers, stream(), max_files=1, max_fields=4,
-            max_part_size=_JSON_BODY_MAX_BYTES,
-        ).parse()
-    except Exception:
+    form = await _parse_form(request, body)
+    if form is None:
         return "invalid_request"
     try:
         if form.get("protocol_version") != str(SUBSCRIPTION_PROTOCOL_VERSION):
