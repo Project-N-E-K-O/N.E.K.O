@@ -601,7 +601,8 @@ Live2DManager.prototype._getCoreParameterDefaultValue = function(coreModel, inde
             'getParamDefault'
         ],
         ['defaultValues', 'defaults', '_parameterDefaultValues'],
-        undefined
+        undefined,
+        value => typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')
     );
 };
 
@@ -1472,11 +1473,13 @@ Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
     });
 };
 
-Live2DManager.prototype._readParameterValueByIndex = function(coreModel, idx, methodNames, arrayNames, fallbackValue) {
+Live2DManager.prototype._readParameterValueByIndex = function(coreModel, idx, methodNames, arrayNames, fallbackValue, acceptValue) {
     for (const methodName of methodNames) {
         try {
             if (typeof coreModel?.[methodName] === 'function') {
-                const value = Number(coreModel[methodName](idx));
+                const rawValue = coreModel[methodName](idx);
+                if (acceptValue && !acceptValue(rawValue)) continue;
+                const value = Number(rawValue);
                 if (Number.isFinite(value)) return value;
             }
         } catch (_) {}
@@ -1496,7 +1499,9 @@ Live2DManager.prototype._readParameterValueByIndex = function(coreModel, idx, me
             try {
                 const values = root[arrayName];
                 if (values && values[idx] !== undefined) {
-                    const value = Number(values[idx]);
+                    const rawValue = values[idx];
+                    if (acceptValue && !acceptValue(rawValue)) continue;
+                    const value = Number(rawValue);
                     if (Number.isFinite(value)) return value;
                 }
             } catch (_) {}
@@ -2735,28 +2740,19 @@ Live2DManager.prototype.installMouthOverride = function() {
     };
     const resolveSavedParamEntry = ([paramId, value]) => {
         if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-        let idx = -1;
-        let resolvedId = paramId;
         try {
-            if (/^(?:param_)?\d+$/.test(paramId)) {
-                const parsedIndex = parseInt(paramId.replace(/^param_/, ''), 10);
-                const parameterCount = typeof coreModel.getParameterCount === 'function'
-                    ? coreModel.getParameterCount()
-                    : Number.POSITIVE_INFINITY;
-                if (parsedIndex >= 0 && parsedIndex < parameterCount) {
-                    idx = parsedIndex;
-                    if (typeof coreModel.getParameterId === 'function') {
-                        const id = coreModel.getParameterId(idx);
-                        if (id) resolvedId = id;
-                    }
-                }
-            } else {
-                idx = coreModel.getParameterIndex(paramId);
-            }
+            const resolved = this._resolveModelParameterKey(coreModel, paramId);
+            const parameterCount = typeof coreModel.getParameterCount === 'function'
+                ? coreModel.getParameterCount() : 0;
+            // Cubism creates virtual indices for missing names. Those are not
+            // real model parameters and have no declared default to offset.
+            if (!resolved || !Number.isInteger(resolved.idx) || resolved.idx < 0
+                || !Number.isInteger(parameterCount) || resolved.idx >= parameterCount) return null;
+            return { id: paramId, resolvedId: String(resolved.resolvedId),
+                idx: resolved.idx, value, isIndexKey: resolved.isIndexKey };
         } catch (_) {
             return null;
         }
-        return idx >= 0 ? { id: paramId, resolvedId, idx, value } : null;
     };
     const runtimeBreathParams = this._resolveRuntimeBreathParams(coreModel);
     const runtimeBreathParamIds = new Set(runtimeBreathParams);
@@ -2774,11 +2770,37 @@ Live2DManager.prototype.installMouthOverride = function() {
         return persistentIds.has(entry.id) ||
             (entry.resolvedId && persistentIds.has(entry.resolvedId));
     };
-    const savedParamEntries = (this.savedModelParameters && this._shouldApplySavedParams)
-        ? Object.entries(this.savedModelParameters)
-            .map(resolveSavedParamEntry)
-            .filter(entry => entry && !isRuntimeManagedSavedParam(entry))
-        : [];
+    const savedEntriesByIndex = new Map();
+    if (this.savedModelParameters && this._shouldApplySavedParams) {
+        for (const item of Object.entries(this.savedModelParameters)) {
+            const entry = resolveSavedParamEntry(item);
+            if (!entry || isRuntimeManagedSavedParam(entry)) continue;
+            const existing = savedEntriesByIndex.get(entry.idx);
+            if (!existing || existing.isIndexKey || !entry.isIndexKey) {
+                savedEntriesByIndex.set(entry.idx, entry);
+            }
+        }
+    }
+    const savedParamEntries = [];
+    const unavailableDefaults = [];
+    for (const entry of savedEntriesByIndex.values()) {
+        const defaultValue = this._getCoreParameterDefaultValue(coreModel, entry.idx);
+        const offset = entry.value - defaultValue;
+        if (!Number.isFinite(defaultValue) || !Number.isFinite(offset)) {
+            unavailableDefaults.push(entry.id);
+            continue;
+        }
+        // Keep zero offsets: frames without motion changes still restore the
+        // saved value. Default metadata is fixed for this installation/model.
+        savedParamEntries.push({ ...entry, offset });
+    }
+    if (unavailableDefaults.length > 0) {
+        console.warn('[Live2D SavedParameters] 跳过缺少有效默认值的运行时叠加项:', {
+            count: unavailableDefaults.length,
+            parameterIds: unavailableDefaults.slice(0, 8).map(id => String(id).slice(0, 80))
+        });
+    }
+    const savedParameterRevision = this._parameterConfigRevision || 0;
     const shouldApplyPersistentExpressions = this._parameterEditingMode !== true;
     const lookAtParamIndices = {};
     for (const id of ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY']) {
@@ -2822,7 +2844,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             // 1a. 保存参数 + 口型 + 眨眼参数快照（用于后续 Diff 检测）
             const preUpdateParams = {};
             const currentPersistentParamIds = savedParamEntries.length > 0 ? getCurrentPersistentParamIds() : null;
-            if (savedParamEntries.length > 0) {
+            if (savedParamEntries.length > 0
+                && (this._parameterConfigRevision || 0) === savedParameterRevision) {
                 for (const entry of savedParamEntries) {
                     if (isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
                     try {
@@ -2994,14 +3017,14 @@ Live2DManager.prototype.installMouthOverride = function() {
                 // 注意：口型、眨眼在 coreModel.update 拦截器（注入点2）中写入
                 // 注意：呼吸、视线微动在 motionManager.update 拦截器（注入点1）中已写入
                 // 1. 应用保存的模型参数（智能叠加模式）
-                if (savedParamEntries.length > 0) {
+                if (savedParamEntries.length > 0
+                    && (this._parameterConfigRevision || 0) === savedParameterRevision) {
                     for (const entry of savedParamEntries) {
                         if (isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
                         try {
                             const currentVal = coreModel.getParameterValueByIndex(entry.idx);
                             const preVal = preUpdateParams[entry.id] !== undefined ? preUpdateParams[entry.id] : currentVal;
-                            const defaultVal = coreModel.getParameterDefaultValueByIndex(entry.idx);
-                            const offset = entry.value - defaultVal;
+                            const offset = entry.offset;
 
                             if (Math.abs(currentVal - preVal) > 0.001) {
                                 coreModel.setParameterValueByIndex(entry.idx, currentVal + offset);
