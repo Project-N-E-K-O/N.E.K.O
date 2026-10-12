@@ -1028,3 +1028,27 @@ def test_lowering_fps_during_capture_reapplies_the_hold():
     assert out["before"] == {"fps": 60, "hold": None}
     assert out["after"]["fps"] >= 15 and out["after"]["hold"] == {"userFps": 15, "heldFps": out["after"]["fps"]}
     assert out["after"]["fps"] > 15 and out["restored"] == 15
+
+
+def test_recovery_deadline_counts_from_navigation_start():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        // [导航开始到本脚本执行已过的毫秒, 首屏页面配置落定的时刻]
+        const cases = [['slow6s_ready5s', 6000, 5000], ['slow6s_ready3s', 6000, 3000], ['slow20s_ready2s', 20000, 2000], ['slow20s_ready4s', 20000, 4000]];
+        for (const [label, elapsed, readyAt] of cases) {
+          const h = makeBridge();
+          h.ctx.performance = { now: () => clock.now, timeOrigin: clock.now - elapsed };   // 环境里的 Date.now() 走同一个时钟
+          let starts = 0;
+          h.bridge.recoverFromPageConfig = () => { starts += 1; return Promise.resolve(false); };
+          h.ctx.pageConfigReady = new Promise((r) => setTimeoutF(() => r(true), readyAt));
+          h.ctx.NekoVisitParentBridge.startRecoveryWhenReady(h.bridge, h.ctx, (fn, ms) => setTimeoutF(fn, ms));
+          await advance(12000);
+          runs[label] = starts;
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    # 已过 6 s：只剩 4 s 预算；已过 20 s：按下限 3 s
+    assert out == {"slow6s_ready5s": 0, "slow6s_ready3s": 1, "slow20s_ready2s": 1, "slow20s_ready4s": 0}

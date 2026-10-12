@@ -29,6 +29,7 @@
   // 重载恢复（等首屏页面配置、取 token、查快照）的总时限：从页面脚本加载起算。后端的 20 s 页面宽限还要容下
   // 之后重建 iframe、加载脚本、鉴权、领凭证、加载 SDK、入房并报 joined，这里只用一半，给后面留够时间
   var RECOVER_TOTAL_MS = 10000;
+  var RECOVER_MIN_MS = 3000;            // 页面加载已经吃掉大半预算时仍留给重载恢复的下限（查快照本身很快）
   var TOKEN_LOOKUP_TIMEOUT_MS = 5000;   // 取 CSRF token 卡住时按失败处理
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
@@ -1140,10 +1141,20 @@
    * 首屏页面配置落定（成功或失败）后启动重载恢复。到总截止时间还没落定（启动闸一直没放行、page_config 请求挂住）
    * 就放弃：这一场按页面没开处理（后端 20 s 页面宽限后以 local_page_lost 结束）。
    */
+  /** 这次导航开始到现在的毫秒数（拿不到导航起点时按 0）。 */
+  function sinceNavigation(win) {
+    var perf = win.performance;
+    var origin = perf && perf.timeOrigin;
+    if (typeof origin !== 'number' || !isFinite(origin)) return 0;
+    return Math.max(0, Date.now() - origin);
+  }
+
   function startRecoveryWhenReady(bridge, win, setTimeoutFn) {
     var started = false;
-    // 总截止时间在脚本加载时就定下：等首屏页面配置、取 token、查快照都从同一个预算里扣
-    var overall = bridge.now() + RECOVER_TOTAL_MS;
+    // 总截止时间在脚本加载时就定下：等首屏页面配置、取 token、查快照都从同一个预算里扣。
+    // 后端的 20 s 页面宽限从旧页面断开（约等于这次导航开始）算起：首页前面几十个同步脚本可能已经吃掉好几秒，要扣掉
+    var budget = Math.max(RECOVER_MIN_MS, RECOVER_TOTAL_MS - sinceNavigation(win));
+    var overall = bridge.now() + budget;
     var go = function () {
       if (started) return;
       started = true;
@@ -1152,7 +1163,7 @@
     var ready = win.pageConfigReady;
     if (ready && typeof ready.then === 'function') {
       ready.then(go, go);
-      setTimeoutFn(function () { started = true; }, RECOVER_TOTAL_MS);
+      setTimeoutFn(function () { started = true; }, budget);
     } else {
       win.addEventListener('load', go);
     }
