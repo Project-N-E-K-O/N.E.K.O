@@ -2546,3 +2546,37 @@ def test_stalled_sdk_script_fails_the_capability_gate_in_time():
         """
     )
     assert out == {"early": 0, "caps": [{"ok": False, "reason": "sdk_load_failed"}], "removed": True}
+
+
+def test_manual_rejoin_clears_stale_peer_presence():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.c.peerPresent = true;                         // 断线前对端在场；断线期间它走了、退出事件没送到
+        h.c.rejoin();
+        await settle();
+        await settle();
+        const joined = h.ws.sent.filter((m) => m.type === 'state' && m.state === 'joined').pop();
+        return { flag: h.c.peerPresent, reported: joined ? joined.peer_present : null };
+        """
+    )
+    assert out == {"flag": False, "reported": False}
+
+
+def test_stalled_async_stats_still_emit_each_tick():
+    out = run_visit_js(
+        """
+        const h = await joinedController('host');
+        h.c.media.subscribe = true;
+        h.c.adapter.receiverStats = () => new Promise(() => {});     // getStats 一直不回
+        const stats = () => h.ws.sent.filter((m) => m.type === 'stats').length;
+        const before = stats();
+        h.c.collectStats();
+        await advance(3900);
+        const early = stats() - before;
+        await advance(200);
+        return { early, late: stats() - before };
+        """
+    )
+    # 4 s 到点只发同步部分（队列长度、接收帧率等），不让后端统计和阶梯停住
+    assert out == {"early": 0, "late": 1}

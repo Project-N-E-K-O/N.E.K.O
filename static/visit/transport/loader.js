@@ -24,6 +24,7 @@
   // TRTC SDK 的调试插件会按 URL 参数 / sessionStorage 从外部 CDN 拉脚本：载入前清掉这两个开关
   var TRTC_DEBUG_STORAGE_KEYS = ['TRTC_ENABLE_DEBUG_PLUGIN', 'TRTC_DEBUG_DIALOG_PATH'];
   var STATS_INTERVAL_MS = 5000;
+  var STATS_COLLECT_TIMEOUT_MS = 4000;  // 异步统计（getStats）单拍的上限：短于取样周期，卡住时按没拿到处理
   var HIDDEN_REPORT_MIN_MS = 1000;
   var PEER_STATS_FRESH_MS = 12000;
   var SOFTENC_WINDOW_MS = 10000;      // VISIT_VP9_CPU_FALLBACK 的秒数
@@ -514,6 +515,8 @@
     var self = this;
     // 离房期间传输 WS 断开重连：新连接拿到凭证后自己入房，这里迟到的续接不能再入一次（同一实例并发 enterRoom / 换掉新房间）
     var gen = this.connGen;
+    // 断线期间对端可能已经走了、退出事件没送到：重新入房后只认新的进房事件，不把旧的在场带进 joined 上报
+    this.peerPresent = false;
     this.stopAllMedia();
     this.adapter.leave().then(function () {
       self.rejoining = false;
@@ -850,7 +853,23 @@
       ? adapter.senderStats() : Promise.resolve(null);
     var receiver = adapter && typeof adapter.receiverStats === 'function' && this.media.subscribe
       ? adapter.receiverStats(now) : Promise.resolve(null);
-    Promise.all([sender, receiver]).then(function (res) {
+    // getStats 可能一直不回（网络 / 设备切换时 WebRTC 卡住）：每拍最多等 STATS_COLLECT_TIMEOUT_MS，到点只发同步部分，
+    // 否则后端统计、接收帧率与拥塞阶梯都会停住。晚回来的那份由上面的代号 / 序号检查丢掉
+    var collected = Promise.all([sender, receiver]);
+    new Promise(function (resolve) {
+      var timer = setTimeout(function () { resolve(null); }, STATS_COLLECT_TIMEOUT_MS);
+      collected.then(function (res) {
+        clearTimeout(timer);
+        resolve(res);
+      }, function () {
+        clearTimeout(timer);
+        resolve(null);
+      });
+    }).then(function (res) {
+      if (!res) {
+        finish(null);
+        return;
+      }
       var rx = res[1];
       if (rx) {
         ['rx_kbps', 'rtt_ms', 'loss_pct'].forEach(function (key) {
@@ -858,7 +877,7 @@
         });
       }
       finish(res[0]);
-    }, function () { finish(null); });
+    });
   };
 
   /** VP9 软编跟不上：编码帧率持续 10 s 低于目标的 90 %（兼容模式按 15 fps 算）→ 下次串门用 vp8。 */
