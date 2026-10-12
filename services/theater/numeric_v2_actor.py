@@ -2545,7 +2545,7 @@ def _turn_messages(
     )
     if route_changed:
         source_transition_dialogue_policy = transition_source_dialogue_policy(
-            session.dialogue_policy
+            str(outcome.ledger_event.get("source_transition_dialogue_policy") or session.dialogue_policy)
         )
         # 换场直接构造紧凑工作记忆，不创建普通回合字段后再二次裁剪。
         source_beat = _beat_for_actor(cast, source["story_beat"])
@@ -3197,7 +3197,7 @@ class NumericV2Actor:
         ).strip()
         # 所有正式转场统一用紧凑四文本合同，标签由 Runtime 确定，文字按历史适配。
         source_transition_dialogue_policy = transition_source_dialogue_policy(
-            session.dialogue_policy
+            str(outcome.ledger_event.get("source_transition_dialogue_policy") or session.dialogue_policy)
         )
         actor_budget = numeric_v2_actor_budget(session.actor_budget_profile)
         performance = await self._invoke(

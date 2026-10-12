@@ -3780,6 +3780,8 @@
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
             "autoCat": "Auto Cat Mode",
+            "gravityCat": "Gravity Cat",
+            "gravityCatTooltip": "Use Playground gravity mode when entering cat form",
             "catAudio": "Cat Audio",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudioTooltip": "Play cat sound effects while in kitten mode",

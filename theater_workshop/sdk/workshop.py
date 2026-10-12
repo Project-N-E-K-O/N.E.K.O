@@ -62,7 +62,7 @@ class TheaterWorkshop:
 
     @classmethod
     def open(cls, *, project_root, control_root, gateway, model_call,
-             write_transaction, authoring_names, owner=None):
+             write_transaction, authoring_names, owner=None, token_counter=None):
         root = canonical_root(project_root)
         with cls._instances_lock:
             existing = cls._instances.get(root)
@@ -76,14 +76,16 @@ class TheaterWorkshop:
                     raise WorkshopError("workshop_owner_mismatch")
                 if existing._generator._model_call != model_call:
                     raise WorkshopError("workshop_model_mismatch")
+                if existing._generator._token_counter != token_counter:
+                    raise WorkshopError("workshop_token_counter_mismatch")
                 return existing
             instance = cls(root, canonical_root(control_root), gateway, model_call,
-                           write_transaction, authoring_names, owner)
+                           write_transaction, authoring_names, owner, token_counter)
             cls._instances[root] = instance
             return instance
 
     def __init__(self, root, control_root, gateway, model_call,
-                 write_transaction, authoring_names, owner):
+                 write_transaction, authoring_names, owner, token_counter=None):
         import portalocker
 
         self.root = root
@@ -97,9 +99,9 @@ class TheaterWorkshop:
         self._names = authoring_names
         self._gateway = gateway
         self._compiler = NumericV2Compiler(gateway)
-        self._generator = NumericV2Generator(model_call)
+        self._generator = NumericV2Generator(model_call, token_counter=token_counter)
         self._quality = NumericV2QualityAssessor(model_call)
-        self._branch = NumericV2BranchService()
+        self._branch = NumericV2BranchService(token_counter=token_counter)
         # Identity also collapses case aliases on case-insensitive filesystems.
         # Directory creation is an explicit, fenced open action, never import.
         with self._host_transaction():

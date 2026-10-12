@@ -3780,6 +3780,8 @@
             "slopFilter": "自然な表現",
             "slopFilterTooltip": "過去の返答にある繰り返しや型にはまった言い回しを減らし、より自然に話せるようにします。",
             "autoCat": "自動ねこ化",
+            "gravityCat": "重力ねこ",
+            "gravityCatTooltip": "猫モードに入るときPlaygroundの重力モードを使います",
             "catAudio": "猫の効果音",
             "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
             "catAudioTooltip": "猫モード中に猫の鳴き声などの効果音を再生します",

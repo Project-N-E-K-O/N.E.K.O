@@ -3780,6 +3780,8 @@
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",
             "autoCat": "自動變貓",
+            "gravityCat": "重力貓貓",
+            "gravityCatTooltip": "進入貓形態時使用 Playground 重力模式",
             "catAudio": "貓貓音效",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
             "catAudioTooltip": "變貓後播放貓咪叫聲等音效",

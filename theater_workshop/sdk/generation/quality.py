@@ -587,7 +587,7 @@ class NumericV2QualityAssessor(ModelAgent):
                         "transition_contract": {
                             **{
                                 field: deepcopy((route.get("transition_contract") or {}).get(field))
-                                for field in _TRANSITION_CONTRACT_FIELDS
+                                for field in (*_TRANSITION_CONTRACT_FIELDS, "fallback_offer", "accept_input", "silent_choice")
                             },
                             # 桥段核对需要来源目标，但只读输入不能扩大文字修订白名单。
                             "source_ids": deepcopy((route.get("transition_contract") or {}).get("source_ids") or []),

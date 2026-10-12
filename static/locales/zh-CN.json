@@ -3780,6 +3780,8 @@
             "slopFilter": "自然表达",
             "slopFilterTooltip": "减少历史回复中重复、套路化的说法，让她表达得更自然。",
             "autoCat": "自动变猫",
+            "gravityCat": "重力猫猫",
+            "gravityCatTooltip": "进入猫形态时使用 Playground 重力模式",
             "catAudio": "猫猫音效",
             "autoCatTooltip": "一段时间无互动后自动变成小猫",
             "catAudioTooltip": "变猫后播放猫咪叫声等音效",

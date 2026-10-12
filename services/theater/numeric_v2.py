@@ -1431,6 +1431,17 @@ class NumericV2Compiler:
                     f"{path}.fallback_offer",
                     "确定性兜底邀请最多允许 160 token。",
                 )
+        if "silent_choice" in contract:
+            choice = contract.get("silent_choice")
+            if not isinstance(choice, Mapping) or set(choice) != {"destination", "arrangement"}:
+                c.add("transition_silent_choice_invalid", f"{path}.silent_choice",
+                      "Silent choice requires destination and arrangement.")
+            else:
+                for field in ("destination", "arrangement"):
+                    text = c.require_text(choice.get(field), f"{path}.silent_choice.{field}")
+                    if text and ("\n" in text or "\r" in text or count_tokens(text) > 30):
+                        c.add("transition_silent_choice_invalid", f"{path}.silent_choice.{field}",
+                              "Silent choice fields must be single-line text within 30 tokens.")
         if "accept_input" in contract:
             accept_input = c.require_text(
                 contract.get("accept_input"),

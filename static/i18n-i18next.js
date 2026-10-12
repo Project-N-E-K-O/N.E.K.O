@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 串门访客层徽标（本分支）与上游串门 PR-14a 复盘日记、VRM 表情编辑（#3398）合并，刷新八语言客户端缓存。
-    const LOCALE_VERSION = '2026-10-12-visit-frame-badges-main-merge-4';
+    // 串门访客层徽标（本分支）与上游重力猫、访问复盘、VRM 情绪设置文案合并，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-13-visit-frame-badges-main-merge-5';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

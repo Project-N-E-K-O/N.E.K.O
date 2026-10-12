@@ -3780,6 +3780,8 @@
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
             "autoCat": "Modo gato automático",
+            "gravityCat": "Gato gravitatorio",
+            "gravityCatTooltip": "Usa el modo de gravedad de Playground al entrar en el modo gatito",
             "catAudio": "Sonidos de gato",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudioTooltip": "Reproduce efectos de sonido de gato en el modo gatito",

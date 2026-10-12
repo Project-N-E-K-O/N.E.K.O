@@ -1436,6 +1436,24 @@
         I.setChatSurfaceMode('minimized');
     }
 
+    I._handleIdleCat1PlaygroundYarnActivate = function _handleIdleCat1PlaygroundYarnActivate(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        // Desktop owns this activation through the trusted Pet → main → chat
+        // IPC path. The BroadcastChannel copy is still needed by Web, but if
+        // it toggles the desktop renderer first the later IPC is deduped and
+        // RESTORE_COMPLETE/ACK never closes the native handoff.
+        if (window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel') return false;
+        var activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
+        if (I.getCurrentChatSurfaceMode() !== 'minimized' || I.isMinimizeTransitioning) return false;
+        if (activationId && window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) return false;
+        var toggled = I.toggleMinimized();
+        if (toggled !== true) return false;
+        if (activationId) {
+            window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = activationId;
+        }
+        return true;
+    }
+
     I.cycleChatSurfaceMode = function cycleChatSurfaceMode() {
         return I.setChatSurfaceMode(I.getNextChatSurfaceMode(I.getCurrentChatSurfaceMode()));
     }
@@ -1922,7 +1940,8 @@
     }
 
     I.toggleMinimized = function toggleMinimized() {
-        if (I.isMinimizeTransitioning) return;
+        if (I.isMinimizeTransitioning) return false;
+        var wasMinimized = !!I.minimized;
         if (I.minimized && I.idleDockActive && I.idleDockSavedPosition) {
             var shell = I.getShell();
             if (shell) {
@@ -1936,6 +1955,7 @@
             stopIdleDockMinimizeObserver();
         }
         I.cycleChatSurfaceMode();
+        return wasMinimized !== !!I.minimized || I.isMinimizeTransitioning || !!I.pendingChatSurfaceMode;
     }
 
     I.prewarmUserDisplayName = function prewarmUserDisplayName() {

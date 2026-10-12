@@ -6,6 +6,8 @@
 
 本规则由 Web 主页面和 NEKO-PC 的 Pet renderer 页面内同一套 Cat Mind 执行。NEKO-PC 桌面壳只提供安全的桌面事实与能力，其中需要进入 Cat Mind 的部分由页面 consumer 转换为 observation；它不持有五维、短时意图、cooldown、pending/active action 或 episode，不运行 selector，也不发 action request。因此下列数值、provider、生命周期和摘要规则在两端完全共用，不存在桌面专用评分分支。
 
+猫形态资源选择属于表现层配置，不改变本规则定义的 Cat Mind 评分和动作语义。NEKO-PC 的 `catResourceGroup` 只允许 `dev_neko`（开发猫，默认）和 `yui_neko`（YUI）；正式资源包中的外观与声音必须使用同一组。当前切换通过重载 Pet 页面重新建立静态 URL 注册，因此按低频设置变更处理，Cat Mind 运行态会按冷启动重新建立，不宣称跨重载保留 observation、cooldown、动作结果或 return episode，也不能伪造旧状态。资源画布比例与透明边属于渲染资产事实，涉及接触点、窗口边缘和可见体量的校准仍需结合正式资源和实机画面验证。
+
 五维在代码内部保存为 `0–1`，本文统一换算为 `0–100`。所有加减值均经过 `0–100` 截断。动作公式中的变量也使用 `0–100` 显示值。
 
 ## 二、初始值与时间流
@@ -132,7 +134,9 @@ CAT1 本地文字的 `5%` 哈气彩蛋只通过哈气专用窄入口请求既有
 
 这些事件不创建第六个需求字段，也不直接映射动作。`return_click`、tier 变化与动作结果仍遵守异步边界，不能在旧入口同步启动下一动作。
 
-Electron 桌面窗口感知只在真实小猫形态的 CAT1 阶段启用：小猫已经显示且 tier 为 CAT1 时启动；进入 CAT2/CAT3、return、呼吸球切换、猫形态失效或页面卸载时停止；以后重新进入 CAT1 时建立新的正式 sensing session。这里复用的是 CAT1 的进入与退出生命周期，不是把窗口读取改成 Cat Mind 的 30 秒 tick。该 sensing bridge 是 Primary Pet renderer 的通用桌面能力；当前 Cat Mind 只是把初始当前窗口、后续身份/位置/尺寸变化以及 unavailable/current 恢复投影成 `desktop_occlusion_or_layer_change` observation 的一个消费者。`source=desktop-window-sensing` 的正式原生窗口事实只保留在 recent events 和 debug 中，不排入 Cat Mind decision，因此高频移动不能在 runner 完成后串起下一动作；其他来源的同名 observation 保留既有异步判断语义。其他页面功能可以并列消费同一正式 session 的安全结果，但不能各自再次启动 session 或复制读取周期。Web 页面没有桌面 bridge 时无动作。页面 session owner 不创建底层读取、检查 timer、第二窗口目标或 Cat Mind action request。
+Electron 桌面窗口感知在普通猫形态只覆盖 CAT1，并使用默认 `legacy` session 提供旧 active-window rect；进入 CAT2/CAT3、return、呼吸球切换、猫形态失效或页面卸载时停止。只有 CAT1 Playground active 才切换为 `gravity` session 并接收完整窗口 scene；Playground 退出立即停止并清空 scene。这里复用 CAT1/Playground 的进入与退出生命周期，不是把窗口读取改成 Cat Mind 的 30 秒 tick。该 sensing bridge 是 Primary Pet renderer 的通用桌面能力；`source=desktop-window-sensing` 的正式原生窗口事实只保留在 recent events 和 debug 中，不排入 Cat Mind decision。其他页面功能可以订阅同一正式 session，但不能再次启动 session 或复制读取周期。Web 页面没有桌面 bridge 时无动作。页面 session owner 不创建第二窗口目标或 Cat Mind action request。
+
+桌面窗口重力的交互准入不属于 Cat Mind：Playground 内猫的手动拖动在任意位置都合法，拖动期间窗口重力不按起点或路径准入、碰撞或限制位置；只在松手时按最终位置选择窗口。释放后的抛掷不会在后续 scene 到达时重新认领窗口；窗口读取的 `pending/busy` 暂态保留这次释放的位置等待结果，真实 `no-window` 消费失败请求，不能在未来窗口出现时重放。毛线球短点击只恢复对话框并结束毛线球 body，猫 body 仍由 Playground 持有；恢复链路的去重和 Electron 锁释放遵循 `cat1-playground-drop-design.md`，不新增 Cat Mind observation、需求值或动作 owner。
 
 ### 3.5 动作完成和中断
 
