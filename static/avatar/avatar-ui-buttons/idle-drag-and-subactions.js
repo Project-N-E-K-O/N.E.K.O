@@ -1341,6 +1341,7 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
         overlapPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX,
         sidePaddingPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX,
         assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1),
+        wideArt: _getNekoCatAppearanceMetadata('action.cat1.play_yarn').wideArt === true,
         facingRight: !!(state && state.facingRight)
     });
     if (!posted) return false;

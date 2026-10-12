@@ -6,6 +6,8 @@
 
 本规则由 Web 主页面和 NEKO-PC 的 Pet renderer 页面内同一套 Cat Mind 执行。NEKO-PC 桌面壳只提供安全的桌面事实与能力，其中需要进入 Cat Mind 的部分由页面 consumer 转换为 observation；它不持有五维、短时意图、cooldown、pending/active action 或 episode，不运行 selector，也不发 action request。因此下列数值、provider、生命周期和摘要规则在两端完全共用，不存在桌面专用评分分支。
 
+猫形态资源选择属于表现层配置，不改变本规则定义的 Cat Mind 评分和动作语义。NEKO-PC 的 `catResourceGroup` 只允许 `dev_neko`（开发猫，默认）和 `yui_neko`（YUI）；正式资源包中的外观与声音必须使用同一组。当前切换通过重载 Pet 页面重新建立静态 URL 注册，因此按低频设置变更处理，Cat Mind 运行态会按冷启动重新建立，不宣称跨重载保留 observation、cooldown、动作结果或 return episode，也不能伪造旧状态。资源画布比例与透明边属于渲染资产事实，涉及接触点、窗口边缘和可见体量的校准仍需结合正式资源和实机画面验证。
+
 五维在代码内部保存为 `0–1`，本文统一换算为 `0–100`。所有加减值均经过 `0–100` 截断。动作公式中的变量也使用 `0–100` 显示值。
 
 ## 二、初始值与时间流

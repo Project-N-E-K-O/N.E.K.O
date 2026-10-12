@@ -503,6 +503,10 @@ function _getNekoCatVoiceUrls(slot) {
     const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getVoice(slot, { random: false });
     return result && result.available ? result.urls : [];
 }
+function _getNekoCatAppearanceMetadata(slot) {
+    const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getAppearance(slot, { random: false });
+    return result && result.available && result.metadata ? result.metadata : {};
+}
 const _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = _getNekoCatAppearanceUrl('drag.rapid', { random: false });
 const _NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS = 5000;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_WINDOW_MS = 1100;
