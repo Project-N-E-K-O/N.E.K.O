@@ -133,6 +133,26 @@ class ForgetTargetEpochsRequired(ScopedMemoryError):
         super().__init__(f"scoped_forget needs epochs for fan-out targets: {list(self.missing)}")
 
 
+# Same bound the server applies to ScopedForgetRequest.target_epochs.
+_FORGET_TARGET_EPOCHS_MAX = 64
+
+
+def _check_target_epochs(subject: dict, forget_epoch: int | None, target_epochs: dict[str, int]) -> None:
+    """Raise ``ValueError`` for a ``target_epochs`` the server always answers with 422."""
+    if forget_epoch is None:
+        raise ValueError("target_epochs requires forget_epoch")
+    if len(target_epochs) > _FORGET_TARGET_EPOCHS_MAX:
+        raise ValueError("too many target_epochs keys")
+    for key, value in target_epochs.items():
+        if not isinstance(key, str) or not key or len(key) > 512 or not key.isprintable():
+            raise ValueError("invalid target_epochs key")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError("target_epochs values must be non-negative integers")
+    subject_key = f"{subject.get('subject_kind')}:{subject.get('subject_id')}"
+    if subject_key in target_epochs and target_epochs[subject_key] != forget_epoch:
+        raise ValueError("target_epochs disagrees with forget_epoch")
+
+
 def _missing_target_epochs(response: httpx.Response) -> list[str] | None:
     """The fan-out keys a 409 ``scoped_forget`` answer names, or None for any other 409."""
     try:
@@ -437,16 +457,18 @@ class ScopedMemoryClient:
         Opting in means the server refuses (HTTP 409, nothing erased) a map
         that misses a fan-out target; that answer raises
         :class:`ForgetTargetEpochsRequired` carrying the missing keys, so the
-        caller can bump those counters and resend. ``target_epochs`` without
-        ``forget_epoch`` raises ``ValueError`` (the server always refuses it).
+        caller can bump those counters and resend. A ``target_epochs`` the
+        server always refuses (no ``forget_epoch``, a value for this subject
+        that differs from ``forget_epoch``, too many or malformed keys or
+        epochs) raises ``ValueError`` before anything is sent.
 
         ``True`` only when the server confirms ``status: "forgotten"``; a
         truncated, non-JSON or wrong-shaped 2xx body is a failed erase.
         """
-        if target_epochs is not None and forget_epoch is None:
-            # 服务端对这种请求固定回 422：按普通失败返回 False 的话，撤销流程会一直重试一个
+        if target_epochs is not None:
+            # 服务端对这些请求固定回 422：按普通失败返回 False 的话，撤销流程会一直重试一个
             # 永远不会成功的请求。这是调用方的编程错误，直接抛出
-            raise ValueError("target_epochs requires forget_epoch")
+            _check_target_epochs(subject, forget_epoch, target_epochs)
         body: dict[str, Any] = {"subject": subject}
         if forget_epoch is not None:
             body["forget_epoch"] = forget_epoch

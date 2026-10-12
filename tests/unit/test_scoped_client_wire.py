@@ -576,13 +576,25 @@ async def test_opted_in_forget_refused_for_missing_targets_raises_with_the_keys(
     assert excinfo.value.missing == ("participant:neko_visit:p1",)
 
 
+_SUBJECT_KEY = f"{_SUBJECT['subject_kind']}:{_SUBJECT['subject_id']}"
+
+
 @pytest.mark.asyncio
-async def test_target_epochs_without_forget_epoch_is_a_caller_error():
+@pytest.mark.parametrize("forget_epoch, target_epochs", [
+    (None, {"participant:neko_visit:p1": 1}),
+    (3, {_SUBJECT_KEY: 4}),
+    (3, {f"participant:neko_visit:p{i}": 1 for i in range(65)}),
+    (3, {"": 1}),
+    (3, {"participant:neko_visit:p1": -1}),
+], ids=["no-forget-epoch", "disagrees", "too-many", "empty-key", "negative"])
+async def test_target_epochs_without_forget_epoch_is_a_caller_error(forget_epoch, target_epochs):
     recorder = _Recorder()
     client, http = _client(recorder)
     async with http:
         with pytest.raises(ValueError):
-            await client.post_forget("Lanlan", subject=_SUBJECT, target_epochs={"participant:neko_visit:p1": 1})
+            await client.post_forget(
+                "Lanlan", subject=_SUBJECT, forget_epoch=forget_epoch, target_epochs=target_epochs,
+            )
     # 服务端必回 422 的请求不发出去：否则撤销流程把它当普通失败一直重试
     assert recorder.requests == []
 

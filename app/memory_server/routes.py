@@ -5805,6 +5805,11 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         "forgotten_subjects": [
             target.as_entry_fields() for target in targets
         ],
+        # 这一次真正擦除的 subject：重放只补擦新关联目标时它比 forgotten_subjects 少，
+        # 隐私清除唯一的回执要能分辨「补擦」和「完整擦除」
+        "erased_subjects": [
+            target.as_entry_fields() for target in erase_targets
+        ],
         **stats,
     }
 
@@ -5982,6 +5987,7 @@ def _forget_duplicate_response(subject, targets) -> dict:
         "status": "forgotten",
         "subject": subject.as_entry_fields(),
         "forgotten_subjects": [target.as_entry_fields() for target in targets],
+        "erased_subjects": [],
         "duplicate": True,
     }
 

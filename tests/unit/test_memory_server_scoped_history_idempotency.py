@@ -3372,7 +3372,9 @@ async def test_forget_without_target_epochs_keeps_the_old_behaviour(env):
 
 async def test_fanout_target_is_fenced_at_its_own_epoch_against_a_delayed_write(env):
     _fan_out_to(env, PART)
-    await _forget(env, GROUP, forget_epoch=7, target_epochs={PART_KEY: 2})
+    full = await _forget(env, GROUP, forget_epoch=7, target_epochs={PART_KEY: 2})
+    # 完整擦除：实际擦除的就是整个扇出
+    assert full["erased_subjects"] == full["forgotten_subjects"]
     tombstones = _tombstones(env)
     # 每个 key 各记自己的代数：扇出目标是 2，不是请求 subject 的 7；擦完都记上完成标记
     assert tombstones[GROUP_KEY]["forget_epoch"] == 7 and tombstones[GROUP_KEY]["erased_epoch"] == 7
@@ -3483,8 +3485,11 @@ async def test_replay_naming_a_newly_linked_target_erases_only_that_target(env):
     assert result.get("duplicate") is None
     assert _facts_of(env, PART) == [] and _facts_of(env, GROUP)
     assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
+    # 回执分得出补擦：这次只擦了 PART，forgotten_subjects 仍列出整个扇出
+    assert [s["subject_id"] for s in result["erased_subjects"]] == [PART["subject_id"]]
+    assert {s["subject_id"] for s in result["forgotten_subjects"]} == {GROUP["subject_id"], PART["subject_id"]}
     again = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
-    assert again.get("duplicate") is True
+    assert again.get("duplicate") is True and again["erased_subjects"] == []
 
 
 async def test_partial_replay_does_not_mark_the_request_subject_through_a_higher_fence(env):
