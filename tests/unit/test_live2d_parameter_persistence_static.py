@@ -644,10 +644,14 @@ def test_saved_idle_restore_stops_only_an_existing_idle_motion():
 
 def test_live2d_avatar_performance_inline_expression_cleanup_stays_targeted():
     source = AVATAR_PERFORMANCE_PATH.read_text(encoding="utf-8")
-    start = source.index("        async clearExpression() {")
+    start = source.index("        async clearExpression(options) {")
     end = source.index("        hasMotion(group, options) {", start)
     clear_source = source[start:end]
 
+    assert "options.session && !this.ownsSession(options.session)" in clear_source
+    assert "this.clearOwnedExpression(state)" in clear_source
+    assert "this.restoreOwnedParams(this.expressionParamSnapshot, state)" in clear_source
+    # Standalone driver calls retain the existing targeted legacy cleanup.
     assert "manager?._activeTransientExpression === true" in clear_source
     assert "if (shouldClearManagerExpression" in clear_source
     assert "manager.applyPersistentExpressionsNative(true)" in clear_source

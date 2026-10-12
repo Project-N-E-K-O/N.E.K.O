@@ -902,10 +902,17 @@ Live2DManager.prototype.softClearEmotionEffects = async function(options = {}) {
  * @param {Array} params - 表情参数数组 [{Id, Value}, ...]
  * @param {number} fadeInDuration - 淡入持续时间（毫秒），默认 300ms
  */
-Live2DManager.prototype._installManualExpressionOverride = function(params, fadeInDuration = 300) {
-    this._removeManualExpressionOverride();
-
-    if (!this.currentModel || !this.currentModel.internalModel || !params || params.length === 0) return;
+Live2DManager.prototype._installManualExpressionOverride = function(params, fadeInDuration = 300, options = {}) {
+    if (!this.currentModel || !this.currentModel.internalModel?.coreModel || !Array.isArray(params) || params.length === 0) return false;
+    const model = this.currentModel;
+    const emitter = model.internalModel;
+    const coreModel = emitter.coreModel;
+    if (options.generation !== undefined) {
+        if ((this._transientExpressionGeneration || 0) !== options.generation) return false;
+    }
+    const generation = this._transientExpressionGeneration || 0;
+    const previousListener = this._manualExpressionListener;
+    const previousEmitter = this._manualExpressionEmitter;
 
     // 钳制 fadeInDuration：非法值回退到默认，范围 [50, 5000]
     if (!Number.isFinite(fadeInDuration) || fadeInDuration <= 0) {
@@ -915,25 +922,14 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
 
     const self = this;
     const startTime = performance.now();
-    const emitter = this.currentModel.internalModel; // 捕获绑定时的 emitter
-    this._manualExpressionEmitter = emitter;
-
-    this._manualExpressionParams = params;
 
     const onBeforeUpdate = function() {
         if (self._manualExpressionListener !== onBeforeUpdate) return;
-        if (!self.currentModel || !self.currentModel.internalModel || !self.currentModel.internalModel.coreModel) {
-            self._removeManualExpressionOverride();
+        if (self.currentModel !== model || model.destroyed || model.internalModel !== emitter
+            || emitter.coreModel !== coreModel) {
+            self._removeManualExpressionOverride(onBeforeUpdate, emitter);
             return;
         }
-
-        // 防御性检查：确保当前模型仍是绑定时的模型，避免切模后跨模型写入
-        if (self.currentModel.internalModel !== emitter) {
-            self._removeManualExpressionOverride();
-            return;
-        }
-
-        const coreModel = self.currentModel.internalModel.coreModel;
 
         const elapsed = performance.now() - startTime;
         const fadeProgress = Math.min(elapsed / fadeInDuration, 1);
@@ -942,7 +938,9 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
             ? 2 * fadeProgress * fadeProgress
             : 1 - Math.pow(-2 * fadeProgress + 2, 2) / 2;
 
-        for (const param of self._manualExpressionParams) {
+        for (const param of params) {
+            if (self._manualExpressionListener !== onBeforeUpdate || self.currentModel !== model
+                || model.internalModel !== emitter || emitter.coreModel !== coreModel) return;
             if (live2dExpressionAmplitudeParams().includes(param.Id)) continue;
             if (typeof self._isEyeBlinkParamId === 'function' && self._isEyeBlinkParamId(param.Id)) continue;
             try {
@@ -955,29 +953,66 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
         }
     };
 
+    // Publish only a registered listener. A failed registration leaves no
+    // pointer or protection set that a guide cannot later retire.
+    try {
+        emitter.on('beforeModelUpdate', onBeforeUpdate);
+    } catch (error) {
+        try { emitter.off('beforeModelUpdate', onBeforeUpdate); } catch (_) {}
+        throw error;
+    }
+    if (this.currentModel !== model || model.internalModel !== emitter || emitter.coreModel !== coreModel
+        || (this._transientExpressionGeneration || 0) !== generation) {
+        emitter.off('beforeModelUpdate', onBeforeUpdate);
+        return false;
+    }
+    try {
+        if (!this._removeManualExpressionOverride(previousListener, previousEmitter)) {
+            emitter.off('beforeModelUpdate', onBeforeUpdate);
+            return false;
+        }
+    } catch (error) {
+        try { emitter.off('beforeModelUpdate', onBeforeUpdate); } catch (_) {}
+        throw error;
+    }
+    if (this.currentModel !== model || model.internalModel !== emitter || emitter.coreModel !== coreModel
+        || (this._transientExpressionGeneration || 0) !== generation) {
+        emitter.off('beforeModelUpdate', onBeforeUpdate);
+        return false;
+    }
+    // A failed registration is not a takeover. Retire older SDK requests only
+    // when this direct manual listener is ready to become the published owner.
+    if (options.generation === undefined) this._invalidateExpressionPlayback();
+    this._manualExpressionEmitter = emitter;
+    this._manualExpressionParams = params;
     this._manualExpressionListener = onBeforeUpdate;
-    emitter.on('beforeModelUpdate', onBeforeUpdate);
     console.log(`[ManualExpression] 安装手动表情覆盖，${params.length}个参数，淡入 ${fadeInDuration}ms`);
+    return true;
 };
 
 /**
  * 移除手动表情覆盖
  */
-Live2DManager.prototype._removeManualExpressionOverride = function() {
-    if (this._manualExpressionListener) {
-        const emitter = this._manualExpressionEmitter || (this.currentModel && this.currentModel.internalModel);
-        if (emitter) {
-            emitter.off('beforeModelUpdate', this._manualExpressionListener);
-        }
+Live2DManager.prototype._removeManualExpressionOverride = function(expectedListener, expectedEmitter) {
+    if (arguments.length > 0 && (this._manualExpressionListener !== expectedListener
+        || (expectedEmitter && this._manualExpressionEmitter !== expectedEmitter))) return false;
+    const listener = this._manualExpressionListener;
+    const emitter = this._manualExpressionEmitter || (this.currentModel && this.currentModel.internalModel);
+    if (listener && emitter) emitter.off('beforeModelUpdate', listener);
+    // An emitter hook may synchronously install a successor while removing us.
+    if (this._manualExpressionListener === listener) {
+        this._manualExpressionListener = null;
+        this._manualExpressionEmitter = null;
+        this._manualExpressionParams = null;
     }
-    this._manualExpressionListener = null;
-    this._manualExpressionEmitter = null;
-    this._manualExpressionParams = null;
+    return true;
 };
 
 Live2DManager.prototype.playExpression = function(emotion, specifiedExpressionFile = null) {
     const model = this.currentModel;
     if (!model) return Promise.resolve(false);
+    const internalModel = model.internalModel;
+    const coreModel = internalModel?.coreModel;
 
     this._invalidateExpressionPlayback(true);
     this._cancelSmoothReset();
@@ -986,12 +1021,14 @@ Live2DManager.prototype.playExpression = function(emotion, specifiedExpressionFi
     this._transientExpressionGeneration = generation;
     const previousTask = this._transientExpressionTask || Promise.resolve(false);
     const task = previousTask.catch(() => false).then(async () => {
-        if (this.currentModel !== model || this._transientExpressionGeneration !== generation) {
+        if (this.currentModel !== model || model.internalModel !== internalModel
+            || internalModel?.coreModel !== coreModel || this._transientExpressionGeneration !== generation) {
             return false;
         }
         if (this._activeTransientExpression) {
             await this.clearExpression({ preserveTransientGeneration: true });
-            if (this.currentModel !== model || this._transientExpressionGeneration !== generation) {
+            if (this.currentModel !== model || model.internalModel !== internalModel
+                || internalModel?.coreModel !== coreModel || this._transientExpressionGeneration !== generation) {
                 return false;
             }
         }
@@ -1005,7 +1042,11 @@ Live2DManager.prototype.playExpression = function(emotion, specifiedExpressionFi
 
 // 播放表情（优先使用 EmotionMapping.expressions）
 Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedExpressionFile = null, expressionModel = this.currentModel, generation = this._transientExpressionGeneration || 0) {
+    const expressionInternalModel = expressionModel?.internalModel;
+    const expressionCoreModel = expressionInternalModel?.coreModel;
     const isCurrent = () => this.currentModel === expressionModel
+        && expressionModel?.internalModel === expressionInternalModel
+        && expressionInternalModel?.coreModel === expressionCoreModel
         && (this._transientExpressionGeneration || 0) === generation;
     if (!isCurrent()) return false;
     if (!this.currentModel) {
@@ -1170,7 +1211,8 @@ Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedEx
         console.log('使用手动参数设置播放expression（带淡入过渡）');
         if (expressionData.Parameters && expressionData.Parameters.length > 0) {
             // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
-            this._installManualExpressionOverride(expressionData.Parameters, LIVE2D_EMOTION_SOFT_EXPRESSION_FADE_IN_MS);
+            if (this._installManualExpressionOverride(expressionData.Parameters,
+                LIVE2D_EMOTION_SOFT_EXPRESSION_FADE_IN_MS, { generation }) !== true || !isCurrent()) return false;
             this.expressionApplied = true;
             this._activeTransientExpression = true;
         }

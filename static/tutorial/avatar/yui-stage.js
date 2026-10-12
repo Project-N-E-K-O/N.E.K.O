@@ -959,8 +959,9 @@
             existing.refs += 1;
             return {
                 id: existing.session && existing.session.id ? existing.session.id : '',
+                isCurrent: () => activePerformanceLocks.get(lockKey) === existing && !existing.session?.cancelled,
                 release: function (reason) {
-                    releaseYuiGuidePerformanceLock(lockKey, reason || 'release');
+                    releaseYuiGuidePerformanceLock(lockKey, reason || 'release', existing);
                 }
             };
         }
@@ -1001,16 +1002,17 @@
         activePerformanceLocks.set(lockKey, record);
         return {
             id: session.id || '',
+            isCurrent: () => activePerformanceLocks.get(lockKey) === record && !session.cancelled,
             release: function (reason) {
-                releaseYuiGuidePerformanceLock(lockKey, reason || 'release');
+                releaseYuiGuidePerformanceLock(lockKey, reason || 'release', record);
             }
         };
     }
 
-    function releaseYuiGuidePerformanceLock(key, reason) {
+    function releaseYuiGuidePerformanceLock(key, reason, expectedRecord) {
         const lockKey = String(key || 'home-yui-guide').trim() || 'home-yui-guide';
         const record = activePerformanceLocks.get(lockKey);
-        if (!record) {
+        if (!record || (expectedRecord && record !== expectedRecord)) {
             return false;
         }
         record.refs = Math.max(0, record.refs - 1);
@@ -2180,6 +2182,128 @@
         }
     }
 
+    function directPersistentParameters(manager) {
+        const result = {};
+        Object.values(manager.persistentExpressionParamsByName || {}).forEach(params => {
+            if (!Array.isArray(params)) return;
+            params.forEach(param => {
+                if (param && param.Id) (result[param.Id] || (result[param.Id] = [])).push(param);
+            });
+        });
+        return JSON.parse(JSON.stringify(result));
+    }
+
+    function directEffectiveParameters(manager, core) {
+        const result = {};
+        const priorities = {};
+        Object.entries(manager.effectiveModelParameters || {}).forEach(([key, value]) => {
+            const resolved = typeof manager._resolveModelParameterKey === 'function'
+                ? manager._resolveModelParameterKey(core, key) : null;
+            const id = resolved ? String(resolved.resolvedId) : key;
+            const priority = resolved?.isIndexKey ? 0 : 1;
+            if (!(id in priorities) || priority >= priorities[id]) {
+                result[id] = value;
+                priorities[id] = priority;
+            }
+        });
+        return result;
+    }
+
+    // These pose sessions do not use Stage. Their released parameters still
+    // belong to the manager's confirmed configuration, not the opening pose.
+    function beginDirectPoseParameters(session) {
+        const manager = session.manager;
+        const state = { manager, model: session.model, internalModel: session.model.internalModel,
+            core: session.coreModel, revision: manager._parameterConfigRevision,
+            effective: directEffectiveParameters(manager, session.coreModel),
+            persistent: directPersistentParameters(manager), baseline: {}, written: new Set(), lost: false,
+            capabilities: (session.performanceLockCapabilities || [])
+                .filter(capability => ['frame', 'motion', 'expression', 'params', 'lookAt'].includes(capability)) };
+        Object.values(session.params).forEach(meta => {
+            state.baseline[meta.id] = readParam(state.core, meta);
+        });
+        session.parameterRestoreState = state;
+        if (!manager._avatarPerformanceSessionOwners) manager._avatarPerformanceSessionOwners = new Map();
+        state.capabilities.forEach(capability => manager._avatarPerformanceSessionOwners.set(capability, session));
+        if (Object.prototype.hasOwnProperty.call(session, 'previousEyeBlinkSuspended')) {
+            const previous = manager._avatarPerformanceEyeBlinkOwner;
+            state.previousValue = previous && previous.model === state.model
+                && previous.internalModel === state.internalModel && previous.core === state.core
+                ? previous.previousValue : !!manager._suspendEyeBlinkOverride;
+            manager._avatarPerformanceEyeBlinkOwner = state;
+        }
+    }
+
+    function ownsDirectPoseParameters(session) {
+        const state = session.parameterRestoreState;
+        if (!state) return true;
+        return !state.lost && (!state.poseEntry || state.poseRetired
+                || state.manager._temporaryPoseOverrides?.get(session.poseOverrideSource) === state.poseEntry)
+            && state.manager === session.manager
+            && getCurrentLive2DModel(state.manager) === state.model && !state.model.destroyed
+            && state.model.internalModel === state.internalModel && state.internalModel.coreModel === state.core
+            && state.capabilities.every(capability => state.manager._avatarPerformanceSessionOwners?.get(capability) === session)
+            && (!session.performanceLock || typeof session.performanceLock.isCurrent !== 'function'
+                || session.performanceLock.isCurrent());
+    }
+
+    function directPoseRestoreValue(session, meta, fallback, onlyChanged = false) {
+        const state = session.parameterRestoreState;
+        if (!state || !ownsDirectPoseParameters(session)) return undefined;
+        const manager = state.manager;
+        if (manager._parameterEditingMode === true) return undefined;
+        const protectedIds = typeof manager._getActiveExpressionParamIds === 'function'
+            ? manager._getActiveExpressionParamIds() : new Set();
+        const breathIds = new Set(['ParamBreath', 'ParamBreath2', 'ParamBreath3']);
+        if (typeof manager._resolveRuntimeBreathParams === 'function') {
+            manager._resolveRuntimeBreathParams(state.core).forEach(id => breathIds.add(id));
+        }
+        if (protectedIds.has(meta.id) || breathIds.has(meta.id)
+            || meta.id === 'ParamOpacity' || meta.id === 'ParamVisibility'
+            || (!Object.prototype.hasOwnProperty.call(session, 'previousEyeBlinkSuspended')
+                && typeof manager._isEyeBlinkParamId === 'function' && manager._isEyeBlinkParamId(meta.id))) return undefined;
+        const current = state.releaseEffective || directEffectiveParameters(manager, state.core);
+        const persistent = state.releasePersistent || directPersistentParameters(manager);
+        const has = (object, id) => Object.prototype.hasOwnProperty.call(object, id);
+        const configChanged = manager._parameterConfigRevision !== state.revision
+            && (has(current, meta.id) !== has(state.effective, meta.id) || current[meta.id] !== state.effective[meta.id]);
+        const persistentChanged = JSON.stringify(persistent[meta.id]) !== JSON.stringify(state.persistent[meta.id]);
+        if (!configChanged && !persistentChanged) return onlyChanged ? undefined : fallback;
+        if (has(current, meta.id)) return current[meta.id];
+        const value = typeof manager._getCoreParameterDefaultValue === 'function'
+            ? manager._getCoreParameterDefaultValue(state.core, meta.index) : undefined;
+        if (Number.isFinite(value)) return value;
+        if (!state.warnedDefault) {
+            state.warnedDefault = true;
+            console.warn('[YuiGuide] 跳过默认值不可读的临时参数恢复');
+        }
+        return undefined;
+    }
+
+    function restoreDirectPoseParameter(session, meta, value, onlyChanged = false) {
+        const state = session.parameterRestoreState;
+        if (!state || !state.written.has(meta.id)) return;
+        const restored = directPoseRestoreValue(session, meta, value, onlyChanged);
+        if (Number.isFinite(restored)) writeParam(session.coreModel, meta, restored);
+    }
+
+    function retireDirectPoseParameters(session) {
+        const state = session.parameterRestoreState;
+        if (!state) return;
+        state.capabilities.forEach(capability => {
+            if (state.manager._avatarPerformanceSessionOwners?.get(capability) === session) {
+                state.manager._avatarPerformanceSessionOwners.delete(capability);
+            }
+        });
+    }
+
+    function restoreDirectEyeBlink(session) {
+        const state = session.parameterRestoreState;
+        if (!state || state.manager._avatarPerformanceEyeBlinkOwner !== state) return;
+        if (ownsDirectPoseParameters(session)) state.manager._suspendEyeBlinkOverride = state.previousValue;
+        state.manager._avatarPerformanceEyeBlinkOwner = null;
+    }
+
     class Live2DWakeupSession {
         constructor(context, options) {
             const normalizedOptions = options || {};
@@ -2226,7 +2350,8 @@
             const current = getCurrentLive2DModel(this.manager);
             return current === this.model
                 && current.internalModel
-                && current.internalModel.coreModel === this.coreModel;
+                && current.internalModel.coreModel === this.coreModel
+                && ownsDirectPoseParameters(this);
         }
 
         start() {
@@ -2238,6 +2363,7 @@
                 this.performanceLockKey,
                 this.performanceLockCapabilities
             );
+            beginDirectPoseParameters(this);
             this.active = true;
             this.startedAt = this.timelineStartedAt || performance.now();
             this.manager._suspendEyeBlinkOverride = true;
@@ -2279,16 +2405,20 @@
                 this.frameId = 0;
             }
             if (this.manager) {
-                this.manager._suspendEyeBlinkOverride = this.previousEyeBlinkSuspended;
+                restoreDirectEyeBlink(this);
                 this.clearTemporaryPoseOverride();
             }
             if (!preserveFinalPose) {
                 this.restoreCapturedParams();
+            } else {
+                Object.values(this.params).forEach(meta => restoreDirectPoseParameter(this, meta, meta.initial, true));
             }
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                retireDirectPoseParameters(this);
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
             }
+            retireDirectPoseParameters(this);
         }
 
         cancel(reason) {
@@ -2300,7 +2430,11 @@
                 return false;
             }
             try {
-                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                const installed = this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                if (installed && this.parameterRestoreState) {
+                    this.parameterRestoreState.poseEntry = this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource);
+                }
+                return installed;
             } catch (_) {
                 return false;
             }
@@ -2311,7 +2445,12 @@
                 return;
             }
             try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+                const state = this.parameterRestoreState;
+                if (state?.poseEntry) {
+                    if (this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== state.poseEntry) state.lost = true;
+                    this.manager.clearTemporaryPoseOverride(this.poseOverrideSource, state.poseEntry);
+                    state.poseRetired = true;
+                }
             } catch (_) {}
         }
 
@@ -2319,9 +2458,14 @@
             if (!this.isCurrentModel()) {
                 return;
             }
+            const state = this.parameterRestoreState;
+            if (!state) return;
+            state.restoring = true;
+            state.releaseEffective = directEffectiveParameters(this.manager, this.coreModel);
+            state.releasePersistent = directPersistentParameters(this.manager);
             Object.keys(this.params).forEach((key) => {
                 const meta = this.params[key];
-                writeParam(this.coreModel, meta, meta.initial);
+                restoreDirectPoseParameter(this, meta, state.baseline[meta.id]);
             });
         }
 
@@ -2393,6 +2537,13 @@
             if (!meta) {
                 return;
             }
+            if (!ownsDirectPoseParameters(this)) return;
+            const state = this.parameterRestoreState;
+            if (state?.restoring) {
+                restoreDirectPoseParameter(this, meta, targetValue);
+                return;
+            }
+            if (state) state.written.add(meta.id);
             const current = readParam(this.coreModel, meta);
             const blended = lerp(current, targetValue, weight);
             writeParam(this.coreModel, meta, blended);
@@ -2537,7 +2688,8 @@
             const current = getCurrentLive2DModel(this.manager);
             return current === this.model
                 && current.internalModel
-                && current.internalModel.coreModel === this.coreModel;
+                && current.internalModel.coreModel === this.coreModel
+                && ownsDirectPoseParameters(this);
         }
 
         start() {
@@ -2549,6 +2701,7 @@
                 this.performanceLockKey,
                 this.performanceLockCapabilities
             );
+            beginDirectPoseParameters(this);
             this.active = true;
             this.startedAt = performance.now();
             this.initialModelFrame = readIntroGreetingHugModelFrame(this.model);
@@ -2591,9 +2744,11 @@
                 this.restoreModelFrame();
             }
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                retireDirectPoseParameters(this);
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
             }
+            retireDirectPoseParameters(this);
         }
 
         cancel(reason) {
@@ -2605,7 +2760,11 @@
                 return false;
             }
             try {
-                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                const installed = this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                if (installed && this.parameterRestoreState) {
+                    this.parameterRestoreState.poseEntry = this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource);
+                }
+                return installed;
             } catch (_) {
                 return false;
             }
@@ -2616,7 +2775,12 @@
                 return;
             }
             try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+                const state = this.parameterRestoreState;
+                if (state?.poseEntry) {
+                    if (this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== state.poseEntry) state.lost = true;
+                    this.manager.clearTemporaryPoseOverride(this.poseOverrideSource, state.poseEntry);
+                    state.poseRetired = true;
+                }
             } catch (_) {}
         }
 
@@ -2645,9 +2809,14 @@
             if (!this.isCurrentModel()) {
                 return;
             }
+            const state = this.parameterRestoreState;
+            if (!state) return;
+            state.restoring = true;
+            state.releaseEffective = directEffectiveParameters(this.manager, this.coreModel);
+            state.releasePersistent = directPersistentParameters(this.manager);
             Object.keys(this.params).forEach((key) => {
                 const meta = this.params[key];
-                writeParam(this.coreModel, meta, meta.initial);
+                restoreDirectPoseParameter(this, meta, state.baseline[meta.id]);
             });
             this.writeWeighted('yuiByExpression', 0, 1);
             this.writeWeighted('yuiHeartSwitch', 0, 1);
@@ -2816,6 +2985,13 @@
             if (!meta) {
                 return;
             }
+            if (!ownsDirectPoseParameters(this)) return;
+            const state = this.parameterRestoreState;
+            if (state?.restoring) {
+                restoreDirectPoseParameter(this, meta, targetValue);
+                return;
+            }
+            if (state) state.written.add(meta.id);
             const current = readParam(this.coreModel, meta);
             const blended = lerp(current, targetValue, weight);
             writeParam(this.coreModel, meta, blended);
@@ -2915,7 +3091,8 @@
             const current = getCurrentLive2DModel(this.manager);
             return current === this.model
                 && current.internalModel
-                && current.internalModel.coreModel === this.coreModel;
+                && current.internalModel.coreModel === this.coreModel
+                && ownsDirectPoseParameters(this);
         }
 
         start() {
@@ -2926,6 +3103,7 @@
                 this.performanceLockKey,
                 this.performanceLockCapabilities
             );
+            beginDirectPoseParameters(this);
             this.active = true;
             this.startedAt = performance.now();
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
@@ -2965,9 +3143,11 @@
             this.restoreCapturedParams();
             this.restoreModelFrame();
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                retireDirectPoseParameters(this);
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
             }
+            retireDirectPoseParameters(this);
         }
 
         cancel(reason) {
@@ -2979,7 +3159,11 @@
                 return false;
             }
             try {
-                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                const installed = this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                if (installed && this.parameterRestoreState) {
+                    this.parameterRestoreState.poseEntry = this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource);
+                }
+                return installed;
             } catch (_) {
                 return false;
             }
@@ -2990,7 +3174,12 @@
                 return;
             }
             try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+                const state = this.parameterRestoreState;
+                if (state?.poseEntry) {
+                    if (this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== state.poseEntry) state.lost = true;
+                    this.manager.clearTemporaryPoseOverride(this.poseOverrideSource, state.poseEntry);
+                    state.poseRetired = true;
+                }
             } catch (_) {}
         }
 
@@ -3005,9 +3194,14 @@
             if (!this.isCurrentModel()) {
                 return;
             }
+            const state = this.parameterRestoreState;
+            if (!state) return;
+            state.restoring = true;
+            state.releaseEffective = directEffectiveParameters(this.manager, this.coreModel);
+            state.releasePersistent = directPersistentParameters(this.manager);
             Object.keys(this.params).forEach((key) => {
                 const meta = this.params[key];
-                writeParam(this.coreModel, meta, meta.initial);
+                restoreDirectPoseParameter(this, meta, state.baseline[meta.id]);
             });
             this.writeWeighted('yuiHeartSwitch', 0, 1);
             this.writeWeighted('yuiMouthCoverSwitch', 0, 1);
@@ -3085,6 +3279,13 @@
             if (!meta) {
                 return;
             }
+            if (!ownsDirectPoseParameters(this)) return;
+            const state = this.parameterRestoreState;
+            if (state?.restoring) {
+                restoreDirectPoseParameter(this, meta, targetValue);
+                return;
+            }
+            if (state) state.written.add(meta.id);
             const current = readParam(this.coreModel, meta);
             const blended = lerp(current, targetValue, weight);
             writeParam(this.coreModel, meta, blended);
@@ -4052,7 +4253,8 @@
             const current = getCurrentLive2DModel(this.manager);
             return current === this.model
                 && current.internalModel
-                && current.internalModel.coreModel === this.coreModel;
+                && current.internalModel.coreModel === this.coreModel
+                && ownsDirectPoseParameters(this);
         }
 
         start() {
@@ -4072,6 +4274,7 @@
                 this.performanceLockCapabilities
             );
             this.frozenOverlayAnchors = freezeLive2DOverlayAnchors(this.manager);
+            beginDirectPoseParameters(this);
             this.active = true;
             this.startedAt = performance.now();
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
@@ -4163,12 +4366,14 @@
                 this.restoreCapturedParams();
             }
             this.restoreModelFrame();
-            restoreLive2DOverlayAnchors(this.frozenOverlayAnchors);
+            if (ownsDirectPoseParameters(this)) restoreLive2DOverlayAnchors(this.frozenOverlayAnchors);
             this.frozenOverlayAnchors = null;
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                retireDirectPoseParameters(this);
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
             }
+            retireDirectPoseParameters(this);
         }
 
         cancel(reason) {
@@ -4180,7 +4385,11 @@
                 return false;
             }
             try {
-                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                const installed = this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                if (installed && this.parameterRestoreState) {
+                    this.parameterRestoreState.poseEntry = this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource);
+                }
+                return installed;
             } catch (_) {
                 return false;
             }
@@ -4191,7 +4400,12 @@
                 return;
             }
             try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+                const state = this.parameterRestoreState;
+                if (state?.poseEntry) {
+                    if (this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== state.poseEntry) state.lost = true;
+                    this.manager.clearTemporaryPoseOverride(this.poseOverrideSource, state.poseEntry);
+                    state.poseRetired = true;
+                }
             } catch (_) {}
         }
 
@@ -4242,9 +4456,14 @@
             if (!this.isCurrentModel()) {
                 return;
             }
+            const state = this.parameterRestoreState;
+            if (!state) return;
+            state.restoring = true;
+            state.releaseEffective = directEffectiveParameters(this.manager, this.coreModel);
+            state.releasePersistent = directPersistentParameters(this.manager);
             Object.keys(this.params).forEach((key) => {
                 const meta = this.params[key];
-                writeParam(this.coreModel, meta, meta.initial);
+                restoreDirectPoseParameter(this, meta, state.baseline[meta.id]);
             });
             this.writeWeighted('yuiPanicMouthZ2', 0, 1);
             this.writeWeighted('yuiPanicEyesYyy', 0, 1);
@@ -4331,6 +4550,13 @@
             if (!meta) {
                 return;
             }
+            if (!ownsDirectPoseParameters(this)) return;
+            const state = this.parameterRestoreState;
+            if (state?.restoring) {
+                restoreDirectPoseParameter(this, meta, targetValue);
+                return;
+            }
+            if (state) state.written.add(meta.id);
             const current = readParam(this.coreModel, meta);
             const blended = lerp(current, targetValue, weight);
             writeParam(this.coreModel, meta, blended);
@@ -4443,7 +4669,8 @@
             const current = getCurrentLive2DModel(this.manager);
             return current === this.model
                 && current.internalModel
-                && current.internalModel.coreModel === this.coreModel;
+                && current.internalModel.coreModel === this.coreModel
+                && ownsDirectPoseParameters(this);
         }
 
         start() {
@@ -4460,6 +4687,7 @@
                 this.performanceLockCapabilities
             );
             this.frozenOverlayAnchors = freezeLive2DOverlayAnchors(this.manager);
+            beginDirectPoseParameters(this);
             this.active = true;
             this.startedAt = performance.now();
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
@@ -4501,9 +4729,11 @@
             restoreLive2DOverlayAnchors(this.frozenOverlayAnchors);
             this.frozenOverlayAnchors = null;
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                retireDirectPoseParameters(this);
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
             }
+            retireDirectPoseParameters(this);
         }
 
         cancel(reason) {
@@ -4515,7 +4745,11 @@
                 return false;
             }
             try {
-                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                const installed = this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                if (installed && this.parameterRestoreState) {
+                    this.parameterRestoreState.poseEntry = this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource);
+                }
+                return installed;
             } catch (_) {
                 return false;
             }
@@ -4526,7 +4760,12 @@
                 return;
             }
             try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+                const state = this.parameterRestoreState;
+                if (state?.poseEntry) {
+                    if (this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== state.poseEntry) state.lost = true;
+                    this.manager.clearTemporaryPoseOverride(this.poseOverrideSource, state.poseEntry);
+                    state.poseRetired = true;
+                }
             } catch (_) {}
         }
 
@@ -4582,9 +4821,14 @@
             if (!this.isCurrentModel()) {
                 return;
             }
+            const state = this.parameterRestoreState;
+            if (!state) return;
+            state.restoring = true;
+            state.releaseEffective = directEffectiveParameters(this.manager, this.coreModel);
+            state.releasePersistent = directPersistentParameters(this.manager);
             Object.keys(this.params).forEach((key) => {
                 const meta = this.params[key];
-                writeParam(this.coreModel, meta, meta.initial);
+                restoreDirectPoseParameter(this, meta, state.baseline[meta.id]);
             });
             this.writeWeighted('yuiPanicMouthZ2', 0, 1);
             this.writeWeighted('yuiAnnoyedPoutZ3', 0, 1);
@@ -4658,6 +4902,13 @@
             if (!meta) {
                 return;
             }
+            if (!ownsDirectPoseParameters(this)) return;
+            const state = this.parameterRestoreState;
+            if (state?.restoring) {
+                restoreDirectPoseParameter(this, meta, targetValue);
+                return;
+            }
+            if (state) state.written.add(meta.id);
             const current = readParam(this.coreModel, meta);
             const blended = lerp(current, targetValue, weight);
             writeParam(this.coreModel, meta, blended);
@@ -4764,7 +5015,8 @@
             const current = getCurrentLive2DModel(this.manager);
             return current === this.model
                 && current.internalModel
-                && current.internalModel.coreModel === this.coreModel;
+                && current.internalModel.coreModel === this.coreModel
+                && ownsDirectPoseParameters(this);
         }
 
         start() {
@@ -4780,6 +5032,7 @@
                 this.performanceLockKey,
                 this.performanceLockCapabilities
             );
+            beginDirectPoseParameters(this);
             this.active = true;
             this.startedAt = performance.now();
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
@@ -4819,9 +5072,11 @@
             this.restoreCapturedParams();
             this.restoreModelFrame();
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                retireDirectPoseParameters(this);
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
             }
+            retireDirectPoseParameters(this);
         }
 
         cancel(reason) {
@@ -4833,7 +5088,11 @@
                 return false;
             }
             try {
-                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                const installed = this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                if (installed && this.parameterRestoreState) {
+                    this.parameterRestoreState.poseEntry = this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource);
+                }
+                return installed;
             } catch (_) {
                 return false;
             }
@@ -4844,7 +5103,12 @@
                 return;
             }
             try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+                const state = this.parameterRestoreState;
+                if (state?.poseEntry) {
+                    if (this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== state.poseEntry) state.lost = true;
+                    this.manager.clearTemporaryPoseOverride(this.poseOverrideSource, state.poseEntry);
+                    state.poseRetired = true;
+                }
             } catch (_) {}
         }
 
@@ -4889,9 +5153,14 @@
             if (!this.isCurrentModel()) {
                 return;
             }
+            const state = this.parameterRestoreState;
+            if (!state) return;
+            state.restoring = true;
+            state.releaseEffective = directEffectiveParameters(this.manager, this.coreModel);
+            state.releasePersistent = directPersistentParameters(this.manager);
             Object.keys(this.params).forEach((key) => {
                 const meta = this.params[key];
-                writeParam(this.coreModel, meta, meta.initial);
+                restoreDirectPoseParameter(this, meta, state.baseline[meta.id]);
             });
             this.writeWeighted('yuiPanicMouthZ2', 0, 1);
             this.writeWeighted('yuiAnnoyedPoutZ3', 0, 1);
@@ -4965,6 +5234,13 @@
             if (!meta) {
                 return;
             }
+            if (!ownsDirectPoseParameters(this)) return;
+            const state = this.parameterRestoreState;
+            if (state?.restoring) {
+                restoreDirectPoseParameter(this, meta, targetValue);
+                return;
+            }
+            if (state) state.written.add(meta.id);
             const current = readParam(this.coreModel, meta);
             const blended = lerp(current, targetValue, weight);
             writeParam(this.coreModel, meta, blended);
@@ -5036,6 +5312,7 @@
             this.params = scanMappedLive2DParams(this.coreModel, YUI_INTRO_VOICE_LOOK_AT_PARAMS);
             this.stage = null;
             this.stageSession = null;
+            this.poseOverrideEntry = null;
             this.active = false;
             this.finished = false;
             this.result = 'idle';
@@ -5191,7 +5468,9 @@
                 return false;
             }
             try {
-                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                const installed = this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+                this.poseOverrideEntry = this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource);
+                return installed;
             } catch (_) {
                 return false;
             }
@@ -5202,7 +5481,14 @@
                 return;
             }
             try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+                if (this.poseOverrideEntry) {
+                    if (this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== this.poseOverrideEntry) {
+                        this.stage?.driver?.relinquishParameterWrites(
+                            Object.values(this.params).map(meta => meta.id), this.poseOverrideEntry);
+                    }
+                    this.manager.clearTemporaryPoseOverride(this.poseOverrideSource, this.poseOverrideEntry);
+                }
+                this.poseOverrideEntry = null;
             } catch (_) {}
         }
 
@@ -5327,6 +5613,10 @@
             if (!meta) {
                 return;
             }
+            if (this.stage && this.stageSession && typeof this.stage.driver.ownsSession === 'function') {
+                if (!this.stage.driver.ownsSession(this.stageSession)) return;
+                this.stage.driver.trackParameterWrites([meta.id], this.poseOverrideEntry || this.stageSession);
+            }
             const current = readParam(this.coreModel, meta);
             const blended = lerp(current, targetValue, weight);
             writeParam(this.coreModel, meta, blended);
@@ -5345,7 +5635,8 @@
         }
 
         applyTemporaryPose(coreModel) {
-            if (!this.active || coreModel !== this.coreModel || !this.isCurrentModel()) {
+            if (!this.active || coreModel !== this.coreModel || !this.isCurrentModel() || !this.isStageOwner()
+                || (this.poseOverrideEntry && this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== this.poseOverrideEntry)) {
                 return;
             }
             this.applyPose(this.currentPose || this.computeNeutralPose(), 1);
@@ -5365,7 +5656,8 @@
                     this.stageSession = this.stage.acquire('home-yui-guide-intro-voice-look-at', {
                         priority: YUI_GUIDE_PERFORMANCE_PRIORITY,
                         force: true,
-                        capabilities: this.performanceLockCapabilities.slice()
+                        capabilities: this.performanceLockCapabilities.slice(),
+                        paramIds: Object.values(this.params).map(meta => meta.id)
                     });
                 } catch (_) {
                     this.stageSession = null;
@@ -5485,7 +5777,7 @@
             if (!this.active) {
                 return;
             }
-            if (this.isCancelled() || !this.isCurrentModel()) {
+            if (this.isCancelled() || !this.isCurrentModel() || !this.isStageOwner()) {
                 this.stop('cancelled');
                 return;
             }
@@ -5495,11 +5787,16 @@
             }
         }
 
+        isStageOwner() {
+            return !this.stage || !this.stageSession || typeof this.stage.driver.ownsSession !== 'function'
+                || this.stage.driver.ownsSession(this.stageSession);
+        }
+
         async animateReleaseToNeutral() {
             const durationMs = INTRO_VOICE_LOOK_AT_RELEASE_MS;
             if (
                 durationMs <= 0
-                || !this.isCurrentModel()
+                || !this.isCurrentModel() || !this.isStageOwner()
                 || typeof window.requestAnimationFrame !== 'function'
             ) {
                 return;
@@ -5513,7 +5810,7 @@
             const startedAt = performance.now();
             await new Promise((resolve) => {
                 const step = (now) => {
-                    if (!this.isCurrentModel()) {
+                    if (!this.isCurrentModel() || !this.isStageOwner()) {
                         resolve();
                         return;
                     }
@@ -5559,14 +5856,17 @@
             if (!isHandoffStop) {
                 await this.animateReleaseToNeutral();
             }
+            const hadStage = !!(this.stage && this.stageSession);
+            const ownedStage = !hadStage || typeof this.stage.driver.ownsSession !== 'function'
+                || this.stage.driver.ownsSession(this.stageSession);
+            this.clearTemporaryPoseOverride();
             if (this.stage && this.stageSession && this.stageSession.id) {
                 try {
                     this.stage.release(this.stageSession.id, normalizedReason || 'stopped');
                 } catch (_) {}
             }
-            this.clearTemporaryPoseOverride();
-            if (!isHandoffStop) {
-                this.restoreCapturedParams();
+            if (!isHandoffStop && ownedStage && this.isCurrentModel()) {
+                if (!hadStage) this.restoreCapturedParams();
                 if (this.smoothedPoint) {
                     this.applyFocusPoint(this.smoothedPoint);
                 }
@@ -5803,12 +6103,17 @@
         if (!context) {
             return null;
         }
+        const isCurrent = () => context.manager === window.live2dManager
+            && getCurrentLive2DModel(context.manager) === context.model && !context.model.destroyed
+            && context.model.internalModel?.coreModel === context.coreModel;
+        if (!isCurrent()) return null;
         let continuationState = normalizedOptions.continuationState || null;
         if (activeIntroVoiceLookAtSession && activeIntroVoiceLookAtSession.active) {
             if (typeof activeIntroVoiceLookAtSession.getContinuationState === 'function') {
                 continuationState = activeIntroVoiceLookAtSession.getContinuationState();
             }
             await activeIntroVoiceLookAtSession.stop('replaced');
+            if (!isCurrent()) return null;
         }
         const session = new Live2DIntroVoiceLookAtSession(context, {
             document: normalizedOptions.document || document,
@@ -5879,7 +6184,8 @@
             const current = getCurrentLive2DModel(this.manager);
             return current === this.model
                 && current.internalModel
-                && current.internalModel.coreModel === this.coreModel;
+                && current.internalModel.coreModel === this.coreModel
+                && ownsDirectPoseParameters(this);
         }
 
         installTemporaryPoseOverride() {
@@ -5887,11 +6193,15 @@
                 return false;
             }
             try {
-                return this.manager.setTemporaryPoseOverride(
+                const installed = this.manager.setTemporaryPoseOverride(
                     this.poseOverrideSource,
                     this.applyTemporaryPose,
                     { priority: -100 }
                 ) === true;
+                if (installed && this.parameterRestoreState) {
+                    this.parameterRestoreState.poseEntry = this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource);
+                }
+                return installed;
             } catch (_) {
                 return false;
             }
@@ -5902,7 +6212,12 @@
                 return;
             }
             try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+                const state = this.parameterRestoreState;
+                if (state?.poseEntry) {
+                    if (this.manager._temporaryPoseOverrides?.get(this.poseOverrideSource) !== state.poseEntry) state.lost = true;
+                    this.manager.clearTemporaryPoseOverride(this.poseOverrideSource, state.poseEntry);
+                    state.poseRetired = true;
+                }
             } catch (_) {}
         }
 
@@ -5911,6 +6226,13 @@
             if (!meta) {
                 return;
             }
+            if (!ownsDirectPoseParameters(this)) return;
+            const state = this.parameterRestoreState;
+            if (state?.restoring) {
+                restoreDirectPoseParameter(this, meta, targetValue);
+                return;
+            }
+            if (state) state.written.add(meta.id);
             const current = readParam(this.coreModel, meta);
             writeParam(this.coreModel, meta, lerp(current, targetValue, weight));
         }
@@ -5951,6 +6273,7 @@
             if (!this.isCurrentModel()) {
                 return false;
             }
+            beginDirectPoseParameters(this);
             this.active = true;
             this.finished = false;
             this.result = 'playing';
@@ -6042,6 +6365,8 @@
             this.detachTicker();
             await this.animateRelease();
             this.clearTemporaryPoseOverride();
+            Object.values(this.params).forEach(meta => restoreDirectPoseParameter(this, meta, meta.initial, true));
+            retireDirectPoseParameters(this);
             if (activeGuideIdleSwaySession === this) {
                 activeGuideIdleSwaySession = null;
             }
