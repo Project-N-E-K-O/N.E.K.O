@@ -1462,11 +1462,15 @@
         // Note: decoder is NOT reset here.
     }
 
-    // A local handoff must retire both the audible nodes and the rest of their
-    // speech. WebSocket headers use interruptedSpeechId to reject later chunks;
+    // A local handoff must retire accepted audio, including its first chunk
+    // before playback starts. WebSocket headers reject later chunks by speech;
     // the epoch fences blob reads/decodes that already crossed an await.
     function interruptCurrentAssistantSpeech() {
-        if (!S.isPlaying) return false;
+        if (!S.isPlaying) {
+            var turnId = normalizeAssistantTurnId(S.processingAudioBlobTurnId) ||
+                resolveAssistantSpeechCancelTurnId();
+            if (!turnId || isAssistantTurnPlaybackDrained(turnId)) return false;
+        }
         S.interruptedSpeechId = S.currentPlayingSpeechId || null;
         S.pendingDecoderReset = true;
         S.skipNextAudioBlob = false;

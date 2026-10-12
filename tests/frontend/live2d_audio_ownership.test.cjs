@@ -690,6 +690,73 @@ function streamingAudioFixture({ paced = false } = {}) {
 }
 
 for (const paced of [false, true]) {
+    for (const phase of ['header-only', 'blob-read', 'ogg-decode', 'decoder-reset']) {
+        for (const queued of phase === 'header-only' ? [false] : [false, true]) {
+            test(`guide handoff fences the first assistant chunk during ${phase}${queued ? ' with queued continuation' : ''} (${paced ? 'paced timer' : 'rAF'})`, async () => {
+                const f = streamingAudioFixture({ paced });
+                let enteredResolve, release, pending, successorTask;
+                const entered = new Promise(resolve => { enteredResolve = resolve; });
+                const gate = new Promise(resolve => { release = resolve; });
+                const ogg = new Uint8Array([79, 103, 103, 83, 0, 0, 0, 0]).buffer;
+                const decoded = { float32Data: new Float32Array([.2, .3]), sampleRate: 48000 };
+                const result = phase === 'ogg-decode' ? decoded : f.pcm();
+                try {
+                    if (phase === 'decoder-reset') {
+                        f.S.socket.onmessage({ data: JSON.stringify({ type: 'user_activity', interrupted_speech_id: 'previous' }) });
+                        f.window.resetOggOpusDecoder = () => { enteredResolve(); return gate; };
+                    }
+                    if (phase === 'ogg-decode') f.context.decodeOggOpusChunk = () => { enteredResolve(); return gate; };
+                    f.header('assistant');
+                    if (phase !== 'header-only') {
+                        pending = f.blob(() => {
+                            if (phase === 'blob-read') { enteredResolve(); return gate; }
+                            return Promise.resolve(phase === 'ogg-decode' ? ogg : f.pcm());
+                        });
+                        await entered;
+                        assert.equal(f.S.processingAudioBlobTurnId, 'assistant');
+                        if (queued) {
+                            // Another accepted chunk queues behind the first, before any source exists.
+                            f.header('assistant'); await f.blob();
+                        }
+                        assert.equal(f.S.incomingAudioBlobQueue.length, queued ? 1 : 0);
+                    } else {
+                        assert.equal(f.S.pendingAudioChunkMetaQueue.length, 1);
+                    }
+                    assert.equal(f.S.isPlaying, false);
+                    assert.equal(f.sources.length, 0);
+                    const epoch = f.S.incomingAudioEpoch;
+                    const session = f.handoff();
+                    assert.ok(session?.mouthOwner);
+                    assert.equal(f.S.interruptedSpeechId, 'assistant');
+                    assert.ok(f.S.incomingAudioEpoch > epoch);
+                    assert.equal(f.S.pendingAudioChunkMetaQueue.length, 0);
+                    assert.equal(f.S.incomingAudioBlobQueue.length, 0);
+                    f.header('assistant'); await f.blob();
+                    release(result);
+                    if (pending) await pending;
+                    assert.equal(f.sources.length, 0, 'neither the first chunk nor its queued continuation may publish');
+                    assert.equal(f.S.isPlaying, false);
+                    assert.equal(f.window.LanLan1.setMouth(.5, session.mouthOwner), true);
+                    assert.equal(f.signals.filter(signal => signal.action === 'voice_play_start').length, 0);
+                    f.queue.stopGuideMouthMotion(session);
+                    f.header('assistant'); await f.blob();
+                    assert.equal(f.sources.length, 0, 'guide end does not revive the first chunk');
+                    f.window.resetOggOpusDecoder = async () => {};
+                    f.header('successor'); successorTask = f.blob(); await successorTask;
+                    assert.equal(f.sources.length, 1);
+                    assert.equal(f.sources[0]._nekoSpeechId, 'successor');
+                    assert.equal(f.S.pendingDecoderReset, false);
+                    assert.equal(f.S.decoderResetPromise, null);
+                } finally {
+                    release(result);
+                    if (pending) await pending;
+                    if (successorTask) await successorTask;
+                    await f.cleanup();
+                }
+            });
+        }
+    }
+
     test(`guide handoff rejects remaining chunks of the interrupted speech but accepts a new speech (${paced ? 'paced timer' : 'rAF'})`, async () => {
         const f = streamingAudioFixture({ paced });
         try {
@@ -823,6 +890,40 @@ test('Live2D guide with an idle assistant does not alter interruption state', as
         assert.equal(f.window.LanLan1.setMouth(.5, session.mouthOwner), true);
     } finally { await f.cleanup(); }
 });
+
+for (const state of ['cancelled', 'cancelled-in-flight', 'skipped-header', 'text-only']) {
+    test(`guide handoff preserves ${state} audio state without accepted work`, async () => {
+        const f = streamingAudioFixture();
+        let enteredResolve, release, pending;
+        const entered = new Promise(resolve => { enteredResolve = resolve; });
+        const gate = new Promise(resolve => { release = resolve; });
+        try {
+            f.header('previous');
+            if (state === 'cancelled-in-flight') {
+                pending = f.blob(() => { enteredResolve(); return gate; });
+                await entered;
+            }
+            f.S.socket.onmessage({ data: JSON.stringify({ type: 'user_activity', interrupted_speech_id: 'previous' }) });
+            if (state === 'skipped-header') f.header('previous');
+            if (state === 'text-only') {
+                f.S.socket.onmessage({ data: JSON.stringify({ type: 'gemini_response', isNewMessage: true, turn_id: 'text-only', text: 'hello' }) });
+                assert.equal(f.S.assistantTurnId, 'text-only');
+            }
+            const before = [f.S.interruptedSpeechId, f.S.incomingAudioEpoch, f.S.pendingDecoderReset];
+            assert.equal(f.S.currentPlayingSpeechId, 'previous', 'the last speech ID alone is not accepted audio');
+            assert.equal(f.S.pendingDecoderReset, true, 'a reset latch alone is not accepted audio');
+            const session = f.handoff();
+            assert.ok(session?.mouthOwner);
+            assert.deepEqual([f.S.interruptedSpeechId, f.S.incomingAudioEpoch, f.S.pendingDecoderReset], before);
+            assert.equal(f.S.isPlaying, false);
+            assert.equal(f.sources.length, 0);
+        } finally {
+            release(f.pcm());
+            if (pending) await pending;
+            await f.cleanup();
+        }
+    });
+}
 
 test('viewer adapters fence decode completion and late end after clear', async () => {
     const f = fixture();
