@@ -3506,6 +3506,40 @@ async def test_partial_replay_does_not_mark_the_request_subject_through_a_higher
     assert retry.get("duplicate") is None and _facts_of(env, GROUP) == []
 
 
+async def test_unfenced_wire_routed_into_the_forgotten_subject_is_marked_without_staging(env):
+    idem = env.idem
+    await idem.update_key(NAME, KEY_SEGMENTS, idem.transition(
+        "pending",
+        request={"shape": "segments", "wire_keys": [GROUP_KEY, PART_KEY], "content_hash": "h"},
+        routed_keys=[GROUP_KEY], routed_positions=[GROUP_KEY, GROUP_KEY],
+        epochs={GROUP_KEY: 5},
+    ))
+    # 只有记录、没有暂存：GROUP 这个 wire 够新，PART 早已解绑、不在扇出里，却按位置路由进了 GROUP
+    await env.routes._cancel_staged_writes_for_subjects(
+        NAME, {GROUP_KEY}, request_subject_key=GROUP_KEY, forget_epoch=5,
+    )
+    record = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_SEGMENTS]
+    # 不能因为 GROUP 够新就整条放过：经路由写进被清 subject 的 PART 必须记下，重试时丢掉它那段
+    assert record["state"] == "pending"
+    assert record.get("forgotten_keys") == [PART_KEY]
+
+
+async def test_tombstones_are_raised_per_key_at_their_own_epochs(env):
+    idem = env.idem
+    await idem.record_tombstone_epochs(NAME, {GROUP_KEY: 7, PART_KEY: 2})
+    await idem.record_tombstone_epochs(NAME, {GROUP_KEY: 3, PART_KEY: 4})
+    rows = _tombstones(env)
+    # 各 key 各自单调：GROUP 不被较小的 3 拉低，PART 被抬到 4，互不影响
+    assert rows[GROUP_KEY]["forget_epoch"] == 7 and rows[PART_KEY]["forget_epoch"] == 4
+    path = Path(idem.tombstones_path(NAME))
+    damaged = {**rows, GP_KEY: {"forget_epoch": "9"}}
+    path.write_text(json.dumps(damaged), encoding="utf-8")
+    await idem.record_tombstone_epochs(NAME, {GP_KEY: 1, PART_KEY: 5})
+    rows = _tombstones(env)
+    # 坏行原样保留（读路径对它 fail closed），同一次写入里的其它 key 照常抬高
+    assert rows[GP_KEY] == {"forget_epoch": "9"} and rows[PART_KEY]["forget_epoch"] == 5
+
+
 def test_damaged_routed_positions_fall_back_to_the_routed_keys(env):
     record = {
         "request": {"wire_keys": [PART_KEY]},

@@ -4850,10 +4850,13 @@ def _stale_record_marks(record: dict, subject_keys: set[str], fences: dict[str, 
     Position by position (the record keeps the wire keys and, aligned with
     them, ``routed_positions``): a position touching a forgotten subject
     through its wire or its routed destination is marked by its WIRE key,
-    unless that wire was started after its own fence. Marking the wire drops
-    exactly that segment on the retry and leaves a fresh wire routed to the
-    same destination alone. A record without aligned positions (older
-    records) also marks the forgotten routed keys, as before.
+    unless that wire was started after its own fence. The retry drops every
+    segment whose wire OR routed destination is a marked key, so marking the
+    wire (not the shared destination) spares a fresh wire routed to the same
+    forgotten subject; a fresh wire routed onto a stale wire's own key is
+    still dropped (over-dropping, never under-erasing). A record without
+    aligned positions (older records) also marks the forgotten routed keys,
+    as before.
     """
     request = record.get("request")
     raw_wires = request.get("wire_keys") if isinstance(request, dict) else None
@@ -5250,14 +5253,13 @@ async def _cancel_staged_writes_for_subjects(
         peek_touched = _staged_subject_keys(peek) | set(wire_keys) if peek is not None else set(wire_keys)
         if not subject_keys.intersection(peek_touched):
             return
-        if peek is None and _staged_after_forget(
-            {"wire_keys": wire_only, "epochs": record.get("epochs") or {}}, subject_keys, fences,
-        ):
-            # 还没有暂存、但记录里的请求代数说明它是知道这次清除之后才发起的：合法的新写入
-            return
         # 没有暂存时只能按记录逐个位置判断：早于自己围栏的 wire 才记进 forgotten_keys，
-        # 够新的 wire 留给重试照常写入（不能把整个请求归成一个布尔值一起丢）
+        # 够新的 wire 留给重试照常写入（不能把整个请求归成一个布尔值一起丢）。经路由写进被清
+        # subject、本身没有围栏的 wire 也按位置算进来，不能只看 wire 本身是不是被清的 key
         stale_marks = _stale_record_marks(record, subject_keys, fences)
+        if peek is None and not stale_marks:
+            # 还没有暂存、也没有早于围栏的位置：全是知道这次清除之后才发起的合法新写入
+            return
         def _mark_forgotten(touched: set[str]):
             def _mark(old, touched=touched):
                 if old is None or old.get("state") != idempotency.KEY_STATE_PENDING:
@@ -5558,13 +5560,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                 # 取消暂存按已在位的有效围栏比，不按这次（可能是陈旧重放的）较低代数：早于围栏的
                 # 暂存都该取消
                 effective_fence = fence_at_start
-            for target_key in list(effective_fanout_fences):
-                fence = _recorded_fence(recorded, target_key)
-                if fence is None:
-                    continue
-                fanout_fence_at_start[target_key] = fence
-                if fence > effective_fanout_fences[target_key]:
-                    effective_fanout_fences[target_key] = fence
+            _raise_fanout_fences(recorded, effective_fanout_fences, fanout_fence_at_start)
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:
@@ -5660,14 +5656,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                 if fence is not None and (fence_at_start is None or fence > fence_at_start):
                     fence_at_start = fence
                     effective_fence = max(effective_fence, fence)
-                for target_key in list(effective_fanout_fences):
-                    fence = _recorded_fence(fences_now, target_key)
-                    if fence is None:
-                        continue
-                    if fence > fanout_fence_at_start.get(target_key, -1):
-                        fanout_fence_at_start[target_key] = fence
-                    if fence > effective_fanout_fences[target_key]:
-                        effective_fanout_fences[target_key] = fence
+                _raise_fanout_fences(fences_now, effective_fanout_fences, fanout_fence_at_start)
         # ALL tombstones open before ANY erase.
         for target in erase_targets:
             await runtime.fact_store.abegin_subject_forget(lanlan_name, target)
@@ -5907,6 +5896,18 @@ def _erase_subject_keys(subject, targets, erase_targets, forgotten_subject_keys:
     if len(erase_targets) == len(targets):
         return set(forgotten_subject_keys)
     return {subject.key} | {target.key for target in erase_targets}
+
+
+def _raise_fanout_fences(tombstones, effective: dict[str, int], at_start: dict[str, int]) -> None:
+    """Raise each fan-out target's fences to the tombstone epoch now stored for it (never lowers)."""
+    for target_key in list(effective):
+        fence = _recorded_fence(tombstones, target_key)
+        if fence is None:
+            continue
+        if fence > at_start.get(target_key, -1):
+            at_start[target_key] = fence
+        if fence > effective[target_key]:
+            effective[target_key] = fence
 
 
 def _recorded_fence(recorded, subject_key: str) -> int | None:

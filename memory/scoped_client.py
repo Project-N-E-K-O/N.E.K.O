@@ -437,11 +437,16 @@ class ScopedMemoryClient:
         Opting in means the server refuses (HTTP 409, nothing erased) a map
         that misses a fan-out target; that answer raises
         :class:`ForgetTargetEpochsRequired` carrying the missing keys, so the
-        caller can bump those counters and resend.
+        caller can bump those counters and resend. ``target_epochs`` without
+        ``forget_epoch`` raises ``ValueError`` (the server always refuses it).
 
         ``True`` only when the server confirms ``status: "forgotten"``; a
         truncated, non-JSON or wrong-shaped 2xx body is a failed erase.
         """
+        if target_epochs is not None and forget_epoch is None:
+            # 服务端对这种请求固定回 422：按普通失败返回 False 的话，撤销流程会一直重试一个
+            # 永远不会成功的请求。这是调用方的编程错误，直接抛出
+            raise ValueError("target_epochs requires forget_epoch")
         body: dict[str, Any] = {"subject": subject}
         if forget_epoch is not None:
             body["forget_epoch"] = forget_epoch

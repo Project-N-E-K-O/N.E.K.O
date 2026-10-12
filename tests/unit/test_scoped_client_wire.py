@@ -577,6 +577,17 @@ async def test_opted_in_forget_refused_for_missing_targets_raises_with_the_keys(
 
 
 @pytest.mark.asyncio
+async def test_target_epochs_without_forget_epoch_is_a_caller_error():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    async with http:
+        with pytest.raises(ValueError):
+            await client.post_forget("Lanlan", subject=_SUBJECT, target_epochs={"participant:neko_visit:p1": 1})
+    # 服务端必回 422 的请求不发出去：否则撤销流程把它当普通失败一直重试
+    assert recorder.requests == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("opt_in, payload", [
     (False, _MISSING_TARGETS),
     (True, {"detail": "some other conflict"}),
