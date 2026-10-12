@@ -375,6 +375,70 @@ test('natural source end waits for audio_done; normal finish releases the owner'
     assert.equal(f.frames.size, 0);
 });
 
+for (const termination of ['socket_close', 'session_ended_by_server']) {
+    for (const paced of [false, true]) {
+        test(`real ${termination} clears overlapping audio/text turns (${paced ? 'paced timer' : 'rAF'})`, async () => {
+            const f = fixture({ paced });
+            class Socket {
+                static OPEN = 1;
+                constructor(url) { this.url = url; this.readyState = 1; }
+                send() {}
+            }
+            f.context.WebSocket = Socket;
+            f.context.Blob = Blob;
+            f.context.Node = { ELEMENT_NODE: 1 };
+            f.window.t = key => key;
+            f.window.location.protocol = 'http:';
+            f.window.location.host = 'localhost:48911';
+            f.window.lanlan_config.lanlan_name = '';
+            f.run('static/app/app-websocket.js');
+            f.window.appWebSocket.connectWebSocket();
+            const source = f.schedule('audio-turn');
+            const oldFrame = [...f.frames.values()][0];
+            f.S.assistantTurnId = null;
+            f.S.assistantPendingTurnServerId = 'text-turn';
+            f.S.assistantTurnAwaitingBubble = true;
+            f.window.appWebSocket.ensureAssistantTurnStarted('gemini_response_first_chunk', 'text-turn');
+            assert.equal(f.S.assistantTurnId, 'text-turn');
+            assert.equal(f.S.assistantSpeechActiveTurnId, 'audio-turn');
+            const cancellations = [];
+            f.window.addEventListener('neko-assistant-speech-cancel', event => cancellations.push(event.detail));
+            const socket = f.S.socket;
+            const epoch = f.S.incomingAudioEpoch;
+            try {
+                if (termination === 'socket_close') socket.onclose();
+                else await socket.onmessage({ data: JSON.stringify({ type: termination }) });
+                assert.equal(cancellations[0].source, termination);
+                assert.equal(cancellations[0].turnId, 'text-turn', 'reproduce the reviewed ID mismatch');
+                assert.ok(cancellations.some(event => event.source === 'clear_audio_queue'),
+                    'the full disconnect path must reach its production queue cleanup');
+                assert.equal(f.S.isPlaying, false);
+                assert.equal(f.S.lipSyncActive, false);
+                assert.equal(f.manager.hasActiveLipSync(), false);
+                assert.equal(f.frames.size, 0);
+                assert.equal(f.S.scheduledSources.length, 0);
+                assert.equal(source.stopped, true);
+                assert.equal(source.disconnected, true);
+                assert.equal(f.S.assistantTurnCompletedId, null);
+                assert.equal(f.S.assistantSpeechActiveTurnId, null);
+                assert.ok(f.S.incomingAudioEpoch > epoch);
+                assert.equal(f.window.NekoSpeechPlaybackState.active, false);
+                f.schedule('successor');
+                const published = f.window.NekoSpeechPlaybackState;
+                oldFrame();
+                source.onended();
+                assert.equal(f.window.NekoSpeechPlaybackState, published);
+                assert.equal(f.S.isPlaying, true);
+                assert.equal(f.manager.hasActiveLipSync(), true);
+                assert.equal(f.frames.size, 1);
+            } finally {
+                f.window.appWebSocket.cancelAutoReconnect();
+                await f.window.appAudioPlayback.clearAudioQueue();
+            }
+        });
+    }
+}
+
 test('audio still finalizes after avatar change retired its Live2D sampler', () => {
     const f = fixture();
     const source = f.schedule();

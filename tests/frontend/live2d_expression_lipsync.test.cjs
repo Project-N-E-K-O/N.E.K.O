@@ -252,6 +252,111 @@ test('soft-clear cancelled by model replacement does not reset the new model', a
     assert.equal(manager.currentModel.writes.length, 0);
 });
 
+test('real tutorial cleanup completes one fade and resets tracked motion parameters', async () => {
+    const { manager, context, advance } = fixture();
+    const model = manager.currentModel;
+    let stopped = 0;
+    model.internalModel.motionManager.stopAllMotions = () => { stopped++; };
+    manager._setActiveMotionParamIds(new Set(['ParamAngleX']));
+    model.values[2] = 25;
+    manager.speaking = true;
+    resident(manager);
+    await manager.applyPersistentExpressionsNative();
+    const persistentTasks = [];
+    const applyPersistent = manager.applyPersistentExpressionsNative;
+    manager.applyPersistentExpressionsNative = function (...args) {
+        const task = applyPersistent.apply(this, args);
+        persistentTasks.push(task);
+        return task;
+    };
+    context.window.live2dManager = manager;
+    context.window.__YuiGuideDirector = {};
+    vm.runInContext(fs.readFileSync(path.resolve(__dirname,
+        '../../static/tutorial/yui-guide/director/emotion-bridge.js'), 'utf8'), context);
+    const bridge = new context.window.__YuiGuideDirector.YuiGuideEmotionBridge();
+    const softClear = manager.softClearEmotionEffects;
+    let cleanup;
+    manager.softClearEmotionEffects = function (options) {
+        cleanup = softClear.call(this, options);
+        return cleanup;
+    };
+    try {
+        bridge.clear();
+        assert.ok(cleanup, 'the production model-type entry must reach soft clear');
+        assert.equal(stopped, 1);
+        assert.equal(model.internalModel.listenerCount('beforeModelUpdate'), 1);
+        model.internalModel.emit('beforeModelUpdate');
+        model.values[0] = 0.2; // the next core frame no longer contains the transient shape
+        model.internalModel.emit('beforeModelUpdate');
+        advance(219);
+        model.internalModel.emit('beforeModelUpdate');
+        assert.ok(manager._smoothResetListener, 'the fade lasts the requested 220ms');
+        advance(220);
+        model.values[0] = 0.2;
+        model.internalModel.emit('beforeModelUpdate');
+        assert.equal(await cleanup, true, 'tutorial cleanup must retain its reset generation');
+        await Promise.all(persistentTasks);
+        assert.equal(model.values[2], 0, 'actual angle returns to its recorded baseline');
+        assert.equal(manager._activeMotionParamIds, null);
+        assert.ok(Math.abs(model.values[0] + 0.4) < 1e-12, 'resident mouth form survives cleanup');
+        assert.equal(model.values[1], 0.6, 'speech retains mouth opening');
+        assert.equal(model.internalModel.listenerCount('beforeModelUpdate'), 0);
+    } finally {
+        manager._cancelSmoothReset();
+        if (cleanup) await cleanup;
+        await Promise.all(persistentTasks);
+        manager.teardownPersistentExpressions();
+    }
+});
+
+test('new expression still supersedes tutorial cleanup without resetting its motion state', async () => {
+    const { manager, context } = fixture();
+    manager._setActiveMotionParamIds(new Set(['ParamAngleX']));
+    context.window.live2dManager = manager;
+    context.window.__YuiGuideDirector = {};
+    vm.runInContext(fs.readFileSync(path.resolve(__dirname,
+        '../../static/tutorial/yui-guide/director/emotion-bridge.js'), 'utf8'), context);
+    const bridge = new context.window.__YuiGuideDirector.YuiGuideEmotionBridge();
+    const softClear = manager.softClearEmotionEffects;
+    let cleanup;
+    manager.softClearEmotionEffects = function (options) {
+        cleanup = softClear.call(this, options);
+        return cleanup;
+    };
+    try {
+        bridge.clear();
+        assert.equal(await manager.playExpression('happy', 'happy.exp3.json'), true);
+        manager.currentModel.values[2] = 15;
+        assert.equal(await cleanup, false);
+        assert.equal(manager.currentModel.values[2], 15);
+        assert.ok(manager._activeMotionParamIds.has('ParamAngleX'));
+        assert.ok(manager._manualExpressionListener);
+    } finally {
+        manager._cancelSmoothReset();
+        manager._removeManualExpressionOverride();
+        if (cleanup) await cleanup;
+    }
+});
+
+for (const fallback of ['smooth', 'expression', 'motion-and-smooth']) {
+    test(`tutorial cleanup retains the legacy ${fallback} fallback`, () => {
+        const { context } = fixture();
+        const calls = [];
+        const manager = {};
+        if (fallback === 'expression') manager.clearExpression = () => calls.push('expression');
+        else manager.smoothResetToInitialState = duration => calls.push(duration);
+        if (fallback === 'motion-and-smooth') manager.clearEmotionEffects = () => calls.push('motion');
+        context.window.live2dManager = manager;
+        context.window.__YuiGuideDirector = {};
+        vm.runInContext(fs.readFileSync(path.resolve(__dirname,
+            '../../static/tutorial/yui-guide/director/emotion-bridge.js'), 'utf8'), context);
+        const bridge = new context.window.__YuiGuideDirector.YuiGuideEmotionBridge();
+        assert.equal(bridge.clearLive2DGuidePresentation(), true);
+        assert.deepEqual(calls, fallback === 'expression' ? ['expression']
+            : fallback === 'motion-and-smooth' ? ['motion', 220] : [220]);
+    });
+}
+
 test('new expression cancels an old fade even when no transient expression was marked active', async () => {
     const { manager } = fixture();
     const fade = manager.softClearEmotionEffects({ duration: 100 });
