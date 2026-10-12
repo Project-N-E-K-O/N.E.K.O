@@ -1423,6 +1423,69 @@ def test_screen_source_subwindow_closes_when_parent_popup_hides(
 
 
 @pytest.mark.frontend
+def test_screen_subwindow_is_reused_when_row_hover_returns(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    device = page.locator('[data-neko-mic-main-action="device"]')
+    screen.hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    device.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'device';
+        }"""
+    )
+    assert page.evaluate("window.__screenRenderOptions.length") == 1
+    screen.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'screen';
+        }"""
+    )
+    # Row-to-row round trips reattach the cached screen panel instead of
+    # rebuilding it: the enumeration must not run a second time.
+    assert page.evaluate("window.__screenRenderOptions.length") == 1
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.locator(".screen-source-option").count() == 1
+
+
+@pytest.mark.frontend
+def test_screen_subwindow_survives_menu_edge_grazing(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    screen.hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    panel = page.locator(".neko-mic-subwindow")
+    # The toolbar keeps drifting under a resting pointer (model breathing and
+    # mouse tracking), so panel↔menu boundary crossings happen while the user
+    # is only wiggling near the row. Round trips must not close the panel,
+    # and the reopened panel must not re-enumerate.
+    for _ in range(3):
+        panel.hover()
+        page.wait_for_timeout(80)
+        screen.hover()
+        page.wait_for_timeout(80)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate("window.__screenRenderOptions.length") == 1
+    # Settling on a non-action menu area still dismisses it.
+    page.locator(".mic-gain-container").hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+
+
+@pytest.mark.frontend
 def test_playback_device_action_position_and_pseudo_device_filtering(
     page: Page,
 ) -> None:

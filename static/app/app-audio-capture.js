@@ -4377,13 +4377,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             leftColumn.appendChild(volumeContainer);
 
             var MIC_ACTION_HOVER_COLLAPSE_MS = 260;
-            var MIC_ACTION_HOVER_BRIDGE_MS = 900;
+            var MIC_ACTION_HOVER_KEEP_ZONE_PX = 16;
+            var MIC_SCREEN_RETURN_CLOSE_DELAY_MS = 220;
             var activeMicActionKey = null;
             var micActionHoverCollapseTimer = null;
             var micActionHoverOpenGeneration = 0;
             var micHoverPointer = null;
             var micHoverPointerTracking = false;
             var micPopupLayout = null;
+            var micScreenReturnCloseTimer = null;
+            var micScreenReturnPointer = null;
+            var micScreenReturnTracking = false;
+            var cachedScreenMicSubwindow = null;
 
             function rememberMicHoverPointer(event) {
                 micHoverPointer = { x: event.clientX, y: event.clientY };
@@ -4395,6 +4400,9 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 micHoverPointerTracking = false;
             }
 
+            // 行↔面板的过渡走廊：面板可能被按钮禁区推离菜单（间隔较宽），
+            // 用梯形连接两者的相对边，覆盖横穿途中的停留。与包围盒不同，
+            // 梯形不会把远处的空白区也判定为悬停。
             function isPointerInMicHoverBridge() {
                 var panel = getOwnedMicSubwindow();
                 var action = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]');
@@ -4402,9 +4410,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 var a = action.getBoundingClientRect();
                 var b = panel.getBoundingClientRect();
                 var p = micHoverPointer;
-                var padding = 8;
-                // A narrow trapezoid joins the facing edges. Unlike a bounding
-                // rectangle, it does not keep a remote blank area active.
+                var padding = MIC_ACTION_HOVER_KEEP_ZONE_PX;
                 function between(value, start, end) { return value >= start && value <= end; }
                 function corridor(value, cross, start, end, lowStart, highStart, lowEnd, highEnd) {
                     if (!between(value, start - padding, end + padding)) return false;
@@ -4419,11 +4425,97 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return false;
             }
 
+            // 悬停保持判定：指针停在语音菜单本体上、贴着子面板（外扩一圈，
+            // 覆盖菜单漂移时的边缘停留）、或仍在行↔面板的过渡走廊里，一律
+            // 视为仍在悬停。菜单会随模型呼吸/鼠标跟随在指针下方持续漂移，
+            // 布局变化会让浏览器补发合成的 mouseleave；行间移动或停回菜单
+            // 留白处也不是「离开」——面板跟随菜单会话，指针移出后才收起。
+            function isPointerInMicHoverKeepZone() {
+                if (!micHoverPointer) return false;
+                var panel = getOwnedMicSubwindow();
+                if (!panel || !panel.isConnected) return false;
+                if (micPopup.isConnected && micHoverPointInRect(micHoverPointer, micPopup.getBoundingClientRect())) {
+                    return true;
+                }
+                var pad = MIC_ACTION_HOVER_KEEP_ZONE_PX;
+                var rect = panel.getBoundingClientRect();
+                if (micHoverPointInRect(micHoverPointer, {
+                    left: rect.left - pad,
+                    right: rect.right + pad,
+                    top: rect.top - pad,
+                    bottom: rect.bottom + pad
+                })) {
+                    return true;
+                }
+                return isPointerInMicHoverBridge();
+            }
+
             function getOwnedMicSubwindow() {
                 var ownerSelector = micPopup.id
                     ? '[data-neko-sidepanel-owner="' + micPopup.id + '"].neko-mic-subwindow'
                     : '.neko-mic-subwindow';
                 return document.querySelector(ownerSelector);
+            }
+
+            function isScreenMicSubwindowReusable(panel) {
+                if (!panel || panel.dataset.nekoMicActionKey !== 'screen') return false;
+                var list = panel.querySelector('.neko-mic-popup-screen-sources');
+                if (!list) return false;
+                // 枚举中途被切走的「加载中」面板不复用：那次枚举会在面板
+                // 脱离文档后放弃，复用会把加载态永久定格。
+                return !!(
+                    list.querySelector('.screen-source-option')
+                    || list.querySelector('[data-neko-screen-source-deferred-load]')
+                );
+            }
+
+            function discardCachedScreenMicSubwindow() {
+                if (cachedScreenMicSubwindow) {
+                    cachedScreenMicSubwindow.remove();
+                    cachedScreenMicSubwindow = null;
+                }
+            }
+
+            function cacheScreenMicSubwindow(panel) {
+                // 屏幕源枚举是所有子面板里最重的一步。行间来回悬停会反复
+                // 拆掉屏幕面板，每次拆掉都触发整轮重新枚举（加载中 → 列表
+                // → 缩略图），看起来就是不停闪烁刷新。这里把已渲染完的屏
+                // 幕面板节点摘下来留用，回到屏幕行时原样复用。
+                if (!isScreenMicSubwindowReusable(panel)) return false;
+                discardCachedScreenMicSubwindow();
+                cachedScreenMicSubwindow = panel;
+                panel.remove();
+                return true;
+            }
+
+            function takeCachedScreenMicSubwindow() {
+                var panel = cachedScreenMicSubwindow;
+                cachedScreenMicSubwindow = null;
+                return panel;
+            }
+
+            function cancelMicScreenReturnCloseTimer() {
+                if (micScreenReturnCloseTimer) {
+                    clearTimeout(micScreenReturnCloseTimer);
+                    micScreenReturnCloseTimer = null;
+                }
+                if (micScreenReturnTracking) {
+                    document.removeEventListener('pointermove', rememberMicScreenReturnPointer, true);
+                    micScreenReturnTracking = false;
+                }
+            }
+
+            function rememberMicScreenReturnPointer(event) {
+                micScreenReturnPointer = { x: event.clientX, y: event.clientY };
+            }
+
+            // 几何命中：指针点位是否落在矩形内（不依赖 :hover——无头环境不维护）。
+            function micHoverPointInRect(point, rect) {
+                return !!(
+                    point && rect
+                    && point.x >= rect.left && point.x <= rect.right
+                    && point.y >= rect.top && point.y <= rect.bottom
+                );
             }
 
             function clearMicActionHoverCollapseTimer() {
@@ -4447,8 +4539,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             function closeMicSubwindow() {
                 clearMicActionHoverCollapseTimer();
+                cancelMicScreenReturnCloseTimer();
                 micActionHoverOpenGeneration += 1;
                 activeMicActionKey = null;
+                discardCachedScreenMicSubwindow();
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
                     if (micPopupLayout) micPopupLayout.setPanel(null);
@@ -4468,14 +4562,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (event) rememberMicHoverPointer(event);
                 micHoverPointerTracking = true;
                 document.addEventListener('pointermove', rememberMicHoverPointer, true);
-                var bridgeStartedAt = Date.now();
                 function attemptCollapse() {
                     micActionHoverCollapseTimer = null;
                     if (isMicActionHoverSurfaceActive()) {
                         stopMicHoverPointerTracking();
                         return;
                     }
-                    if (isPointerInMicHoverBridge() && Date.now() - bridgeStartedAt < MIC_ACTION_HOVER_BRIDGE_MS) {
+                    // 指针仍贴着行/面板（含过渡缝隙）就不算离开：每次复查都
+                    // 重新取实时指针位置和实时矩形，真正移出的下一个动作会
+                    // 立即关闭。原先按 mouseleave 起算的固定宽限会在用户中途
+                    // 停顿、或菜单随模型呼吸在指针下漂移时把面板收走，表现为
+                    // 「悬停展开后一停就关」。
+                    if (isPointerInMicHoverKeepZone()) {
                         micActionHoverCollapseTimer = setTimeout(attemptCollapse, 90);
                         return;
                     }
@@ -4489,16 +4587,40 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 micActionHoverCollapseTimer = setTimeout(attemptCollapse, MIC_ACTION_HOVER_COLLAPSE_MS);
             }
 
-            leftColumn.addEventListener('mouseenter', function () {
+            leftColumn.addEventListener('mouseenter', function (event) {
                 if (activeMicActionKey !== 'screen') return;
                 var panel = getOwnedMicSubwindow();
                 if (!panel || !panel.isConnected) return;
-                closeMicSubwindow();
-                leftColumn.querySelectorAll(
-                    '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
-                ).forEach(function (surface) {
-                    surface.style.background = 'transparent';
-                });
+                // 从屏幕子面板回到菜单本体的瞬间，指针常常只是路过边缘：
+                // 屏幕行贴着菜单边，工具栏还随模型呼吸持续微动，边界会在
+                // 指针下来回扫。立即关闭会让紧接着的行 hover 重新走一遍
+                // 「拆面板 → 重开」，延迟一拍再关，期间落回屏幕行或子面板
+                // 则取消。
+                cancelMicScreenReturnCloseTimer();
+                rememberMicScreenReturnPointer(event);
+                if (!micScreenReturnTracking) {
+                    document.addEventListener('pointermove', rememberMicScreenReturnPointer, true);
+                    micScreenReturnTracking = true;
+                }
+                micScreenReturnCloseTimer = setTimeout(function () {
+                    cancelMicScreenReturnCloseTimer();
+                    if (voiceControlsDisposed || activeMicActionKey !== 'screen') return;
+                    var currentPanel = getOwnedMicSubwindow();
+                    if (!currentPanel || !currentPanel.isConnected) return;
+                    // 用实时指针位置做几何判定：指针已回到面板或屏幕行上一律
+                    // 不关；真正停回菜单留白处才算「回到菜单」，关闭面板。
+                    if (micHoverPointInRect(micScreenReturnPointer, currentPanel.getBoundingClientRect())) return;
+                    var screenRow = leftColumn.querySelector('[data-neko-mic-main-action-row="screen"]')
+                        || leftColumn.querySelector('[data-neko-mic-main-action="screen"]');
+                    if (screenRow && micHoverPointInRect(micScreenReturnPointer, screenRow.getBoundingClientRect())) return;
+                    if (!micHoverPointInRect(micScreenReturnPointer, leftColumn.getBoundingClientRect())) return;
+                    closeMicSubwindow();
+                    leftColumn.querySelectorAll(
+                        '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
+                    ).forEach(function (surface) {
+                        surface.style.background = 'transparent';
+                    });
+                }, MIC_SCREEN_RETURN_CLOSE_DELAY_MS);
             });
 
             function wireMicSubwindowHoverBridge(panel) {
@@ -4612,14 +4734,19 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 }
             }
 
-            function createMicSubwindow(title, iconText, width) {
-                // Keep activeMicActionKey; only tear down the previous DOM panel.
-                clearMicActionHoverCollapseTimer();
+            function teardownOwnedMicSubwindows() {
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
                     if (micPopupLayout) micPopupLayout.setPanel(null);
-                    panel.remove();
+                    if (!cacheScreenMicSubwindow(panel)) panel.remove();
                 });
+            }
+
+            function createMicSubwindow(title, iconText, width) {
+                // Keep activeMicActionKey; only tear down the previous DOM panel.
+                clearMicActionHoverCollapseTimer();
+                cancelMicScreenReturnCloseTimer();
+                teardownOwnedMicSubwindows();
                 var panel = document.createElement('div');
                 panel.className = 'neko-mic-subwindow';
                 if (micPopup.id) panel.setAttribute('data-neko-sidepanel-owner', micPopup.id);
@@ -5124,6 +5251,26 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             async function openScreenSourceSubwindow(triggerEvent) {
+                // 同一次语音菜单会话内复用已渲染的屏幕面板：行间来回悬停
+                // 不再重新枚举。点 × 或重开菜单（closeMicSubwindow）会丢弃
+                // 缓存，下次打开仍然重新枚举拿到新鲜列表。
+                var cached = takeCachedScreenMicSubwindow();
+                if (cached) {
+                    // 复用前先拆掉当前打开的其他子面板，否则两块面板会同时挂
+                    // 在文档上（createMicSubwindow 的拆除逻辑被缓存路径绕开）。
+                    teardownOwnedMicSubwindows();
+                    document.body.appendChild(cached);
+                    if (micPopupLayout) micPopupLayout.setPanel(cached);
+                    positionMicSubwindow(cached);
+                    // A click on a row whose cached panel was opened by hover
+                    // (possibly still in the deferred state) finishes the work
+                    // hover deferred, exactly like the fresh-build path.
+                    if (triggerEvent && triggerEvent.type === 'click'
+                        && typeof cached._nekoOnExplicitOpen === 'function') {
+                        cached._nekoOnExplicitOpen();
+                    }
+                    return;
+                }
                 var panel = createMicSubwindow(
                     window.t ? window.t('buttons.screenShare') : 'Screen Share',
                     null,

@@ -252,6 +252,7 @@ def install_voice_popover_harness(
         }
         const source = document.createElement('button');
         source.type = 'button';
+        source.className = 'screen-source-option';
         source.textContent = 'test-screen';
         container.appendChild(source);
         const filter = document.createElement('input');
