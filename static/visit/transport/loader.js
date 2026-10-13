@@ -32,6 +32,8 @@
   var PUBLISH_RETRY_BASE_MS = 2000;   // SDK 拒绝发布后的首次重试间隔，之后翻倍
   var PUBLISH_RETRY_MAX_MS = 30000;
   var SDK_LOAD_TIMEOUT_MS = 10000;    // 本地 SDK 脚本加载的上限：一直不报 load / error 时按加载失败上报（后端首次入房留了 25 s）
+  var JOIN_ATTEMPT_TIMEOUT_MS = 10000; // 单次入房的上限：网络切换时 SDK 的入房可能既不成功也不失败
+  var REJOIN_LEAVE_WAIT_MS = 5000;    // 手动重新入房前离房的上限：操作链卡住时 leave 不会结束
   var STOP_LEAVE_WAIT_MS = 5000;      // 收到 stop 后等离房的上限（与 backend-ws 终止时同值；父页 ended 后最多留 iframe 6 s）
   var TEARDOWN_IDLE_WAIT_MS = 2000;   // 拆适配器前等在途 SDK 操作的上限（父页对被顶号的 iframe 按 2 + 15 + 8 s 再留余量）
   // 后端判自己断线是断开后 25 s：手动重新入房失败时在这个窗口内按退避再试，不让一次暂时性失败拖到判死
@@ -175,6 +177,8 @@
     this.vendor = null;
     this.sdk = null;
     this.adapter = null;
+    this.adapterSeq = 0;      // 每换一个适配器加一：旧适配器的事件回调据此作废
+    this.everJoined = false;  // 这个传输页是否入房成功过（一开始就进不去 vs 中途断线后重进）
     this.connGen = 0;
     this.sdkCapsGen = -1;
     this.preflight = null;
@@ -349,17 +353,20 @@
   P.ensureAdapter = function () {
     if (this.adapter) return this.adapter;
     var self = this;
+    var seq = this.adapterSeq;
+    // 被 retireAdapter 丢掉的适配器迟到的事件（进房完成、被同身份顶下线等）一概不管
+    var live = function () { return self.adapterSeq === seq; };
     this.adapter = this.vendor.createAdapter({
       sdk: this.sdk,
       peerVid: this.core.peerVid,
       handlers: {
-        onPiece: function (fromVid, cmd, bytes) { self.core.onPiece(fromVid, cmd, bytes); },
-        onPeer: function (kind, vid, reason, explicit) { self.onPeer(kind, vid, reason, explicit); },
-        onState: function (state, extra) { self.onVendorState(state, extra); },
-        onRemoteTrack: function (track) { self.onRemoteTrack(track); },
-        onNetwork: function (info) { if (info && typeof info.lossPct === 'number') self.loss = { value: info.lossPct, at: self.now() }; },
-        onNeedRejoin: function () { self.rejoin(); },
-        onLog: function (level, msg, code) { self.log(level, msg, code); },
+        onPiece: function (fromVid, cmd, bytes) { if (live()) self.core.onPiece(fromVid, cmd, bytes); },
+        onPeer: function (kind, vid, reason, explicit) { if (live()) self.onPeer(kind, vid, reason, explicit); },
+        onState: function (state, extra) { if (live()) self.onVendorState(state, extra); },
+        onRemoteTrack: function (track) { if (live()) self.onRemoteTrack(track); },
+        onNetwork: function (info) { if (live() && info && typeof info.lossPct === 'number') self.loss = { value: info.lossPct, at: self.now() }; },
+        onNeedRejoin: function () { if (live()) self.rejoin(); },
+        onLog: function (level, msg, code) { if (live()) self.log(level, msg, code); },
       },
     });
     this.core.attach(this.adapter);
@@ -371,17 +378,51 @@
     var adapter = this.ensureAdapter();
     var self = this;
     var gen = this.connGen;
+    var initial = !this.everJoined;
+    var settled = false;
+    // 入房可能既不成功也不失败（网络切换时 SDK 卡住），重试窗口只管得住失败的那种：每次最多等 JOIN_ATTEMPT_TIMEOUT_MS。
+    // 一开始就进不去：直接按入房失败结束这一场；中途断线后重进卡住：丢掉卡住的适配器，换新的在窗口内再试
+    var timer = setTimeout(function () {
+      if (settled || self.stopped || self.adapter !== adapter) return;
+      settled = true;
+      self.log('warn', 'vendor join timed out', 'join_timeout');
+      if (!initial) {
+        self.retireAdapter();
+        if (self.scheduleRejoinRetry(gen)) return;
+      }
+      self.onVendorState('error', { error_code: 'join_timeout' });
+    }, JOIN_ATTEMPT_TIMEOUT_MS);
     adapter.join(this.creds).then(function () {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      self.everJoined = true;
       self.rejoinUntil = 0;
       self.rejoinAttempts = 0;
       self.core.flush();
       self.reapplyMedia();
     }, function (err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       var code = (err && err.errorCode) || 'join_failed';
       self.log('warn', 'vendor join failed', code);
       if (self.scheduleRejoinRetry(gen)) return;
       self.onVendorState('error', { error_code: code });
     });
+  };
+
+  /**
+   * 丢掉卡住的适配器（入房 / 离房一直不结束）：事件回调作废，马上退房 / 断开后销毁（不等 15 s 顶号窗口），
+   * 下一次 join 由 ensureAdapter 新建一个。
+   */
+  P.retireAdapter = function () {
+    var old = this.adapter;
+    if (!old) return;
+    this.adapter = null;
+    this.adapterSeq += 1;
+    this.core.attach(null);
+    Promise.resolve().then(function () { return old.destroy({ immediate: true }); }).then(null, function () {});
   };
 
   /** 手动重新入房失败：还在重试窗口里、传输 WS 没换代就按退避再试一次；排上了返回 true。 */
@@ -519,10 +560,19 @@
     // 断线期间对端可能已经走了、退出事件没送到：重新入房后只认新的进房事件，不把旧的在场带进 joined 上报
     this.peerPresent = false;
     this.stopAllMedia();
-    this.adapter.leave().then(function () {
+    var leaving = this.adapter.leave();
+    var done = false;
+    var proceed = function (timedOut) {
+      if (done) return;
+      done = true;
       self.rejoining = false;
-      if (!self.stopped && gen === self.connGen && self.link.ws) self.join();
-    });
+      if (self.stopped || gen !== self.connGen || !self.link.ws) return;
+      // 离房一直不结束（发布 / 档位更新等操作链卡住，leave 排在它后面）：丢掉这个适配器，换新的入房
+      if (timedOut) self.retireAdapter();
+      self.join();
+    };
+    setTimeout(function () { proceed(true); }, REJOIN_LEAVE_WAIT_MS);
+    leaving.then(function () { proceed(false); }, function () { proceed(false); });
   };
 
   // ── vendor 事件 ───────────────────────────────────────────────────────

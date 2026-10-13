@@ -339,10 +339,12 @@
        * 拆掉适配器，返回清理做完的 promise。TRTC 的 destroy 要求先 exitRoom：被同 vid 的新页面顶掉（4409）时不离房、
        * 留给接替页面入房顶号；接替页面没能入房时，过一会儿兜底 exitRoom 再 destroy，旧实例不一直占着房间。
        */
-      destroy: function () {
+      destroy: function (opts) {
         var t = trtc;
         trtc = null;
         if (!t) return;
+        // immediate：控制器丢掉卡住的适配器换新的时用，不留给接替页面顶号，马上退房（中断还没完成的进房）
+        var waitMs = opts && opts.immediate ? 0 : SUPERSEDED_EXIT_MS;
         var destroyNow = function () {
           try {
             t.destroy();
@@ -357,7 +359,7 @@
           return Promise.resolve();
         }
         return new Promise(function (resolve) {
-          setTimeout(resolve, SUPERSEDED_EXIT_MS);
+          setTimeout(resolve, waitMs);
         }).then(function () {
           return boundCleanup(Promise.resolve().then(function () { return t.exitRoom(); }));
         }).then(destroyNow);

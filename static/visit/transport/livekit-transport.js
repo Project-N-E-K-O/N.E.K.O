@@ -420,14 +420,16 @@
        * 已经离过房或已被顶下线时再断开一次是空操作。
        */
       /** 返回清理做完的 promise（传输页据此告诉父页可以移除 iframe）。 */
-      destroy: function () {
+      destroy: function (opts) {
         var r = room;
         room = null;
         if (!r) return Promise.resolve();
+        // immediate：控制器丢掉卡住的适配器换新的时用，不留给接替页面顶号，马上断开（中断还没完成的连接）
+        var waitMs = opts && opts.immediate ? 0 : SUPERSEDED_DISCONNECT_MS;
         // 已经发出过离房：离房等超时后才拆时断开可能还在路上，等它做完再算清理完成（父页据此才移除 iframe）
         if (leaving) return boundCleanup(departing);
         return new Promise(function (resolve) {
-          setTimeout(resolve, SUPERSEDED_DISCONNECT_MS);
+          setTimeout(resolve, waitMs);
         }).then(function () {
           return boundCleanup(Promise.resolve().then(function () { return r.disconnect(false); }));
         });

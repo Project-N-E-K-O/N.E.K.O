@@ -2629,3 +2629,119 @@ def test_empty_or_partial_receiver_samples_are_filled_too():
     )
     assert out == {"empty": {"rx_kbps": 0, "rtt_ms": 0, "loss_pct": 0},
                    "partial": {"rx_kbps": 200, "rtt_ms": 40, "loss_pct": 1}}
+
+
+def test_initial_join_that_never_settles_ends_the_visit():
+    out = run_visit_js(
+        """
+        const h = makeController('guest');
+        const origCreate = h.TRTC.create;
+        h.TRTC.create = () => {
+          const inst = origCreate();
+          inst.enterRoom = () => { h.log.push(['enterRoom-hang']); return new Promise(() => {}); };   // 一开始就卡住
+          return inst;
+        };
+        h.c.onAuthToken('tok');
+        const ws = sockets[sockets.length - 1];
+        ws.serverOpen();
+        ws.serverSend(credsFor('guest'));
+        await settle();
+        const errors = () => ws.sent.filter((m) => m.type === 'state' && m.state === 'error').map((m) => m.error_code);
+        await advance(9900);
+        const early = errors();
+        await advance(200);
+        await advance(15000);
+        return { early, late: errors(), instances: h.TRTC.instances.length, enters: kinds(h.log).filter((k) => k.startsWith('enterRoom')).length };
+        """
+    )
+    # 一开始就进不去：直接按入房失败结束这一场，不换适配器重试
+    assert out == {"early": [], "late": ["join_timeout"], "instances": 1, "enters": 1}
+
+
+def test_stuck_rejoin_leave_replaces_the_adapter():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        const old = h.trtc;
+        old.exitRoom = () => { h.log.push(['exitRoom-hang']); return new Promise(() => {}); };   // 离房一直不结束
+        h.c.rejoin();
+        await settle();
+        await advance(4900);
+        const early = h.TRTC.instances.length;
+        await advance(200);
+        await settle();
+        const fresh = h.TRTC.instances[h.TRTC.instances.length - 1];
+        const states = () => h.ws.sent.filter((m) => m.type === 'state').map((m) => m.state);
+        const joinedAfter = states().lastIndexOf('joined');
+        // 旧实例迟到的事件（被同身份顶下线）不再影响控制器
+        old.emit('KICKED_OUT', { reason: 'kick' });
+        await settle();
+        return { early, instances: h.TRTC.instances.length, freshIsNew: fresh !== old, joined: joinedAfter >= 0,
+                 kickedReported: states().includes('kicked') };
+        """
+    )
+    assert out == {"early": 1, "instances": 2, "freshIsNew": True, "joined": True, "kickedReported": False}
+
+
+def test_stuck_mid_session_join_is_retried_with_a_new_adapter():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        const origCreate = h.TRTC.create;
+        let made = 0;
+        h.TRTC.create = () => {
+          const inst = origCreate();
+          made += 1;
+          if (made === 1) inst.enterRoom = () => { h.log.push(['enterRoom-hang']); return new Promise(() => {}); };
+          return inst;
+        };
+        // 中途断线后重进：现有适配器的入房卡住
+        h.trtc.enterRoom = () => { h.log.push(['enterRoom-hang']); return new Promise(() => {}); };
+        h.c.rejoin();
+        await settle();
+        await advance(9900);
+        const early = h.TRTC.instances.length;
+        await advance(200);                     // 10 s：丢掉卡住的适配器，按退避换新的再试
+        await advance(1100);
+        await settle();
+        const errors = h.ws.sent.filter((m) => m.type === 'state' && m.state === 'error').length;
+        return { early, instances: h.TRTC.instances.length, errors };
+        """
+    )
+    assert out["early"] == 1 and out["instances"] >= 2 and out["errors"] == 0
+
+
+def test_immediate_destroy_exits_without_the_superseded_wait():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + """
+        const runs = {};
+        // TRTC：在房时 immediate 销毁马上退房，不等 15 s 顶号窗口
+        {
+          const h = await joinedController('guest');
+          h.log.length = 0;
+          h.c.retireAdapter();
+          await settle();                      // 销毁排在下一个微任务里
+          await advance(100);
+          runs.trtc = kinds(h.log).filter((k) => k === 'exitRoom' || k === 'destroy');
+        }
+        // LiveKit：同样马上断开
+        {
+          const ctx = makeContext();
+          load(ctx, FILES);
+          const LKV = ctx.NekoVisitTransport.vendors.livekit;
+          const LK = makeFakeLK([]);
+          const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+          const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 560, fps: 30 } };
+          const a = LKV.createAdapter({ sdk: LK, handlers });
+          await a.join(creds);
+          let disconnects = 0;
+          LK.Room.last.disconnect = () => { disconnects += 1; return Promise.resolve(); };
+          let done = false;
+          a.destroy({ immediate: true }).then(() => { done = true; });
+          await advance(100);
+          runs.livekit = { disconnects, done };
+        }
+        return runs;
+        """
+    )
+    assert out == {"trtc": ["exitRoom", "destroy"], "livekit": {"disconnects": 1, "done": True}}
