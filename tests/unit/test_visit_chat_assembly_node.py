@@ -1371,6 +1371,21 @@ const report = {};
     report.same_visit_line_phase = h.chat._test.state().visit.phase;
     report.same_visit_line_active = h.chat.isActive();
   }
+  // ── 空闲快照抢在回显前面收了尾：迟到的回显认领那个已标「未送达」的气泡，原地改回已发出 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.I.submitVisitChatText({ text: '最后一句', requestId: 'le1' });
+    await h.chat.afterBind(h.socket, '咪咪');
+    report.late_echo_before = h.messages.find((m) => m.id === 'visit-local-le1').status;
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:9', lp: 9, text: '最后一句', final: true, truncated: false,
+      speaker: { side: 'host', kind: 'human', name: '', self: true }, request_id: 'le1' });
+    const bubble = h.messages.find((m) => m.id === 'visit-local-le1');
+    report.late_echo_after = bubble.status;
+    report.late_echo_text = bubble.blocks[0].text;
+    report.late_echo_copies = h.messages.filter((m) => (m.blocks || []).some((b) => b.text === '最后一句')).length;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1837,3 +1852,10 @@ def test_visit_submissions_carry_their_visit_id(report):
 def test_same_visit_line_promotes_a_waiting_phase_to_active(report):
     assert report["same_visit_line_phase"] == "active"
     assert report["same_visit_line_active"] is True
+
+
+def test_late_echo_reclaims_its_failed_local_bubble(report):
+    assert report["late_echo_before"] == "failed"
+    assert report["late_echo_after"] == "sent"
+    assert report["late_echo_text"] == "最后一句"
+    assert report["late_echo_copies"] == 1

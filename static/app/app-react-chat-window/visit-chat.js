@@ -497,7 +497,8 @@
 
     var pendingLocal = [];   // [{requestId, messageId, text, submitSeq}] 已发出、还没等到回显的本地气泡（先进先出）
     var submitSeq = 0;       // 每次交出去一句 +1：被拒那句之后又提交过，就不把旧文字塞回输入框
-    var visitAckedTextSession = false;   // 「文本会话已开」是串门路由的 ack 给的（没有真的普通会话）
+    var visitAckedTextSession = false;
+    var lateEchoBubbles = new Map();   // request_id → 收尾时标了「未送达」的本地气泡（等迟到的回显认领）   // 「文本会话已开」是串门路由的 ack 给的（没有真的普通会话）
 
     // 串门收尾：把只由串门 ack 置上的文本会话标记撤掉，下一句普通聊天照常显式发开会话请求
     function releaseVisitTextSession() {
@@ -634,12 +635,15 @@
     // 后端回显的本侧亲人句认领本地气泡：按回显带的 request_id 认领（丢过一次回显也不会错位）；
     // 回显带了 id 却不在等的列表里（别的窗口发的 / 早已标掉）就不认领。只有不带 id 的旧后端才按先进先出
     function claimLocalBubble(entry) {
-        if (!pendingLocal.length) return null;
         var claimed = null;
         if (entry && entry.requestId) {
             claimed = takePending(entry.requestId);
+            if (!claimed && lateEchoBubbles.has(entry.requestId)) {
+                claimed = lateEchoBubbles.get(entry.requestId);
+                lateEchoBubbles.delete(entry.requestId);
+            }
         } else if (!entry || !entry.fromSnapshot) {
-            claimed = pendingLocal.shift();
+            claimed = pendingLocal.shift() || null;
         }
         if (claimed && typeof I.clearPendingRollbackDraft === 'function') I.clearPendingRollbackDraft(claimed.requestId);
         return claimed;
@@ -1014,8 +1018,13 @@
             visitId: frame.visit_id, side: visit.side || frame.side, reason: frame.reason || '',
             peerName: visit.peerName, started: visit.everStarted === true
         };
-        // 还挂着的本地气泡：这一场已经结束，等不到回显了
-        pendingLocal.slice().forEach(function (entry) { markNotDelivered(entry.requestId, false); });
+        // 还挂着的本地气泡：这一场已经结束，等不到回显了。记下 request_id → 气泡：空闲快照抢在回显前面时，
+        // 迟到的回显还能认领这个已标「未送达」的气泡、原地改回已发出，不再另出一条
+        pendingLocal.slice().forEach(function (entry) {
+            lateEchoBubbles.set(entry.requestId, entry);
+            while (lateEchoBubbles.size > 50) lateEchoBubbles.delete(lateEchoBubbles.keys().next().value);
+            markNotDelivered(entry.requestId, false);
+        });
         lines.forEach(function (entry) {
             if (entry.stallTimer) clearTimeout(entry.stallTimer);
             entry.stallTimer = 0;
