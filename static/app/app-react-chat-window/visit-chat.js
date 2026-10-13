@@ -489,7 +489,7 @@
     var submitSeq = 0;       // 每次交出去一句 +1：被拒那句之后又提交过，就不把旧文字塞回输入框
     var visitAckedTextSession = false;   // 「文本会话已开」是串门路由的 ack 给的（没有真的普通会话）
 
-    // 串门收尾：把只由串门 ack 置上的文本会话标记撤掉，下一句普通聊天照常显式 start_session
+    // 串门收尾：把只由串门 ack 置上的文本会话标记撤掉，下一句普通聊天照常显式发开会话请求
     function releaseVisitTextSession() {
         if (!visitAckedTextSession) return;
         visitAckedTextSession = false;
@@ -568,7 +568,7 @@
         }
         var messageId = 'visit-local-' + requestId;
         var appState = window.appState;
-        // 页面还没有普通文本会话：这句会先发 start_session，串门路由只回 ack、并不起普通会话
+        // 页面还没有普通文本会话：这句会先发开会话请求，串门路由只回 ack、并不起普通会话
         if (appState && appState.isTextSessionActive !== true) visitAckedTextSession = true;
         var host = getHost();
         if (host && typeof host.appendMessage === 'function') {
@@ -620,12 +620,18 @@
         return true;
     }
 
-    // 后端回显的本侧亲人句：按先进先出认领本地气泡（拒绝的那几句已经按 request_id 摘掉了）
-    function claimLocalBubble(frame) {
+    // 后端回显的本侧亲人句认领本地气泡：按回显带的 request_id 认领（丢过一次回显也不会错位）；
+    // 回显带了 id 却不在等的列表里（别的窗口发的 / 早已标掉）就不认领。只有不带 id 的旧后端才按先进先出
+    function claimLocalBubble(entry) {
         if (!pendingLocal.length) return null;
-        var entry = pendingLocal.shift();
-        if (typeof I.clearPendingRollbackDraft === 'function') I.clearPendingRollbackDraft(entry.requestId);
-        return entry;
+        var claimed = null;
+        if (entry && entry.requestId) {
+            claimed = takePending(entry.requestId);
+        } else if (!entry || !entry.fromSnapshot) {
+            claimed = pendingLocal.shift();
+        }
+        if (claimed && typeof I.clearPendingRollbackDraft === 'function') I.clearPendingRollbackDraft(claimed.requestId);
+        return claimed;
     }
 
     // ── 台词拼接 ────────────────────────────────────────────────────
@@ -654,6 +660,7 @@
         }
         if (frame.speaker) entry.speaker = frame.speaker;
         if (frame.addressee) entry.addressee = frame.addressee;
+        if (!entry.requestId && typeof frame.request_id === 'string' && frame.request_id) entry.requestId = frame.request_id;
         // 全序键 (lp, side_rank)：同 lp 时 host 在前（§3.6.6 ①），两侧页面显示顺序一致
         if (typeof entry.lp !== 'number' && Number.isInteger(frame.lp)) entry.lp = frame.lp;
         var side = frame.speaker && frame.speaker.side;
@@ -725,9 +732,10 @@
         if (!adapter || typeof adapter.renderVisitLine !== 'function') return;
         var notice = entry.truncated ? t('visit.stream.truncated', '（被打断）') : '';
         var claimed = null;
-        if (!entry.rendered && entry.final && !entry.fromSnapshot
+        if (!entry.rendered && entry.final && (!entry.fromSnapshot || entry.requestId)
                 && entry.speaker && entry.speaker.self === true && entry.speaker.kind === 'human') {
-            // 本侧亲人句：认领发送时的本地气泡，原地换成后端清洗后的那一句
+            // 本侧亲人句：认领发送时的本地气泡，原地换成后端清洗后的那一句。快照重放的行只按 request_id 认领
+            // （不带 id 的历史行按顺序猜会占掉刚发出的那句的气泡）
             claimed = claimLocalBubble(entry);
             if (claimed) entry.messageId = claimed.messageId;
         }
@@ -2056,9 +2064,13 @@
     function handleStatus(code, details) {
         details = details || {};
         var requestId = typeof details.request_id === 'string' ? details.request_id : '';
-        if (INPUT_REFUSALS.indexOf(code) !== -1 && requestId) {
-            // 后端拒了这句：本地气泡标「未送达」，输入框自提交后没再编辑时恢复原文
-            markNotDelivered(requestId, true);
+        if (INPUT_REFUSALS.indexOf(code) !== -1 && requestId && !markNotDelivered(requestId, true)) {
+            // 被拒的不是串门句（未 bind 的页面在串门期间发普通聊天、阶段切换的空档等）：按普通句收尾——
+            // 原文放回输入框（React 侧只填空输入框），乐观气泡标失败，回复在途标记一并撤掉
+            restoreDraft(requestId);
+            if (window.appButtons && typeof window.appButtons.markTextSubmissionRefused === 'function') {
+                window.appButtons.markTextSubmissionRefused(requestId);
+            }
         }
         // bind 被拒（不带 request_id）：Docker / 局域网访问每次连上都会这样，不弹提示
         if (code === 'VISIT_E_UNAUTHORIZED' && !requestId) return false;

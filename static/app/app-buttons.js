@@ -3411,6 +3411,7 @@
                     }
 
                     updateReactOptimisticMessageStatus('sent');
+                    rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '');
 
                     if (sentUserContent) {
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
@@ -3513,6 +3514,39 @@
 
         mod.sendTextPayload = sendTextPayload;
         window.sendTextPayload = sendTextPayload;
+
+        // 已发出的普通句：request_id → 乐观气泡 id（只留最近几条）。后端事后拒了这句（串门期间未授权等）时据此收尾
+        var sentTextSubmissions = [];
+
+        function rememberSentTextSubmission(requestId, messageId) {
+            if (!requestId) return;
+            sentTextSubmissions.push({ requestId: String(requestId), messageId: messageId || '' });
+            if (sentTextSubmissions.length > 20) sentTextSubmissions.shift();
+        }
+
+        /** 后端拒了一句已发出的普通句：乐观气泡标失败；它还是最近一句时撤掉「回复在途」并把原文放回旧输入框。 */
+        mod.markTextSubmissionRefused = function markTextSubmissionRefused(requestId) {
+            var id = String(requestId || '');
+            var record = null;
+            for (var i = 0; i < sentTextSubmissions.length; i++) {
+                if (sentTextSubmissions[i].requestId === id) {
+                    record = sentTextSubmissions.splice(i, 1)[0];
+                    break;
+                }
+            }
+            if (!record) return false;
+            if (record.messageId && window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
+                window.reactChatWindowHost.updateMessage(record.messageId, { status: 'failed' });
+            }
+            if (window._lastSubmittedRequestId === id) {
+                S.pendingTextTurnSubmitAt = 0;
+                var legacyInput = document.getElementById('textInputBox');
+                if (legacyInput && !legacyInput.value && window._lastSubmittedText) legacyInput.value = window._lastSubmittedText;
+                window._lastSubmittedText = '';
+                window._lastSubmittedRequestId = '';
+            }
+            return true;
+        };
 
         mod.sendAvatarDropPayload = async function sendAvatarDropPayload(payload) {
             var items = getAvatarDropItems(payload);

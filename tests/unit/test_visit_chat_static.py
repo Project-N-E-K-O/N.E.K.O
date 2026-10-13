@@ -389,3 +389,11 @@ def test_galgame_choices_are_hidden_while_the_visit_owns_the_composer():
     assert "var visitOwnsComposer = typeof I.isVisitChatActive === 'function' && I.isVisitChatActive();" in props
     assert "galgameOptions: !visitOwnsComposer &&" in props
     assert "galgameOptionsLoading: !visitOwnsComposer &&" in props
+
+
+def test_refused_ordinary_submission_is_closed_by_request_id():
+    buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
+    assert "rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '');" in buttons
+    body = _function_body(buttons, "markTextSubmissionRefused")
+    assert "updateMessage(record.messageId, { status: 'failed' })" in body
+    assert "window._lastSubmittedRequestId === id" in body and "S.pendingTextTurnSubmitAt = 0;" in body

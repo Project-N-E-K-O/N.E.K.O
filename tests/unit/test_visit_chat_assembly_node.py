@@ -154,6 +154,7 @@ function createHarness(opts) {
     },
     appButtons: {
       sendTextPayload(text, options) { sendCalls.push({ text, options }); socket.send(JSON.stringify({ action: 'stream_data', data: text, request_id: options.requestId, source: options.source })); return Promise.resolve(true); },
+      markTextSubmissionRefused(id) { (win.__refused = win.__refused || []).push(id); return true; },
     },
     appendReactChatBlocks(response) {
       pushMessage({ id: 'plugin-blocks-' + response.request_id + '-' + (wall++) + '-1', role: 'system', blocks: response.blocks });
@@ -1063,6 +1064,52 @@ const report = {};
     report.avatar_after_first_frame = h.lineMessage('g:1').avatarUrl;
     report.avatar_text_kept = h.lineText('g:1');
   }
+  // ── 按 request_id 认领：A 的实时回显丢了、快照带回 A，再发 B，各自留在自己的气泡里 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const me = { side: 'host', kind: 'human', name: '', self: true };
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: {
+      active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true,
+      transcript: [{ type: 'visit_line', visit_id: VID, line_id: 'h:1', lp: 3, text: '句子A', final: true, truncated: false, speaker: me, request_id: 'ra' }],
+    } }; } };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.I.submitVisitChatText({ text: '句子A', requestId: 'ra' });   // A 的回显随断线丢了
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    release();
+    await probe;
+    h.I.submitVisitChatText({ text: '句子B', requestId: 'rb' });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:2', lp: 4, text: '句子B', final: true, truncated: false, speaker: me, request_id: 'rb' });
+    report.by_id_a = (h.messages.find((m) => m.id === 'visit-local-ra') || { blocks: [{}] }).blocks[0].text;
+    report.by_id_b = (h.messages.find((m) => m.id === 'visit-local-rb') || { blocks: [{}] }).blocks[0].text;
+    report.by_id_pending = h.chat._test.state().pending.length;
+    h.state('ended');
+    report.by_id_failed = h.messages.filter((m) => m.status === 'failed').length;
+    report.by_id_bubbles = h.messages.filter((m) => m.id.indexOf('visit-local-') === 0 || m.id.indexOf('visit-line-') === 0).length;
+  }
+  // ── 带 id 的回显不认领别人的气泡（别的窗口发的那句）──
+  {
+    const h = createHarness();
+    h.state('started');
+    h.I.submitVisitChatText({ text: '我发的', requestId: 'mine' });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:1', lp: 1, text: '别的窗口发的', final: true, truncated: false,
+      speaker: { side: 'host', kind: 'human', name: '', self: true }, request_id: 'other-window' });
+    report.foreign_id_kept = h.messages.find((m) => m.id === 'visit-local-mine').blocks[0].text;
+    report.foreign_id_pending = h.chat._test.state().pending.length;
+  }
+  // ── 普通句被串门拒了（不在 pendingLocal 里）：原文放回输入框、乐观气泡标失败 ──
+  {
+    const h = createHarness();
+    h.chat.handleStatus('VISIT_E_UNAUTHORIZED', { request_id: 'ordinary-1' });
+    report.ordinary_refused_rollback = h.rollbacks.indexOf('ordinary-1') !== -1;
+    report.ordinary_refused_marked = (h.win.__refused || []).indexOf('ordinary-1') !== -1;
+    h.state('started');
+    h.I.submitVisitChatText({ text: '串门句', requestId: 'v-1' });
+    h.chat.handleStatus('VISIT_E_BUSY', { request_id: 'v-1' });
+    report.visit_refused_not_ordinary = (h.win.__refused || []).indexOf('v-1') === -1;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1409,3 +1456,22 @@ def test_first_frame_refreshes_avatars_of_lines_already_shown(report):
     assert report["avatar_before_first_frame"] == ""
     assert report["avatar_after_first_frame"] == "data:image/png;base64,AAAA"
     assert report["avatar_text_kept"] == "你好呀"
+
+
+def test_local_bubbles_are_claimed_by_request_id(report):
+    assert report["by_id_a"] == "句子A"
+    assert report["by_id_b"] == "句子B"
+    assert report["by_id_pending"] == 0
+    assert report["by_id_failed"] == 0
+    assert report["by_id_bubbles"] == 2
+
+
+def test_echo_with_a_foreign_request_id_claims_nothing(report):
+    assert report["foreign_id_kept"] == "我发的"
+    assert report["foreign_id_pending"] == 1
+
+
+def test_refused_ordinary_submission_restores_the_draft(report):
+    assert report["ordinary_refused_rollback"] is True
+    assert report["ordinary_refused_marked"] is True
+    assert report["visit_refused_not_ordinary"] is True

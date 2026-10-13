@@ -779,7 +779,7 @@ class TalkMixin:
             self._post_display(self.visit_line_payload(
                 ln=ln, lp=lp, side=self.side, kind="human", ad_side=ad_side, ad_kind=ad_kind, reply_to="",
                 goodbye=False, text=payload["txt"], truncated=bool(payload["truncated"]),
-                trunc_reason=payload.get("trunc_reason"),
+                trunc_reason=payload.get("trunc_reason"), request_id=request_id,
             ))
 
         def reply() -> None:

@@ -132,6 +132,16 @@ async def test_family_line_order_reserve_room_persist_enqueue_mirror(tmp_path, m
         assert order.index("send:text:c:human_interrupt") < order.index("send:text:h:")
         assert host.host.events[-1] == "mirror_user_input" and host.host.user_inputs == ["你们好呀"]
         assert rt.outbox.pending_bytes >= 0
+        # 本页显示帧带上发起提交的 request_id（页面按它认领本地气泡）；/state 重放同样带；上线的消息不带
+        def own_line():
+            return [f for f in host.host.frames if f.get("type") == "visit_line"
+                    and f["speaker"]["self"] is True and f["speaker"]["kind"] == "human"]
+        await wait_for(own_line)
+        assert own_line()[0]["request_id"] == "r1"
+        await wait_for(lambda: any(r.get("speaker", {}).get("kind") == "human" for r in rt.snapshot()["transcript"]))
+        replayed = [r for r in rt.snapshot()["transcript"] if r["speaker"]["kind"] == "human" and r["speaker"]["self"]]
+        assert replayed[0]["request_id"] == "r1"
+        assert all("request_id" not in p for p in wire.sent["host"])
     finally:
         hgate.set()
         ggate.set()
