@@ -9,18 +9,6 @@
         'user_plugin_enabled',
         'openclaw_enabled',
     ]);
-    const HOME_TUTORIAL_PROACTIVE_KEYS = Object.freeze([
-        'proactiveChatEnabled',
-        'proactiveVisionEnabled',
-        'proactiveVisionChatEnabled',
-        'proactiveNewsChatEnabled',
-        'proactiveCommunityChatEnabled',
-        'proactiveVideoChatEnabled',
-        'proactivePersonalChatEnabled',
-        'proactiveMusicEnabled',
-        'proactiveMemeEnabled',
-        'proactiveMiniGameInviteEnabled',
-    ]);
 
     const mod = {};
     const state = {
@@ -81,75 +69,27 @@
         }
     }
 
-    function snapshotProactiveState() {
-        const snapshot = {};
-        const appState = window.appState || null;
-        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
-            if (typeof window[key] !== 'undefined') {
-                snapshot[key] = !!window[key];
-            } else if (appState && typeof appState[key] !== 'undefined') {
-                snapshot[key] = !!appState[key];
-            } else {
-                snapshot[key] = false;
-            }
-        });
-        return snapshot;
-    }
-
-    function applyProactiveState(values) {
-        const appState = window.appState || null;
-        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
-            if (Object.prototype.hasOwnProperty.call(values, key)) {
-                const next = !!values[key];
-                window[key] = next;
-                if (appState && typeof appState[key] !== 'undefined') {
-                    appState[key] = next;
+    // 纯运行时抑制：绝不改写任何用户设置的内存镜像——与小剧场
+    // lockProactiveChatForTheater 的约定一致（见 app-proactive.js「transient
+    // suppression」段注释）。这十个 proactive 键由 saveSettings 持久化并经
+    // storage 事件、周期同步、server merge 扩散，临时改写会在抑制期间的任意
+    // 一次保存里被当成用户设置固化。抑制只做三件事：登记标志、停运行时、
+    // 派发事件；触发面由 app-proactive 的 isHomeTutorialFeatureSuppressed
+    // 统一拦截，释放时由事件监听负责重排与补挂。
+    function stopProactiveRuntime() {
+        [
+            'stopProactiveChatSchedule',
+            'stopProactiveVisionDuringSpeech',
+            'releaseProactiveVisionStream'
+        ].forEach(function (methodName) {
+            if (typeof window[methodName] === 'function') {
+                try {
+                    window[methodName]();
+                } catch (error) {
+                    console.warn('[HomeTutorialRuntime] failed to stop proactive runtime:', methodName, error);
                 }
             }
         });
-        if (typeof window.stopProactiveChatSchedule === 'function') {
-            try {
-                window.stopProactiveChatSchedule();
-            } catch (error) {
-                console.warn('[HomeTutorialRuntime] failed to stop proactive schedule:', error);
-            }
-        }
-        if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
-            try {
-                window.stopProactiveVisionDuringSpeech();
-            } catch (error) {
-                console.warn('[HomeTutorialRuntime] failed to stop proactive vision:', error);
-            }
-        }
-        if (typeof window.releaseProactiveVisionStream === 'function') {
-            try {
-                window.releaseProactiveVisionStream();
-            } catch (error) {
-                console.warn('[HomeTutorialRuntime] failed to release proactive vision stream:', error);
-            }
-        }
-    }
-
-    function maybeRestartProactiveSchedule(snapshot) {
-        if (!snapshot || !snapshot.proactiveChatEnabled) {
-            return;
-        }
-        const hasMode = HOME_TUTORIAL_PROACTIVE_KEYS.some(function (key) {
-            return key !== 'proactiveChatEnabled' && !!snapshot[key];
-        });
-        if (!hasMode) {
-            return;
-        }
-        const scheduler = window.appProactive && typeof window.appProactive.scheduleProactiveChat === 'function'
-            ? window.appProactive.scheduleProactiveChat
-            : window.scheduleProactiveChat;
-        if (typeof scheduler === 'function') {
-            try {
-                scheduler();
-            } catch (error) {
-                console.warn('[HomeTutorialRuntime] failed to restart proactive schedule:', error);
-            }
-        }
     }
 
     async function fetchAgentFlagSnapshot() {
@@ -444,7 +384,6 @@
         const token = Date.now() + Math.random();
         const snapshot = {
             galgameEnabled: snapshotGalgameState(),
-            proactive: snapshotProactiveState(),
             agentFlags: null,
             reason: reason || 'tutorial-started',
         };
@@ -453,11 +392,7 @@
         suppression.snapshot = snapshot;
 
         setGalgameState(false);
-        const proactiveOff = {};
-        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
-            proactiveOff[key] = false;
-        });
-        applyProactiveState(proactiveOff);
+        stopProactiveRuntime();
         setAgentSuppressionPromise(snapshotAndDisableAgentFlags(token));
 
         window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
@@ -477,11 +412,7 @@
         }
 
         setGalgameState(false);
-        const proactiveOff = {};
-        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
-            proactiveOff[key] = false;
-        });
-        applyProactiveState(proactiveOff);
+        stopProactiveRuntime();
         queueSuppressedAgentFlagsReapply(
             suppression.token,
             reason || (suppression.snapshot && suppression.snapshot.reason) || 'tutorial-enforced'
@@ -514,10 +445,10 @@
             }
             setGalgameState(!!snapshot.galgameEnabled, { force: true });
         }, 0);
-        if (snapshot.proactive) {
-            applyProactiveState(snapshot.proactive);
-            maybeRestartProactiveSchedule(snapshot.proactive);
-        }
+        // 主动搭话没有任何设置值需要恢复（抑制从不改写内存）：下方派发的
+        // active:false 事件由 app-proactive 监听，负责重排调度、补挂视觉，
+        // 情境弹窗模块负责重放暂存提示。头像重载层若仍持有运行时 hold，
+        // 触发闸门会继续拦截到模型恢复完成，并由它自己的释放事件再补一轮。
         if (snapshot.agentFlags) {
             void restoreAgentSnapshot(snapshot.agentFlags, restoreToken)
                 .then(function (restored) {

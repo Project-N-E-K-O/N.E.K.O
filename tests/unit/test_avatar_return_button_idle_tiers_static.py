@@ -3640,7 +3640,18 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "new CustomEvent('neko:idle-cat1-compact-mirror-state'" in source
     assert "via: 'local'" in source
     assert "return dispatchedLocal;" in source
-    assert "assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1)" in source
+    mirror_active_block = source.split(
+        "const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect)",
+        1,
+    )[1].split("if (!posted) return false;", 1)[0]
+    _assert_source_order(
+        mirror_active_block,
+        "cat1 compact mirror active payload",
+        "const assetUrl = options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1);",
+        "_postNekoIdleCat1CompactMirrorState({",
+        "active: true,",
+        "assetUrl,",
+    )
     mirror_state_block = source.split("function _setNekoIdleCat1CompactMirrorActive", 1)[1].split(
         "const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect)",
         1,

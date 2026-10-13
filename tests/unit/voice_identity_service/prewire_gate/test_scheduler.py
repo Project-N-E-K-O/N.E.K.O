@@ -374,7 +374,9 @@ async def test_uncooperative_async_backend_fences_scheduler_without_overlap(
         # Windows worker (15.6ms monotonic ticks) expired it in the queue and
         # ran the queued job instead.
         deadline_seconds=0.5 if trigger == "timeout" else 1.0,
-        close_timeout_seconds=0.01,
+        # Allow the queued deadline to pass during physical cancellation,
+        # while keeping cancellation below this test's 0.2s worker wait.
+        close_timeout_seconds=0.01 if trigger == "cancel" else 0.12,
     )
     active = scheduler.submit(_request("uncooperative-active"))
     queued = scheduler.submit(_request("must-not-run", start=10))
@@ -404,6 +406,40 @@ async def test_uncooperative_async_backend_fences_scheduler_without_overlap(
         assert backend.max_active == 1
         with pytest.raises(SchedulerClosedError):
             scheduler.submit(_request("rejected-after-fence", start=20))
+    finally:
+        backend.release.set()
+        await asyncio.wait_for(backend.returned.wait(), 0.2)
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_fence_preserves_elapsed_queue_deadline_before_timer_runs() -> None:
+    now = [10.0]
+    backend = _AsyncUncooperativeBackend()
+    scheduler = _scheduler(backend, clock=lambda: now[0])
+    active = scheduler.submit(_request("active"))
+    expired = scheduler.submit(_request("expired", start=10))
+    now[0] = 10.5
+    pending = scheduler.submit(_request("pending", start=20))
+    try:
+        await asyncio.wait_for(backend.started.wait(), 0.2)
+        assert scheduler.cancel(active)
+        await asyncio.wait_for(backend.cancelled.wait(), 0.2)
+        # Advance only the injected deadline clock. The real one-second queue
+        # timers have not fired; cancellation retirement now triggers the fence.
+        assert not scheduler._jobs[expired.job_id].future.done()
+        now[0] = 11.1
+        await asyncio.wait_for(asyncio.shield(scheduler._worker), 0.2)
+        active_result = await scheduler.await_result(active)
+        expired_result = await scheduler.await_result(expired)
+        pending_result = await scheduler.await_result(pending)
+        assert active_result.error_code == "cancelled_by_caller"
+        assert expired_result.status is ScoreResultStatus.TIMED_OUT
+        assert expired_result.error_code == "deadline_expired_in_queue"
+        assert pending_result.status is ScoreResultStatus.CANCELLED
+        assert pending_result.error_code == "scheduler_fenced"
+        assert scheduler.queued_jobs == 0
+        assert backend.calls == backend.max_active == 1
     finally:
         backend.release.set()
         await asyncio.wait_for(backend.returned.wait(), 0.2)

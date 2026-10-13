@@ -2,8 +2,320 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app/app-proactive.js'), 'utf8');
+
+test('tutorial suppression rejects late vision acquisition at every async boundary', async () => {
+    for (const stage of ['prepare', 'backend', 'stream', 'manual-stream']) {
+        const acquiresStream = stage === 'stream' || stage === 'manual-stream';
+        const listeners = new Map();
+        let settle;
+        let enterStage;
+        const entered = new Promise((resolve) => { enterStage = resolve; });
+        const gate = new Promise((resolve) => { settle = resolve; });
+        let stopped = 0;
+        let promptCalls = 0;
+        const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
+        const state = { isRecording: true, proactiveVisionEnabled: true };
+        const window = {
+            appState: state, appConst: {},
+            addEventListener(type, listener) { listeners.set(type, listener); },
+            prepareRememberedWindowCapture: async () => {
+                if (stage === 'prepare') { enterStage(); await gate; }
+                return { required: false, allowed: true };
+            },
+            appScreen: {
+                fetchBackendScreenshot: async () => {
+                    if (stage === 'backend') { enterStage(); await gate; }
+                    return { dataUrl: null };
+                },
+                acquireOrReuseCachedStream: async () => {
+                    promptCalls += 1;
+                    enterStage();
+                    await gate;
+                    state.screenCaptureStream = stream;
+                    return stream;
+                }
+            }
+        };
+        vm.runInNewContext(source, {
+            window,
+            document: {
+                addEventListener() {},
+                getElementById() {
+                    return stage === 'manual-stream' ? { classList: { contains() { return true; } } } : null;
+                }
+            },
+            localStorage: { getItem() { return null; } },
+            console, clearTimeout() {}, clearInterval() {}
+        });
+        const pending = window.acquireProactiveVisionStream();
+        await entered;
+        listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+        window.releaseProactiveVisionStream(); // Begin-time release has no late stream yet.
+        settle();
+        assert.equal(await pending, false, stage);
+        assert.equal(promptCalls, acquiresStream ? 1 : 0, 'no prompt after earlier suppression');
+        assert.equal(stopped, stage === 'stream' ? 1 : 0, 'release the late cached track');
+        assert.equal(state.screenCaptureStream == null, stage !== 'manual-stream', 'manual sharing remains protected');
+        await window.acquireProactiveVisionStream();
+        assert.equal(promptCalls, acquiresStream ? 1 : 0, 'already suppressed calls never acquire');
+    }
+});
+
+test('both proactive screenshot acquisitions release late streams under suppression', async () => {
+    for (const targetAcquire of [1, 2]) {
+        const listeners = new Map();
+        let settle;
+        let entered;
+        const waiting = new Promise((resolve) => { entered = resolve; });
+        const gate = new Promise((resolve) => { settle = resolve; });
+        let acquisitions = 0;
+        let frames = 0;
+        let stopped = 0;
+        let backendCalls = 0;
+        const state = { isRecording: true, proactiveVisionEnabled: true };
+        const window = {
+            appState: state, appConst: {},
+            addEventListener(type, listener) { listeners.set(type, listener); },
+            appScreen: {
+                acquireOrReuseCachedStream: async () => {
+                    acquisitions += 1;
+                    if (acquisitions === targetAcquire) { entered(); await gate; }
+                    const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
+                    state.screenCaptureStream = stream;
+                    return stream;
+                },
+                captureFrameFromStream: async () => { frames += 1; return null; },
+                fetchBackendScreenshot: async () => { backendCalls += 1; return { dataUrl: null }; }
+            }
+        };
+        vm.runInNewContext(source, {
+            window,
+            document: { addEventListener() {}, getElementById() { return null; } },
+            localStorage: { getItem() { return null; } },
+            console, clearTimeout() {}, clearInterval() {}
+        });
+        const pending = window.appProactive.captureProactiveChatScreenshotWithSource();
+        await waiting;
+        listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+        settle();
+        assert.equal((await pending).dataUrl, null);
+        assert.equal(frames, targetAcquire - 1, 'do not extract a frame from the late stream');
+        assert.equal(backendCalls, 0, 'do not fall back to another capture after suppression');
+        assert.equal(stopped, targetAcquire, 'discard any first black stream and release the late one');
+        assert.equal(state.screenCaptureStream, null);
+    }
+});
+
+test('every successful proactive screenshot route rechecks tutorial suppression', async () => {
+    for (const route of ['cached', 'native', 'stream', 'retry', 'backend']) {
+        const listeners = new Map();
+        let settle;
+        let enter;
+        const entered = new Promise((resolve) => { enter = resolve; });
+        const gate = new Promise((resolve) => { settle = resolve; });
+        let frames = 0;
+        let stopped = 0;
+        const stream = {
+            active: true,
+            getTracks() { return [{ stop() { stopped += 1; } }]; },
+            getVideoTracks() { return [{ readyState: 'live' }]; }
+        };
+        const delayedFrame = async () => { enter(); await gate; return { dataUrl: 'FRAME' }; };
+        const state = {
+            isRecording: true, proactiveVisionEnabled: true,
+            screenCaptureStream: route === 'cached' ? stream : null,
+            selectedScreenSourceId: route === 'native' ? 'screen:0' : null
+        };
+        const window = {
+            appState: state, appConst: {},
+            addEventListener(type, listener) { listeners.set(type, listener); },
+            getDesktopCaptureProvider: () => route === 'native' ? { captureSourceAsDataUrl() {} } : null,
+            captureDesktopSourceWithTimeout: async () => {
+                await delayedFrame(); return { success: true, dataUrl: 'NATIVE' };
+            },
+            appScreen: {
+                acquireOrReuseCachedStream: async () => {
+                    if (route === 'backend') return null;
+                    state.screenCaptureStream = stream;
+                    return stream;
+                },
+                captureFrameFromStream: async () => {
+                    frames += 1;
+                    if (route === 'retry' && frames === 1) return null;
+                    return delayedFrame();
+                },
+                fetchBackendScreenshot: delayedFrame,
+                scheduleScreenCaptureIdleCheck() {}
+            }
+        };
+        vm.runInNewContext(source, {
+            window,
+            document: { addEventListener() {}, getElementById() { return null; } },
+            localStorage: { getItem() { return null; } },
+            console, clearTimeout() {}, clearInterval() {}
+        });
+        const pending = window.appProactive.captureProactiveChatScreenshotWithSource();
+        await entered;
+        listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+        settle();
+        assert.equal((await pending).dataUrl, null, route);
+        assert.equal(frames, route === 'native' || route === 'backend' ? 0 : (route === 'retry' ? 2 : 1));
+        assert.equal(state.screenCaptureStream == null, true, route);
+        assert.equal(stopped, route === 'native' || route === 'backend' ? 0 : (route === 'retry' ? 2 : 1));
+    }
+});
+
+test('request_screenshot rechecks tutorial suppression immediately before sending', async () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
+    const start = websocketSource.indexOf('(async function () {', branch);
+    const end = websocketSource.indexOf('})();', start) + 5;
+    for (const paired of [true, false]) {
+        for (const phase of ['before', 'during', 'none']) {
+            let suppressed = phase === 'before';
+            let captures = 0;
+            const sent = [];
+            const window = {
+                isNekoHomeTutorialProactiveSuppressed: () => suppressed,
+                captureProactiveChatScreenshot: async () => { captures += 1; suppressed = phase === 'during'; return 'FRAME'; }
+            };
+            if (paired) window.appProactive = {
+                captureProactiveChatScreenshotWithSource: async () => {
+                    captures += 1;
+                    suppressed = phase === 'during';
+                    return { dataUrl: 'FRAME', captureType: 'screen' };
+                }
+            };
+            await vm.runInNewContext(websocketSource.slice(start, end), {
+                window, S: { socket: { readyState: 1, send(value) { sent.push(value); } } },
+                WebSocket: { OPEN: 1 }, console
+            });
+            assert.equal(sent.length, 1, 'always resolve the backend screenshot request');
+            assert.equal(JSON.parse(sent[0]).data, phase === 'none' ? 'FRAME' : '');
+            assert.equal(captures, phase === 'before' ? 0 : 1);
+        }
+    }
+});
+
+test('click-guide activation stops vision and releases only automatic capture', () => {
+    for (const manualSharing of [false, true]) {
+        const listeners = new Map();
+        let stopped = 0;
+        let cleared = 0;
+        const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
+        const state = {
+            isRecording: true, proactiveVisionEnabled: true,
+            screenCaptureStream: stream, proactiveVisionFrameTimer: 1
+        };
+        const window = {
+            appState: state, appConst: {},
+            addEventListener(type, listener) { listeners.set(type, listener); }
+        };
+        vm.runInNewContext(source, {
+            window,
+            document: {
+                addEventListener() {},
+                getElementById() { return { classList: { contains() { return manualSharing; } } }; }
+            },
+            localStorage: { getItem() { return null; } },
+            console, clearTimeout() {}, clearInterval() { cleared += 1; }
+        });
+        window.isNekoClickGuideActive = true;
+        listeners.get('neko:click-guide-active')({ detail: { active: true } });
+        assert.equal(state.proactiveVisionFrameTimer, null);
+        assert.equal(cleared, 1);
+        assert.equal(stopped, manualSharing ? 0 : 1);
+        assert.equal(state.screenCaptureStream == null, !manualSharing);
+    }
+});
+
+test('click-guide release restores chat after its timer expires while suppressed', async () => {
+    const listeners = new Map();
+    const timers = new Map();
+    let nextTimer = 0;
+    const state = {
+        isRecording: true,
+        proactiveChatEnabled: true,
+        proactiveNewsChatEnabled: true,
+        proactiveVisionEnabled: false,
+        proactiveChatInterval: 15
+    };
+    const window = {
+        appState: state, appConst: {},
+        addEventListener(type, listener) { listeners.set(type, listener); }
+    };
+    vm.runInNewContext(source, {
+        window,
+        document: { addEventListener() {}, getElementById() { return null; } },
+        localStorage: { getItem() { return null; } },
+        console,
+        setTimeout(fn) { timers.set(++nextTimer, fn); return nextTimer; },
+        clearTimeout(id) { timers.delete(id); },
+        clearInterval() {}
+    });
+    const release = () => listeners.get('neko:click-guide-active')({ detail: { active: false } });
+    release();
+    assert.equal(timers.size, 0, 'release must not initialize the scheduler early');
+    state._proactiveSchedulerInitialized = true;
+    window.scheduleProactiveChat();
+    assert.equal(timers.size, 1);
+    window.isNekoClickGuideActive = true;
+    const timer = timers.get(state.proactiveChatTimer);
+    timers.delete(state.proactiveChatTimer);
+    await timer();
+    assert.equal(state.proactiveChatTimer, null);
+    assert.equal(timers.size, 0, 'the guide blocks rearming the expired timer');
+    window.isNekoClickGuideActive = false;
+    release();
+    assert.equal(timers.size, 1, 'release must restore the chat timer');
+
+    listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+    release();
+    assert.equal(timers.size, 0, 'other tutorial sources must still block rearming');
+});
+
+test('overlapping tutorial sources keep vision stopped until the final release', () => {
+    const listeners = new Map();
+    let intervalCount = 0;
+    const window = {
+        appState: { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: false },
+        appConst: {},
+        addEventListener(type, listener) { listeners.set(type, listener); }
+    };
+    vm.runInNewContext(source, {
+        window,
+        document: { addEventListener() {}, getElementById() { return null; } },
+        localStorage: { getItem() { return null; } },
+        console,
+        setInterval() { intervalCount += 1; return intervalCount; },
+        clearInterval() {},
+        clearTimeout() {}
+    });
+    const emit = (active, source) => listeners.get('neko:home-tutorial-features-suppressed')({
+        detail: { active, source }
+    });
+    emit(true, 'yui-guide-director');
+    emit(true, 'avatar-reload-override');
+    emit(true, 'yui-guide-director'); // Enforce repeats must not create extra holds.
+    emit(false, 'avatar-reload-override');
+    assert.equal(window.appProactive.isHomeTutorialFeatureSuppressed(), true);
+    assert.equal(intervalCount, 0);
+    emit(false, 'yui-guide-director');
+    assert.equal(window.appProactive.isHomeTutorialFeatureSuppressed(), false);
+    assert.equal(intervalCount, 1);
+
+    emit(true); // Feature controller's begin/end have no source field.
+    emit(true, 'avatar-reload-override');
+    emit(false);
+    assert.equal(window.appProactive.isHomeTutorialFeatureSuppressed(), true);
+    assert.equal(intervalCount, 1);
+    emit(false, 'avatar-reload-override');
+    assert.equal(window.appProactive.isHomeTutorialFeatureSuppressed(), false);
+    assert.equal(intervalCount, 2);
+});
 
 test('proactive scheduler re-arms after new-user icebreaker suppression', () => {
     assert.match(source, /function getNewUserIcebreakerRetryDelayMs\(\)/);
