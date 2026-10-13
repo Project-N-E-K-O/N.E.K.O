@@ -6889,5 +6889,9 @@
             "recallAlready": "이미 작별 인사를 하고 있어요",
             "composerPlaceholder": "작별 인사 중…"
         }
+    },
+    "visitFrame": {
+        "peerAway": "잠깐 자리를 비웠어요",
+        "visitingAway": "놀러 가는 중"
     }
 }

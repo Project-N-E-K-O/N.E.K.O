@@ -800,8 +800,12 @@
             if (S.screenCaptureStream && S.screenCaptureStreamLastUsed) {
                 var idleTime = Date.now() - S.screenCaptureStreamLastUsed;
                 if (idleTime >= IDLE_TIMEOUT) {
-                    // 主动视觉活跃时，不释放屏幕流（避免 macOS 反复弹窗 getDisplayMedia）
-                    var proactiveVisionActive = S.proactiveVisionEnabled && (
+                    // 主动视觉活跃时，不释放屏幕流（避免 macOS 反复弹窗 getDisplayMedia）。
+                    // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面，
+                    // 不得据设置值保留流。
+                    var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                        && window.isNekoHomeTutorialProactiveSuppressed() === true;
+                    var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
                         S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
                     );
                     var isManualScreenShare = screenButton() && screenButton().classList.contains('active');
@@ -2712,8 +2716,11 @@
         cancelPendingScreenSharingStart();
         stopScreening();
 
-        // 判断主动视觉是否活跃
-        var proactiveVisionActive = S.proactiveVisionEnabled && (
+        // 判断主动视觉是否活跃（教程抑制期间视觉属于被暂停面，
+        // 不得据设置真值保留流，否则停止分享后屏幕流被无限期扣住）。
+        var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+            && window.isNekoHomeTutorialProactiveSuppressed() === true;
+        var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
             S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
         );
 

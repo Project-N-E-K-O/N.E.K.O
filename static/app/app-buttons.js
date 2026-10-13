@@ -2526,9 +2526,13 @@
                     throw error;
                 }
 
-                // Start proactive vision during speech if enabled
+                // Start proactive vision during speech if enabled.
+                // 教程抑制期间不启动：acquireProactiveVisionStream 可能弹出
+                // 系统屏幕采集授权框，而视觉属于被暂停面。
                 try {
-                    if (S.proactiveVisionEnabled) {
+                    var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                        && window.isNekoHomeTutorialProactiveSuppressed() === true;
+                    if (S.proactiveVisionEnabled && !tutorialHoldsVision) {
                         if (typeof window.acquireProactiveVisionStream === 'function') {
                             await window.acquireProactiveVisionStream();
                         }

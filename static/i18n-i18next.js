@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 串门 PR-12（聊天面与知情同意）与上游（重力猫、访问复盘、VRM 情绪设置）合并，刷新客户端 locale 缓存。
-    const LOCALE_VERSION = '2026-10-13-visit-pr12-review-round1';
+    // 串门 PR-12（聊天面与知情同意）合入 main 上的串门 PR-10 / PR-11（访客层徽标）与重力猫、访问复盘、VRM 情绪设置文案，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-13-visit-pr12-main-merge-pr3403';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

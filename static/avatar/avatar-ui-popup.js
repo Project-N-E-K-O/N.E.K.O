@@ -1372,8 +1372,9 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     fpsSlider.addEventListener('change', () => {
         const idx = parseInt(fpsSlider.value, 10);
         window.targetFrameRate = fpsValues[idx];
-        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 先派发再保存：串门取帧期间的临时帧率（nekoTargetFrameRateHold）由这个事件撤掉，保存时才存用户新选的值
         window.dispatchEvent(new CustomEvent('neko-frame-rate-changed', { detail: { fps: fpsValues[idx] } }));
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
     });
     fpsSlider.addEventListener('click', (e) => e.stopPropagation());
     fpsSlider.addEventListener('mousedown', (e) => e.stopPropagation());

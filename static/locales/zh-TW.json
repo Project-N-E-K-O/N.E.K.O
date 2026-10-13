@@ -6889,5 +6889,9 @@
             "recallAlready": "她們已經在道別了",
             "composerPlaceholder": "她們正在道別…"
         }
+    },
+    "visitFrame": {
+        "peerAway": "離開了一下",
+        "visitingAway": "串門中"
     }
 }

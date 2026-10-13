@@ -5317,6 +5317,18 @@
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
                         try {
+                            function replySuppressedScreenshot() {
+                                if (typeof window.isNekoHomeTutorialProactiveSuppressed !== 'function'
+                                    || !window.isNekoHomeTutorialProactiveSuppressed()) return false;
+                                // 回空结果解除后端 future，避免额外等待 3 秒。现有协议
+                                // 没有“拒绝兜底”语义：本机连接仍可能由 pyautogui 截图，
+                                // 此闸门只保证前端不发送教程期间的屏幕内容。
+                                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                                    S.socket.send(JSON.stringify({ action: 'screenshot_response', data: '' }));
+                                }
+                                return true;
+                            }
+                            if (replySuppressedScreenshot()) return;
                             var dataUrl = null;
                             // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
                             // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
@@ -5331,6 +5343,7 @@
                             } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
+                            if (replySuppressedScreenshot()) return;
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
                                 // null = 窗口截图或无法确定 → 不叠加

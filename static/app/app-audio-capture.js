@@ -1107,8 +1107,11 @@
             // 先显示选择提示
             window.showStatusToast(window.t ? window.t('app.deviceSelected', { device: deviceName }) : `已选择 ${deviceName}`, 3000);
 
-            // 保存需要恢复的状态
-            const shouldRestartProactiveVision = S.proactiveVisionEnabled && S.isRecording;
+            // 保存需要恢复的状态（教程抑制期间被停掉的视觉不由换麦恢复，
+            // 由抑制释放事件统一补挂，避免教程中途重启屏幕采集）
+            const tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                && window.isNekoHomeTutorialProactiveSuppressed() === true;
+            const shouldRestartProactiveVision = S.proactiveVisionEnabled && S.isRecording && !tutorialHoldsVision;
             const shouldRestartScreening = S.videoSenderInterval !== undefined && S.videoSenderInterval !== null;
 
             // 防止并发切换导致状态混乱

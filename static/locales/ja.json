@@ -6889,5 +6889,9 @@
             "recallAlready": "もうお別れの挨拶をしています",
             "composerPlaceholder": "お別れの挨拶中…"
         }
+    },
+    "visitFrame": {
+        "peerAway": "ちょっと席を外しています",
+        "visitingAway": "おでかけ中"
     }
 }

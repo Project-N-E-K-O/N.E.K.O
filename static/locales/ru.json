@@ -6889,5 +6889,9 @@
             "recallAlready": "Они уже прощаются",
             "composerPlaceholder": "Прощаются…"
         }
+    },
+    "visitFrame": {
+        "peerAway": "Ненадолго отошла",
+        "visitingAway": "В гостях"
     }
 }

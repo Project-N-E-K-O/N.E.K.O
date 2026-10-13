@@ -3,33 +3,12 @@
 
     function noop() {}
 
-    const PROACTIVE_STATE_KEYS = Object.freeze([
-        'proactiveChatEnabled',
-        'proactiveVisionEnabled',
-        'proactiveVisionChatEnabled',
-        'proactiveNewsChatEnabled',
-        'proactiveCommunityChatEnabled',
-        'proactiveVideoChatEnabled',
-        'proactivePersonalChatEnabled',
-        'proactiveMusicEnabled',
-        'proactiveMemeEnabled',
-        'proactiveMiniGameInviteEnabled'
-    ]);
-
-    function snapshotProactiveState() {
-        const appState = window.appState || null;
-        const snapshot = {};
-        PROACTIVE_STATE_KEYS.forEach((key) => {
-            if (typeof window[key] !== 'undefined') {
-                snapshot[key] = !!window[key];
-            } else if (appState && typeof appState[key] !== 'undefined') {
-                snapshot[key] = !!appState[key];
-            } else {
-                snapshot[key] = false;
-            }
-        });
-        return snapshot;
-    }
+    // 纯运行时抑制（与小剧场 lockProactiveChatForTheater 约定一致）：
+    // 本控制器不改写任何 proactive 设置的内存镜像——那些值会被 saveSettings
+    // 持久化并同步到其他窗口，临时改写会在抑制期间的任意一次保存里被固化
+    // 成用户设置。抑制 = 停运行时 + 登记 proactiveRuntimeHold + 派发事件；
+    // 触发面由 app-proactive 的 isHomeTutorialFeatureSuppressed 统一拦截
+    // （经 isProactiveRuntimeHeld），标志存活到模型恢复完成为止。
 
     function stopProactiveRuntime() {
         [
@@ -47,50 +26,20 @@
         });
     }
 
-    function maybeRestartProactiveRuntime(snapshot) {
-        if (!snapshot || !snapshot.proactiveChatEnabled) {
-            return;
-        }
-        const hasMode = PROACTIVE_STATE_KEYS.some((key) => key !== 'proactiveChatEnabled' && !!snapshot[key]);
-        const scheduler = window.appProactive && typeof window.appProactive.scheduleProactiveChat === 'function'
-            ? window.appProactive.scheduleProactiveChat
-            : window.scheduleProactiveChat;
-        if (hasMode && typeof scheduler === 'function') {
-            try {
-                scheduler.call(window);
-            } catch (error) {
-                console.warn('[TutorialAvatarReloadController] 主动搭话调度恢复失败:', error);
-            }
-        }
-    }
-
-    function applyProactiveState(values, options) {
-        if (!values || typeof values !== 'object') {
-            return;
-        }
-        const appState = window.appState || null;
-        PROACTIVE_STATE_KEYS.forEach((key) => {
-            if (!Object.prototype.hasOwnProperty.call(values, key)) {
-                return;
-            }
-            const next = !!values[key];
-            window[key] = next;
-            if (appState && typeof appState[key] !== 'undefined') {
-                appState[key] = next;
-            }
-        });
-        stopProactiveRuntime();
-        if (options && options.restart) {
-            maybeRestartProactiveRuntime(values);
-        }
-    }
-
-    function buildDisabledProactiveState() {
-        const state = {};
-        PROACTIVE_STATE_KEYS.forEach((key) => {
-            state[key] = false;
-        });
-        return state;
+    function dispatchTutorialSuppressionEvent(active) {
+        // 与 home 教程 feature controller 共用同一事件面：抑制开始要停调度、
+        // 撤回展示中的情境弹窗（教程期间不弹 modal），解除要重排调度、补挂
+        // 视觉、重放暂存的提示。本层的释放事件在模型恢复完成后才派发——
+        // feature controller 的 end 先于模型恢复，那一次的 active:false 被
+        // 本层 hold 拦下的部分由这条补上。
+        try {
+            // window.CustomEvent 优先：vm 测试沙箱只挂 window 属性，浏览器里
+            // 两者等价。
+            const EventConstructor = window.CustomEvent || CustomEvent;
+            window.dispatchEvent(new EventConstructor('neko:home-tutorial-features-suppressed', {
+                detail: { active: !!active, source: 'avatar-reload-override' }
+            }));
+        } catch (_) { }
     }
 
     class TutorialAvatarReloadController {
@@ -114,6 +63,15 @@
 
         hasActiveOverride() {
             return !!this.override;
+        }
+
+        isProactiveRuntimeHeld() {
+            // 头像层唯一的抑制信号：beginOverride 实际停掉运行时后为 true，
+            // restoreOverride 在模型恢复完成后复位。app-proactive 的
+            // isHomeTutorialFeatureSuppressed 据此拦截触发面——覆盖
+            // feature controller begin 之前的窗口，以及它的 end 先于模型
+            // 恢复完成的 teardown 窗口（调度可以排，触发必须拦）。
+            return !!(this.override && this.override.proactiveRuntimeHold === true);
         }
 
         getPendingPromise() {
@@ -181,16 +139,13 @@
                 };
                 this.override.currentName = currentName;
                 this.override.snapshotPayload = snapshotPayload;
-                const featureController = window.NekoHomeTutorialFeatureController;
-                const proactiveManagedByTutorialLifecycle = !!(
-                    featureController
-                    && typeof featureController.isActive === 'function'
-                    && featureController.isActive()
-                );
-                if (!proactiveManagedByTutorialLifecycle) {
-                    this.override.proactiveSnapshot = snapshotProactiveState();
-                    applyProactiveState(buildDisabledProactiveState());
-                }
+                // 纯运行时抑制：停调度/视觉、登记标志、派发事件。不写任何
+                // 设置内存，也不管 feature controller 是否已激活——本层标志
+                // 要活到模型恢复完成，比 controller 的生命周期更长（它的 end
+                // 先于 restoreOverride），两层各管各的、由同一道闸门聚合。
+                override.proactiveRuntimeHold = true;
+                dispatchTutorialSuppressionEvent(true);
+                stopProactiveRuntime();
 
                 if (!skipSourceModelFade) {
                     await Promise.resolve(this.fadeOutCurrentModel({
@@ -272,7 +227,6 @@
 
             const currentName = override.currentName;
             const snapshotPayload = override.snapshotPayload;
-            const proactiveSnapshot = override.proactiveSnapshot;
             override.restoring = true;
 
             const restorePromise = Promise.resolve().then(async () => {
@@ -293,7 +247,13 @@
                         } catch (_) {}
                     }
                 } finally {
-                    applyProactiveState(proactiveSnapshot, { restart: true });
+                    // 恢复尝试（含 showCurrentModel 降级）结束后解除 hold：
+                    // 即使恢复失败也不能永久锁住已结束的教程，当前没有保证
+                    // 再次恢复的重试调度；失败已记录，不能将此处视为恢复成功。
+                    // app-proactive 监听后重排调度、为进行中的录音补挂视觉，
+                    // 情境弹窗模块重放暂存提示。没有任何设置值需要恢复。
+                    override.proactiveRuntimeHold = false;
+                    dispatchTutorialSuppressionEvent(false);
                     this.revealPrepared();
                     this.clearViewportWatcher();
                     if (this.override === override) {

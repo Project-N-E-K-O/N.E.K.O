@@ -6889,5 +6889,9 @@
             "recallAlready": "They're already saying goodbye",
             "composerPlaceholder": "Saying goodbye…"
         }
+    },
+    "visitFrame": {
+        "peerAway": "Stepped away",
+        "visitingAway": "Out visiting"
     }
 }

@@ -6889,5 +6889,9 @@
             "recallAlready": "Elas já estão se despedindo",
             "composerPlaceholder": "Se despedindo…"
         }
+    },
+    "visitFrame": {
+        "peerAway": "Saiu por um instante",
+        "visitingAway": "Visitando"
     }
 }

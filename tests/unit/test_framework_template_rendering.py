@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
 import pytest
 
+import config.visit_settings as visit_settings
 from main_routers import agent_router, cookies_login_router, pages_router, shared_state
 
 
@@ -21,6 +22,8 @@ PAGE_PATHS = [
 def pages_client(monkeypatch):
     monkeypatch.setattr(shared_state, "_state", shared_state._state.copy())
     monkeypatch.setattr(shared_state, "set_steamworks", lambda _value: None)
+    # /visit/transport sits behind the NEKO_VISIT_ENABLED release switch (404 while off); render it with the switch on
+    monkeypatch.setattr(visit_settings, "VISIT_ENABLED", True)
     shared_state.init_shared_state(
         role_state={},
         steamworks=None,

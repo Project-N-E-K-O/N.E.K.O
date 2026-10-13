@@ -4240,6 +4240,18 @@ class UniversalTutorialManager {
         // 清除全局引导标记
         window.isInTutorial = false;
 
+        // teardown 直接清全局标志、不经过任何抑制层的 begin/end：必须刷新
+        // 交互锁并广播转变。调度重排/视觉补挂挂在 lock-changed(locked:false)
+        // 这个最终释放边上——各来源的 features-suppressed false 事件都可能
+        // 早于最终解锁到达（scheduleProactiveChat 在闸门仍关时直接返回、
+        // 不留定时器），漏掉这次广播会让聊天/视觉定时器死到下一次无关操作。
+        try {
+            const interactionRuntime = window.NekoHomeTutorialRuntime;
+            if (interactionRuntime && typeof interactionRuntime.refreshInteractionLock === 'function') {
+                interactionRuntime.refreshInteractionLock('tutorial-teardown');
+            }
+        } catch (_) { }
+
         // 恢复页面滚动
         this.unlockBodyScroll();
 
