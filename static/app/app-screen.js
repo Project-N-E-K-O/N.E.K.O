@@ -37,10 +37,12 @@
     // 来源列表里还在确认来源是否存在的点选：开始分享前等它们结束，免得先拿
     // 上一个来源（或默认的整块屏幕）开播，再被晚到的选择切走。
     var pendingScreenSourceValidations = new Set();
+    // 最近一次点选（latestScreenSourceClickToken 对应的那次）的确认结果。
+    var latestScreenSourceClickOutcome = null;
 
     // 返回的 release(outcome)：'committed' 这次点击选中了来源；'rejected' 来源
     // 不在或需要用户再确认一次；'superseded' 被更新的点击或选择取代。
-    function holdScreenShareStartForSourceValidation() {
+    function holdScreenShareStartForSourceValidation(clickToken) {
         var resolveValidation = null;
         var validation = new Promise(function (resolve) { resolveValidation = resolve; });
         pendingScreenSourceValidations.add(validation);
@@ -48,8 +50,12 @@
         return function (outcome) {
             if (released) return;
             released = true;
+            outcome = outcome || 'superseded';
+            if (latestScreenSourceClickToken === clickToken) {
+                latestScreenSourceClickOutcome = outcome;
+            }
             pendingScreenSourceValidations.delete(validation);
-            resolveValidation(outcome || 'superseded');
+            resolveValidation(outcome);
         };
     }
     var explicitScreenSourceSelectionTitle = null;
@@ -2133,15 +2139,16 @@
 
     async function startScreenSharingOnce(attempt) {
         // 等待期间用户可能又点了别的来源，新的确认会在等待中加进来：一直等到
-        // 没有进行中的确认为止。用户要选的来源被拒（已关闭，或标题变了要再
-        // 确认）时停止这次启动，不拿上一个来源（或默认整块屏幕）开播。
-        var sourceChoiceRejected = false;
+        // 没有进行中的确认为止。最后一次点选被拒（来源已关闭，或标题变了要
+        // 再确认）时停止这次启动，不拿上一个来源（或默认整块屏幕）开播；更早
+        // 被拒、之后又点选成功的，按最后那次选择照常开播。
+        var waitedForSourceChoice = false;
         while (pendingScreenSourceValidations.size > 0) {
-            var outcomes = await Promise.all(Array.from(pendingScreenSourceValidations));
-            if (outcomes.indexOf('rejected') !== -1) sourceChoiceRejected = true;
+            waitedForSourceChoice = true;
+            await Promise.all(Array.from(pendingScreenSourceValidations));
             if (discardCancelledScreenSharingStart(attempt)) return;
         }
-        if (sourceChoiceRejected) {
+        if (waitedForSourceChoice && latestScreenSourceClickOutcome === 'rejected') {
             console.warn('[屏幕源] 用户选的来源未通过确认，停止本次屏幕分享启动');
             return;
         }
@@ -3538,7 +3545,7 @@
                     // 一个已不存在的来源，开始分享时会退回到分享整块屏幕，所
                     // 以点下时先确认它还在，不在就提示重新选，不改动当前选择。
                     // 确认期间开始分享要等这次确认结束，不能先拿上一个来源开播。
-                    var releaseValidation = holdScreenShareStartForSourceValidation();
+                    var releaseValidation = holdScreenShareStartForSourceValidation(clickToken);
                     var availability;
                     try {
                         availability = await checkListedScreenSourceAvailable(source.id);

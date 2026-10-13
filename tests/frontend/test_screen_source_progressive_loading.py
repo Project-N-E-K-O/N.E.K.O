@@ -2410,6 +2410,55 @@ def test_share_start_stops_when_the_pending_click_is_rejected(
 
 
 @pytest.mark.frontend
+def test_share_start_follows_a_later_accepted_click_after_a_rejected_one(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page)
+    _install_share_session(page)
+    result = page.evaluate(
+        """async () => {
+            const share = window.__share;
+            const popup = document.getElementById('live2d-popup-screen');
+            window.__metadataSources = window.__metadataSources.concat([
+                { id: 'window:3', name: 'Mail', display_id: '' },
+            ]);
+            await window.renderFloatingScreenSourceList(popup);
+            const original = window.__desktopProvider.getSources;
+            const releases = [];
+            window.__desktopProvider.getSources = (options) => {
+                if (releases.length < 2 && options.thumbnailSize.width === 0) {
+                    return new Promise((resolve) => {
+                        releases.push((sources) => resolve(sources));
+                    });
+                }
+                return original(options);
+            };
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const start = window.startScreenSharing();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // The user also picks window:3 while both checks are pending…
+            popup.querySelector('.screen-source-option[data-source-id="window:3"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // …window:2's check reports it closed, then window:3's passes.
+            releases[0](window.__metadataSources.filter((source) => source.id !== 'window:2'));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            releases[1](window.__metadataSources);
+            await start;
+            await share.waitFor(() => share.calls.length >= 1);
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            window.__desktopProvider.getSources = original;
+            return {
+                calls: share.calls.slice(),
+                selectedId: window.appState.selectedScreenSourceId,
+            };
+        }"""
+    )
+    assert result["selectedId"] == "window:3"
+    assert result["calls"] and set(result["calls"]) == {"window:3"}
+
+
+@pytest.mark.frontend
 def test_portal_pick_switches_an_active_share_even_when_remembering(
     page: Page,
 ) -> None:
