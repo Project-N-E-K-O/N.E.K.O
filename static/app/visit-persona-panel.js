@@ -116,12 +116,17 @@
     var openPanel = null;
 
     /**
-     * 打开面板；同一时刻只开一个（再调用时复用已开的那个、返回它的结果）。
+     * 打开面板；同一时刻只开一个。同一角色再调用时复用已开的那个、返回它的结果；
+     * 换了角色就先关掉旧面板（它的结果为 false），再为新角色开一个。
      */
     window.openVisitPersonaPreview = function openVisitPersonaPreview(catgirl, options) {
         options = options || {};
         if (!catgirl) return Promise.resolve(false);
-        if (openPanel) return openPanel.result;
+        if (openPanel) {
+            if (openPanel.catgirl === catgirl) return openPanel.result;
+            // 别的窗口换了角色：确认旧角色的面板不能放行新角色的串门
+            openPanel.close(false);
+        }
 
         var overlay = el('div', 'visit-dialog-overlay');
         var dialog = el('div', 'visit-dialog visit-persona');
@@ -155,7 +160,9 @@
         var settle;
         var panel = {
             result: new Promise(function (resolve) { settle = resolve; }),
-            closed: false
+            closed: false,
+            catgirl: catgirl,
+            close: null
         };
         openPanel = panel;
         var current = null;      // 最近一次 GET 的结果
@@ -170,6 +177,7 @@
             if (openPanel === panel) openPanel = null;
             settle(confirmed === true);
         }
+        panel.close = close;
 
         function setNotice(lines) {
             while (notice.firstChild) notice.removeChild(notice.firstChild);

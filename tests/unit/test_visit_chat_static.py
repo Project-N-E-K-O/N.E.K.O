@@ -419,3 +419,11 @@ def test_visit_lines_do_not_toast_text_chatting():
     buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
     assert """                    if (!isVisitLine) {
                         window.showStatusToast(window.t ? window.t('app.textChattingShort')""" in buttons
+
+
+def test_persona_panel_is_reused_only_for_the_same_character():
+    # 别的窗口换了角色：旧角色面板的确认不能放行新角色的串门
+    source = _read(PERSONA)
+    assert "if (openPanel.catgirl === catgirl) return openPanel.result;" in source
+    assert "openPanel.close(false);" in source
+    assert "panel.close = close;" in source

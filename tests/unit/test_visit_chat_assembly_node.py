@@ -1171,6 +1171,24 @@ const report = {};
     report.geometry_on_close = refreshes;
     report.geometry_dialog_closed = h.dialogs().length;
   }
+  // ── 切换角色：上一位的串门 UI 状态清掉，不往新角色的聊天里补结束消息 ──
+  {
+    const routes = {
+      '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true } }),
+      '/api/visit/state?catgirl=%E5%B0%8F%E6%A9%98': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }),
+    };
+    const h = createHarness({ routes });
+    await h.chat.afterBind(h.socket, '咪咪');
+    h.I.submitVisitChatText({ text: '还在等回显', requestId: 'sw1' });
+    report.switch_before_active = h.chat.isActive();
+    const socket2 = { readyState: 1, send() {} };
+    h.win.appState.socket = socket2;
+    h.win.lanlan_config.lanlan_name = '小橘';
+    await h.chat.afterBind(socket2, '小橘');
+    report.switch_after_active = h.chat.isActive();
+    report.switch_no_ended = !h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    report.switch_pending = h.chat._test.state().pending.length;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1560,3 +1578,10 @@ def test_raw_dialogs_refresh_compact_hit_geometry(report):
     assert report["geometry_on_open"] >= 1
     assert report["geometry_on_close"] > report["geometry_on_open"]
     assert report["geometry_dialog_closed"] == 0
+
+
+def test_character_switch_clears_the_old_visit_without_an_ended_message(report):
+    assert report["switch_before_active"] is True
+    assert report["switch_after_active"] is False
+    assert report["switch_no_ended"] is True
+    assert report["switch_pending"] == 0

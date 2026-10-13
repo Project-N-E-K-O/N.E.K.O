@@ -316,6 +316,7 @@
     var peerAvatarUrl = '';
     var inviteDialog = null;     // {visitId, handle, timer}
     var endedVisitIds = [];      // 本页见过 ended 的场次（最多 32 个）
+    var boundCatgirl = '';       // 最近一次 bind 时这一页的角色名
     var previewedPeer = null;    // 出门确认时预览到的对端 {visitId, name, shortCode, crossRegion}
 
     function markEnded(visitId) {
@@ -867,6 +868,22 @@
             }
             if (visit.reconnecting) pollReconnect();
         }, RECONNECT_POLL_MS);
+    }
+
+    // 切换角色：清掉上一位角色的串门 UI 状态（不走 onEnded：不往新角色刚清空的聊天里写结束消息）
+    function resetForCharacterSwitch() {
+        openDialogs.slice().forEach(function (handle) { handle.close(null); });
+        clearReconnectPoll();
+        releaseVisitTextSession();
+        lines.forEach(function (entry) { if (entry.stallTimer) clearTimeout(entry.stallTimer); });
+        lines.clear();
+        pendingLocal = [];
+        visit = blankVisit();
+        typing = null;
+        peerAvatarUrl = '';
+        previewedPeer = null;
+        lastEnded = null;
+        render();
     }
 
     // 换到另一场：清掉上一场的状态、台词拼接、待认领的本地气泡与访客头像（line_id 按场次计数）
@@ -2205,7 +2222,13 @@
      */
     async function afterBind(socket, catgirl, retryAttempt) {
         // 新连接：bind 会重放所有没定下来的 debrief 块；页上还在的按 request_id 跳过，被消息上限裁掉的要重新上屏
-        if (!retryAttempt) debriefSeen.clear();
+        if (!retryAttempt) {
+            debriefSeen.clear();
+            var boundName = catgirl || currentCatgirl();
+            // 换了角色（app-character.js 清空聊天后为新角色连上）：上一位的串门由后端收尾，这一页不再替它补结束消息
+            if (boundName && boundCatgirl && boundName !== boundCatgirl) resetForCharacterSwitch();
+            if (boundName) boundCatgirl = boundName;
+        }
         var seqAtSend = stateFrameSeq;
         var name = catgirl || currentCatgirl();
         var result = name
