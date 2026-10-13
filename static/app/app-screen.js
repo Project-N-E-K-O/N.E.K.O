@@ -2127,7 +2127,9 @@
     }
 
     async function startScreenSharingOnce(attempt) {
-        if (pendingScreenSourceValidations.size > 0) {
+        // 等待期间用户可能又点了别的来源，新的确认会在等待中加进来：一直等到
+        // 没有进行中的确认为止。
+        while (pendingScreenSourceValidations.size > 0) {
             await Promise.all(Array.from(pendingScreenSourceValidations));
             if (discardCancelledScreenSharingStart(attempt)) return;
         }

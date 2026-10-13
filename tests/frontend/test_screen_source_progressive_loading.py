@@ -2171,6 +2171,55 @@ def test_share_start_waits_for_a_pending_source_click(page: Page) -> None:
 
 
 @pytest.mark.frontend
+def test_share_start_also_waits_for_a_click_made_while_it_waits(page: Page) -> None:
+    _install_screen_source_harness(page)
+    _install_share_session(page)
+    result = page.evaluate(
+        """async () => {
+            const share = window.__share;
+            const popup = document.getElementById('live2d-popup-screen');
+            window.__metadataSources = window.__metadataSources.concat([
+                { id: 'window:3', name: 'Mail', display_id: '' },
+            ]);
+            await window.renderFloatingScreenSourceList(popup);
+            const original = window.__desktopProvider.getSources;
+            const releases = [];
+            window.__desktopProvider.getSources = (options) => {
+                if (releases.length < 2 && options.thumbnailSize.width === 0) {
+                    return new Promise((resolve) => {
+                        releases.push(() => resolve(window.__metadataSources));
+                    });
+                }
+                return original(options);
+            };
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const start = window.startScreenSharing();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // A second click while the start is already waiting.
+            popup.querySelector('.screen-source-option[data-source-id="window:3"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            releases[0]();
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const callsBeforeSecondCheck = share.calls.slice();
+            releases[1]();
+            await start;
+            await share.waitFor(() => share.calls.length >= 1);
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            window.__desktopProvider.getSources = original;
+            return {
+                callsBeforeSecondCheck,
+                calls: share.calls.slice(),
+                selectedId: window.appState.selectedScreenSourceId,
+            };
+        }"""
+    )
+    assert result["callsBeforeSecondCheck"] == []
+    assert result["selectedId"] == "window:3"
+    assert result["calls"] and set(result["calls"]) == {"window:3"}
+
+
+@pytest.mark.frontend
 def test_portal_pick_switches_an_active_share_even_when_remembering(
     page: Page,
 ) -> None:
