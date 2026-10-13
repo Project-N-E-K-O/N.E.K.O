@@ -3097,6 +3097,8 @@
             "selected": "Selecionado {{source}}",
             "current": "Atual: {{source}}",
             "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia",
+            "sourceClosed": "A fonte selecionada não está mais disponível (a janela pode ter sido fechada). Selecione novamente",
+            "sourceRenamed": "O título desta janela mudou para \"{{source}}\". Clique novamente para confirmar",
             "captureFailed": "A captura de tela foi interrompida. Verifique as permissões do sistema ou selecione a fonte novamente",
             "clickToChoose": "Clique para escolher uma fonte de tela",
             "chooseAgain": "Escolher outra fonte de tela"
