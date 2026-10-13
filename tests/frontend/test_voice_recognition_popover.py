@@ -1424,7 +1424,7 @@ def test_screen_source_subwindow_closes_when_parent_popup_hides(
 
 @pytest.mark.frontend
 def test_screen_subwindow_is_reused_when_row_hover_returns(page: Page) -> None:
-    install_voice_popover_harness(page, deferred_permission=False)
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(
         """async () => {
             await window.renderFloatingMicList(window.__voicePopoverTest.popup());
@@ -1459,7 +1459,7 @@ def test_screen_subwindow_is_reused_when_row_hover_returns(page: Page) -> None:
 
 @pytest.mark.frontend
 def test_screen_subwindow_cache_invalidates_on_source_change(page: Page) -> None:
-    install_voice_popover_harness(page, deferred_permission=False)
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(
         """async () => {
             await window.renderFloatingMicList(window.__voicePopoverTest.popup());
@@ -1496,7 +1496,7 @@ def test_screen_subwindow_cache_invalidates_on_source_change(page: Page) -> None
 
 @pytest.mark.frontend
 def test_screen_subwindow_failed_render_is_not_cached(page: Page) -> None:
-    install_voice_popover_harness(page, deferred_permission=False)
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(
         """async () => {
             window.__screenRenderFailures = 1;
@@ -1541,7 +1541,7 @@ def test_screen_subwindow_failed_render_is_not_cached(page: Page) -> None:
 
 @pytest.mark.frontend
 def test_screen_subwindow_cache_invalidates_on_remote_remember_toggle(page: Page) -> None:
-    install_voice_popover_harness(page, deferred_permission=False)
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(
         """async () => {
             await window.renderFloatingMicList(window.__voicePopoverTest.popup());
@@ -1577,9 +1577,146 @@ def test_screen_subwindow_cache_invalidates_on_remote_remember_toggle(page: Page
     ) is False
 
 
+def _open_cached_screen_panel_then_device(page: Page):
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    device = page.locator('[data-neko-mic-main-action="device"]')
+    screen.hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    device.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'device';
+        }"""
+    )
+    return screen, device
+
+
+def _wait_for_panel(page: Page, key: str) -> None:
+    page.wait_for_function(
+        """(key) => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === key;
+        }""",
+        arg=key,
+    )
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("change", ["window_closed", "window_opened", "lookup_failed"])
+def test_screen_subwindow_cache_rebuilds_when_sources_are_not_current(
+    page: Page, change: str
+) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    screen, _device = _open_cached_screen_panel_then_device(page)
+    # The cached list is a snapshot. A window closed meanwhile would stay
+    # clickable and, when picked, fall back to sharing a whole monitor; so
+    # reuse re-checks the source ids first and rebuilds on any mismatch or
+    # failed lookup.
+    if change == "window_closed":
+        page.evaluate("() => { window.__desktopSources = []; }")
+    elif change == "window_opened":
+        page.evaluate(
+            "() => { window.__desktopSources.push({ id: 'window:7', name: 'New' }); }"
+        )
+    else:
+        page.evaluate("() => { window.__desktopGetSourcesFails = true; }")
+    screen.hover()
+    _wait_for_panel(page, "screen")
+    page.wait_for_function("window.__screenRenderOptions.length === 2")
+    assert page.evaluate("window.__desktopGetSourcesCalls") == 1
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+
+@pytest.mark.frontend
+def test_screen_subwindow_cache_reuse_checks_sources_without_rerender(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    screen, _device = _open_cached_screen_panel_then_device(page)
+    screen.hover()
+    _wait_for_panel(page, "screen")
+    assert page.evaluate("window.__desktopGetSourcesCalls") == 1
+    assert page.evaluate("window.__screenRenderOptions.length") == 1
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+
+@pytest.mark.frontend
+def test_stale_screen_cache_check_does_not_reattach_after_row_change(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    screen, device = _open_cached_screen_panel_then_device(page)
+    page.evaluate(
+        """() => {
+            window.__desktopGetSourcesGate = new Promise((resolve) => {
+                window.__releaseDesktopGetSources = resolve;
+            });
+        }"""
+    )
+    screen.hover()
+    page.wait_for_function("window.__desktopGetSourcesCalls === 1")
+    # The pointer moves on while the check is pending; the late result must
+    # not hang the screen panel back next to the device row.
+    device.hover()
+    _wait_for_panel(page, "device")
+    page.evaluate("() => window.__releaseDesktopGetSources()")
+    page.wait_for_timeout(150)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate(
+        "document.querySelector('.neko-mic-subwindow').dataset.nekoMicActionKey"
+    ) == "device"
+    assert page.locator(".screen-source-option").count() == 0
+
+
+@pytest.mark.frontend
+def test_stale_screen_cache_check_does_not_add_a_second_panel_after_reopen(
+    page: Page,
+) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    screen, device = _open_cached_screen_panel_then_device(page)
+    page.evaluate(
+        """() => {
+            window.__desktopGetSourcesGate = new Promise((resolve) => {
+                window.__releaseDesktopGetSources = resolve;
+            });
+        }"""
+    )
+    screen.hover()
+    page.wait_for_function("window.__desktopGetSourcesCalls === 1")
+    # Leaving and returning while the check is pending starts a newer screen
+    # open, which builds a fresh panel; the older check must then drop the
+    # cached one instead of attaching a second screen panel.
+    device.hover()
+    _wait_for_panel(page, "device")
+    screen.hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 2")
+    page.evaluate("() => window.__releaseDesktopGetSources()")
+    page.wait_for_timeout(150)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.locator(".screen-source-option").count() == 1
+
+
+@pytest.mark.frontend
+def test_screen_subwindow_cache_is_rebuilt_without_enumerating_when_it_may_prompt(
+    page: Page,
+) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    screen, _device = _open_cached_screen_panel_then_device(page)
+    # On Linux enumeration can open the portal dialog, so hover may not check
+    # the cached list; the panel is rebuilt in the click-to-enumerate state.
+    page.evaluate("() => { window.electronDesktopCapturer.sourceEnumerationMayPrompt = true; }")
+    screen.hover()
+    _wait_for_panel(page, "screen")
+    page.wait_for_function("window.__screenRenderOptions.length === 2")
+    assert page.evaluate("window.__desktopGetSourcesCalls") == 0
+    assert page.evaluate("window.__screenRenderOptions[1].deferEnumeration") is True
+
+
 @pytest.mark.frontend
 def test_screen_subwindow_with_pending_thumbnails_is_not_cached(page: Page) -> None:
-    install_voice_popover_harness(page, deferred_permission=False)
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(
         """async () => {
             window.__screenThumbnailsComplete = false;
@@ -1738,7 +1875,7 @@ def test_screen_subwindow_closes_after_keep_zone_stop_then_menu_whitespace(
 
 @pytest.mark.frontend
 def test_screen_subwindow_survives_menu_edge_grazing(page: Page) -> None:
-    install_voice_popover_harness(page, deferred_permission=False)
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(
         """async () => {
             await window.renderFloatingMicList(window.__voicePopoverTest.popup());

@@ -4526,6 +4526,45 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return true;
             }
 
+            // 缓存面板里的来源列表是缓存那一刻的快照，期间关掉的窗口还会列
+            // 在里面；点它会走「来源不存在」的回退。复用前只取一次来源元数
+            // 据（不带缩略图）核对 id，集合不变才复用，否则重建。
+            async function areCachedScreenSourcesCurrent(panel) {
+                var options = panel.querySelectorAll('.screen-source-option');
+                // 延迟枚举态（只有按钮）没有列表，不会过期。
+                if (options.length === 0) return true;
+                var provider = typeof window.getDesktopCaptureProvider === 'function'
+                    ? window.getDesktopCaptureProvider() : null;
+                if (!provider || typeof provider.getSources !== 'function') return false;
+                // Linux 上枚举可能弹出系统分享对话框，悬停不能触发，直接重建
+                // （重建会回到「点击后才枚举」的延迟态）。
+                if (typeof window.desktopSourceEnumerationMayPrompt !== 'function'
+                    || window.desktopSourceEnumerationMayPrompt(provider)) {
+                    return false;
+                }
+                try {
+                    var request = [{ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } }];
+                    var sources = typeof window.invokeDesktopCaptureWithTimeout === 'function'
+                        ? await window.invokeDesktopCaptureWithTimeout(provider, 'getSources', request)
+                        : await provider.getSources(request[0]);
+                    var currentIds = (sources || []).map(function (source) {
+                        return String((source && source.id) || '');
+                    }).filter(function (id) {
+                        return id.indexOf('screen:') === 0 || id.indexOf('window:') === 0;
+                    }).sort();
+                    var cachedIds = Array.prototype.map.call(options, function (option) {
+                        return String(option.dataset.sourceId || '');
+                    }).sort();
+                    if (currentIds.length !== cachedIds.length) return false;
+                    for (var i = 0; i < currentIds.length; i += 1) {
+                        if (currentIds[i] !== cachedIds[i]) return false;
+                    }
+                    return true;
+                } catch (error) {
+                    return false;
+                }
+            }
+
             function takeCachedScreenMicSubwindow() {
                 var panel = cachedScreenMicSubwindow;
                 cachedScreenMicSubwindow = null;
@@ -5317,6 +5356,22 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     // 复用前先拆掉当前打开的其他子面板，否则两块面板会同时挂
                     // 在文档上（createMicSubwindow 的拆除逻辑被缓存路径绕开）。
                     teardownOwnedMicSubwindows();
+                    var openGeneration = micActionHoverOpenGeneration;
+                    var sourcesUnchanged = await areCachedScreenSourcesCurrent(cached);
+                    // 核对期间指针去了别的行、菜单关了或又发起了新的打开：
+                    // 这次打开已过期，不能再把面板挂回去。
+                    if (voiceControlsDisposed
+                        || openGeneration !== micActionHoverOpenGeneration
+                        || activeMicActionKey !== 'screen') {
+                        cached.remove();
+                        return;
+                    }
+                    if (!sourcesUnchanged) {
+                        cached.remove();
+                        cached = null;
+                    }
+                }
+                if (cached) {
                     document.body.appendChild(cached);
                     if (micPopupLayout) micPopupLayout.setPanel(cached);
                     positionMicSubwindow(cached);

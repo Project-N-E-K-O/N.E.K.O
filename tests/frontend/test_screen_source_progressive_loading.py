@@ -491,6 +491,143 @@ def test_remembered_title_wins_when_an_old_source_id_is_reused(page: Page) -> No
 
 
 @pytest.mark.frontend
+def test_clicking_a_closed_window_asks_to_choose_again_instead_of_selecting(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            window.__toasts = [];
+            window.showStatusToast = (message) => window.__toasts.push(message);
+            // The window closes after the list was rendered.
+            window.__metadataSources = window.__metadataSources.filter(
+                (source) => source.id !== 'window:2'
+            );
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return {
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId') || null,
+                pushedToMain: window.__selectedSourceCalls.filter(Boolean),
+                toasts: window.__toasts,
+                closedOptionLeft: !!document.querySelector(
+                    '.screen-source-option[data-source-id="window:2"]'
+                ),
+                screenOptionLeft: !!document.querySelector(
+                    '.screen-source-option[data-source-id="screen:1"]'
+                ),
+            };
+        }"""
+    )
+    # A stale option must not become the selection: starting to share with a
+    # missing window falls back to a whole monitor.
+    assert result == {
+        "selectedId": None,
+        "storedId": None,
+        "pushedToMain": [],
+        "toasts": ["所选来源已不存在（窗口可能已关闭），请重新选择"],
+        "closedOptionLeft": False,
+        "screenOptionLeft": True,
+    }
+
+
+@pytest.mark.frontend
+def test_click_selection_proceeds_when_the_availability_lookup_fails(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    selected = page.evaluate(
+        """async () => {
+            const original = window.__desktopProvider.getSources;
+            window.__desktopProvider.getSources = () => Promise.reject(new Error('bridge down'));
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
+        }"""
+    )
+    # A flaky bridge keeps the previous behaviour; sharing start still runs
+    # its own existence check.
+    assert selected == "window:2"
+
+
+@pytest.mark.frontend
+def test_click_selection_does_not_enumerate_when_it_may_prompt(page: Page) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            const before = window.__captureCalls.length;
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return {
+                extraCalls: window.__captureCalls.length - before,
+                selectedId: window.appState.selectedScreenSourceId,
+            };
+        }"""
+    )
+    # On Linux another enumeration could reopen the portal dialog.
+    assert result == {"extraCalls": 0, "selectedId": "window:2"}
+
+
+@pytest.mark.frontend
+def test_later_click_supersedes_a_pending_availability_check(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    selected = page.evaluate(
+        """async () => {
+            const original = window.__desktopProvider.getSources;
+            let releaseFirst = null;
+            let calls = 0;
+            window.__desktopProvider.getSources = (options) => {
+                calls += 1;
+                if (calls === 1) {
+                    return new Promise((resolve) => {
+                        releaseFirst = () => resolve(window.__metadataSources);
+                    });
+                }
+                return original(options);
+            };
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            document.querySelector(
+                '.screen-source-option[data-source-id="screen:1"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            releaseFirst();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
+        }"""
+    )
+    # The first click's late check must not overwrite the newer choice.
+    assert selected == "screen:1"
+
+
+@pytest.mark.frontend
 def test_window_selection_and_toggle_bound_the_remembered_title(page: Page) -> None:
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
     assert page.evaluate(

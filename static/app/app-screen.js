@@ -3110,6 +3110,37 @@
             }
         }
 
+        // 点选列表里的来源前确认它仍然存在。会弹系统对话框的桌面端（Linux
+        // 门户）不能为了确认再枚举一次，列表本身就是用户刚在对话框里选的；
+        // 枚举失败也放行，开始分享时还有原有的校验。
+        async function checkListedScreenSourceAvailable(sourceId) {
+            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
+                return { available: true, currentIds: null };
+            }
+            try {
+                var currentSources = await window.invokeDesktopCaptureWithTimeout(
+                    desktopProvider,
+                    'getSources',
+                    [{ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } }]
+                );
+                var currentIds = new Set((currentSources || []).map(function (s) {
+                    return s && s.id;
+                }));
+                return { available: currentIds.has(sourceId), currentIds: currentIds };
+            } catch (error) {
+                console.warn('[屏幕源] 确认来源是否存在失败，按原选择继续:', error);
+                return { available: true, currentIds: null };
+            }
+        }
+
+        // 把列表里已经不存在的来源去掉，避免用户再点到它们。
+        function dropUnavailableScreenSourceOptions(targetPopup, currentIds) {
+            if (!currentIds) return;
+            targetPopup.querySelectorAll('.screen-source-option').forEach(function (option) {
+                if (!currentIds.has(option.dataset.sourceId)) option.remove();
+            });
+        }
+
         function appendDeferredLoadButton(targetPopup, deferredOptions, buttonText) {
             var deferredLoadButton = document.createElement('button');
             deferredLoadButton.type = 'button';
@@ -3382,6 +3413,24 @@
 
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
+                    var clickToken = {};
+                    screenPopup._screenSourceClickToken = clickToken;
+                    // 列表是枚举那一刻的快照：期间关掉的窗口还列在这里。选中
+                    // 一个已不存在的来源，开始分享时会退回到分享整块屏幕，所
+                    // 以点下时先确认它还在，不在就提示重新选，不改动当前选择。
+                    var availability = await checkListedScreenSourceAvailable(source.id);
+                    if (screenPopup._screenSourceClickToken !== clickToken) return;
+                    if (!availability.available) {
+                        dropUnavailableScreenSourceOptions(screenPopup, availability.currentIds);
+                        window.showStatusToast(
+                            safeT(
+                                'app.screenSource.sourceClosed',
+                                '所选来源已不存在（窗口可能已关闭），请重新选择'
+                            ),
+                            4000
+                        );
+                        return;
+                    }
                     // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
                     await selectScreenSource(
                         source.id,

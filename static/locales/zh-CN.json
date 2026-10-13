@@ -3096,6 +3096,7 @@
             "selected": "已选择 {{source}}",
             "current": "当前来源：{{source}}",
             "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享",
+            "sourceClosed": "所选来源已不存在（窗口可能已关闭），请重新选择",
             "captureFailed": "屏幕捕获已停止，请检查系统权限或重新选择来源",
             "clickToChoose": "点击选择屏幕来源",
             "chooseAgain": "重新选择屏幕来源"

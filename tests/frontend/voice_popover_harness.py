@@ -53,7 +53,7 @@ def extract_device_change_source() -> str:
 
 
 def install_voice_popover_harness(
-    page: Page, *, deferred_permission: bool
+    page: Page, *, deferred_permission: bool, desktop_bridge: bool = False
 ) -> None:
     permission_source, render_expression = extract_voice_popover_sources()
     page.set_content(
@@ -225,6 +225,21 @@ def install_voice_popover_harness(
     }
     let deferScreenSources = false;
     const screenSourceResolvers = [];
+    // 可选的桌面来源桥（desktop_bridge=True）：复用缓存的屏幕面板前会用它
+    // 核对来源 id。__desktopSources 是「当前存在的来源」，改它模拟窗口被关掉。
+    // 默认不装：浏览器分享面板的用例依赖「没有桌面桥」。
+    window.__desktopSources = [{ id: 'screen:0:0', name: 'test-screen' }];
+    window.__desktopGetSourcesCalls = 0;
+    window.__desktopGetSourcesFails = false;
+    if (__DESKTOP_BRIDGE__) window.electronDesktopCapturer = {
+        sourceEnumerationMayPrompt: false,
+        async getSources() {
+            window.__desktopGetSourcesCalls += 1;
+            if (window.__desktopGetSourcesGate) await window.__desktopGetSourcesGate;
+            if (window.__desktopGetSourcesFails) throw new Error('getSources failed');
+            return window.__desktopSources.map((source) => ({ ...source }));
+        },
+    };
     window.__screenRenderOptions = [];
     window.renderFloatingScreenSourceList = async (container, options = {}) => {
         window.__screenRenderOptions.push({
@@ -264,6 +279,7 @@ def install_voice_popover_harness(
         source.type = 'button';
         source.className = 'screen-source-option';
         source.textContent = 'test-screen';
+        source.dataset.sourceId = 'screen:0:0';
         // 生产渲染的第二阶段先放 loading 占位再补缩略图；__screenThumbnailsComplete
         // 为 false 时停在 loading，模拟面板在第二阶段期间被拆走（填充放弃）。
         const thumbnail = document.createElement('div');
@@ -385,6 +401,9 @@ def install_voice_popover_harness(
     )
     harness = harness.replace(
         "__DEFERRED_PERMISSION__", "true" if deferred_permission else "false"
+    )
+    harness = harness.replace(
+        "__DESKTOP_BRIDGE__", "true" if desktop_bridge else "false"
     )
     harness = harness.replace("__PERMISSION_SOURCE__", permission_source)
     harness = harness.replace("__RENDER_EXPRESSION__", render_expression)

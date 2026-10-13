@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合并重力猫、访问复盘与 VRM 情绪设置文案，刷新客户端 locale 缓存。
-    const LOCALE_VERSION = '2026-10-12-pr3140-gravity-main-merge';
+    const LOCALE_VERSION = '2026-10-13-pr3415-screen-source-closed';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

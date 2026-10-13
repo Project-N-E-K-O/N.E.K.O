@@ -3096,6 +3096,7 @@
             "selected": "Seleccionado {{source}}",
             "current": "Actual: {{source}}",
             "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa",
+            "sourceClosed": "La fuente seleccionada ya no está disponible (es posible que la ventana se haya cerrado). Vuelva a seleccionarla",
             "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente",
             "clickToChoose": "Haz clic para elegir una fuente de pantalla",
             "chooseAgain": "Elegir otra fuente de pantalla"
