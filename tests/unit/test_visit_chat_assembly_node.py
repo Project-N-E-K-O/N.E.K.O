@@ -1330,6 +1330,13 @@ const report = {};
     await h.chat.afterBind(h.socket, '咪咪');
     report.snapshot_ending_released = h.win.appState.isTextSessionActive;
   }
+  // ── 还没恢复阶段（visit.side 为空）时到了发给自家猫娘的本侧亲人句：收件人按这一行自己的 side 判 ──
+  {
+    const h = createHarness();
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:1', lp: 1, text: '给自家的', final: true, truncated: false,
+      speaker: { side: 'host', kind: 'human', name: '', self: true }, addressee: { side: 'host', kind: 'cat' } });
+    report.own_recipient_author = h.lineMessage('h:1').author;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1776,3 +1783,7 @@ def test_room_created_after_a_character_switch_is_ended(report):
     end = report["switched_create_end"]
     assert end is not None
     assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end" and end["visit_id"]
+
+
+def test_self_line_recipient_uses_the_lines_own_side(report):
+    assert report["own_recipient_author"].endswith("咪咪")

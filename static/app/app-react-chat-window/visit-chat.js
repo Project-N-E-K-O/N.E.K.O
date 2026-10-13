@@ -730,7 +730,9 @@
         speaker = speaker || {};
         if (speaker.self === true) {
             if (speaker.kind === 'human') {
-                var toOwn = addressee && addressee.side === visit.side && addressee.kind === 'cat';
+                // 用这一行自己的 side（本侧）比：重载后 /state 还没回来时 visit.side 还是空的
+                var ownSide = speaker.side || visit.side;
+                var toOwn = addressee && addressee.side === ownSide && addressee.kind === 'cat';
                 return t('visit.speaker.toArrow', '{{from}} → {{to}}', {
                     from: userName(), to: toOwn ? ownCatName() : peerCatName()
                 });
