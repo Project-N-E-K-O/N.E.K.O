@@ -916,6 +916,11 @@
         var visitId = typeof frame.visit_id === 'string' ? frame.visit_id : '';
         if (!visitId) return;
         var action = String(frame.action || '');
+        if (action === 'ended' && endedVisitIds.indexOf(visitId) !== -1) {
+            // 空闲快照已先替这一场收过尾（留过结束消息）：迟到的 ended 帧不再重建这一场、不重复追加
+            render();
+            return;
+        }
         // 另一场的迟到帧（这一场还在进行）：不动
         if (visit.visitId && visit.visitId !== visitId && inVisit() && action !== 'pending') return;
         if (visit.visitId !== visitId) {
@@ -1406,7 +1411,7 @@
 
     // ── 发起：邀请客人（host）/ 去别人家（guest）──────────────────────────
 
-    async function withPersonaRetry(request) {
+    async function withPersonaRetry(request, catgirl) {
         var result = await request();
         if (result.status === 409 && bodyCode(result) === 'VISIT_PERSONA_UNREVIEWED') {
             if (typeof window.openVisitPersonaPreview !== 'function') {
@@ -1414,8 +1419,10 @@
                 return result;
             }
             // 确认串门人设之前不重发；确认后自动重试一次
-            var confirmed = await window.openVisitPersonaPreview(currentCatgirl(), { requireConfirm: true });
+            // 面板开的是发起请求的那位（别的窗口中途换了角色也不串）；确认后角色已换就不再重试
+            var confirmed = await window.openVisitPersonaPreview(catgirl || currentCatgirl(), { requireConfirm: true });
             if (confirmed !== true) return result;
+            if (catgirl && currentCatgirl() !== catgirl) return result;
             result = await request();
         }
         return result;
@@ -1468,7 +1475,7 @@
             var crop = readCrop();
             var result = await withPersonaRetry(function () {
                 return api('POST', '/api/visit/rooms', { catgirl: catgirl, crop: crop });
-            });
+            }, catgirl);
             if (result.status !== 202) toast(startErrorText(result), 6000);
         } finally {
             starting = false;
@@ -1493,8 +1500,10 @@
     }
 
     /** 先预览（只读、不消耗邀请码），预览失败不弹确认框、不发 join。 */
-    async function previewThenConfirm(inviteCode) {
+    async function previewThenConfirm(inviteCode, catgirl) {
         var preview = await api('GET', '/api/visit/invites/' + encodeURIComponent(inviteCode) + '/preview');
+        // 预览期间别的窗口换了角色：确认框与 join 都钉在发起时那位，已不是当前角色就作罢
+        if (currentCatgirl() !== catgirl) return null;
         if (preview.status !== 200 || !preview.body || !VISIT_ID_RE.test(String(preview.body.visit_id || ''))) {
             toast(previewErrorText(preview), 6000);
             return null;
@@ -1503,7 +1512,7 @@
         var hostName = String(data.host_display_name || '');
         var shortCode = String(data.host_short_code || '');
         var linesOut = [t('visit.join.confirmBody', '让 {{cat}} 去 {{host}}（{{code}}）家串门？', {
-            cat: currentCatgirl(), host: hostName, code: shortCode
+            cat: catgirl, host: hostName, code: shortCode
         })];
         if (data.cross_region === true) linesOut.push({ text: t('visit.join.crossRegion', '对方在另一个地区，连接可能不太稳定'), tone: 'warning' });
         var buttons = [{ id: 'cancel', label: t('visit.common.cancel', '取消') }];
@@ -1514,13 +1523,14 @@
         }
         var answer = await openDialog({ title: t('visit.join.confirmTitle', '让她出门吗？'), lines: linesOut, buttons: buttons }).result;
         if (answer !== 'go' || data.locally_blocked === true) return null;
+        if (currentCatgirl() !== catgirl) return null;
         return data;
     }
 
     async function joinWithCode(inviteCode) {
         var catgirl = currentCatgirl();
         if (!catgirl) return null;
-        var data = await previewThenConfirm(inviteCode);
+        var data = await previewThenConfirm(inviteCode, catgirl);
         if (!data) return null;
         var visitId = String(data.visit_id);
         previewedPeer = {
@@ -1531,7 +1541,7 @@
             return api('POST', '/api/visit/rooms/' + encodeURIComponent(visitId) + '/join', {
                 catgirl: catgirl, invite_code: inviteCode, confirm: true
             });
-        });
+        }, catgirl);
         if (result.status !== 202) toast(startErrorText(result), 6000);
         return result;
     }

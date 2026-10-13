@@ -1189,6 +1189,50 @@ const report = {};
     report.switch_no_ended = !h.messages.some((m) => m.id === 'visit-ended-' + VID);
     report.switch_pending = h.chat._test.state().pending.length;
   }
+  // ── 出门预览期间别的窗口换了角色：不弹确认、不发 join ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = {
+      '/api/visit/invites/*': async () => { await gate; return { status: 200, body: { visit_id: VID2, host_display_name: '邻居', host_short_code: 'ABCDEF', cross_region: false, expires_at: 9e9, locally_blocked: false } }; },
+      ['/api/visit/rooms/' + VID2 + '/join']: async () => ({ status: 202, body: { ok: true } }),
+    };
+    const h = createHarness({ routes });
+    const pending = h.chat._test.joinWithCode('ABCDEFGH23');
+    await h.settle();
+    h.win.lanlan_config.lanlan_name = '小橘';
+    release();
+    await pending;
+    report.switch_preview_dialogs = h.dialogs().length;
+    report.switch_preview_joins = h.fetches.filter((f) => f.url.indexOf('/join') !== -1).length;
+  }
+  // ── 出门确认框写的是发起时那位；确认前换了角色就不 join ──
+  {
+    const routes = {
+      '/api/visit/invites/*': async () => ({ status: 200, body: { visit_id: VID2, host_display_name: '邻居', host_short_code: 'ABCDEF', cross_region: false, expires_at: 9e9, locally_blocked: false } }),
+      ['/api/visit/rooms/' + VID2 + '/join']: async () => ({ status: 202, body: { ok: true } }),
+    };
+    const h = createHarness({ routes });
+    const pending = h.chat._test.joinWithCode('ABCDEFGH23');
+    await h.settle();
+    report.confirm_names_original = h.dialogs()[0] ? h.dialogs()[0].textContent.indexOf('咪咪') !== -1 : false;
+    h.win.lanlan_config.lanlan_name = '小橘';
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'go').click();
+    await pending;
+    report.confirm_switch_joins = h.fetches.filter((f) => f.url.indexOf('/join') !== -1).length;
+  }
+  // ── 空闲快照先替这一场收了尾，迟到的 ended 帧不再追加第二条结束消息 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 1, text: '你好', final: true, truncated: false,
+      speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } });
+    await h.chat.afterBind(h.socket, '咪咪');
+    h.state('ended');
+    report.ended_once = h.messages.filter((m) => m.id === 'visit-ended-' + VID).length;
+    report.ended_not_revived = h.chat.isActive();
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1585,3 +1629,15 @@ def test_character_switch_clears_the_old_visit_without_an_ended_message(report):
     assert report["switch_after_active"] is False
     assert report["switch_no_ended"] is True
     assert report["switch_pending"] == 0
+
+
+def test_join_flow_stays_pinned_to_the_starting_character(report):
+    assert report["switch_preview_dialogs"] == 0
+    assert report["switch_preview_joins"] == 0
+    assert report["confirm_names_original"] is True
+    assert report["confirm_switch_joins"] == 0
+
+
+def test_late_ended_frame_after_state_reconciliation_appends_nothing(report):
+    assert report["ended_once"] == 1
+    assert report["ended_not_revived"] is False

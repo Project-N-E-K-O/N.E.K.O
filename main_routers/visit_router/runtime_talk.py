@@ -699,8 +699,13 @@ class TalkMixin:
         if input_type == "audio":
             await self._voice_unavailable()
             return True
+        if input_type in ("user_image", "avatar_drop_image"):
+            # 串门输入框只发文字（不带附件）：这类图片都来自普通提交（重载未恢复时的附件、拖到头像的图片）。
+            # 吞掉不发给对端，但回带 request_id 的拒绝，页面据此把普通气泡标失败
+            await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
+            return True
         if input_type != "text":
-            # 截图 / 摄像头 / 图片一律吞掉
+            # 截图 / 摄像头帧一律吞掉
             return True
         if self.side == "guest":
             await self.status("VISIT_INPUT_REFUSED_AWAY", request_id=request_id)

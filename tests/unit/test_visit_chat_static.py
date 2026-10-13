@@ -259,7 +259,7 @@ def test_join_previews_first_and_never_joins_after_a_failed_preview():
     fail = preview.index("if (preview.status !== 200")
     assert preview.index("return null;", fail) < preview.index("openDialog(")
     join = _function_body(chat, "joinWithCode")
-    assert join.index("previewThenConfirm(inviteCode)") < join.index("'/join'")
+    assert join.index("previewThenConfirm(inviteCode, catgirl)") < join.index("'/join'")
     assert "if (!data) return null;" in join
 
 
@@ -395,7 +395,7 @@ def test_galgame_choices_are_hidden_while_the_visit_owns_the_composer():
 
 def test_refused_ordinary_submission_is_closed_by_request_id():
     buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
-    assert "rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine);" in buttons
+    assert "rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine, startedTextSessionHere);" in buttons
     body = _function_body(buttons, "markTextSubmissionRefused")
     assert "updateMessage(record.messageId, { status: 'failed' })" in body
     assert "window._lastSubmittedRequestId === id" in body and "S.pendingTextTurnSubmitAt = 0;" in body
@@ -427,3 +427,13 @@ def test_persona_panel_is_reused_only_for_the_same_character():
     assert "if (openPanel.catgirl === catgirl) return openPanel.result;" in source
     assert "openPanel.close(false);" in source
     assert "panel.close = close;" in source
+
+
+def test_refused_ordinary_submission_releases_an_ack_only_text_session():
+    # 普通提交顺带发了开会话请求、串门只回 ack：被拒后撤回「文本会话已开」
+    buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
+    assert "startedTextSessionHere = true;" in buttons
+    assert "!isVisitLine, startedTextSessionHere);" in buttons
+    body = _function_body(buttons, "markTextSubmissionRefused")
+    assert "if (record.startedSession && S.isTextSessionActive === true) {" in body
+    assert "S.isTextSessionActive = false;" in body

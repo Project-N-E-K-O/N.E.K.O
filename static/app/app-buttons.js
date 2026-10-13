@@ -3159,7 +3159,9 @@
             }
 
             // If no active text session, start one first
+            var startedTextSessionHere = false;
             if (!S.isTextSessionActive) {
+                startedTextSessionHere = true;
                 textSendButton.disabled = true;
                 textInputBox.disabled = true;
                 screenshotButton.disabled = true;
@@ -3415,7 +3417,7 @@
                     }
 
                     updateReactOptimisticMessageStatus('sent');
-                    rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine);
+                    rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine, startedTextSessionHere);
 
                     if (sentUserContent) {
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
@@ -3525,10 +3527,10 @@
         var sentTextSubmissions = [];
         var lastTurnRequestId = '';   // 最近一句开了普通回复轮（置了 pendingTextTurnSubmitAt）的请求
 
-        function rememberSentTextSubmission(requestId, messageId, opensTurn) {
+        function rememberSentTextSubmission(requestId, messageId, opensTurn, startedSession) {
             if (!requestId) return;
             if (opensTurn) lastTurnRequestId = String(requestId);
-            sentTextSubmissions.push({ requestId: String(requestId), messageId: messageId || '' });
+            sentTextSubmissions.push({ requestId: String(requestId), messageId: messageId || '', startedSession: startedSession === true });
             if (sentTextSubmissions.length > 20) sentTextSubmissions.shift();
         }
 
@@ -3543,6 +3545,11 @@
                 }
             }
             if (!record) return false;
+            if (record.startedSession && S.isTextSessionActive === true) {
+                // 这句顺带发了开会话请求：串门在飞时那只是 ack、并没起普通会话（被拒正说明串门接着输入）。
+                // 撤回标记，串门结束后下一句普通聊天照常显式开会话
+                S.isTextSessionActive = false;
+            }
             if (record.messageId && window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
                 window.reactChatWindowHost.updateMessage(record.messageId, { status: 'failed' });
             }

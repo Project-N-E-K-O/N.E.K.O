@@ -255,6 +255,11 @@ async def test_only_visit_composer_lines_reach_the_peer(tmp_path, monkeypatch):
                 message["source"] = source
             assert await rtm.route_stream_message("Host", message) is True
             assert host.host.statuses[-1] == ("VISIT_INPUT_REFUSED_SOURCE", {"visit_id": rt.visit_id, "request_id": "d1"})
+        # 普通提交带的图片同样回带 request_id 的拒绝（不再静默吞掉）
+        for kind in ("user_image", "avatar_drop_image"):
+            assert await rtm.route_stream_message("Host", {"input_type": kind, "data": "data:image/png;base64,AA",
+                                                           "request_id": "i1"}) is True
+            assert host.host.statuses[-1] == ("VISIT_INPUT_REFUSED_SOURCE", {"visit_id": rt.visit_id, "request_id": "i1"})
         assert [p for p in _texts(wire, "host") if p.get("sp") == "h"] == []
         assert host.host.user_inputs == []
     finally:
