@@ -1649,7 +1649,94 @@ class CompressedRecentHistoryManager:
             )
             return 'merged'
 
+    def _append_keyed_locked(self, file_path, lanlan_name, new_messages, key, expected_generation=None) -> str:
+        """Strict keyed append (one critical section). Returns ``'present'``, ``'retired'`` or ``'written'``.
+
+        Unlike :meth:`_append_and_persist_locked` nothing is parked in the
+        pending batches: an unreadable file or a failed write raises, so the
+        keyed ``/cache`` caller leaves its key ``pending`` and answers 503
+        instead of reporting a write that never reached the disk.
+        """
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            presence, history, pending = self._keyed_presence_unlocked(file_path, lanlan_name, key)
+            if presence != 'absent':
+                return presence
+            merged = list(history) + list(pending) + list(new_messages)
+            recent_file.write_recent_payload_unlocked(file_path, messages_to_dict(merged))
+            # 之前挂着的未落盘批次随这次一起写进去了
+            self._set_pending_batches(lanlan_name, [], file_path)
+            self._cache_history_view(file_path, lanlan_name, merged)
+            return 'written'
+
+    def _keyed_presence_unlocked(self, file_path, lanlan_name, key) -> tuple[str, list, list]:
+        """``('present'|'retired'|'absent', history, pending)`` of ``key``. The caller holds the file lock.
+
+        The single place both :meth:`keyed_state` and :meth:`append_keyed`
+        decide from, so the time-index step and the recent step never judge
+        "already written" differently. Raises when the file or the retired-key
+        sidecar cannot be read (never guessed as absent).
+        """
+        status, history = self._load_history_unlocked(file_path, lanlan_name)
+        if status == RECENT_READ_UNREADABLE:
+            raise RuntimeError(f"recent history of {lanlan_name!r} unreadable")
+        pending = recent_file.get_recent_pending_unlocked(file_path)
+        if key in recent_file.keyed_entry_keys(messages_to_dict(list(history) + list(pending))):
+            return 'present', history, pending
+        # 旁路读不出就不猜：抛错让带键写入 503、留着 pending 等重试
+        if key in recent_file.read_retired_keys_unlocked(file_path):
+            return 'retired', history, pending
+        return 'absent', history, pending
+
+    def _keyed_state_locked(self, file_path, lanlan_name, key, expected_generation=None) -> str:
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            return self._keyed_presence_unlocked(file_path, lanlan_name, key)[0]
+
+    async def keyed_state(self, lanlan_name, key: str) -> str:
+        """``'present'`` / ``'retired'`` / ``'absent'`` for ``key`` in this character's recent file; never writes.
+
+        Raises when the file or its retired-key sidecar cannot be read.
+        """
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        return await asyncio.to_thread(
+            self._keyed_state_locked, file_path, lanlan_name, key, admission_generation,
+        )
+
+    async def append_keyed(self, new_messages, lanlan_name, key: str) -> str:
+        """Append a keyed batch unless ``key`` already is (or was) in this character's recent file.
+
+        Returns ``'present'`` (an entry carries ``key``), ``'retired'`` (an
+        entry carrying it left the file, see
+        :func:`utils.recent_file.retire_removed_keyed_entries`) or
+        ``'written'``. Never compresses. Raises when the file cannot be read
+        or written: the caller must not take that as written.
+        """
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
+        return await _await_recent_mutation_to_completion(
+            self._append_keyed_locked,
+            file_path,
+            lanlan_name,
+            list(new_messages),
+            key,
+            admission_generation,
+        )
+
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
+        # 普通写入不带串门日记的幂等键（只有 append_keyed 由服务端盖上）：调用方带来的一律去掉
+        recent_file.strip_idempotency_metadata(new_messages)
         file_path, admission_generation = self._capture_recent_operation_admission(
             lanlan_name,
         )

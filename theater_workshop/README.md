@@ -103,6 +103,8 @@ await host.close()
 
 依赖方向：调用方 → `host.py` → `sdk/`；SDK 不反向导入宿主、不初始化 `ConfigManager`、不启动服务。宿主注入模型调用、受保护写入事务、包操作网关和明确的项目根；正式包只由 `services/theater/numeric_v2.py` 编译器裁定，并由 `NumericV2PackageRegistry` 安装。
 
+宿主还通过 `TheaterWorkshop.open(token_counter=...)` 向主线和支线生成校验注入与编译器一致的 token 计数器，校验静默选择的两个字段各不超过 30 tokens。独立调用 `NumericV2Generator` 或 `NumericV2BranchService` 时也应传入该能力；未提供时，静默出口返回校验问题，不反向导入宿主或估算放行。普通出口及旧包读取兼容性保持不变。
+
 **写入保护**
 
 - 作者项目的创建、更新、删除、生成状态、检查点、评分／编译／复验／安装回执都经宿主写入事务提交；保护不放在 HTTP 层，程序直接调用 SDK 也无法绕过。

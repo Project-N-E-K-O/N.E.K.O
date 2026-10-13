@@ -1271,3 +1271,88 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
     assert restart_schedule_calls == ["scheduled"]
     assert release_calls == []
     assert startup_failures == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("with_config_dir", [True, False])
+def test_launcher_import_records_removed_characters_for_visit_retirement(monkeypatch, tmp_path, with_config_dir):
+    from launcher_core import runtime as launcher
+
+    config_manager = SimpleNamespace(
+        app_docs_dir=tmp_path / "N.E.K.O",
+        cloudsave_manifest_path=tmp_path / "N.E.K.O" / "cloudsave" / "manifest.json",
+        ensure_local_state_directory=lambda: True,
+    )
+    if with_config_dir:
+        config_manager.config_dir = tmp_path / "N.E.K.O" / "config"
+    seen = {}
+
+    @contextmanager
+    def _fake_fence(_config_manager, *, mode, reason):
+        yield {"mode": mode}
+
+    class _DummyCloudsaveManager:
+        def import_if_needed(self, **kwargs):
+            seen.update(kwargs)
+            return {"success": True, "action": "skipped", "requested_reason": kwargs["reason"]}
+
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "cloud_apply_fence", _fake_fence)
+    monkeypatch.setattr(launcher, "bootstrap_local_cloudsave_environment", lambda _cm: {})
+    monkeypatch.setattr(launcher, "get_cloudsave_manager", lambda _config_manager: _DummyCloudsaveManager())
+    monkeypatch.setattr(launcher, "set_root_mode", lambda _cm, mode, **updates: {"mode": mode, **updates})
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_a, **_k: None)
+
+    launcher._prepare_cloudsave_runtime_for_launch()
+
+    # 有真实配置目录：带上串门退役记录回调；测试替身没有：不带（导入照常）
+    assert callable(seen["on_characters_removed"]) is with_config_dir
+    if not with_config_dir:
+        assert seen["on_characters_removed"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_startup_import_records_removed_characters_for_visit_retirement(tmp_path):
+    import contextlib
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    from app import main_server
+
+    fake_config_manager = SimpleNamespace(app_docs_dir=Path(tmp_path), config_dir=tmp_path / "config")
+    run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "imported"})
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
+        stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
+        stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
+        stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()))
+        stack.enter_context(
+            patch.object(main_server, "initialize_character_data", AsyncMock(side_effect=RuntimeError("stop here")))
+        )
+        with pytest.raises(RuntimeError, match="stop here"):
+            await main_server._ensure_main_server_runtime_initialized(reason="unit_test")
+
+    assert run_cloudsave_action.await_args.args == ("import_if_needed",)
+    assert callable(run_cloudsave_action.await_args.kwargs["on_characters_removed"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_manager_action_passes_extra_arguments_through():
+    from app import main_server
+
+    seen = {}
+
+    class _Manager:
+        def import_if_needed(self, *, reason, on_characters_removed=None):
+            seen.update(reason=reason, on_characters_removed=on_characters_removed)
+            return {"success": True}
+
+    def marker(_removed):
+        return 0
+
+    with patch.object(main_server, "_cloudsave_manager", _Manager()):
+        await main_server._run_cloudsave_manager_action("import_if_needed", reason="r", on_characters_removed=marker)
+    assert seen == {"reason": "r", "on_characters_removed": marker}

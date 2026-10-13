@@ -1,6 +1,6 @@
 # N.E.K.O 小剧场架构
 
-状态：Numeric v2.2。本文只描述当前实现合同：模块与权限、数据合同、回合流水线、复核与确定性检查、生命周期与事务、前端胶囊展示合同和可选模块开关。代码与测试高于本文；实现与本文不一致时，先修正其中之一，不在文档里并列新旧两套方案。
+状态：Numeric v2.2。[Actor 与叙事提案职责拆分](./neko-theater-actor-responsibility-split.md)已实现，程序检查完成；真实回合、质量、容量和时延结论以仓库外验证报告为准。本文记录当前合同与实现边界，模块与权限、数据合同、回合流水线、复核、生命周期与事务仍以代码和测试为准。
 
 | 需要了解 | 入口 |
 | --- | --- |
@@ -8,12 +8,15 @@
 | 为什么这样设计、否决过什么、仍未验证什么 | [小剧场设计决策记录](./neko-theater-decisions.md) |
 | 剧本工坊 SDK 的调用、宿主与发布合同 | 仓库 `theater_workshop/README.md` |
 | 各阶段 Token 上限的汇总 | [LLM Prompt 预算](./llm-prompt-budget.md) |
+| 本轮职责拆分方案、调用与交付边界 | [Actor 与叙事提案职责拆分](./neko-theater-actor-responsibility-split.md) |
 
 实现存在不等于体验已验收；未覆盖的范围集中列在决策记录的“已知风险与未验证范围”。
 
 ## 架构总览
 
 ### 小剧场回合
+
+下图描述同步兼容路径。HTTP 输入回合先执行 Evaluator → Actor → 正文 Review → 原子提交与交付，再后台执行 NarrativeProposer → 独立账本复核 → 结算；pending 恢复和下一轮有限等待见[职责拆分方案](./neko-theater-actor-responsibility-split.md#http-输入回合首字优先交付)。
 
 ```mermaid
 flowchart TD
@@ -29,7 +32,10 @@ flowchart TD
     Context --> Actor
     Lookup -. "本轮共享证据" .-> Actor
     Actor --> Checks["确定性检查：桥段吸收、目标幕事实提前、推荐预筛、重复输出"]
-    Checks --> Review["Guard 快检（review）/ 首次争议复查（dispute）/ 共享一次改稿"]
+    Checks --> ReviewGate{"本稿实际进入既有 Review？"}
+    ReviewGate -->|是| Proposer["NarrativeProposer：冻结同稿叙事提案"]
+    Proposer -->|提案成功或记录缺口| Review["Guard 快检（review）/ 首次争议复查（dispute）/ 共享一次改稿"]
+    ReviewGate -->|否| Adopt
     Review --> Adopt["采用合格稿；语义纠错耗尽采用完整末稿；技术失败回滚"]
     Adopt --> Commit["复验身份与 revision；Store 原子提交"]
     Commit --> Session
@@ -66,6 +72,7 @@ flowchart TD
 - 玩家用自然语言决定当下行动；推荐输入只是可选的自然语言快捷输入，不存在正式 Choice；
 - 前置 Evaluator 判断隐藏数值变化、自然收束信号、转场态度、候选结局就绪与事实候选；
 - Actor 在同一次调用中生成旁白、猫娘动作与对白以及推荐输入；
+- 叙事事件由独立 `NumericV2NarrativeProposer` 提案；同步兼容路径在实际正文 Review 前执行，HTTP 输入路径在正文复核与交付后后台提案并独立复核；
 - Runtime 确定性处理数值限幅、选路、结局、邀请锁存、事实账本、Ledger、Session 和原子提交；
 - 隐藏数值、阈值、路线条件和内部判定依据不对玩家公开。
 
@@ -84,15 +91,17 @@ flowchart TD
 | `llm_context.py` | 人格读取、玩家称呼读取和 Prompt 文本截断辅助。 |
 | `numeric_v2_evaluator.py` | 前置判定（计分依据、意图、结局就绪、事实候选）、Guard 快检/争议复查和作者禁令窄判定；只能选择作者声明的枚举，不选路线、不写 Session。 |
 | `numeric_v2_actor.py` | 组装表现上下文与 Prompt，调用 Actor 生成正文、三段转场和推荐；带重复输出来源标签；不提交状态。 |
+| `numeric_v2_narrative_proposer.py` | 独立 `NumericV2NarrativeProposer`：同步路径在正文 Review 前提案；HTTP 路径在交付后后台提案并由独立调用复核，不改稿、不提交。 |
 | `numeric_v2_actor_output.py`、`numeric_v2_json.py` | 解析 Actor JSON（只解包完整单个围栏）、校验正文/推荐/三段、保护玩家行动归属；不调用模型。 |
 | `numeric_v2_context.py` | Actor/Evaluator/Guard 共用的历史、场景、作者边界（`project_contract_boundaries`）、实际开场与目标幕事实泄露检查。 |
 | `numeric_v2_action_projection.py` | 从玩家原话和已提交结果确定性投影玩家动作结果（离开、签名、交付等）与未来约定；不推断目的地或意图。 |
 | `numeric_v2_budget.py` | 固定输入预算；`economy / balanced / quality` 只是同预算别名。 |
 | `numeric_v2_history.py` | 证据不足时让模型选择已提交原文编号，再由代码核验还原；不生成摘要事实。 |
+| `numeric_v2_narrative.py` | 核验叙事事件形状、逐阶段原文与末稿绑定；按序重放派生当前状态和记录缺口，过滤角色不可知信息；不调用模型或选路。 |
 | `numeric_v2_fixed_narration.py` | 作者固定旁白的校验、触发候选、依赖顺序、逐字交付、交接方向与离幕前必显。 |
 | `numeric_v2_performance.py` | 把演出形状转换为有序内容块（旁白、动作、对白、固定旁白），供历史、恢复与 TTS 坐标使用。 |
 | `numeric_v2_runtime.py` | 确定性状态引擎：限幅、选路、结局、邀请、`story_state` 事实账本、完成合同判定、Ledger 事件、时间线与事实证据投影、版本冲突。 |
-| `numeric_v2_workflow.py` | 回合编排：Evaluator → Runtime 候选 → Actor → 确定性检查 → 条件复核/改稿 → 身份与 revision 复验 → 原子提交；记录分阶段诊断。 |
+| `numeric_v2_workflow.py` | 回合编排：Evaluator → Runtime 候选 → Actor → 确定性检查 → 同步路径的条件叙事提案 → 条件复核/改稿 → 身份与 revision 复验 → 原子提交；记录分阶段诊断。 |
 | `numeric_v2_store.py` | 原子保存/读取 Session、Ledger、演出历史、恢复槽和索引；拒绝重复回合与 stale revision。 |
 | `numeric_v2_storage_transaction.py` | 把最终磁盘变更放进云存档写栅栏；不包住模型等待。 |
 | `numeric_v2_archive.py` | 结束回执、公开单集记忆胶囊、公开冷档案、遗忘事务与冷档案隔离区。 |
@@ -236,6 +245,22 @@ flowchart TD
 - 工坊侧 `exit_plan.trigger_fact_ids` 选择真正决定离幕的完成事实，只有它们投影进 `completion_contract`；其它完成事实只留在 `fact_contract`，不会提前打开出口。支线构建器为支线幕生成 `branch_complete` 事实与出口字段。
 - `scene:<node_id>:*` 事实只能在对应当前节点提交；`prop:*` 等全局事实按合同校验。
 
+### 3.6 叙事事件与当前视图
+
+Session 可选 `narrative_state` 使用独立版本，Ledger 与演出记录保存同一 `narrative_record`，与原状态在同一事务提交。事件记录主体、动作或言语、具体变化、阶段、原文引文和获知范围；明确的剧情时间与原因可选，未知不补造。程序分配事件 ID、revision、顺序、场景范围及旧值，当前视图只从已批准事件派生。
+
+本轮拆分后，Actor 继续读取已提交账本，不再生成事件表；独立 `NumericV2NarrativeProposer` 对冻结候选提出最多 3 个 `narrative_events`，每个最多 3 项变化，事件 Schema 不改。位置、持有者、落点、状态、阶段结果、未解决事项、明确选择和具体安排使用受限属性。实体固定引用玩家与当前猫娘，其它引用使用类型加原文名；新名称须有逐字出处，不自动合并别名。持有者只存于物品，不等同所有权。普通轻微演出动作无需逐个记录。
+
+事件说明使用对应原文 `quote`，不另存模型自由摘要。除持有者固定引用外，状态值须逐字来自该引文；即使 Review 批准，无引文依据的值也不提交，其他独立获准事件保留并标明部分覆盖。引文存在仍不能替代已发生、主体、玩家授权和认知范围的语义复核。
+
+提案只在该候选实际进入既有 Review 前生成；本回合内同稿重复复核复用同一提案，正文或旁白（含固定旁白与转场分段）改动后重新提案。仅推荐变化不重提账本事件，但新推荐仍须进入现有 Review，不能沿用旧推荐批准。提案器不自审、不提交。现有 Review 只批准冻结候选编号，不能另造事件，规则不因拆分扩写。正文事件绑定最终正文指纹及对应段落引文；废稿批准失效。同一本轮玩家原话中的独立获准事件可跨改稿保留，但每次复核的同属性玩家提案先替换旧批准，中间否决不能被后续丢表复活，互相冲突的旧事件不自选真值；合并仍按阶段顺序、最多 3 项，保留缺口。`confirmed_changes / confirmed_no_change / partial / unrecorded / unconfirmed` 区分变化、无变化和缺口；空表只有明确复核才算无变化。未确认覆盖使旧属性降为最后已知值，后续“无变化”不自动恢复；换幕后未重新确认的旧站位和落点不再视为当前位置，已确认持有者可继承。
+
+`complete` 仍依赖已提案事件全部通过和现有 Review 的完整性判断，纯引文与结构校验不能发现从未提案的关键变化；`coverage_from` 是账本首次初始化的 revision，不是连续完整性的证明。拆分后的覆盖收益须按真实完整回合验收，不能用结构通过或 Review 标志替代。
+
+新生成的 `narrative_record` 使用 v2：部分覆盖仍保留获准事件、主体、引文与阶段旧值链，但本轮写入值也只作为最后已知状态，避免后段结果缺失时把前段持有者当作当前事实。v1 记录保持原样重放，旧存档不迁移；输入投影对不完整覆盖同样只提供最后已知值。应用 v2 时，前次不完整覆盖的旧值不会因本轮“无变化”重新成为当前值，须有新的完整确认。
+
+Evaluator、Actor 和 Review 的实际输入携带角色可知投影，完整原文历史继续保留。有账本的正式转场在受限认知范围中明确允许此投影，并继承当前持物与阶段结果；静态作者方向不能重新决定已发生状态。事件协议按开场、普通回合、正式转场分别限制阶段，引文只取本轮对应输入或正文。投影优先保留玩家、猫娘、本轮明确提及对象及其持物，其余最多 16 个相关实体，按当前幕和最近来源选择；投影预算 1600 Token。关键状态过大时先省重复引文；仍超预算时按玩家/猫娘、本轮对象和最近来源顺序装箱，显式记录 omitted_essential_entities 与总省略数量，不能把省略理解为物品不存在或可重新分配。完整账本及来源引用不删除，后续输入明确提及的对象重新优先装箱，避免大量持有物永久阻断后续回合。正式节点、作者白名单事实、完成合同与 `pending_transition` 邀请合同继续由原链路负责；阶段记录不自动完成任务或授权转场。三段仍由一次 Actor 调用生成，程序顺序重放不等于逐段反馈生成。复核关闭或开场原本不复核时仅记录缺口，不暗加调用或自信任 Actor。旧存档缺字段时保持未知，从首次新记录开始覆盖；冷恢复及分叉验证事件重放与视图相等。叙事元数据不进入公开页面或 TTS。
+
 ## 4. 回合流水线
 
 ```text
@@ -244,11 +269,12 @@ flowchart TD
   → Evaluator 一次调用（evaluator 开关）；需要回忆且证据不足时按需查原文（history_lookup）
   → 服务端把 criterion + strength 确定性换算为 delta；Evaluator 事实提议在启用复核时先暂存待审
   → Runtime 应用 delta、scene_complete 提示、转场态度、route gate 和 priority；形成候选称呼状态
-  → Actor 按软节奏生成正文、推荐、提议信号和事实候选
-  → 确定性检查；按开关进入普通复核或正式转场三段复核；首次争议可复查一次，正文/提议共用一次改稿
+  → Actor 按软节奏同次生成正文、旁白、动作、推荐、提议信号和原有事实候选，读取已提交账本但不生成叙事事件表
+  → 确定性检查；候选实际进入既有 Review 前，由 NarrativeProposer 生成绑定同稿的叙事提案
+  → 普通复核或正式转场三段复核；首次争议可复查一次，同稿复核复用提案，正文/旁白改稿重新提案，推荐变化仅重新复核；正文/提议共用一次改稿
   → 作者出口兜底与接受按钮（条件满足时）
   → 重新校验 Session、角色绑定和 revision
-  → 原子提交 Session + Ledger event + performance record + 事实账本
+  → 原子提交 Session + Ledger event + performance record + 事实账本 + 叙事记录与派生视图
   → 公开快照；已提交对白进入 TTS
 ```
 
@@ -338,13 +364,13 @@ Runtime 已选路线时，Actor 同一回合完成三段并按固定顺序存储
 - Actor 看到的完成合同：未满足项保留作者目标；已满足项只给键和值，按事实 `updated_revision`（旧值兼容 `source_revision`）附上对应回合的玩家输入与演出原文，同回合只附一次，占用既有 1500 Token 证据预算，超预算整条省略而不截断，缺失时不从作者计划补写。
 - 完成合同满足后的下一回合：当前无待确认邀请且玩家未拒绝时，Actor 收到收束要求（先回应当前输入，再公开下一阶段并等待选择）。主观交流、动作与混合输入走同一机制，换话题本身既不拒绝也不接受邀请。事实在 Actor 输出之后才落账，不能反向改变同一回合已生成的正文。
 - 暂缓：本次场景访问中已有被撤下的邀请记录时，抑制自动收束和程序重提同一邀请，直到玩家明确改主意；没有冷却计时。
-- 作者出口兜底：回合开始前完成合同已满足、仍在原幕、无既有邀请、玩家未拒绝或暂缓、本轮输入不是明确离场、正文无违规且复核确认未公开邀请时，Workflow 逐字追加 `fallback_offer` 并锁存邀请；不执行路线、不替玩家接受。复用已审普通稿或局部删除无效邀约的回合不追加。
+- 作者出口兜底：回合开始前完成合同已满足、仍在原幕、无既有邀请、玩家未拒绝或暂缓、本轮没有明确离场或接近出口、正文无违规且复核确认未公开邀请时，Workflow 准备逐字拼接 `fallback_offer`。拼接后的正文与作者接受按钮在同一复核预算内再审，通过才锁存邀请；语义拒绝保留原已审稿，技术失败原子回滚。不执行路线、不替玩家接受；复用已审普通稿或局部删除无效邀约的回合不追加。
 - 作者文本投影：`fallback_offer / accept_input` 展示前套用当前姓名投影（称呼未知时为“你”）；换场复核的作者原文保护同时识别投影文本与旧存档原文，不重写安装包。
-- 接受按钮：复核确认正文存在有效新邀请后，把当前选中路线的 `accept_input` 放到推荐首槽；待确认邀请期间，普通追问回合把原始接受按钮补回首位（同节点、旧邀请有效、本轮无新邀请时）。同一邀请期间已被提交过的接受原文（含本轮输入）不再强制补回，重新公开邀请后重置；替补到首位的暂缓或追问不继承接受权限。拒绝回合只有在回合前后邀请都仍有效时才保留原按钮。
+- 接受按钮：开启复核时，Actor 声明新邀请即先把当前路线的 `accept_input` 准备到推荐首槽；旧邀请仍有效的普通追问同样先准备原接受按钮，一起送审。新邀请误报撤回预备按钮，报告任一坏推荐则撤下整组，提交前不补回。Guard 发现未声明的合法邀请仍可锁存正文，但不追加未审的作者按钮；自由输入继续可用。关闭复核时保留原旧按钮恢复规则。同一邀请期间已被提交过的接受原文（含本轮输入）不再强制补回，重新公开邀请后重置；替补到首位的暂缓或追问不继承接受权限。
 - 确定性接受：玩家原样点击刚展示的作者邀请所配的 `accept_input`，且邀请与当前数值仍选中同一出口时，程序确认接受，不被 Evaluator 的 `unclear` 吞掉；数值、事实与路线门槛照常核对。自由输入、旧邀请、未展示或改写过的按钮仍走语义判断。
 - 旧邀请接受：从原邀请 Ledger 数值重建其出口；与当前路线不一致时先留幕并撤下旧邀请，再生成一次普通回应，保留本轮合法计分，不让自然结局另换出口。
 - 邀请状态：Runtime 统一锁存与清除；只有 `offer_present && valid` 才锁存新邀请。经复核的新邀请正文写入 `transition_offer_presented=true`（performance 与 Ledger 同步，恢复与分叉校验）。错误旧邀请可由 `pending_invitation_invalid` 撤下，并记录 `transition_offer_invalidated=true` 作为检索边界；作者写定的 `fallback_offer` 同样不豁免。玩家逐字点击接受按钮只证明接受了刚展示的邀请，不证明邀请有效，也不豁免候选正文：只有目标段正文出错时保留接受并改写，改写后仍错则回滚；只有复核（快检或争议复查同样处理）明确判定邀请本身无效时才撤回接受并撤下邀请。
-- 投影：每条演出记录与 Ledger 带 `fact_projection`（`evidence_only`，玩家输入、可见文本、数值变化与节点迁移）、`timeline_projection`（revision、`scene_entered / scene_left / scene_turn`、访问 ID `<node_id>:r<进入 revision>`，不推断自然日期）和 `player_action_projection`（玩家已确认动作与 `future_references` 分开；疑问、想要、准备、条件句不进入完成动作；动作词与引用取自同一合格分句）。公开历史过滤内部投影字段。输入响应的 `resolved_turn` 只含 `route_changed`，不下发 `route_status`（`conditions_blocked` 等会让玩家反复试探隐藏门槛）；玩家侧 `/stories` 列表不含 `warnings` 与 `metric_count`，二者只在导入等作者接口返回。
+- 投影：每条演出记录与 Ledger 带 `fact_projection`（`evidence_only`，玩家输入、可见文本、数值变化与节点迁移）、`timeline_projection`（revision、`scene_entered / scene_left / scene_turn`、访问 ID `<node_id>:r<进入 revision>`，不推断自然日期）和 `player_action_projection`（玩家已确认动作与 `future_references` 分开；疑问、想要、准备、条件句不进入完成动作；动作词与引用取自同一合格分句）。接近出口使用 `approach_scene_exit / performed` 与 `player_departure_pending`，仅抑制本轮作者兜底邀请；不触发已离场的复核/返回约束。`player_left_current_scene` 仅对应完成离场；旧已提交投影读取时保留，不迁移存档。公开历史过滤内部投影字段。输入响应的 `resolved_turn` 只含 `route_changed`，不下发 `route_status`（`conditions_blocked` 等会让玩家反复试探隐藏门槛）；玩家侧 `/stories` 列表不含 `warnings` 与 `metric_count`，二者只在导入等作者接口返回。
 
 ## 5. 模型调用、复核与确定性检查
 
@@ -370,7 +396,7 @@ Runtime 已选路线时，Actor 同一回合完成三段并按固定顺序存储
 - 普通复核在未换幕且有可见正文/场景更新或提议信号时进入，包括已有待确认邀请的追问与澄清。正式换幕合并复核三段正文与首批按钮，终局没有按钮也复核。
 - 基础输出：`offer_present / offer_quote / offer_kind / valid / body_violations / unsafe_suggestion_indexes / failure_reason / player_action_kind`；`player_action_kind` 为 `requested_movement / unauthorized / 空串`，旧响应缺失、非法或未同时列出 `player_action` 时按空值处理（fail-closed）。`offer_kind` 为 `exit_mention_only / invitation / 空串`，只修饰已核验的普通复核邀请引文；缺失、非法、引文未核验或正式复核时按空值处理（fail-closed，保留邀请判定）。正式主动转场另含 `initiation_authorized`，接受邀请的正式复核另含 `acceptance_authorized / pending_invitation_invalid`，普通漏判补查另含 `player_request_quote / missed_initiation / public_destination_index`。`offer_present=true` 只有在 `offer_quote` 能在本轮正文中逐字找到时才可信。`failure_reason` 只供改写与诊断，程序不从中反推安全：唯一违规是 `player_action`、正文无邀请且 `player_action_kind = requested_movement` 时，才解除这项否决；无正文违规的无效邀请只在 `offer_kind = exit_mention_only` 且引文仅出现在旁白（不在猫娘对白）时清除邀请标志。
 - 错误码容错只限格式：`body_violations` 中“已知枚举＋冒号＋解释”的字符串，或带 `type` 与字符串 `detail / reason / description / evidence_quote` 的对象，按精确已知枚举还原并去重；未知码、缺码、额外结构仍拒绝，不从解释猜码，附带引文不授权事实或裁剪。
-- 正文、提议和按钮独立核对：按钮不能首提、补足或否决正文提议；复核报告任一不安全按钮时撤下当稿整组推荐，避免漏检的同组按钮沿用错误前提，撤下后不重审正文或补写按钮。未报告错误的组保留；程序核验的作者接受按钮仍可按既有规则提供。
+- 正文、提议和按钮独立核对：按钮不能首提、补足或否决正文提议；复核报告任一不安全按钮时撤下当稿整组推荐，避免漏检的同组按钮沿用错误前提，撤下后不重审正文或补写按钮。未报告错误的组只交付末次复核已覆盖的原文，作者按钮同样受审；后续程序拼接不能恢复坏组或加入未审推荐。复核覆盖记录只在 Workflow 内使用，不进入模型输出协议或存档。
 - 展示依赖按钮：本轮有待触发条件片段且有推荐时，普通复核改为 `suggestion_checks: [{index, decision, requires}]`，`decision` 为互斥的 `allow / reject / after_display`；`after_display` 项绑定片段编号，Workflow 交付后按实际插入结果保留或删除，辅助检查损坏只撤下按钮。普通回合末次复核后程序实际插入本幕 `position=after` 的条件片段时，清空该轮全部预生成推荐，下一回合照常生成。
 - 正式三段另含必填 `delivery_matches_route`，分别核对旁白与表演的地点、时点和阶段；`false` 补为 `scene_boundary`，不撤销已成立的玩家接受。改稿从历史与当前合同重新生成，不以被拒三段为底稿；末稿仍落点错误则回滚，不走语义末稿兜底。
 - 结构化定位 `body_issues`（同时返回 `scene_update_removal_safe`）：只在未换幕且玩家本轮已确认离场，或有可选旁白且无待判完成事实／Evaluator 事实提议时请求；`fixed_narration_content` 仅在同时有待触发条件片段时可用。每项 `{code, field, quote, violations}`，`code` 为 `player_return_after_departure / other / fixed_narration_content`，`field` 为 `actor_performance / scene_update`；最多 6 项，引文逐字来自对应字段且不超过 120 字符（原文代写先核验完整引文再缩短），全部项须覆盖所有正文违规，否则整组弃用而原违规保留。
@@ -407,17 +433,24 @@ Runtime 已选路线时，Actor 同一回合完成三段并按固定顺序存储
 
 | 调用 | 输入上限 | 输出上限 | 时限 |
 | --- | ---: | ---: | --- |
-| 普通 / 开场 / 换幕 Actor | 10000（历史 5200 / 12 回合） | 700 / 900 / 1200 | 35 秒 |
+| 普通 / 开场 / 换幕 Actor | 10000（历史 5200 / 12 回合） | 1000 / 1200 / 1700 | 35 秒 |
+| NarrativeProposer（仅既有 Review 调用前） | 8500 | 1000 | 12 秒；`max_retries=0` |
 | 补推荐 | — | 260 | 同 Actor |
 | Evaluator | 7000 | 360 | 12 秒 |
-| 普通 Guard 快检 | 6000 | 基础 190；有待判定固定旁白时至少 512 并为每段触发引文留余量；有待审事实至少 350；漏判补查 +96；请求 `body_issues` 时 +322（基础定位即 512），各项余量不互相挤占 | 8 秒 |
-| 正式 Guard / 主动请求补查 | 8000 | 512 | 8 秒 |
+| 普通 Guard 快检 | 8500 | 基础 190；有待判定固定旁白时至少 512 并为每段触发引文留余量；有待审事实至少 350；漏判补查 +96；请求 `body_issues` 时 +322（基础定位即 512），各项余量不互相挤占 | 8 秒 |
+| 正式 Guard / 主动请求补查 | 8500 | 512 | 8 秒 |
 | 争议复查 | 同快检 | 4096（含思考） | 单次上限 8 秒，且不超过剩余复核预算 |
 | 作者禁令窄判定 | — | 160 | 8 秒 |
 | 按需历史查找 | 每页 7000，最多两页并发 | 256 / 页 | 总等待 12 秒 |
 
 - 整回合复核时间预算 20 秒：首次快检始终执行；预算耗尽后不再追加争议或改写后复检，未完成当前稿复核的普通及正式回合均回滚。每次复核调用的 timeout 取配置时限与剩余预算的较小值。
+- 常规启用复核且无按需修复时，同步兼容路径为 Evaluator + Actor + NarrativeProposer + Review，共 4 次调用；HTTP 路径为前台 Evaluator + Actor + 正文 Review、后台提案 + 独立账本复核，共 5 次调用；无实际 Review 不调用提案器，原本不复核的开场不暗加调用。提案使用 `conversation` 槽，本轮正式配置为 `qwen3.8-flash`、关闭 thinking；容量及等待成本待实测，不把新增串行调用描述为提速。
+- 提案不能为满足输入或输出上限中途裁断玩家原话、完整候选正文或事件证据；临界与不完整响应须按失败/缺口合同处理，不能自认为已完整入账。正文仍先复核并原子提交，旧记录重放和 TTS 交付保持原协议。HTTP 后台结算已实现 pending 恢复、版本/生命周期校验和下一轮至多 1 秒的模型等待屏障；超时取消并记录缺口。
+- 叙事提案受控失败（超时、模型不可用、容量、格式或引文错误）不阻断正文 Review；缺省事件表保留 `unrecorded/partial` 缺口，不以空表冒充无变化。同稿缓存失败，不追加调用，新稿重新提案；回合诊断、日志与 trace 记录失败。正文审核和原子提交仍须成功，取消请求及其它模块错误继续沿用原有处理。
+- Review 发送前装箱超预算且本稿携带叙事事件表时，撤下该表并缓存同稿缺口，再用原生 Review 审核同一完整正文与推荐；作者合同、玩家原话、最新完整历史及已提交账本不裁断。该降级单列诊断，不记为提案失败；无表仍超预算或实际审核失败继续回滚，不增加成功模型请求或复核层。有复核的开场同样适用。Review 最终装箱仍超限时只省略状态投影的属性重复引文，累计 `quotes_omitted`；全部值、来源编号、近期事件及已提交原账本不变。
+- 已审普通稿触发漏判转场补救后，补救 Actor 生成或结构检查失败可复用同一已审普通事务；要求原稿正文和邀请合法、无待触发固定旁白，撤下错误推荐整组，事实、账本及绑定仍经统一提交校验。不复用失败转场内容，不追加调用；正式转场审核、取消及存储失败仍回滚。
 - 浏览器网络等待硬上限：开场 180 秒、输入 660 秒；不是正常耗时。
+- 普通六块与正式转场 Actor 在原有历史淘汰后仍超预算时，可仅省略动态状态投影的属性重复引文并累计 `quotes_omitted`；值、来源编号、近期事件、玩家原话、作者合同、最新完整历史及原账本保持完整，仍超限则拒绝发送。不提高输入上限或增加模型调用。
 - 判定/Guard 从 `summary` 配置槽取用户模型；Actor 用 `conversation` 槽。争议思考参数复用 `config.providers.focus_extra_body`，未登记模型时争议不可用并保留快检结果；不按模型名猜参数，不自动换模型。
 - 接口级结构化输出：Actor（开场、普通、正式转场、普通/转场补推荐）与 Guard（普通、接受/主动转场、漏判补查、固定原文、事实与禁令复核）的请求按实际分支附带严格 `json_schema`，只声明原 Prompt 已有字段，`scene_update` 仍可省略。仅当端点为 HTTPS 阿里云 DashScope 兼容模式（`dashscope*.aliyuncs.com` 或 `*.maas.aliyuncs.com`，路径 `/compatible-mode/v1`）、模型属 `qwen3.8-flash / qwen3.8-max` 系列且非 Anthropic 供应商时发送；其他模型不加参数，不探测、不在失败后去掉 Schema 重发。Evaluator、历史查找、普通聊天与工坊不使用。Schema 只保证形状，字段含义、引文、索引范围与状态连续性仍由原解析与语义链路检查。
 
@@ -584,5 +617,7 @@ stateDiagram-v2
 压测默认 `mixed` 每 10 次尝试安排 7 次推荐、3 次自由输入（第 3、6、9 次为自由）；候选包可传 `--package-root`，分叉用 `--fork-revision`。报告分别统计计划与实际输入比例、失败、自然结束截短、各类重试与降级；动态玩家只看公开历史。
 
 架构改动按范围核对：Story Package 编译与可达性；软节奏、`scene_complete`、priority 与支线进入回流；身份替换、行为归属、开场与换场合同、推荐合同；事实合同、完成合同、出口兜底与接受按钮；Session revision、幂等、并发、原子失败、重启恢复与跨剧本隔离；改名、同名新角色、切换、重开、删剧本和删角色；前端公开投影、刷新恢复、结局面板、输入关闭与隐藏数值隔离；剧场与普通聊天的输入、草稿、历史、音频和恢复不串线；八语言 key；记忆归档全链路；真实桌面 TTS 设备发声需人工验收。
+
+最终装箱仍超限时，普通 Actor 可将最新完整角色原文中确证保留的待确认邀约副本改为 `story_so_far` 引用，撤下邀请不适用。Review 仅在公开去向表与最新完整回合全部对白/旁白逐字一致时引用该回合；程序验证仍持有完整原始引文表。保留状态、玩家输入、完整候选与最新历史，不新增调用，仍超限则拒绝发送。
 
 Prompt 写了某条要求不算完成证据；行为必须由真实输出或可执行回归证明。

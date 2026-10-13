@@ -3,7 +3,7 @@
  * 依赖: live2d-core.js (提供 Live2DManager 类和 window.LIPSYNC_PARAMS)
  */
 
-// lipsync 强制覆盖 motion mouth 参数的阈值：mouthValue 高于此值时强制写入，否则让位给 motion 自带的嘴部关键帧
+// 仅供旧 setMouth(value) 调用方兼容；显式语音 owner 在句中静默时仍控制开合。
 const LIPSYNC_OVERRIDE_THRESHOLD = 0.001;
 
 // Bundled pixi-live2d-display MotionPriority enum. Keep this local instead of
@@ -351,6 +351,14 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     const stage = this.pixi_app && this.pixi_app.stage;
     const ticker = this.pixi_app && this.pixi_app.ticker;
 
+    // 先退休模型的口型写入权限。有效音频由外层 bridge 在新模型就绪后重新接管。
+    this._lipSyncOwner = null;
+    this.mouthValue = 0;
+    this._mouthOverrideToken = null;
+    this._cachedMouthIndices = null;
+    this._cachedMouthIndicesModel = null;
+    this._expressionAmplitudeIndexCache = null;
+
     if (window.closeAllSettingsWindows && !shouldSkipCloseWindows) {
         try {
             window.closeAllSettingsWindows();
@@ -420,16 +428,18 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
         this._motionTimerGeneration = (this._motionTimerGeneration || 0) + 1;
     }
 
-    if (activeModel) {
-        try {
-            const coreModel = activeModel.internalModel && activeModel.internalModel.coreModel;
-            if (coreModel && this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
-                coreModel.update = this._origCoreModelUpdate;
-            }
-        } catch (_) {}
-    }
+    try {
+        if (this._mouthMotionManagerRef && typeof this._origMotionManagerUpdate === 'function') {
+            this._mouthMotionManagerRef.update = this._origMotionManagerUpdate;
+        }
+        if (this._coreModelRef && typeof this._origCoreModelUpdate === 'function') {
+            this._coreModelRef.update = this._origCoreModelUpdate;
+        }
+    } catch (_) {}
     this._mouthOverrideInstalled = false;
     this._origCoreModelUpdate = null;
+    this._origMotionManagerUpdate = null;
+    this._mouthMotionManagerRef = null;
     this._coreModelRef = null;
     this._temporaryPoseOverride = null;
     this._temporaryPoseOverrides = new Map();
@@ -2687,19 +2697,23 @@ Live2DManager.prototype.installMouthOverride = function() {
     }
 
     // 如果之前装过，先还原
-    if (this._mouthOverrideInstalled) {
-        if (typeof this._origMotionManagerUpdate === 'function' && motionManager) {
-            try { motionManager.update = this._origMotionManagerUpdate; } catch (_) {}
-        }
-        if (typeof this._origCoreModelUpdate === 'function') {
-            try { coreModel.update = this._origCoreModelUpdate; } catch (_) {}
-        }
-        this._origMotionManagerUpdate = null;
-        this._origCoreModelUpdate = null;
+    // 恢复安装时的实例，不能把旧模型的绑定方法装到新模型上。
+    // core 失败恢复会先清理 installed 标志，motion 包装仍需在重装前还原。
+    if (typeof this._origMotionManagerUpdate === 'function' && this._mouthMotionManagerRef) {
+        try { this._mouthMotionManagerRef.update = this._origMotionManagerUpdate; } catch (_) {}
     }
+    if (typeof this._origCoreModelUpdate === 'function' && this._coreModelRef) {
+        try { this._coreModelRef.update = this._origCoreModelUpdate; } catch (_) {}
+    }
+    this._origMotionManagerUpdate = null;
+    this._origCoreModelUpdate = null;
 
-    // 口型参数列表（这些参数不会被常驻表情覆盖）- 使用文件顶部定义的 LIPSYNC_PARAMS 常量
-    const lipSyncParams = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+    const overrideToken = {};
+    this._mouthOverrideToken = overrideToken;
+    this._mouthMotionManagerRef = motionManager;
+    // 振幅写入与保存外观保护是两种职责，不能通过删除公共列表的嘴形来合并。
+    const runtimeMouthParams = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+    const lipSyncParams = window.LIPSYNC_AMPLITUDE_PARAMS || runtimeMouthParams.filter(id => id !== 'ParamMouthForm');
     const visibilityParams = ['ParamOpacity', 'ParamVisibility'];
     
     // 缓存参数索引，避免每帧查询
@@ -2751,7 +2765,7 @@ Live2DManager.prototype.installMouthOverride = function() {
         if (!entry) return true;
         const ids = [entry.id, entry.resolvedId].filter(Boolean);
         return ids.some(id => this._isEyeBlinkParamId(id)) ||
-            ids.some(id => lipSyncParams.includes(id)) ||
+            ids.some(id => runtimeMouthParams.includes(id)) ||
             ids.some(id => visibilityParams.includes(id)) ||
             ids.some(isRuntimeBreathParamId);
     };
@@ -2800,7 +2814,7 @@ Live2DManager.prototype.installMouthOverride = function() {
         
         internalModel.motionManager.update = (...args) => {
             // 检查 coreModel 是否仍然有效（在调用原始方法之前检查）
-            if (!coreModel || !this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+            if (this._mouthOverrideToken !== overrideToken || this.currentModel?.internalModel !== internalModel || internalModel.coreModel !== coreModel) {
                 return; // 如果模型已销毁，直接返回
             }
 
@@ -2845,14 +2859,14 @@ Live2DManager.prototype.installMouthOverride = function() {
                     // SDK 内部 motion 在异步加载期间可能会抛出 getParameterIndex 错误
                     // 这是 pixi-live2d-display 的已知问题，静默忽略即可
                     // 当 motion 加载完成后错误会自动消失
-                    if (!coreModel || !this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+                    if (this._mouthOverrideToken !== overrideToken || this.currentModel?.internalModel !== internalModel || internalModel.coreModel !== coreModel) {
                         return;
                     }
                 }
             }
             
             // 再次检查 coreModel 是否仍然有效（调用原始方法后）
-            if (!coreModel || !this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+            if (this._mouthOverrideToken !== overrideToken || this.currentModel?.internalModel !== internalModel || internalModel.coreModel !== coreModel) {
                 return; // 如果模型已销毁，直接返回
             }
 
@@ -2956,8 +2970,8 @@ Live2DManager.prototype.installMouthOverride = function() {
                         } catch (_) {}
                     }
 
-                    // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
-                    if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
+                    // 整段语音持有开合控制，句中静默不能交回动作。
+                    if (this.hasActiveLipSync() || !this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
                         for (const [, idx] of mouthParamEntries) {
                             try {
                                 coreModel.setParameterValueByIndex(idx, this.mouthValue);
@@ -3028,6 +3042,10 @@ Live2DManager.prototype.installMouthOverride = function() {
     
     // 覆盖 coreModel.update，确保在调用原始方法前写入参数
     coreModel.update = () => {
+        // 旧包装函数可能已被 ticker 捕获；必须按安装身份拒绝，不能污染接管的新模型。
+        if (this._mouthOverrideToken !== overrideToken || this.currentModel?.internalModel !== internalModel || internalModel.coreModel !== coreModel) {
+            return;
+        }
         // 首先检查覆盖是否仍然有效（防止在清理后仍然被调用）
         if (!this._mouthOverrideInstalled || !this._coreModelRef) {
             // 覆盖已被清理，但函数可能仍在运行，直接返回
@@ -3056,8 +3074,8 @@ Live2DManager.prototype.installMouthOverride = function() {
         try {
             // === 注入点 2（渲染前）：口型 + 眨眼 ===
             // 这是渲染前的最后一步，强制命令，绝对优先级
-            // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
-            if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
+            // 显式 owner 控制整个发声周期；旧入口保持原来的阈值兼容。
+            if (this.hasActiveLipSync() || !this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
                 for (const [, idx] of mouthParamEntries) {
                     try {
                         currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
@@ -3165,8 +3183,29 @@ Live2DManager.prototype.installMouthOverride = function() {
     console.log('已安装双重参数覆盖（motionManager.update 后 + coreModel.update 前）');
 };
 
-// 设置嘴巴开合值（0~1），用于口型同步
-Live2DManager.prototype.setMouth = function(value) {
+// owner 是调用方创建的唯一令牌。模型不推断音量为零是否意味着语音结束。
+Live2DManager.prototype.beginLipSync = function(owner) {
+    if (!owner || (typeof owner !== 'object' && typeof owner !== 'function')) return false;
+    if (this._lipSyncOwner === owner) return true;
+    this._lipSyncOwner = owner;
+    this.setMouth(0, owner);
+    return true;
+};
+
+Live2DManager.prototype.hasActiveLipSync = function() {
+    return this._lipSyncOwner != null;
+};
+
+Live2DManager.prototype.endLipSync = function(owner) {
+    if (!owner || this._lipSyncOwner !== owner) return false;
+    this.setMouth(0, owner);
+    this._lipSyncOwner = null;
+    return true;
+};
+
+// 带令牌的更新必须匹配当前语音；旧单参数入口不能抢占正在播放的语音。
+Live2DManager.prototype.setMouth = function(value, owner) {
+    if (owner !== undefined ? !owner || this._lipSyncOwner !== owner : this.hasActiveLipSync()) return false;
     const v = Math.max(0, Math.min(1, Number(value) || 0));
     this.mouthValue = v;
 
@@ -3183,7 +3222,7 @@ Live2DManager.prototype.setMouth = function(value) {
             if (!this._cachedMouthIndices || this._cachedMouthIndicesModel !== coreModel) {
                 this._cachedMouthIndices = [];
                 this._cachedMouthIndicesModel = coreModel;
-                const mouthIds = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+                const mouthIds = window.LIPSYNC_AMPLITUDE_PARAMS || (window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO']).filter(id => id !== 'ParamMouthForm');
 
                 for (const id of mouthIds) {
                     if (id === 'ParamMouthForm') continue; // 忽略嘴型（非张合）参数
@@ -3210,6 +3249,7 @@ Live2DManager.prototype.setMouth = function(value) {
     } catch (e) {
         if (shouldLog) console.error('[Live2D setMouth] 错误:', e);
     }
+    return true;
 };
 
 // 应用模型位置和缩放设置

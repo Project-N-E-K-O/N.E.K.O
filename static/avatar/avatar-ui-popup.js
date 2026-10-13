@@ -761,6 +761,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
         { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '自然表达', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
+        { id: 'gravity-cat', label: window.t ? window.t('settings.toggles.gravityCat') : '重力猫猫', labelKey: 'settings.toggles.gravityCat', tooltipKey: 'settings.toggles.gravityCatTooltip', alwaysTinted: true },
         { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true },
     ];
 
@@ -2606,6 +2607,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
     } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
         checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
+    } else if (toggle.id === 'gravity-cat' && window.nekoIdleCat1Playground
+        && typeof window.nekoIdleCat1Playground.isGravityCatEnabled === 'function') {
+        checkbox.checked = window.nekoIdleCat1Playground.isGravityCatEnabled();
     } else if (toggle.id === 'cat-audio' && window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.isEnabled === 'function') {
         checkbox.checked = window.nekoIdleCatAudio.isEnabled();
     }
@@ -2825,6 +2829,11 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // 不走 saveNEKOSettings 的 server-sync 对话设置管线。
             if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.setAutoCatEnabled === 'function') {
                 window.nekoAutoGoodbye.setAutoCatEnabled(isChecked);
+            }
+        } else if (toggle.id === 'gravity-cat') {
+            if (window.nekoIdleCat1Playground
+                && typeof window.nekoIdleCat1Playground.setGravityCatEnabled === 'function') {
+                window.nekoIdleCat1Playground.setGravityCatEnabled(isChecked);
             }
         } else if (toggle.id === 'cat-audio') {
             if (window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.setEnabled === 'function') {

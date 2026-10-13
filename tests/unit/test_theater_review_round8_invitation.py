@@ -52,7 +52,10 @@ async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='
                 'program_invitation': {'route_id': 'fake', 'offer': OFFER, 'accept_input': ACCEPT}}
 
     async def validate_offer(self, **kwargs):
-        return ev.NumericV2TransitionOfferReview(False, True, (), (),
+        # The appended author invitation is reviewed as part of the final draft.
+        # An earlier verdict about the body without it cannot approve this text.
+        offered = OFFER in kwargs['actor_performance'].get('performance', '')
+        return ev.NumericV2TransitionOfferReview(offered, complete, (), (),
             acceptance_authorized=True if kwargs.get('route_changed') else None)
 
     monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
@@ -128,6 +131,8 @@ async def test_final_author_blocks_are_issued_without_duplication(tmp_path, monk
     assert result.performance['performance'] == text
     assert result.performance['performance'].count(OFFER) == 1
     assert result.stored.session.transition_offered is valid
+    if review and valid:
+        assert result.diagnostics['transition_judge_calls'] == 1
     assert result.performance['suggested_inputs'] == ([ACCEPT] if valid else [])
     assert ('program_invitation' in result.stored.ledger_events[-1]) is valid
     accepted = await turn(runtime, result.stored, 'accept', ACCEPT, 'suggestion')
@@ -189,3 +194,25 @@ async def test_program_acceptance_rejects_changed_evidence(tmp_path, monkeypatch
         '好。' if mutation == 'input' else ACCEPT, input_source='suggestion')
     assert workflow._confirmed_authored_acceptance(
         runtime.engine, current, request, require_program_invitation=True) == ''
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['off', 'failure'])
+async def test_rejected_appended_program_invitation_is_not_committed(tmp_path, monkeypatch, mode):
+    runtime, current = await setup_case(tmp_path, monkeypatch, mode=mode, review=True)
+    reviewed = []
+
+    async def reject_offer(self, **kwargs):
+        candidate = kwargs['actor_performance']
+        reviewed.append(deepcopy(candidate))
+        return ev.NumericV2TransitionOfferReview(
+            OFFER in candidate['performance'], False, (), ())
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', reject_offer)
+    result = await turn(runtime, current, 'rejected-fallback', '接下来呢？')
+    assert len(reviewed) == 2
+    assert OFFER not in reviewed[0]['performance']
+    assert reviewed[1]['performance'].endswith(OFFER)
+    assert OFFER not in result.performance['performance']
+    assert not result.stored.session.transition_offered
+    assert 'program_invitation' not in result.stored.ledger_events[-1]

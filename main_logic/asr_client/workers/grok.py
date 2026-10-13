@@ -25,7 +25,7 @@ from urllib.parse import urlencode
 
 import websockets
 
-from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
+from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence, retire_interval_deliveries
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection, normalize_zh_en_language
 
@@ -462,11 +462,12 @@ async def grok_asr_worker(
                     if request.kind == "audio":
                         latest_audio_key = key
                         if request.audio:
-                            delivery = begin_transport_write(request_queue)
+                            delivery = begin_transport_write(request_queue, delivery_spans=request.delivery_spans)
                             await connection.send(request.audio)
                             complete_transport_write(
                                 delivery, len(request.audio), generation=request.generation,
                                 buffer_epoch=request.buffer_epoch, provider="grok",
+                            delivery_spans=request.delivery_spans, takes_ownership=True,
                             )
                         continue
 
@@ -499,6 +500,8 @@ async def grok_asr_worker(
                     )
                     return "failed"
                 finally:
+                    if request.kind == "audio":
+                        retire_interval_deliveries(request_queue, only_spans=request.delivery_spans)
                     request_queue.task_done()
 
         receiver_task = asyncio.create_task(_receive_events(), name="grok-asr-receiver")

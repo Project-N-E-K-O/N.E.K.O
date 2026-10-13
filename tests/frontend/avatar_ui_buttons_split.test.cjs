@@ -23,6 +23,7 @@ const PART_NAMES = [
 const STANDALONE_PART_NAMES = [
     'edge-peek-controller.js',
     'idle-desktop-window-edge-peek.js',
+    'idle-desktop-window-gravity.js',
     'idle-desktop-window-interactions.js',
     'idle-desktop-window-top-edge.js',
 ];

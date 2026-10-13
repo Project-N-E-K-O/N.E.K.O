@@ -396,14 +396,35 @@ async def test_renamed_character_gets_its_chips_under_the_new_name(monkeypatch, 
     assert _chip_ids(socket) == [chips_request_id(vid(5))]
 
 
-async def test_preview_and_failed_blocks_are_left_to_pr14(monkeypatch, tmp_path):
-    await _pending(tmp_path, 6, debrief_choice="preview:diary",
-                   debrief_pending={"diary": "d", "facts": []})
+async def test_bind_replays_the_block_the_current_choice_owes(monkeypatch, tmp_path):
+    from main_logic.visit.spool import new_debrief_writes
+    from main_routers.visit_router.debrief import failed_request_id, preview_request_id
+
+    diary = "第一行" + chr(10) * 2 + "第二行"
+    pending = {"diary": diary, "facts": ["去了邻居家"]}
+    await _pending(tmp_path, 6, debrief_choice="preview:diary", debrief_pending=pending)
+    await _pending(tmp_path, 10, debrief_choice="committing:diary", debrief_pending=pending)
+    writes = {**new_debrief_writes(), "facts": True, "facts_written": 1}
+    await _pending(tmp_path, 11, debrief_choice="commit_failed:diary", debrief_pending=pending,
+                   debrief_writes=writes,
+                   debrief_commit_error={"step": "cache", "status": 422, "at": 1.0, "seq": 2})
     manager = _ProtocolManager()
     install(monkeypatch, manager)
     socket = VisitSocket([bind()])
     await run(socket, manager)
-    assert _chip_ids(socket) == []
+    assert _chip_ids(socket) == [preview_request_id(vid(6)), preview_request_id(vid(10)),
+                                 failed_request_id(vid(11), 2)]
+    blocks = {f["request_id"]: f["blocks"] for f in socket.sent if f.get("type") == "chat_blocks"}
+    # 预览正文逐字放在 plain_text 块里（换行原样保留），零 LLM
+    plain = [b["text"] for b in blocks[preview_request_id(vid(6))] if b.get("plain_text")]
+    assert plain == [diary, "去了邻居家"]
+    # 写入中：「不记」置灰、「写入」可点，后面紧跟 committing 状态帧
+    buttons = {b["id"]: b for b in blocks[preview_request_id(vid(10))][-2]["buttons"]}
+    assert buttons["forget"].get("disabled") is True and not buttons["confirm"].get("disabled")
+    frames = [(f["visit_id"], f["phase"]) for f in socket.sent if f.get("type") == "visit_debrief"]
+    assert frames == [(vid(10), "committing"), (vid(11), "commit_failed")]
+    failed = [f for f in socket.sent if f.get("type") == "visit_debrief" and f["phase"] == "commit_failed"][0]
+    assert failed["seq"] == 2 and failed["written"] == {"facts": True, "cache": False}
 
 
 async def test_ack_is_per_connection_and_never_clears_the_flag(monkeypatch, tmp_path):
@@ -611,7 +632,7 @@ async def test_replay_stops_when_the_account_changes_midway(monkeypatch, tmp_pat
 
     async def switching():
         calls["n"] += 1
-        return OWN_A if calls["n"] <= 2 else OWN_B      # 扫描时 + 第一块发前仍是 A，之后换成 B
+        return OWN_A if calls["n"] <= 3 else OWN_B      # 扫描时、逐场检查、拿锁后复查仍是 A，之后换成 B
 
     monkeypatch.setattr(accounts, "own_visit_uid", switching)
     socket = VisitSocket([])
@@ -664,7 +685,7 @@ async def test_recovery_sends_no_chips_when_the_interrupted_notice_failed(monkey
 
     fake.send_frame = refuse
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
-    assert await debrief.render_chips(vid(20), own_char="Host", status="interrupted") is False
+    assert await debrief.render_chips(vid(20), own_char=NAME, status="interrupted") is False
     assert fake.blocks == []
 
 
@@ -688,7 +709,7 @@ async def test_crash_notice_then_account_change_sends_no_chip(monkeypatch, tmp_p
 
     async def switching():
         calls["n"] += 1
-        return OWN_A if calls["n"] <= 2 else OWN_B      # 扫描与提示前是 A，写完提示后换成 B
+        return OWN_A if calls["n"] <= 3 else OWN_B      # 扫描、逐场检查、拿锁后复查是 A，写完提示后换成 B
 
     monkeypatch.setattr(accounts, "own_visit_uid", switching)
     socket = VisitSocket([])
@@ -768,7 +789,7 @@ async def test_recovery_skips_a_visit_of_another_account(monkeypatch, tmp_path):
 
     await _pending(tmp_path, 21, finalized="crash", own_uid=OWN_B)
     fake = await _recovery_host(monkeypatch)
-    assert await debrief.render_chips(vid(21), own_char="Host", status="interrupted") is False
+    assert await debrief.render_chips(vid(21), own_char=NAME, status="interrupted") is False
     assert fake.frames == [] and fake.blocks == []
 
 
@@ -777,7 +798,7 @@ async def test_recovery_of_the_current_account_still_renders(monkeypatch, tmp_pa
 
     await _pending(tmp_path, 22, finalized="crash")
     fake = await _recovery_host(monkeypatch)
-    assert await debrief.render_chips(vid(22), own_char="Host", status="interrupted") is True
+    assert await debrief.render_chips(vid(22), own_char=NAME, status="interrupted") is True
     assert [b[1] for b in fake.blocks] == [chips_request_id(vid(22))]
 
 
@@ -785,7 +806,7 @@ async def test_recovery_with_unreadable_state_sends_nothing(monkeypatch, tmp_pat
     from main_routers.visit_router import debrief
 
     fake = await _recovery_host(monkeypatch)
-    assert await debrief.render_chips(vid(23), own_char="Host", status=None) is False
+    assert await debrief.render_chips(vid(23), own_char=NAME, status=None) is False
     assert fake.frames == [] and fake.blocks == []
 
 
@@ -801,6 +822,17 @@ async def test_recovery_account_change_during_the_notice_sends_no_chip(monkeypat
 
     monkeypatch.setattr(accounts, "own_visit_uid", switching)
     fake = await _recovery_host(monkeypatch)
-    assert await debrief.render_chips(vid(24), own_char="Host", status="interrupted") is False
+    assert await debrief.render_chips(vid(24), own_char=NAME, status="interrupted") is False
     assert fake.blocks == []
 
+
+
+async def test_crashed_generation_replays_chips_with_the_interrupted_notice(monkeypatch, tmp_path):
+    # generating:diary 投递的也是芯片：崩溃场次照样先发「意外中断」，与启动补录同一口径
+    await _pending(tmp_path, 21, finalized="crash", debrief_choice="generating:diary")
+    manager = _ProtocolManager()
+    install(monkeypatch, manager)
+    socket = VisitSocket([bind()])
+    await run(socket, manager)
+    assert socket.statuses() == ["VISIT_INTERRUPTED_LAST_TIME"]
+    assert _chip_ids(socket) == [chips_request_id(vid(21))]

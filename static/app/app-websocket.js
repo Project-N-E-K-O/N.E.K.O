@@ -1645,7 +1645,7 @@
         && S.gameVoiceSttGateActive !== true) {
         console.log('[App] independent ASR blocked; stopping the microphone');
         if (typeof window.stopMicCapture === 'function') {
-            Promise.resolve(window.stopMicCapture()).catch(function (micTeardownErr) {
+            Promise.resolve(window.stopMicCapture({ normalEnd: false })).catch(function (micTeardownErr) {
                 console.warn('[App] blocked-ASR microphone teardown failed:', micTeardownErr);
             });
         } else if (typeof window.stopRecording === 'function') {
@@ -3592,7 +3592,10 @@
                     if (!Number.isFinite(playbackGain)) playbackGain = 1;
                     playbackGain = Math.max(0, Math.min(2, playbackGain));
 
-                    if (speechId && S.interruptedSpeechId && speechId === S.interruptedSpeechId) {
+                    if (speechId && ((S.interruptedSpeechId && speechId === S.interruptedSpeechId) ||
+                        (window.appAudioPlayback &&
+                            typeof window.appAudioPlayback.isAssistantSpeechInterrupted === 'function' &&
+                            window.appAudioPlayback.isAssistantSpeechInterrupted(speechId)))) {
                         if (window.DEBUG_AUDIO) {
                             console.log(window.t('console.discardInterruptedAudio'), speechId);
                         }
@@ -5170,6 +5173,18 @@
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
                         try {
+                            function replySuppressedScreenshot() {
+                                if (typeof window.isNekoHomeTutorialProactiveSuppressed !== 'function'
+                                    || !window.isNekoHomeTutorialProactiveSuppressed()) return false;
+                                // 回空结果解除后端 future，避免额外等待 3 秒。现有协议
+                                // 没有“拒绝兜底”语义：本机连接仍可能由 pyautogui 截图，
+                                // 此闸门只保证前端不发送教程期间的屏幕内容。
+                                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                                    S.socket.send(JSON.stringify({ action: 'screenshot_response', data: '' }));
+                                }
+                                return true;
+                            }
+                            if (replySuppressedScreenshot()) return;
                             var dataUrl = null;
                             // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
                             // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
@@ -5184,6 +5199,7 @@
                             } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
+                            if (replySuppressedScreenshot()) return;
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
                                 // null = 窗口截图或无法确定 → 不叠加
@@ -6036,6 +6052,10 @@
             S.independentAsrActive = false;
             S.independentAsrProvider = '';
             clearAssistantLifecycleOnDisconnect('socket_close');
+            if (window.appAudioPlayback &&
+                typeof window.appAudioPlayback.clearLocalAssistantSpeechInterruptions === 'function') {
+                window.appAudioPlayback.clearLocalAssistantSpeechInterruptions(_thisSocket);
+            }
 
             // Clear heartbeat
             if (S.heartbeatInterval) {

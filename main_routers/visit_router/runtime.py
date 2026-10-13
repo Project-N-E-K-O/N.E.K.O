@@ -146,6 +146,8 @@ _RENEW_RETRY_BASE_S = 5.0
 _RENEW_RETRY_MAX_S = 60.0
 _VOICE_STATUS_THROTTLE_S = 5.0
 _ACCOUNT_CHANGE_SEAL_WAIT_S = 30.0  # 登出 / 切换社区账号前等在飞串门封存上传文件的上限
+# 按住账号的一次复盘推送（核账号 + 写出）最长多久：必须短于切号的等待，切号放行时它一定已结束或被截断
+_ACCOUNT_BOUND_PUSH_MAX_S = 10.0
 
 # ═════════════════════════════════════════════════════════════════════
 # 依赖注入
@@ -558,6 +560,7 @@ def _reset_for_tests() -> None:
     _disabled_gen = 0
     _account_change_lock = None
     _credential_requests.clear()
+    _account_bound_pushes.clear()
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -2920,7 +2923,11 @@ async def account_change(
                 except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
                     logger.warning("visit: ending live visits before the account change failed: %r", exc)
             # 还在途的领凭证请求（场次可能已注销、请求仍在后台）读会话时必须仍是旧账号：先等它们结束再改会话
-            await _settle_credential_requests(timeout)
+            await _settle_in_flight(_credential_requests, timeout, "credential requests")
+            # 已核过账号、正往页面推复盘块的也先推完：核完账号到写出去之间不会换成另一个账号。
+            # 至少等满推送的时限（调用方传了更短的 timeout 也一样）：放行时它们一定已结束或被截断
+            await _settle_in_flight(_account_bound_pushes, max(timeout, _ACCOUNT_BOUND_PUSH_MAX_S + 1.0),
+                                    "debrief pushes")
             yield
     finally:
         _account_changes -= 1
@@ -2929,12 +2936,47 @@ async def account_change(
 _credential_requests: set[asyncio.Future] = set()
 """Servers credential requests in flight: an account change waits for them before the session changes."""
 
+_account_bound_pushes: set[asyncio.Future] = set()
+"""Debrief pushes in flight (:func:`hold_account_for_push`): an account change waits for them before the session changes."""
 
-async def _settle_credential_requests(timeout: float) -> None:
-    pending = [t for t in _credential_requests if not t.done()]
-    if pending:
-        # 只等不取消：请求已发出时取消也撤不回 Servers 那边的签发（与兑掉的邀请码）
-        await asyncio.wait(pending, timeout=max(0.0, timeout))
+
+@asynccontextmanager
+async def hold_account_for_push():
+    """Yield whether a push bound to the signed-in account may go out; keep the account from changing until it ends.
+
+    Yields False while a logout / account switch is in progress (the caller
+    skips the push; bind replays it to the account that owns the visit).
+    Otherwise the push checks the account and writes inside the block, and
+    :func:`account_change` waits for it before the session changes, so no
+    switch lands between the check and the write. The block is cut off
+    (``TimeoutError``) after ``_ACCOUNT_BOUND_PUSH_MAX_S``, shorter than
+    that wait: a push never writes after the credentials changed.
+    """
+    if _account_changes:
+        yield False
+        return
+    held = asyncio.get_running_loop().create_future()
+    _account_bound_pushes.add(held)
+    try:
+        async with asyncio.timeout(_ACCOUNT_BOUND_PUSH_MAX_S):
+            yield True
+    finally:
+        if not held.done():
+            held.set_result(None)
+        _account_bound_pushes.discard(held)
+
+
+async def _settle_in_flight(futures: set[asyncio.Future], timeout: float, what: str) -> None:
+    """Wait (bounded) for the in-flight ``futures`` an account change must not overtake; never cancels them."""
+    pending = [f for f in futures if not f.done()]
+    if not pending:
+        return
+    # 只等不取消：领凭证请求已发出时取消也撤不回 Servers 那边的签发（与兑掉的邀请码）；
+    # 复盘推送由它自己的时限截断（hold_account_for_push），这里也不取消
+    _done, still = await asyncio.wait(pending, timeout=max(0.0, timeout))
+    if still:
+        logger.warning("visit: account change proceeds with %d %s still in flight after %.0fs",
+                       len(still), what, timeout)
 
 
 def _seals_in_background() -> list["VisitRuntime"]:
@@ -3088,5 +3130,6 @@ __all__ = [
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
     "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
-    "hold_character_lifecycle", "end_visits_for_account_change", "account_change", "cancel_background_writes",
+    "hold_character_lifecycle", "hold_account_for_push", "end_visits_for_account_change", "account_change",
+    "cancel_background_writes",
 ]

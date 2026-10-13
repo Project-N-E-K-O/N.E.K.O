@@ -602,7 +602,7 @@ async def test_ordinary_review_keeps_committed_history_watermark_with_projected_
 @pytest.mark.parametrize("path", ["missed_recovery", "review_rewrite", "contract_rewrite", "terminal_rewrite",
                                   "terminal_rewrite_authored"])
 async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(tmp_path, monkeypatch, path):
-    """Every later formal transition draft must pass the bridge-leak and terminal-question checks or roll back."""
+    """Reject unsafe later drafts; speculative recovery may retain its reviewed ordinary transaction."""
     from services.theater import numeric_v2_evaluator as ev
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_missed_transition import QUOTE
@@ -684,12 +684,20 @@ async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(t
     diagnostics: dict[str, Any] = {}
     terminal = path.startswith("terminal_rewrite")
     expected = "segment_overlap" if terminal else "terminal_new_question"
-    with pytest.raises(NumericV2ActorOutputError, match=expected):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
-            config_manager=object(), runtime=runtime, current=current,
-            turn=TurnRequestV2("later", 0, message), ensure_current_binding=lambda _: _binding(),
-            diagnostics_sink=diagnostics)
+    execution = numeric_v2_workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("later", 0, message), ensure_current_binding=lambda _: _binding(),
+        diagnostics_sink=diagnostics)
+    if path == "missed_recovery":
+        result = await execution
+        assert result.stored.session.current_node_id == current.session.current_node_id
+        assert result.stored.session.revision == current.session.revision + 1
+        assert result.performance["performance"] == "（点头）我听到了。"
+        assert "segments" not in result.performance
+        assert diagnostics["recovered_ordinary_drafts_reused"] == 1
+    else:
+        with pytest.raises(NumericV2ActorOutputError, match=expected):
+            await execution
     assert diagnostics["transition_structure_rejected" if terminal else "terminal_structure_rejected"]
     assert len(generations) == 2
-    # The failed turn is atomic: nothing reached storage.
-    assert await runtime.restore_session(f"later_{path}") == current
+    assert await runtime.restore_session(f"later_{path}") == (result.stored if path == "missed_recovery" else current)

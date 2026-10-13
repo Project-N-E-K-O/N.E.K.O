@@ -51,22 +51,26 @@ def test_invalid_evidence_index_does_not_authorize(index):
     assert not result.missed_initiation and not result.public_destination_quote
 
 
-def test_numbered_evidence_excludes_player_and_candidate():
+@pytest.mark.parametrize("player_input", ["带我去新秘密房间。", "带我去新秘密房间，但先别出门。"])
+def test_numbered_evidence_excludes_player_and_candidate(player_input):
     case = initiation_case()
     messages, evidence = ev._build_transition_judge_messages(
-        case["engine"], case["session"], player_input="带我去新秘密房间。",
+        case["engine"], case["session"], player_input=player_input,
         actor_performance={"performance": "新秘密房间已经开放。", "suggested_inputs": []},
         check_missed_initiation=True)
     data = json.loads(messages[1].content.split("：", 1)[1])
     recovery_check = data["missed_initiation_check"]
-    assert recovery_check["player_request"] == "带我去新秘密房间。"
-    assert recovery_check["required_exit"]["chapter"] == case["target"]
+    assert set(recovery_check) == {"public_destination_evidence"}
+    assert data["player_input"] == player_input
+    assert data["next_scene_direction"]["chapter"] == case["target"]
     assert recovery_check["public_destination_evidence"]
     assert all(text in case["session"].opening_performance["performance"]
                for text in recovery_check["public_destination_evidence"])
     assert "新秘密房间" not in str(recovery_check["public_destination_evidence"])
     assert evidence == tuple(recovery_check["public_destination_evidence"])
     assert messages[0].content.startswith("本次先独立核对 JSON 开头的 missed_initiation_check")
+    assert "顶层 player_input" in messages[0].content
+    assert "顶层 next_scene_direction" in messages[0].content
     assert "保留原八字段并增加 player_request_quote、missed_initiation 与 public_destination_index" in messages[0].content
 
 
@@ -80,11 +84,11 @@ def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparat
         check_missed_initiation=True,
     )
     data = json.loads(messages[1].content.split("：", 1)[1])
-    required = data["missed_initiation_check"]["required_exit"]
+    required = data["next_scene_direction"]
     # 补查会触发昂贵的正式演绎，必须先看到接受后真正抵达的地点与阶段。
     assert required["direction"] == "一起确认登记信息后继续下一步。"
-    assert required["bridge_boundary"] == data["next_scene_direction"]["bridge_boundary"]
-    assert required["opening_boundary"] == data["next_scene_direction"]["opening_boundary"]
+    assert required["bridge_boundary"] == route["transition_contract"]["bridge_scene_narration"]
+    assert required["opening_boundary"] == case["engine"].nodes["ending_leave"]["story_beat"]["opening_scene"]
     assert "阅览室" in required["bridge_boundary"]
     assert "阅览室" in required["opening_boundary"]
 

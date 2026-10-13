@@ -167,6 +167,9 @@ async def test_completed_scene_can_invite_after_subjective_reply_without_auto_ac
         }
 
     async def review(self, **kwargs):
+        if kwargs["actor_performance"]["performance"].endswith(f"要现在一起去{destination}吗？"):
+            assert kwargs["actor_performance"]["suggested_inputs"][0] == "好，我们现在过去。"
+            return ev.NumericV2TransitionOfferReview(True, True, (), ())
         return ev.NumericV2TransitionOfferReview(False, False, (), ())
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", options)

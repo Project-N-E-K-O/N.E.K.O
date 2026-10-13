@@ -504,6 +504,54 @@ async def test_rename_own_char_rewrites_header_and_state(tmp_path):
     assert await VisitSpool.rename_own_char(tmp_path, "old", "new") == []
 
 
+async def test_rename_own_char_ignores_other_characters_visits_in_flight(tmp_path):
+    from main_logic.visit.spool import SpoolBusy
+
+    done = await open_spool(tmp_path, vid(1), own_char="old")
+    await done.append(line(1, "body"))
+    await done.close()
+    await done.write_state(state_for(own_char="old"))
+    # 改名在运行期执行：别的角色正在串门（spool 还开着）不能挡住这次迁移（变异：先判 busy 必红）
+    live_other = await open_spool(tmp_path, vid(2), own_char="other")
+    try:
+        assert await VisitSpool.rename_own_char(tmp_path, "old", "new") == [vid(1)]
+        assert (await done.read_state())["own_char"] == "new"
+        # 被改名角色自己的场次还开着：照旧报 busy（别的场次先改完）
+        live_own = await open_spool(tmp_path, vid(3), own_char="new")
+        try:
+            with pytest.raises(SpoolBusy):
+                await VisitSpool.rename_own_char(tmp_path, "new", "newer")
+            assert (await done.read_state())["own_char"] == "newer"
+        finally:
+            await live_own.close()
+    finally:
+        await live_other.close()
+
+
+async def test_rename_own_char_treats_a_spool_still_being_opened_as_busy(tmp_path):
+    from main_logic.visit import spool as spool_mod
+    from main_logic.visit.spool import SpoolBusy
+
+    done = await open_spool(tmp_path, vid(1), own_char="old")
+    await done.append(line(1, "body"))
+    await done.close()
+    await done.write_state(state_for(own_char="old"))
+    # 另一场刚登记、文件已建、头行还没写（_open_sync 出锁后才写）：归属未知，按仍在写报 busy，
+    # 不能当成读不出（变异：按 unreadable 必红），别的场次照样先改完
+    opening = spool_mod.visit_path(spool_mod._spool_dir(tmp_path), vid(2), spool_mod.SPOOL_SUFFIX)
+    opening.write_bytes(b"")
+    key = spool_mod._spool_key(opening)
+    with spool_mod._OPEN_SPOOLS_LOCK:
+        spool_mod._OPEN_SPOOLS.add(key)
+    try:
+        with pytest.raises(SpoolBusy):
+            await VisitSpool.rename_own_char(tmp_path, "old", "new")
+        assert (await done.read_state())["own_char"] == "new"
+    finally:
+        with spool_mod._OPEN_SPOOLS_LOCK:
+            spool_mod._OPEN_SPOOLS.discard(key)
+
+
 # ── sweep ──
 
 

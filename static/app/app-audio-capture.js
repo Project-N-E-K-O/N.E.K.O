@@ -1107,8 +1107,11 @@
             // 先显示选择提示
             window.showStatusToast(window.t ? window.t('app.deviceSelected', { device: deviceName }) : `已选择 ${deviceName}`, 3000);
 
-            // 保存需要恢复的状态
-            const shouldRestartProactiveVision = S.proactiveVisionEnabled && S.isRecording;
+            // 保存需要恢复的状态（教程抑制期间被停掉的视觉不由换麦恢复，
+            // 由抑制释放事件统一补挂，避免教程中途重启屏幕采集）
+            const tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                && window.isNekoHomeTutorialProactiveSuppressed() === true;
+            const shouldRestartProactiveVision = S.proactiveVisionEnabled && S.isRecording && !tutorialHoldsVision;
             const shouldRestartScreening = S.videoSenderInterval !== undefined && S.videoSenderInterval !== null;
 
             // 防止并发切换导致状态混乱
@@ -2517,7 +2520,7 @@
     }
 
     // 闭麦，按钮on click
-    async function stopMicCapture() {
+    async function stopMicCapture(options = {}) {
         S.isSwitchingMode = true;
 
         // 隐藏语音准备提示（防止残留）
@@ -2565,7 +2568,7 @@
         // 立即更新音量显示状态（显示"未录音"）
         updateMicVolumeStatusNow(false);
 
-        stopRecording();
+        stopRecording({ normalEnd: options.normalEnd !== false });
 
         if (_mic)    _mic.disabled = false;
         if (_mute)   _mute.disabled = true;
@@ -2648,6 +2651,17 @@
         // cancel the start they are about to make.
         invalidatePendingMicStart();
         if (!S.isRecording) return;
+
+        // A deliberate capture end precedes lease revocation on the same
+        // ordered socket. Failure/mute/disconnect teardown does not flush.
+        if (options.normalEnd === true && notifyServer
+            && S.socket && S.socket.readyState === WebSocket.OPEN) {
+            voiceLeaseGeneration += 1;
+            S.socket.send(JSON.stringify({
+                action: 'voice_input_control', event: 'capture_end',
+                lease_generation: voiceLeaseGeneration, engaged: true
+            }));
+        }
 
         S.isRecording = false;
         window.isRecording = false;

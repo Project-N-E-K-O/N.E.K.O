@@ -191,6 +191,11 @@ def guarded(name, globals=None, locals=None, fromlist=(), level=0):
 builtins.__import__ = guarded
 import theater_workshop.sdk
 assert theater_workshop.sdk.TheaterWorkshop._instances == {}
+from theater_workshop.sdk.numeric_v2 import valid_silent_choice
+choice = {'destination': 'observatory', 'arrangement': 'read the records'}
+assert valid_silent_choice(choice, token_counter=lambda text: 30)
+assert not valid_silent_choice(choice, token_counter=lambda text: 31)
+assert not valid_silent_choice(choice)
 print('pure-sdk-import')
 """
     result = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
@@ -206,6 +211,19 @@ def test_same_root_reuses_instance_and_explicit_model_change_requires_reopen(ope
     assert open_workshop(config) is host
     with pytest.raises(WorkshopError, match="workshop_model_mismatch"):
         open_workshop(config, model_config={"model": "different"})
+
+
+def test_host_injects_compiler_counter_into_both_generation_paths(opened):
+    from utils.tokenize import count_tokens
+
+    sdk = opened[0].sdk
+    assert sdk._generator._token_counter is count_tokens
+    assert sdk._branch._token_counter is count_tokens
+    with pytest.raises(WorkshopError, match="workshop_token_counter_mismatch"):
+        type(sdk).open(project_root=sdk.root, control_root=sdk.root.parent,
+            gateway=sdk._gateway, model_call=fixed_model,
+            write_transaction=sdk._host_transaction, authoring_names=sdk._names,
+            owner=sdk._owner, token_counter=lambda text: 0)
 
 
 def test_concurrent_edits_only_one_accepts_old_revision(opened):

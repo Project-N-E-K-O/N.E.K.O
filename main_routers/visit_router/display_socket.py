@@ -24,8 +24,10 @@ ordinary chat never loads the visit package:
   endpoints. A bound connection is marked on the connection object itself
   (:data:`utils.visit_route_state.VISIT_SOCKET_BOUND_ATTR`, never a global)
   and gets the frames it missed: ``invite_ready`` / ``visit_invite`` of a
-  live visit and the debrief chips of every visit of this character whose
-  ``state.json.debrief_chip_pending`` is set.
+  live visit and, for every visit of this character whose
+  ``state.json.debrief_chip_pending`` is set, the debrief block its current
+  choice owes (chips, preview, preview while committing, failure block)
+  followed by its state frame (``debrief.owed_block``).
 * ``visit_debrief_chip_ack`` (:func:`handle_chip_ack`): remembered per
   connection only; it never clears ``debrief_chip_pending``.
 * the visit downlink (``visit_*`` frames, debrief chips) goes to bound
@@ -42,6 +44,7 @@ only source of a grace period (PR-07).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import secrets
 from typing import Any, Optional
@@ -57,8 +60,6 @@ logger = get_module_logger(__name__, "Main")
 
 _SEND_TIMEOUT_S = 2.0
 _UNAUTHORIZED = "VISIT_E_UNAUTHORIZED"
-# 这几种状态投递的是「记成日记 / 不记」两个芯片；预览块、写入中、写入失败块随 PR-14 的两步写入
-_CHIP_CHOICES = (None, "ask_later", "generating:diary")
 
 _replays: set[asyncio.Task] = set()
 """Bind replays in flight (kept referenced until done)."""
@@ -209,30 +210,91 @@ async def _pending_debriefs(lanlan_name: str) -> list[dict]:
 
 async def _replay_chips(websocket: Any, lanlan_name: str) -> None:
     from main_routers.visit_router.accounts import own_visit_uid
-    from main_routers.visit_router.debrief import chip_blocks, chips_request_id
     from main_routers.visit_router.local_context import prompt_lang
 
     delivered = _delivered(websocket)
     lang = prompt_lang()
-    for state in await _pending_debriefs(lanlan_name):
-        visit_id = state["visit_id"]
-        if await own_visit_uid() != state["own_uid"]:
+    for scanned in await _pending_debriefs(lanlan_name):
+        if await own_visit_uid() != scanned["own_uid"]:
             # 扫描期间登出 / 换了账号：不再把上一个账号的芯片发给这一页
             return
-        if state["debrief_choice"] not in _CHIP_CHOICES:
-            # 预览块 / 写入中 / 写入失败块的重放属于 PR-14（/debrief/choice 与两步写入）
-            continue
-        request_id = chips_request_id(visit_id)
-        if request_id in delivered:
-            continue
-        if state["finalized"] == "crash":
+        if not await _replay_one(websocket, lanlan_name, scanned["visit_id"], scanned["own_uid"], delivered, lang):
+            return
+
+
+async def _replay_one(websocket: Any, lanlan_name: str, visit_id: str, owner: str, delivered: set,
+                      lang: Optional[str]) -> bool:
+    """Replay one visit's owed block under its debrief lock; False stops the replay of this connection."""
+    from main_logic.visit.spool import VisitSpool
+    from main_routers.visit_router import debrief, runtime
+    from main_routers.visit_router.accounts import own_visit_uid
+
+    # 与 /debrief/choice 同一把锁、锁内重读：扫描之后另一页刚选了「不记」/ 写完 / 放弃时，
+    # 不把旧快照里的预览正文和已失效的按钮再推给这一页
+    async with debrief._visit_lock(visit_id):
+        try:
+            state = await VisitSpool(runtime.runtime_deps().config_dir(), visit_id).read_state()
+        except Exception as exc:  # noqa: BLE001 - 一场读不出不挡其余场次
+            logger.debug("visit display: state of %s unreadable: %s", visit_id[:6], type(exc).__name__)
+            return True
+        if state is None or not state.get("debrief_chip_pending") or state.get("own_uid") != owner:
+            return True
+        from main_logic.visit import local_chars
+
+        try:
+            async with contextlib.AsyncExitStack() as stack:
+                # 核名字、核账号到投递都按住这只猫的生命周期与登录账号：中途改名（旧名字归了另一只猫）、切号都进不来
+                if not await debrief._pin_push(stack, state):
+                    return True
+                if await local_chars.resolve_char_name(state["own_char_uid"]) != lanlan_name:
+                    # 等锁期间这只猫改了名（旧名字可能已归另一只猫）：这条连接已不是它的页面，留给它新名字的 bind 重放
+                    return True
+                if await own_visit_uid() != owner:
+                    # 等锁期间（另一页正在生成 / 提交）登出或换了账号：这一页不再收上一个账号的块（账号最后核）
+                    return False
+                # 核完身份再重读：「清除这个人」不拿这把锁，落在上面几次 await 里也不会推出刚被清掉的预览
+                fresh = await debrief.reread_for_delivery(state)
+                if fresh is None or not fresh.get("debrief_chip_pending"):
+                    return True
+                return await _send_owed(websocket, lanlan_name, fresh, delivered, lang, own_visit_uid)
+        except TimeoutError:
+            # 这一场按住账号的推送超过了时限：这场截断、下次 bind 再重放；接着试下一场
+            # （真在切号的话，下一场的 _pin_push 会直接给 False，开销很小）
+            logger.info("visit display: replay of %s took longer than the account hold limit; cut off", visit_id[:6])
+            return True
+
+
+async def _send_owed(websocket: Any, lanlan_name: str, state: dict, delivered: set, lang: Optional[str],
+                     own_visit_uid: Any) -> bool:
+    """Send the block ``state`` owes (unless delivered on this connection) and its state frame."""
+    from main_routers.visit_router.debrief import CHIP_CHOICES, owed_block
+
+    visit_id = state["visit_id"]
+    # 按当前状态投递：芯片 / 预览块 / 写入中的预览块 / 写入失败块（内容全取自 state.json，零 LLM）
+    owed = owed_block(state, lang)
+    if owed is None:
+        return True
+    request_id, blocks, frame = owed
+    if request_id not in delivered:
+        # 「意外中断」只跟芯片一起出（含 generating:diary，它投递的也是芯片），与启动补录同一口径
+        if state["finalized"] == "crash" and state["debrief_choice"] in CHIP_CHOICES:
             if not await _send_status(websocket, "VISIT_INTERRUPTED_LAST_TIME", {"visit_id": visit_id}):
                 # 提示没送出（连接卡住 / 断开）：芯片不单独发，后面的也不再试；下次 visit_bind 连同提示一起重放
-                return
+                return False
             if await own_visit_uid() != state["own_uid"]:
-                return  # 写提示的这段 await 里登出 / 换了账号：芯片不再发
-        await _send(websocket, chat_blocks_frame(chip_blocks(visit_id, lang), request_id=request_id,
-                                                 source_name=lanlan_name))
+                return False  # 写提示的这段 await 里登出 / 换了账号：芯片不再发
+        if not await _send(websocket, chat_blocks_frame(blocks, request_id=request_id, source_name=lanlan_name)):
+            return False
+    if frame is not None:
+        # 状态帧不按 request_id 去重：页上已有的同一块（重连时被前端去重跳过）靠它校正按钮
+        await _send(websocket, frame)
+    from main_routers.visit_router.debrief import settled_after_delivery
+
+    # 写后复查：投递期间「清除这个人」已把这场作废时补一帧 chosen，页面最终一定是置灰
+    correction = await settled_after_delivery(state, request_id)
+    if correction is not None:
+        await _send(websocket, correction)
+    return True
 
 
 def chat_blocks_frame(blocks: list, *, request_id: str, source_name: str) -> dict:
@@ -249,7 +311,7 @@ async def handle_chip_ack(websocket: Any, lanlan_name: str, message: Any) -> Non
     """``visit_debrief_chip_ack``: remember it on this connection when it names the owed block."""
     from main_logic.visit.spool import VisitSpool
     from main_routers.visit_router import runtime
-    from main_routers.visit_router.debrief import chips_request_id
+    from main_routers.visit_router.debrief import owed_request_id
     from utils.visit_wire import VISIT_ID_RE
 
     if not is_bound(websocket) or not isinstance(message, dict):
@@ -266,8 +328,7 @@ async def handle_chip_ack(websocket: Any, lanlan_name: str, message: Any) -> Non
         return
     # 只认当前状态应投递的那一块：旧芯片迟到的 ack 不能把还没送达的下一块标成已送达；
     # 也只认这条连接确实发过的块：先到的 ack 不能让还没重放到这条连接的芯片被跳过
-    if (state["debrief_choice"] in _CHIP_CHOICES and request_id == chips_request_id(visit_id)
-            and request_id in _sent(websocket)):
+    if request_id == owed_request_id(state) and request_id in _sent(websocket):
         _delivered(websocket).add(request_id)
 
 

@@ -1086,7 +1086,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
                 return;
             }
             if (image.getAttribute('src') !== src) image.setAttribute('src', src);
-            if (isIdleCat1CompactMirrorWideArt(src)) {
+            if ((detail && detail.wideArt === true) || isIdleCat1CompactMirrorWideArt(src)) {
                 element.setAttribute('data-neko-cat1-wide-art', 'true');
             } else {
                 element.removeAttribute('data-neko-cat1-wide-art');
