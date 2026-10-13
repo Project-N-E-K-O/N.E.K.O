@@ -1287,6 +1287,23 @@ const report = {};
     const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
     report.switched_join_end = end && end.body;
   }
+  // ── 建房在途时换了角色：后端收下的那一场同样立刻硬结束 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = {
+      '/api/visit/rooms': async () => { await gate; return { status: 202, body: { visit_id: VID2, phase: 'pending' } }; },
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+    };
+    const h = createHarness({ routes });
+    const pending = h.chat._test.startInvite();
+    await h.settle();
+    h.win.lanlan_config.lanlan_name = '小橘';
+    release();
+    await pending;
+    const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
+    report.switched_create_end = end && end.body;
+  }
   // ── 读 state 期间到了新一场的邀请：旧快照作废，不把新一场又收掉 ──
   {
     let release;
@@ -1753,3 +1770,9 @@ def test_invitation_during_a_state_probe_invalidates_the_snapshot(report):
 
 def test_ending_snapshot_releases_the_ack_only_session(report):
     assert report["snapshot_ending_released"] is False
+
+
+def test_room_created_after_a_character_switch_is_ended(report):
+    end = report["switched_create_end"]
+    assert end is not None
+    assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end" and end["visit_id"]
