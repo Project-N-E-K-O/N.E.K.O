@@ -589,6 +589,7 @@
         try {
             Promise.resolve(send(text, {
                 source: 'neko_visit:' + visit.recipient,
+                visitId: visit.visitId || '',
                 requestId: requestId,
                 // 串门只收文字：待发截图留在输入区，不上传、不清掉
                 ignoreComposerAttachments: true,
@@ -2308,7 +2309,18 @@
     // 旧一场先收尾；读 state 期间到的，在途的旧快照作废。已结束那一场迟到的台词照常上屏、不换场
     function reconcileLineVisit(frame) {
         var lineVisit = typeof frame.visit_id === 'string' ? frame.visit_id : '';
-        if (!lineVisit || lineVisit === visit.visitId || endedVisitIds.indexOf(lineVisit) !== -1) return;
+        if (!lineVisit || endedVisitIds.indexOf(lineVisit) !== -1) return;
+        if (lineVisit === visit.visitId) {
+            // 同一场、还停在等待阶段（漏了 started）：台词就是已开始的证据，推进到 active，在途的旧快照作废
+            if (visit.phase === null || WAITING_PHASES.indexOf(visit.phase) !== -1) {
+                stateFrameSeq += 1;
+                visit.phase = 'active';
+                visit.everStarted = true;
+                closeInviteDialog(lineVisit);
+                render();
+            }
+            return;
+        }
         stateFrameSeq += 1;
         if (visit.visitId && inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
         startNewVisit(lineVisit);

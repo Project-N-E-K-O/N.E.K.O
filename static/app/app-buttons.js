@@ -3381,6 +3381,10 @@
                         if (messageSource) {
                             textMessage.source = messageSource;
                         }
+                        // 串门台词带上发起时的场次：后端对不上当前那一场就拒，不会发给另一场的客人
+                        if (isVisitLine && typeof options.visitId === 'string' && options.visitId) {
+                            textMessage.visit_id = options.visitId;
+                        }
                         S.socket.send(JSON.stringify(textMessage));
 
                         if (!options.preserveInputValue) {

@@ -244,6 +244,22 @@ async def test_refusals_by_phase_and_side(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_visit_line_for_another_visit_is_refused(tmp_path, monkeypatch):
+    # 页面以为还在另一场（重连漏了换场）：带着别的 visit_id 的串门句不能发给这一场的客人
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        assert await rtm.route_stream_message("Host", {"input_type": "text", "data": "给上一场的", "source": "neko_visit:guest_cat",
+                                                        "visit_id": "z" * 22, "request_id": "o1"}) is True
+        assert host.host.statuses[-1] == ("VISIT_INPUT_REFUSED_WRAPUP", {"visit_id": rt.visit_id, "request_id": "o1"})
+        assert [p for p in _texts(wire, "host") if p.get("sp") == "h"] == []
+        assert host.host.user_inputs == []
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_only_visit_composer_lines_reach_the_peer(tmp_path, monkeypatch):
     # 拖到头像的文件、历史拖放、页面没恢复串门态时的普通提交：拒掉，不发给对端、不镜像
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)

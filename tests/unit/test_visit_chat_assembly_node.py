@@ -1355,6 +1355,22 @@ const report = {};
     report.line_switch_side = h.chat._test.state().visit.side;
     report.line_switch_old_ended = h.messages.some((m) => m.id === 'visit-ended-' + VID);
   }
+  // ── 串门句带上发起时的场次 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    h.I.submitVisitChatText({ text: '你好', requestId: 'vid1' });
+    report.submit_visit_id = h.sendCalls[h.sendCalls.length - 1].options.visitId;
+  }
+  // ── 接待确认后漏了 started、同一场的台词到了：推进到 active ──
+  {
+    const h = createHarness();
+    h.frame({ type: 'visit_invite', visit_id: VID, peer_name: '小白', peer_short_id: 'QWERTY', cross_region: false, expires_at: 1700000000 + 60 });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 1, text: '打扰啦', final: true, truncated: false,
+      speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } });
+    report.same_visit_line_phase = h.chat._test.state().visit.phase;
+    report.same_visit_line_active = h.chat.isActive();
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1812,3 +1828,12 @@ def test_line_from_a_new_visit_switches_and_invalidates_the_probe(report):
     assert report["line_switch_phase"] == "active"
     assert report["line_switch_side"] == "host"
     assert report["line_switch_old_ended"] is True
+
+
+def test_visit_submissions_carry_their_visit_id(report):
+    assert report["submit_visit_id"] == "A" * 22
+
+
+def test_same_visit_line_promotes_a_waiting_phase_to_active(report):
+    assert report["same_visit_line_phase"] == "active"
+    assert report["same_visit_line_active"] is True

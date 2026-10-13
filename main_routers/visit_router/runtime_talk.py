@@ -707,6 +707,11 @@ class TalkMixin:
         if input_type != "text":
             # 截图 / 摄像头帧一律吞掉
             return True
+        claimed_visit = message.get("visit_id")
+        if isinstance(claimed_visit, str) and claimed_visit and claimed_visit != self.visit_id:
+            # 页面以为还在另一场（重连时漏了换场）：写给那一场客人的话不能发给这一场的客人
+            await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
+            return True
         if self.side == "guest":
             await self.status("VISIT_INPUT_REFUSED_AWAY", request_id=request_id)
             return True

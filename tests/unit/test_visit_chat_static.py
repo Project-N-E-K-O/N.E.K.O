@@ -439,3 +439,9 @@ def test_refused_ordinary_submission_releases_an_ack_only_text_session():
     # 当前会话已归后来的那句时不撤
     assert "if (startedSession === true) lastSessionStartRequestId = String(requestId);" in buttons
     assert "S.isTextSessionActive = false;" in body
+
+
+def test_visit_lines_send_their_visit_id_on_the_wire():
+    buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
+    assert "if (isVisitLine && typeof options.visitId === 'string' && options.visitId) {" in buttons
+    assert "textMessage.visit_id = options.visitId;" in buttons
