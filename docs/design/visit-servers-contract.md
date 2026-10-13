@@ -112,7 +112,7 @@
 | 时钟容差 | ±300 s（`VISIT_TICKET_CLOCK_TOLERANCE_S`）：`iat - 300 ≤ now ≤ exp + 300` |
 | 邀请码 | 10 位 base32、10 min（`VISIT_INVITE_CODE_TTL_S` = `VISIT_INVITE_WAIT_S` = 600）、一次性；guest 必带；每房 host + guest 各一，第三者 403 `room_full` |
 | 公钥缓存 | `VISIT_PUBKEYS_CACHE_S = 86400`；每次领凭证顺带刷新；`revoked` 覆盖内置表 |
-| LiveKit 房间参数 | Servers `CreateRoom` 带 `max_participants:2`、`departure_timeout:60`（≥ `VISIT_PEER_REJOIN_GRACE_S=35` 加重连余量）、`empty_timeout = VISIT_INVITE_WAIT_S`；自建端 `room.auto_create:false`（部署见仓库 `deploy/livekit/README.md`） |
+| LiveKit 房间参数 | Servers `CreateRoom` 带 `max_participants:2`、`departure_timeout:60`（≥ `VISIT_PEER_REJOIN_GRACE_S=35` 加重连余量）、`empty_timeout = VISIT_INVITE_WAIT_S`；自建端 `room.auto_create:false`（部署模板在 N.E.K.O.Connect 仓库） |
 
 ## 计费、免费额度与并发房
 
