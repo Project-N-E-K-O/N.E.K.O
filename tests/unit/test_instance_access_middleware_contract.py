@@ -1,16 +1,19 @@
-"""契约：所有对外暴露的 ASGI 应用都必须挂 InstanceAccessMiddleware。
+"""Contract: every externally exposed ASGI app must mount InstanceAccessMiddleware.
 
-实例门禁做在应用层（不是 nginx 层），因为同一套「本机免步骤、远程要 key」的判定
-必须同时覆盖 Docker（有 nginx）与桌面 / 源码（没有 nginx）两种部署。
+Instance access is enforced at the application layer, not in nginx, because the
+same "local bypass / remote requires the key" decision has to cover both Docker
+(behind nginx) and desktop/source deployments (no nginx at all).
 
-代价是：新加一个 ASGI 应用时忘了挂中间件，那个服务的 HTTP/WS 会**完全裸奔**，
-而且没有任何症状 —— 能构建、能启动、功能也正常。这个测试用静态扫描把这类遗漏
-变成 CI 红灯。
+The price of that choice: a new ASGI app that forgets the middleware is left
+completely unprotected -- and there is no symptom at all. It builds, the
+container starts, features work. This test turns that class of omission into a
+CI failure.
 
-范围：app/ 与 plugin/，即 nginx 背后的四个服务。local_server/ 下的 survey /
-telemetry 是独立部署的旁路服务，不经过本实例的反代，也不共享实例门禁。
+Scope: app/ and plugin/, i.e. the four services behind nginx. local_server/
+holds stand-alone side services that sit outside this instance's proxy and do
+not share its access gate.
 
-背景见 docs/design/security/community-remote-access.md。
+Background: docs/design/security/community-remote-access.md.
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ SCAN_ROOTS = ("app", "plugin")
 
 
 def _fastapi_sites() -> set[str]:
-    """静态找出所有 `FastAPI(...)` 实例化点，不导入任何应用模块。"""
+    """Statically locate every FastAPI(...) site without importing app modules."""
     sites: set[str] = set()
     for root in SCAN_ROOTS:
         for path in sorted((ROOT / root).rglob("*.py")):

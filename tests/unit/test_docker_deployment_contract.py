@@ -1,13 +1,17 @@
-"""Docker 部署面的契约测试。
+"""Contract tests for the Docker deployment surface.
 
-这些断言钉住的都是"改错了不会有任何症状、只会在部署时静默失效"的东西：
-  * .env 没进容器 → API Key 填了也不生效
-  * 端口只在一边改 → 反代打旧端口，/memory/ /agent/ 502
-  * 健康检查写错 → 探针永远不健康，编排层反复重启正常容器
-  * 构建身份 ENV 放太前 → 每个 commit 让后面所有层全量失效
-  * .dockerignore 顺序写反 → 运行时读的文档静默变成内置短桩
+Every assertion here pins something that fails *silently* at deploy time:
 
-背景见 docker/README_Docker.md 与 docker-image-full-logic.md。
+  * .env never reaching the container -> a configured API key stays unconfigured
+  * a port changed on one side only -> the reverse proxy hits the old port (502)
+  * a malformed healthcheck -> the probe is never healthy and an orchestrator
+    keeps restarting a perfectly healthy container
+  * a build-identity ENV placed too early -> every commit invalidates all the
+    heavy layers below it
+  * a wrong .dockerignore ordering -> docs the runtime reads fall back to
+    built-in stubs without any error
+
+See docker/README_Docker.md for the deployment contract itself.
 """
 
 from __future__ import annotations
