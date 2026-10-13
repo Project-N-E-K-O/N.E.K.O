@@ -355,3 +355,106 @@ test('a manager without reset does not break the apply path', () => {
     const result = profile.apply(makeManager([], []));
     assert.equal(result.reset, false);
 });
+
+test('profile bone names survive the GLTFLoader node sanitization', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [{ bone: 'hair.001', shape: 'sphere', radius: 0.03, offset: [0, 0, 0] }],
+        chains: [{ bones: ['upper_arm.L'], stiffness: 0.7 }]
+    };
+    const collider = makeCollider('hair001', 0.5);
+    collider.shape.type = 'sphere';
+    collider.shape.offset = { x: 0, y: 0, z: 0 };
+    const applied = profile.applyColliders(makeManager([collider]));
+    assert.equal(applied, 1);
+    assert.equal(collider.shape.radius, 0.03);
+
+    const joint = { bone: { name: 'upper_armL' }, settings: {} };
+    const manager = makeManager([], [joint]);
+    const joints = profile.applyJoints(manager);
+    assert.equal(joints, 1);
+    assert.equal(joint.settings.stiffness, 0.7);
+});
+
+test('a bone name with spaces and brackets is sanitized the same way', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [{ bone: 'Hair Front [L]', shape: 'sphere', radius: 0.05, offset: [0, 0, 0] }],
+        chains: []
+    };
+    const collider = makeCollider('Hair_Front_L', 0.5);
+    collider.shape.type = 'sphere';
+    collider.shape.offset = { x: 0, y: 0, z: 0 };
+    const applied = profile.applyColliders(makeManager([collider]));
+    assert.equal(applied, 1);
+    assert.equal(collider.shape.radius, 0.05);
+});
+
+test('a geometry mismatch stays unmatched instead of stealing the next entry', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [
+            { bone: 'Head', shape: 'sphere', radius: 0.09, offset: [0, 0.1, 0] },
+            { bone: 'Head', shape: 'sphere', radius: 0.04, offset: [0, 0, 0] }
+        ],
+        chains: []
+    };
+    const first = makeCollider('Head', 0.5);
+    first.shape.type = 'sphere';
+    first.shape.offset = { x: 0, y: 0, z: 0 };
+    const second = makeCollider('Head', 0.5);
+    second.shape.type = 'sphere';
+    second.shape.offset = { x: 0, y: 0.1, z: 0 };
+    const applied = profile.applyColliders(makeManager([first, second]));
+    assert.equal(applied, 2);
+    assert.equal(first.shape.radius, 0.04);
+    assert.equal(second.shape.radius, 0.09);
+});
+
+test('an unmatched collider does not take an entry that belongs to another collider', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [{ bone: 'Head', shape: 'sphere', radius: 0.07, offset: [0, 0.9, 0] }],
+        chains: []
+    };
+    const stranger = makeCollider('Head', 0.5);
+    stranger.shape.type = 'capsule';
+    stranger.shape.offset = { x: 0, y: 0, z: 0 };
+    const applied = profile.applyColliders(makeManager([stranger]));
+    assert.equal(applied, 0, 'a collider whose geometry differs must not take the entry');
+    assert.equal(stranger.shape.radius, 0.25);
+});
+
+test('an entry without geometry metadata falls back to positional pairing', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [{ bone: 'Head', radius: 0.06 }],
+        chains: []
+    };
+    const collider = makeCollider('Head', 0.5);
+    collider.shape.type = 'sphere';
+    collider.shape.offset = { x: 0, y: 0, z: 0 };
+    const applied = profile.applyColliders(makeManager([collider]));
+    assert.equal(applied, 1);
+    assert.equal(collider.shape.radius, 0.06);
+});
+
+test('configured radii are scaled by the current scene scale', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [{ bone: 'Head', shape: 'sphere', radius: 0.1, offset: [0, 0, 0] }],
+        chains: []
+    };
+    const collider = makeCollider('Head', 0.5);
+    collider.shape.type = 'sphere';
+    collider.shape.offset = { x: 0, y: 0, z: 0 };
+    profile.applyColliders(makeManager([collider]), 0.5);
+    assert.equal(collider.shape.radius, 0.05);
+    assert.equal(collider._originalRadius, 0.1);
+});

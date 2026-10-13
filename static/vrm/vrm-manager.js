@@ -1620,10 +1620,11 @@ class VRMManager {
 
         // 同时等待场景稳定和待机动画加载完成，确保模型不以 T-pose 显示
         this._loadState = 'settling';
+        const physicsProfilePromise = this.loadPhysicsProfile(modelUrl).catch(() => false);
         const stabilityPromise = (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken))
             ? this._waitForSceneStability(result.vrm.scene, loadToken)
             : Promise.resolve(false);
-        const [stabilityResult, animationSucceeded] = await Promise.all([stabilityPromise, animationReady]);
+        const [stabilityResult, animationSucceeded] = await Promise.all([stabilityPromise, animationReady, physicsProfilePromise]);
 
         if (this._isLoadTokenActive(loadToken) && stabilityResult === true) {
             this._loadState = 'ready';
@@ -1649,8 +1650,6 @@ class VRMManager {
                     model: this.currentModel
                 }
             }));
-
-            await this.loadPhysicsProfile(modelUrl);
 
             showAndFadeIn();
 
@@ -1846,6 +1845,13 @@ class VRMManager {
         this.setModelScale(scale, scale, scale);
     }
 
+    _currentSceneScale() {
+        const scene = this.currentModel && this.currentModel.vrm ? this.currentModel.vrm.scene : null;
+        if (!scene || !scene.scale) return 1;
+        const s = Number(scene.scale.x);
+        return Number.isFinite(s) && s > 0 ? s : 1;
+    }
+
     _applyPhysicsProfile(springBoneManager, modelUrl) {
         const modelName = this._resolvePhysicsProfileModelName(modelUrl);
         const usable = this._physicsProfile
@@ -1854,7 +1860,8 @@ class VRMManager {
             && this._physicsProfileModel === modelName;
 
         if (usable) {
-            const applied = this._physicsProfile.apply(springBoneManager);
+            const sceneScale = this._currentSceneScale();
+            const applied = this._physicsProfile.apply(springBoneManager, sceneScale);
             return {
                 source: applied.source,
                 colliders: applied.colliders,
@@ -1900,8 +1907,12 @@ class VRMManager {
         if (this._physicsProfileModel === modelName && this._physicsProfile.hasProfile) {
             return true;
         }
-        const loaded = await this._physicsProfile.load(modelName);
-        if (loaded && this._physicsProfile.hasProfile && this._physicsProfile.lastModel === modelName) {
+        const profile = this._physicsProfile;
+        const loaded = await profile.load(modelName);
+        if (this._physicsProfile !== profile) {
+            return false;
+        }
+        if (loaded && profile.hasProfile && profile.lastModel === modelName) {
             this._physicsProfileModel = modelName;
             return true;
         }

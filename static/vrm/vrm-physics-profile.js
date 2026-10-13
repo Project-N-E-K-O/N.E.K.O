@@ -80,6 +80,19 @@
             return '';
         }
 
+        _sanitizeNodeName(name) {
+            if (typeof name !== 'string' || !name) return '';
+            const binding = window.THREE && window.THREE.PropertyBinding;
+            if (binding && typeof binding.sanitizeNodeName === 'function') {
+                try {
+                    return binding.sanitizeNodeName(name);
+                } catch (error) {
+                    return '';
+                }
+            }
+            return name.replace(/\s/g, '_').replace(/[\[\]\.:\/]/g, '');
+        }
+
         _vecKey(v) {
             if (!v) return '';
             let x;
@@ -99,8 +112,14 @@
             return round(x) + ',' + round(y) + ',' + round(z);
         }
 
-        _geometryKey(shapeName, offset, tail) {
-            return (shapeName || '') + '|' + this._vecKey(offset) + '|' + this._vecKey(tail);
+        _geometryKey(shapeName, offset) {
+            const vec = this._vecKey(offset);
+            return (shapeName || '') + '|' + (vec || '0,0,0');
+        }
+
+        _hasGeometryInfo(entry) {
+            if (!entry) return false;
+            return this._vecKey(entry.offset) !== '';
         }
 
         _colliderIndex() {
@@ -111,8 +130,10 @@
             for (let i = 0; i < list.length; i++) {
                 const entry = list[i];
                 if (!entry || !entry.bone) continue;
-                if (!index.has(entry.bone)) index.set(entry.bone, []);
-                index.get(entry.bone).push(entry);
+                const key = this._sanitizeNodeName(entry.bone);
+                if (!key) continue;
+                if (!index.has(key)) index.set(key, []);
+                index.get(key).push(entry);
             }
             return index;
         }
@@ -126,29 +147,46 @@
                 const chain = list[i];
                 if (!chain || !Array.isArray(chain.bones)) continue;
                 for (let b = 0; b < chain.bones.length; b++) {
-                    const boneName = chain.bones[b];
-                    if (boneName && !index.has(boneName)) index.set(boneName, chain);
+                    const key = this._sanitizeNodeName(chain.bones[b]);
+                    if (key && !index.has(key)) index.set(key, chain);
                 }
             }
             return index;
         }
 
-        applyColliders(springBoneManager) {
+        applyColliders(springBoneManager, sceneScale) {
+            const scale = typeof sceneScale === 'number' && Number.isFinite(sceneScale) && sceneScale > 0
+                ? sceneScale
+                : 1;
             const colliders = springBoneManager && springBoneManager.colliders
                 ? Array.from(springBoneManager.colliders)
                 : [];
             const index = this._colliderIndex();
-            const used = new Map();
+            const matched = new Array(colliders.length).fill(null);
+            const claimed = new Set();
             let applied = 0;
 
-            const take = (boneName, entry) => {
-                if (!used.has(boneName)) used.set(boneName, new Set());
-                used.get(boneName).add(entry);
-            };
-            const isUsed = (boneName, entry) => {
-                const set = used.get(boneName);
-                return !!set && set.has(entry);
-            };
+            for (let i = 0; i < colliders.length; i++) {
+                const collider = colliders[i];
+                if (!collider || !collider.shape || collider.shape.radius === undefined) continue;
+
+                const boneName = this._sanitizeNodeName(this._boneNameOfCollider(collider));
+                const entries = boneName ? index.get(boneName) : null;
+                if (!entries) continue;
+
+                const runtimeKey = this._geometryKey(
+                    collider.shape.type || '',
+                    collider.shape.offset
+                );
+                for (let k = 0; k < entries.length; k++) {
+                    if (claimed.has(entries[k])) continue;
+                    if (this._geometryKey(entries[k].shape, entries[k].offset) === runtimeKey) {
+                        matched[i] = entries[k];
+                        claimed.add(entries[k]);
+                        break;
+                    }
+                }
+            }
 
             for (let i = 0; i < colliders.length; i++) {
                 const collider = colliders[i];
@@ -158,46 +196,32 @@
                     collider._rawOriginalRadius = collider.shape.radius;
                 }
 
-                const boneName = this._boneNameOfCollider(collider);
-                const entries = boneName ? index.get(boneName) : null;
-                let entry = null;
-
-                if (entries) {
-                    const shapeName = collider.shape.type || '';
-                    const runtimeKey = this._geometryKey(
-                        shapeName,
-                        collider.shape.offset,
-                        collider.shape.tail
-                    );
-                    for (let k = 0; k < entries.length; k++) {
-                        const candidate = entries[k];
-                        if (isUsed(boneName, candidate)) continue;
-                        if (this._geometryKey(candidate.shape, candidate.offset, candidate.tail) === runtimeKey) {
-                            entry = candidate;
+                if (!matched[i]) {
+                    const boneName = this._sanitizeNodeName(this._boneNameOfCollider(collider));
+                    const entries = boneName ? index.get(boneName) : null;
+                    if (entries) {
+                        for (let k = 0; k < entries.length; k++) {
+                            const candidate = entries[k];
+                            if (claimed.has(candidate)) continue;
+                            if (this._hasGeometryInfo(candidate)) continue;
+                            matched[i] = candidate;
+                            claimed.add(candidate);
                             break;
                         }
                     }
-                    if (!entry) {
-                        for (let k = 0; k < entries.length; k++) {
-                            if (!isUsed(boneName, entries[k])) {
-                                entry = entries[k];
-                                break;
-                            }
-                        }
-                    }
-                    if (entry) take(boneName, entry);
                 }
 
-                let target;
+                const entry = matched[i];
+                let base;
                 if (entry && typeof entry.radius === 'number' && Number.isFinite(entry.radius) && entry.radius >= 0) {
-                    target = entry.radius;
+                    base = entry.radius;
                     applied++;
                 } else {
-                    target = collider._rawOriginalRadius * DEFAULT_REDUCTION;
+                    base = collider._rawOriginalRadius * DEFAULT_REDUCTION;
                 }
 
-                collider.shape.radius = target;
-                collider._originalRadius = target;
+                collider._originalRadius = base;
+                collider.shape.radius = base * scale;
             }
 
             this.appliedColliders = applied;
@@ -215,8 +239,8 @@
                 const joint = joints[i];
                 if (!joint || !joint.settings) continue;
                 const bone = joint.bone;
-                const boneName = bone && bone.name ? bone.name : '';
-                const chain = index.get(boneName);
+                const boneName = this._sanitizeNodeName(bone && bone.name ? bone.name : '');
+                const chain = boneName ? index.get(boneName) : null;
                 if (!chain) continue;
 
                 const settings = joint.settings;
@@ -240,11 +264,11 @@
             return applied;
         }
 
-        apply(springBoneManager) {
+        apply(springBoneManager, sceneScale) {
             if (!springBoneManager) {
                 return { colliders: 0, joints: 0, source: this.source, reset: false };
             }
-            const colliders = this.applyColliders(springBoneManager);
+            const colliders = this.applyColliders(springBoneManager, sceneScale);
             const joints = this.applyJoints(springBoneManager);
             const reset = this.resetSpringState(springBoneManager);
             return { colliders: colliders, joints: joints, source: this.source, reset: reset };
