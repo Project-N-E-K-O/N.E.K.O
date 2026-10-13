@@ -2022,6 +2022,42 @@ def test_screen_subwindow_closes_after_keep_zone_stop_then_menu_whitespace(
 
 
 @pytest.mark.frontend
+def test_screen_return_watch_stops_when_the_window_loses_focus(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    screen.hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    page.locator(".neko-mic-subwindow").hover()
+    page.wait_for_timeout(100)
+    # Back on the screen row: the return watch keeps polling there.
+    screen.hover()
+    page.wait_for_timeout(400)
+    reads = page.evaluate(
+        """async () => {
+            let count = 0;
+            const row = document.querySelector('[data-neko-mic-main-action-row="screen"]')
+                || document.querySelector('[data-neko-mic-main-action="screen"]');
+            const original = row.getBoundingClientRect.bind(row);
+            row.getBoundingClientRect = () => { count += 1; return original(); };
+            window.dispatchEvent(new Event('blur'));
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            const afterBlur = count;
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            return { afterBlur, later: count };
+        }"""
+    )
+    # No more polling once the window lost focus; the panel itself stays (the
+    # screen panel does not close on leaving, by design).
+    assert reads["later"] == reads["afterBlur"]
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+
+@pytest.mark.frontend
 def test_screen_subwindow_survives_menu_edge_grazing(page: Page) -> None:
     install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(

@@ -4616,8 +4616,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 }
                 if (micScreenReturnTracking) {
                     document.removeEventListener('pointermove', rememberMicScreenReturnPointer, true);
+                    document.removeEventListener('mouseout', stopMicScreenReturnWatchOnExit, true);
+                    window.removeEventListener('blur', stopMicScreenReturnWatchOnExit);
                     micScreenReturnTracking = false;
                 }
+            }
+
+            // 指针离开整个窗口或窗口失焦后不会再有 pointermove，回菜单的驻留
+            // 观察会一直按最后的坐标复查下去；停掉它（重进菜单会重新安排）。
+            function stopMicScreenReturnWatchOnExit(event) {
+                if (event.type === 'blur' || !event.relatedTarget) cancelMicScreenReturnCloseTimer();
             }
 
             function rememberMicScreenReturnPointer(event) {
@@ -4719,6 +4727,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 rememberMicScreenReturnPointer(event);
                 if (!micScreenReturnTracking) {
                     document.addEventListener('pointermove', rememberMicScreenReturnPointer, true);
+                    document.addEventListener('mouseout', stopMicScreenReturnWatchOnExit, true);
+                    window.addEventListener('blur', stopMicScreenReturnWatchOnExit);
                     micScreenReturnTracking = true;
                 }
                 // 去抖一拍后进入驻留观察：每拍都用实时指针位置重新判定。

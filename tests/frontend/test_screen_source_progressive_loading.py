@@ -851,6 +851,13 @@ def test_window_losing_its_title_still_needs_confirmation(page: Page) -> None:
                 '.screen-source-option[data-source-id="window:2"]'
             );
             window.setScreenSourceTitleMatchEnabled(true);
+            const originalT = window.t;
+            window.t = (key, options = {}) => {
+                if (key === 'app.screenSource.sourceRenamed') {
+                    window.__lastRenameToastSource = options.source;
+                }
+                return originalT(key, options);
+            };
             option.click();
             await new Promise((resolve) => setTimeout(resolve, 20));
             const afterFirst = {
@@ -873,6 +880,8 @@ def test_window_losing_its_title_still_needs_confirmation(page: Page) -> None:
         "selectedId": "window:2",
         "remembered": None,
     }
+    # The confirmation names the verified (empty) title, not the stale one.
+    assert page.evaluate("window.__lastRenameToastSource") == ""
 
 
 @pytest.mark.frontend

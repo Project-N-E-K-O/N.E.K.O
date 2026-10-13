@@ -3621,7 +3621,9 @@
                             if (renamed) applyScreenSourceOptionName(option, currentName);
                             option._nekoRenameAcknowledged = true;
                             option._nekoRenameNeedsConfirm = false;
-                            var shownName = option.dataset.sourceName || source.name || '';
+                            // 已确认的标题可能就是空串，照实显示，不退回旧标题。
+                            var shownName = option.dataset.sourceName !== undefined
+                                ? option.dataset.sourceName : (source.name || '');
                             window.showStatusToast(
                                 window.t
                                     ? window.t('app.screenSource.sourceRenamed', { source: shownName })
