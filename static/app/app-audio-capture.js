@@ -4535,7 +4535,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (options.length === 0) return true;
                 var provider = typeof window.getDesktopCaptureProvider === 'function'
                     ? window.getDesktopCaptureProvider() : null;
-                if (!provider || typeof provider.getSources !== 'function') return false;
+                if (!provider || typeof provider.getSources !== 'function'
+                    || typeof window.invokeDesktopCaptureWithTimeout !== 'function') {
+                    return false;
+                }
                 // Linux 上枚举可能弹出系统分享对话框，悬停不能触发，直接重建
                 // （重建会回到「点击后才枚举」的延迟态）。
                 if (typeof window.desktopSourceEnumerationMayPrompt !== 'function'
@@ -4543,10 +4546,11 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     return false;
                 }
                 try {
-                    var request = [{ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } }];
-                    var sources = typeof window.invokeDesktopCaptureWithTimeout === 'function'
-                        ? await window.invokeDesktopCaptureWithTimeout(provider, 'getSources', request)
-                        : await provider.getSources(request[0]);
+                    var sources = await window.invokeDesktopCaptureWithTimeout(
+                        provider,
+                        'getSources',
+                        [{ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } }]
+                    );
                     var currentIds = (sources || []).map(function (source) {
                         return String((source && source.id) || '');
                     }).filter(function (id) {
@@ -5358,6 +5362,11 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     teardownOwnedMicSubwindows();
                     var openGeneration = micActionHoverOpenGeneration;
                     var sourcesUnchanged = await areCachedScreenSourcesCurrent(cached);
+                    // 核对期间另一个窗口可能改了选中来源或记住窗口开关；缓存
+                    // 已不在全局引用上，收不到那次丢弃，这里再比一次。
+                    if (cached._nekoScreenCacheStamp !== getScreenSourceCacheStamp()) {
+                        sourcesUnchanged = false;
+                    }
                     // 核对期间指针去了别的行、菜单关了或又发起了新的打开：
                     // 这次打开已过期，不能再把面板挂回去。
                     if (voiceControlsDisposed

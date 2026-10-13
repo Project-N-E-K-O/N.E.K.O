@@ -1699,6 +1699,33 @@ def test_stale_screen_cache_check_does_not_add_a_second_panel_after_reopen(
 
 
 @pytest.mark.frontend
+def test_screen_cache_is_rebuilt_when_selection_state_changes_during_the_check(
+    page: Page,
+) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    screen, _device = _open_cached_screen_panel_then_device(page)
+    page.evaluate(
+        """() => {
+            window.__desktopGetSourcesGate = new Promise((resolve) => {
+                window.__releaseDesktopGetSources = resolve;
+            });
+        }"""
+    )
+    screen.hover()
+    page.wait_for_function("window.__desktopGetSourcesCalls === 1")
+    # The panel is off the global cache while its sources are checked, so a
+    # change from another window in that gap must be caught after the await.
+    page.evaluate("() => window.__setRememberWindowFromOtherWindow(false)")
+    page.evaluate("() => window.__releaseDesktopGetSources()")
+    page.wait_for_function("window.__screenRenderOptions.length === 2")
+    _wait_for_panel(page, "screen")
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate(
+        "document.querySelector('.neko-screen-source-title-match-toggle').checked"
+    ) is False
+
+
+@pytest.mark.frontend
 def test_screen_subwindow_cache_is_rebuilt_without_enumerating_when_it_may_prompt(
     page: Page,
 ) -> None:

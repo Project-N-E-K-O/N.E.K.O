@@ -28,6 +28,9 @@
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
     var screenSourceSelectionGeneration = 0;
     var explicitScreenSourceSelectionGeneration = null;
+    // 来源列表里最近一次点击的令牌：所有列表（宠物窗口菜单、设置面板等）共用，
+    // 后点的那次让更早、还在确认来源是否存在的点击作废。
+    var latestScreenSourceClickToken = null;
     var explicitScreenSourceSelectionTitle = null;
 
     function markScreenSourceSelectionChanged() {
@@ -3115,7 +3118,7 @@
         // 枚举失败也放行，开始分享时还有原有的校验。
         async function checkListedScreenSourceAvailable(sourceId) {
             if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
-                return { available: true, currentIds: null };
+                return { available: true, currentIds: null, source: null };
             }
             try {
                 var currentSources = await window.invokeDesktopCaptureWithTimeout(
@@ -3126,10 +3129,17 @@
                 var currentIds = new Set((currentSources || []).map(function (s) {
                     return s && s.id;
                 }));
-                return { available: currentIds.has(sourceId), currentIds: currentIds };
+                var currentSource = (currentSources || []).find(function (s) {
+                    return s && s.id === sourceId;
+                }) || null;
+                return {
+                    available: !!currentSource,
+                    currentIds: currentIds,
+                    source: currentSource
+                };
             } catch (error) {
                 console.warn('[屏幕源] 确认来源是否存在失败，按原选择继续:', error);
-                return { available: true, currentIds: null };
+                return { available: true, currentIds: null, source: null };
             }
         }
 
@@ -3139,6 +3149,10 @@
             targetPopup.querySelectorAll('.screen-source-option').forEach(function (option) {
                 if (!currentIds.has(option.dataset.sourceId)) option.remove();
             });
+            // 按标题筛选重算一次可见窗口数：窗口全被移除时显示「没有匹配的窗口」，
+            // 不留一块空网格。
+            var titleFilter = targetPopup.querySelector('.screen-source-title-filter');
+            if (titleFilter) titleFilter.dispatchEvent(new Event('input'));
         }
 
         function appendDeferredLoadButton(targetPopup, deferredOptions, buttonText) {
@@ -3414,12 +3428,18 @@
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
                     var clickToken = {};
-                    screenPopup._screenSourceClickToken = clickToken;
+                    latestScreenSourceClickToken = clickToken;
+                    var clickSelectionGeneration = screenSourceSelectionGeneration;
                     // 列表是枚举那一刻的快照：期间关掉的窗口还列在这里。选中
                     // 一个已不存在的来源，开始分享时会退回到分享整块屏幕，所
                     // 以点下时先确认它还在，不在就提示重新选，不改动当前选择。
                     var availability = await checkListedScreenSourceAvailable(source.id);
-                    if (screenPopup._screenSourceClickToken !== clickToken) return;
+                    // 确认期间又点了别的项（任一列表），或者选择已经变了（例如
+                    // 另一个窗口选了别的来源）：这次点击作废，不能覆盖更新的选择。
+                    if (latestScreenSourceClickToken !== clickToken
+                        || clickSelectionGeneration !== screenSourceSelectionGeneration) {
+                        return;
+                    }
                     if (!availability.available) {
                         dropUnavailableScreenSourceOptions(screenPopup, availability.currentIds);
                         window.showStatusToast(
@@ -3431,11 +3451,20 @@
                         );
                         return;
                     }
+                    // 窗口标题可能在列表渲染后变了：用确认时拿到的最新名称，
+                    // 记住窗口时存下的才是当前标题。
+                    var current = availability.source;
+                    var selectedName = current && typeof current.name === 'string'
+                        ? current.name : source.name;
+                    var selectedDisplayName = current && current.name !== source.name
+                        && source.id.startsWith('window:')
+                        ? getScreenSourceDisplayName(current, screenIndex)
+                        : displayName;
                     // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
                     await selectScreenSource(
                         source.id,
-                        source.name,
-                        displayName,
+                        selectedName,
+                        selectedDisplayName,
                         isPortalPick && source.id.startsWith('screen:') ? null : screenIndex
                     );
                 });

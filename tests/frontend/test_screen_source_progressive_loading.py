@@ -523,6 +523,9 @@ def test_clicking_a_closed_window_asks_to_choose_again_instead_of_selecting(
                 screenOptionLeft: !!document.querySelector(
                     '.screen-source-option[data-source-id="screen:1"]'
                 ),
+                noWindowsHintShown: !document.querySelector(
+                    '.screen-source-no-window-matches'
+                ).hidden,
             };
         }"""
     )
@@ -535,6 +538,7 @@ def test_clicking_a_closed_window_asks_to_choose_again_instead_of_selecting(
         "toasts": ["所选来源已不存在（窗口可能已关闭），请重新选择"],
         "closedOptionLeft": False,
         "screenOptionLeft": True,
+        "noWindowsHintShown": True,
     }
 
 
@@ -624,6 +628,107 @@ def test_later_click_supersedes_a_pending_availability_check(page: Page) -> None
         }"""
     )
     # The first click's late check must not overwrite the newer choice.
+    assert selected == "screen:1"
+
+
+@pytest.mark.frontend
+def test_click_selection_uses_the_title_seen_by_the_availability_check(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    remembered = page.evaluate(
+        """async () => {
+            window.setScreenSourceTitleMatchEnabled(true);
+            // The window retitled itself after the list was rendered.
+            window.__metadataSources = window.__metadataSources.map((source) => (
+                source.id === 'window:2' ? { ...source, name: 'Editor - draft' } : source
+            ));
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return window.__storedValues.get('selectedScreenWindowTitle');
+        }"""
+    )
+    # Remembering the stale title would break later title-based recovery.
+    assert remembered == "Editor - draft"
+
+
+@pytest.mark.frontend
+def test_pending_click_does_not_override_a_newer_cross_window_selection(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    selected = page.evaluate(
+        """async () => {
+            const original = window.__desktopProvider.getSources;
+            let release = null;
+            window.__desktopProvider.getSources = () => new Promise((resolve) => {
+                release = () => resolve(window.__metadataSources);
+            });
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // Another window picks a different source while the check runs.
+            window.__storedValues.set('selectedScreenSourceId', 'screen:1');
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'selectedScreenSourceId', newValue: 'screen:1',
+            }));
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
+        }"""
+    )
+    assert selected == "screen:1"
+
+
+@pytest.mark.frontend
+def test_later_click_in_another_list_supersedes_a_pending_check(page: Page) -> None:
+    _install_screen_source_harness(page)
+    selected = page.evaluate(
+        """async () => {
+            const first = document.getElementById('live2d-popup-screen');
+            const second = document.createElement('div');
+            second.id = 'second-screen-list';
+            second.style.display = 'flex';
+            second.style.opacity = '1';
+            document.body.appendChild(second);
+            await window.renderFloatingScreenSourceList(first);
+            await window.renderFloatingScreenSourceList(second);
+            const original = window.__desktopProvider.getSources;
+            let releaseFirst = null;
+            let calls = 0;
+            window.__desktopProvider.getSources = (options) => {
+                calls += 1;
+                if (calls === 1) {
+                    return new Promise((resolve) => {
+                        releaseFirst = () => resolve(window.__metadataSources);
+                    });
+                }
+                return original(options);
+            };
+            first.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            second.querySelector('.screen-source-option[data-source-id="screen:1"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            releaseFirst();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
+        }"""
+    )
+    # The click made later in the other list wins, whichever check ends last.
     assert selected == "screen:1"
 
 
