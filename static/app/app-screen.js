@@ -3575,10 +3575,11 @@
                             screenPopup.querySelectorAll('.screen-source-option').forEach(function (card) {
                                 if (card.dataset.sourceId === source.id) freshCard = card;
                             });
-                            var latestName = availability.source
-                                ? String(availability.source.name || '') : null;
-                            if (!freshCard || (latestName !== null
-                                && latestName !== (freshCard.dataset.sourceName || ''))) {
+                            // 确认失败（拿不到最新标题）时用旧卡片上的标题去对。
+                            var expectedName = availability.source
+                                ? String(availability.source.name || '')
+                                : (option.dataset.sourceName || '');
+                            if (!freshCard || expectedName !== (freshCard.dataset.sourceName || '')) {
                                 releaseValidation('rejected');
                                 return;
                             }

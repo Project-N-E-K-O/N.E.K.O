@@ -924,6 +924,45 @@ def test_stale_render_result_is_checked_against_the_fresh_card(page: Page) -> No
 
 
 @pytest.mark.frontend
+def test_failed_check_from_a_replaced_render_still_compares_titles(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    selected = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const original = window.__desktopProvider.getSources;
+            let fail = null;
+            let calls = 0;
+            window.__desktopProvider.getSources = (options) => {
+                calls += 1;
+                if (calls === 1) {
+                    return new Promise((_resolve, reject) => {
+                        fail = () => reject(new Error('bridge timeout'));
+                    });
+                }
+                return original(options);
+            };
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__metadataSources = window.__metadataSources.map((source) => (
+                source.id === 'window:2' ? { ...source, name: 'Browser' } : source
+            ));
+            await window.renderFloatingScreenSourceList(popup);
+            fail();  // the old check cannot verify anything
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
+        }"""
+    )
+    # The old card said "Editor", the fresh one says "Browser": no selection.
+    assert selected is None
+
+
+@pytest.mark.frontend
 def test_rename_confirmation_resets_and_skips_screens(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(
