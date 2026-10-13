@@ -152,6 +152,28 @@ async def test_takeover_is_released_right_after_the_hold_and_before_the_home_lin
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_ending_frame_reaches_the_page_only_after_the_takeover_is_released(tmp_path, monkeypatch):
+    # 页面一看到「结束中」就把输入框交还普通聊天：这一帧要在接管释放之后才推，
+    # 否则那段空档里提交的普通句子会被串门拦下、页面却没有对应的本地气泡可以收尾
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    try:
+        push = host.rt.push
+
+        async def recording_push(action, **fields):
+            host.host.events.append(f"push:{action}")
+            await push(action, **fields)
+
+        monkeypatch.setattr(host.rt, "push", recording_push)
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        events = host.host.events
+        assert events.index("release_takeover") < events.index("push:ending")
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_parked_callbacks_are_handed_back_once_both_segments_ended(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     hh = host.host

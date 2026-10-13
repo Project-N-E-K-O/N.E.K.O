@@ -120,6 +120,7 @@ function createHarness(opts) {
   const host = {
     appendMessage(m) { pushMessage(m); return m; },
     updateMessage(id, patch) { const m = messages.find((x) => x.id === id); if (m) { Object.assign(m, JSON.parse(JSON.stringify(patch))); sortAll(); } },
+    removeMessage(id) { const i = messages.findIndex((x) => x.id === id); if (i >= 0) messages.splice(i, 1); return i >= 0; },
     getState() { return { messages: messages }; },
   };
   const I = {
@@ -1004,6 +1005,27 @@ const report = {};
     h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:2', lp: 9, text: '最新一句', final: true, truncated: false, speaker: own });
     report.lamport_order = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0).map((m) => m.blocks[0].text);
   }
+  // ── 读快照期间提交、快照里已有这句、实时终稿后到：认领并撤掉本地气泡，不留重复 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const me = { side: 'host', kind: 'human', name: '', self: true };
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: {
+      active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true,
+      transcript: [{ type: 'visit_line', visit_id: VID, line_id: 'h:7', lp: 7, text: '刚发的', final: true, truncated: false, speaker: me }],
+    } }; } };
+    const h = createHarness({ routes });
+    h.state('started');
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.I.submitVisitChatText({ text: '刚发的', requestId: 's1' });
+    release();
+    await probe;
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:7', lp: 7, text: '刚发的', final: true, truncated: false, speaker: me });
+    report.snapshot_then_live_local = h.messages.some((m) => m.id === 'visit-local-s1');
+    report.snapshot_then_live_lines = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0).length;
+    report.snapshot_then_live_pending = h.chat._test.state().pending.length;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1328,3 +1350,9 @@ def test_ack_only_text_session_is_released_when_the_visit_ends(report):
 
 def test_lines_are_ordered_by_lamport_key_with_host_first(report):
     assert report["lamport_order"] == ["更早一句", "东家这句", "客人这句", "最新一句"]
+
+
+def test_live_final_after_snapshot_claims_and_removes_the_local_bubble(report):
+    assert report["snapshot_then_live_local"] is False
+    assert report["snapshot_then_live_lines"] == 1
+    assert report["snapshot_then_live_pending"] == 0

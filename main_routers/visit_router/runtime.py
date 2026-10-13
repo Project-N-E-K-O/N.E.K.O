@@ -1858,7 +1858,6 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         _detach(self._hand_back_callbacks())
 
     async def _exit_steps(self, reason: str) -> None:
-        await self.push(PHASE_ENDING, reason=reason)
         # ① 先收口本侧进行中的行：这一行的 text{final} 排在 leave 之前、进得了本场转录
         await self.close_current_line("visit_end")
         # ② 后台关闭数据通道（排空 → leave → 补传窗口），不阻塞下面任何一步
@@ -1876,6 +1875,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 logger.warning("visit %s: takeover release failed: %s", self.visit_id[:6], type(exc).__name__)
             else:
                 self.takeover_token = None
+        # 「结束中」在接管释放之后才推：页面一看到它就把输入框交还普通聊天，此时普通输入已不会再被串门拦下；
+        # 释放之前页面仍按串门处理，这期间提交的句子由 finalizing 拒掉（带 request_id，页面标未送达、放回原文）
+        await self.push(PHASE_ENDING, reason=reason)
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
         # ④ 回家仪式句（亲人先开口则放弃）；可选步骤：失败不挡后面的封存与交还

@@ -758,7 +758,18 @@
     function onLineFinal(frame, fromSnapshot) {
         var entry = lineEntry(frame);
         if (!entry) return;
-        if (fromSnapshot) entry.fromSnapshot = true;
+        if (fromSnapshot) {
+            entry.fromSnapshot = true;
+        } else if (entry.fromSnapshot && entry.rendered) {
+            // 快照先把这一句上了屏、实时终稿后到：是刚发出的那句（读快照时后端已记下、回显还在路上）。
+            // 认领它的本地气泡并撤掉，不留一条一直「发送中」、收尾时又被标未送达的重复气泡
+            entry.fromSnapshot = false;
+            if (entry.speaker && entry.speaker.self === true && entry.speaker.kind === 'human') {
+                var claimed = claimLocalBubble(entry);
+                var host = getHost();
+                if (claimed && host && typeof host.removeMessage === 'function') host.removeMessage(claimed.messageId);
+            }
+        }
         if (entry.stallTimer) { clearTimeout(entry.stallTimer); entry.stallTimer = 0; }
         entry.final = true;
         entry.text = String(frame.text || '');
