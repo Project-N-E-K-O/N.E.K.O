@@ -6864,6 +6864,7 @@
             "VISIT_INPUT_REFUSED_AWAY": "She's visiting someone, so messages from here can't reach her. You can call her home",
             "VISIT_INPUT_REFUSED_NOT_READY": "The guest hasn't arrived yet. Wait until the visit starts",
             "VISIT_INPUT_REFUSED_RATE": "Too many messages too fast. Wait a moment",
+            "VISIT_INPUT_REFUSED_SOURCE": "A visit is in progress: only lines typed in the chat box reach it. This one was not sent",
             "VISIT_E_BUSY": "Couldn't send just now. Your text is still in the box; try again shortly",
             "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "Visits aren't supported on this device right now",
             "VISIT_LOGIN_REQUIRED": "Sign in to your community account to visit",

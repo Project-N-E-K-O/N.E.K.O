@@ -369,8 +369,10 @@ def test_persona_panel_escape_and_failed_first_generation():
 def test_refused_bind_refreshes_the_token_and_retries_once_per_socket():
     source = _read(WS)
     status = _function_body(source, "_showVisitStatus")
-    assert "code === 'VISIT_E_UNAUTHORIZED' && !(details && details.request_id)" in status
-    assert "_retryVisitBindAfterRefusal(S.socket)" in status
+    # 只认 bind 自己被拒（后端带 reason:bind_refused），按收到这条状态的那条连接重试
+    assert "code === 'VISIT_E_UNAUTHORIZED' && details && details.reason === 'bind_refused'" in status
+    assert "_retryVisitBindAfterRefusal(socket || S.socket)" in status
+    assert "_showVisitStatus(statusCode, statusDetails || {}, _thisSocket);" in source
     retry = _function_body(source, "_retryVisitBindAfterRefusal")
     assert "_visitBindRefreshed.has(socket)" in retry and "_sendVisitBind(socket, true)" in retry
     assert "forceRefresh === true || attempt > 0" in _function_body(source, "_sendVisitBind")
@@ -393,7 +395,27 @@ def test_galgame_choices_are_hidden_while_the_visit_owns_the_composer():
 
 def test_refused_ordinary_submission_is_closed_by_request_id():
     buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
-    assert "rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '');" in buttons
+    assert "rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine);" in buttons
     body = _function_body(buttons, "markTextSubmissionRefused")
     assert "updateMessage(record.messageId, { status: 'failed' })" in body
     assert "window._lastSubmittedRequestId === id" in body and "S.pendingTextTurnSubmitAt = 0;" in body
+    # 「回复在途」按开轮的那句认，不依赖 _lastSubmittedRequestId（头像拖放不写它）
+    assert "if (lastTurnRequestId === id) {" in body
+
+
+def test_choice_prompts_are_hidden_while_the_visit_owns_the_composer():
+    # 渲染层与命中区都经 getRevealedChoicePrompt 取选项：串门接管输入框期间它返回 null
+    reveal = _function_body(_read(SUBMIT), "getRevealedChoicePrompt")
+    assert "if (typeof I.isVisitChatActive === 'function' && I.isVisitChatActive()) return null;" in reveal
+
+
+def test_persona_panel_refreshes_compact_hit_geometry_on_open_and_close():
+    source = _read(PERSONA)
+    assert source.count("refreshCompactGeometry();") >= 2
+    assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in source
+
+
+def test_visit_lines_do_not_toast_text_chatting():
+    buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
+    assert """                    if (!isVisitLine) {
+                        window.showStatusToast(window.t ? window.t('app.textChattingShort')""" in buttons

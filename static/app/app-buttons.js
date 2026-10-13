@@ -3415,7 +3415,7 @@
                     }
 
                     updateReactOptimisticMessageStatus('sent');
-                    rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '');
+                    rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine);
 
                     if (sentUserContent) {
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
@@ -3440,7 +3440,9 @@
                         window.resetProactiveChatBackoff();
                     }
 
-                    window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                    if (!isVisitLine) {
+                        window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                    }
                     return true;
                 } catch (sendError) {
                     console.error('[Chat] send text payload failed:', sendError);
@@ -3521,9 +3523,11 @@
 
         // 已发出的普通句：request_id → 乐观气泡 id（只留最近几条）。后端事后拒了这句（串门期间未授权等）时据此收尾
         var sentTextSubmissions = [];
+        var lastTurnRequestId = '';   // 最近一句开了普通回复轮（置了 pendingTextTurnSubmitAt）的请求
 
-        function rememberSentTextSubmission(requestId, messageId) {
+        function rememberSentTextSubmission(requestId, messageId, opensTurn) {
             if (!requestId) return;
+            if (opensTurn) lastTurnRequestId = String(requestId);
             sentTextSubmissions.push({ requestId: String(requestId), messageId: messageId || '' });
             if (sentTextSubmissions.length > 20) sentTextSubmissions.shift();
         }
@@ -3542,8 +3546,12 @@
             if (record.messageId && window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
                 window.reactChatWindowHost.updateMessage(record.messageId, { status: 'failed' });
             }
-            if (window._lastSubmittedRequestId === id) {
+            // 「回复在途」按开轮的那句认（头像拖放这类 rollbackText 为空的提交不写 _lastSubmittedRequestId）
+            if (lastTurnRequestId === id) {
+                lastTurnRequestId = '';
                 S.pendingTextTurnSubmitAt = 0;
+            }
+            if (window._lastSubmittedRequestId === id) {
                 var legacyInput = document.getElementById('textInputBox');
                 if (legacyInput && !legacyInput.value && window._lastSubmittedText) legacyInput.value = window._lastSubmittedText;
                 window._lastSubmittedText = '';

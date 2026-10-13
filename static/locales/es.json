@@ -6864,6 +6864,7 @@
             "VISIT_INPUT_REFUSED_AWAY": "Está de visita y lo que digas aquí no le llega. Puedes llamarla a casa",
             "VISIT_INPUT_REFUSED_NOT_READY": "La visita aún no llegó. Espera a que empiece",
             "VISIT_INPUT_REFUSED_RATE": "Demasiados mensajes seguidos. Espera un momento",
+            "VISIT_INPUT_REFUSED_SOURCE": "Hay una visita en curso: solo llegan los mensajes escritos en el cuadro de texto. Este no se envió",
             "VISIT_E_BUSY": "No se pudo enviar ahora. Tu texto sigue en el cuadro; inténtalo luego",
             "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "Este dispositivo no admite visitas por ahora",
             "VISIT_LOGIN_REQUIRED": "Inicia sesión en tu cuenta de la comunidad para visitar",

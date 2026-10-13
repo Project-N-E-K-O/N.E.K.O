@@ -717,6 +717,11 @@ class TalkMixin:
         if room.phase == "wrap_up":
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
+        if not str(message.get("source") or "").startswith("neko_visit:"):
+            # 只有串门输入框发的句子算家里人的台词。拖到头像上的文件、历史拖放、重载后页面还没恢复串门态时的
+            # 普通提交都不是写给客人的：拒掉（带 request_id，页面放回原文），不发给对端
+            await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
+            return True
         if room.phase != "active":
             return False
         now = self.clock()

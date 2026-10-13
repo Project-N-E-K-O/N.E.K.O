@@ -6864,6 +6864,7 @@
             "VISIT_INPUT_REFUSED_AWAY": "다른 집에 가 있어서 여기서 한 말은 전달되지 않아요. 집으로 부를 수 있어요",
             "VISIT_INPUT_REFUSED_NOT_READY": "아직 손님이 오지 않았어요. 방문이 시작되면 이야기해요",
             "VISIT_INPUT_REFUSED_RATE": "너무 빨리 보내고 있어요. 잠시 후 보내 주세요",
+            "VISIT_INPUT_REFUSED_SOURCE": "방문 중에는 입력창에서 한 말만 전달돼요. 이 메시지는 보내지지 않았어요",
             "VISIT_E_BUSY": "지금은 보내지 못했어요. 글은 입력창에 남아 있으니 잠시 후 다시 보내 주세요",
             "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "이 기기에서는 지금 방문 기능을 쓸 수 없어요",
             "VISIT_LOGIN_REQUIRED": "방문하려면 커뮤니티 계정에 로그인해 주세요",

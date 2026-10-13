@@ -1733,6 +1733,11 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   min-width: auto;
 }
 
+/* 纯文本块（串门台词、日记预览）逐字显示：确认写入的就是这些字节，换行与连续空格不能被系统消息样式折叠 */
+.system-chip .message-block-text.message-block-text-plain {
+  white-space: pre-wrap;
+}
+
 .system-chip .message-block-text {
   white-space: normal;
 }

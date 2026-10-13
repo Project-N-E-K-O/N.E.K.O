@@ -6864,6 +6864,7 @@
             "VISIT_INPUT_REFUSED_AWAY": "她在別人家做客，這裡說的話傳不過去；可以叫她回來",
             "VISIT_INPUT_REFUSED_NOT_READY": "客人還沒到，等串門開始再說吧",
             "VISIT_INPUT_REFUSED_RATE": "說得太快了，歇一會兒再傳",
+            "VISIT_INPUT_REFUSED_SOURCE": "串門進行中，只有輸入框裡說給客人的話會發過去；這則沒有發出去",
             "VISIT_E_BUSY": "這會兒傳不出去，文字還在輸入框裡，稍後再試",
             "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "這台裝置暫時不支援串門",
             "VISIT_LOGIN_REQUIRED": "串門需要先登入社群帳號",

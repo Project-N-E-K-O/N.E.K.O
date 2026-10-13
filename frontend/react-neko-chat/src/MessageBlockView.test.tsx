@@ -56,6 +56,8 @@ describe('MessageBlockView plain_text', () => {
     expect(container.querySelector('[data-render-mode="markdown"]')).toBeNull();
     expect(srcSetter).not.toHaveBeenCalled();
     expect(container.textContent).toBe(ATTACK_TEXT);
+    // 带专属类：系统消息（日记预览）里也按 pre-wrap 逐字显示
+    expect(container.querySelector('.message-block-text-plain')).not.toBeNull();
   });
 
   it('keeps the Markdown path for the same text without plain_text (the test is live)', () => {

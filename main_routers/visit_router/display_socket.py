@@ -128,9 +128,11 @@ async def _send_status(websocket: Any, code: str, details: Optional[dict] = None
     return await _send(websocket, {"type": "status", "message": message})
 
 
-async def refuse(websocket: Any, request_id: Any = None) -> None:
-    """``status{VISIT_E_UNAUTHORIZED}`` on this connection (with the request id when given)."""
-    details = {"request_id": request_id} if isinstance(request_id, str) and request_id else {}
+async def refuse(websocket: Any, request_id: Any = None, *, reason: Optional[str] = None) -> None:
+    """``status{VISIT_E_UNAUTHORIZED}`` on this connection (with the request id / reason when given)."""
+    details: dict = {"request_id": request_id} if isinstance(request_id, str) and request_id else {}
+    if reason:
+        details["reason"] = reason
     await _send_status(websocket, _UNAUTHORIZED, details)
 
 
@@ -156,7 +158,8 @@ async def handle_bind(websocket: Any, lanlan_name: str, message: Any) -> bool:
         return True
     if not bind_allowed(websocket, message):
         logger.warning("visit display: %s (bind refused)", _UNAUTHORIZED)
-        await refuse(websocket)
+        # reason 让页面分清「bind 被拒」与未 bind 连接上其它帧（屏幕帧、播放进度）被拒：只有前者值得刷新 token 重发
+        await refuse(websocket, reason="bind_refused")
         return False
     setattr(websocket, VISIT_SOCKET_BOUND_ATTR, True)
     _delivered(websocket)

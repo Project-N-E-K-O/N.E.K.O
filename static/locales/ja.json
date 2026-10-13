@@ -6864,6 +6864,7 @@
             "VISIT_INPUT_REFUSED_AWAY": "よその家にいるので、ここからの言葉は届きません。呼び戻すことはできます",
             "VISIT_INPUT_REFUSED_NOT_READY": "お客さんがまだ来ていません。おでかけが始まってから話しましょう",
             "VISIT_INPUT_REFUSED_RATE": "送信が早すぎます。少し待ってから送ってください",
+            "VISIT_INPUT_REFUSED_SOURCE": "訪問中は、入力欄から話しかけた言葉だけが届きます。これは送信されませんでした",
             "VISIT_E_BUSY": "今は送れませんでした。文字は入力欄に残っています。少ししてからどうぞ",
             "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "この端末では今のところおでかけできません",
             "VISIT_LOGIN_REQUIRED": "おでかけにはコミュニティアカウントへのログインが必要です",

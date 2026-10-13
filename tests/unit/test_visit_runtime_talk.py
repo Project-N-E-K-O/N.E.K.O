@@ -244,6 +244,25 @@ async def test_refusals_by_phase_and_side(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_only_visit_composer_lines_reach_the_peer(tmp_path, monkeypatch):
+    # 拖到头像的文件、历史拖放、页面没恢复串门态时的普通提交：拒掉，不发给对端、不镜像
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        for source in ("avatar-drop", "react-chat-window", None):
+            message = {"input_type": "text", "data": "<<<TEXT_FILE_1_START>>>私人文件", "request_id": "d1"}
+            if source:
+                message["source"] = source
+            assert await rtm.route_stream_message("Host", message) is True
+            assert host.host.statuses[-1] == ("VISIT_INPUT_REFUSED_SOURCE", {"visit_id": rt.visit_id, "request_id": "d1"})
+        assert [p for p in _texts(wire, "host") if p.get("sp") == "h"] == []
+        assert host.host.user_inputs == []
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 @pytest.mark.parametrize("phase", ["pending", "invite_ready", "joining", "awaiting_accept"])
 async def test_family_typing_before_activation_is_not_ready(tmp_path, monkeypatch, phase):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)

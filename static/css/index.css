@@ -4811,7 +4811,8 @@ body.chat-export-modal-open {
     cursor: pointer;
 }
 
-.visit-dialog-btn.is-primary { border-color: #44b7fe; background: #44b7fe; color: #fff; }
+/* 主按钮白字：底色加深到对比度 ≥4.5:1（#44b7fe 只有约 2.2:1） */
+.visit-dialog-btn.is-primary { border-color: #1a73b5; background: #1a73b5; color: #fff; }
 .visit-dialog-btn.is-danger { border-color: #e06060; color: #c03838; }
 .visit-dialog-btn:disabled { opacity: 0.5; cursor: default; }
 

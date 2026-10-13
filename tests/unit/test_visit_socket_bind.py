@@ -190,6 +190,9 @@ async def test_proxy_header_refuses_bind_even_from_loopback(monkeypatch, header)
     await run(socket, manager)
     assert not display_socket.is_bound(socket)
     assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"] and socket.visit_frames() == []
+    # bind 自己被拒带 reason：页面只对它刷新 token 重发
+    details = [json.loads(f["message"])["details"] for f in socket.sent if f.get("type") == "status"]
+    assert details == [{"reason": "bind_refused"}]
     assert rt.replayed == []
 
 

@@ -2136,6 +2136,7 @@
         VISIT_INPUT_REFUSED_WRAPUP: 'visit.wrapUp.toastRefused',
         VISIT_INPUT_REFUSED_NOT_READY: 'visit.status.VISIT_INPUT_REFUSED_NOT_READY',
         VISIT_INPUT_REFUSED_RATE: 'visit.status.VISIT_INPUT_REFUSED_RATE',
+        VISIT_INPUT_REFUSED_SOURCE: 'visit.status.VISIT_INPUT_REFUSED_SOURCE',
         VISIT_E_BUSY: 'visit.status.VISIT_E_BUSY',
         VISIT_RECALL_ALREADY: 'visit.wrapUp.recallAlready',
         VISIT_TTS_FALLBACK: 'visit.stream.ttsFallback',
@@ -2215,9 +2216,10 @@
         void _sendVisitBind(socket, true);
     }
 
-    function _showVisitStatus(code, details) {
-        if (code === 'VISIT_E_UNAUTHORIZED' && !(details && details.request_id)) {
-            _retryVisitBindAfterRefusal(S.socket);
+    function _showVisitStatus(code, details, socket) {
+        if (code === 'VISIT_E_UNAUTHORIZED' && details && details.reason === 'bind_refused') {
+            // 只认 bind 自己被拒：未 bind 连接上的屏幕帧 / 播放进度被拒不占这条连接唯一一次重试
+            _retryVisitBindAfterRefusal(socket || S.socket);
         }
         var verdict = true;
         if (window.nekoVisitChat && typeof window.nekoVisitChat.handleStatus === 'function') {
@@ -3945,7 +3947,7 @@
                     } catch (_) { }
 
                     if (statusCode && Object.prototype.hasOwnProperty.call(VISIT_STATUS_TOAST_KEYS, statusCode)) {
-                        _showVisitStatus(statusCode, statusDetails || {});
+                        _showVisitStatus(statusCode, statusDetails || {}, _thisSocket);
                         return;
                     }
 

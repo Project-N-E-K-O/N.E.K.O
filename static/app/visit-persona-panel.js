@@ -95,6 +95,13 @@
         return body && typeof body === 'object' ? String(body.code || body.error || '') : '';
     }
 
+    // Electron compact 窗口按 DOM 收集命中区：面板开 / 关后通知它重算
+    function refreshCompactGeometry() {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+        } catch (_) { /* 非 compact 窗口没有几何桥 */ }
+    }
+
     function el(tag, className, text) {
         var node = document.createElement(tag);
         if (className) node.className = className;
@@ -143,6 +150,7 @@
         dialog.appendChild(actions);
         overlay.appendChild(dialog);
         (document.body || document.documentElement).appendChild(overlay);
+        refreshCompactGeometry();
 
         var settle;
         var panel = {
@@ -158,6 +166,7 @@
             panel.closed = true;
             if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onKeydown, true);
             if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            refreshCompactGeometry();
             if (openPanel === panel) openPanel = null;
             settle(confirmed === true);
         }

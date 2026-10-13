@@ -1864,6 +1864,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
         # ③ 回调暂扣 → 立即释放接管（此后亲人就能普通聊天）
         input_stamp = self.host.last_user_input()
+        input_released = True
         if self.takeover_token is not None:
             try:
                 self.hold_token = self.host.hold_callbacks(self.inbox.accept)
@@ -1873,11 +1874,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 self.host.release_takeover(self.takeover_token)
             except Exception as exc:  # noqa: BLE001 - token 留着：teardown 再试一次
                 logger.warning("visit %s: takeover release failed: %s", self.visit_id[:6], type(exc).__name__)
+                input_released = False
             else:
+                # 返回 False = 令牌已不是当前持有者（输入早已不归串门）：同样算交还
                 self.takeover_token = None
         # 「结束中」在接管释放之后才推：页面一看到它就把输入框交还普通聊天，此时普通输入已不会再被串门拦下；
         # 释放之前页面仍按串门处理，这期间提交的句子由 finalizing 拒掉（带 request_id，页面标未送达、放回原文）
-        await self.push(PHASE_ENDING, reason=reason)
+        if input_released:
+            await self.push(PHASE_ENDING, reason=reason)
+        # 释放失败：不推 ending，页面留在串门态（这期间的提交由 finalizing 拒掉并收尾），等 teardown 重试释放后的 ended
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
         # ④ 回家仪式句（亲人先开口则放弃）；可选步骤：失败不挡后面的封存与交还

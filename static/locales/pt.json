@@ -6864,6 +6864,7 @@
             "VISIT_INPUT_REFUSED_AWAY": "Ela está de visita e as mensagens daqui não chegam. Você pode chamá-la de volta",
             "VISIT_INPUT_REFUSED_NOT_READY": "A visita ainda não chegou. Espere começar",
             "VISIT_INPUT_REFUSED_RATE": "Mensagens rápidas demais. Espere um pouco",
+            "VISIT_INPUT_REFUSED_SOURCE": "Há uma visita em andamento: só chegam as falas digitadas na caixa de texto. Esta não foi enviada",
             "VISIT_E_BUSY": "Não deu para enviar agora. O texto continua na caixa; tente já já",
             "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "Este dispositivo não suporta visitas no momento",
             "VISIT_LOGIN_REQUIRED": "Entre na sua conta da comunidade para fazer visitas",

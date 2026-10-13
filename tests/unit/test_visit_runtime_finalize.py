@@ -174,6 +174,37 @@ async def test_ending_frame_reaches_the_page_only_after_the_takeover_is_released
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_failed_takeover_release_keeps_the_page_in_visit_mode(tmp_path, monkeypatch):
+    # 释放抛错：不推 ending（页面一看到它就交还输入框，而接管还在），等 teardown 重试释放后的 ended
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    try:
+        push = host.rt.push
+        real_release = host.host.release_takeover
+        calls = {"n": 0}
+
+        async def recording_push(action, **fields):
+            host.host.events.append(f"push:{action}")
+            await push(action, **fields)
+
+        def flaky_release(token):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("release failed")
+            return real_release(token)
+
+        monkeypatch.setattr(host.rt, "push", recording_push)
+        monkeypatch.setattr(host.host, "release_takeover", flaky_release)
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        assert "push:ending" not in host.host.events
+        assert calls["n"] >= 2                                          # teardown 重试过
+        assert any(f.get("action") == "ended" for f in host.host.frames if f.get("type") == "visit_state_change")
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_parked_callbacks_are_handed_back_once_both_segments_ended(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     hh = host.host

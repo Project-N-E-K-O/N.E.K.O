@@ -193,6 +193,13 @@
      * spec: {title, lines:[string|{text, tone}], body?:Node, buttons:[{id,label,variant}], dismissible}
      * → {root, close(result), setLines(lines), setButtons(buttons), result: Promise}
      */
+    // Electron compact 窗口的命中区按 DOM 收集：裸 DOM 对话框开 / 关后要通知它重算，否则新按钮点不到、关掉后留一块透明命中区
+    function refreshCompactGeometry() {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+        } catch (_) { /* 非 compact 窗口没有几何桥 */ }
+    }
+
     function openDialog(spec) {
         var overlay = document.createElement('div');
         overlay.className = 'visit-dialog-overlay';
@@ -227,6 +234,7 @@
                 handle.closed = true;
                 if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onKeydown, true);
                 if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                refreshCompactGeometry();
                 var index = openDialogs.indexOf(handle);
                 if (index >= 0) openDialogs.splice(index, 1);
                 settle(value === undefined ? null : value);
@@ -273,6 +281,7 @@
         }
         if (typeof document.addEventListener === 'function') document.addEventListener('keydown', onKeydown, true);
         (document.body || document.documentElement).appendChild(overlay);
+        refreshCompactGeometry();
         openDialogs.push(handle);
         // 焦点移进对话框（有输入框的由调用方再聚焦到输入框）
         var firstButton = actions.firstChild;
@@ -661,6 +670,7 @@
         if (frame.speaker) entry.speaker = frame.speaker;
         if (frame.addressee) entry.addressee = frame.addressee;
         if (!entry.requestId && typeof frame.request_id === 'string' && frame.request_id) entry.requestId = frame.request_id;
+        if (entry.visitId && entry.visitId === visit.visitId) visit.everStarted = true;
         // 全序键 (lp, side_rank)：同 lp 时 host 在前（§3.6.6 ①），两侧页面显示顺序一致
         if (typeof entry.lp !== 'number' && Number.isInteger(frame.lp)) entry.lp = frame.lp;
         var side = frame.speaker && frame.speaker.side;
@@ -805,6 +815,13 @@
         var entry = lineEntry(frame);
         if (!entry || entry.final) return;
         if (entry.stallTimer) { clearTimeout(entry.stallTimer); entry.stallTimer = 0; }
+        if (frame.reason === 'rejected') {
+            // 后端整行作废（协议校验没过）：不会再有可靠终稿，已开出的半截气泡撤掉
+            var host = getHost();
+            if (entry.rendered && host && typeof host.removeMessage === 'function') host.removeMessage(entry.messageId);
+            lines.delete(entry.lineId);
+            return;
+        }
         var done = Number(frame.i_done);
         // 分片可丢：i_done 比本页收到的多时补齐长度，缺的片照样显示占位，之后到的迟片还能落位
         if (Number.isInteger(done) && done >= 0 && done <= 4096) entry.clauses.length = done;
@@ -858,8 +875,15 @@
         visit.visitId = visitId;
         peerAvatarUrl = '';
         applyPreviewedPeer();
-        lines.forEach(function (entry) { if (entry.stallTimer) clearTimeout(entry.stallTimer); });
-        lines.clear();
+        // 这一场的台词（漏了阶段帧时先到的）留着、并算作开始过；别的场次的清掉
+        lines.forEach(function (entry, key) {
+            if (entry.visitId === visitId) {
+                visit.everStarted = true;
+                return;
+            }
+            if (entry.stallTimer) clearTimeout(entry.stallTimer);
+            lines.delete(key);
+        });
         pendingLocal = [];
     }
 
@@ -2054,7 +2078,7 @@
 
     var INPUT_REFUSALS = [
         'VISIT_INPUT_REFUSED_AWAY', 'VISIT_INPUT_REFUSED_WRAPUP', 'VISIT_INPUT_REFUSED_NOT_READY',
-        'VISIT_INPUT_REFUSED_RATE', 'VISIT_E_BUSY', 'VISIT_E_UNAUTHORIZED'
+        'VISIT_INPUT_REFUSED_RATE', 'VISIT_INPUT_REFUSED_SOURCE', 'VISIT_E_BUSY', 'VISIT_E_UNAUTHORIZED'
     ];
 
     /**
@@ -2188,7 +2212,8 @@
             ? await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(name))
             : { status: 0, body: null };
         var S = window.appState;
-        if (S && S.socket && S.socket !== socket) return;   // 这期间已换了连接
+        // 这期间换了连接，或连接已清空（切换角色时先置 null、再清聊天）：旧快照不能再往新聊天里写
+        if (S && S.socket !== socket) return;
         var state = result.status === 200 && result.body && typeof result.body === 'object' ? result.body : null;
         if (!state) {
             dispatchBound({ socket: socket });
@@ -2198,7 +2223,7 @@
             if (attempt < delays.length) {
                 setTimeout(function () {
                     var S2 = window.appState;
-                    if (S2 && S2.socket && S2.socket !== socket) return;
+                    if (S2 && S2.socket !== socket) return;
                     afterBind(socket, catgirl, attempt + 1);
                 }, delays[attempt]);
             }

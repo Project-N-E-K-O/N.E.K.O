@@ -1110,6 +1110,67 @@ const report = {};
     h.chat.handleStatus('VISIT_E_BUSY', { request_id: 'v-1' });
     report.visit_refused_not_ordinary = (h.win.__refused || []).indexOf('v-1') === -1;
   }
+  // ── 被拒的行（reason: rejected）：撤掉已开出的半截气泡 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    const peerCat = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'g:9', i: 0, lp: 9, text: '半截', speaker: peerCat });
+    report.rejected_before = !!h.lineMessage('g:9');
+    h.frame({ type: 'visit_line_abort', visit_id: VID, line_id: 'g:9', i_done: 0, reason: 'rejected' });
+    report.rejected_after = !!h.lineMessage('g:9');
+    report.rejected_entry = h.chat._test.state().lines.has('g:9');
+    h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'g:8', i: 0, lp: 8, text: '被打断的', speaker: peerCat });
+    h.frame({ type: 'visit_line_abort', visit_id: VID, line_id: 'g:8', i_done: 1, reason: 'interrupted' });
+    report.interrupted_kept = h.lineText('g:8');
+  }
+  // ── 漏了 started、/state 也读不到：收到过这一场的台词，结束时照样留结束消息 ──
+  {
+    const h = createHarness();
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 1, text: '你好', final: true, truncated: false,
+      speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } });
+    h.frame({ type: 'visit_state_change', action: 'ended', visit_id: VID, side: 'host', ts: 2 });
+    report.line_proves_started = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    report.line_kept_after_switch = h.lineText('g:1');
+  }
+  {
+    // 页面已知这一场（等客时）、漏了 started：台词到了同样算开始过
+    const h = createHarness();
+    h.state('pending');
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 1, text: '你好', final: true, truncated: false,
+      speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } });
+    h.state('ended');
+    report.line_proves_started_known_visit = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+  }
+  // ── 切换角色时连接先被清空：旧连接的快照不再写进新聊天 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: {
+      active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true,
+      transcript: [{ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 1, text: '旧角色的', final: true, truncated: false,
+        speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } }] } }; } };
+    const h = createHarness({ routes });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.win.appState.socket = null;   // app-character.js 切换角色：先置 null、再清聊天
+    release();
+    await probe;
+    report.null_socket_visit = h.chat._test.state().visit.visitId;
+    report.null_socket_lines = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0).length;
+  }
+  // ── 裸 DOM 对话框开 / 关都通知 compact 窗口重算命中区 ──
+  {
+    const h = createHarness();
+    let refreshes = 0;
+    h.win.addEventListener('neko:compact-interaction-geometry-refresh', () => { refreshes += 1; });
+    h.frame({ type: 'visit_invite', visit_id: VID, peer_name: '小白', peer_short_id: 'QWERTY', cross_region: false, expires_at: 1700000000 + 60 });
+    report.geometry_on_open = refreshes;
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'decline').click();
+    await h.settle();
+    report.geometry_on_close = refreshes;
+    report.geometry_dialog_closed = h.dialogs().length;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1475,3 +1536,27 @@ def test_refused_ordinary_submission_restores_the_draft(report):
     assert report["ordinary_refused_rollback"] is True
     assert report["ordinary_refused_marked"] is True
     assert report["visit_refused_not_ordinary"] is True
+
+
+def test_rejected_line_bubble_is_withdrawn(report):
+    assert report["rejected_before"] is True
+    assert report["rejected_after"] is False
+    assert report["rejected_entry"] is False
+    assert report["interrupted_kept"] == "被打断的|（被打断）"
+
+
+def test_a_received_line_proves_the_visit_started(report):
+    assert report["line_proves_started"] is True
+    assert report["line_proves_started_known_visit"] is True
+    assert report["line_kept_after_switch"] == "你好"
+
+
+def test_snapshot_is_dropped_once_the_socket_is_cleared(report):
+    assert report["null_socket_visit"] is None
+    assert report["null_socket_lines"] == 0
+
+
+def test_raw_dialogs_refresh_compact_hit_geometry(report):
+    assert report["geometry_on_open"] >= 1
+    assert report["geometry_on_close"] > report["geometry_on_open"]
+    assert report["geometry_dialog_closed"] == 0
