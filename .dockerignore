@@ -93,8 +93,19 @@ backup/
 *.mov
 *.mkv
 
-# Documentation (optional)
+# Documentation：整体排除控制体积，但把**运行时真正会被读取**的两棵子树放回来。
+#   main_routers/agent_router.py     → docs/<lang>/guide/openclaw_guide.md
+#   main_routers/voice_identity_router.py → docs/development/voice-readiness.md
+# 少了它们，Docker 部署下 OpenClaw 指南会静默退回代码里的短桩文案（只在日志留
+# 一条 warning），entrypoint 里对 /app/docs 的属主修复也会变成空操作。
+#
+# 顺序要紧：Docker 的规则是「最后命中的模式生效」，且父目录命中同样算命中，
+# 所以否定模式必须写在 docs/ 之后。
 docs/
+!docs/*/guide
+!docs/*/guide/**
+!docs/development
+!docs/development/**
 README*.md
 LICENSE
 CHANGELOG.md
