@@ -4617,15 +4617,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (micScreenReturnTracking) {
                     document.removeEventListener('pointermove', rememberMicScreenReturnPointer, true);
                     document.removeEventListener('mouseout', stopMicScreenReturnWatchOnExit, true);
-                    window.removeEventListener('blur', stopMicScreenReturnWatchOnExit);
                     micScreenReturnTracking = false;
                 }
             }
 
-            // 指针离开整个窗口或窗口失焦后不会再有 pointermove，回菜单的驻留
-            // 观察会一直按最后的坐标复查下去；停掉它（重进菜单会重新安排）。
+            // 指针离开整个窗口后不会再有 pointermove，回菜单的驻留观察会一直
+            // 按最后的坐标复查下去；停掉它（指针回到菜单会重新安排）。只失焦
+            // 不停：指针还在窗口上时照样有移动事件，停了反而会在切回窗口后
+            // 挪到留白处时收不起来。
             function stopMicScreenReturnWatchOnExit(event) {
-                if (event.type === 'blur' || !event.relatedTarget) cancelMicScreenReturnCloseTimer();
+                if (!event.relatedTarget) cancelMicScreenReturnCloseTimer();
             }
 
             function rememberMicScreenReturnPointer(event) {
@@ -4728,7 +4729,6 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (!micScreenReturnTracking) {
                     document.addEventListener('pointermove', rememberMicScreenReturnPointer, true);
                     document.addEventListener('mouseout', stopMicScreenReturnWatchOnExit, true);
-                    window.addEventListener('blur', stopMicScreenReturnWatchOnExit);
                     micScreenReturnTracking = true;
                 }
                 // 去抖一拍后进入驻留观察：每拍都用实时指针位置重新判定。

@@ -2022,7 +2022,7 @@ def test_screen_subwindow_closes_after_keep_zone_stop_then_menu_whitespace(
 
 
 @pytest.mark.frontend
-def test_screen_return_watch_stops_when_the_window_loses_focus(page: Page) -> None:
+def test_screen_return_watch_stops_when_the_pointer_leaves_the_window(page: Page) -> None:
     install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(
         """async () => {
@@ -2044,17 +2044,42 @@ def test_screen_return_watch_stops_when_the_window_loses_focus(page: Page) -> No
                 || document.querySelector('[data-neko-mic-main-action="screen"]');
             const original = row.getBoundingClientRect.bind(row);
             row.getBoundingClientRect = () => { count += 1; return original(); };
-            window.dispatchEvent(new Event('blur'));
+            row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: null }));
             await new Promise((resolve) => setTimeout(resolve, 100));
-            const afterBlur = count;
+            const afterExit = count;
             await new Promise((resolve) => setTimeout(resolve, 400));
-            return { afterBlur, later: count };
+            return { afterExit, later: count };
         }"""
     )
-    # No more polling once the window lost focus; the panel itself stays (the
-    # screen panel does not close on leaving, by design).
-    assert reads["later"] == reads["afterBlur"]
+    # No more polling once the pointer left the window; the panel itself stays
+    # (the screen panel does not close on leaving, by design).
+    assert reads["later"] == reads["afterExit"]
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+
+@pytest.mark.frontend
+def test_screen_return_watch_survives_a_focus_loss_with_the_pointer_on_the_menu(
+    page: Page,
+) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    screen.hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    page.locator(".neko-mic-subwindow").hover()
+    page.wait_for_timeout(100)
+    screen.hover()
+    page.wait_for_timeout(400)
+    # Focus goes elsewhere (e.g. keyboard switch) while the pointer stays on
+    # the screen row; moving on to menu whitespace afterwards still closes.
+    page.evaluate("() => window.dispatchEvent(new Event('blur'))")
+    page.wait_for_timeout(200)
+    page.locator(".mic-gain-container").hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
 
 
 @pytest.mark.frontend
