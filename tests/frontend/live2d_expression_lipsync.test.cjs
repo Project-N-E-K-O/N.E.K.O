@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
+const { installAvatarOperationRuntime } = require('../unit/fixtures/live2d_runtime_fixture.cjs');
 
 const source = fs.readFileSync(path.resolve(__dirname, '../../static/live2d/live2d-emotion.js'), 'utf8');
 const FORM = 'ParamMouthForm';
@@ -36,12 +37,13 @@ function fixture(options = {}) {
     let now = 0;
     class Live2DManager {}
     const context = vm.createContext({
-        Live2DManager, Set, Promise, console: { log() {}, warn() {}, error() {} },
+        Live2DManager, Set, Promise, AbortController, console: { log() {}, warn() {}, error() {} },
         window: { LIPSYNC_PARAMS: [OPEN, FORM], LIPSYNC_AMPLITUDE_PARAMS: [OPEN] },
         performance: { now: () => now },
         fetch: options.fetch || (async () => ({ ok: true, json: async () => ({ Parameters: parameters }) })),
         cancelAnimationFrame() {}, setTimeout: options.setTimeout || setTimeout, clearTimeout,
     });
+    installAvatarOperationRuntime(context);
     vm.runInContext(source, context);
     const manager = new Live2DManager();
     manager.currentModel = createModel(options.expression);
