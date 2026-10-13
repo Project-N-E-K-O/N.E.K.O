@@ -620,12 +620,18 @@ const report = {};
     let release;
     const gate = new Promise((r) => { release = r; });
     const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true } }; } };
-    const h = createHarness({ routes });
+    const h = createHarness({ routes, withPacer: true });
+    const bound = [];
+    h.win.addEventListener('neko-visit-bound', (ev) => bound.push(ev.detail));
     const probe = h.chat.afterBind(h.socket, '咪咪');
     await h.settle();
-    h.chat.handleFrame({ type: 'visit_state_change', action: 'ended', visit_id: VID, side: 'host', ts: 1 });
+    const ended = { type: 'visit_state_change', action: 'ended', visit_id: VID, side: 'host', ts: 1 };
+    h.win.dispatchEvent(new CustomEventLike('neko-visit-frame', { detail: ended }));
+    h.chat.handleFrame(ended);
     release();
     await probe;
+    report.ended_race_bound_active = 'active' in (bound[0] || {}) ? bound[0].active : null;
+    report.ended_race_pacer_active = h.win.nekoVisitPacer.isArmed() && !!(bound[0] || {}).active;
     report.ended_race_active = h.chat.isActive();
     report.ended_race_phase = h.chat._test.state().visit.phase;
   }
@@ -1114,6 +1120,9 @@ def test_escape_closes_a_dismissible_dialog(report):
 
 def test_a_late_snapshot_never_revives_a_visit_that_already_ended(report):
     assert report["ended_race_active"] is False
+    # 帧链里已经结束：迟到的 active 快照绝不能把这一场重新武装
+    assert report["ended_race_bound_active"] is not True
+    assert report["ended_race_pacer_active"] is False
     assert report["ended_race_phase"] is None
 
 
