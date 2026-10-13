@@ -1233,6 +1233,15 @@ const report = {};
     report.ended_once = h.messages.filter((m) => m.id === 'visit-ended-' + VID).length;
     report.ended_not_revived = h.chat.isActive();
   }
+  // ── 旧一场还挂着、bind 重放来了新一场的 invite_ready：切到新一场（旧一场先收尾）──
+  {
+    const h = createHarness();
+    h.state('started');
+    h.frame({ type: 'visit_state_change', action: 'invite_ready', visit_id: VID2, side: 'host', ts: 3, invite_code: 'QWERTYUI23', invite_expires_at: 1700000000 + 600 });
+    report.replay_invite_switched = h.chat._test.state().visit.visitId === VID2;
+    report.replay_invite_phase = h.chat._test.state().visit.phase;
+    report.replay_invite_old_ended = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1641,3 +1650,9 @@ def test_join_flow_stays_pinned_to_the_starting_character(report):
 def test_late_ended_frame_after_state_reconciliation_appends_nothing(report):
     assert report["ended_once"] == 1
     assert report["ended_not_revived"] is False
+
+
+def test_replayed_invite_ready_switches_to_the_new_visit(report):
+    assert report["replay_invite_switched"] is True
+    assert report["replay_invite_phase"] == "invite_ready"
+    assert report["replay_invite_old_ended"] is True

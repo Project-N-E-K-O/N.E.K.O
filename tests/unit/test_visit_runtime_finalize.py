@@ -115,12 +115,15 @@ async def test_ending_releases_the_input_with_the_takeover_and_keeps_the_lock_un
         # 接管还没释放：普通聊天此刻输出被压着，这句由串门拒掉（不漏进普通聊天）
         assert host.rt.phase == "ending" and host.rt.takeover_token is not None
         assert rtm.is_visit_route_active("Host")
+        # 快照也一样：接管还没释放时报收尾前的阶段（页面看到 ending 会交还输入框）
+        assert host.rt.snapshot()["phase"] == "active"
         claim = await registry.route_external_stream_message("Host", {"input_type": "text", "data": "喂"})
         assert claim is registry.RouteClaim.CLAIMED
         assert host.host.status_codes()[-1] == "VISIT_INPUT_REFUSED_WRAPUP"
         # 接管一释放：输入交还普通聊天，改名 / 删除锁保持到收尾完成
         await wait_for(lambda: host.host.released)
         assert not rtm.is_visit_route_active("Host")
+        assert host.rt.snapshot()["phase"] == "ending"
         assert registry.get_active_external_route("Host") is None
         assert registry.is_external_route_locked("Host")
         claim = await registry.route_external_stream_message("Host", {"input_type": "text", "data": "在吗"})

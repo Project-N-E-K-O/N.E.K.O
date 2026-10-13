@@ -307,6 +307,36 @@ async def test_visit_line_after_the_route_released_is_refused_not_chatted(monkey
     assert status == [{"code": "VISIT_INPUT_REFUSED_WRAPUP", "details": {"request_id": "r9"}}]
 
 
+async def test_visit_line_is_refused_before_another_route_can_claim_it(monkeypatch):
+    # 页面漏了串门结束、别的路由（如游戏）已接管：写给串门的句子不能被它认领
+    manager = _ProtocolManager()
+    install(monkeypatch, manager, visit_active=False)
+    game_calls = []
+
+    async def game_stream(_name, message):
+        game_calls.append(message)
+        return True
+
+    async def game_start(_name, _message):
+        return False
+
+    async def game_finalize(_name):
+        return 0
+
+    monkeypatch.setitem(registry._kinds, "test_game", registry.ExternalRouteKind(
+        kind="test_game", is_active=lambda name: name == NAME, route_stream_message=game_stream,
+        on_start_session=game_start, finalize_for_character=game_finalize,
+        current_instance=lambda _n: "game:x",
+    ))
+    socket = VisitSocket([bind(), {"action": "stream_data", "input_type": "text", "data": "hi",
+                                   "source": "neko_visit:guest_cat", "request_id": "r10"}])
+    await run(socket, manager)
+    await asyncio.sleep(0)
+    assert game_calls == []
+    status = [json.loads(f["message"]) for f in socket.sent if f.get("type") == "status"]
+    assert status == [{"code": "VISIT_INPUT_REFUSED_WRAPUP", "details": {"request_id": "r10"}}]
+
+
 # ── 下行只发给已绑定的连接 ─────────────────────────────────────────────
 
 

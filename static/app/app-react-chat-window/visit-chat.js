@@ -922,7 +922,8 @@
             return;
         }
         // 另一场的迟到帧（这一场还在进行）：不动
-        if (visit.visitId && visit.visitId !== visitId && inVisit() && action !== 'pending') return;
+        // pending 与 invite_ready 是新一场的权威起点（bind 重放只补 invite_ready、不补 pending）：可以换场
+        if (visit.visitId && visit.visitId !== visitId && inVisit() && action !== 'pending' && action !== 'invite_ready') return;
         if (visit.visitId !== visitId) {
             // 漏收了上一场的 ended、新一场的 pending 先到：上一场照样留下结束消息、标掉还在等回显的本地气泡
             if (visit.visitId && inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });

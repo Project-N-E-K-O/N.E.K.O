@@ -2603,9 +2603,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         transcript = [self.visit_line_payload_from_record(r) for r in self._replay_lines()[-50:]]
         reconnecting = self.phase != PHASE_ENDED and (
             self.liveness.self_disconnected_at is not None or self.liveness.page_departed_at is not None)
+        # 收尾已开始、接管还没释放（释放前或释放抛错等 teardown 重试）：页面看到 ending 就会交还输入框，
+        # 而此时输入仍归串门——快照照旧报收尾前的阶段，与「接管释放后才推 ending 帧」一致
+        phase = self.phase
+        if phase == PHASE_ENDING and self.takeover_token is not None:
+            phase = self._was_phase
         return {
             "active": self.phase not in (PHASE_ENDED,),
-            "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": self.phase,
+            "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": phase,
             "transport": creds.transport if creds else None,
             "tier": creds.tier if creds else None,
             "crop": self.crop,
