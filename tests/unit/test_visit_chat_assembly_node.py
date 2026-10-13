@@ -1389,6 +1389,18 @@ const report = {};
     report.late_echo_text = bubble.blocks[0].text;
     report.late_echo_copies = h.messages.filter((m) => (m.blocks || []).some((b) => b.text === '最后一句')).length;
   }
+  // ── 空闲快照抢在对方最后一句前面收了尾：那句排到结束消息之前 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
+    const h = createHarness({ routes });
+    h.state('started');
+    const peerCat = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 1, text: '第一句', final: true, truncated: false, speaker: peerCat });
+    await h.chat.afterBind(h.socket, '咪咪');
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:2', lp: 2, text: '最后一句', final: true, truncated: false, speaker: peerCat });
+    report.late_peer_order = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0 || m.id === 'visit-ended-' + VID)
+      .map((m) => (m.id.indexOf('visit-ended-') === 0 ? 'ENDED' : m.blocks[0].text));
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1863,3 +1875,7 @@ def test_late_echo_reclaims_its_failed_local_bubble(report):
     assert report["late_echo_after"] == "sent"
     assert report["late_echo_text"] == "最后一句"
     assert report["late_echo_copies"] == 1
+
+
+def test_late_peer_line_is_placed_before_the_ended_message(report):
+    assert report["late_peer_order"] == ["第一句", "最后一句", "ENDED"]

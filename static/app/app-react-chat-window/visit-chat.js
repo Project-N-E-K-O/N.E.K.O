@@ -706,12 +706,15 @@
             if (other === entry || !other.rendered || other.visitId !== entry.visitId || typeof other.lp !== 'number') return;
             if (lineOrder(other, entry) > 0 && (!next || lineOrder(other, next) < 0)) next = other;
         });
-        if (!next) return undefined;
+        // 没有更晚的行、而这一场已经留了结束消息（空闲快照抢在最后几句前面收了尾）：排到结束消息之前
+        var anchorId = next ? next.messageId
+            : (endedVisitIds.indexOf(entry.visitId) !== -1 ? endedMessageId(entry.visitId) : '');
+        if (!anchorId) return undefined;
         var host = getHost();
         var messages = host && typeof host.getState === 'function' ? ((host.getState() || {}).messages || []) : [];
         var nextMessage = null;
         for (var i = 0; i < messages.length; i++) {
-            if (messages[i] && messages[i].id === next.messageId) { nextMessage = messages[i]; break; }
+            if (messages[i] && messages[i].id === anchorId) { nextMessage = messages[i]; break; }
         }
         if (!nextMessage || typeof nextMessage.sortKey !== 'number') return undefined;
         var before = -Infinity;
