@@ -191,6 +191,7 @@ async def test_failed_takeover_release_keeps_the_page_in_visit_mode(tmp_path, mo
 
         def flaky_release(token):
             calls["n"] += 1
+            host.host.events.append(f"release_attempt:{calls['n']}")
             if calls["n"] == 1:
                 raise RuntimeError("release failed")
             return real_release(token)
@@ -200,7 +201,11 @@ async def test_failed_takeover_release_keeps_the_page_in_visit_mode(tmp_path, mo
         host.rt.request_finalize("recall")
         await finish(host.rt, clock)
         assert "push:ending" not in host.host.events
-        assert calls["n"] >= 2                                          # teardown 重试过
+        assert calls["n"] >= 2                                          # 重试过
+        # 「已结束」推出去之前接管已经释放：页面交还输入框时输入不再归串门
+        events = host.host.events
+        assert events.index("release_attempt:2") < events.index("push:ended")
+        assert not rtm.is_visit_route_active("Host")
         assert any(f.get("action") == "ended" for f in host.host.frames if f.get("type") == "visit_state_change")
     finally:
         for g in gates:

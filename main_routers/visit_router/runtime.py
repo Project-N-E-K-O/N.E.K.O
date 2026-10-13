@@ -1913,6 +1913,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not flushed:
             # 页面卡着送不完：停掉显示队列（转录由 GET /state 重放），「已结束」不和它并发写、不排在它后面
             await self._retire_display(_DISPLAY_FLUSH_S)
+        if self.takeover_token is not None:
+            # 收尾开头那次释放抛错过：「已结束」推出去之前再试一次。页面一看到它就交还输入框，输入不能还归串门、
+            # 一直拒到 teardown；与 teardown 同一处理——再失败也不再持有
+            try:
+                self.host.release_takeover(self.takeover_token)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: takeover release failed again before ended: %s",
+                               self.visit_id[:6], type(exc).__name__)
+            self.takeover_token = None
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
         if self.status_code is not None:
             await self.status(self.status_code, reason=self.status_details.get("reason"),
