@@ -3635,8 +3635,10 @@
                         }
                         option._nekoRenameAcknowledged = false;
                         option._nekoRenameNeedsConfirm = false;
+                        // 用卡片上已确认的标题，空串也照用（窗口标题可能确实变成了空）。
                         var selectedName = renamed ? currentName
-                            : (option.dataset.sourceName || source.name);
+                            : (option.dataset.sourceName !== undefined
+                                ? option.dataset.sourceName : source.name);
                         releaseValidation('committed');
                         // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
                         await selectScreenSource(

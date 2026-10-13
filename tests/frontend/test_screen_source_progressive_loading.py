@@ -850,15 +850,29 @@ def test_window_losing_its_title_still_needs_confirmation(page: Page) -> None:
             const option = document.querySelector(
                 '.screen-source-option[data-source-id="window:2"]'
             );
+            window.setScreenSourceTitleMatchEnabled(true);
             option.click();
             await new Promise((resolve) => setTimeout(resolve, 20));
-            return {
+            const afterFirst = {
                 selectedId: window.appState.selectedScreenSourceId,
                 cardName: option.dataset.sourceName,
             };
+            // The confirming click must keep the verified empty title, not
+            // fall back to the card's render-time "Editor".
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return {
+                afterFirst,
+                selectedId: window.appState.selectedScreenSourceId,
+                remembered: window.__storedValues.get('selectedScreenWindowTitle') || null,
+            };
         }"""
     )
-    assert result == {"selectedId": None, "cardName": ""}
+    assert result == {
+        "afterFirst": {"selectedId": None, "cardName": ""},
+        "selectedId": "window:2",
+        "remembered": None,
+    }
 
 
 @pytest.mark.frontend
