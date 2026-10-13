@@ -827,8 +827,8 @@ def test_superseded_frame_is_kept_until_its_fallback_cleanup_ran():
         await open(h2, 'guest');
         change(h2, 'started');
         const f2 = h2.frame;
-        // 其它终态（4403 / 重连超时等）同样等清理做完：报 cleanup_done 就移除，最多 12 s
-        h2.bridge._onFrameMessage({ source: h2.child, origin: h2.ctx.location.origin, data: { t: 'closed', code: 4403 } });
+        // 其它终态（4404 / 重连超时等）同样等清理做完：报 cleanup_done 就移除，最多 12 s（4403 第一次会先重取 token 重建，另有测试）
+        h2.bridge._onFrameMessage({ source: h2.child, origin: h2.ctx.location.origin, data: { t: 'closed', code: 4404 } });
         const other = { removed: f2.removed, lookup: !!h2.ctx.document.getElementById('visit-frame') };
         h2.bridge._onFrameMessage({ source: h2.child, origin: h2.ctx.location.origin, data: { t: 'cleanup_done' } });
         other.onDone = f2.removed;
@@ -1057,3 +1057,39 @@ def test_recovery_deadline_counts_from_navigation_start():
     )
     # 已过 6 s：只剩 4 s 预算；已过 20 s：按下限 3 s
     assert out == {"slow6s_ready5s": 0, "slow6s_ready3s": 1, "slow20s_ready2s": 1, "slow20s_ready4s": 0}
+
+
+def test_rejected_cached_token_is_refreshed_once_before_giving_up():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        // 走真实的取 token 路径：缓存里是后端重启前的旧 token，重取才拿到新的
+        h.ctx.nekoLocalMutationSecurity = {
+          getMutationHeaders: () => Promise.resolve({ 'X-CSRF-Token': 'stale' }),
+          refreshToken: () => Promise.resolve('fresh'),
+        };
+        h.bridge = h.ctx.NekoVisitParentBridge.createParentBridge({ window: h.ctx, document: h.ctx.document, assetVersion: '9' });
+        await open(h, 'host');
+        const first = h.child.token;
+        change(h, 'started');
+        const origin = h.ctx.location.origin;
+        h.bridge._onFrameMessage({ source: h.child, origin, data: { t: 'closed', code: 4403 } });
+        const rebuilt = h.ctx.document.getElementById('visit-frame');
+        const child2 = { posted: [], token: null };
+        child2.postMessage = (m) => child2.posted.push(m);
+        child2.__nekoVisitFrameSink = { onFrame: () => true, suspend: () => {}, setAuthToken: (t) => { child2.token = t; } };
+        if (rebuilt) rebuilt.contentWindow = child2;
+        h.bridge._onFrameMessage({ source: child2, origin, data: { t: 'ready', v: 1, side: 'host', visit_id: VISIT_ID } });
+        await settle();
+        const second = child2.token;
+        // 重取之后还被 4403 拒绝：当终态，不再重建
+        h.bridge._onFrameMessage({ source: child2, origin, data: { t: 'closed', code: 4403 } });
+        const again = !!h.ctx.document.getElementById('visit-frame');
+        const closed = h.bridge._state.closedVisitId === VISIT_ID;
+        change(h, 'ended');
+        await advance(15100);
+        return { first, rebuilt: !!rebuilt && rebuilt !== h.frame, second, again, closed };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"first": "stale", "rebuilt": True, "second": "fresh", "again": False, "closed": True}

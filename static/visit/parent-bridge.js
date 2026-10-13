@@ -34,6 +34,7 @@
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
   var RECOVER_TOKEN_WINDOW_MS = 12000;  // 重载恢复取 token 的时限（另受 RECOVER_TOTAL_MS 约束）
+  var CLOSE_UNAUTHORIZED = 4403;       // 传输 WS 关闭码：鉴权没过（与 backend-ws.js 同值）
   var CLOSE_UNKNOWN_VISIT = 4404;      // 传输 WS 关闭码：后端不认这个场次（与 backend-ws.js 同值）
   var CLOSE_SUPERSEDED = 4409;         // 传输 WS 关闭码：被同 vid 的新传输连接顶掉（与 backend-ws.js 同值）
   // 移除 iframe 会把它里面还在跑的清理一起掐掉：父页至少等到子页的清理时限
@@ -142,6 +143,8 @@
       firstFrame: null,
       publishing: false,
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
+      authRetryVisitId: null,  // 已经因 4403 重取 token 重建过一次的场次（同一场只重来一次）
+      forceTokenRefresh: false,  // 下一次鉴权跳过缓存的 token、直接重取
       endedVisitId: null,    // 最近结束的场次：它迟到的 wrap_up / ending 不再补建 iframe（只拦补建，不参与场次过滤）
       retiring: [],          // 已脱离父页、等它把清理做完（报 cleanup_done）的旧 iframe [{frame, timer}]
       auxGen: { crop: 0, hidden: 0, away: 0 },   // 实时辅助状态各自的更新计数：重载快照只不覆盖查询期间更新过的那几项
@@ -477,7 +480,7 @@
      * 就按退避重取，直到拿到或这个 iframe 被换掉。
      */
     function authenticate(f, sink, attempt, gen) {
-      boundedToken(attempt === 0 ? getToken() : refreshTokenLookup()).then(function (token) {
+      boundedToken(attempt === 0 && !state.forceTokenRefresh ? getToken() : refreshTokenLookup()).then(function (token) {
         if (state.frame !== f || gen !== state.authGen) return;
         if (!token) {
           var delay = backoffMs(attempt);
@@ -488,6 +491,7 @@
           }, delay);
           return;
         }
+        state.forceTokenRefresh = false;
         // 先同步交 token，iframe 拿到 token 才连传输 WS（首帧 auth）
         sink.setAuthToken(token);
         state.sink = sink;
@@ -550,8 +554,17 @@
         // guest 的离家样式留到 ended；4404 是后端已经不认这个场次了，可能再也等不到 ended，照旧清掉
         // 离房等超时后才报 closed 时退房 / 断开可能还在路上；被同 vid 顶掉（4409）时没离房，适配器 15 s 后才兜底退房 / 断开
         var closedId = state.visitId;
+        var closedSide = state.side;
         removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT, keepElement: true });
         retireElement(f, data.code === CLOSE_SUPERSEDED ? SUPERSEDED_KEEP_MS : CLOSED_KEEP_MS);
+        // 4403：缓存的 token 可能已经失效（页面开着时后端重启过），重取就能过。同一场只重来一次：
+        // 跳过缓存重取 token、重建 iframe；再被 4403 拒绝才当终态
+        if (data.code === CLOSE_UNAUTHORIZED && closedId && state.authRetryVisitId !== closedId) {
+          state.authRetryVisitId = closedId;
+          state.forceTokenRefresh = true;
+          ensureFrame(closedSide, closedId);
+          return;
+        }
         state.closedVisitId = closedId;
       }
     }
