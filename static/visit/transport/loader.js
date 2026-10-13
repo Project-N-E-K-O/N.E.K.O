@@ -192,6 +192,7 @@
     this.loss = null;
     this.softencSince = null;
     this.statsMark = null;
+    this.lastRxSample = null;   // 上一拍成功取到的接收统计（getStats 卡住时沿用，见 collectStats）
     this.statsGen = 0;
     this.statsSeq = 0;
     this.statsEmittedSeq = 0;
@@ -685,6 +686,7 @@
   P.resetStatsBaselines = function () {
     this.statsGen += 1;
     this.statsMark = null;
+    this.lastRxSample = null;
     if (this.unpacker) this.unpacker.resetStats();
     if (this.adapter && typeof this.adapter.resetStats === 'function') this.adapter.resetStats();
   };
@@ -866,15 +868,25 @@
         resolve(null);
       });
     }).then(function (res) {
+      var keys = ['rx_kbps', 'rtt_ms', 'loss_pct'];
       if (!res) {
+        // 后端只在 rx_kbps / rtt_ms / loss_pct 都在时才把这拍转发给对端；对端只读其中新鲜的 rx_fps（接收帧率，
+        // 拥塞阶梯用），这三项沿用上一拍成功的值（从没取到过就填 0），否则 getStats 卡住时对端的阶梯也跟着失明
+        if (self.media.subscribe) {
+          var last = self.lastRxSample || { rx_kbps: 0, rtt_ms: 0, loss_pct: 0 };
+          keys.forEach(function (key) { if (typeof out[key] !== 'number') out[key] = last[key]; });
+        }
         finish(null);
         return;
       }
       var rx = res[1];
       if (rx) {
-        ['rx_kbps', 'rtt_ms', 'loss_pct'].forEach(function (key) {
+        keys.forEach(function (key) {
           if (typeof rx[key] === 'number' && isFinite(rx[key])) out[key] = rx[key];
         });
+        if (keys.every(function (key) { return typeof out[key] === 'number'; })) {
+          self.lastRxSample = { rx_kbps: out.rx_kbps, rtt_ms: out.rtt_ms, loss_pct: out.loss_pct };
+        }
       }
       finish(res[0]);
     });

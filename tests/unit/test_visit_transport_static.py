@@ -2580,3 +2580,30 @@ def test_stalled_async_stats_still_emit_each_tick():
     )
     # 4 s 到点只发同步部分（队列长度、接收帧率等），不让后端统计和阶梯停住
     assert out == {"early": 0, "late": 1}
+
+
+def test_stalled_receiver_stats_still_carry_the_fields_the_backend_forwards():
+    out = run_visit_js(
+        """
+        const runs = {};
+        for (const label of ['afterSample', 'neverSampled']) {
+          const h = await joinedController('host');
+          h.c.media.subscribe = true;
+          h.c.unpacker.stats = () => ({ rx_fps: 25, rx_w: 320, rx_h: 896 });
+          if (label === 'afterSample') {
+            h.c.adapter.receiverStats = () => Promise.resolve({ rx_kbps: 300, rtt_ms: 40, loss_pct: 1 });
+            h.c.collectStats();
+            await settle();
+          }
+          h.c.adapter.receiverStats = () => new Promise(() => {});     // getStats 卡住
+          h.c.collectStats();
+          await advance(4100);
+          const last = h.ws.sent.filter((m) => m.type === 'stats').pop();
+          runs[label] = { rx_fps: last.rx_fps, rx_kbps: last.rx_kbps, rtt_ms: last.rtt_ms, loss_pct: last.loss_pct };
+        }
+        return runs;
+        """
+    )
+    # 后端要这三项齐了才转发给对端；对端读的是新鲜的 rx_fps
+    assert out == {"afterSample": {"rx_fps": 25, "rx_kbps": 300, "rtt_ms": 40, "loss_pct": 1},
+                   "neverSampled": {"rx_fps": 25, "rx_kbps": 0, "rtt_ms": 0, "loss_pct": 0}}
