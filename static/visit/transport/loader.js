@@ -32,7 +32,7 @@
   var PUBLISH_RETRY_BASE_MS = 2000;   // SDK 拒绝发布后的首次重试间隔，之后翻倍
   var PUBLISH_RETRY_MAX_MS = 30000;
   var SDK_LOAD_TIMEOUT_MS = 10000;    // 本地 SDK 脚本加载的上限：一直不报 load / error 时按加载失败上报（后端首次入房留了 25 s）
-  var JOIN_ATTEMPT_TIMEOUT_MS = 10000; // 单次入房的上限：网络切换时 SDK 的入房可能既不成功也不失败
+  var JOIN_ATTEMPT_TIMEOUT_MS = 10000; // 中途断线后重进时单次入房的上限：网络切换时 SDK 的入房可能既不成功也不失败
   var REJOIN_LEAVE_WAIT_MS = 5000;    // 手动重新入房前离房的上限：操作链卡住时 leave 不会结束
   var STOP_LEAVE_WAIT_MS = 5000;      // 收到 stop 后等离房的上限（与 backend-ws 终止时同值；父页 ended 后最多留 iframe 6 s）
   var TEARDOWN_IDLE_WAIT_MS = 2000;   // 拆适配器前等在途 SDK 操作的上限（父页对被顶号的 iframe 按 2 + 15 + 8 s 再留余量）
@@ -380,22 +380,22 @@
     var gen = this.connGen;
     var initial = !this.everJoined;
     var settled = false;
-    // 入房可能既不成功也不失败（网络切换时 SDK 卡住），重试窗口只管得住失败的那种：每次最多等 JOIN_ATTEMPT_TIMEOUT_MS。
-    // 一开始就进不去：直接按入房失败结束这一场；中途断线后重进卡住：丢掉卡住的适配器，换新的在窗口内再试
-    var timer = setTimeout(function () {
+    // 入房可能既不成功也不失败（网络切换时 SDK 卡住），重试窗口只管得住失败的那种。
+    // 一开始就进不去：客户端不另设上限、也不换适配器，交给后端的首次入房期限（能力门通过后 25 s）结束这一场——
+    // SDK 自己的连接超时与 UDP → TCP → TURN 回退在慢网络上要十几秒，客户端提前判死会误伤本来能进的场次。
+    // 中途断线后重进卡住：每次最多等 JOIN_ATTEMPT_TIMEOUT_MS，丢掉卡住的适配器，换新的在重试窗口内再试
+    var timer = initial ? null : setTimeout(function () {
       if (settled || self.stopped || self.adapter !== adapter) return;
       settled = true;
       self.log('warn', 'vendor join timed out', 'join_timeout');
-      if (!initial) {
-        self.retireAdapter();
-        if (self.scheduleRejoinRetry(gen)) return;
-      }
+      self.retireAdapter();
+      if (self.scheduleRejoinRetry(gen)) return;
       self.onVendorState('error', { error_code: 'join_timeout' });
     }, JOIN_ATTEMPT_TIMEOUT_MS);
     adapter.join(this.creds).then(function () {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       self.everJoined = true;
       self.rejoinUntil = 0;
       self.rejoinAttempts = 0;
@@ -404,7 +404,7 @@
     }, function (err) {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       var code = (err && err.errorCode) || 'join_failed';
       self.log('warn', 'vendor join failed', code);
       if (self.scheduleRejoinRetry(gen)) return;

@@ -2631,7 +2631,7 @@ def test_empty_or_partial_receiver_samples_are_filled_too():
                    "partial": {"rx_kbps": 200, "rtt_ms": 40, "loss_pct": 1}}
 
 
-def test_initial_join_that_never_settles_ends_the_visit():
+def test_initial_join_that_never_settles_is_left_to_the_backend_deadline():
     out = run_visit_js(
         """
         const h = makeController('guest');
@@ -2647,15 +2647,13 @@ def test_initial_join_that_never_settles_ends_the_visit():
         ws.serverSend(credsFor('guest'));
         await settle();
         const errors = () => ws.sent.filter((m) => m.type === 'state' && m.state === 'error').map((m) => m.error_code);
-        await advance(9900);
-        const early = errors();
-        await advance(200);
-        await advance(15000);
-        return { early, late: errors(), instances: h.TRTC.instances.length, enters: kinds(h.log).filter((k) => k.startsWith('enterRoom')).length };
+        await advance(30000);
+        return { errors: errors(), instances: h.TRTC.instances.length, enters: kinds(h.log).filter((k) => k.startsWith('enterRoom')).length };
         """
     )
-    # 一开始就进不去：直接按入房失败结束这一场，不换适配器重试
-    assert out == {"early": [], "late": ["join_timeout"], "instances": 1, "enters": 1}
+    # 一开始就进不去：客户端不提前判死、也不换适配器重试，交给后端首次入房的 25 s 期限结束这一场
+    # （慢网络上 SDK 走 TURN 回退要十几秒，客户端 10 s 判死会误伤）
+    assert out == {"errors": [], "instances": 1, "enters": 1}
 
 
 def test_stuck_rejoin_leave_replaces_the_adapter():
