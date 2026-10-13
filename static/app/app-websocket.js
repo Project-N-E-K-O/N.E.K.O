@@ -3168,6 +3168,17 @@
                     return;
                 }
 
+                // 串门：传输 iframe 的建 / 拆与访客图层只在承载模型的页面做（Pet 窗 / 网页单窗口）。
+                // 多窗口下 chat 窗也会收到同一帧，它只渲染台词，不建 iframe。不 return：台词渲染另有分派。
+                if (response.type === 'visit_state_change') {
+                    var visitChatFollower = window.__NEKO_MULTI_WINDOW__ === true
+                        && /^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
+                    if (!visitChatFollower && window.nekoVisitParentBridge
+                        && typeof window.nekoVisitParentBridge.onStateChange === 'function') {
+                        window.nekoVisitParentBridge.onStateChange(response);
+                    }
+                }
+
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
                     if (S.suppressAssistantStreamUntilNextSession) {

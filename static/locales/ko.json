@@ -6683,5 +6683,9 @@
         "stream": {
             "ttsFallback": "지금은 음성을 쓸 수 없어서 이번 방문에서는 글로 이야기해요"
         }
+    },
+    "visitFrame": {
+        "peerAway": "잠깐 자리를 비웠어요",
+        "visitingAway": "놀러 가는 중"
     }
 }

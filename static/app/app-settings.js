@@ -1677,9 +1677,15 @@
         const currentRenderQuality = typeof window.renderQuality !== 'undefined'
             ? window.renderQuality
             : S.renderQuality;
-        const currentTargetFrameRate = typeof window.targetFrameRate !== 'undefined'
-            ? window.targetFrameRate
-            : S.targetFrameRate;
+        // 串门取帧期间 window.targetFrameRate 被临时拉高（static/visit/parent-bridge.js），
+        // 保存的是用户自己的值，不能把临时值写进设置；当前值已不是临时值（用户刚改过）就照常保存
+        const targetFrameRateHold = window.nekoTargetFrameRateHold;
+        const currentTargetFrameRate = targetFrameRateHold && typeof targetFrameRateHold.userFps === 'number'
+            && window.targetFrameRate === targetFrameRateHold.heldFps
+            ? targetFrameRateHold.userFps
+            : (typeof window.targetFrameRate !== 'undefined'
+                ? window.targetFrameRate
+                : S.targetFrameRate);
         const currentMouseTracking = typeof window.mouseTrackingEnabled !== 'undefined'
             ? window.mouseTrackingEnabled
             : true;

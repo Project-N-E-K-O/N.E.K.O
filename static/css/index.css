@@ -4730,3 +4730,39 @@ body.chat-export-modal-open {
 .is-cat1-edge-peek-locked .neko-idle-return-btn > .neko-idle-return-art,
 .neko-idle-return-btn.is-cat1-edge-peek-locked > .neko-idle-return-art { transition: opacity 160ms ease; }
 .neko-idle-return-btn > .neko-idle-return-art.is-cat1-edge-peek-locked-hover-fade { opacity: 0.12; }
+
+/* 串门（设计稿 §3.4.5 / OD-14 v2）：host 侧访客图层就是传输 iframe。
+   z-index 必须低于模型容器（Pet / 桌面 10，非 Pet 移动端 5）且 pointer-events:none——命中测试落在本家画布上，
+   Pet 窗穿透不变；只靠 .transparent-overlay 会让直通合成模式整窗可点（T3 实测）。 */
+#visit-frame {
+    position: fixed;
+    z-index: 4;
+    border: 0;
+    background: transparent;
+    pointer-events: none;
+    transition: opacity 200ms ease;
+}
+
+/* A 侧：她出门串门了。只做半透明，不用 .minimized（会断截图水印的坐标链），
+   也不做 CSS 缩放（会让模型包围盒与实际像素错位、穿透判定跟着错）。
+   用户同时把模型最小化时让 .minimized 的透明度说了算（:not 排除）。 */
+#live2d-container.visiting-away:not(.minimized),
+#vrm-container.visiting-away:not(.minimized),
+#mmd-container.visiting-away:not(.minimized),
+#pngtuber-container.visiting-away:not(.minimized) {
+    opacity: 0.55;
+}
+
+.visit-badge {
+    position: fixed;
+    z-index: 11;
+    transform: translateX(-50%);
+    padding: 2px 10px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 12px;
+    line-height: 20px;
+    white-space: nowrap;
+    pointer-events: none;
+}

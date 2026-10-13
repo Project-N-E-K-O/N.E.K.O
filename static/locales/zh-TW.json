@@ -6683,5 +6683,9 @@
         "stream": {
             "ttsFallback": "語音暫時無法使用，這場串門她先用文字說話"
         }
+    },
+    "visitFrame": {
+        "peerAway": "離開了一下",
+        "visitingAway": "串門中"
     }
 }

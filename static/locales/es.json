@@ -6683,5 +6683,9 @@
         "stream": {
             "ttsFallback": "La voz no está disponible ahora; en esta visita hablará por texto"
         }
+    },
+    "visitFrame": {
+        "peerAway": "Se ausentó un momento",
+        "visitingAway": "De visita"
     }
 }

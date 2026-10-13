@@ -6683,5 +6683,9 @@
         "stream": {
             "ttsFallback": "语音暂时用不了，这场串门她先用文字说话"
         }
+    },
+    "visitFrame": {
+        "peerAway": "离开了一下",
+        "visitingAway": "在串门中"
     }
 }
