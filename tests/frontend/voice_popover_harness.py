@@ -250,6 +250,16 @@ def install_voice_popover_harness(
                 screenSourceResolvers.push(resolve);
             });
         }
+        // 生产渲染在枚举失败 / 空列表时（retryOnFailure）留下当前来源摘要和
+        // 重试按钮并返回 false；__screenRenderFailures 计数控制接下来几次失败。
+        if (window.__screenRenderFailures > 0) {
+            window.__screenRenderFailures -= 1;
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.dataset.nekoScreenSourceDeferredLoad = '';
+            container.appendChild(retry);
+            return false;
+        }
         const source = document.createElement('button');
         source.type = 'button';
         source.className = 'screen-source-option';
@@ -269,6 +279,7 @@ def install_voice_popover_harness(
         return true;
     };
     window.__screenThumbnailsComplete = true;
+    window.__screenRenderFailures = 0;
     window.__settleScreenThumbnails = () => {
         document.querySelectorAll('.screen-source-thumbnail-loading').forEach((el) => {
             el.className = 'screen-source-thumbnail screen-source-thumbnail-ready';
@@ -277,6 +288,10 @@ def install_voice_popover_harness(
     let rememberWindowEnabled = true;
     window.__rememberWindowSetCalls = [];
     window.isScreenSourceTitleMatchEnabled = () => rememberWindowEnabled;
+    // 模拟另一个窗口改了开关：只改状态，不派发 neko:screen-source-changed。
+    window.__setRememberWindowFromOtherWindow = (enabled) => {
+        rememberWindowEnabled = enabled;
+    };
     window.setScreenSourceTitleMatchEnabled = (enabled) => {
         rememberWindowEnabled = enabled;
         window.__rememberWindowSetCalls.push(enabled);

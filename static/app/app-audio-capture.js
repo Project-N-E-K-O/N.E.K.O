@@ -4465,6 +4465,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             function isScreenMicSubwindowReusable(panel) {
                 if (!panel || panel.dataset.nekoMicActionKey !== 'screen') return false;
+                // 只缓存渲染成功的面板（列表或 Linux 延迟枚举按钮）。枚举失败、
+                // 空列表同样会留下重试按钮，但缓存它们会让行间回来时不再自动
+                // 重新枚举，只能手动点重试。
+                if (panel._nekoScreenRenderOk !== true) return false;
                 var list = panel.querySelector('.neko-mic-popup-screen-sources');
                 if (!list) return false;
                 // 两类中途面板不复用：①枚举未完成（连列表都没有）——那次枚举
@@ -4477,6 +4481,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     )
                     && !list.querySelector('.screen-source-thumbnail-loading')
                 );
+            }
+
+            // 缓存面板的选中高亮和「记住窗口」开关只在挂载时刷新。有的更新
+            // 路径不派发 neko:screen-source-changed（例如另一个窗口改了记住
+            // 窗口开关），所以缓存时记下这两项，取用时对不上就丢弃重建。
+            function getScreenSourceCacheStamp() {
+                var titleMatch = typeof window.isScreenSourceTitleMatchEnabled === 'function'
+                    ? !!window.isScreenSourceTitleMatchEnabled() : null;
+                return String(S.selectedScreenSourceId || '') + '|' + String(titleMatch);
             }
 
             function discardCachedScreenMicSubwindow() {
@@ -4493,6 +4506,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // 幕面板节点摘下来留用，回到屏幕行时原样复用。
                 if (!isScreenMicSubwindowReusable(panel)) return false;
                 discardCachedScreenMicSubwindow();
+                panel._nekoScreenCacheStamp = getScreenSourceCacheStamp();
                 cachedScreenMicSubwindow = panel;
                 panel.remove();
                 return true;
@@ -4501,6 +4515,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             function takeCachedScreenMicSubwindow() {
                 var panel = cachedScreenMicSubwindow;
                 cachedScreenMicSubwindow = null;
+                if (panel && panel._nekoScreenCacheStamp !== getScreenSourceCacheStamp()) {
+                    panel.remove();
+                    return null;
+                }
                 return panel;
             }
 
@@ -4613,11 +4631,11 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     micScreenReturnTracking = true;
                 }
                 // 去抖一拍后进入驻留观察：每拍都用实时指针位置重新判定。
-                // 停在屏幕行上不能只看一眼就放行——之后挪到菜单留白处不会
+                // 指针还在菜单里时，停在屏幕行或面板保持区（它外扩后会伸进
+                // 菜单边缘）都不能只看一眼就放行——之后挪到菜单留白处不会
                 // 再有任何事件重新安排关闭（行的 mouseleave 对 screen 豁免），
-                // 面板会永久开着；所以行上要保持观察，直到指针落到留白处
-                // （关闭）、回到面板/走廊或离开菜单（停止观察，重进菜单会
-                // 重新安排）。
+                // 面板会永久开着；所以要保持观察，直到指针落到留白处（关闭）
+                // 或离开菜单（回到面板等，停止观察，重进菜单会重新安排）。
                 micScreenReturnCloseTimer = setTimeout(function tick() {
                     micScreenReturnCloseTimer = null;
                     if (voiceControlsDisposed || activeMicActionKey !== 'screen') {
@@ -4629,18 +4647,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         cancelMicScreenReturnCloseTimer();
                         return;
                     }
-                    var screenRow = leftColumn.querySelector('[data-neko-mic-main-action-row="screen"]')
-                        || leftColumn.querySelector('[data-neko-mic-main-action="screen"]');
-                    if (screenRow && micHoverPointInRect(micScreenReturnPointer, screenRow.getBoundingClientRect())) {
-                        micScreenReturnCloseTimer = setTimeout(tick, MIC_SCREEN_RETURN_RECHECK_MS);
-                        return;
-                    }
-                    if (isPointerNearMicPanelZone(micScreenReturnPointer)) {
-                        cancelMicScreenReturnCloseTimer();
-                        return;
-                    }
                     if (!micHoverPointInRect(micScreenReturnPointer, leftColumn.getBoundingClientRect())) {
                         cancelMicScreenReturnCloseTimer();
+                        return;
+                    }
+                    var screenRow = leftColumn.querySelector('[data-neko-mic-main-action-row="screen"]')
+                        || leftColumn.querySelector('[data-neko-mic-main-action="screen"]');
+                    if ((screenRow && micHoverPointInRect(micScreenReturnPointer, screenRow.getBoundingClientRect()))
+                        || isPointerNearMicPanelZone(micScreenReturnPointer)) {
+                        micScreenReturnCloseTimer = setTimeout(tick, MIC_SCREEN_RETURN_RECHECK_MS);
                         return;
                     }
                     closeMicSubwindow();
@@ -5415,12 +5430,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         );
                         if (loadButton) loadButton.click();
                     };
-                    await window.renderFloatingScreenSourceList(screenSourceList, {
+                    // 渲染结果决定能否缓存：列表 / 延迟按钮为 true，空列表、
+                    // 失败和面板失效为 false（见 isScreenMicSubwindowReusable）。
+                    panel._nekoScreenRenderOk = await window.renderFloatingScreenSourceList(screenSourceList, {
                         requireVisible: false,
                         deferEnumeration: deferEnumeration,
                         retryOnFailure: true,
-                        onDeferredRender: function () { positionMicSubwindow(panel); }
-                    });
+                        onDeferredRender: function (rendered) {
+                            panel._nekoScreenRenderOk = rendered === true;
+                            positionMicSubwindow(panel);
+                        }
+                    }) === true;
                     positionMicSubwindow(panel);
                 }
             }
@@ -5488,17 +5508,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             if (screenSummary) {
                 screenSummary.setAttribute('aria-live', 'polite');
                 screenSummary.title = currentScreenSourceLabel;
-                // 选择、自动回退和其他窗口的选择都会派发该事件。
-                addVoiceWindowListener('neko:screen-source-changed', function () {
-                    // 缓存中的屏幕面板收不到这些 document 级刷新（选中高亮、
-                    // 当前来源摘要、记住窗口开关），丢弃缓存让下次打开重新
-                    // 枚举，避免复用出过期状态。
-                    discardCachedScreenMicSubwindow();
-                    var nextLabel = getCurrentScreenSourceLabel();
-                    screenSummary.textContent = nextLabel;
-                    screenSummary.title = nextLabel;
-                });
             }
+            // 选择、自动回退和其他窗口的选择都会派发该事件。
+            addVoiceWindowListener('neko:screen-source-changed', function () {
+                // 缓存中的屏幕面板收不到这些 document 级刷新（选中高亮、
+                // 当前来源摘要、记住窗口开关），丢弃缓存让下次打开重新
+                // 枚举，避免复用出过期状态。不依赖摘要节点是否存在。
+                discardCachedScreenMicSubwindow();
+                if (!screenSummary) return;
+                var nextLabel = getCurrentScreenSourceLabel();
+                screenSummary.textContent = nextLabel;
+                screenSummary.title = nextLabel;
+            });
             // 主按钮展开屏幕源，右侧独立按钮开始/停止共享；二者共用行级悬停生命周期。
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示

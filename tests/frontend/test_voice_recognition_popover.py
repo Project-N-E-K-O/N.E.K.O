@@ -1495,6 +1495,89 @@ def test_screen_subwindow_cache_invalidates_on_source_change(page: Page) -> None
 
 
 @pytest.mark.frontend
+def test_screen_subwindow_failed_render_is_not_cached(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            window.__screenRenderFailures = 1;
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    device = page.locator('[data-neko-mic-main-action="device"]')
+
+    def round_trip() -> None:
+        device.hover()
+        page.wait_for_function(
+            """() => {
+                const panel = document.querySelector('.neko-mic-subwindow');
+                return panel && panel.dataset.nekoMicActionKey === 'device';
+            }"""
+        )
+        screen.hover()
+        page.wait_for_function(
+            """() => {
+                const panel = document.querySelector('.neko-mic-subwindow');
+                return panel && panel.dataset.nekoMicActionKey === 'screen';
+            }"""
+        )
+
+    screen.hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    page.wait_for_function(
+        "document.querySelector('.neko-mic-subwindow [data-neko-screen-source-deferred-load]') !== null"
+    )
+    # A failed / empty enumeration leaves the same retry button as the Linux
+    # deferred state, but must not be cached: coming back to the row has to
+    # enumerate again on its own, as it did before the cache existed.
+    round_trip()
+    page.wait_for_function("window.__screenRenderOptions.length === 2")
+    page.wait_for_function("document.querySelectorAll('.screen-source-option').length === 1")
+    # The successful render is cached as usual.
+    round_trip()
+    assert page.evaluate("window.__screenRenderOptions.length") == 2
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+
+@pytest.mark.frontend
+def test_screen_subwindow_cache_invalidates_on_remote_remember_toggle(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    device = page.locator('[data-neko-mic-main-action="device"]')
+    screen.hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    device.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'device';
+        }"""
+    )
+    # Another window flipping "remember window" reaches this window only as a
+    # storage event, which refreshes connected toggles and dispatches no
+    # neko:screen-source-changed. The detached cached toggle would show the
+    # old value, so the cache must be rebuilt.
+    page.evaluate("() => window.__setRememberWindowFromOtherWindow(false)")
+    screen.hover()
+    page.wait_for_function(
+        """() => {
+            const panel = document.querySelector('.neko-mic-subwindow');
+            return panel && panel.dataset.nekoMicActionKey === 'screen';
+        }"""
+    )
+    assert page.evaluate("window.__screenRenderOptions.length") == 2
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate(
+        "document.querySelector('.neko-screen-source-title-match-toggle').checked"
+    ) is False
+
+
+@pytest.mark.frontend
 def test_screen_subwindow_with_pending_thumbnails_is_not_cached(page: Page) -> None:
     install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(
@@ -1600,6 +1683,55 @@ def test_screen_subwindow_closes_after_row_stop_then_menu_whitespace(page: Page)
     # Drifting from the row to menu whitespace then closes the panel — no
     # new mouseenter fires inside the menu, so the watcher is the only way
     # to see this.
+    page.locator(".mic-gain-container").hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+
+
+@pytest.mark.frontend
+def test_screen_subwindow_closes_after_keep_zone_stop_then_menu_whitespace(
+    page: Page,
+) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    screen.hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    page.locator(".neko-mic-subwindow").hover()
+    page.wait_for_timeout(100)
+    # The panel keep zone (panel rect + 16px, plus the row↔panel corridor)
+    # reaches into the menu edge. Resting there past the debounce must not end
+    # the watch either.
+    point = page.evaluate(
+        """() => {
+            const popup = window.__voicePopoverTest.popup();
+            const column = popup.querySelector('.neko-mic-popup-scroll');
+            const c = column.getBoundingClientRect();
+            const p = document.querySelector('.neko-mic-subwindow').getBoundingClientRect();
+            // Just above the bottom edge of the expanded panel rect, at the
+            // menu's right edge: menu whitespace below the action rows.
+            const x = c.right - 3;
+            const y = p.bottom + 16 - 2;
+            const hit = document.elementFromPoint(x, y);
+            return {
+                x, y,
+                inColumn: x >= c.left && x <= c.right && y >= c.top && y <= c.bottom,
+                nearPanel: x >= p.left - 16 && x <= p.right + 16
+                    && y >= p.top - 16 && y <= p.bottom + 16,
+                offRows: !!hit && column.contains(hit)
+                    && !hit.closest('[data-neko-mic-main-action-row], [data-neko-mic-main-action]'),
+            };
+        }"""
+    )
+    assert point["inColumn"] and point["nearPanel"] and point["offRows"], point
+    page.mouse.move(point["x"], point["y"])
+    page.wait_for_timeout(500)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    # Moving on to menu whitespace fires no new mouseenter inside the menu, so
+    # only the still-running watch can close the panel.
     page.locator(".mic-gain-container").hover()
     page.wait_for_function("window.__voicePopoverTest.panels() === 0")
 
