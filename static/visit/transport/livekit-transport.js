@@ -162,6 +162,7 @@
     function bind() {
       var E = LK.RoomEvent;
       room.on(E.ParticipantConnected, function (p) {
+        if (leaving) return;   // 离房期间排队到的进房事件不算（重进后以新房间里的为准）
         if (isPeer(p.identity)) handlers.onPeer('enter', p.identity, null);
       });
       room.on(E.ParticipantDisconnected, function (p, reason) {

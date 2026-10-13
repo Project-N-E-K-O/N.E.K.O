@@ -2743,3 +2743,88 @@ def test_immediate_destroy_exits_without_the_superseded_wait():
         """
     )
     assert out == {"trtc": ["exitRoom", "destroy"], "livekit": {"disconnects": 1, "done": True}}
+
+
+def test_late_publish_result_of_a_retired_adapter_is_ignored():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        const old = h.trtc;
+        let failOld;
+        old.startLocalVideo = () => new Promise((_, reject) => { failOld = reject; });   // 旧适配器上的发布挂着
+        h.ws.serverSend({ type: 'media', publish: true, crop: 'upper', ladder: 0 });
+        await settle();
+        old.exitRoom = () => new Promise(() => {});                                      // 离房也卡住
+        h.c.rejoin();
+        await settle();
+        await advance(5100);                                                              // 换新适配器、入房
+        await settle();
+        h.ws.serverSend({ type: 'media', publish: true, crop: 'upper', ladder: 0 });   // 重进后后端重发媒体快照
+        await settle();
+        const posts = () => h.posted.filter((m) => m.t === 'publish').map((m) => m.on);
+        const before = posts();
+        failOld(new Error('stale'));                                                      // 旧发布迟到失败
+        await settle();
+        await advance(40000);
+        // 新适配器已经在发布：旧发布的迟到失败不能叫停取帧（哪怕之后的重试又把它拉回来，中间也会冻住）
+        return { last: before[before.length - 1], afterStale: posts().slice(before.length),
+                 freshPublishes: kinds(h.log).filter((k) => k === 'startLocalVideo').length };
+        """
+    )
+    assert out == {"last": True, "afterStale": [], "freshPublishes": 1}
+
+
+def test_peer_enter_queued_while_leaving_does_not_restore_presence():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.trtc.exitRoom = () => new Promise(() => {});        // 离房还没结束
+        h.c.peerPresent = true;
+        h.ws.serverClose(1006);                                 // 传输 WS 断了：清在场、离房
+        await settle();
+        h.trtc.emit('REMOTE_USER_ENTER', { userId: 'h_peer' });  // 离房期间排队到的旧进房事件
+        await settle();
+        return { present: h.c.peerPresent };
+        """
+    )
+    assert out == {"present": False}
+
+
+def test_livekit_ignores_peer_enter_while_leaving():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const LKV = ctx.NekoVisitTransport.vendors.livekit;
+        const LK = makeFakeLK([]);
+        const peers = [];
+        const handlers = { onPiece() {}, onPeer(kind) { peers.push(kind); }, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 560, fps: 30 } };
+        const a = LKV.createAdapter({ sdk: LK, handlers, peerVid: 'h_peer' });
+        await a.join(creds);
+        LK.Room.last.disconnect = () => new Promise(() => {});    // 离房还没结束
+        a.leave();
+        LK.Room.last.emit('ParticipantConnected', { identity: 'h_peer', trackPublications: new Map() });
+        return peers;
+        """
+    )
+    assert out == []
+
+
+def test_every_join_starts_without_stale_peer_presence():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.ws.serverClose(1006);                     // 传输 WS 断了：离房、重连
+        await settle();
+        await advance(1100);
+        const ws2 = sockets[sockets.length - 1];
+        ws2.serverOpen();
+        h.c.peerPresent = true;                     // 残留的在场标记（离房期间排队到的旧事件之类）
+        ws2.serverSend(credsFor('guest'));          // 新连接拿到凭证后入房
+        await settle();
+        const joined = ws2.sent.filter((m) => m.type === 'state' && m.state === 'joined').pop();
+        return joined ? joined.peer_present : 'none';
+        """
+    )
+    assert out is False

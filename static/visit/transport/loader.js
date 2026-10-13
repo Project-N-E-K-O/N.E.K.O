@@ -380,6 +380,8 @@
     var gen = this.connGen;
     var initial = !this.everJoined;
     var settled = false;
+    // 只认这次入房之后的进房事件：离房期间排队的旧进房事件可能把在场又置回去，空房里重进不会再有纠正的事件
+    this.peerPresent = false;
     // 入房可能既不成功也不失败（网络切换时 SDK 卡住），重试窗口只管得住失败的那种。
     // 一开始就进不去：客户端不另设上限、也不换适配器，交给后端的首次入房期限（能力门通过后 25 s）结束这一场——
     // SDK 自己的连接超时与 UDP → TCP → TURN 回退在慢网络上要十几秒，客户端提前判死会误伤本来能进的场次。
@@ -473,7 +475,10 @@
     var self = this;
     var track = this.packer.ensureTrack();
     var sent = this.profile();
+    // 发布期间这个适配器被换掉（入房 / 离房卡住）：它迟到的结果不算数，不能叫停新适配器的发布或排重试
+    var seq = this.adapterSeq;
     this.adapter.publish(track, sent).then(function (ok) {
+      if (seq !== self.adapterSeq) return;
       // 'profile_failed'：轨已发布，但发送端码率 / 帧率上限没设上，交给 pushProfile 重试
       var profileFailed = ok === 'profile_failed';
       if (profileFailed) ok = true;
@@ -488,6 +493,7 @@
       }
       else if (ok === false) self.announcePublish(false);
     }, function (err) {
+      if (seq !== self.adapterSeq) return;
       self.log('warn', 'publish failed', String(err && err.code));
       self.announcePublish(false);
       self.schedulePublishRetry();

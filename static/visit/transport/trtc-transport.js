@@ -73,6 +73,7 @@
     function bind() {
       var E = TRTC.EVENT;
       trtc.on(E.REMOTE_USER_ENTER, function (ev) {
+        if (leaving) return;   // 离房期间排队到的进房事件不算（重进后以新房间里的为准）
         if (isPeer(ev.userId)) handlers.onPeer('enter', ev.userId, null);
       });
       trtc.on(E.REMOTE_USER_EXIT, function (ev) {
