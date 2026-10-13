@@ -2207,6 +2207,7 @@
                 if (visit.phase === null && phaseFromState(state.phase)) {
                     visit.side = state.side || state.role || visit.side;
                     visit.phase = phaseFromState(state.phase);
+                    if (visit.phase === 'ending') releaseVisitTextSession();
                 }
                 if (snapshotStarted(state)) visit.everStarted = true;
                 visit.ownName = currentCatgirl();
@@ -2224,6 +2225,8 @@
             visit.side = state.side || state.role || visit.side;
             if (visit.side) rememberSide(snapshotVisit, visit.side);
             visit.phase = phaseFromState(state.phase) || visit.phase;
+            // 快照只在接管释放后才报 ending：与 ending 帧同一副作用，撤掉只由串门 ack 置上的会话标记
+            if (visit.phase === 'ending') releaseVisitTextSession();
             if (snapshotStarted(state)) visit.everStarted = true;
             visit.reconnecting = state.reconnecting === true;
             visit.ownName = currentCatgirl();

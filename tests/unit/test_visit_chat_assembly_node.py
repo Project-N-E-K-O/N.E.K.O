@@ -1302,6 +1302,17 @@ const report = {};
     report.invite_probe_visit = h.chat._test.state().visit.visitId === VID2;
     report.invite_probe_phase = h.chat._test.state().visit.phase;
   }
+  // ── 快照先于 ending 帧报了 ending：同样撤掉只由串门 ack 置上的会话标记 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'host', enabled: true, room: {} } }) };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.win.appState.isTextSessionActive = false;
+    h.I.submitVisitChatText({ text: '你好', requestId: 'se1' });
+    h.win.appState.isTextSessionActive = true;   // 串门 ack
+    await h.chat.afterBind(h.socket, '咪咪');
+    report.snapshot_ending_released = h.win.appState.isTextSessionActive;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1738,3 +1749,7 @@ def test_join_admitted_after_a_character_switch_is_ended(report):
 def test_invitation_during_a_state_probe_invalidates_the_snapshot(report):
     assert report["invite_probe_visit"] is True
     assert report["invite_probe_phase"] == "awaiting_accept"
+
+
+def test_ending_snapshot_releases_the_ack_only_session(report):
+    assert report["snapshot_ending_released"] is False
