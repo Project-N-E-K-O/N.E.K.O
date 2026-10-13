@@ -1053,7 +1053,7 @@ finalize（leave → release_takeover → 仪式句 之后）
 
 ### 3.12 实测清单 T1~T15（每项 ≤30 min；PR-10 前完成；T1~T4 任一失败（或 T5 的 2D `destination-in` 与 WebGL 打包 shader 都不成立）即退设计 1——preload 异 host 直通补丁 + 能力旗 + 老壳 fail-closed，只损失前端 PR-10/11；后端 PR 完全通用）
 
-> 2026-10-02 / 10-03：T1~T5 已在真实 Pet 窗实测，Windows（直通 / 兼容两种合成模式）上全部通过，继续 iframe 方案（兼容模式 T2 有一轮 17/312 黑帧，owner 判定为测试期间操作干扰、不计入；加诊断重测约 7700 帧 0 黑帧）；**T3/T4 的 macOS 部分仍待测，PR-10/11 合并前补齐**（兼容模式下访客不透明像素的命中已于 2026-10-03 补测通过）。结论与关键数字见本节末「T1~T5 实测结论（Windows）」，原始数据在 `scripts/visit_probe/results/`。
+> 2026-10-02 / 10-03：T1~T5 已在真实 Pet 窗实测，Windows（直通 / 兼容两种合成模式）上全部通过，继续 iframe 方案（兼容模式 T2 有一轮 17/312 黑帧，owner 判定为测试期间操作干扰、不计入；加诊断重测约 7700 帧 0 黑帧）；**T3/T4 的 macOS 部分仍待测，PR-10/11 合并前补齐**（兼容模式下访客不透明像素的命中已于 2026-10-03 补测通过）。结论与关键数字见本节末「T1~T5 实测结论（Windows）」。
 
 - **T1** 同源 iframe 内 `window.WebSocket === 原生`（`iframe.contentWindow.WebSocket.name`），父页 `_activeWs` 不变（Chat 窗不收 CONNECTING）。
 - **T2** 同任务取帧：父页 `postrender` 内同步调 iframe `drawImage(#live2d-canvas, 裁剪)`，连续 300 帧无黑帧；定时器驱动与 rAF 驱动两种模式各测；分数累加器在 60 / 75 / 144 Hz 与定时器 60 fps 下用 `RTCRtpSender.getStats()` 的 `framesPerSecond / framesEncoded` 验收恰好 30。
@@ -1074,7 +1074,7 @@ finalize（leave → release_takeover → 仪式句 之后）
 
 #### T1~T5 实测结论（Windows）
 
-2026-10-02 / 10-03 在真实开发态壳的 Pet 窗实测（Electron 41.2.0 / Chrome 146，Windows 11，1920×1080@60 Hz，DPR 1），直通与兼容（`--disable-gpu-compositing`）两种合成模式各跑一遍。原始数据在 `scripts/visit_probe/results/`（`direct/`、`compat/`、`compat-2026-10-03/`、`compat-2026-10-03-blankcheck/`），脚本与复现方法见 `scripts/visit_probe/README.md`。
+2026-10-02 / 10-03 在真实开发态壳的 Pet 窗实测（Electron 41.2.0 / Chrome 146，Windows 11，1920×1080@60 Hz，DPR 1），直通与兼容（`--disable-gpu-compositing`）两种合成模式各跑一遍。脚本与复现方法见 `scripts/visit_probe/README.md`。
 
 | 项 | 结论 | 关键数字 |
 |---|---|---|
@@ -1090,7 +1090,7 @@ finalize（leave → release_takeover → 仪式句 之后）
 - **兼容模式取帧降到 15 fps**（owner 拍板）：每帧约 8 ms，30 fps 约占 Pet 主线程 24%、15 fps 约 12%；直通模式仍 30 fps（3.3.5 第 5 条）。
 - **分数累加器**：「最近 1 s 帧数」估 `renderFps` 在冷启动第一秒多抓（兼容模式实测 60 / 75 / ~118 Hz 源第一秒 50 / 58 / 66 帧，每帧 8 ms 时把开销放大到每秒约 0.35~0.5 s），≈30 Hz 源又少约 2.4%；改为按相邻两次渲染的时间跨度算、首帧用刷新率作初值（3.3.5 第 2 条），模拟下各源从第一秒起恰好是目标帧率。
 - 模型包围盒 `getModelScreenBounds()` 不按视口裁剪（模型一半挂在屏幕外时上半身框会落到屏幕下方），取景先与视口求交再按比例构框（3.4.1）。
-- 实现后真机复验（2026-10-12，同一台机器，`scripts/visit_probe/measure_bridge.mjs`，数据在 `scripts/visit_probe/results/bridge-2026-10-12/`；用产品代码 `parent-bridge.js` + 传输页，不连后端）：兼容模式每秒 14~15 帧、第一秒 14~15，每帧打包 7.3~7.7 ms；直通模式每秒 29~31 帧、第一秒 29~30，每帧打包 0.23 ms；逐帧回读 alpha 半共约 1470 帧 0 空帧（另一轮只按秒抽查时 1/10 次读到空帧，逐帧复查未复现，原因未定）；兼容模式一轮最后一秒只有 5 帧，原因未查（取帧侧按设计不补帧，这种情况超过 1 s 会报 hidden）。结束后 `targetFrameRate` 与 `_visitCaptureActive` 都恢复。
+- 实现后真机复验（2026-10-12，同一台机器，`scripts/visit_probe/measure_bridge.mjs`；用产品代码 `parent-bridge.js` + 传输页，不连后端）：兼容模式每秒 14~15 帧、第一秒 14~15，每帧打包 7.3~7.7 ms；直通模式每秒 29~31 帧、第一秒 29~30，每帧打包 0.23 ms；逐帧回读 alpha 半共约 1470 帧 0 空帧（另一轮只按秒抽查时 1/10 次读到空帧，逐帧复查未复现，原因未定）；兼容模式一轮最后一秒只有 5 帧，原因未查（取帧侧按设计不补帧，这种情况超过 1 s 会报 hidden）。结束后 `targetFrameRate` 与 `_visitCaptureActive` 都恢复。
 - 待补：T3 / T4 的 macOS 部分（PR-10 / PR-11 合并闸门）。
 
 ---
