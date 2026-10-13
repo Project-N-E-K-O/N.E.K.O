@@ -742,6 +742,72 @@ def test_window_with_a_constantly_changing_title_is_selected_on_the_second_click
 
 
 @pytest.mark.frontend
+def test_card_renamed_in_place_needs_one_confirmation(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            // A reused cached list got the current title, but its thumbnail
+            // still shows whatever window had this id before.
+            window.__metadataSources = window.__metadataSources.map((source) => (
+                source.id === 'window:2' ? { ...source, name: 'Browser' } : source
+            ));
+            window.refreshScreenSourceOptionNames(popup, window.__metadataSources);
+            const option = popup.querySelector('.screen-source-option[data-source-id="window:2"]');
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const afterFirst = window.appState.selectedScreenSourceId;
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return { afterFirst, afterSecond: window.appState.selectedScreenSourceId };
+        }"""
+    )
+    assert result == {"afterFirst": None, "afterSecond": "window:2"}
+
+
+@pytest.mark.frontend
+def test_confirmed_click_still_selects_after_the_list_is_reopened(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    selected = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const original = window.__desktopProvider.getSources;
+            let release = null;
+            let calls = 0;
+            window.__desktopProvider.getSources = (options) => {
+                calls += 1;
+                if (calls === 1) {
+                    return new Promise((resolve) => {
+                        release = () => resolve(window.__metadataSources);
+                    });
+                }
+                return original(options);
+            };
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            await window.renderFloatingScreenSourceList(popup);
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
+        }"""
+    )
+    # Reopening the list is not a cancel: an existing, unchanged source the
+    # user clicked is still selected.
+    assert selected == "window:2"
+
+
+@pytest.mark.frontend
 def test_refresh_option_names_updates_cards_and_filter_in_place(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(
@@ -2052,6 +2118,56 @@ def _install_share_session(page: Page) -> None:
             });
         }"""
     )
+
+
+@pytest.mark.frontend
+def test_share_start_waits_for_a_pending_source_click(page: Page) -> None:
+    # Clicking a source and then the share toggle right away: the click is
+    # still checking that the source exists. The start must not capture the
+    # previous source (or a default monitor) first.
+    _install_screen_source_harness(page)
+    _install_share_session(page)
+    result = page.evaluate(
+        """async () => {
+            const share = window.__share;
+            const popup = document.getElementById('live2d-popup-screen');
+            await window.renderFloatingScreenSourceList(popup);
+            document.querySelector(
+                '.screen-source-option[data-source-id="screen:1"]'
+            ).click();
+            await share.waitFor(() => window.appState.selectedScreenSourceId === 'screen:1');
+            const original = window.__desktopProvider.getSources;
+            let release = null;
+            let held = false;
+            window.__desktopProvider.getSources = (options) => {
+                if (!held && options.thumbnailSize.width === 0) {
+                    held = true;
+                    return new Promise((resolve) => {
+                        release = () => resolve(window.__metadataSources);
+                    });
+                }
+                return original(options);
+            };
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const start = window.startScreenSharing();
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const callsWhilePending = share.calls.slice();
+            release();
+            await start;
+            await share.waitFor(() => share.calls.length >= 1);
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            window.__desktopProvider.getSources = original;
+            return {
+                callsWhilePending,
+                calls: share.calls.slice(),
+                selectedId: window.appState.selectedScreenSourceId,
+            };
+        }"""
+    )
+    assert result["callsWhilePending"] == []
+    assert result["selectedId"] == "window:2"
+    assert result["calls"] and set(result["calls"]) == {"window:2"}
 
 
 @pytest.mark.frontend

@@ -34,6 +34,19 @@
     // 选择被改成某个来源（不含清空）的次数。进行中的点选据此判断期间有没有
     // 出现更新的选择；后台只是清空选择时不推进，不会作废用户的点击。
     var screenSourceChoiceGeneration = 0;
+    // 来源列表里还在确认来源是否存在的点选：开始分享前等它们结束，免得先拿
+    // 上一个来源（或默认的整块屏幕）开播，再被晚到的选择切走。
+    var pendingScreenSourceValidations = new Set();
+
+    function holdScreenShareStartForSourceValidation() {
+        var release = null;
+        var validation = new Promise(function (resolve) { release = resolve; });
+        pendingScreenSourceValidations.add(validation);
+        return function () {
+            pendingScreenSourceValidations.delete(validation);
+            release();
+        };
+    }
     var explicitScreenSourceSelectionTitle = null;
 
     // 调用方先写好 S.selectedScreenSourceId 再调用。
@@ -2114,6 +2127,10 @@
     }
 
     async function startScreenSharingOnce(attempt) {
+        if (pendingScreenSourceValidations.size > 0) {
+            await Promise.all(Array.from(pendingScreenSourceValidations));
+            if (discardCancelledScreenSharingStart(attempt)) return;
+        }
         // 检查是否在录音状态
         if (!S.isRecording) {
             window.showStatusToast(window.t ? window.t('app.micRequired') : '请先开启麦克风录音！', 3000);
@@ -3023,6 +3040,8 @@
             var name = names.get(option.dataset.sourceId);
             if (name && name !== option.dataset.sourceName) {
                 applyScreenSourceOptionName(option, name);
+                // 缩略图还是旧的（id 可能已换成另一个窗口），点选时先请用户确认。
+                option._nekoRenameNeedsConfirm = true;
                 changed = true;
             }
         });
@@ -3488,18 +3507,28 @@
                     // 列表是枚举那一刻的快照：期间关掉的窗口还列在这里。选中
                     // 一个已不存在的来源，开始分享时会退回到分享整块屏幕，所
                     // 以点下时先确认它还在，不在就提示重新选，不改动当前选择。
-                    var availability = await checkListedScreenSourceAvailable(source.id);
-                    // 确认期间又点了别的项（任一列表）、出现过更新的选择（例如
-                    // 另一个窗口选了别的来源，哪怕之后又改回来），或者这个列表
-                    // 已经重新渲染：这次点击作废，不能覆盖更新的选择，也不能拿
-                    // 旧快照去改新列表。后台只是清空选择时不算，点击照常生效。
+                    // 确认期间开始分享要等这次确认结束，不能先拿上一个来源开播。
+                    var releaseValidation = holdScreenShareStartForSourceValidation();
+                    var availability;
+                    try {
+                        availability = await checkListedScreenSourceAvailable(source.id);
+                    } finally {
+                        releaseValidation();
+                    }
+                    // 确认期间又点了别的项（任一列表），或者出现过更新的选择（例
+                    // 如另一个窗口选了别的来源，哪怕之后又改回来）：这次点击作
+                    // 废，不能覆盖更新的选择。后台只是清空选择时不算。
                     if (latestScreenSourceClickToken !== clickToken
-                        || clickChoiceGeneration !== screenSourceChoiceGeneration
-                        || screenPopup._screenSourceRenderToken !== clickRenderToken) {
+                        || clickChoiceGeneration !== screenSourceChoiceGeneration) {
                         return;
                     }
+                    // 列表在确认期间重新渲染过（关掉又打开）：不拿旧快照去改新
+                    // 列表，但来源确认存在时选择照常生效。
+                    var renderIsCurrent = screenPopup._screenSourceRenderToken === clickRenderToken;
                     if (!availability.available) {
-                        dropUnavailableScreenSourceOptions(screenPopup, availability.currentIds);
+                        if (renderIsCurrent) {
+                            dropUnavailableScreenSourceOptions(screenPopup, availability.currentIds);
+                        }
                         window.showStatusToast(
                             safeT(
                                 'app.screenSource.sourceClosed',
@@ -3513,24 +3542,35 @@
                     // 已经换成了另一个窗口。先把卡片刷新成当前标题、请用户确认
                     // 后再点一次，不直接选中，免得分享出用户没看到的窗口。卡片
                     // 上记的名称一并更新，之后打开「记住窗口」读到的是当前标题。
+                    // 复用缓存时就地改过名的卡片（缩略图还是旧的）同样要确认。
                     // 只拦一次：标题一直在变的窗口（下载进度、闪烁的未读提示）
                     // 每次确认都会不同，用户看过新标题后再点就直接选中。
                     var current = availability.source;
                     var renamed = !!(current && current.name
                         && String(current.name) !== (option.dataset.sourceName || ''));
-                    if (renamed) applyScreenSourceOptionName(option, String(current.name));
-                    if (renamed && !option._nekoRenameAcknowledged) {
+                    var needsConfirm = renamed || option._nekoRenameNeedsConfirm === true;
+                    if (needsConfirm && !option._nekoRenameAcknowledged) {
+                        // 旧列表的卡片已不在屏幕上，没法让用户在它上面确认。
+                        if (!renderIsCurrent) return;
+                        if (renamed) applyScreenSourceOptionName(option, String(current.name));
                         option._nekoRenameAcknowledged = true;
+                        option._nekoRenameNeedsConfirm = false;
+                        var shownName = option.dataset.sourceName || source.name || '';
                         window.showStatusToast(
                             window.t
-                                ? window.t('app.screenSource.sourceRenamed', { source: current.name })
-                                : '这个窗口的标题已变为「' + current.name + '」，确认是它后请再点一次',
+                                ? window.t('app.screenSource.sourceRenamed', { source: shownName })
+                                : '这个窗口的标题已变为「' + shownName + '」，确认是它后请再点一次',
                             4000
                         );
                         return;
                     }
+                    if (renamed && renderIsCurrent) {
+                        applyScreenSourceOptionName(option, String(current.name));
+                    }
                     option._nekoRenameAcknowledged = false;
-                    var selectedName = option.dataset.sourceName || source.name;
+                    option._nekoRenameNeedsConfirm = false;
+                    var selectedName = renamed ? String(current.name)
+                        : (option.dataset.sourceName || source.name);
                     // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
                     await selectScreenSource(
                         source.id,
