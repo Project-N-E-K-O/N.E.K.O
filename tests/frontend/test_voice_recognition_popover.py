@@ -1698,6 +1698,10 @@ def test_screen_cache_reuse_refreshes_names_in_place_when_only_titles_changed(
                         && container.classList.contains('neko-mic-popup-screen-sources'),
                     names: sources.map((source) => source.name),
                 });
+                // Like the real helper, renaming the selected source announces
+                // it; the cache check must not mistake that for an outside change.
+                window.dispatchEvent(new CustomEvent('neko:screen-source-changed',
+                    { detail: { sourceId: null, sourceLabel: '' } }));
             };
             window.__desktopSources[0].name = 'Renamed';
         }"""
@@ -1710,6 +1714,30 @@ def test_screen_cache_reuse_refreshes_names_in_place_when_only_titles_changed(
     assert page.evaluate("window.__refreshNamesCalls") == [
         {"isScreenList": True, "names": ["Renamed"]}
     ]
+
+
+@pytest.mark.frontend
+def test_screen_cache_rebuilds_when_monitor_order_changes(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    page.evaluate(
+        """() => {
+            window.__desktopSources = [
+                { id: 'screen:0:0', name: 'Screen A' },
+                { id: 'screen:1:0', name: 'Screen B' },
+            ];
+        }"""
+    )
+    screen, _device = _open_cached_screen_panel_then_device(page)
+    # Same ids, new display order: the cards' "Screen N" labels and indices
+    # come from the order, so the cache must not be reused.
+    page.evaluate("() => { window.__desktopSources.reverse(); }")
+    screen.hover()
+    _wait_for_panel(page, "screen")
+    page.wait_for_function("window.__screenRenderOptions.length === 2")
+    assert page.evaluate(
+        "Array.from(document.querySelectorAll('.screen-source-option'),"
+        " (option) => option.dataset.sourceId)"
+    ) == ["screen:1:0", "screen:0:0"]
 
 
 @pytest.mark.frontend

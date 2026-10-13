@@ -4540,7 +4540,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             // 缓存面板里的来源列表是缓存那一刻的快照，期间关掉的窗口还会列
             // 在里面；点它会走「来源不存在」的回退。复用前只取一次来源元数
             // 据（不带缩略图）核对 id，集合不变才复用（标题就地刷新），否则重建。
-            async function areCachedScreenSourcesCurrent(panel) {
+            async function areCachedScreenSourcesCurrent(panel, changeCountBeforeCheck) {
                 var options = panel.querySelectorAll('.screen-source-option');
                 // 延迟枚举态（只有按钮）没有列表，不会过期。
                 if (options.length === 0) return true;
@@ -4562,17 +4562,27 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         'getSources',
                         [{ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } }]
                     );
-                    // 只比对 id 集合。窗口标题经常变（浏览器切标签页、未读数），
-                    // 标题不同就整块重建会让防闪烁形同虚设；名称在原卡片上就地
-                    // 刷新，点选时还有一次标题确认兜底。
-                    var currentIds = (sources || []).map(function (source) {
+                    // 核对期间收到过来源变更通知（例如同 id 改名）：先判，下面就地
+                    // 刷新名称时自己也会发这个通知，不能把它当成外部变更。
+                    if (changeCountBeforeCheck !== screenSourceChangeCount) return false;
+                    // 只比对 id，不比标题。窗口标题经常变（浏览器切标签页、未读
+                    // 数），标题不同就整块重建会让防闪烁形同虚设；名称在原卡片上
+                    // 就地刷新，点选时还有一次标题确认兜底。屏幕按枚举顺序比：
+                    // 卡片上的「屏幕 N」和点选用的序号都来自这个顺序。窗口只比集合。
+                    function idsOf(list, prefix, keepOrder) {
+                        var ids = list.filter(function (id) { return id.indexOf(prefix) === 0; });
+                        return keepOrder ? ids : ids.sort();
+                    }
+                    var currentAll = (sources || []).map(function (source) {
                         return String((source && source.id) || '');
-                    }).filter(function (id) {
-                        return id.indexOf('screen:') === 0 || id.indexOf('window:') === 0;
-                    }).sort();
-                    var cachedIds = Array.prototype.map.call(options, function (option) {
+                    });
+                    var cachedAll = Array.prototype.map.call(options, function (option) {
                         return String(option.dataset.sourceId || '');
-                    }).sort();
+                    });
+                    var currentIds = idsOf(currentAll, 'screen:', true)
+                        .concat(idsOf(currentAll, 'window:', false));
+                    var cachedIds = idsOf(cachedAll, 'screen:', true)
+                        .concat(idsOf(cachedAll, 'window:', false));
                     if (currentIds.length !== cachedIds.length) return false;
                     for (var i = 0; i < currentIds.length; i += 1) {
                         if (currentIds[i] !== cachedIds[i]) return false;
@@ -5385,12 +5395,14 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     // 在文档上（createMicSubwindow 的拆除逻辑被缓存路径绕开）。
                     teardownOwnedMicSubwindows();
                     var openGeneration = micActionHoverOpenGeneration;
-                    var sourceChangeCountBeforeCheck = screenSourceChangeCount;
-                    var sourcesUnchanged = await areCachedScreenSourcesCurrent(cached);
                     // 核对期间另一个窗口可能改了选中来源、来源名称或记住窗口开
-                    // 关；缓存已不在全局引用上，收不到那次丢弃，这里补判。
-                    if (cached._nekoScreenCacheStamp !== getScreenSourceCacheStamp()
-                        || sourceChangeCountBeforeCheck !== screenSourceChangeCount) {
+                    // 关；缓存已不在全局引用上，收不到那次丢弃，靠变更计数（在
+                    // 核对函数里、就地刷新之前判）和缓存戳补判。
+                    var sourcesUnchanged = await areCachedScreenSourcesCurrent(
+                        cached,
+                        screenSourceChangeCount
+                    );
+                    if (cached._nekoScreenCacheStamp !== getScreenSourceCacheStamp()) {
                         sourcesUnchanged = false;
                     }
                     // 核对期间指针去了别的行、菜单关了或又发起了新的打开：

@@ -833,6 +833,74 @@ def test_in_place_rename_refreshes_the_selected_source_label(page: Page) -> None
 
 
 @pytest.mark.frontend
+def test_window_losing_its_title_still_needs_confirmation(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            // The id now reports an empty title (an untitled window may have
+            // taken it over); the card still shows "Editor".
+            window.__metadataSources = window.__metadataSources.map((source) => (
+                source.id === 'window:2' ? { ...source, name: '' } : source
+            ));
+            const option = document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            );
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return {
+                selectedId: window.appState.selectedScreenSourceId,
+                cardName: option.dataset.sourceName,
+            };
+        }"""
+    )
+    assert result == {"selectedId": None, "cardName": ""}
+
+
+@pytest.mark.frontend
+def test_stale_render_result_is_checked_against_the_fresh_card(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    selected = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const original = window.__desktopProvider.getSources;
+            const oldSnapshot = window.__metadataSources.slice();
+            let release = null;
+            let calls = 0;
+            window.__desktopProvider.getSources = (options) => {
+                calls += 1;
+                if (calls === 1) {
+                    return new Promise((resolve) => { release = () => resolve(oldSnapshot); });
+                }
+                return original(options);
+            };
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // The list is reopened and now shows another window behind that id.
+            window.__metadataSources = window.__metadataSources.map((source) => (
+                source.id === 'window:2' ? { ...source, name: 'Browser' } : source
+            ));
+            await window.renderFloatingScreenSourceList(popup);
+            release();  // the old lookup still says "Editor"
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
+        }"""
+    )
+    # The fresh list shows "Browser"; the stale result must not select it.
+    assert selected is None
+
+
+@pytest.mark.frontend
 def test_rename_confirmation_resets_and_skips_screens(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(

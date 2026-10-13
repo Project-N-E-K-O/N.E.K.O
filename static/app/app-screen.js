@@ -3047,12 +3047,16 @@
         if (!container) return;
         var names = new Map();
         (sources || []).forEach(function (source) {
-            if (source && source.id && source.name) names.set(String(source.id), String(source.name));
+            if (!source || !source.id) return;
+            var id = String(source.id);
+            var name = String(source.name || '');
+            // 窗口的空标题也要同步（可能是 id 被复用了）；屏幕的空名称忽略。
+            if (name || id.startsWith('window:')) names.set(id, name);
         });
         var changed = false;
         container.querySelectorAll('.screen-source-option').forEach(function (option) {
             var name = names.get(option.dataset.sourceId);
-            if (name && name !== option.dataset.sourceName) {
+            if (name !== undefined && name !== (option.dataset.sourceName || '')) {
                 applyScreenSourceOptionName(option, name);
                 // 窗口卡片的缩略图还是旧的（id 可能已换成另一个窗口），点选时
                 // 先请用户确认；之前确认过的也要重新确认。
@@ -3557,6 +3561,21 @@
                         // 列表在确认期间重新渲染过（关掉又打开）：不拿旧快照去改新
                         // 列表，但来源确认存在时选择照常生效。
                         var renderIsCurrent = screenPopup._screenSourceRenderToken === clickRenderToken;
+                        // 列表已换成新一轮渲染：选中前和新列表里这张卡片的标题对一下，
+                        // 对不上（或新列表里没有它）就不选，请用户在新列表里重新点。
+                        if (!renderIsCurrent && availability.available) {
+                            var freshCard = null;
+                            screenPopup.querySelectorAll('.screen-source-option').forEach(function (card) {
+                                if (card.dataset.sourceId === source.id) freshCard = card;
+                            });
+                            var latestName = availability.source
+                                ? String(availability.source.name || '') : null;
+                            if (!freshCard || (latestName !== null
+                                && latestName !== (freshCard.dataset.sourceName || ''))) {
+                                releaseValidation('rejected');
+                                return;
+                            }
+                        }
                         if (!availability.available) {
                             releaseValidation('rejected');
                             if (renderIsCurrent) {
@@ -3579,8 +3598,12 @@
                         // 只拦一次：标题一直在变的窗口（下载进度、闪烁的未读提示）
                         // 每次确认都会不同，用户看过新标题后再点就直接选中。
                         var current = availability.source;
-                        var renamed = !!(current && current.name
-                            && String(current.name) !== (option.dataset.sourceName || ''));
+                        // 窗口的空标题也算变化：卡片上留着非空的旧标题时，空标题
+                        // 可能就是 id 被别的（没有标题的）窗口复用了。
+                        var currentName = current ? String(current.name || '') : '';
+                        var renamed = !!current
+                            && (currentName !== '' || source.id.startsWith('window:'))
+                            && currentName !== (option.dataset.sourceName || '');
                         // 只对窗口确认：显示器卡片显示的是序号，名称变了也不会误导。
                         var needsConfirm = source.id.startsWith('window:')
                             && (renamed || option._nekoRenameNeedsConfirm === true);
@@ -3588,7 +3611,7 @@
                             releaseValidation('rejected');
                             // 旧列表的卡片已不在屏幕上，没法让用户在它上面确认。
                             if (!renderIsCurrent) return;
-                            if (renamed) applyScreenSourceOptionName(option, String(current.name));
+                            if (renamed) applyScreenSourceOptionName(option, currentName);
                             option._nekoRenameAcknowledged = true;
                             option._nekoRenameNeedsConfirm = false;
                             var shownName = option.dataset.sourceName || source.name || '';
@@ -3601,11 +3624,11 @@
                             return;
                         }
                         if (renamed && renderIsCurrent) {
-                            applyScreenSourceOptionName(option, String(current.name));
+                            applyScreenSourceOptionName(option, currentName);
                         }
                         option._nekoRenameAcknowledged = false;
                         option._nekoRenameNeedsConfirm = false;
-                        var selectedName = renamed ? String(current.name)
+                        var selectedName = renamed ? currentName
                             : (option.dataset.sourceName || source.name);
                         releaseValidation('committed');
                         // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
