@@ -2184,13 +2184,13 @@
      * 同一个，§4.5；index.html 与 chat.html 都发）。发出之后交给 visit-chat.js 读一次 state，
      * 再派发 neko-visit-bound（pacer 据此决定回报给哪条连接、这一场是否在进行）。
      */
-    async function _sendVisitBind(socket) {
+    async function _sendVisitBind(socket, forceRefresh) {
         var token = '';
         // 首次取不到（page_config 一时没回来）：刷新后再试，最多 3 次、间隔递增；连接已换就作罢
         for (var attempt = 0; attempt < 3 && !token; attempt++) {
             if (attempt > 0) await new Promise(function (resolve) { setTimeout(resolve, 1000 * attempt); });
             if (S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
-            token = await _visitCsrfToken(attempt > 0);
+            token = await _visitCsrfToken(forceRefresh === true || attempt > 0);
         }
         if (!token || S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
         try {
@@ -2205,7 +2205,20 @@
         }
     }
 
+    // bind 被拒（不带 request_id 的未授权）：后端重启换了 CSRF token 而页面还开着时，缓存的旧 token 会被拒。
+    // 每条连接刷新一次 token 再重发一次 bind；仍被拒（非本机访问等）就不再试
+    var _visitBindRefreshed = typeof WeakSet === 'function' ? new WeakSet() : null;
+
+    function _retryVisitBindAfterRefusal(socket) {
+        if (!socket || !_visitBindRefreshed || _visitBindRefreshed.has(socket)) return;
+        _visitBindRefreshed.add(socket);
+        void _sendVisitBind(socket, true);
+    }
+
     function _showVisitStatus(code, details) {
+        if (code === 'VISIT_E_UNAUTHORIZED' && !(details && details.request_id)) {
+            _retryVisitBindAfterRefusal(S.socket);
+        }
         var verdict = true;
         if (window.nekoVisitChat && typeof window.nekoVisitChat.handleStatus === 'function') {
             try { verdict = window.nekoVisitChat.handleStatus(code, details); } catch (_) { verdict = true; }

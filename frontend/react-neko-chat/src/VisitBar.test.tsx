@@ -85,6 +85,17 @@ describe('full visit bar', () => {
     expect(document.body.querySelector('.composer-visit-bar')).toBeNull();
   });
 
+  it('hides the bar while the theater presentation is active', () => {
+    const { container } = render(
+      <App
+        chatSurfaceMode="full"
+        theaterPresentation={{ active: true, phase: 'performing' }}
+        visitBar={{ tone: 'idle', actions: [{ id: 'entry', label: '串门' }] }}
+      />,
+    );
+    expect(container.querySelector('.full-visit-bar')).toBeNull();
+  });
+
   it('renders nothing without a bar', () => {
     const { container } = render(<App chatSurfaceMode="full" visitBar={null} />);
     expect(container.querySelector('.full-visit-bar')).toBeNull();

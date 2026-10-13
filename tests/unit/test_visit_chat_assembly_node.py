@@ -834,6 +834,32 @@ const report = {};
     const doc = { source: 'memory', visit_id: VID, lines: [{ line_id: 'x', lp: 1, side: 'guest', speaker_kind: 'cat', ts: 1, text: '甲', truncated: false }] };
     report.late_ended_export = h.chat._test.buildTranscriptText(doc).split('\n')[1].replace(/^\[[^\]]*\] /, '').split('：')[0];
   }
+  // ── 上一场结束后，重放的邀请把页面带进新的一场：旧的台词缓存清掉 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    const sp = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'L1', text: '旧一场', final: true, truncated: false, speaker: sp });
+    h.state('ended');
+    h.frame({ type: 'visit_invite', visit_id: VID2, peer_name: '小黑', peer_short_id: 'ZXCVBN', cross_region: false, expires_at: 1700000000 + 60 });
+    h.frame({ type: 'visit_line_delta', visit_id: VID2, line_id: 'L1', i: 0, text: '新一场的片', speaker: sp });
+    report.invite_new_visit_line = h.chat._test.state().lines.get('L1').text;
+  }
+  // ── debrief 块被消息上限裁掉：新连接重放时重新上屏 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
+    const h = createHarness({ routes });
+    const chips = { type: 'chat_blocks', request_id: 'visit-debrief:' + VID, blocks: [
+      { type: 'buttons', buttons: [{ id: 'diary', label: '记成日记', action: 'visit_debrief_choice', payload: { visit_id: VID, choice: 'diary' } }] },
+    ] };
+    h.chat.handleChatBlocks(chips);
+    h.messages.splice(0, h.messages.length);   // 宿主按上限裁掉了
+    await h.chat.afterBind(h.socket, '咪咪');  // 新连接
+    h.chat.handleChatBlocks(chips);            // bind 重放
+    report.pruned_chip_back = h.messages.filter((m) => m.id.indexOf('plugin-blocks-visit-debrief:' + VID) === 0).length;
+    h.chat.handleChatBlocks(chips);            // 同一连接再到一次：还在页上，不重复
+    report.pruned_chip_no_dup = h.messages.filter((m) => m.id.indexOf('plugin-blocks-visit-debrief:' + VID) === 0).length;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1102,3 +1128,12 @@ def test_failed_report_keeps_the_dialog_and_draft_for_retry(report):
 
 def test_late_ended_message_also_records_the_side(report):
     assert report["late_ended_export"] == "我家猫娘"
+
+
+def test_replayed_invite_starts_a_clean_visit(report):
+    assert report["invite_new_visit_line"] == "新一场的片"
+
+
+def test_pruned_debrief_block_comes_back_on_replay(report):
+    assert report["pruned_chip_back"] == 1
+    assert report["pruned_chip_no_dup"] == 1

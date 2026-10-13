@@ -364,3 +364,13 @@ def test_persona_panel_escape_and_failed_first_generation():
     assert "document.removeEventListener('keydown', onKeydown, true)" in panel
     load = _function_body(panel, "load")
     assert "started.status !== 202 && codeOf(started) !== 'persona_generating'" in load
+
+
+def test_refused_bind_refreshes_the_token_and_retries_once_per_socket():
+    source = _read(WS)
+    status = _function_body(source, "_showVisitStatus")
+    assert "code === 'VISIT_E_UNAUTHORIZED' && !(details && details.request_id)" in status
+    assert "_retryVisitBindAfterRefusal(S.socket)" in status
+    retry = _function_body(source, "_retryVisitBindAfterRefusal")
+    assert "_visitBindRefreshed.has(socket)" in retry and "_sendVisitBind(socket, true)" in retry
+    assert "forceRefresh === true || attempt > 0" in _function_body(source, "_sendVisitBind")

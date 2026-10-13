@@ -1466,8 +1466,8 @@
     function onInvite(frame) {
         var visitId = String(frame.visit_id || '');
         if (!visitId || !isUiWindow()) return;
-        if (!visit.visitId || visit.visitId === visitId) {
-            visit.visitId = visitId;
+        if (!visit.visitId || visit.visitId === visitId || !inVisit()) {
+            if (visit.visitId !== visitId) startNewVisit(visitId);
             visit.side = 'host';
             visit.phase = 'awaiting_accept';
             if (frame.peer_name) visit.peerName = String(frame.peer_name);
@@ -2056,6 +2056,8 @@
      * Pet 窗（不画界面）照样要派发：pacer 就在那一页。
      */
     async function afterBind(socket, catgirl, retryAttempt) {
+        // 新连接：bind 会重放所有没定下来的 debrief 块；页上还在的按 request_id 跳过，被消息上限裁掉的要重新上屏
+        if (!retryAttempt) debriefSeen.clear();
         var seqAtSend = stateFrameSeq;
         var name = catgirl || currentCatgirl();
         var result = name

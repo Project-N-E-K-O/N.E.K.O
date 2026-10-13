@@ -3243,7 +3243,7 @@ export default function FullChatSurface({
         >
           <div id="music-player-mount" />
           {/* 串门工具条（full 自己的一份，与 compact 不共用代码）：宿主给状态与按钮，点按钮回传 id */}
-          {!catLocalTextOnly && visitBar && (visitBar.badge || visitBar.actions.length > 0) ? (
+          {!catLocalTextOnly && theaterPresentation?.active !== true && visitBar && (visitBar.badge || visitBar.actions.length > 0) ? (
             <div
               className={`full-visit-bar is-${visitBar.tone ?? 'idle'}`}
               role="toolbar"
