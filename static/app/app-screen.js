@@ -31,10 +31,15 @@
     // 来源列表里最近一次点击的令牌：所有列表（宠物窗口菜单、设置面板等）共用，
     // 后点的那次让更早、还在确认来源是否存在的点击作废。
     var latestScreenSourceClickToken = null;
+    // 选择被改成某个来源（不含清空）的次数。进行中的点选据此判断期间有没有
+    // 出现更新的选择；后台只是清空选择时不推进，不会作废用户的点击。
+    var screenSourceChoiceGeneration = 0;
     var explicitScreenSourceSelectionTitle = null;
 
+    // 调用方先写好 S.selectedScreenSourceId 再调用。
     function markScreenSourceSelectionChanged() {
         screenSourceSelectionGeneration += 1;
+        if (S.selectedScreenSourceId) screenSourceChoiceGeneration += 1;
         explicitScreenSourceSelectionGeneration = null;
         explicitScreenSourceSelectionTitle = null;
     }
@@ -3478,19 +3483,19 @@
                     e.stopPropagation();
                     var clickToken = {};
                     latestScreenSourceClickToken = clickToken;
-                    var clickSelectionGeneration = screenSourceSelectionGeneration;
-                    var clickSelectedSourceId = S.selectedScreenSourceId;
+                    var clickChoiceGeneration = screenSourceChoiceGeneration;
+                    var clickRenderToken = screenPopup._screenSourceRenderToken;
                     // 列表是枚举那一刻的快照：期间关掉的窗口还列在这里。选中
                     // 一个已不存在的来源，开始分享时会退回到分享整块屏幕，所
                     // 以点下时先确认它还在，不在就提示重新选，不改动当前选择。
                     var availability = await checkListedScreenSourceAvailable(source.id);
-                    // 确认期间又点了别的项（任一列表），或者选择被改成了别的来源
-                    // （例如另一个窗口选了别的）：这次点击作废，不能覆盖更新的
-                    // 选择。后台只是清空选择时不算，用户这次点击照常生效。
-                    if (latestScreenSourceClickToken !== clickToken) return;
-                    if (clickSelectionGeneration !== screenSourceSelectionGeneration
-                        && S.selectedScreenSourceId
-                        && S.selectedScreenSourceId !== clickSelectedSourceId) {
+                    // 确认期间又点了别的项（任一列表）、出现过更新的选择（例如
+                    // 另一个窗口选了别的来源，哪怕之后又改回来），或者这个列表
+                    // 已经重新渲染：这次点击作废，不能覆盖更新的选择，也不能拿
+                    // 旧快照去改新列表。后台只是清空选择时不算，点击照常生效。
+                    if (latestScreenSourceClickToken !== clickToken
+                        || clickChoiceGeneration !== screenSourceChoiceGeneration
+                        || screenPopup._screenSourceRenderToken !== clickRenderToken) {
                         return;
                     }
                     if (!availability.available) {

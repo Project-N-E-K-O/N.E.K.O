@@ -1631,6 +1631,16 @@ def test_screen_subwindow_cache_rebuilds_when_sources_are_not_current(
     page.wait_for_function("window.__screenRenderOptions.length === 2")
     assert page.evaluate("window.__desktopGetSourcesCalls") == 1
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    # The rebuilt panel lists what exists now.
+    expected_ids = {
+        "window_closed": [],
+        "window_opened": ["screen:0:0", "window:7"],
+        "lookup_failed": ["screen:0:0"],
+    }[change]
+    assert page.evaluate(
+        "Array.from(document.querySelectorAll('.screen-source-option'),"
+        " (option) => option.dataset.sourceId)"
+    ) == expected_ids
 
 
 @pytest.mark.frontend
@@ -1752,6 +1762,31 @@ def test_screen_cache_is_rebuilt_when_selection_state_changes_during_the_check(
     assert page.evaluate(
         "document.querySelector('.neko-screen-source-title-match-toggle').checked"
     ) is False
+
+
+@pytest.mark.frontend
+def test_screen_cache_is_rebuilt_when_sources_change_during_the_check(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    screen, _device = _open_cached_screen_panel_then_device(page)
+    page.evaluate(
+        """() => {
+            window.__desktopGetSourcesGate = new Promise((resolve) => {
+                window.__releaseDesktopGetSources = resolve;
+            });
+        }"""
+    )
+    screen.hover()
+    page.wait_for_function("window.__desktopGetSourcesCalls === 1")
+    # A same-id rename/label change from elsewhere fires this event while the
+    # panel is off the global cache; the check must not hand it back.
+    page.evaluate(
+        """() => window.dispatchEvent(new CustomEvent('neko:screen-source-changed',
+            { detail: { sourceId: null, sourceLabel: '' } }))"""
+    )
+    page.evaluate("() => window.__releaseDesktopGetSources()")
+    page.wait_for_function("window.__screenRenderOptions.length === 2")
+    _wait_for_panel(page, "screen")
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
 
 
 @pytest.mark.frontend

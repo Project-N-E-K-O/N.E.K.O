@@ -4404,6 +4404,9 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var micScreenReturnPointer = null;
             var micScreenReturnTracking = false;
             var cachedScreenMicSubwindow = null;
+            // neko:screen-source-changed 的次数：缓存面板核对来源期间不在
+            // 全局引用上，收不到那次丢弃，靠它在核对后补判。
+            var screenSourceChangeCount = 0;
 
             function rememberMicHoverPointer(event) {
                 micHoverPointer = { x: event.clientX, y: event.clientY };
@@ -5370,10 +5373,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     // 在文档上（createMicSubwindow 的拆除逻辑被缓存路径绕开）。
                     teardownOwnedMicSubwindows();
                     var openGeneration = micActionHoverOpenGeneration;
+                    var sourceChangeCountBeforeCheck = screenSourceChangeCount;
                     var sourcesUnchanged = await areCachedScreenSourcesCurrent(cached);
-                    // 核对期间另一个窗口可能改了选中来源或记住窗口开关；缓存
-                    // 已不在全局引用上，收不到那次丢弃，这里再比一次。
-                    if (cached._nekoScreenCacheStamp !== getScreenSourceCacheStamp()) {
+                    // 核对期间另一个窗口可能改了选中来源、来源名称或记住窗口开
+                    // 关；缓存已不在全局引用上，收不到那次丢弃，这里补判。
+                    if (cached._nekoScreenCacheStamp !== getScreenSourceCacheStamp()
+                        || sourceChangeCountBeforeCheck !== screenSourceChangeCount) {
                         sourcesUnchanged = false;
                     }
                     // 核对期间指针去了别的行、菜单关了或又发起了新的打开：
@@ -5601,6 +5606,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // 缓存中的屏幕面板收不到这些 document 级刷新（选中高亮、
                 // 当前来源摘要、记住窗口开关），丢弃缓存让下次打开重新
                 // 枚举，避免复用出过期状态。不依赖摘要节点是否存在。
+                screenSourceChangeCount += 1;
                 discardCachedScreenMicSubwindow();
                 if (!screenSummary) return;
                 var nextLabel = getCurrentScreenSourceLabel();

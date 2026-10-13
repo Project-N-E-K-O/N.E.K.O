@@ -800,6 +800,93 @@ def test_refreshed_card_title_feeds_a_later_remember_toggle(page: Page) -> None:
 
 
 @pytest.mark.frontend
+def test_pending_click_yields_to_a_choice_made_and_reverted_meanwhile(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    selected = page.evaluate(
+        """async () => {
+            document.querySelector(
+                '.screen-source-option[data-source-id="screen:1"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const original = window.__desktopProvider.getSources;
+            let release = null;
+            window.__desktopProvider.getSources = () => new Promise((resolve) => {
+                release = () => resolve(window.__metadataSources);
+            });
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // Another window picks window:9, then goes back to screen:1: the
+            // final id equals the click-time one, but newer choices happened.
+            for (const id of ['window:9', 'screen:1']) {
+                window.__storedValues.set('selectedScreenSourceId', id);
+                window.dispatchEvent(new StorageEvent('storage', {
+                    key: 'selectedScreenSourceId', newValue: id,
+                }));
+            }
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
+        }"""
+    )
+    assert selected == "screen:1"
+
+
+@pytest.mark.frontend
+def test_pending_click_from_a_replaced_render_is_dropped(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const original = window.__desktopProvider.getSources;
+            let release = null;
+            let calls = 0;
+            window.__desktopProvider.getSources = (options) => {
+                calls += 1;
+                if (calls === 1) {
+                    return new Promise((resolve) => {
+                        // The old snapshot no longer has window:2.
+                        release = () => resolve(window.__metadataSources.filter(
+                            (source) => source.id !== 'window:2'
+                        ));
+                    });
+                }
+                return original(options);
+            };
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // The popup is closed and reopened while the check is pending.
+            await window.renderFloatingScreenSourceList(popup);
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return {
+                selectedId: window.appState.selectedScreenSourceId,
+                freshWindowCardKept: !!popup.querySelector(
+                    '.screen-source-option[data-source-id="window:2"]'
+                ),
+            };
+        }"""
+    )
+    # The obsolete click neither selects nor prunes the fresh list.
+    assert result == {"selectedId": None, "freshWindowCardKept": True}
+
+
+@pytest.mark.frontend
 def test_background_clear_does_not_drop_a_pending_click(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(

@@ -275,20 +275,27 @@ def install_voice_popover_harness(
             container.appendChild(retry);
             return false;
         }
-        const source = document.createElement('button');
-        source.type = 'button';
-        source.className = 'screen-source-option';
-        source.textContent = 'test-screen';
-        source.dataset.sourceId = 'screen:0:0';
-        source.dataset.sourceName = 'test-screen';
-        // 生产渲染的第二阶段先放 loading 占位再补缩略图；__screenThumbnailsComplete
-        // 为 false 时停在 loading，模拟面板在第二阶段期间被拆走（填充放弃）。
-        const thumbnail = document.createElement('div');
-        thumbnail.className = window.__screenThumbnailsComplete === false
-            ? 'screen-source-thumbnail screen-source-thumbnail-loading'
-            : 'screen-source-thumbnail screen-source-thumbnail-ready';
-        source.appendChild(thumbnail);
-        container.appendChild(source);
+        // 装了桌面桥时按 __desktopSources 生成卡片（与核对用的来源一致），
+        // 否则固定一张 test-screen。
+        const listed = window.electronDesktopCapturer
+            ? window.__desktopSources
+            : [{ id: 'screen:0:0', name: 'test-screen' }];
+        listed.forEach((listedSource) => {
+            const source = document.createElement('button');
+            source.type = 'button';
+            source.className = 'screen-source-option';
+            source.textContent = listedSource.name;
+            source.dataset.sourceId = listedSource.id;
+            source.dataset.sourceName = listedSource.name;
+            // 生产渲染的第二阶段先放 loading 占位再补缩略图；__screenThumbnailsComplete
+            // 为 false 时停在 loading，模拟面板在第二阶段期间被拆走（填充放弃）。
+            const thumbnail = document.createElement('div');
+            thumbnail.className = window.__screenThumbnailsComplete === false
+                ? 'screen-source-thumbnail screen-source-thumbnail-loading'
+                : 'screen-source-thumbnail screen-source-thumbnail-ready';
+            source.appendChild(thumbnail);
+            container.appendChild(source);
+        });
         const filter = document.createElement('input');
         filter.type = 'search';
         filter.className = 'screen-source-title-filter';
