@@ -694,6 +694,84 @@ def test_retitled_source_needs_a_second_click_on_the_refreshed_card(
 
 
 @pytest.mark.frontend
+def test_window_with_a_constantly_changing_title_is_selected_on_the_second_click(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            const original = window.__desktopProvider.getSources;
+            let tick = 0;
+            // Download progress / blinking unread titles: every lookup differs.
+            window.__desktopProvider.getSources = (options) => {
+                tick += 1;
+                window.__metadataSources = window.__metadataSources.map((source) => (
+                    source.id === 'window:2'
+                        ? { ...source, name: `Downloading ${tick * 10}%` } : source
+                ));
+                return original(options);
+            };
+            const option = document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            );
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const afterFirst = window.appState.selectedScreenSourceId;
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return {
+                afterFirst,
+                afterSecond: window.appState.selectedScreenSourceId,
+                cardName: option.dataset.sourceName,
+            };
+        }"""
+    )
+    # The confirmation stops only once; after the user has seen a fresh title
+    # the next click selects with the latest one.
+    assert result == {
+        "afterFirst": None,
+        "afterSecond": "window:2",
+        "cardName": "Downloading 20%",
+    }
+
+
+@pytest.mark.frontend
+def test_refresh_option_names_updates_cards_and_filter_in_place(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const filter = popup.querySelector('.screen-source-title-filter');
+            filter.value = 'editor';
+            filter.dispatchEvent(new Event('input'));
+            window.refreshScreenSourceOptionNames(popup, [
+                { id: 'screen:1', name: 'Entire Screen' },
+                { id: 'window:2', name: 'Browser' },
+            ]);
+            const option = popup.querySelector('.screen-source-option[data-source-id="window:2"]');
+            return {
+                name: option.dataset.sourceName,
+                label: option.querySelector('.screen-source-option-label').textContent,
+                hiddenByFilter: option.hidden,
+            };
+        }"""
+    )
+    # The renamed card no longer matches the active filter.
+    assert result == {"name": "Browser", "label": "Browser", "hiddenByFilter": True}
+
+
+@pytest.mark.frontend
 def test_refreshed_card_title_feeds_a_later_remember_toggle(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(

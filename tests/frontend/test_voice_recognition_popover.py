@@ -1608,9 +1608,7 @@ def _wait_for_panel(page: Page, key: str) -> None:
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize(
-    "change", ["window_closed", "window_opened", "source_renamed", "lookup_failed"]
-)
+@pytest.mark.parametrize("change", ["window_closed", "window_opened", "lookup_failed"])
 def test_screen_subwindow_cache_rebuilds_when_sources_are_not_current(
     page: Page, change: str
 ) -> None:
@@ -1622,10 +1620,6 @@ def test_screen_subwindow_cache_rebuilds_when_sources_are_not_current(
     # failed lookup.
     if change == "window_closed":
         page.evaluate("() => { window.__desktopSources = []; }")
-    elif change == "source_renamed":
-        # Same id set, new title (or an id reused by another window): the
-        # cached card would show and search by the old name.
-        page.evaluate("() => { window.__desktopSources[0].name = 'Renamed'; }")
     elif change == "window_opened":
         page.evaluate(
             "() => { window.__desktopSources.push({ id: 'window:7', name: 'New' }); }"
@@ -1648,6 +1642,35 @@ def test_screen_subwindow_cache_reuse_checks_sources_without_rerender(page: Page
     assert page.evaluate("window.__desktopGetSourcesCalls") == 1
     assert page.evaluate("window.__screenRenderOptions.length") == 1
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+
+@pytest.mark.frontend
+def test_screen_cache_reuse_refreshes_names_in_place_when_only_titles_changed(
+    page: Page,
+) -> None:
+    install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
+    screen, _device = _open_cached_screen_panel_then_device(page)
+    page.evaluate(
+        """() => {
+            window.__refreshNamesCalls = [];
+            window.refreshScreenSourceOptionNames = (container, sources) => {
+                window.__refreshNamesCalls.push({
+                    isScreenList: !!container
+                        && container.classList.contains('neko-mic-popup-screen-sources'),
+                    names: sources.map((source) => source.name),
+                });
+            };
+            window.__desktopSources[0].name = 'Renamed';
+        }"""
+    )
+    screen.hover()
+    _wait_for_panel(page, "screen")
+    # Titles change all the time (browser tabs, unread counts); the same id
+    # set keeps the cached panel and only renames its cards.
+    assert page.evaluate("window.__screenRenderOptions.length") == 1
+    assert page.evaluate("window.__refreshNamesCalls") == [
+        {"isScreenList": True, "names": ["Renamed"]}
+    ]
 
 
 @pytest.mark.frontend

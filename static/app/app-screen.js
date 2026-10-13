@@ -2990,6 +2990,41 @@
     }
     mod.selectScreenSource = selectScreenSource;
 
+    // ======================== 来源卡片名称刷新 ========================
+    // 把卡片上的名称换成当前标题（窗口的显示名就是标题；屏幕显示序号不变）。
+    function applyScreenSourceOptionName(option, name) {
+        option.dataset.sourceName = name;
+        option.dataset.sourceSearchText = normalizeScreenSourceTitle(name);
+        option.title = name;
+        var optionLabel = option.querySelector('.screen-source-option-label');
+        if (optionLabel) {
+            if (String(option.dataset.sourceId || '').startsWith('window:')) {
+                optionLabel.textContent = name;
+            }
+            optionLabel.title = name;
+        }
+    }
+
+    // 复用已渲染的来源列表时，用新取到的来源元数据就地刷新卡片名称，
+    // 不必整块重建；有改动就按当前筛选重算一次可见窗口。
+    window.refreshScreenSourceOptionNames = function (container, sources) {
+        if (!container) return;
+        var names = new Map();
+        (sources || []).forEach(function (source) {
+            if (source && source.id && source.name) names.set(String(source.id), String(source.name));
+        });
+        var changed = false;
+        container.querySelectorAll('.screen-source-option').forEach(function (option) {
+            var name = names.get(option.dataset.sourceId);
+            if (name && name !== option.dataset.sourceName) {
+                applyScreenSourceOptionName(option, name);
+                changed = true;
+            }
+        });
+        var titleFilter = changed ? container.querySelector('.screen-source-title-filter') : null;
+        if (titleFilter) titleFilter.dispatchEvent(new Event('input'));
+    };
+
     // ======================== updateScreenSourceListSelection ========================
     function updateScreenSourceListSelection() {
         var popupIds = ['live2d-popup-screen', 'vrm-popup-screen', 'mmd-popup-screen'];
@@ -3418,6 +3453,7 @@
 
                 // 名称（在缩略图下方，允许多行）
                 var label = document.createElement('span');
+                label.className = 'screen-source-option-label';
                 label.textContent = displayName || source.name || '';
                 if (source.name) {
                     label.title = source.name;
@@ -3468,23 +3504,18 @@
                         );
                         return;
                     }
-                    // 标题和列表里的不一样：可能只是窗口改了标题，也可能这个 id
+                    // 标题和卡片上的不一样：可能只是窗口改了标题，也可能这个 id
                     // 已经换成了另一个窗口。先把卡片刷新成当前标题、请用户确认
                     // 后再点一次，不直接选中，免得分享出用户没看到的窗口。卡片
                     // 上记的名称一并更新，之后打开「记住窗口」读到的是当前标题。
+                    // 只拦一次：标题一直在变的窗口（下载进度、闪烁的未读提示）
+                    // 每次确认都会不同，用户看过新标题后再点就直接选中。
                     var current = availability.source;
-                    if (current && current.name && current.name !== source.name) {
-                        source = current;
-                        displayName = source.id.startsWith('window:')
-                            ? getScreenSourceDisplayName(current, screenIndex)
-                            : displayName;
-                        option.dataset.sourceName = current.name;
-                        option.dataset.sourceSearchText = normalizeScreenSourceTitle(
-                            current.name || displayName
-                        );
-                        label.textContent = displayName || current.name;
-                        label.title = current.name;
-                        option.title = current.name;
+                    var renamed = !!(current && current.name
+                        && String(current.name) !== (option.dataset.sourceName || ''));
+                    if (renamed) applyScreenSourceOptionName(option, String(current.name));
+                    if (renamed && !option._nekoRenameAcknowledged) {
+                        option._nekoRenameAcknowledged = true;
                         window.showStatusToast(
                             window.t
                                 ? window.t('app.screenSource.sourceRenamed', { source: current.name })
@@ -3493,11 +3524,13 @@
                         );
                         return;
                     }
+                    option._nekoRenameAcknowledged = false;
+                    var selectedName = option.dataset.sourceName || source.name;
                     // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
                     await selectScreenSource(
                         source.id,
-                        source.name,
-                        displayName,
+                        selectedName,
+                        source.id.startsWith('window:') ? selectedName : displayName,
                         isPortalPick && source.id.startsWith('screen:') ? null : screenIndex
                     );
                 });
