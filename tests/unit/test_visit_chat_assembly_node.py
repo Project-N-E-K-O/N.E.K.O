@@ -107,9 +107,19 @@ function createHarness(opts) {
     removeEventListener(type, fn) { const i = docListeners.findIndex((l) => l.type === type && l.fn === fn); if (i >= 0) docListeners.splice(i, 1); },
   };
   function pressKey(key) { docListeners.filter((l) => l.type === 'keydown').slice().forEach((l) => l.fn({ key })); }
+  // 与真实宿主一样：每条消息带 sortKey（没给就排到最后），按 sortKey 排序
+  let sortSeq = 0;
+  function sortAll() { messages.sort((a, b) => a.sortKey - b.sortKey); }
+  function pushMessage(m) {
+    const copy = JSON.parse(JSON.stringify(m));
+    if (typeof copy.sortKey !== 'number') copy.sortKey = (sortSeq += 1000);
+    messages.push(copy);
+    sortAll();
+    return copy;
+  }
   const host = {
-    appendMessage(m) { messages.push(JSON.parse(JSON.stringify(m))); return m; },
-    updateMessage(id, patch) { const m = messages.find((x) => x.id === id); if (m) Object.assign(m, JSON.parse(JSON.stringify(patch))); },
+    appendMessage(m) { pushMessage(m); return m; },
+    updateMessage(id, patch) { const m = messages.find((x) => x.id === id); if (m) { Object.assign(m, JSON.parse(JSON.stringify(patch))); sortAll(); } },
     getState() { return { messages: messages }; },
   };
   const I = {
@@ -135,15 +145,17 @@ function createHarness(opts) {
         const blocks = [{ type: 'text', text: spec.text, plain_text: true }];
         if (spec.notice) blocks.push({ type: 'status', text: spec.notice });
         const existing = messages.find((x) => x.id === spec.messageId);
-        if (existing) Object.assign(existing, { blocks: blocks, author: spec.author, status: 'sent' });
-        else messages.push({ id: spec.messageId, author: spec.author, blocks: blocks, status: 'sent' });
+        const patch = { blocks: blocks, author: spec.author, status: 'sent' };
+        if (typeof spec.sortKey === 'number') patch.sortKey = spec.sortKey;
+        if (existing) { Object.assign(existing, patch); sortAll(); }
+        else pushMessage(Object.assign({ id: spec.messageId }, patch));
       },
     },
     appButtons: {
       sendTextPayload(text, options) { sendCalls.push({ text, options }); socket.send(JSON.stringify({ action: 'stream_data', data: text, request_id: options.requestId, source: options.source })); return Promise.resolve(true); },
     },
     appendReactChatBlocks(response) {
-      messages.push({ id: 'plugin-blocks-' + response.request_id + '-' + (wall++) + '-1', role: 'system', blocks: JSON.parse(JSON.stringify(response.blocks)) });
+      pushMessage({ id: 'plugin-blocks-' + response.request_id + '-' + (wall++) + '-1', role: 'system', blocks: response.blocks });
       return true;
     },
   };
@@ -980,6 +992,18 @@ const report = {};
     h2.state('ended');
     report.real_session_after_end = h2.win.appState.isTextSessionActive;
   }
+  // ── 台词按 (lp, side_rank) 落位：同 lp 时 host 在前；快照重放的更早的行排在实时行之前 ──
+  {
+    const h = createHarness();
+    h.state('started', { side: 'guest' });
+    const own = { side: 'guest', kind: 'cat', name: '小白', self: true };
+    const hostCat = { side: 'host', kind: 'cat', name: '咪咪', self: false };
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 5, text: '客人这句', final: true, truncated: false, speaker: own });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:1', lp: 5, text: '东家这句', final: true, truncated: false, speaker: hostCat });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:0', lp: 2, text: '更早一句', final: true, truncated: false, speaker: hostCat });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:2', lp: 9, text: '最新一句', final: true, truncated: false, speaker: own });
+    report.lamport_order = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0).map((m) => m.blocks[0].text);
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1300,3 +1324,7 @@ def test_preview_from_the_http_answer_shows_when_the_push_is_missing(report):
 def test_ack_only_text_session_is_released_when_the_visit_ends(report):
     assert report["ack_session_after_end"] is False
     assert report["real_session_after_end"] is True
+
+
+def test_lines_are_ordered_by_lamport_key_with_host_first(report):
+    assert report["lamport_order"] == ["更早一句", "东家这句", "客人这句", "最新一句"]

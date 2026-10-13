@@ -639,7 +639,42 @@
         }
         if (frame.speaker) entry.speaker = frame.speaker;
         if (frame.addressee) entry.addressee = frame.addressee;
+        // 全序键 (lp, side_rank)：同 lp 时 host 在前（§3.6.6 ①），两侧页面显示顺序一致
+        if (typeof entry.lp !== 'number' && Number.isInteger(frame.lp)) entry.lp = frame.lp;
+        var side = frame.speaker && frame.speaker.side;
+        if (side === 'host' || side === 'guest') entry.sideRank = side === 'host' ? 0 : 1;
         return entry;
+    }
+
+    function lineOrder(a, b) {
+        return a.lp !== b.lp ? a.lp - b.lp : (a.sideRank || 0) - (b.sideRank || 0);
+    }
+
+    /**
+     * 新上屏的一行按 (lp, side_rank) 落位：这一场已上屏、键比它大的行里最早的那条之前。
+     * 没有更晚的行（绝大多数情况）就返回 undefined，照常追加到末尾。
+     */
+    function lineSortKey(entry) {
+        if (typeof entry.lp !== 'number') return undefined;
+        var next = null;
+        lines.forEach(function (other) {
+            if (other === entry || !other.rendered || other.visitId !== entry.visitId || typeof other.lp !== 'number') return;
+            if (lineOrder(other, entry) > 0 && (!next || lineOrder(other, next) < 0)) next = other;
+        });
+        if (!next) return undefined;
+        var host = getHost();
+        var messages = host && typeof host.getState === 'function' ? ((host.getState() || {}).messages || []) : [];
+        var nextMessage = null;
+        for (var i = 0; i < messages.length; i++) {
+            if (messages[i] && messages[i].id === next.messageId) { nextMessage = messages[i]; break; }
+        }
+        if (!nextMessage || typeof nextMessage.sortKey !== 'number') return undefined;
+        var before = -Infinity;
+        messages.forEach(function (message) {
+            var key = message && message.sortKey;
+            if (typeof key === 'number' && key < nextMessage.sortKey && key > before) before = key;
+        });
+        return before === -Infinity ? nextMessage.sortKey - 1 : (before + nextMessage.sortKey) / 2;
     }
 
     /** 已到的分片按 i 拼起来：中间缺的片留一个占位、不补洞。 */
@@ -683,6 +718,8 @@
         }
         adapter.renderVisitLine({
             messageId: entry.messageId,
+            // 第一次上屏（含认领本地气泡）时按全序键落位；之后的分片 / 终稿原地更新，不再挪
+            sortKey: entry.rendered ? undefined : lineSortKey(entry),
             speaker: entry.speaker,
             author: speakerAuthor(entry.speaker, entry.addressee),
             avatarUrl: entry.speaker && entry.speaker.self !== true && entry.speaker.kind === 'cat' ? peerAvatarUrl : '',

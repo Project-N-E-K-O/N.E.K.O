@@ -1205,6 +1205,8 @@
             blocks: blocks,
             status: 'sent'
         };
+        // 串门台词按 (lp, side_rank) 落位：visit-chat 算好的排序键（没有就照常追加到末尾）
+        if (typeof spec.sortKey === 'number' && isFinite(spec.sortKey)) patch.sortKey = spec.sortKey;
         var messages = host && typeof host.getState === 'function' ? (host.getState().messages || []) : [];
         var exists = messages.some(function (message) { return message && message.id === spec.messageId; });
         if (exists && host && typeof host.updateMessage === 'function') {

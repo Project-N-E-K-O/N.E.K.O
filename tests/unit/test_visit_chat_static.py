@@ -374,3 +374,10 @@ def test_refused_bind_refreshes_the_token_and_retries_once_per_socket():
     retry = _function_body(source, "_retryVisitBindAfterRefusal")
     assert "_visitBindRefreshed.has(socket)" in retry and "_sendVisitBind(socket, true)" in retry
     assert "forceRefresh === true || attempt > 0" in _function_body(source, "_sendVisitBind")
+
+
+def test_visit_line_render_carries_the_lamport_sort_key():
+    # visit-chat 按 (lp, side_rank) 算好的排序键要随消息交给宿主，否则台词仍按到达先后排
+    render = _function_body(_read(ADAPTER), "renderVisitLine")
+    assert "patch.sortKey = spec.sortKey" in render
+    assert "sortKey: entry.rendered ? undefined : lineSortKey(entry)" in _function_body(_read(CHAT), "renderLine")
