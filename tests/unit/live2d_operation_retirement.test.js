@@ -105,6 +105,68 @@ test('release stops its already admitted real SDK action', async () => {
     } finally { f.release(); }
 });
 
+for (const loading of [true, false]) {
+    test(`SDK reset failure still retires its ${loading ? 'pending' : 'active'} operation and permits explicit reset retry`, async () => {
+        const f = await fixture(), entered = deferred(), gate = deferred();
+        const sdkReset = f.native.state.reset, error = new Error('controlled SDK reset failure');
+        let pending;
+        try {
+            f.native.state.reset = () => { throw error; };
+            if (loading) f.native._loadMotion = async () => { entered.resolve(); await gate.promise; return f.motion(); };
+            pending = f.manager.playActionMotion(f.group, 0);
+            if (loading) await entered.promise;
+            else assert.equal(await pending, true);
+            const operation = loading ? f.manager._actionMotionRequestPendingOperation : f.manager._activeActionMotionOperation;
+            assert.ok(operation);
+            assert.throws(() => f.native.stopAllMotions(), thrown => thrown === error);
+            if (loading) {
+                assert.equal(operation.signal.aborted, true, 'reset failure must abort the detached pending receipt');
+                assert.equal(await pending, false);
+                assert.equal(f.manager._actionMotionRequestPendingOperation, null);
+            } else assert.ok(!f.manager._activeActionMotionOperation, 'reset failure must retire the detached active receipt');
+            assert.equal(f.manager._avatarOperations.size, 0);
+            // A failed SDK reset is not reported as an idle/native success.
+            assert.ok(f.native.state.currentPriority || f.native.state.reservePriority);
+            f.native.state.reset = sdkReset; f.native.stopAllMotions();
+            gate.resolve(); await pending;
+            assert.equal(await f.manager.playActionMotion(f.group, 0), true);
+        } finally { f.native.state.reset = sdkReset; gate.resolve(); if (pending) await pending.catch(() => false); f.release(); }
+    });
+}
+
+for (const idle of [true, false]) for (const saved of [null, 3]) {
+test(`real SDK natural completion restores motion-only parameters with Idle=${idle} and saved=${saved}`, async () => {
+    const f = await fixture();
+    try {
+        const data = { Version: 3, Meta: { Duration: 1, Fps: 30, Loop: false, AreBeziersRestricted: true,
+            CurveCount: 1, TotalSegmentCount: 1, TotalPointCount: 2, UserDataCount: 0, TotalUserDataSize: 0 },
+            Curves: [{ Target: 'Parameter', Id: 'ParamAngleX', Segments: [0, 9, 0, 1, 9], FadeInTime: 0, FadeOutTime: 0 }], UserData: [] };
+        const idleData = { ...data, Meta: { ...data.Meta, Loop: true, CurveCount: 0, TotalSegmentCount: 0, TotalPointCount: 0 }, Curves: [] };
+        f.native._loadMotion = async group => f.runtime.sdk.Motion.create(group === 'Idle' ? idleData : data);
+        if (!idle) f.native.definitions.Idle = [];
+        if (saved !== null) f.apply({ ParamAngleX: saved });
+        f.runtime.context.fetch = async () => ({ ok: true, json: async () => data });
+        const events = [];
+        f.native.on('motionStart', group => events.push(`start:${group}:${f.native.state.currentPriority}`));
+        f.native.on('motionFinish', () => events.push(`finish:${f.native.state.currentPriority}`));
+        assert.equal(await f.manager.playMotion(f.group), true);
+        const timer = f.manager.motionTimer, baseline = f.manager._findRecordedParameterBaseline('ParamAngleX', f.core, { includeSavedParameters: true }).value;
+        f.native.update(f.core, 0); f.native.update(f.core, 500);
+        assert.equal(f.value('ParamAngleX'), 9 + (saved || 0), 'actual parsed motion and saved offset must drive the Core parameter');
+        for (let time = 1000; time <= 3000 && (!events.includes('finish:2') || (idle && !events.some(event => event.startsWith('start:Idle')))); time += 100) {
+            f.native.update(f.core, time); await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.ok(events.includes('finish:2'), 'real SDK emits completion before its priority is reset');
+        assert.equal(events.includes('start:Idle:1'), idle, 'real SDK idle admission follows registered resources');
+        assert.equal(f.value('ParamAngleX'), saved === null ? baseline : saved, 'natural retirement and the saved layer recover the accepted parameter');
+        assert.equal(f.manager._activeActionMotionOperation, null);
+        assert.equal(f.manager.motionTimer, null);
+        assert.equal(timer.id.cancelled, true);
+        assert.equal(f.manager._avatarOperations.size, 0);
+    } finally { f.release(); }
+});
+}
+
 test('old release preserves a newer direct SDK editor/preview action', async () => {
     const f = await fixture();
     try {

@@ -313,10 +313,15 @@ function live2dGetMotionOwners(motionManager) {
         state.reset = function(...args) {
             const pending = owners.reservation?.operation, active = owners.active?.operation;
             owners.reservation = null; owners.active = null;
-            const result = reset.apply(this, args);
-            if (pending) pending.abort();
-            if (active) { live2dRetireMotionMetadata(active, true); active.dispose(); }
-            return result;
+            try {
+                return reset.apply(this, args);
+            } finally {
+                if (pending) pending.abort();
+                if (active) {
+                    try { live2dRetireMotionMetadata(active, true); }
+                    finally { active.dispose(); }
+                }
+            }
         };
         motionManager.on('motionStart', () => {
             if (owners.active?.operation) {
@@ -326,11 +331,15 @@ function live2dGetMotionOwners(motionManager) {
             if (owners.active?.operation) owners.active.operation.manager._activeActionMotionOperation = owners.active.operation;
         });
         motionManager.on('motionFinish', () => {
-            if (Number(state.currentPriority || 0) > LIVE2D_MOTION_PRIORITY.IDLE) return;
-            if (owners.active?.operation) {
-                live2dRetireMotionMetadata(owners.active.operation, true); owners.active.operation.dispose();
-            }
+            // Bundled SDK emits finish before state.complete() resets priority.
+            // The active receipt identifies the finished action; an Idle or
+            // external preview has no owned operation to retire here.
+            const active = owners.active?.operation;
             owners.active = null;
+            if (active) {
+                try { live2dRetireMotionMetadata(active, true); }
+                finally { active.dispose(); }
+            }
         });
     }
     return owners;
