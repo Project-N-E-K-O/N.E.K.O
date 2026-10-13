@@ -3526,10 +3526,12 @@
         // 已发出的普通句：request_id → 乐观气泡 id（只留最近几条）。后端事后拒了这句（串门期间未授权等）时据此收尾
         var sentTextSubmissions = [];
         var lastTurnRequestId = '';   // 最近一句开了普通回复轮（置了 pendingTextTurnSubmitAt）的请求
+        var lastSessionStartRequestId = '';   // 最近一次顺带开文本会话的那句（当前会话归它）
 
         function rememberSentTextSubmission(requestId, messageId, opensTurn, startedSession) {
             if (!requestId) return;
             if (opensTurn) lastTurnRequestId = String(requestId);
+            if (startedSession === true) lastSessionStartRequestId = String(requestId);
             sentTextSubmissions.push({ requestId: String(requestId), messageId: messageId || '', startedSession: startedSession === true });
             if (sentTextSubmissions.length > 20) sentTextSubmissions.shift();
         }
@@ -3545,7 +3547,9 @@
                 }
             }
             if (!record) return false;
-            if (record.startedSession && S.isTextSessionActive === true) {
+            // 只在当前会话仍是这句开的时候撤：之后别的句子若已开了真会话，不能把它的标记一起撤掉
+            if (record.startedSession && lastSessionStartRequestId === id && S.isTextSessionActive === true) {
+                lastSessionStartRequestId = '';
                 // 这句顺带发了开会话请求：串门在飞时那只是 ack、并没起普通会话（被拒正说明串门接着输入）。
                 // 撤回标记，串门结束后下一句普通聊天照常显式开会话
                 S.isTextSessionActive = false;

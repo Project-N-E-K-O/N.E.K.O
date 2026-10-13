@@ -435,5 +435,7 @@ def test_refused_ordinary_submission_releases_an_ack_only_text_session():
     assert "startedTextSessionHere = true;" in buttons
     assert "!isVisitLine, startedTextSessionHere);" in buttons
     body = _function_body(buttons, "markTextSubmissionRefused")
-    assert "if (record.startedSession && S.isTextSessionActive === true) {" in body
+    assert "if (record.startedSession && lastSessionStartRequestId === id && S.isTextSessionActive === true) {" in body
+    # 当前会话已归后来的那句时不撤
+    assert "if (startedSession === true) lastSessionStartRequestId = String(requestId);" in buttons
     assert "S.isTextSessionActive = false;" in body
