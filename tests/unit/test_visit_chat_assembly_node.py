@@ -728,7 +728,7 @@ const report = {};
       speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } });
     h.win.dispatchEvent(new CustomEventLike('neko-visit-first-frame', { detail: { dataURL: 'data:image/png;base64,OLD' } }));
     await h.chat.afterBind(h.socket, '咪咪');
-    report.snapshot_switch_line = h.chat._test.state().lines.get('L1').text;
+    report.snapshot_switch_line = [...h.chat._test.state().lines.values()].find((e) => e.lineId === 'L1' && e.visitId === VID2).text;
     report.snapshot_switch_avatar = h.win.__lastAvatar || '';
   }
   // ── 重连轮询发现已结束：照样留下该场的结束消息（查看详情 / 导出 / 举报） ──
@@ -864,7 +864,7 @@ const report = {};
     h.state('ended');
     h.frame({ type: 'visit_invite', visit_id: VID2, peer_name: '小黑', peer_short_id: 'ZXCVBN', cross_region: false, expires_at: 1700000000 + 60 });
     h.frame({ type: 'visit_line_delta', visit_id: VID2, line_id: 'L1', i: 0, text: '新一场的片', speaker: sp });
-    report.invite_new_visit_line = h.chat._test.state().lines.get('L1').text;
+    report.invite_new_visit_line = [...h.chat._test.state().lines.values()].find((e) => e.lineId === 'L1' && e.visitId === VID2).text;
   }
   // ── debrief 块被消息上限裁掉：新连接重放时重新上屏 ──
   {
@@ -1119,7 +1119,7 @@ const report = {};
     report.rejected_before = !!h.lineMessage('g:9');
     h.frame({ type: 'visit_line_abort', visit_id: VID, line_id: 'g:9', i_done: 0, reason: 'rejected' });
     report.rejected_after = !!h.lineMessage('g:9');
-    report.rejected_entry = h.chat._test.state().lines.has('g:9');
+    report.rejected_entry = [...h.chat._test.state().lines.values()].some((e) => e.lineId === 'g:9');
     h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'g:8', i: 0, lp: 8, text: '被打断的', speaker: peerCat });
     h.frame({ type: 'visit_line_abort', visit_id: VID, line_id: 'g:8', i_done: 1, reason: 'interrupted' });
     report.interrupted_kept = h.lineText('g:8');
@@ -1255,6 +1255,17 @@ const report = {};
     const before = h.dialogs().length;
     h.frame({ type: 'visit_invite', visit_id: VID, peer_name: '小白', peer_short_id: 'QWERTY', cross_region: false, expires_at: 1700000000 + 60 });
     report.ended_invite_ignored = h.chat._test.state().visit.visitId === VID2 && h.dialogs().length === before;
+  }
+  // ── 上一场的 h:1 已收口留着；漏了新一场的阶段帧、先来了它的 h:1：不撞、各自一条 ──
+  {
+    const h = createHarness();
+    const sp = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.state('started');
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 1, text: '上一场', final: true, truncated: false, speaker: sp });
+    h.state('ended');
+    h.frame({ type: 'visit_line_delta', visit_id: VID2, line_id: 'g:1', i: 0, lp: 1, text: '新一场的片', speaker: sp });
+    const texts = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0 && m.id.endsWith(':g:1')).map((m) => m.blocks[0].text);
+    report.keyed_lines = texts;
   }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
@@ -1677,3 +1688,7 @@ def test_replayed_invite_switches_from_a_retained_visit(report):
     assert report["replay_invite_old_ended2"] is True
     assert report["replay_invite_started"] == "active"
     assert report["ended_invite_ignored"] is True
+
+
+def test_line_assembly_is_keyed_by_visit(report):
+    assert report["keyed_lines"] == ["上一场", "新一场的片"]

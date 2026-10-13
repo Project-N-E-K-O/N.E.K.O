@@ -646,21 +646,28 @@
 
     // ── 台词拼接 ────────────────────────────────────────────────────
 
-    var lines = new Map();   // line_id → {clauses[], text, final, truncated, messageId, speaker, addressee, stallTimer}
+    // (visit_id, line_id) → {clauses[], text, final, truncated, messageId, speaker, addressee, stallTimer}
+    // line_id 每场重新计数：按场次分开存，漏了阶段帧时新一场的 h:1 不会撞上上一场留着的 h:1
+    var lines = new Map();
+
+    function lineKey(visitId, lineId) {
+        return String(visitId || '') + '|' + String(lineId || '');
+    }
 
     function lineEntry(frame) {
         var id = String(frame.line_id || '');
         if (!id) return null;
-        var entry = lines.get(id);
+        var entryVisit = String(frame.visit_id || visit.visitId || '');
+        var key = lineKey(entryVisit, id);
+        var entry = lines.get(key);
         if (!entry) {
-            var entryVisit = String(frame.visit_id || visit.visitId || '');
             entry = {
                 // line_id 每场重新计数（h:1、g:1…）：气泡 id 带上场次，下一场的同号台词不会改到上一场的气泡
                 lineId: id, visitId: entryVisit, clauses: [], text: '', final: false,
                 truncated: false, messageId: 'visit-line-' + entryVisit + ':' + id, speaker: frame.speaker || {}, addressee: frame.addressee || {},
-                stallTimer: 0, rendered: false
+                stallTimer: 0, rendered: false, key: key
             };
-            lines.set(id, entry);
+            lines.set(key, entry);
             while (lines.size > 512) {
                 var oldest = lines.keys().next().value;
                 var old = lines.get(oldest);
@@ -820,7 +827,7 @@
             // 后端整行作废（协议校验没过）：不会再有可靠终稿，已开出的半截气泡撤掉
             var host = getHost();
             if (entry.rendered && host && typeof host.removeMessage === 'function') host.removeMessage(entry.messageId);
-            lines.delete(entry.lineId);
+            lines.delete(entry.key);
             return;
         }
         var done = Number(frame.i_done);
@@ -2165,7 +2172,7 @@
         // 重载前的台词按 visit_line 同形重放（已有的 line_id 不重复上屏）
         (Array.isArray(state.transcript) ? state.transcript : []).forEach(function (frame) {
             if (!frame || frame.type !== 'visit_line') return;
-            var existing = lines.get(String(frame.line_id || ''));
+            var existing = lines.get(lineKey(frame.visit_id || visit.visitId, frame.line_id));
             // 已收口的行不动；只拼了分片（final 断线时丢了）或本地截断的行，用快照里的可靠终稿覆盖
             if (existing && existing.final) return;
             onLineFinal(frame, true);

@@ -213,6 +213,30 @@ async def test_failed_takeover_release_keeps_the_page_in_visit_mode(tmp_path, mo
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_twice_failed_release_keeps_the_token_for_teardown(tmp_path, monkeypatch):
+    # 收尾开头与「已结束」前两次释放都抛错：令牌留着，teardown 还会再试（管理器仍持有接管）
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    try:
+        real_release = host.host.release_takeover
+        calls = {"n": 0}
+
+        def flaky_release(token):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise RuntimeError("release failed")
+            return real_release(token)
+
+        monkeypatch.setattr(host.host, "release_takeover", flaky_release)
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        assert calls["n"] >= 3                                          # teardown 拿着令牌再试了一次
+        assert host.host.released == host.host.takeovers
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_parked_callbacks_are_handed_back_once_both_segments_ended(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     hh = host.host

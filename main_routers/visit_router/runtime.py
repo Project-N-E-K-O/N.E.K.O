@@ -1915,13 +1915,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await self._retire_display(_DISPLAY_FLUSH_S)
         if self.takeover_token is not None:
             # 收尾开头那次释放抛错过：「已结束」推出去之前再试一次。页面一看到它就交还输入框，输入不能还归串门、
-            # 一直拒到 teardown；与 teardown 同一处理——再失败也不再持有
+            # 一直拒到 teardown
             try:
                 self.host.release_takeover(self.takeover_token)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 令牌留着：teardown 还会再试（管理器仍持有接管时不能丢掉唯一的令牌）
                 logger.warning("visit %s: takeover release failed again before ended: %s",
                                self.visit_id[:6], type(exc).__name__)
-            self.takeover_token = None
+            else:
+                self.takeover_token = None
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
         if self.status_code is not None:
             await self.status(self.status_code, reason=self.status_details.get("reason"),
