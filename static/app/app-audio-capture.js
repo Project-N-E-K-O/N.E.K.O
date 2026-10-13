@@ -4528,7 +4528,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             // 缓存面板里的来源列表是缓存那一刻的快照，期间关掉的窗口还会列
             // 在里面；点它会走「来源不存在」的回退。复用前只取一次来源元数
-            // 据（不带缩略图）核对 id，集合不变才复用，否则重建。
+            // 据（不带缩略图）核对 id 和标题，完全一致才复用，否则重建。
             async function areCachedScreenSourcesCurrent(panel) {
                 var options = panel.querySelectorAll('.screen-source-option');
                 // 延迟枚举态（只有按钮）没有列表，不会过期。
@@ -4551,17 +4551,23 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         'getSources',
                         [{ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } }]
                     );
-                    var currentIds = (sources || []).map(function (source) {
-                        return String((source && source.id) || '');
-                    }).filter(function (id) {
-                        return id.indexOf('screen:') === 0 || id.indexOf('window:') === 0;
-                    }).sort();
-                    var cachedIds = Array.prototype.map.call(options, function (option) {
-                        return String(option.dataset.sourceId || '');
-                    }).sort();
-                    if (currentIds.length !== cachedIds.length) return false;
-                    for (var i = 0; i < currentIds.length; i += 1) {
-                        if (currentIds[i] !== cachedIds[i]) return false;
+                    // 比对 id 和标题：窗口改了标题，或者关掉的窗口 id 被新窗口
+                    // 复用时，id 集合可能不变，但卡片上的名称已经对不上了。
+                    var currentNames = {};
+                    var currentCount = 0;
+                    (sources || []).forEach(function (source) {
+                        var id = String((source && source.id) || '');
+                        if (id.indexOf('screen:') !== 0 && id.indexOf('window:') !== 0) return;
+                        currentNames[id] = String(source.name || '');
+                        currentCount += 1;
+                    });
+                    if (currentCount !== options.length) return false;
+                    for (var i = 0; i < options.length; i += 1) {
+                        var optionId = String(options[i].dataset.sourceId || '');
+                        if (!Object.prototype.hasOwnProperty.call(currentNames, optionId)
+                            || currentNames[optionId] !== String(options[i].dataset.sourceName || '')) {
+                            return false;
+                        }
                     }
                     return true;
                 } catch (error) {

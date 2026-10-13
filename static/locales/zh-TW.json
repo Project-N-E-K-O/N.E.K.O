@@ -3097,6 +3097,7 @@
             "current": "目前來源：{{source}}",
             "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享",
             "sourceClosed": "所選來源已不存在（窗口可能已關閉），請重新選擇",
+            "sourceRenamed": "這個窗口的標題已變為「{{source}}」，確認是它後請再點一次",
             "captureFailed": "螢幕擷取已停止，請檢查系統權限或重新選擇來源",
             "clickToChoose": "點擊選擇螢幕來源",
             "chooseAgain": "重新選擇螢幕來源"

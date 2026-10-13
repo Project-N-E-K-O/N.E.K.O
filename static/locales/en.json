@@ -3097,6 +3097,7 @@
             "current": "Selected: {{source}}",
             "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
             "sourceClosed": "The selected source is no longer available (the window may have been closed). Please choose again",
+            "sourceRenamed": "This window's title changed to \"{{source}}\". Click it again to confirm",
             "captureFailed": "Screen capture stopped. Check system permissions or select the source again",
             "clickToChoose": "Click to choose a screen source",
             "chooseAgain": "Choose a different screen source"

@@ -280,6 +280,7 @@ def install_voice_popover_harness(
         source.className = 'screen-source-option';
         source.textContent = 'test-screen';
         source.dataset.sourceId = 'screen:0:0';
+        source.dataset.sourceName = 'test-screen';
         // 生产渲染的第二阶段先放 loading 占位再补缩略图；__screenThumbnailsComplete
         // 为 false 时停在 loading，模拟面板在第二阶段期间被拆走（填充放弃）。
         const thumbnail = document.createElement('div');

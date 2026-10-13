@@ -526,6 +526,12 @@ def test_clicking_a_closed_window_asks_to_choose_again_instead_of_selecting(
                 noWindowsHintShown: !document.querySelector(
                     '.screen-source-no-window-matches'
                 ).hidden,
+                windowGroupShown: document.querySelector(
+                    '.screen-source-window-label'
+                ).style.display !== 'none',
+                screenGroupShown: document.querySelector(
+                    '.screen-source-screen-label'
+                ).style.display !== 'none',
             };
         }"""
     )
@@ -538,7 +544,11 @@ def test_clicking_a_closed_window_asks_to_choose_again_instead_of_selecting(
         "toasts": ["所选来源已不存在（窗口可能已关闭），请重新选择"],
         "closedOptionLeft": False,
         "screenOptionLeft": True,
-        "noWindowsHintShown": True,
+        # The emptied window group is hidden as a whole, not left as an empty
+        # grid with a "no matches" hint for an empty filter.
+        "noWindowsHintShown": False,
+        "windowGroupShown": False,
+        "screenGroupShown": True,
     }
 
 
@@ -632,7 +642,7 @@ def test_later_click_supersedes_a_pending_availability_check(page: Page) -> None
 
 
 @pytest.mark.frontend
-def test_click_selection_uses_the_title_seen_by_the_availability_check(
+def test_retitled_source_needs_a_second_click_on_the_refreshed_card(
     page: Page,
 ) -> None:
     _install_screen_source_harness(page)
@@ -641,22 +651,111 @@ def test_click_selection_uses_the_title_seen_by_the_availability_check(
             document.getElementById('live2d-popup-screen')
         )"""
     ) is True
-    remembered = page.evaluate(
+    result = page.evaluate(
         """async () => {
+            window.__toasts = [];
+            window.showStatusToast = (message) => window.__toasts.push(message);
             window.setScreenSourceTitleMatchEnabled(true);
-            // The window retitled itself after the list was rendered.
+            // The window retitled itself after the list was rendered — or the
+            // id now belongs to a different window.
             window.__metadataSources = window.__metadataSources.map((source) => (
                 source.id === 'window:2' ? { ...source, name: 'Editor - draft' } : source
             ));
+            const option = document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            );
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const afterFirst = {
+                selectedId: window.appState.selectedScreenSourceId,
+                cardName: option.dataset.sourceName,
+                cardTitle: option.title,
+                toasts: [...window.__toasts],
+            };
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return {
+                afterFirst,
+                selectedId: window.appState.selectedScreenSourceId,
+                remembered: window.__storedValues.get('selectedScreenWindowTitle'),
+            };
+        }"""
+    )
+    # The first click only shows the current title; sharing a window the user
+    # did not see is never committed from a stale card.
+    assert result["afterFirst"] == {
+        "selectedId": None,
+        "cardName": "Editor - draft",
+        "cardTitle": "Editor - draft",
+        "toasts": ["app.screenSource.sourceRenamed"],
+    }
+    assert result["selectedId"] == "window:2"
+    assert result["remembered"] == "Editor - draft"
+
+
+@pytest.mark.frontend
+def test_refreshed_card_title_feeds_a_later_remember_toggle(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    remembered = page.evaluate(
+        """async () => {
+            window.__metadataSources = window.__metadataSources.map((source) => (
+                source.id === 'window:2' ? { ...source, name: 'Editor - draft' } : source
+            ));
+            const option = document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            );
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            option.click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // Enabling "remember window" afterwards reads the title from the card.
+            window.setScreenSourceTitleMatchEnabled(true);
+            return window.__storedValues.get('selectedScreenWindowTitle');
+        }"""
+    )
+    assert remembered == "Editor - draft"
+
+
+@pytest.mark.frontend
+def test_background_clear_does_not_drop_a_pending_click(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    selected = page.evaluate(
+        """async () => {
+            document.querySelector(
+                '.screen-source-option[data-source-id="screen:1"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const original = window.__desktopProvider.getSources;
+            let release = null;
+            window.__desktopProvider.getSources = () => new Promise((resolve) => {
+                release = () => resolve(window.__metadataSources);
+            });
             document.querySelector(
                 '.screen-source-option[data-source-id="window:2"]'
             ).click();
             await new Promise((resolve) => setTimeout(resolve, 20));
-            return window.__storedValues.get('selectedScreenWindowTitle');
+            // Another window cleared the selection: not a competing choice.
+            window.__storedValues.delete('selectedScreenSourceId');
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'selectedScreenSourceId', newValue: null,
+            }));
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__desktopProvider.getSources = original;
+            return window.appState.selectedScreenSourceId;
         }"""
     )
-    # Remembering the stale title would break later title-based recovery.
-    assert remembered == "Editor - draft"
+    assert selected == "window:2"
 
 
 @pytest.mark.frontend

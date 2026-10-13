@@ -3149,10 +3149,23 @@
             targetPopup.querySelectorAll('.screen-source-option').forEach(function (option) {
                 if (!currentIds.has(option.dataset.sourceId)) option.remove();
             });
-            // 按标题筛选重算一次可见窗口数：窗口全被移除时显示「没有匹配的窗口」，
-            // 不留一块空网格。
+            // 分组被移空就连标题一起隐藏，不留一块空网格。
+            targetPopup.querySelectorAll('.screen-source-group-label').forEach(function (groupLabel) {
+                var grid = groupLabel.nextElementSibling;
+                if (grid && !grid.querySelector('.screen-source-option')) {
+                    groupLabel.style.display = 'none';
+                    grid.style.display = 'none';
+                }
+            });
+            // 还有窗口时按当前筛选重算可见数；窗口全没了就把筛选框也收起。
             var titleFilter = targetPopup.querySelector('.screen-source-title-filter');
-            if (titleFilter) titleFilter.dispatchEvent(new Event('input'));
+            if (titleFilter) {
+                if (targetPopup.querySelector('.screen-source-option[data-source-id^="window:"]')) {
+                    titleFilter.dispatchEvent(new Event('input'));
+                } else if (titleFilter.parentElement) {
+                    titleFilter.parentElement.style.display = 'none';
+                }
+            }
         }
 
         function appendDeferredLoadButton(targetPopup, deferredOptions, buttonText) {
@@ -3430,14 +3443,18 @@
                     var clickToken = {};
                     latestScreenSourceClickToken = clickToken;
                     var clickSelectionGeneration = screenSourceSelectionGeneration;
+                    var clickSelectedSourceId = S.selectedScreenSourceId;
                     // 列表是枚举那一刻的快照：期间关掉的窗口还列在这里。选中
                     // 一个已不存在的来源，开始分享时会退回到分享整块屏幕，所
                     // 以点下时先确认它还在，不在就提示重新选，不改动当前选择。
                     var availability = await checkListedScreenSourceAvailable(source.id);
-                    // 确认期间又点了别的项（任一列表），或者选择已经变了（例如
-                    // 另一个窗口选了别的来源）：这次点击作废，不能覆盖更新的选择。
-                    if (latestScreenSourceClickToken !== clickToken
-                        || clickSelectionGeneration !== screenSourceSelectionGeneration) {
+                    // 确认期间又点了别的项（任一列表），或者选择被改成了别的来源
+                    // （例如另一个窗口选了别的）：这次点击作废，不能覆盖更新的
+                    // 选择。后台只是清空选择时不算，用户这次点击照常生效。
+                    if (latestScreenSourceClickToken !== clickToken) return;
+                    if (clickSelectionGeneration !== screenSourceSelectionGeneration
+                        && S.selectedScreenSourceId
+                        && S.selectedScreenSourceId !== clickSelectedSourceId) {
                         return;
                     }
                     if (!availability.available) {
@@ -3451,20 +3468,36 @@
                         );
                         return;
                     }
-                    // 窗口标题可能在列表渲染后变了：用确认时拿到的最新名称，
-                    // 记住窗口时存下的才是当前标题。
+                    // 标题和列表里的不一样：可能只是窗口改了标题，也可能这个 id
+                    // 已经换成了另一个窗口。先把卡片刷新成当前标题、请用户确认
+                    // 后再点一次，不直接选中，免得分享出用户没看到的窗口。卡片
+                    // 上记的名称一并更新，之后打开「记住窗口」读到的是当前标题。
                     var current = availability.source;
-                    var selectedName = current && typeof current.name === 'string'
-                        ? current.name : source.name;
-                    var selectedDisplayName = current && current.name !== source.name
-                        && source.id.startsWith('window:')
-                        ? getScreenSourceDisplayName(current, screenIndex)
-                        : displayName;
+                    if (current && current.name && current.name !== source.name) {
+                        source = current;
+                        displayName = source.id.startsWith('window:')
+                            ? getScreenSourceDisplayName(current, screenIndex)
+                            : displayName;
+                        option.dataset.sourceName = current.name;
+                        option.dataset.sourceSearchText = normalizeScreenSourceTitle(
+                            current.name || displayName
+                        );
+                        label.textContent = displayName || current.name;
+                        label.title = current.name;
+                        option.title = current.name;
+                        window.showStatusToast(
+                            window.t
+                                ? window.t('app.screenSource.sourceRenamed', { source: current.name })
+                                : '这个窗口的标题已变为「' + current.name + '」，确认是它后请再点一次',
+                            4000
+                        );
+                        return;
+                    }
                     // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
                     await selectScreenSource(
                         source.id,
-                        selectedName,
-                        selectedDisplayName,
+                        source.name,
+                        displayName,
                         isPortalPick && source.id.startsWith('screen:') ? null : screenIndex
                     );
                 });
