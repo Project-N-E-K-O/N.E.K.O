@@ -3042,8 +3042,12 @@
             var name = names.get(option.dataset.sourceId);
             if (name && name !== option.dataset.sourceName) {
                 applyScreenSourceOptionName(option, name);
-                // 缩略图还是旧的（id 可能已换成另一个窗口），点选时先请用户确认。
-                option._nekoRenameNeedsConfirm = true;
+                // 窗口卡片的缩略图还是旧的（id 可能已换成另一个窗口），点选时
+                // 先请用户确认；之前确认过的也要重新确认。
+                if (String(option.dataset.sourceId || '').startsWith('window:')) {
+                    option._nekoRenameNeedsConfirm = true;
+                    option._nekoRenameAcknowledged = false;
+                }
                 changed = true;
             }
         });
@@ -3550,7 +3554,9 @@
                     var current = availability.source;
                     var renamed = !!(current && current.name
                         && String(current.name) !== (option.dataset.sourceName || ''));
-                    var needsConfirm = renamed || option._nekoRenameNeedsConfirm === true;
+                    // 只对窗口确认：显示器卡片显示的是序号，名称变了也不会误导。
+                    var needsConfirm = source.id.startsWith('window:')
+                        && (renamed || option._nekoRenameNeedsConfirm === true);
                     if (needsConfirm && !option._nekoRenameAcknowledged) {
                         // 旧列表的卡片已不在屏幕上，没法让用户在它上面确认。
                         if (!renderIsCurrent) return;

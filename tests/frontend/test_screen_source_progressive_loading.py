@@ -808,6 +808,50 @@ def test_confirmed_click_still_selects_after_the_list_is_reopened(page: Page) ->
 
 
 @pytest.mark.frontend
+def test_rename_confirmation_resets_and_skips_screens(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const option = popup.querySelector('.screen-source-option[data-source-id="window:2"]');
+            const rename = (id, name) => {
+                window.__metadataSources = window.__metadataSources.map((source) => (
+                    source.id === id ? { ...source, name } : source
+                ));
+            };
+            const click = async (target) => {
+                target.click();
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                return window.appState.selectedScreenSourceId;
+            };
+            // Confirm once (first click prompts), leaving the card acknowledged…
+            rename('window:2', 'Browser');
+            const firstClick = await click(option);
+            // …then the reused card is renamed in place again before the next click.
+            rename('window:2', 'Mail');
+            window.refreshScreenSourceOptionNames(popup, window.__metadataSources);
+            const afterInPlaceRename = await click(option);
+            // A monitor's name change is not a window retitle: no prompt.
+            rename('screen:1', 'Built-in Display');
+            const screenClick = await click(
+                popup.querySelector('.screen-source-option[data-source-id="screen:1"]')
+            );
+            return { firstClick, afterInPlaceRename, screenClick };
+        }"""
+    )
+    assert result == {
+        "firstClick": None,
+        "afterInPlaceRename": None,
+        "screenClick": "screen:1",
+    }
+
+
+@pytest.mark.frontend
 def test_refresh_option_names_updates_cards_and_filter_in_place(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(
