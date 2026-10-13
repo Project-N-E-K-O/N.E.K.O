@@ -1616,16 +1616,21 @@
     function onInvite(frame) {
         var visitId = String(frame.visit_id || '');
         if (!visitId || !isUiWindow()) return;
-        if (!visit.visitId || visit.visitId === visitId || !inVisit()) {
-            if (visit.visitId !== visitId) startNewVisit(visitId);
-            visit.side = 'host';
-            visit.phase = 'awaiting_accept';
-            if (frame.peer_name) visit.peerName = String(frame.peer_name);
-            if (frame.peer_short_id) visit.peerShortId = String(frame.peer_short_id);
-            if (frame.peer_human_label) visit.peerHumanLabel = String(frame.peer_human_label);
-            visit.crossRegion = frame.cross_region === true;
-            render();
+        // 已结束的那一场的邀请（迟到 / 重放）：不复活、不弹框
+        if (endedVisitIds.indexOf(visitId) !== -1) return;
+        // visit_invite 是这一场的权威起点（bind 重放只补邀请、不补之前的阶段帧）：
+        // 页面还挂着旧一场时先给它收尾，再进新一场，之后 started 等帧才对得上
+        if (visit.visitId !== visitId) {
+            if (visit.visitId && inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+            startNewVisit(visitId);
         }
+        visit.side = 'host';
+        visit.phase = 'awaiting_accept';
+        if (frame.peer_name) visit.peerName = String(frame.peer_name);
+        if (frame.peer_short_id) visit.peerShortId = String(frame.peer_short_id);
+        if (frame.peer_human_label) visit.peerHumanLabel = String(frame.peer_human_label);
+        visit.crossRegion = frame.cross_region === true;
+        render();
         // 重连后 bind 会重推同一份邀请：已经弹着就不再弹
         if (inviteDialog && inviteDialog.visitId === visitId) return;
         closeInviteDialog();

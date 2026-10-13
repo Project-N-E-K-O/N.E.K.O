@@ -1242,6 +1242,20 @@ const report = {};
     report.replay_invite_phase = h.chat._test.state().visit.phase;
     report.replay_invite_old_ended = h.messages.some((m) => m.id === 'visit-ended-' + VID);
   }
+  // ── 旧一场还挂着、bind 重放来了新一场的邀请：换到新一场（旧一场先收尾），之后 started 对得上 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    h.frame({ type: 'visit_invite', visit_id: VID2, peer_name: '小黑', peer_short_id: 'ZXCVBN', cross_region: false, expires_at: 1700000000 + 60 });
+    report.replay_invite_visit = h.chat._test.state().visit.visitId === VID2;
+    report.replay_invite_old_ended2 = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    h.frame({ type: 'visit_state_change', action: 'started', visit_id: VID2, side: 'host', ts: 5 });
+    report.replay_invite_started = h.chat._test.state().visit.phase;
+    // 已结束那一场的邀请迟到：不复活
+    const before = h.dialogs().length;
+    h.frame({ type: 'visit_invite', visit_id: VID, peer_name: '小白', peer_short_id: 'QWERTY', cross_region: false, expires_at: 1700000000 + 60 });
+    report.ended_invite_ignored = h.chat._test.state().visit.visitId === VID2 && h.dialogs().length === before;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1656,3 +1670,10 @@ def test_replayed_invite_ready_switches_to_the_new_visit(report):
     assert report["replay_invite_switched"] is True
     assert report["replay_invite_phase"] == "invite_ready"
     assert report["replay_invite_old_ended"] is True
+
+
+def test_replayed_invite_switches_from_a_retained_visit(report):
+    assert report["replay_invite_visit"] is True
+    assert report["replay_invite_old_ended2"] is True
+    assert report["replay_invite_started"] == "active"
+    assert report["ended_invite_ignored"] is True
