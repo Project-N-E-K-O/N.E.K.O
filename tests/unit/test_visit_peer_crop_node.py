@@ -1153,3 +1153,26 @@ def test_normal_transport_closure_ends_the_visit_ui():
         files=BRIDGE_FILES,
     )
     assert out == {"away": False, "frame": False, "phase": None, "ended": True, "rebuilt": False}
+
+
+def test_normal_closure_voids_a_pending_reload_snapshot():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        await open(h, 'guest');                                 // 实时通道先建好了 iframe
+        change(h, 'started');
+        let respond;
+        h.ctx.fetch = () => new Promise((r) => { respond = r; });
+        h.bridge.recoverAfterReload('Neko');                    // 重载恢复的快照请求还在路上
+        await settle();
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 1000 } });
+        respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side: 'guest', phase: 'active' }) });
+        await settle();
+        await settle();
+        const rebuilt = !!h.ctx.document.getElementById('visit-frame');
+        await advance(15100);
+        return { rebuilt };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"rebuilt": False}

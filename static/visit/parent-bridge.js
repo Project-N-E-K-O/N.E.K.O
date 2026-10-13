@@ -574,6 +574,7 @@
         if (normalEnd) {
           // 正常收线就是这一场结束了。显示 WS 断着时 ended 事件可能丢、之后也补发不了（后端已经结束这一场）：
           // 和收到 ended 一样处理，离家样式已经在上面清掉，迟到的 ended / 辅助事件按已结束场次丢掉
+          state.liveGen += 1;   // 和 ended 一样：在途的重载恢复快照作废，不再给已结束的场次补建 iframe
           state.endedVisitId = closedId;
           state.closedVisitId = null;
           state.phase = null;
