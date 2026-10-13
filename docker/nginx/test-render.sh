@@ -47,7 +47,10 @@ render_mode() {
         fi
         # shellcheck source=render.sh
         . "$SCRIPT_DIR/render.sh"
-        render_nginx_configuration "/home/neko/ssl/N.E.K.O.crt" "/home/neko/ssl/N.E.K.O.key"
+        # 证书路径放在 prefix 内：T5 的 nginx -t 会真的去读证书文件，
+        # 用 /home/neko/... 会在测试机上找不到文件而误报（CI 上就踩到了）。
+        # 快照比较时 prefix 会被归一化成 @NGINX_PREFIX@，不影响 T3/T4。
+        render_nginx_configuration "$prefix/ssl/N.E.K.O.crt" "$prefix/ssl/N.E.K.O.key"
     ) >/dev/null
 }
 
@@ -216,9 +219,17 @@ fi
 
 echo
 echo "== T5 nginx -t（可选） =="
-if command -v nginx >/dev/null 2>&1 && { [ "$(id -u)" = "0" ] || [ -w /var/log/nginx ]; }; then
+if command -v nginx >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 \
+   && { [ "$(id -u)" = "0" ] || [ -w /var/log/nginx ]; }; then
     for mode in http tls; do
         t5="$WORK/t5-$mode"
+        mkdir -p "$t5/ssl"
+        # nginx -t 会真的去加载证书，测试里造一张一次性自签证书给它
+        if ! openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=localhost" \
+                -keyout "$t5/ssl/N.E.K.O.key" -out "$t5/ssl/N.E.K.O.crt" >/dev/null 2>&1; then
+            info "跳过 T5：无法生成测试证书（openssl 不可用？）"
+            break
+        fi
         render_mode "$mode" "$t5" >/dev/null
         if nginx -t -c "$t5/etc/nginx/nginx.conf" -p "$t5" 2>&1 | sed 's/^/     /'; then
             pass "nginx 接受 $mode 模式的渲染结果"
@@ -227,7 +238,7 @@ if command -v nginx >/dev/null 2>&1 && { [ "$(id -u)" = "0" ] || [ -w /var/log/n
         fi
     done
 else
-    info "跳过：未找到 nginx，或 /var/log/nginx 不可写（CI 里用 root + nginx 包运行）"
+    info "跳过：未找到 nginx / openssl，或 /var/log/nginx 不可写（CI 里用 root + nginx 包运行）"
 fi
 
 echo
