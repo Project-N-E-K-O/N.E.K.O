@@ -808,6 +808,31 @@ def test_confirmed_click_still_selects_after_the_list_is_reopened(page: Page) ->
 
 
 @pytest.mark.frontend
+def test_in_place_rename_refreshes_the_selected_source_label(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    labels = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const before = window.getSelectedScreenSourceLabel();
+            window.__metadataSources = window.__metadataSources.map((source) => (
+                source.id === 'window:2' ? { ...source, name: 'Editor - draft' } : source
+            ));
+            window.refreshScreenSourceOptionNames(popup, window.__metadataSources);
+            return { before, after: window.getSelectedScreenSourceLabel() };
+        }"""
+    )
+    # The settings row summary follows the card, as a full render would.
+    assert labels == {"before": "Editor", "after": "Editor - draft"}
+
+
+@pytest.mark.frontend
 def test_rename_confirmation_resets_and_skips_screens(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(
@@ -2261,6 +2286,59 @@ def test_share_start_also_waits_for_a_click_made_while_it_waits(page: Page) -> N
     assert result["callsBeforeSecondCheck"] == []
     assert result["selectedId"] == "window:3"
     assert result["calls"] and set(result["calls"]) == {"window:3"}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("rejection", ["closed", "retitled"])
+def test_share_start_stops_when_the_pending_click_is_rejected(
+    page: Page, rejection: str
+) -> None:
+    # The user asked for a source that turns out closed (or retitled and
+    # needing a second click). Starting right away must not fall back to the
+    # previous source or a default monitor.
+    _install_screen_source_harness(page)
+    _install_share_session(page)
+    result = page.evaluate(
+        """async (rejection) => {
+            const share = window.__share;
+            const popup = document.getElementById('live2d-popup-screen');
+            await window.renderFloatingScreenSourceList(popup);
+            popup.querySelector('.screen-source-option[data-source-id="screen:1"]').click();
+            await share.waitFor(() => window.appState.selectedScreenSourceId === 'screen:1');
+            const original = window.__desktopProvider.getSources;
+            let release = null;
+            let held = false;
+            window.__desktopProvider.getSources = (options) => {
+                if (!held && options.thumbnailSize.width === 0) {
+                    held = true;
+                    return new Promise((resolve) => {
+                        release = () => resolve(window.__metadataSources);
+                    });
+                }
+                return original(options);
+            };
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            window.__metadataSources = rejection === 'closed'
+                ? window.__metadataSources.filter((source) => source.id !== 'window:2')
+                : window.__metadataSources.map((source) => (
+                    source.id === 'window:2' ? { ...source, name: 'Other' } : source
+                ));
+            const start = window.startScreenSharing();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            release();
+            await start;
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            window.__desktopProvider.getSources = original;
+            return {
+                calls: share.calls.slice(),
+                selectedId: window.appState.selectedScreenSourceId,
+                sharing: share.state().active,
+            };
+        }""",
+        rejection,
+    )
+    assert result == {"calls": [], "selectedId": "screen:1", "sharing": False}
 
 
 @pytest.mark.frontend

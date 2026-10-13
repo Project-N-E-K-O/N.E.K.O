@@ -4412,9 +4412,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 micHoverPointer = { x: event.clientX, y: event.clientY };
             }
 
+            // 指针离开整个窗口（或窗口失焦）后不会再有 pointermove，记录的
+            // 位置会一直停在保持区里，收起复查就永远不会放行；清掉它。
+            function forgetMicHoverPointerOnExit(event) {
+                if (event.type === 'blur' || !event.relatedTarget) micHoverPointer = null;
+            }
+
             function stopMicHoverPointerTracking() {
                 if (!micHoverPointerTracking) return;
                 document.removeEventListener('pointermove', rememberMicHoverPointer, true);
+                document.removeEventListener('mouseout', forgetMicHoverPointerOnExit, true);
+                window.removeEventListener('blur', forgetMicHoverPointerOnExit);
                 micHoverPointerTracking = false;
             }
 
@@ -4657,8 +4665,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // delayed hover-collapse behavior.
                 if (activeMicActionKey === 'screen') return;
                 if (event) rememberMicHoverPointer(event);
-                micHoverPointerTracking = true;
-                document.addEventListener('pointermove', rememberMicHoverPointer, true);
+                if (!micHoverPointerTracking) {
+                    micHoverPointerTracking = true;
+                    document.addEventListener('pointermove', rememberMicHoverPointer, true);
+                    document.addEventListener('mouseout', forgetMicHoverPointerOnExit, true);
+                    window.addEventListener('blur', forgetMicHoverPointerOnExit);
+                }
                 function attemptCollapse() {
                     micActionHoverCollapseTimer = null;
                     if (isMicActionHoverSurfaceActive()) {

@@ -1423,6 +1423,35 @@ def test_screen_source_subwindow_closes_when_parent_popup_hides(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("exit_event", ["mouseout", "blur"])
+def test_light_subpanel_closes_after_the_pointer_leaves_the_window(
+    page: Page, exit_event: str
+) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    page.locator('[data-neko-mic-main-action="device"]').hover()
+    _wait_for_panel(page, "device")
+    # Resting on the menu keeps the panel; the watch keeps polling.
+    page.locator(".mic-gain-container").hover()
+    page.wait_for_timeout(400)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    # Leaving the whole window sends no further pointermove; the last point
+    # would otherwise sit in the keep zone forever.
+    if exit_event == "mouseout":
+        page.evaluate(
+            """() => document.querySelector('.mic-gain-container').dispatchEvent(
+                new MouseEvent('mouseout', { bubbles: true, relatedTarget: null }))"""
+        )
+    else:
+        page.evaluate("() => window.dispatchEvent(new Event('blur'))")
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+
+
+@pytest.mark.frontend
 def test_screen_subwindow_is_reused_when_row_hover_returns(page: Page) -> None:
     install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(
