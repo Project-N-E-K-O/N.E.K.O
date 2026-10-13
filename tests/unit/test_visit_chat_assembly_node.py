@@ -146,7 +146,7 @@ function createHarness(opts) {
         const blocks = [{ type: 'text', text: spec.text, plain_text: true }];
         if (spec.notice) blocks.push({ type: 'status', text: spec.notice });
         const existing = messages.find((x) => x.id === spec.messageId);
-        const patch = { blocks: blocks, author: spec.author, status: 'sent' };
+        const patch = { blocks: blocks, author: spec.author, status: 'sent', avatarUrl: spec.avatarUrl || '' };
         if (typeof spec.sortKey === 'number') patch.sortKey = spec.sortKey;
         if (existing) { Object.assign(existing, patch); sortAll(); }
         else pushMessage(Object.assign({ id: spec.messageId }, patch));
@@ -784,7 +784,7 @@ const report = {};
   {
     let release;
     const gate = new Promise((r) => { release = r; });
-    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'host', enabled: true, peer: { cat_name: '小白' } } }; } };
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'host', enabled: true, peer: { cat_name: '小白' }, room: { phase: 'ending' } } }; } };
     const h = createHarness({ routes });
     const probe = h.chat.afterBind(h.socket, '咪咪');
     await h.settle();
@@ -844,7 +844,7 @@ const report = {};
   {
     let release;
     const gate = new Promise((r) => { release = r; });
-    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'guest', enabled: true } }; } };
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'guest', enabled: true, room: { phase: 'ending' } } }; } };
     const h = createHarness({ routes, noStorage: true });   // 本地存储不可用：只能靠 lastEnded 认本侧
     const probe = h.chat.afterBind(h.socket, '咪咪');
     await h.settle();
@@ -1025,6 +1025,43 @@ const report = {};
     report.snapshot_then_live_local = h.messages.some((m) => m.id === 'visit-local-s1');
     report.snapshot_then_live_lines = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0).length;
     report.snapshot_then_live_pending = h.chat._test.state().pending.length;
+  }
+  // ── 等客时取消（pending → ending → ended）：不留查看详情 / 导出 / 举报 ──
+  {
+    const h = createHarness();
+    h.state('pending');
+    h.state('ending');
+    h.state('ended');
+    report.cancel_before_start_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    const h2 = createHarness();
+    h2.state('started');
+    h2.state('ending');
+    h2.state('ended');
+    report.started_then_ended_message = h2.messages.some((m) => m.id === 'visit-ended-' + VID);
+  }
+  // ── ending 起输入框交还普通聊天：串门 ack 的会话标记在 ending 撤掉，之后起的真会话 ended 时不动 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    h.win.appState.isTextSessionActive = false;
+    h.I.submitVisitChatText({ text: '你好', requestId: 'e1' });
+    h.win.appState.isTextSessionActive = true;   // 串门 ack
+    h.state('ending');
+    report.ending_released_ack = h.win.appState.isTextSessionActive;
+    h.win.appState.isTextSessionActive = true;   // ending 之后普通聊天起了真会话
+    h.state('ended');
+    report.real_session_kept_after_ended = h.win.appState.isTextSessionActive;
+  }
+  // ── 台词先于第一帧到：第一帧到了，已上屏的对端猫娘气泡补上头像 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    const peerCat = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', lp: 1, text: '你好呀', final: true, truncated: false, speaker: peerCat });
+    report.avatar_before_first_frame = h.lineMessage('g:1').avatarUrl;
+    h.win.dispatchEvent(new CustomEventLike('neko-visit-first-frame', { detail: { dataURL: 'data:image/png;base64,AAAA', visitId: VID } }));
+    report.avatar_after_first_frame = h.lineMessage('g:1').avatarUrl;
+    report.avatar_text_kept = h.lineText('g:1');
   }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
@@ -1356,3 +1393,19 @@ def test_live_final_after_snapshot_claims_and_removes_the_local_bubble(report):
     assert report["snapshot_then_live_local"] is False
     assert report["snapshot_then_live_lines"] == 1
     assert report["snapshot_then_live_pending"] == 0
+
+
+def test_cancel_before_start_leaves_no_ended_message(report):
+    assert report["cancel_before_start_ended_message"] is False
+    assert report["started_then_ended_message"] is True
+
+
+def test_ack_session_is_released_at_ending_and_a_later_real_session_is_kept(report):
+    assert report["ending_released_ack"] is False
+    assert report["real_session_kept_after_ended"] is True
+
+
+def test_first_frame_refreshes_avatars_of_lines_already_shown(report):
+    assert report["avatar_before_first_frame"] == ""
+    assert report["avatar_after_first_frame"] == "data:image/png;base64,AAAA"
+    assert report["avatar_text_kept"] == "你好呀"

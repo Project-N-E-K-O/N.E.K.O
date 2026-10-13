@@ -381,3 +381,11 @@ def test_visit_line_render_carries_the_lamport_sort_key():
     render = _function_body(_read(ADAPTER), "renderVisitLine")
     assert "patch.sortKey = spec.sortKey" in render
     assert "sortKey: entry.rendered ? undefined : lineSortKey(entry)" in _function_body(_read(CHAT), "renderLine")
+
+
+def test_galgame_choices_are_hidden_while_the_visit_owns_the_composer():
+    # GalGame 选项是给普通聊天生成的：串门接管输入框时点了会被当成串门台词发给客人
+    props = _function_body(_read(ROOT / "static" / "app" / "app-react-chat-window" / "geometry-and-messages.js"), "buildRenderProps")
+    assert "var visitOwnsComposer = typeof I.isVisitChatActive === 'function' && I.isVisitChatActive();" in props
+    assert "galgameOptions: !visitOwnsComposer &&" in props
+    assert "galgameOptionsLoading: !visitOwnsComposer &&" in props

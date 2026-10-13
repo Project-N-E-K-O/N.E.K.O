@@ -321,8 +321,23 @@
             peerName: '', peerShortId: '', peerHumanLabel: '',
             inviteCode: '', inviteExpiresAt: 0, crossRegion: false,
             peerHidden: false, reconnecting: false, endingSoonAt: 0,
-            recipient: 'guest_cat', ownName: ''
+            recipient: 'guest_cat', ownName: '',
+            // 这一场真的开始过（见过 active / wrap_up）：结束时才留查看详情 / 导出 / 举报
+            everStarted: false
         };
+    }
+
+    function noteStarted() {
+        if (visit.phase === 'active' || visit.phase === 'wrap_up') visit.everStarted = true;
+    }
+
+    // 快照能否说明这一场开始过：active / wrap_up 算；ending 要看房间是否建过（激活时才建）或已有台词——
+    // 取消 / 激活前失败也会先到 ending
+    function snapshotStarted(state) {
+        if (state.phase === 'active' || state.phase === 'wrap_up') return true;
+        if (state.phase !== 'ending') return false;
+        return (!!state.room && typeof state.room === 'object')
+            || (Array.isArray(state.transcript) && state.transcript.length > 0);
     }
 
     function phaseOf(action) {
@@ -905,6 +920,12 @@
         case 'wrap_up':
         case 'ending':
             visit.phase = phaseOf(action);
+            noteStarted();
+            if (action === 'ending') {
+                // 后端在接管释放之后才推 ending：输入框从这里起交还普通聊天，只由串门 ack 置上的会话标记就此撤掉，
+                // 之后普通聊天起的真会话不会在 ended 时被误撤
+                releaseVisitTextSession();
+            }
             if (action !== 'pending') visit.inviteCode = '';
             if (visit.phase !== 'awaiting_accept') closeInviteDialog(visitId);
             break;
@@ -926,7 +947,7 @@
         clearReconnectPoll();
         var ended = {
             visitId: frame.visit_id, side: visit.side || frame.side, reason: frame.reason || '',
-            peerName: visit.peerName, started: visit.phase !== null && WAITING_PHASES.indexOf(visit.phase) === -1
+            peerName: visit.peerName, started: visit.everStarted === true
         };
         // 还挂着的本地气泡：这一场已经结束，等不到回显了
         pendingLocal.slice().forEach(function (entry) { markNotDelivered(entry.requestId, false); });
@@ -2011,6 +2032,13 @@
         if (detail && typeof detail.dataURL === 'string' && detail.dataURL.indexOf('data:image/') === 0
                 && (!detail.visitId || detail.visitId === visit.visitId)) {
             peerAvatarUrl = detail.dataURL;
+            // 台词可能先于第一帧到：已上屏的对端猫娘气泡补上头像（之后的行渲染时自然带上）
+            lines.forEach(function (entry) {
+                if (entry.rendered && entry.visitId === visit.visitId && entry.speaker
+                        && entry.speaker.self !== true && entry.speaker.kind === 'cat') {
+                    renderLine(entry);
+                }
+            });
         }
     });
 
@@ -2080,8 +2108,7 @@
         releaseEnabled = state.enabled === true;
         var snapshotVisit = state.active === true && typeof state.visit_id === 'string' && state.visit_id
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
-        if (state.active === true && endedVisitIds.indexOf(state.visit_id) !== -1
-                && ['active', 'wrap_up', 'ending'].indexOf(state.phase) !== -1) {
+        if (state.active === true && endedVisitIds.indexOf(state.visit_id) !== -1 && snapshotStarted(state)) {
             // ended 帧先到时本页还不知道这场开始过（没留结束消息）：按快照补上，不复活这一场
             ensureEndedMessage({ visitId: state.visit_id, side: state.side || state.role || null,
                 peerName: state.peer && state.peer.cat_name ? String(state.peer.cat_name) : '' });
@@ -2095,6 +2122,7 @@
                     visit.side = state.side || state.role || visit.side;
                     visit.phase = phaseFromState(state.phase);
                 }
+                if (snapshotStarted(state)) visit.everStarted = true;
                 visit.ownName = currentCatgirl();
                 mergeSnapshotDetails(state, true);
             }
@@ -2110,6 +2138,7 @@
             visit.side = state.side || state.role || visit.side;
             if (visit.side) rememberSide(snapshotVisit, visit.side);
             visit.phase = phaseFromState(state.phase) || visit.phase;
+            if (snapshotStarted(state)) visit.everStarted = true;
             visit.reconnecting = state.reconnecting === true;
             visit.ownName = currentCatgirl();
             mergeSnapshotDetails(state, false);

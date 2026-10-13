@@ -1570,6 +1570,8 @@
         var visitOverrides = {};
         if (visitView && visitView.composerDisabled) visitOverrides.composerDisabled = true;
         if (visitView && visitView.inputPlaceholder) visitOverrides.inputPlaceholder = visitView.inputPlaceholder;
+        // 串门接管输入框时不出 GalGame 选项：那是给普通聊天生成的，点了会被当成串门台词发给客人
+        var visitOwnsComposer = typeof I.isVisitChatActive === 'function' && I.isVisitChatActive();
         return Object.assign({}, I.ensureViewProps(), visitOverrides, {
             messages: I.state.messages.concat(catMessages),
             userName: getConfiguredUserName() || undefined,
@@ -1584,8 +1586,8 @@
             compactMinimizeCancelSeq: I.compactMinimizeCancelSeq,
             compactChatState: I.getCurrentCompactChatState(),
             galgameModeEnabled: !!I.state.galgameModeEnabled,
-            galgameOptions: Array.isArray(I.state.galgameOptions) ? I.state.galgameOptions : [],
-            galgameOptionsLoading: !!I.state.galgameOptionsLoading,
+            galgameOptions: !visitOwnsComposer && Array.isArray(I.state.galgameOptions) ? I.state.galgameOptions : [],
+            galgameOptionsLoading: !visitOwnsComposer && !!I.state.galgameOptionsLoading,
             choicePrompt: I.getRevealedChoicePrompt(),
             onMessageAction: I.handleMessageAction,
             onComposerImportImage: I.handleComposerImportImage,
