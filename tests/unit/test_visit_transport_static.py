@@ -2607,3 +2607,25 @@ def test_stalled_receiver_stats_still_carry_the_fields_the_backend_forwards():
     # 后端要这三项齐了才转发给对端；对端读的是新鲜的 rx_fps
     assert out == {"afterSample": {"rx_fps": 25, "rx_kbps": 300, "rtt_ms": 40, "loss_pct": 1},
                    "neverSampled": {"rx_fps": 25, "rx_kbps": 0, "rtt_ms": 0, "loss_pct": 0}}
+
+
+def test_empty_or_partial_receiver_samples_are_filled_too():
+    out = run_visit_js(
+        """
+        const h = await joinedController('host');
+        h.c.media.subscribe = true;
+        h.c.unpacker.stats = () => ({ rx_fps: 25, rx_w: 320, rx_h: 896 });
+        const pick = () => { const m = h.ws.sent.filter((x) => x.type === 'stats').pop(); return { rx_kbps: m.rx_kbps, rtt_ms: m.rtt_ms, loss_pct: m.loss_pct }; };
+        h.c.adapter.receiverStats = () => Promise.resolve(null);            // getStats 失败，适配器给了空
+        h.c.collectStats(); await settle();
+        const empty = pick();
+        h.c.adapter.receiverStats = () => Promise.resolve({ rx_kbps: 300, rtt_ms: 40, loss_pct: 1 });
+        h.c.collectStats(); await settle();
+        h.c.adapter.receiverStats = () => Promise.resolve({ rx_kbps: 200 }); // 只给了一部分
+        h.c.collectStats(); await settle();
+        const partial = pick();
+        return { empty, partial };
+        """
+    )
+    assert out == {"empty": {"rx_kbps": 0, "rtt_ms": 0, "loss_pct": 0},
+                   "partial": {"rx_kbps": 200, "rtt_ms": 40, "loss_pct": 1}}

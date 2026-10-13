@@ -1129,3 +1129,27 @@ def test_4403_retry_keeps_hidden_and_away_state():
     )
     assert out["guest"] == {"rebuilt": True, "away": True}
     assert out["host"]["rebuilt"] is True and out["host"]["hidden"] is True and out["host"]["dim"] not in ("", None)
+
+
+def test_normal_transport_closure_ends_the_visit_ui():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        const box = h.ctx.document.createElement('div');
+        box.id = 'live2d-container';
+        h.ctx.document.body.appendChild(box);
+        await open(h, 'guest');
+        change(h, 'started');
+        change(h, 'departed');
+        // 后端收线后传输 WS 以 1000 关闭；显示 WS 断着，ended 事件丢了
+        h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 1000 } });
+        const after = { away: box.classList.contains('visiting-away'), frame: !!h.ctx.document.getElementById('visit-frame'),
+                        phase: h.bridge._state.phase, ended: h.bridge._state.endedVisitId === VISIT_ID };
+        change(h, 'wrap_up');                                   // 迟到的事件不再补建
+        after.rebuilt = !!h.ctx.document.getElementById('visit-frame');
+        await advance(15100);
+        return after;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == {"away": False, "frame": False, "phase": None, "ended": True, "rebuilt": False}

@@ -34,6 +34,7 @@
   var TOKEN_RETRY_BASE_MS = 1000;       // 取不到 token 时的重试间隔，之后翻倍
   var TOKEN_RETRY_MAX_MS = 15000;
   var RECOVER_TOKEN_WINDOW_MS = 12000;  // 重载恢复取 token 的时限（另受 RECOVER_TOTAL_MS 约束）
+  var CLOSE_NORMAL = 1000;             // 传输 WS 关闭码：后端收线（stop）之后本侧主动关，这一场已经结束
   var CLOSE_UNAUTHORIZED = 4403;       // 传输 WS 关闭码：鉴权没过（与 backend-ws.js 同值）
   var CLOSE_UNKNOWN_VISIT = 4404;      // 传输 WS 关闭码：后端不认这个场次（与 backend-ws.js 同值）
   var CLOSE_SUPERSEDED = 4409;         // 传输 WS 关闭码：被同 vid 的新传输连接顶掉（与 backend-ws.js 同值）
@@ -557,7 +558,8 @@
         var closedSide = state.side;
         // 显隐 / 离家只在变化时推一次：4403 重建会把它们清掉，先记下来，重建后套回去
         var live = { hidden: !!state.peerHidden, away: !!state.away };
-        removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT, keepElement: true });
+        var normalEnd = data.code === CLOSE_NORMAL;
+        removeFrame({ keepAway: !normalEnd && data.code !== CLOSE_UNKNOWN_VISIT, keepElement: true });
         retireElement(f, data.code === CLOSE_SUPERSEDED ? SUPERSEDED_KEEP_MS : CLOSED_KEEP_MS);
         // 4403：缓存的 token 可能已经失效（页面开着时后端重启过），重取就能过。同一场只重来一次：
         // 跳过缓存重取 token、重建 iframe；再被 4403 拒绝才当终态
@@ -567,6 +569,14 @@
           ensureFrame(closedSide, closedId);
           if (live.away) setAway(true);
           if (live.hidden) setPeerHidden(true);
+          return;
+        }
+        if (normalEnd) {
+          // 正常收线就是这一场结束了。显示 WS 断着时 ended 事件可能丢、之后也补发不了（后端已经结束这一场）：
+          // 和收到 ended 一样处理，离家样式已经在上面清掉，迟到的 ended / 辅助事件按已结束场次丢掉
+          state.endedVisitId = closedId;
+          state.closedVisitId = null;
+          state.phase = null;
           return;
         }
         state.closedVisitId = closedId;

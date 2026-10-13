@@ -869,26 +869,24 @@
       });
     }).then(function (res) {
       var keys = ['rx_kbps', 'rtt_ms', 'loss_pct'];
-      if (!res) {
-        // 后端只在 rx_kbps / rtt_ms / loss_pct 都在时才把这拍转发给对端；对端只读其中新鲜的 rx_fps（接收帧率，
-        // 拥塞阶梯用），这三项沿用上一拍成功的值（从没取到过就填 0），否则 getStats 卡住时对端的阶梯也跟着失明
-        if (self.media.subscribe) {
-          var last = self.lastRxSample || { rx_kbps: 0, rtt_ms: 0, loss_pct: 0 };
-          keys.forEach(function (key) { if (typeof out[key] !== 'number') out[key] = last[key]; });
-        }
-        finish(null);
-        return;
-      }
-      var rx = res[1];
+      var rx = res && res[1];
       if (rx) {
         keys.forEach(function (key) {
           if (typeof rx[key] === 'number' && isFinite(rx[key])) out[key] = rx[key];
         });
+      }
+      if (self.media.subscribe) {
+        // 后端只在 rx_kbps / rtt_ms / loss_pct 都在时才把这拍转发给对端；对端只读其中新鲜的 rx_fps（接收帧率，
+        // 拥塞阶梯用）。取样超时、getStats 失败给了空、或只给了一部分时，缺的项沿用上一拍成功的值（从没取到过就填 0），
+        // 否则对端的阶梯会跟着失明
         if (keys.every(function (key) { return typeof out[key] === 'number'; })) {
           self.lastRxSample = { rx_kbps: out.rx_kbps, rtt_ms: out.rtt_ms, loss_pct: out.loss_pct };
+        } else {
+          var last = self.lastRxSample || { rx_kbps: 0, rtt_ms: 0, loss_pct: 0 };
+          keys.forEach(function (key) { if (typeof out[key] !== 'number') out[key] = last[key]; });
         }
       }
-      finish(res[0]);
+      finish(res ? res[0] : null);
     });
   };
 
