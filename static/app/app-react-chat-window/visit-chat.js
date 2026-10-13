@@ -1473,6 +1473,14 @@
         return 'upper';
     }
 
+    // 建房 / 入房请求在途时换了角色：后端照样收下了那位，这一页却已不管她——立刻把那一场硬结束，免得空占角色与邀请码
+    async function abandonIfCharacterSwitched(result, catgirl) {
+        var visitId = result && result.status === 202 && result.body ? String(result.body.visit_id || '') : '';
+        if (!visitId || currentCatgirl() === catgirl) return false;
+        await api('POST', '/api/visit/route/end', { lanlan_name: catgirl, visit_id: visitId, reason: 'route_end' });
+        return true;
+    }
+
     async function startInvite() {
         var catgirl = currentCatgirl();
         if (!catgirl || starting) return;
@@ -1484,6 +1492,7 @@
             var result = await withPersonaRetry(function () {
                 return api('POST', '/api/visit/rooms', { catgirl: catgirl, crop: crop });
             }, catgirl);
+            if (await abandonIfCharacterSwitched(result, catgirl)) return;
             if (result.status !== 202) toast(startErrorText(result), 6000);
         } finally {
             starting = false;
@@ -1550,6 +1559,7 @@
                 catgirl: catgirl, invite_code: inviteCode, confirm: true
             });
         }, catgirl);
+        if (await abandonIfCharacterSwitched(result, catgirl)) return null;
         if (result.status !== 202) toast(startErrorText(result), 6000);
         return result;
     }
@@ -2228,7 +2238,7 @@
 
     // ── visit_bind 之后：读一次 state，告诉 pacer / 聊天面这一页的串门状况 ─────────
 
-    var stateFrameSeq = 0;   // 本页收到的 visit_state_change 计数
+    var stateFrameSeq = 0;   // 本页收到的 visit_state_change / visit_invite 计数
 
     function dispatchBound(detail) {
         try {
@@ -2299,6 +2309,8 @@
             onStateChange(frame);
             break;
         case 'visit_invite':
+            // 邀请同样是权威的换场：读 state 期间到了它，读回来的快照就作废（不能把刚换进来的新一场又收掉）
+            stateFrameSeq += 1;
             onInvite(frame);
             break;
         case 'visit_line_delta':

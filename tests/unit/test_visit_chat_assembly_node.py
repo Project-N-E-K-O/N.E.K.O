@@ -1267,6 +1267,41 @@ const report = {};
     const texts = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0 && m.id.endsWith(':g:1')).map((m) => m.blocks[0].text);
     report.keyed_lines = texts;
   }
+  // ── join 在途时换了角色：后端收下的那一场立刻硬结束 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = {
+      '/api/visit/invites/*': async () => ({ status: 200, body: { visit_id: VID2, host_display_name: '邻居', host_short_code: 'ABCDEF', cross_region: false, expires_at: 9e9, locally_blocked: false } }),
+      ['/api/visit/rooms/' + VID2 + '/join']: async () => { await gate; return { status: 202, body: { ok: true, visit_id: VID2, phase: 'pending' } }; },
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+    };
+    const h = createHarness({ routes });
+    const pending = h.chat._test.joinWithCode('ABCDEFGH23');
+    await h.settle();
+    h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'go').click();
+    await h.settle();
+    h.win.lanlan_config.lanlan_name = '小橘';
+    release();
+    await pending;
+    const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
+    report.switched_join_end = end && end.body;
+  }
+  // ── 读 state 期间到了新一场的邀请：旧快照作废，不把新一场又收掉 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true } }; } };
+    const h = createHarness({ routes });
+    h.state('started');
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.frame({ type: 'visit_invite', visit_id: VID2, peer_name: '小黑', peer_short_id: 'ZXCVBN', cross_region: false, expires_at: 1700000000 + 60 });
+    release();
+    await probe;
+    report.invite_probe_visit = h.chat._test.state().visit.visitId === VID2;
+    report.invite_probe_phase = h.chat._test.state().visit.phase;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1692,3 +1727,14 @@ def test_replayed_invite_switches_from_a_retained_visit(report):
 
 def test_line_assembly_is_keyed_by_visit(report):
     assert report["keyed_lines"] == ["上一场", "新一场的片"]
+
+
+def test_join_admitted_after_a_character_switch_is_ended(report):
+    end = report["switched_join_end"]
+    assert end is not None
+    assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end" and end["visit_id"]
+
+
+def test_invitation_during_a_state_probe_invalidates_the_snapshot(report):
+    assert report["invite_probe_visit"] is True
+    assert report["invite_probe_phase"] == "awaiting_accept"
