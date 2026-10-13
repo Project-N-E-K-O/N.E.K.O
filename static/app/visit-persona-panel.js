@@ -119,6 +119,11 @@
      * 打开面板；同一时刻只开一个。同一角色再调用时复用已开的那个、返回它的结果；
      * 换了角色就先关掉旧面板（它的结果为 false），再为新角色开一个。
      */
+    /** 关掉已开的面板（结果 false）：切换角色时由聊天面调用，旧角色的面板不能留着让人改 / 确认。 */
+    window.closeVisitPersonaPreview = function closeVisitPersonaPreview() {
+        if (openPanel && typeof openPanel.close === 'function') openPanel.close(false);
+    };
+
     window.openVisitPersonaPreview = function openVisitPersonaPreview(catgirl, options) {
         options = options || {};
         if (!catgirl) return Promise.resolve(false);

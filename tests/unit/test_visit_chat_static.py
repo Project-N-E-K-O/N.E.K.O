@@ -445,3 +445,9 @@ def test_visit_lines_send_their_visit_id_on_the_wire():
     buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
     assert "if (isVisitLine && typeof options.visitId === 'string' && options.visitId) {" in buttons
     assert "textMessage.visit_id = options.visitId;" in buttons
+
+
+def test_persona_panel_exposes_a_close_hook_for_character_switches():
+    source = _read(PERSONA)
+    assert "window.closeVisitPersonaPreview = function closeVisitPersonaPreview()" in source
+    assert "openPanel.close(false)" in _function_body(source, "closeVisitPersonaPreview")

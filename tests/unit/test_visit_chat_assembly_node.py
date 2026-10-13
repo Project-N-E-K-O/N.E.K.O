@@ -1178,6 +1178,8 @@ const report = {};
       '/api/visit/state?catgirl=%E5%B0%8F%E6%A9%98': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }),
     };
     const h = createHarness({ routes });
+    let personaClosed = 0;
+    h.win.closeVisitPersonaPreview = () => { personaClosed += 1; };
     await h.chat.afterBind(h.socket, '咪咪');
     h.I.submitVisitChatText({ text: '还在等回显', requestId: 'sw1' });
     report.switch_before_active = h.chat.isActive();
@@ -1188,6 +1190,7 @@ const report = {};
     report.switch_after_active = h.chat.isActive();
     report.switch_no_ended = !h.messages.some((m) => m.id === 'visit-ended-' + VID);
     report.switch_pending = h.chat._test.state().pending.length;
+    report.switch_persona_closed = personaClosed;
   }
   // ── 出门预览期间别的窗口换了角色：不弹确认、不发 join ──
   {
@@ -1782,6 +1785,7 @@ def test_character_switch_clears_the_old_visit_without_an_ended_message(report):
     assert report["switch_after_active"] is False
     assert report["switch_no_ended"] is True
     assert report["switch_pending"] == 0
+    assert report["switch_persona_closed"] == 1
 
 
 def test_join_flow_stays_pinned_to_the_starting_character(report):

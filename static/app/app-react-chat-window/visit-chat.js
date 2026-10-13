@@ -887,6 +887,8 @@
     // 切换角色：清掉上一位角色的串门 UI 状态（不走 onEnded：不往新角色刚清空的聊天里写结束消息）
     function resetForCharacterSwitch() {
         openDialogs.slice().forEach(function (handle) { handle.close(null); });
+        // 人设面板是另一个模块的对话框：一并关掉，免得在新角色的页面上改 / 确认上一位的人设
+        if (typeof window.closeVisitPersonaPreview === 'function') window.closeVisitPersonaPreview();
         clearReconnectPoll();
         releaseVisitTextSession();
         lines.forEach(function (entry) { if (entry.stallTimer) clearTimeout(entry.stallTimer); });
