@@ -1884,6 +1884,34 @@ test('macOS top corners trigger at the current display work-area top', async () 
     }
 });
 
+test('macOS panel origin below the menu bar still maps the work-area edge into renderer space', async () => {
+    const harness = createHarness({
+        platform: 'darwin',
+        currentDisplay: {
+            screenX: 1,
+            screenY: 25,
+            width: 1000,
+            height: 800,
+            bounds: { x: 0, y: 0, width: 1000, height: 800 },
+            workArea: { x: 0, y: 25, width: 1000, height: 744 }
+        }
+    });
+    const manager = new harness.Live2DManager();
+    const model = createRotatingModel({ x: 0, y: 0, scaleX: 1 });
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    await waitForQueuedFrame(harness);
+    flushNextFrame(harness);
+
+    assert.equal(await enterPromise, true);
+    assert.equal(manager._live2DPeekState.edge, 'top-left');
+});
+
 test('Windows bottom corners trigger at the current display work-area bottom', async () => {
     const cases = [
         { edge: 'bottom-left', x: 0, scaleX: 1, rotation: 45 },
