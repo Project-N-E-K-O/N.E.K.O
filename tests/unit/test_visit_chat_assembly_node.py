@@ -1337,6 +1337,24 @@ const report = {};
       speaker: { side: 'host', kind: 'human', name: '', self: true }, addressee: { side: 'host', kind: 'cat' } });
     report.own_recipient_author = h.lineMessage('h:1').author;
   }
+  // ── 读 state 期间到了新一场的台词（漏了它的阶段帧）：换进新一场，旧快照作废 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true } }; } };
+    const h = createHarness({ routes });
+    h.state('started');
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.frame({ type: 'visit_line', visit_id: VID2, line_id: 'g:1', lp: 1, text: '新一场', final: true, truncated: false,
+      speaker: { side: 'guest', kind: 'cat', name: '小黑', self: false } });
+    release();
+    await probe;
+    report.line_switch_visit = h.chat._test.state().visit.visitId === VID2;
+    report.line_switch_phase = h.chat._test.state().visit.phase;
+    report.line_switch_side = h.chat._test.state().visit.side;
+    report.line_switch_old_ended = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1787,3 +1805,10 @@ def test_room_created_after_a_character_switch_is_ended(report):
 
 def test_self_line_recipient_uses_the_lines_own_side(report):
     assert report["own_recipient_author"].endswith("咪咪")
+
+
+def test_line_from_a_new_visit_switches_and_invalidates_the_probe(report):
+    assert report["line_switch_visit"] is True
+    assert report["line_switch_phase"] == "active"
+    assert report["line_switch_side"] == "host"
+    assert report["line_switch_old_ended"] is True

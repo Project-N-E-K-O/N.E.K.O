@@ -2304,6 +2304,25 @@
         dispatchBound(detail);
     }
 
+    // 台词带来的场次与本页不同（漏了新一场的阶段帧）：台词只在进行中的场次里有，按它换进这一场——
+    // 旧一场先收尾；读 state 期间到的，在途的旧快照作废。已结束那一场迟到的台词照常上屏、不换场
+    function reconcileLineVisit(frame) {
+        var lineVisit = typeof frame.visit_id === 'string' ? frame.visit_id : '';
+        if (!lineVisit || lineVisit === visit.visitId || endedVisitIds.indexOf(lineVisit) !== -1) return;
+        stateFrameSeq += 1;
+        if (visit.visitId && inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+        startNewVisit(lineVisit);
+        var speaker = frame.speaker || {};
+        if (speaker.side === 'host' || speaker.side === 'guest') {
+            visit.side = speaker.self === true ? speaker.side : (speaker.side === 'host' ? 'guest' : 'host');
+            rememberSide(lineVisit, visit.side);
+        }
+        visit.phase = 'active';
+        visit.everStarted = true;
+        visit.ownName = currentCatgirl();
+        render();
+    }
+
     // ── 帧入口 ─────────────────────────────────────────────────────
 
     function handleFrame(frame) {
@@ -2319,9 +2338,11 @@
             onInvite(frame);
             break;
         case 'visit_line_delta':
+            reconcileLineVisit(frame);
             onLineDelta(frame);
             break;
         case 'visit_line':
+            reconcileLineVisit(frame);
             onLineFinal(frame);
             break;
         case 'visit_line_abort':
