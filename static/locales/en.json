@@ -4256,6 +4256,21 @@
             "desc": "Access the character card manager to create, edit, import, and export character cards~"
         },
         "systray": {
+            "macos": {
+                "location": {
+                    "title": "📍 Menu bar icon location",
+                    "desc": "The N.E.K.O icon appears in the macOS menu bar at the top of your screen.",
+                    "note": "Look for the N.E.K.O icon shown in the image in the top menu bar.",
+                    "alt": "N.E.K.O icon and menu in the macOS menu bar"
+                },
+                "menu": {
+                    "title": "📋 Menu bar menu",
+                    "desc": "Click the N.E.K.O icon in the menu bar to open the menu. Here are some useful features:"
+                },
+                "exitDesc": "To close N.E.K.O, choose Exit from the menu bar menu."
+            },
+            "settings": "Settings",
+            "settingsDesc": "Open settings to adjust your N.E.K.O preferences.",
             "location": {
                 "title": "Tray icon location",
                 "desc": "The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O.",

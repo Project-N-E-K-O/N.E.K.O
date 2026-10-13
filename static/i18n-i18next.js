@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 屏幕来源文案（本分支）与上游串门访客层徽标、重力猫、访问复盘、VRM 情绪设置文案合并，刷新八语言客户端缓存。
-    const LOCALE_VERSION = '2026-10-13-pr3415-screen-source-main-merge';
+    // 屏幕来源文案（本分支）与上游 Day1 托盘图标介绍、串门访客层徽标等文案合并，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-13-pr3415-screen-source-main-merge-2';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

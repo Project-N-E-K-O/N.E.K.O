@@ -233,6 +233,21 @@
         return String(value || '').trim();
     }
 
+    // Sources may be shared by independent stages whose local session IDs match.
+    let live2dDriverSequence = 0;
+
+    function persistentParameterSnapshot(manager) {
+        const result = {};
+        Object.values(manager && manager.persistentExpressionParamsByName || {}).forEach((params) => {
+            if (!Array.isArray(params)) return;
+            params.forEach((param) => {
+                if (!param || !param.Id) return;
+                (result[param.Id] || (result[param.Id] = [])).push(cloneJsonCompatible(param));
+            });
+        });
+        return result;
+    }
+
     class AvatarPerformanceStage {
         constructor(options) {
             const normalized = options || {};
@@ -305,12 +320,17 @@
             }
 
             this.cancelTweens(sessionId);
-            this.clearLookAt({
-                sessionId: sessionId,
-                reason: reason || 'release'
-            });
             session.cancelled = true;
-            this.clearTemporaryParams(reason || 'release');
+            const ownsDriver = !this.driver || typeof this.driver.ownsSession !== 'function'
+                || this.driver.ownsSession(session);
+            if (ownsDriver) {
+                if (this.driver && typeof this.driver.clearLookAt === 'function') {
+                    this.driver.clearLookAt({ session: session, sessionId: sessionId, reason: reason || 'release' });
+                }
+                this.clearTemporaryParams(reason || 'release');
+            } else {
+                this.temporaryParamSnapshots.clear();
+            }
             this.frameState = Object.assign({}, DEFAULT_FRAME, this.profile.defaultFrame || {});
 
             let restored = false;
@@ -321,7 +341,7 @@
                     this.warn('driver restore failed', error);
                 }
             }
-            if (!restored && this.driver && typeof this.driver.applyFrame === 'function') {
+            if (!restored && ownsDriver && this.driver && typeof this.driver.applyFrame === 'function') {
                 try {
                     this.driver.applyFrame(this.frameState, session);
                 } catch (error) {
@@ -460,6 +480,7 @@
                 return Promise.resolve(false);
             }
             const motionOptions = Object.assign({}, normalized, {
+                session: this.activeSession,
                 profile: normalized.profile || this.profile
             });
             return Promise.resolve(this.driver.playMotion(group, motionOptions)).catch((error) => {
@@ -475,6 +496,7 @@
                 return Promise.resolve(false);
             }
             const expressionOptions = Object.assign({}, normalized, {
+                session: this.activeSession,
                 profile: normalized.profile || this.profile
             });
             return Promise.resolve(this.driver.applyExpression(expression, expressionOptions)).catch((error) => {
@@ -490,6 +512,7 @@
                 return Promise.resolve(false);
             }
             const emotionOptions = Object.assign({}, normalized, {
+                session: this.activeSession,
                 profile: normalized.profile || this.profile
             });
             return Promise.resolve(this.driver.applyEmotion(emotion, emotionOptions)).catch((error) => {
@@ -500,6 +523,7 @@
 
         clearExpression(options) {
             const normalized = Object.assign({}, options || {}, {
+                session: this.activeSession,
                 profile: (options && options.profile) || this.profile
             });
             const sessionId = normalized.sessionId || this.getActiveSessionId();
@@ -712,6 +736,7 @@
                     return false;
                 }
                 return this.driver.runPoseTimeline(step, Object.assign({}, stepOptions, {
+                    session: this.activeSession,
                     reducedMotion: sequenceOptions.reducedMotion === true || stepOptions.reducedMotion === true
                 }));
             }
@@ -1048,7 +1073,7 @@
                 if (!this.temporaryParamSnapshots.has(snapshotKey) && typeof this.driver.captureParams === 'function') {
                     this.temporaryParamSnapshots.set(snapshotKey, this.driver.captureParams([paramId]));
                 }
-                if (this.driver.setParam(paramId, value, normalized)) {
+                if (this.driver.setParam(paramId, value, Object.assign({}, normalized, { session: this.activeSession }))) {
                     return true;
                 }
             }
@@ -1063,7 +1088,7 @@
 
             this.temporaryParamSnapshots.forEach((snapshot) => {
                 try {
-                    this.driver.restoreParams(snapshot, reason || 'clear');
+                    this.driver.restoreParams(snapshot, reason || 'clear', { session: this.activeSession });
                 } catch (error) {
                     this.warn('driver restore param failed', error);
                 }
@@ -1089,7 +1114,7 @@
             if (!this.driver || typeof this.driver.clearLookAt !== 'function') {
                 return false;
             }
-            this.driver.clearLookAt(normalized);
+            this.driver.clearLookAt(Object.assign({}, normalized, { session: this.activeSession, sessionId: sessionId }));
             return true;
         }
 
@@ -1315,6 +1340,11 @@
             this.profile = normalized.profile || {};
             this.styleSnapshot = null;
             this.ownerSessionId = '';
+            this.ownerSession = null;
+            this.sessionState = null;
+            this.driverSequence = ++live2dDriverSequence;
+            this.poseSequence = 0;
+            this.sessionSequence = 0;
             this.activeFrameTransformNonIdentity = false;
             this.activeFrameTransformContainer = null;
             this.committedFrameTransformActive = false;
@@ -1334,6 +1364,173 @@
 
         getManager() {
             return this.managerResolver() || null;
+        }
+
+        warn(message, error) {
+            console.warn('[Live2DAvatarPerformanceDriver] ' + message, error);
+        }
+
+        ownsSession(session) {
+            if (this.ownerSession !== session) return false;
+            const state = session && session._live2dDriverState;
+            if (state && !state.manager) return true; // frame-only DOM stages need no model manager
+            const owners = state && state.manager._avatarPerformanceSessionOwners;
+            return !!(owners && state.capabilities.every(capability => owners.get(capability) === session));
+        }
+
+        isCurrentState(state = this.sessionState) {
+            return !!(state && state.model && this.sessionState === state && this.ownsSession(state.session)
+                && state.manager === this.getManager() && state.model === this.getModel()
+                && state.internalModel === state.model.internalModel
+                && state.coreModel === this.getCoreModel() && !state.model.destroyed);
+        }
+
+        trackParameterWrites(ids, owner) {
+            const state = this.sessionState;
+            if (!this.isCurrentState(state)) return;
+            ids.forEach((id) => {
+                state.parameterOwners.set(id, owner || state.session);
+                if (hasOwn(state.params, id)) return;
+                const captured = state.snapshot.params || {};
+                Object.assign(state.params, hasOwn(captured, id)
+                    ? { [id]: captured[id] } : this.captureParams([id]));
+            });
+        }
+
+        relinquishParameterWrites(ids, owner, state = this.sessionState) {
+            if (!state) return;
+            ids.forEach((id) => {
+                if (state.parameterOwners.get(id) === owner) state.parameterOwners.set(id, null);
+            });
+        }
+
+        restoreOwnedParams(values, state = this.sessionState, owner) {
+            if (!this.isCurrentState(state) || !values || state.manager._parameterEditingMode === true) return;
+            const manager = state.manager;
+            const current = manager.effectiveModelParameters || {};
+            const previous = state.snapshot.effectiveParameters || {};
+            const persistent = persistentParameterSnapshot(manager);
+            const previousPersistent = state.snapshot.persistentParameters || {};
+            const protectedIds = typeof manager._getActiveExpressionParamIds === 'function'
+                ? manager._getActiveExpressionParamIds() : new Set();
+            const breathIds = new Set(['ParamBreath', 'ParamBreath2', 'ParamBreath3']);
+            if (typeof manager._resolveRuntimeBreathParams === 'function') {
+                manager._resolveRuntimeBreathParams(state.coreModel).forEach(id => breathIds.add(id));
+            }
+            let skippedDefaults = 0;
+            Object.keys(values).forEach((id) => {
+                if (!hasOwn(state.params, id) || state.parameterOwners.get(id) === null
+                    || (owner && state.parameterOwners.get(id) !== owner)
+                    || protectedIds.has(id) || breathIds.has(id)
+                    || id === 'ParamOpacity' || id === 'ParamVisibility') return;
+                if (typeof manager._isEyeBlinkParamId === 'function' && manager._isEyeBlinkParamId(id)) return;
+                const configChanged = manager._parameterConfigRevision !== state.snapshot.configRevision
+                    && (hasOwn(previous, id) !== hasOwn(current, id) || previous[id] !== current[id]);
+                const persistentChanged = JSON.stringify(previousPersistent[id]) !== JSON.stringify(persistent[id]);
+                let value = values[id];
+                if (configChanged || persistentChanged) {
+                    if (hasOwn(current, id)) value = current[id];
+                    else {
+                        const index = state.coreModel.getParameterIndex(id);
+                        value = typeof manager._getCoreParameterDefaultValue === 'function'
+                            ? manager._getCoreParameterDefaultValue(state.coreModel, index) : undefined;
+                        if (!Number.isFinite(value)) { skippedDefaults++; return; }
+                    }
+                }
+                if (Number.isFinite(Number(value))) state.coreModel.setParameterValueById(id, Number(value));
+            });
+            if (skippedDefaults && !state.warnedDefaults) {
+                state.warnedDefaults = true;
+                this.warn('skipped unavailable defaults during parameter restore (' + skippedDefaults + ')');
+            }
+        }
+
+        clearOwnedExpression(state = this.sessionState) {
+            const owned = state && state.expression;
+            if (!owned) return;
+            const manager = state.manager;
+            if (owned.resource && (manager._manualExpressionListener !== owned.listener
+                || manager._manualExpressionResource !== owned.resource)) {
+                manager._retireManualExpressionResource(owned.resource);
+                state.expression = null;
+                return;
+            }
+            if (manager.currentModel !== state.model || state.model.destroyed ||
+                state.model.internalModel !== state.internalModel || state.internalModel.coreModel !== state.coreModel) {
+                if (owned.listener && manager._manualExpressionListener === owned.listener &&
+                    manager._manualExpressionEmitter === owned.emitter) {
+                    manager._removeManualExpressionOverride(owned.listener, owned.emitter, { retire: true });
+                }
+                return;
+            }
+            if ((manager._transientExpressionGeneration || 0) !== owned.generation) return;
+            if (owned.listener && manager._manualExpressionListener !== owned.listener) return;
+            if (owned.paramIds && manager._activeExpressionParamIds !== owned.paramIds) return;
+            if (owned.pending && !owned.listener && manager._manualExpressionListener !== owned.previousListener) return;
+            if (!owned.pending && (manager._manualExpressionListener || null) !== owned.listener) return;
+            // Cancel our pending request only while no newer manual owner has
+            // taken over. The earlier listener is left installed.
+            if (typeof manager._invalidateExpressionPlayback === 'function') manager._invalidateExpressionPlayback();
+            if (owned.pending) {
+                manager._activeExpressionParamIds = owned.previousParamIds;
+                state.expression = null;
+                return;
+            }
+            if (owned.listener && typeof manager._removeManualExpressionOverride === 'function') {
+                manager._removeManualExpressionOverride(owned.listener, owned.emitter, { retire: true });
+            }
+            if (manager._manualExpressionListener && manager._manualExpressionListener !== owned.listener) {
+                state.expression = null;
+                return;
+            }
+            const expressionManager = state.model.internalModel.motionManager?.expressionManager;
+            if (expressionManager && typeof expressionManager.stopAllExpressions === 'function') {
+                try { expressionManager.stopAllExpressions(); }
+                catch (error) { this.warn('expression stop failed', error); }
+            }
+            manager._activeTransientExpression = false;
+            if (owned.paramIds && manager._activeExpressionParamIds === owned.paramIds) {
+                manager._activeExpressionParamIds = owned.previousListener &&
+                    manager._manualExpressionListener === owned.previousListener ? owned.previousParamIds : null;
+            }
+            state.expression = null;
+        }
+
+        async playOwnedExpression(callback, state = this.sessionState) {
+            if (!state) return callback();
+            if (!this.isCurrentState(state) || state.session.cancelled) return false;
+            const previousListener = state.manager._manualExpressionListener;
+            const previousParamIds = state.manager._activeExpressionParamIds;
+            const owned = { generation: state.manager._transientExpressionGeneration || 0,
+                listener: null, emitter: null, paramIds: null, pending: true,
+                previousListener: previousListener, previousParamIds: previousParamIds };
+            state.expression = owned;
+            const onApplied = (resource) => {
+                if (!this.isCurrentState(state) || state.session.cancelled || state.expression !== owned
+                    || resource.model !== state.model || resource.internalModel !== state.internalModel
+                    || resource.coreModel !== state.coreModel) return;
+                Object.assign(owned, { generation: resource.generation, listener: resource.listener,
+                    emitter: resource.emitter, paramIds: resource.paramIds, resource: resource.resource, pending: false });
+                if (owned.paramIds && typeof owned.paramIds.forEach === 'function') {
+                    this.trackParameterWrites(Array.from(owned.paramIds));
+                }
+            };
+            const pending = callback(onApplied);
+            if (owned.pending) owned.generation = state.manager._transientExpressionGeneration || 0;
+            const result = await pending;
+            if (!this.isCurrentState(state) || state.session.cancelled || state.expression !== owned) return false;
+            if ((state.manager._transientExpressionGeneration || 0) !== owned.generation) return false;
+            if (result === false) return false;
+            if (!owned.pending) return result;
+            owned.listener = state.manager._manualExpressionListener !== previousListener
+                ? state.manager._manualExpressionListener : null;
+            owned.emitter = state.manager._manualExpressionEmitter;
+            owned.paramIds = state.manager._activeExpressionParamIds;
+            owned.pending = false;
+            if (owned.paramIds && typeof owned.paramIds.forEach === 'function') {
+                this.trackParameterWrites(Array.from(owned.paramIds));
+            }
+            return result;
         }
 
         getModel() {
@@ -1518,12 +1715,36 @@
                 manager._avatarPerformanceBypassLocks = nextDepth > 0 || restoreExternalBypass;
             };
             try {
-                return Promise.resolve(callback()).finally(() => {
-                    restore();
-                });
+                // Permission covers synchronous admission only. Async manager
+                // work carries an explicit session receipt, never a global flag.
+                const result = callback();
+                restore();
+                return Promise.resolve(result);
             } catch (error) {
                 restore();
                 throw error;
+            }
+        }
+
+        async runOwnedOperation(state, callback) {
+            if (!state) return callback({});
+            if (!this.isCurrentState(state) || state.session.cancelled) return false;
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            state.operationController.signal.addEventListener('abort', abort, { once: true });
+            const timer = setTimeout(abort, 15000);
+            const options = { signal: controller.signal, lifetimeSignal: state.operationController.signal,
+                performanceOwner: state.session };
+            let onAbort;
+            const cancelled = new Promise(resolve => {
+                onAbort = () => resolve(false);
+                controller.signal.addEventListener('abort', onAbort, { once: true });
+            });
+            try { return await Promise.race([Promise.resolve(callback(options)), cancelled]); }
+            finally {
+                clearTimeout(timer);
+                controller.signal.removeEventListener('abort', onAbort);
+                state.operationController.signal.removeEventListener('abort', abort);
             }
         }
 
@@ -1590,10 +1811,29 @@
                 .concat(Array.isArray(normalized.captureParamIds) ? normalized.captureParamIds : [])
                 .concat([params.angleX, params.angleY, params.eyeX, params.eyeY])
                 .filter(Boolean);
+            // Named expressions choose their parameter IDs asynchronously. Capture
+            // the bounded real model once, but restore only IDs actually written.
+            const manager = this.getManager();
+            const core = this.getCoreModel();
+            if (core && manager && typeof core.getParameterCount === 'function') {
+                for (let index = 0; index < core.getParameterCount(); index++) {
+                    const id = manager._getCoreParameterId(core, index);
+                    if (id) requestedParamIds.push(id);
+                }
+            }
             const paramIds = Array.from(new Set(requestedParamIds.map((id) => String(id || '').trim()).filter(Boolean)));
             return {
                 kind: 'live2d',
                 sessionId: session && session.id ? session.id : '',
+                session: session || null,
+                manager: this.getManager(),
+                model: this.getModel(),
+                internalModel: this.getModel() && this.getModel().internalModel,
+                coreModel: this.getCoreModel(),
+                configRevision: this.getManager()?._parameterConfigRevision,
+                effectiveParameters: cloneJsonCompatible(this.getManager()?.effectiveModelParameters || {}),
+                persistentParameters: persistentParameterSnapshot(this.getManager()),
+                editingMode: this.getManager()?._parameterEditingMode === true,
                 container: container,
                 containerStyle: this.captureContainerStyle(container),
                 committedFrameTransformActive: this.committedFrameTransformActive,
@@ -1613,24 +1853,22 @@
                 return false;
             }
 
-            const manager = this.getManager();
-            if (manager && typeof manager.clearTemporaryPoseOverride === 'function') {
-                const sources = [this.lookAtSource, snapshot.lookAt && snapshot.lookAt.source].filter(Boolean);
-                Array.from(new Set(sources)).forEach((source) => {
-                    try {
-                        manager.clearTemporaryPoseOverride(source);
-                    } catch (_) {}
-                });
+            const state = snapshot.session && snapshot.session._live2dDriverState;
+            if (!state || state.driver !== this) return false;
+            state.operationController.abort();
+            Array.from(state.timelines || []).forEach((finish) => finish('cancelled', 'session_release'));
+            // Retirement always cleans only this state's resources, even after takeover.
+            if (state.lookAtEntry && typeof state.manager.clearTemporaryPoseOverride === 'function') {
+                if (state.manager._temporaryPoseOverrides?.get(state.lookAtSource) !== state.lookAtEntry) {
+                    this.relinquishParameterWrites(state.lookAtParamIds, state.lookAtOwner, state);
+                }
+                state.manager.clearTemporaryPoseOverride(state.lookAtSource, state.lookAtEntry);
+                state.lookAtEntry = null;
             }
-
-            if (snapshot.params) {
-                this.restoreParams(snapshot.params);
-            }
-            if (snapshot.lookAt && snapshot.lookAt.snapshot) {
-                this.restoreParams(snapshot.lookAt.snapshot);
-            }
-            if (this.expressionParamSnapshot) {
-                this.restoreParams(this.expressionParamSnapshot);
+            this.clearOwnedExpression(state);
+            const stillOwner = this.sessionState === state && this.ownsSession(state.session);
+            if (stillOwner) {
+                this.restoreOwnedParams(state.params, state);
                 this.expressionParamSnapshot = null;
             }
             const container = this.getContainer();
@@ -1641,19 +1879,21 @@
                 this.committedFrameTransformContainer,
                 snapshotCommittedContainer
             ].filter(Boolean);
-            if (ownedMarkerContainers.includes(window._nekoAvatarPerformanceFrameContainer)) {
+            const ownsContainer = window._nekoAvatarPerformanceFrameOwner === state.session;
+            if (ownsContainer && ownedMarkerContainers.includes(window._nekoAvatarPerformanceFrameContainer)) {
                 window._nekoAvatarPerformanceFrameContainer = null;
+                window._nekoAvatarPerformanceFrameOwner = null;
             }
 
-            this.restoreExpression(snapshot.expression);
-            if (container && snapshotContainer === container) {
+            if (ownsContainer && container && snapshotContainer === container) {
                 this.restoreContainerStyle(snapshot.containerStyle);
             }
+            if (!stillOwner) return false;
 
             this.activeFrameTransformNonIdentity = false;
             this.activeFrameTransformContainer = null;
             this.committedFrameTransformActive =
-                snapshot.committedFrameTransformActive === true &&
+                ownsContainer && snapshot.committedFrameTransformActive === true &&
                 snapshotCommittedContainer === container &&
                 snapshotContainer === container &&
                 this.hasContainerTransform(container);
@@ -1662,9 +1902,9 @@
                 : null;
             if (this.committedFrameTransformActive) {
                 window._nekoAvatarPerformanceFrameContainer = container;
+                window._nekoAvatarPerformanceFrameOwner = this;
             }
             this.styleSnapshot = null;
-            this.ownerSessionId = '';
             this.lookAtSnapshot = null;
             this.lookAtSource = '';
             this.lookAtSessionId = '';
@@ -1672,7 +1912,7 @@
         }
 
         commitCurrentFrameAsBaseline(session) {
-            if (session && this.ownerSessionId && session.id !== this.ownerSessionId) {
+            if (session && !this.ownsSession(session)) {
                 return false;
             }
             const container = this.getContainer();
@@ -1699,11 +1939,28 @@
         acquireSession(session) {
             const container = this.getContainer();
             this.ownerSessionId = session && session.id ? session.id : '';
+            this.ownerSession = session || null;
+            const snapshot = session && session.snapshot;
+            const state = { driver: this, session: session, snapshot: snapshot,
+                manager: snapshot && snapshot.manager || this.getManager(),
+                model: snapshot && snapshot.model || this.getModel(),
+                internalModel: snapshot && snapshot.internalModel || this.getModel()?.internalModel,
+                coreModel: snapshot && snapshot.coreModel || this.getCoreModel(), params: {}, expression: null,
+                operationController: new AbortController(),
+                timelines: new Set(), parameterOwners: new Map(), capabilities: normalizeCapabilities(session && session.capabilities)
+                    .filter(capability => CONTRACTS.capabilities.includes(capability)) };
+            this.sessionState = state;
+            if (session) session._live2dDriverState = state;
+            if (state.manager) {
+                if (!state.manager._avatarPerformanceSessionOwners) state.manager._avatarPerformanceSessionOwners = new Map();
+                state.capabilities.forEach(capability => state.manager._avatarPerformanceSessionOwners.set(capability, session));
+            }
             this.activeFrameTransformNonIdentity = false;
             this.activeFrameTransformContainer = null;
             const manager = this.getManager();
             if (this.sessionHasCapability(session, 'motion') && manager && typeof manager.suspendTemporaryMotions === 'function') {
-                this.motionSuspendSource = 'avatar-performance-motion-' + (this.ownerSessionId || 'session');
+                this.motionSuspendSource = 'avatar-performance-motion-' + this.driverSequence + '-' + (++this.sessionSequence);
+                state.motionSuspendSource = this.motionSuspendSource;
                 try {
                     manager.suspendTemporaryMotions(this.motionSuspendSource, this.getModel());
                 } catch (_) {}
@@ -1712,6 +1969,7 @@
             if (hasFrameCapability && container) {
                 this.activeFrameTransformContainer = container;
                 window._nekoAvatarPerformanceFrameContainer = container;
+                window._nekoAvatarPerformanceFrameOwner = session;
             }
             if (!hasFrameCapability || !container || this.styleSnapshot) {
                 return;
@@ -1723,7 +1981,23 @@
         }
 
         releaseSession(session) {
-            if (session && this.ownerSessionId && session.id !== this.ownerSessionId) {
+            const state = session && session._live2dDriverState;
+            if (!state || state.driver !== this) return;
+            state.operationController.abort();
+            if (state.manager && state.manager.currentModel === state.model &&
+                state.model.internalModel === state.internalModel && state.internalModel?.coreModel === state.coreModel &&
+                state.manager._temporaryMotionSuspendToken === state.motionSuspendSource && state.motionSuspendSource) {
+                try {
+                    state.manager.resumeTemporaryMotions(state.motionSuspendSource, state.model);
+                } catch (error) { this.warn('motion resume failed', error); }
+            }
+            const ownsSession = this.ownsSession(session);
+            state.capabilities.forEach(capability => {
+                if (state.manager?._avatarPerformanceSessionOwners?.get(capability) === session) {
+                    state.manager._avatarPerformanceSessionOwners.delete(capability);
+                }
+            });
+            if (!ownsSession) {
                 return;
             }
             const container = this.getContainer();
@@ -1731,11 +2005,13 @@
             const committedContainer = this.committedFrameTransformContainer;
             this.activeFrameTransformNonIdentity = false;
             this.activeFrameTransformContainer = null;
-            if (window._nekoAvatarPerformanceFrameContainer === activeContainer ||
-                window._nekoAvatarPerformanceFrameContainer === committedContainer) {
+            const ownsContainer = window._nekoAvatarPerformanceFrameOwner === session;
+            if (ownsContainer && (window._nekoAvatarPerformanceFrameContainer === activeContainer ||
+                window._nekoAvatarPerformanceFrameContainer === committedContainer)) {
                 window._nekoAvatarPerformanceFrameContainer = null;
+                window._nekoAvatarPerformanceFrameOwner = null;
             }
-            if (this.styleSnapshot && activeContainer && activeContainer === container) {
+            if (ownsContainer && this.styleSnapshot && activeContainer && activeContainer === container) {
                 this.restoreContainerStyle(this.styleSnapshot);
             }
             const retainCommittedTransform =
@@ -1745,26 +2021,23 @@
                 this.hasContainerTransform(container);
             if (retainCommittedTransform) {
                 window._nekoAvatarPerformanceFrameContainer = committedContainer;
+                window._nekoAvatarPerformanceFrameOwner = this;
             } else {
                 this.committedFrameTransformActive = false;
                 this.committedFrameTransformContainer = null;
             }
             this.styleSnapshot = null;
             this.ownerSessionId = '';
-            const manager = this.getManager();
-            if (manager && typeof manager.resumeTemporaryMotions === 'function' && this.motionSuspendSource) {
-                try {
-                    manager.resumeTemporaryMotions(this.motionSuspendSource);
-                } catch (_) {}
-            }
+            this.ownerSession = null;
+            this.sessionState = null;
             this.motionSuspendSource = '';
-            this.clearLookAt({
-                sessionId: session && session.id ? session.id : ''
-            });
+            this.lookAtSnapshot = null;
+            this.lookAtSource = '';
+            this.lookAtSessionId = '';
         }
 
         applyFrame(frame, session) {
-            if (session && this.ownerSessionId && session.id !== this.ownerSessionId) {
+            if (session && !this.ownsSession(session)) {
                 return;
             }
 
@@ -1802,6 +2075,7 @@
             container.style.transform = transform;
             if (this.activeFrameTransformContainer === container) {
                 window._nekoAvatarPerformanceFrameContainer = container;
+                window._nekoAvatarPerformanceFrameOwner = this.ownerSession;
             }
             if (frame.opacity !== '') {
                 container.style.opacity = String(frame.opacity);
@@ -1809,8 +2083,17 @@
         }
 
         async playMotion(motion, options) {
+            return this.runOwnedOperation(this.sessionState,
+                operation => this.playMotionOwned(motion, Object.assign({}, options, operation)));
+        }
+
+        async playMotionOwned(motion, options) {
             const manager = this.getManager();
             const model = this.getModel();
+            const state = this.sessionState;
+            const isCurrent = () => state ? this.isCurrentState(state) && !state.session.cancelled
+                : this.getManager() === manager && this.getModel() === model;
+            if ((options && options.session && !this.ownsSession(options.session)) || !isCurrent()) return false;
             if (!manager || !model) {
                 return false;
             }
@@ -1825,7 +2108,8 @@
 
                 if (groupName && explicitIndex !== null && typeof manager.playActionMotion === 'function') {
                     try {
-                        const played = await this.withPerformanceBypass(() => manager.playActionMotion(groupName, explicitIndex));
+                        const played = await this.withPerformanceBypass(() => manager.playActionMotion(groupName, explicitIndex, Object.assign({}, options, { isCurrent })));
+                        if (!isCurrent()) return false;
                         if (played !== false) {
                             return true;
                         }
@@ -1836,7 +2120,8 @@
                     const runtimeRef = this.findMotionRuntimeReference(groupName, file);
                     if (runtimeRef) {
                         try {
-                            const played = await this.withPerformanceBypass(() => manager.playActionMotion(runtimeRef.group, runtimeRef.index));
+                            const played = await this.withPerformanceBypass(() => manager.playActionMotion(runtimeRef.group, runtimeRef.index, Object.assign({}, options, { isCurrent })));
+                            if (!isCurrent()) return false;
                             if (played !== false) {
                                 return true;
                             }
@@ -1845,7 +2130,8 @@
                 }
 
                 if (groupName && this.hasMotion(groupName, options) && typeof manager.playMotion === 'function') {
-                    const played = await this.withPerformanceBypass(() => manager.playMotion(groupName));
+                    const played = await this.withPerformanceBypass(() => manager.playMotion(groupName, Object.assign({}, options, { isCurrent })));
+                    if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;
                     }
@@ -1855,7 +2141,15 @@
         }
 
         async applyEmotion(emotion, options) {
+            return this.runOwnedOperation(this.sessionState,
+                operation => this.applyEmotionOwned(emotion, Object.assign({}, options, operation)));
+        }
+
+        async applyEmotionOwned(emotion, options) {
             const manager = this.getManager();
+            const state = this.sessionState;
+            if ((options && options.session && !this.ownsSession(options.session)) ||
+                (state && !this.isCurrentState(state))) return false;
             if (!manager || !this.getModel()) {
                 return false;
             }
@@ -1878,6 +2172,10 @@
                 || (Array.isArray(parts) && parts.indexOf('motion') >= 0);
 
             if (wantsExpression && wantsMotion && typeof manager.setEmotion === 'function') {
+                const request = {};
+                if (state) state.expressionRequest = request;
+                const isCurrent = () => !state || (this.isCurrentState(state) && !state.session.cancelled
+                    && state.expressionRequest === request);
                 const expressionCandidates = this.collectExpressionCandidates(emotionName, normalized);
                 for (let index = 0; index < expressionCandidates.length; index += 1) {
                     const candidate = expressionCandidates[index];
@@ -1889,10 +2187,14 @@
                         this.mergeExpressionParamSnapshot(this.captureParams(Object.keys(params)));
                     }
                     if (file) {
-                        this.mergeExpressionParamSnapshot(await this.captureExpressionParamsFromFile(file));
+                        const captured = await this.captureExpressionParamsFromFile(file, normalized);
+                        if (!isCurrent()) return false;
+                        this.mergeExpressionParamSnapshot(captured);
                     }
                 }
-                const applied = await this.withPerformanceBypass(() => manager.setEmotion(emotionName));
+                const applied = await this.playOwnedExpression(
+                    onApplied => this.withPerformanceBypass(() => manager.setEmotion(emotionName, Object.assign({}, normalized, { isCurrent, onApplied }))), state);
+                if (!isCurrent()) return false;
                 return applied !== false;
             }
 
@@ -1932,15 +2234,6 @@
                 return {};
             }
             const snapshot = {};
-            if (hasOwn(manager, 'savedModelParameters')) {
-                snapshot.savedModelParameters = cloneJsonCompatible(manager.savedModelParameters);
-            }
-            if (hasOwn(manager, '_shouldApplySavedParams')) {
-                snapshot.shouldApplySavedParams = !!manager._shouldApplySavedParams;
-            }
-            if (hasOwn(manager, 'persistentExpressionParamsByName')) {
-                snapshot.persistentExpressionParamsByName = cloneJsonCompatible(manager.persistentExpressionParamsByName);
-            }
             if (hasOwn(manager, '_activeExpressionParamIds')) {
                 snapshot.activeExpressionParamIds = cloneParamIdSnapshot(manager._activeExpressionParamIds);
             }
@@ -1952,18 +2245,9 @@
             if (!manager || !snapshot || typeof snapshot !== 'object') {
                 return false;
             }
-            if (hasOwn(snapshot, 'savedModelParameters')) {
-                manager.savedModelParameters = cloneJsonCompatible(snapshot.savedModelParameters);
-            }
-            if (hasOwn(snapshot, 'shouldApplySavedParams')) {
-                manager._shouldApplySavedParams = !!snapshot.shouldApplySavedParams;
-            }
-            if (hasOwn(snapshot, 'persistentExpressionParamsByName')) {
-                manager.persistentExpressionParamsByName = cloneJsonCompatible(snapshot.persistentExpressionParamsByName);
-            }
-            if (hasOwn(snapshot, 'activeExpressionParamIds')) {
-                manager._activeExpressionParamIds = restoreParamIdSnapshot(snapshot.activeExpressionParamIds);
-            }
+            // Configuration and protection belong to the manager. Retirement may
+            // only remove expression resources actually created by this session.
+            this.clearOwnedExpression();
             return true;
         }
 
@@ -2003,7 +2287,7 @@
             return candidates;
         }
 
-        async captureExpressionParamsFromFile(file) {
+        async captureExpressionParamsFromFile(file, options = {}) {
             const manager = this.getManager();
             if (!file || !manager || typeof fetch !== 'function' || typeof manager.resolveAssetPath !== 'function') {
                 return {};
@@ -2021,12 +2305,14 @@
                 pushCandidate('expressions/' + baseName);
             }
             for (let index = 0; index < candidates.length; index += 1) {
+                if (options.signal?.aborted) return {};
                 try {
-                    const response = await fetch(manager.resolveAssetPath(candidates[index]));
+                    const response = await fetch(manager.resolveAssetPath(candidates[index]), { signal: options.signal });
                     if (!response.ok) {
                         continue;
                     }
                     const data = await response.json();
+                    if (options.signal?.aborted) return {};
                     const paramIds = Array.isArray(data.Parameters)
                         ? data.Parameters.map((param) => param && param.Id).filter(Boolean)
                         : [];
@@ -2092,11 +2378,25 @@
         }
 
         async applyExpression(expression, options) {
+            return this.runOwnedOperation(this.sessionState,
+                operation => this.applyExpressionOwned(expression, Object.assign({}, options, operation)));
+        }
+
+        async applyExpressionOwned(expression, options) {
             const manager = this.getManager();
+            const state = this.sessionState;
+            if ((options && options.session && !this.ownsSession(options.session)) ||
+                (state && (!this.isCurrentState(state) || state.session.cancelled))) return false;
+            const request = {};
+            const isCurrent = () => !state || (this.isCurrentState(state) && !state.session.cancelled
+                && state.expressionRequest === request);
+            if (state) state.expressionRequest = request;
+            if (!isCurrent()) return false;
             if (!manager) {
                 return false;
             }
-            await this.clearExpression();
+            await this.clearExpression({ preserveRequest: request });
+            if (!isCurrent()) return false;
             const candidates = this.collectExpressionCandidates(expression, options);
             for (let index = 0; index < candidates.length; index += 1) {
                 const candidate = candidates[index];
@@ -2123,15 +2423,21 @@
                 }
 
                 if (file && this.hasExpressionFile(file) && typeof manager.playExpression === 'function') {
-                    this.mergeExpressionParamSnapshot(await this.captureExpressionParamsFromFile(file));
-                    const played = await this.withPerformanceBypass(() => manager.playExpression(candidateName || file, file));
+                    const captured = await this.captureExpressionParamsFromFile(file, options);
+                    if (!isCurrent()) return false;
+                    this.mergeExpressionParamSnapshot(captured);
+                    const played = await this.playOwnedExpression(
+                        onApplied => this.withPerformanceBypass(() => manager.playExpression(candidateName || file, file, Object.assign({}, options, { isCurrent, onApplied }))), state);
+                    if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;
                     }
                 }
 
                 if (candidateName && this.hasExpressionName(candidateName) && typeof manager.playExpression === 'function') {
-                    const played = await this.withPerformanceBypass(() => manager.playExpression(candidateName));
+                    const played = await this.playOwnedExpression(
+                        onApplied => this.withPerformanceBypass(() => manager.playExpression(candidateName, null, Object.assign({}, options, { isCurrent, onApplied }))), state);
+                    if (!isCurrent()) return false;
                     if (played !== false) {
                         return true;
                     }
@@ -2140,7 +2446,17 @@
             return false;
         }
 
-        async clearExpression() {
+        async clearExpression(options) {
+            if (options && options.session && !this.ownsSession(options.session)) return false;
+            const state = this.sessionState;
+            if (state) {
+                if (!this.isCurrentState(state)) return false;
+                if (!options || options.preserveRequest !== state.expressionRequest) state.expressionRequest = null;
+                this.clearOwnedExpression(state);
+                if (this.expressionParamSnapshot) this.restoreOwnedParams(this.expressionParamSnapshot, state);
+                this.expressionParamSnapshot = null;
+                return true;
+            }
             const manager = this.getManager();
             const shouldClearManagerExpression = manager?._activeTransientExpression === true;
             if (this.expressionParamSnapshot) {
@@ -2309,6 +2625,9 @@
         }
 
         async runPoseTimeline(step, options) {
+            const state = this.sessionState;
+            if (options && options.session && !this.ownsSession(options.session)) return false;
+            if (state && (!this.isCurrentState(state) || state.session.cancelled)) return false;
             const normalized = step || {};
             const computePose = typeof normalized.computePose === 'function' ? normalized.computePose : null;
             if (!computePose) {
@@ -2328,6 +2647,7 @@
             if (!context) {
                 return false;
             }
+            if (state && (!this.isCurrentState(state) || state.session.cancelled)) return false;
 
             const paramIdsByKey = normalized.params && typeof normalized.params === 'object' ? normalized.params : {};
             const metas = {};
@@ -2354,8 +2674,17 @@
             }
 
             const manager = context.manager;
-            const source = 'avatar-performance-pose-' + (options && options.sessionId ? options.sessionId : 'session');
-            const previousEyeBlinkSuspended = !!manager._suspendEyeBlinkOverride;
+            const source = 'avatar-performance-pose-' + this.driverSequence + '-' + (++this.poseSequence);
+            const previousBlinkOwner = manager._avatarPerformanceEyeBlinkOwner;
+            const blinkOwner = { model: context.model, internalModel: context.model.internalModel,
+                core: context.coreModel, previousValue: previousBlinkOwner
+                    && previousBlinkOwner.model === context.model
+                    && previousBlinkOwner.internalModel === context.model.internalModel
+                    && previousBlinkOwner.core === context.coreModel
+                ? previousBlinkOwner.previousValue : !!manager._suspendEyeBlinkOverride };
+            const poseOwner = {};
+            this.trackParameterWrites(paramKeys.map(key => metas[key].id), poseOwner);
+            let poseEntry = null;
             let cancelFrame = null;
             let settled = false;
             let settleLoop = null;
@@ -2371,17 +2700,32 @@
                     cancelFrame();
                     cancelFrame = null;
                 }
-                if (manager && normalized.suspendEyeBlink !== false) {
-                    manager._suspendEyeBlinkOverride = previousEyeBlinkSuspended;
+                if (manager && manager._avatarPerformanceEyeBlinkOwner === blinkOwner) {
+                    if (context.model === this.getModel() && !context.model.destroyed
+                        && context.model.internalModel === blinkOwner.internalModel
+                        && this.getCoreModel() === blinkOwner.core) {
+                        manager._suspendEyeBlinkOverride = blinkOwner.previousValue;
+                    }
+                    manager._avatarPerformanceEyeBlinkOwner = null;
                 }
                 if (manager && typeof manager.clearTemporaryPoseOverride === 'function') {
                     try {
-                        manager.clearTemporaryPoseOverride(source);
+                        if (poseEntry && manager._temporaryPoseOverrides?.get(source) !== poseEntry) {
+                            this.relinquishParameterWrites(paramKeys.map(key => metas[key].id), poseOwner, state);
+                        }
+                        if (poseEntry) manager.clearTemporaryPoseOverride(source, poseEntry);
                     } catch (_) {}
                 }
                 if (normalized.restoreOnComplete !== false) {
-                    this.restorePoseParams(context.coreModel, metas);
+                    if (state) {
+                        const values = {};
+                        paramKeys.forEach(key => { values[metas[key].id] = metas[key].initial; });
+                        this.restoreOwnedParams(values, state, poseOwner);
+                    } else if (context.model === this.getModel() && !context.model.destroyed) {
+                        this.restorePoseParams(context.coreModel, metas);
+                    }
                 }
+                if (state) state.timelines.delete(finish);
                 if (typeof normalized.onResult === 'function') {
                     try {
                         normalized.onResult({
@@ -2401,11 +2745,16 @@
                 if (settled) {
                     return;
                 }
-                if (context.model !== this.getModel() || context.model.destroyed) {
+                if (context.model !== this.getModel() || context.model.destroyed ||
+                    (state && (!this.isCurrentState(state) || state.session.cancelled))) {
                     finish('cancelled', 'model_changed');
                     return;
                 }
                 const elapsed = Math.max(0, now() - startedAt);
+                if (state && !paramKeys.some(key => state.parameterOwners.get(metas[key].id) === poseOwner)) {
+                    finish('cancelled', 'pose_replaced');
+                    return;
+                }
                 const handoffStart = Math.max(0, durationMs - handoffMs);
                 let progress = handoffStart > 0 ? Math.min(1, elapsed / handoffStart) : 1;
                 let weight = 1;
@@ -2429,23 +2778,34 @@
                     finish('failed', 'compute_exception');
                     throw error;
                 }
-                this.applyPoseValues(context.coreModel, metas, values, weight);
+                const ownedMetas = {};
+                paramKeys.forEach(key => {
+                    if (!state || state.parameterOwners.get(metas[key].id) === poseOwner) ownedMetas[key] = metas[key];
+                });
+                this.applyPoseValues(context.coreModel, ownedMetas, values, weight);
                 if (elapsed >= durationMs) {
                     finish('played', '');
                 }
             };
 
             try {
+                if (state) state.timelines.add(finish);
                 if (manager && normalized.suspendEyeBlink !== false) {
+                    manager._avatarPerformanceEyeBlinkOwner = blinkOwner;
                     manager._suspendEyeBlinkOverride = true;
                 }
                 if (manager && typeof manager.setTemporaryPoseOverride === 'function') {
                     usesTemporaryPoseOverride = manager.setTemporaryPoseOverride(source, (coreModel) => {
+                        if (manager._temporaryPoseOverrides?.get(source) !== poseEntry) {
+                            finish('cancelled', 'pose_replaced');
+                            return;
+                        }
                         if (coreModel === context.coreModel) {
                             overrideFrameCount += 1;
                             applyFrame();
                         }
                     }) === true;
+                    poseEntry = manager._temporaryPoseOverrides?.get(source);
                 }
                 applyFrame();
                 if (typeof normalized.onInitialPose === 'function') {
@@ -2455,6 +2815,7 @@
                         });
                     } catch (_) {}
                 }
+                if (settled) return false;
                 if (durationMs <= 0) {
                     finish('played', '');
                     return true;
@@ -2492,7 +2853,8 @@
                                 // override 回调已在模型 update 注入点逐帧 applyFrame，
                                 // rAF 只做完成/取消督导；重复 applyFrame 会让 handoff 期
                                 // 同一帧双重混合（实际权重变成 1-(1-w)^2）偏离设计曲线。
-                                if (context.model !== this.getModel() || context.model.destroyed) {
+                                if (context.model !== this.getModel() || context.model.destroyed ||
+                                    (state && (!this.isCurrentState(state) || state.session.cancelled))) {
                                     finish('cancelled', 'model_changed');
                                 } else if (Math.max(0, now() - startedAt) >= durationMs) {
                                     finish('played', '');
@@ -2540,7 +2902,12 @@
             return snapshot;
         }
 
-        restoreParams(snapshot) {
+        restoreParams(snapshot, reason, options) {
+            if (options && options.session && !this.ownsSession(options.session)) return;
+            if (this.sessionState) {
+                this.restoreOwnedParams(snapshot);
+                return;
+            }
             if (!snapshot || typeof snapshot !== 'object') {
                 return;
             }
@@ -2673,7 +3040,9 @@
             return String(id || '');
         }
 
-        setParam(id, value) {
+        setParam(id, value, options) {
+            if (options && options.session && !this.ownsSession(options.session)) return false;
+            if (this.sessionState && !this.isCurrentState()) return false;
             const coreModel = this.getCoreModel();
             const paramId = this.resolveParamId(id);
             if (!coreModel || !paramId) {
@@ -2686,11 +3055,13 @@
                         return false;
                     }
                     if (typeof coreModel.setParameterValueByIndex === 'function') {
+                        this.trackParameterWrites([paramId]);
                         coreModel.setParameterValueByIndex(index, Number(value));
                         return true;
                     }
                 }
                 if (typeof coreModel.setParameterValueById === 'function') {
+                    this.trackParameterWrites([paramId]);
                     coreModel.setParameterValueById(paramId, Number(value));
                     return true;
                 }
@@ -2700,7 +3071,7 @@
 
         lookAt(target, options, session) {
             const normalized = options || {};
-            if (session && this.ownerSessionId && session.id !== this.ownerSessionId) {
+            if ((session && !this.ownsSession(session)) || (this.sessionState && !this.isCurrentState())) {
                 return false;
             }
             const values = this.resolveLookAtValues(target, normalized);
@@ -2715,14 +3086,32 @@
                 this.lookAtSnapshot = this.captureParams(paramIds);
             }
             this.lookAtSessionId = sessionId;
-            this.lookAtSource = 'avatar-performance-look-at-' + (sessionId || 'session');
+            this.lookAtSource = 'avatar-performance-look-at-' + this.driverSequence + '-' + (sessionId || 'session');
+            const lookAtOwner = {};
+            this.trackParameterWrites(paramIds, lookAtOwner);
 
             const manager = this.getManager();
             if (manager && typeof manager.setTemporaryPoseOverride === 'function') {
                 const source = this.lookAtSource;
+                const state = this.sessionState;
+                let entry;
                 manager.setTemporaryPoseOverride(source, (coreModel) => {
-                    this.applyLookAtValues(coreModel, values);
+                    if (state && (!this.isCurrentState(state) || state.session.cancelled
+                        || manager._temporaryPoseOverrides?.get(source) !== entry)) return;
+                    const ownedValues = Object.assign({}, values);
+                    if (state) [['angleX', params.angleX], ['angleY', params.angleY],
+                        ['eyeX', params.eyeX], ['eyeY', params.eyeY]].forEach(([key, id]) => {
+                        if (state.parameterOwners.get(id) !== lookAtOwner) delete ownedValues[key];
+                    });
+                    this.applyLookAtValues(coreModel, ownedValues);
                 });
+                entry = manager._temporaryPoseOverrides?.get(source);
+                if (this.sessionState) {
+                    this.sessionState.lookAtSource = source;
+                    this.sessionState.lookAtEntry = entry;
+                    this.sessionState.lookAtOwner = lookAtOwner;
+                    this.sessionState.lookAtParamIds = paramIds;
+                }
                 return true;
             }
 
@@ -2731,17 +3120,26 @@
 
         clearLookAt(options) {
             const normalized = options || {};
+            if (normalized.session && !this.ownsSession(normalized.session)) return false;
             if (normalized.sessionId && this.lookAtSessionId && normalized.sessionId !== this.lookAtSessionId) {
                 return false;
             }
             const manager = this.getManager();
             if (manager && typeof manager.clearTemporaryPoseOverride === 'function' && this.lookAtSource) {
                 try {
-                    manager.clearTemporaryPoseOverride(this.lookAtSource);
+                    const entry = this.sessionState && this.sessionState.lookAtEntry;
+                    if (entry) {
+                        if (manager._temporaryPoseOverrides?.get(this.lookAtSource) !== entry) {
+                            this.relinquishParameterWrites(this.sessionState.lookAtParamIds, this.sessionState.lookAtOwner);
+                        }
+                        manager.clearTemporaryPoseOverride(this.lookAtSource, entry);
+                        this.sessionState.lookAtEntry = null;
+                    }
                 } catch (_) {}
             }
             if (this.lookAtSnapshot) {
-                this.restoreParams(this.lookAtSnapshot);
+                if (this.sessionState) this.restoreOwnedParams(this.lookAtSnapshot, this.sessionState, this.sessionState.lookAtOwner);
+                else this.restoreParams(this.lookAtSnapshot);
             }
             this.lookAtSnapshot = null;
             this.lookAtSource = '';

@@ -4256,6 +4256,21 @@
             "desc": "Gestiona las tarjetas de personaje, importación/exportación y personalización~"
         },
         "systray": {
+            "macos": {
+                "location": {
+                    "title": "📍 Ubicación del icono en la barra de menús",
+                    "desc": "El icono de N.E.K.O aparece en la barra de menús de macOS, en la parte superior de la pantalla.",
+                    "note": "Busca en la barra de menús el icono de N.E.K.O que aparece en la imagen.",
+                    "alt": "Icono y menú de N.E.K.O en la barra de menús de macOS"
+                },
+                "menu": {
+                    "title": "📋 Menú de la barra de menús",
+                    "desc": "Haz clic en el icono de N.E.K.O en la barra de menús para abrir el menú. Estas son algunas funciones útiles:"
+                },
+                "exitDesc": "Para cerrar N.E.K.O, selecciona Salir en el menú de la barra de menús."
+            },
+            "settings": "Ajustes",
+            "settingsDesc": "Abre los ajustes para cambiar tus preferencias de N.E.K.O.",
             "location": {
                 "title": "Ubicación del icono de bandeja",
                 "desc": "El ícono N.E.K.O aparece en la bandeja del sistema en la parte inferior derecha de la pantalla. Haz clic en él para encontrar N.E.K.O.",
