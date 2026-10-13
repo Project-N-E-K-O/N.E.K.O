@@ -610,9 +610,11 @@
         if (!id) return null;
         var entry = lines.get(id);
         if (!entry) {
+            var entryVisit = String(frame.visit_id || visit.visitId || '');
             entry = {
-                lineId: id, visitId: frame.visit_id || visit.visitId, clauses: [], text: '', final: false,
-                truncated: false, messageId: 'visit-line-' + id, speaker: frame.speaker || {}, addressee: frame.addressee || {},
+                // line_id 每场重新计数（h:1、g:1…）：气泡 id 带上场次，下一场的同号台词不会改到上一场的气泡
+                lineId: id, visitId: entryVisit, clauses: [], text: '', final: false,
+                truncated: false, messageId: 'visit-line-' + entryVisit + ':' + id, speaker: frame.speaker || {}, addressee: frame.addressee || {},
                 stallTimer: 0, rendered: false
             };
             lines.set(id, entry);
@@ -661,7 +663,8 @@
         if (!adapter || typeof adapter.renderVisitLine !== 'function') return;
         var notice = entry.truncated ? t('visit.stream.truncated', '（被打断）') : '';
         var claimed = null;
-        if (!entry.rendered && entry.final && entry.speaker && entry.speaker.self === true && entry.speaker.kind === 'human') {
+        if (!entry.rendered && entry.final && !entry.fromSnapshot
+                && entry.speaker && entry.speaker.self === true && entry.speaker.kind === 'human') {
             // 本侧亲人句：认领发送时的本地气泡，原地换成后端清洗后的那一句
             claimed = claimLocalBubble(entry);
             if (claimed) entry.messageId = claimed.messageId;
@@ -703,9 +706,10 @@
         armStall(entry);
     }
 
-    function onLineFinal(frame) {
+    function onLineFinal(frame, fromSnapshot) {
         var entry = lineEntry(frame);
         if (!entry) return;
+        if (fromSnapshot) entry.fromSnapshot = true;
         if (entry.stallTimer) { clearTimeout(entry.stallTimer); entry.stallTimer = 0; }
         entry.final = true;
         entry.text = String(frame.text || '');
@@ -1992,7 +1996,11 @@
         }
         // 重载前的台词按 visit_line 同形重放（已有的 line_id 不重复上屏）
         (Array.isArray(state.transcript) ? state.transcript : []).forEach(function (frame) {
-            if (frame && frame.type === 'visit_line' && !lines.has(String(frame.line_id || ''))) onLineFinal(frame);
+            if (!frame || frame.type !== 'visit_line') return;
+            var existing = lines.get(String(frame.line_id || ''));
+            // 已收口的行不动；只拼了分片（final 断线时丢了）或本地截断的行，用快照里的可靠终稿覆盖
+            if (existing && existing.final) return;
+            onLineFinal(frame, true);
         });
     }
 
@@ -2023,7 +2031,11 @@
             return;
         }
         if (snapshotVisit) {
-            if (visit.visitId !== snapshotVisit) startNewVisit(snapshotVisit);
+            if (visit.visitId !== snapshotVisit) {
+                // 断线期间别的窗口结束了这一场、又开了新一场：上一场照样留下结束消息、标掉还在等回显的本地气泡
+                if (inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+                startNewVisit(snapshotVisit);
+            }
             visit.side = state.side || state.role || visit.side;
             if (visit.side) rememberSide(snapshotVisit, visit.side);
             visit.phase = phaseFromState(state.phase) || visit.phase;
@@ -2081,14 +2093,17 @@
             return;
         }
         var stale = stateFrameSeq !== seqAtSend;
+        applyState(state, stale);
         var detail = { socket: socket };
         if (typeof state.visit_id === 'string' && state.visit_id) detail.visit_id = state.visit_id;
+        var startedPhases = ['active', 'wrap_up', 'ending'];
         if (!stale) {
-            var phase = state.phase;
-            detail.active = state.active === true && (phase === 'active' || phase === 'wrap_up' || phase === 'ending');
+            detail.active = state.active === true && startedPhases.indexOf(state.phase) !== -1;
+        } else if (state.active === true && visit.visitId === state.visit_id && startedPhases.indexOf(visit.phase) !== -1) {
+            // 读的期间到的是不带阶段的帧（peer_hidden 等）、这一场仍在进行：pacer 也得知道已开始（它只在 started 帧上置位）
+            detail.active = true;
         }
         dispatchBound(detail);
-        applyState(state, stale);
     }
 
     // ── 帧入口 ─────────────────────────────────────────────────────

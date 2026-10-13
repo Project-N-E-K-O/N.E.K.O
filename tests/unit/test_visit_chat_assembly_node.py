@@ -197,8 +197,9 @@ function createHarness(opts) {
   function state(action, extra) { frame(Object.assign({ type: 'visit_state_change', action: action, visit_id: VID, side: 'host', ts: 1 }, extra || {})); }
   function dialogs() { return body.all((n) => n.className && n.className.indexOf('visit-dialog ') === 0 || n.className === 'visit-dialog'); }
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
-  function lineText(id) { const m = messages.find((x) => x.id === 'visit-line-' + id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, timers, pressKey };
+  function lineMessage(id) { return messages.find((x) => x.id.indexOf('visit-line-') === 0 && x.id.endsWith(':' + id)); }
+  function lineText(id) { const m = lineMessage(id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey };
 }
 
 const report = {};
@@ -219,7 +220,7 @@ const report = {};
     report.final_text = h.lineText('L1');
     h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'L1', i: 3, text: '迟到', speaker: sp });
     report.after_final = h.lineText('L1');
-    report.plain = h.messages.find((m) => m.id === 'visit-line-L1').blocks[0].plain_text === true;
+    report.plain = h.lineMessage('L1').blocks[0].plain_text === true;
   }
   // ── abort 立即截断到 i_done ──
   {
@@ -328,7 +329,7 @@ const report = {};
     h.frame({ type: 'visit_line', visit_id: VID, line_id: 'H1', text: '第一句（清洗后）', final: true, truncated: false,
       speaker: { side: 'host', kind: 'human', name: '', self: true }, addressee: { side: 'guest', kind: 'cat' } });
     report.echo_claimed = h.messages.find((m) => m.id === 'visit-local-r1').blocks[0].text;
-    report.echo_no_dup = h.messages.filter((m) => m.id === 'visit-line-H1').length;
+    report.echo_no_dup = h.lineMessage('H1') ? 1 : 0;
     // 收件人切到自家猫娘
     h.I.handleVisitBarAction('to_own');
     h.I.submitVisitChatText({ text: '给她的', requestId: 'r3' });
@@ -496,6 +497,7 @@ const report = {};
     release();
     await probe;
     report.race_detail_has_active = Object.prototype.hasOwnProperty.call(bound[0] || {}, 'active');
+    report.race_detail_active = (bound[0] || {}).active;
     report.race_pacer_armed = h.win.nekoVisitPacer.isArmed();
     report.race_chat_phase = h.chat._test.state().visit.phase;
   }
@@ -644,7 +646,7 @@ const report = {};
     report.guest_badge = h.I.getVisitChatView().bar.badge;
     h.frame({ type: 'visit_line', visit_id: VID2, line_id: 'z1', text: '你好', final: true, truncated: false,
       speaker: { side: 'host', kind: 'cat', name: '小黑', self: false } });
-    const m = h.messages.find((x) => x.id === 'visit-line-z1');
+    const m = h.lineMessage('z1');
     report.stale_avatar_used = !!(m && m.avatarUrl);
     report.renderVisitLine_avatar = h.win.__lastAvatar || '';
   }
@@ -860,6 +862,70 @@ const report = {};
     h.chat.handleChatBlocks(chips);            // 同一连接再到一次：还在页上，不重复
     report.pruned_chip_no_dup = h.messages.filter((m) => m.id.indexOf('plugin-blocks-visit-debrief:' + VID) === 0).length;
   }
+  // ── 下一场的同号台词：新气泡，不改上一场的 ──
+  {
+    const h = createHarness();
+    const sp = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.state('started');
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:1', text: '第一场', final: true, truncated: false, speaker: sp });
+    h.state('ended');
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'started', visit_id: VID2, side: 'host', ts: 1 });
+    h.frame({ type: 'visit_line', visit_id: VID2, line_id: 'g:1', text: '第二场', final: true, truncated: false, speaker: sp });
+    const both = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0 && m.id.endsWith(':g:1')).map((m) => m.blocks[0].text);
+    report.scoped_ids = both;
+  }
+  // ── 快照里的终稿补全只拼了一半的行；快照历史不认领新发出的本地气泡 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: {
+      active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true,
+      transcript: [
+        { type: 'visit_line', visit_id: VID, line_id: 'g:5', text: '完整的一句', final: true, truncated: false, speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } },
+        { type: 'visit_line', visit_id: VID, line_id: 'h:2', text: '以前说过的话', final: true, truncated: false, speaker: { side: 'host', kind: 'human', name: '', self: true } },
+      ] } }; } };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'g:5', i: 0, text: '完整', speaker: { side: 'guest', kind: 'cat', name: '小白', self: false } });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.I.submitVisitChatText({ text: '新的一句', requestId: 'n1' });
+    release();
+    await probe;
+    report.snapshot_final_fill = h.lineText('g:5');
+    report.snapshot_no_claim = h.messages.find((m) => m.id === 'visit-local-n1').blocks[0].text;
+    report.snapshot_history_shown = h.lineText('h:2');
+  }
+  // ── 快照带来另一场、上一场还在进行：先给上一场收尾 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: true, visit_id: VID2, phase: 'active', side: 'host', enabled: true } }) };
+    const h = createHarness({ routes });
+    h.state('started');
+    h.I.submitVisitChatText({ text: '等回显', requestId: 'p1' });
+    await h.chat.afterBind(h.socket, '咪咪');
+    report.switch_old_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    report.switch_old_bubble = h.messages.find((m) => m.id === 'visit-local-p1').status;
+    report.switch_new_visit = h.chat._test.state().visit.visitId === VID2;
+  }
+  // ── 读快照期间被非阶段帧抢先、这一场仍在进行：pacer 也拿到 active:true ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true } }; } };
+    const h = createHarness({ routes, withPacer: true });
+    const bound = [];
+    h.win.addEventListener('neko-visit-bound', (ev) => bound.push(ev.detail));
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    const hidden = { type: 'visit_state_change', action: 'peer_hidden', visit_id: VID, side: 'host', ts: 1 };
+    h.win.dispatchEvent(new CustomEventLike('neko-visit-frame', { detail: hidden }));
+    h.chat.handleFrame(hidden);
+    release();
+    await probe;
+    report.nonphase_bound_active = bound[0] && bound[0].active;
+    report.nonphase_pacer_armed = h.win.nekoVisitPacer.isArmed();
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -993,7 +1059,9 @@ def test_abandon_with_unconfirmed_writes_asks_first_and_says_so(report):
 
 
 def test_state_probe_racing_a_started_frame_keeps_the_visit_active(report):
-    assert report["race_detail_has_active"] is False
+    # 迟到的旧快照（awaiting_accept）不能带出 active:false 盖掉帧刚驱动的状态；按帧之后的当前状态给 true 可以
+    assert not (report["race_detail_has_active"] and report["race_detail_active"] is False)
+    assert report["race_detail_active"] is True
     assert report["race_pacer_armed"] is True
     assert report["race_chat_phase"] == "active"
 
@@ -1137,3 +1205,24 @@ def test_replayed_invite_starts_a_clean_visit(report):
 def test_pruned_debrief_block_comes_back_on_replay(report):
     assert report["pruned_chip_back"] == 1
     assert report["pruned_chip_no_dup"] == 1
+
+
+def test_line_bubbles_are_scoped_to_their_visit(report):
+    assert report["scoped_ids"] == ["第一场", "第二场"]
+
+
+def test_snapshot_finals_fill_partial_lines_without_claiming_new_bubbles(report):
+    assert report["snapshot_final_fill"] == "完整的一句"
+    assert report["snapshot_no_claim"] == "新的一句"
+    assert report["snapshot_history_shown"] == "以前说过的话"
+
+
+def test_snapshot_switch_finalizes_the_previous_visit(report):
+    assert report["switch_old_ended_message"] is True
+    assert report["switch_old_bubble"] == "failed"
+    assert report["switch_new_visit"] is True
+
+
+def test_non_phase_frame_during_probe_still_activates_the_pacer(report):
+    assert report["nonphase_bound_active"] is True
+    assert report["nonphase_pacer_armed"] is True
