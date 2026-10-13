@@ -1833,6 +1833,18 @@ class VRMManager {
                 }
             });
 
+            const joints = springBoneManager.joints
+                ? Array.from(springBoneManager.joints)
+                : [];
+            joints.forEach(joint => {
+                const settings = joint && joint.settings;
+                if (!settings || typeof settings.hitRadius !== 'number') return;
+                if (joint._originalHitRadius === undefined) {
+                    joint._originalHitRadius = settings.hitRadius;
+                }
+                settings.hitRadius = joint._originalHitRadius * scaleFactor;
+            });
+
             console.log(`[VRM] Scaled ${colliders.length} colliders with factor ${scaleFactor.toFixed(3)}`);
         }
     }

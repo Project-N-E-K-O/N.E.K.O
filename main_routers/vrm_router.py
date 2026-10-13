@@ -541,7 +541,7 @@ async def delete_vrm_model(request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
         target.unlink()
-        await _cleanup_vrm_emotion_mapping(target.stem)
+        await _cleanup_vrm_model_configs(target.stem)
         logger.info(f"已删除 VRM 模型: {target.name}")
 
         return JSONResponse(content={"success": True, "message": f"VRM 模型 {target.stem} 已删除"})
@@ -685,13 +685,14 @@ def _vrm_model_stem_exists(model_name: str, directories) -> bool:
                for directory in directories for path in _iter_vrm_model_files(directory))
 
 
-async def _cleanup_vrm_emotion_mapping(model_name: str):
+async def _cleanup_vrm_model_configs(model_name: str):
     # Built-in/user models and case-variant extensions intentionally share a mapping.
     try:
         config_mgr = get_config_manager()
         directories = [config_mgr.project_root / 'static' / 'vrm', config_mgr.vrm_dir]
         emotion_config = _get_emotion_config_path(model_name)
-        if not emotion_config or not emotion_config.is_file():
+        physics_config = _get_physics_config_path(model_name)
+        if not emotion_config and not physics_config:
             return
         workshop = await get_subscribed_workshop_items()
         if not isinstance(workshop, dict) or not workshop.get('success'):
@@ -704,14 +705,27 @@ async def _cleanup_vrm_emotion_mapping(model_name: str):
             if folder.is_dir():
                 directories.append(folder)
                 directories.extend(child for child in folder.iterdir() if child.is_dir())
-        for directory in directories:
-            for model in _iter_vrm_model_files(directory):
-                other_config = emotion_config.parent / f"{model.stem}_emotion.json"
-                if model.stem == model_name or (other_config.is_file() and other_config.samefile(emotion_config)):
-                    return
-        emotion_config.unlink()
+
+        targets = []
+        if emotion_config and emotion_config.is_file():
+            targets.append((emotion_config, '_emotion.json'))
+        if physics_config and physics_config.is_file():
+            targets.append((physics_config, '_physics.json'))
+
+        for config_path, suffix in targets:
+            shared = False
+            for directory in directories:
+                for model in _iter_vrm_model_files(directory):
+                    other_config = config_path.parent / f"{model.stem}{suffix}"
+                    if model.stem == model_name or (other_config.is_file() and other_config.samefile(config_path)):
+                        shared = True
+                        break
+                if shared:
+                    break
+            if not shared:
+                config_path.unlink()
     except Exception as e:
-        logger.warning(f"删除情感映射配置失败: {e}")
+        logger.warning(f"删除模型配置失败: {e}")
 
 
 @router.delete('/model/{model_name}')
@@ -735,9 +749,7 @@ async def delete_vrm_model(model_name: str):
             return JSONResponse(status_code=404, content={"success": False, "error": f"未在用户目录中找到模型 {model_name}，可能是内置模型，无法删除"})
 
         vrm_path.unlink()
-
-        await _cleanup_vrm_emotion_mapping(model_name)
-
+        await _cleanup_vrm_model_configs(model_name)
         logger.info(f"已删除VRM模型: {model_name}")
         return {"success": True, "message": f"模型 {model_name} 已成功删除"}
     except Exception as e:

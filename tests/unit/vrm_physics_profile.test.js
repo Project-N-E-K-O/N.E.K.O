@@ -458,3 +458,34 @@ test('configured radii are scaled by the current scene scale', () => {
     assert.equal(collider.shape.radius, 0.05);
     assert.equal(collider._originalRadius, 0.1);
 });
+
+test('the configured hit radius follows the scene scale too', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [],
+        chains: [{ bones: ['Head'], stiffness: 0.4, hit_radius: 0.02 }]
+    };
+    const joint = { bone: { name: 'Head' }, settings: {} };
+    profile.applyJoints(makeManager([], [joint]), 0.5);
+    assert.equal(joint.settings.hitRadius, 0.01);
+    assert.equal(joint.settings.stiffness, 0.4);
+});
+
+test('two chains on one bone each keep their own settings', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [],
+        chains: [
+            { bones: ['Tail'], stiffness: 0.2 },
+            { bones: ['Tail'], stiffness: 0.9 }
+        ]
+    };
+    const first = { bone: { name: 'Tail' }, settings: {} };
+    const second = { bone: { name: 'Tail' }, settings: {} };
+    const applied = profile.applyJoints(makeManager([], [first, second]));
+    assert.equal(applied, 2);
+    assert.equal(first.settings.stiffness, 0.2);
+    assert.equal(second.settings.stiffness, 0.9);
+});

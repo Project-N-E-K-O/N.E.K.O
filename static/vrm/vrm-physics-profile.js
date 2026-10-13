@@ -148,7 +148,9 @@
                 if (!chain || !Array.isArray(chain.bones)) continue;
                 for (let b = 0; b < chain.bones.length; b++) {
                     const key = this._sanitizeNodeName(chain.bones[b]);
-                    if (key && !index.has(key)) index.set(key, chain);
+                    if (!key) continue;
+                    if (!index.has(key)) index.set(key, []);
+                    index.get(key).push(chain);
                 }
             }
             return index;
@@ -228,11 +230,15 @@
             return applied;
         }
 
-        applyJoints(springBoneManager) {
+        applyJoints(springBoneManager, sceneScale) {
+            const scale = typeof sceneScale === 'number' && Number.isFinite(sceneScale) && sceneScale > 0
+                ? sceneScale
+                : 1;
             const joints = springBoneManager && springBoneManager.joints
                 ? Array.from(springBoneManager.joints)
                 : [];
             const index = this._chainIndex();
+            const claimed = new Map();
             let applied = 0;
 
             for (let i = 0; i < joints.length; i++) {
@@ -240,13 +246,22 @@
                 if (!joint || !joint.settings) continue;
                 const bone = joint.bone;
                 const boneName = this._sanitizeNodeName(bone && bone.name ? bone.name : '');
-                const chain = boneName ? index.get(boneName) : null;
+                if (!boneName) continue;
+                const chains = index.get(boneName);
+                if (!chains || !chains.length) continue;
+
+                const cursor = claimed.get(boneName) || 0;
+                const chain = chains[cursor < chains.length ? cursor : chains.length - 1];
+                claimed.set(boneName, cursor + 1);
                 if (!chain) continue;
 
                 const settings = joint.settings;
                 for (let k = 0; k < JOINT_SETTING_KEYS.length; k++) {
                     const map = JOINT_SETTING_KEYS[k];
-                    if (typeof chain[map.profile] === 'number') {
+                    if (typeof chain[map.profile] !== 'number') continue;
+                    if (map.settings === 'hitRadius') {
+                        settings[map.settings] = chain[map.profile] * scale;
+                    } else {
                         settings[map.settings] = chain[map.profile];
                     }
                 }
@@ -269,7 +284,7 @@
                 return { colliders: 0, joints: 0, source: this.source, reset: false };
             }
             const colliders = this.applyColliders(springBoneManager, sceneScale);
-            const joints = this.applyJoints(springBoneManager);
+            const joints = this.applyJoints(springBoneManager, sceneScale);
             const reset = this.resetSpringState(springBoneManager);
             return { colliders: colliders, joints: joints, source: this.source, reset: reset };
         }

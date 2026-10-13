@@ -143,3 +143,59 @@ def test_physics_endpoint_differs_from_emotion_endpoint(client, config_dir):
     assert emotion.status_code == 200
     assert physics.status_code == 200
     assert emotion.json()["config"] != physics.json()["config"]
+
+
+def test_cleanup_removes_both_configs_when_no_model_remains(tmp_path, monkeypatch):
+    class _Mgr:
+        project_root = tmp_path
+        vrm_dir = tmp_path / "user_vrm"
+
+    _Mgr.vrm_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(vrm_router, "get_config_manager", lambda: _Mgr())
+
+    async def _no_workshop():
+        return {"success": True, "items": []}
+
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", _no_workshop)
+
+    config_dir = tmp_path / "static" / "vrm" / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    emotion = config_dir / "sister1.0_emotion.json"
+    physics = config_dir / "sister1.0_physics.json"
+    emotion.write_text("{}", encoding="utf-8")
+    physics.write_text("{}", encoding="utf-8")
+
+    import asyncio
+
+    asyncio.run(vrm_router._cleanup_vrm_model_configs("sister1.0"))
+
+    assert not emotion.exists()
+    assert not physics.exists()
+
+
+def test_cleanup_keeps_configs_while_a_same_stem_model_remains(tmp_path, monkeypatch):
+    class _Mgr:
+        project_root = tmp_path
+        vrm_dir = tmp_path / "user_vrm"
+
+    _Mgr.vrm_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "static" / "vrm").mkdir(parents=True, exist_ok=True)
+    survivor = tmp_path / "static" / "vrm" / "sister1.0.vrm"
+    survivor.write_bytes(b"vrm")
+    monkeypatch.setattr(vrm_router, "get_config_manager", lambda: _Mgr())
+
+    async def _no_workshop():
+        return {"success": True, "items": []}
+
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", _no_workshop)
+
+    config_dir = tmp_path / "static" / "vrm" / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    physics = config_dir / "sister1.0_physics.json"
+    physics.write_text("{}", encoding="utf-8")
+
+    import asyncio
+
+    asyncio.run(vrm_router._cleanup_vrm_model_configs("sister1.0"))
+
+    assert physics.exists()
