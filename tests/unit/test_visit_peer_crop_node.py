@@ -1093,3 +1093,39 @@ def test_rejected_cached_token_is_refreshed_once_before_giving_up():
         files=BRIDGE_FILES,
     )
     assert out == {"first": "stale", "rebuilt": True, "second": "fresh", "again": False, "closed": True}
+
+
+def test_4403_retry_keeps_hidden_and_away_state():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        // guest：出门后 4403 重建，离家样式照旧
+        {
+          const h = makeBridge();
+          const box = h.ctx.document.createElement('div');
+          box.id = 'live2d-container';
+          h.ctx.document.body.appendChild(box);
+          await open(h, 'guest');
+          change(h, 'started');
+          change(h, 'departed');
+          h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 4403 } });
+          runs.guest = { rebuilt: !!h.ctx.document.getElementById('visit-frame'), away: box.classList.contains('visiting-away') };
+          change(h, 'ended'); await advance(15100);
+        }
+        // host：对端隐藏后 4403 重建，新 iframe 照样压暗
+        {
+          const h = makeBridge();
+          await open(h, 'host');
+          change(h, 'started');
+          h.bridge.onStateChange({ type: 'visit_state_change', action: 'peer_hidden', side: 'host', visit_id: VISIT_ID });
+          h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data: { t: 'closed', code: 4403 } });
+          const f = h.ctx.document.getElementById('visit-frame');
+          runs.host = { rebuilt: !!f, hidden: h.bridge._state.peerHidden === true, dim: f ? f.style.opacity : null };
+          change(h, 'ended'); await advance(15100);
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["guest"] == {"rebuilt": True, "away": True}
+    assert out["host"]["rebuilt"] is True and out["host"]["hidden"] is True and out["host"]["dim"] not in ("", None)

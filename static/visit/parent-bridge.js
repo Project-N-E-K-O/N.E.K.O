@@ -555,6 +555,8 @@
         // 离房等超时后才报 closed 时退房 / 断开可能还在路上；被同 vid 顶掉（4409）时没离房，适配器 15 s 后才兜底退房 / 断开
         var closedId = state.visitId;
         var closedSide = state.side;
+        // 显隐 / 离家只在变化时推一次：4403 重建会把它们清掉，先记下来，重建后套回去
+        var live = { hidden: !!state.peerHidden, away: !!state.away };
         removeFrame({ keepAway: data.code !== CLOSE_UNKNOWN_VISIT, keepElement: true });
         retireElement(f, data.code === CLOSE_SUPERSEDED ? SUPERSEDED_KEEP_MS : CLOSED_KEEP_MS);
         // 4403：缓存的 token 可能已经失效（页面开着时后端重启过），重取就能过。同一场只重来一次：
@@ -563,6 +565,8 @@
           state.authRetryVisitId = closedId;
           state.forceTokenRefresh = true;
           ensureFrame(closedSide, closedId);
+          if (live.away) setAway(true);
+          if (live.hidden) setPeerHidden(true);
           return;
         }
         state.closedVisitId = closedId;
