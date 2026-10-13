@@ -963,6 +963,42 @@ def test_failed_check_from_a_replaced_render_still_compares_titles(page: Page) -
 
 
 @pytest.mark.frontend
+def test_in_place_refresh_reconciles_the_remembered_window(page: Page) -> None:
+    _install_screen_source_harness(page)
+    page.evaluate(
+        """() => {
+            window.__metadataSources = window.__metadataSources.concat([
+                { id: 'window:3', name: 'Browser', display_id: '' },
+            ]);
+        }"""
+    )
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            window.setScreenSourceTitleMatchEnabled(true);
+            popup.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const before = window.appState.selectedScreenSourceId;
+            // Same ids, but the remembered "Editor" now lives behind window:3.
+            const swapped = window.__metadataSources.map((source) => {
+                if (source.id === 'window:2') return { ...source, name: 'Browser' };
+                if (source.id === 'window:3') return { ...source, name: 'Editor' };
+                return source;
+            });
+            window.refreshScreenSourceOptionNames(popup, swapped);
+            return { before, after: window.appState.selectedScreenSourceId };
+        }"""
+    )
+    # A reused list resolves the remembered title like a fresh render does.
+    assert result == {"before": "window:2", "after": "window:3"}
+
+
+@pytest.mark.frontend
 def test_rename_confirmation_resets_and_skips_screens(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(

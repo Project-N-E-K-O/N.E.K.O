@@ -3076,14 +3076,15 @@
         });
         var titleFilter = changed ? container.querySelector('.screen-source-title-filter') : null;
         if (titleFilter) titleFilter.dispatchEvent(new Event('input'));
-        // 和完整渲染一样，用这次取到的来源刷新当前选中来源的名称（设置行摘要）。
-        if (changed) {
-            var listed = (sources || []).filter(function (source) { return source && source.id; });
-            refreshSelectedScreenSourceLabelFromSources(
-                listed.filter(function (source) { return String(source.id).startsWith('screen:'); }),
-                listed.filter(function (source) { return String(source.id).startsWith('window:'); })
-            );
-        }
+        // 和完整渲染一样：开着「记住窗口」时按标题重新解析当前选中的窗口（id
+        // 可能已换成别的窗口），再刷新当前选中来源的名称（设置行摘要）。选中
+        // 来源因此变化时，调用方的缓存戳会对不上，面板随之重建。
+        var listed = (sources || []).filter(function (source) { return source && source.id; });
+        reconcileRememberedWindowSource(listed);
+        refreshSelectedScreenSourceLabelFromSources(
+            listed.filter(function (source) { return String(source.id).startsWith('screen:'); }),
+            listed.filter(function (source) { return String(source.id).startsWith('window:'); })
+        );
     };
 
     // ======================== updateScreenSourceListSelection ========================
