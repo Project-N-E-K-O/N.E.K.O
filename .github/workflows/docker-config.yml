@@ -48,8 +48,10 @@ jobs:
           # 直接合并空覆盖验证不到任何东西。
           sed 's/^    # mem_limit: 2g/    mem_limit: 2g/' \
               docker/compose.limits.example.yaml > /tmp/neko-limits.yaml
+          # 注意 compose config 会把字节值加引号输出（mem_limit: "2147483648"），
+          # 所以模式必须容忍引号 —— 第一版就是漏了引号，被 CI 抓到的。
           merged=$(docker compose -f docker/docker-compose.yml -f /tmp/neko-limits.yaml config)
-          printf '%s\n' "$merged" | grep -qE 'mem_limit: ?(2g|2147483648)' \
+          printf '%s\n' "$merged" | grep -qE 'mem_limit: ?"?(2g|2147483648)"?' \
             || { echo "资源上限覆盖文件未生效："; printf '%s\n' "$merged" | head -40; exit 1; }
 
       - name: Nginx 配置分层（渲染 + 分层不变量）
