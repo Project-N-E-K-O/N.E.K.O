@@ -290,6 +290,20 @@ async def test_unbound_text_without_a_visit_is_ordinary_chat(monkeypatch):
     assert socket.statuses() == [] and manager.statuses == []
 
 
+async def test_visit_line_after_the_route_released_is_refused_not_chatted(monkeypatch):
+    # 路由在 ending 放手、页面还没收到那一帧时发出的串门句：不漏进普通聊天，按「正在道别」拒掉
+    manager = _ProtocolManager()
+    calls = install(monkeypatch, manager, visit_active=False)
+    socket = VisitSocket([bind(), {"action": "stream_data", "input_type": "text", "data": "hi",
+                                   "source": "neko_visit:peer", "request_id": "r9"}])
+    await run(socket, manager)
+    await asyncio.sleep(0)
+    assert calls["stream"] == []
+    assert not any(kind == "stream_data" for kind, _ in manager.calls)
+    status = [json.loads(f["message"]) for f in socket.sent if f.get("type") == "status"]
+    assert status == [{"code": "VISIT_INPUT_REFUSED_WRAPUP", "details": {"request_id": "r9"}}]
+
+
 # ── 下行只发给已绑定的连接 ─────────────────────────────────────────────
 
 

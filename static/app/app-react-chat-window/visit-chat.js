@@ -472,6 +472,15 @@
 
     var pendingLocal = [];   // [{requestId, messageId, text, submitSeq}] 已发出、还没等到回显的本地气泡（先进先出）
     var submitSeq = 0;       // 每次交出去一句 +1：被拒那句之后又提交过，就不把旧文字塞回输入框
+    var visitAckedTextSession = false;   // 「文本会话已开」是串门路由的 ack 给的（没有真的普通会话）
+
+    // 串门收尾：把只由串门 ack 置上的文本会话标记撤掉，下一句普通聊天照常显式 start_session
+    function releaseVisitTextSession() {
+        if (!visitAckedTextSession) return;
+        visitAckedTextSession = false;
+        var appState = window.appState;
+        if (appState && appState.isTextSessionActive === true) appState.isTextSessionActive = false;
+    }
 
     function blockReason() {
         if (!I.isVisitChatActive()) return null;
@@ -543,6 +552,9 @@
             return false;
         }
         var messageId = 'visit-local-' + requestId;
+        var appState = window.appState;
+        // 页面还没有普通文本会话：这句会先发 start_session，串门路由只回 ack、并不起普通会话
+        if (appState && appState.isTextSessionActive !== true) visitAckedTextSession = true;
         var host = getHost();
         if (host && typeof host.appendMessage === 'function') {
             host.appendMessage(localBubbleMessage(messageId, text.trim(), 'sending'));
@@ -794,7 +806,11 @@
         var action = String(frame.action || '');
         // 另一场的迟到帧（这一场还在进行）：不动
         if (visit.visitId && visit.visitId !== visitId && inVisit() && action !== 'pending') return;
-        if (visit.visitId !== visitId) startNewVisit(visitId);
+        if (visit.visitId !== visitId) {
+            // 漏收了上一场的 ended、新一场的 pending 先到：上一场照样留下结束消息、标掉还在等回显的本地气泡
+            if (visit.visitId && inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+            startNewVisit(visitId);
+        }
         if (frame.side === 'host' || frame.side === 'guest') {
             visit.side = frame.side;
             rememberSide(visitId, frame.side);
@@ -870,6 +886,7 @@
             if (entry.stallTimer) clearTimeout(entry.stallTimer);
             entry.stallTimer = 0;
         });
+        releaseVisitTextSession();
         visit = blankVisit();
         typing = null;
         if (ended.started) {
@@ -1805,7 +1822,13 @@
 
         if (status === 200) {
             if (body.applied === 'preview') {
-                // 预览块由后端 chat_blocks 推来；这里不拼预览
+                // 预览块平常由后端 chat_blocks 推来；推送没到这一页（显示连接断了 / 写失败）时，
+                // 用应答里同一份块补上屏（按 request_id 去重：推送先到 / 后到都只留一份）。前端不自己拼预览
+                var frame = body.chat_blocks;
+                if (frame && frame.type === 'chat_blocks' && frame.request_id === 'visit-debrief-preview:' + visitId) {
+                    handleChatBlocks(frame);
+                    onDebriefFrame({ visit_id: visitId, phase: 'preview' });
+                }
                 return;
             }
             if (body.applied === 'diary') {

@@ -200,6 +200,10 @@ async def test_diary_generates_a_preview_and_writes_nothing(env):
     blocks = env.host.block(debrief.preview_request_id(vid(1)))[0]
     assert [b["text"] for b in blocks if b.get("plain_text")] == [body["preview"]["diary"], *body["preview"]["facts"]]
     assert "preview" in env.host.phases()
+    # 推送没到发起页时，页面用应答里同一份块补上屏
+    frame = body["chat_blocks"]
+    assert frame["type"] == "chat_blocks" and frame["request_id"] == debrief.preview_request_id(vid(1))
+    assert frame["blocks"] == blocks
 
 
 async def test_preview_is_cleaned_once_and_written_byte_for_byte(env):

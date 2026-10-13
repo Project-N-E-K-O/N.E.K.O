@@ -1058,7 +1058,12 @@ async def _answer_preview(spool: Any, state: Mapping[str, Any], own_char: str,
         if not caller_current:
             # 生成期间改了名（旧名字可能已归另一只猫）/ 换了账号：不再回给发起请求的旧页面
             return 404, {"error": "unknown_or_expired"}
-        return 200, {"ok": True, "applied": "preview", "preview": dict(pending)}
+        from main_routers.visit_router.display_socket import chat_blocks_frame
+
+        # 预览块推送没到发起页（显示连接断了 / 写失败）时，页面用这份同样的块补上屏（按 request_id 去重）
+        frame = chat_blocks_frame(preview_blocks(visit_id, pending, _lang()),
+                                  request_id=preview_request_id(visit_id), source_name=own_char)
+        return 200, {"ok": True, "applied": "preview", "preview": dict(pending), "chat_blocks": frame}
 
 
 def _parse_choice(payload: Mapping[str, Any]) -> tuple[Optional[str], Optional[str], Optional[int],

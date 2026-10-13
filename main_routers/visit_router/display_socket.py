@@ -134,6 +134,12 @@ async def refuse(websocket: Any, request_id: Any = None) -> None:
     await _send_status(websocket, _UNAUTHORIZED, details)
 
 
+async def refuse_orphan_line(websocket: Any, request_id: Any = None) -> None:
+    """``status{VISIT_INPUT_REFUSED_WRAPUP}`` for a visit-tagged line no visit took (route released at ``ending``)."""
+    details = {"request_id": request_id} if isinstance(request_id, str) and request_id else {}
+    await _send_status(websocket, "VISIT_INPUT_REFUSED_WRAPUP", details)
+
+
 async def refuse_unbound(websocket: Any, message: Any) -> bool:
     """Refuse input of an unbound connection while a visit owns the character; True if refused."""
     if is_bound(websocket):

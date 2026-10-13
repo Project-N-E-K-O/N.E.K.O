@@ -496,7 +496,6 @@ const report = {};
     h.chat.handleFrame(started);
     release();
     await probe;
-    report.race_detail_has_active = Object.prototype.hasOwnProperty.call(bound[0] || {}, 'active');
     report.race_detail_active = (bound[0] || {}).active;
     report.race_pacer_armed = h.win.nekoVisitPacer.isArmed();
     report.race_chat_phase = h.chat._test.state().visit.phase;
@@ -932,6 +931,55 @@ const report = {};
     report.nonphase_bound_active = bound[0] && bound[0].active;
     report.nonphase_pacer_armed = h.win.nekoVisitPacer.isArmed();
   }
+  // ── 漏了上一场的 ended、新一场的 pending 先到：上一场先收尾 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    h.I.submitVisitChatText({ text: '等回显', requestId: 'q1' });
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 2 });
+    report.pending_switch_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    report.pending_switch_old_bubble = h.messages.find((m) => m.id === 'visit-local-q1').status;
+    report.pending_switch_new_visit = h.chat._test.state().visit.visitId === VID2;
+  }
+  // ── 预览块推送没到：用 200 应答里的同一份块补上屏，之后的推送不重复 ──
+  {
+    const previewFrame = { type: 'chat_blocks', request_id: 'visit-debrief-preview:' + VID, blocks: [
+      { type: 'text', text: '今天的日记', plain_text: true },
+      { type: 'buttons', buttons: [
+        { id: 'confirm', label: '写入', action: 'visit_debrief_choice', payload: { visit_id: VID, choice: 'confirm' } },
+      ] },
+    ], metadata: { source: 'system', source_name: '咪咪', passthrough: true } };
+    const routes = { '/api/visit/debrief/choice': async () => ({ status: 200, body: { ok: true, applied: 'preview', preview: { diary: '今天的日记', facts: [] }, chat_blocks: previewFrame } }) };
+    const h = createHarness({ routes });
+    h.chat.handleChatBlocks({ type: 'chat_blocks', request_id: 'visit-debrief:' + VID, blocks: [
+      { type: 'buttons', buttons: [{ id: 'diary', label: '记成日记', action: 'visit_debrief_choice', payload: { visit_id: VID, choice: 'diary' } }] },
+    ] });
+    const chipMsg = h.messages.find((m) => m.id.indexOf('plugin-blocks-visit-debrief:') === 0);
+    h.win.dispatchEvent(new CustomEventLike('react-chat-window:action', { detail: { message: chipMsg, action: chipMsg.blocks[0].buttons[0] } }));
+    await h.settle();
+    const previews = () => h.messages.filter((m) => m.id.indexOf('plugin-blocks-visit-debrief-preview:' + VID) === 0);
+    report.http_preview_rendered = previews().length;
+    report.http_preview_text = previews()[0] ? previews()[0].blocks[0].text : null;
+    report.http_preview_chip_disabled = chipMsg.blocks[0].buttons.every((b) => b.disabled === true);
+    h.chat.handleChatBlocks(previewFrame);   // 推送后到 / bind 重放
+    report.http_preview_no_dup = previews().length;
+  }
+  // ── 只为串门句起的文本会话：串门结束后撤掉；串门前就有的普通会话不动 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    h.win.appState.isTextSessionActive = false;
+    h.I.submitVisitChatText({ text: '你好', requestId: 'a1' });
+    h.win.appState.isTextSessionActive = true;   // 串门路由回的 ack
+    h.state('ended');
+    report.ack_session_after_end = h.win.appState.isTextSessionActive;
+    const h2 = createHarness();
+    h2.win.appState.isTextSessionActive = true;   // 串门前就在普通文本聊天
+    h2.state('started');
+    h2.I.submitVisitChatText({ text: '你好', requestId: 'a2' });
+    h2.state('ended');
+    report.real_session_after_end = h2.win.appState.isTextSessionActive;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1066,7 +1114,6 @@ def test_abandon_with_unconfirmed_writes_asks_first_and_says_so(report):
 
 def test_state_probe_racing_a_started_frame_keeps_the_visit_active(report):
     # 迟到的旧快照（awaiting_accept）不能带出 active:false 盖掉帧刚驱动的状态；按帧之后的当前状态给 true 可以
-    assert not (report["race_detail_has_active"] and report["race_detail_active"] is False)
     assert report["race_detail_active"] is True
     assert report["race_pacer_armed"] is True
     assert report["race_chat_phase"] == "active"
@@ -1235,3 +1282,21 @@ def test_snapshot_switch_finalizes_the_previous_visit(report):
 def test_non_phase_frame_during_probe_still_activates_the_pacer(report):
     assert report["nonphase_bound_active"] is True
     assert report["nonphase_pacer_armed"] is True
+
+
+def test_pending_frame_for_a_new_visit_finalizes_the_previous_one(report):
+    assert report["pending_switch_ended_message"] is True
+    assert report["pending_switch_old_bubble"] == "failed"
+    assert report["pending_switch_new_visit"] is True
+
+
+def test_preview_from_the_http_answer_shows_when_the_push_is_missing(report):
+    assert report["http_preview_rendered"] == 1
+    assert report["http_preview_text"] == "今天的日记"
+    assert report["http_preview_chip_disabled"] is True
+    assert report["http_preview_no_dup"] == 1
+
+
+def test_ack_only_text_session_is_released_when_the_visit_ends(report):
+    assert report["ack_session_after_end"] is False
+    assert report["real_session_after_end"] is True

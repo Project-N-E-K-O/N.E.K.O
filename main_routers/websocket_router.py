@@ -1355,6 +1355,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         continue
                     if claim is RouteClaim.CLAIMED:
                         continue
+                    if (
+                        input_type in _TEXT_SESSION_INPUT_TYPES
+                        and str(message.get("source") or "").startswith(VISIT_ROUTE_KIND + ":")
+                    ):
+                        # 写给串门的句子没有串门接（路由在 ending 放手、页面还没收到那一帧）：
+                        # 不漏进普通聊天，按「正在道别」拒掉，页面据 request_id 标未送达、放回原文
+                        from main_routers.visit_router import display_socket as _visit_display
+
+                        await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
+                        continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")
