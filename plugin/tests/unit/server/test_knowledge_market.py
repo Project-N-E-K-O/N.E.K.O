@@ -755,6 +755,72 @@ async def test_redirect_off_the_allowlist_is_refused(monkeypatch):
     assert excinfo.value.code == "unsafe_artifact_redirect"
 
 
+def _descriptor_client(monkeypatch, replies: list[int], seen: list[str | None]):
+    """Serve the version descriptor through a mock transport, one status per request."""
+    body = _descriptor().model_dump(mode="json")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization"))
+        status = replies.pop(0)
+        return httpx.Response(status, json=body if status == 200 else {"detail": "x"})
+
+    real_client = httpx.AsyncClient
+
+    class Fake:
+        AsyncClient = staticmethod(lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+        Timeout = httpx.Timeout
+        HTTPError = httpx.HTTPError
+
+    async def fake_httpx():
+        return Fake
+
+    monkeypatch.setattr(km, "ensure_httpx", fake_httpx)
+
+
+def _tokens(monkeypatch, *, refreshed: str | None):
+    calls: list[dict] = []
+
+    async def ensure(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("force_refresh"):
+            return {"access_token": refreshed} if refreshed else None
+        return {"access_token": "stale"}
+
+    monkeypatch.setattr(km, "_ensure_valid_oauth_token", ensure)
+    return calls
+
+
+REQUEST = km.KnowledgeSubscribeRequest(package_id=42, version="1.0.0", channel="stable", pack_id="market-memes")
+
+
+async def test_a_revoked_login_is_refreshed_once_for_the_descriptor(monkeypatch):
+    seen: list[str | None] = []
+    _descriptor_client(monkeypatch, [401, 200], seen)
+    calls = _tokens(monkeypatch, refreshed="fresh")
+    descriptor = await km._fetch_version_descriptor(REQUEST)
+    assert descriptor.pack_id == "market-memes"
+    assert seen == ["Bearer stale", "Bearer fresh"]
+    assert calls[-1] == {"force_refresh": True, "rejected_access_token": "stale"}
+
+
+async def test_without_a_fresh_login_the_descriptor_is_asked_for_anonymously(monkeypatch):
+    seen: list[str | None] = []
+    _descriptor_client(monkeypatch, [401, 200], seen)
+    _tokens(monkeypatch, refreshed=None)
+    assert (await km._fetch_version_descriptor(REQUEST)).package_id == 42
+    assert seen == ["Bearer stale", None]
+
+
+async def test_a_descriptor_that_needs_a_login_says_so(monkeypatch):
+    seen: list[str | None] = []
+    _descriptor_client(monkeypatch, [401, 401], seen)
+    _tokens(monkeypatch, refreshed=None)
+    with pytest.raises(km._TaskError) as excinfo:
+        await km._fetch_version_descriptor(REQUEST)
+    assert excinfo.value.code == "market_auth_required" and excinfo.value.retryable is True
+    assert len(seen) == 2  # one retry, not a loop
+
+
 # ── wiring ──────────────────────────────────────────────────────────
 
 

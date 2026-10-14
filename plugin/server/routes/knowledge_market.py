@@ -633,18 +633,38 @@ def _market_subscription(item: dict[str, Any]) -> dict[str, Any] | None:
 
 
 async def _fetch_version_descriptor(request: KnowledgeSubscribeRequest) -> KnowledgeVersionDescriptor:
+    """Read the version descriptor, signed in when a market login is saved.
+
+    Like the other market calls: a 401 for a saved token (revoked before its
+    recorded expiry) refreshes it once and asks again; if no fresh token is
+    to be had, it asks without one, so a public package never fails on a
+    stale login. A 401 even then means the package needs a login.
+    """
     httpx = await ensure_httpx()
-    headers = {"Accept": "application/json"}
     token_data = await _ensure_valid_oauth_token()
-    if token_data and token_data.get("access_token"):
-        headers["Authorization"] = f"Bearer {token_data['access_token']}"
+    access_token = str(token_data.get("access_token") or "") if token_data else ""
     url = (
         f"{MARKET_API_URL.rstrip('/')}/api/v1/knowledge/packages/"
         f"{request.package_id}/versions/{quote(request.version, safe='')}"
     )
+
+    async def get(client: Any, token: str) -> Any:
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return await client.get(url, params={"channel": request.channel}, headers=headers)
+
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            response = await client.get(url, params={"channel": request.channel}, headers=headers)
+            response = await get(client, access_token)
+            if response.status_code == 401 and access_token:
+                refreshed = await _ensure_valid_oauth_token(
+                    force_refresh=True, rejected_access_token=access_token
+                )
+                fresh = str(refreshed.get("access_token") or "") if refreshed else ""
+                response = await get(client, fresh if fresh != access_token else "")
+            if response.status_code == 401:
+                raise _TaskError("market_auth_required", "该知识包需要登录插件市场", retryable=True)
             response.raise_for_status()
             descriptor = KnowledgeVersionDescriptor.model_validate(response.json())
     except (httpx.HTTPError, ValueError) as exc:

@@ -112,9 +112,16 @@ def _field(payload: Mapping[str, Any], name: str, pattern: re.Pattern[str]) -> s
     return value
 
 
-def parse_subscription(payload: object) -> KnowledgeSubscription:
-    """Validate subscription metadata; exactly the known fields, all required."""
-    if not isinstance(payload, Mapping) or set(payload) != _FIELDS:
+def parse_subscription(payload: object, *, strict: bool = True) -> KnowledgeSubscription:
+    """Validate subscription metadata; every known field is required.
+
+    ``strict`` (an apply request): no other field either. Reading the
+    registry is lenient about extra fields, so a registry written by a later
+    version that records more about a subscription still opens here.
+    """
+    if not isinstance(payload, Mapping) or not _FIELDS <= set(payload):
+        raise SubscriptionError("invalid_subscription")
+    if strict and set(payload) != _FIELDS:
         raise SubscriptionError("invalid_subscription")
     if payload.get("provider") != MARKET_PROVIDER:
         raise SubscriptionError("untrusted_provider")

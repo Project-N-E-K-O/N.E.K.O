@@ -171,7 +171,7 @@ def _parse_record(pack_id: str, raw: object) -> PackRecord:
     subscription = None
     if raw.get("subscription") is not None:
         try:
-            subscription = parse_subscription(raw["subscription"])
+            subscription = parse_subscription(raw["subscription"], strict=False)
         except SubscriptionError as exc:
             raise KnowledgeRegistryError("invalid_pack_record") from exc
         if subscription.pack_id != pack_id:

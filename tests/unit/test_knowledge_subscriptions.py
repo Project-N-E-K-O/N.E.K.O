@@ -338,6 +338,61 @@ def test_registry_refuses_a_subscription_naming_another_pack(tmp_path):
         load_registry(tmp_path)
 
 
+def test_registry_reads_a_subscription_with_fields_it_does_not_know(tmp_path):
+    """A registry written by a later version stays readable; an apply stays strict."""
+    raw = _raw(_pack())
+    subscription = {**_subscription(raw).to_json(), "added_later": "x"}
+    record = {
+        "pack_sha256": "0" * 64,
+        "source": {"name": "x", "homepage": "", "license": ""},
+        "declared_material_type": "knowledge",
+        "material_type_override": None,
+        "entries": 1,
+        "chunks": 1,
+        "auto_context": False,
+        "local_embedding": True,
+        "disabled_titles": [],
+        "subscription": subscription,
+    }
+    (tmp_path / REGISTRY_FILE).write_text(
+        json.dumps({"schema_version": 1, "enabled": True, "packs": {"market-memes": record}}), encoding="utf-8"
+    )
+    loaded = load_registry(tmp_path).packs["market-memes"].subscription
+    assert loaded == _subscription(raw)
+    with pytest.raises(SubscriptionError):
+        parse_subscription(subscription)
+    # A missing field is still a broken record.
+    del record["subscription"]["remote_id"]
+    (tmp_path / REGISTRY_FILE).write_text(
+        json.dumps({"schema_version": 1, "enabled": True, "packs": {"market-memes": record}}), encoding="utf-8"
+    )
+    with pytest.raises(KnowledgeRegistryError):
+        load_registry(tmp_path)
+
+
+def test_plugin_server_copies_of_the_subscription_rules_agree():
+    """The plugin server does not import ``knowledge``; its copies must not drift."""
+    import re
+
+    from knowledge import models, subscriptions
+    from plugin.server.routes import knowledge_market as km
+
+    assert km.MARKET_PROVIDER == subscriptions.MARKET_PROVIDER
+    assert km.SUBSCRIPTION_PROTOCOL_VERSION == subscriptions.SUBSCRIPTION_PROTOCOL_VERSION
+    assert km.MAX_ARTIFACT_BYTES == models.MAX_PACK_BYTES
+    assert km._PACK_ID_PATTERN == models._PACK_ID_RE.pattern
+    assert km._VERSION_PATTERN == subscriptions._VERSION_RE.pattern
+    assert km._SHA256_RE.pattern == subscriptions._SHA256_RE.pattern
+    remote_id = km.KnowledgeVersionDescriptor.model_fields["remote_id"].metadata
+    assert any(getattr(item, "pattern", None) == subscriptions._REMOTE_ID_RE.pattern for item in remote_id)
+    assert km._PACKAGE_ID_MAX == int("9" * 19)
+    assert re.fullmatch(subscriptions._PACKAGE_ID_RE, str(km._PACKAGE_ID_MAX))
+    channel = km.KnowledgeSubscribeRequest.model_fields["channel"].annotation
+    assert set(channel.__args__) == set(subscriptions.CHANNELS)
+    material = km.KnowledgeVersionDescriptor.model_fields["material_type"].annotation
+    assert set(material.__args__) == set(models.MATERIAL_TYPES)
+
+
 # ── unsubscribe ─────────────────────────────────────────────────────
 
 IDENTITY = ("plugin-market", "42", "knowledge/market-memes")
