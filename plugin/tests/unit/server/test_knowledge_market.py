@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from plugin.server.routes import knowledge_market as km
 from plugin.server.routes.market_bridge import get_bridge_token
@@ -777,12 +777,14 @@ def _descriptor_client(monkeypatch, replies: list[int], seen: list[str | None]):
     monkeypatch.setattr(km, "ensure_httpx", fake_httpx)
 
 
-def _tokens(monkeypatch, *, refreshed: str | None):
+def _tokens(monkeypatch, *, refreshed: str | None, refresh_fails: bool = False):
     calls: list[dict] = []
 
     async def ensure(**kwargs):
         calls.append(kwargs)
         if kwargs.get("force_refresh"):
+            if refresh_fails:
+                raise HTTPException(status_code=502, detail="auth service unavailable")
             return {"access_token": refreshed} if refreshed else None
         return {"access_token": "stale"}
 
@@ -807,6 +809,14 @@ async def test_without_a_fresh_login_the_descriptor_is_asked_for_anonymously(mon
     seen: list[str | None] = []
     _descriptor_client(monkeypatch, [401, 200], seen)
     _tokens(monkeypatch, refreshed=None)
+    assert (await km._fetch_version_descriptor(REQUEST)).package_id == 42
+    assert seen == ["Bearer stale", None]
+
+
+async def test_a_failing_refresh_still_asks_for_the_descriptor_anonymously(monkeypatch):
+    seen: list[str | None] = []
+    _descriptor_client(monkeypatch, [401, 200], seen)
+    _tokens(monkeypatch, refreshed=None, refresh_fails=True)
     assert (await km._fetch_version_descriptor(REQUEST)).package_id == 42
     assert seen == ["Bearer stale", None]
 

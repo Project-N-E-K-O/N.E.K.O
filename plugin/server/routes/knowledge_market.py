@@ -658,9 +658,14 @@ async def _fetch_version_descriptor(request: KnowledgeSubscribeRequest) -> Knowl
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
             response = await get(client, access_token)
             if response.status_code == 401 and access_token:
-                refreshed = await _ensure_valid_oauth_token(
-                    force_refresh=True, rejected_access_token=access_token
-                )
+                try:
+                    refreshed = await _ensure_valid_oauth_token(
+                        force_refresh=True, rejected_access_token=access_token
+                    )
+                except HTTPException:
+                    # The Auth service failing (unreachable, 5xx) is no fresh
+                    # token either: ask without one.
+                    refreshed = None
                 fresh = str(refreshed.get("access_token") or "") if refreshed else ""
                 response = await get(client, fresh if fresh != access_token else "")
             if response.status_code == 401:
