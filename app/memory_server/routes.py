@@ -4421,10 +4421,10 @@ async def _persist_fence_marks(lanlan_name: str, key: str, staging: dict, fenced
         raise
     except Exception as exc:
         journal_error = exc
+    # 先记原始写盘错误：兜底期间调用方若被取消，下面那行就走不到了
+    logger.error(f"[scoped_history] {lanlan_name}: 清除丢弃标记的暂存落盘失败，改记键记录兜底: {journal_error}")
     fallback = await _record_fence_fallback(lanlan_name, key, fenced)
-    logger.error(
-        f"[scoped_history] {lanlan_name}: 清除丢弃标记的暂存落盘失败（键记录兜底：{fallback}）: {journal_error}"
-    )
+    logger.error(f"[scoped_history] {lanlan_name}: 清除丢弃标记的键记录兜底：{fallback}")
     raise HTTPException(
         status_code=503,
         detail="scoped history staging failed; retry with the same key",
@@ -5210,9 +5210,10 @@ def _mark_items_forgotten_during_generation(
 ) -> set[int]:
     """Journal as dropped every item of a subject whose forget generation moved.
 
-    Returns the indexes of every segment whose subject moved (generation or a
-    running forget) when this call journaled anything new, else an empty set,
-    so a caller can persist exactly those subjects as a fallback.
+    Returns the indexes of the segments this call journaled something new for
+    (dropped items or a fresh segment mark), else an empty set, so a caller
+    can persist exactly those as a fallback; a segment fenced by an earlier
+    recheck is not reported again.
 
     A subject whose forget is still running (between ``abegin`` and
     ``aend``) counts as moved too: a baseline captured inside that window
@@ -5235,6 +5236,7 @@ def _mark_items_forgotten_during_generation(
     applied = staging.setdefault("applied", [])
     done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
     added = False
+    touched: set[int] = set()
     items = staging.get("items") or []
     for position, item in enumerate(items):
         if (
@@ -5246,6 +5248,7 @@ def _mark_items_forgotten_during_generation(
             # 被清 subject 的抽取原文 / 显示名一并抹掉：之后请求若中断，暂存里也不留它们
             items[position] = _stripped_item(item)
             added = True
+            touched.add(item.get("segment"))
     segments = staging.get("segments")
     if isinstance(segments, list):
         newly = {
@@ -5254,9 +5257,11 @@ def _mark_items_forgotten_during_generation(
             and segments[index].get(_SEGMENT_DROPPED_BY_FORGET) is not True
         }
         _mark_segments_dropped(segments, newly)
+        touched |= newly
         # 只剩语言项的段（语言项从不记丢弃）也要让调用方落盘：否则段级标记只在内存里
         added = added or bool(newly)
-    return set(changed) if added else set()
+    # 只报这次真正新记了东西的段：早先已挡下的段不再并进兜底（它的 wire key 可能被有效段用着）
+    return touched if added else set()
 
 
 def _fingerprint_of_staging(document: dict) -> dict | None:

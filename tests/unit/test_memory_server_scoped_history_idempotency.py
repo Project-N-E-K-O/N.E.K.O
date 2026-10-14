@@ -4553,3 +4553,26 @@ async def test_fallback_written_while_the_caller_is_cancelled_is_reported_as_wri
     # 写成了就按写成了记，不能被说成「没写成」
     assert any("recorded in forgotten_keys" in line for line in logged)
     assert not any("cancelled before it was written" in line for line in logged)
+
+
+async def test_recheck_reports_only_the_segments_it_newly_fenced(env):
+    from memory.scopes import coerce_subject
+
+    routes = env.routes
+    staging = {
+        "segments": [
+            {"subject": dict(GP), "wire_key": GP_KEY, "dropped_by_forget": True},     # 早先那次复核已挡下
+            {"subject": dict(PART), "wire_key": PART_KEY},
+        ],
+        "items": [
+            {"seq": 0, "segment": 0, "kind": "facts", "facts": []},
+            {"seq": 1, "segment": 1, "kind": "facts", "facts": [{"text": "Mika 的猫下午在窗台睡觉"}]},
+        ],
+        "applied": [{"seq": 0, "dropped_forget_during_generation": True}],
+    }
+    contexts = [{"subject": coerce_subject(GP)}, {"subject": coerce_subject(PART)}]
+    baseline = routes._capture_forget_generations(NAME, routes._staged_segment_subjects(staging, contexts))
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))      # 第 0 段早已挡下，generation 仍不同
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(PART))    # 第 1 段这次才被清除
+    # 只报这次新挡的第 1 段：第 0 段不再并进兜底
+    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {1}
