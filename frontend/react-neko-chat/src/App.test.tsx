@@ -21,6 +21,37 @@ import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
 
 describe('App', () => {
+  it.each(['compact', 'full'] as const)('acknowledges an unchanged empty %s composer for each new key', (mode) => {
+    const onComposerRestore = vi.fn();
+    const props = { chatSurfaceMode: mode, compactChatState: 'input' as const, onComposerRestore };
+    const { rerender } = render(<App {...props} composerRestore={{ key: 'empty-first', text: '' }} />);
+    expect(onComposerRestore).toHaveBeenCalledExactlyOnceWith('empty-first');
+    rerender(<App {...props} composerRestore={{ key: 'empty-second', text: '' }} />);
+    expect(onComposerRestore).toHaveBeenCalledTimes(2);
+    expect(onComposerRestore).toHaveBeenLastCalledWith('empty-second');
+    rerender(<App {...props} composerRestore={{ key: 'empty-second', text: '' }} />);
+    expect(onComposerRestore).toHaveBeenCalledTimes(2);
+  });
+  it.each(['compact', 'full'] as const)('restores and clears a %s composer exactly once per handoff', (mode) => {
+    const props = { chatSurfaceMode: mode, compactChatState: 'input' as const,
+      composerRestore: { key: 'first', text: 'Transferred draft' }, onComposerRestore: vi.fn() };
+    const { rerender } = render(<App {...props} />);
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).toHaveValue('Transferred draft');
+    expect(props.onComposerRestore).toHaveBeenCalledExactlyOnceWith('first');
+    props.composerRestore = { key: 'same-value', text: 'Transferred draft' };
+    rerender(<App {...props} />);
+    expect(props.onComposerRestore).toHaveBeenCalledTimes(2);
+    expect(props.onComposerRestore).toHaveBeenLastCalledWith('same-value');
+    fireEvent.change(input, { target: { value: 'Edited locally' } });
+    rerender(<App {...props} />);
+    expect(input).toHaveValue('Edited locally');
+    rerender(<App {...props} composerRestore={{ key: 'second', text: '' }} />);
+    expect(input).toHaveValue('');
+    expect(props.onComposerRestore).toHaveBeenLastCalledWith('second');
+    rerender(<App {...props} composerRestore={{ key: 'second', text: '' }} rollbackDraft="Rejected submission" _rollbackKey="rejected" />);
+    expect(input).toHaveValue('Rejected submission');
+  });
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
   const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
   const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';

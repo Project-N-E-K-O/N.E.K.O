@@ -632,8 +632,37 @@
         I.state._rollbackKey = 'rb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
         delete I.state.pendingRollbackDrafts[requestId];
         console.log('[ROLLBACK] rollbackLastDraft: rollbackDraftPresent=true length=' + I.state.rollbackDraft.length + ' key=' + I.state._rollbackKey);
+        I.dispatchHostEvent('composer-rollback', { requestId: requestId, text: rollbackText });
         I.renderWindow();
     }
+
+    I.captureComposerTransferState = function () {
+        return { version: 1, pendingRollbackDrafts: Object.assign({}, I.state.pendingRollbackDrafts) };
+    };
+
+    I.restoreComposerTransferState = function (snapshot, draft) {
+        if (!snapshot || snapshot.version !== 1) throw new Error('Unsupported composer transfer state');
+        I.state.pendingRollbackDrafts = Object.assign(Object.create(null), snapshot.pendingRollbackDrafts);
+        I.state.rollbackDraft = '';
+        if (typeof draft !== 'string') return Promise.resolve();
+        return new Promise(function (resolve, reject) {
+            var props = I.ensureViewProps();
+            var key = 'handoff-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+            var timer = setTimeout(function () {
+                if (props.onComposerRestore === restored) delete props.onComposerRestore;
+                reject(new Error('Composer restoration did not complete'));
+            }, 15000);
+            function restored(restoredKey) {
+                if (restoredKey !== key) return;
+                clearTimeout(timer);
+                if (props.onComposerRestore === restored) delete props.onComposerRestore;
+                resolve();
+            }
+            props.composerRestore = { key: key, text: draft };
+            props.onComposerRestore = restored;
+            I.renderWindow();
+        });
+    };
 
     I.clearPendingRollbackDraft = function clearPendingRollbackDraft(requestId) {
         if (!requestId) return;

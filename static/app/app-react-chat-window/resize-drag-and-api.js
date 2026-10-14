@@ -954,6 +954,8 @@
         clearGuideMessages: I.clearGuideMessages,
         clearMessages: I.clearMessages,
         getState: I.getStateSnapshot,
+        captureComposerTransferState: I.captureComposerTransferState,
+        restoreComposerTransferState: I.restoreComposerTransferState,
         setOnMessageAction: function (handler) {
             I.state.onMessageAction = typeof handler === 'function' ? handler : null;
         },

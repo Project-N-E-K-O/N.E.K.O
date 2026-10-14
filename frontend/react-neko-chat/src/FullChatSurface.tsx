@@ -41,6 +41,7 @@ import {
 } from './avatarTools';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
 import { claimOrdinaryDraftRestore } from './theaterDraftRestore';
+import { useComposerRestore } from './useComposerRestore';
 import {
   playCompactToolWheelDetentSound,
   useCompactToolWheelAudioPreload,
@@ -488,6 +489,8 @@ export default function FullChatSurface({
   theaterPresentation,
   onCompactChatStateChange,
   rollbackDraft,
+  composerRestore,
+  onComposerRestore,
   _rollbackKey,
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
@@ -622,6 +625,8 @@ export default function FullChatSurface({
     // 输入区隐藏或猫咪本地文字模式下道具入口不可见，编辑器回传的结果只落槽位，不拉起管理弹窗。
     if (!catLocalTextOnly && !composerHidden) setAvatarToolManagerOpen(true);
   }, [applyEditorResult, catLocalTextOnly, composerHidden]);
+
+  useComposerRestore(draft, setDraft, composerRestore, onComposerRestore);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call

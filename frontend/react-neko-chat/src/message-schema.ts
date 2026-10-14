@@ -275,6 +275,8 @@ export const chatWindowPropsSchema = z.object({
   failedStatusLabel: z.string().optional(),
   inputHint: z.string().optional(),
   rollbackDraft: z.string().optional(),
+  composerRestore: z.object({ key: z.string(), text: z.string() }).optional(),
+  onComposerRestore: z.function().args(z.string()).returns(z.void()).optional(),
   _rollbackKey: z.string().optional(),
   _avatarToolDeactivationKey: z.string().optional(),
   jukeboxButtonLabel: z.string().optional(),

@@ -1250,6 +1250,82 @@
         });
     }
 
+    // Desktop providers transport this opaque state between independent chat
+    // pages. Queue/ref ownership stays here, beside the stream implementation.
+    var desktopTransferGlobals = {
+        _geminiTurnFullText: '', _realisticGeminiBuffer: '', _realisticGeminiQueue: [],
+        _realisticGeminiVersion: 0, _lastBubbleTime: 0, _pendingMusicCommand: '',
+        _structuredGeminiStreaming: false, _turnIsStructured: false,
+        _geminiTurnEndSealed: false, _nekoAssistantTurnId: null,
+        _nekoCompactCaptionSegmentTurnId: '', _nekoCompactCaptionSegmentSeq: 0,
+        _nekoCompactCaptionSegmentId: '', realisticGeminiCurrentTurnId: null,
+        _lastSubmittedRequestId: '', _lastSubmittedText: ''
+    };
+    var desktopTransferTurn = {
+        assistantTurnId: null, assistantTurnStartedAt: 0,
+        assistantPendingTurnServerId: null, assistantTurnAwaitingBubble: false,
+        pendingTextTurnSubmitAt: 0, assistantTurnSeq: 0,
+        assistantTurnCompletedId: null, assistantTurnSettledId: null,
+        assistantTurnCompletionSource: null
+    };
+    function copyDesktopTransferFields(source, defaults) {
+        return Object.fromEntries(Object.entries(defaults).map(function (entry) {
+            var key = entry[0];
+            return [key, structuredClone(source[key] == null ? entry[1] : source[key])];
+        }));
+    }
+    function captureDesktopBubbleRef(ref) {
+        var id = ref && ref.dataset && ref.dataset.reactChatMessageId;
+        return id ? { id: id, text: ref.textContent || '', time: ref._stableTime || '' } : null;
+    }
+    function captureDesktopState() {
+        var host = getHost();
+        if (!host || !host.captureComposerTransferState) return null;
+        _tryFlushPendingHostMessages();
+        return {
+            version: 1,
+            globals: copyDesktopTransferFields(window, desktopTransferGlobals),
+            turn: copyDesktopTransferFields(S, desktopTransferTurn),
+            composerState: host.captureComposerTransferState(),
+            current: captureDesktopBubbleRef(window.currentGeminiMessage),
+            bubbles: (window.currentTurnGeminiBubbles || []).map(captureDesktopBubbleRef).filter(Boolean),
+            attachments: (window.currentTurnGeminiAttachments || []).map(captureDesktopBubbleRef).filter(Boolean)
+        };
+    }
+    async function restoreDesktopState(snapshot, options) {
+        var host = getHost();
+        if (!snapshot || snapshot.version !== 1 || !host || !host.restoreComposerTransferState) {
+            throw new Error('Unsupported desktop chat transfer state');
+        }
+        if (options && options.restoreResponse === false) {
+            await host.restoreComposerTransferState(snapshot.composerState, options.draft);
+            return;
+        }
+        window._realisticProcessingOwner = null;
+        window._isProcessingRealisticQueue = false;
+        _pendingHostMessages = [];
+        if (_pendingFlushTimer) clearInterval(_pendingFlushTimer);
+        _pendingFlushTimer = null;
+        Object.assign(window, copyDesktopTransferFields(snapshot.globals, desktopTransferGlobals));
+        Object.assign(S, copyDesktopTransferFields(snapshot.turn, desktopTransferTurn));
+        var references = new Map();
+        function restoreRef(value) {
+            if (!value) return null;
+            if (!references.has(value.id)) {
+                var ref = createVirtualBubbleRef(value.id);
+                ref.textContent = value.text;
+                ref._stableTime = value.time;
+                references.set(value.id, ref);
+            }
+            return references.get(value.id);
+        }
+        window.currentGeminiMessage = restoreRef(snapshot.current);
+        window.currentTurnGeminiBubbles = (snapshot.bubbles || []).map(restoreRef);
+        window.currentTurnGeminiAttachments = (snapshot.attachments || []).map(restoreRef);
+        await host.restoreComposerTransferState(snapshot.composerState, options && options.draft);
+        if (window._realisticGeminiQueue.length) processRealisticQueue(window._realisticGeminiVersion);
+    }
+
     // ======================== 覆盖全局函数 ========================
 
     window.appendMessage = appendMessage;
@@ -1265,6 +1341,8 @@
 
     // 覆盖 appChat 上的方法
     if (window.appChat) {
+        window.appChat.captureDesktopState = captureDesktopState;
+        window.appChat.restoreDesktopState = restoreDesktopState;
         window.appChat.appendMessage = appendMessage;
         window.appChat.createGeminiBubble = createGeminiBubble;
         window.appChat.processRealisticQueue = processRealisticQueue;

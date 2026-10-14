@@ -42,6 +42,7 @@ import {
 import { useFocusGlow } from './useFocusGlow';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
 import { claimOrdinaryDraftRestore } from './theaterDraftRestore';
+import { useComposerRestore } from './useComposerRestore';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
@@ -965,6 +966,8 @@ function CompactChatApp({
   onCompactChatStateChange,
   onCompactMinimizeRequest,
   rollbackDraft,
+  composerRestore,
+  onComposerRestore,
   _rollbackKey,
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
@@ -1201,6 +1204,8 @@ function CompactChatApp({
     // 猫咪本地文字模式下道具入口整体隐藏，编辑器窗口回传的结果只落槽位，不把管理弹窗拉起来。
     if (!catLocalTextOnly) setAvatarToolManagerOpen(true);
   }, [applyEditorResult, catLocalTextOnly]);
+
+  useComposerRestore(draft, setDraft, composerRestore, onComposerRestore);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
