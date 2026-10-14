@@ -2884,15 +2884,6 @@
             });
     }
 
-    function announceReplyTailCapability() {
-        var socket = S.socket;
-        if (!window.nekoReplyTail || window.__nekoReplyTailPresentationVersion !== 1
-                || !socket || socket.readyState !== WebSocket.OPEN || socket._replyTailVersion === 1) return;
-        socket.send(JSON.stringify({ action: 'reply_tail_capabilities', version: 1 }));
-        socket._replyTailVersion = 1;
-    }
-    window.addEventListener('neko-reply-tail-presentation', announceReplyTailCapability);
-
     function connectWebSocket() {
         var currentLanlanName = getWebSocketLanlanName();
         // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
@@ -6351,6 +6342,17 @@
     window.refreshCoreApiCapability = refreshCoreApiCapability;
     window.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
     window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
+
+    // ========================  Reply-tail capability  ========================
+    // Kept out of the handshake section that static harnesses evaluate alone.
+    function announceReplyTailCapability() {
+        var socket = S.socket;
+        if (!window.nekoReplyTail || window.__nekoReplyTailPresentationVersion !== 1
+                || !socket || socket.readyState !== WebSocket.OPEN || socket._replyTailVersion === 1) return;
+        socket.send(JSON.stringify({ action: 'reply_tail_capabilities', version: 1 }));
+        socket._replyTailVersion = 1;
+    }
+    window.addEventListener('neko-reply-tail-presentation', announceReplyTailCapability);
 
     // ========================  Greeting check (after model loaded)  ========================
     // 需要 WS 已连接 AND 模型已加载 两个条件同时满足才发送，
