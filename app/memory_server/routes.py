@@ -4391,6 +4391,56 @@ def _capture_forget_generations(lanlan_name: str, subjects: list) -> dict[int, i
     }
 
 
+async def _persist_fence_marks(lanlan_name: str, key: str, staging: dict) -> None:
+    """Persist the segment drop marks a recheck just added, or answer 503 with a durable fallback.
+
+    When the journal write fails, the marks would exist only in memory and a
+    same-key retry restored from the unmarked journal (its baseline captured
+    after the forget) would write the fenced segments. The fenced segments'
+    subjects are then merged into the key record's ``forgotten_keys``, which
+    the restored path replays before applying; only if that write fails too
+    does the retry rely on the next successful journal write.
+    """
+    from . import idempotency
+
+    try:
+        await idempotency.write_staging(lanlan_name, key, staging)
+        return
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        journal_error = exc
+    fenced = set().union(*(
+        _segment_subject_keys(segment) for segment in staging.get("segments") or []
+        if isinstance(segment, dict) and segment.get(_SEGMENT_DROPPED_BY_FORGET) is True
+    ))
+
+    def _remember(old):
+        if old is None or old.get("state") != idempotency.KEY_STATE_PENDING:
+            return None
+        prior = _forgotten_keys_of(old)
+        if fenced <= prior:
+            return None
+        return {**old, "forgotten_keys": sorted(prior | fenced)}
+
+    fallback = "skipped"
+    if fenced:
+        try:
+            await idempotency.update_key(lanlan_name, key, _remember)
+            fallback = "recorded in forgotten_keys"
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 两处都写不进：照样回 503，下次重试再写
+            fallback = f"failed too: {exc}"
+    logger.error(
+        f"[scoped_history] {lanlan_name}: 清除丢弃标记的暂存落盘失败（键记录兜底：{fallback}）: {journal_error}"
+    )
+    raise HTTPException(
+        status_code=503,
+        detail="scoped history staging failed; retry with the same key",
+    ) from journal_error
+
+
 def _staged_segment_subjects(staging: dict, contexts: list[dict]) -> list:
     """The subject each staged segment is applied to (the journal's, not today's routing).
 
@@ -4955,16 +5005,7 @@ async def _process_scoped_history_keyed(
         ):
             # 与生成路径落暂存后那次复核对称：基线刚取、等于当前 generation，所以这里只会在「清除正在进行」
             # 时生效。事实层此刻拒收这段却不留标记，不先标上，同段后面的显示名会照常写进被清 subject
-            try:
-                await idempotency.write_staging(lanlan_name, key, staging)
-            except MaintenanceModeError:
-                raise
-            except Exception as exc:
-                logger.error(f"[scoped_history] {lanlan_name}: 暂存落盘失败: {exc}")
-                raise HTTPException(
-                    status_code=503,
-                    detail="scoped history staging failed; retry with the same key",
-                ) from exc
+            await _persist_fence_marks(lanlan_name, key, staging)
         try:
             await _apply_keyed_staging(
                 lanlan_name, key, staging, generations,
@@ -4996,16 +5037,7 @@ async def _process_scoped_history_keyed(
                 lanlan_name, staging, contexts, trust_generations,
             ):
                 # 段级标记落盘：池未落盘、同键重试走恢复路径时同样挡下
-                try:
-                    await idempotency.write_staging(lanlan_name, key, staging)
-                except MaintenanceModeError:
-                    raise
-                except Exception as exc:
-                    logger.error(f"[scoped_history] {lanlan_name}: 暂存落盘失败: {exc}")
-                    raise HTTPException(
-                        status_code=503,
-                        detail="scoped history staging failed; retry with the same key",
-                    ) from exc
+                await _persist_fence_marks(lanlan_name, key, staging)
             # 被清除挡下的段（墓碑、清除丢弃）记忆已擦：它的 activity / channel 也不能再进信赖池
             try:
                 fenced = await _fenced_segments(lanlan_name, staging)

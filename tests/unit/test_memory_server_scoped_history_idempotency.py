@@ -4279,3 +4279,89 @@ async def test_restored_retry_inside_a_running_forget_writes_no_display_name(env
     # 事实层此刻拒收这段：同段的显示名也不能写进被清 subject（persona 写入没有清除保护）
     assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
     assert _facts_of(env, GROUP) == []
+
+
+def _fail_fence_writes_once(env):
+    """Make the first journal write carrying a forget drop mark fail (a transient disk error)."""
+    real_write = env.idem.write_staging
+    state = {"failed": False}
+
+    async def flaky(name, key, document):
+        marked = any(
+            isinstance(segment, dict) and segment.get("dropped_by_forget") is True
+            for segment in document.get("segments") or []
+        )
+        if marked and not state["failed"]:
+            state["failed"] = True
+            raise OSError("disk hiccup while persisting the fence")
+        return await real_write(name, key, document)
+
+    env.monkeypatch.setattr(env.idem, "write_staging", flaky)
+    return state
+
+
+def _capture_trust(env):
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    return captured
+
+
+_ACTIVITY_BODY = dict(
+    display_name=None,
+    speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+)
+
+
+async def test_failed_trust_step_fence_write_leaves_a_durable_fallback(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00012", "count": 1}])
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_before_apply(*args, **kwargs):
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+    state = _fail_fence_writes_once(env)
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, body)
+    assert excinfo.value.status_code == 503 and state["failed"]
+    # 暂存没打上标记：被挡的 subject 记在键记录上，恢复的重试据此丢弃这段
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert GROUP_KEY in record["forgotten_keys"]
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+    captured = _capture_trust(env)
+    await _post(env, body)                                       # 基线取在清除之后的同键重试
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_failed_restored_fence_write_leaves_a_durable_fallback(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    subject = coerce_subject(GROUP)
+    _fail_fence_writes_once(env)
+    await env.fs.abegin_subject_forget(NAME, subject)
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            await _post(env, _single_body())                     # 恢复的重试赶上清除进行中，标记写失败
+        assert excinfo.value.status_code == 503
+    finally:
+        await env.fs.aend_subject_forget(NAME, subject)
+    await _post(env, _single_body())                             # 清除之后再重试：基线已是新的
+    # 键记录上的兜底标记让这段照样丢弃：显示名、事实都不写进被清 subject
+    assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
+    assert _facts_of(env, GROUP) == []
