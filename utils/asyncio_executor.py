@@ -21,6 +21,11 @@ async def to_thread_through_cancellation(func, /, *args, **kwargs):
     of task-cancellation sweeps) and awaited to completion; the cancellation
     is re-raised afterwards. The task's cancellation count is left alone, so
     an enclosing ``asyncio.timeout`` / ``TaskGroup`` still sees it.
+
+    Known limit: if that wait is itself interrupted by a non-cancellation
+    ``BaseException`` thrown into the task (e.g. ``GeneratorExit`` at
+    shutdown), the original cancellation is still re-raised but the worker
+    is NOT guaranteed to have finished.
     """
     loop = asyncio.get_running_loop()
     context = contextvars.copy_context()
