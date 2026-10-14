@@ -54,7 +54,7 @@
         <span v-if="loadSlow" data-testid="surface-load-slow">{{ t('plugins.ui.loadingSlow') }}</span>
       </p>
       <div v-if="surface.available !== false && (surface.mode === 'hosted-tsx' || surface.mode === 'markdown')" class="hosted-surface-frame__load-actions">
-        <template v-if="error || (loading && loadSlow)">
+        <template v-if="error || (loading && loadActionsAvailable)">
           <el-button v-if="!rendererReloadRequired" data-testid="surface-retry" @click="loadHostedTsx">{{ t('market.retry') }}</el-button>
           <el-button data-testid="surface-open-logs" @click="emit('openLogs')">{{ t('plugins.ui.openLogs') }}</el-button>
           <el-button v-if="error" data-testid="surface-reload-page" @click="reloadPage">{{ t('common.languageReload') }}</el-button>
@@ -113,6 +113,7 @@ const loading = ref(false)
 type HostedLoadPhase = 'idle' | 'resources' | 'context' | 'render'
 const loadPhase = ref<HostedLoadPhase>('idle')
 const loadSlow = ref(false)
+const loadActionsAvailable = ref(false)
 const HOSTED_LOAD_SLOW_MS = 3000
 let loadSlowTimer: number | null = null
 const error = ref('')
@@ -356,21 +357,28 @@ function sendSurfaceMessage(message: unknown) {
 // auto-reload (it would destroy user work); expose an explicit escape hatch.
 function reloadPage() { window.location.reload() }
 
-function clearLoadDelay() {
+function clearLoadDelay(resetActions = true) {
   if (loadSlowTimer !== null) window.clearTimeout(loadSlowTimer)
   loadSlowTimer = null
   loadSlow.value = false
+  if (resetActions) loadActionsAvailable.value = false
 }
 
 function enterLoadPhase(phase: Exclude<HostedLoadPhase, 'idle'>, loadId: number) {
-  clearLoadDelay()
+  // Stage timing resets, but an escape hatch already offered by this load
+  // stays available without removing the user's focused button.
+  clearLoadDelay(false)
   loadPhase.value = phase
+  // Document construction is synchronous; only its error attribution is
+  // observable, so it needs no slow-loading timer.
+  if (phase === 'render') return
   // One timer per phase, owned by this load. Retry/teardown must not let an
   // older read mark a replacement surface as slow.
   loadSlowTimer = window.setTimeout(() => {
     if (!componentMounted || loadId !== currentLoadId || loadPhase.value !== phase || !loading.value) return
     loadSlowTimer = null
     loadSlow.value = true
+    loadActionsAvailable.value = true
   }, HOSTED_LOAD_SLOW_MS)
 }
 

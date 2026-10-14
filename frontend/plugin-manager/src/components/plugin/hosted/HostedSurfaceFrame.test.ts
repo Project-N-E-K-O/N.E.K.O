@@ -847,7 +847,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     frame.unmount()
   })
 
-  it('identifies source and context waits, resets the slow deadline between stages, and opens logs while pending', async () => {
+  it('resets the phase deadline while retaining available actions and focus between stages', async () => {
     const source = deferred<typeof hostedSource>()
     const context = deferred<{ state: { label: string } }>()
     apiMocks.getPluginHostedSurfaceSource.mockReturnValue(source.promise)
@@ -865,6 +865,9 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).not.toBeNull()
     expect(vi.getTimerCount()).toBe(0)
+    const retry = frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-retry"]')!
+    const logs = frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-open-logs"]')!
+    retry.focus()
     frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-open-logs"]')!.click()
     expect(frame.openLogs).toHaveBeenCalledOnce()
 
@@ -875,7 +878,11 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     expect(frame.container.textContent).toContain('plugins.ui.loadingContext')
     expect(frame.iframe()).toBeNull()
     expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
-    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBe(retry)
+    expect(frame.container.querySelector('[data-testid="surface-open-logs"]')).toBe(logs)
+    expect(document.activeElement).toBe(retry)
+    logs.click()
+    expect(frame.openLogs).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(2999)
     expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
     await vi.advanceTimersByTimeAsync(1)
@@ -888,6 +895,56 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
     expect(vi.getTimerCount()).toBe(0)
     expect(frame.errors).not.toHaveBeenCalled()
+  })
+
+  it('keeps the per-phase threshold when successive waits each take less than three seconds', async () => {
+    const source = deferred<typeof hostedSource>()
+    const context = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValue(source.promise)
+    apiMocks.getPluginHostedSurfaceContext.mockReturnValue(context.promise)
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    await vi.advanceTimersByTimeAsync(2900)
+    source.resolve(hostedSource)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(2900)
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBeNull()
+    context.resolve({ state: { label: 'ready' } })
+    await flushPromises()
+    expect(frame.iframe()?.srcdoc).toContain('ready')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retries immediately after a slow resources phase, resets actions, and ignores retired context', async () => {
+    const source = deferred<typeof hostedSource>()
+    const oldContext = deferred<{ state: { label: string } }>()
+    const newContext = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValueOnce(source.promise).mockResolvedValue(hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockReturnValueOnce(oldContext.promise).mockReturnValueOnce(newContext.promise)
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    await vi.advanceTimersByTimeAsync(5000)
+    const retry = frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-retry"]')!
+    source.resolve(hostedSource)
+    await flushPromises()
+    const oldSignal = apiMocks.getPluginHostedSurfaceContext.mock.calls[0]![2].signal as AbortSignal
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBe(retry)
+    retry.click()
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledTimes(2)
+    expect(apiMocks.getPluginHostedSurfaceContext).toHaveBeenCalledTimes(2)
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-open-logs"]')).toBeNull()
+    oldContext.reject(new Error('retired context'))
+    await flushPromises()
+    expect(frame.errors).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).not.toBeNull()
+    newContext.resolve({ state: { label: 'replacement' } })
+    await flushPromises()
+    expect(frame.iframe()?.srcdoc).toContain('replacement')
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it.each(['resolve', 'reject'] as const)('retries a slow context request, aborts its controller, and ignores an old %s', async (settlement) => {

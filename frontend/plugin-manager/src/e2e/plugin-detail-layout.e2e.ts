@@ -307,6 +307,60 @@ for (const sample of [
   })
 }
 
+test('[phase actions] 阶段切换保留已出现按钮、焦点和日志入口', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 768 })
+  await page.clock.install()
+  await stubLayoutPluginApis(page)
+  await page.route(`**/plugin/${PLUGIN_ID}/surfaces*`, (route) => route.fulfill({ json: {
+    surfaces: [{ id: 'panel_main', kind: 'panel', mode: 'hosted-tsx', entry: 'ui/panel.tsx', available: true }],
+    warnings: [],
+  } }))
+  let releaseSource!: () => void
+  let releaseContext!: () => void
+  const source = new Promise<void>((resolve) => { releaseSource = resolve })
+  const context = new Promise<void>((resolve) => { releaseContext = resolve })
+  let sourceWaiting!: () => void
+  let contextWaiting!: () => void
+  const sourceRequested = new Promise<void>((resolve) => { sourceWaiting = resolve })
+  const contextRequested = new Promise<void>((resolve) => { contextWaiting = resolve })
+  const handlers: Array<Promise<void>> = []
+  const hold = async (route: Route, wait: Promise<void>, ready: () => void, payload: unknown) => {
+    let finished!: () => void
+    handlers.push(new Promise<void>((resolve) => { finished = resolve }))
+    ready()
+    try { await wait; await route.fulfill({ json: payload }) } finally { finished() }
+  }
+  await page.route(`**/plugin/${PLUGIN_ID}/hosted-ui/source*`, (route) => hold(route, source, sourceWaiting, {
+    source: 'export default function Panel() { return <div>ready</div> }', dependencies: [],
+  }))
+  await page.route(`**/plugin/${PLUGIN_ID}/hosted-ui/context*`, (route) => hold(route, context, contextWaiting, {
+    state: {}, actions: [], entries: [],
+  }))
+  try {
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`, { waitUntil: 'load' })
+    await page.locator('#tab-panel').click()
+    await sourceRequested
+    await page.clock.runFor(5000)
+    const retry = page.getByTestId('surface-retry')
+    await expect(retry).toBeVisible()
+    const originalButton = await retry.elementHandle()
+    await retry.focus()
+    releaseSource()
+    await contextRequested
+    await expect(page.getByTestId('surface-placeholder')).toHaveAttribute('data-load-phase', 'context')
+    await expect(page.getByTestId('surface-load-slow')).toHaveCount(0)
+    expect(await originalButton!.evaluate((button) => button.isConnected)).toBe(true)
+    await expect(retry).toBeFocused()
+    await page.getByTestId('surface-open-logs').click()
+    await expect(page.locator('#tab-logs')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.log-viewer')).toBeVisible()
+  } finally {
+    releaseSource()
+    releaseContext()
+    await Promise.all(handlers)
+  }
+})
+
 test('[retry narrow] ru 短面板从错误页重试时重置滚动位置，阶段标题保持可见', async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 620 })
   await page.addInitScript(() => window.localStorage.setItem('locale', 'ru'))
