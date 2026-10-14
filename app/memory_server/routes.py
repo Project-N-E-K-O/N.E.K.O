@@ -20,6 +20,7 @@ with its flush loop.
 """
 
 import asyncio
+import contextlib
 import copy
 import hashlib
 import json
@@ -4935,33 +4936,41 @@ async def _process_scoped_history_keyed(
         trust_states = [context["trust_state"] for context in contexts]
         for state in trust_states:
             state["trust_signal_events"] = ()
-        # 落盘后的复核之后、这里之前，不带代数的清除也可能推进 generation：应用时只有事实项会比，
-        # 没抽出事实（只有 activity / 语言项）的段认不出。信赖步骤前按生成前取的 generation 再核一次，
-        # 段级标记落盘，同键重试（池未落盘时）同样挡下
-        if generations is not None and _mark_items_forgotten_during_generation(
-            lanlan_name, staging, contexts, generations,
-        ):
+        # 落盘后的复核之后，不带代数的清除也可能推进 generation：应用时只有事实项会比，没抽出事实
+        # （只有 activity / 语言项）的段认不出。按生成前取的 generation 再核一次，并与信赖写入同在
+        # 事实存储的持久化锁里——清除正是持这把锁推进 generation（abegin_subject_forget），与事实层
+        # 「比代数再落盘」同一口径：复核之后、信赖落盘之前插不进清除。池锁是叶子锁，持锁区间内
+        # 也不调用 FactStore，不会成环。恢复的重试读不到生成前的 generation，靠盘上的段级标记
+        trust_guard = (
+            runtime.fact_store._get_persist_alock(lanlan_name)
+            if generations is not None else contextlib.nullcontext()
+        )
+        async with trust_guard:
+            if generations is not None and _mark_items_forgotten_during_generation(
+                lanlan_name, staging, contexts, generations,
+            ):
+                # 段级标记落盘：池未落盘、同键重试走恢复路径时同样挡下
+                try:
+                    await idempotency.write_staging(lanlan_name, key, staging)
+                except MaintenanceModeError:
+                    raise
+                except Exception as exc:
+                    logger.error(f"[scoped_history] {lanlan_name}: 暂存落盘失败: {exc}")
+                    raise HTTPException(
+                        status_code=503,
+                        detail="scoped history staging failed; retry with the same key",
+                    ) from exc
+            # 被清除挡下的段（墓碑、清除丢弃）记忆已擦：它的 activity / channel 也不能再进信赖池
             try:
-                await idempotency.write_staging(lanlan_name, key, staging)
-            except MaintenanceModeError:
-                raise
-            except Exception as exc:
-                logger.error(f"[scoped_history] {lanlan_name}: 暂存落盘失败: {exc}")
+                fenced = await _fenced_segments(lanlan_name, staging)
+            except idempotency.IdempotencyStateError as exc:
                 raise HTTPException(
-                    status_code=503,
-                    detail="scoped history staging failed; retry with the same key",
+                    status_code=503, detail="idempotency state unreadable; retry later",
                 ) from exc
-        # 被清除挡下的段（墓碑、清除丢弃）记忆已擦：它的 activity / channel 也不能再进信赖池
-        try:
-            fenced = await _fenced_segments(lanlan_name, staging)
-        except idempotency.IdempotencyStateError as exc:
-            raise HTTPException(
-                status_code=503, detail="idempotency state unreadable; retry later",
-            ) from exc
-        trust_result, trust_outcomes = await _apply_trust_for_segments([
-            _without_trust_mutation(state) if index in fenced else state
-            for index, state in enumerate(trust_states)
-        ])
+            trust_result, trust_outcomes = await _apply_trust_for_segments([
+                _without_trust_mutation(state) if index in fenced else state
+                for index, state in enumerate(trust_states)
+            ])
         response = _keyed_response(
             shape, contexts, staging, trust_result, trust_outcomes,
         )

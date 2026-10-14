@@ -3799,20 +3799,21 @@ async def test_orphan_scrub_reads_the_key_records_under_the_character_lock(env):
     path.parent.mkdir(parents=True, exist_ok=True)
     await idem.update_key(NAME, "other-key", idem.transition("done"))          # 键文件在、但没人认领它
     path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # 读不出
+    keys_file = os.path.normcase(os.path.abspath(idem.keys_path(NAME)))
     lock = idem.idempotency_lock(NAME)
-    await lock.acquire()
-    try:
-        scrub = asyncio.create_task(idem.drop_unreadable_orphan_staging(NAME, str(path)))
-        await asyncio.sleep(0.2)
-        # 等锁期间同键请求把这份暂存认领成 pending（update_key 本该同样排在这把锁后面，这里直接落盘模拟）
-        records = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))
-        records[KEY_GROUP] = {"state": "pending", "written_at": 1.0, "updated_at": 1.0}
-        Path(idem.keys_path(NAME)).write_text(json.dumps(records), encoding="utf-8")
-    finally:
-        lock.release()
-    # 归属判断用的是锁内重读的键记录：已被认领的暂存不能当成孤儿抹掉
-    assert await scrub is False
-    assert "猫薄荷" in path.read_text(encoding="utf-8")
+    held_at_read = []
+    real_read = idem._read_json_object
+
+    def spy(target):
+        if os.path.normcase(os.path.abspath(target)) == keys_file:
+            held_at_read.append(lock.locked())
+        return real_read(target)
+
+    env.monkeypatch.setattr(idem, "_read_json_object", spy)
+    assert await idem.drop_unreadable_orphan_staging(NAME, str(path)) is True
+    # 归属判断用的键记录必须在角色锁里读：锁外的快照与改写之间，update_key 可能已把这条路径认领成 pending
+    assert held_at_read and all(held_at_read)
+    assert "猫薄荷" not in path.read_text(encoding="utf-8")
 
 
 async def test_legacy_integer_fact_ids_are_journaled_as_strings(env):
@@ -3953,3 +3954,46 @@ async def test_trust_step_fence_mark_is_on_disk_for_the_same_key_retry(env):
     # 恢复的重试读不到生成前的 generation，只能靠盘上的段级标记认出这段被清除挡下
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_forget_cannot_slip_between_the_trust_recheck_and_the_trust_write(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]
+    subject = coerce_subject(GROUP)
+    captured_generation = env.fs._subject_forget_generation(NAME, subject)
+    real_fenced = env.routes._fenced_segments
+    real_trust = env.routes._apply_trust_for_segments
+    forgets = []
+
+    async def forget():
+        # 与 scoped_forget 同一入口推进 generation（持事实存储的持久化锁）
+        await env.fs.abegin_subject_forget(NAME, subject)
+        await env.fs.aend_subject_forget(NAME, subject)
+
+    async def forget_after_the_recheck(lanlan_name, staging):
+        forgets.append(asyncio.create_task(forget()))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return await real_fenced(lanlan_name, staging)
+
+    seen = []
+
+    async def capture(states):
+        moved = env.routes._trust_mutation_for(states[0]) is not None
+        seen.append((moved, env.fs._subject_forget_generation(NAME, subject) != captured_generation))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_fenced_segments", forget_after_the_recheck)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00006", "count": 1}],
+    )
+    await _post(env, body)
+    await asyncio.gather(*forgets)
+    # 复核与信赖写入之间插不进清除：activity 进了池，就说明写入时 generation 还是生成前那个
+    ((moved, generation_moved),) = seen
+    assert not (moved and generation_moved)
+    assert env.fs._subject_forget_generation(NAME, subject) != captured_generation    # 清除确实发生了
