@@ -479,7 +479,7 @@ async def test_unsubscribe_cancels_a_queued_and_a_building_import_of_its_release
         removal = asyncio.create_task(service.remove_subscription("market-memes", IDENTITY, frozenset({_release(raw)})))
         await asyncio.sleep(0.05)
         service._write_lock.release()
-        await removal
+        assert (await removal)["kept"] == "not_installed"
         assert (await _settle(service, queued))["state"] == "cancelled"
         assert (await _settle(service, blocker))["state"] == "active"
         assert {pack["pack_id"] for pack in await service.list_packs()} == {"local-pack"}
@@ -516,7 +516,7 @@ async def test_identity_is_checked_again_when_the_unsubscribe_gets_the_lock(tmp_
         await asyncio.sleep(0.05)
         service._write_lock.release()
         with pytest.raises(service_module.KnowledgeUnavailable) as excinfo:
-            await removal
+            _ = await removal
         assert excinfo.value.reason == "subscription_identity_mismatch"
         assert (await _settle(service, local))["state"] == "active"
     finally:
