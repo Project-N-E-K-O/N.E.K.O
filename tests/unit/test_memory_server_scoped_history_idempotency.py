@@ -3997,3 +3997,74 @@ async def test_forget_cannot_slip_between_the_trust_recheck_and_the_trust_write(
     ((moved, generation_moved),) = seen
     assert not (moved and generation_moved)
     assert env.fs._subject_forget_generation(NAME, subject) != captured_generation    # 清除确实发生了
+
+
+async def test_cancelled_request_keeps_the_guard_until_the_trust_worker_finishes(env):
+    import threading
+
+    env.llm.responses = [[]]
+    entered, release = threading.Event(), threading.Event()
+    real_write = trust_store._with_pool_write
+
+    def slow_write(mutator):
+        entered.set()
+        release.wait(5)
+        return real_write(mutator)
+
+    env.monkeypatch.setattr(trust_store, "_with_pool_write", slow_write)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00007", "count": 1}],
+    )
+    request = asyncio.create_task(_post(env, body))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        request.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        # 线程里的池写入取消不掉：写完之前持久化锁不能放，否则清除能在写入落盘前推进 generation
+        assert env.fs._get_persist_alock(NAME).locked()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert not env.fs._get_persist_alock(NAME).locked()
+
+
+async def test_restored_retry_fences_an_activity_only_segment_forgotten_during_apply(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def trust_crash(_states):
+        raise RuntimeError("killed at the trust step")
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", trust_crash)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00008", "count": 1}],
+    )
+    with pytest.raises(Exception):
+        await _post(env, body)
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_during_apply(*args, **kwargs):
+        # 恢复的重试持键锁应用时，一次不带代数的清除推进了 generation（擦除前那遍扫描恰好跳过了这份暂存）
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    captured = []
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_during_apply)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    await _post(env, body)
+    # 恢复的重试也按应用前取的 generation 复核：这段的 activity 不进信赖池
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
