@@ -4394,9 +4394,9 @@ def _capture_forget_generations(lanlan_name: str, subjects: list) -> dict[int, i
 async def _persist_fence_marks(lanlan_name: str, key: str, staging: dict, fenced: set[str]) -> None:
     """Persist the segment drop marks a recheck just added, or answer 503 with a durable fallback.
 
-    ``fenced`` are the journal subjects of the segments this recheck newly
-    fenced (never the routed destination of an older dropped segment, which a
-    valid segment may share). When the journal write fails, the marks would
+    ``fenced`` are the journal subjects of the segments this recheck fenced
+    (each one's own subject moved or is being forgotten; never the routed
+    destination of an older dropped segment, which a valid segment may share). When the journal write fails, the marks would
     exist only in memory and a same-key retry restored from the unmarked
     journal (its baseline captured after the forget) would write those
     segments; ``fenced`` is then merged into the key record's
@@ -4414,7 +4414,10 @@ async def _persist_fence_marks(lanlan_name: str, key: str, staging: dict, fenced
         raise
     except asyncio.CancelledError:
         # 线程里的写入已等到结束，但成没成这里看不出：照样补记兜底，再把取消抛出
-        await _record_fence_fallback(lanlan_name, key, fenced)
+        fallback = await _record_fence_fallback(lanlan_name, key, fenced)
+        logger.warning(
+            f"[scoped_history] {lanlan_name}: 清除丢弃标记的暂存写入时请求被取消（键记录兜底：{fallback}）"
+        )
         raise
     except Exception as exc:
         journal_error = exc
@@ -4454,12 +4457,14 @@ async def _record_fence_fallback(lanlan_name: str, key: str, fenced: set[str]) -
         try:
             stored = await asyncio.shield(task)
         except asyncio.CancelledError as exc:
-            if task.done():
-                # 兜底任务本身被取消（关停时的取消扫描）：没写成
-                outcome = "cancelled"
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                # 调用方自己被取消：等兜底写完后照样把取消抛出
                 cancellation = cancellation or exc
+            if task.done():
+                # 只是兜底任务本身被取消（关停时的取消扫描）：没写成，调用方照常记日志、回 503
+                outcome = "cancelled before it was written"
                 break
-            cancellation = cancellation or exc
             continue
         except MaintenanceModeError:
             if cancellation is not None:
@@ -4480,7 +4485,7 @@ async def _record_fence_fallback(lanlan_name: str, key: str, fenced: set[str]) -
 
 
 def _fenced_journal_keys(staging: dict, contexts: list[dict], indexes: set[int]) -> set[str]:
-    """Journal subject keys of the segments a recheck just fenced (by their own generation)."""
+    """Journal subject keys of the segments a recheck fenced (by their own generation)."""
     subjects = _staged_segment_subjects(staging, contexts)
     return {subjects[index].key for index in indexes if 0 <= index < len(subjects)}
 
@@ -5181,8 +5186,9 @@ def _mark_items_forgotten_during_generation(
 ) -> set[int]:
     """Journal as dropped every item of a subject whose forget generation moved.
 
-    Returns the indexes of the segments it changed anything for (empty when
-    nothing was added), so a caller can persist exactly those as a fallback.
+    Returns the indexes of every segment whose subject moved (generation or a
+    running forget) when this call journaled anything new, else an empty set,
+    so a caller can persist exactly those subjects as a fallback.
 
     A subject whose forget is still running (between ``abegin`` and
     ``aend``) counts as moved too: a baseline captured inside that window

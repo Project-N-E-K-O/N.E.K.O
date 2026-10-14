@@ -4474,3 +4474,24 @@ async def test_fallback_fence_keys_are_the_newly_fenced_journal_subjects_only(en
     }
     contexts = [{"subject": coerce_subject(PART)}, {"subject": coerce_subject(GROUP)}]
     assert env.routes._fenced_journal_keys(staging, contexts, {1}) == {GROUP_KEY}
+
+
+async def test_fallback_task_cancelled_alone_still_answers_503(env):
+    env.llm.responses = [[]]
+    _bump_before_apply(env)
+    state = _fail_fence_writes_once(env)
+    real_update = env.idem.update_key
+
+    async def swept_update(name, key, fn):
+        if state["failed"]:
+            # 关停时的取消扫描只取消了兜底任务本身：调用方没被取消
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
+        return await real_update(name, key, fn)
+
+    env.monkeypatch.setattr(env.idem, "update_key", swept_update)
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00015", "count": 1}])
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, body)
+    # 没被取消的调用方不能收到 CancelledError：按兜底没写成照常回 503
+    assert excinfo.value.status_code == 503
