@@ -2552,9 +2552,10 @@ async def _apply_trust_for_segments(parsed_segments):
     with ``parsed_segments`` so each segment can report its own numbers.
 
     This is the handler's last durable write and it comes after every FactStore
-    call, which is what keeps the pool lock a leaf: it never overlaps the
-    FactStore lock order. Any failure before this point shows up as "trust did
-    not move at all".
+    call. The keyed path calls it while holding the fact persistence lock
+    (key_lock -> persist_alock -> pool lock); the pool lock stays a leaf
+    because nothing is acquired and no FactStore code runs while it is held.
+    Any failure before this point shows up as "trust did not move at all".
     """
     from memory.trust_store import MutationOutcome
 
@@ -4382,12 +4383,21 @@ def _restore_missing_display_items(staging: dict, display_names: dict[int, str |
             })
 
 
+def _capture_forget_generations(lanlan_name: str, contexts: list[dict]) -> dict[int, int]:
+    """Segment index -> current forget generation of that segment's (routed) subject."""
+    return {
+        index: runtime.fact_store._subject_forget_generation(lanlan_name, context["subject"])
+        for index, context in enumerate(contexts)
+    }
+
+
 async def _apply_keyed_staging(
     lanlan_name: str,
     key: str,
     staging: dict,
     generations: dict[int, int] | None = None,
     display_names: dict[int, str | None] | None = None,
+    fact_generations: dict[int, int] | None = None,
 ) -> None:
     """Apply every item not yet in ``applied``; journal each one atomically.
 
@@ -4406,8 +4416,13 @@ async def _apply_keyed_staging(
     LLM call, so a forget landing while the model ran (a window with no
     staging file to cancel and, without ``forget_epoch``, no tombstone)
     still invalidates the write, as on the unkeyed path. A retry restored
-    from an existing staging file reads the current generation: a forget
-    since then would have cancelled that staging under the key lock.
+    from an existing staging file passes ``fact_generations`` instead,
+    captured under the key lock just before applying: the pre-erase
+    cancellation scan is best effort and may skip that staging, so a forget
+    running during the restored apply must still invalidate its fact writes
+    (and the trust step compares against the same baseline).
+    ``generations is None`` keeps meaning "restored retry" for the display
+    name handling.
     """
     from memory.scopes import coerce_subject
 
@@ -4432,8 +4447,9 @@ async def _apply_keyed_staging(
         segment = segments[item["segment"]]
         generation = None
         if item.get("kind") == _KEYED_ITEM_FACTS:
-            if generations is not None and item["segment"] in generations:
-                generation = generations[item["segment"]]
+            baseline = generations if generations is not None else fact_generations
+            if baseline is not None and item["segment"] in baseline:
+                generation = baseline[item["segment"]]
             else:
                 generation = runtime.fact_store._subject_forget_generation(
                     lanlan_name, coerce_subject(segment["subject"]),
@@ -4839,12 +4855,7 @@ async def _process_scoped_history_keyed(
             # forget generation，只留在内存里。生成期间到达的清除（此时还没有暂存
             # 可取消，不带 forget_epoch 时也没有墓碑）会推进 generation，首次应用时
             # 事实存储据此丢弃这次写入
-            generations = {
-                index: runtime.fact_store._subject_forget_generation(
-                    lanlan_name, context["subject"],
-                )
-                for index, context in enumerate(contexts)
-            }
+            generations = _capture_forget_generations(lanlan_name, contexts)
             try:
                 staging = await _build_keyed_staging(
                     lanlan_name,
@@ -4914,16 +4925,18 @@ async def _process_scoped_history_keyed(
                         status_code=503,
                         detail="scoped history staging failed; retry with the same key",
                     ) from exc
-        # 信赖步骤复核 generation 用的基线：生成这份暂存的请求用调 LLM 之前取的那份；恢复的重试在这里
-        # （持键锁、应用之前）取。之后到达的清除推进了 generation，说明这份暂存早于它
-        trust_generations = generations if generations is not None else {
-            index: runtime.fact_store._subject_forget_generation(lanlan_name, context["subject"])
-            for index, context in enumerate(contexts)
-        }
+        # 应用与信赖步骤共用的 generation 基线：生成这份暂存的请求用调 LLM 之前取的那份；恢复的重试在这里
+        # （持键锁、应用之前）取。之后到达的清除推进了 generation，说明这份暂存早于它：事实项交给事实层
+        # 按它丢弃，信赖步骤按它隔离，两层同一个依据
+        trust_generations = (
+            generations if generations is not None
+            else _capture_forget_generations(lanlan_name, contexts)
+        )
         try:
             await _apply_keyed_staging(
                 lanlan_name, key, staging, generations,
                 {index: context.get("display_name") for index, context in enumerate(contexts)},
+                fact_generations=trust_generations,
             )
         except (HTTPException, MaintenanceModeError):
             raise

@@ -4103,3 +4103,40 @@ async def test_cancelled_trust_write_returns_only_after_its_worker_finished(env)
     with pytest.raises(asyncio.CancelledError):
         await write
     assert finished.is_set()
+
+
+async def test_restored_retry_drops_facts_forgotten_during_apply_on_the_same_baseline(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    body = _single_body(
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00010", "count": 1}],
+    )
+    with pytest.raises(HTTPException):
+        await _post(env, body)                                   # 暂存已落盘、事实一项没写
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    real_apply = env.routes._apply_keyed_staging
+    subject = coerce_subject(GROUP)
+
+    async def forget_during_apply(*args, **kwargs):
+        # 擦除前那遍扫描跳过了这份暂存：一次不带代数的清除在恢复的重试应用期间完整跑完
+        await env.fs.abegin_subject_forget(NAME, subject)
+        await env.fs.aend_subject_forget(NAME, subject)
+        return await real_apply(*args, **kwargs)
+
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_during_apply)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    await _post(env, body)
+    # 事实层与信赖层按同一份基线：清除之前生成的事实不在清除之后写回，activity 也不进池
+    assert _facts_of(env, GROUP) == []
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None

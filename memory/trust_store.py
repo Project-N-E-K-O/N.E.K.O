@@ -1165,9 +1165,10 @@ async def aapply_trust_mutations(
     """The single write entry point for trust evolution.
 
     LOCK ORDER: the pool lock is a LEAF. While holding it, never take another
-    lock, never await, and never call into ``FactStore``. This runs as the last
-    durable write of its handler, after every FactStore call, so the two lock
-    orders cannot overlap.
+    lock, never await, and never call into ``FactStore``. Callers may hold
+    other locks around this call (keyed scoped_history holds the fact
+    persistence lock: key_lock -> persist_alock -> pool lock); that is safe
+    exactly because nothing is acquired while the pool lock is held.
     """
     materialized = tuple(muts)
     if not materialized:
