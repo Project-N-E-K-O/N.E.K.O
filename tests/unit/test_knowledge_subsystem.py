@@ -885,7 +885,11 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
                     break
                 await asyncio.sleep(0.01)
             # The staged file is owned by a job, and the reservation is gone.
-            assert [job["state"] for job in service.list_jobs()] == ["queued"]
+            # The runner may already have picked the job up ("building"), but
+            # it cannot commit while this test holds the write lock.
+            (job,) = service.list_jobs()
+            assert job["state"] in service_module.ACTIVE_JOB_STATES
+            assert service._staging_path(job["job_id"]).exists()
             assert service._admitting == {}
     finally:
         await service.stop()
