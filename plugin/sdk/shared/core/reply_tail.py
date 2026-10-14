@@ -17,7 +17,10 @@ class ReplyTailClient:
     async def _request(self, operation: str, context: dict, registration_id: str,
                        timeout: float, **kwargs: Any) -> dict:
         plugin_id = str(self._host_ctx.plugin_id)
-        if context.get("version") != self.version or context.get("source") != "plugin:" + plugin_id:
+        if (
+            not isinstance(context, dict) or context.get("version") != self.version
+            or context.get("source") != "plugin:" + plugin_id
+        ):
             return {"accepted": False, "status": "failed", "reason": "invalid_context"}
         timeout = float(timeout)
         if not math.isfinite(timeout) or timeout <= 0:

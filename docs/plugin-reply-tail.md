@@ -76,8 +76,14 @@ separate bound of 256: past it, and past the scope bound, the oldest receipts
 and scopes of closed replies holding no image are evicted first. Capacity
 exhaustion rejects new work. Expiry reclaims state and
 never triggers submission.
+The retention of an invocation's context starts at the tool invocation, so a
+reply that keeps generating for more than 120 seconds after it loses that
+invocation's images as `expired`.
 Frontend pending images also have a one-shot expiry check, so reclamation does
-not require a later chat event. Display and reconnect cancel that check.
+not require a later chat event. Display and reconnect cancel that check. An
+image whose original text stays hidden for the whole 120 seconds (the chat
+collapsed, or in compact mode history closed while a newer caption replaced
+the original) is dropped at expiry and does not enter history either.
 
 The whole reply's attachment submission phase has a five-second deadline,
 also capped by each original context's expiry. A stalled write is cancelled

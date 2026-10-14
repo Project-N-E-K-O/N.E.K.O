@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import time
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -12,6 +13,7 @@ from fastapi import FastAPI
 from PIL import Image
 from starlette.websockets import WebSocketState
 
+import app.main_server.character_runtime as character_runtime
 from main_logic.core._shared import _ReplyTurn
 from main_logic.core.turn import TurnMixin
 from main_logic.reply_tail import ReplyTailRegistry
@@ -159,7 +161,7 @@ async def test_cancel_during_decode_wins(chain, monkeypatch):
         assert release.wait(5)
         return validator(parts)
 
-    monkeypatch.setattr(runtime, "_build_plugin_image_chat_blocks", slow)
+    monkeypatch.setattr("main_logic.reply_tail._image_validation", (slow, runtime._image_part_payloads_conflict))
     task = asyncio.create_task(register(chain))
     assert await asyncio.to_thread(started.wait, 5)
     chain.registry.cancel(chain.context, "image-A", plugin_id="stickers")
@@ -277,6 +279,33 @@ async def test_router_inherits_actual_access_guard(chain, monkeypatch):
             "context": chain.context, "plugin_id": "stickers", "registration_id": "a",
         })
     assert response.status_code in {401, 403}
+    # Control: the same request from loopback is let through.
+    monkeypatch.delenv("NEKO_REMOTE_DEPLOYMENT")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post("/api/tools/reply-tail/status", json={
+            "context": chain.context, "plugin_id": "stickers", "registration_id": "a",
+        })
+    assert response.status_code == 200
+
+
+async def test_the_main_server_binds_the_display_validator(chain, monkeypatch):
+    import main_logic.reply_tail as module
+
+    assert module._image_validation == (
+        character_runtime._build_plugin_image_chat_blocks,
+        character_runtime._image_part_payloads_conflict,
+    )
+    monkeypatch.setattr(module, "_image_validation", None)
+    assert (await register(chain)) == {"accepted": False, "status": "failed", "reason": "unavailable"}
+
+
+async def test_sdk_answers_a_missing_context_without_a_request():
+    ctx = SdkContext(SimpleNamespace(plugin_id="stickers"))
+    for context in (None, "token"):
+        assert (await ctx.reply_tail.status(context, registration_id="a"))["reason"] == "invalid_context"
 
 
 @pytest.mark.parametrize("opt_in", [False, True])
@@ -497,7 +526,7 @@ async def test_validation_capacity_survives_caller_cancellation(chain, monkeypat
         assert release.wait(5)
         return original(parts)
 
-    monkeypatch.setattr(runtime, "_build_plugin_image_chat_blocks", parked)
+    monkeypatch.setattr(module, "_image_validation", (parked, runtime._image_part_payloads_conflict))
     task = asyncio.create_task(register(chain))
     assert await asyncio.to_thread(started.wait, 5)
     task.cancel()
@@ -567,7 +596,7 @@ async def test_stalled_submission_has_deadline_and_reclaims_image_memory(chain, 
 async def test_submission_budget_is_shared_by_all_attachments(chain, monkeypatch):
     import main_logic.reply_tail as module
 
-    monkeypatch.setattr(module, "SUBMISSION_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(module, "SUBMISSION_TIMEOUT_SECONDS", 1.0)
     await register(chain, registration_id="first")
     await register(chain, registration_id="second")
     calls = 0
@@ -575,10 +604,16 @@ async def test_submission_budget_is_shared_by_all_attachments(chain, monkeypatch
     async def send(_payload):
         nonlocal calls
         calls += 1
-        await asyncio.sleep(0.065)
+        if calls == 1:
+            await asyncio.sleep(0.5)
+        else:
+            await asyncio.Event().wait()
 
     chain.manager.websocket.send_json.side_effect = send
-    await asyncio.wait_for(finish(chain), 1)
+    started = time.monotonic()
+    await asyncio.wait_for(finish(chain), 5)
+    # A per-attachment budget would let the second write run its own full second.
+    assert time.monotonic() - started < 1.4
     assert calls == 2
     assert chain.registry.status(chain.context, "first", plugin_id="stickers")["status"] == "submitted"
     assert chain.registry.status(chain.context, "second", plugin_id="stickers")["reason"] == "submission_timeout"

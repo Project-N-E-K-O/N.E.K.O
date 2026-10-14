@@ -6,7 +6,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 MAX_SCOPES = 128
 MAX_REGISTRATIONS = 64
@@ -19,6 +19,19 @@ MAX_RETAINED_BYTES = 16 * 1024 * 1024
 MAX_VALIDATIONS = 4
 RETENTION_SECONDS = 120.0
 SUBMISSION_TIMEOUT_SECONDS = 5.0
+
+
+# The display validator lives in the main server, above main_logic in the
+# module layering, so the server binds it here at import time.
+_image_validation: tuple[Callable[[list], list], Callable[[Any], bool]] | None = None
+
+
+def bind_image_validation(
+    build_blocks: Callable[[list], list], payloads_conflict: Callable[[Any], bool],
+) -> None:
+    """Bind the plugin image chat validator and its dual-source check."""
+    global _image_validation
+    _image_validation = (build_blocks, payloads_conflict)
 
 
 def _valid_registration_id(registration_id: Any) -> bool:
@@ -230,12 +243,10 @@ class ReplyTailRegistry:
             return receipt("failed", "attachment_too_large")
         # Reuse the display validator; unlike ToolImage this preserves GIF bytes
         # and only accepts inline pixels or host-minted media references.
-        from app.main_server.character_runtime import (
-            _build_plugin_image_chat_blocks,
-            _image_part_payloads_conflict,
-        )
-
-        if any(_image_part_payloads_conflict(part) for part in parts):
+        if _image_validation is None:
+            return receipt("failed", "unavailable")
+        build_blocks, payloads_conflict = _image_validation
+        if any(payloads_conflict(part) for part in parts):
             return receipt("failed", "invalid_attachment")
         if (
             self._validations >= MAX_VALIDATIONS
@@ -253,7 +264,7 @@ class ReplyTailRegistry:
             if not _task.cancelled():
                 _task.exception()
 
-        validation = asyncio.create_task(asyncio.to_thread(_build_plugin_image_chat_blocks, parts))
+        validation = asyncio.create_task(asyncio.to_thread(build_blocks, parts))
         try:
             blocks = await asyncio.shield(validation)
         finally:
