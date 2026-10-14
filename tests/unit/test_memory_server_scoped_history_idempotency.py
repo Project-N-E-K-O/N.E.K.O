@@ -4472,9 +4472,8 @@ async def test_fallback_fence_keys_are_the_newly_fenced_journal_subjects_only(en
         ],
         "items": [], "applied": [],
     }
-    contexts = [{"subject": coerce_subject(PART)}, {"subject": coerce_subject(GROUP)}]
     # 本次新挡的段：暂存记的写入目标 + 它稳定的 wire key；早先丢弃段的 key 一个都不带
-    assert env.routes._fenced_journal_keys(staging, contexts, {1}) == {GROUP_KEY, PART_KEY}
+    assert env.routes._fenced_journal_keys(staging, {1}) == {GROUP_KEY, PART_KEY}
 
 
 async def test_fallback_task_cancelled_alone_still_answers_503(env):
@@ -4528,3 +4527,29 @@ async def test_fallback_fence_survives_a_lost_journal_and_changed_routing(env):
     await _post(env, _single_body())
     # 兜底带着稳定的 wire key：重新生成时照样认出这段，清除前的输入不会写进新目标
     assert _facts_of(env, PART) == [] and _facts_of(env, GP) == []
+
+
+async def test_fallback_written_while_the_caller_is_cancelled_is_reported_as_written(env):
+    env.llm.responses = [[]]
+    _bump_before_apply(env)
+    state = _fail_fence_writes_once(env)
+    real_update = env.idem.update_key
+    caller = {}
+
+    async def update_then_cancel_caller(name, key, fn):
+        result = await real_update(name, key, fn)
+        if state["failed"]:
+            caller["task"].cancel()                              # 兜底刚写完，调用方同一时刻被取消
+        return result
+
+    env.monkeypatch.setattr(env.idem, "update_key", update_then_cancel_caller)
+    logged = []
+    env.monkeypatch.setattr(env.routes.logger, "warning", lambda msg, *a, **k: logged.append(str(msg)))
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00016", "count": 1}])
+    caller["task"] = asyncio.ensure_future(_post(env, body))
+    with pytest.raises((asyncio.CancelledError, HTTPException)):
+        await caller["task"]
+    assert GROUP_KEY in _forgotten_keys_on_record(env)
+    # 写成了就按写成了记，不能被说成「没写成」
+    assert any("recorded in forgotten_keys" in line for line in logged)
+    assert not any("cancelled before it was written" in line for line in logged)

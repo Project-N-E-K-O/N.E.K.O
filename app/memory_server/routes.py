@@ -4461,10 +4461,11 @@ async def _record_fence_fallback(lanlan_name: str, key: str, fenced: set[str]) -
             if current is not None and current.cancelling():
                 # 调用方自己被取消：等兜底写完后照样把取消抛出
                 cancellation = cancellation or exc
-            if task.done():
+            if task.cancelled():
                 # 只是兜底任务本身被取消（关停时的取消扫描）：没写成，调用方照常记日志、回 503
                 outcome = "cancelled before it was written"
                 break
+            # 调用方被取消、兜底任务还在跑或刚正常结束 / 抛错：下一轮取它的真实结果
             continue
         except MaintenanceModeError:
             if cancellation is not None:
@@ -4480,30 +4481,30 @@ async def _record_fence_fallback(lanlan_name: str, key: str, fenced: set[str]) -
         )
         break
     if cancellation is not None:
+        logger.warning(f"[scoped_history] {lanlan_name}: 请求被取消，清除丢弃标记的键记录兜底：{outcome}")
         raise cancellation
     return outcome
 
 
-def _fenced_journal_keys(staging: dict, contexts: list[dict], indexes: set[int]) -> set[str]:
-    """Keys identifying the segments a recheck fenced: journal subject plus stable wire key.
+def _segment_fence_keys(segment: object) -> set[str]:
+    """Keys a fallback fence records for one segment: its journal subject and its stable wire key.
 
     The journal subject covers a restored retry of this journal. The wire key
     is the segment's stable identity: if the journal is later lost and the
     canonical routing changes, a regenerating retry resolves a new destination
     but still matches ``forgotten_keys`` through it.
     """
-    subjects = _staged_segment_subjects(staging, contexts)
+    return _segment_subject_keys(segment) - {"None", ""}
+
+
+def _fenced_journal_keys(staging: dict, indexes: set[int]) -> set[str]:
+    """Fallback fence keys of the segments a recheck fenced (see :func:`_segment_fence_keys`)."""
     segments = staging.get("segments") if isinstance(staging, dict) else None
-    keys = set()
-    for index in indexes:
-        if not 0 <= index < len(subjects):
-            continue
-        keys.add(subjects[index].key)
-        segment = segments[index] if isinstance(segments, list) and index < len(segments) else None
-        wire_key = segment.get("wire_key") if isinstance(segment, dict) else None
-        if isinstance(wire_key, str) and wire_key:
-            keys.add(wire_key)
-    return keys
+    if not isinstance(segments, list):
+        return set()
+    return set().union(*(
+        _segment_fence_keys(segments[index]) for index in indexes if 0 <= index < len(segments)
+    ))
 
 
 def _staged_segment_subjects(staging: dict, contexts: list[dict]) -> list:
@@ -4633,7 +4634,7 @@ async def _apply_keyed_staging(
                 # 不带代数的清除在应用前后推进了 generation：事实层已静默丢弃这批写入。给这段打上
                 # 段级丢弃标记，信赖隔离与记忆丢弃用同一个依据
                 _mark_segments_dropped(segments, {item["segment"]})
-                fenced_now = _segment_subject_keys(segments[item["segment"]]) - {"None"}
+                fenced_now = _segment_fence_keys(segments[item["segment"]])
         applied.append(entry)
         done_seqs.add(seq)
         staging["applied"] = applied
@@ -5045,7 +5046,7 @@ async def _process_scoped_history_keyed(
             newly = _mark_items_forgotten_during_generation(lanlan_name, staging, contexts, generations)
             if newly:
                 await _persist_fence_marks(
-                    lanlan_name, key, staging, _fenced_journal_keys(staging, contexts, newly),
+                    lanlan_name, key, staging, _fenced_journal_keys(staging, newly),
                 )
         if generations is None:
             # 从暂存恢复的重试同样按记录上的 forgotten_keys 丢弃被清段：清除在生成期间只记下标记、
@@ -5082,7 +5083,7 @@ async def _process_scoped_history_keyed(
             # 与生成路径落暂存后那次复核对称：基线刚取、等于当前 generation，所以这里只会在「清除正在进行」
             # 时生效。事实层此刻拒收这段却不留标记，不先标上，同段后面的显示名会照常写进被清 subject
             await _persist_fence_marks(
-                lanlan_name, key, staging, _fenced_journal_keys(staging, contexts, newly),
+                lanlan_name, key, staging, _fenced_journal_keys(staging, newly),
             )
         try:
             await _apply_keyed_staging(
@@ -5115,7 +5116,7 @@ async def _process_scoped_history_keyed(
             if newly:
                 # 段级标记落盘：池未落盘、同键重试走恢复路径时同样挡下
                 await _persist_fence_marks(
-                    lanlan_name, key, staging, _fenced_journal_keys(staging, contexts, newly),
+                    lanlan_name, key, staging, _fenced_journal_keys(staging, newly),
                 )
             # 被清除挡下的段（墓碑、清除丢弃）记忆已擦：它的 activity / channel 也不能再进信赖池
             try:
