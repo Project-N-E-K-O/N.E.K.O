@@ -4468,12 +4468,13 @@ async def test_fallback_fence_keys_are_the_newly_fenced_journal_subjects_only(en
         "segments": [
             # 早先因别的原因丢弃的段：它的路由目标可能被一个有效段共用，不能借它去挡别人
             {"subject": dict(PART), "wire_key": GP_KEY, "dropped_by_forget": True},
-            {"subject": dict(GROUP), "wire_key": GROUP_KEY, "dropped_by_forget": True},
+            {"subject": dict(GROUP), "wire_key": PART_KEY, "dropped_by_forget": True},
         ],
         "items": [], "applied": [],
     }
     contexts = [{"subject": coerce_subject(PART)}, {"subject": coerce_subject(GROUP)}]
-    assert env.routes._fenced_journal_keys(staging, contexts, {1}) == {GROUP_KEY}
+    # 本次新挡的段：暂存记的写入目标 + 它稳定的 wire key；早先丢弃段的 key 一个都不带
+    assert env.routes._fenced_journal_keys(staging, contexts, {1}) == {GROUP_KEY, PART_KEY}
 
 
 async def test_fallback_task_cancelled_alone_still_answers_503(env):
@@ -4495,3 +4496,35 @@ async def test_fallback_task_cancelled_alone_still_answers_503(env):
         await _post(env, body)
     # 没被取消的调用方不能收到 CancelledError：按兜底没写成照常回 503
     assert excinfo.value.status_code == 503
+
+
+async def test_fallback_fence_survives_a_lost_journal_and_changed_routing(env):
+    from memory import subject_identity
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    real_canonical = subject_identity.canonical_subject
+    route = {"to": coerce_subject(GP)}
+
+    def reroute(subject, snap=None):
+        if subject.key == GROUP_KEY:
+            return route["to"]
+        return real_canonical(subject, snap)
+
+    env.monkeypatch.setattr(subject_identity, "canonical_subject", reroute)
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_before_apply(*args, **kwargs):
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))   # 清除了当时的路由目标
+        return await real_apply(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+    _fail_fence_writes_once(env)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())                         # 标记写失败，只剩键记录兜底
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+    _staging_file(env, KEY_GROUP).unlink()                       # 之后暂存丢了
+    route["to"] = coerce_subject(PART)                           # 路由也变了
+    await _post(env, _single_body())
+    # 兜底带着稳定的 wire key：重新生成时照样认出这段，清除前的输入不会写进新目标
+    assert _facts_of(env, PART) == [] and _facts_of(env, GP) == []

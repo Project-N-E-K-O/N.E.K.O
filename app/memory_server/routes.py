@@ -4485,9 +4485,25 @@ async def _record_fence_fallback(lanlan_name: str, key: str, fenced: set[str]) -
 
 
 def _fenced_journal_keys(staging: dict, contexts: list[dict], indexes: set[int]) -> set[str]:
-    """Journal subject keys of the segments a recheck fenced (by their own generation)."""
+    """Keys identifying the segments a recheck fenced: journal subject plus stable wire key.
+
+    The journal subject covers a restored retry of this journal. The wire key
+    is the segment's stable identity: if the journal is later lost and the
+    canonical routing changes, a regenerating retry resolves a new destination
+    but still matches ``forgotten_keys`` through it.
+    """
     subjects = _staged_segment_subjects(staging, contexts)
-    return {subjects[index].key for index in indexes if 0 <= index < len(subjects)}
+    segments = staging.get("segments") if isinstance(staging, dict) else None
+    keys = set()
+    for index in indexes:
+        if not 0 <= index < len(subjects):
+            continue
+        keys.add(subjects[index].key)
+        segment = segments[index] if isinstance(segments, list) and index < len(segments) else None
+        wire_key = segment.get("wire_key") if isinstance(segment, dict) else None
+        if isinstance(wire_key, str) and wire_key:
+            keys.add(wire_key)
+    return keys
 
 
 def _staged_segment_subjects(staging: dict, contexts: list[dict]) -> list:
@@ -4563,6 +4579,7 @@ async def _apply_keyed_staging(
             continue
         segment = segments[item["segment"]]
         generation = None
+        fenced_now: set[str] = set()
         if item.get("kind") == _KEYED_ITEM_FACTS:
             baseline = generations if generations is not None else fact_generations
             if baseline is not None and item["segment"] in baseline:
@@ -4616,10 +4633,16 @@ async def _apply_keyed_staging(
                 # 不带代数的清除在应用前后推进了 generation：事实层已静默丢弃这批写入。给这段打上
                 # 段级丢弃标记，信赖隔离与记忆丢弃用同一个依据
                 _mark_segments_dropped(segments, {item["segment"]})
+                fenced_now = _segment_subject_keys(segments[item["segment"]]) - {"None"}
         applied.append(entry)
         done_seqs.add(seq)
         staging["applied"] = applied
-        await idempotency.write_staging(lanlan_name, key, staging)
+        if fenced_now:
+            # 刚标上的段级标记与复核那几处同样经 _persist_fence_marks 落盘：写失败时兜底记进键记录，
+            # 否则基线取在清除之后的同键重试会把这段清除前的事实重新写进去
+            await _persist_fence_marks(lanlan_name, key, staging, fenced_now)
+        else:
+            await idempotency.write_staging(lanlan_name, key, staging)
     if generations is None and display_names:
         # 恢复的重试：之前尝试已写过的显示名项也按这次请求带来的当前值再盖一次（「置为该值」幂等）——
         # 显示名不在请求身份里，键停在 pending 期间改了名字，不能就此带着旧名收尾。被清除挡下的段不盖
