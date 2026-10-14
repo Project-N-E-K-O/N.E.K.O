@@ -78,6 +78,11 @@ describe('prepareExternalWindow', () => {
     expect(open).toHaveBeenCalledTimes(1)
   })
 
+  it('reports a blank window the browser refused', () => {
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    expect(prepareExternalWindow().blocked).toBe(true)
+  })
+
   it('closes the blank window on cancel or an unsafe URL', () => {
     const popup = { opener: {}, closed: false, location: { href: '' }, close: vi.fn() }
     vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)

@@ -532,9 +532,19 @@ async def test_unsubscribe_overrides_an_import_that_is_not_a_job_yet(tmp_path):
         await _wait_for(lambda: _imports(service, "admitting"), "import not admitting")
         result = await service.remove_subscription("market-memes", IDENTITY, frozenset({_release(raw)}))
         assert result["kept"] == "not_installed"
+        listed: list[list[str]] = []
+        discard = service._discard_staging
+
+        async def discard_and_look(job_id):
+            # Once it is a job, it is listed once, as that job.
+            listed.append([item["state"] for item in _imports(service)])
+            await discard(job_id)
+
+        service._discard_staging = discard_and_look
         service._admission_lock.release()
         job = await importing
         assert job["ok"] is True and job["state"] == "cancelled"
+        assert listed and listed[0] == ["cancelled"]
         await asyncio.sleep(0.05)
         assert await service.list_packs() == []
     finally:

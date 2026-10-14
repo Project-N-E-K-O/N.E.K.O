@@ -172,6 +172,7 @@ export default {
     openMarket: '前往外掛市場訂閱',
     marketUnavailable: '未設定外掛市場位址',
     marketPairFailed: '無法與外掛市場配對，請稍後再試',
+    marketPopupBlocked: '瀏覽器封鎖了新視窗，請允許此頁面彈出視窗後再試',
     subscribedTag: '市場訂閱 · {version}',
     subscribedHint: '從外掛市場訂閱安裝，更新與取消訂閱請在市場頁面操作',
     importQueued: '正在背景匯入 {name}',

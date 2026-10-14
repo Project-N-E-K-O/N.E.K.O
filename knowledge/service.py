@@ -1071,6 +1071,8 @@ class KnowledgeService:
             await self._discard_staging(job.job_id)
             return {"ok": False, "reason": "knowledge_stopping"}
         self._remember_job(job)
+        # A job now: listed as one, no longer as an incoming import.
+        self._incoming.pop(arrived_at, None)
         job.arrived_at = arrived_at
         if self._removal_committed_over(pack.pack_id, subscription, arrived_at):
             # The pack was removed while this import was being admitted.

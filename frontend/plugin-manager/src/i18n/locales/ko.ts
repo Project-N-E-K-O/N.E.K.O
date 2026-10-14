@@ -172,6 +172,7 @@ export default {
     openMarket: '플러그인 마켓에서 구독',
     marketUnavailable: '플러그인 마켓 주소가 설정되지 않았습니다',
     marketPairFailed: '플러그인 마켓과 페어링하지 못했습니다. 잠시 후 다시 시도하세요',
+    marketPopupBlocked: '브라우저가 새 창을 차단했습니다. 이 페이지의 팝업을 허용한 뒤 다시 시도하세요',
     subscribedTag: '마켓 구독 · {version}',
     subscribedHint: '플러그인 마켓 구독으로 설치되었습니다. 업데이트와 구독 취소는 마켓 페이지에서 하세요',
     importQueued: '{name}을(를) 백그라운드에서 가져오는 중',

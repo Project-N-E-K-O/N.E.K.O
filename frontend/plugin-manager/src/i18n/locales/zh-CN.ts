@@ -172,6 +172,7 @@ export default {
     openMarket: '去插件市场订阅',
     marketUnavailable: '未配置插件市场地址',
     marketPairFailed: '无法与插件市场配对，请稍后重试',
+    marketPopupBlocked: '浏览器拦截了新窗口，请允许本页面弹出窗口后重试',
     subscribedTag: '市场订阅 · {version}',
     subscribedHint: '从插件市场订阅安装，更新和取消订阅请在市场页面操作',
     importQueued: '正在后台导入 {name}',

@@ -172,6 +172,7 @@ export default {
     openMarket: 'Subscribe in the plugin market',
     marketUnavailable: 'No plugin market address is configured',
     marketPairFailed: 'Could not pair with the plugin market. Please try again later',
+    marketPopupBlocked: 'The browser blocked the new window. Allow pop-ups for this page and try again',
     subscribedTag: 'Market · {version}',
     subscribedHint: 'Installed from a plugin market subscription; update or unsubscribe on the market page',
     importQueued: 'Importing {name} in the background',

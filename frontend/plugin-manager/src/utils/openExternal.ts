@@ -77,14 +77,21 @@ export function openExternalUrl(url: string): void {
  *
  * In a browser, `window.open` after an await is no longer tied to the click
  * and is blocked as a popup, so a blank window is opened up front and pointed
- * at the URL later. Electron routes to the system browser and has no such
- * restriction, so nothing is opened until `open`.
+ * at the URL later. `blocked` says the browser refused even that one: a later
+ * `open` would be refused too, so the caller should tell the user instead of
+ * doing the work behind it. Electron routes to the system browser and has no
+ * such restriction, so nothing is opened until `open`.
  */
-export function prepareExternalWindow(): { open: (url: string) => void; cancel: () => void } {
-  if (externalShell()) return { open: openExternalUrl, cancel: () => {} }
+export function prepareExternalWindow(): {
+  blocked: boolean
+  open: (url: string) => void
+  cancel: () => void
+} {
+  if (externalShell()) return { blocked: false, open: openExternalUrl, cancel: () => {} }
   const popup = window.open('', '_blank')
   if (popup) popup.opener = null
   return {
+    blocked: popup === null,
     open(url: string) {
       const href = normalizeExternalUrl(url)
       if (!href) {

@@ -172,6 +172,7 @@ export default {
     openMarket: 'プラグインマーケットで購読',
     marketUnavailable: 'プラグインマーケットのアドレスが設定されていません',
     marketPairFailed: 'プラグインマーケットとのペアリングに失敗しました。しばらくしてから再試行してください',
+    marketPopupBlocked: 'ブラウザが新しいウィンドウをブロックしました。このページのポップアップを許可してから再試行してください',
     subscribedTag: 'マーケット購読 · {version}',
     subscribedHint: 'プラグインマーケットの購読でインストールされました。更新や購読解除はマーケットページで行ってください',
     importQueued: '{name} をバックグラウンドでインポートしています',

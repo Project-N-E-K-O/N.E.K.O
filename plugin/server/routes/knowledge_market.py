@@ -54,7 +54,7 @@ import json
 import re
 import secrets
 import time
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import quote, urljoin, urlparse
 
 from fastapi import APIRouter, HTTPException, Query
@@ -238,6 +238,8 @@ _active_package_tasks: dict[int, str] = {}
 _unsubscribing: dict[int, asyncio.Task[Any]] = {}
 # Background reports to the market (held so they are not collected mid-flight).
 _background: set[asyncio.Task[Any]] = set()
+# The latest report to the market per package (see _report_in_order).
+_reports: dict[int, asyncio.Task[Any]] = {}
 # Every pause between retries goes through here (tests record them).
 _sleep = asyncio.sleep
 
@@ -493,6 +495,30 @@ def _in_background(coro: Any, name: str) -> asyncio.Task[Any]:
     return task
 
 
+def _report_in_order(package_id: int, report: Callable[[], Awaitable[Any]], *, name: str) -> None:
+    """Report to the market in the background, after the package's previous report.
+
+    A subscribe report that is slow (refreshing the OAuth token, say) must not
+    land after the unsubscribe that followed it, or the market would keep a
+    subscription that is gone. Each report has its own timeout, so the wait
+    is bounded.
+    """
+    previous = _reports.get(package_id)
+
+    async def run() -> None:
+        if previous is not None and not previous.done():
+            await asyncio.wait({previous})
+        await report()
+
+    task = _in_background(run(), name=name)
+    _reports[package_id] = task
+    task.add_done_callback(
+        lambda done, *, package_id=package_id: _reports.pop(package_id, None)
+        if _reports.get(package_id) is done
+        else None
+    )
+
+
 async def _execute_subscription(task_id: str, payload: KnowledgeSubscribeRequest) -> None:
     task = _tasks[task_id]
     try:
@@ -524,8 +550,10 @@ async def _execute_subscription(task_id: str, payload: KnowledgeSubscribeRequest
             message="知识包已交给本地知识库，正在导入",
             completed_at=time.time(),
         )
-        _in_background(
-            _report_subscription_best_effort(descriptor, result), name=f"market-knowledge-report-{task_id}"
+        _report_in_order(
+            descriptor.package_id,
+            lambda: _report_subscription_best_effort(descriptor, result),
+            name=f"market-knowledge-report-{task_id}",
         )
     except asyncio.CancelledError:
         if task.get("completed_at") is None:
@@ -701,7 +729,11 @@ async def _artifact_sources(url: str) -> list[str]:
         source = url if item.get("id") == "github-direct" else f"{base}{url}"
         if (base in _GITHUB_MIRROR_PREFIXES or item.get("id") == "github-direct") and source not in sources:
             sources.append(source)
-    for source in (*(f"{prefix}{url}" for prefix in _GITHUB_MIRROR_PREFIXES), url):
+    mirrors = [f"{prefix}{url}" for prefix in _GITHUB_MIRROR_PREFIXES]
+    # Without a usable test, GitHub itself comes right after the first mirror:
+    # each source may take its whole timeout, so last could mean never tried.
+    fallback = [*mirrors, url] if usable else [*mirrors[:1], url, *mirrors[1:]]
+    for source in fallback:
         if source not in sources:
             sources.append(source)
     return sources
@@ -856,8 +888,10 @@ def _report_unsubscribe_later(package_id: int) -> None:
     awaited, so the answer is not delayed past Main's proxy. The market page
     reconciles anyway; this only saves it a round.
     """
-    _in_background(
-        _report_unsubscribe_best_effort(package_id), name=f"market-knowledge-unsubscribe-report-{package_id}"
+    _report_in_order(
+        package_id,
+        lambda: _report_unsubscribe_best_effort(package_id),
+        name=f"market-knowledge-unsubscribe-report-{package_id}",
     )
 
 
@@ -999,6 +1033,7 @@ def _cleanup_tasks() -> None:
         task_id
         for task_id, task in _tasks.items()
         if task_id not in _task_workers
+        and task_id not in _applies
         and task.get("completed_at")
         and now - float(task["completed_at"]) > _TASK_TTL_SECONDS
     ]:
@@ -1010,7 +1045,9 @@ def _cleanup_tasks() -> None:
         (
             (task_id, task)
             for task_id, task in _tasks.items()
-            if task_id not in _task_workers and task.get("completed_at") is not None
+            # An apply left running by a cancelled worker still needs its task
+            # (its package is released from it when the apply settles).
+            if task_id not in _task_workers and task_id not in _applies and task.get("completed_at") is not None
         ),
         key=lambda item: (float(item[1]["completed_at"]), item[0]),
     )

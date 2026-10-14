@@ -111,7 +111,7 @@ class FakeMain:
 def env(monkeypatch):
     for state in (
         km._tasks, km._task_workers, km._applies, km._active_package_tasks,
-        km._unsubscribing, km._background, km._mirror_cache,
+        km._unsubscribing, km._background, km._mirror_cache, km._reports,
     ):
         state.clear()
     main = FakeMain()
@@ -578,6 +578,45 @@ async def test_unsubscribe_refuses_a_pack_its_worker_did_not_resolve(env, monkey
     gate.set()
 
 
+async def test_reports_of_a_package_reach_the_market_in_order(env, monkeypatch):
+    main = env["main"]
+    gate = asyncio.Event()
+    sent: list[str] = []
+
+    async def slow_subscribe_report(descriptor, result):
+        await gate.wait()  # e.g. refreshing the OAuth token
+        sent.append("subscribe")
+
+    async def unsubscribe_report(package_id, *, timeout=10.0):
+        sent.append("unsubscribe")
+        return True
+
+    monkeypatch.setattr(km, "_report_subscription_best_effort", slow_subscribe_report)
+    monkeypatch.setattr(km, "_report_unsubscribe_best_effort", unsubscribe_report)
+    main.on("POST", "subscriptions/apply", STAGED)
+    main.on("GET", "subscriptions", _state(imports=[_import("queued")]))
+    main.on("POST", "subscriptions/remove", REMOVED)
+    await _finished(env["http"], await _subscribe(env["http"]))
+    assert (await _unsubscribe(env["http"])).status_code == 200
+    await asyncio.sleep(0.02)
+    assert sent == []  # the unsubscribe report waits for the subscribe report
+    gate.set()
+    await _until(lambda: len(sent) == 2, "reports not sent")
+    assert sent == ["subscribe", "unsubscribe"]
+    await _until(lambda: not km._reports, "report chain not cleared")
+
+
+def test_a_task_whose_apply_still_runs_is_never_pruned(env, monkeypatch):
+    monkeypatch.setattr(km, "_TASK_MAX_ENTRIES", 0)
+    monkeypatch.setattr(km, "_TASK_TTL_SECONDS", 0)
+    km._tasks["t1"] = {"task_id": "t1", "package_id": 42, "created_at": 0.0, "completed_at": 1.0}
+    km._tasks["t2"] = {"task_id": "t2", "package_id": 43, "created_at": 0.0, "completed_at": 1.0}
+    km._applies["t1"] = object()  # an apply left running by a cancelled worker
+    km._cleanup_tasks()
+    assert list(km._tasks) == ["t1"]
+    km._applies.clear()
+
+
 @pytest.mark.parametrize(
     "status, body, reason",
     [
@@ -639,6 +678,14 @@ async def test_download_sources_follow_the_speed_test(monkeypatch):
     # Every allowlisted mirror is still tried, unmeasured ones after the measured.
     assert set(sources) == {RELEASE, *(f"{prefix}{RELEASE}" for prefix in km._GITHUB_MIRROR_PREFIXES)}
     assert len(sources) == len(set(sources))
+    async def unmeasured():
+        return ()
+
+    # No usable test: GitHub itself right after the first mirror, not last.
+    monkeypatch.setattr(km, "_measured_github_sources", unmeasured)
+    fallback = await km._artifact_sources(RELEASE)
+    assert fallback[:2] == [f"{km._GITHUB_MIRROR_PREFIXES[0]}{RELEASE}", RELEASE]
+    assert set(fallback) == set(sources)
     # Not a GitHub Release asset: downloaded as published only.
     assert await km._artifact_sources("https://objects.githubusercontent.com/x.neko-knowledge.json") == [
         "https://objects.githubusercontent.com/x.neko-knowledge.json"

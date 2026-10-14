@@ -172,6 +172,7 @@ export default {
     openMarket: 'Suscribirse en el mercado de plugins',
     marketUnavailable: 'No hay una dirección del mercado de plugins configurada',
     marketPairFailed: 'No se pudo vincular con el mercado de plugins. Inténtalo de nuevo más tarde',
+    marketPopupBlocked: 'El navegador bloqueó la nueva ventana. Permite las ventanas emergentes para esta página e inténtalo de nuevo',
     subscribedTag: 'Mercado · {version}',
     subscribedHint: 'Instalado mediante una suscripción del mercado de plugins; actualízalo o cancela la suscripción en la página del mercado',
     importQueued: 'Importando {name} en segundo plano',

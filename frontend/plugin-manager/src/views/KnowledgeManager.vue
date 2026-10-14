@@ -1073,6 +1073,11 @@ async function toggleEntry(row: KnowledgeEntry, disabled: boolean) {
 async function openKnowledgeMarket() {
   // Before any await: a browser only allows a popup inside the click itself.
   const target = prepareExternalWindow()
+  if (target.blocked) {
+    // No window to show the Market in: do not issue a pairing code for nothing.
+    ElMessage.error(t('knowledge.marketPopupBlocked'))
+    return
+  }
   marketOpening.value = true
   try {
     const base = await getMarketUrl()
