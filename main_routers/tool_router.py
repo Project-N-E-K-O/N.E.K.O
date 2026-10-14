@@ -434,9 +434,11 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
 class ReplyTailRequest(BaseModel):
     context: Dict[str, Any]
     plugin_id: str = Field(min_length=1, max_length=128)
-    registration_id: str = Field(min_length=1, max_length=128)
-    parts: List[Dict[str, Any]] = Field(default_factory=list, max_length=2)
-    ai_behavior: str = "blind"
+    # Validated by the registry, which answers with a receipt rather than a
+    # 422 the SDK would raise as an HTTP error.
+    registration_id: Any = ""
+    parts: Any = Field(default_factory=list)
+    ai_behavior: Any = "blind"
 
 
 @router.post("/reply-tail/register")

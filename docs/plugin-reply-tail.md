@@ -31,9 +31,10 @@ The handler must accept `_ctx` or `**kwargs`. `_ctx.host_reply` is reserved host
 context, captured before awaiting the original tool invocation. Do not build it
 from model parameters, logs, the latest role, or the latest active reply. The
 credential binds the plugin source, role, reply, request, call and retry attempt.
-Treat its token as private and do not log it.
+Every invocation gets its own context, even when a provider reuses a call ID
+within one reply. Treat its token as private and do not log it.
 
-Registration IDs are idempotent within one call. Use the same original context
+Registration IDs are idempotent within one invocation. Use the same original context
 and ID for `self.ctx.reply_tail.status(...)` and `.cancel(...)`. Do not
 immediately resend on timeout: the host might already have accepted the image.
 The SDK deliberately does not retry or fall back to `push_message`.
@@ -67,11 +68,14 @@ part encoding and validator, preserving GIF animation. Host-minted image
 references are also supported. Arbitrary remote images and `ToolResult.images`
 are not part of this API; the latter feeds model vision.
 
-State is in memory: 128 call scopes, 64 registrations, two images per
-registration, 2 MiB serialized payload per registration, 16 MiB retained or
-validating payload, four concurrent validations, and 120-second retention.
-Capacity exhaustion rejects new work. Expiry reclaims state and never triggers
-submission.
+State is in memory: 128 invocation scopes, 64 registrations still holding
+images, two images per registration, 2 MiB serialized payload per registration,
+16 MiB retained or validating payload, four concurrent validations, and
+120-second retention. Settled receipts stay for status queries within a
+separate bound of 256: past it, and past the scope bound, the oldest receipts
+and scopes of closed replies holding no image are evicted first. Capacity
+exhaustion rejects new work. Expiry reclaims state and
+never triggers submission.
 Frontend pending images also have a one-shot expiry check, so reclamation does
 not require a later chat event. Display and reconnect cancel that check.
 
@@ -80,7 +84,9 @@ also capped by each original context's expiry. A stalled write is cancelled
 at the deadline so it cannot indefinitely retain image memory or hold reply
 cleanup. Status records remain bounded by the normal retention policy.
 
-Retry or discard cancels the old attempt. Interruption cancels incomplete
+A reply counts as successful whenever its shown text is kept as the reply,
+including the long-reply truncation recovery. Retry or discard cancels the old
+attempt. Interruption cancels incomplete
 replies; a new input cannot reassign a completed reply's image to a newer turn.
 Reconnect drops pending frontend attachments rather than replaying them under a
 different connection.

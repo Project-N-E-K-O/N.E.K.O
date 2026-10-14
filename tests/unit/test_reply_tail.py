@@ -1,6 +1,7 @@
 """Original ownership, cancellation races and display-only image delivery."""
 import asyncio
 import base64
+import json
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -469,14 +470,14 @@ async def test_external_cancellation_during_write_reports_unknown_delivery(chain
     assert all(not item.blocks for item in chain.registry._registrations.values())
 
 
-async def test_other_base_exception_keeps_existing_failure_semantics(chain):
+async def test_other_base_exception_reports_unknown_delivery(chain):
     await register(chain, registration_id="first")
     await register(chain, registration_id="second")
     chain.manager.render_chat_blocks = AsyncMock(side_effect=BaseException("test transport abort"))
     with pytest.raises(BaseException, match="test transport abort"):
         await finish(chain)
     assert chain.registry.status(chain.context, "first", plugin_id="stickers") == {
-        "accepted": False, "status": "failed", "reason": "submission_uncertain",
+        "accepted": False, "status": "uncertain", "reason": "submission_interrupted",
     }
     assert chain.registry.status(chain.context, "second", plugin_id="stickers")["status"] == "cancelled"
     assert chain.registry._retained_bytes == 0
@@ -603,3 +604,200 @@ async def test_context_expiry_caps_submission_deadline(chain, monkeypatch):
     item.scope.expires = 0
     chain.registry._prune()
     assert not chain.registry._registrations
+
+
+async def test_each_invocation_gets_its_own_scope_even_with_a_repeated_call_id(chain):
+    # ID-less providers number each tool round from ``call_0``.
+    second = chain.registry.tool_context(chain.manager, chain.owner, "call-A", "plugin:stickers")
+    assert second["token"] != chain.context["token"]
+    assert second["invocation_id"] != chain.context["invocation_id"]
+    assert (await register(chain, registration_id="chosen"))["status"] == "registered"
+    assert await chain.registry.register(
+        second, "chosen", [image_part()], plugin_id="stickers",
+    ) == {"accepted": True, "status": "registered"}
+    await finish(chain)
+    sent = [call.args[0]["reply_tail"] for call in chain.manager.websocket.send_json.call_args_list]
+    assert [tail["call_id"] for tail in sent] == ["call-A", "call-A"]
+    assert {tail["invocation_id"] for tail in sent} == {
+        chain.context["invocation_id"], second["invocation_id"],
+    }
+
+
+async def test_settled_receipts_and_idle_scopes_do_not_exhaust_capacity(chain, monkeypatch):
+    import main_logic.reply_tail as module
+
+    monkeypatch.setattr(module, "MAX_REGISTRATIONS", 1)
+    monkeypatch.setattr(module, "MAX_SCOPES", 1)
+    # A settled tombstone holds no image, so it takes no registration slot.
+    assert chain.registry.cancel(chain.context, "early", plugin_id="stickers")["status"] == "cancelled"
+    assert (await register(chain))["status"] == "registered"
+    await finish(chain)
+    assert chain.registry.status(chain.context, "image-A", plugin_id="stickers")["status"] == "submitted"
+    owner = _ReplyTurn("speech-B", "request-B", session=chain.manager.session)
+    context = chain.registry.tool_context(chain.manager, owner, "call-B", "plugin:stickers")
+    # The closed reply's idle scope made room, its settled receipt went with it.
+    assert context is not None
+    assert chain.registry.status(chain.context, "image-A", plugin_id="stickers")["reason"] == "invalid_context"
+    assert (await chain.registry.register(
+        context, "image-B", [image_part()], plugin_id="stickers",
+    ))["status"] == "registered"
+    # A scope of an open reply, or one still holding an image, is never evicted.
+    assert chain.registry.tool_context(chain.manager, owner, "call-C", "plugin:stickers") is None
+    assert (await chain.registry.register(
+        context, "image-C", [image_part()], plugin_id="stickers",
+    ))["reason"] == "capacity"
+    monkeypatch.setattr(module, "MAX_SETTLED_RECORDS", 1)
+    assert chain.registry.cancel(context, "early-1", plugin_id="stickers")["status"] == "cancelled"
+    # An open reply's tombstone still decides its ID, so it is never evicted.
+    assert chain.registry.cancel(context, "early-2", plugin_id="stickers") == {
+        "accepted": False, "status": "uncertain", "reason": "capacity",
+    }
+    assert chain.registry.status(context, "early-1", plugin_id="stickers")["status"] == "cancelled"
+    owner.reply_tail.completed = True
+    owner.turn_ended = True
+    await chain.registry.finish(owner.reply_tail)
+    assert chain.registry.status(context, "image-B", plugin_id="stickers")["status"] == "submitted"
+    monkeypatch.setattr(module, "MAX_SCOPES", 4)
+    later = _ReplyTurn("speech-C", "request-C", session=chain.manager.session)
+    later_context = chain.registry.tool_context(chain.manager, later, "call-D", "plugin:stickers")
+    assert chain.registry.cancel(later_context, "early", plugin_id="stickers")["status"] == "cancelled"
+    # Once closed, the oldest settled receipt makes room.
+    assert chain.registry.status(context, "image-B", plugin_id="stickers")["reason"] == "registration_not_found"
+    assert chain.registry.status(context, "early-1", plugin_id="stickers")["status"] == "cancelled"
+
+
+async def test_router_answers_out_of_range_requests_with_receipts(chain, monkeypatch):
+    from main_routers.cookies_login_router import verify_local_access
+
+    app = FastAPI()
+    app.dependency_overrides[verify_local_access] = lambda: None
+    app.include_router(tool_router.router)
+    monkeypatch.setattr(tool_router, "reply_tail_registry", chain.registry)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://local",
+    ) as client:
+        async def post(operation, **body):
+            response = await client.post(f"/api/tools/reply-tail/{operation}", json={
+                "context": chain.context, "plugin_id": "stickers", **body,
+            })
+            assert response.status_code == 200
+            return response.json()
+
+        assert (await post(
+            "register", registration_id="x" * 129, parts=[image_part()],
+        ))["reason"] == "invalid_attachment"
+        assert (await post(
+            "register", registration_id="a", parts=[image_part()] * 3,
+        ))["reason"] == "invalid_attachment"
+        assert (await post(
+            "register", registration_id="a", parts=["not a part"],
+        ))["reason"] == "invalid_attachment"
+        assert (await post("status", registration_id=""))["reason"] == "registration_not_found"
+        assert (await post("cancel", registration_id=7))["reason"] == "registration_not_found"
+    assert chain.registry._registrations == {}
+
+
+@pytest.mark.parametrize("readable", [True, False])
+async def test_a_long_reply_kept_by_its_recovery_is_a_completed_reply(monkeypatch, readable):
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.tool_calling import ToolDefinition, ToolRegistry, ToolResult
+    from tests.unit.test_offline_late_completion_turn_ownership import (
+        _client, _text, _tool_call, _observe, _wire, _text_turn,
+        _make_callback_media_manager,
+    )
+    import main_logic.reply_tail as module
+
+    registry = ReplyTailRegistry()
+    monkeypatch.setattr(module, "reply_tail_registry", registry)
+    client = _client([
+        [_text("先说一句。"), _tool_call("call-A")],
+        [_text("这是很长的一句话。" * 40 if readable else "ahah" * 200), _text("", "stop")],
+    ])
+    client.enable_response_guard = True
+    client.max_response_rerolls = 0
+    mgr = _observe(_make_callback_media_manager(client))
+    mgr._get_text_guard_max_length = lambda: 30
+    mgr.websocket.state = SimpleNamespace(reply_tail_version=1)
+    _wire(mgr, client)
+    contexts = []
+
+    async def dispatch(call, metadata):
+        contexts.append(call.host_reply)
+        assert (await registry.register(
+            call.host_reply, "image-A", [image_part()], plugin_id="stickers",
+        ))["status"] == "registered"
+        return ToolResult(call.call_id, call.name, {})
+
+    mgr.tool_registry = ToolRegistry(remote_dispatcher=dispatch)
+    mgr.tool_registry.register(ToolDefinition(
+        "lookup", "", metadata={"source": "plugin:stickers", "reply_tail": True},
+    ))
+    client.on_tool_call = ToolCallingMixin._make_tool_call_handler(mgr, client)
+    monkeypatch.setattr("main_logic.core.dispatch_text_user_message", lambda *_: None)
+    await asyncio.wait_for(_text_turn(mgr, "说点什么", "original-request"), 5)
+
+    discards = [frame["message"] for frame in mgr.websocket.sent if frame.get("type") == "response_discarded"]
+    tails = [frame for frame in mgr.websocket.sent if "reply_tail" in frame]
+    status = registry.status(contexts[0], "image-A", plugin_id="stickers")
+    if readable:
+        # The stream keeps the shown text truncated to its last sentence end.
+        assert discards == []
+        assert len(tails) == 1 and status["status"] == "submitted"
+    else:
+        assert [json.loads(message)["code"] for message in discards] == ["RESPONSE_TOO_LONG"]
+        assert tails == [] and status["status"] == "cancelled"
+    assert registry._retained_bytes == 0
+
+
+@pytest.mark.parametrize("code", ["RESPONSE_LENGTH_TRUNCATED", "RESPONSE_TOO_LONG"])
+async def test_the_truncated_recovery_keeps_its_images_for_the_recovered_reply(code):
+    from tests.unit.test_offline_late_completion_turn_ownership import _core_manager
+
+    mgr = _core_manager()
+    mgr.websocket.state = SimpleNamespace(reply_tail_version=1)
+    registry = ReplyTailRegistry()
+    reply_turn = mgr._begin_reply_turn(
+        speech_id=mgr.current_speech_id, request_id="req-A", meta=None,
+    )
+    reply_turn.session = mgr.session
+    mgr._active_text_request_id = "req-A"
+    context = registry.tool_context(mgr, reply_turn, "call-A", "plugin:stickers")
+    assert (await registry.register(
+        context, "image-A", [image_part()], plugin_id="stickers",
+    ))["status"] == "registered"
+    truncated = code == "RESPONSE_LENGTH_TRUNCATED"
+    message = json.dumps({"code": code, **({"text": "截断到这里。"} if truncated else {})})
+
+    await mgr.handle_response_discarded(
+        "length>30", 1, 1, False, message, request_id="req-A", reply_turn=reply_turn,
+    )
+    await registry.finish(reply_turn.reply_tail)
+
+    tails = [frame for frame in mgr.websocket.sent if "reply_tail" in frame]
+    status = registry.status(context, "image-A", plugin_id="stickers")
+    if truncated:
+        turn_end = next(i for i, frame in enumerate(mgr.websocket.sent) if frame.get("data") == "turn end")
+        assert len(tails) == 1 and mgr.websocket.sent.index(tails[0]) > turn_end
+        assert status["status"] == "submitted"
+    else:
+        assert tails == []
+        assert status == {"accepted": False, "status": "cancelled", "reason": "reply_discarded"}
+
+
+@pytest.mark.parametrize("commit", ["reply", "length_recovery", "gibberish_prefix"])
+async def test_every_exit_keeping_the_shown_text_completes_the_reply(monkeypatch, commit):
+    from tests.unit.test_offline_turn_cancellation_e2e import (
+        _SUMMARY_GIBBERISH_TAIL, _client, _length_guarded_client, _reply_chunks,
+        _summary_client,
+    )
+
+    if commit == "reply":
+        client = _client()
+        client.script = [_reply_chunks("openai", "你好呀。")]
+    elif commit == "length_recovery":
+        client, _ = _length_guarded_client("name_prefix")
+    else:
+        client = _summary_client(monkeypatch, _SUMMARY_GIBBERISH_TAIL)
+    tail = SimpleNamespace(completed=False, discard_attempt=lambda: None)
+    await client.stream_text("Q1", reply_owner=SimpleNamespace(reply_tail=tail))
+    assert tail.completed

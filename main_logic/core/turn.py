@@ -1523,8 +1523,6 @@ class TurnMixin:
             if request_id is _REQUEST_ID_UNSET
             else request_id
         )
-        if reply_turn is not None and reply_turn.reply_tail is not None:
-            reply_turn.reply_tail.discard_attempt()
         request_has_owner = (
             request_id is not _REQUEST_ID_UNSET
             and active_request_id is not None
@@ -1566,6 +1564,16 @@ class TurnMixin:
                     f"[{self.lanlan_name}] response_discarded JSON 解析失败: {_parse_err} (msg_len={len(message or '')})"
                 )
                 print(f"[response_discarded parse_err] raw: {message!r}")
+
+        # The truncated recovery keeps this attempt's text as the reply, so its
+        # reply-tail images stay registered until the recovered body is
+        # published (``_mark_recovery_published``). Every other discard ends
+        # the attempt that registered them.
+        if (
+            reply_turn is not None and reply_turn.reply_tail is not None
+            and _truncated_text is None
+        ):
+            reply_turn.reply_tail.discard_attempt()
 
         # 被丢弃的这段回复前端已经 clear 掉了，用户没看到——不该作为"AI 说过的
         # 话"进 activity tracker 的 unfinished_thread 检测。_clear_tts_pipeline
@@ -1669,6 +1677,13 @@ class TurnMixin:
                 # the steps below, but what the user saw and memory recorded
                 # still lands in history, before the taker's user message.
                 _append_recovery_history()
+                # Like the regular commit: the shown reply is complete, so
+                # its reply-tail images may follow it once the turn ends.
+                if (
+                    _truncated_text is not None and reply_turn is not None
+                    and reply_turn.reply_tail is not None
+                ):
+                    reply_turn.reply_tail.completed = True
 
             try:
                 if _truncated_text is not None:

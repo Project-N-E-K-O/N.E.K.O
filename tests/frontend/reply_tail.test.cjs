@@ -71,10 +71,14 @@ function harness() {
     function end(turnId = 'turn-A', requestId = 'request-A') {
         emit('neko-assistant-turn-end', { turnId, requestId });
     }
-    function enqueue(registration_id = 'image-A', request_id = 'request-A', call_id = 'call-A') {
+    function enqueue(registration_id = 'image-A', request_id = 'request-A', call_id = 'call-A',
+            invocation_id = undefined) {
         return window.nekoReplyTail.enqueue({
             blocks: [{ type: 'image', url: 'data:image/gif;base64,AAAA' }],
-            reply_tail: { version: 1, reply_id: 'reply-A', request_id, registration_id, call_id },
+            reply_tail: {
+                version: 1, reply_id: 'reply-A', request_id, registration_id, call_id,
+                ...(invocation_id ? { invocation_id } : {}),
+            },
         });
     }
     function advance(ms) {
@@ -216,6 +220,19 @@ test('separate calls may use the same local registration id', () => {
     h.end();
     h.enqueue('image-A', 'request-A', 'call-A');
     h.enqueue('image-A', 'request-A', 'call-B');
+    h.flush();
+    assert.equal(h.attachments.length, 2);
+    assert.notEqual(h.attachments[0].placement.id, h.attachments[1].placement.id);
+});
+
+test('invocations repeating a provider call id stay distinct, each still deduplicated', () => {
+    const h = harness();
+    h.start();
+    h.assistant('original', 'turn-A', 1);
+    h.end();
+    h.enqueue('image-A', 'request-A', 'call_0', 'invocation-1');
+    h.enqueue('image-A', 'request-A', 'call_0', 'invocation-2');
+    h.enqueue('image-A', 'request-A', 'call_0', 'invocation-1');
     h.flush();
     assert.equal(h.attachments.length, 2);
     assert.notEqual(h.attachments[0].placement.id, h.attachments[1].placement.id);

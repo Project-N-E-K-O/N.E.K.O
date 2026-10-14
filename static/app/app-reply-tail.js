@@ -141,7 +141,8 @@
         enqueue: function (payload) {
             var tail = payload && payload.reply_tail;
             if (!tail || tail.version !== 1 || !tail.reply_id || !tail.request_id || !tail.registration_id) return false;
-            var key = JSON.stringify([tail.reply_id, tail.call_id || '', tail.registration_id]);
+            // Keyed by the host-minted invocation: provider call IDs repeat within a reply.
+            var key = JSON.stringify([tail.reply_id, tail.invocation_id || tail.call_id || '', tail.registration_id]);
             if (seen.has(key) || pending.has(key)) return true;
             if (pending.size >= MAX_ENTRIES) return false;
             var entry = { payload: payload, created: Date.now() };

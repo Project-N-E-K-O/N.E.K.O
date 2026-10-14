@@ -10,11 +10,22 @@ from typing import Any
 
 MAX_SCOPES = 128
 MAX_REGISTRATIONS = 64
+MAX_REGISTRATION_ID_LENGTH = 128
+# Settled receipts and tombstones are kept for status queries, bounded apart
+# from the registrations still holding images.
+MAX_SETTLED_RECORDS = 256
 MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 MAX_RETAINED_BYTES = 16 * 1024 * 1024
 MAX_VALIDATIONS = 4
 RETENTION_SECONDS = 120.0
 SUBMISSION_TIMEOUT_SECONDS = 5.0
+
+
+def _valid_registration_id(registration_id: Any) -> bool:
+    return (
+        isinstance(registration_id, str)
+        and 0 < len(registration_id) <= MAX_REGISTRATION_ID_LENGTH
+    )
 
 
 def receipt(status: str, reason: str = "", **extra: Any) -> dict:
@@ -60,6 +71,20 @@ class _Registration:
     reason: str = ""
     submitted_at: float | None = None
 
+    @property
+    def active(self) -> bool:
+        return self.status in {"registered", "submitting"}
+
+
+def _reply_open(reply: ReplyTailReply, attempt: int) -> bool:
+    """Whether ``reply`` still accepts attachments for its ``attempt``."""
+    owner = reply.owner
+    return not (
+        reply.closed or reply.completed or reply.attempt != attempt
+        or owner.taken_over or owner.turn_ended
+        or reply.manager.websocket is not reply.websocket
+    )
+
 
 class ReplyTailRegistry:
     def __init__(self) -> None:
@@ -88,6 +113,47 @@ class ReplyTailRegistry:
             if not any(key[0] == token for key in self._registrations):
                 del self._scopes[token]
 
+    def _active_count(self) -> int:
+        return sum(1 for item in self._registrations.values() if item.active)
+
+    def _room_for_scope(self) -> bool:
+        """Make room for a new scope by evicting the oldest idle one.
+
+        A scope is idle once its reply closed and nothing of it still holds an
+        image; only its settled receipts go with it.
+        """
+        if len(self._scopes) < MAX_SCOPES:
+            return True
+        for token, scope in list(self._scopes.items()):
+            if not scope.reply.closed or any(
+                key[0] == token and item.active for key, item in self._registrations.items()
+            ):
+                continue
+            for key in [key for key in self._registrations if key[0] == token]:
+                del self._registrations[key]
+            del self._scopes[token]
+            return True
+        return False
+
+    def _room_for_settled(self) -> bool:
+        """Keep settled receipts within their own bound.
+
+        Only a receipt of a closed reply is evicted: one of an open reply
+        still decides a repeated registration ID (a duplicate, or a cancel
+        that arrived first).
+        """
+        settled = [key for key, item in self._registrations.items() if not item.active]
+        if len(settled) < MAX_SETTLED_RECORDS:
+            return True
+        for key in settled:
+            if self._registrations[key].scope.reply.closed:
+                del self._registrations[key]
+                return True
+        return False
+
+    def _room_for_registration(self) -> bool:
+        return self._active_count() < MAX_REGISTRATIONS and self._room_for_settled()
+
     def tool_context(self, manager: Any, owner: Any, call_id: str, source: str) -> dict | None:
         self._prune()
         websocket = getattr(manager, "websocket", None)
@@ -106,20 +172,16 @@ class ReplyTailRegistry:
             owner.reply_tail = reply
         if reply.closed or reply.websocket is not websocket:
             return None
-        for scope in self._scopes.values():
-            context = scope.context
-            if (
-                scope.reply is reply and context["attempt"] == reply.attempt
-                and context["source"] == source and context["call_id"] == call_id
-            ):
-                return dict(context)
-        if len(self._scopes) >= MAX_SCOPES:
+        # One scope per invocation: provider call IDs are not unique within a
+        # reply (ID-less providers number each tool round from ``call_0``).
+        if not self._room_for_scope():
             return None
         token = secrets.token_urlsafe(32)
         context = {
             "version": 1, "reply_id": reply.reply_id,
             "request_id": str(owner.request_id), "role": str(manager.lanlan_name),
-            "call_id": call_id, "source": source, "attempt": reply.attempt, "token": token,
+            "call_id": call_id, "invocation_id": secrets.token_urlsafe(12),
+            "source": source, "attempt": reply.attempt, "token": token,
         }
         self._scopes[token] = _Scope(reply, context, time.monotonic() + RETENTION_SECONDS)
         return dict(context)
@@ -149,18 +211,16 @@ class ReplyTailRegistry:
         scope = self._scope(context, plugin_id)
         if scope is None:
             return receipt("failed", "invalid_context")
+        if not _valid_registration_id(registration_id):
+            return receipt("failed", "invalid_attachment")
         key = (scope.context["token"], registration_id)
         if key in self._registrations:
             return {**self._result(self._registrations[key]), "duplicate": True}
         reply = scope.reply
-        if (
-            reply.closed or reply.completed or reply.attempt != context["attempt"]
-            or reply.owner.taken_over or reply.owner.turn_ended
-            or reply.manager.websocket is not reply.websocket
-        ):
+        if not _reply_open(reply, context["attempt"]):
             return receipt("cancelled", "reply_closed")
         if (
-            ai_behavior != "blind" or not 0 < len(registration_id) <= 128
+            ai_behavior != "blind" or not isinstance(parts, list)
             or not 0 < len(parts) <= 2
             or any(not isinstance(part, dict) or part.get("type") != "image" for part in parts)
         ):
@@ -179,7 +239,7 @@ class ReplyTailRegistry:
             return receipt("failed", "invalid_attachment")
         if (
             self._validations >= MAX_VALIDATIONS
-            or len(self._registrations) >= MAX_REGISTRATIONS
+            or self._active_count() >= MAX_REGISTRATIONS
             or self._retained_bytes + size > MAX_RETAINED_BYTES
         ):
             return receipt("failed", "capacity")
@@ -207,17 +267,13 @@ class ReplyTailRegistry:
             return receipt("cancelled", "expired")
         if key in self._registrations:
             return {**self._result(self._registrations[key]), "duplicate": True}
-        if (
-            reply.closed or reply.completed or reply.attempt != context["attempt"]
-            or reply.owner.taken_over or reply.owner.turn_ended
-            or reply.manager.websocket is not reply.websocket
-        ):
+        if not _reply_open(reply, context["attempt"]):
             return receipt("cancelled", "reply_closed")
         if len(blocks) != len(parts):
             return receipt("failed", "invalid_image")
         if (
-            len(self._registrations) >= MAX_REGISTRATIONS
-            or self._retained_bytes + size > MAX_RETAINED_BYTES
+            self._retained_bytes + size > MAX_RETAINED_BYTES
+            or not self._room_for_registration()
         ):
             return receipt("failed", "capacity")
         self._registrations[key] = _Registration(scope, registration_id, blocks, size)
@@ -228,6 +284,8 @@ class ReplyTailRegistry:
         scope = self._scope(context, plugin_id)
         if scope is None:
             return receipt("failed", "invalid_context")
+        if not _valid_registration_id(registration_id):
+            return receipt("failed", "registration_not_found")
         item = self._registrations.get((scope.context["token"], registration_id))
         return self._result(item) if item else receipt("failed", "registration_not_found")
 
@@ -235,10 +293,12 @@ class ReplyTailRegistry:
         scope = self._scope(context, plugin_id)
         if scope is None:
             return receipt("failed", "invalid_context")
+        if not _valid_registration_id(registration_id):
+            return receipt("failed", "registration_not_found")
         key = (scope.context["token"], registration_id)
         item = self._registrations.get(key)
         if item is None:
-            if len(self._registrations) >= MAX_REGISTRATIONS:
+            if not self._room_for_settled():
                 return receipt("uncertain", "capacity")
             # A cancel arriving before the decode/registration is a tombstone.
             item = _Registration(scope, registration_id, [], 0, "cancelled", "plugin_cancelled")
@@ -277,6 +337,7 @@ class ReplyTailRegistry:
                             "version": 1, "reply_id": reply.reply_id,
                             "request_id": str(reply.owner.request_id),
                             "call_id": item.scope.context["call_id"],
+                            "invocation_id": item.scope.context["invocation_id"],
                             "registration_id": item.registration_id,
                         },
                     )
@@ -290,7 +351,8 @@ class ReplyTailRegistry:
                 self.cancel_reply(reply, "transport_interrupted")
                 raise
             except BaseException:
-                self._settle(item, "failed", "submission_uncertain")
+                # Like a cancellation: the write may have reached the peer.
+                self._settle(item, "uncertain", "submission_interrupted")
                 self.cancel_reply(reply, "transport_interrupted")
                 raise
             self._settle(item, "submitted" if sent else "failed", "" if sent else "transport_failed")
