@@ -4950,6 +4950,21 @@ async def _process_scoped_history_keyed(
             generations if generations is not None
             else _capture_forget_generations(lanlan_name, _staged_segment_subjects(staging, contexts))
         )
+        if generations is None and _mark_items_forgotten_during_generation(
+            lanlan_name, staging, contexts, trust_generations,
+        ):
+            # 与生成路径落暂存后那次复核对称：基线刚取、等于当前 generation，所以这里只会在「清除正在进行」
+            # 时生效。事实层此刻拒收这段却不留标记，不先标上，同段后面的显示名会照常写进被清 subject
+            try:
+                await idempotency.write_staging(lanlan_name, key, staging)
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 暂存落盘失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="scoped history staging failed; retry with the same key",
+                ) from exc
         try:
             await _apply_keyed_staging(
                 lanlan_name, key, staging, generations,

@@ -35,7 +35,7 @@ async def to_thread_through_cancellation(func, /, *args, **kwargs):
                 continue
             except BaseException:  # noqa: BLE001 - the cancellation below is what propagates
                 break
-        if not worker.cancelled():
+        if worker.done() and not worker.cancelled():
             worker.exception()  # retrieved: the result is no longer wanted
         raise cancellation
 

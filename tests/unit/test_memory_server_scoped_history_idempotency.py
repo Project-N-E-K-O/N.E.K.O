@@ -4259,3 +4259,23 @@ async def test_restored_retry_keeps_its_journal_subject_when_routing_changed(env
     result = await _post(env, body)
     # 恢复的重试照暂存写 GROUP：基线也得取 GROUP 的，不能拿 GP 的计数器去比、把事实误丢
     assert result["created"] == 2 and len(_facts_of(env, GROUP)) == 2
+
+
+@pytest.mark.parametrize("responses", [SINGLE_FACTS, []], ids=["facts", "display_name_only"])
+async def test_restored_retry_inside_a_running_forget_writes_no_display_name(env, responses):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [responses]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())                         # 暂存已落盘、第一项就中断
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    subject = coerce_subject(GROUP)
+    await env.fs.abegin_subject_forget(NAME, subject)            # 恢复的重试赶上清除正在进行
+    try:
+        await _post(env, _single_body())
+    finally:
+        await env.fs.aend_subject_forget(NAME, subject)
+    # 事实层此刻拒收这段：同段的显示名也不能写进被清 subject（persona 写入没有清除保护）
+    assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
+    assert _facts_of(env, GROUP) == []
