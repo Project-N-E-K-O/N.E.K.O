@@ -876,7 +876,13 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
         monkeypatch.setattr(service_module, "atomic_write_bytes", slow_write)
         async with service._write_lock:
             request = asyncio.create_task(service.import_pack(_raw(_pack())))
-            await asyncio.sleep(0.05)
+            # Parsing runs first, in a thread; cancel only once the request
+            # has reached the shielded admission.
+            for _ in range(200):
+                if service._admitting:
+                    break
+                await asyncio.sleep(0.01)
+            assert service._admitting
             request.cancel()
             (outcome,) = await asyncio.gather(request, return_exceptions=True)
             assert isinstance(outcome, asyncio.CancelledError)
@@ -887,9 +893,12 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
             # The staged file is owned by a job, and the reservation is gone.
             # The runner may already have picked the job up ("building"), but
             # it cannot commit while this test holds the write lock.
-            (job,) = service.list_jobs()
+            jobs = service.list_jobs()
+            assert len(jobs) == 1, jobs
+            (job,) = jobs
             assert job["state"] in service_module.ACTIVE_JOB_STATES
             assert service._staging_path(job["job_id"]).exists()
+            assert load_registry(tmp_path).packs == {}
             assert service._admitting == {}
     finally:
         await service.stop()
