@@ -686,7 +686,7 @@ class KnowledgeService:
             raise KnowledgeUnavailable("subscription_identity_mismatch")
         provider, package_id = identity[0], identity[1]
         claims = [
-            subscription.pack_id
+            (subscription.pack_id, subscription.identity)
             for subscription in (
                 *(item.subscription for item in self._registry.packs.values()),
                 *(job.subscription for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES),
@@ -696,7 +696,9 @@ class KnowledgeService:
             and subscription.provider == provider
             and subscription.provider_package_id == package_id
         ]
-        if any(claim != pack_id for claim in claims):
+        # The whole identity: a removal for an old remote id must not match
+        # an import of the package that is not installed yet either.
+        if any(claim != (pack_id, identity) for claim in claims):
             raise KnowledgeUnavailable("subscription_identity_mismatch")
 
     async def _remove(
@@ -820,7 +822,10 @@ class KnowledgeService:
         # before parsing when imports are already at their limit, and never
         # parse more than that many at once.
         if self.import_busy():
-            return {"ok": False, "reason": "knowledge_busy"}
+            # A repeat of an apply whose import is queued or building is still
+            # answered with that import: the slots may be full of exactly it.
+            staged = await self._staged_repeat(raw, subscription) if subscription is not None else None
+            return staged or {"ok": False, "reason": "knowledge_busy"}
         self._request_seq += 1
         arrived_at = self._request_seq
         # The reservation lasts until the request is answered (including the
@@ -893,6 +898,16 @@ class KnowledgeService:
             ),
             None,
         )
+
+    async def _staged_repeat(self, raw: bytes, subscription: KnowledgeSubscription) -> dict[str, Any] | None:
+        """The answer to a repeated apply of a staged import, or None if this is no such repeat."""
+        if self._staged_subscription_job(subscription) is None:
+            return None
+        if await self._thread(pack_sha256, raw) != subscription.artifact_sha256:
+            return None
+        # Checked again after the await: the import may have finished since.
+        staged = self._staged_subscription_job(subscription)
+        return {"ok": True, **staged.to_json(), "existing": True} if staged is not None else None
 
     def _admission_settled(self, arrived_at: int) -> None:
         self._admission_owned.discard(arrived_at)

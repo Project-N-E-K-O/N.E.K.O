@@ -602,6 +602,21 @@ async def test_unsubscribe_refuses_an_import_of_the_package_under_another_pack(t
         await service.stop()
 
 
+async def test_unsubscribe_compares_the_whole_identity_of_an_import_on_its_way(tmp_path):
+    service = await _started(tmp_path)
+    try:
+        raw = _raw(_pack())
+        async with service._write_lock:
+            staged = await service.import_pack(raw, subscription=_subscription(raw, remote_id="knowledge/renamed"))
+            # Same package and pack, but a removal for the old remote id.
+            with pytest.raises(service_module.KnowledgeUnavailable) as excinfo:
+                await service.remove_subscription("market-memes", IDENTITY, frozenset({_release(raw)}))
+            assert excinfo.value.reason == "subscription_identity_mismatch"
+        assert (await _settle(service, staged))["state"] == "active"
+    finally:
+        await service.stop()
+
+
 async def test_unsubscribe_answers_busy_when_the_lock_stays_held(tmp_path, monkeypatch):
     monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 0.05)
     service = await _started(tmp_path)
@@ -662,6 +677,27 @@ async def test_subscription_state_shows_installed_imports_and_failures(tmp_path,
         await service.stop()
 
 
+async def test_a_repeated_apply_is_answered_even_while_imports_are_full(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "MAX_PENDING_IMPORTS", 1)
+    service = await _started(tmp_path)
+    try:
+        raw = _raw(_pack())
+        async with service._write_lock:
+            first = await service.import_pack(raw, subscription=_subscription(raw))
+            assert service.import_busy()
+            again = await service.import_pack(raw, subscription=_subscription(raw))
+            assert again["ok"] is True and again["job_id"] == first["job_id"] and again["existing"] is True
+            # Anything else is still refused before parsing.
+            other = _raw(_pack("other-pack"))
+            busy = await service.import_pack(other, subscription=_subscription(other, pack_id="other-pack", package_id="43"))
+            assert busy == {"ok": False, "reason": "knowledge_busy"}
+            tampered = await service.import_pack(raw + b" ", subscription=_subscription(raw))
+            assert tampered == {"ok": False, "reason": "knowledge_busy"}
+        assert (await _settle(service, first))["state"] == "active"
+    finally:
+        await service.stop()
+
+
 def test_releases_contract():
     sha = "a" * 64
     assert parse_releases([{"version": "1.0.0", "artifact_sha256": sha}] * 2) == frozenset({("1.0.0", sha)})
@@ -709,6 +745,18 @@ async def test_apply_route_installs_a_subscription(client):
     state = (await http.get("/internal/knowledge/subscriptions")).json()
     assert state["ok"] is True and state["installed"][0]["pack_id"] == "market-memes"
     assert state["imports"][0]["state"] == "active"
+
+
+async def test_apply_route_lets_a_repeat_through_while_imports_are_full(client, monkeypatch):
+    http, service = client
+    monkeypatch.setattr(service_module, "MAX_PENDING_IMPORTS", 1)
+    raw = _raw(_pack())
+    form = _apply_form(raw, _subscription(raw).to_json())
+    async with service._write_lock:
+        first = (await http.post("/internal/knowledge/subscriptions/apply", **form)).json()
+        again = (await http.post("/internal/knowledge/subscriptions/apply", **form)).json()
+    assert again["ok"] is True and again["job_id"] == first["job_id"]
+    await _settle(service, first)
 
 
 @pytest.mark.parametrize(

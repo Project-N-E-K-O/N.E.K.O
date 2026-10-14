@@ -526,7 +526,7 @@ async def test_unsubscribe_waits_for_an_apply_already_sent_and_names_its_release
     assert (await _finished(env["http"], task_id))["status"] == "cancelled"
 
 
-async def test_an_apply_that_outlasts_the_budget_is_busy(env, monkeypatch):
+async def test_an_apply_that_outlasts_the_budget_keeps_holding_its_package(env, monkeypatch):
     monkeypatch.setattr(km, "_UNSUBSCRIBE_BUDGET_SECONDS", 0.1)
     main = env["main"]
     gate = asyncio.Event()
@@ -536,12 +536,31 @@ async def test_an_apply_that_outlasts_the_budget_is_busy(env, monkeypatch):
         return STAGED
 
     main.on("POST", "subscriptions/apply", stuck_apply)
+    main.on("GET", "subscriptions", _state())
+    main.on("POST", "subscriptions/remove", {"ok": True, "removed": False, "kept": "not_installed"})
     await _subscribe(env["http"])
     await _until(lambda: "POST subscriptions/apply" in main.paths(), "apply not sent")
     response = await _unsubscribe(env["http"])
     assert response.status_code == 503 and response.json()["detail"]["retryable"] is True
     assert "POST subscriptions/remove" not in main.paths()
+    # Its worker is gone, but the apply still holds the package: a retry must
+    # not answer "not installed" and a new subscribe must not start meanwhile.
+    again = await _unsubscribe(env["http"])
+    assert again.status_code == 503
+    assert (await env["http"].post(
+        "/market/knowledge/subscribe",
+        params=TOKEN,
+        json={"package_id": 42, "version": "1.0.0", "channel": "stable", "pack_id": "market-memes"},
+    )).status_code == 409
+    assert "GET subscriptions" not in main.paths()
     gate.set()
+    await _until(lambda: not km._applies, "apply still running")
+    # Settled: what it staged is now the Memory Server's to report, and the
+    # next unsubscribe removes it.
+    main.on("GET", "subscriptions", _state(imports=[_import("queued")]))
+    assert (await _unsubscribe(env["http"])).status_code == 200
+    assert main.bodies("subscriptions/remove") == [_removal(("1.0.0", SHA))]
+    assert km._active_package_tasks == {}
 
 
 async def test_unsubscribe_refuses_a_pack_its_worker_did_not_resolve(env, monkeypatch):

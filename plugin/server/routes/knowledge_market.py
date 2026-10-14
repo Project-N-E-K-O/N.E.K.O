@@ -231,6 +231,9 @@ _task_workers: dict[str, asyncio.Task[None]] = {}
 # it may stage an import whatever happens here, so an unsubscribe waits for
 # it, and its removal then reaches the Memory Server after it.
 _applies: dict[str, asyncio.Task[dict[str, Any]]] = {}
+# The task holding each package: until its worker and its apply have both
+# ended (an apply outlives a cancelled worker; until it settles, a subscribe
+# of the package is refused and an unsubscribe still waits for it).
 _active_package_tasks: dict[int, str] = {}
 _unsubscribing: dict[int, asyncio.Task[Any]] = {}
 # Background reports to the market (held so they are not collected mid-flight).
@@ -314,10 +317,12 @@ async def subscribe_knowledge_package(payload: KnowledgeSubscribeRequest, token:
             existing.get("version") == payload.version
             and existing.get("channel") == payload.channel
             and existing.get("requested_pack_id") == payload.pack_id
+            and existing_id in _task_workers
         ):
             return {"task_id": existing_id, "status": existing.get("status", "pending")}
         raise HTTPException(status_code=409, detail={"code": "knowledge_subscription_conflict"})
-    if len(_task_workers) >= _MAX_ACTIVE_SUBSCRIPTIONS:
+    # An apply left running by a cancelled worker still holds its artifact.
+    if len(_task_workers.keys() | _applies.keys()) >= _MAX_ACTIVE_SUBSCRIPTIONS:
         raise HTTPException(
             status_code=429,
             detail={"code": "knowledge_subscription_busy"},
@@ -346,11 +351,7 @@ async def subscribe_knowledge_package(payload: KnowledgeSubscribeRequest, token:
     )
     _task_workers[task_id] = worker
     _active_package_tasks[payload.package_id] = task_id
-    worker.add_done_callback(
-        lambda done, *, task_id=task_id, package_id=payload.package_id: _subscription_done(
-            task_id, package_id, done
-        )
-    )
+    worker.add_done_callback(lambda done, *, task_id=task_id: _subscription_done(task_id, done))
     return {"task_id": task_id, "status": "pending"}
 
 
@@ -437,17 +438,25 @@ def _task_summary(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _subscription_done(task_id: str, package_id: int, done: asyncio.Task[None]) -> None:
+def _subscription_done(task_id: str, done: asyncio.Task[None]) -> None:
     task = _tasks.get(task_id)
     if done.cancelled() and task is not None and task.get("completed_at") is None:
         _mark_cancelled(task)
     if _task_workers.get(task_id) is done:
         _task_workers.pop(task_id, None)
-    if _active_package_tasks.get(package_id) == task_id:
-        _active_package_tasks.pop(package_id, None)
+    _release_package(task_id)
     if not done.cancelled() and done.exception() is not None:
         logger.warning("knowledge subscription worker ended with {}", type(done.exception()).__name__)
     _cleanup_tasks()
+
+
+def _release_package(task_id: str) -> None:
+    """Free the task's package once neither its worker nor its apply is running."""
+    if task_id in _task_workers or task_id in _applies:
+        return
+    package_id = (_tasks.get(task_id) or {}).get("package_id")
+    if package_id is not None and _active_package_tasks.get(package_id) == task_id:
+        _active_package_tasks.pop(package_id, None)
 
 
 def _stage(task: dict[str, Any], stage: str, progress: float, message: str) -> None:
@@ -562,6 +571,7 @@ async def _shielded_apply(task_id: str, subscription: dict[str, str], raw: bytes
     def settled(done: asyncio.Task[dict[str, Any]], *, task_id: str = task_id) -> None:
         if _applies.get(task_id) is done:
             _applies.pop(task_id, None)
+            _release_package(task_id)
         if not done.cancelled():
             done.exception()
 

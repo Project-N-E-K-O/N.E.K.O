@@ -542,8 +542,11 @@ async def knowledge_apply_subscription(request: Request):
         return _failure("knowledge_starting", 503)
     if _media_type(request) != "multipart/form-data":
         return _failure("invalid_request", 400)
-    # Same admission as a local import: the body is read into memory.
-    if _import_slots.locked() or service.import_busy():
+    # The body is read into memory, at most as many at once as local imports
+    # (the same slots). Unlike a local import it is read even when imports are
+    # full: a repeat of an apply already staged must reach the service, which
+    # answers it with that import and refuses anything else before parsing.
+    if _import_slots.locked():
         return {"ok": False, "reason": "knowledge_busy", **service.availability()}
     async with _import_slots:
         raw = await _read_body(request, max_bytes=_PACK_BODY_MAX_BYTES)
