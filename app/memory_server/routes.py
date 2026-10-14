@@ -2545,34 +2545,6 @@ def _trust_mutation_for(parsed: dict) -> "object | None":
     )
 
 
-async def _await_through_cancellation(awaitable):
-    """Await ``awaitable`` to completion even when the current task is cancelled, then re-raise.
-
-    The trust pool write runs in a worker thread that cancellation cannot
-    stop; a caller holding a lock around it (the keyed trust step holds the
-    fact persistence lock) must not release that lock before the write has
-    really finished. Same pattern as the fact store's thread-backed writes.
-    """
-    task = asyncio.ensure_future(awaitable)
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError as cancellation:
-        current = asyncio.current_task()
-        while not task.done():
-            if current is not None:
-                while current.cancelling():
-                    current.uncancel()
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                continue
-            except BaseException:  # noqa: BLE001 - the cancellation below is what propagates
-                break
-        if task.done() and not task.cancelled():
-            task.exception()   # 结果已不再需要：取走异常，免得「never retrieved」告警
-        raise cancellation
-
-
 async def _apply_trust_for_segments(parsed_segments):
     """Fold the whole batch into the pool with ONE write. Never raises.
 
@@ -4995,10 +4967,11 @@ async def _process_scoped_history_keyed(
                 raise HTTPException(
                     status_code=503, detail="idempotency state unreadable; retry later",
                 ) from exc
-            trust_result, trust_outcomes = await _await_through_cancellation(_apply_trust_for_segments([
+            # 被取消时池写入（线程里停不下来）写完才返回（aapply_trust_mutations），持久化锁不会先放
+            trust_result, trust_outcomes = await _apply_trust_for_segments([
                 _without_trust_mutation(state) if index in fenced else state
                 for index, state in enumerate(trust_states)
-            ]))
+            ])
         response = _keyed_response(
             shape, contexts, staging, trust_result, trust_outcomes,
         )

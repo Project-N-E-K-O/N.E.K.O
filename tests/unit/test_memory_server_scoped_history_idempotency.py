@@ -4068,3 +4068,38 @@ async def test_restored_retry_fences_an_activity_only_segment_forgotten_during_a
     # 恢复的重试也按应用前取的 generation 复核：这段的 activity 不进信赖池
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_cancelled_trust_write_returns_only_after_its_worker_finished(env):
+    import threading
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_write = trust_store._with_pool_write
+
+    def slow_write(mutator):
+        entered.set()
+        release.wait(5)
+        try:
+            return real_write(mutator)
+        finally:
+            finished.set()
+
+    env.monkeypatch.setattr(trust_store, "_with_pool_write", slow_write)
+    mutation = trust_store.TrustMutation(
+        speaker_account_id="neko_visit:5f2c1b7e",
+        activity_events=(trust_store.ActivityEvent(id="evt-00009", count=1),),
+        signal_events=(), channel=None,
+    )
+    # 取消扫描直接取消跑这次写入的任务（不只是外层请求）：线程停不下来，任务必须等它写完才结束
+    write = asyncio.create_task(trust_store.aapply_trust_mutations([mutation]))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        write.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not write.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await write
+    assert finished.is_set()

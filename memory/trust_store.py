@@ -98,6 +98,7 @@ lock, event application logic, response handling, or migration.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -223,8 +224,12 @@ _load_failed: bool = False
 # Cancellation safety: the whole critical section runs inside ONE
 # ``asyncio.to_thread``. Once handed off it cannot be cancelled — the awaiting
 # coroutine may be cancelled but the thread still finishes and still releases
-# the lock. Hence no shield / no second cancellation loop / no before-after
-# rollback: there is no "hold a lock across await" anywhere in this module.
+# the lock. Hence no before-after rollback: there is no "hold a lock across
+# await" anywhere in this module. The one exception to "a cancelled await
+# returns at once" is ``aapply_trust_mutations``: its CALLER may hold another
+# lock around the write (keyed scoped_history holds the fact persistence lock
+# so a forget cannot bump the generation in between), so on cancellation it
+# waits for its own worker to finish before re-raising.
 _pool_lock = threading.Lock()
 
 # Mutators are SYNCHRONOUS on purpose: "await inside the lock" and "take another
@@ -1175,7 +1180,7 @@ async def aapply_trust_mutations(
         captured["result"] = result
         return dirty, result
 
-    persisted, _ = await asyncio.to_thread(_with_pool_write, _mutator)
+    persisted, _ = await _await_pool_write(_mutator)
     base = captured.get("result") or TrustApplyResult(
         persisted=False,
         per_mutation=tuple(MutationOutcome() for _ in materialized),
@@ -1193,6 +1198,36 @@ async def aapply_trust_mutations(
             ),
         )
     return base
+
+
+async def _await_pool_write(mutator: TrustMutator) -> tuple[bool, Any]:
+    """Run ``_with_pool_write`` in a worker and return only once that worker is done.
+
+    The worker future is owned here (not a task a cancellation sweep could
+    cancel): when the awaiting task is cancelled, the write keeps going in the
+    thread, so the cancellation is re-raised only after it really finished.
+    """
+    loop = asyncio.get_running_loop()
+    worker = loop.run_in_executor(
+        None, contextvars.copy_context().run, _with_pool_write, mutator,
+    )
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError as cancellation:
+        current = asyncio.current_task()
+        while not worker.done():
+            if current is not None:
+                while current.cancelling():
+                    current.uncancel()
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:  # noqa: BLE001 - the cancellation below is what propagates
+                break
+        if worker.done() and not worker.cancelled():
+            worker.exception()   # retrieved: the result is no longer wanted
+        raise cancellation
 
 
 # ── canonical sealing (write-side subject routing) ──────────────────────────
