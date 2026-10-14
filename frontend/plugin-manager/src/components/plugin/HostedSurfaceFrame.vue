@@ -41,7 +41,8 @@
       @error="handleError"
     />
 
-    <div v-else class="hosted-surface-frame__placeholder" :class="{ 'is-unavailable': surface.available === false }">
+    <!-- A replacement load starts at the top instead of inheriting the previous wait's scroll position. -->
+    <div v-else :key="currentLoadId" class="hosted-surface-frame__placeholder" :class="{ 'is-unavailable': surface.available === false }" data-testid="surface-placeholder" :data-load-phase="loadPhase">
       <el-icon :size="42" class="hosted-surface-frame__icon">
         <Loading v-if="loading" class="is-loading" />
         <WarningFilled v-else-if="surface.available === false || error" />
@@ -49,9 +50,15 @@
       </el-icon>
       <h3>{{ placeholderTitle }}</h3>
       <p>{{ placeholderText }}</p>
-      <div v-if="error && !loading && surface.available !== false && (surface.mode === 'hosted-tsx' || surface.mode === 'markdown')">
-        <el-button v-if="!rendererReloadRequired" data-testid="surface-retry" @click="loadHostedTsx">{{ t('market.retry') }}</el-button>
-        <el-button data-testid="surface-reload-page" @click="reloadPage">{{ t('common.languageReload') }}</el-button>
+      <p v-if="loading" class="hosted-surface-frame__slow-message" aria-live="polite">
+        <span v-if="loadSlow" data-testid="surface-load-slow">{{ t('plugins.ui.loadingSlow') }}</span>
+      </p>
+      <div v-if="surface.available !== false && (surface.mode === 'hosted-tsx' || surface.mode === 'markdown')" class="hosted-surface-frame__load-actions">
+        <template v-if="error || (loading && loadSlow)">
+          <el-button v-if="!rendererReloadRequired" data-testid="surface-retry" @click="loadHostedTsx">{{ t('market.retry') }}</el-button>
+          <el-button data-testid="surface-open-logs" @click="emit('openLogs')">{{ t('plugins.ui.openLogs') }}</el-button>
+          <el-button v-if="error" data-testid="surface-reload-page" @click="reloadPage">{{ t('common.languageReload') }}</el-button>
+        </template>
       </div>
       <div class="hosted-surface-frame__meta">
         <el-tag size="small" effect="plain">{{ surface.kind }}</el-tag>
@@ -103,6 +110,11 @@ const pendingStaticSurfaceMessages: unknown[] = []
 const maxPendingStaticSurfaceMessages = 100
 const hostedDocument = ref('')
 const loading = ref(false)
+type HostedLoadPhase = 'idle' | 'resources' | 'context' | 'render'
+const loadPhase = ref<HostedLoadPhase>('idle')
+const loadSlow = ref(false)
+const HOSTED_LOAD_SLOW_MS = 3000
+let loadSlowTimer: number | null = null
 const error = ref('')
 const rendererReloadRequired = ref(false)
 // A live plugin document owns its language. An app-language update must not
@@ -216,8 +228,15 @@ const trustedIframeOrigin = computed(() => {
   return 'null'
 })
 
+const loadPhaseTitle = computed(() => {
+  if (loadPhase.value === 'resources') return t('plugins.ui.loadingResources')
+  if (loadPhase.value === 'context') return t('plugins.ui.loadingContext')
+  if (loadPhase.value === 'render') return t('plugins.ui.loadingRender')
+  return t('plugins.ui.loading')
+})
+
 const placeholderTitle = computed(() => {
-  if (loading.value) return t('plugins.ui.loading')
+  if (loading.value) return loadPhaseTitle.value
   if (error.value) return t('plugins.ui.loadError')
   if (props.surface.available === false) return t('plugins.ui.surfaceUnavailable')
   if (props.surface.mode === 'hosted-tsx') return t('plugins.ui.hostedTsxPending')
@@ -227,7 +246,17 @@ const placeholderTitle = computed(() => {
 })
 
 const placeholderText = computed(() => {
-  if (error.value) return error.value
+  if (error.value) {
+    return loadPhase.value === 'idle' ? error.value : t('plugins.ui.loadStageError', {
+      stage: loadPhaseTitle.value,
+      message: error.value,
+    })
+  }
+  if (loading.value) {
+    if (loadPhase.value === 'context') return t('plugins.ui.loadingContextHint')
+    if (loadPhase.value === 'render') return t('plugins.ui.loadingRenderHint')
+    return t('plugins.ui.loadingResourcesHint')
+  }
   if (props.surface.available === false) return t('plugins.ui.surfaceEntryMissing')
   if (props.surface.mode === 'static') return t('plugins.ui.noUI')
   return t('plugins.ui.hostedRuntimePending')
@@ -327,7 +356,27 @@ function sendSurfaceMessage(message: unknown) {
 // auto-reload (it would destroy user work); expose an explicit escape hatch.
 function reloadPage() { window.location.reload() }
 
+function clearLoadDelay() {
+  if (loadSlowTimer !== null) window.clearTimeout(loadSlowTimer)
+  loadSlowTimer = null
+  loadSlow.value = false
+}
+
+function enterLoadPhase(phase: Exclude<HostedLoadPhase, 'idle'>, loadId: number) {
+  clearLoadDelay()
+  loadPhase.value = phase
+  // One timer per phase, owned by this load. Retry/teardown must not let an
+  // older read mark a replacement surface as slow.
+  loadSlowTimer = window.setTimeout(() => {
+    if (!componentMounted || loadId !== currentLoadId || loadPhase.value !== phase || !loading.value) return
+    loadSlowTimer = null
+    loadSlow.value = true
+  }, HOSTED_LOAD_SLOW_MS)
+}
+
 function invalidateSurfaceLoad() {
+  clearLoadDelay()
+  loadPhase.value = 'idle'
   sourceController?.abort('surface-replaced')
   sourceController = null
   currentLoadId += 1
@@ -353,6 +402,7 @@ async function loadHostedTsx() {
   loading.value = false
   if (!componentMounted || !['hosted-tsx', 'markdown'].includes(surface.mode) || surface.available === false) return
   loading.value = true
+  enterLoadPhase('resources', loadId)
   const controller = new AbortController()
   sourceController = controller
   const requestConfig = { signal: controller.signal, suppressErrorMessage: true }
@@ -368,10 +418,13 @@ async function loadHostedTsx() {
     if (!isCurrent()) return
     let document: string
     if (surface.mode === 'markdown') {
+      enterLoadPhase('render', loadId)
       document = (module as Awaited<ReturnType<typeof loadMarkdownRenderer>>).buildMarkdownDocument(response.source, title, requestLocale)
     } else {
+      enterLoadPhase('context', loadId)
       const context = await getPluginHostedSurfaceContext(pluginId, { kind: surface.kind, id: surface.id, locale: requestLocale }, requestConfig)
       if (!isCurrent()) return
+      enterLoadPhase('render', loadId)
       document = (module as Awaited<ReturnType<typeof loadTsxRenderer>>).buildHostedTsxDocument({
         source: response.source, dependencies: response.dependencies, pluginId, surface, context, locale: requestLocale,
       })
@@ -388,7 +441,13 @@ async function loadHostedTsx() {
   } finally {
     controller.abort('surface-load-finished')
     if (sourceController === controller) sourceController = null
-    if (isCurrent()) loading.value = false
+    if (isCurrent()) {
+      clearLoadDelay()
+      loading.value = false
+      // Keep the failed phase for error attribution. Construction is still
+      // synchronous; this state does not claim to track compile progress.
+      if (!error.value) loadPhase.value = 'idle'
+    }
   }
 }
 
@@ -635,6 +694,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   componentMounted = false
+  clearLoadDelay()
+  loadPhase.value = 'idle'
   sourceController?.abort('surface-disposed')
   sourceController = null
   currentLoadId += 1
@@ -748,11 +809,18 @@ defineExpose({
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center;
+  overflow: auto;
   gap: 12px;
   padding: 32px;
   text-align: center;
   color: var(--el-text-color-secondary);
+}
+
+.hosted-surface-frame__placeholder > * {
+  /* Wrapped hints/actions must keep their content height in short panels.
+     Safe centering lets overflow start at the top and remain scrollable. */
+  flex-shrink: 0;
 }
 
 .hosted-surface-frame__placeholder h3 {
@@ -769,6 +837,22 @@ defineExpose({
 
 .hosted-surface-frame__icon {
   color: var(--el-color-primary);
+}
+
+.hosted-surface-frame__slow-message {
+  min-height: 3.4em;
+}
+
+.hosted-surface-frame__load-actions {
+  min-height: 32px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.hosted-surface-frame__load-actions .el-button + .el-button {
+  margin-left: 0;
 }
 
 .hosted-surface-frame__placeholder.is-unavailable .hosted-surface-frame__icon {
