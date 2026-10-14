@@ -48,7 +48,7 @@
         <WarningFilled v-else-if="surface.available === false || error" />
         <Document v-else />
       </el-icon>
-      <h3>{{ placeholderTitle }}</h3>
+      <h3 aria-live="polite" aria-atomic="true">{{ placeholderTitle }}</h3>
       <p>{{ placeholderText }}</p>
       <p v-if="loading" class="hosted-surface-frame__slow-message" aria-live="polite">
         <span v-if="loadSlow" data-testid="surface-load-slow">{{ t('plugins.ui.loadingSlow') }}</span>
