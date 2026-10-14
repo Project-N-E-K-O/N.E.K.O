@@ -169,6 +169,12 @@ export default {
     license: 'License',
     importPack: 'Import data pack',
     importHint: 'JSON pack file, up to 10 MiB',
+    openMarket: 'Subscribe in the plugin market',
+    marketUnavailable: 'No plugin market address is configured',
+    marketPairFailed: 'Could not pair with the plugin market. Please try again later',
+    marketPopupBlocked: 'The browser blocked the new window. Allow pop-ups for this page and try again',
+    subscribedTag: 'Market · {version}',
+    subscribedHint: 'Installed from a plugin market subscription; update or unsubscribe on the market page',
     importQueued: 'Importing {name} in the background',
     importUnchanged: '{name} is already installed and unchanged',
     importRejected: 'Import failed: {reason}',
@@ -263,6 +269,7 @@ export default {
       invalid_entry: 'The pack contains an invalid entry',
       unexpected_entry_field: 'An entry contains an unsupported field',
       duplicate_title: 'The pack contains duplicate entry titles',
+      subscription_identity_mismatch: 'This pack is a plugin market subscription or conflicts with one; unsubscribe in the market or remove the pack first',
       csrf_validation_failed: 'Security check failed; reload the page and try again',
       operation_failed: 'Operation failed'
     }

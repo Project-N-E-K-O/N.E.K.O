@@ -267,10 +267,17 @@
             }
         }
 
-        async function fetchPageConfigToken() {
+        // 重取 token 的请求上限：挂住时到点取消，refreshPromise 才会清掉、之后的 refreshToken 另发新请求
+        // （否则所有调用方都一直拿到同一个永远不落定的 promise）。首屏读初始 token 不受影响
+        const TOKEN_REFRESH_TIMEOUT_MS = 10000;
+
+        async function fetchPageConfigToken(timeoutMs) {
+            const controller = timeoutMs && typeof AbortController === 'function' ? new AbortController() : null;
+            const timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs) : null;
             try {
                 const response = await fetch(PAGE_CONFIG_URL + resolveLanlanNameParam(), {
                     cache: 'no-store',
+                    signal: controller ? controller.signal : undefined,
                 });
                 if (!response.ok) {
                     return '';
@@ -279,6 +286,8 @@
                 return extractAutostartCsrfToken(data);
             } catch (_) {
                 return '';
+            } finally {
+                if (timer) clearTimeout(timer);
             }
         }
 
@@ -329,7 +338,7 @@
             }
             refreshPromise = (async function () {
                 try {
-                    const token = await fetchPageConfigToken();
+                    const token = await fetchPageConfigToken(TOKEN_REFRESH_TIMEOUT_MS);
                     if (token) {
                         cachedToken = token;
                     }

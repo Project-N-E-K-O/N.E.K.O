@@ -556,6 +556,8 @@
         'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
+        'visitEnabled',
+        'visitVoiceEnabled',
         'proactiveChatInterval',
         'proactiveVisionInterval',
         'subtitleEnabled',
@@ -596,6 +598,8 @@
             voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,
+            visitEnabled: false,
+            visitVoiceEnabled: true,
             proactiveChatInterval: Number.isFinite(C.DEFAULT_PROACTIVE_CHAT_INTERVAL)
                 ? C.DEFAULT_PROACTIVE_CHAT_INTERVAL
                 : 15,
@@ -659,6 +663,8 @@
             voiceInputResourceOptimizationEnabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
+            visitEnabled: S.visitEnabled,
+            visitVoiceEnabled: S.visitVoiceEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
             subtitleEnabled: S.subtitleEnabled,
@@ -1659,15 +1665,27 @@
         const currentSlopFilter = typeof window.slopFilterEnabled !== 'undefined'
             ? window.slopFilterEnabled
             : S.slopFilterEnabled;
+        const currentVisitEnabled = typeof window.visitEnabled !== 'undefined'
+            ? window.visitEnabled
+            : S.visitEnabled;
+        const currentVisitVoiceEnabled = typeof window.visitVoiceEnabled !== 'undefined'
+            ? window.visitVoiceEnabled
+            : S.visitVoiceEnabled;
         const currentTextGuardMaxLength = typeof window.textGuardMaxLength !== 'undefined'
             ? window.textGuardMaxLength
             : S.textGuardMaxLength;
         const currentRenderQuality = typeof window.renderQuality !== 'undefined'
             ? window.renderQuality
             : S.renderQuality;
-        const currentTargetFrameRate = typeof window.targetFrameRate !== 'undefined'
-            ? window.targetFrameRate
-            : S.targetFrameRate;
+        // 串门取帧期间 window.targetFrameRate 被临时拉高（static/visit/parent-bridge.js），
+        // 保存的是用户自己的值，不能把临时值写进设置；当前值已不是临时值（用户刚改过）就照常保存
+        const targetFrameRateHold = window.nekoTargetFrameRateHold;
+        const currentTargetFrameRate = targetFrameRateHold && typeof targetFrameRateHold.userFps === 'number'
+            && window.targetFrameRate === targetFrameRateHold.heldFps
+            ? targetFrameRateHold.userFps
+            : (typeof window.targetFrameRate !== 'undefined'
+                ? window.targetFrameRate
+                : S.targetFrameRate);
         const currentMouseTracking = typeof window.mouseTrackingEnabled !== 'undefined'
             ? window.mouseTrackingEnabled
             : true;
@@ -1716,6 +1734,8 @@
             voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
+            visitEnabled: currentVisitEnabled,
+            visitVoiceEnabled: currentVisitVoiceEnabled,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
             textGuardMaxLength: currentTextGuardMaxLength,
@@ -1761,6 +1781,8 @@
         S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
+        S.visitEnabled = currentVisitEnabled;
+        S.visitVoiceEnabled = currentVisitVoiceEnabled;
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
         S.textGuardMaxLength = currentTextGuardMaxLength;
@@ -1948,6 +1970,8 @@
                     );
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
+                S.visitEnabled = settings.visitEnabled ?? false;
+                S.visitVoiceEnabled = settings.visitVoiceEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
                 // 回复 token 上限（默认 300 tiktoken tokens；0 = 无限制）
@@ -2083,6 +2107,8 @@
         window.focusCognitionEnabled = S.focusCognitionEnabled;
         // 同理：自然表达开关也镜像到 window，避免设置弹窗在 reload 后误显示为开。
         window.slopFilterEnabled = S.slopFilterEnabled;
+        window.visitEnabled = S.visitEnabled;
+        window.visitVoiceEnabled = S.visitVoiceEnabled;
 
         // 加载字幕设置（统一从 subtitle-shared store 读取）
         const subtitleStore = window.nekoSubtitleShared;
@@ -2296,6 +2322,8 @@
                     window.focusCognitionEnabled = S.focusCognitionEnabled;
                     window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                     window.slopFilterEnabled = S.slopFilterEnabled;
+                    window.visitEnabled = S.visitEnabled;
+                    window.visitVoiceEnabled = S.visitVoiceEnabled;
                     window.proactiveChatInterval = S.proactiveChatInterval;
                     window.proactiveVisionInterval = S.proactiveVisionInterval;
                     window.textGuardMaxLength = S.textGuardMaxLength;

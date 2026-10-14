@@ -1733,6 +1733,11 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   min-width: auto;
 }
 
+/* 纯文本块（串门台词、日记预览）逐字显示：确认写入的就是这些字节，换行与连续空格不能被系统消息样式折叠 */
+.system-chip .message-block-text.message-block-text-plain {
+  white-space: pre-wrap;
+}
+
 .system-chip .message-block-text {
   white-space: normal;
 }
@@ -2748,6 +2753,186 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compac
 
 body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   max-height: 240px;
+}
+
+/* 串门工具条：与选项同一层（定位、Electron 命中区沿用 compact-chat-choice-anchor），本身可点 */
+.composer-visit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 2px 10px rgba(40, 80, 120, 0.16);
+  color: #334;
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: auto;
+}
+
+.composer-visit-bar-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(68, 183, 254, 0.16);
+  color: #1d6fa5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.composer-visit-bar.is-waiting .composer-visit-bar-badge {
+  background: rgba(255, 184, 77, 0.2);
+  color: #9a5b00;
+}
+
+.composer-visit-bar.is-warning .composer-visit-bar-badge {
+  background: rgba(240, 96, 96, 0.16);
+  color: #b03434;
+}
+
+.composer-visit-bar-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-visit-bar-action {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid rgba(68, 120, 170, 0.32);
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.composer-visit-bar-action:hover:not(:disabled) {
+  background: rgba(68, 183, 254, 0.12);
+}
+
+.composer-visit-bar-action.is-primary,
+.composer-visit-bar-action[aria-pressed="true"] {
+  border-color: #44b7fe;
+  background: #44b7fe;
+  color: #fff;
+}
+
+.composer-visit-bar-action.is-danger {
+  border-color: rgba(220, 80, 80, 0.5);
+  color: #b03434;
+}
+
+.composer-visit-bar-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-theme="dark"] .composer-visit-bar {
+  background: rgba(30, 36, 48, 0.9);
+  color: #e6ebf2;
+}
+
+[data-theme="dark"] .composer-visit-bar-badge {
+  color: #9fd8ff;
+}
+
+/* full（冻结的 legacy 界面）自己的一份串门工具条：在 composer 上方，与 compact 的样式互不复用 */
+.full-visit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  background: rgba(68, 183, 254, 0.08);
+  color: #334;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.full-visit-bar-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(68, 183, 254, 0.16);
+  color: #1d6fa5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.full-visit-bar.is-waiting .full-visit-bar-badge {
+  background: rgba(255, 184, 77, 0.2);
+  color: #9a5b00;
+}
+
+.full-visit-bar.is-warning .full-visit-bar-badge {
+  background: rgba(240, 96, 96, 0.16);
+  color: #b03434;
+}
+
+.full-visit-bar-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.full-visit-bar-action {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid rgba(68, 120, 170, 0.32);
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.full-visit-bar-action:hover:not(:disabled) {
+  background: rgba(68, 183, 254, 0.12);
+}
+
+.full-visit-bar-action.is-primary,
+.full-visit-bar-action[aria-pressed="true"] {
+  border-color: #44b7fe;
+  background: #44b7fe;
+  color: #fff;
+}
+
+.full-visit-bar-action.is-danger {
+  border-color: rgba(220, 80, 80, 0.5);
+  color: #b03434;
+}
+
+.full-visit-bar-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-theme="dark"] .full-visit-bar {
+  background: rgba(68, 183, 254, 0.12);
+  color: #e6ebf2;
+}
+
+[data-theme="dark"] .full-visit-bar-action {
+  background: transparent;
+}
+
+[data-theme="dark"] .full-visit-bar-badge {
+  color: #9fd8ff;
 }
 
 .chat-window.chat-surface-mode-compact .window-topbar {

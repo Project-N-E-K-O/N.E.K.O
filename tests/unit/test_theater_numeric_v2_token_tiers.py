@@ -14,7 +14,7 @@ from services.theater.numeric_v2_usage import numeric_v2_usage_scope, invoke_wit
 from tests.unit.test_theater_numeric_v2_review_capacity import _fixture
 
 
-@pytest.mark.parametrize('profile,limits', [(name, (7000, 6000, 8000, 1500))
+@pytest.mark.parametrize('profile,limits', [(name, (7000, 8500, 8500, 1500))
     for name in ('economy', 'balanced', 'quality')])
 def test_every_tier_keeps_player_and_candidate_complete(profile, limits):
     # 正文超过过去360字段上限，句尾否定必须真的进入每档消息，当前输入也不能被截断。

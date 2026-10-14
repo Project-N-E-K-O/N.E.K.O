@@ -1333,7 +1333,8 @@ class VRMCore {
     async disposeVRM() {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
         
-        const vrm = this.manager.currentModel.vrm;
+        const currentModel = this.manager.currentModel;
+        const vrm = currentModel.vrm;
         
         if (vrm.scene && vrm.scene.parent) {
             vrm.scene.parent.remove(vrm.scene);
@@ -1435,8 +1436,10 @@ class VRMCore {
             }
         }
         
-        // 清理 currentModel 引用（在清理完成后才设置为 null）
-        this.manager.currentModel = null;
+        // 异步资源清理期间可能已装入新模型，只清空本次捕获的引用。
+        if (this.manager.currentModel === currentModel) {
+            this.manager.currentModel = null;
+        }
     }
 
     /**

@@ -32,6 +32,7 @@ MODEL_MANAGER_PART_NAMES = (
     "page-bridge.js",
     "card-face.js",
     "path-request-fullscreen.js",
+    "vrm-emotion-source.js",
     "page-controller.js",
     "background-model-drag.js",
     "window-lifecycle.js",

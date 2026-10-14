@@ -82,6 +82,7 @@ test('small_move capability check is pure while actual start owns hover preparat
     const context = vm.createContext({
         Math,
         Number,
+        window: {},
         _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW: profile,
         _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE: 'compact-top-edge',
         _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX: 12,
@@ -107,6 +108,10 @@ test('small_move capability check is pure while actual start owns hover preparat
         },
     });
 
+    vm.runInContext(sourceBetween(
+        'function _pauseNekoIdleCat1JourneyForGravity',
+        'function _getNekoIdleCurrentLanlanName'
+    ), context, { filename: JOURNEY_PATH });
     vm.runInContext(sourceBetween(
         'function _prepareNekoIdleCat1PairMoveStart',
         'function _finishNekoIdleCat1PairMove'

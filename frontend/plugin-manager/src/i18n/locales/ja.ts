@@ -169,6 +169,12 @@ export default {
     license: 'ライセンス',
     importPack: 'データパックをインポート',
     importHint: 'JSON 形式のデータパックファイル（最大 10 MiB）',
+    openMarket: 'プラグインマーケットで購読',
+    marketUnavailable: 'プラグインマーケットのアドレスが設定されていません',
+    marketPairFailed: 'プラグインマーケットとのペアリングに失敗しました。しばらくしてから再試行してください',
+    marketPopupBlocked: 'ブラウザが新しいウィンドウをブロックしました。このページのポップアップを許可してから再試行してください',
+    subscribedTag: 'マーケット購読 · {version}',
+    subscribedHint: 'プラグインマーケットの購読でインストールされました。更新や購読解除はマーケットページで行ってください',
     importQueued: '{name} をバックグラウンドでインポートしています',
     importUnchanged: '{name} はインストール済みで、内容に変更はありません',
     importRejected: 'インポートに失敗しました：{reason}',
@@ -263,6 +269,7 @@ export default {
       invalid_entry: 'データパックに無効な項目があります',
       unexpected_entry_field: '項目にサポートされていないフィールドがあります',
       duplicate_title: 'データパックに重複した項目タイトルがあります',
+      subscription_identity_mismatch: 'このデータパックはプラグインマーケットの購読、または既存の購読と競合しています。先にマーケットで購読を解除するか、データパックを削除してください',
       csrf_validation_failed: 'セキュリティチェックに失敗しました。ページを再読み込みしてから再試行してください',
       operation_failed: '操作に失敗しました'
     }

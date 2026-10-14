@@ -731,7 +731,7 @@ class ReceiveMixin:
     def visit_line_payload(
         self, *, ln: str, lp: int, side: str, kind: str, ad_side: Optional[str], ad_kind: Optional[str],
         reply_to: str, goodbye: bool, text: str, truncated: bool, i_done: Any = 0,
-        trunc_reason: Optional[str] = None,
+        trunc_reason: Optional[str] = None, request_id: Any = None,
     ) -> dict:
         payload = {
             "type": "visit_line", "visit_id": self.visit_id, "line_id": ln, "lp": lp,
@@ -743,7 +743,10 @@ class ReceiveMixin:
         }
         if trunc_reason:
             payload["trunc_reason"] = trunc_reason
-        # 页面重载时 GET /state 按 (lp, side) 用同一份形状重放（收件人 / 回复 / 告别 / i_done 都在）
+        if isinstance(request_id, str) and request_id:
+            # 本侧亲人句：发起提交的客户端 id，页面按它认领本地气泡（只进本页的显示帧，不上线）
+            payload["request_id"] = request_id
+        # 页面重载时 GET /state 按 (lp, side) 用同一份形状重放（收件人 / 回复 / 告别 / i_done / request_id 都在）
         self._line_frames[(lp, side)] = payload
         while len(self._line_frames) > 512:
             self._line_frames.pop(next(iter(self._line_frames)))

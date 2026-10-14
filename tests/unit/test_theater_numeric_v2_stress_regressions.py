@@ -51,6 +51,54 @@ async def test_new_verified_invitation_does_not_reinsert_this_turns_consumed_act
     assert await runtime.restore_session('consumed_new_offer') == result.stored
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('acceptance', [
+    '（回看柜台）明天来复习，我给你留靠窗的位置。',
+    '（指向驾驶舱）我来签发你的舰长许可。',
+])
+async def test_authored_acceptance_is_reviewed_and_rejected_batch_is_not_reinserted(
+    tmp_path, monkeypatch, acceptance,
+):
+    story = numeric_v2_story()
+    for route in story['nodes'][0]['route_gates']:
+        route['transition_contract']['accept_input'] = acceptance
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    current = await runtime.start_session(session_id='authored_suggestion_review',
+        catgirl_binding=_binding(), opening_performance=_opening())
+    reviewed = []
+
+    async def options():
+        return {**default_options(), 'review': True}
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        return {'performance': '（点头）要现在一起出发吗？',
+                'suggested_inputs': ['（摇头）我先想想。'], 'transition_offered': True}
+
+    async def review(self, **kwargs):
+        suggestions = tuple(kwargs['actor_performance']['suggested_inputs'])
+        reviewed.append(suggestions)
+        unsafe = tuple(i for i, item in enumerate(suggestions) if item == acceptance)
+        return evaluator.NumericV2TransitionOfferReview(True, True, (), unsafe)
+
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime,
+        current=current, turn=TurnRequestV2('ask', 0, '还有什么安排？'),
+        ensure_current_binding=lambda _: _binding())
+
+    assert result.performance['suggested_inputs'] == []
+    assert result.performance['performance'] == '（点头）要现在一起出发吗？'
+    assert result.stored.session.transition_offered is True
+    assert reviewed == [(acceptance, '（摇头）我先想想。')]
+    assert await runtime.restore_session('authored_suggestion_review') == result.stored
+
+
 @pytest.mark.parametrize('name,purpose,state', [
     ('旧信', '核对日期', '由女主保管在抽屉里'),
     ('晶片', '验证入口权限', '由玩家保管在腰包里'),

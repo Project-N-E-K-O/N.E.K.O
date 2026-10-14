@@ -28,20 +28,32 @@
 //    sharp edge (file:// could open arbitrary local content, javascript:
 //    is a non-starter, data: is unsupported by most OS handlers) — only
 //    schemes a sane new-tab/browser would accept get through.
-export function openExternalUrl(url: string): void {
-  if (!url) return
+function normalizeExternalUrl(url: string): string | null {
+  if (!url) return null
   let normalized: URL
   try {
     normalized = new URL(url, window.location.href)
   } catch {
-    return
+    return null
   }
-  if (!['http:', 'https:', 'mailto:'].includes(normalized.protocol)) return
-  const href = normalized.toString()
+  if (!['http:', 'https:', 'mailto:'].includes(normalized.protocol)) return null
+  return normalized.toString()
+}
+
+function externalShell(): { openExternal: (u: string) => void | Promise<unknown> } | null {
   const shell = (window as unknown as {
     electronShell?: { openExternal?: (u: string) => void | Promise<unknown> }
   }).electronShell
-  if (shell && typeof shell.openExternal === 'function') {
+  return shell && typeof shell.openExternal === 'function'
+    ? (shell as { openExternal: (u: string) => void | Promise<unknown> })
+    : null
+}
+
+export function openExternalUrl(url: string): void {
+  const href = normalizeExternalUrl(url)
+  if (!href) return
+  const shell = externalShell()
+  if (shell) {
     // The preload bridge may be backed by ipcRenderer.invoke (Promise<void>)
     // or ipcRenderer.send (void) — we don't control which side it's on.
     // Promise.resolve normalizes both; .catch swallows the unhandled
@@ -56,6 +68,43 @@ export function openExternalUrl(url: string): void {
     return
   }
   window.open(href, '_blank', 'noopener,noreferrer')
+}
+
+/**
+ * For a link only known after an await (e.g. one that needs a server round
+ * trip): call this synchronously in the click handler, then `open(url)` once
+ * the URL is ready, or `cancel()` if it never is.
+ *
+ * In a browser, `window.open` after an await is no longer tied to the click
+ * and is blocked as a popup, so a blank window is opened up front and pointed
+ * at the URL later. `blocked` says the browser refused even that one: a later
+ * `open` would be refused too, so the caller should tell the user instead of
+ * doing the work behind it. Electron routes to the system browser and has no
+ * such restriction, so nothing is opened until `open`.
+ */
+export function prepareExternalWindow(): {
+  blocked: boolean
+  open: (url: string) => void
+  cancel: () => void
+} {
+  if (externalShell()) return { blocked: false, open: openExternalUrl, cancel: () => {} }
+  const popup = window.open('', '_blank')
+  if (popup) popup.opener = null
+  return {
+    blocked: popup === null,
+    open(url: string) {
+      const href = normalizeExternalUrl(url)
+      if (!href) {
+        popup?.close()
+        return
+      }
+      if (popup && !popup.closed) popup.location.href = href
+      else window.open(href, '_blank', 'noopener,noreferrer')
+    },
+    cancel() {
+      popup?.close()
+    },
+  }
 }
 
 export function openLocalPath(path: string): Promise<void> {

@@ -349,6 +349,7 @@ def test_report_with_an_expired_login_is_queued_and_asks_to_sign_in(env, monkeyp
     monkeypatch.setattr(cr, "_servers_session", expired)
     resp = _report(client)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
+    assert resp.json()["queued"] is True            # 已排队：页面按已排队显示、不再让人重提
     assert _queued(tmp_path) is not None
 
 
@@ -366,6 +367,7 @@ def test_report_needs_a_login(env):
     resp = _report(client)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
     assert _queued(tmp_path) is None
+    assert "queued" not in resp.json()             # 没排队：不能说成已记录
 
 
 def test_report_persist_failure_is_500(env, monkeypatch):
@@ -540,6 +542,7 @@ def test_report_waiting_for_a_transcript_with_an_expired_login_asks_to_sign_in(e
     resp = _report(client, include_transcript=True)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
     assert _queued(tmp_path) is not None and fake.count("/api/visit/reports") == 0
+    assert resp.json()["queued"] is True
 
 
 

@@ -47,10 +47,18 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from starlette.datastructures import UploadFile
+from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartParser
 
 from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
+from knowledge.subscriptions import (
+    SUBSCRIPTION_PROTOCOL_VERSION,
+    KnowledgeSubscription,
+    SubscriptionError,
+    parse_expected_identity,
+    parse_releases,
+    parse_subscription_json,
+)
 from utils.http.knowledge_proxy import JSON_BODY_MAX_BYTES, PACK_BODY_MAX_BYTES
 
 from ._shared import logger
@@ -360,21 +368,28 @@ async def knowledge_settings(request: Request):
     return await _call(lambda svc: svc.set_enabled(payload["enabled"]))
 
 
-async def _pack_from_multipart(request: Request, body: bytes) -> bytes | None:
-    """Return the uploaded file of a ``multipart/form-data`` import body.
-
-    The ``pack`` field wins; otherwise the only uploaded file is used.
-    """
+async def _parse_form(request: Request, body: bytes) -> FormData | None:
+    """Parse an already size-capped ``multipart/form-data`` body: one file, a few small fields."""
 
     async def stream():
         yield body
 
     try:
-        form = await MultiPartParser(
+        return await MultiPartParser(
             request.headers, stream(), max_files=1, max_fields=8,
             max_part_size=_JSON_BODY_MAX_BYTES,
         ).parse()
     except Exception:
+        return None
+
+
+async def _pack_from_multipart(request: Request, body: bytes) -> bytes | None:
+    """Return the uploaded file of a ``multipart/form-data`` import body.
+
+    The ``pack`` field wins; otherwise the only uploaded file is used.
+    """
+    form = await _parse_form(request, body)
+    if form is None:
         return None
     try:
         uploads = [value for value in form.values() if isinstance(value, UploadFile)]
@@ -488,3 +503,89 @@ async def knowledge_pack_remove(request: Request):
     if payload is None or not _pack_id(payload):
         return _failure("invalid_request", 400)
     return await _call(lambda svc: svc.remove_pack(_pack_id(payload)))
+
+
+async def _subscription_from_multipart(
+    request: Request, body: bytes
+) -> tuple[bytes, KnowledgeSubscription] | str:
+    """The pack file and subscription metadata of an apply body, or a refusal reason."""
+    form = await _parse_form(request, body)
+    if form is None:
+        return "invalid_request"
+    try:
+        if form.get("protocol_version") != str(SUBSCRIPTION_PROTOCOL_VERSION):
+            return "unsupported_protocol"
+        metadata = form.get("subscription")
+        upload = form.get("pack")
+        if not isinstance(metadata, str) or not isinstance(upload, UploadFile):
+            return "invalid_request"
+        try:
+            subscription = parse_subscription_json(metadata)
+        except SubscriptionError as exc:
+            return exc.reason
+        return await upload.read(), subscription
+    finally:
+        await form.close()
+
+
+@router.post("/subscriptions/apply")
+async def knowledge_apply_subscription(request: Request):
+    """Install a plugin-market artifact the plugin server downloaded and verified.
+
+    Reached only through Main's ``/api/public-knowledge/subscriptions/apply``
+    (CSRF + Origin), which the plugin server calls; the browser-facing bridge
+    does not forward this path. The pack must be the exact artifact named by
+    the subscription (same SHA-256, pack id and material type).
+    """
+    service = _service
+    if service is None:
+        return _failure("knowledge_starting", 503)
+    if _media_type(request) != "multipart/form-data":
+        return _failure("invalid_request", 400)
+    # The body is read into memory, at most as many at once as local imports
+    # (the same slots). Unlike a local import it is read even when imports are
+    # full: a repeat of an apply already staged must reach the service, which
+    # answers it with that import and refuses anything else before parsing.
+    if _import_slots.locked():
+        return {"ok": False, "reason": "knowledge_busy", **service.availability()}
+    async with _import_slots:
+        raw = await _read_body(request, max_bytes=_PACK_BODY_MAX_BYTES)
+        if raw is None:
+            return _failure("pack_too_large", 413)
+        parsed = await _subscription_from_multipart(request, raw)
+        if isinstance(parsed, str):
+            return _failure(parsed, 400)
+        pack, subscription = parsed
+        return await _call(lambda svc: svc.import_pack(pack, subscription=subscription))
+
+
+@router.get("/subscriptions")
+async def knowledge_subscriptions():
+    """Installed subscriptions and their imports, for the market page to reconcile against."""
+
+    async def run(svc: KnowledgeService) -> dict[str, Any]:
+        return svc.subscription_state()
+
+    return await _call(run)
+
+
+@router.post("/subscriptions/remove")
+async def knowledge_remove_subscription(request: Request):
+    """Unsubscribe: remove the named releases of a market package, installed or on the way.
+
+    Reached only through Main, like ``subscriptions/apply``. The body names the
+    pack, the subscription identity and the releases to remove; repeating it
+    is safe (see ``KnowledgeService.remove_subscription``).
+    """
+    payload = await _json_object(request)
+    if payload is None or not _pack_id(payload):
+        return _failure("invalid_request", 400)
+    version = payload.get("protocol_version")
+    if type(version) is not int or version != SUBSCRIPTION_PROTOCOL_VERSION:
+        return _failure("unsupported_protocol", 400)
+    try:
+        identity = parse_expected_identity(payload.get("expected_subscription"))
+        releases = parse_releases(payload.get("releases"))
+    except SubscriptionError as exc:
+        return _failure(exc.reason, 400)
+    return await _call(lambda svc: svc.remove_subscription(_pack_id(payload), identity, releases))

@@ -47,6 +47,8 @@ export default function MessageBlockView({
   }
 
   if (block.type === 'text') {
+    // 纯文本分支在最前面：文本节点直出，不经 SmartTextBlock / ReactMarkdown（§3.6.6，串门台词）
+    if (block.plain_text) return <div className="message-block message-block-text message-block-text-plain">{block.text}</div>;
     return (
       <SmartTextBlock
         text={block.text}

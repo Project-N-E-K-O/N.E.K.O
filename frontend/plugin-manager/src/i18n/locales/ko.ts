@@ -169,6 +169,12 @@ export default {
     license: '라이선스',
     importPack: '데이터 팩 가져오기',
     importHint: 'JSON 형식의 데이터 팩 파일, 최대 10 MiB',
+    openMarket: '플러그인 마켓에서 구독',
+    marketUnavailable: '플러그인 마켓 주소가 설정되지 않았습니다',
+    marketPairFailed: '플러그인 마켓과 페어링하지 못했습니다. 잠시 후 다시 시도하세요',
+    marketPopupBlocked: '브라우저가 새 창을 차단했습니다. 이 페이지의 팝업을 허용한 뒤 다시 시도하세요',
+    subscribedTag: '마켓 구독 · {version}',
+    subscribedHint: '플러그인 마켓 구독으로 설치되었습니다. 업데이트와 구독 취소는 마켓 페이지에서 하세요',
     importQueued: '{name}을(를) 백그라운드에서 가져오는 중',
     importUnchanged: '{name}은(는) 이미 설치되어 있으며 변경 사항이 없습니다',
     importRejected: '가져오기 실패: {reason}',
@@ -263,6 +269,7 @@ export default {
       invalid_entry: '데이터 팩에 잘못된 항목이 있습니다',
       unexpected_entry_field: '항목에 지원되지 않는 필드가 있습니다',
       duplicate_title: '데이터 팩에 중복된 항목 제목이 있습니다',
+      subscription_identity_mismatch: '이 데이터 팩은 플러그인 마켓 구독이거나 기존 구독과 충돌합니다. 먼저 마켓에서 구독을 취소하거나 데이터 팩을 삭제하세요',
       csrf_validation_failed: '보안 확인에 실패했습니다. 페이지를 새로 고친 뒤 다시 시도하세요',
       operation_failed: '작업에 실패했습니다'
     }

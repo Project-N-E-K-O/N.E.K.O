@@ -1340,6 +1340,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     if await route_external_microphone_audio(lanlan_name):
                         continue
                 else:
+                    if (
+                        input_type in _TEXT_SESSION_INPUT_TYPES
+                        and str(message.get("source") or "").startswith(VISIT_ROUTE_KIND + ":")
+                        and not _visit_owns_input(lanlan_name)
+                    ):
+                        # 写给串门的句子、当前输入却不归串门（页面漏了结束、别的路由如游戏已接管）：
+                        # 先于通用路由分派拒掉，不让别的路由认领、也不漏进普通聊天
+                        from main_routers.visit_router import display_socket as _visit_display
+
+                        await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
+                        continue
                     # 分派途中路由可能换主（别的路由放手、串门刚好起来）：把发起这条输入的连接带进分派，
                     # 串门据此拒绝未绑定连接的输入、把未授权提示发回这条连接
                     connection_token = DISPLAY_SOCKET_CONNECTION.set(websocket)
@@ -1358,6 +1369,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             await stream_mgr._emit_agent_callback_turn_end(message.get("request_id"))
                         continue
                     if claim is RouteClaim.CLAIMED:
+                        continue
+                    if (
+                        input_type in _TEXT_SESSION_INPUT_TYPES
+                        and str(message.get("source") or "").startswith(VISIT_ROUTE_KIND + ":")
+                    ):
+                        # 分派途中串门放手（路由在 ending 释放）、这句没人接：同样不漏进普通聊天，
+                        # 按「正在道别」拒掉，页面据 request_id 标未送达、放回原文
+                        from main_routers.visit_router import display_socket as _visit_display
+
+                        await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
                         continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")

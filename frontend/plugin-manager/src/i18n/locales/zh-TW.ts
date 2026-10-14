@@ -169,6 +169,12 @@ export default {
     license: '授權條款',
     importPack: '匯入資料包',
     importHint: 'JSON 格式的資料包檔案，最大 10 MiB',
+    openMarket: '前往外掛市場訂閱',
+    marketUnavailable: '未設定外掛市場位址',
+    marketPairFailed: '無法與外掛市場配對，請稍後再試',
+    marketPopupBlocked: '瀏覽器封鎖了新視窗，請允許此頁面彈出視窗後再試',
+    subscribedTag: '市場訂閱 · {version}',
+    subscribedHint: '從外掛市場訂閱安裝，更新與取消訂閱請在市場頁面操作',
     importQueued: '正在背景匯入 {name}',
     importUnchanged: '{name} 已安裝且內容未變更',
     importRejected: '匯入失敗：{reason}',
@@ -263,6 +269,7 @@ export default {
       invalid_entry: '資料包中有無效的詞條',
       unexpected_entry_field: '詞條含有不支援的欄位',
       duplicate_title: '資料包中有重複的詞條標題',
+      subscription_identity_mismatch: '此資料包是外掛市場訂閱，或與已安裝的訂閱衝突；請先在市場取消訂閱或刪除此資料包',
       csrf_validation_failed: '安全驗證失敗，請重新整理頁面後再試',
       operation_failed: '操作失敗'
     }

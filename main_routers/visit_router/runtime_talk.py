@@ -699,8 +699,18 @@ class TalkMixin:
         if input_type == "audio":
             await self._voice_unavailable()
             return True
+        if input_type in ("user_image", "avatar_drop_image"):
+            # 串门输入框只发文字（不带附件）：这类图片都来自普通提交（重载未恢复时的附件、拖到头像的图片）。
+            # 吞掉不发给对端，但回带 request_id 的拒绝，页面据此把普通气泡标失败
+            await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
+            return True
         if input_type != "text":
-            # 截图 / 摄像头 / 图片一律吞掉
+            # 截图 / 摄像头帧一律吞掉
+            return True
+        claimed_visit = message.get("visit_id")
+        if isinstance(claimed_visit, str) and claimed_visit and claimed_visit != self.visit_id:
+            # 页面以为还在另一场（重连时漏了换场）：写给那一场客人的话不能发给这一场的客人
+            await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
         if self.side == "guest":
             await self.status("VISIT_INPUT_REFUSED_AWAY", request_id=request_id)
@@ -716,6 +726,11 @@ class TalkMixin:
             return True
         if room.phase == "wrap_up":
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
+            return True
+        if not str(message.get("source") or "").startswith("neko_visit:"):
+            # 只有串门输入框发的句子算家里人的台词。拖到头像上的文件、历史拖放、重载后页面还没恢复串门态时的
+            # 普通提交都不是写给客人的：拒掉（带 request_id，页面放回原文），不发给对端
+            await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
             return True
         if room.phase != "active":
             return False
@@ -779,7 +794,7 @@ class TalkMixin:
             self._post_display(self.visit_line_payload(
                 ln=ln, lp=lp, side=self.side, kind="human", ad_side=ad_side, ad_kind=ad_kind, reply_to="",
                 goodbye=False, text=payload["txt"], truncated=bool(payload["truncated"]),
-                trunc_reason=payload.get("trunc_reason"),
+                trunc_reason=payload.get("trunc_reason"), request_id=request_id,
             ))
 
         def reply() -> None:

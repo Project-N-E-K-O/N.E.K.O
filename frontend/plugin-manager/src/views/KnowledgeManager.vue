@@ -223,6 +223,9 @@
           <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="importSelectedPack" />
           <el-button type="primary" :loading="importing" @click="fileInput?.click()">{{ t('knowledge.importPack') }}</el-button>
           <span class="toolbar__hint">{{ t('knowledge.importHint') }}</span>
+          <el-button class="toolbar__end" :loading="marketOpening" @click="openKnowledgeMarket">
+            {{ t('knowledge.openMarket') }}
+          </el-button>
         </div>
 
         <section v-if="activeJobs.length" class="job-panel job-panel--active" aria-live="polite">
@@ -286,6 +289,11 @@
                     <strong :title="scope.row.pack_id">{{ scope.row.source?.name || scope.row.pack_id }}</strong>
                     <el-tooltip v-if="scope.row.broken" :content="t('knowledge.brokenHint')" placement="top">
                       <el-tag type="danger" size="small">{{ t('knowledge.brokenTag') }}</el-tag>
+                    </el-tooltip>
+                    <el-tooltip v-if="scope.row.subscription" :content="t('knowledge.subscribedHint')" placement="top">
+                      <el-tag type="success" size="small" effect="plain">
+                        {{ t('knowledge.subscribedTag', { version: scope.row.subscription.version }) }}
+                      </el-tag>
                     </el-tooltip>
                   </div>
                   <span class="pack-identity__meta">{{ scope.row.pack_id }}</span>
@@ -545,10 +553,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
 import {
+  createMarketPairing,
   isActiveKnowledgeJob,
   isKnownKnowledgeReason,
   knowledgeApi,
   knowledgeFailureReason,
+  knowledgeMarketUrl,
   type KnowledgeDiagnosticQuery,
   type KnowledgeEntry,
   type KnowledgeEntryDetail,
@@ -570,7 +580,8 @@ import {
   vectorStateTagType,
   visibleDiagnosticQueries,
 } from '@/utils/knowledgeDisplay'
-import { openExternalUrl } from '@/utils/openExternal'
+import { openExternalUrl, prepareExternalWindow } from '@/utils/openExternal'
+import { getMarketUrl } from '@/api/market'
 
 const MATERIAL_FOLLOW = '__follow__'
 const EMPTY_MARK = '—'
@@ -603,6 +614,7 @@ const pendingPacks = reactive(new Set<string>())
 const packJobs = ref<KnowledgePackJob[]>([])
 const pendingJobs = reactive(new Set<string>())
 const importing = ref(false)
+const marketOpening = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const queries = ref<KnowledgeDiagnosticQuery[]>([])
@@ -1055,6 +1067,31 @@ async function toggleEntry(row: KnowledgeEntry, disabled: boolean) {
     ElMessage.error(errorMessage(error))
   } finally {
     pendingEntries.delete(key)
+  }
+}
+
+async function openKnowledgeMarket() {
+  // Before any await: a browser only allows a popup inside the click itself.
+  const target = prepareExternalWindow()
+  if (target.blocked) {
+    // No window to show the Market in: do not issue a pairing code for nothing.
+    ElMessage.error(t('knowledge.marketPopupBlocked'))
+    return
+  }
+  marketOpening.value = true
+  try {
+    const base = await getMarketUrl()
+    if (!base) {
+      target.cancel()
+      ElMessage.error(t('knowledge.marketUnavailable'))
+      return
+    }
+    target.open(knowledgeMarketUrl(base, await createMarketPairing()))
+  } catch {
+    target.cancel()
+    ElMessage.error(t('knowledge.marketPairFailed'))
+  } finally {
+    marketOpening.value = false
   }
 }
 

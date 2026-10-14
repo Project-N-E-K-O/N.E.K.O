@@ -13,8 +13,10 @@ const elementPlusImportStyle = isVitest ? false : 'css'
 // 提取代理目标的 hostname 用于运行时检测
 // 当 API_BASE_URL 为空（通过 Vite 代理）时，前端需要知道代理目标是本地还是远程
 let PROXY_TARGET_HOSTNAME = 'localhost'
+let BACKEND_ORIGIN = 'http://localhost:48916'
 try {
   PROXY_TARGET_HOSTNAME = new URL(BACKEND_TARGET).hostname
+  BACKEND_ORIGIN = new URL(BACKEND_TARGET).origin
 } catch {
   // 解析失败，假定为本地
   PROXY_TARGET_HOSTNAME = 'localhost'
@@ -84,10 +86,28 @@ export default defineConfig({
         secure: false
       },
       // Market Bridge API endpoints only. Keep the SPA route /market on Vite.
-      '^/market/(status|bridge-token|install|installed|token-exchange|github-proxy/measure|catalog(?:/.*)?|oauth(?:/.*)?|tasks(?:/.*)?|knowledge(?:/.*)?)(?:\\?.*)?$': {
+      '^/market/(status|bridge-token|pair-code|install|installed|token-exchange|github-proxy/measure|catalog(?:/.*)?|oauth(?:/.*)?|tasks(?:/.*)?|knowledge(?:/.*)?)(?:\\?.*)?$': {
         target: BACKEND_TARGET,
         changeOrigin: true,
-        secure: false
+        secure: false,
+        // The bridge accepts only same-origin local pages. A request from the
+        // manager page this server serves reaches the backend as same-origin,
+        // so the backend never has to trust the Vite port. Only that page's
+        // own requests are rewritten: one another local site sends here
+        // cross-origin keeps its Origin and is refused by the backend.
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            const origin = req.headers.origin
+            if (!origin) return
+            let sameOrigin = false
+            try {
+              sameOrigin = new URL(origin).host === req.headers.host
+            } catch {
+              sameOrigin = false
+            }
+            if (sameOrigin) proxyReq.setHeader('origin', BACKEND_ORIGIN)
+          })
+        },
       },
       '^/plugins/development(?:/.*)?(?:\\?.*)?$': {
         target: BACKEND_TARGET,

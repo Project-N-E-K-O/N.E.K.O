@@ -359,7 +359,8 @@ class Side:
     cancelled: list = field(default_factory=list)
     uploads: list = field(default_factory=list)
     commits: list = field(default_factory=list)
-    settings: dict = field(default_factory=lambda: {"visitMemoryEnabled": True, "visitVoiceEnabled": True})
+    settings: dict = field(default_factory=lambda: {"visitEnabled": True, "visitMemoryEnabled": True,
+                                                         "visitVoiceEnabled": True})
     rt: Optional[rtm.VisitRuntime] = None
     creds_error: Optional[Exception] = None
     creds_gate: Optional[asyncio.Event] = None

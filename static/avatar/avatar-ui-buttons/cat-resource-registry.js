@@ -2,11 +2,47 @@
 (function installNekoCatResourceRegistry(global) {
     'use strict';
 
-    const selectedAppearanceGroupId = 'dev_neko';
-    const selectedVoiceGroupId = 'dev_neko';
+    const CAT_RESOURCE_GROUPS = Object.freeze({ dev_neko: 'dev_neko', yui_neko: 'yui_neko' });
+    const normalizeGroupId = (value) => value === CAT_RESOURCE_GROUPS.yui_neko
+        ? CAT_RESOURCE_GROUPS.yui_neko
+        : CAT_RESOURCE_GROUPS.dev_neko;
+
+    function readSessionGroupId() {
+        try {
+            return global.sessionStorage && global.sessionStorage.getItem('neko:cat-resource-group');
+        } catch (_) {
+            return null;
+        }
+    }
+
+    // The desktop preload supplies the authoritative value before the page is
+    // ready. Plain web pages use sessionStorage as a fallback for the one
+    // reload used to apply a live settings change.
+    const selectedAppearanceGroupId = normalizeGroupId(
+        global.__nekoCatResourceGroup || readSessionGroupId()
+    );
+    const selectedVoiceGroupId = selectedAppearanceGroupId;
 
     const appearanceGroups = {
         dev_neko: {
+            'idle.cat1': ['/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif'],
+            'idle.cat2': ['/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif'],
+            'idle.cat3': ['/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif'],
+            'click.cat1': ['/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat1-click.gif'],
+            'click.cat2': ['/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif'],
+            'click.cat3': ['/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif'],
+            'drag.cat1': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif', '/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif'],
+            'drag.cat2': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif', '/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif'],
+            'drag.cat3': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif', '/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-4.gif'],
+            'drag.rapid': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-5.gif'],
+            'movement.cat1.walking': ['/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif'],
+            'movement.cat1.stretch': ['/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-2.gif'],
+            'movement.cat1.interactive': ['/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif'],
+            'action.cat1.eat': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat.gif'],
+            'action.cat1.play_yarn': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif'], metadata: { wideArt: true } },
+            'playground.cat1.air': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif']
+        },
+        yui_neko: {
             'idle.cat1': ['/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif'],
             'idle.cat2': ['/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif'],
             'idle.cat3': ['/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif'],
@@ -28,6 +64,16 @@
 
     const voiceGroups = {
         dev_neko: {
+            'cat1.ambient': ['/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice1.mp3', '/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice2.mp3', '/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice3.mp3'],
+            'cat1.drag': ['/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-click.mp3'],
+            'cat1.rapid_drag': ['/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-funny.mp3'],
+            'cat1.eat': ['/static/assets/cat-resources/voice/dev_neko/action/cat1-voice-eat.mp3'],
+            'cat1.play_yarn': ['/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice3.mp3'],
+            'cat1.hiss': ['/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-chat-angry.mp3'],
+            'cat2.sleep': ['/static/assets/cat-resources/voice/dev_neko/sleep/cat2-sleep1.mp3', '/static/assets/cat-resources/voice/dev_neko/sleep/cat2-sleep2.mp3'],
+            'cat3.sleep': ['/static/assets/cat-resources/voice/dev_neko/sleep/cat3-sleep1.mp3', '/static/assets/cat-resources/voice/dev_neko/sleep/cat3-sleep2.mp3']
+        },
+        yui_neko: {
             'cat1.ambient': ['/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice1.mp3', '/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice2.mp3', '/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice3.mp3'],
             'cat1.drag': ['/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-click.mp3'],
             'cat1.rapid_drag': ['/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-funny.mp3'],
@@ -68,6 +114,35 @@
 
     function getVoice(slot, options) {
         return readSlot(voiceGroups, selectedVoiceGroupId, slot, options);
+    }
+
+    // The settings window can change the group while Pet is open. Resource
+    // URLs are intentionally fixed for one page lifetime, so reload once after
+    // the new group arrives and let the preload provide it on the next load.
+    if (typeof global.addEventListener === 'function') {
+        global.addEventListener('neko:cat-resource-group', (event) => {
+            const nextGroupId = normalizeGroupId(event && event.detail && event.detail.group);
+            if (nextGroupId === selectedAppearanceGroupId) {
+                // A previous reload may have failed. Keep the fallback state
+                // and persisted value aligned before returning.
+                global.__nekoCatResourceGroup = nextGroupId;
+                try {
+                    if (global.sessionStorage) global.sessionStorage.setItem('neko:cat-resource-group', nextGroupId);
+                } catch (_) {}
+                return;
+            }
+            global.__nekoCatResourceGroup = nextGroupId;
+            let persisted = false;
+            try {
+                if (global.sessionStorage) {
+                    global.sessionStorage.setItem('neko:cat-resource-group', nextGroupId);
+                    persisted = true;
+                }
+            } catch (_) {}
+            try {
+                if (persisted && global.location && typeof global.location.reload === 'function') global.location.reload();
+            } catch (_) {}
+        });
     }
 
     function getActionCapabilities(actionId) {

@@ -734,6 +734,86 @@ def test_branch_path_rejects_missing_or_generic_accept_input():
         service.finish_path(plan, result)
 
 
+def _silent_exit_path(position, initial, changes):
+    from utils.tokenize import count_tokens
+    project = branchable_project()
+    if position == "source":
+        beat = next(node for node in project["story"]["nodes"] if node["id"] == "main_3")["story_beat"]
+        beat["acting_contract"] = {**_character_state()["acting_contract"], "dialogue_policy": initial}
+        beat["acting_contract"].pop("assertable_self_facts")
+        base = beat["goals"][0]
+        beat["goals"] = [
+            {**deepcopy(base), "id": f"main_3_goal_{index + 1:02d}",
+             "evidence": {"mode": "semantic", "anchors": []},
+             "delivery": {**base["delivery"], "type": "catgirl_action", "output_field": "performance_action",
+                          **({"state_effects": {"dialogue_policy": policy}} if policy != "unchanged" else {})}}
+            for index, policy in enumerate(changes)
+        ]
+    service = NumericV2BranchService(id_factory=iter(["scene", "r0", "r1", "draft"]).__next__,
+                                     token_counter=count_tokens)
+    options = service.options(project, "main_3")
+    plan = service.prepare_path(project, source_node_id="main_3", endpoint_mode="mainline",
+        endpoint_node_id="main_4", direction="根据当前证据继续核对。", length=1,
+        condition_selection={"mode": "fixed", "key": options["condition_candidates"][0]["key"]})
+    result = _path_result(plan)
+    if position == "scene":
+        scene = result["scenes"][0]
+        scene["character_state"]["acting_contract"]["dialogue_policy"] = initial
+        scene["ordered_goals"] = [
+            {**_ordered_goal("猫娘收好已经展示的证据"), "delivery_type": "catgirl_action",
+             "dialogue_policy_after": policy}
+            for policy in changes
+        ]
+    index = 0 if position == "source" else 1
+    result["transitions"][index].pop("fallback_offer")
+    result["transitions"][index]["silent_choice"] = {
+        "destination": "下一处核对地点", "arrangement": "继续核对证据"}
+    return project, service, plan, result, index
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("initial,changes,allowed", [
+    ("optional", ["forbidden"], True),
+    ("forbidden", ["unchanged"], True),
+    ("optional", ["forbidden", "unchanged"], True),
+    ("optional", ["forbidden", "required"], False),
+    ("optional", ["forbidden", "optional"], False),
+    ("optional", ["unchanged"], False),
+])
+def test_branch_missing_fallback_requires_final_typed_forbidden_policy(position, initial, changes, allowed):
+    project, service, plan, result, index = _silent_exit_path(position, initial, changes)
+    if not allowed:
+        with pytest.raises(NumericV2BranchError, match="branch_transition_fallback_offer_required"):
+            service.finish_path(plan, result)
+        return
+
+    draft = service.finish_path(plan, result)
+    story, _, _ = service.build_story(project, draft)
+    node_id = "main_3" if position == "source" else "node_branch_scene"
+    node = next(node for node in story["nodes"] if node["id"] == node_id)
+    contract = node["route_gates"][-1 if position == "source" else 0]["transition_contract"]
+
+    assert "fallback_offer" not in contract
+    assert contract["accept_input"] == result["transitions"][index]["accept_input"]
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("field,missing,code", [
+    ("accept_input", True, "branch_transition_accept_input_required"),
+    ("fallback_offer", False, "branch_transition_fallback_offer_required"),
+])
+def test_branch_forbidden_exit_keeps_acceptance_and_present_value_validation(position, field, missing, code):
+    _, service, plan, result, index = _silent_exit_path(position, "optional", ["forbidden"])
+    if missing:
+        result["transitions"][index].pop(field)
+    else:
+        result["transitions"][index][field] = None
+
+    with pytest.raises(NumericV2BranchError, match=code):
+        service.finish_path(plan, result)
+
+
 @pytest.mark.parametrize("opening_transfer", [False, True])
 def test_branch_scene_persists_key_prop_state_change_on_stable_node_id(opening_transfer):
     project = branchable_project()
@@ -1038,3 +1118,35 @@ def test_entrance_projection_does_not_ignore_untracked_metric(mode):
     assert NumericV2BranchService._condition_alternatives(conditions, schema, "trust", 0) is None
     conditions[mode][0].update(metric="trust", value=20)
     assert NumericV2BranchService._condition_alternatives(conditions, schema, "trust", 0) == [20]
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("choice", [None, {}, {"destination": "石桥"},
+    {"destination": "石桥", "arrangement": ""},
+    {"destination": "石桥", "arrangement": "核对\n记录"}])
+def test_generated_silent_branch_rejects_missing_or_malformed_choice(position, choice):
+    _, service, plan, result, index = _silent_exit_path(position, "optional", ["forbidden"])
+    if choice is None:
+        result["transitions"][index].pop("silent_choice")
+    else:
+        result["transitions"][index]["silent_choice"] = choice
+    with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+        service.finish_path(plan, result)
+
+
+@pytest.mark.parametrize("field", ["destination", "arrangement"])
+@pytest.mark.parametrize("tokens", [30, 31])
+def test_branch_silent_choice_enforces_compiler_token_limit(field, tokens):
+    _, service, plan, result, index = _silent_exit_path("scene", "optional", ["forbidden"])
+    result["transitions"][index]["silent_choice"][field] = " a" * tokens
+    if tokens > 30:
+        with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+            service.finish_path(plan, result)
+    else:
+        service.finish_path(plan, result)
+
+
+def test_silent_branch_without_counter_returns_validation_error():
+    _, _, plan, result, _ = _silent_exit_path("scene", "optional", ["forbidden"])
+    with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+        NumericV2BranchService().finish_path(plan, result)

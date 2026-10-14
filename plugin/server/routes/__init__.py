@@ -19,6 +19,7 @@ from plugin.server.routes.plugin_cli import router as plugin_cli_router
 from plugin.server.routes.llm_tools import router as llm_tools_router
 from plugin.server.routes.market_bridge import router as market_bridge_router
 from plugin.server.routes.knowledge_bridge import router as knowledge_bridge_router
+from plugin.server.routes.knowledge_market import router as knowledge_market_router
 from plugin.server.routes.model_config import router as model_config_router
 from plugin.server.routes.model_gateway import router as model_gateway_router
 from plugin.server.routes.model_usage import router as model_usage_router
@@ -43,4 +44,5 @@ __all__ = [
     'llm_tools_router',
     'market_bridge_router',
     'knowledge_bridge_router',
+    'knowledge_market_router',
 ]

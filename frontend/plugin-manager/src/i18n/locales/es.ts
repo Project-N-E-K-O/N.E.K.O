@@ -169,6 +169,12 @@ export default {
     license: 'Licencia',
     importPack: 'Importar paquete de datos',
     importHint: 'Archivo de paquete JSON, hasta 10 MiB',
+    openMarket: 'Suscribirse en el mercado de plugins',
+    marketUnavailable: 'No hay una dirección del mercado de plugins configurada',
+    marketPairFailed: 'No se pudo vincular con el mercado de plugins. Inténtalo de nuevo más tarde',
+    marketPopupBlocked: 'El navegador bloqueó la nueva ventana. Permite las ventanas emergentes para esta página e inténtalo de nuevo',
+    subscribedTag: 'Mercado · {version}',
+    subscribedHint: 'Instalado mediante una suscripción del mercado de plugins; actualízalo o cancela la suscripción en la página del mercado',
     importQueued: 'Importando {name} en segundo plano',
     importUnchanged: '{name} ya está instalado y no ha cambiado',
     importRejected: 'Error al importar: {reason}',
@@ -263,6 +269,7 @@ export default {
       invalid_entry: 'El paquete contiene una entrada no válida',
       unexpected_entry_field: 'Una entrada contiene un campo no admitido',
       duplicate_title: 'El paquete contiene títulos de entrada duplicados',
+      subscription_identity_mismatch: 'Este paquete es una suscripción del mercado de plugins o entra en conflicto con una; cancela la suscripción en el mercado o elimina el paquete primero',
       csrf_validation_failed: 'Falló la comprobación de seguridad; recarga la página e inténtalo de nuevo',
       operation_failed: 'La operación falló'
     }

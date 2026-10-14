@@ -169,6 +169,12 @@ export default {
     license: '许可协议',
     importPack: '导入数据包',
     importHint: 'JSON 格式的数据包文件，最大 10 MiB',
+    openMarket: '去插件市场订阅',
+    marketUnavailable: '未配置插件市场地址',
+    marketPairFailed: '无法与插件市场配对，请稍后重试',
+    marketPopupBlocked: '浏览器拦截了新窗口，请允许本页面弹出窗口后重试',
+    subscribedTag: '市场订阅 · {version}',
+    subscribedHint: '从插件市场订阅安装，更新和取消订阅请在市场页面操作',
     importQueued: '正在后台导入 {name}',
     importUnchanged: '{name} 已安装且内容未变化',
     importRejected: '导入失败：{reason}',
@@ -263,6 +269,7 @@ export default {
       invalid_entry: '数据包中存在无效词条',
       unexpected_entry_field: '词条包含不支持的字段',
       duplicate_title: '数据包中存在重复的词条标题',
+      subscription_identity_mismatch: '该数据包是插件市场订阅，或与已安装的订阅冲突；请先在市场取消订阅或删除该数据包',
       csrf_validation_failed: '安全校验失败，请刷新页面后重试',
       operation_failed: '操作失败'
     }

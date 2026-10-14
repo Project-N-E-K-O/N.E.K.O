@@ -43,11 +43,16 @@ def _manager_harness(body: str) -> str:
           Live2DManager: function Live2DManager() {{}},
           fetch: async () => {{ throw new Error('unexpected fetch'); }},
           performance: {{ now() {{ return 0; }} }},
-          setTimeout, clearTimeout, setInterval, clearInterval,
+          AbortController, setTimeout, clearTimeout, setInterval, clearInterval,
         }};
         context.global = context;
         context.window.Live2DManager = context.Live2DManager;
         vm.createContext(context);
+        const coreSource = fs.readFileSync({json.dumps(str(PROJECT_ROOT / 'static' / 'live2d' / 'live2d-core.js'))}, 'utf8');
+        const lifecycleStart = coreSource.indexOf('// Avatar operation lifecycle');
+        const lifecycleEnd = coreSource.indexOf('// End avatar operation lifecycle', lifecycleStart);
+        assert(lifecycleStart >= 0 && lifecycleEnd > lifecycleStart);
+        vm.runInContext(coreSource.slice(lifecycleStart, lifecycleEnd), context);
         vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_MODEL_PATH))}, 'utf8'), context);
         vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_EMOTION_PATH))}, 'utf8'), context);
         {body}
@@ -556,11 +561,12 @@ def test_live2d_action_and_expression_slots_are_exclusive():
     script = _manager_harness(
         """
         (async () => {
-          const state = { currentPriority: 0, reservePriority: 0, setReserved() {}, setReservedIdle() {} };
+          const state = { currentPriority: 0, reservePriority: 0, setReserved() {}, setReservedIdle() {},
+            reserve(group, index, priority) { this.setReserved(group, index, priority); return true; }, reset() {} };
           let finishAction;
           const manager = new context.Live2DManager();
           manager.currentModel = {
-            internalModel: { motionManager: { state, motionGroups: {
+            internalModel: { motionManager: { state, on() {}, motionGroups: {
               Tap: [{
                 _loop: true,
                 isLoop() { return this._loop; },
@@ -591,7 +597,7 @@ def test_live2d_action_and_expression_slots_are_exclusive():
           };
           tapMotion._loop = true;
           manager.currentModel.motion = async () => {
-            state.setReserved('Tap', 0, 2);
+            state.reserve('Tap', 0, 2);
             return false;
           };
           assert.strictEqual(await manager.playActionMotion('Tap', 0), false);
@@ -644,10 +650,14 @@ def test_saved_idle_restore_stops_only_an_existing_idle_motion():
 
 def test_live2d_avatar_performance_inline_expression_cleanup_stays_targeted():
     source = AVATAR_PERFORMANCE_PATH.read_text(encoding="utf-8")
-    start = source.index("        async clearExpression() {")
+    start = source.index("        async clearExpression(options) {")
     end = source.index("        hasMotion(group, options) {", start)
     clear_source = source[start:end]
 
+    assert "options.session && !this.ownsSession(options.session)" in clear_source
+    assert "this.clearOwnedExpression(state)" in clear_source
+    assert "this.restoreOwnedParams(this.expressionParamSnapshot, state)" in clear_source
+    # Standalone driver calls retain the existing targeted legacy cleanup.
     assert "manager?._activeTransientExpression === true" in clear_source
     assert "if (shouldClearManagerExpression" in clear_source
     assert "manager.applyPersistentExpressionsNative(true)" in clear_source
@@ -672,12 +682,14 @@ def test_stale_load_token_is_checked_after_directory_parameter_failure():
     configure_end = source.index("Live2DManager.prototype._applyTextureQuality", configure_start)
     configure_source = source[configure_start:configure_end]
 
-    load_index = configure_source.index("await this._loadModelDirectoryParameters(this.modelName)")
+    load_index = configure_source.index("await this._loadModelDirectoryParameters(parameterTicket.modelName)")
     catch_index = configure_source.index("console.error('加载模型参数失败:'", load_index)
     token_index = configure_source.index("if (!this._isLoadTokenActive(loadToken)) return;", load_index)
     apply_index = configure_source.index("this._applyEffectiveModelParameters(", load_index)
 
     assert load_index < catch_index < token_index < apply_index
+    assert "this._getParameterReloadTicketStatus(parameterTicket) === 'active'" in configure_source[load_index:catch_index]
+    assert "this._getParameterReloadTicketStatus(parameterTicket) === 'active'" in configure_source[token_index:apply_index]
     assert "模型目录参数 > 用户偏好参数" not in configure_source
 
 

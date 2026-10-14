@@ -99,6 +99,8 @@ CLOUDSAVE_ERROR_I18N_KEYS = {
     "CLOUD_CHARACTER_NOT_FOUND": "cloudsave.error.cloudCharacterNotFound",
     "CLOUDSAVE_CHARACTER_NOT_FOUND": "cloudsave.error.cloudCharacterNotFound",
     "LOCAL_CHARACTER_EXISTS": "cloudsave.error.localCharacterExists",
+    "VISIT_DATA_BUSY": "cloudsave.error.visitDataBusy",
+    "VISIT_DATA_AMBIGUOUS": "cloudsave.error.visitDataAmbiguous",
     "CLOUD_CHARACTER_EXISTS": "cloudsave.error.cloudCharacterExists",
     "CLOUDSAVE_WRITE_FENCE_ACTIVE": "cloudsave.error.writeFenceActive",
     "NAME_AUDIT_FAILED": "cloudsave.error.nameAuditFailed",
@@ -316,6 +318,54 @@ async def _force_terminate_session(character_name: str) -> tuple[bool, str]:
     except Exception as exc:
         logger.warning("强制终止角色 %s 会话失败: %s", character_name, exc)
         return False, str(exc)
+
+
+def _character_config_lock():
+    # 晚绑定：测试会把这把模块级锁换成新的
+    from utils import character_memory
+
+    return character_memory.character_config_mutation_lock
+
+
+async def _visit_name_refusal(config_manager, name: str):
+    """409 ``VISIT_DATA_BUSY`` while a pending visit retirement / rename holds ``name``.
+
+    Called under the character-config lock right before the import publishes
+    the character, so no delete or rename can slip in between. Same rule as
+    every other path creating a character: the roster keys entries by name.
+    An overwrite of a local character is checked too: when that character's
+    own rename is still unreconciled, the import would replace its profile
+    (and uid) first, and recovery could then no longer tell where its
+    entries belong. A rename that can never be reconciled answers
+    ``VISIT_DATA_AMBIGUOUS`` (delete one of the two characters) rather than
+    ``VISIT_DATA_BUSY`` (try again later).
+    """
+    from main_routers.visit_router import character_hooks
+
+    blocked = await character_hooks.name_block_reason(config_manager, name)
+    if blocked is None:
+        return None
+    reason, names = blocked
+    if reason == character_hooks.NAME_AMBIGUOUS:
+        # 链式改名的标记挂着不止两个名字：报本机真有的那个角色，不能按字母序挑到已不存在的中间名字
+        configured = set((await config_manager.aload_characters()).get("猫娘") or {})
+        others = sorted(n for n in names if n != name)
+        other = next((n for n in others if n in configured), others[0] if others else name)
+        return _cloudsave_error_response(
+            "VISIT_DATA_AMBIGUOUS",
+            "An unfinished rename between this character and another one left their visit data impossible to "
+            "separate automatically. Delete one of the two characters, then download again.",
+            status_code=409,
+            character_name=name,
+            message_params={"first": name, "second": other},
+        )
+    return _cloudsave_error_response(
+        "VISIT_DATA_BUSY",
+        "Visit data under this name is still being sorted out (a character with this name was just "
+        "deleted or renamed). Please try again later.",
+        status_code=409,
+        character_name=name,
+    )
 
 
 def _local_character_exists(config_manager, character_name: str) -> bool:
@@ -637,6 +687,13 @@ async def post_cloudsave_character_download(name: str, request: Request):
             character_name=name,
         )
 
+    # 先查一次再做强制结束会话 / 释放句柄这些不可撤回的步骤：名字被串门标记占着时下面照样
+    # 会 409，不能先把用户的会话断掉。发布前在锁内还会再查一次
+    async with _character_config_lock():
+        visit_refusal = await _visit_name_refusal(config_manager, name)
+    if visit_refusal is not None:
+        return visit_refusal
+
     block_reason = _active_session_block_reason(name)
     if block_reason:
         if not isinstance(force_val, bool) or not force_val:
@@ -688,15 +745,22 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
                 reason=f"single_character_download:{name}",
             ):
-                result, import_cancelled = await _await_thread_call_to_completion(
-                    import_cloudsave_character_unit,
-                    config_manager,
-                    name,
-                    overwrite=overwrite,
-                    backup_before_overwrite=backup_before_overwrite,
-                    retain_recent_locks=True,
-                    use_cloud_apply_fence=False,
-                )
+                # 判定与发布在角色配置变更锁内完成：否则并发的删除可以在判定之后写下退役标记
+                # 并提交，随后这里照样发布同名角色
+                async with _character_config_lock():
+                    visit_refusal = await _visit_name_refusal(config_manager, name)
+                    if visit_refusal is None:
+                        result, import_cancelled = await _await_thread_call_to_completion(
+                            import_cloudsave_character_unit,
+                            config_manager,
+                            name,
+                            overwrite=overwrite,
+                            backup_before_overwrite=backup_before_overwrite,
+                            retain_recent_locks=True,
+                            use_cloud_apply_fence=False,
+                        )
+                if visit_refusal is not None:
+                    return visit_refusal
                 reload_error_response, completion_cancelled = (
                     await _await_coroutine_to_completion(
                         _complete_cloudsave_character_download(

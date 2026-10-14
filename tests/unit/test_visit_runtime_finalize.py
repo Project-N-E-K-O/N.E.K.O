@@ -115,12 +115,15 @@ async def test_ending_releases_the_input_with_the_takeover_and_keeps_the_lock_un
         # 接管还没释放：普通聊天此刻输出被压着，这句由串门拒掉（不漏进普通聊天）
         assert host.rt.phase == "ending" and host.rt.takeover_token is not None
         assert rtm.is_visit_route_active("Host")
+        # 快照也一样：接管还没释放时报收尾前的阶段（页面看到 ending 会交还输入框）
+        assert host.rt.snapshot()["phase"] == "active"
         claim = await registry.route_external_stream_message("Host", {"input_type": "text", "data": "喂"})
         assert claim is registry.RouteClaim.CLAIMED
         assert host.host.status_codes()[-1] == "VISIT_INPUT_REFUSED_WRAPUP"
         # 接管一释放：输入交还普通聊天，改名 / 删除锁保持到收尾完成
         await wait_for(lambda: host.host.released)
         assert not rtm.is_visit_route_active("Host")
+        assert host.rt.snapshot()["phase"] == "ending"
         assert registry.get_active_external_route("Host") is None
         assert registry.is_external_route_locked("Host")
         claim = await registry.route_external_stream_message("Host", {"input_type": "text", "data": "在吗"})
@@ -145,6 +148,88 @@ async def test_takeover_is_released_right_after_the_hold_and_before_the_home_lin
         assert events.index("hold_callbacks") < events.index("release_takeover")
         ritual = [e for e in events if e.startswith("output:visit-ritual")]
         assert ritual and events.index("release_takeover") < events.index(ritual[0])
+        assert host.host.released == host.host.takeovers
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_ending_frame_reaches_the_page_only_after_the_takeover_is_released(tmp_path, monkeypatch):
+    # 页面一看到「结束中」就把输入框交还普通聊天：这一帧要在接管释放之后才推，
+    # 否则那段空档里提交的普通句子会被串门拦下、页面却没有对应的本地气泡可以收尾
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    try:
+        push = host.rt.push
+
+        async def recording_push(action, **fields):
+            host.host.events.append(f"push:{action}")
+            await push(action, **fields)
+
+        monkeypatch.setattr(host.rt, "push", recording_push)
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        events = host.host.events
+        assert events.index("release_takeover") < events.index("push:ending")
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_failed_takeover_release_keeps_the_page_in_visit_mode(tmp_path, monkeypatch):
+    # 释放抛错：不推 ending（页面一看到它就交还输入框，而接管还在），等 teardown 重试释放后的 ended
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    try:
+        push = host.rt.push
+        real_release = host.host.release_takeover
+        calls = {"n": 0}
+
+        async def recording_push(action, **fields):
+            host.host.events.append(f"push:{action}")
+            await push(action, **fields)
+
+        def flaky_release(token):
+            calls["n"] += 1
+            host.host.events.append(f"release_attempt:{calls['n']}")
+            if calls["n"] == 1:
+                raise RuntimeError("release failed")
+            return real_release(token)
+
+        monkeypatch.setattr(host.rt, "push", recording_push)
+        monkeypatch.setattr(host.host, "release_takeover", flaky_release)
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        assert "push:ending" not in host.host.events
+        assert calls["n"] >= 2                                          # 重试过
+        # 「已结束」推出去之前接管已经释放：页面交还输入框时输入不再归串门
+        events = host.host.events
+        assert events.index("release_attempt:2") < events.index("push:ended")
+        assert not rtm.is_visit_route_active("Host")
+        assert any(f.get("action") == "ended" for f in host.host.frames if f.get("type") == "visit_state_change")
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_twice_failed_release_keeps_the_token_for_teardown(tmp_path, monkeypatch):
+    # 收尾开头与「已结束」前两次释放都抛错：令牌留着，teardown 还会再试（管理器仍持有接管）
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    try:
+        real_release = host.host.release_takeover
+        calls = {"n": 0}
+
+        def flaky_release(token):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise RuntimeError("release failed")
+            return real_release(token)
+
+        monkeypatch.setattr(host.host, "release_takeover", flaky_release)
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        assert calls["n"] >= 3                                          # teardown 拿着令牌再试了一次
         assert host.host.released == host.host.takeovers
     finally:
         for g in gates:

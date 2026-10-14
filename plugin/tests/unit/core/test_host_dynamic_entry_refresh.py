@@ -68,7 +68,10 @@ async def test_host_prefers_dynamic_entry_timeout_metadata(tmp_path) -> None:
 
     try:
         await host.start(message_target_queue=asyncio.Queue())
+        # The caller budget is also the parent IPC deadline. It stays above
+        # the entry's 0.05s timeout, and long enough for a busy runner to
+        # deliver that shorter timeout instead of aborting at the deadline.
         with pytest.raises(PluginExecutionError, match=r"timed out after 0.05s"):
-            await host.trigger("slow_entry", {}, timeout=2.0)
+            await host.trigger("slow_entry", {}, timeout=15.0)
     finally:
         await host.shutdown(timeout=1.0)
