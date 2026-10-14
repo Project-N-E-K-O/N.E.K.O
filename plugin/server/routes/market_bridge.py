@@ -183,9 +183,10 @@ def _is_loopback_host(host: str) -> bool:
     return normalized in {"localhost", "127.0.0.1", "::1"}
 
 
-def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
+def _is_local_bridge_origin(origin: str, expected_ports: set[int]) -> bool:
     try:
         parsed = urlparse(origin)
+        port = parsed.port or 80
     except ValueError:
         return False
     if parsed.scheme != "http" or not parsed.hostname or not _is_loopback_host(parsed.hostname):
@@ -194,7 +195,7 @@ def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
         return False
     if parsed.params or parsed.query or parsed.fragment:
         return False
-    return (parsed.port or 80) == expected_port
+    return port in expected_ports
 
 
 def _require_local_bridge_token_access(request: Request) -> None:
@@ -202,6 +203,12 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     Remote Market origins are intentionally excluded here even when CORS trusts
     them; remote pages must pair through /token-exchange instead.
+
+    The manager page is served by Main (packaged) or by this server
+    directly; a POST carries its Origin, so the origin may be Main's port or
+    the port this request reached. The Vite dev server (5173) is not trusted:
+    its proxy rewrites the Origin of the requests it forwards to the backend's
+    own, so any other page on that port is still refused.
     """
 
     if request.scope.get("neko.market_remote_authorized") or has_forwarding_metadata(request.headers):
@@ -209,15 +216,19 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     host_header = request.headers.get("host", "")
     try:
-        host = urlparse(f"//{host_header}").hostname or ""
+        parsed_host = urlparse(f"//{host_header}")
+        host = parsed_host.hostname or ""
+        request_port = parsed_host.port or 80
     except ValueError:
         host = ""
+        request_port = 0
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host) or not _is_loopback_host(host):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     origin = request.headers.get("origin")
-    if origin and not _is_local_bridge_origin(origin, _main_server_port()):
+    expected_ports = {request_port, _main_server_port()}
+    if origin and not _is_local_bridge_origin(origin, expected_ports):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
 
@@ -501,6 +512,15 @@ class MarketBridgeTokenResponse(BaseModel):
     """供同源前端（plugin-manager UI）直接获取 bridge token。"""
     bridge_token: str
     port: int = 48911
+
+
+class MarketPairCodeResponse(BaseModel):
+    """A one-time code the local manager hands to a remote Market page."""
+    one_time_code: str
+    # Main's port, like bridge.json: the Market page reaches this server
+    # through Main's /market proxy, which passes CORS headers back unchanged.
+    port: int = 48911
+    expires_in: int = _ONE_TIME_CODE_TTL_SECONDS
 
 
 class MarketOAuthStartResponse(BaseModel):
@@ -1658,6 +1678,17 @@ async def market_bridge_token(request: Request):
     _require_local_bridge_token_access(request)
 
     return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=_main_server_port())
+
+
+@router.post("/pair-code", response_model=MarketPairCodeResponse)
+async def market_pair_code(request: Request):
+    """Issue a short-lived code the local manager passes to a remote Market page.
+
+    The page exchanges it at ``/token-exchange``. Same local-only gate as
+    ``/bridge-token``; the returned port is Main's (see the response model).
+    """
+    _require_local_bridge_token_access(request)
+    return MarketPairCodeResponse(one_time_code=_issue_one_time_code(), port=_main_server_port())
 
 
 @router.post("/oauth/start", response_model=MarketOAuthStartResponse)

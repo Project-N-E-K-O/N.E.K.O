@@ -375,3 +375,24 @@ async def test_availability_expires_after_prolonged_refresh_failures(memory_serv
         await asyncio.sleep(0.01)
     assert public_knowledge.tool_available() is False
     assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is None
+
+
+async def test_subscription_apply_is_forwarded_like_any_write(proxy, memory_server):
+    client = memory_server(lambda request: httpx.Response(200, json={"ok": True, "job_id": "j"}))
+    files = {"pack": ("pack.neko-knowledge.json", b'{"schema_version": 1}', "application/json")}
+    data = {"protocol_version": "1", "subscription": "{}"}
+    refused = await proxy.post("/api/public-knowledge/subscriptions/apply", data=data, files=files)
+    assert refused.status_code == 403
+    response = await proxy.post("/api/public-knowledge/subscriptions/apply", headers=_AUTH, data=data, files=files)
+    assert response.json() == {"ok": True, "job_id": "j"}
+    assert client.requests[0].url.path == "/internal/knowledge/subscriptions/apply"
+
+
+async def test_subscription_remove_is_forwarded_like_any_write(proxy, memory_server):
+    client = memory_server(lambda request: httpx.Response(200, json={"ok": True, "removed": True}))
+    body = {"protocol_version": 1, "pack_id": "market-memes"}
+    refused = await proxy.post("/api/public-knowledge/subscriptions/remove", json=body)
+    assert refused.status_code == 403
+    response = await proxy.post("/api/public-knowledge/subscriptions/remove", headers=_AUTH, json=body)
+    assert response.json() == {"ok": True, "removed": True}
+    assert client.requests[0].url.path == "/internal/knowledge/subscriptions/remove"

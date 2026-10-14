@@ -1755,13 +1755,14 @@ def test_only_later_removals_supersede_an_import(tmp_path):
     job = service_module.ImportJob(
         job_id="j", pack_id="demo-memes", state="building", created_at="", updated_at="", arrived_at=5
     )
-    service._pending_removals["demo-memes"] = {3}
-    service._removed_at["demo-memes"] = 4
+    # (arrival number, releases covered); None: a local removal, every release.
+    service._pending_removals["demo-memes"] = frozenset({(3, None)})
+    service._removed_at["demo-memes"] = {None: 4}
     assert service._superseded(job) is False
-    service._pending_removals["demo-memes"].add(6)
+    service._pending_removals["demo-memes"] = frozenset({(3, None), (6, None)})
     assert service._superseded(job) is True
     service._pending_removals.clear()
-    service._removed_at["demo-memes"] = 6
+    service._removed_at["demo-memes"] = {None: 6}
     assert service._superseded(job) is True
 
 

@@ -260,3 +260,69 @@ async def test_the_bare_knowledge_path_is_capped_too(monkeypatch):
         response = await client.post("/market/knowledge?token=t", content=chunks())
     assert response.status_code == 413
     assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_remote_market_pairing_through_main_keeps_plugin_cors_headers(monkeypatch):
+    """A remote Market page reaches the plugin server via Main's port.
+
+    ``/market/pair-code`` returns Main's port (like bridge.json), so the page's
+    CORS preflight and ``/token-exchange`` go through Main's ``/market`` proxy.
+    Only the plugin server configures CORS for Market origins; the proxy must
+    hand its CORS answer back unchanged.
+    """
+    from plugin.server.http_app import build_plugin_server_app
+    from plugin.server.routes import market_bridge
+    from plugin.settings import MARKET_ORIGINS
+
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.setattr(market_bridge, "_main_server_port", lambda: 48911)
+    market_origin = MARKET_ORIGINS[0]
+    real_client = httpx.AsyncClient
+    plugin_app = build_plugin_server_app()
+
+    def plugin_client(**_kwargs):
+        return real_client(transport=httpx.ASGITransport(app=plugin_app, client=("127.0.0.1", 50001)))
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", plugin_client)
+    main_app = FastAPI()
+    main_app.add_api_route(
+        "/market/{path:path}",
+        web_app.proxy_user_plugin_market_bridge,
+        methods=["GET", "POST", "OPTIONS"],
+    )
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_app, client=("127.0.0.1", 50002)),
+        base_url="http://127.0.0.1:48911",
+    ) as main:
+        # The local manager (served by Main) asks for a pairing code.
+        pairing = await main.post("/market/pair-code", headers={"Origin": "http://127.0.0.1:48911"})
+        assert pairing.status_code == 200, pairing.text
+        assert pairing.json()["port"] == 48911
+
+        preflight = await main.options(
+            "/market/token-exchange",
+            headers={
+                "Origin": market_origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == market_origin
+
+        exchanged = await main.post(
+            "/market/token-exchange",
+            headers={"Origin": market_origin},
+            json={"one_time_code": pairing.json()["one_time_code"]},
+        )
+        assert exchanged.status_code == 200
+        assert exchanged.headers["access-control-allow-origin"] == market_origin
+        assert exchanged.json()["bridge_token"] == market_bridge.get_bridge_token()
+
+        # The remote page itself can never mint a code.
+        refused = await main.post("/market/pair-code", headers={"Origin": market_origin})
+        assert refused.status_code == 403

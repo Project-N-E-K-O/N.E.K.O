@@ -31,6 +31,7 @@ from plugin.server.routes import (
     logs_router,
     market_bridge_router,
     knowledge_bridge_router,
+    knowledge_market_router,
     media_router,
     messages_router,
     metrics_router,
@@ -360,6 +361,9 @@ def build_plugin_server_app(
     )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
+    # Before the bridge: its /market/knowledge/{path} catch-all would
+    # otherwise answer the subscription routes with 404.
+    app.include_router(knowledge_market_router)
     app.include_router(knowledge_bridge_router)
     app.include_router(market_bridge_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
