@@ -59,6 +59,7 @@ import weakref
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from utils.asyncio_executor import to_thread_through_cancellation
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
@@ -365,11 +366,13 @@ async def read_staging(lanlan_name: str, key: str) -> dict | None:
 async def write_staging(lanlan_name: str, key: str, document: dict) -> None:
     """Atomically (re)write the staging document of ``key``.
 
-    Callers hold ``key_lock(lanlan_name, key)``: one writer per key.
+    Callers hold ``key_lock(lanlan_name, key)``: one writer per key. A
+    cancelled caller returns only after the write finished, so the key lock
+    is never released while its write is still running in the thread.
     """
     doc = dict(document)
     doc["key"] = key
-    await asyncio.to_thread(
+    await to_thread_through_cancellation(
         _write_json_object, staging_path(lanlan_name, key), doc,
     )
 

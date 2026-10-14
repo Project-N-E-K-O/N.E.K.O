@@ -4140,3 +4140,122 @@ async def test_restored_retry_drops_facts_forgotten_during_apply_on_the_same_bas
     assert _facts_of(env, GROUP) == []
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
+
+
+def _one_segment_staging(subject: dict) -> dict:
+    return {"segments": [{"subject": dict(subject), "wire_key": GROUP_KEY}], "items": [], "applied": []}
+
+
+async def test_restored_baseline_watches_the_journal_subject_not_todays_routing(env):
+    from memory.scopes import coerce_subject
+
+    routes = env.routes
+    staging = _one_segment_staging(GROUP)                        # 暂存记的是 GROUP
+    contexts = [{"subject": coerce_subject(GP)}]                 # 之后路由变了，当下解析成 GP
+    baseline = routes._capture_forget_generations(NAME, routes._staged_segment_subjects(staging, contexts))
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))
+    # 只是当下路由到的 subject 动了：这份暂存写的是 GROUP，不能误判成被清除
+    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) is False
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+    # 暂存记的 subject 被清除：要认出来
+    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) is True
+    assert staging["segments"][0].get("dropped_by_forget") is True
+
+
+async def test_baseline_captured_inside_a_running_forget_still_fences(env):
+    from memory.scopes import coerce_subject
+
+    routes = env.routes
+    subject = coerce_subject(GROUP)
+    staging = _one_segment_staging(GROUP)
+    contexts = [{"subject": subject}]
+    await env.fs.abegin_subject_forget(NAME, subject)
+    try:
+        # 基线取在 abegin 推进之后、aend 推进之前：generation 相等，但事实层此刻已拒收这段
+        baseline = routes._capture_forget_generations(NAME, [subject])
+        assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) is True
+    finally:
+        await env.fs.aend_subject_forget(NAME, subject)
+
+
+async def test_cancelled_staging_write_returns_only_after_the_file_is_written(env):
+    import threading
+
+    idem = env.idem
+    entered, release = threading.Event(), threading.Event()
+    real_write = idem._write_json_object
+
+    def slow_write(path, data):
+        entered.set()
+        release.wait(5)
+        return real_write(path, data)
+
+    env.monkeypatch.setattr(idem, "_write_json_object", slow_write)
+    write = asyncio.create_task(idem.write_staging(NAME, KEY_GROUP, {"segments": [], "items": []}))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        write.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        # 调用方持着键锁：写入还在线程里时不能先返回、先放锁
+        assert not write.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await write
+    assert _staging_file(env, KEY_GROUP).exists()
+
+
+@pytest.mark.parametrize("responses", [[], SINGLE_FACTS], ids=["activity_only", "facts"])
+async def test_request_arriving_inside_a_running_forget_is_fenced_from_trust(env, responses):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [responses]
+    subject = coerce_subject(GROUP)
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00011", "count": 1}],
+    )
+    await env.fs.abegin_subject_forget(NAME, subject)            # 清除已推进 generation、还没收尾
+    try:
+        await _post(env, body)
+    finally:
+        await env.fs.aend_subject_forget(NAME, subject)
+    # 事实层在清除进行中拒收这段；信赖步骤用同一个依据挡下 activity
+    assert _facts_of(env, GROUP) == []
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_restored_retry_keeps_its_journal_subject_when_routing_changed(env):
+    from memory import subject_identity
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    body = _single_body(display_name=None)
+    with pytest.raises(HTTPException):
+        await _post(env, body)                                   # 暂存记下的写入目标是 GROUP
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    rerouted = coerce_subject(GP)
+    env.fs._bump_subject_forget_generation(NAME, rerouted)       # 两个 subject 的计数器不同
+    real_canonical = subject_identity.canonical_subject
+
+    def reroute(subject, snap=None):
+        if subject.key == GROUP_KEY:
+            return rerouted                                      # 之后路由变了：当下解析成 GP
+        return real_canonical(subject, snap)
+
+    env.monkeypatch.setattr(subject_identity, "canonical_subject", reroute)
+    result = await _post(env, body)
+    # 恢复的重试照暂存写 GROUP：基线也得取 GROUP 的，不能拿 GP 的计数器去比、把事实误丢
+    assert result["created"] == 2 and len(_facts_of(env, GROUP)) == 2

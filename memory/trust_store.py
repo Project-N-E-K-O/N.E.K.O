@@ -98,7 +98,6 @@ lock, event application logic, response handling, or migration.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 import os
 import re
@@ -111,6 +110,7 @@ from utils.config_manager import get_config_manager
 # Module-level import on purpose (mirrors gates.py): this runs inside the
 # critical section, and a function-local import would lock the import
 # machinery along with the pool.
+from utils.asyncio_executor import to_thread_through_cancellation
 from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
 from memory.identity import (
@@ -1181,7 +1181,8 @@ async def aapply_trust_mutations(
         captured["result"] = result
         return dirty, result
 
-    persisted, _ = await _await_pool_write(_mutator)
+    # 被取消时等线程写完再抛：调用方可能持着别的锁等这次写（见模块头取消安全说明）
+    persisted, _ = await to_thread_through_cancellation(_with_pool_write, _mutator)
     base = captured.get("result") or TrustApplyResult(
         persisted=False,
         per_mutation=tuple(MutationOutcome() for _ in materialized),
@@ -1199,36 +1200,6 @@ async def aapply_trust_mutations(
             ),
         )
     return base
-
-
-async def _await_pool_write(mutator: TrustMutator) -> tuple[bool, Any]:
-    """Run ``_with_pool_write`` in a worker and return only once that worker is done.
-
-    The worker future is owned here (not a task a cancellation sweep could
-    cancel): when the awaiting task is cancelled, the write keeps going in the
-    thread, so the cancellation is re-raised only after it really finished.
-    """
-    loop = asyncio.get_running_loop()
-    worker = loop.run_in_executor(
-        None, contextvars.copy_context().run, _with_pool_write, mutator,
-    )
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError as cancellation:
-        current = asyncio.current_task()
-        while not worker.done():
-            if current is not None:
-                while current.cancelling():
-                    current.uncancel()
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                continue
-            except BaseException:  # noqa: BLE001 - the cancellation below is what propagates
-                break
-        if worker.done() and not worker.cancelled():
-            worker.exception()   # retrieved: the result is no longer wanted
-        raise cancellation
 
 
 # ── canonical sealing (write-side subject routing) ──────────────────────────

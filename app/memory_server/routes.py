@@ -4383,12 +4383,30 @@ def _restore_missing_display_items(staging: dict, display_names: dict[int, str |
             })
 
 
-def _capture_forget_generations(lanlan_name: str, contexts: list[dict]) -> dict[int, int]:
+def _capture_forget_generations(lanlan_name: str, subjects: list) -> dict[int, int]:
     """Segment index -> current forget generation of that segment's (routed) subject."""
     return {
-        index: runtime.fact_store._subject_forget_generation(lanlan_name, context["subject"])
-        for index, context in enumerate(contexts)
+        index: runtime.fact_store._subject_forget_generation(lanlan_name, subject)
+        for index, subject in enumerate(subjects)
     }
+
+
+def _staged_segment_subjects(staging: dict, contexts: list[dict]) -> list:
+    """The subject each staged segment is applied to (the journal's, not today's routing).
+
+    A restored retry applies every segment to the subject recorded in the
+    staging document, which may differ from the current routing; the
+    forget-generation baseline and its recheck must watch that same subject.
+    """
+    from memory.scopes import coerce_subject
+
+    segments = staging.get("segments") if isinstance(staging, dict) else None
+    subjects = []
+    for index, context in enumerate(contexts):
+        segment = segments[index] if isinstance(segments, list) and index < len(segments) else None
+        recorded = coerce_subject(segment.get("subject")) if isinstance(segment, dict) and segment.get("subject") else None
+        subjects.append(recorded if recorded is not None else context["subject"])
+    return subjects
 
 
 async def _apply_keyed_staging(
@@ -4855,7 +4873,7 @@ async def _process_scoped_history_keyed(
             # forget generation，只留在内存里。生成期间到达的清除（此时还没有暂存
             # 可取消，不带 forget_epoch 时也没有墓碑）会推进 generation，首次应用时
             # 事实存储据此丢弃这次写入
-            generations = _capture_forget_generations(lanlan_name, contexts)
+            generations = _capture_forget_generations(lanlan_name, [context["subject"] for context in contexts])
             try:
                 staging = await _build_keyed_staging(
                     lanlan_name,
@@ -4930,7 +4948,7 @@ async def _process_scoped_history_keyed(
         # 按它丢弃，信赖步骤按它隔离，两层同一个依据
         trust_generations = (
             generations if generations is not None
-            else _capture_forget_generations(lanlan_name, contexts)
+            else _capture_forget_generations(lanlan_name, _staged_segment_subjects(staging, contexts))
         )
         try:
             await _apply_keyed_staging(
@@ -5063,14 +5081,23 @@ def _without_trust_mutation(state: dict) -> dict:
 def _mark_items_forgotten_during_generation(
     lanlan_name: str, staging: dict, contexts: list[dict], generations: dict[int, int] | None,
 ) -> bool:
-    """Journal as dropped every item of a subject whose forget generation moved; return whether any was added."""
+    """Journal as dropped every item of a subject whose forget generation moved; return whether any was added.
+
+    A subject whose forget is still running (between ``abegin`` and
+    ``aend``) counts as moved too: a baseline captured inside that window
+    equals the current generation, yet the fact store already refuses the
+    segment's writes.
+    """
     if not generations:
         return False
+    fact_store = runtime.fact_store
     changed = {
-        index for index, context in enumerate(contexts)
+        index for index, subject in enumerate(_staged_segment_subjects(staging, contexts))
         if index in generations
-        and runtime.fact_store._subject_forget_generation(lanlan_name, context["subject"])
-        != generations[index]
+        and (
+            fact_store._subject_forget_generation(lanlan_name, subject) != generations[index]
+            or fact_store._subject_forget_is_active(lanlan_name, subject)
+        )
     }
     if not changed:
         return False
