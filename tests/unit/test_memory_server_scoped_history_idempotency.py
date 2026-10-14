@@ -2830,11 +2830,12 @@ async def test_locale_only_segment_forgotten_after_staging_is_marked_on_disk(env
             # 暂存落盘之后、复核之前，一次清除推进了第一段的 generation
             env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))
 
-    async def _crash(lanlan_name, item, segment, generation):
+    async def _crash(*_args, **_kwargs):
+        # 复核之后、应用循环写任何东西之前进程被杀：盘上只有复核自己写的那份
         raise RuntimeError("injected crash before applying anything")
 
     env.monkeypatch.setattr(env.idem, "write_staging", write_then_forget)
-    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", _crash)
     with pytest.raises(HTTPException):
         await _post(env, body)
     staging = json.loads(_staging_file(env, KEY_SEGMENTS).read_text(encoding="utf-8"))
@@ -3787,3 +3788,168 @@ def test_target_epochs_reject_negative_values(env):
         env.routes.ScopedForgetRequest.model_validate(
             {"subject": GROUP, "forget_epoch": 1, "target_epochs": {PART_KEY: -1}},
         )
+
+
+# ── #3337 核对补测：#3292 合并前已修、但原测试守不住的几处 ─────────────────
+
+
+async def test_orphan_scrub_reads_the_key_records_under_the_character_lock(env):
+    idem = env.idem
+    path = Path(idem.staging_path(NAME, KEY_GROUP))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    await idem.update_key(NAME, "other-key", idem.transition("done"))          # 键文件在、但没人认领它
+    path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # 读不出
+    lock = idem.idempotency_lock(NAME)
+    await lock.acquire()
+    try:
+        scrub = asyncio.create_task(idem.drop_unreadable_orphan_staging(NAME, str(path)))
+        await asyncio.sleep(0.2)
+        # 等锁期间同键请求把这份暂存认领成 pending（update_key 本该同样排在这把锁后面，这里直接落盘模拟）
+        records = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))
+        records[KEY_GROUP] = {"state": "pending", "written_at": 1.0, "updated_at": 1.0}
+        Path(idem.keys_path(NAME)).write_text(json.dumps(records), encoding="utf-8")
+    finally:
+        lock.release()
+    # 归属判断用的是锁内重读的键记录：已被认领的暂存不能当成孤儿抹掉
+    assert await scrub is False
+    assert "猫薄荷" in path.read_text(encoding="utf-8")
+
+
+async def test_legacy_integer_fact_ids_are_journaled_as_strings(env):
+    env.llm.responses = [SINGLE_FACTS]
+    real_persist = env.fs._apersist_new_facts
+
+    async def legacy_ids(lanlan_name, extracted, **kwargs):
+        created = await real_persist(lanlan_name, extracted, **kwargs)
+        # reconcile 命中、新建结果里都混着旧版整数 id 的事实（FactStore 仍认这种 id）
+        kwargs["reconciled_facts"].append({**created[0], "id": 12345})
+        return [{**created[0], "id": 67890}, *created[1:]]
+
+    env.monkeypatch.setattr(env.fs, "_apersist_new_facts", legacy_ids)
+    original = _fail_on_item(env, failing_seq=1)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
+    entry = next(e for e in staging["applied"] if e.get("facts_applied"))
+    # 与 _keyed_fact_identity 同口径一律记成字符串
+    assert "12345" in entry["reconciled"] and "67890" in entry["fact_ids"]
+    assert all(isinstance(v, str) for v in entry["reconciled"] + entry["fact_ids"])
+
+
+async def test_keyed_fact_reads_ride_out_a_concurrent_replace(env):
+    import builtins
+
+    fs = env.fs
+    active, archive = Path(fs._facts_path(NAME)), Path(fs._facts_archive_path(NAME))
+    active.parent.mkdir(parents=True, exist_ok=True)
+    active.write_text(json.dumps([{"id": "f1", "text": "家里阳台种着猫薄荷"}]), encoding="utf-8")
+    archive.write_text(json.dumps([{"id": "f0", "effect_key": "ek-0"}]), encoding="utf-8")
+    watched = {os.path.normcase(os.path.abspath(p)): 0 for p in (active, archive)}
+    real_open = builtins.open
+
+    def busy_twice(file, *args, **kwargs):
+        if isinstance(file, (str, os.PathLike)):
+            target = os.path.normcase(os.path.abspath(os.fspath(file)))
+            if target in watched and watched[target] < 2:
+                watched[target] += 1
+                # 归档 / 去重写入方正 os.replace 这个文件：Windows 上的共享冲突
+                exc = PermissionError(13, "Access is denied")
+                exc.winerror = 32
+                raise exc
+        return real_open(file, *args, **kwargs)
+
+    env.monkeypatch.setattr(builtins, "open", busy_twice)
+    # 带键 facts 项应用时在工作线程里读这两份文件：替换窗口里的共享冲突先退避重试，不能当成读不出
+    assert await asyncio.to_thread(fs._assert_active_facts_readable, NAME) == 1
+    assert await asyncio.to_thread(fs._read_archived_effect_keys, NAME) == {"ek-0"}
+    assert set(watched.values()) == {2}
+
+
+async def test_forget_after_the_recheck_fences_an_activity_only_segment_from_trust(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]                                     # 没抽出事实：这段只有 activity
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_before_apply(*args, **kwargs):
+        # 落盘后的复核之后、信赖步骤之前，一次不带代数的清除推进了 generation
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00003", "count": 1}],
+    )
+    await _post(env, body)
+    # 没有事实项去比 generation 的段也要按清除挡下：activity 不进信赖池
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_activity_only_segment_without_a_forget_still_moves_the_trust_pool(env):
+    env.llm.responses = [[]]
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00004", "count": 1}],
+    )
+    await _post(env, body)
+    # 对照：期间没有清除时这段的 activity 照常进信赖池
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is not None
+
+
+async def test_trust_step_fence_mark_is_on_disk_for_the_same_key_retry(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]
+    real_apply = env.routes._apply_keyed_staging
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def forget_before_apply(*args, **kwargs):
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    async def trust_crash(_states):
+        raise RuntimeError("killed at the trust step")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", trust_crash)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00005", "count": 1}],
+    )
+    with pytest.raises(Exception):
+        await _post(env, body)
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+    captured = []
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    await _post(env, body)
+    # 恢复的重试读不到生成前的 generation，只能靠盘上的段级标记认出这段被清除挡下
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None

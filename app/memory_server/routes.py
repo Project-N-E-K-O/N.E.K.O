@@ -4935,6 +4935,22 @@ async def _process_scoped_history_keyed(
         trust_states = [context["trust_state"] for context in contexts]
         for state in trust_states:
             state["trust_signal_events"] = ()
+        # 落盘后的复核之后、这里之前，不带代数的清除也可能推进 generation：应用时只有事实项会比，
+        # 没抽出事实（只有 activity / 语言项）的段认不出。信赖步骤前按生成前取的 generation 再核一次，
+        # 段级标记落盘，同键重试（池未落盘时）同样挡下
+        if generations is not None and _mark_items_forgotten_during_generation(
+            lanlan_name, staging, contexts, generations,
+        ):
+            try:
+                await idempotency.write_staging(lanlan_name, key, staging)
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 暂存落盘失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="scoped history staging failed; retry with the same key",
+                ) from exc
         # 被清除挡下的段（墓碑、清除丢弃）记忆已擦：它的 activity / channel 也不能再进信赖池
         try:
             fenced = await _fenced_segments(lanlan_name, staging)
