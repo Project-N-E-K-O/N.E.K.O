@@ -4155,10 +4155,10 @@ async def test_restored_baseline_watches_the_journal_subject_not_todays_routing(
     baseline = routes._capture_forget_generations(NAME, routes._staged_segment_subjects(staging, contexts))
     env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))
     # 只是当下路由到的 subject 动了：这份暂存写的是 GROUP，不能误判成被清除
-    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) is False
+    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == set()
     env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
     # 暂存记的 subject 被清除：要认出来
-    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) is True
+    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {0}
     assert staging["segments"][0].get("dropped_by_forget") is True
 
 
@@ -4173,7 +4173,7 @@ async def test_baseline_captured_inside_a_running_forget_still_fences(env):
     try:
         # 基线取在 abegin 推进之后、aend 推进之前：generation 相等，但事实层此刻已拒收这段
         baseline = routes._capture_forget_generations(NAME, [subject])
-        assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) is True
+        assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {0}
     finally:
         await env.fs.aend_subject_forget(NAME, subject)
 
@@ -4353,15 +4353,124 @@ async def test_failed_restored_fence_write_leaves_a_durable_fallback(env):
         await _post(env, _single_body())
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     subject = coerce_subject(GROUP)
-    _fail_fence_writes_once(env)
+    state = _fail_fence_writes_once(env)
     await env.fs.abegin_subject_forget(NAME, subject)
     try:
         with pytest.raises(HTTPException) as excinfo:
             await _post(env, _single_body())                     # 恢复的重试赶上清除进行中，标记写失败
-        assert excinfo.value.status_code == 503
+        assert excinfo.value.status_code == 503 and state["failed"]
     finally:
         await env.fs.aend_subject_forget(NAME, subject)
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert GROUP_KEY in record["forgotten_keys"]                 # 走的是键记录兜底
     await _post(env, _single_body())                             # 清除之后再重试：基线已是新的
     # 键记录上的兜底标记让这段照样丢弃：显示名、事实都不写进被清 subject
     assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
     assert _facts_of(env, GROUP) == []
+
+
+async def test_failed_post_write_recheck_fence_write_leaves_a_durable_fallback(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    real_write = env.idem.write_staging
+    writes = {"n": 0}
+
+    async def write_then_forget(name, key, document):
+        await real_write(name, key, document)
+        writes["n"] += 1
+        if writes["n"] == 1:
+            # 暂存首次落盘之后、复核之前，一次不带代数的清除推进了 generation
+            env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+
+    env.monkeypatch.setattr(env.idem, "write_staging", write_then_forget)
+    state = _fail_fence_writes_once(env)                         # 复核新打的标记那次写失败
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    assert excinfo.value.status_code == 503 and state["failed"]
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert GROUP_KEY in record["forgotten_keys"]
+    env.monkeypatch.setattr(env.idem, "write_staging", real_write)
+    await _post(env, _single_body())                             # 基线取在清除之后的同键重试
+    # 生成路径落暂存后那次复核也有兜底：清除之前抽出的事实不写回、显示名不写
+    assert _facts_of(env, GROUP) == []
+    assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
+
+
+def _bump_before_apply(env):
+    from memory.scopes import coerce_subject
+
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_before_apply(*args, **kwargs):
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+
+
+def _forgotten_keys_on_record(env) -> list:
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    return record.get("forgotten_keys") or []
+
+
+async def test_cancelled_fence_write_still_records_the_fallback(env):
+    env.llm.responses = [[]]
+    _bump_before_apply(env)
+    real_write = env.idem.write_staging
+
+    async def cancelled_on_fence(name, key, document):
+        if any(isinstance(seg, dict) and seg.get("dropped_by_forget") is True for seg in document.get("segments") or []):
+            # 写入在线程里失败、请求同时被取消：等待方只看得到取消
+            raise asyncio.CancelledError()
+        return await real_write(name, key, document)
+
+    env.monkeypatch.setattr(env.idem, "write_staging", cancelled_on_fence)
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00013", "count": 1}])
+    with pytest.raises(asyncio.CancelledError):
+        await _post(env, body)
+    # 写入成没成看不出：照样把被挡的 subject 记进键记录
+    assert GROUP_KEY in _forgotten_keys_on_record(env)
+
+
+async def test_fallback_fence_record_completes_before_the_key_lock_is_released(env):
+    env.llm.responses = [[]]
+    _bump_before_apply(env)
+    state = _fail_fence_writes_once(env)
+    real_update = env.idem.update_key
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    async def gated_update(name, key, fn):
+        if state["failed"]:                                      # 暂存写失败之后的那次就是兜底
+            entered.set()
+            await gate.wait()
+        return await real_update(name, key, fn)
+
+    env.monkeypatch.setattr(env.idem, "update_key", gated_update)
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00014", "count": 1}])
+    request = asyncio.create_task(_post(env, body))
+    await asyncio.wait_for(entered.wait(), 5)
+    request.cancel()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    # 兜底还没写完：请求不能先结束、先放键锁
+    assert not request.done() and env.idem.key_lock(NAME, KEY_GROUP).locked()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert GROUP_KEY in _forgotten_keys_on_record(env)
+
+
+async def test_fallback_fence_keys_are_the_newly_fenced_journal_subjects_only(env):
+    from memory.scopes import coerce_subject
+
+    staging = {
+        "segments": [
+            # 早先因别的原因丢弃的段：它的路由目标可能被一个有效段共用，不能借它去挡别人
+            {"subject": dict(PART), "wire_key": GP_KEY, "dropped_by_forget": True},
+            {"subject": dict(GROUP), "wire_key": GROUP_KEY, "dropped_by_forget": True},
+        ],
+        "items": [], "applied": [],
+    }
+    contexts = [{"subject": coerce_subject(PART)}, {"subject": coerce_subject(GROUP)}]
+    assert env.routes._fenced_journal_keys(staging, contexts, {1}) == {GROUP_KEY}
