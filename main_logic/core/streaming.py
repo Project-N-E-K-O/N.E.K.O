@@ -994,7 +994,7 @@ class StreamingMixin:
                             # 取完上下文之后还隔着几段 await（凝神气泡等）：在真正调用前、
                             # 不再有 await 的地方再核对一次，会话换了或这一轮被顶替就不带。
                             if "turn_context" in stream_text_kwargs and not (
-                                self.session is _turn_context_job.session
+                                self.session is getattr(_turn_context_job, "session", None)
                                 and self.current_speech_id == new_user_sid
                             ):
                                 stream_text_kwargs.pop("turn_context")
