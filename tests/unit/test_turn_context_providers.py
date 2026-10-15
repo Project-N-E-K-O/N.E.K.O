@@ -187,7 +187,7 @@ def test_only_an_offline_session_starts_providers():
     assert _Manager(session=realtime_like)._start_turn_context("你好") is None
 
 
-async def _drive_text_turn(monkeypatch, *, on_post=None):
+async def _drive_text_turn(monkeypatch, *, on_post=None, before_send=None):
     """A real typed turn through ``_process_stream_data_internal``; returns
     the kwargs ``stream_text`` received."""
     from unittest.mock import AsyncMock
@@ -219,6 +219,18 @@ async def _drive_text_turn(monkeypatch, *, on_post=None):
         seen.update(kwargs)
 
     session.stream_text = AsyncMock(side_effect=stream_text)
+    if before_send is not None:
+        # A thinking-on turn awaits the focus pulse after the context is
+        # collected and before the reply is sent.
+        async def focus_decision(_text):
+            return True
+
+        async def push_focus(active, **_kwargs):
+            if active:
+                before_send(mgr)
+
+        mgr._focus_inline_decision = focus_decision
+        mgr._push_focus_thinking = push_focus
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr, {"input_type": "text", "data": "芙宁娜是谁"},
     )
@@ -298,3 +310,12 @@ async def test_results_for_a_session_that_was_replaced_are_dropped(monkeypatch):
     assert job is not None and job.session is first
     manager.session = object.__new__(OmniOfflineClient)  # a hot swap
     assert await manager._collect_turn_context(job, still_current=lambda: True) is None
+
+
+
+async def test_a_turn_superseded_after_collection_still_sends_no_context(monkeypatch):
+    def supersede(mgr):
+        mgr.current_speech_id = "a-newer-turn"
+
+    seen = await _drive_text_turn(monkeypatch, before_send=supersede)
+    assert "turn_context" not in seen

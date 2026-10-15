@@ -991,6 +991,13 @@ class StreamingMixin:
                                 await self._push_focus_thinking(True)
                             if callable(on_dispatch_attempted):
                                 on_dispatch_attempted()
+                            # 取完上下文之后还隔着几段 await（凝神气泡等）：在真正调用前、
+                            # 不再有 await 的地方再核对一次，会话换了或这一轮被顶替就不带。
+                            if "turn_context" in stream_text_kwargs and not (
+                                self.session is _turn_context_job.session
+                                and self.current_speech_id == new_user_sid
+                            ):
+                                stream_text_kwargs.pop("turn_context")
                             # 与下面的调用之间没有 await：记下的就是真正接这轮的 client。
                             reply_turn.session = self.session
                             await self.session.stream_text(data, **stream_text_kwargs)
