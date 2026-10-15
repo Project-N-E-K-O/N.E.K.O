@@ -45,6 +45,7 @@ connects ``websocket_router`` / ``turn.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import random
 import secrets
@@ -60,6 +61,7 @@ from config.visit_settings import (
     VISIT_CAPS_PREFLIGHT_TIMEOUT_S,
     VISIT_CAPS_SDK_TIMEOUT_S,
     VISIT_CROP_DEFAULT,
+    VISIT_ENABLED_DEFAULT,
     VISIT_ENDING_SOON_S,
     VISIT_IDLE_TIMEOUT_S,
     VISIT_INBOX_HANDOFF_ABS_MAX_S,
@@ -117,6 +119,7 @@ from main_routers.visit_router.transport_ws import (
 from main_routers.visit_router.transcript_upload import UploadJournal
 from utils.logger_config import get_module_logger
 from utils.visit_route_state import (
+    VISIT_ROUTE_KIND,
     activate_visit_route,
     finalize_visit_route_state,
     get_visit_route_state,
@@ -144,6 +147,8 @@ _RENEW_RETRY_BASE_S = 5.0
 _RENEW_RETRY_MAX_S = 60.0
 _VOICE_STATUS_THROTTLE_S = 5.0
 _ACCOUNT_CHANGE_SEAL_WAIT_S = 30.0  # 登出 / 切换社区账号前等在飞串门封存上传文件的上限
+# 按住账号的一次复盘推送（核账号 + 写出）最长多久：必须短于切号的等待，切号放行时它一定已结束或被截断
+_ACCOUNT_BOUND_PUSH_MAX_S = 10.0
 
 # ═════════════════════════════════════════════════════════════════════
 # 依赖注入
@@ -273,6 +278,38 @@ def get_runtime(lanlan_name: str) -> Optional["VisitRuntime"]:
     return _runtimes.get(str(lanlan_name or ""))
 
 
+def live_runtimes() -> list["VisitRuntime"]:
+    """Every registered runtime (one per visiting character), in registration order."""
+    return list(_runtimes.values())
+
+
+def end_visits_disabled() -> int:
+    """``visitEnabled`` was switched off: end every live visit now (``visit_disabled``, design §3.7.6).
+
+    A hard end with the fixed farewell line, no natural wrap-up. Visits
+    already running their exit flow are left alone. Returns how many were
+    ended.
+    """
+    global _disabled_gen
+    _disabled_gen += 1  # 还挂在入场途中的 start_visit 醒来后看到它就不登记
+    return sum(1 for rt in live_runtimes() if rt.request_finalize("visit_disabled"))
+
+
+def apply_voice_setting(enabled: bool) -> int:
+    """``visitVoiceEnabled`` was saved: live visits use it from their next line (design §3.7.6).
+
+    Pushed by the settings save instead of re-read before each line, so the
+    reply runner keeps no await between its admission check and taking the
+    line; the home-coming line and debrief summary follow it as well. The
+    one-way TTS fallback (``voice.fallen_back``) is kept. Returns how many
+    runtimes were updated.
+    """
+    runtimes = live_runtimes()
+    for rt in runtimes:
+        rt.voice.enabled = bool(enabled)
+    return len(runtimes)
+
+
 def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
     return _by_visit.get(visit_id)
 
@@ -354,8 +391,22 @@ _account_changes = 0
 _account_gen = 0
 """Bumped when an account change starts: a ``start_visit`` that was awaiting meanwhile does not register."""
 
+_disabled_gen = 0
+"""Bumped by :func:`end_visits_disabled`: a ``start_visit`` still awaiting when the user switched visits off
+does not register (it is not in ``_runtimes`` yet, so ending live visits cannot reach it)."""
+
 _account_change_lock: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = None
 """Serializes account changes (created per event loop: a lock binds to the loop that first waits on it)."""
+
+
+def account_epoch() -> Optional[int]:
+    """The account-change generation, or None while a logout / account switch is in progress.
+
+    Every logout / switch (:func:`account_change`) bumps it, so two equal
+    readings around an await prove no account change happened in between
+    (an A→B→A switch included).
+    """
+    return None if _account_changes else _account_gen
 
 
 def _account_change_mutex() -> asyncio.Lock:
@@ -393,6 +444,24 @@ async def _remember_name(character_uid: str) -> None:
     _uid_by_name[name] = character_uid
 
 
+async def _remember_name_strict(character_uid: str) -> None:
+    """Like :func:`_remember_name`, but a config read failure raises (the clearing guard fails closed).
+
+    A guard registered only under the uid would not block a rename of the
+    character's current name, so it must not be entered without one; a
+    deleted character (no current name) has nothing left to protect.
+    """
+    from main_logic.visit import local_chars
+
+    name = await local_chars.resolve_char_name(character_uid)
+    if not name:
+        return
+    for old, uid in list(_uid_by_name.items()):
+        if uid == character_uid and old != name:
+            del _uid_by_name[old]
+    _uid_by_name[name] = character_uid
+
+
 def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[Any]]) -> asyncio.Task:
     """Run a visit background write registered under ``character_uid`` until it finishes.
 
@@ -420,6 +489,36 @@ def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[A
     task = asyncio.ensure_future(run())
     bucket.add(task)
     return task
+
+
+@contextlib.asynccontextmanager
+async def hold_character_lifecycle(character_uids: Iterable[str]):
+    """``lifecycle_guard`` of the clearing endpoints: rename / delete of these characters answer 400 while held.
+
+    Entered under the character-config mutation lock (the one rename and
+    delete run under), so a rename already in progress finishes first and
+    the clearing then re-reads the new name; once entered, the characters
+    count as having visit background work (``is_character_lifecycle_locked``).
+    """
+    from utils.character_memory import character_config_mutation_lock
+
+    held = asyncio.get_running_loop().create_future()
+    buckets: list[tuple[str, set]] = []
+    try:
+        async with character_config_mutation_lock:
+            for uid in sorted({str(u) for u in character_uids if u}):
+                await _remember_name_strict(uid)
+                bucket = _visit_bg_tasks.setdefault(uid, set())
+                bucket.add(held)
+                buckets.append((uid, bucket))
+        yield
+    finally:
+        if not held.done():
+            held.set_result(None)
+        for uid, bucket in buckets:
+            bucket.discard(held)
+            if not bucket and _visit_bg_tasks.get(uid) is bucket:
+                _visit_bg_tasks.pop(uid, None)
 
 
 def current_instance(lanlan_name: str) -> Optional[str]:
@@ -456,10 +555,13 @@ def _reset_for_tests() -> None:
     _room_cancels.clear()
     _outbox_cleanups.clear()
     _awaited_writes.clear()
-    global _account_changes, _account_gen, _account_change_lock
+    global _account_changes, _account_gen, _account_change_lock, _disabled_gen
     _account_changes = 0
     _account_gen = 0
+    _disabled_gen = 0
     _account_change_lock = None
+    _credential_requests.clear()
+    _account_bound_pushes.clear()
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -593,6 +695,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
         # 凭证与能力门
         self.grant: Optional[cr.VisitGrant] = None
+        # 准入检查（清除进行中、被封缓存）按的社区账号：领到的凭证必须属于它
+        self.admitted_account: Optional[str] = None
+        # 准入时的账号变更代数（account_epoch）：领凭证之前必须仍是它
+        self.admitted_epoch: Optional[int] = None
         self._livekit_codec: Optional[str] = None
         self._creds_task: Optional[asyncio.Task] = None
         self.preflight_ok: Optional[bool] = None
@@ -858,12 +964,24 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.finalizing:
             # 等主对话轮期间这场已被结束：不再去领凭证（guest 会兑掉一次性邀请码、扣配额，且撤不回）
             return False
+        if self.admitted_epoch is not None and account_epoch() != self.admitted_epoch:
+            # 准入之后有过登出 / 换账号（或正在进行）：领凭证撤不回（guest 兑掉一次性邀请码），发请求之前就结束。
+            # 同步判断、紧接着发请求；此后才开始的账号变更会先结束本场、等它收尾，再改本机会话——
+            # 这次请求用的仍是准入时的会话
+            self.request_finalize("busy")
+            return False
+        # 与上面的代数判断之间没有让出：此后开始的账号变更会先等这次请求结束，再改本机会话
+        # 钉在准入账号上：请求取会话快照时若已换成别的账号，凭证客户端不发请求（不会按新账号兑邀请码）
+        request = asyncio.ensure_future(self.deps.fetch_credentials(
+            role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
+            tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
+            invite_code=self.invite_code if self.side == "guest" else None,
+            expect_account=self.admitted_account,
+        ))
+        _credential_requests.add(request)
+        request.add_done_callback(_credential_requests.discard)
         try:
-            creds = await self.deps.fetch_credentials(
-                role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
-                tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
-                invite_code=self.invite_code if self.side == "guest" else None,
-            )
+            creds = await request
         except cr.VisitServersError as exc:
             self._finalize_for_servers_error(exc)
             return False
@@ -880,6 +998,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: account mapping not recorded: %r", self.visit_id[:6], exc)
             # 转录 / 举报上传按这张映射认账号：没写成就一直补写，写成之前上传只是排队等着
             _detach(_retry_record_account(self.deps, creds.account, creds.visit_uid, self.visit_id))
+        if self.admitted_account is not None and creds.account != self.admitted_account:
+            # 准入检查（清除进行中、被封缓存）按的是另一个社区账号：期间换了账号，这份凭证不能用，host 的房间撤掉
+            logger.warning("visit %s: community account changed before credentials", self.visit_id[:6])
+            self.request_finalize("busy")
+            self._cancel_room_once()
+            return False
         if self.side == "host" and not creds.invite_code:
             logger.warning("visit %s: host credentials without an invite code", self.visit_id[:6])
             self.request_finalize("servers_unreachable")
@@ -909,6 +1033,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             details["retry_after_s"] = exc.retry_after_s
         if isinstance(exc, cr.VisitRoomEnded):
             self.request_finalize("kicked")
+            return
+        if isinstance(exc, cr.VisitAccountChanged):
+            self.request_finalize("busy")
             return
         if isinstance(exc, cr.VisitLoginRequired):
             reason = "login_required"
@@ -1202,6 +1329,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
             frames.append(dict(self._invite_frame))
         return frames
+
+    def replay_for_bind(self) -> None:
+        """Queue :meth:`bind_replay_frames` on the ordered display queue (``visit_bind``).
+
+        Taken and queued synchronously when the socket binds: frames queued
+        earlier go out first, frames of later transitions after, so an older
+        snapshot never lands behind a newer phase.
+        """
+        for frame in self.bind_replay_frames():
+            self._post_display(frame)
 
     # ── 媒体 ─────────────────────────────────────────────────────────
 
@@ -1721,13 +1858,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         _detach(self._hand_back_callbacks())
 
     async def _exit_steps(self, reason: str) -> None:
-        await self.push(PHASE_ENDING, reason=reason)
         # ① 先收口本侧进行中的行：这一行的 text{final} 排在 leave 之前、进得了本场转录
         await self.close_current_line("visit_end")
         # ② 后台关闭数据通道（排空 → leave → 补传窗口），不阻塞下面任何一步
         closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
         # ③ 回调暂扣 → 立即释放接管（此后亲人就能普通聊天）
         input_stamp = self.host.last_user_input()
+        input_released = True
         if self.takeover_token is not None:
             try:
                 self.hold_token = self.host.hold_callbacks(self.inbox.accept)
@@ -1737,8 +1874,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 self.host.release_takeover(self.takeover_token)
             except Exception as exc:  # noqa: BLE001 - token 留着：teardown 再试一次
                 logger.warning("visit %s: takeover release failed: %s", self.visit_id[:6], type(exc).__name__)
+                input_released = False
             else:
+                # 返回 False = 令牌已不是当前持有者（输入早已不归串门）：同样算交还
                 self.takeover_token = None
+        # 「结束中」在接管释放之后才推：页面一看到它就把输入框交还普通聊天，此时普通输入已不会再被串门拦下；
+        # 释放之前页面仍按串门处理，这期间提交的句子由 finalizing 拒掉（带 request_id，页面标未送达、放回原文）
+        if input_released:
+            await self.push(PHASE_ENDING, reason=reason)
+        # 释放失败：不推 ending，页面留在串门态（这期间的提交由 finalizing 拒掉并收尾），等 teardown 重试释放后的 ended
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
         # ④ 回家仪式句（亲人先开口则放弃）；可选步骤：失败不挡后面的封存与交还
@@ -1769,6 +1913,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not flushed:
             # 页面卡着送不完：停掉显示队列（转录由 GET /state 重放），「已结束」不和它并发写、不排在它后面
             await self._retire_display(_DISPLAY_FLUSH_S)
+        if self.takeover_token is not None:
+            # 收尾开头那次释放抛错过：「已结束」推出去之前再试一次。页面一看到它就交还输入框，输入不能还归串门、
+            # 一直拒到 teardown
+            try:
+                self.host.release_takeover(self.takeover_token)
+            except Exception as exc:  # noqa: BLE001 - 令牌留着：teardown 还会再试（管理器仍持有接管时不能丢掉唯一的令牌）
+                logger.warning("visit %s: takeover release failed again before ended: %s",
+                               self.visit_id[:6], type(exc).__name__)
+            else:
+                self.takeover_token = None
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
         if self.status_code is not None:
             await self.status(self.status_code, reason=self.status_details.get("reason"),
@@ -2448,6 +2602,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         rows.sort(key=lambda r: (r["lp"], SIDE_RANK.get(r["side"], 2)))
         return rows
 
+    def transcript_records(self) -> list[dict]:
+        """The in-memory transcript (both sides, ``(lp, side_rank)`` order) for ``GET /transcript``."""
+        return self._replay_lines()
+
     def snapshot(self) -> dict:
         """``GET /api/visit/state`` body for this character (never the invite code)."""
         creds = self.creds
@@ -2455,9 +2613,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         transcript = [self.visit_line_payload_from_record(r) for r in self._replay_lines()[-50:]]
         reconnecting = self.phase != PHASE_ENDED and (
             self.liveness.self_disconnected_at is not None or self.liveness.page_departed_at is not None)
+        # 收尾已开始、接管还没释放（释放前或释放抛错等 teardown 重试）：页面看到 ending 就会交还输入框，
+        # 而此时输入仍归串门——快照照旧报收尾前的阶段，与「接管释放后才推 ending 帧」一致
+        phase = self.phase
+        if phase == PHASE_ENDING and self.takeover_token is not None:
+            phase = self._was_phase
         return {
             "active": self.phase not in (PHASE_ENDED,),
-            "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": self.phase,
+            "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": phase,
             "transport": creds.transport if creds else None,
             "tier": creds.tier if creds else None,
             "crop": self.crop,
@@ -2555,6 +2718,22 @@ class VisitRefused(Exception):
         self.body = body
 
 
+VISIT_SWITCH_OFF = "VISIT_DISABLED"
+"""409 code of a room / join while the user's ``visitEnabled`` setting is off (design §3.7.6)."""
+
+
+async def visit_switch_refusal(deps: Optional[RuntimeDeps] = None) -> Optional[VisitRefused]:
+    """The refusal of a room / join while ``visitEnabled`` is off, else None.
+
+    Read once per request from the conversation settings; settings that cannot
+    be read fall back to the default (off), so an unreadable file refuses.
+    """
+    settings = await (deps or runtime_deps()).settings()
+    if settings.get("visitEnabled", VISIT_ENABLED_DEFAULT) is True:
+        return None
+    return VisitRefused(409, {"code": VISIT_SWITCH_OFF, "reason": "visit_disabled"})
+
+
 async def start_visit(
     lanlan_name: str,
     side: str,
@@ -2583,8 +2762,13 @@ async def start_visit(
         raise ValueError("side must be 'host' or 'guest'")
     stop_gen = _stop_gen
     account_gen = _account_gen
+    disabled_gen = _disabled_gen
     if _account_changes:
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
+    # 用户的串门开关（visitEnabled）关着：拒绝一切邀请、也不能出门（§3.7.6）；在人设闸之前，不触发人设重生成
+    switch_off = await visit_switch_refusal(deps)
+    if switch_off is not None:
+        raise switch_off
     gate = await persona_gate(name)
     if not gate.ok:
         raise VisitRefused(409, {"code": "VISIT_PERSONA_UNREVIEWED", "state": gate.state})
@@ -2621,6 +2805,9 @@ async def start_visit(
         if _stop_gen != stop_gen or _stopping:
             # 入场途中 stop_all 跑过 / 正在跑（它只看得到已登记的运行时）：不再登记、不再起传输
             raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "shutdown"})
+        if _disabled_gen != disabled_gen:
+            # 入场途中用户在设置里关掉了串门（关闭钩子只结束已登记的运行时）：不再登记
+            raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "visit_disabled"})
         # 查账号期间（还没登记运行时、输入还不归串门）语音会话 / 热切换可能已经起来、manager 也可能被换掉：再查一次
         if not host.is_current():
             raise VisitRefused(409, {"reason": "busy"})
@@ -2642,6 +2829,8 @@ async def start_visit(
             finalize_visit_route_state(name)
         raise
     rt.slot = slot
+    rt.admitted_account = account
+    rt.admitted_epoch = account_gen
     rt.start()
     _pending_visits.pop(key, None)
     return rt
@@ -2662,9 +2851,19 @@ async def _local_account() -> Optional[str]:
 
 
 async def route_stream_message(lanlan_name: str, message: dict) -> bool:
+    from main_routers.visit_router import display_socket
+    from utils.visit_route_state import DISPLAY_SOCKET_CONNECTION
+
     rt = _runtimes.get(str(lanlan_name or ""))
     if rt is None or not is_visit_route_active(lanlan_name):
         return False
+    origin = DISPLAY_SOCKET_CONNECTION.get()
+    if origin is not None and not display_socket.is_bound(origin):
+        # 来自没 visit_bind 的 display socket（分派途中路由换成了串门）：吞掉、把未授权提示发回发起的
+        # 那条连接（不是当前的 mgr.websocket），不代亲人发言
+        request_id = message.get("request_id") if isinstance(message, dict) else None
+        await display_socket.refuse(origin, request_id)
+        return True
     return await rt.on_stream_message(message)
 
 
@@ -2766,9 +2965,61 @@ async def account_change(
                     await end_visits_for_account_change(timeout)
                 except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
                     logger.warning("visit: ending live visits before the account change failed: %r", exc)
+            # 还在途的领凭证请求（场次可能已注销、请求仍在后台）读会话时必须仍是旧账号：先等它们结束再改会话
+            await _settle_in_flight(_credential_requests, timeout, "credential requests")
+            # 已核过账号、正往页面推复盘块的也先推完：核完账号到写出去之间不会换成另一个账号。
+            # 至少等满推送的时限（调用方传了更短的 timeout 也一样）：放行时它们一定已结束或被截断
+            await _settle_in_flight(_account_bound_pushes, max(timeout, _ACCOUNT_BOUND_PUSH_MAX_S + 1.0),
+                                    "debrief pushes")
             yield
     finally:
         _account_changes -= 1
+
+
+_credential_requests: set[asyncio.Future] = set()
+"""Servers credential requests in flight: an account change waits for them before the session changes."""
+
+_account_bound_pushes: set[asyncio.Future] = set()
+"""Debrief pushes in flight (:func:`hold_account_for_push`): an account change waits for them before the session changes."""
+
+
+@asynccontextmanager
+async def hold_account_for_push():
+    """Yield whether a push bound to the signed-in account may go out; keep the account from changing until it ends.
+
+    Yields False while a logout / account switch is in progress (the caller
+    skips the push; bind replays it to the account that owns the visit).
+    Otherwise the push checks the account and writes inside the block, and
+    :func:`account_change` waits for it before the session changes, so no
+    switch lands between the check and the write. The block is cut off
+    (``TimeoutError``) after ``_ACCOUNT_BOUND_PUSH_MAX_S``, shorter than
+    that wait: a push never writes after the credentials changed.
+    """
+    if _account_changes:
+        yield False
+        return
+    held = asyncio.get_running_loop().create_future()
+    _account_bound_pushes.add(held)
+    try:
+        async with asyncio.timeout(_ACCOUNT_BOUND_PUSH_MAX_S):
+            yield True
+    finally:
+        if not held.done():
+            held.set_result(None)
+        _account_bound_pushes.discard(held)
+
+
+async def _settle_in_flight(futures: set[asyncio.Future], timeout: float, what: str) -> None:
+    """Wait (bounded) for the in-flight ``futures`` an account change must not overtake; never cancels them."""
+    pending = [f for f in futures if not f.done()]
+    if not pending:
+        return
+    # 只等不取消：领凭证请求已发出时取消也撤不回 Servers 那边的签发（与兑掉的邀请码）；
+    # 复盘推送由它自己的时限截断（hold_account_for_push），这里也不取消
+    _done, still = await asyncio.wait(pending, timeout=max(0.0, timeout))
+    if still:
+        logger.warning("visit: account change proceeds with %d %s still in flight after %.0fs",
+                       len(still), what, timeout)
 
 
 def _seals_in_background() -> list["VisitRuntime"]:
@@ -2904,7 +3155,7 @@ def register_visit_route_kind() -> None:
     from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
 
     register_external_route_kind(ExternalRouteKind(
-        kind="neko_visit",
+        kind=VISIT_ROUTE_KIND,
         is_active=is_visit_route_active,
         route_stream_message=route_stream_message,
         on_start_session=on_start_session,
@@ -2921,6 +3172,7 @@ __all__ = [
     "VisitRuntime", "VisitRefused", "RuntimeDeps", "start_visit", "end_visit", "stop_all",
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
-    "get_runtime", "get_runtime_by_visit", "recent_runtime", "on_page_signal",
-    "end_visits_for_account_change", "account_change", "cancel_background_writes",
+    "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
+    "hold_character_lifecycle", "hold_account_for_push", "end_visits_for_account_change", "account_change",
+    "cancel_background_writes",
 ]

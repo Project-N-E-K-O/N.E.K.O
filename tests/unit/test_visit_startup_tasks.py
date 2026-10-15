@@ -135,6 +135,12 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
     assert captured["submit_report"] is transcript_upload.submit_queued_report
     assert captured["config_dir"] == tmp_path and captured["family_names"] == ("妈妈",)
     assert callable(captured["summary_llm"]) and callable(captured["void_pending"])
+    # 删除退役补完：人设退役与角色配置变更锁（与删除事务同一把）
+    from main_routers.visit_router import character_hooks
+    from utils import character_memory
+
+    assert captured["retire_persona"] is character_hooks.retire_persona
+    assert captured["config_lock"]() is character_memory.character_config_mutation_lock
     gate.set()
     assert await rec is None
     assert not sweep.done()
@@ -290,10 +296,14 @@ async def test_start_awaiting_its_account_lookup_is_refused_after_an_account_cha
         def is_current(self):
             return True
 
+    async def _switch_on():
+        return {"visitEnabled": True}
+
     monkeypatch.setattr(persona, "persona_gate", persona_ok)
     monkeypatch.setattr(runtime, "_local_account", slow_account)
     starting = asyncio.ensure_future(runtime.start_visit("A", "host", host=Host(),
-                                                         deps=SimpleNamespace(config_dir=lambda: Path("."))))
+                                                         deps=SimpleNamespace(config_dir=lambda: Path("."),
+                                                                              settings=_switch_on)))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     async with runtime.account_change():

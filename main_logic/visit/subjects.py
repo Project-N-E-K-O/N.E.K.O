@@ -59,7 +59,7 @@ import json
 import math
 import threading
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -413,18 +413,22 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
     return merged
 
 
-def _read_top_level_sync(path: Path) -> dict:
-    with path_lock(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return {}
-        except (OSError, ValueError, RecursionError) as exc:
-            raise RosterCorruptError(f"cannot read {path.name}: {exc!r}") from exc
+def _read_top_level_sync_unlocked(path: Path) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError) as exc:
+        raise RosterCorruptError(f"cannot read {path.name}: {exc!r}") from exc
     if not isinstance(data, dict):
         raise RosterCorruptError(f"{path.name} is not a JSON object")
     return data
+
+
+def _read_top_level_sync(path: Path) -> dict:
+    with path_lock(path):
+        return _read_top_level_sync_unlocked(path)
 
 
 async def read_roster_marker(config_dir: str | Path, key: str) -> Any:
@@ -434,9 +438,59 @@ async def read_roster_marker(config_dir: str | Path, key: str) -> Any:
     ``pending_retire``) that live outside every account partition. Reads
     strictly: an unreadable roster raises :class:`RosterCorruptError`.
     """
-    path = Path(config_dir) / VISIT_PEERS_FILENAME
-    data = await asyncio.to_thread(_read_top_level_sync, path)
+    return await asyncio.to_thread(read_roster_marker_sync, config_dir, key)
+
+
+def read_roster_marker_sync(config_dir: str | Path, key: str) -> Any:
+    """Blocking :func:`read_roster_marker`, for callers already off the event loop (a startup import thread)."""
+    data = _read_top_level_sync(Path(config_dir) / VISIT_PEERS_FILENAME)
     return copy.deepcopy(data.get(key))
+
+
+def read_roster_markers_sync(config_dir: str | Path, *keys: str) -> tuple[Any, ...]:
+    """Deep copies of several top-level markers from one locked read (``None`` for an absent key)."""
+    data = _read_top_level_sync(Path(config_dir) / VISIT_PEERS_FILENAME)
+    return tuple(copy.deepcopy(data.get(key)) for key in keys)
+
+
+async def read_roster_markers(config_dir: str | Path, *keys: str) -> tuple[Any, ...]:
+    """:func:`read_roster_marker` for several keys at once, all from the same state of the file.
+
+    Separate reads could pair a slot read before a recovery promoted the
+    next queued marker with a queue read after it, a state that never
+    existed. An unreadable roster raises :class:`RosterCorruptError`.
+    """
+    return await asyncio.to_thread(read_roster_markers_sync, config_dir, *keys)
+
+
+def rename_marker_names(marker: Any) -> tuple[str, ...] | None:
+    """Every name a pending rename marker holds: ``old``, ``new`` and the ``chained`` ones.
+
+    ``chained``: names a cloudsave import moved the same character on to
+    while the marker was pending. ``None`` for a malformed marker.
+    """
+    if not isinstance(marker, dict):
+        return None
+    old, new = marker.get("old"), marker.get("new")
+    if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
+        return None
+    chained = marker.get("chained")
+    extra = [name for name in chained if isinstance(name, str) and name] if isinstance(chained, list) else []
+    return tuple(dict.fromkeys([old, new, *extra]))
+
+
+def pending_rename_names(slot: Any, queued: Any) -> frozenset[str] | None:
+    """The names held by the ``pending_rename`` slot and every queued rename; ``None`` if one is malformed."""
+    markers = ([] if slot is None else [slot]) + (queued if isinstance(queued, list) else [])
+    if queued is not None and not isinstance(queued, list):
+        return None
+    names: set[str] = set()
+    for marker in markers:
+        held = rename_marker_names(marker)
+        if held is None:
+            return None
+        names.update(held)
+    return frozenset(names)
 
 
 def _clear_marker_sync(path: Path, key: str, expected: Any) -> bool:
@@ -462,6 +516,193 @@ async def clear_roster_marker(config_dir: str | Path, key: str, expected: Any) -
     """
     path = Path(config_dir) / VISIT_PEERS_FILENAME
     return await asyncio.to_thread(_clear_marker_sync, path, key, expected)
+
+
+def _set_marker_sync(path: Path, key: str, value: Any) -> tuple[bool, Any]:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        # 值为 null 的标记没有任何可对账的信息，按空位处理（否则会永远占着位置）
+        if data.get(key) is not None:
+            return False, copy.deepcopy(data[key])
+        data[key] = copy.deepcopy(value)
+        atomic_write_json(path, data)
+        return True, None
+
+
+def set_roster_marker_sync(config_dir: str | Path, key: str, value: Any) -> tuple[bool, Any]:
+    """Blocking :func:`set_roster_marker`, for callers already off the event loop (a startup import thread)."""
+    return _set_marker_sync(Path(config_dir) / VISIT_PEERS_FILENAME, key, value)
+
+
+async def set_roster_marker(config_dir: str | Path, key: str, value: Any) -> tuple[bool, Any]:
+    """Atomically store the top-level ``key`` unless it already holds a non-null value.
+
+    Returns ``(True, None)`` once ``value`` is written, else ``(False,
+    existing)`` with a copy of the value already there (left untouched: a
+    pending transaction must be reconciled before another one can take its
+    marker). Account partitions and other keys are preserved; an unreadable
+    roster raises :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_set_marker_sync, path, key, value)
+
+
+def _edit_marker_list_sync(path: Path, key: str, item: Any, add: bool) -> bool:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        if not data and not add:
+            return False
+        items = data.get(key, [])
+        if not isinstance(items, list):
+            raise RosterCorruptError(f"{path.name}: {key!r} is not a list")
+        if add:
+            if item in items:
+                return False
+            data[key] = [*items, copy.deepcopy(item)]
+        else:
+            if item not in items:
+                return False
+            kept = [entry for entry in items if entry != item]
+            if kept:
+                data[key] = kept
+            else:
+                del data[key]
+        atomic_write_json(path, data)
+        return True
+
+
+async def add_roster_marker_item(config_dir: str | Path, key: str, item: Any) -> bool:
+    """Append ``item`` to the top-level list ``key`` (created when absent); False if already there.
+
+    For ``pending_retire``: several deletes may be pending at once, each one
+    is added and removed on its own. A ``key`` that is not a list, or an
+    unreadable roster, raises :class:`RosterCorruptError`.
+    """
+    return await asyncio.to_thread(add_roster_marker_item_sync, config_dir, key, item)
+
+
+def add_roster_marker_item_sync(config_dir: str | Path, key: str, item: Any) -> bool:
+    """Blocking :func:`add_roster_marker_item`, for callers already off the event loop (a startup import thread)."""
+    return _edit_marker_list_sync(Path(config_dir) / VISIT_PEERS_FILENAME, key, item, True)
+
+
+async def remove_roster_marker_item(config_dir: str | Path, key: str, item: Any) -> bool:
+    """Remove ``item`` from the top-level list ``key`` (the key goes once empty); False if absent."""
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_edit_marker_list_sync, path, key, item, False)
+
+
+def _replace_marker_sync(path: Path, key: str, expected: Any, value: Any) -> bool:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        current = data.get(key)
+        if isinstance(current, list):
+            if expected not in current:
+                return False
+            data[key] = [copy.deepcopy(value) if entry == expected else entry for entry in current]
+        elif current == expected and current is not None:
+            data[key] = copy.deepcopy(value)
+        else:
+            return False
+        atomic_write_json(path, data)
+        return True
+
+
+def replace_roster_marker_sync(config_dir: str | Path, key: str, expected: Any, value: Any) -> bool:
+    """Replace the marker ``key`` (or, for a list, its item equal to ``expected``) with ``value``.
+
+    False, writing nothing, when the marker no longer is ``expected``. Blocking,
+    for a startup import thread; an unreadable roster raises
+    :class:`RosterCorruptError`.
+    """
+    return _replace_marker_sync(Path(config_dir) / VISIT_PEERS_FILENAME, key, expected, value)
+
+
+async def replace_roster_marker(config_dir: str | Path, key: str, expected: Any, value: Any) -> bool:
+    """:func:`replace_roster_marker_sync` off the event loop."""
+    return await asyncio.to_thread(replace_roster_marker_sync, config_dir, key, expected, value)
+
+
+def _promote_marker_sync(path: Path, slot_key: str, queue_key: str) -> Any:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        queue = data.get(queue_key)
+        if data.get(slot_key) is not None or not queue:
+            return None
+        if not isinstance(queue, list):
+            raise RosterCorruptError(f"{path.name}: {queue_key!r} is not a list")
+        item, *rest = queue
+        data[slot_key] = copy.deepcopy(item)
+        if rest:
+            data[queue_key] = rest
+        else:
+            del data[queue_key]
+        atomic_write_json(path, data)
+        return copy.deepcopy(item)
+
+
+async def promote_roster_marker(config_dir: str | Path, slot_key: str, queue_key: str) -> Any:
+    """Move the first item of the list ``queue_key`` into the empty slot ``slot_key``; return it.
+
+    ``None`` when the slot is still taken or the queue is empty (nothing is
+    written). One write, so a crash never loses or duplicates the item. A
+    queue that is not a list, or an unreadable roster, raises
+    :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_promote_marker_sync, path, slot_key, queue_key)
+
+
+def _rotate_marker_sync(path: Path, slot_key: str, queue_key: str, expected: Any) -> Any:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        queue = data.get(queue_key)
+        if data.get(slot_key) != expected or not isinstance(queue, list) or not queue:
+            return None
+        item, *rest = queue
+        data[slot_key] = copy.deepcopy(item)
+        data[queue_key] = [*rest, copy.deepcopy(expected)]
+        atomic_write_json(path, data)
+        return copy.deepcopy(item)
+
+
+async def rotate_roster_marker(config_dir: str | Path, slot_key: str, queue_key: str, expected: Any) -> Any:
+    """Swap the slot ``slot_key`` (while it equals ``expected``) to the end of ``queue_key``; return the new slot.
+
+    The first queued item takes the slot, in one write. ``None`` when the
+    slot changed or the queue is empty (nothing is written). An unreadable
+    roster raises :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_rotate_marker_sync, path, slot_key, queue_key, expected)
+
+
+def _prune_marker_items_sync(path: Path, key: str, keep: Callable[[Any], bool]) -> list[Any]:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        value = data.get(key)
+        if value is None:
+            return []
+        kept = [item for item in value if keep(item)] if isinstance(value, list) else []
+        dropped = [item for item in value if not keep(item)] if isinstance(value, list) else [value]
+        if not dropped:
+            return []
+        if kept:
+            data[key] = kept
+        else:
+            del data[key]
+        atomic_write_json(path, data)
+        return dropped
+
+
+async def prune_roster_marker_items(config_dir: str | Path, key: str, keep: Callable[[Any], bool]) -> list[Any]:
+    """Drop the items of the list marker ``key`` that ``keep`` rejects (the whole value if not a list).
+
+    Returns the dropped items. An unreadable roster raises
+    :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_prune_marker_items_sync, path, key, keep)
 
 
 class PeerRoster:
@@ -885,6 +1126,48 @@ class PeerRoster:
                     by_char[new] = _merge_char_entries(target, entry) if new in by_char else entry
                     moved += 1
             return moved, moved > 0
+
+        return await asyncio.to_thread(self._mutate, fn)
+
+    async def retire_char(self, own_char: str) -> int:
+        """Delete ``by_char[own_char]`` of every peer in every account partition (one atomic write).
+
+        For a deleted local character (``pending_retire``): like
+        :meth:`rename_char` it walks every account, local character names
+        being machine-wide. A peer left with no ``by_char`` entry is dropped;
+        ``last_summary`` goes with its entry. Idempotent; returns the number
+        of removed entries. A damaged partition raises
+        :class:`RosterCorruptError` so the retirement stays pending.
+        """
+        _require_str(own_char, "own_char")
+
+        def fn(data: dict):
+            # 退役是删除事务的一步：分区结构坏了不能跳过（标记会被清掉、坏分区里的条目永远留着）
+            removed = 0
+            if "accounts" not in data:
+                return 0, False
+            accounts = data["accounts"]
+            if not isinstance(accounts, dict):
+                raise RosterCorruptError(f"{self.path.name}: accounts is not an object")
+            for account in accounts.values():
+                if not isinstance(account, dict):
+                    raise RosterCorruptError(f"{self.path.name}: account entry is not an object")
+                if "peers" not in account:
+                    continue
+                peers = account["peers"]
+                if not isinstance(peers, dict):
+                    raise RosterCorruptError(f"{self.path.name}: peers is not an object")
+                for peer_uid, peer in list(peers.items()):
+                    if not isinstance(peer, dict) or not isinstance(peer.get("by_char"), dict):
+                        raise RosterCorruptError(f"{self.path.name}: peer entry is malformed")
+                    by_char = peer["by_char"]
+                    if own_char not in by_char:
+                        continue
+                    del by_char[own_char]
+                    removed += 1
+                    if not by_char:
+                        del peers[peer_uid]
+            return removed, removed > 0
 
         return await asyncio.to_thread(self._mutate, fn)
 

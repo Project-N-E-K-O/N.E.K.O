@@ -3238,8 +3238,9 @@ def _offline_client_for_ephemeral():
 
     sent: list = []
 
-    async def _fake_stream(messages, **_overrides):
-        sent.append(messages)
+    async def _fake_stream(messages, **overrides):
+        # The instruction rides the request view, not history.
+        sent.append([*messages, overrides["_instruction"]])
         yield SimpleNamespace(content="看到了喵~")
 
     client._astream_visible_with_tools = _fake_stream

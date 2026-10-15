@@ -912,6 +912,58 @@ class TimeIndexedMemory:
             self.store_conversation, event_id, messages, lanlan_name, timestamp
         )
 
+    def store_conversation_strict(self, event_id, messages, lanlan_name, timestamp=None) -> None:
+        """:meth:`store_conversation` that raises instead of logging when nothing can be stored.
+
+        Keyed ``/cache`` writes only: the lenient version returns normally when
+        no engine can be built, and the keyed write would then mark a key done
+        whose row never reached the database.
+        """
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_engine_exists(lanlan_name):
+            raise RuntimeError(f"time index of {lanlan_name!r} unavailable")
+        self.store_conversation(event_id, messages, lanlan_name, timestamp)
+
+    async def astore_conversation_strict(self, event_id, messages, lanlan_name, timestamp=None) -> None:
+        await asyncio.to_thread(
+            self.store_conversation_strict, event_id, messages, lanlan_name, timestamp
+        )
+
+    def has_conversation(self, event_id, lanlan_name) -> bool:
+        """Whether rows of ``event_id`` exist in the original table (strict: raises when unreadable).
+
+        Rows left without a timestamp (the insert committed, the timestamp
+        ``UPDATE`` of :meth:`store_conversation` did not) are completed here
+        before answering True: timeframe readers filter on the timestamp, so
+        such a row would otherwise count as stored while no reader sees it.
+        """
+        if not self._ensure_engine_exists(lanlan_name):
+            raise RuntimeError(f"time index of {lanlan_name!r} unavailable")
+        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        with self.engines[lanlan_name].connect() as conn:
+            row = conn.execute(
+                text(f"SELECT 1 FROM {original_table} WHERE session_id = :session_id LIMIT 1"),
+                {"session_id": event_id},
+            ).fetchone()
+            if row is None:
+                return False
+            missing = conn.execute(
+                text(f"SELECT 1 FROM {original_table} WHERE session_id = :session_id AND timestamp IS NULL LIMIT 1"),
+                {"session_id": event_id},
+            ).fetchone()
+            if missing is not None:
+                self._assert_timeindex_writable(lanlan_name)
+                conn.execute(
+                    text(f"UPDATE {original_table} SET timestamp = :timestamp "
+                         "WHERE session_id = :session_id AND timestamp IS NULL"),
+                    {"timestamp": datetime.now(), "session_id": event_id},
+                )
+                conn.commit()
+        return True
+
+    async def ahas_conversation(self, event_id, lanlan_name) -> bool:
+        return await asyncio.to_thread(self.has_conversation, event_id, lanlan_name)
+
     @staticmethod
     def _parse_serialized_theater_message(serialized_message: object) -> dict | None:
         """识别时间索引中的新旧剧场行并返回解析结果；非剧场或解析失败时返回 None（宁可保留）。"""  # noqa: DOCSTRING_CJK

@@ -141,6 +141,7 @@ packages = [
   "config",
   "main_logic",
   "main_routers",
+  "knowledge",
   "memory",
   "plugin",
   "services",
@@ -149,6 +150,10 @@ packages = [
 ]
 exclude = [
   "plugin/plugins",
+  # Legacy data files kept in the repo; the knowledge subsystem only serves
+  # packs the user imports, so they are not shipped.
+  "knowledge/data",
+  "knowledge/moegirl_knowledge",
   "main_logic/asr_client/endpointing/models/*.onnx",
   "main_logic/asr_client/endpointing/models/*.part",
   "main_logic/asr_client/speaker_shadow/models/*.onnx",
@@ -163,6 +168,7 @@ include = [
   "config",
   "main_logic",
   "main_routers",
+  "knowledge",
   "memory",
   "plugin",
   "services",
@@ -177,6 +183,10 @@ include = [
 ]
 exclude = [
   "plugin/plugins",
+  # Legacy data files kept in the repo; the knowledge subsystem only serves
+  # packs the user imports, so they are not shipped.
+  "knowledge/data",
+  "knowledge/moegirl_knowledge",
   "main_logic/asr_client/endpointing/models/*.onnx",
   "main_logic/asr_client/endpointing/models/*.part",
   "main_logic/asr_client/speaker_shadow/models/*.onnx",

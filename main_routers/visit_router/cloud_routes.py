@@ -33,6 +33,7 @@ passes the local-origin gate (loopback peer + Origin / Host + CSRF).
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from collections.abc import Mapping
@@ -42,8 +43,15 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.visit_settings import VISIT_REPORT_NOTE_MAX_CHARS, VISIT_UPLOAD_RETRY_BACKOFF_S
+from config.visit_settings import (
+    VISIT_DETAILS_MAX_PAGES,
+    VISIT_LP_MAX,
+    VISIT_REPORT_NOTE_MAX_CHARS,
+    VISIT_TEXT_MAX_BYTES,
+    VISIT_UPLOAD_RETRY_BACKOFF_S,
+)
 from main_logic.visit import memory_bridge
+from main_logic.visit.memory_commit import SIDE_RANK
 from main_logic.visit.sanitize import neutralize_display_name
 from main_routers.system_router._shared import _read_json_object
 from main_routers.visit_router import accounts
@@ -141,6 +149,116 @@ async def fetch_details_page(visit_id: str, *, cursor: str = "", limit: int | No
         logger.warning("visit servers details: reply names another visit")
         raise CloudError(_error(503, "servers_unreachable"))
     return body
+
+
+class CloudTranscriptIncomplete(Exception):
+    """Servers still had a ``next_cursor`` after ``VISIT_DETAILS_MAX_PAGES`` pages."""
+
+
+_MALFORMED: dict = {}
+"""Marker of a details row whose half for this side does not have the contracted shape."""
+
+
+def _finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # 超出 float 范围的整数：isfinite 会抛，不能让一行坏数据把导出变成 500
+        return False
+
+
+def _utf8_str(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        # JSON 里转义的孤立代理字符：解析得出字符串，却编不成 UTF-8，回给前端时会 500
+        return False
+    return True
+
+
+def _cloud_line(row: Any, role: str) -> dict | None:
+    """This side's half of one aligned details row in the cloud transcript shape.
+
+    None when the row has no half for this side, :data:`_MALFORMED` when it is malformed.
+    """
+    if not isinstance(row, dict):
+        return _MALFORMED
+    mine = row.get(role)
+    lp = row.get("lp")
+    if mine is None:
+        return None
+    if not isinstance(mine, dict):
+        # 本侧字段在、却不是对象：坏行，不能当成「这一侧没有」静默漏掉
+        return _MALFORMED
+    ts = mine.get("ts")
+    if (
+        not isinstance(lp, int) or isinstance(lp, bool) or not 0 <= lp <= VISIT_LP_MAX
+        or row.get("side") not in ("host", "guest")
+        or mine.get("from") not in tu.SPEAKERS
+        or not _finite_number(ts)
+        or not _utf8_str(mine.get("text"))
+        or len(mine["text"].encode("utf-8")) > VISIT_TEXT_MAX_BYTES
+        or not isinstance(mine.get("truncated"), bool)
+    ):
+        return _MALFORMED
+    return {"lp": lp, "side": row["side"], "from": mine["from"], "ts": ts, "text": mine["text"],
+            "truncated": mine["truncated"]}
+
+
+async def fetch_cloud_transcript(visit_id: str) -> dict:
+    """This side's transcript of ``visit_id`` from Servers details, every page (``GET /transcript`` fallback).
+
+    Pages are requested with ``limit`` = :data:`DETAILS_PAGE_LIMIT` and the
+    returned ``cursor`` until there is no ``next_cursor``; this side is the
+    reply's ``requester_role``. Returns ``{source:'cloud', visit_id, role,
+    lines}`` sorted by ``(lp, side_rank)``. Raises :class:`CloudError` when
+    any page fails (no partial lines) and :class:`CloudTranscriptIncomplete`
+    past ``VISIT_DETAILS_MAX_PAGES`` pages.
+    """
+    role: str | None = None
+    lines: list[dict] = []
+    rejected = 0
+    cursor = ""
+    seen_cursors = {cursor}
+    for _page in range(VISIT_DETAILS_MAX_PAGES):
+        body = await fetch_details_page(visit_id, cursor=cursor, limit=DETAILS_PAGE_LIMIT)
+        page_role = body.get("requester_role")
+        rows = body.get("lines")
+        if (page_role not in ("host", "guest") or (role is not None and page_role != role)
+                or not isinstance(rows, list)):
+            logger.warning("visit servers details: malformed transcript page")
+            raise CloudError(_error(503, "servers_unreachable"))
+        role = page_role
+        next_cursor = body.get("next_cursor")
+        if len(rows) > DETAILS_PAGE_LIMIT or (next_cursor not in (None, "") and len(rows) != DETAILS_PAGE_LIMIT):
+            # 契约（§4.7 details）：除最后一页外每页恰好 limit 行、任何一页都不超过 limit；
+            # 不合的页会让页数上限算出的总量不成立（少了白翻满页数，多了撑破内存上界）
+            logger.warning("visit servers details: transcript page size off contract")
+            raise CloudError(_error(503, "servers_unreachable"))
+        for row in rows:
+            line = _cloud_line(row, role)
+            if line is _MALFORMED:
+                rejected += 1
+            elif line is not None:
+                lines.append(line)
+        if next_cursor is None or next_cursor == "":
+            if rejected:
+                # 不合契约的行丢掉、记一条诊断（每份转录一条，不逐行刷）
+                memory_bridge.diag("cloud_transcript_rows_rejected", count=rejected)
+            lines.sort(key=lambda line: (line["lp"], SIDE_RANK.get(line["side"], 2)))
+            return {"source": "cloud", "visit_id": visit_id, "role": role, "lines": lines}
+        if not isinstance(next_cursor, str) or not _CURSOR_RE.fullmatch(next_cursor) or next_cursor in seen_cursors:
+            # 回到请求过的游标（原地不动或绕圈）会把同一页重复拼进来：按坏响应处理，不白等满页数
+            logger.warning("visit servers details: malformed next_cursor")
+            raise CloudError(_error(503, "servers_unreachable"))
+        cursor = next_cursor
+        seen_cursors.add(cursor)
+    memory_bridge.diag("cloud_transcript_incomplete", pages=VISIT_DETAILS_MAX_PAGES)
+    raise CloudTranscriptIncomplete(visit_id)
 
 
 # ── 历史 / 详情 ────────────────────────────────────────────────────────
@@ -275,6 +393,16 @@ def _after_attempt(retry_after_s: int | None) -> float:
     return float(max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], retry_after_s or 0))
 
 
+def _queued_login_required() -> JSONResponse:
+    """``VISIT_LOGIN_REQUIRED`` for a report that is already queued (``queued: true``).
+
+    Unlike a report refused before it was queued, re-submitting it only gets
+    ``already_queued``; the page shows it as queued and asks to sign in.
+    """
+    status, body = cr.VisitLoginRequired().to_local_error()
+    return JSONResponse({"ok": False, **body, "queued": True}, status_code=status)
+
+
 async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
     visit_id = doc["visit_id"]
     if doc["include_transcript"]:
@@ -304,8 +432,8 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
                 tu.schedule_visit_retry(visit_id, config_dir=config_dir,
                                         initial_delay_s=_after_attempt(upload.retry_after_s))
             if upload.login_required:
-                # 已排队，但转录因登录失效传不上去：提示重新登录
-                return _cloud_error(cr.VisitLoginRequired())
+                # 已排队，但转录因登录失效传不上去：提示重新登录，并带 queued 让页面按已排队显示
+                return _queued_login_required()
             return JSONResponse({"queued": True}, status_code=202)
         # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上；
         # 没能写进文件（磁盘 / 权限）时原因在 upload.unavailable 里，提交的这份照样带上
@@ -326,7 +454,7 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
     tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(result.retry_after_s))
     if result.login_required:
         # 已排队，但登录失效：提示重新登录（原账号回来后由后台 / 启动补录接着提交）
-        return _cloud_error(cr.VisitLoginRequired())
+        return _queued_login_required()
     return JSONResponse({"queued": True}, status_code=202)
 
 

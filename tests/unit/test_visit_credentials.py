@@ -1574,3 +1574,13 @@ async def test_capped_and_already_expired_grant_is_retried_at_most_once_per_marg
     # 过了一个余量再试一次
     assert await grant.ensure_fresh(wall_now=wall[0] + 120)
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_credentials_pinned_to_another_account_send_nothing(servers):
+    # 会话快照已是 u1 以外的账号（登出 / 换账号已落地）：guest 不能按它兑掉一次性邀请码
+    with pytest.raises(cr.VisitAccountChanged):
+        await _guest(expect_account="u0")
+    assert servers.requests == []
+    creds = await _guest(expect_account="u1")
+    assert creds.account == "u1" and len(servers.requests) == 1

@@ -105,6 +105,8 @@ class AsrProviderMeta:
     # bounded session.finish recovery path.
     observes_local_activity: bool = False
     supports_result_preserving_finish: bool = False
+    # Explicit worker source-sidecar support; matching rates alone is not proof.
+    supports_interception_delivery: bool = False
     failure_rules: tuple[tuple[str, AsrFailureRule], ...] = ()
 
     @property
@@ -217,6 +219,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         implementation_status="implemented",
         observes_local_activity=True,
         supports_result_preserving_finish=True,
+        supports_interception_delivery=True,
         failure_rules=(
             ("ASR_QWEN_READ_DISCONNECTED", AsrFailureRule(recover_on_provider_failure=True)),
             ("ASR_QWEN_CONNECTION_FAILED", AsrFailureRule(retry_connect=True)),
@@ -242,6 +245,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"provider"}),
         implementation_status="implemented",
+        supports_interception_delivery=True,
         failure_rules=(
             ("ASR_STEP_CONNECTION_CLOSED", AsrFailureRule(use_delivery_notice=True)),
             ("ASR_STEP_WORKER_FAILED", AsrFailureRule(use_delivery_notice=True)),
@@ -254,6 +258,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"provider"}),
         implementation_status="implemented",
+        supports_interception_delivery=True,
     ),
     "glm": AsrProviderMeta(
         provider_key="glm",
@@ -262,6 +267,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="implemented",
+        supports_interception_delivery=True,
         requires_smart_turn=True,
         max_segment_ms=27_000,
         warm_transport_ms=0,
@@ -278,6 +284,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="implemented",
+        supports_interception_delivery=True,
         requires_smart_turn=True,
         max_segment_ms=27_000,
         warm_transport_ms=0,
@@ -292,6 +299,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
+        supports_interception_delivery=True,
         replay_policy="provider_managed",
         connect_max_attempts=3,
         failure_rules=(
@@ -312,6 +320,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="implemented",
+        supports_interception_delivery=True,
         requires_smart_turn=True,
         max_segment_ms=27_000,
         warm_transport_ms=0,

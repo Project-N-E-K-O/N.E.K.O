@@ -504,6 +504,54 @@ async def test_rename_own_char_rewrites_header_and_state(tmp_path):
     assert await VisitSpool.rename_own_char(tmp_path, "old", "new") == []
 
 
+async def test_rename_own_char_ignores_other_characters_visits_in_flight(tmp_path):
+    from main_logic.visit.spool import SpoolBusy
+
+    done = await open_spool(tmp_path, vid(1), own_char="old")
+    await done.append(line(1, "body"))
+    await done.close()
+    await done.write_state(state_for(own_char="old"))
+    # 改名在运行期执行：别的角色正在串门（spool 还开着）不能挡住这次迁移（变异：先判 busy 必红）
+    live_other = await open_spool(tmp_path, vid(2), own_char="other")
+    try:
+        assert await VisitSpool.rename_own_char(tmp_path, "old", "new") == [vid(1)]
+        assert (await done.read_state())["own_char"] == "new"
+        # 被改名角色自己的场次还开着：照旧报 busy（别的场次先改完）
+        live_own = await open_spool(tmp_path, vid(3), own_char="new")
+        try:
+            with pytest.raises(SpoolBusy):
+                await VisitSpool.rename_own_char(tmp_path, "new", "newer")
+            assert (await done.read_state())["own_char"] == "newer"
+        finally:
+            await live_own.close()
+    finally:
+        await live_other.close()
+
+
+async def test_rename_own_char_treats_a_spool_still_being_opened_as_busy(tmp_path):
+    from main_logic.visit import spool as spool_mod
+    from main_logic.visit.spool import SpoolBusy
+
+    done = await open_spool(tmp_path, vid(1), own_char="old")
+    await done.append(line(1, "body"))
+    await done.close()
+    await done.write_state(state_for(own_char="old"))
+    # 另一场刚登记、文件已建、头行还没写（_open_sync 出锁后才写）：归属未知，按仍在写报 busy，
+    # 不能当成读不出（变异：按 unreadable 必红），别的场次照样先改完
+    opening = spool_mod.visit_path(spool_mod._spool_dir(tmp_path), vid(2), spool_mod.SPOOL_SUFFIX)
+    opening.write_bytes(b"")
+    key = spool_mod._spool_key(opening)
+    with spool_mod._OPEN_SPOOLS_LOCK:
+        spool_mod._OPEN_SPOOLS.add(key)
+    try:
+        with pytest.raises(SpoolBusy):
+            await VisitSpool.rename_own_char(tmp_path, "old", "new")
+        assert (await done.read_state())["own_char"] == "new"
+    finally:
+        with spool_mod._OPEN_SPOOLS_LOCK:
+            spool_mod._OPEN_SPOOLS.discard(key)
+
+
 # ── sweep ──
 
 
@@ -2043,3 +2091,44 @@ async def test_sweep_modes_split_pending_uploads_from_the_rest(tmp_path):
     # only：只回收过期的待传文件，别的文件不动
     deleted = await VisitSpool.sweep(tmp_path, NOW, uploads="only")
     assert [path.name for path in deleted] == [upload.name] and sp.jsonl_path.exists()
+
+
+async def test_unreclaimable_bytes_counts_what_the_size_sweep_never_deletes(tmp_path):
+    spool_dir = tmp_path / "visit_spool"
+    # 未结清（崩溃后未补录）：转录与 state 都算
+    crashed = VisitSpool(tmp_path, vid(1))
+    await crashed.write_state(state_for())
+    spool_dir.joinpath(f"{vid(1)}.jsonl").write_bytes(b"x" * 1000)
+    # 没有 state 的转录：判不出已结清，同样算
+    spool_dir.joinpath(f"{vid(2)}.jsonl").write_bytes(b"y" * 300)
+    # 待传转录：连同它那一场已结清的转录一起算（容量回收不动有待传文件的场次）
+    pending = VisitSpool(tmp_path, vid(3))
+    await pending.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    spool_dir.joinpath(f"{vid(3)}.jsonl").write_bytes(b"p" * 200)
+    spool_dir.joinpath(f"{vid(3)}.upload.json").write_bytes(b"u" * 50)
+    # 已结清、无待传：容量回收会删，不算
+    done = VisitSpool(tmp_path, vid(4))
+    await done.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    spool_dir.joinpath(f"{vid(4)}.jsonl").write_bytes(b"d" * 5000)
+    # outbox 流水启动即删、在飞的一场另有上限：都不算
+    spool_dir.joinpath(f"{vid(5)}.outbox.jsonl").write_bytes(b"o" * 7000)
+    spool_dir.joinpath(f"{vid(6)}.jsonl").write_bytes(b"l" * 9000)
+
+    def size(n, suffix):
+        return spool_dir.joinpath(f"{vid(n)}{suffix}").stat().st_size
+
+    expected = (size(1, ".jsonl") + size(1, ".state.json") + 300
+                + size(3, ".jsonl") + size(3, ".state.json") + 50)
+    assert await VisitSpool.unreclaimable_bytes(tmp_path, is_live=lambda v: v == vid(6)) == expected
+    assert await VisitSpool.unreclaimable_bytes(tmp_path) == expected + 9000
+    assert await VisitSpool.unreclaimable_bytes(tmp_path / "missing") == 0
+
+
+async def test_unreclaimable_bytes_keeps_the_pinned_state_of_a_committing_diary(tmp_path):
+    spool_dir = tmp_path / "visit_spool"
+    pinned = VisitSpool(tmp_path, vid(1))
+    await pinned.write_state(dict(settled(state_for()), debrief_choice="committing:diary",
+                                  debrief_pending={"diary": "d", "facts": []}))
+    spool_dir.joinpath(f"{vid(1)}.jsonl").write_bytes(b"x" * 1000)
+    # 转录容量回收会删，state.json 被钉住不删：只有后者算
+    assert await VisitSpool.unreclaimable_bytes(tmp_path) == pinned.state_path.stat().st_size

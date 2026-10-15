@@ -339,6 +339,8 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice') {
             var choiceRects = Array.prototype.slice.call(element.querySelectorAll('.composer-galgame-option'))
+                // 串门工具条与选项同层：工具条整条也是命中区（Electron 透明窗）
+                .concat(Array.prototype.slice.call(element.querySelectorAll('.composer-visit-bar')))
                 .map(function (child) {
                     var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                     if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
@@ -756,6 +758,7 @@
                 && !element.classList.contains('compact-chat-choice-anchor')
                 && !element.classList.contains('neko-idle-cat1-compact-mirror')
                 && !element.classList.contains('modal-dialog-theater')
+                && !element.classList.contains('visit-dialog')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
@@ -1562,7 +1565,14 @@
         var catMessages = catLocalTextOnly && typeof I.getCatLocalChatDisplayMessages === 'function'
             ? I.getCatLocalChatDisplayMessages()
             : [];
-        return Object.assign({}, I.ensureViewProps(), {
+        // 串门（visit-chat.js）：工具条、输入框禁用与占位文字；没在串门时为 null，不覆盖任何既有值
+        var visitView = typeof I.getVisitChatView === 'function' ? I.getVisitChatView() : null;
+        var visitOverrides = {};
+        if (visitView && visitView.composerDisabled) visitOverrides.composerDisabled = true;
+        if (visitView && visitView.inputPlaceholder) visitOverrides.inputPlaceholder = visitView.inputPlaceholder;
+        // 串门接管输入框时不出 GalGame 选项：那是给普通聊天生成的，点了会被当成串门台词发给客人
+        var visitOwnsComposer = typeof I.isVisitChatActive === 'function' && I.isVisitChatActive();
+        return Object.assign({}, I.ensureViewProps(), visitOverrides, {
             messages: I.state.messages.concat(catMessages),
             userName: getConfiguredUserName() || undefined,
             assistantName: getConfiguredAssistantName() || undefined,
@@ -1576,8 +1586,8 @@
             compactMinimizeCancelSeq: I.compactMinimizeCancelSeq,
             compactChatState: I.getCurrentCompactChatState(),
             galgameModeEnabled: !!I.state.galgameModeEnabled,
-            galgameOptions: Array.isArray(I.state.galgameOptions) ? I.state.galgameOptions : [],
-            galgameOptionsLoading: !!I.state.galgameOptionsLoading,
+            galgameOptions: !visitOwnsComposer && Array.isArray(I.state.galgameOptions) ? I.state.galgameOptions : [],
+            galgameOptionsLoading: !visitOwnsComposer && !!I.state.galgameOptionsLoading,
             choicePrompt: I.getRevealedChoicePrompt(),
             onMessageAction: I.handleMessageAction,
             onComposerImportImage: I.handleComposerImportImage,
@@ -1598,6 +1608,8 @@
                 ? I.handleTheaterSuggestedInputSelect : undefined,
             onTheaterEnd: I.handleTheaterEnd,
             onChoiceSelect: I.handleChoiceSelect,
+            visitBar: visitView ? visitView.bar : null,
+            onVisitBarAction: I.handleVisitBarAction,
             onCompactChatStateChange: I.handleCompactChatStateChange,
             onCompactMinimizeRequest: I.handleCompactMinimizeRequest,
             avatarToolMenuOpenRequest: I.state.viewProps.avatarToolMenuOpenRequest || null,

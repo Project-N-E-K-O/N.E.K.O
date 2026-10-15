@@ -18,8 +18,11 @@ Design: ``docs/design/visit-infrastructure.md`` section 3.7.3 item 7 and
 PR-08 ``recovery.py``. :func:`visit_spool_recovery` is started with
 ``asyncio.create_task`` after startup (PR-09b) and runs, in order:
 
-1. the character-rename reconciliation (``visit_peers.json.pending_rename``),
-   first, so forgets resolve roster entries under their current name;
+1. the retirement of deleted characters (``pending_retire``), then the
+   character-rename reconciliation (``visit_peers.json.pending_rename``, then
+   each rename a cloudsave import queued in ``pending_rename_queue``), so
+   a rename never moves entries into a name whose leftovers are still to be
+   retired, and forgets resolve roster entries under their current name;
 2. unfinished local forgets (clearing sentinels, then revocation logs);
 3. startup cleanup: only leftover ``.outbox.jsonl`` files are deleted;
 4. ``VisitSpool.sweep`` (7 days / 20 MB, pending uploads and unsettled
@@ -48,10 +51,19 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncContextManager
 
 from config.visit_settings import VISIT_REPORTS_DIRNAME, VISIT_SPOOL_DIRNAME, VISIT_SPOOL_RETENTION_DAYS
 from main_logic.visit import local_chars, memory_bridge
+from main_logic.visit.char_lifecycle import (
+    ALL_NAMES as _ALL_NAMES,
+    MARKER_CHANGED as _MARKER_CHANGED,
+    RetirePersona,
+    drop_deleted_queued_renames,
+    reconcile_renames,
+    reconcile_rename as _reconcile_rename,
+    replay_retires,
+)
 from main_logic.visit.forget_runner import LifecycleGuard, VoidPending, replay_forgets
 # 与 identity 票据核验认的传输方式同一个常量：那边加了新传输方式，这里自动认得，不会把
 # 只剩上传文件的场次当损坏删掉
@@ -76,11 +88,11 @@ from main_logic.visit.spool import (
     _read_header_strict,
 )
 from main_logic.visit.subjects import (
-    PeerRoster,
     RosterCorruptError,
-    clear_roster_marker,
     path_lock,
+    pending_rename_names,
     read_roster_marker,
+    read_roster_markers,
 )
 from memory.scoped_client import ScopedMemoryClient
 from utils.file_utils import atomic_write_json
@@ -96,9 +108,11 @@ _LINE_FIELDS = ("lp", "side", "from", "ts", "text", "truncated")
 RenderChips = Callable[..., Awaitable[bool]]
 """``render_chips(visit_id, *, own_char, status) -> bool``: try to show the debrief block now.
 
-``status`` is ``'interrupted'`` for a crashed visit, else ``None``. The
-return value is only whether it reached a connected display; the pending
-flag in ``state.json`` stays until the user decides either way."""
+``status`` is ``'interrupted'`` for a crashed visit, else ``None``; the
+callback shows the notice only with the chips (not with a preview or a
+failure block). The return value is only whether it reached a connected
+display; the pending flag in ``state.json`` stays until the user decides
+either way."""
 
 UploadTranscript = Callable[[str, dict], Awaitable["bool | str"]]
 """``upload_transcript(visit_id, upload_doc) -> bool | str``: upload one pending transcript.
@@ -131,6 +145,8 @@ class RecoveryReport:
 
     forgets_clean: bool = True
     renamed: bool = False
+    # 删除退役（pending_retire）全部补完；False：标记留到下次启动
+    retired: bool = True
     crashed: list[str] = field(default_factory=list)
     chips: list[str] = field(default_factory=list)
     digests: dict[str, bool] = field(default_factory=dict)
@@ -155,20 +171,31 @@ class RecoveryReport:
 
 
 def _read_stream(path: Path) -> list[dict]:
-    data = path.read_bytes()
-    parts = data.split(b"\n")
-    tail = parts.pop()
-    if tail:
-        logger.warning("visit upload stream %s: dropped a partial trailing line", path.name)
+    records, dropped = _read_stream_counted(path)
+    if dropped:
+        logger.warning("visit upload stream %s: dropped %d unreadable record(s)", path.name, dropped)
+    return records
+
+
+_NEWLINE = bytes((10,))
+
+
+def _read_stream_counted(path: Path) -> tuple[list[dict], int]:
+    """``(JSON objects of the stream, records dropped)``: a partial trailing line and unparseable lines count."""
+    parts = path.read_bytes().split(_NEWLINE)
+    dropped = 1 if parts.pop() else 0
     out = []
     for raw in parts:
         try:
             obj = json.loads(raw)
         except (ValueError, RecursionError):
+            dropped += bool(raw.strip())
             continue
         if isinstance(obj, dict):
             out.append(obj)
-    return out
+        else:
+            dropped += 1
+    return out, dropped
 
 
 def _number(value: Any) -> float | None:
@@ -434,6 +461,54 @@ def _stream_doc_sync(
                             fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
 
 
+DROPPED_RECORDS_KEY = "dropped_records"
+"""Envelope key of a recovery-sealed upload: records its crashed stream lost (absent when none)."""
+
+
+def _dropped_line_records(records: list[dict], doc: dict) -> int:
+    """Line records of the stream that ``build_upload_doc`` rejected as malformed."""
+    line_records = sum(1 for record in records[1:] if record.get("kind") == "line")
+    return max(0, line_records - len(doc["request"]["lines"]))
+
+
+def _recorded_drops(doc: dict) -> int:
+    value = doc.get(DROPPED_RECORDS_KEY)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def read_pending_upload_doc_sync(config_dir: Path, visit_id: str) -> tuple[dict, int] | None:
+    """``(upload document, records dropped)`` of a visit whose transcript has not reached Servers yet (read only).
+
+    The sealed ``.upload.json`` when :func:`sealed_upload_doc_usable` (with
+    the drops recovery recorded when it sealed a crashed stream), else the document its ``.upload.jsonl`` stream would seal into
+    (a crashed visit; ``finalized_reason`` ``'crash'``) with the number of
+    records the rebuild had to drop (a partial trailing line, unparseable
+    lines, malformed line records); None when neither exists or is usable.
+    Nothing is written or deleted. Raises ``OSError`` when a file exists but
+    cannot be read right now.
+    """
+    spool_dir = Path(config_dir) / VISIT_SPOOL_DIRNAME
+    try:
+        doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
+    except ValueError:
+        doc = None
+    if sealed_upload_doc_usable(doc, visit_id):
+        return doc, _recorded_drops(doc)
+    try:
+        records, dropped = _read_stream_counted(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX))
+    except FileNotFoundError:
+        return None
+    owner, char_uid = _with_header_fallback(spool_dir, visit_id, None, None)
+    try:
+        doc = build_upload_doc(records, visit_id=visit_id, finalized_reason=None,
+                               fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
+    except ValueError:
+        return None
+    if doc is None:
+        return None
+    return doc, dropped + _dropped_line_records(records, doc)
+
+
 def _write_private_json(path: Path, doc: dict) -> None:
     atomic_write_json(path, doc)
     try:
@@ -455,12 +530,19 @@ def _seal_stream_sync(
     sealed = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
     owner, char_uid = _with_header_fallback(spool_dir, visit_id, owner, char_uid)
     stream_mtime_ns = stream.stat().st_mtime_ns
-    doc = build_upload_doc(_read_stream(stream), visit_id=visit_id, finalized_reason=finalized_reason,
+    records, dropped = _read_stream_counted(stream)
+    doc = build_upload_doc(records, visit_id=visit_id, finalized_reason=finalized_reason,
                            fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
     if doc is None:
         memory_bridge.diag("upload_stream_corrupt", visit_id=visit_id)
         stream.unlink(missing_ok=True)
         return None
+    dropped += _dropped_line_records(records, doc)
+    if dropped:
+        # 封存后流水就删了：丢掉多少条要随文件留下，导出时才知道这份不完整（上传只发 request，不受影响）；
+        # 上传成功后文件也删了，本机日志里留一条诊断
+        doc[DROPPED_RECORDS_KEY] = dropped
+        memory_bridge.diag("upload_stream_dropped_records", visit_id=visit_id, count=dropped)
     if doc["own_char_uid"] is None:
         # 角色 id 哪儿都补不回来（多半是 state.json 一时读不出）：封出来的文件会被当成坏文件
         # 删掉，连同刚删的流水一起丢掉整份转录。不写文件、留着流水，下次启动再封
@@ -523,10 +605,6 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
-_ALL_NAMES = None
-"""Sentinel of :func:`_reconcile_rename`: every name-dependent step must wait."""
-
-
 async def _reconcile_rename_guarded(
     config_dir: Path, names: set[str], uid_of: dict[str, str] | None,
     lifecycle_guard: LifecycleGuard | None,
@@ -574,75 +652,6 @@ async def _reconcile_rename_guarded(
             return result
     logger.warning("visit recovery: pending_rename kept changing while waiting for its guard, deferred")
     return _ALL_NAMES
-
-
-_MARKER_CHANGED = object()
-"""Returned by :func:`_reconcile_rename` when the marker is not the one the caller guarded."""
-
-
-async def _reconcile_rename(
-    config_dir: Path, names: set[str], uid_of: dict[str, str] | None = None,
-    expected: Any = None,
-) -> Any:
-    """Finish or roll back a pending character rename; return the names still unsettled.
-
-    The marker is ``{old, new}`` plus, when the rename transaction wrote it,
-    the renamed character's ``uid``: with ``uid_of`` (current name -> uid)
-    the direction is decided by which name that uid has now. Without a uid,
-    by which of the two names exists. When neither name exists the
-    character was deleted (its data is retired by uid): the marker is
-    dropped. An empty set means no rename is pending; ``{old, new}`` that
-    the marker is kept as genuinely ambiguous (only those two names wait);
-    ``None`` that the roster or marker is unreadable (everything waits).
-    """
-    try:
-        marker = await read_roster_marker(config_dir, "pending_rename")
-    except RosterCorruptError as exc:
-        logger.error("visit recovery: roster unreadable, rename not reconciled: %s", exc)
-        return _ALL_NAMES
-    if expected is not None and marker != expected:
-        # 调用方是按另一份标记拿的守卫：这次读到的标记属于别的角色，不能拿着错的守卫去迁
-        return _MARKER_CHANGED
-    if marker is None:
-        return frozenset()
-    old = marker.get("old") if isinstance(marker, dict) else None
-    new = marker.get("new") if isinstance(marker, dict) else None
-    if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
-        # 格式坏了的标记已没有可对账的信息，留着只会永久挡住补录与清除：记诊断后清掉
-        memory_bridge.diag("pending_rename_malformed")
-        logger.error("visit recovery: malformed pending_rename %r dropped", marker)
-        return frozenset() if await clear_roster_marker(config_dir, "pending_rename", marker) else _ALL_NAMES
-    # rename_char 按机器上的角色名改写全部账号分区，与 own_uid 无关
-    roster = PeerRoster(config_dir, own_uid="pending-rename")
-    uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
-    if uid is not None and uid_of is not None:
-        # 有 uid 就按它现在叫什么定方向：新旧两个名字同时存在（旧名被新建角色占用）也分得清
-        current = {name for name, value in uid_of.items() if value == uid}
-        # 另一个名字被别的角色占着（旧名被新建角色复用）：名册条目只按名字存，迁移会把
-        # 两个角色的记录混到一起。分不开就不迁，留着标记、只挡这两个名字
-        reused = (old in uid_of and uid_of[old] != uid) or (new in uid_of and uid_of[new] != uid)
-        forward = new in current and not reused
-        backward = old in current and not forward and not reused
-        deleted = not current
-    else:
-        forward = new in names and old not in names
-        backward = old in names and new not in names
-        deleted = old not in names and new not in names
-    if forward:
-        await roster.rename_char(old, new)
-        await VisitSpool.rename_own_char(config_dir, old, new)
-    elif backward:
-        # 改名没生效：把已经改写成新名的场次改回旧名
-        await VisitSpool.rename_own_char(config_dir, new, old)
-        await roster.rename_char(new, old)
-    elif deleted:
-        # 两个名字都不在：这个角色已被删除，它的名册条目与场次由删除的退役步骤按 uid
-        # 处理。标记不再有可对账的对象，留着只会永远挡住清除与逐场补录
-        logger.warning("visit recovery: pending_rename %r -> %r names a deleted character, dropped", old, new)
-    else:
-        logger.warning("visit recovery: pending_rename %r -> %r is ambiguous, kept", old, new)
-        return frozenset({old, new})
-    return frozenset() if await clear_roster_marker(config_dir, "pending_rename", marker) else _ALL_NAMES
 
 
 def _in_flight(config_dir: Path, visit_id: str, is_live: Callable[[str], bool]) -> bool:
@@ -1020,6 +1029,16 @@ async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
     return owner
 
 
+async def pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
+    """Community ``visit_uid`` owning the visit's pending transcript (the rule uploads follow).
+
+    The sealed upload's own owner, else ``state.json``, else the upload
+    stream header: legacy ownerless files are attributed the same way the
+    upload path backfills them.
+    """
+    return await _pending_upload_owner(Path(config_dir), visit_id)
+
+
 def _upload_stream_owner_sync(spool_dir: Path, visit_id: str) -> str | None:
     """``own_visit_uid`` named by this visit's upload stream header; None when absent or not this visit's."""
     try:
@@ -1330,6 +1349,8 @@ async def visit_spool_recovery(
     resume_diary_commit: ResumeDiaryCommit | None = None,
     void_pending: VoidPending | None = None,
     lifecycle_guard: LifecycleGuard | None = None,
+    retire_persona: RetirePersona | None = None,
+    config_lock: Callable[[], AsyncContextManager[Any]] | None = None,
     client: ScopedMemoryClient | None = None,
     now: float | None = None,
 ) -> RecoveryReport:
@@ -1346,7 +1367,10 @@ async def visit_spool_recovery(
     background upload retry of a visit whose files were transiently
     unreadable. ``summary_llm`` is required for last-visit summaries (without it
     they wait for a later pass). ``lifecycle_guard`` is the clearing
-    endpoints' rename / delete guard, held while forgets are replayed. The
+    endpoints' rename / delete guard, held while forgets are replayed.
+    ``retire_persona`` deletes a deleted character's visit persona and
+    ``config_lock`` is the character-config mutation lock each pending
+    retirement is settled under. The
     other callbacks are optional and their
     steps are skipped (files kept) when missing. Independent of
     ``visitMemoryEnabled`` and of the ``NEKO_VISIT_ENABLED`` release switch.
@@ -1379,10 +1403,52 @@ async def visit_spool_recovery(
         names, uid_of = await load_names()
         # 本机其他猫的名字同样受保护：对端把自己叫成「本机的另一只猫」时不能顶替成说话人标签
         local_names = frozenset(names)
-        unsettled = await _reconcile_rename_guarded(config_dir, names, uid_of, lifecycle_guard, load_names)
     except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
-        logger.error("visit recovery: rename reconciliation failed: %r", exc)
+        logger.error("visit recovery: character config unreadable, rename / retirement deferred: %r", exc)
+        load_names = None
+    if load_names is not None:
+        try:
+            # 删除提交后退役没做完（失败 / 崩溃）的角色：补完它的场次、名册条目与串门人设，
+            # 否则同名新角色会收到旧芯片、名字一直被占着。先于改名对账：改名（含云快照导入
+            # 带来的改名）可能把别的角色的条目迁进这个名字，之后再按名字退役会把它们一起删掉
+            report.retired = await replay_retires(
+                config_dir, load_names, retire_persona=retire_persona, config_lock=config_lock,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("visit recovery: retirement replay failed: %r", exc)
+            report.retired = False
+        try:
+            # 退役重放按项拿放角色配置锁、可能耗时：期间云下载可能把某个角色以第三个名字恢复回来。
+            # 锁内重读名单再判断哪些排队改名属于已删除的角色，旧快照会把它的改名当成「已删」丢掉
+            if config_lock is not None:
+                async with config_lock():
+                    names, uid_of = await load_names()
+                    await drop_deleted_queued_renames(config_dir, uid_of)
+            else:
+                names, uid_of = await load_names()
+                await drop_deleted_queued_renames(config_dir, uid_of)
+            # 云快照一次改了几个角色的名字：其余的排在队列里依次轮到（同一套规则，每笔在各自角色的守卫下对账）
+            unsettled = await reconcile_renames(
+                config_dir, names, uid_of,
+                reconcile=lambda: _reconcile_rename_guarded(config_dir, names, uid_of, lifecycle_guard, load_names),
+                # 上面已在锁内按重读的名单撤过；锁外再按同一份名单撤一次，会把锁释放后新记下的排队改名当成已删除
+                drop_deleted=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
+            logger.error("visit recovery: rename reconciliation failed: %r", exc)
+            unsettled = _ALL_NAMES
+    else:
+        report.retired = False
         unsettled = _ALL_NAMES
+    if unsettled is not _ALL_NAMES:
+        # 位置上那笔对不完账时，后面排队的改名也还没轮到：它们的名字同样没对完账，清除重放与
+        # 逐场补录都得跳过（按新名找不到还在旧名下的条目，会「成功」地什么都没做）
+        try:
+            held = pending_rename_names(*await read_roster_markers(
+                config_dir, "pending_rename", "pending_rename_queue"))
+        except RosterCorruptError:
+            held = None
+        unsettled = _ALL_NAMES if held is None else frozenset(unsettled | held)
     names_settled = unsettled is not _ALL_NAMES
     report.renamed = unsettled == frozenset()
     if names_settled:

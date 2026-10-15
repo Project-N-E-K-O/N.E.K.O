@@ -1003,7 +1003,11 @@ class StreamingMixin:
                                 _agent_cb_drained, _agent_cb_extra_snapshot
                             )
                         if reply_turn is not None:
-                            self._end_reply_turn(reply_turn)
+                            try:
+                                if reply_turn.reply_tail is not None:
+                                    await reply_turn.reply_tail.registry.finish(reply_turn.reply_tail)
+                            finally:
+                                self._end_reply_turn(reply_turn)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

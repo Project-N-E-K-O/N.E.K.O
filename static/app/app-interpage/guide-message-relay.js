@@ -182,6 +182,12 @@
                         dispatchIdleCat1PlaygroundYarnRequest(event.data);
                         break;
                     }
+                    case 'idle_cat1_playground_yarn_activate': {
+                        var cat1PlaygroundYarnActivateCurrentName = I.getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!cat1PlaygroundYarnActivateCurrentName || event.data.lanlan_name !== cat1PlaygroundYarnActivateCurrentName)) break;
+                        dispatchIdleCat1PlaygroundYarnActivate(event.data);
+                        break;
+                    }
                     case 'idle_chat_pair_move_bounds': {
                         var pairMoveChatCurrentName = I.getCurrentLanlanName();
                         if (event.data.lanlan_name && (!pairMoveChatCurrentName || event.data.lanlan_name !== pairMoveChatCurrentName)) break;
@@ -966,6 +972,22 @@
                 reason: 'cat1-playground-entry',
                 source: '',
                 trigger: 'cat1-question-mark',
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleCat1PlaygroundYarnActivate(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-playground-yarn-activate', {
+            detail: Object.assign({
+                action: 'idle_cat1_playground_yarn_activate',
+                activationId: detail && detail.activationId ? detail.activationId : '',
+                reason: 'cat1-playground-yarn-click',
+                source: '',
+                trigger: 'yarn-click',
                 timestamp: Date.now(),
                 via: 'broadcast-channel'
             }, detail || {}, {

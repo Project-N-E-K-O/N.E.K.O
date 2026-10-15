@@ -73,6 +73,7 @@ from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketState
 
 from config.visit_settings import (
+    VISIT_CAPS_CACHE_TTL_S,
     VISIT_LIVEKIT_PUBLISH,
     VISIT_TIERS,
 )
@@ -569,6 +570,7 @@ def pending_close_tasks() -> list[asyncio.Task]:
 def _reset_for_tests() -> None:
     """Forget every registration (unit tests only)."""
     _links.clear()
+    _preflight_failures.clear()
 
 
 # ── 上行处理 ───────────────────────────────────────────────────────────
@@ -597,7 +599,47 @@ def _record_preflight(session: VisitTransportSession, msg: dict[str, Any], ok: b
     slot = get_visit_route_state(session.lanlan_name)
     if slot is not None and slot.get("visit_id") == session.visit_id:
         slot["caps_preflight"] = dict(caps)
+    # 按页面环境（User-Agent）记下结论：同一环境再建房 / 入房时失败结论可同步 409
+    remember_preflight(caps["ua"], ok, caps["reason"])
     return caps
+
+
+# ── 预检结果缓存（§4.6 rooms / join 的同步 409）──────────────────────────
+
+_PREFLIGHT_CACHE_MAX = 16
+_preflight_failures: dict[str, tuple[float, Optional[str]]] = {}
+"""User-Agent → (monotonic time, reason) of the last failed preflight of that page environment."""
+
+
+def page_environment(user_agent: Any) -> str:
+    """Cache key of a page environment: its User-Agent, cut like the reported ``caps.ua``."""
+    return str(user_agent or "")[:_UA_MAX_CHARS]
+
+
+def remember_preflight(user_agent: Any, ok: bool, reason: Optional[str]) -> None:
+    """Record a preflight result of one page environment (a pass clears an earlier failure)."""
+    key = page_environment(user_agent)
+    if not key:
+        return
+    _preflight_failures.pop(key, None)
+    if ok:
+        return
+    _preflight_failures[key] = (time.monotonic(), reason)
+    while len(_preflight_failures) > _PREFLIGHT_CACHE_MAX:
+        _preflight_failures.pop(next(iter(_preflight_failures)))
+
+
+def cached_preflight_failure(user_agent: Any) -> Optional[dict[str, Any]]:
+    """``{reason}`` when this page environment failed the preflight within ``VISIT_CAPS_CACHE_TTL_S``."""
+    key = page_environment(user_agent)
+    hit = _preflight_failures.get(key) if key else None
+    if hit is None:
+        return None
+    if time.monotonic() - hit[0] > VISIT_CAPS_CACHE_TTL_S:
+        # 过期：下一次照常建 iframe 重跑预检（环境可能已经变了）
+        del _preflight_failures[key]
+        return None
+    return {"reason": hit[1]}
 
 
 def _sdk_caps(msg: dict[str, Any]) -> dict[str, Any]:

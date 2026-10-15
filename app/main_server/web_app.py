@@ -383,6 +383,7 @@ from main_routers.mmd_router import router as mmd_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
+from main_routers.public_knowledge_router import router as public_knowledge_router  # noqa
 from main_routers.numeric_theater_router import router as numeric_theater_router  # noqa
 from main_routers.storage_location_router import router as storage_location_router  # noqa
 from main_routers.plugin_card_router import router as plugin_card_router  # noqa
@@ -398,6 +399,7 @@ from main_routers.cookies_login_router import router as cookies_login_router  # 
 from main_routers.game_router import router as game_router  # noqa
 from main_routers.watch_together_router import router as watch_together_router
 from main_routers.game_router.drawing_guess import router as drawing_guess_router  # noqa
+from main_routers.visit_router import router as visit_router  # noqa
 from main_routers.card_drop_router import (  # noqa
     _facts_cors_headers as _card_drop_cors_headers,
     _local_mutation_origin_allowed as _card_drop_mutation_origin_allowed,
@@ -646,6 +648,28 @@ async def runtime_shutdown(request: Request):
     )
 
 
+def _knowledge_body(request: Request, knowledge_path: str) -> tuple[Response | None, object]:
+    """(refusal, streamed body) for a knowledge call, under its size cap.
+
+    Like the other two hops, the body is passed through as it arrives and
+    never held whole in Main; going over the cap stops the transfer.
+    """
+    from utils.http.knowledge_proxy import body_limit, capped_body, declared_size_problem
+
+    limit = body_limit(knowledge_path, request.method)
+    problem = declared_size_problem(request.headers.get("content-length"), limit)
+    if problem is not None:
+        return JSONResponse(status_code=problem[1], content={"ok": False, "reason": problem[0]}), b""
+    if limit == 0:
+        # Reads carry no body: send none, rather than an empty chunked one.
+        return None, b""
+    return None, capped_body(request, limit)
+
+
+def _payload_too_large() -> JSONResponse:
+    return JSONResponse(status_code=413, content={"ok": False, "reason": "payload_too_large"})
+
+
 @app.api_route(
     "/market/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 )
@@ -703,7 +727,10 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
 
     headers.pop("x-neko-market-internal", None)
     headers.pop("x-neko-market-public-origin", None)
-    body = await request.body()
+    # Knowledge calls (manager page -> plugin server's /market/knowledge) are
+    # streamed through under their size cap instead; see below.
+    knowledge_path = path == "knowledge" or path.startswith("knowledge/")
+    body = b"" if knowledge_path else await request.body()
     if request.scope.get("neko.instance_identity"):
         # This is a new authenticated service-to-service hop. The plugin's
         # proxy middleware must observe its real loopback caller, not rewrite
@@ -721,6 +748,12 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         headers["x-neko-market-internal"] = market_internal_proof(
             signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
+    if knowledge_path:
+        refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))
+        if refused is not None:
+            return refused
+    from utils.http.knowledge_proxy import BodyTooLarge, is_body_too_large
+
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False
@@ -731,7 +764,11 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
                 content=body,
                 headers=headers,
             )
+    except BodyTooLarge:
+        return _payload_too_large()
     except httpx.HTTPError as exc:
+        if is_body_too_large(exc):
+            return _payload_too_large()
         logger.warning("Market bridge proxy failed: target=%s error=%s", target, exc)
         return JSONResponse(
             status_code=502,
@@ -768,6 +805,7 @@ app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
+app.include_router(public_knowledge_router)
 app.include_router(cloudsave_router)
 app.include_router(storage_location_router)
 app.include_router(plugin_card_router)
@@ -789,6 +827,8 @@ app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(numeric_theater_router)
+# 猫娘串门：/api/visit（含 /api/visit/transport/ws）；发起入口受 NEKO_VISIT_ENABLED 总闸，数据管理不受
+app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)
 app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.

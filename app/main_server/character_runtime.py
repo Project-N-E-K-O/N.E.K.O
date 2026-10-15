@@ -33,6 +33,7 @@ from PIL import Image
 from config import USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.reply_tail import bind_image_validation
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     CALLBACK_IMAGE_MAX_COUNT,
@@ -498,6 +499,10 @@ def _build_plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, st
     return _build_plugin_chat_blocks(media_parts, include_text=False)
 
 
+# Reply-tail images go through the same display validator as plugin pushes.
+bind_image_validation(_build_plugin_image_chat_blocks, _image_part_payloads_conflict)
+
+
 def _build_ordered_plugin_chat_blocks(parts: list[Any]) -> list[dict[str, str]]:
     """Build supported frontend blocks without changing canonical part order."""
     return _build_plugin_chat_blocks(parts, include_text=True)
@@ -805,6 +810,14 @@ def _get_explicit_session_user_language(name):
     if manager is None or not getattr(manager, "_user_language_explicit", False):
         return None
     return getattr(manager, "user_language", None)
+
+
+def _get_session_tool_names(name):
+    """Return the tool names the role's live session has registered."""
+    manager = _get_session_manager(name)
+    if manager is None:
+        return None
+    return manager.list_tools()
 
 
 def _get_session_render_language(name):
@@ -2007,6 +2020,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     ),
                     render_language_provider=(
                         lambda _name=k: _get_session_render_language(_name)
+                    ),
+                    tool_names_provider=(
+                        lambda _name=k: _get_session_tool_names(_name)
                     ),
                 ),
                 name=f"SyncConnector-{k}",

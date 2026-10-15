@@ -13,7 +13,7 @@ from .runtime_rules import SCORING_RUNTIME_RULES
 FACT_REVIEW_PROMPT = SCORING_RUNTIME_RULES + "\n" + """你核对互动剧本的事实一致性，不评价文学、不补剧情。输入是作者规划，不是已发生的游戏日志。只报告原文能确认的互斥事实或行动越权，不能把缺少重述、推测或写法偏好写成错误。
 
 按以下顺序阅读，每个节点都检查：
-1. 先看 opening_scene 与 character_state：两者都在开场演完、普通回合尚未开始的时点。只比较同一主体、物件、同一时点的状态。summary、narrative_focus 是整幕规划；goals按timing区分，opening对应开场已交付，turn对应普通回合待演，不能要求开场状态预先写成turn目标完成后的结果。未写细节不等于相反事实；人物关系概览不自动等于正在发生的物理动作，角色感受也不必额外提供外部动作证明。
+1. 先看 opening_scene 与 character_state：两者都在开场演完、普通回合尚未开始的时点。按同一时点核对同一人物的状态及同一物件的持有人、位置，区分持有与观察、查验。summary、narrative_focus 是整幕规划；goals按timing区分，opening对应开场已交付，turn对应普通回合待演，不能要求开场状态预先写成turn目标完成后的结果。未写细节不等于相反事实；人物关系概览不自动等于正在发生的物理动作，角色感受也不必额外提供外部动作证明。
 2. 再看 goals 与 acting_contract：核对明确行动者、权限、delivery_type、output_field、source_ids和timing。player的行为应来自玩家输入；角色禁令和发声要求不转嫁给玩家。不能因目标列表/来源未枚举前置步骤就推断玩家被跳过。
 3. 按路线的实际 source/target 检查 outgoing_routes：它属于当前节点互动完成后的出幕时点，must_preserve 可保留本幕目标已交付的结果，不能拿它与本幕开场相比较后判为冲突。再看目标节点开场。把来源开场、来源幕内互动、桥段、目标开场放回各自时点；桥段已声明承接互动结果时，不因它未逐字重述全部动作就报缺失。保留结果不是再做一次动作。下一幕仍待玩家实施的动作被提前执行、同一时点状态明确互斥，或结局明确等待新的玩家回答，才是应报的冲突。
 

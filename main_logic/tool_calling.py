@@ -162,6 +162,9 @@ class ToolCall:
     raw_arguments: str = ""
     # Used internally by some providers for state tracking; opaque to callers.
     provider_meta: Dict[str, Any] = field(default_factory=dict)
+    # Host-only ownership, never encoded into model arguments/history.
+    reply_owner: Any = field(default=None, repr=False)
+    host_reply: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
 
 @dataclass

@@ -46,6 +46,7 @@ import re
 from pathlib import Path
 
 import pytest
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP = ROOT / "static" / "i18n-i18next.js"
@@ -65,6 +66,46 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-10-13-visit-pr12-main-merge-pr3415",
+        "2026-10-13-visit-pr12-main-merge-day1-systray",
+        "2026-10-13-pr3415-screen-source-main-merge-2",
+        "2026-10-13-visit-pr12-input-source-refusal",
+        "2026-10-13-day1-platform-systray-main-merge",
+        "2026-10-13-visit-pr12-main-merge-pr3403",
+        "2026-10-13-visit-pr12-review-round1",
+        "2026-10-13-visit-frame-badges-main-merge-5",
+        "2026-10-13-visit-pr12-chat-consent-main-merge",
+        "2026-10-12-visit-pr12-chat-consent",
+        "2026-10-13-day1-platform-systray",
+        "2026-10-13-pr3415-screen-source-main-merge",
+        "2026-10-13-pr3415-screen-source-closed",
+        "2026-10-12-pr3140-gravity-main-merge",
+        "2026-10-12-visit-frame-badges-main-merge-4",
+        "2026-10-12-visit-frame-badges-main-merge-3",
+        "2026-10-12-gravity-cat-settings",
+        "2026-10-12-pr14a-debrief-pr3398-merge",
+        "2026-10-12-visit-frame-badges-main-merge-2",
+        "2026-10-12-gravity-cat-settings",
+        "2026-10-12-pr3398-main-merge",
+        "2026-10-12-visit-frame-badges-merge",
+        "2026-10-12-pr14a-debrief-ambiguous-names-merge",
+        "2026-10-12-pr14a-debrief-main-merge",
+        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
+        "2026-10-11-vrm-emotion-recovery",
+        "2026-10-11-vrm-emotion-load-state-main-rebase",
+        "2026-10-11-pr3385-cloudsave-visit-data-busy",
+        "2026-10-11-vrm-emotion-load-state",
+        "2026-10-11-visit-data-ambiguous-names",
+        "2026-10-11-visit-pr13-pr15-report-queued-login",
+        "2026-10-11-visit-data-ambiguous",
+        "2026-10-11-visit-data-busy-rename-text",
+        "2026-10-11-pr14a-visit-debrief",
+        "2026-10-11-visit-pr13-pr15-settings-memory-panel",
+        "2026-10-11-visit-pr13-pr15-forget-record-discard",
+        "2026-10-12-visit-frame-badges",
+        "2026-10-11-pngtuber-skipped-bound-memory-toggle-main-merge",
+        "2026-10-10-pngtuber-delete-skipped-bound",
+        "2026-10-09-memory-toggle-repair",
         "2026-10-09-pr3340-avatar-wake-hints-rebase",
         "2026-10-09-pr3345-wake-repair-hints",
         "2026-10-09-chat-avatar-storage-hardening-rebase",
@@ -163,6 +204,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-assist-model-id-removal",
         "2026-10-03-model-picker-url-hint",
         "2026-10-03-assist-model-picker",
+        "2026-10-03-theater-air-basketball-main-merge",
+        "2026-10-03-model-picker-main-merge-round5",
         "2026-10-03-requesty-air-basketball-main-merge",
         "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-click-guide-review-main-merge",
@@ -395,7 +438,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = 'dbc6b94b9017bca9a3efc25114ee731e5908cf39a754c3ff7c17d0c47a2b0134'
+LOCALE_KEY_SIGNATURE = "94ce8c3d3f1b87949726108f46aa857360b898d1c92e3d9154eac80ccbf3d71e"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
@@ -492,6 +535,26 @@ def test_locale_key_signature_pins_the_shipped_key_set() -> None:
     bootstrap = _read_bootstrap()
     signature = _locale_key_signature(_supported_languages(bootstrap))
     assert signature == LOCALE_KEY_SIGNATURE, _BUMP_INSTRUCTIONS
+
+
+@pytest.mark.parametrize("template_name", ["model_manager.html", "vrm_emotion_manager.html"])
+def test_vrm_pages_refresh_the_locale_bootstrap_with_static_assets(template_name: str) -> None:
+    from config import DEFAULT_VRM_LIGHTING
+
+    template = Environment().from_string(
+        (ROOT / "templates" / template_name).read_text(encoding="utf-8")
+    )
+    urls = []
+    for version in ("before-locale-update", "after-locale-update"):
+        rendered = template.render(
+            static_asset_version=version,
+            vrm_defaults=dict(DEFAULT_VRM_LIGHTING),
+        )
+        scripts = re.findall(r'<script\b[^>]*\bsrc="([^"]+)"', rendered)
+        bootstrap_urls = [url for url in scripts if url.startswith("/static/i18n-i18next.js")]
+        assert bootstrap_urls == [f"/static/i18n-i18next.js?v={version}"]
+        urls.extend(bootstrap_urls)
+    assert urls[0] != urls[1], "a locale bootstrap update must change its browser cache key"
 
 
 def test_bump_instructions_name_every_step_of_the_fix() -> None:

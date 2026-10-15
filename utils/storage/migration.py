@@ -71,6 +71,10 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
 MIGRATED_RUNTIME_ENTRY_NAMES = (
     "config",
     "memory",
+    # Public knowledge: user-imported packs and registry, plus knowledge.db.
+    # The database is derived but moves with the rest: migration runs with
+    # every server stopped, exactly like memory's SQLite files.
+    "knowledge",
     "plugins",
     "live2d",
     "vrm",

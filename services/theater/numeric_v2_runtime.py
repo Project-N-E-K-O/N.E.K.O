@@ -20,6 +20,7 @@ from .numeric_v2 import (
     NumericV2Compiler,
 )
 from .numeric_v2_performance import (
+    is_silent_invitation_control,
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
     valid_ordered_content,
@@ -33,6 +34,7 @@ from .numeric_v2_action_projection import (
     normalize_player_action_projection,
     project_player_action_result,
 )
+from .numeric_v2_narrative import apply_narrative_record, validate_narrative_state
 from .numeric_v2_store import (
     NumericV2SessionStore,
     NumericV2StoredSession,
@@ -823,6 +825,8 @@ class ScriptSessionV2:
     transition_offered: bool = False
     # Recorded by the live runtime, never inferred from a later archive/replay.
     opening_performed_at: str = ""
+    # 缺省表示旧存档未记录叙事状态；不从作者开场补造。
+    narrative_state: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -849,6 +853,8 @@ class ScriptSessionV2:
             "dialogue_policy": self.dialogue_policy,
             "transition_offered": self.transition_offered,
             "opening_performed_at": self.opening_performed_at,
+            **({"narrative_state": deepcopy(self.narrative_state)}
+               if self.narrative_state is not None else {}),
         }
 
     @classmethod
@@ -883,6 +889,9 @@ class ScriptSessionV2:
         story_state = _validate_story_state(value.get("story_state"))
         if story_state["revision"] != session_revision:
             raise NumericV2RuntimeError("story_state_revision_mismatch")
+        narrative_state = value.get("narrative_state")
+        if narrative_state is not None:
+            narrative_state = validate_narrative_state(narrative_state, revision=session_revision)
         return cls(
             session_id=_stable_id(value.get("session_id"), "session_id"),
             story_package_id=_stable_id(value.get("story_package_id"), "story_package_id"),
@@ -909,6 +918,7 @@ class ScriptSessionV2:
             ),
             dialogue_policy=_dialogue_policy(value.get("dialogue_policy")),
             transition_offered=_transition_offered(value),
+            narrative_state=narrative_state,
         )
 
 
@@ -1065,6 +1075,14 @@ class NumericV2Engine:
                 and opening_performance["fixed_narrations"] != generated_opening.get("fixed_narrations", [])):
             raise NumericV2RuntimeError("numeric_fixed_narration_invalid")
         validate_delivery(self.story, generated_opening)
+        narrative_state = None
+        if "narrative_record" in generated_opening:
+            narrative_state = apply_narrative_record(
+                None, generated_opening["narrative_record"], revision=0,
+                node_id=str(self.story["start_node_id"]),
+                from_node_id=str(self.story["start_node_id"]),
+                performance=generated_opening, message="",
+            )
         return ScriptSessionV2(
             session_id=_stable_id(session_id, "session_id"),
             story_package_id=self.story_id,
@@ -1080,6 +1098,7 @@ class NumericV2Engine:
             opening_performance=generated_opening,
             performance_history=(),
             story_state=_initial_story_state(str(self.story["start_node_id"])),
+            narrative_state=narrative_state,
             actor_budget_profile=actor_budget_profile,
             player_address_known=bool(self.story["initial_state"]["player_address_known"]),
             dialogue_policy=self._node_dialogue_policy(
@@ -1100,6 +1119,11 @@ class NumericV2Engine:
         story_state = _validate_story_state(session.story_state)
         if story_state["revision"] != session.revision:
             raise NumericV2RuntimeError("story_state_revision_mismatch")
+        if session.narrative_state is not None:
+            narrative_state = validate_narrative_state(session.narrative_state)
+            # 尚未交付的 outcome 已推进回合号，叙事视图仍取已提交起点。
+            if narrative_state["revision"] > session.revision:
+                raise NumericV2RuntimeError("narrative_state_revision_mismatch")
         if session.status not in {"active", "ended"}:
             raise NumericV2RuntimeError("session_status_invalid")
         if session.actor_budget_profile not in NUMERIC_V2_ACTOR_BUDGET_PROFILES:
@@ -1328,6 +1352,17 @@ class NumericV2Engine:
         if accepted_offer_route_id is not None:
             # 同时作为审计/分叉的重放边界；无此字段的旧回合沿用旧选路规则。
             event["accepted_offer_route_id"] = accepted_offer_route_id
+        if route is not None and accepted_offer_route_id is not None:
+            receipt = offered_event.get("program_invitation") if offered_event else None
+            if (isinstance(receipt, Mapping) and receipt.get("silent") is True
+                    and receipt.get("route_id") == accepted_offer_route_id
+                    and receipt.get("revision") == session.revision
+                    and receipt.get("offer") == ""
+                    and request.input_source == "suggestion"
+                    and request.message.strip() == receipt.get("accept_input")):
+                # This receipt constrains only the departing scene, never Session policy.
+                event["source_transition_dialogue_policy"] = "forbidden"
+                event["input_source"] = request.input_source
         if offer_route_changed:
             event["transition_offer_invalidated"] = True
         if fact_operations:
@@ -1643,10 +1678,22 @@ class NumericV2Runtime:
         replay_session = self.engine.create_session(
             session_id=session_id,
             catgirl_binding=source.session.catgirl_binding,
-            opening_performance=source.session.opening_performance,
+            opening_performance={key: value for key, value in source.session.opening_performance.items()
+                                 if key != "narrative_record"},
             actor_budget_profile=source.session.actor_budget_profile,
         )
-        replay_session = replace(replay_session, opening_performed_at=source.session.opening_performed_at)
+        narrative_state = None
+        if "narrative_record" in source.session.opening_performance:
+            narrative_state = apply_narrative_record(
+                None, source.session.opening_performance["narrative_record"], revision=0,
+                node_id=str(self.engine.story["start_node_id"]),
+                from_node_id=str(self.engine.story["start_node_id"]),
+                performance=source.session.opening_performance, message="",
+            )
+        replay_session = replace(
+            replay_session, opening_performance=deepcopy(source.session.opening_performance),
+            opening_performed_at=source.session.opening_performed_at, narrative_state=narrative_state,
+        )
         replay_events: list[dict[str, Any]] = []
         for index, source_event in enumerate(source.ledger_events[:through_revision]):
             changes = tuple(
@@ -1691,6 +1738,8 @@ class NumericV2Runtime:
                 replayed_event["transition_offer_invalidated"] = True
             if source_event.get("transition_offer_presented") is True:
                 replayed_event["transition_offer_presented"] = True
+            if "transition_offer_source" in source_event:
+                replayed_event["transition_offer_source"] = source_event["transition_offer_source"]
             replayed_session_after_turn = outcome.session
             if "transition_offered" in source_event:
                 # 分叉重放沿用原回合已经提交的提议状态；不能把 Actor 结果重新猜一遍。
@@ -1714,6 +1763,19 @@ class NumericV2Runtime:
                 replayed_session_after_turn = replace(
                     outcome.session,
                     player_address_known=True,
+                )
+            if "narrative_record" in source_event:
+                narrative_record = deepcopy(source_event["narrative_record"])
+                replayed_event["narrative_record"] = narrative_record
+                replayed_session_after_turn = replace(
+                    replayed_session_after_turn,
+                    narrative_state=apply_narrative_record(
+                        replay_session.narrative_state, narrative_record,
+                        revision=int(source_event["result_revision"]),
+                        node_id=str(source_event["to_node_id"]),
+                        from_node_id=str(source_event["from_node_id"]),
+                        performance=source_performance, message=request.message,
+                    ),
                 )
             # 分叉只更换 Session 身份；剧情正文和每轮正式输入保持逐字一致。
             source_performance.update({
@@ -1796,7 +1858,8 @@ class NumericV2Runtime:
                             segments[0],
                             transition_source_dialogue_policy(
                                 str(
-                                    outcome.ledger_event.get("before_dialogue_policy")
+                                    outcome.ledger_event.get("source_transition_dialogue_policy")
+                                    or outcome.ledger_event.get("before_dialogue_policy")
                                     or "required"
                                 )
                             ),
@@ -1821,7 +1884,8 @@ class NumericV2Runtime:
         elif (
             "performance" in performance
             and (
-                not valid_mixed_performance_policy(
+                not is_silent_invitation_control(outcome.ledger_event, performance)
+                and not valid_mixed_performance_policy(
                     performance,
                     str(
                         outcome.ledger_event.get("performance_dialogue_policy")
@@ -1876,9 +1940,28 @@ class NumericV2Runtime:
             "fact_projection": deepcopy(fact_projection),
             "timeline_projection": deepcopy(timeline_projection),
         }
+        narrative_state = outcome.session.narrative_state
+        if "narrative_record" not in ledger_event and narrative_state is not None:
+            # Reinvitation only publishes author text; v2 replay preserves prior gaps.
+            control_turn = ledger_event.get("input_source") == "reinvite"
+            ledger_event["narrative_record"] = {
+                "schema": "numeric_v2_narrative_record_v2" if control_turn else "numeric_v2_narrative_record_v1",
+                "coverage": "confirmed_no_change" if control_turn else "unrecorded",
+                "events": [], "proposal_count": 0,
+            }
+        if "narrative_record" in ledger_event:
+            narrative_record = deepcopy(ledger_event["narrative_record"])
+            record["narrative_record"] = narrative_record
+            narrative_state = apply_narrative_record(
+                narrative_state, narrative_record, revision=outcome.session.revision,
+                node_id=str(ledger_event["to_node_id"]),
+                from_node_id=str(ledger_event["from_node_id"]),
+                performance=record, message=str(ledger_event["input_text"]),
+            )
         session = replace(
             outcome.session,
             performance_history=(*outcome.session.performance_history, record),
+            narrative_state=narrative_state,
         )
         return await self.store.commit(session, ledger_event)
 

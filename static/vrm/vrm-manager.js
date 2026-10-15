@@ -876,6 +876,7 @@ class VRMManager {
             if (this.renderer && this.scene && this.camera) {
                 this.renderer.render(this.scene, this.camera);
             }
+            window.nekoVisitParentBridge?.onExternalRender?.();
 
             // 10. VMC Protocol 采样钩子。全局 active 标志由按需加载的
             // sender 维护；未显式启用时不调用任何 VMC 逐帧逻辑。

@@ -9,14 +9,7 @@ const REGISTRY_PATH = path.join(
   PROJECT_ROOT,
   'static/avatar/avatar-ui-buttons/cat-resource-registry.js',
 );
-const APPEARANCE_MANIFEST_PATH = path.join(
-  PROJECT_ROOT,
-  'static/assets/cat-resources/appearance/dev_neko/manifest.json',
-);
-const VOICE_MANIFEST_PATH = path.join(
-  PROJECT_ROOT,
-  'static/assets/cat-resources/voice/dev_neko/manifest.json',
-);
+const RESOURCE_GROUPS = ['dev_neko', 'yui_neko'];
 const REGISTRY_TEMPLATES = [
   'templates/index.html',
   'templates/chat.html',
@@ -29,8 +22,8 @@ const REGISTRY_TEMPLATES = [
   'templates/soccer_demo.html',
 ];
 
-function loadRegistry(source = fs.readFileSync(REGISTRY_PATH, 'utf8'), overrides = {}) {
-  const window = {};
+function loadRegistry(source = fs.readFileSync(REGISTRY_PATH, 'utf8'), overrides = {}, group = 'dev_neko') {
+  const window = { __nekoCatResourceGroup: group };
   vm.runInNewContext(source, { window, ...overrides }, {
     filename: REGISTRY_PATH,
   });
@@ -39,22 +32,31 @@ function loadRegistry(source = fs.readFileSync(REGISTRY_PATH, 'utf8'), overrides
 
 // Slot ids the registry source declares for one group block, so extra registry
 // slots that the manifest does not describe are caught too.
-function registrySlotIds(blockStart, blockEnd) {
+function registrySlotIds(blockStart, blockEnd, groupId) {
   const source = fs.readFileSync(REGISTRY_PATH, 'utf8');
   const start = source.indexOf(blockStart);
   const end = source.indexOf(blockEnd, start);
   assert.ok(start >= 0 && end > start, `registry block ${blockStart}`);
-  return [...source.slice(start, end).matchAll(/^\s*'([a-z0-9_.]+)':/gm)].map((match) => match[1]).sort();
+  const groupStart = source.indexOf(`        ${groupId}: {`, start);
+  assert.ok(groupStart >= start && groupStart < end, `registry group ${groupId}`);
+  const groupEnd = Math.min(
+    ...['\n        },', '\n        }\n'].map((marker) => {
+      const index = source.indexOf(marker, groupStart);
+      return index >= 0 && index <= end ? index : Number.POSITIVE_INFINITY;
+    }),
+  );
+  assert.ok(groupEnd > groupStart && groupEnd <= end, `registry group end ${groupId}`);
+  return [...source.slice(groupStart, groupEnd).matchAll(/^\s*'([a-z0-9_.]+)':/gm)].map((match) => match[1]).sort();
 }
 
-function assertManifestMatchesRegistry(manifest, readSlot, registrySlots) {
-  assert.equal(manifest.group_id, 'dev_neko');
+function assertManifestMatchesRegistry(manifest, readSlot, registrySlots, groupId) {
+  assert.equal(manifest.group_id, groupId);
   assert.deepEqual(Object.keys(manifest.slots).sort(), registrySlots, `${manifest.kind} slot sets differ`);
   for (const [slot, entry] of Object.entries(manifest.slots)) {
     const expectedUrls = entry.resources.map((resource) => resource.path);
     const actual = readSlot(slot, { random: false });
     assert.equal(actual.available, true, `${manifest.kind}:${slot} should be available`);
-    assert.equal(actual.groupId, 'dev_neko', `${manifest.kind}:${slot} group`);
+    assert.equal(actual.groupId, groupId, `${manifest.kind}:${slot} group`);
     assert.deepEqual(Array.from(actual.urls), expectedUrls, `${manifest.kind}:${slot} paths`);
     assert.deepEqual({ ...actual.metadata }, entry.metadata || {}, `${manifest.kind}:${slot} metadata`);
     for (const resource of entry.resources) {
@@ -73,16 +75,26 @@ function assertManifestMatchesRegistry(manifest, readSlot, registrySlots) {
 }
 
 test('static cat manifests and registry stay slot-compatible', () => {
-  const registry = loadRegistry();
-  const appearance = JSON.parse(fs.readFileSync(APPEARANCE_MANIFEST_PATH, 'utf8'));
-  const voice = JSON.parse(fs.readFileSync(VOICE_MANIFEST_PATH, 'utf8'));
+  for (const groupId of RESOURCE_GROUPS) {
+    const registry = loadRegistry(undefined, {}, groupId);
+    const appearance = JSON.parse(fs.readFileSync(
+      path.join(PROJECT_ROOT, `static/assets/cat-resources/appearance/${groupId}/manifest.json`),
+      'utf8',
+    ));
+    const voice = JSON.parse(fs.readFileSync(
+      path.join(PROJECT_ROOT, `static/assets/cat-resources/voice/${groupId}/manifest.json`),
+      'utf8',
+    ));
 
-  assert.equal(registry.selectedAppearanceGroupId, 'dev_neko');
-  assert.equal(registry.selectedVoiceGroupId, 'dev_neko');
-  assertManifestMatchesRegistry(appearance, registry.getAppearance,
-    registrySlotIds('const appearanceGroups', 'const voiceGroups'));
-  assertManifestMatchesRegistry(voice, registry.getVoice,
-    registrySlotIds('const voiceGroups', 'const actionDependencies'));
+    assert.equal(registry.selectedAppearanceGroupId, groupId);
+    assert.equal(registry.selectedVoiceGroupId, groupId);
+    assertManifestMatchesRegistry(appearance, registry.getAppearance,
+      registrySlotIds('const appearanceGroups', 'const voiceGroups', groupId), groupId);
+    assertManifestMatchesRegistry(voice, registry.getVoice,
+      registrySlotIds('const voiceGroups', 'const actionDependencies', groupId), groupId);
+  }
+
+  const registry = loadRegistry();
 
   assert.equal(registry.getAppearance('action.cat1.play_yarn', { random: false }).metadata.wideArt, true);
   for (const actionId of [
@@ -99,6 +111,120 @@ test('static cat manifests and registry stay slot-compatible', () => {
   const unknownAction = registry.getActionCapabilities('missing-action');
   assert.equal(unknownAction.available, false);
   assert.equal(unknownAction.reason, 'unknown_action');
+});
+
+test('preload resource group takes precedence over stale session storage', () => {
+  const source = fs.readFileSync(REGISTRY_PATH, 'utf8');
+  const window = {
+    __nekoCatResourceGroup: 'yui_neko',
+    sessionStorage: { getItem: () => 'dev_neko' },
+  };
+  vm.runInNewContext(source, { window }, { filename: REGISTRY_PATH });
+  assert.equal(window.NekoCatResourceRegistry.selectedAppearanceGroupId, 'yui_neko');
+  assert.equal(window.NekoCatResourceRegistry.selectedVoiceGroupId, 'yui_neko');
+});
+
+test('compact mirror messages carry wide-art metadata from the active registry', () => {
+  const coreSource = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'static/avatar/avatar-ui-buttons/core.js'),
+    'utf8',
+  );
+  const dragSource = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js'),
+    'utf8',
+  );
+  const mirrorSource = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'static/app/app-react-chat-window/bootstrap-state-and-geometry.js'),
+    'utf8',
+  );
+  assert.match(coreSource, /function _isNekoCatAppearanceWideArtUrl\(slot, assetUrl\)/);
+  assert.match(dragSource, /const assetUrl = options\.assetUrl \|\| _getNekoIdleReturnAssetUrl\(_NEKO_IDLE_TIER_CAT1\)/);
+  assert.match(dragSource, /wideArt:\s*_isNekoCatAppearanceWideArtUrl\('action\.cat1\.play_yarn', assetUrl\)/);
+  assert.match(mirrorSource, /detail && detail\.wideArt === true/);
+});
+
+function createCompactMirrorProducer(registry, idleUrl) {
+  const coreSource = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'static/avatar/avatar-ui-buttons/core.js'),
+    'utf8',
+  );
+  const helperStart = coreSource.indexOf('function _isNekoCatAppearanceWideArtUrl(');
+  const helperEnd = coreSource.indexOf('\nconst _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL', helperStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart, 'missing wide-art producer helper');
+  const source = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js'),
+    'utf8',
+  );
+  const start = source.indexOf('function _getNekoIdleScreenRectFromCompactSurfaceRect(');
+  const end = source.indexOf('function _deactivateNekoIdleCat1CompactMirrors(', start);
+  assert.ok(start >= 0 && end > start, 'missing compact mirror producer');
+  const events = [];
+  const window = {
+    dispatchEvent(event) {
+      events.push(event.detail);
+      return true;
+    },
+    appInterpage: null,
+  };
+  const context = vm.createContext({
+    _NEKO_CAT_RESOURCE_REGISTRY: registry,
+    _NEKO_IDLE_TIER_CAT1: 'cat1',
+    _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX: 28,
+    _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX: 12,
+    _getNekoIdleReturnAssetUrl: () => idleUrl,
+    _normalizeNekoIdleScreenRect: (rect) => rect,
+    _getNekoDesktopVirtualViewportOrigin: () => ({ x: 0, y: 0 }),
+    _getNekoDesktopVirtualElementRect: () => ({ width: 80, height: 80 }),
+    _getNekoIdleCurrentLanlanName: () => '',
+    clearTimeout: () => {},
+    setTimeout: () => 1,
+    CustomEvent: function CustomEvent(type, init) {
+      this.type = type;
+      this.detail = init.detail;
+    },
+    Date,
+    console,
+    window,
+  });
+  vm.runInContext(
+    `${coreSource.slice(helperStart, helperEnd)}\n${source.slice(start, end)}\nthis.producer = _setNekoIdleCat1CompactMirrorActive;`,
+    context,
+  );
+  const producer = context.producer;
+  const makeContainer = () => ({
+    id: 'cat1',
+    classList: { add() {}, remove() {} },
+  });
+  return {
+    events,
+    producer,
+    makeContainer,
+  };
+}
+
+test('compact mirror producer marks only the actual wide-art asset', () => {
+  const playYarnUrl = '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif';
+  const idleUrl = '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif';
+  const producer = createCompactMirrorProducer({
+    getAppearance(slot) {
+      if (slot === 'action.cat1.play_yarn') {
+        return { available: true, urls: [playYarnUrl], metadata: { wideArt: true } };
+      }
+      return { available: true, urls: [idleUrl], metadata: {} };
+    },
+  }, idleUrl);
+
+  assert.equal(producer.producer(null, producer.makeContainer(), true, {
+    surfaceRect: { left: 0, top: 0, width: 100, height: 100 },
+    assetUrl: playYarnUrl,
+  }), true);
+  assert.equal(producer.events.at(-1).wideArt, true);
+
+  assert.equal(producer.producer(null, producer.makeContainer(), true, {
+    surfaceRect: { left: 0, top: 0, width: 100, height: 100 },
+    assetUrl: idleUrl,
+  }), true);
+  assert.equal(producer.events.at(-1).wideArt, false);
 });
 
 

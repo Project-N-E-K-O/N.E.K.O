@@ -14,7 +14,7 @@ def test_structured_passthrough_blocks_reach_the_react_chat_host() -> None:
     assert "blocks: structuredResponseBlocks" in adapter
     assert "response.type === 'chat_blocks'" in websocket
     assert "window.appendReactChatBlocks(response)" in websocket
-    assert "function appendReactChatBlocks(payload)" in adapter
+    assert "function appendReactChatBlocks(payload, tailPlacement)" in adapter
     chat_blocks_branch = websocket.split("if (response.type === 'chat_blocks')", 1)[1].split(
         "// -------- gemini_response --------",
         1,

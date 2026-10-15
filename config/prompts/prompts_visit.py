@@ -1059,51 +1059,6 @@ def build_visit_last_summary_prompt(name: str, record_block: str, lang: str | No
     return instruction + ("\n\n" + record_block if record_block else "")
 
 
-# 回家简述之后的两个芯片（聊天里的系统消息：一句说明 + 「记成日记 / 不记」两个按钮）。
-# 只是界面文字，不进任何提示词。
-VISIT_DEBRIEF_CHIP_PROMPT = {
-    "zh": "要把这次串门记成日记吗？",
-    "zh-TW": "要把這次串門記成日記嗎？",
-    "en": "Keep this visit in her diary?",
-    "ja": "今回の訪問を日記に残しますか？",
-    "ko": "이번 방문을 일기로 남길까요?",
-    "ru": "Записать этот визит в дневник?",
-    "es": "¿Guardar esta visita en su diario?",
-    "pt": "Guardar esta visita no diário dela?",
-}
-
-VISIT_DEBRIEF_CHIP_DIARY = {
-    "zh": "记成日记",
-    "zh-TW": "記成日記",
-    "en": "Keep as diary",
-    "ja": "日記に残す",
-    "ko": "일기로 남기기",
-    "ru": "Записать в дневник",
-    "es": "Guardar en el diario",
-    "pt": "Guardar no diário",
-}
-
-VISIT_DEBRIEF_CHIP_FORGET = {
-    "zh": "不记",
-    "zh-TW": "不記",
-    "en": "Don't keep",
-    "ja": "残さない",
-    "ko": "남기지 않기",
-    "ru": "Не записывать",
-    "es": "No guardar",
-    "pt": "Não guardar",
-}
-
-
-def get_visit_debrief_chip_labels(lang: str | None) -> tuple[str, str, str]:
-    """Return ``(prompt, diary label, forget label)`` of the debrief chips."""
-    return (
-        _loc(VISIT_DEBRIEF_CHIP_PROMPT, lang),
-        _loc(VISIT_DEBRIEF_CHIP_DIARY, lang),
-        _loc(VISIT_DEBRIEF_CHIP_FORGET, lang),
-    )
-
-
 def get_visit_debrief_fallback(lang: str | None) -> str:
     """Return the fixed debrief line used when generation fails or is rejected."""
     return _loc(VISIT_DEBRIEF_FALLBACK, lang)

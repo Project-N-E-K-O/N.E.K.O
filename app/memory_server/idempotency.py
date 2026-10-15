@@ -26,7 +26,9 @@ Three per-character files live under ``memory_dir/<character>/``:
   which Windows file names reject, so the file name is a digest and the key
   itself is stored inside the document).
 * ``scoped_tombstones.json`` -- ``{subject_key: {forgotten_at,
-  forget_epoch}}``, the largest forget epoch each subject ever received.
+  forget_epoch}}``, the largest forget epoch each subject ever received
+  (a fan-out target of a forget is fenced at its own epoch, never at the
+  requested subject's).
 
 Locking contract (see docs/design/visit-infrastructure.md section 4.6):
 
@@ -54,9 +56,10 @@ import os
 import shutil
 import time
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from utils.asyncio_executor import to_thread_through_cancellation
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
@@ -140,7 +143,10 @@ def forget_fence(lanlan_name: str, subject_key: str) -> asyncio.Lock:
     Held from the completed-epoch check through the erase, both cancellation
     passes and the completion marker, so the next forget of the subject only
     checks once the previous one has published (or failed to publish) its
-    completed epoch. Taken before any other lock, by forgets only.
+    completed epoch. Taken before any other lock, by forgets only; a forget
+    takes the fences of every subject it may erase (the requested one and
+    its fan-out targets) in sorted key order, so overlapping forgets never
+    wait on each other in a cycle.
     """
     # 独立的登记表：客户端的幂等键可以是任意合法字符串，借用键锁的命名空间会让
     # 某个键恰好与栅栏同名，清除拿着栅栏再去拿同名键锁就会自己等自己
@@ -360,11 +366,13 @@ async def read_staging(lanlan_name: str, key: str) -> dict | None:
 async def write_staging(lanlan_name: str, key: str, document: dict) -> None:
     """Atomically (re)write the staging document of ``key``.
 
-    Callers hold ``key_lock(lanlan_name, key)``: one writer per key.
+    Callers hold ``key_lock(lanlan_name, key)``: one writer per key. A
+    cancelled caller returns only after the write finished, so the key lock
+    is never released while its write is still running in the thread.
     """
     doc = dict(document)
     doc["key"] = key
-    await asyncio.to_thread(
+    await to_thread_through_cancellation(
         _write_json_object, staging_path(lanlan_name, key), doc,
     )
 
@@ -510,13 +518,32 @@ async def record_tombstones(
     Monotonic: a smaller epoch never lowers an existing tombstone (a late or
     replayed forget must not reopen a window a newer forget closed).
     """
-    stamp = time.time() if now is None else float(now)
-    keys = sorted({str(key) for key in subject_keys if key})
     epoch = int(forget_epoch)
+    return await record_tombstone_epochs(
+        lanlan_name, {str(key): epoch for key in subject_keys if key}, now=now,
+    )
+
+
+async def record_tombstone_epochs(
+    lanlan_name: str,
+    epochs: Mapping[str, int],
+    *,
+    now: float | None = None,
+) -> dict:
+    """Raise each subject's tombstone to at least its own epoch, in one write.
+
+    Each key keeps its own epoch domain (the client counts per subject key),
+    so a forget that fans out to linked subjects passes each target's own
+    generation instead of copying the requested subject's onto them. Same
+    monotonic rule as :func:`record_tombstones`.
+    """
+    stamp = time.time() if now is None else float(now)
+    wanted = {str(key): int(value) for key, value in epochs.items() if key}
 
     def _mutate(data: dict) -> bool:
         changed = False
-        for subject_key in keys:
+        for subject_key in sorted(wanted):
+            epoch = wanted[subject_key]
             current = data.get(subject_key)
             current_epoch = (
                 current.get("forget_epoch")
@@ -686,7 +713,7 @@ async def cleanup_expired(
         ttl_s = MEMORY_IDEMPOTENCY_TTL_S
     current = time.time() if now is None else float(now)
     cutoff = current - float(ttl_s)
-    report = {"staging_removed": 0, "tombstones_removed": 0}
+    report = {"staging_removed": 0, "tombstones_removed": 0, "retired_removed": 0}
     from . import runtime
 
     for name in lanlan_names:
@@ -699,11 +726,12 @@ async def cleanup_expired(
             await _cleanup_one(name, cutoff, report)
         finally:
             runtime._end_character_request(name, lease)
-    if report["staging_removed"] or report["tombstones_removed"]:
+    if report["staging_removed"] or report["tombstones_removed"] or report["retired_removed"]:
         logger.info(
-            "[Idempotency] 启动清理：暂存 %d、墓碑 %d",
+            "[Idempotency] 启动清理：暂存 %d、墓碑 %d、recent 退役记录 %d",
             report["staging_removed"],
             report["tombstones_removed"],
+            report["retired_removed"],
         )
     return report
 
@@ -712,6 +740,7 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
     protected: set[str] = set()
     if not await asyncio.to_thread(os.path.isdir, _character_dir(name)):
         return
+    await _cleanup_retired_keys(name, cutoff, report)
     try:
         # 按文件名反查它属于哪个键：文件名是键的摘要，内容里的键可能坏了 / 被改过，
         # 只有键记录能说明这份暂存还是不是某个 pending 键唯一的副本
@@ -812,6 +841,47 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
         report["tombstones_removed"] += len(removed)
     except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
         logger.warning(f"[Idempotency] {name}: 墓碑清理失败（跳过）: {exc}")
+
+
+async def _cleanup_retired_keys(name: str, cutoff: float, report: dict) -> None:
+    """Drop ``recent.retired_keys.json`` records older than the cutoff whose key is terminal.
+
+    A record of a key still ``pending`` (or without any key record) is kept
+    however old: it is the only proof that a keyed diary entry reached
+    ``recent.json`` before being moved out, and a later same-key retry would
+    otherwise write it back.
+    """
+    from utils.recent_file import RETIRED_KEYS_FILENAME, prune_retired_keys, recent_sidecar_path
+
+    recent_path = os.path.join(_character_dir(name), "recent.json")
+    if not await asyncio.to_thread(os.path.exists, recent_sidecar_path(recent_path, RETIRED_KEYS_FILENAME)):
+        return
+    loaded: dict[str, dict] = {}
+
+    def _records() -> dict:
+        # 在 recent 文件锁内读（prune 持锁调用 _drop）：云存档恢复持同一把锁替换 recent 并删键记录，
+        # 用锁外的旧快照会把恢复之后仍需保留的退役记录删掉
+        if "records" not in loaded:
+            loaded["records"] = _read_json_object(keys_path(name))
+        return loaded["records"]
+
+    def _drop(key: str, stamp: Any) -> bool:
+        record = _records().get(key)
+        terminal = isinstance(record, dict) and record.get("state") in TERMINAL_KEY_STATES
+        return (
+            terminal
+            and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
+            and stamp < cutoff
+        )
+
+    try:
+        assert_cloudsave_writable(_config_manager(), operation="save", target=_cloudsave_target(
+            os.path.join(_character_dir(name), RETIRED_KEYS_FILENAME)))
+        dropped = await asyncio.to_thread(prune_retired_keys, recent_path, _drop)
+    except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort（键记录读不出：一条都不删）
+        logger.warning(f"[Idempotency] {name}: recent 退役记录清理失败（跳过）: {exc}")
+        return
+    report["retired_removed"] += len(dropped)
 
 
 def _staged_subjects(document: Any) -> set[str]:

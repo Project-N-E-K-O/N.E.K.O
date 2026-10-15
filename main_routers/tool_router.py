@@ -89,6 +89,7 @@ from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
+from main_logic.reply_tail import reply_tail_registry
 
 
 def _validate_local_callback_url(url: str) -> str:
@@ -180,6 +181,7 @@ class ToolRegisterRequest(BaseModel):
     # 模型轮也会被卡住；超过 5 分钟的同步工具应该改成 plugin 自己拆任务
     # 而不是把 main_server 长期 hold 住。
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
+    reply_tail: bool = False
 
     @field_validator("callback_url")
     @classmethod
@@ -326,8 +328,15 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
             ]
             if not to_drop:
                 continue
+            holder_of = getattr(mgr, "_public_knowledge_holder", None)
+            holder = holder_of() if callable(holder_of) else None
             for name in to_drop:
                 mgr.tool_registry.unregister(name)
+            # 被驱逐的工具可能占着内置工具的名字（query_public_knowledge），
+            # 让出后把内置版本补回来。
+            refill = getattr(mgr, "_refill_vacated_builtins", None)
+            if callable(refill):
+                refill(holder)
             # 复用 mgr 已有的 fire-and-forget sync 通道（与 register_tool /
             # clear_tools 同一条路径），把 fresh session.update 推到 wire。
             # 直接访问 ``_fire_task`` / ``_sync_tools_to_active_session`` 是
@@ -380,6 +389,8 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         "call_id": call.call_id,
         "raw_arguments": call.raw_arguments,
     }
+    if call.host_reply is not None:
+        payload["host_reply"] = call.host_reply
     try:
         client = _get_http_client()
         resp = await client.post(callback_url, json=payload, timeout=timeout)
@@ -418,6 +429,38 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         # 就做了这个判别，这里少了一份。
         body = {"output": body}
     return await asyncio.to_thread(tool_result_from_envelope, call, body)
+
+
+class ReplyTailRequest(BaseModel):
+    context: Dict[str, Any]
+    plugin_id: str = Field(min_length=1, max_length=128)
+    # Validated by the registry, which answers with a receipt rather than a
+    # 422 the SDK would raise as an HTTP error.
+    registration_id: Any = ""
+    parts: Any = Field(default_factory=list)
+    ai_behavior: Any = "blind"
+
+
+@router.post("/reply-tail/register")
+async def register_reply_tail(body: ReplyTailRequest) -> dict:
+    return await reply_tail_registry.register(
+        body.context, body.registration_id, body.parts,
+        plugin_id=body.plugin_id, ai_behavior=body.ai_behavior,
+    )
+
+
+@router.post("/reply-tail/status")
+async def reply_tail_status(body: ReplyTailRequest) -> dict:
+    return reply_tail_registry.status(
+        body.context, body.registration_id, plugin_id=body.plugin_id,
+    )
+
+
+@router.post("/reply-tail/cancel")
+async def cancel_reply_tail(body: ReplyTailRequest) -> dict:
+    return reply_tail_registry.cancel(
+        body.context, body.registration_id, plugin_id=body.plugin_id,
+    )
 
 
 def _ensure_dispatcher_bound(role_keys) -> None:
@@ -581,6 +624,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             "callback_url": req.callback_url,
             "timeout_seconds": req.timeout_seconds,
             "role": req.role,
+            **({"reply_tail": True} if req.reply_tail else {}),
         },
     )
     # Reserve ownership before the first await, including managers rebuilt

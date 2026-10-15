@@ -79,6 +79,7 @@ type ChatWindowProps = ChatWindowSchemaProps & {
   // ChoicePrompt remains part of ChatWindowSchemaProps. Keep the legacy galgame
   // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
+  onVisitBarAction?: (actionId: string) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
 };
 
@@ -482,6 +483,8 @@ export default function FullChatSurface({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  visitBar = null,
+  onVisitBarAction,
   theaterPresentation,
   onCompactChatStateChange,
   rollbackDraft,
@@ -3239,6 +3242,30 @@ export default function FullChatSurface({
           data-compact-chat-state={effectiveCompactChatState}
         >
           <div id="music-player-mount" />
+          {/* 串门工具条（full 自己的一份，与 compact 不共用代码）：宿主给状态与按钮，点按钮回传 id */}
+          {!catLocalTextOnly && theaterPresentation?.active !== true && visitBar && (visitBar.badge || visitBar.actions.length > 0) ? (
+            <div
+              className={`full-visit-bar is-${visitBar.tone ?? 'idle'}`}
+              role="toolbar"
+              aria-label={i18n('chat.visitBarAriaLabel', 'Visit')}
+            >
+              {visitBar.badge ? <span className="full-visit-bar-badge">{visitBar.badge}</span> : null}
+              {visitBar.detail ? <span className="full-visit-bar-detail">{visitBar.detail}</span> : null}
+              {visitBar.actions.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  className={`full-visit-bar-action is-${action.variant ?? 'secondary'}`}
+                  disabled={action.disabled}
+                  aria-pressed={typeof action.pressed === 'boolean' ? action.pressed : undefined}
+                  data-visit-bar-action={action.id}
+                  onClick={() => onVisitBarAction?.(action.id)}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {!catLocalTextOnly && composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
               {composerAttachments.map((attachment) => (

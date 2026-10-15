@@ -1810,8 +1810,8 @@ async def test_rename_marker_swapped_while_reloading_names_retakes_the_guard(tmp
 
     async def load():
         loads["n"] += 1
-        if loads["n"] == 2:
-            # 守卫内重读名单期间，标记被另一个角色（B → D）的改名换掉
+        if loads["n"] == 3:
+            # 守卫内重读名单期间（第 1 次是启动读名单，第 2 次是退役重放之后的重读），标记被另一个角色（B → D）的改名换掉
             data = json.loads(peers_path.read_text(encoding="utf-8"))
             data["pending_rename"] = {"old": "B", "new": "D", "uid": CHAR_UID_B}
             peers_path.write_text(json.dumps(data), encoding="utf-8")
@@ -3048,3 +3048,22 @@ def test_a_transcript_line_that_cannot_be_written_is_corrupt():
     line = {"lp": 1, "side": "host", "from": "own_cat", "ts": 1.0, "text": "ok", "truncated": False}
     assert recovery._valid_line(line) is True
     assert recovery._valid_line({**line, "text": "x" + chr(0xD800)}) is False
+
+
+async def test_crashed_memory_on_visit_without_lines_is_abandoned_not_retried(tmp_path):
+    from main_logic.visit.spool import debrief_final, region_settled
+
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, vid(41), [], write_jsonl=False, finalized=None)
+    chips = Chips()
+    llm = LLM()
+    report = await _recover(tmp_path, render_chips=chips, summary_llm=llm)
+    state = await spool.read_state()
+    assert report.crashed == [vid(41)] and chips.calls == [] and llm.calls == 0
+    assert state["debrief_choice"] == "abandoned"
+    assert state["digest_writes"]["0"]["abandoned"] == "no_transcript"
+    assert region_settled(state) and debrief_final(state)
+    # 下次启动：终态已在，不再弹芯片、不再改写 state.json
+    before = spool.state_path.stat().st_mtime_ns
+    await _recover(tmp_path, render_chips=chips, summary_llm=llm)
+    assert chips.calls == [] and spool.state_path.stat().st_mtime_ns == before

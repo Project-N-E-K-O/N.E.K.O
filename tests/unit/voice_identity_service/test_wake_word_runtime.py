@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -15,6 +16,7 @@ from main_logic.voice_input.activation import (
     ActivationState,
     AudioFrame,
     OutputCommit,
+    OutputOrigin,
     VoiceActivationController,
     WakeWordDetection,
     WakeWordBatchResult,
@@ -122,7 +124,7 @@ async def test_frames_received_during_prepare_are_replayed_to_wake_detector():
     await settle()
 
     assert [audio.sequence for audio, _ in detector.frames] == [0]
-    assert sent == [frame(0)]
+    assert sent == [replace(frame(0), output_origin=OutputOrigin.REPLAY)]
     assert instance.state is ActivationState.ACTIVE
     assert sum(item.reason == "wake_word_detected" for item in statuses) == 1
     await instance.close()
@@ -157,7 +159,7 @@ async def test_keyword_receives_silence_short_audio_and_preserves_following_inst
         await instance.feed(frame(i), voice_activity=False)
     await settle()
     assert [audio.sequence for audio, _ in detector.frames] == [0, 1, 2]
-    assert sent == [frame(i) for i in range(10)]
+    assert sent == [replace(frame(i), output_origin=OutputOrigin.REPLAY) for i in range(10)]
     assert scorer.calls == []
     assert instance.state is ActivationState.ACTIVE
     assert sum(item.reason == "wake_word_detected" for item in statuses) == 1
@@ -332,5 +334,5 @@ async def test_keyword_after_normal_speaker_rejection_remains_eligible(
     detector.release.set()
     await settle()
     assert instance.state is ActivationState.ACTIVE
-    assert sent == [frame(i) for i in range(15)]
+    assert sent == [replace(frame(i), output_origin=OutputOrigin.REPLAY) for i in range(15)]
     await instance.close()

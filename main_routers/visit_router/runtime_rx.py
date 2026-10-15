@@ -307,6 +307,19 @@ class ReceiveMixin:
         if self.finalizing or self.peer is not None:
             # 读本机名字期间这场已被结束（或另一条 hello 先装好了对端）：不再装对端、不发邀请
             return
+        try:
+            # 核验之后的这几次 await 里对端可能刚被拉黑（拉黑钩子这时还找不到对端）：装入之前再查一次，
+            # 之后它就挂在 self.peer 上、钩子找得到
+            blocked = (await self.deps.load_blocklist(self.config_dir)).is_blocked(claims.sub)
+        except Exception as exc:  # noqa: BLE001 - 读不到：fail closed，与核验时同一处理
+            logger.warning("visit %s: blocklist recheck failed: %s", self.visit_id[:6], type(exc).__name__)
+            self.request_finalize("peer_identity_rejected")
+            return
+        if blocked:
+            self.request_finalize("peer_blocked")
+            return
+        if self.finalizing or self.peer is not None:
+            return
         self.peer = PeerInfo(
             uid=claims.sub, vid=claims.vid, char_tag=claims.char_tag, raw_display=claims.display_name,
             display=display,
@@ -718,7 +731,7 @@ class ReceiveMixin:
     def visit_line_payload(
         self, *, ln: str, lp: int, side: str, kind: str, ad_side: Optional[str], ad_kind: Optional[str],
         reply_to: str, goodbye: bool, text: str, truncated: bool, i_done: Any = 0,
-        trunc_reason: Optional[str] = None,
+        trunc_reason: Optional[str] = None, request_id: Any = None,
     ) -> dict:
         payload = {
             "type": "visit_line", "visit_id": self.visit_id, "line_id": ln, "lp": lp,
@@ -730,7 +743,10 @@ class ReceiveMixin:
         }
         if trunc_reason:
             payload["trunc_reason"] = trunc_reason
-        # 页面重载时 GET /state 按 (lp, side) 用同一份形状重放（收件人 / 回复 / 告别 / i_done 都在）
+        if isinstance(request_id, str) and request_id:
+            # 本侧亲人句：发起提交的客户端 id，页面按它认领本地气泡（只进本页的显示帧，不上线）
+            payload["request_id"] = request_id
+        # 页面重载时 GET /state 按 (lp, side) 用同一份形状重放（收件人 / 回复 / 告别 / i_done / request_id 都在）
         self._line_frames[(lp, side)] = payload
         while len(self._line_frames) > 512:
             self._line_frames.pop(next(iter(self._line_frames)))

@@ -225,6 +225,46 @@ async def _apply_noise_reduction_if_current_locked(enabled: bool) -> None:
             raise
 
 
+def _end_visits_disabled() -> None:
+    """End live visits after ``visitEnabled`` was switched off (design §3.7.6).
+
+    Runs after the settings are saved: a failure here is logged, never turned
+    into a failed save response.
+    """
+    try:
+        from main_routers.visit_router import runtime as visit_runtime
+
+        ended = visit_runtime.end_visits_disabled()
+    except Exception as exc:  # noqa: BLE001 - 设置已落盘：结束串门失败只记日志
+        logger.error("visitEnabled switched off: ending live visits failed: %r", exc)
+        return
+    if ended:
+        logger.info("visitEnabled switched off: ended %d live visit(s)", ended)
+
+
+_visit_voice_pushed_revision = -1
+"""Settings revision of the last ``visitVoiceEnabled`` pushed to live visits (pushes run outside the write lock)."""
+
+
+def _apply_visit_voice(enabled: bool, revision: int) -> None:
+    """Push a saved ``visitVoiceEnabled`` to live visits (from their next line, design §3.7.6).
+
+    Two concurrent saves resume from their worker threads in any order: a push
+    older than the last one applied is dropped, so the live value always
+    matches the newest saved revision.
+    """
+    global _visit_voice_pushed_revision
+    if revision <= _visit_voice_pushed_revision:
+        return
+    _visit_voice_pushed_revision = revision
+    try:
+        from main_routers.visit_router import runtime as visit_runtime
+
+        visit_runtime.apply_voice_setting(enabled)
+    except Exception as exc:  # noqa: BLE001 - 设置已落盘：推给串门失败只记日志
+        logger.error("visitVoiceEnabled saved: applying to live visits failed: %r", exc)
+
+
 async def _apply_noise_reduction_if_current(enabled: bool) -> None:
     """Finish the saved transition even if its HTTP caller is cancelled."""
 
@@ -436,6 +476,24 @@ async def save_conversation_settings(request: Request):
                     **response_payload,
                 },
             )
+
+        # 串门开关：只在这次保存把它从开改成关时结束正在进行的串门（§3.7.6）。默认就是关，
+        # 不能因为别的设置项随手一存就把串门掐掉；前后值取自同一把锁里的那次写入，
+        # 并发保存之间不会漏判
+        if (
+            result.previous is not None
+            and result.previous.settings.get("visitEnabled") is True
+            and result.snapshot.settings.get("visitEnabled") is False
+        ):
+            _end_visits_disabled()
+        # 串门语音：中途切换从下一句生效（§3.7.6），由这里推给正在进行的串门
+        saved_voice = result.snapshot.settings.get("visitVoiceEnabled")
+        if (
+            result.previous is not None
+            and isinstance(saved_voice, bool)
+            and saved_voice != result.previous.settings.get("visitVoiceEnabled")
+        ):
+            _apply_visit_voice(saved_voice, result.snapshot.revision)
 
         if (
             isinstance(data.get("noiseReductionEnabled"), bool)

@@ -343,8 +343,12 @@ class _StreamingMixin:
         start = -1 if anchor is None else _find_by_identity(history, -1, anchor)
         position = len(history)
         if anchor is None or start >= 0:
-            position = _cancelled_turn_end(history, start, generation)
+            position = _cancelled_turn_end(
+                history, start, generation,
+                round_generation=self._proactive_round_generation,
+            )
         history.insert(position, reply)
+
 
     def _commit_reply(
         self, anchor, text: str, generation: int, *, turn_history=None,
@@ -368,6 +372,20 @@ class _StreamingMixin:
         if text:
             self._conversation_history.append(AIMessage(content=text))
         return True
+
+    @staticmethod
+    def _mark_reply_tail_completed(reply_owner, live: bool, shown: str) -> None:
+        """Let the reply-tail images of ``reply_owner`` follow its reply.
+
+        Every exit that keeps this attempt's shown text as the reply (the
+        regular commit, the long-reply recovery, the summary gibberish
+        fallback) marks it. A retry or discard leaves it incomplete, and the
+        reroll exhausted ``RESPONSE_LENGTH_TRUNCATED`` recovery is marked by
+        the core once it has published the recovered body.
+        """
+        tail = getattr(reply_owner, "reply_tail", None)
+        if tail is not None and live and shown:
+            tail.completed = True
 
     def _trim_cancelled_round_text(self, shown: str, rounds) -> None:
         """Make a kept, cancelled tool round hold only the text that was shown.
@@ -404,28 +422,28 @@ class _StreamingMixin:
         return latest
 
     def _keep_shown_text_of_cut_stream(
-        self, anchor, shown: str, segment_round, generation: int, rounds,
+        self, anchor, reply, segment_round, generation: int, rounds,
         *, turn_history=None,
     ) -> None:
-        """Keep what a reply had shown when its task was cancelled before it
-        committed.
+        """Keep what a reply had shown when it was cut before it committed.
 
         A task cancelled in the stream loop, the end-of-stream flush or the
         summary epilogue never reaches the commit it was heading for, so
         this does what that commit, or the tool round sentinel before it,
-        would have done with ``shown`` (the text shown since the last
-        persisted tool round). A round of this turn's own
+        would have done with ``reply`` (holding the text shown since the
+        last persisted tool round). A round of this turn's own
         ``rounds`` kept after ``segment_round`` (the one the last sentinel
         reported) already holds that text, its sentinel lost to the
-        cancellation: it is trimmed to it. Otherwise the text is committed as
-        a cancelled reply, in order.
+        cancellation: it is trimmed to it. Otherwise the reply is committed
+        as a cancelled reply, in order. ``prompt_ephemeral`` commits a
+        cancelled reply through here as well.
         """
         kept = self._last_tool_round_of(rounds)
         if kept is not None and kept is not segment_round:
-            kept["content"] = shown
+            kept["content"] = reply.content
             return
         self._commit_cancelled_reply(
-            anchor, AIMessage(content=shown), generation, turn_history=turn_history,
+            anchor, reply, generation, turn_history=turn_history,
         )
 
     async def _check_repetition(self, response: str) -> bool:
@@ -1209,6 +1227,9 @@ class _StreamingMixin:
                         if not self._resume_response_generation(response_generation):
                             status_reported = True
                             break
+                        tail = getattr(reply_owner, "reply_tail", None)
+                        if tail is not None:
+                            tail.discard_attempt()
                         assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
                         assistant_message_total = ""     # 全轮累积，用于 _check_repetition / 长度 guard
                         is_first_chunk = True
@@ -1860,10 +1881,14 @@ class _StreamingMixin:
                                 )
                                 # The recovery may first be emitted by the
                                 # end-of-stream flush above, a cancellation point.
-                                if self._commit_reply(
+                                _live_at_commit = self._commit_reply(
                                     user_message, history_recovery_text, response_generation,
                                     turn_history=turn_history,
-                                ):
+                                )
+                                self._mark_reply_tail_completed(
+                                    reply_owner, _live_at_commit, recovery_text,
+                                )
+                                if _live_at_commit:
                                     await self._check_repetition(recovery_text)
                                 assistant_message = history_recovery_text
                                 guard_exhausted = True
@@ -2006,13 +2031,14 @@ class _StreamingMixin:
                             # 用 assistant_message_total 会把判定为乱码、已丢弃的 tail
                             # 也塞进 _recent_responses，污染后续重复判定。
                             cut_keeps_shown = False
-                            if (
-                                self._commit_reply(
-                                    user_message, summary_prefix_for_history, response_generation,
-                                    turn_history=turn_history,
-                                )
-                                and summary_prefix_for_history
-                            ):
+                            _live_at_commit = self._commit_reply(
+                                user_message, summary_prefix_for_history, response_generation,
+                                turn_history=turn_history,
+                            )
+                            self._mark_reply_tail_completed(
+                                reply_owner, _live_at_commit, assistant_message_total,
+                            )
+                            if _live_at_commit and summary_prefix_for_history:
                                 await self._check_repetition(summary_prefix_for_history)
                             assistant_message = ""
                             guard_exhausted = True
@@ -2088,6 +2114,9 @@ class _StreamingMixin:
                         _live_at_commit = self._commit_reply(
                             user_message, assistant_message, response_generation,
                             turn_history=turn_history,
+                        )
+                        self._mark_reply_tail_completed(
+                            reply_owner, _live_at_commit, assistant_message_total,
                         )
                         # 重复检测看完整一轮文本（含 pre-tool），与人类用户感知
                         # 的"这一轮 AI 说了什么"一致。
@@ -2267,7 +2296,7 @@ class _StreamingMixin:
             # would have, but never a summary its send had not yet queued.
             if cut_keeps_shown:
                 self._keep_shown_text_of_cut_stream(
-                    user_message, assistant_message, segment_round,
+                    user_message, AIMessage(content=assistant_message), segment_round,
                     response_generation, _turn_tool_rounds,
                     turn_history=turn_history,
                 )

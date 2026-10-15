@@ -913,3 +913,114 @@ def test_state_schema_accepts_frozen_rendering_and_abandoned_runs():
                 {"plan": {**record["plan"], "headers": {"peer_cat": 1}}}):
         with pytest.raises(SpoolStateError):
             validate_state({**state, "digest_writes": {"0": {**record, **bad}}})
+
+
+# ── 记忆开但无转录：写「已放弃」终态（PR#3338 评审线程，2026-10-09 拍板） ──────────────
+
+
+async def _no_llm(_prompt):
+    raise AssertionError("no transcript: the summary must not call the LLM")
+
+
+async def _assert_no_transcript_terminal(spool):
+    from main_logic.visit.spool import debrief_final, region_settled, transcript_releasable
+
+    state = await spool.read_state()
+    assert state["debrief_choice"] == "abandoned" and state["debrief_chip_pending"] is False
+    assert state["digest_writes"] == {"0": {
+        "requested_at": state["digest_writes"]["0"]["requested_at"], "through_lp": 0,
+        "group": {}, "segments": {}, "abandoned": "no_transcript",
+    }}
+    assert state["digest_runs"] == 1 and state["digested_through_lp"] == 0
+    assert debrief_final(state)
+    # 结清判定本身不改：摘要也处理完才算结清
+    assert not region_settled(state)
+    assert await commit_last_summary(spool, llm=_no_llm, resolve_char_name=resolver())
+    state = await spool.read_state()
+    assert region_settled(state) and transcript_releasable(state)
+
+
+async def test_memory_on_visit_without_transcript_file_is_abandoned(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, [], write_jsonl=False)
+    server = FakeMemoryServer()
+    result = await _commit(spool, server)
+    assert result.ok and result.skipped == "no_transcript" and server.requests == []
+    await _assert_no_transcript_terminal(spool)
+
+
+async def test_memory_on_visit_with_only_a_header_is_abandoned(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, [])
+    assert spool.jsonl_path.exists()
+    server = FakeMemoryServer()
+    result = await _commit(spool, server)
+    assert result.ok and result.skipped == "nothing_new" and server.requests == []
+    await _assert_no_transcript_terminal(spool)
+
+
+async def test_no_transcript_terminal_is_written_once(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, [], write_jsonl=False)
+    await _commit(spool, FakeMemoryServer())
+    before = spool.state_path.stat().st_mtime_ns
+    first = await spool.read_state()
+    again = await _commit(spool, FakeMemoryServer())
+    assert again.ok and again.skipped == "no_transcript"
+    # 每次启动都重写会刷新 mtime，state.json 就永远到不了按龄回收
+    assert spool.state_path.stat().st_mtime_ns == before
+    assert await spool.read_state() == first
+
+
+async def test_no_transcript_keeps_a_choice_already_recorded(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, [], write_jsonl=False, debrief_choice="forget")
+    await _commit(spool, FakeMemoryServer())
+    state = await spool.read_state()
+    assert state["debrief_choice"] == "forget"
+    assert state["digest_writes"]["0"]["abandoned"] == "no_transcript"
+
+
+async def test_no_transcript_terminal_needs_memory_on_and_finalize(tmp_path):
+    await seed_roster(tmp_path)
+    off = await make_visit(tmp_path, vid(2), [], memory_enabled=False)
+    live = await make_visit(tmp_path, vid(3), [], write_jsonl=False, finalized=None)
+    assert (await _commit(off, FakeMemoryServer())).skipped == "memory_off"
+    assert (await _commit(live, FakeMemoryServer())).skipped == "not_finalized"
+    for spool in (off, live):
+        state = await spool.read_state()
+        assert state["debrief_choice"] is None and state["digest_writes"] == {} and state["digest_runs"] == 0
+
+
+async def test_unreadable_transcript_is_not_taken_for_an_empty_one(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, [ln(0, "你好")])
+    data = spool.jsonl_path.read_bytes()
+    # 头行指向别的场次：整份文件按损坏忽略（dropped_lines > 0），不是「一句都没有」
+    spool.jsonl_path.write_bytes(data.replace(V1.encode(), vid(9).encode(), 1))
+    result = await _commit(spool, FakeMemoryServer())
+    assert result.skipped == "no_transcript"
+    state = await spool.read_state()
+    assert state["debrief_choice"] is None and state["digest_writes"] == {}
+
+
+async def test_header_with_only_a_torn_line_is_not_abandoned(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, [])
+    with spool.jsonl_path.open("ab") as f:
+        f.write(b'{"lp": 0, "tex')     # 写到一半的行：损坏，不当作没说话
+    result = await _commit(spool, FakeMemoryServer())
+    assert result.skipped == "nothing_new"
+    assert (await spool.read_state())["digest_writes"] == {}
+
+
+async def test_mark_no_transcript_itself_ignores_memory_off_and_registered_runs(tmp_path):
+    await seed_roster(tmp_path)
+    off = await make_visit(tmp_path, vid(4), [], memory_enabled=False)
+    assert await off.mark_no_transcript(now=1.0) is False
+    assert (await off.read_state())["digest_writes"] == {}
+    digested = await make_visit(tmp_path, vid(5), _conversation(4))
+    assert (await _commit(digested, FakeMemoryServer())).ok
+    before = await digested.read_state()
+    assert await digested.mark_no_transcript(now=1.0) is False
+    assert await digested.read_state() == before

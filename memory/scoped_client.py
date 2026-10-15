@@ -120,6 +120,55 @@ class ScopedMemoryError(RuntimeError):
     """
 
 
+class ForgetTargetEpochsRequired(ScopedMemoryError):
+    """An opted-in ``scoped_forget`` was refused: some fan-out targets had no epoch.
+
+    ``missing`` lists their subject keys. Nothing was erased; the caller
+    bumps each missing key's own forget generation, persists it, and resends
+    with those keys added to ``target_epochs``.
+    """
+
+    def __init__(self, missing: Sequence[str]) -> None:
+        self.missing: tuple[str, ...] = tuple(missing)
+        super().__init__(f"scoped_forget needs epochs for fan-out targets: {list(self.missing)}")
+
+
+# Same bound the server applies to ScopedForgetRequest.target_epochs.
+_FORGET_TARGET_EPOCHS_MAX = 64
+
+
+def _check_target_epochs(subject: dict, forget_epoch: int | None, target_epochs: dict[str, int]) -> None:
+    """Raise ``ValueError`` for a ``target_epochs`` the server always answers with 422."""
+    if forget_epoch is None:
+        raise ValueError("target_epochs requires forget_epoch")
+    if len(target_epochs) > _FORGET_TARGET_EPOCHS_MAX:
+        raise ValueError("too many target_epochs keys")
+    for key, value in target_epochs.items():
+        if not isinstance(key, str) or not key or len(key) > 512 or not key.isprintable():
+            raise ValueError("invalid target_epochs key")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError("target_epochs values must be non-negative integers")
+    # 与服务端 MemorySubject.create 同样去掉首尾空白，否则 key 对不上、这条校验查不出来
+    subject_key = f"{str(subject.get('subject_kind') or '').strip()}:{str(subject.get('subject_id') or '').strip()}"
+    if subject_key in target_epochs and target_epochs[subject_key] != forget_epoch:
+        raise ValueError("target_epochs disagrees with forget_epoch")
+
+
+def _missing_target_epochs(response: httpx.Response) -> list[str] | None:
+    """The fan-out keys a 409 ``scoped_forget`` answer names, or None for any other 409."""
+    try:
+        payload = _response_json(response)
+    except ValueError:
+        return None
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if not isinstance(detail, dict) or detail.get("error") != "missing_target_epochs":
+        return None
+    missing = detail.get("missing_target_epochs")
+    if not isinstance(missing, list) or not missing or not all(isinstance(k, str) and k for k in missing):
+        return None
+    return list(missing)
+
+
 def encode_wire_body(payload: dict[str, Any]) -> bytes:
     """Serialize a request body exactly as it goes on the wire."""
     return json.dumps(
@@ -389,7 +438,12 @@ class ScopedMemoryClient:
         return True
 
     async def post_forget(
-        self, lanlan: str, *, subject: dict, forget_epoch: int | None = None,
+        self,
+        lanlan: str,
+        *,
+        subject: dict,
+        forget_epoch: int | None = None,
+        target_epochs: dict[str, int] | None = None,
     ) -> bool:
         """Erase everything stored for one exact subject. Idempotent.
 
@@ -397,16 +451,39 @@ class ScopedMemoryClient:
         (sent only when not ``None``); the server keeps it as a tombstone and
         drops keyed history products stamped with a lower generation.
 
+        ``target_epochs`` (sent only when not ``None``, requires
+        ``forget_epoch``) is ``{subject_key: generation}`` for the other
+        subjects identity expansion erases along with this one, each from
+        its own counter, so each gets a tombstone in its own epoch domain.
+        Opting in means the server refuses (HTTP 409, nothing erased) a map
+        that misses a fan-out target; that answer raises
+        :class:`ForgetTargetEpochsRequired` carrying the missing keys, so the
+        caller can bump those counters and resend. A NEW forget must bump
+        EVERY target's own counter (not only the missing ones): a target
+        whose completion marker already reaches the epoch sent for it is
+        treated as a replay and is not erased again. A ``target_epochs`` the
+        server always refuses (no ``forget_epoch``, a value for this subject
+        that differs from ``forget_epoch``, too many or malformed keys or
+        epochs) raises ``ValueError`` before anything is sent.
+
         ``True`` only when the server confirms ``status: "forgotten"``; a
         truncated, non-JSON or wrong-shaped 2xx body is a failed erase.
         """
+        if target_epochs is not None:
+            # 服务端对这些请求固定回 422：按普通失败返回 False 的话，撤销流程会一直重试一个
+            # 永远不会成功的请求。这是调用方的编程错误，直接抛出
+            _check_target_epochs(subject, forget_epoch, target_epochs)
         body: dict[str, Any] = {"subject": subject}
         if forget_epoch is not None:
             body["forget_epoch"] = forget_epoch
-        response = await self._post_write(
-            self._url(lanlan, "scoped_forget"), body,
-            timeout=_FORGET_TIMEOUT_S, what="scoped_forget",
-        )
+        url = self._url(lanlan, "scoped_forget")
+        if target_epochs is None:
+            response = await self._post_write(
+                url, body, timeout=_FORGET_TIMEOUT_S, what="scoped_forget",
+            )
+        else:
+            body["target_epochs"] = dict(target_epochs)
+            response = await self._post_forget_with_targets(url, body)
         if response is None:
             return False
         try:
@@ -418,6 +495,28 @@ class ScopedMemoryClient:
             logger.warning("scoped_forget: response does not confirm the erase")
             return False
         return True
+
+    async def _post_forget_with_targets(
+        self, url: str, body: dict[str, Any],
+    ) -> httpx.Response | None:
+        """POST an opted-in forget; a 409 naming missing fan-out targets raises."""
+        try:
+            response = await self._send(
+                "POST", url, body=body, timeout=_FORGET_TIMEOUT_S, retry=True,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("scoped memory scoped_forget failed: %s", exc)
+            return None
+        if response.status_code == 409:
+            missing = _missing_target_epochs(response)
+            if missing is not None:
+                raise ForgetTargetEpochsRequired(missing)
+        if not response.is_success:
+            logger.warning(
+                "scoped memory scoped_forget failed: HTTP %s", response.status_code,
+            )
+            return None
+        return response
 
     async def post_history(
         self,

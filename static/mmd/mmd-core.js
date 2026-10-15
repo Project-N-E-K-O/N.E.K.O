@@ -1290,6 +1290,7 @@ class MMDCore {
         } else if (this.manager.renderer) {
             this.manager.renderer.render(this.manager.scene, this.manager.camera);
         }
+        window.nekoVisitParentBridge?.onExternalRender?.();
 
         this._flushRenderWaiters();
     }

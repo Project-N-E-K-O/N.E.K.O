@@ -21,6 +21,46 @@ def _fact_candidates() -> dict[str, Any]:
     }))
 
 
+def _narrative_events(phases: tuple[str, ...]) -> dict[str, Any]:
+    entities = {"type": "string", "minLength": 1, "maxLength": 80,
+                "anyOf": [{"enum": ["player", "character"]}, {
+                    "pattern": r"^(item|person|activity|arrangement|environment):[\s\S]*\S[\s\S]*$",
+                }]}
+    events = _array(_object({
+        "phase": {"type": "string", "enum": list(phases)},
+        "subject": entities,
+        "kind": {"type": "string", "enum": ["action", "speech"]},
+        "changes": {**_array({"anyOf": [
+            _object({
+                "entity": entities,
+                "attribute": {"type": "string", "enum": [
+                    "position", "location", "condition", "stage_result", "unresolved", "choice",
+                    "commitment", "arrangement", "time", "environment",
+                ]},
+                "value": {"type": "string", "minLength": 1, "maxLength": 120},
+            }),
+            _object({
+                "entity": {"type": "string", "minLength": 1, "maxLength": 80,
+                           "pattern": r"^item:[\s\S]*\S[\s\S]*$"},
+                "attribute": {"type": "string", "enum": ["holder"]},
+                "value": {"type": "string", "minLength": 1, "maxLength": 80,
+                          "anyOf": [{"enum": ["none", "player", "character"]}, {
+                              "pattern": r"^person:[\s\S]*\S[\s\S]*$",
+                          }]},
+            }),
+        ]}), "minItems": 1, "maxItems": 3},
+        "source": {"type": "string", "enum": ["player_input", "performance", "scene_narration"]},
+        "quote": {"type": "string", "minLength": 1, "maxLength": 160},
+        # DashScope rejects uniqueItems on arrays; the local parser checks it.
+        "known_to": {**_array({"type": "string", "enum": ["player", "character"]}),
+                     "minItems": 1, "maxItems": 2},
+        "authorization_quote": {"type": "string", "minLength": 1, "maxLength": 160},
+        "time": {"type": "string", "minLength": 1, "maxLength": 80},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 120},
+    }, optional=("authorization_quote", "time", "reason")))
+    return {**events, "maxItems": 3}
+
+
 def response_format_for(config: Mapping[str, Any], name: str, schema: dict[str, Any]) -> dict[str, Any] | None:
     """Enable this format only for verified compatible Aliyun endpoints."""
     model = str(config.get("model") or "").lower()
@@ -63,11 +103,18 @@ def actor_output_schema(*, opening_required: bool = False, transition_required: 
     return _object(properties, optional=("scene_update",))
 
 
+def narrative_output_schema(*, opening: bool = False, transition: bool = False) -> dict[str, Any]:
+    """Keep the existing event contract separate from Actor's public output."""
+    phases = (("player_input", "source_response", "transition_bridge", "target_opening") if transition
+              else ("opening",) if opening else ("player_input", "turn"))
+    return _object({"narrative_events": _narrative_events(phases)})
+
+
 def review_output_schema(*, formal: bool = False, transition_intent: str = "",
                          confirmed_acceptance: bool = False, missed_initiation: bool = False,
                          fixed_narrations: bool = False, display_suggestions: bool = False,
-                         completion_facts: bool = False, evaluator_facts: bool = False,
-                         locate_body_issues: bool = False) -> dict[str, Any]:
+                         completion_facts: bool = False, evaluator_facts: bool = False, actor_facts: bool = False,
+                         locate_body_issues: bool = False, narrative_events: bool = False) -> dict[str, Any]:
     """Match each review prompt branch; the parser still verifies evidence."""
     violations = _array({"type": "string", "enum": ["player_action", "scene_boundary", "author_boundary"]})
     properties: dict[str, Any] = {}
@@ -106,6 +153,11 @@ def review_output_schema(*, formal: bool = False, transition_intent: str = "",
         }))
     if completion_facts:
         properties["fact_candidates"] = _fact_candidates()
+    if actor_facts:
+        properties["approved_actor_fact_indexes"] = _array({"type": "integer"})
+    if narrative_events:
+        properties["approved_narrative_event_indexes"] = _array({"type": "integer"})
+        properties["narrative_review_complete"] = {"type": "boolean"}
     if evaluator_facts:
         properties["approved_evaluator_fact_indexes"] = _array({"type": "integer"})
     if locate_body_issues:

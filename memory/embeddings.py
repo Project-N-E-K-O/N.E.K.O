@@ -66,6 +66,7 @@ import os
 import platform
 import re
 import sys
+import time
 from typing import Any
 
 from ._embeddings import lifecycle as _service_lifecycle
@@ -147,6 +148,9 @@ DEFAULT_VECTORS_MAX_LENGTH = 1024
 # 测试 / 自定义 profile 把 max_length 顶到旧 8192 时也只允许 2 条
 # 一桶,峰值仍可控。"""
 _INFER_BATCH_MAX_TOKENS = 16384
+
+# Non-sticky (borrowed-model) inference failures log at most this often.
+_SOFT_FAILURE_LOG_INTERVAL_SECONDS = 60.0
 
 # Matryoshka discrete steps supported by the default local profile.
 _DIM_STEPS = (32, 64, 128, 256, 512, 768)
@@ -1036,6 +1040,7 @@ class EmbeddingService:
         self._lifecycle_condition = asyncio.Condition()
         self._active_operations = 0
         self._closing = False
+        self._soft_failure_logged_at = float("-inf")
 
         # Decide initial disable conditions (all but model file presence,
         # which we check at load time so a deferred download path can
@@ -1169,10 +1174,14 @@ class EmbeddingService:
             self._tokenizer = None
             self._state = EmbeddingState.CLOSED
 
-    async def embed(self, text: str) -> list[float] | None:
+    async def embed(self, text: str, *, sticky_failure: bool = True) -> list[float] | None:
         """Single-text embedding. Returns None when not READY — caller
         must treat this as a cache miss and skip the vector path for
-        this query."""
+        this query.
+
+        ``sticky_failure=False`` is for borrowers of the model (the public
+        knowledge indexer): an inference error then only fails this call
+        instead of disabling vectors for the whole process."""
         if not text:
             return None
         if not await self._begin_operation():
@@ -1184,20 +1193,20 @@ class EmbeddingService:
                 vectors = await self._run_blocking(self._infer_blocking, [text])
             except Exception as e:  # noqa: BLE001 — sticky inference failure
                 if not self._closing:
-                    logger.warning(
-                        "EmbeddingService: inference failed (%s: %s); vectors disabled",
-                        type(e).__name__, e,
-                    )
-                    self._mark_disabled(_DisableReason.INFERENCE_ERROR)
+                    self._on_inference_error(e, sticky=sticky_failure)
                 return None
             return vectors[0] if vectors else None
         finally:
             await self._end_operation()
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
+    async def embed_batch(
+        self, texts: list[str], *, sticky_failure: bool = True
+    ) -> list[list[float] | None]:
         """Batch embedding. Empty / None inputs and not-ready service
         both produce a None at the corresponding output index — keeps
-        callers' index alignment with the input list intact."""
+        callers' index alignment with the input list intact.
+
+        ``sticky_failure`` works as in ``embed``."""
         if not texts:
             return []
         result: list[list[float] | None] = [None] * len(texts)
@@ -1220,17 +1229,31 @@ class EmbeddingService:
                 vectors = await self._run_blocking(self._infer_blocking, active_texts)
             except Exception as e:  # noqa: BLE001
                 if not self._closing:
-                    logger.warning(
-                        "EmbeddingService: batch inference failed (%s: %s); vectors disabled",
-                        type(e).__name__, e,
-                    )
-                    self._mark_disabled(_DisableReason.INFERENCE_ERROR)
+                    self._on_inference_error(e, sticky=sticky_failure)
                 return result
             for slot, vec in zip(active_idx, vectors):
                 result[slot] = vec
             return result
         finally:
             await self._end_operation()
+
+    def _on_inference_error(self, error: Exception, *, sticky: bool) -> None:
+        if not sticky:
+            # A background caller may hit the same problem batch after batch;
+            # one line a minute is enough to see it.
+            now = time.monotonic()
+            if now - self._soft_failure_logged_at >= _SOFT_FAILURE_LOG_INTERVAL_SECONDS:
+                self._soft_failure_logged_at = now
+                logger.warning(
+                    "EmbeddingService: inference failed for a non-sticky caller (%s: %s)",
+                    type(error).__name__, error,
+                )
+            return
+        logger.warning(
+            "EmbeddingService: inference failed (%s: %s); vectors disabled",
+            type(error).__name__, error,
+        )
+        self._mark_disabled(_DisableReason.INFERENCE_ERROR)
 
     async def _begin_operation(self) -> bool:
         """Register a request unless shutdown has started."""

@@ -97,6 +97,8 @@ class InboxHandoff:
         seg = self._segments[name]
         if seg.queued_at is None:
             seg.queued_at = self._clock()
+        # 已登记过估时（入队后才失败的段）也不再算：它不会再出声，交还不为它多等
+        seg.est_ms = 0
         seg.done = True
 
     def abandon(self) -> None:

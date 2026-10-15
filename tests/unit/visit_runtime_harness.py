@@ -171,6 +171,10 @@ class FakeHost:
         self.events: list[str] = []
         self.mirror_error: Optional[Exception] = None
         self.dead_worker_prefix: Optional[tuple[str, ...]] = None
+        self.bound = True
+
+    def display_bound(self) -> bool:
+        return self.bound
 
     def is_current(self) -> bool:
         return self.current
@@ -226,11 +230,12 @@ class FakeHost:
         self.resubmitted.extend(callbacks)
         self.events.append("resubmit")
 
-    def open_speech_stream(self, *, metadata, request_id, on_enqueued):
+    def open_speech_stream(self, *, metadata, request_id, on_enqueued, on_failed=None):
         if not self.voice_streams:
             return None
         stream = FakeStream(self, request_id, on_enqueued)
         stream.metadata = metadata
+        stream.on_failed = on_failed
         if self.dead_worker_prefix and request_id.startswith(self.dead_worker_prefix):
             stream.closed = True           # TTS worker 已关：push / finish 都收不下
         self.streams.append(stream)
@@ -354,7 +359,8 @@ class Side:
     cancelled: list = field(default_factory=list)
     uploads: list = field(default_factory=list)
     commits: list = field(default_factory=list)
-    settings: dict = field(default_factory=lambda: {"visitMemoryEnabled": True, "visitVoiceEnabled": True})
+    settings: dict = field(default_factory=lambda: {"visitEnabled": True, "visitMemoryEnabled": True,
+                                                         "visitVoiceEnabled": True})
     rt: Optional[rtm.VisitRuntime] = None
     creds_error: Optional[Exception] = None
     creds_gate: Optional[asyncio.Event] = None

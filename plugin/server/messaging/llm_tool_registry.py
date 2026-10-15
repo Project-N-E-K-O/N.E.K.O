@@ -147,6 +147,7 @@ async def register_remote_tool(
     parameters: Dict[str, Any],
     timeout_seconds: float,
     role: Optional[str] = None,
+    reply_tail: bool = False,
 ) -> Dict[str, Any]:
     """Register a plugin-owned LLM tool with ``main_server``.
 
@@ -169,6 +170,7 @@ async def register_remote_tool(
         "role": role,
         "source": _source_tag(plugin_id),
         "timeout_seconds": float(timeout_seconds),
+        **({"reply_tail": True} if reply_tail else {}),
     }
 
     client = _get_http_client()
