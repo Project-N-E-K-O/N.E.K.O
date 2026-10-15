@@ -195,9 +195,10 @@ class ChatOpenAI:
             p[limit_field] = limit_value
         extra_body = overrides.pop("extra_body", self.extra_body)
         if extra_body and urlsplit(str(self.base_url or '')).hostname in {
-            'router.requesty.ai', 'router.eu.requesty.ai',
+            'router.requesty.ai', 'router.eu.requesty.ai', 'api.atlascloud.ai',
         }:
-            # Requesty documents a top-level reasoning_effort, unlike OpenRouter.
+            # Requesty documents a top-level reasoning_effort, unlike OpenRouter;
+            # Atlas Cloud reads the same field and ignores OpenRouter's reasoning object.
             # Apply at request time so Focus overrides use the same wire dialect.
             # https://docs.requesty.ai/features/reasoning
             reasoning = extra_body.get('reasoning')

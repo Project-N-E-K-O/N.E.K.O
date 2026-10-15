@@ -16,6 +16,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
     'assistApiKeyRequesty',
+    'assistApiKeyAtlascloud',
 )
 
 _MODEL_TYPES = (
@@ -180,6 +181,33 @@ def test_requesty_readback_uses_only_its_dedicated_key(
     )
     assert 'sk-other-core' not in json.dumps(response)
     assert 'sk-requesty-dedicated' not in json.dumps(response)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+@pytest.mark.parametrize('atlascloud_key', ['', 'apikey-atlascloud-dedicated'])
+def test_atlascloud_readback_uses_only_its_dedicated_key(
+    config_manager, core_config_router, core_provider, atlascloud_key,
+):
+    """An unrelated core credential must not appear as a configured Atlas Cloud key."""
+    core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+    _write_core_config(config_manager, {
+        'coreApi': core_provider,
+        'coreApiKey': core_key,
+        'assistApi': 'atlascloud',
+        'assistApiKeyAtlascloud': atlascloud_key,
+    })
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response['success'] is True
+    assert response['assistApi'] == 'atlascloud'
+    assert response['assistApiKeyAtlascloud'] == (
+        core_config_router.CORE_CONFIG_SECRET_SENTINEL if atlascloud_key else ''
+    )
+    assert response['assist_api_key_display'] == (
+        core_config_router.mask_core_config_secret_for_display(atlascloud_key)
+    )
+    assert 'sk-other-core' not in json.dumps(response)
+    assert 'apikey-atlascloud-dedicated' not in json.dumps(response)
 
 
 @pytest.mark.unit
