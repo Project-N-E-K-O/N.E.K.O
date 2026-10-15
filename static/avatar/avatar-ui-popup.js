@@ -759,6 +759,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
         { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
+        { id: 'auto-memory-recall', label: window.t ? window.t('settings.toggles.autoMemoryRecall') : '自动想起记忆', labelKey: 'settings.toggles.autoMemoryRecall', tooltipKey: 'settings.toggles.autoMemoryRecallTooltip', storageKey: 'autoMemoryRecallEnabled', alwaysTinted: true },
         { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '自然表达', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
         { id: 'gravity-cat', label: window.t ? window.t('settings.toggles.gravityCat') : '重力猫猫', labelKey: 'settings.toggles.gravityCat', tooltipKey: 'settings.toggles.gravityCatTooltip', alwaysTinted: true },
@@ -2594,6 +2595,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.avatarReactionBubbleEnabled;
     } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
         checkbox.checked = window.focusCognitionEnabled;
+    } else if (toggle.id === 'auto-memory-recall' && typeof window.autoMemoryRecallEnabled !== 'undefined') {
+        checkbox.checked = window.autoMemoryRecallEnabled;
     } else if (toggle.id === 'slop-filter' && typeof window.slopFilterEnabled !== 'undefined') {
         checkbox.checked = window.slopFilterEnabled;
     } else if (toggle.id === 'visit-enabled' && typeof window.visitEnabled !== 'undefined') {
@@ -2752,6 +2755,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // （core.py `_focus_inline_decision` 读 focusCognitionEnabled gate），
             // 思考气泡随之不再出现；master 情绪读不受影响。
             window.focusCognitionEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'auto-memory-recall') {
+            // 文字对话回复前自动想起相关记忆（被动注入）。关掉后后端不再发记忆
+            // 检索（main_logic/turn_context.py 读 autoMemoryRecallEnabled），
+            // recall_memory 工具不受影响。
+            window.autoMemoryRecallEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }

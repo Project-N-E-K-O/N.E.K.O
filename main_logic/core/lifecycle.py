@@ -1728,6 +1728,7 @@ class LifecycleMixin:
         operation_is_current,
         cached_turns_before_final: list[dict],
         visual_still_owned=None,
+        turn_context=None,
     ) -> bool:
         """Two-phase Realtime -> Offline VLM promotion for one raw-image turn.
 
@@ -1844,6 +1845,7 @@ class LifecycleMixin:
                         delivered = await submit_text(
                             turn.transcript,
                             turn_id=turn.turn_id,
+                            turn_context=turn_context,
                         )
                         return delivered is not False
                     delivered = await submit(
@@ -1853,6 +1855,9 @@ class LifecycleMixin:
                         # 与这批帧一起冻结的采集通道。不传的话离线侧会把屏幕
                         # 和摄像头帧一律标成 "user"。
                         source=turn.source,
+                        # 本轮附加上下文：快速路径上接这一轮的本来就是离线
+                        # 会话，检索时排除的也是它常驻的知识。
+                        turn_context=turn_context,
                     )
                     return delivered is not False
                 if current is None or not operation_is_current():

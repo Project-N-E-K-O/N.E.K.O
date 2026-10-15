@@ -130,6 +130,58 @@ def names_in_query(query: str, entry: StoredEntry) -> bool:
     return False
 
 
+def _name_length(name: str) -> tuple[int, int]:
+    """CJK characters and other letters/digits in ``name``."""
+    view = search_view(name)
+    cjk = sum(1 for ch in view if is_cjk_token(ch))
+    other = sum(1 for ch in view if ch.isalnum() and not is_cjk_token(ch))
+    return cjk, other
+
+
+def _is_whole_text(text: str, name: str) -> bool:
+    """The whole message is ``name``, give or take edge punctuation and quotes."""
+    name_loose = loose_surface(name)
+    if name_loose and loose_surface(text) == name_loose:
+        return True
+    name_strict = strict_surface(name)
+    return bool(name_strict) and strict_surface(text) == name_strict
+
+
+def named_in_text(
+    text: str, entry: StoredEntry, *, min_cjk_chars: int, min_latin_chars: int
+) -> bool:
+    """Whether a chat message names the entry: its title, an alias or a
+    recognition phrase occurs in it.
+
+    Passive retrieval reads whole chat messages, not queries, so short names
+    are held to more: a name with fewer than ``min_cjk_chars`` CJK characters
+    and fewer than ``min_latin_chars`` other letters names the entry only when
+    it is the whole message. Longer names count wherever they occur as a
+    phrase (Latin words on word boundaries, symbols as written).
+    """
+    query_runs: list[str] | None = None
+    text_surface = ""
+    names = (entry.title, *entry.terms.get("alias", ()), *entry.terms.get("recognition", ()))
+    for name in names:
+        if not strict_surface(name):
+            continue
+        if _is_whole_text(text, name):
+            return True
+        cjk, other = _name_length(name)
+        if cjk < min_cjk_chars and other < min_latin_chars:
+            continue
+        if not loose_surface(name):
+            text_surface = text_surface or strict_surface(text)
+            if _contains_word(text_surface, strict_surface(name)):
+                return True
+            continue
+        if query_runs is None:
+            query_runs = _plain_query_runs(text)
+        if _phrase_in(ordered_runs(name), query_runs):
+            return True
+    return False
+
+
 def _phrase_in(name_runs: list[str], query_runs: list[str]) -> bool:
     """Whether the name's word runs occur in order and adjacent in the query.
 
@@ -203,11 +255,14 @@ def semantic_candidates(
     allowed_pack_ids: Iterable[str],
     exclude_entry_ids: Collection[int] = (),
     limit: int = SEMANTIC_CANDIDATES,
+    threshold: float = SEMANTIC_THRESHOLD,
 ) -> list[SemanticMatch]:
     """Best-scoring chunk per entry over the allowed packs, best first.
 
     ``exclude_entry_ids`` (disabled entries) are skipped before the cut to
-    ``limit``, so they cannot crowd out entries that may be served.
+    ``limit``, so they cannot crowd out entries that may be served. Passive
+    retrieval passes its own ``threshold``: it compares a hit with the next
+    one down, which may sit below the tool's bar.
     """
     if snapshot is None or query_vector is None:
         return []
@@ -233,7 +288,7 @@ def semantic_candidates(
         if entry_id in excluded:
             continue
         current = best.get(entry_id)
-        if score >= SEMANTIC_THRESHOLD and (current is None or score > current.score):
+        if score >= threshold and (current is None or score > current.score):
             best[entry_id] = SemanticMatch(entry_id, score, chunk_index)
     return sorted(best.values(), key=lambda match: -match.score)[:limit]
 

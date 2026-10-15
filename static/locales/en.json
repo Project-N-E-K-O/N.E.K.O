@@ -3780,6 +3780,8 @@
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
+            "autoMemoryRecall": "Auto-recall memories",
+            "autoMemoryRecallTooltip": "When on, related past moments are recalled automatically before each reply in text chat (including transcribed voice); when off, memories are looked up only when needed.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
             "autoCat": "Auto Cat Mode",

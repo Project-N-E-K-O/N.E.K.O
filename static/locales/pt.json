@@ -3780,6 +3780,8 @@
             "avatarReactionBubble": "Bolha de Expressão",
             "focusCognition": "Modo de concentração",
             "focusCognitionTooltip": "Quando ativado, ela se concentra e pensa mais profundamente quando você desabafa ou pergunta algo complexo; desativado desliga a concentração.",
+            "autoMemoryRecall": "Lembrar automaticamente",
+            "autoMemoryRecallTooltip": "Quando ativado, antes de responder no chat de texto (incluindo voz transcrita) momentos passados relacionados são lembrados automaticamente; quando desativado, só se lembra quando for preciso.",
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",
             "autoCat": "Modo gato automático",

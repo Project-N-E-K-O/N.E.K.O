@@ -1424,6 +1424,45 @@ class RenderingMixin:
             skipped=skipped,
         )
 
+    async def arecall_residency(
+        self, name: str,
+        pending_reflections: list[dict] | None = None,
+        confirmed_reflections: list[dict] | None = None,
+    ) -> tuple[list[dict], set[str]]:
+        """What the private persona render keeps in the system prompt, for recall.
+
+        Runs the same selection as the legacy (private) path of
+        ``arender_persona_markdown`` without composing any text. Returns the
+        non-protected persona entries that selection leaves out, each copied
+        with its ``entity`` section key, and the ids of the reflections it
+        keeps. Left-out entries are not in the prompt, so recall may bring
+        them back; kept reflections already are. Suppressed entries never
+        reach either list (they render in their own section, and recall's
+        hard filter drops them anyway); protected entries always render.
+        """
+        persona = await self.aensure_persona(name)
+        now = datetime.now()
+        prep = self._prepare_render(persona, pending_reflections, confirmed_reflections)
+        kept_persona, _ = await self._ascore_trim_entries(
+            prep.flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
+        )
+        kept_reflections, _ = await self._ascore_trim_entries(
+            prep.reflections, REFLECTION_RENDER_MAX_TOKENS, now,
+            cache_writeback=False,
+        )
+        kept = {id(entry) for entry in kept_persona}
+        left_out = [
+            {**entry, 'entity': prep.non_protected_entity_index.get(id(entry))}
+            for entry in prep.flat_non_protected
+            if id(entry) not in kept
+        ]
+        resident_reflection_ids = {
+            str(reflection.get('id'))
+            for reflection in kept_reflections
+            if isinstance(reflection, dict) and reflection.get('id')
+        }
+        return left_out, resident_reflection_ids
+
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:
         """Check if a given text matches any suppressed entry."""
         for entry in self._collect_all_entries(persona):

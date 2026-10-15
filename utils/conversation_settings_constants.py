@@ -28,6 +28,9 @@ ALLOWED_CONVERSATION_SETTINGS = frozenset({
     "mergeMessagesEnabled",
     "focusModeEnabled",
     "focusCognitionEnabled",
+    # 文字对话回复前自动召回相关记忆（被动注入），默认开；后端读取见
+    # main_logic/turn_context.py 的 MEMORY_SETTING_KEY。
+    "autoMemoryRecallEnabled",
     "avatarReactionBubbleEnabled",
     "slopFilterEnabled",
     "proactiveChatInterval",

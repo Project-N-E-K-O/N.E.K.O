@@ -1300,7 +1300,7 @@ async def test_catalog_hides_leftovers_of_a_removed_pack(tmp_path, monkeypatch):
 
 
 def test_deeply_nested_markup_is_defused_in_bounded_passes(monkeypatch):
-    from knowledge import text as text_module
+    from utils import prompt_fence as text_module
 
     passes = {"n": 0}
     real = text_module._CHAT_TOKEN_RE

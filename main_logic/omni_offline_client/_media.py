@@ -79,6 +79,7 @@ class _MediaMixin:
         turn_source_count: int | None = None,
         turn_id: str | None = None,
         on_turn_committed=None,
+        turn_context=None,
     ) -> None:
         """Run one externally transcribed turn under cancellable task ownership."""
 
@@ -90,6 +91,7 @@ class _MediaMixin:
                 turn_source_count=turn_source_count,
                 turn_id=turn_id,
                 on_turn_committed=on_turn_committed,
+                turn_context=turn_context,
                 input_transcript_callback=(
                     self._ignore_already_recorded_external_transcript
                 ),
@@ -374,6 +376,7 @@ class _MediaMixin:
         *,
         turn_id: str,
         source: str | None = None,
+        turn_context=None,
     ) -> bool:
         """Submit one utterance's sampled raw frames with its transcript.
 
@@ -451,6 +454,8 @@ class _MediaMixin:
                     # 这个身份，留空即可（记录里就不带 turn_id）。
                     turn_id=str(turn_id or "").strip() or None,
                     on_turn_committed=_mark_committed,
+                    # 本轮附加上下文（知识/语料/记忆），Core 在提交前取好。
+                    turn_context=turn_context,
                 )
             except BaseException as exc:
                 # 本轮帧是 invocation-local 的，失败即消失；但取走的那段用户附件
@@ -480,6 +485,7 @@ class _MediaMixin:
         text: str,
         *,
         turn_id: str,
+        turn_context=None,
     ) -> bool:
         """Generate a text/TTS reply for a later image-free independent-ASR turn."""
 
@@ -492,7 +498,7 @@ class _MediaMixin:
             self._multimodal_submit_lock = lock
         async with lock:
             try:
-                await self._run_external_voice_stream(text)
+                await self._run_external_voice_stream(text, turn_context=turn_context)
             except self._ExternalVoiceSubmitCancelled:
                 return False
             return True
@@ -551,9 +557,12 @@ class _MediaMixin:
                 else:
                     kept_parts.append(item)
             if len(kept_parts) == 1 and isinstance(kept_parts[0], dict) and kept_parts[0].get("type") == "text":
-                self._conversation_history[idx] = HumanMessage(content=kept_parts[0].get("text", ""))
+                replacement = HumanMessage(content=kept_parts[0].get("text", ""))
             else:
-                self._conversation_history[idx] = HumanMessage(content=kept_parts)
+                replacement = HumanMessage(content=kept_parts)
+            self._conversation_history[idx] = replacement
+            # 这一轮的 resident 块（知识）跟着替换后的消息走。
+            self._rebind_resident_anchor(old, replacement)
 
         logger.info(
             f"🖼️ Evicted {evicted_imgs} image(s) from {len(image_turn_indices) - keep_turns} older turn(s); "

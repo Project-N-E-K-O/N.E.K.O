@@ -4180,6 +4180,12 @@ RECALL_ENTRY_TIER_LABEL = {
         "ko": "지난 사실", "ru": "архивный факт",
         "es": "hecho archivado", "pt": "fato arquivado",
     },
+    # 画像里没被渲染进系统提示的条目（预算挤出去的），召回时带回来。
+    "persona": {
+        "zh": "长期记忆", "zh-TW": "長期記憶", "en": "long-term memory", "ja": "長期記憶",
+        "ko": "장기 기억", "ru": "долговременная память",
+        "es": "memoria a largo plazo", "pt": "memória de longo prazo",
+    },
 }
 
 # entity 的 'master' 指"关于使用者的事实"，不是称谓——一律用中性的"用户"

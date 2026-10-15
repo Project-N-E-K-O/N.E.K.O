@@ -726,6 +726,10 @@ class _StreamingMixin:
         ] = None,
         response_done_callback: Optional[Callable[[], Awaitable[None]]] = None,
         reply_owner: Any = None,
+        # 本轮附加上下文（``_turn_context.TurnContext``）：resident 块（知识）
+        # 锚在这一轮的用户消息后，provider 应答之后留在本会话之后的请求里；
+        # ephemeral 块（语料、记忆）只进这一轮的请求。两者都不进历史。
+        turn_context: Any = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -1175,7 +1179,12 @@ class _StreamingMixin:
         # The tool rounds this turn appended, across attempts, so a cancelled
         # turn trims only its own (``_last_tool_round_of``).
         _turn_tool_rounds: list = []
+        # 本轮的 resident 块：先只属于这一轮，provider 应答后才留给后续轮次；
+        # 绑定在 try 之前，finally 才读得到。
+        _resident_entry = None
+        _ephemeral_context = getattr(turn_context, "ephemeral", None)
         try:
+            _resident_entry = self._register_resident_context(user_message, turn_context)
             # A displaced reply's frontend notice goes out before this reply
             # sends anything (see _begin_response_generation).
             await self._run_displaced_followup()
@@ -1334,6 +1343,7 @@ class _StreamingMixin:
                             _tool_bus_frames=_turn_tool_bus_frames,
                             _tool_rounds=_turn_tool_rounds,
                             _response_generation=response_generation,
+                            _instruction=_ephemeral_context,
                             **_focus_overrides,
                         ):
                             # The empty chunk a cancelled tool loop hands up is
@@ -1351,6 +1361,10 @@ class _StreamingMixin:
                             # astream 是惰性的，请求要到第一次 __anext__ 才真正发出去，
                             # 在那之前任何位置发布都只是在赌。清标记在 await 之前：一轮
                             # 只发一次，attempt 重试和 reroll 都不会把同一批图再抄一遍。
+                            # 同一个时刻：provider 收下了这一轮，本轮的 resident
+                            # 块（知识）从此留在本会话之后的请求里。
+                            if _resident_entry is not None and not _resident_entry.delivered:
+                                self._settle_resident_context(_resident_entry, delivered=True)
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None
@@ -2309,6 +2323,12 @@ class _StreamingMixin:
             interrupter_owned = self._take_interrupter_ownership(response_generation)
             self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
+            # 没等到 provider 应答的 resident 块不留：请求没发出去、出字前被
+            # 打断或被新消息顶替。跑过工具轮说明 provider 已经应答过。
+            if _resident_entry is not None and not _resident_entry.delivered:
+                self._settle_resident_context(
+                    _resident_entry, delivered=bool(_turn_tool_rounds),
+                )
 
             if history_replacement_text:
                 # The index is a hint: a concurrent turn's cancelled tool round
@@ -2319,7 +2339,9 @@ class _StreamingMixin:
                     _history, history_replacement_index, user_message,
                 )
                 if _replace_at >= 0:
-                    _history[_replace_at] = HumanMessage(content=history_replacement_text)
+                    _replacement = HumanMessage(content=history_replacement_text)
+                    _history[_replace_at] = _replacement
+                    self._rebind_resident_anchor(user_message, _replacement)
 
             # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:

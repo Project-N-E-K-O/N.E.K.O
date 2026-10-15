@@ -1,0 +1,416 @@
+# -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Passive memory recall: memories a chat message brings in unasked.
+
+Before a text reply, Main asks for memories related to what the user just
+said (``/internal/memory/{name}/turn_context``) and shows the hits to that
+reply's requests alone. Nobody asked for them, so the bars are far higher
+than ``recall_memory``'s:
+
+* **pool** - what the system prompt does not already hold: active facts
+  (minus those written during the current session, whose conversation is
+  still in context), archived facts (keywords only), reflections the persona
+  render leaves out, and persona entries it leaves out. Private scope only.
+* **rare term** - the message and a memory share a term of at least three
+  CJK characters or four letters that at most two memories contain;
+* **keywords and meaning** - a top BM25 hit whose cosine clears the dual bar;
+  without a usable vector signal this becomes a very high keyword bar
+  instead (most of the message's terms in the memory, near the BM25 top);
+* **meaning alone** - up to the two best cosines, clearing the higher bar,
+  the last one taken leading the next by the calibrated margin.
+
+Vector bars are calibrated on the loaded model against small talk
+(``utils.semantic_calibration``). Nothing is written; nothing about the
+session is kept.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from datetime import datetime
+from typing import Any
+
+import numpy as np
+
+from config import HYBRID_RECALL_BM25_THRESHOLD
+from config.turn_context_settings import (
+    TURN_CONTEXT_CALIBRATION_BASE_QUANTILE,
+    TURN_CONTEXT_CALIBRATION_BATCH,
+    TURN_CONTEXT_CALIBRATION_BATCH_PAUSE_SECONDS,
+    TURN_CONTEXT_CALIBRATION_HIGH_QUANTILE,
+    TURN_CONTEXT_CALIBRATION_MIN_SAMPLES,
+    TURN_CONTEXT_CALIBRATION_PROBES,
+    TURN_CONTEXT_DUAL_STEPS,
+    TURN_CONTEXT_LEAD_FLOOR,
+    TURN_CONTEXT_LEAD_STEPS,
+    TURN_CONTEXT_MAX_ITEMS_PER_KIND,
+    TURN_CONTEXT_MEMORY_BM25_MIN_COVERAGE,
+    TURN_CONTEXT_MEMORY_EXTRA_STEPS,
+    TURN_CONTEXT_MEMORY_FLOOR,
+    TURN_CONTEXT_QUERY_MAX_CHARS,
+    TURN_CONTEXT_RARE_TERM_MAX_DOCS,
+    TURN_CONTEXT_RARE_TERM_MIN_CJK_CHARS,
+    TURN_CONTEXT_RARE_TERM_MIN_LATIN_CHARS,
+    TURN_CONTEXT_SEMANTIC_STEPS,
+)
+from utils.logger_config import get_module_logger
+from utils.prompt_fence import fence_safe
+from utils.semantic_calibration import (
+    background_from_scores,
+    embed_probes,
+    leading_take,
+    passive_thresholds,
+    probe_best_scores,
+)
+
+logger = get_module_logger(__name__, "Memory")
+
+# Keyword evidence counts only near the top of the BM25 order.
+PASSIVE_BM25_TOP = 8
+# Without vectors, the keyword-only bar also needs the hit among the top two
+# and a message long enough for coverage to mean something.
+FALLBACK_BM25_TOP = 2
+FALLBACK_MIN_QUERY_TERMS = 6
+# Time kept back from the budget for rendering once the vector is in.
+RENDER_RESERVE_SECONDS = 0.1
+
+_probe_vectors: dict[str, np.ndarray] = {}
+_probe_tasks: dict[str, asyncio.Task[Any]] = {}
+
+
+def _is_cjk(ch: str) -> bool:
+    return "一" <= ch <= "鿿" or "぀" <= ch <= "ヿ" or "가" <= ch <= "힯"
+
+
+def _is_rare_term_shape(term: str) -> bool:
+    cjk = sum(1 for ch in term if _is_cjk(ch))
+    if cjk:
+        return cjk >= TURN_CONTEXT_RARE_TERM_MIN_CJK_CHARS
+    return sum(1 for ch in term if ch.isalpha()) >= TURN_CONTEXT_RARE_TERM_MIN_LATIN_CHARS
+
+
+def _ensure_probe_vectors(service, model_id: str) -> np.ndarray | None:
+    """Probe vectors of ``model_id``; embedded once in the background."""
+    vectors = _probe_vectors.get(model_id)
+    if vectors is not None:
+        return vectors
+    task = _probe_tasks.get(model_id)
+    if task is not None and not task.done():
+        return None
+
+    async def run() -> None:
+        try:
+            rows = await embed_probes(
+                service.embed_batch,
+                TURN_CONTEXT_CALIBRATION_PROBES,
+                batch=TURN_CONTEXT_CALIBRATION_BATCH,
+                pause=TURN_CONTEXT_CALIBRATION_BATCH_PAUSE_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[turn_context] calibration probes failed: %s", type(exc).__name__)
+            return
+        vecs = []
+        for row in rows or ():
+            if row is None:
+                continue
+            arr = np.asarray(row, dtype=np.float32)
+            norm = float(np.linalg.norm(arr))
+            if norm > 0 and np.isfinite(norm):
+                vecs.append(arr / norm)
+        if len(vecs) >= TURN_CONTEXT_CALIBRATION_MIN_SAMPLES and len({v.size for v in vecs}) == 1:
+            _probe_vectors[model_id] = np.vstack(vecs)
+
+    _probe_tasks[model_id] = asyncio.create_task(run())
+    return None
+
+
+def _parse_time(value) -> datetime | None:
+    from memory.temporal import _parse_iso_safe, to_naive_local
+
+    return to_naive_local(_parse_iso_safe(value))
+
+
+async def _aload_pools(
+    lanlan_name: str, fact_store, reflection_engine, persona_manager,
+    session_started_at: datetime | None,
+):
+    from memory.hybrid_recall import (
+        _aload_archive_facts,
+        _aload_reflections_for_recall,
+        _drop_archive_overlap,
+        _tag_tier,
+    )
+    from memory.recall import MemoryRecallReranker
+    from memory.scopes import filter_entries_for_subjects
+
+    facts, reflections, archive, pending, confirmed = await asyncio.gather(
+        fact_store.aload_facts(lanlan_name),
+        _aload_reflections_for_recall(reflection_engine, lanlan_name),
+        _aload_archive_facts(fact_store, lanlan_name),
+        reflection_engine.aget_pending_reflections(lanlan_name),
+        reflection_engine.aget_confirmed_reflections(lanlan_name),
+    )
+    facts = facts or []
+    archive = _drop_archive_overlap(archive or [], facts, lanlan_name)
+    persona_left_out: list[dict] = []
+    resident_reflections: set[str] = set()
+    if persona_manager is not None:
+        persona_left_out, resident_reflections = await persona_manager.arecall_residency(
+            lanlan_name, pending or [], confirmed or [],
+        )
+    if session_started_at is not None:
+        # Facts written during this session come from a conversation the
+        # model still has in front of it.
+        facts = [
+            fact for fact in facts
+            if (created := _parse_time(fact.get('created_at'))) is None
+            or created < session_started_at
+        ]
+    reflections = [
+        reflection for reflection in reflections or []
+        if str(reflection.get('id') or '') not in resident_reflections
+    ]
+    tagged = {
+        'fact': _tag_tier(facts, 'fact'),
+        'reflection': _tag_tier(reflections, 'reflection'),
+        'fact_archive': _tag_tier(archive, 'fact_archive'),
+        'persona': _tag_tier(persona_left_out, 'persona'),
+    }
+    tagged = {
+        tier: filter_entries_for_subjects(rows, None, include_legacy_private=None)
+        for tier, rows in tagged.items()
+    }
+    bm25_pool = MemoryRecallReranker._hard_filter(
+        tagged['fact'] + tagged['reflection'] + tagged['fact_archive'] + tagged['persona']
+    )
+    embedding_pool = MemoryRecallReranker._hard_filter(
+        tagged['fact'] + tagged['reflection'] + tagged['persona']
+    )
+    return bm25_pool, embedding_pool
+
+
+def _pool_matrix(pool: list[dict], model_id: str, dim: int):
+    """Unit vectors of the docs with a valid cached embedding, and those docs."""
+    from memory.hybrid_recall import _cached_doc_vector, _ScanState
+
+    rows: list[dict] = []
+    vecs: list[np.ndarray] = []
+    state = _ScanState()
+    for doc in pool:
+        cvec, cnorm = _cached_doc_vector(doc, doc.get('text', '') or '', model_id, state)
+        if cvec is None or cvec.size != dim or cnorm <= 0:
+            continue
+        rows.append(doc)
+        vecs.append(np.asarray(cvec, dtype=np.float32) / cnorm)
+    if not rows:
+        return None, []
+    return np.vstack(vecs), rows
+
+
+def _render(picked: list[dict], lang: str) -> tuple[str, int]:
+    from memory.recall_render import render_recall_block
+    from utils.tokenize import count_tokens
+
+    block = render_recall_block(
+        [
+            {
+                "text": doc.get('text') or '',
+                "tier": doc.get('_tier'),
+                "entity": doc.get('entity'),
+                "created_at": doc.get('created_at'),
+                "event_start_at": doc.get('event_start_at'),
+                "event_end_at": doc.get('event_end_at'),
+            }
+            for doc in picked
+        ],
+        lang,
+    )
+    text = fence_safe(block.text).strip()
+    return text, (count_tokens(text) if text else 0)
+
+
+async def amemory_turn_context(
+    *,
+    lanlan_name: str,
+    text: str,
+    fact_store,
+    reflection_engine,
+    persona_manager,
+    config_manager,
+    budget_ms: int,
+    language: str,
+    session_started_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Memories to show this reply unasked; never raises.
+
+    Returns ``{"result", "context", "memory_ids", "tokens", "retrieval_mode",
+    "elapsed_ms"}``; ``context`` is the rendered lines, without a fence.
+    """
+    started = time.monotonic()
+    deadline = started + max(int(budget_ms or 0), 50) / 1000
+    query = str(text or "").strip()[:TURN_CONTEXT_QUERY_MAX_CHARS]
+
+    def finish(result: str, *, picked=(), context: str = "", tokens: int = 0, mode: str = ""):
+        elapsed = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "[turn_context] %s: memory result=%s mode=%s hits=%d %dms",
+            lanlan_name, result, mode, len(picked), elapsed,
+        )
+        return {
+            "result": result,
+            "context": context,
+            "memory_ids": [str(doc.get('id') or '') for doc in picked],
+            "tokens": tokens,
+            "retrieval_mode": mode,
+            "elapsed_ms": elapsed,
+        }
+
+    if not query:
+        return finish("miss")
+    try:
+        from memory.embeddings import get_embedding_service, parse_dim_from_model_id
+        from memory.hybrid_recall import _bm25_rank, _tokenize
+
+        service = get_embedding_service()
+        model_id = service.model_id() if service.is_available() else None
+        embed_task: asyncio.Task[Any] | None = None
+        if model_id:
+            _ensure_probe_vectors(service, model_id)
+            embed_task = asyncio.create_task(service.embed_batch([query]))
+            # Every exit below may leave it running; its outcome is never needed then.
+            embed_task.add_done_callback(lambda task: task.cancelled() or task.exception())
+
+        bm25_pool, embedding_pool = await _aload_pools(
+            lanlan_name, fact_store, reflection_engine, persona_manager, session_started_at,
+        )
+        if not bm25_pool:
+            if embed_task is not None:
+                embed_task.cancel()
+            return finish("miss")
+        try:
+            from memory.stop_names import collect_stop_names
+            stop_names = collect_stop_names(config_manager) or []
+        except Exception:  # noqa: BLE001
+            stop_names = []
+
+        bm25_scored = await asyncio.to_thread(_bm25_rank, query, bm25_pool, stop_names=stop_names)
+        query_terms = set(_tokenize(query, stop_names))
+        doc_terms = {
+            id(doc): set(_tokenize(doc.get('text', '') or '', stop_names)) & query_terms
+            for doc, _score in bm25_scored
+        }
+        document_frequency: dict[str, int] = {}
+        for terms in doc_terms.values():
+            for term in terms:
+                document_frequency[term] = document_frequency.get(term, 0) + 1
+        rare_terms = {
+            term for term, count in document_frequency.items()
+            if count <= TURN_CONTEXT_RARE_TERM_MAX_DOCS and _is_rare_term_shape(term)
+        }
+
+        chosen: dict[int, tuple[int, float, dict]] = {}
+
+        def offer(doc: dict, strength: int, score: float) -> None:
+            current = chosen.get(id(doc))
+            if current is None or (strength, score) > current[:2]:
+                chosen[id(doc)] = (strength, score, doc)
+
+        for doc, score in bm25_scored:
+            if doc_terms.get(id(doc), set()) & rare_terms:
+                offer(doc, 3, score)
+
+        query_vector: np.ndarray | None = None
+        if embed_task is not None:
+            remaining = deadline - time.monotonic() - RENDER_RESERVE_SECONDS
+            done, _pending = await asyncio.wait({embed_task}, timeout=max(remaining, 0))
+            if embed_task in done and embed_task.exception() is None:
+                rows = embed_task.result() or []
+                if rows and rows[0] is not None:
+                    arr = np.asarray(rows[0], dtype=np.float32)
+                    norm = float(np.linalg.norm(arr))
+                    if norm > 0 and np.isfinite(norm):
+                        query_vector = arr / norm
+            else:
+                embed_task.cancel()
+
+        thresholds = None
+        cosine: list[tuple[dict, float]] = []
+        if query_vector is not None and model_id:
+            dim = parse_dim_from_model_id(model_id) or int(query_vector.size)
+            matrix, rows = await asyncio.to_thread(_pool_matrix, embedding_pool, model_id, dim)
+            if matrix is not None and matrix.shape[1] == query_vector.size:
+                sims = matrix @ query_vector
+                cosine = sorted(zip(rows, sims.tolist()), key=lambda pair: -pair[1])
+                probes = _probe_vectors.get(model_id)
+                if probes is not None and probes.shape[1] == matrix.shape[1]:
+                    background = background_from_scores(
+                        probe_best_scores(probes, matrix),
+                        high_quantile=TURN_CONTEXT_CALIBRATION_HIGH_QUANTILE,
+                        base_quantile=TURN_CONTEXT_CALIBRATION_BASE_QUANTILE,
+                        min_samples=TURN_CONTEXT_CALIBRATION_MIN_SAMPLES,
+                    )
+                    thresholds = passive_thresholds(
+                        background,
+                        floor=TURN_CONTEXT_MEMORY_FLOOR,
+                        dual_steps=TURN_CONTEXT_DUAL_STEPS,
+                        semantic_steps=TURN_CONTEXT_SEMANTIC_STEPS,
+                        extra_steps=TURN_CONTEXT_MEMORY_EXTRA_STEPS,
+                        lead_steps=TURN_CONTEXT_LEAD_STEPS,
+                        lead_floor=TURN_CONTEXT_LEAD_FLOOR,
+                    )
+
+        bm25_top = [
+            (doc, score) for doc, score in bm25_scored
+            if score >= HYBRID_RECALL_BM25_THRESHOLD
+        ][:PASSIVE_BM25_TOP]
+        if thresholds is not None:
+            mode = "hybrid"
+            top_ids = {id(doc) for doc, _score in bm25_top}
+            for doc, score in cosine:
+                if id(doc) in top_ids and score >= thresholds.dual:
+                    offer(doc, 2, score)
+            take = leading_take(
+                [score for _doc, score in cosine],
+                threshold=thresholds.semantic,
+                lead=thresholds.lead,
+                max_take=TURN_CONTEXT_MAX_ITEMS_PER_KIND,
+            )
+            for doc, score in cosine[:take]:
+                offer(doc, 1, score)
+        else:
+            # No usable vector signal: keywords alone, on a very high bar.
+            mode = "bm25"
+            if len(query_terms) >= FALLBACK_MIN_QUERY_TERMS:
+                for doc, score in bm25_top[:FALLBACK_BM25_TOP]:
+                    coverage = len(doc_terms.get(id(doc), set())) / len(query_terms)
+                    if coverage >= TURN_CONTEXT_MEMORY_BM25_MIN_COVERAGE:
+                        offer(doc, 2, score)
+
+        ranked = sorted(chosen.values(), key=lambda item: (-item[0], -item[1]))
+        picked = [doc for _strength, _score, doc in ranked[:TURN_CONTEXT_MAX_ITEMS_PER_KIND]]
+        if not picked:
+            return finish("miss", mode=mode)
+        context, tokens = await asyncio.to_thread(_render, picked, language)
+        if not context:
+            return finish("miss", mode=mode)
+        return finish("matched", picked=picked, context=context, tokens=tokens, mode=mode)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[turn_context] %s: memory turn context failed: %s", lanlan_name, type(exc).__name__,
+            exc_info=True,
+        )
+        return finish("error")

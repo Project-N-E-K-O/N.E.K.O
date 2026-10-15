@@ -550,6 +550,7 @@
         'mergeMessagesEnabled',
         'focusModeEnabled',
         'focusCognitionEnabled',
+        'autoMemoryRecallEnabled',
         'noiseReductionEnabled',
         'independentAsrEnabled',
         'independentAsrProviderPreference',
@@ -592,6 +593,7 @@
             mergeMessagesEnabled: false,
             focusModeEnabled: false,
             focusCognitionEnabled: true,
+            autoMemoryRecallEnabled: true,
             noiseReductionEnabled: true,
             independentAsrEnabled: false,
             independentAsrProviderPreference: 'auto',
@@ -655,6 +657,7 @@
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
+            autoMemoryRecallEnabled: S.autoMemoryRecallEnabled,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
             independentAsrProviderPreference: _normalizeIndependentAsrProviderPreference(
@@ -1634,6 +1637,9 @@
         const currentFocusCognition = typeof window.focusCognitionEnabled !== 'undefined'
             ? window.focusCognitionEnabled
             : S.focusCognitionEnabled;
+        const currentAutoMemoryRecall = typeof window.autoMemoryRecallEnabled !== 'undefined'
+            ? window.autoMemoryRecallEnabled
+            : S.autoMemoryRecallEnabled;
         const currentIndependentAsr = S.independentAsrEnabled === true;
         const currentVoiceResourceOptimization =
             S.voiceInputResourceOptimizationEnabled !== false;
@@ -1728,6 +1734,7 @@
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
+            autoMemoryRecallEnabled: currentAutoMemoryRecall,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: currentIndependentAsr,
             independentAsrProviderPreference: currentIndependentAsrProviderPreference,
@@ -1776,6 +1783,7 @@
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
+        S.autoMemoryRecallEnabled = currentAutoMemoryRecall;
         S.independentAsrEnabled = currentIndependentAsr;
         S.independentAsrProviderPreference = currentIndependentAsrProviderPreference;
         S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
@@ -1961,6 +1969,7 @@
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
+                S.autoMemoryRecallEnabled = settings.autoMemoryRecallEnabled ?? true;
                 S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
                 S.voiceInputResourceOptimizationEnabled =
                     settings.voiceInputResourceOptimizationEnabled ?? true;
@@ -2105,6 +2114,7 @@
         // 关、reload 时若没触发 merge，window 会是 undefined 让弹窗误显示为开。这里在
         // 每次 loadSettings 末尾从 S 权威镜像一次兜住该时序漏洞。
         window.focusCognitionEnabled = S.focusCognitionEnabled;
+        window.autoMemoryRecallEnabled = S.autoMemoryRecallEnabled;
         // 同理：自然表达开关也镜像到 window，避免设置弹窗在 reload 后误显示为开。
         window.slopFilterEnabled = S.slopFilterEnabled;
         window.visitEnabled = S.visitEnabled;
@@ -2320,6 +2330,7 @@
                     window.mergeMessagesEnabled = S.mergeMessagesEnabled;
                     window.focusModeEnabled = S.focusModeEnabled;
                     window.focusCognitionEnabled = S.focusCognitionEnabled;
+                    window.autoMemoryRecallEnabled = S.autoMemoryRecallEnabled;
                     window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                     window.slopFilterEnabled = S.slopFilterEnabled;
                     window.visitEnabled = S.visitEnabled;

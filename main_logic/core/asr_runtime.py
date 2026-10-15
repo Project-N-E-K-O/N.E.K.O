@@ -6298,6 +6298,7 @@ class AsrRuntimeMixin:
         *,
         turn_id: str,
         session_ref: object | None = None,
+        turn_context=None,
     ) -> None:
         """Submit a completed ASR turn to the session that produced it.
 
@@ -6319,7 +6320,10 @@ class AsrRuntimeMixin:
             await self.ensure_tts_pipeline_alive()
         submit = getattr(session_ref, "submit_external_voice_turn", None)
         if callable(submit):
-            await submit(text, turn_id=turn_id)
+            if turn_context is not None and hasattr(session_ref, "resident_turn_context_ids"):
+                await submit(text, turn_id=turn_id, turn_context=turn_context)
+            else:
+                await submit(text, turn_id=turn_id)
         else:
             await session_ref.create_response(text)
 
@@ -6343,6 +6347,10 @@ class AsrRuntimeMixin:
             session_ref = getattr(self, "session", None)
         prepared_session_ref = session_ref
         transition_generation = self._voice_input_transition_generation
+        # 本轮附加上下文（知识/语料/记忆）：只有离线客户端接这一轮时才有，
+        # realtime 语音只靠工具。绑定在 try 之前，finally 才收得了尾。
+        turn_context_job = None
+        turn_context = None
         try:
             if (
                 not self._ingress_token_matches(token)
@@ -6458,6 +6466,8 @@ class AsrRuntimeMixin:
                     # the preview bubble and the clear must not remove it.
                     await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            # 转写已被接受：和下面的预览恢复、swap 闸并行检索。
+            turn_context_job = self._start_turn_context(event.text, session=session_ref)
             def visual_ownership_lost() -> bool:
                 """Whether a successor has taken this turn's frames since the freeze.
 
@@ -6513,6 +6523,10 @@ class AsrRuntimeMixin:
             # order _fail_closed_voice_route owns.
             if not route_still_core():
                 return
+            # 取本轮附加上下文：等到预算为止；路由在这期间离开 Core 就丢掉。
+            turn_context = await self._collect_turn_context(
+                turn_context_job, still_current=route_still_core,
+            )
             # Synchronize with close+promotion itself, rather than sampling
             # final_swap_task once. A swap may begin during any awaited submit;
             # sharing this barrier means it cannot close the prepared session
@@ -6565,6 +6579,7 @@ class AsrRuntimeMixin:
                         event.text,
                         turn_id=external_turn_id,
                         session_ref=session_ref,
+                        turn_context=turn_context,
                     )
                 else:
                     get_delivery = getattr(
@@ -6598,6 +6613,7 @@ class AsrRuntimeMixin:
                                 event.text,
                                 turn_id=external_turn_id,
                                 session_ref=session_ref,
+                                turn_context=turn_context,
                             )
                         else:
                             try:
@@ -6639,6 +6655,7 @@ class AsrRuntimeMixin:
                                     event.text,
                                     turn_id=external_turn_id,
                                     session_ref=session_ref,
+                                    turn_context=turn_context,
                                 )
                     else:
                         # Candidate connect must happen outside the swap lock so
@@ -6657,6 +6674,7 @@ class AsrRuntimeMixin:
                     event.text,
                     turn_id=external_turn_id,
                     session_ref=session_ref,
+                    turn_context=turn_context,
                 )
             if handoff_target is not None:
                 delivered = await self._handoff_to_offline_vlm_and_submit(
@@ -6665,6 +6683,9 @@ class AsrRuntimeMixin:
                     prepared_session=prepared_session_ref,
                     operation_is_current=route_still_core,
                     cached_turns_before_final=cached_turns_before_final,
+                    # 只有快速路径（接这一轮的已经是离线会话）会带上；从
+                    # realtime 交接过来的候选会话开工时还不存在，这里是 None。
+                    turn_context=turn_context,
                     # 交接内部还有连候选会话、promote、起 TTS、同步工具一长串
                     # await。所有权判据必须跟着进去，而且**不能**并进
                     # operation_is_current —— 那个谓词为假会整轮放弃，丢帧只该
@@ -6679,6 +6700,8 @@ class AsrRuntimeMixin:
                 return bool(delivered)
             return True
         finally:
+            if turn_context_job is not None:
+                turn_context_job.cancel()
             self._abandon_core_voice_turn(
                 external_turn_id,
                 session_ref=session_ref,

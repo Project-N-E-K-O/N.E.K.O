@@ -15,6 +15,7 @@
 
 from utils.screen_comment_guard import project_screen_history, strip_screen_labels
 
+from ._turn_context import _TurnContextMixin
 from ._shared import (
     _answered_chunk,
     _generation_check,
@@ -70,7 +71,9 @@ _TOOLS_REFUSAL_REQUEST_QUALIFIERS = (
 )
 
 
-class _ToolingMixin:
+class _ToolingMixin(_TurnContextMixin):
+    # The request view below splices the session's resident turn context
+    # (``_turn_context``), so every client that builds one carries it.
     def _dialog_messages_for_provider(self, messages, *, instruction=None, own_rounds=None):
         """Build the request view of ``messages``; the saved history is untouched.
 
@@ -100,7 +103,13 @@ class _ToolingMixin:
 
         Last, a tool round left with no user turn before it gets a stand-in
         (``_seat_tool_rounds``).
+
+        Before all of this, the session's resident turn context (knowledge
+        kept beside the history, ``_turn_context``) goes back right after the
+        user messages it answered, so every request of the session carries it
+        at the same place.
         """
+        messages = self._with_resident_context(messages)
         if instruction is not None:
             messages = self._with_instruction(messages, instruction, own_rounds)
         projected = self._projected_dialog_messages(messages)

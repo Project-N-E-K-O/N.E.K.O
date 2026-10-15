@@ -2675,6 +2675,9 @@ class QueryMemoryRequest(BaseModel):
     # the endpoint (fail-closed) — it must never fall back to legacy private.
     subjects: list[MemorySubjectRequest] | None = None
     language: str | None = None
+    # recall_memory's budget: past it the vector half is dropped and the
+    # keyword half still answers. Omitted: no limit (legacy callers).
+    budget_ms: int | None = None
 
 
 def _sanitized_display_name(raw: str | None, *, context: str) -> str | None:
@@ -5852,6 +5855,53 @@ async def _cancel_staged_writes_for_subjects(
     return cancelled
 
 
+class MemoryTurnContextRequest(BaseModel):
+    # The user's own words of this text turn (Main cuts them to
+    # TURN_CONTEXT_QUERY_MAX_CHARS); never stored.
+    text: str
+    # Time left of Main's turn budget; the vector half is dropped past it.
+    budget_ms: int = 1000
+    language: str | None = None
+    # When the session that asks began (epoch seconds): facts written since
+    # come from a conversation the model still has in context.
+    session_started_at: float | None = None
+
+
+@app.post("/internal/memory/{lanlan_name}/turn_context")
+async def memory_turn_context(lanlan_name: str, req: MemoryTurnContextRequest):
+    """Memories a text turn brings in unasked (passive turn context).
+
+    Private scope only. Returns the rendered lines without a fence (Main
+    wraps them), the ids shown, and their token count; any failure reads as
+    no result, so a broken memory store never delays a reply.
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.fact_store is None or runtime.reflection_engine is None:
+        return {"result": "unavailable", "context": "", "memory_ids": [], "tokens": 0}
+    resolved_language = await _resolve_scoped_memory_language(lanlan_name, [], req.language)
+    started_at = None
+    if isinstance(req.session_started_at, (int, float)) and req.session_started_at > 0:
+        try:
+            started_at = datetime.fromtimestamp(float(req.session_started_at))
+        except (OverflowError, OSError, ValueError):
+            started_at = None
+    from config.prompts.prompts_memory import _normalize_memory_prompt_lang
+    from memory.turn_context import amemory_turn_context
+
+    with language_context(resolved_language):
+        return await amemory_turn_context(
+            lanlan_name=lanlan_name,
+            text=req.text,
+            fact_store=runtime.fact_store,
+            reflection_engine=runtime.reflection_engine,
+            persona_manager=getattr(runtime, "persona_manager", None),
+            config_manager=runtime._config_manager,
+            budget_ms=max(50, min(int(req.budget_ms or 0), 5000)),
+            language=_normalize_memory_prompt_lang(resolved_language),
+            session_started_at=started_at,
+        )
+
+
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     # Validate before the locale lookup: it keys per-character state files by
@@ -7441,6 +7491,8 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
                 config_manager=runtime._config_manager,
                 time_window=time_window,
                 subjects=subjects,
+                persona_manager=getattr(runtime, "persona_manager", None),
+                budget_ms=req.budget_ms,
             )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server

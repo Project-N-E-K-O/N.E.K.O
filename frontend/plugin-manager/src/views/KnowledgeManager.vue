@@ -788,6 +788,7 @@ function queryResultLabel(result: string): string {
 function queryModeLabel(mode: string): string {
   if (mode === 'lookup') return t('knowledge.modeLookup')
   if (mode === 'sample') return t('knowledge.modeSample')
+  if (mode === 'passive') return t('knowledge.autoContext')
   return mode || EMPTY_MARK
 }
 

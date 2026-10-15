@@ -639,6 +639,11 @@ class StreamingMixin:
                     memory_text = self._clean_frontend_memory_text(message.get("memory_text"))
                     message_source = str(message.get("source") or "").strip()
                     record_data = memory_text or data
+                    # 本轮附加上下文（知识/语料/记忆）：用户原话一到就并行检索，
+                    # 和下面的打断、清 TTS、凝神判断同时跑；发给模型之前再取，
+                    # 共用一个时间预算。检索用用户看得见的原话（record_data），
+                    # 不用可能夹着隐藏脚手架的 data。
+                    _turn_context_job = self._start_turn_context(record_data)
                     # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
@@ -790,6 +795,8 @@ class StreamingMixin:
                         # been handled; a settle here would return at once.
                         self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
                         logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
+                        if _turn_context_job is not None:
+                            _turn_context_job.cancel()
                         return
 
                     # 文本模式：把挂起的 agent 任务回调**就地拼到本轮 user
@@ -887,6 +894,16 @@ class StreamingMixin:
                         # contents) the user never typed, mismatching the cadence
                         # signal and entering Focus on evidence the user didn't author.
                         _focus_thinking = await self._focus_inline_decision(record_data)
+                        # 取本轮附加上下文：等到预算为止；这期间有新消息顶替了
+                        # 这一轮（speech id 已轮换）或会话换了，就整个丢掉。
+                        _turn_context_session = self.session
+                        _turn_context = await self._collect_turn_context(
+                            _turn_context_job,
+                            still_current=lambda: (
+                                self.current_speech_id == new_user_sid
+                                and self.session is _turn_context_session
+                            ),
+                        )
 
                         async def response_discarded_callback(
                             reason: str,
@@ -956,6 +973,8 @@ class StreamingMixin:
                             stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                         if memory_text:
                             stream_text_kwargs["history_replacement_text"] = memory_text
+                        if _turn_context is not None:
+                            stream_text_kwargs["turn_context"] = _turn_context
                         try:
                             if _focus_thinking:
                                 # 凝神 turn runs thinking-on: pre-pulse the frontend so

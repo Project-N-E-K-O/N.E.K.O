@@ -27,6 +27,10 @@ from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from config.prompts.prompts_sys import _loc
+from config.turn_context_settings import (
+    RECALL_MEMORY_TOOL_BUDGET_MS,
+    RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
+)
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
@@ -367,7 +371,12 @@ class ToolCallingMixin:
         # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
         # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
         # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
-        post_body = {"query": query, "language": self.user_language}
+        post_body = {
+            "query": query,
+            "language": self.user_language,
+            # 服务端过了这个预算就只用关键词结果，不会整个超时成"没找到"。
+            "budget_ms": RECALL_MEMORY_TOOL_BUDGET_MS,
+        }
         if time_arg:
             post_body["time"] = time_arg
         result_payload: dict = {}
@@ -378,7 +387,7 @@ class ToolCallingMixin:
             resp = await client.post(
                 f"http://127.0.0.1:{self.memory_server_port}/query_memory/{self.lanlan_name}",
                 json=post_body,
-                timeout=5.0,
+                timeout=RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
             )
             if not resp.is_success:
                 # WARNING 只带 status + body 长度（非敏感元数据）；body 原文

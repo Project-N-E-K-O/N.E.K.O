@@ -3780,6 +3780,8 @@
             "avatarReactionBubble": "表情バブル",
             "focusCognition": "集中モード",
             "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
+            "autoMemoryRecall": "記憶を自動で思い出す",
+            "autoMemoryRecallTooltip": "オンにすると、テキストチャット（音声の文字起こしを含む）で返事をする前に、あなたの言葉に関係する思い出を自動で思い出します。オフにすると、必要なときだけ思い出します。",
             "slopFilter": "自然な表現",
             "slopFilterTooltip": "過去の返答にある繰り返しや型にはまった言い回しを減らし、より自然に話せるようにします。",
             "autoCat": "自動ねこ化",

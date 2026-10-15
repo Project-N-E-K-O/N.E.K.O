@@ -3780,6 +3780,8 @@
             "avatarReactionBubble": "表情气泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "开启后，遇到你倾诉脆弱或复杂的话题时她会更专注地深入思考；关闭则不再进入凝神。",
+            "autoMemoryRecall": "自动想起记忆",
+            "autoMemoryRecallTooltip": "开启后，文字聊天（含语音转文字）时，回复前会自动想起和你这句话相关的往事；关闭后只在需要时主动回忆。",
             "slopFilter": "自然表达",
             "slopFilterTooltip": "减少历史回复中重复、套路化的说法，让她表达得更自然。",
             "autoCat": "自动变猫",

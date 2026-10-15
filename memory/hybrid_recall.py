@@ -1098,6 +1098,8 @@ async def hybrid_recall(
     time_window: tuple | None = None,
     subjects=None,
     include_legacy_private: bool | None = None,
+    persona_manager=None,
+    budget_ms: int | None = None,
 ) -> dict[str, Any]:
     """End-to-end hybrid recall — the function the ``/query_memory``
     HTTP endpoint should call.
@@ -1163,10 +1165,27 @@ async def hybrid_recall(
     archive_facts = _drop_archive_overlap(
         archive_facts or [], active_facts, lanlan_name,
     )
+    # Persona entries the private render leaves out of the system prompt
+    # (over its budget) are recallable like any other memory; the ones it
+    # keeps are already in front of the model.
+    persona_left_out: list[dict] = []
+    if persona_manager is not None and not subjects:
+        try:
+            pending, confirmed = await asyncio.gather(
+                reflection_engine.aget_pending_reflections(lanlan_name),
+                reflection_engine.aget_confirmed_reflections(lanlan_name),
+            )
+            persona_left_out, _resident = await persona_manager.arecall_residency(
+                lanlan_name, pending or [], confirmed or [],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hybrid_recall] persona residency skipped: %s", exc)
+            persona_left_out = []
 
     facts_tagged = _tag_tier(active_facts, 'fact')
     refl_tagged = _tag_tier(active_reflections, 'reflection')
     arch_tagged = _tag_tier(archive_facts, 'fact_archive')
+    persona_tagged = _tag_tier(persona_left_out, 'persona')
 
     # Security boundary: scope filtering happens before any BM25/cosine/RRF
     # scoring. A group caller never searches the private/global corpus and then
@@ -1182,6 +1201,9 @@ async def hybrid_recall(
     arch_tagged = filter_entries_for_subjects(
         arch_tagged, subjects, include_legacy_private=include_legacy_private,
     )
+    persona_tagged = filter_entries_for_subjects(
+        persona_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
 
     # "语义 + 时间"联合检索：给了 time_window 就先把候选池按事件时间窗口
     # 硬过滤，只让落在该区间的条目进入后续 BM25 / cosine 打分。
@@ -1190,9 +1212,10 @@ async def hybrid_recall(
         facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
         refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
         arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
+        persona_tagged = [d for d in persona_tagged if _overlaps_window(d, ws, we)]
 
-    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged
-    embedding_pool_raw = facts_tagged + refl_tagged
+    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged + persona_tagged
+    embedding_pool_raw = facts_tagged + refl_tagged + persona_tagged
 
     # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
     # Imported lazily so a circular-import-safe boot path stays viable.
@@ -1214,7 +1237,19 @@ async def hybrid_recall(
     # can proceed while embedding model warms (if first call).
     cosine_scored_task = asyncio.create_task(_cosine_rank(query, embedding_pool))
     bm25_scored = _bm25_rank(query, bm25_pool, stop_names=stop_names)
-    cosine_scored = await cosine_scored_task
+    if budget_ms is None:
+        cosine_scored = await cosine_scored_task
+    else:
+        # Past the caller's budget the vector half is dropped and the
+        # keyword half still answers, instead of the whole call timing out.
+        remaining = max(int(budget_ms), 0) / 1000 - (time.time() - start)
+        done, _pending = await asyncio.wait({cosine_scored_task}, timeout=max(remaining, 0))
+        if cosine_scored_task in done:
+            cosine_scored = cosine_scored_task.result()
+        else:
+            cosine_scored_task.cancel()
+            cosine_scored = []
+            logger.info("[hybrid_recall] %s: vector half over budget, keywords only", lanlan_name)
 
     # Threshold + per-side cap.
     bm25_top = [

@@ -46,6 +46,7 @@ from .greeting import GreetingMixin
 from .asr_runtime import AsrRuntimeMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
+from .turn_context import TurnContextMixin
 from .takeover import TakeoverMixin, TakeoverToken, HoldToken
 
 
@@ -65,6 +66,7 @@ class LLMSessionManager(
     StreamingMixin,
     NotifyMixin,
     TakeoverMixin,
+    TurnContextMixin,
 ):
     # Ceiling for a missing voice_play_end before the playback gate self-heals:
     # above a normal single reply, but recovers a dropped end-signal reasonably
