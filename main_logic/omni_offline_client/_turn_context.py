@@ -129,6 +129,17 @@ class _TurnContextMixin:
             return
         if entry.delivered:
             return
+        carried = {
+            card_id
+            for item in self._live_resident_entries()
+            if item.delivered and item is not entry
+            for card_id in item.ids
+        }
+        if entry.ids and set(entry.ids) <= carried:
+            # Another turn's block with the same cards was delivered while
+            # this one's lookup ran: one copy is enough.
+            entries[:] = [item for item in entries if item is not entry]
+            return
         entry.delivered = True
         self._trim_resident_context(keep=entry)
 

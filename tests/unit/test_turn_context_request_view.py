@@ -228,3 +228,17 @@ def test_a_block_still_waiting_on_its_provider_does_not_exclude_its_cards():
     assert client.resident_turn_context_ids() == [], "a superseding turn may still bring the card in"
     client._settle_resident_context(entry, delivered=True)
     assert client.resident_turn_context_ids() == ["pack/芙宁娜"]
+
+
+
+def test_a_block_whose_cards_another_turn_delivered_meanwhile_is_dropped():
+    client = _client("openai")
+    first, second = HumanMessage(content="问题一"), HumanMessage(content="问题二")
+    client._conversation_history += [first, AIMessage(content="答"), second]
+    earlier = client._register_resident_context(first, _context())
+    later = client._register_resident_context(second, _context())
+    client._settle_resident_context(earlier, delivered=True)
+    client._settle_resident_context(later, delivered=True)
+    assert client.resident_turn_context_ids() == ["pack/芙宁娜"]
+    view = client._dialog_messages_for_provider(client._conversation_history)
+    assert sum(1 for item in view if getattr(item, "content", None) == _KNOWLEDGE) == 1

@@ -28,11 +28,11 @@ MODEL_ID = "local-text-retrieval-v1-8d-int8"
 @pytest.fixture(autouse=True)
 def _fresh_caches():
     _invalidate_pool_cache()
-    mtc._probe_vectors.clear()
+    mtc._probes.vectors.clear()
     mtc._backgrounds.clear()
     yield
     _invalidate_pool_cache()
-    mtc._probe_vectors.clear()
+    mtc._probes.vectors.clear()
     mtc._backgrounds.clear()
 
 
@@ -148,7 +148,7 @@ async def test_reflections_already_in_the_prompt_stay_out_the_rest_come_in(tmp_p
 
 
 async def test_persona_entries_the_prompt_left_out_come_in(tmp_path):
-    result = await _run(tmp_path, "布偶猫掉毛好严重", left_out=[
+    result = await _run(tmp_path, "团子的布偶猫掉毛好严重", left_out=[
         {"id": "p1", "text": "用户养了一只叫团子的布偶猫", "entity": "master", "score": 1.0},
     ])
     assert result["memory_ids"] == ["p1"]
@@ -170,7 +170,7 @@ def _calibrate():
     """Probes far from every memory: the background sits near zero."""
     probes = np.zeros((64, 8), dtype=np.float32)
     probes[:, 7] = 1.0
-    mtc._probe_vectors[MODEL_ID] = probes
+    mtc._probes.vectors[MODEL_ID] = probes
 
 
 async def test_meaning_alone_takes_up_to_two_clear_leaders(tmp_path):
@@ -356,3 +356,28 @@ async def test_the_background_of_an_unchanged_pool_is_computed_once(tmp_path, mo
     facts.append(_fact("d3", "用户养了一盆绿萝", vector=[0, 0, 0, 1, 0, 0, 0, 0]))
     await _run(tmp_path, "明天想早起出门走走", service=_vectors([1, 0, 0, 0, 0, 0, 0, 0]), facts=facts)
     assert len(calls) == 2, "a changed pool is measured again"
+
+
+
+async def test_an_everyday_phrase_shared_by_chance_brings_nothing(tmp_path):
+    facts = [
+        _fact("f1", "用户说今天好开心，因为吃到了蛋糕"),
+        _fact("f2", "Master really likes rainy days"),
+    ]
+    assert (await _run(tmp_path, "我今天好累啊", facts=facts))["result"] == "miss"
+    assert (await _run(tmp_path, "I really want to sleep", facts=facts))["result"] == "miss"
+
+
+async def test_with_vectors_a_rare_term_also_needs_the_meaning_to_agree(tmp_path):
+    _calibrate()
+    facts = [
+        _fact("near", "用户最爱吃海底捞", vector=[1, 0, 0, 0, 0, 0, 0, 0]),
+        # Shares two rare terms with the message, means something else.
+        _fact("far", "用户吃海底捞时把会员卡丢了", vector=[0, 0, 0, 0, 1, 0, 0, 0]),
+    ]
+    result = await _run(
+        tmp_path, "周末又去吃海底捞了", service=_vectors([1, 0, 0, 0, 0, 0, 0, 0]), facts=facts,
+    )
+    assert result["retrieval_mode"] == "hybrid"
+    assert "far" not in result["memory_ids"]
+    assert result["memory_ids"][0] == "near"

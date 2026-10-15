@@ -60,15 +60,15 @@ from config.turn_context_settings import (
 from utils.semantic_calibration import (
     Background,
     PassiveThresholds,
+    ProbeVectors,
     background_from_scores,
-    embed_probes,
     leading_take,
     passive_thresholds,
     probe_best_scores,
 )
 
 from .retrieval import SemanticMatch, named_in_text
-from .store import StoredEntry, VectorSnapshot, normalize_vector
+from .store import StoredEntry, VectorSnapshot
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,7 @@ def select_hits(
     lexical_ids: Sequence[int],
     semantic: Sequence[SemanticMatch],
     thresholds: PassiveThresholds | None,
+    named_ids: Sequence[int] = (),
     limit: int = TURN_CONTEXT_MAX_ITEMS_PER_KIND,
 ) -> list[PassiveHit]:
     """The passive hits among one material type's candidates, strongest first.
@@ -127,7 +128,7 @@ def select_hits(
         if current is None or (hit.strength, hit.score) > (current.strength, current.score):
             chosen[hit.entry_id] = hit
 
-    candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *semantic_by_id]))
+    candidate_ids = list(dict.fromkeys([*exact_ids, *named_ids, *lexical_ids, *semantic_by_id]))
     exact = set(exact_ids)
     for entry_id in candidate_ids:
         entry = entries.get(entry_id)
@@ -169,50 +170,26 @@ class Calibration:
     """
 
     def __init__(self) -> None:
-        self._probes: dict[str, np.ndarray] = {}
-        self._probe_task: asyncio.Task[Any] | None = None
+        self._probes = ProbeVectors()
         self._backgrounds: dict[tuple[Any, ...], Background | None] = {}
         self._pending: set[tuple[Any, ...]] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
 
     def probes(self, model_id: str | None) -> np.ndarray | None:
-        return self._probes.get(model_id) if model_id else None
+        return self._probes.get(model_id)
 
     def ensure_probes(self, model_id: str | None, embed_batch: Callable[[list[str]], Awaitable[list[Any]]]) -> None:
         """Embed the probe sentences once per model, in the background."""
-        if not model_id or model_id in self._probes:
-            return
-        if self._probe_task is not None and not self._probe_task.done():
-            return
-
-        async def run() -> None:
-            try:
-                vectors = await embed_probes(
-                    embed_batch,
-                    TURN_CONTEXT_CALIBRATION_PROBES,
-                    batch=TURN_CONTEXT_CALIBRATION_BATCH,
-                    pause=TURN_CONTEXT_CALIBRATION_BATCH_PAUSE_SECONDS,
-                )
-            except Exception as exc:
-                logger.warning("[Knowledge] calibration probes failed: %s", type(exc).__name__)
-                return
-            rows = []
-            for vector in vectors or ():
-                blob = normalize_vector(vector) if vector else None
-                if blob is not None:
-                    rows.append(np.frombuffer(blob, dtype="<f4"))
-            if len(rows) < TURN_CONTEXT_CALIBRATION_MIN_SAMPLES:
-                return
-            dims = {row.shape[0] for row in rows}
-            if len(dims) != 1:
-                return
-            self._probes[model_id] = np.vstack(rows).astype(np.float32)
+        self._probes.ensure(
+            model_id,
+            embed_batch,
+            TURN_CONTEXT_CALIBRATION_PROBES,
+            batch=TURN_CONTEXT_CALIBRATION_BATCH,
+            pause=TURN_CONTEXT_CALIBRATION_BATCH_PAUSE_SECONDS,
+            min_samples=TURN_CONTEXT_CALIBRATION_MIN_SAMPLES,
             # A new model makes every background stale.
-            self._backgrounds.clear()
-
-        self._probe_task = asyncio.create_task(run())
-        self._tasks.add(self._probe_task)
-        self._probe_task.add_done_callback(self._tasks.discard)
+            on_ready=self._backgrounds.clear,
+        )
 
     def background(
         self,
@@ -280,5 +257,6 @@ class Calibration:
         return None
 
     def cancel(self) -> None:
+        self._probes.cancel()
         for task in list(self._tasks):
             task.cancel()

@@ -70,8 +70,8 @@ from config.turn_context_settings import (
 from utils.logger_config import get_module_logger
 from utils.prompt_fence import fence_safe
 from utils.semantic_calibration import (
+    ProbeVectors,
     background_from_scores,
-    embed_probes,
     leading_take,
     passive_thresholds,
     probe_best_scores,
@@ -87,9 +87,10 @@ FALLBACK_BM25_TOP = 2
 FALLBACK_MIN_QUERY_TERMS = 6
 # Time kept back from the budget for rendering once the vector is in.
 RENDER_RESERVE_SECONDS = 0.1
+# Distinct rare terms a memory must share when no vector can confirm it.
+RARE_TERMS_WITHOUT_VECTOR = 2
 
-_probe_vectors: dict[str, np.ndarray] = {}
-_probe_tasks: dict[str, asyncio.Task[Any]] = {}
+_probes = ProbeVectors()
 # Backgrounds per (character, model, pool): the pool rarely changes between
 # turns, and its probe-by-memory product is the costly part.
 _backgrounds: dict[tuple[Any, ...], Any] = {}
@@ -107,39 +108,29 @@ def _is_rare_term_shape(term: str) -> bool:
     return sum(1 for ch in term if ch.isalpha()) >= TURN_CONTEXT_RARE_TERM_MIN_LATIN_CHARS
 
 
-def _ensure_probe_vectors(service, model_id: str) -> np.ndarray | None:
-    """Probe vectors of ``model_id``; embedded once in the background."""
-    vectors = _probe_vectors.get(model_id)
-    if vectors is not None:
-        return vectors
-    task = _probe_tasks.get(model_id)
-    if task is not None and not task.done():
-        return None
+def _ensure_probe_vectors(service, model_id: str) -> None:
+    """Embed the probe sentences for ``model_id`` once, in the background."""
+    _probes.ensure(
+        model_id,
+        service.embed_batch,
+        TURN_CONTEXT_CALIBRATION_PROBES,
+        batch=TURN_CONTEXT_CALIBRATION_BATCH,
+        pause=TURN_CONTEXT_CALIBRATION_BATCH_PAUSE_SECONDS,
+        min_samples=TURN_CONTEXT_CALIBRATION_MIN_SAMPLES,
+    )
 
-    async def run() -> None:
-        try:
-            rows = await embed_probes(
-                service.embed_batch,
-                TURN_CONTEXT_CALIBRATION_PROBES,
-                batch=TURN_CONTEXT_CALIBRATION_BATCH,
-                pause=TURN_CONTEXT_CALIBRATION_BATCH_PAUSE_SECONDS,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[turn_context] calibration probes failed: %s", type(exc).__name__)
-            return
-        vecs = []
-        for row in rows or ():
-            if row is None:
-                continue
-            arr = np.asarray(row, dtype=np.float32)
-            norm = float(np.linalg.norm(arr))
-            if norm > 0 and np.isfinite(norm):
-                vecs.append(arr / norm)
-        if len(vecs) >= TURN_CONTEXT_CALIBRATION_MIN_SAMPLES and len({v.size for v in vecs}) == 1:
-            _probe_vectors[model_id] = np.vstack(vecs)
 
-    _probe_tasks[model_id] = asyncio.create_task(run())
-    return None
+_common_terms_cache: list[set[str]] = []
+
+
+def _common_terms() -> set[str]:
+    """Terms of everyday small talk (the calibration probes): never rare,
+    however seldom a memory pool happens to contain them."""
+    if not _common_terms_cache:
+        from memory.hybrid_recall import _tokenize
+
+        _common_terms_cache.append(set(_tokenize(" ".join(TURN_CONTEXT_CALIBRATION_PROBES), [])))
+    return _common_terms_cache[0]
 
 
 def _parse_time(value) -> datetime | None:
@@ -342,9 +333,12 @@ async def amemory_turn_context(
         for terms in doc_terms.values():
             for term in terms:
                 document_frequency[term] = document_frequency.get(term, 0) + 1
+        common = _common_terms()
         rare_terms = {
             term for term, count in document_frequency.items()
-            if count <= TURN_CONTEXT_RARE_TERM_MAX_DOCS and _is_rare_term_shape(term)
+            if count <= TURN_CONTEXT_RARE_TERM_MAX_DOCS
+            and _is_rare_term_shape(term)
+            and term not in common
         }
 
         chosen: dict[int, tuple[int, float, dict]] = {}
@@ -354,9 +348,13 @@ async def amemory_turn_context(
             if current is None or (strength, score) > current[:2]:
                 chosen[id(doc)] = (strength, score, doc)
 
-        for doc, score in bm25_scored:
-            if doc_terms.get(id(doc), set()) & rare_terms:
-                offer(doc, 3, score)
+        # A shared rare term is evidence of the same specific thing only when
+        # something else agrees; it is judged once the vectors are in.
+        rare_docs = [
+            (doc, score, shared)
+            for doc, score in bm25_scored
+            if (shared := doc_terms.get(id(doc), set()) & rare_terms)
+        ]
 
         query_vector: np.ndarray | None = None
         if embed_task is not None:
@@ -378,7 +376,7 @@ async def amemory_turn_context(
             dim = parse_dim_from_model_id(model_id) or int(query_vector.size)
             matrix, rows = await asyncio.to_thread(_pool_matrix, embedding_pool, model_id, dim)
             if matrix is not None and matrix.shape[1] == query_vector.size:
-                probes = _probe_vectors.get(model_id)
+                probes = _probes.get(model_id)
                 # The same pool (ids and embedded texts) has the same background.
                 cache_key = (
                     lanlan_name, model_id,
@@ -400,6 +398,15 @@ async def amemory_turn_context(
                         lead_steps=TURN_CONTEXT_LEAD_STEPS,
                         lead_floor=TURN_CONTEXT_LEAD_FLOOR,
                     )
+
+        # Rare-term route: with calibrated vectors the memory must also clear
+        # the dual cosine bar; a memory without a vector (or no calibration)
+        # must share at least two distinct rare terms instead.
+        cosine_by_doc = {id(doc): score for doc, score in cosine} if thresholds is not None else {}
+        for doc, score, shared in rare_docs:
+            cos = cosine_by_doc.get(id(doc))
+            if (cos >= thresholds.dual) if cos is not None else len(shared) >= RARE_TERMS_WITHOUT_VECTOR:
+                offer(doc, 3, score)
 
         bm25_top = [
             (doc, score) for doc, score in bm25_scored

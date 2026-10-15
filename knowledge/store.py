@@ -23,6 +23,7 @@ connection, so readers never share a connection with the single writer.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import sqlite3
 from collections import Counter
@@ -95,6 +96,15 @@ _SCHEMA = (
 
 
 _REQUIRED_TABLES = frozenset({"meta", "packs", "entries", "surfaces", "entries_fts", "chunks"})
+
+
+# Passive naming: a name is looked up among message spans of at most this
+# many characters, each starting and ending on a word or a CJK character.
+NAME_SPAN_MAX_CHARS = 40
+NAMED_CANDIDATES = 64
+_NAME_UNIT_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]|[^\W_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]+|[^\w\s]+"
+)
 
 
 class KnowledgeStoreError(Exception):
@@ -622,6 +632,45 @@ class KnowledgeStore:
                 (expression, *args, limit),
             )
         ]
+
+    def named_candidates(
+        self,
+        text: str,
+        *,
+        pack_ids: Sequence[str],
+        exclude_ids: Collection[int] = (),
+        max_name_chars: int = NAME_SPAN_MAX_CHARS,
+        limit: int = NAMED_CANDIDATES,
+    ) -> list[int]:
+        """Entries whose title, alias or recognition phrase appears in ``text``.
+
+        Every span of the message that starts and ends on a word (a CJK
+        character counts as one) is looked up among the strict exact-match
+        keys, so a named entry is found however many keyword matches outrank
+        it. The caller still applies its own naming rules to what comes back.
+        """
+        if not pack_ids:
+            return []
+        view = strict_surface(text)
+        spans = [match.span() for match in _NAME_UNIT_RE.finditer(view)]
+        keys: set[str] = set()
+        for first, (start, _end) in enumerate(spans):
+            for _start, end in spans[first:]:
+                if end - start > max_name_chars:
+                    break
+                keys.add(f"s:{view[start:end]}")
+        if not keys:
+            return []
+        clause, args = self._pack_clause(pack_ids, False, exclude_ids)
+        with self._read() as conn:
+            return [
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT s.entry_id FROM surfaces s JOIN entries e ON e.id=s.entry_id"
+                    f" WHERE s.surface IN (SELECT value FROM json_each(?)){clause} LIMIT ?",
+                    (json.dumps(sorted(keys), ensure_ascii=False), *args, limit),
+                )
+            ]
 
     def lexical_candidates(
         self,

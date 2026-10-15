@@ -1773,6 +1773,8 @@ class LifecycleMixin:
                     # speech id twice. Only a hot-swap replacement needs the
                     # preparation that could not run at the original boundary.
                     if current is not prepared_session:
+                        # 热切换换来的会话：检索排除的是旧会话常驻的知识，不适用。
+                        context_kwargs = {}
                         prepare = getattr(
                             current,
                             'prepare_external_voice_turn',

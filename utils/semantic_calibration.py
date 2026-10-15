@@ -32,10 +32,15 @@ is handed; no model, file or network access of its own.
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Sequence
 
 import numpy as np
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +85,77 @@ async def embed_probes(
         result = list(result or [])
         vectors.extend(result[:len(chunk)] + [None] * (len(chunk) - len(result)))
     return vectors
+
+
+class ProbeVectors:
+    """Probe sentence vectors per embedding model, embedded once.
+
+    ``ensure`` starts the embedding in the background and returns at once; a
+    failed or short run is not retried for ``retry_after`` seconds, so a
+    broken model is not asked for every probe again on every turn.
+    """
+
+    def __init__(self, *, retry_after: float = 600.0) -> None:
+        self.vectors: dict[str, np.ndarray] = {}
+        self.retry_after = retry_after
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
+        self._failed_at: dict[str, float] = {}
+
+    def get(self, model_id: str | None) -> np.ndarray | None:
+        return self.vectors.get(model_id) if model_id else None
+
+    def ensure(
+        self,
+        model_id: str | None,
+        embed_batch: Callable[[list[str]], Awaitable[list[Any]]],
+        texts: Sequence[str],
+        *,
+        batch: int,
+        pause: float,
+        min_samples: int,
+        on_ready: Callable[[], None] | None = None,
+    ) -> None:
+        if not model_id or model_id in self.vectors:
+            return
+        task = self._tasks.get(model_id)
+        if task is not None and not task.done():
+            return
+        failed = self._failed_at.get(model_id)
+        if failed is not None and time.monotonic() - failed < self.retry_after:
+            return
+
+        async def run() -> None:
+            try:
+                raw = await embed_probes(embed_batch, texts, batch=batch, pause=pause)
+            except Exception as exc:  # noqa: BLE001 - any failure backs off
+                logger.warning("calibration probes failed: %s", type(exc).__name__)
+                self._failed_at[model_id] = time.monotonic()
+                return
+            rows = []
+            for vector in raw:
+                if vector is None:
+                    continue
+                arr = np.asarray(vector, dtype=np.float32).ravel()
+                norm = float(np.linalg.norm(arr))
+                if norm > 0 and np.isfinite(norm):
+                    rows.append(arr / norm)
+            if len(rows) < max(int(min_samples), 1) or len({row.size for row in rows}) != 1:
+                self._failed_at[model_id] = time.monotonic()
+                return
+            self.vectors[model_id] = np.vstack(rows).astype(np.float32)
+            self._failed_at.pop(model_id, None)
+            if on_ready is not None:
+                on_ready()
+
+        self._tasks[model_id] = asyncio.create_task(run())
+
+    def tasks(self) -> list[asyncio.Task[Any]]:
+        return list(self._tasks.values())
+
+    def cancel(self) -> None:
+        for task in self._tasks.values():
+            if not task.done():
+                task.cancel()
 
 
 def probe_best_scores(

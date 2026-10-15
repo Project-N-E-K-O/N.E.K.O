@@ -340,7 +340,7 @@ async def test_a_background_is_never_served_for_a_later_snapshot():
     from knowledge.passive import Calibration
 
     calibration = Calibration()
-    calibration._probes["m"] = np.eye(1, 4, dtype=np.float32)
+    calibration._probes.vectors["m"] = np.eye(1, 4, dtype=np.float32)
     snapshot = SimpleNamespace(
         model_id="m", pack_ids=("p",), chunk_pack_index=np.zeros(2, dtype=np.int32),
         matrix=np.eye(2, 4, dtype=np.float32), entry_ids=np.arange(2),
@@ -368,3 +368,56 @@ def test_a_token_dense_title_and_summary_stay_within_the_card_budget():
     text, tokens = render_turn_cards([card], language="zh", max_tokens_per_card=60)
     assert count_tokens(text) <= 60 and tokens <= 60
     assert "===" not in text and "<|" not in text
+
+
+
+async def test_a_named_card_is_found_past_the_keyword_candidate_cut(tmp_path):
+    # Sixty cards say the name far more often than the card that bears it,
+    # so they fill the keyword candidate list; the name still counts.
+    entries = [
+        _entry(f"第{i}幕", "芙宁娜登场。" * 12 + f"这是第{i}幕的台词。") for i in range(60)
+    ]
+    entries.append(_entry("芙宁娜", "枫丹的水神。"))
+    service = await _ready(tmp_path, TopicEmbedder(state="loading"), packs=[_pack("lore", entries=entries)])
+    try:
+        result = await service.turn_context(text="顺便聊聊芙宁娜")
+        assert result["knowledge"]["card_ids"] == ["lore/芙宁娜"]
+    finally:
+        await service.stop()
+
+
+async def test_carried_cards_are_left_out_before_the_semantic_cut(tmp_path, fast_indexer):  # noqa: F811
+    entries = [_entry(f"角色{i}", f"第{i}位角色是一位水神。") for i in range(24)]
+    entries.append(_entry("目标", "这一位是水神，也爱看歌剧。"))
+    service = await _ready(tmp_path, TopicEmbedder(), packs=[_pack("lore", entries=entries)])
+    try:
+        text = "我想多了解一点神明"
+        carried = [f"lore/角色{i}" for i in range(24)]
+        await _calibrated(service, text)
+        result = await service.turn_context(text=text, exclude_card_ids=carried)
+        assert result["retrieval_mode"] == "hybrid"
+        assert result["knowledge"]["card_ids"] == ["lore/目标"]
+    finally:
+        await service.stop()
+
+
+
+async def test_failed_probe_embedding_backs_off_before_retrying():
+    from utils.semantic_calibration import ProbeVectors
+
+    calls = []
+
+    async def broken(texts):
+        calls.append(len(texts))
+        raise RuntimeError("model gone")
+
+    probes = ProbeVectors(retry_after=3600)
+    probes.ensure("m", broken, ["a", "b"], batch=8, pause=0, min_samples=1)
+    await asyncio.gather(*probes.tasks(), return_exceptions=True)
+    probes.ensure("m", broken, ["a", "b"], batch=8, pause=0, min_samples=1)
+    await asyncio.gather(*probes.tasks(), return_exceptions=True)
+    assert calls == [2], "no retry inside the back-off window"
+    probes.retry_after = 0
+    probes.ensure("m", broken, ["a", "b"], batch=8, pause=0, min_samples=1)
+    await asyncio.gather(*probes.tasks(), return_exceptions=True)
+    assert calls == [2, 2]

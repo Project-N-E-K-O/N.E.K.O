@@ -1869,8 +1869,11 @@ class KnowledgeService:
             embed_task.add_done_callback(_consume)
             self._query_embeddings.add(embed_task)
             embed_task.add_done_callback(self._query_embeddings.discard)
-        exact_ids, lexical_ids = await self._query_thread(
-            self._lexical_search, text, allowed, registry
+        # Cards the session still carries are left out before any cut, so
+        # they cannot take the slots of the next-best cards.
+        excluded_ids = await self._query_thread(self._excluded_entry_ids, excluded)
+        exact_ids, lexical_ids, named_ids = await self._query_thread(
+            self._passive_lexical_search, text, allowed, registry, excluded_ids
         )
         query_vector: np.ndarray | None = None
         if embed_task is not None:
@@ -1891,10 +1894,12 @@ class KnowledgeService:
                 if type_vector_packs:
                     semantic_by_type[material_type] = await self._query_thread(
                         self._passive_semantic_search, snapshot, query_vector,
-                        type_vector_packs, registry,
+                        type_vector_packs, registry, excluded_ids,
                     )
         semantic = [match for matches in semantic_by_type.values() for match in matches]
-        candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *(m.entry_id for m in semantic)]))
+        candidate_ids = list(dict.fromkeys(
+            [*exact_ids, *named_ids, *lexical_ids, *(m.entry_id for m in semantic)]
+        ))
         entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
         allowed_set = await self._query_thread(self._current_packs, allowed, registry)
         picked: dict[str, list[PassiveHit]] = {}
@@ -1923,6 +1928,7 @@ class KnowledgeService:
                 entries=entries,
                 usable=usable,
                 exact_ids=[entry_id for entry_id in exact_ids if entry_id in usable],
+                named_ids=[entry_id for entry_id in named_ids if entry_id in usable],
                 lexical_ids=[entry_id for entry_id in lexical_ids if entry_id in usable],
                 semantic=[
                     match for match in semantic_by_type.get(material_type, ())
@@ -1932,15 +1938,37 @@ class KnowledgeService:
             )
         return picked, ("hybrid" if query_vector is not None else "bm25")
 
+    def _excluded_entry_ids(self, card_ids: set[str]) -> set[int]:
+        """Entry ids of ``pack_id/title_key`` card ids."""
+        titles: dict[str, list[str]] = {}
+        for card_id in card_ids:
+            pack_id, _, key = card_id.partition("/")
+            if pack_id and key:
+                titles.setdefault(pack_id, []).append(key)
+        return self._store.entry_ids_by_title(titles) if titles else set()
+
+    def _passive_lexical_search(
+        self, text: str, pack_ids: list[str], registry: Registry, excluded_ids: set[int]
+    ) -> tuple[list[int], list[int], list[int]]:
+        excluded = excluded_ids | self._snapshot_only_disabled(pack_ids, registry)
+        exact_ids, lexical_ids = self._store.lexical_candidates(
+            text, pack_ids=pack_ids, limit=LEXICAL_CANDIDATES, exclude_ids=excluded,
+        )
+        named_ids = self._store.named_candidates(text, pack_ids=pack_ids, exclude_ids=excluded)
+        return exact_ids, lexical_ids, named_ids
+
     def _passive_semantic_search(
         self,
         snapshot: VectorSnapshot | None,
         query_vector: np.ndarray,
         pack_ids: list[str],
         registry: Registry,
+        excluded_ids: set[int] = frozenset(),
     ) -> list[SemanticMatch]:
-        excluded = self._store.disabled_entry_ids(pack_ids) | self._snapshot_only_disabled(
-            pack_ids, registry
+        excluded = (
+            self._store.disabled_entry_ids(pack_ids)
+            | self._snapshot_only_disabled(pack_ids, registry)
+            | excluded_ids
         )
         return semantic_candidates(
             snapshot,
