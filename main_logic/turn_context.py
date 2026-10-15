@@ -252,7 +252,7 @@ def build_turn_context(results: dict[str, dict | None], language: str) -> TurnCo
             fence_safe(knowledge_text),
             _loc(TURN_CONTEXT_KNOWLEDGE_END, lang),
         ))
-        resident = HumanMessage(content=text)
+        resident = HumanMessage(content=text, metadata={"turn_context": "resident"})
         resident_tokens = count_tokens(text)
 
     ephemeral = None
@@ -273,7 +273,7 @@ def build_turn_context(results: dict[str, dict | None], language: str) -> TurnCo
                 _loc(TURN_CONTEXT_MEMORY_END, lang),
             ]
         lines += [_loc(TURN_CONTEXT_TURN_END, lang), _loc(TURN_CONTEXT_TURN_CLOSING, lang)]
-        ephemeral = HumanMessage(content="\n".join(lines))
+        ephemeral = HumanMessage(content="\n".join(lines), metadata={"turn_context": "ephemeral"})
 
     if resident is None and ephemeral is None:
         return None

@@ -1872,6 +1872,8 @@ class KnowledgeService:
         # Cards the session still carries are left out before any cut, so
         # they cannot take the slots of the next-best cards.
         excluded_ids = await self._query_thread(self._excluded_entry_ids, excluded)
+        # Disabled cards stay out of the calibration background too.
+        disabled_ids = await self._query_thread(self._disabled_for_passive, vector_packs, registry)
         exact_ids, lexical_ids, named_ids = await self._query_thread(
             self._passive_lexical_search, text, allowed, registry, excluded_ids
         )
@@ -1918,7 +1920,8 @@ class KnowledgeService:
             type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in type_set]
             background = (
                 self._calibration.background(
-                    snapshot, snapshot_key, type_vector_packs, material_type, self._thread
+                    snapshot, snapshot_key, type_vector_packs, material_type, self._thread,
+                    excluded_entry_ids=disabled_ids,
                 )
                 if query_vector is not None and type_vector_packs
                 else None
@@ -1937,6 +1940,13 @@ class KnowledgeService:
                 thresholds=thresholds_for(material_type, background),
             )
         return picked, ("hybrid" if query_vector is not None else "bm25")
+
+    def _disabled_for_passive(self, pack_ids: list[str], registry: Registry) -> set[int]:
+        if not pack_ids:
+            return set()
+        return self._store.disabled_entry_ids(pack_ids) | self._snapshot_only_disabled(
+            pack_ids, registry
+        )
 
     def _excluded_entry_ids(self, card_ids: set[str]) -> set[int]:
         """Entry ids of ``pack_id/title_key`` card ids."""

@@ -242,3 +242,50 @@ def test_a_block_whose_cards_another_turn_delivered_meanwhile_is_dropped():
     assert client.resident_turn_context_ids() == ["pack/芙宁娜"]
     view = client._dialog_messages_for_provider(client._conversation_history)
     assert sum(1 for item in view if getattr(item, "content", None) == _KNOWLEDGE) == 1
+
+
+
+@pytest.mark.parametrize("with_resident", [False, True])
+@pytest.mark.parametrize("with_ephemeral", [False, True])
+def test_context_blocks_never_move_the_screen_projection_boundary(with_resident, with_ephemeral):
+    from tests.unit.test_screen_history_stopgap import _COMMENT_A, _COMMENT_B
+
+    # A chain spread over the assistant run right before the user's message:
+    # only judged when that message is the turn's boundary.
+    client = _client("openai")
+    user = HumanMessage(content="那你继续说说。")
+    client._conversation_history += [
+        HumanMessage(content="陪我聊聊。"), AIMessage(content=_COMMENT_A), AIMessage(content=_COMMENT_B), user,
+    ]
+    plain = client._dialog_messages_for_provider(client._conversation_history)
+    plain_ai = [item.content for item in plain if getattr(item, "type", None) == "ai"]
+    assert len(plain_ai) == 1, "the run is cut to one comment on a plain turn"
+
+    context = _context(
+        resident=_KNOWLEDGE if with_resident else None,
+        ephemeral=_TURN if with_ephemeral else None,
+    )
+    if with_resident:
+        entry = client._register_resident_context(user, context)
+        client._settle_resident_context(entry, delivered=True)
+    instruction = context.ephemeral
+    if instruction is not None:
+        instruction.metadata["turn_context"] = "ephemeral"
+    view = client._dialog_messages_for_provider(
+        client._conversation_history, instruction=instruction, own_rounds=[],
+    )
+    view_ai = [item.content for item in view if getattr(item, "type", None) == "ai"]
+    assert view_ai == plain_ai, "the context blocks are not the turn boundary"
+
+
+def test_an_earlier_block_the_new_one_covers_is_dropped():
+    client = _client("openai")
+    first, second = HumanMessage(content="问题一"), HumanMessage(content="问题二")
+    client._conversation_history += [first, AIMessage(content="答"), second]
+    earlier = client._register_resident_context(first, _context(resident="块一", ids=("A",)))
+    client._settle_resident_context(earlier, delivered=True)
+    later = client._register_resident_context(second, _context(resident="块二", ids=("A", "B")))
+    client._settle_resident_context(later, delivered=True)
+    assert sorted(client.resident_turn_context_ids()) == ["A", "B"]
+    contents = [getattr(item, "content", None) for item in client._dialog_messages_for_provider(client._conversation_history)]
+    assert "块一" not in contents and "块二" in contents

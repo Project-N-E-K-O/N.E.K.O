@@ -20,6 +20,7 @@ from main_logic.proactive_delivery import (
     fit_images_to_turn_budget,
 )
 
+from ._turn_context import _mark as _mark_turn_context
 from ._shared import (
     _cancelled_turn_end,
     _find_by_identity,
@@ -1183,6 +1184,9 @@ class _StreamingMixin:
         # 绑定在 try 之前，finally 才读得到。
         _resident_entry = None
         _ephemeral_context = getattr(turn_context, "ephemeral", None)
+        if _ephemeral_context is not None:
+            # 打上内部标记（不发给 provider）：请求视图据此不把它当成用户这一轮。
+            _mark_turn_context(_ephemeral_context, "ephemeral")
         try:
             _resident_entry = self._register_resident_context(user_message, turn_context)
             # A displaced reply's frontend notice goes out before this reply

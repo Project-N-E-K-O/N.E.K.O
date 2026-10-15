@@ -198,6 +198,7 @@ class Calibration:
         pack_ids: Sequence[str],
         material_type: str,
         run_in_thread: Callable[..., Awaitable[Any]],
+        excluded_entry_ids: Collection[int] = frozenset(),
     ) -> Background | None:
         """The background of ``pack_ids``' vectors in ``snapshot``, or None
         (computed in the background) when not known yet.
@@ -211,7 +212,13 @@ class Calibration:
         probes = self._probes.get(snapshot.model_id)
         if probes is None:
             return None
-        key = (snapshot_key, snapshot.model_id, material_type, tuple(sorted(pack_ids)))
+        excluded = frozenset(excluded_entry_ids)
+        # Disabling a card changes neither the snapshot nor its generation:
+        # the excluded set is part of the key.
+        key = (
+            snapshot_key, snapshot.model_id, material_type, tuple(sorted(pack_ids)),
+            hash(excluded),
+        )
         if key in self._backgrounds:
             return self._backgrounds[key]
         if key in self._pending:
@@ -224,6 +231,8 @@ class Calibration:
             if not allowed or probes.shape[1] != snapshot.matrix.shape[1]:
                 return None
             mask = np.isin(snapshot.chunk_pack_index, np.asarray(allowed, dtype=np.int32))
+            if excluded:
+                mask &= ~np.isin(snapshot.entry_ids, np.fromiter(excluded, dtype=np.int64))
             if not mask.any():
                 return None
             best = probe_best_scores(probes, snapshot.matrix[mask])

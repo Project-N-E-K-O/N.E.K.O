@@ -41,6 +41,17 @@ from config.turn_context_settings import TURN_CONTEXT_RESIDENT_KNOWLEDGE_MAX_TOK
 from ._shared import logger
 
 
+# Internal metadata key marking a turn-context message. ``metadata`` never
+# reaches a provider; the request view reads the mark to tell these synthetic
+# user-role messages from what the user really said.
+TURN_CONTEXT_MARK = "turn_context"
+
+
+def is_turn_context_message(message) -> bool:
+    metadata = getattr(message, "metadata", None)
+    return isinstance(metadata, dict) and bool(metadata.get(TURN_CONTEXT_MARK))
+
+
 @dataclass(frozen=True)
 class TurnContext:
     """What one reply carries besides its history.
@@ -109,6 +120,7 @@ class _TurnContextMixin:
         """
         if context is None or context.resident is None or anchor is None:
             return None
+        _mark(context.resident, "resident")
         entry = _ResidentEntry(
             anchor=anchor,
             message=context.resident,
@@ -129,17 +141,22 @@ class _TurnContextMixin:
             return
         if entry.delivered:
             return
-        carried = {
-            card_id
-            for item in self._live_resident_entries()
+        others = [
+            item for item in self._live_resident_entries()
             if item.delivered and item is not entry
-            for card_id in item.ids
-        }
+        ]
+        carried = {card_id for item in others for card_id in item.ids}
         if entry.ids and set(entry.ids) <= carried:
             # Another turn's block with the same cards was delivered while
             # this one's lookup ran: one copy is enough.
             entries[:] = [item for item in entries if item is not entry]
             return
+        if entry.ids:
+            # An earlier block whose cards this one all carries again goes
+            # (its prefix changes once); the newer one holds them all.
+            covered = [item for item in others if item.ids and set(item.ids) <= set(entry.ids)]
+            if covered:
+                entries[:] = [item for item in entries if all(item is not drop for drop in covered)]
         entry.delivered = True
         self._trim_resident_context(keep=entry)
 
@@ -166,6 +183,13 @@ class _TurnContextMixin:
                 dropped,
             )
 
+    def _turn_context_message_ids(self, instruction=None) -> set[int]:
+        """Identities of the synthetic context messages a request view holds."""
+        ids = {id(entry.message) for entry in self._resident_entries()}
+        if instruction is not None and is_turn_context_message(instruction):
+            ids.add(id(instruction))
+        return ids
+
     def _rebind_resident_anchor(self, old, new) -> None:
         """A history message was replaced by a copy: its blocks follow it."""
         if old is new:
@@ -190,3 +214,9 @@ class _TurnContextMixin:
             spliced.append(message)
             spliced.extend(by_anchor.get(id(message), ()))
         return spliced
+
+
+def _mark(message, kind: str) -> None:
+    metadata = getattr(message, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata.setdefault(TURN_CONTEXT_MARK, kind)

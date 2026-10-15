@@ -351,7 +351,7 @@ async def test_a_background_is_never_served_for_a_later_snapshot():
 
     assert calibration.background(snapshot, (1, "m"), ["p"], "knowledge", run_in_thread) is None
     await asyncio.gather(*calibration._tasks)
-    assert ((1, "m"), "m", "knowledge", ("p",)) in calibration._backgrounds
+    assert ((1, "m"), "m", "knowledge", ("p",), hash(frozenset())) in calibration._backgrounds
     # The next snapshot (same shape, maybe even the same object id) is a new
     # generation: no stale answer, a fresh computation instead.
     assert calibration.background(snapshot, (2, "m"), ["p"], "knowledge", run_in_thread) is None
@@ -421,3 +421,30 @@ async def test_failed_probe_embedding_backs_off_before_retrying():
     probes.ensure("m", broken, ["a", "b"], batch=8, pause=0, min_samples=1)
     await asyncio.gather(*probes.tasks(), return_exceptions=True)
     assert calls == [2, 2]
+
+
+
+async def test_a_disabled_card_stays_out_of_the_calibration_background():
+    from types import SimpleNamespace
+
+    from knowledge.passive import Calibration
+
+    calibration = Calibration()
+    calibration._probes.vectors["m"] = np.tile(np.eye(1, 4, dtype=np.float32), (40, 1))
+    snapshot = SimpleNamespace(
+        model_id="m", pack_ids=("p",), chunk_pack_index=np.zeros(2, dtype=np.int32),
+        # Entry 1 matches every probe exactly; entry 2 matches none.
+        matrix=np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.float32),
+        entry_ids=np.array([1, 2]),
+    )
+
+    async def run_in_thread(fn):
+        return fn()
+
+    for excluded in (frozenset(), frozenset({1})):
+        calibration.background(snapshot, (1, "m"), ["p"], "knowledge", run_in_thread, excluded_entry_ids=excluded)
+        await asyncio.gather(*calibration._tasks)
+    with_card = calibration._backgrounds[((1, "m"), "m", "knowledge", ("p",), hash(frozenset()))]
+    without = calibration._backgrounds[((1, "m"), "m", "knowledge", ("p",), hash(frozenset({1})))]
+    assert with_card.high == pytest.approx(1.0)
+    assert without.high == pytest.approx(0.0)
