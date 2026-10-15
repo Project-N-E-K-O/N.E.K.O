@@ -319,3 +319,49 @@ async def test_a_turn_superseded_after_collection_still_sends_no_context(monkeyp
 
     seen = await _drive_text_turn(monkeypatch, before_send=supersede)
     assert "turn_context" not in seen
+
+
+
+async def test_the_memory_boundary_is_the_conversation_start_not_the_last_hot_swap(monkeypatch):
+    import datetime as _dt
+
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    seen = {}
+
+    async def fake_post(url, payload, *, deadline):
+        if "memory" in url:
+            seen.update(payload)
+        return None
+
+    monkeypatch.setattr(tc, "_post_json", fake_post)
+    monkeypatch.setattr("main_logic.public_knowledge.tool_available", lambda: False)
+
+    async def settings():
+        return {}
+
+    monkeypatch.setattr("main_logic.core.aload_global_conversation_settings", settings)
+    manager = _Manager(session=object.__new__(OmniOfflineClient))
+    conversation = _dt.datetime(2026, 10, 15, 9, 0)
+    manager._turn_context_conversation_started_at = conversation
+    manager.session_start_time = _dt.datetime(2026, 10, 15, 10, 30)  # a later hot swap
+    job = manager._start_turn_context("海底捞")
+    await tc.collect_turn_context(job)
+    assert seen["session_started_at"] == conversation.timestamp()
+
+
+async def test_a_message_older_than_the_budget_starts_no_lookup(monkeypatch):
+    import time as _time
+
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    async def fake_post(url, payload, *, deadline):
+        raise AssertionError("no provider should be called")
+
+    monkeypatch.setattr(tc, "_post_json", fake_post)
+    monkeypatch.setattr("main_logic.public_knowledge.tool_available", lambda: True)
+    manager = _Manager(session=object.__new__(OmniOfflineClient))
+    assert manager._start_turn_context("你好", ingress_time=_time.time() - 5) is None
+    fresh = manager._start_turn_context("你好", ingress_time=_time.time())
+    assert fresh is not None, "a fresh message does start its lookup"
+    fresh.cancel()

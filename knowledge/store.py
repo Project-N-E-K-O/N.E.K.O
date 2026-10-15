@@ -658,7 +658,14 @@ class KnowledgeStore:
             for _start, end in spans[first:]:
                 if end - start > max_name_chars:
                     break
-                keys.add(f"s:{view[start:end]}")
+                span = view[start:end]
+                keys.add(f"s:{span}")
+                if not span.isalnum():
+                    # Separator variants ("New York" for "New-York") match
+                    # by their loose form, as the naming rule accepts them.
+                    loose = loose_surface(span)
+                    if loose:
+                        keys.add(f"l:{loose}")
         if not keys:
             return []
         clause, args = self._pack_clause(pack_ids, False, exclude_ids)

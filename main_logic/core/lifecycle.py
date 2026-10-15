@@ -2489,6 +2489,8 @@ class LifecycleMixin:
 
         self.session_start_time = datetime.now()
         self._session_turn_count = 0
+        # 真正开始一段对话（热切换不走这里）：被动记忆召回以此排除本段对话里写入的事实。
+        self._turn_context_conversation_started_at = self.session_start_time
 
         # 启动消息处理任务
         self.message_handler_task = asyncio.create_task(self.session.handle_messages())

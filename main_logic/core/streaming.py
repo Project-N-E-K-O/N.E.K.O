@@ -643,7 +643,9 @@ class StreamingMixin:
                     # 和下面的打断、清 TTS、凝神判断同时跑；发给模型之前再取，
                     # 共用一个时间预算。检索用用户看得见的原话（record_data），
                     # 不用可能夹着隐藏脚手架的 data。
-                    _turn_context_job = self._start_turn_context(record_data)
+                    _turn_context_job = self._start_turn_context(
+                        record_data, ingress_time=self._user_input_ingress_time(message),
+                    )
                     # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。

@@ -166,12 +166,17 @@ def start_turn_context(
     knowledge_available: bool,
     session_started_at: float | None,
     settings_loader,
+    started: float | None = None,
 ) -> TurnContextJob | None:
-    """Start every provider for one text turn; None when there is no text."""
+    """Start every provider for one text turn; None when there is no text or
+    the budget, counted from ``started`` (a monotonic time, default now), is
+    already spent."""
     query = str(text or "").strip()[:TURN_CONTEXT_QUERY_MAX_CHARS]
     if not query:
         return None
-    started = time.monotonic()
+    started = time.monotonic() if started is None else started
+    if started + TURN_CONTEXT_BUDGET_SECONDS <= time.monotonic():
+        return None
     job = TurnContextJob(
         started=started,
         deadline=started + TURN_CONTEXT_BUDGET_SECONDS,

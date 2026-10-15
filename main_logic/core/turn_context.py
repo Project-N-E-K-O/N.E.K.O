@@ -42,17 +42,28 @@ from main_logic import core as _core_facade
 class TurnContextMixin:
     """Passive turn context methods (see module docstring)."""
 
-    def _start_turn_context(self, text, *, session=None):
+    def _start_turn_context(self, text, *, session=None, ingress_time=None):
         """Start the providers for one text turn answered by ``session``
         (default: the current one). None when that session cannot carry the
-        blocks or there is nothing to look up; never raises."""
+        blocks or there is nothing to look up; never raises.
+
+        ``ingress_time`` (wall clock) is when the message reached Main: the
+        shared budget counts from there, so time spent preparing the session
+        comes out of it.
+        """
         session = self.session if session is None else session
         if not isinstance(session, OmniOfflineClient):
             return None
         try:
             from main_logic import public_knowledge
 
-            started_at = getattr(self, "session_start_time", None)
+            started_at = (
+                getattr(self, "_turn_context_conversation_started_at", None)
+                or getattr(self, "session_start_time", None)
+            )
+            started = None
+            if isinstance(ingress_time, (int, float)):
+                started = time.monotonic() - max(time.time() - float(ingress_time), 0.0)
             job = _providers.start_turn_context(
                 port=self.memory_server_port,
                 lanlan_name=self.lanlan_name,
@@ -62,6 +73,7 @@ class TurnContextMixin:
                 knowledge_available=public_knowledge.tool_available(),
                 session_started_at=started_at.timestamp() if started_at else None,
                 settings_loader=_core_facade.aload_global_conversation_settings,
+                started=started,
             )
             if job is not None:
                 job.session = session

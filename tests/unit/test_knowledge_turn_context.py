@@ -448,3 +448,17 @@ async def test_a_disabled_card_stays_out_of_the_calibration_background():
     without = calibration._backgrounds[((1, "m"), "m", "knowledge", ("p",), hash(frozenset({1})))]
     assert with_card.high == pytest.approx(1.0)
     assert without.high == pytest.approx(0.0)
+
+
+
+async def test_a_name_written_with_another_separator_is_found_past_the_keyword_cut(tmp_path):
+    entries = [
+        _entry(f"Trip {i}", "new york " * 12 + f"day {i} of the trip.") for i in range(60)
+    ]
+    entries.append(_entry("New-York", "A city on the east coast."))
+    service = await _ready(tmp_path, TopicEmbedder(state="loading"), packs=[_pack("lore", entries=entries)])
+    try:
+        result = await service.turn_context(text="we talked about new york today")
+        assert result["knowledge"]["card_ids"] == ["lore/new-york"]
+    finally:
+        await service.stop()
