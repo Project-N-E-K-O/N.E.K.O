@@ -18,7 +18,6 @@ import hashlib
 import numpy as np
 import pytest
 
-import knowledge.service as service_module
 from knowledge.retrieval import named_in_text
 from knowledge.store import StoredEntry
 from tests.unit.test_knowledge_subsystem import _import, _pack, _started, fast_indexer  # noqa: F401
@@ -314,3 +313,58 @@ def test_background_is_each_probes_best_score():
     best = probe_best_scores(probes, material, block_rows=1)
     assert best.tolist() == pytest.approx([1.0, 0.6, 0.8])
     assert background_from_scores(best, high_quantile=0.5, base_quantile=0.5, min_samples=4) is None
+
+
+
+async def test_many_close_knowledge_cards_do_not_crowd_out_the_corpus_leader(tmp_path, fast_indexer):  # noqa: F811
+    knowledge = _pack("lore", entries=[
+        _entry(f"角色{i}", f"第{i}位角色是一位水神。") for i in range(30)
+    ])
+    corpus = _pack("lines", material_type="corpus", entries=[
+        _entry("台词", "愿神明保佑你，也愿歌剧永远上演。"),
+    ])
+    service = await _ready(tmp_path, TopicEmbedder(), packs=[knowledge, corpus])
+    try:
+        text = "我想多了解一点神明"
+        await _calibrated(service, text)
+        result = await service.turn_context(text=text)
+        assert result["retrieval_mode"] == "hybrid"
+        assert result["corpus"]["card_ids"] == ["lines/台词"]
+    finally:
+        await service.stop()
+
+
+async def test_a_background_is_never_served_for_a_later_snapshot():
+    from types import SimpleNamespace
+
+    from knowledge.passive import Calibration
+
+    calibration = Calibration()
+    calibration._probes["m"] = np.eye(1, 4, dtype=np.float32)
+    snapshot = SimpleNamespace(
+        model_id="m", pack_ids=("p",), chunk_pack_index=np.zeros(2, dtype=np.int32),
+        matrix=np.eye(2, 4, dtype=np.float32), entry_ids=np.arange(2),
+    )
+
+    async def run_in_thread(fn):
+        return fn()
+
+    assert calibration.background(snapshot, (1, "m"), ["p"], "knowledge", run_in_thread) is None
+    await asyncio.gather(*calibration._tasks)
+    assert ((1, "m"), "m", "knowledge", ("p",)) in calibration._backgrounds
+    # The next snapshot (same shape, maybe even the same object id) is a new
+    # generation: no stale answer, a fresh computation instead.
+    assert calibration.background(snapshot, (2, "m"), ["p"], "knowledge", run_in_thread) is None
+
+
+def test_a_token_dense_title_and_summary_stay_within_the_card_budget():
+    from knowledge.render import RenderCard, render_turn_cards
+    from utils.tokenize import count_tokens
+
+    card = RenderCard(
+        title="🧪" * 120, material_type="knowledge", summary="𠀀𠀁𠀂" * 200,
+        content="正文" * 200, source_name="s", source_license="",
+    )
+    text, tokens = render_turn_cards([card], language="zh", max_tokens_per_card=60)
+    assert count_tokens(text) <= 60 and tokens <= 60
+    assert "===" not in text and "<|" not in text

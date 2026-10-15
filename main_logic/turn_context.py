@@ -83,6 +83,9 @@ class TurnContextJob:
     deadline: float
     language: str
     tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
+    # The session the lookup was made for: it excluded that session's
+    # resident cards, so its results fit no other session.
+    session: Any = None
 
     def cancel(self) -> None:
         for task in self.tasks.values():

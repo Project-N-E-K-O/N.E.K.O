@@ -276,3 +276,25 @@ async def test_offline_voice_submit_hands_the_context_to_stream_text():
     client.stream_text = AsyncMock()
     assert await client.submit_external_voice_turn("你好", turn_id="t1", turn_context=context) is True
     assert client.stream_text.await_args.kwargs["turn_context"] is context
+
+
+
+async def test_results_for_a_session_that_was_replaced_are_dropped(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    async def fake_post(url, payload, *, deadline):
+        return _memory_payload() if "memory" in url else _knowledge_payload()
+
+    monkeypatch.setattr(tc, "_post_json", fake_post)
+    monkeypatch.setattr("main_logic.public_knowledge.tool_available", lambda: True)
+
+    async def settings():
+        return {}
+
+    monkeypatch.setattr("main_logic.core.aload_global_conversation_settings", settings)
+    first = object.__new__(OmniOfflineClient)
+    manager = _Manager(session=first)
+    job = manager._start_turn_context("海底捞")
+    assert job is not None and job.session is first
+    manager.session = object.__new__(OmniOfflineClient)  # a hot swap
+    assert await manager._collect_turn_context(job, still_current=lambda: True) is None

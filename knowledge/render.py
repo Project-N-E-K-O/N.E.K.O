@@ -119,6 +119,10 @@ def render_turn_cards(
             content = _safe_block(card.content, remaining)
             if content:
                 lines.append(f"  {labels['content']}: {content}")
-        blocks.append("\n".join(lines))
+        card = "\n".join(lines)
+        if count_tokens(card) > max_tokens_per_card:
+            # A token-dense title plus summary can pass the budget alone.
+            card = _safe(truncate_to_tokens(card, max_tokens_per_card)).rstrip()
+        blocks.append(card)
     text = "\n".join(blocks)
     return text, count_tokens(text)

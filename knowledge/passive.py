@@ -217,21 +217,24 @@ class Calibration:
     def background(
         self,
         snapshot: VectorSnapshot | None,
+        snapshot_key: Any,
         pack_ids: Sequence[str],
         material_type: str,
         run_in_thread: Callable[..., Awaitable[Any]],
     ) -> Background | None:
         """The background of ``pack_ids``' vectors in ``snapshot``, or None
-        (computed in the background) when not known yet."""
+        (computed in the background) when not known yet.
+
+        ``snapshot_key`` names that snapshot for good (the service's vector
+        generation and model): an object id could be reused by the next
+        snapshot once the old one is collected.
+        """
         if snapshot is None or not pack_ids:
             return None
         probes = self._probes.get(snapshot.model_id)
         if probes is None:
             return None
-        key = (
-            id(snapshot), len(snapshot.entry_ids), snapshot.model_id,
-            material_type, tuple(sorted(pack_ids)),
-        )
+        key = (snapshot_key, snapshot.model_id, material_type, tuple(sorted(pack_ids)))
         if key in self._backgrounds:
             return self._backgrounds[key]
         if key in self._pending:

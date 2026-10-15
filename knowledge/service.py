@@ -1832,7 +1832,10 @@ class KnowledgeService:
     ) -> tuple[dict[str, list[PassiveHit]], str]:
         """Candidates from all three signals, judged per material type."""
         model_id = self._current_model_id()
+        # Read together, with no await between: the generation names this
+        # very snapshot in the calibration cache.
         snapshot = self._vectors
+        snapshot_key = self._vectors_built_for
         vector_packs = [
             pack_id
             for pack_id in allowed
@@ -1844,6 +1847,14 @@ class KnowledgeService:
                 or snapshot.pack_versions.get(pack_id, record.pack_sha256) == record.pack_sha256
             )
         ]
+        type_packs = {
+            material_type: [
+                pack_id
+                for pack_id in allowed
+                if registry.packs[pack_id].effective_material_type == material_type
+            ]
+            for material_type in MATERIAL_TYPES
+        }
         embed_task: asyncio.Task[Any] | None = None
         if (
             model_id is not None
@@ -1871,22 +1882,24 @@ class KnowledgeService:
                 blob = normalize_vector(embed_task.result())
                 if blob is not None:
                     query_vector = np.frombuffer(blob, dtype="<f4")
-        semantic: list[SemanticMatch] = []
-        if query_vector is not None and vector_packs:
-            semantic = await self._query_thread(
-                self._passive_semantic_search, snapshot, query_vector, vector_packs, registry
-            )
+        # Each material type gets its own candidate cut, so many close cards
+        # of one type never push the other type's leader out.
+        semantic_by_type: dict[str, list[SemanticMatch]] = {}
+        if query_vector is not None:
+            for material_type, packs in type_packs.items():
+                type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in packs]
+                if type_vector_packs:
+                    semantic_by_type[material_type] = await self._query_thread(
+                        self._passive_semantic_search, snapshot, query_vector,
+                        type_vector_packs, registry,
+                    )
+        semantic = [match for matches in semantic_by_type.values() for match in matches]
         candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *(m.entry_id for m in semantic)]))
         entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
         allowed_set = await self._query_thread(self._current_packs, allowed, registry)
         picked: dict[str, list[PassiveHit]] = {}
         for material_type in MATERIAL_TYPES:
-            type_set = {
-                pack_id
-                for pack_id in allowed
-                if pack_id in allowed_set
-                and registry.packs[pack_id].effective_material_type == material_type
-            }
+            type_set = {pack_id for pack_id in type_packs[material_type] if pack_id in allowed_set}
             if not type_set:
                 picked[material_type] = []
                 continue
@@ -1900,7 +1913,7 @@ class KnowledgeService:
             type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in type_set]
             background = (
                 self._calibration.background(
-                    snapshot, type_vector_packs, material_type, self._thread
+                    snapshot, snapshot_key, type_vector_packs, material_type, self._thread
                 )
                 if query_vector is not None and type_vector_packs
                 else None
@@ -1911,7 +1924,10 @@ class KnowledgeService:
                 usable=usable,
                 exact_ids=[entry_id for entry_id in exact_ids if entry_id in usable],
                 lexical_ids=[entry_id for entry_id in lexical_ids if entry_id in usable],
-                semantic=[match for match in semantic if match.entry_id in usable],
+                semantic=[
+                    match for match in semantic_by_type.get(material_type, ())
+                    if match.entry_id in usable
+                ],
                 thresholds=thresholds_for(material_type, background),
             )
         return picked, ("hybrid" if query_vector is not None else "bm25")

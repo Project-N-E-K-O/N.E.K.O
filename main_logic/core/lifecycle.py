@@ -1762,6 +1762,10 @@ class LifecycleMixin:
             try:
                 current = getattr(self, 'session', None)
                 if isinstance(current, OmniOfflineClient):
+                    # 没有本轮附加上下文时不传这个参数，调用与原来一致。
+                    context_kwargs = (
+                        {'turn_context': turn_context} if turn_context is not None else {}
+                    )
                     if not operation_is_current():
                         return False
                     # The session captured at ASR prepare already owns the turn:
@@ -1845,7 +1849,7 @@ class LifecycleMixin:
                         delivered = await submit_text(
                             turn.transcript,
                             turn_id=turn.turn_id,
-                            turn_context=turn_context,
+                            **context_kwargs,
                         )
                         return delivered is not False
                     delivered = await submit(
@@ -1857,7 +1861,7 @@ class LifecycleMixin:
                         source=turn.source,
                         # 本轮附加上下文：快速路径上接这一轮的本来就是离线
                         # 会话，检索时排除的也是它常驻的知识。
-                        turn_context=turn_context,
+                        **context_kwargs,
                     )
                     return delivered is not False
                 if current is None or not operation_is_current():

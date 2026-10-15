@@ -2339,9 +2339,9 @@ class _StreamingMixin:
                     _history, history_replacement_index, user_message,
                 )
                 if _replace_at >= 0:
-                    _replacement = HumanMessage(content=history_replacement_text)
-                    _history[_replace_at] = _replacement
-                    self._rebind_resident_anchor(user_message, _replacement)
+                    _history[_replace_at] = HumanMessage(content=history_replacement_text)
+                    # 这一轮的 resident 块（知识）跟着替换后的消息走。
+                    self._rebind_resident_anchor(user_message, _history[_replace_at])
 
             # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:

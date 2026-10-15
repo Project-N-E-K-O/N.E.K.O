@@ -389,6 +389,8 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         # 只读：读路径由引擎准入检查兜底，围栏住只会白白打断读取。
         ("/query_memory/{lanlan_name}", "POST"),
         ("/internal/memory/{lanlan_name}/scoped_context", "POST"),
+        # 被动注入的记忆召回：只读召回池 + 纯计算，不写任何角色文件。
+        ("/internal/memory/{lanlan_name}/turn_context", "POST"),
         # 串门记忆浏览器的只读枚举（OD-18）：不写盘，设计稿明确「不进围栏」。
         ("/internal/memory/{lanlan_name}/scoped_subjects", "GET"),
         # 带键写入的清除代数只读查询：只读墓碑文件，不写盘

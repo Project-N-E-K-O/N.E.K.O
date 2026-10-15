@@ -895,14 +895,11 @@ class StreamingMixin:
                         # signal and entering Focus on evidence the user didn't author.
                         _focus_thinking = await self._focus_inline_decision(record_data)
                         # 取本轮附加上下文：等到预算为止；这期间有新消息顶替了
-                        # 这一轮（speech id 已轮换）或会话换了，就整个丢掉。
-                        _turn_context_session = self.session
+                        # 这一轮（speech id 已轮换）或会话换了（开工时记下的会话，
+                        # 见 _collect_turn_context），就整个丢掉。
                         _turn_context = await self._collect_turn_context(
                             _turn_context_job,
-                            still_current=lambda: (
-                                self.current_speech_id == new_user_sid
-                                and self.session is _turn_context_session
-                            ),
+                            still_current=lambda: self.current_speech_id == new_user_sid,
                         )
 
                         async def response_discarded_callback(

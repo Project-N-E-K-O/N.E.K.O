@@ -6574,6 +6574,9 @@ class AsrRuntimeMixin:
                             return
                     if not route_still_core() or self.session is not session_ref:
                         return
+                if turn_context_job is not None and session_ref is not turn_context_job.session:
+                    # 换到了替代会话：检索排除的是旧会话常驻的知识，不适用。
+                    turn_context = None
                 if multimodal_turn is None:
                     await self._submit_core_voice_turn(
                         event.text,

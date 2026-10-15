@@ -8,7 +8,6 @@ render's own budget selection are production code.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch

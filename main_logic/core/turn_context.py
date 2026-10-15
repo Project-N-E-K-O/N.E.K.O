@@ -53,7 +53,7 @@ class TurnContextMixin:
             from main_logic import public_knowledge
 
             started_at = getattr(self, "session_start_time", None)
-            return _providers.start_turn_context(
+            job = _providers.start_turn_context(
                 port=self.memory_server_port,
                 lanlan_name=self.lanlan_name,
                 text=text,
@@ -63,6 +63,9 @@ class TurnContextMixin:
                 session_started_at=started_at.timestamp() if started_at else None,
                 settings_loader=_core_facade.aload_global_conversation_settings,
             )
+            if job is not None:
+                job.session = session
+            return job
         except Exception as exc:
             logger.warning(
                 "[%s] turn context could not start: %s", self.lanlan_name, type(exc).__name__,
@@ -71,7 +74,8 @@ class TurnContextMixin:
 
     async def _collect_turn_context(self, job, *, still_current):
         """What the providers of ``job`` brought back by its deadline, as a
-        ``TurnContext`` for ``stream_text``; None when nothing came back or
+        ``TurnContext`` for ``stream_text``; None when nothing came back, the
+        session is no longer the one the lookup was made for, or
         ``still_current()`` says the turn was superseded meanwhile."""
         if job is None:
             return None
@@ -87,7 +91,7 @@ class TurnContextMixin:
             )
             return None
         elapsed_ms = int((time.monotonic() - job.started) * 1000)
-        if not still_current():
+        if self.session is not job.session or not still_current():
             # Another turn took over while the providers ran: whatever came
             # back answers a message that is no longer the one being replied to.
             logger.info(
