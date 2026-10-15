@@ -58,6 +58,7 @@ from config.prompts.prompts_turn_context import (
 )
 from config.turn_context_settings import (
     TURN_CONTEXT_BUDGET_SECONDS,
+    TURN_CONTEXT_MIN_REMAINING_SECONDS,
     TURN_CONTEXT_QUERY_MAX_CHARS,
 )
 from main_logic.omni_offline_client import TurnContext
@@ -168,18 +169,22 @@ def start_turn_context(
     settings_loader,
     started: float | None = None,
 ) -> TurnContextJob | None:
-    """Start every provider for one text turn; None when there is no text or
-    the budget, counted from ``started`` (a monotonic time, default now), is
-    already spent."""
+    """Start every provider for one text turn; None when there is no text.
+
+    The budget counts from ``started`` (a monotonic time, default now: when
+    the message reached Main), so time spent starting or handing over the
+    session comes out of it; the providers still get at least
+    ``TURN_CONTEXT_MIN_REMAINING_SECONDS``.
+    """
     query = str(text or "").strip()[:TURN_CONTEXT_QUERY_MAX_CHARS]
     if not query:
         return None
-    started = time.monotonic() if started is None else started
-    if started + TURN_CONTEXT_BUDGET_SECONDS <= time.monotonic():
-        return None
+    now = time.monotonic()
+    started = now if started is None else min(started, now)
+    deadline = max(started + TURN_CONTEXT_BUDGET_SECONDS, now + TURN_CONTEXT_MIN_REMAINING_SECONDS)
     job = TurnContextJob(
         started=started,
-        deadline=started + TURN_CONTEXT_BUDGET_SECONDS,
+        deadline=deadline,
         language=normalize_sys_prompt_locale(language),
     )
     if knowledge_available:

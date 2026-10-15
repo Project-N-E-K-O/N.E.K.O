@@ -96,6 +96,7 @@ def _settings(enabled=True):
 
 async def test_a_provider_past_the_budget_is_dropped_without_delaying_the_turn(monkeypatch):
     monkeypatch.setattr(tc, "TURN_CONTEXT_BUDGET_SECONDS", 0.1)
+    monkeypatch.setattr(tc, "TURN_CONTEXT_MIN_REMAINING_SECONDS", 0.05)
     calls = []
 
     async def fake_post(url, payload, *, deadline):
@@ -350,18 +351,25 @@ async def test_the_memory_boundary_is_the_conversation_start_not_the_last_hot_sw
     assert seen["session_started_at"] == conversation.timestamp()
 
 
-async def test_a_message_older_than_the_budget_starts_no_lookup(monkeypatch):
+async def test_a_message_that_waited_past_the_budget_still_gets_the_floor(monkeypatch):
     import time as _time
 
     from main_logic.omni_offline_client import OmniOfflineClient
 
     async def fake_post(url, payload, *, deadline):
-        raise AssertionError("no provider should be called")
+        return None
 
     monkeypatch.setattr(tc, "_post_json", fake_post)
     monkeypatch.setattr("main_logic.public_knowledge.tool_available", lambda: True)
     manager = _Manager(session=object.__new__(OmniOfflineClient))
-    assert manager._start_turn_context("你好", ingress_time=_time.time() - 5) is None
-    fresh = manager._start_turn_context("你好", ingress_time=_time.time())
-    assert fresh is not None, "a fresh message does start its lookup"
-    fresh.cancel()
+    # Five seconds of session start-up: the lookup still runs, on the floor only.
+    late = manager._start_turn_context("你好", ingress_time=_time.time() - 5)
+    assert late is not None
+    left = late.deadline - _time.monotonic()
+    assert 0 < left <= tc.TURN_CONTEXT_MIN_REMAINING_SECONDS + 0.05
+    late.cancel()
+    # Half a second of hand-over comes out of the budget.
+    handed = manager._start_turn_context("你好", ingress_time=_time.time() - 0.5)
+    left = handed.deadline - _time.monotonic()
+    assert tc.TURN_CONTEXT_MIN_REMAINING_SECONDS < left <= tc.TURN_CONTEXT_BUDGET_SECONDS - 0.45
+    handed.cancel()
