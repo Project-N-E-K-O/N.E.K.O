@@ -217,3 +217,14 @@ def test_the_resident_block_follows_its_message_when_old_images_are_evicted():
     assert client.resident_turn_context_ids() == ["pack/芙宁娜"]
     view = client._dialog_messages_for_provider(client._conversation_history)
     assert view[view.index(replaced) + 1].content == _KNOWLEDGE
+
+
+
+def test_a_block_still_waiting_on_its_provider_does_not_exclude_its_cards():
+    client = _client("openai")
+    anchor = HumanMessage(content="问题")
+    client._conversation_history.append(anchor)
+    entry = client._register_resident_context(anchor, _context())
+    assert client.resident_turn_context_ids() == [], "a superseding turn may still bring the card in"
+    client._settle_resident_context(entry, delivered=True)
+    assert client.resident_turn_context_ids() == ["pack/芙宁娜"]

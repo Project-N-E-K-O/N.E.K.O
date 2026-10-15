@@ -90,6 +90,10 @@ RENDER_RESERVE_SECONDS = 0.1
 
 _probe_vectors: dict[str, np.ndarray] = {}
 _probe_tasks: dict[str, asyncio.Task[Any]] = {}
+# Backgrounds per (character, model, pool): the pool rarely changes between
+# turns, and its probe-by-memory product is the costly part.
+_backgrounds: dict[tuple[Any, ...], Any] = {}
+MAX_BACKGROUNDS = 32
 
 
 def _is_cjk(ch: str) -> bool:
@@ -219,6 +223,27 @@ def _pool_matrix(pool: list[dict], model_id: str, dim: int):
     if not rows:
         return None, []
     return np.vstack(vecs), rows
+
+
+def _score(matrix: np.ndarray, query_vector: np.ndarray, probes: np.ndarray | None, cache_key):
+    """Cosines of the query against the pool, and the pool's background
+    (None without probes). Runs in a worker thread: on a large pool both are
+    matrix products the event loop must not wait on."""
+    sims = matrix @ query_vector
+    if probes is None or probes.shape[1] != matrix.shape[1]:
+        return sims, None
+    if cache_key in _backgrounds:
+        return sims, _backgrounds[cache_key]
+    background = background_from_scores(
+        probe_best_scores(probes, matrix),
+        high_quantile=TURN_CONTEXT_CALIBRATION_HIGH_QUANTILE,
+        base_quantile=TURN_CONTEXT_CALIBRATION_BASE_QUANTILE,
+        min_samples=TURN_CONTEXT_CALIBRATION_MIN_SAMPLES,
+    )
+    if len(_backgrounds) >= MAX_BACKGROUNDS:
+        _backgrounds.clear()
+    _backgrounds[cache_key] = background
+    return sims, background
 
 
 def _render(picked: list[dict], lang: str) -> tuple[str, int]:
@@ -353,16 +378,19 @@ async def amemory_turn_context(
             dim = parse_dim_from_model_id(model_id) or int(query_vector.size)
             matrix, rows = await asyncio.to_thread(_pool_matrix, embedding_pool, model_id, dim)
             if matrix is not None and matrix.shape[1] == query_vector.size:
-                sims = matrix @ query_vector
-                cosine = sorted(zip(rows, sims.tolist()), key=lambda pair: -pair[1])
                 probes = _probe_vectors.get(model_id)
-                if probes is not None and probes.shape[1] == matrix.shape[1]:
-                    background = background_from_scores(
-                        probe_best_scores(probes, matrix),
-                        high_quantile=TURN_CONTEXT_CALIBRATION_HIGH_QUANTILE,
-                        base_quantile=TURN_CONTEXT_CALIBRATION_BASE_QUANTILE,
-                        min_samples=TURN_CONTEXT_CALIBRATION_MIN_SAMPLES,
-                    )
+                # The same pool (ids and embedded texts) has the same background.
+                cache_key = (
+                    lanlan_name, model_id,
+                    hash(tuple(
+                        (doc.get('id'), doc.get('embedding_text_sha256')) for doc in rows
+                    )),
+                )
+                sims, background = await asyncio.to_thread(
+                    _score, matrix, query_vector, probes, cache_key,
+                )
+                cosine = sorted(zip(rows, sims.tolist()), key=lambda pair: -pair[1])
+                if background is not None:
                     thresholds = passive_thresholds(
                         background,
                         floor=TURN_CONTEXT_MEMORY_FLOOR,

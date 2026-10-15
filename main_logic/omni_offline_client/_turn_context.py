@@ -90,10 +90,16 @@ class _TurnContextMixin:
         return entries
 
     def resident_turn_context_ids(self) -> list[str]:
-        """Ids of the resident blocks the session's requests still carry."""
+        """Ids of the resident blocks the session's requests still carry.
+
+        Only delivered blocks count: one still waiting on its turn's provider
+        answer may be dropped when a newer message supersedes that turn, and
+        the newer turn must then be free to bring the same card in.
+        """
         ids: list[str] = []
         for entry in self._live_resident_entries():
-            ids.extend(entry.ids)
+            if entry.delivered:
+                ids.extend(entry.ids)
         return ids
 
     def _register_resident_context(self, anchor, context: Optional[TurnContext]):

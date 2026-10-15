@@ -29,9 +29,11 @@ MODEL_ID = "local-text-retrieval-v1-8d-int8"
 def _fresh_caches():
     _invalidate_pool_cache()
     mtc._probe_vectors.clear()
+    mtc._backgrounds.clear()
     yield
     _invalidate_pool_cache()
     mtc._probe_vectors.clear()
+    mtc._backgrounds.clear()
 
 
 def _fact(fid, text, *, created_at=None, vector=None):
@@ -330,3 +332,27 @@ async def test_memory_turn_context_route_reads_as_no_result_before_the_store_is_
     with patch.object(memory_routes.runtime, "fact_store", None):
         result = await memory_routes.memory_turn_context("Neko", MemoryTurnContextRequest(text="你好"))
     assert result["result"] == "unavailable" and result["context"] == ""
+
+
+
+async def test_the_background_of_an_unchanged_pool_is_computed_once(tmp_path, monkeypatch):
+    _calibrate()
+    calls = []
+    real = mtc.probe_best_scores
+
+    def counting(probes, matrix, **kwargs):
+        calls.append(matrix.shape)
+        return real(probes, matrix, **kwargs)
+
+    monkeypatch.setattr(mtc, "probe_best_scores", counting)
+    facts = [
+        _fact("d1", "用户喜欢看日出", vector=[1, 0, 0, 0, 0, 0, 0, 0]),
+        _fact("d2", "用户在学做饭", vector=[0, 0, 1, 0, 0, 0, 0, 0]),
+    ]
+    for _ in range(2):
+        result = await _run(tmp_path, "明天想早起出门走走", service=_vectors([1, 0, 0, 0, 0, 0, 0, 0]), facts=facts)
+        assert result["retrieval_mode"] == "hybrid"
+    assert len(calls) == 1
+    facts.append(_fact("d3", "用户养了一盆绿萝", vector=[0, 0, 0, 1, 0, 0, 0, 0]))
+    await _run(tmp_path, "明天想早起出门走走", service=_vectors([1, 0, 0, 0, 0, 0, 0, 0]), facts=facts)
+    assert len(calls) == 2, "a changed pool is measured again"
