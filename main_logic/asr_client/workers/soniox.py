@@ -126,11 +126,10 @@ class SonioxUtteranceState:
         self.first_partial_reported = False
 
 
-def _soniox_config(api_key: str, config: AsrSessionConfig) -> dict[str, Any]:
+def _soniox_config(config: AsrSessionConfig) -> dict[str, Any]:
     language = config.language.split("-", 1)[0].lower()
     language_hints = ["en", "ja", "es"] if language == "auto" else [language]
     return {
-        "api_key": api_key,
         "model": "stt-rt-v5",
         "audio_format": "pcm_s16le",
         "sample_rate": 16_000,
@@ -705,9 +704,10 @@ async def soniox_asr_worker(
             connected_at = time.monotonic()
             websocket = await websockets.connect(
                 SONIOX_REGION_URLS[region],
+                additional_headers={"Authorization": f"Bearer {api_key}"},
                 close_timeout=_CLOSE_TIMEOUT_SECONDS,
             )
-            await websocket.send(json.dumps(_soniox_config(api_key, config)))
+            await websocket.send(json.dumps(_soniox_config(config)))
             connection_audio_bytes = 0
             if replay_audio and replay_complete:
                 connection_audio_bytes = len(replay_audio)
