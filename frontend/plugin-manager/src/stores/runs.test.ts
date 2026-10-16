@@ -5,6 +5,7 @@ import { useRunsStore, type RunRecord } from './runs'
 import { useConnectionStore } from './connection'
 
 vi.mock('@/utils/constants', () => ({ API_BASE_URL: 'http://127.0.0.1:48916' }))
+vi.mock('@/api/index', () => ({ post: vi.fn() }))
 
 class Socket {
   static CONNECTING = 0
@@ -209,5 +210,17 @@ describe('run connection lifecycle', () => {
     store.$dispose()
     expect((await pending).code).toBe('cancelled')
     expect(socket.close).toHaveBeenCalledOnce()
+  })
+
+  it('does not cache a response if the page disconnects just after the API resolves', async () => {
+    const socket = await openConnection()
+    const pending = store.loadRun('r').catch(error => error)
+    await flush()
+    socket.reply('run.get', record())
+    // Let the API finish, but disconnect before the Store resumes its cache write.
+    await Promise.resolve()
+    store.disconnect()
+    expect((await pending).code).toBe('cancelled')
+    expect(store.runsById.r).toBeUndefined()
   })
 })
