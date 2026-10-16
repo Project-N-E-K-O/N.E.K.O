@@ -153,6 +153,7 @@ class VoiceSessionActivationRuntime:
         self._candidate_voice_samples = 0
         self._last_voice_end_at: float | None = None
         self._attempted_checkpoints: set[float] = set()
+        self._waiting_reason: str | None = None
         self._candidate_diagnostic_id = uuid.uuid4().hex[:12]
         self._candidate_diagnostic_next_at = 0.0
         self._candidate_diagnostic_totals: Counter[str] = Counter()
@@ -393,6 +394,7 @@ class VoiceSessionActivationRuntime:
             if self._closed:
                 return self._publish(self._controller.close())
             decision = self._controller.ingest(frame, voice_activity=voice_activity)
+            buffered_frame = decision.reason == "frame_buffered"
             if decision.state is ActivationState.UNAVAILABLE:
                 self._clear_wake_prepare_backlog_locked()
             if (
@@ -422,10 +424,19 @@ class VoiceSessionActivationRuntime:
                             "wake_word_queue_overflow",
                         )
                     )
-                request = self._advance_candidate(frame, voice_activity=voice_activity)
+                candidate_decision = self._advance_candidate(frame, voice_activity=voice_activity)
+                if candidate_decision is not None:
+                    decision = candidate_decision
+                    request = decision.verification_request
             elif decision.state in {ActivationState.ACTIVE, ActivationState.REPLAYING}:
                 self._clear_candidate()
-            if decision.reason == "frame_buffered":
+            if (
+                decision.state is ActivationState.WAITING
+                and decision.reason == "frame_buffered"
+                and self._waiting_reason is not None
+            ):
+                decision = replace(decision, reason=self._waiting_reason)
+            if buffered_frame:
                 self._log_candidate_progress(frame, voice_activity, request is not None)
             decision = self._publish(decision)
             self._ensure_output_task_locked()
@@ -537,7 +548,7 @@ class VoiceSessionActivationRuntime:
         *,
         voice_activity: bool,
         allow_verification: bool = True,
-    ) -> VerificationRequest | None:
+    ) -> ActivationDecision | None:
         if voice_activity:
             if (
                 self._last_voice_end_at is not None
@@ -590,8 +601,7 @@ class VoiceSessionActivationRuntime:
             self._clear_candidate("candidate_unavailable")
         else:
             self._attempted_checkpoints.add(checkpoint)
-        self._publish(decision)
-        return decision.verification_request
+        return decision
 
     def _ensure_verification_task_locked(self, request: VerificationRequest) -> None:
         if not self._controller.verification_is_current(request):
@@ -664,6 +674,20 @@ class VoiceSessionActivationRuntime:
                     request, kind, now=current
                 )
             )
+            if decision.state is ActivationState.WAITING and decision.reason in {
+                "owner_not_confirmed", "verification_insufficient",
+            }:
+                if (
+                    self._candidate_start_sequence == request.candidate.start_sequence
+                    and self._config.second_checkpoint_seconds in self._attempted_checkpoints
+                ):
+                    # This window used both checks. Collect fresh speech even
+                    # without a silence boundary; never erase a successor that
+                    # began while the rejected inference was awaiting its result.
+                    # Keeping the normal checkpoints bounds repeated inference
+                    # and preserves the minimum voiced duration for activation.
+                    self._clear_candidate("verification_retry")
+                self._waiting_reason = decision.reason
             if decision.reason == "verification_failed":
                 logger.warning(
                     "Voice activation verification failed: status=%s request=%s "
@@ -1087,6 +1111,14 @@ class VoiceSessionActivationRuntime:
                 self._idle_task = None
 
     def _clear_candidate(self, reason: str = "state_change") -> None:
+        if reason in {"speech_gap", "capture_gap"} and (
+            self.state is ActivationState.WAITING
+            and 0 < self._candidate_voice_samples
+            < self._config.first_checkpoint_seconds * 16_000
+        ):
+            self._waiting_reason = "speech_too_short"
+        elif reason == "state_change":
+            self._waiting_reason = None
         if self._candidate_start_sequence is not None:
             totals = self._candidate_diagnostic_totals
             totals["reset_" + reason] += 1
