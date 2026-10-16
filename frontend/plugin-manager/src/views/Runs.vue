@@ -27,6 +27,7 @@
             data-yui-guide-id="runs-table"
             highlight-current-row
             @current-change="handleSelect"
+            @row-click="handleSelect"
             :row-key="(row: RunRecord) => row.run_id"
           >
             <el-table-column prop="status" :label="$t('runs.status')" width="110">
@@ -216,14 +217,19 @@ async function handleRefresh() {
 }
 
 async function handleRefreshSelected() {
-  if (!selectedRun.value || disposed) return
+  if (!selectedRun.value || disposed || loadingSelected.value) return
   const runId = selectedRun.value.run_id
+  lastSelectedRunId.value = null
   loadingSelected.value = true
   try {
-    await Promise.all([
+    const results = await Promise.allSettled([
       runsStore.loadRun(runId),
       runsStore.loadExports(runId)
     ])
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason
+    }
+    if (!disposed) lastSelectedRunId.value = runId
   } catch (error) {
     showRequestError(error)
   } finally {
@@ -258,12 +264,11 @@ async function handleCancel() {
 }
 
 async function handleSelect(row: RunRecord | null) {
-  if (!row || !row.run_id) return
+  if (!row || !row.run_id || disposed) return
   const rid = String(row.run_id)
   if (!rid) return
   if (loadingSelected.value) return
   if (lastSelectedRunId.value === rid) return
-  lastSelectedRunId.value = rid
   runsStore.selectRun(rid)
   await handleRefreshSelected()
 }

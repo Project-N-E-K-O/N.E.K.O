@@ -69,7 +69,8 @@ export function pluginPackageSizeDetails(details: unknown) {
 
   const format = (bytes: number) => {
     const units = ['B', 'KiB', 'MiB', 'GiB']
-    const index = Math.min(Math.floor(Math.log2(Math.max(1, bytes)) / 10), units.length - 1)
+    let index = Math.min(Math.floor(Math.log2(Math.max(1, bytes)) / 10), units.length - 1)
+    if (index < units.length - 1 && Number((bytes / 1024 ** index).toFixed(2)) >= 1024) index++
     return `${Number((bytes / 1024 ** index).toFixed(2))} ${units[index]}`
   }
   const actualText = format(actual)

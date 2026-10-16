@@ -39,6 +39,7 @@ from plugin.core.package_limits import MAX_PLUGIN_PACKAGE_BYTES
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 from plugin.server.infrastructure.package_download import (
     PackageDownloadDeadline,
+    PackageDownloadWriteError,
     PackageSizeExceeded,
     cleanup_download_file as _cleanup_download_file,
     download_package_file,
@@ -4725,23 +4726,27 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             },
             retryable=False,
         ) from exc
-    except OSError as exc:
-        no_space = exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) == 112
+    except PackageDownloadWriteError as exc:
+        no_space = exc.error.errno == errno.ENOSPC or getattr(exc.error, "winerror", None) == 112
         raise _DownloadAttemptError(
             "磁盘空间不足，无法保存插件包" if no_space else "无法将插件包保存到磁盘",
             code="insufficient_disk_space" if no_space else "download_write_failed",
             retryable=False,
         ) from exc
+    except TimeoutError as exc:
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
+    except OSError as exc:
+        raise _DownloadAttemptError("下载网络错误", code="download_network_error") from exc
     except ValueError as exc:
         raise _DownloadAttemptError(str(exc)) from exc
 
 
 def _format_bytes(value: int) -> str:
     if value >= 1024 * 1024:
-        return f"{value / (1024 * 1024):.1f}MB"
+        return f"{value / (1024 * 1024):.1f} MiB"
     if value >= 1024:
-        return f"{value / 1024:.1f}KB"
-    return f"{value}B"
+        return f"{value / 1024:.1f} KiB"
+    return f"{value} B"
 
 
 def _extract_filename(url: str) -> str:

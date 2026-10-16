@@ -36,6 +36,12 @@ describe('resolvePluginInstallErrorKey', () => {
 })
 
 describe('pluginPackageSizeDetails', () => {
+  it('promotes a rounded unit boundary instead of showing 1024 KiB', () => {
+    expect(pluginPackageSizeDetails({
+      actual_bytes: 1048575, maximum_bytes: 524288000, size_source: 'content_length',
+    })?.actual).toBe('1 MiB')
+  })
+
   it('keeps a one-byte overflow visible despite rounded binary units', () => {
     expect(pluginPackageSizeDetails({
       actual_bytes: 524288001, maximum_bytes: 524288000, size_source: 'content_length',

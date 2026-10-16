@@ -21,6 +21,14 @@ class PackageDownloadDeadline(TimeoutError):
     """The downloader total deadline expired, rather than a filesystem error."""
 
 
+class PackageDownloadWriteError(Exception):
+    """An error from a package file operation, not the HTTP transport."""
+
+    def __init__(self, error: OSError) -> None:
+        self.error = error
+        super().__init__(str(error))
+
+
 class PackageSizeExceeded(ValueError):
     def __init__(
         self, actual: int, maximum: int, *,
@@ -33,11 +41,14 @@ class PackageSizeExceeded(ValueError):
 
 
 def _create_download_file(directory: Path) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(
-        prefix="neko-market-", suffix=".neko-plugin", dir=directory
-    )
-    os.close(fd)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(
+            prefix="neko-market-", suffix=".neko-plugin", dir=directory
+        )
+        os.close(fd)
+    except OSError as exc:
+        raise PackageDownloadWriteError(exc) from exc
     return Path(name)
 
 
@@ -53,13 +64,19 @@ def cleanup_download_file(path: Path | None) -> None:
 async def _open_download_file(path: Path) -> AsyncIterator[BinaryIO]:
     opening = asyncio.create_task(asyncio.to_thread(path.open, "wb"))
     try:
-        handle = await await_cancellation_safe(opening)
+        try:
+            handle = await await_cancellation_safe(opening)
+        except OSError as exc:
+            raise PackageDownloadWriteError(exc) from exc
         yield handle
     finally:
         if opening.done() and not opening.cancelled() and opening.exception() is None:
-            await await_cancellation_safe(
-                asyncio.create_task(asyncio.to_thread(opening.result().close))
-            )
+            try:
+                await await_cancellation_safe(
+                    asyncio.create_task(asyncio.to_thread(opening.result().close))
+                )
+            except OSError as exc:
+                raise PackageDownloadWriteError(exc) from exc
 
 
 async def download_package_file(
@@ -107,11 +124,14 @@ async def download_package_file(
                         async def flush() -> None:
                             nonlocal pending_bytes
                             if pending:
-                                await await_cancellation_safe(
-                                    asyncio.create_task(
-                                        asyncio.to_thread(handle.writelines, pending)
+                                try:
+                                    await await_cancellation_safe(
+                                        asyncio.create_task(
+                                            asyncio.to_thread(handle.writelines, pending)
+                                        )
                                     )
-                                )
+                                except OSError as exc:
+                                    raise PackageDownloadWriteError(exc) from exc
                                 pending.clear()
                                 pending_bytes = 0
 
