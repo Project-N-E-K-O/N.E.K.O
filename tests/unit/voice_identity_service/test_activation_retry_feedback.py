@@ -323,6 +323,48 @@ async def test_pending_tail_is_retired_at_a_real_gap_or_expiry(ending):
             release.set()
 
 
+@pytest.mark.parametrize("successor_frames", [14, 15])
+@pytest.mark.parametrize("status", [ActivationScoreStatus.READY, ActivationScoreStatus.INVALID_AUDIO])
+async def test_queue_release_checks_a_ready_successor_without_another_input_frame(successor_frames, status):
+    async with _rig() as rig:
+        entered, release = asyncio.Event(), asyncio.Event()
+        score = rig.scorer.score
+        started = 0
+
+        async def delayed(*args, **kwargs):
+            nonlocal started
+            started += 1
+            entered.set()
+            await release.wait()
+            rig.scorer.status = status if started <= 2 else ActivationScoreStatus.READY
+            rig.scorer.similarity = 0.1 if started <= 2 else 0.9
+            return await score(*args, **kwargs)
+
+        rig.scorer.score = delayed
+        try:
+            await rig.feed(15, settle=False)
+            await asyncio.wait_for(entered.wait(), 2)
+            await rig.feed(15, settle=False)
+            assert rig.runtime._controller.verification_queued
+            await rig.feed(6, voice=False, settle=False)
+            await rig.feed(successor_frames, settle=False)
+            assert rig.runtime._candidate_start_sequence == 36
+            assert not rig.sent
+            release.set()
+            await rig.settle()
+            if successor_frames == 14:
+                assert rig.runtime.state is ActivationState.WAITING
+                assert rig.scorer.calls == 2
+                assert not rig.sent
+                await rig.feed(1)
+            assert rig.runtime.state is ActivationState.ACTIVE
+            assert rig.scorer.calls == 3
+            assert rig.scorer.inputs[-1] == b"".join(_frame(n).pcm for n in range(36, 51))
+            assert not rig.runtime.verification_inflight
+        finally:
+            release.set()
+
+
 async def test_insufficient_score_can_rearm_but_backend_failure_cannot():
     async with _rig() as rig:
         rig.scorer.status = ActivationScoreStatus.INVALID_AUDIO
@@ -413,3 +455,48 @@ async def test_continuous_retry_reaches_both_core_audio_routes(route):
         await _until(lambda: len(h.pcm) >= len(expected))
         assert h.pcm[-15:] == expected
         assert scorer.calls == 3
+
+
+@pytest.mark.parametrize("route", ["native", "independent"])
+async def test_ready_successor_queue_handoff_reaches_both_core_routes(route):
+    async with _harness(route, active=False) as h:
+        scorer = h.factory.scorers[0]
+        entered, release = asyncio.Event(), asyncio.Event()
+        score = scorer.score
+        started = 0
+
+        async def delayed(*args, **kwargs):
+            nonlocal started
+            started += 1
+            entered.set()
+            await release.wait()
+            scorer.similarity = 0.1 if started <= 2 else 0.9
+            return await score(*args, **kwargs)
+
+        scorer.score = delayed
+        try:
+            for index in range(14):
+                h.clock.value += 0.1
+                await h.feed(3000 + index)
+            await asyncio.wait_for(entered.wait(), 2)
+            for index in range(15):
+                h.clock.value += 0.1
+                await h.feed(3100 + index)
+            await _until(lambda: h.activation._controller.verification_queued)
+            for _ in range(6):
+                h.clock.value += 0.1
+                await h.feed(0, voice=False)
+            expected = []
+            for index in range(15):
+                h.clock.value += 0.1
+                expected.append(await h.feed(4000 + index))
+            await _until(lambda: h.activation._candidate_start_sequence == 36
+                         and h.activation._candidate_voice_samples == 24_000)
+            assert not h.deliveries
+            release.set()
+            await _until(lambda: h.activation.state is ActivationState.ACTIVE)
+            await _until(lambda: len(h.pcm) >= 15)
+            assert h.pcm[-15:] == expected
+            assert scorer.calls == 3
+        finally:
+            release.set()

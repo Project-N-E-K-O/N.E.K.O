@@ -160,6 +160,7 @@ class VoiceSessionActivationRuntime:
         self._closed = False
         self._candidate_start_sequence: int | None = None
         self._candidate_start_sample: int | None = None
+        self._candidate_end_sequence: int | None = None
         self._candidate_voice_samples = 0
         self._candidate_sample_rate: int | None = None
         self._candidate_retry_tail: _CandidateTail | None = None
@@ -594,18 +595,20 @@ class VoiceSessionActivationRuntime:
             self._clear_candidate("speech_gap")
             return None
 
+        if self._candidate_start_sequence is not None:
+            self._candidate_end_sequence = frame.sequence
         if self._candidate_retry_tail is not None:
             self._candidate_retry_tail.end_sequence = frame.sequence
         if not allow_verification:
             return None
-        return self._request_candidate_verification(frame.sequence, frame.sample_rate)
+        return self._request_candidate_verification()
 
-    def _request_candidate_verification(
-        self, end_sequence: int, sample_rate: int,
-    ) -> ActivationDecision | None:
+    def _request_candidate_verification(self) -> ActivationDecision | None:
         start_sequence = self._candidate_start_sequence
         start_sample = self._candidate_start_sample
-        if start_sequence is None or start_sample is None:
+        end_sequence = self._candidate_end_sequence
+        sample_rate = self._candidate_sample_rate
+        if start_sequence is None or start_sample is None or end_sequence is None or sample_rate is None:
             return None
         duration = self._candidate_voice_samples / sample_rate
         checkpoint = next(
@@ -706,7 +709,7 @@ class VoiceSessionActivationRuntime:
                 )
             )
             if decision.state is ActivationState.WAITING:
-                tail = None
+                deadline = self._controller.idle_deadline
                 if (
                     self._candidate_start_sequence == request.candidate.start_sequence
                     and self._config.second_checkpoint_seconds in self._attempted_checkpoints
@@ -717,23 +720,22 @@ class VoiceSessionActivationRuntime:
                     tail = self._candidate_retry_tail
                     self._clear_candidate("verification_retry")
                     self._waiting_reason = None
-                    deadline = self._controller.idle_deadline
                     if tail is not None and deadline is not None and current < deadline:
                         self._candidate_start_sequence = tail.start_sequence
                         self._candidate_start_sample = tail.start_sample
+                        self._candidate_end_sequence = tail.end_sequence
                         self._candidate_voice_samples = tail.voice_samples
                         self._candidate_sample_rate = tail.sample_rate
                         self._last_voice_end_at = tail.last_voice_end_at
-                    else:
-                        tail = None
                 if decision.reason in {"owner_not_confirmed", "verification_insufficient"}:
                     self._waiting_reason = decision.reason
-                if tail is not None:
-                    tail_decision = self._request_candidate_verification(
-                        tail.end_sequence, tail.sample_rate,
-                    )
-                    if tail_decision is not None:
-                        decision = tail_decision
+                # Releasing scoring capacity is an eligibility trigger too: a
+                # successor may have reached its checkpoint while the old queue
+                # was full, and must not depend on another input frame arriving.
+                if deadline is not None and current < deadline:
+                    candidate_decision = self._request_candidate_verification()
+                    if candidate_decision is not None:
+                        decision = candidate_decision
             if decision.reason == "verification_failed":
                 logger.warning(
                     "Voice activation verification failed: status=%s request=%s "
@@ -1175,6 +1177,7 @@ class VoiceSessionActivationRuntime:
             )
         self._candidate_start_sequence = None
         self._candidate_start_sample = None
+        self._candidate_end_sequence = None
         self._candidate_voice_samples = 0
         self._candidate_sample_rate = None
         self._candidate_retry_tail = None
