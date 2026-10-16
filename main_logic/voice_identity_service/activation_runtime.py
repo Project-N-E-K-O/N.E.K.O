@@ -151,6 +151,7 @@ class VoiceSessionActivationRuntime:
         self._candidate_start_sequence: int | None = None
         self._candidate_start_sample: int | None = None
         self._candidate_voice_samples = 0
+        self._candidate_sample_rate: int | None = None
         self._last_voice_end_at: float | None = None
         self._attempted_checkpoints: set[float] = set()
         self._waiting_reason: str | None = None
@@ -559,6 +560,7 @@ class VoiceSessionActivationRuntime:
             if self._candidate_start_sequence is None:
                 self._candidate_start_sequence = frame.sequence
                 self._candidate_start_sample = frame.sample_start
+                self._candidate_sample_rate = frame.sample_rate
                 self._attempted_checkpoints.clear()
             self._candidate_voice_samples += frame.sample_end - frame.sample_start
             self._last_voice_end_at = frame.captured_end_at
@@ -1113,8 +1115,9 @@ class VoiceSessionActivationRuntime:
     def _clear_candidate(self, reason: str = "state_change") -> None:
         if reason in {"speech_gap", "capture_gap"} and (
             self.state is ActivationState.WAITING
+            and self._candidate_sample_rate is not None
             and 0 < self._candidate_voice_samples
-            < self._config.first_checkpoint_seconds * 16_000
+            < self._config.first_checkpoint_seconds * self._candidate_sample_rate
         ):
             self._waiting_reason = "speech_too_short"
         elif reason == "state_change":
@@ -1129,6 +1132,7 @@ class VoiceSessionActivationRuntime:
         self._candidate_start_sequence = None
         self._candidate_start_sample = None
         self._candidate_voice_samples = 0
+        self._candidate_sample_rate = None
         self._last_voice_end_at = None
         self._attempted_checkpoints.clear()
 

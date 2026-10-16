@@ -7,7 +7,9 @@ import pytest
 
 from main_logic.voice_identity_service.activation_runtime import VoiceSessionActivationRuntime
 from main_logic.voice_identity_service.activation_scoring import ActivationScoreResult, ActivationScoreStatus
-from main_logic.voice_input.activation import ActivationState, OutputCommit, VoiceActivationController
+from main_logic.voice_input.activation import (
+    ActivationState, AudioFrame, OutputCommit, VoiceActivationConfig, VoiceActivationController,
+)
 from tests.unit.voice_identity_service.test_activation_runtime import _Scorer, _frame, _generation
 from tests.support.activation_harness import _harness, _until
 
@@ -116,6 +118,59 @@ async def test_short_phrases_stay_blocked_and_report_insufficient_speech():
         assert rig.runtime.state is ActivationState.WAITING
         await rig.feed(15)
         assert rig.runtime.state is ActivationState.ACTIVE
+
+
+@pytest.mark.parametrize("sample_rate", [8_000, 16_000, 48_000])
+@pytest.mark.parametrize("voice_frames", [10, 15])
+@pytest.mark.parametrize("gap", ["speech", "capture"])
+async def test_short_speech_hint_uses_candidate_sample_rate(sample_rate, voice_frames, gap):
+    now = 0.0
+    scorer = _RecordingScorer()
+    decisions, sent = [], []
+
+    async def output(frame):
+        sent.append(frame)
+        return OutputCommit.TRANSPORT_WRITTEN
+
+    runtime = VoiceSessionActivationRuntime(
+        _generation(), scorer, output,
+        controller=VoiceActivationController(
+            VoiceActivationConfig(sample_rate=sample_rate), clock=lambda: now,
+        ),
+        status_callback=decisions.append,
+    )
+
+    async def feed(sequence, *, voice, capture_offset=0.0):
+        nonlocal now
+        samples = sample_rate // 10
+        frame = AudioFrame(
+            sequence=sequence, sample_start=sequence * samples,
+            sample_end=(sequence + 1) * samples,
+            captured_at=sequence * 0.1 + capture_offset,
+            sample_rate=sample_rate, pcm=b"\x01\x00" * samples,
+            generation=_generation(),
+        )
+        now = frame.captured_end_at
+        await runtime.feed(frame, voice_activity=voice)
+        if runtime._verification_task is not None:
+            await runtime._verification_task
+
+    try:
+        await runtime.prepare()
+        for sequence in range(voice_frames):
+            await feed(sequence, voice=True)
+        assert scorer.calls == int(voice_frames == 15)
+        if gap == "capture":
+            await feed(voice_frames, voice=True, capture_offset=0.6)
+        else:
+            for sequence in range(voice_frames, voice_frames + 6):
+                await feed(sequence, voice=False)
+        expected = "speech_too_short" if voice_frames < 15 else "owner_not_confirmed"
+        assert decisions[-1].reason == expected
+        assert runtime.state is ActivationState.WAITING
+        assert not sent
+    finally:
+        await runtime.close()
 
 
 async def test_mismatch_hint_survives_subsequent_waiting_frames():
