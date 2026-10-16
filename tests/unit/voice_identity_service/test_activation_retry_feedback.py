@@ -106,6 +106,55 @@ async def test_long_non_owner_speech_has_bounded_repeat_checks_and_no_output():
         assert not rig.runtime.verification_inflight
 
 
+@pytest.mark.parametrize("outcome", ["mismatch", "insufficient", "owner"])
+async def test_evicted_queued_or_replay_audio_rearms_an_exhausted_candidate(outcome):
+    async with _rig() as rig:
+        entered, release = asyncio.Event(), asyncio.Event()
+        score = rig.scorer.score
+
+        async def delayed(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await score(*args, **kwargs)
+
+        rig.scorer.score = delayed
+        rig.scorer.similarity = 0.9 if outcome == "owner" else 0.1
+        if outcome == "insufficient":
+            rig.scorer.status = ActivationScoreStatus.INVALID_AUDIO
+        try:
+            # Sub-threshold pauses retain one candidate. Its first check starts
+            # at 7 s; another 1.5 s of speech queues the second check and evicts
+            # the candidate's beginning from the existing eight-second cache.
+            for _ in range(14):
+                await rig.feed(1, settle=False)
+                await rig.feed(4, voice=False, settle=False)
+            await rig.feed(1, settle=False)
+            await asyncio.wait_for(entered.wait(), 2)
+            await rig.feed(15, settle=False)
+            assert rig.runtime._controller.verification_queued
+            release.set()
+            await rig.settle()
+            assert rig.scorer.calls == 1
+            assert rig.decisions[-1].reason == (
+                "replay_source_evicted" if outcome == "owner"
+                else "queued_candidate_unavailable"
+            )
+            assert rig.runtime.state is ActivationState.WAITING
+            assert not rig.sent  # Eviction never authorizes stale replay.
+            rig.scorer.status = ActivationScoreStatus.READY
+            rig.scorer.similarity = 0.9
+            await rig.feed(14)
+            assert rig.scorer.calls == 1  # The fresh candidate still needs 1.5 s.
+            await rig.feed(1)
+            assert rig.runtime.state is ActivationState.ACTIVE
+            assert rig.scorer.calls == 2
+            assert rig.scorer.inputs[-1] == b"".join(_frame(n).pcm for n in range(86, 101))
+            assert [frame.sequence for frame in rig.sent] == list(range(rig.sent[0].sequence, 101))
+            assert rig.sent[0].sequence >= 82  # Existing pre-roll plus one boundary frame.
+        finally:
+            release.set()
+
+
 async def test_short_phrases_stay_blocked_and_report_insufficient_speech():
     async with _rig() as rig:
         rig.scorer.similarity = 0.9
@@ -180,6 +229,98 @@ async def test_mismatch_hint_survives_subsequent_waiting_frames():
         await rig.feed(3)
         assert rig.decisions[-1].reason == "owner_not_confirmed"
         assert rig.decisions[-1].state is ActivationState.WAITING
+
+
+@pytest.mark.parametrize("tail_frames", [14, 15])
+@pytest.mark.parametrize("outcome", ["mismatch", "insufficient", "failed", "closed"])
+async def test_pending_second_score_preserves_only_a_live_eligible_tail(tail_frames, outcome):
+    async with _rig() as rig:
+        await rig.feed(15)
+        entered, release = asyncio.Event(), asyncio.Event()
+        score = rig.scorer.score
+        calls = 0
+
+        async def delayed(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                entered.set()
+                await release.wait()
+                rig.scorer.status = (
+                    ActivationScoreStatus.INVALID_AUDIO if outcome == "insufficient"
+                    else ActivationScoreStatus.FAILED if outcome == "failed"
+                    else ActivationScoreStatus.READY
+                )
+                result = await score(*args, **kwargs)
+                rig.scorer.status = ActivationScoreStatus.READY
+                rig.scorer.similarity = 0.9
+                return result
+            return await score(*args, **kwargs)
+
+        rig.scorer.score = delayed
+        try:
+            await rig.feed(15, settle=False)
+            await asyncio.wait_for(entered.wait(), 2)
+            await rig.feed(tail_frames, settle=False)
+            if outcome == "closed":
+                await rig.runtime.close()
+                release.set()
+                assert rig.runtime.state is ActivationState.CLOSED
+                assert not rig.sent
+                return
+            release.set()
+            await rig.settle()
+            if outcome == "failed":
+                assert rig.runtime.state is ActivationState.UNAVAILABLE
+                assert rig.scorer.calls == 2
+                assert not rig.sent
+                return
+            if tail_frames == 14:
+                assert rig.runtime.state is ActivationState.WAITING
+                assert rig.scorer.calls == 2
+                assert not rig.sent
+                await rig.feed(1)
+            assert rig.runtime.state is ActivationState.ACTIVE
+            assert rig.scorer.calls == 3
+            assert rig.scorer.inputs[-1] == b"".join(_frame(n).pcm for n in range(30, 45))
+            assert [frame.sequence for frame in rig.sent] == list(range(rig.sent[0].sequence, 45))
+            assert rig.sent[0].sequence >= 26
+        finally:
+            release.set()
+
+
+@pytest.mark.parametrize("ending", ["silence", "capture_gap", "expired"])
+async def test_pending_tail_is_retired_at_a_real_gap_or_expiry(ending):
+    async with _rig() as rig:
+        await rig.feed(15)
+        entered, release = asyncio.Event(), asyncio.Event()
+        score = rig.scorer.score
+
+        async def delayed(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await score(*args, **kwargs)
+
+        rig.scorer.score = delayed
+        try:
+            await rig.feed(15, settle=False)
+            await asyncio.wait_for(entered.wait(), 2)
+            await rig.feed(15, settle=False)
+            if ending == "silence":
+                await rig.feed(6, voice=False, settle=False)
+            elif ending == "capture_gap":
+                frame = _frame(rig.sequence, captured_at=rig.now + 0.6)
+                rig.now = frame.captured_end_at
+                await rig.runtime.feed(frame, voice_activity=True)
+            else:
+                rig.now += 31
+            release.set()
+            await rig.settle()
+            assert rig.runtime.state is ActivationState.WAITING
+            assert rig.scorer.calls == 2
+            assert not rig.sent
+        finally:
+            release.set()
 
 
 async def test_insufficient_score_can_rearm_but_backend_failure_cannot():
