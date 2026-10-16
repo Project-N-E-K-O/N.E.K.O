@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
-import { useConnectionStore } from '@/stores/connection'
+import { computed, onScopeDispose, ref } from 'vue'
 import { API_BASE_URL } from '@/utils/constants'
+import { RunsRequestError } from '@/utils/runsError'
 
 export type RunStatus =
   | 'queued'
@@ -15,7 +15,7 @@ export type RunStatus =
 export interface RunError {
   code: string
   message: string
-  details?: Record<string, any>
+  details?: Record<string, unknown>
 }
 
 export interface RunRecord {
@@ -36,7 +36,7 @@ export interface RunRecord {
   step?: number | null
   step_total?: number | null
   eta_seconds?: number | null
-  metrics?: Record<string, any>
+  metrics?: Record<string, unknown>
   cancel_requested?: boolean
   cancel_reason?: string | null
   cancel_requested_at?: number | null
@@ -58,14 +58,33 @@ export interface ExportItem {
   url?: string | null
   binary_url?: string | null
   binary?: string | null
-  json?: any
+  json?: unknown
   mime?: string | null
-  metadata?: Record<string, any>
+  metadata?: Record<string, unknown>
 }
 
 interface WsMsgBase {
   type: string
-  [k: string]: any
+  [k: string]: unknown
+}
+
+interface PendingRequest {
+  method: string
+  sent: boolean
+  timer: number
+  resolve: (value: unknown) => void
+  reject: (error: RunsRequestError) => void
+}
+
+interface RunsConnection {
+  socket: WebSocket
+  ready: Promise<void>
+  resolve: () => void
+  reject: (error: RunsRequestError) => void
+  opened: boolean
+  terminalError: RunsRequestError | null
+  timer: number | null
+  pending: Map<string, PendingRequest>
 }
 
 function buildWsUrl(path: string): string {
@@ -84,9 +103,8 @@ function buildWsUrl(path: string): string {
 }
 
 export const useRunsStore = defineStore('runs', () => {
-  const connectionStore = useConnectionStore()
-
-  const ws = ref<WebSocket | null>(null)
+  let activeConnection: RunsConnection | null = null
+  let connectionVersion = 0
   const connected = ref(false)
   const connecting = ref(false)
   const lastError = ref<string | null>(null)
@@ -116,7 +134,6 @@ export const useRunsStore = defineStore('runs', () => {
   })
 
   let rpcSeq = 0
-  const inflight = new Map<string, { resolve: (v: any) => void; reject: (e: any) => void }>()
 
   function setRun(rec: RunRecord) {
     const id = rec.run_id
@@ -129,12 +146,11 @@ export const useRunsStore = defineStore('runs', () => {
     )
   }
 
-  function applyBusChange(evt: any) {
+  function applyBusChange(evt: unknown) {
     if (!evt || typeof evt !== 'object') return
-    const bus = evt.bus
-    const payload = evt.payload
+    const { bus, payload } = evt as Record<string, unknown>
     if (bus === 'runs' && payload && typeof payload === 'object') {
-      const id = payload.run_id
+      const id = (payload as Record<string, unknown>).run_id
       if (typeof id === 'string' && id) {
         const prev = runsById.value[id]
         const merged = { ...(prev || {}), ...payload } as RunRecord
@@ -142,7 +158,7 @@ export const useRunsStore = defineStore('runs', () => {
       }
     }
     if (bus === 'export' && payload && typeof payload === 'object') {
-      const runId = payload.run_id
+      const runId = (payload as Record<string, unknown>).run_id
       if (typeof runId === 'string' && runId) {
         // Just mark that exports changed; caller can call export.list.
         // We keep this lightweight to avoid big payloads over ws.
@@ -150,154 +166,182 @@ export const useRunsStore = defineStore('runs', () => {
     }
   }
 
-  async function connect(): Promise<void> {
-    if (connected.value || connecting.value) return
+  function diagnose(connection: RunsConnection, error: RunsRequestError, details: Record<string, unknown> = {}) {
+    const url = new URL(connection.socket.url, window.location.href)
+    console.warn('[runs-ws]', {
+      code: error.code, endpoint: `${url.origin}${url.pathname}`, ...details,
+    })
+  }
+
+  function takeRequest(connection: RunsConnection, id: string): PendingRequest | undefined {
+    const request = connection.pending.get(id)
+    if (request) {
+      connection.pending.delete(id)
+      window.clearTimeout(request.timer)
+    }
+    return request
+  }
+
+  function endConnection(connection: RunsConnection, error: RunsRequestError) {
+    if (activeConnection !== connection) return
+    connection.terminalError = error
+    activeConnection = null
+    connectionVersion++
+    connected.value = false
+    connecting.value = false
+    if (error.code !== 'cancelled') lastError.value = error.code
+    if (connection.timer !== null) window.clearTimeout(connection.timer)
+    connection.timer = null
+    const sock = connection.socket
+    sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null
+    if (!connection.opened) connection.reject(error)
+    for (const id of connection.pending.keys()) {
+      const request = takeRequest(connection, id)!
+      request.reject(request.sent && request.method === 'run.cancel' && error.code !== 'cancelled'
+        ? new RunsRequestError('outcome_unknown') : error)
+    }
+    if (sock.readyState === WebSocket.CONNECTING || sock.readyState === WebSocket.OPEN) {
+      try { sock.close(1000, '') } catch { /* already closed */ }
+    }
+  }
+
+  function getConnection(): RunsConnection {
+    if (activeConnection) {
+      const current = activeConnection
+      if (current.socket.readyState === WebSocket.CONNECTING || current.socket.readyState === WebSocket.OPEN) {
+        return current
+      }
+      endConnection(current, new RunsRequestError('connection_closed'))
+    }
+
+    let sock: WebSocket
+    try {
+      sock = new WebSocket(buildWsUrl('/ws/admin'))
+    } catch {
+      lastError.value = 'connection_failed'
+      throw new RunsRequestError('connection_failed')
+    }
+    let resolve!: () => void
+    let reject!: (error: RunsRequestError) => void
+    const ready = new Promise<void>((done, fail) => { resolve = done; reject = fail })
+    const connection: RunsConnection = {
+      socket: sock, ready, resolve, reject, opened: false, terminalError: null, timer: null, pending: new Map(),
+    }
+    activeConnection = connection
+    connected.value = false
     connecting.value = true
     lastError.value = null
 
-    try {
-      const url = buildWsUrl('/ws/admin')
-      const sock = new WebSocket(url)
-      ws.value = sock
+    connection.timer = window.setTimeout(() => {
+      if (activeConnection !== connection) return
+      const error = new RunsRequestError('connection_timeout')
+      diagnose(connection, error)
+      endConnection(connection, error)
+    }, 5000)
 
-      sock.onopen = () => {
-        connected.value = true
-        connecting.value = false
-        try {
-          connectionStore.markConnected()
-        } catch (_) {
-          // ignore
-        }
-      }
-
-      sock.onmessage = (ev: MessageEvent) => {
-        try {
-          const msg = JSON.parse(String(ev.data || '{}')) as WsMsgBase
-          if (!msg || typeof msg !== 'object') return
-
-          if (msg.type === 'ping') {
-            sock.send(JSON.stringify({ type: 'pong' }))
-            return
-          }
-
-          if (msg.type === 'resp') {
-            const id = msg.id
-            if (typeof id === 'string' && inflight.has(id)) {
-              const h = inflight.get(id)!
-              inflight.delete(id)
-              if (msg.ok) h.resolve(msg.result)
-              else h.reject(new Error(String(msg.error || 'rpc error')))
-            }
-            return
-          }
-
-          if (msg.type === 'event' && msg.event === 'bus.change') {
-            const data = msg.data
-            if (!data || typeof data !== 'object') return
-            applyBusChange(data)
-            return
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
-
-      sock.onerror = () => {
-        lastError.value = 'ws error'
-      }
-
-      sock.onclose = (ev: CloseEvent) => {
-        connected.value = false
-        connecting.value = false
-        ws.value = null
-
-        for (const [id, h] of inflight.entries()) {
-          inflight.delete(id)
-          h.reject(new Error('ws closed'))
-        }
-
-        try {
-          connectionStore.markDisconnected()
-        } catch (_) {
-          // ignore
-        }
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        const t = window.setTimeout(() => {
-          reject(new Error('ws connect timeout'))
-        }, 5000)
-        const check = () => {
-          if (connected.value) {
-            clearTimeout(t)
-            resolve()
-          } else if (!connecting.value && !connected.value) {
-            clearTimeout(t)
-            reject(new Error('ws connect failed'))
-          } else {
-            window.setTimeout(check, 50)
-          }
-        }
-        check()
-      })
-    } catch (e: any) {
+    sock.onopen = () => {
+      if (activeConnection !== connection) return
+      if (connection.timer !== null) window.clearTimeout(connection.timer)
+      connection.timer = null
+      connection.opened = true
+      connected.value = true
       connecting.value = false
-      connected.value = false
-      lastError.value = String(e?.message || e || 'connect failed')
-      throw e
+      connection.resolve()
     }
+    sock.onmessage = (event: MessageEvent) => {
+      if (activeConnection !== connection) return
+      let msg: WsMsgBase
+      try { msg = JSON.parse(String(event.data || '{}')) as WsMsgBase } catch { return }
+      if (!msg || typeof msg !== 'object') return
+      if (msg.type === 'ping') {
+        try { sock.send(JSON.stringify({ type: 'pong' })) } catch {
+          endConnection(connection, new RunsRequestError('connection_closed'))
+        }
+      } else if (msg.type === 'resp' && typeof msg.id === 'string') {
+        const request = takeRequest(connection, msg.id)
+        if (!request) return
+        if (msg.ok) request.resolve(msg.result)
+        else {
+          const error = new RunsRequestError('request_failed')
+          diagnose(connection, error, {
+            method: request.method, requestId: msg.id,
+            serverError: typeof msg.error === 'string' ? msg.error.slice(0, 200) : 'invalid response',
+          })
+          request.reject(error)
+        }
+      } else if (msg.type === 'event' && msg.event === 'bus.change') {
+        applyBusChange(msg.data)
+      }
+    }
+    // Browsers report handshake failures through error + close. Keep the close
+    // metadata; its callback (or the connect deadline) owns terminal cleanup.
+    sock.onerror = () => {}
+    sock.onclose = (event: CloseEvent) => {
+      if (activeConnection !== connection) return
+      const error = new RunsRequestError(connection.opened ? 'connection_closed' : 'connection_failed')
+      diagnose(connection, error, { closeCode: event.code, reason: event.reason.slice(0, 200), wasClean: event.wasClean })
+      endConnection(connection, error)
+    }
+    return connection
+  }
+
+  function connect(): Promise<void> {
+    try { return getConnection().ready } catch (error) { return Promise.reject(error) }
   }
 
   function disconnect() {
-    const sock = ws.value
-    ws.value = null
-    connected.value = false
-    connecting.value = false
-    if (sock) {
-      try {
-        sock.close(1000, '')
-      } catch (_) {
-        // ignore
-      }
-    }
+    if (activeConnection) endConnection(activeConnection, new RunsRequestError('cancelled'))
+    lastError.value = null
   }
 
-  async function rpc<T = any>(method: string, params: Record<string, any>): Promise<T> {
-    if (!connected.value) {
-      await connect()
-    }
-    const sock = ws.value
-    if (!sock || sock.readyState !== WebSocket.OPEN) {
-      throw new Error('ws not ready')
+  onScopeDispose(disconnect)
+
+  async function rpc<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
+    const connection = getConnection()
+    await connection.ready
+    if (activeConnection !== connection) throw connection.terminalError ?? new RunsRequestError('cancelled')
+    if (connection.socket.readyState !== WebSocket.OPEN) {
+      endConnection(connection, new RunsRequestError('connection_closed'))
+      throw new RunsRequestError('connection_closed')
     }
 
-    rpcSeq += 1
-    const id = `rpc-${Date.now()}-${rpcSeq}`
-    const payload = { type: 'req', id, method, params }
-
-    const p = new Promise<T>((resolve, reject) => {
-      inflight.set(id, { resolve, reject })
-      window.setTimeout(() => {
-        if (inflight.has(id)) {
-          inflight.delete(id)
-          reject(new Error('rpc timeout'))
-        }
-      }, 5000)
+    const id = `rpc-${++rpcSeq}`
+    const result = await new Promise<T>((resolve, reject) => {
+      const request: PendingRequest = {
+        method, sent: false, resolve: value => resolve(value as T), reject,
+        timer: window.setTimeout(() => {
+          const pending = takeRequest(connection, id)
+          if (!pending) return
+          const error = new RunsRequestError(pending.sent && method === 'run.cancel' ? 'outcome_unknown' : 'request_timeout')
+          diagnose(connection, error, { method, requestId: id })
+          pending.reject(error)
+        }, 5000),
+      }
+      connection.pending.set(id, request)
+      try {
+        connection.socket.send(JSON.stringify({ type: 'req', id, method, params }))
+        request.sent = true
+      } catch {
+        const error = new RunsRequestError('request_failed')
+        diagnose(connection, error, { method, requestId: id, phase: 'send' })
+        takeRequest(connection, id)?.reject(error)
+      }
     })
+    if (activeConnection !== connection) throw new RunsRequestError('cancelled')
+    return result
+  }
 
-    try {
-      sock.send(JSON.stringify(payload))
-    } catch (e) {
-      inflight.delete(id)
-      throw e
-    }
-    return p
+  function assertCurrentVersion(version: number) {
+    if (version !== connectionVersion) throw new RunsRequestError('cancelled')
   }
 
   async function refreshRuns(pluginId?: string) {
-    const params: Record<string, any> = {}
+    const params: Record<string, unknown> = {}
     if (pluginId) params.plugin_id = pluginId
-    const items = await rpc<RunRecord[]>('runs.list', params)
+    const pending = rpc<RunRecord[]>('runs.list', params)
+    const version = connectionVersion
+    const items = await pending
+    assertCurrentVersion(version)
     if (Array.isArray(items)) {
       // newest first: sort by updated_at desc
       const sorted = [...items].sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
@@ -314,7 +358,10 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   async function loadRun(runId: string) {
-    const rec = await rpc<RunRecord>('run.get', { run_id: runId })
+    const pending = rpc<RunRecord>('run.get', { run_id: runId })
+    const version = connectionVersion
+    const rec = await pending
+    assertCurrentVersion(version)
     if (rec && typeof rec === 'object') {
       setRun(rec)
     }
@@ -322,11 +369,14 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   async function loadExports(runId: string) {
-    const out = await rpc<{ items: ExportItem[]; next_after?: string | null }>('export.list', {
+    const pending = rpc<{ items: ExportItem[]; next_after?: string | null }>('export.list', {
       run_id: runId,
       after: null,
       limit: 500
     })
+    const version = connectionVersion
+    const out = await pending
+    assertCurrentVersion(version)
     const items = Array.isArray(out?.items) ? out.items : []
     exportsByRunId.value[runId] = items
     return items
@@ -337,9 +387,12 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   async function cancelRun(runId: string, reason?: string) {
-    const params: Record<string, any> = { run_id: runId }
+    const params: Record<string, unknown> = { run_id: runId }
     if (reason) params.reason = reason
-    const rec = await rpc<RunRecord>('run.cancel', params)
+    const pending = rpc<RunRecord>('run.cancel', params)
+    const version = connectionVersion
+    const rec = await pending
+    assertCurrentVersion(version)
     if (rec && typeof rec === 'object') {
       setRun(rec)
     }
