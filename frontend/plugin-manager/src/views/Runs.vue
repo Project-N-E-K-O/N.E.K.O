@@ -159,6 +159,7 @@ const { t } = useI18n()
 const loading = ref(false)
 const loadingSelected = ref(false)
 const lastSelectedRunId = ref<string | null>(null)
+let pendingSelectedRunId: string | null = null
 let disposed = false
 
 function showRequestError(error: unknown) {
@@ -234,6 +235,12 @@ async function handleRefreshSelected() {
     showRequestError(error)
   } finally {
     loadingSelected.value = false
+    const nextRunId = pendingSelectedRunId
+    pendingSelectedRunId = null
+    if (!disposed && nextRunId) {
+      runsStore.selectRun(nextRunId)
+      await handleRefreshSelected()
+    }
   }
 }
 
@@ -267,7 +274,10 @@ async function handleSelect(row: RunRecord | null) {
   if (!row || !row.run_id || disposed) return
   const rid = String(row.run_id)
   if (!rid) return
-  if (loadingSelected.value) return
+  if (loadingSelected.value) {
+    pendingSelectedRunId = rid === selectedRun.value?.run_id ? null : rid
+    return
+  }
   if (lastSelectedRunId.value === rid) return
   runsStore.selectRun(rid)
   await handleRefreshSelected()
@@ -279,6 +289,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   disposed = true
+  pendingSelectedRunId = null
   runsStore.disconnect()
 })
 </script>

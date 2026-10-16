@@ -41,6 +41,7 @@ class PackageSizeExceeded(ValueError):
 
 
 def _create_download_file(directory: Path) -> Path:
+    name: str | None = None
     try:
         directory.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(
@@ -48,6 +49,8 @@ def _create_download_file(directory: Path) -> Path:
         )
         os.close(fd)
     except OSError as exc:
+        if name is not None:
+            cleanup_download_file(Path(name))
         raise PackageDownloadWriteError(exc) from exc
     return Path(name)
 

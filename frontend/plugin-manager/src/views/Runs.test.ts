@@ -26,6 +26,7 @@ function deferred() {
 const store = () => mocks.store as unknown as {
   refreshRuns: ReturnType<typeof vi.fn>; cancelRun: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>
   loadRun: ReturnType<typeof vi.fn>; loadExports: ReturnType<typeof vi.fn>
+  selectRun: ReturnType<typeof vi.fn>
 }
 let unmount = () => {}
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve() }
@@ -63,6 +64,63 @@ beforeEach(() => {
 afterEach(() => { unmount() })
 
 describe('run history page request lifecycle', () => {
+  it('loads only the latest row selected while the previous detail load is pending', async () => {
+    const detail = deferred()
+    const exports = deferred()
+    mocks.store.runs = ['a', 'b', 'c'].map(run_id => ({ run_id, status: 'running', updated_at: 1 }))
+    store().loadRun.mockReturnValueOnce(detail.promise)
+    store().loadExports.mockReturnValueOnce(exports.promise)
+    const root = mount(true)
+    await flush()
+    const rows = root.querySelectorAll<HTMLElement>('.el-table__body tbody tr')
+    rows[0]!.click()
+    rows[1]!.click()
+    rows[2]!.click()
+    detail.reject(new RunsRequestError('request_failed'))
+    await flush()
+    expect(store().loadRun.mock.calls).toEqual([['a']])
+    exports.resolve()
+    await flush()
+    expect(store().selectRun.mock.calls).toEqual([['a'], ['c']])
+    expect(store().loadRun.mock.calls).toEqual([['a'], ['c']])
+    expect(store().loadExports.mock.calls).toEqual([['a'], ['c']])
+    expect(mocks.store.selectedRun).toMatchObject({ run_id: 'c' })
+  })
+
+  it('discards a pending row change when the user returns to the row already loading', async () => {
+    const detail = deferred()
+    mocks.store.runs = ['a', 'b'].map(run_id => ({ run_id, status: 'running', updated_at: 1 }))
+    store().loadRun.mockReturnValueOnce(detail.promise)
+    const root = mount(true)
+    await flush()
+    const rows = root.querySelectorAll<HTMLElement>('.el-table__body tbody tr')
+    rows[0]!.click()
+    rows[1]!.click()
+    rows[0]!.click()
+    detail.resolve()
+    await flush()
+    expect(store().selectRun.mock.calls).toEqual([['a']])
+    expect(store().loadRun.mock.calls).toEqual([['a']])
+    expect(mocks.store.selectedRun).toMatchObject({ run_id: 'a' })
+  })
+
+  it('discards pending row changes and late errors when the page is unmounted', async () => {
+    const detail = deferred()
+    mocks.store.runs = ['a', 'b'].map(run_id => ({ run_id, status: 'running', updated_at: 1 }))
+    store().loadRun.mockReturnValueOnce(detail.promise)
+    const root = mount(true)
+    await flush()
+    const rows = root.querySelectorAll<HTMLElement>('.el-table__body tbody tr')
+    rows[0]!.click()
+    rows[1]!.click()
+    unmount()
+    detail.reject(new RunsRequestError('connection_closed'))
+    await flush()
+    expect(store().selectRun.mock.calls).toEqual([['a']])
+    expect(store().loadRun.mock.calls).toEqual([['a']])
+    expect(mocks.error).not.toHaveBeenCalled()
+  })
+
   it.each(['loadRun', 'loadExports'] as const)('retries the same actual table row after %s fails without duplicating successful loads', async method => {
     mocks.store.runs = [{ run_id: 'r', plugin_id: 'p', entry_id: 'e', status: 'running', updated_at: 1 }]
     store()[method].mockRejectedValueOnce(new RunsRequestError('connection_closed'))

@@ -40,6 +40,32 @@ def test_market_and_import_share_the_500_mib_package_limit():
     assert module._DOWNLOAD_MAX_BYTES == _UPLOAD_MAX_BYTES == 500 * 1024 * 1024
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_temp_file_close_failure_attempts_cleanup_without_replacing_the_error(tmp_path, monkeypatch, cleanup_fails):
+    failure = OSError(errno.EIO, "close failed")
+    close = download_io.os.close
+
+    def fail_close(fd):
+        close(fd)
+        raise failure
+
+    def fail_unlink(*args, **kwargs):
+        raise PermissionError("cleanup denied")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(download_io, "os", SimpleNamespace(close=fail_close))
+        if cleanup_fails:
+            patch.setattr(Path, "unlink", fail_unlink)
+        with pytest.raises(download_io.PackageDownloadWriteError) as raised:
+            download_io._create_download_file(tmp_path)
+        assert raised.value.error is failure
+        assert raised.value.__cause__ is failure
+        files = list(tmp_path.glob("neko-market-*.neko-plugin"))
+        assert len(files) == (1 if cleanup_fails else 0)
+    for path in files:
+        path.unlink()
+
+
 @pytest.mark.parametrize("size", [264366702, 500 * 1024 * 1024])
 async def test_valid_large_content_length_reaches_stream_without_large_fixture(
     isolated_download_root, monkeypatch, size,
