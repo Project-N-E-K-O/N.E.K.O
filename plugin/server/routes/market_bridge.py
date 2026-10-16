@@ -13,6 +13,7 @@ import asyncio
 import base64
 from collections.abc import Awaitable, Callable
 import dataclasses
+import errno
 import hashlib
 import hmac
 import json
@@ -34,6 +35,7 @@ from utils.deployment import has_forwarding_metadata
 from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
+from plugin.core.package_limits import MAX_PLUGIN_PACKAGE_BYTES
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 from plugin.server.infrastructure.package_download import (
     PackageDownloadDeadline,
@@ -111,12 +113,12 @@ _ACCOUNT_SUMMARY_LOCK = asyncio.Lock()
 _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
 # 下载限制
-_DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
+_DOWNLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
 # httpx 的超时是**每阶段**的（连接/读/写各自计时），所以一个"每次读都及时返回一点点
 # 字节"的服务器永远不会触发它——总时长必须有独立兜底。本文件里 _fetch_market_release
 # 已经为同一个理由用了 asyncio.timeout，注释就写着 "HTTPX phase timeouts alone do not
-# bound total response time"。1800s 对应 200MB 上限下约 114KB/s 的最低持续吞吐：低于
+# bound total response time"。1800s 对应 500MiB 上限下约 284KiB/s 的最低持续吞吐：低于
 # 这个速度的下载实际上已经停滞，而调用方本来就有 GitHub 直连的回退路径可以重试。
 _DOWNLOAD_TOTAL_TIMEOUT = 1800.0
 # Keep at most one 4 MiB batch of chunks. Progress and cancellation are still
@@ -472,6 +474,8 @@ class MarketTaskStatus(BaseModel):
     # 让前端识别稳定错误码（upgrade_rollback_completed / package_id_change / ...）。
     error: str | None = None
     error_code: str | None = None
+    error_details: dict[str, Any] | None = None
+    retryable: bool | None = None
     created_at: float = 0.0
     completed_at: float | None = None
     install_source_warning: str | None = None
@@ -3571,6 +3575,8 @@ class _TaskError(Exception):
     code: str
     message: str
     http_status: int | None = None
+    details: dict[str, Any] | None = None
+    retryable: bool | None = None
 
     def __post_init__(self) -> None:
         super().__init__(self.code, self.message)
@@ -3620,6 +3626,8 @@ def _finalize_task_failure(
     task["progress"] = task.get("progress", 0.0)
     task["error"] = err.message
     task["error_code"] = err.code
+    task["error_details"] = err.details
+    task["retryable"] = err.retryable
     task["completed_at"] = time.time()
     task["message"] = _human_message_for(err.code) or err.message
     logger.error(
@@ -3670,6 +3678,12 @@ _HUMAN_MESSAGES: dict[str, str] = {
     "lock_write_failed": "安装记录写入失败",
     "market_list_fetch_failed": "无法连接到 Market",
     "download_failed": "下载失败",
+    "package_size_exceeded": "插件包超过大小限制",
+    "download_timeout": "插件包下载超时",
+    "download_network_error": "下载插件包时网络连接失败",
+    "download_http_error": "插件下载服务器返回错误",
+    "insufficient_disk_space": "磁盘空间不足，无法保存插件包",
+    "download_write_failed": "无法将插件包保存到磁盘",
     "package_hash_mismatch": "插件包校验失败",
     "install_failed": "安装失败，已清理临时文件",
     "override_rollback_completed": "内置插件升级失败，已恢复内置版本",
@@ -3772,7 +3786,7 @@ async def _do_install(
         raise
     except Exception as exc:
         _raise_if_task_cancel_requested(task)
-        raise _TaskError(code="download_failed", message=str(exc)) from exc
+        raise _download_task_error(exc) from exc
 
     try:
         _raise_if_task_cancel_requested(task)
@@ -3792,7 +3806,7 @@ async def _do_install(
             )
         except _DownloadAttemptError as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
         except ValueError as exc:
             _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
@@ -4078,7 +4092,7 @@ async def _do_upgrade(
             raise
         except Exception as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
 
         _raise_if_task_cancel_requested(task)
         try:
@@ -4097,7 +4111,7 @@ async def _do_upgrade(
             )
         except _DownloadAttemptError as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
         except ValueError as exc:
             _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
@@ -4448,7 +4462,25 @@ def _utc_iso_now() -> str:
 
 
 class _DownloadAttemptError(ValueError):
-    """A failed HTTP download that may safely use the GitHub direct fallback."""
+    """Download failure with a stable category and explicit retry policy."""
+
+    def __init__(
+        self, message: str, *, code: str = "download_failed",
+        details: dict[str, Any] | None = None, retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+        self.retryable = retryable
+
+
+def _download_task_error(exc: Exception) -> _TaskError:
+    if isinstance(exc, _DownloadAttemptError):
+        return _TaskError(
+            code=exc.code, message=str(exc), details=exc.details,
+            retryable=exc.retryable,
+        )
+    return _TaskError(code="download_failed", message=str(exc))
 
 
 def _direct_github_download_fallback(url: str) -> str | None:
@@ -4581,7 +4613,9 @@ async def _download_package(url: str, task: dict[str, Any]) -> tuple[Path, str]:
 
     try:
         return await _download_package_once(url, task), url
-    except _DownloadAttemptError:
+    except _DownloadAttemptError as exc:
+        if not exc.retryable:
+            raise
         fallback_url = _direct_github_download_fallback(url)
         if not fallback_url:
             raise
@@ -4642,7 +4676,10 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError(f"下载失败: HTTP {exc.response.status_code}") from exc
+        raise _DownloadAttemptError(
+            f"下载失败: HTTP {exc.response.status_code}", code="download_http_error",
+            details={"http_status": exc.response.status_code},
+        ) from exc
     except httpx.TimeoutException as exc:
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
@@ -4652,7 +4689,7 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载超时") from exc
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
     except httpx.RequestError as exc:
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
@@ -4663,7 +4700,7 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载网络错误") from exc
+        raise _DownloadAttemptError("下载网络错误", code="download_network_error") from exc
     except PackageDownloadDeadline as exc:
         # asyncio.timeout 的**总时长**兜底到期。与上面的 httpx.TimeoutException 是两回事：
         # 那个是某一阶段超时，这个是"每阶段都没超时、但整通下载拖得太久"（滴流式响应）。
@@ -4677,10 +4714,23 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载超时") from exc
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
     except PackageSizeExceeded as exc:
         raise _DownloadAttemptError(
-            f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)"
+            f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)",
+            code="package_size_exceeded",
+            details={
+                "actual_bytes": exc.actual, "maximum_bytes": exc.maximum,
+                "size_source": exc.source,
+            },
+            retryable=False,
+        ) from exc
+    except OSError as exc:
+        no_space = exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) == 112
+        raise _DownloadAttemptError(
+            "磁盘空间不足，无法保存插件包" if no_space else "无法将插件包保存到磁盘",
+            code="insufficient_disk_space" if no_space else "download_write_failed",
+            retryable=False,
         ) from exc
     except ValueError as exc:
         raise _DownloadAttemptError(str(exc)) from exc

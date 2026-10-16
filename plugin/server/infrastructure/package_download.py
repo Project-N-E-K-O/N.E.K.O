@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 import tempfile
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 from plugin.logging_config import get_logger
 from plugin.utils.asyncio_utils import await_cancellation_safe
@@ -22,9 +22,13 @@ class PackageDownloadDeadline(TimeoutError):
 
 
 class PackageSizeExceeded(ValueError):
-    def __init__(self, actual: int, maximum: int) -> None:
+    def __init__(
+        self, actual: int, maximum: int, *,
+        source: Literal["content_length", "received_bytes"] = "received_bytes",
+    ) -> None:
         self.actual = actual
         self.maximum = maximum
+        self.source = source
         super().__init__(f"Package size {actual} exceeds {maximum} bytes")
 
 
@@ -92,10 +96,10 @@ async def download_package_file(
                         total = None
                     if total is not None and total < 0:
                         total = None
-                    if total is not None and total > maximum_bytes:
-                        raise PackageSizeExceeded(total, maximum_bytes)
                     received = 0
                     report_progress(received, total)
+                    if total is not None and total > maximum_bytes:
+                        raise PackageSizeExceeded(total, maximum_bytes, source="content_length")
                     async with _open_download_file(path) as handle:
                         pending: list[bytes] = []
                         pending_bytes = 0
@@ -117,6 +121,7 @@ async def download_package_file(
                             pending_bytes += len(chunk)
                             received += len(chunk)
                             if received > maximum_bytes:
+                                report_progress(received, total)
                                 raise PackageSizeExceeded(received, maximum_bytes)
                             if pending_bytes >= flush_bytes:
                                 await flush()

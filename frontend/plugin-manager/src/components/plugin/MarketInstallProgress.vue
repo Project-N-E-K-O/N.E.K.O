@@ -28,6 +28,12 @@
     <p v-if="statusText" class="install-progress__status" :class="statusTone">
       {{ statusText }}
     </p>
+    <div v-if="sizeExceeded" class="install-progress__failure" role="note">
+      <p v-if="sizeDetails">
+        {{ t(sizeDetails.source === 'content_length' ? 'market.packageSizeDeclared' : 'market.packageSizeReceived', sizeDetails) }}
+      </p>
+      <p>{{ t('market.packageSizeHint') }}</p>
+    </div>
 
     <div class="install-progress__steps-block">
       <button
@@ -62,6 +68,9 @@
           </span>
         </li>
       </ul>
+      <p v-if="store.detailsExpanded && sizeExceeded && sizeDetails" class="install-progress__diagnostics">
+        {{ t('market.packageSizeDiagnostics', sizeDetails) }}
+      </p>
     </div>
 
     <div v-if="props.showCancel && !store.done" class="install-progress__actions">
@@ -120,6 +129,7 @@ import { useI18n } from 'vue-i18n'
 import { ArrowDown, ArrowUp, Check, CloseBold, Loading, Remove } from '@element-plus/icons-vue'
 
 import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
+import { normalizePluginInstallErrorCode, pluginPackageSizeDetails } from '@/utils/pluginInstallError'
 
 interface Props {
   /** Tighter layout for the update float window: no bar label, thin bar. */
@@ -140,6 +150,9 @@ const emit = defineEmits<{ cancel: [] }>()
 
 const { t } = useI18n()
 const store = useMarketInstallTaskStore()
+const sizeExceeded = computed(() => store.task?.status === 'failed'
+  && normalizePluginInstallErrorCode(store.task.error_code) === 'package_size_exceeded')
+const sizeDetails = computed(() => pluginPackageSizeDetails(store.task?.error_details))
 
 const versionLine = computed(() => {
   const ctx = store.context
@@ -186,6 +199,17 @@ const rollbackIncomplete = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.install-progress__failure p {
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.install-progress__diagnostics {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .install-progress--compact {

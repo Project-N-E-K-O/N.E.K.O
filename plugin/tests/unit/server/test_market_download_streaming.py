@@ -28,6 +28,7 @@ from __future__ import annotations
 from plugin.utils.http_imports import load_httpx
 
 import asyncio
+import errno
 import hashlib
 import http.server
 import io
@@ -42,6 +43,116 @@ from plugin.server.routes import market_bridge as module
 from plugin.server.infrastructure import package_download as download_io
 
 pytestmark = pytest.mark.plugin_unit
+
+
+def test_market_and_import_share_the_500_mib_package_limit():
+    from plugin.server.application.plugin_cli.service import _UPLOAD_MAX_BYTES
+
+    assert module._DOWNLOAD_MAX_BYTES == _UPLOAD_MAX_BYTES == 500 * 1024 * 1024
+
+
+@pytest.mark.parametrize("size", [264366702, 500 * 1024 * 1024])
+async def test_valid_large_content_length_reaches_stream_without_large_fixture(
+    isolated_download_root, monkeypatch, size,
+):
+    httpx = load_httpx()
+    client = httpx.AsyncClient
+
+    class BodyReached(Exception):
+        pass
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            raise BodyReached
+            yield b""  # pragma: no cover - keep this an async byte iterator
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        200, headers={"content-length": str(size)}, stream=Stream(),
+    ))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs))
+    task = {}
+    with pytest.raises(BodyReached):
+        await module._download_package_once("https://example.test/package", task)
+    assert task["total_bytes"] == size
+    assert not list((isolated_download_root / ".downloads").glob("*.neko-plugin"))
+
+
+@pytest.mark.parametrize("declared", [True, False])
+async def test_size_refusal_preserves_counts_and_removes_partial_file(
+    isolated_download_root, monkeypatch, declared,
+):
+    httpx = load_httpx()
+    client = httpx.AsyncClient
+    limit = module._DOWNLOAD_MAX_BYTES if declared else 6
+    actual = limit + 1
+    response = httpx.Response(200, content=b"package")
+    if declared:
+        response.headers["content-length"] = str(actual)
+    else:
+        response.headers.pop("content-length")
+    transport = httpx.MockTransport(lambda request: response)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs))
+    monkeypatch.setattr(module, "_DOWNLOAD_MAX_BYTES", limit)
+    task = {}
+    with pytest.raises(module._DownloadAttemptError) as raised:
+        await module._download_package_once("https://example.test/package", task)
+    assert raised.value.code == "package_size_exceeded"
+    assert raised.value.retryable is False
+    assert raised.value.details == {
+        "actual_bytes": actual, "maximum_bytes": limit,
+        "size_source": "content_length" if declared else "received_bytes",
+    }
+    assert task["downloaded_bytes"] == (0 if declared else 7)
+    assert task["total_bytes"] == (actual if declared else None)
+    assert not list((isolated_download_root / ".downloads").glob("*.neko-plugin"))
+
+
+@pytest.mark.parametrize("declared", [True, False])
+async def test_received_bytes_equal_to_limit_are_allowed(isolated_download_root, monkeypatch, declared):
+    httpx = load_httpx()
+    client = httpx.AsyncClient
+    response = httpx.Response(200, content=b"package")
+    if not declared:
+        response.headers.pop("content-length")
+    transport = httpx.MockTransport(lambda request: response)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs))
+    monkeypatch.setattr(module, "_DOWNLOAD_MAX_BYTES", 7)
+    path = await module._download_package_once("https://example.test/package", {})
+    assert path.read_bytes() == b"package"
+    path.unlink()
+
+
+@pytest.mark.parametrize("failure,code,retryable", [
+    ("timeout", "download_timeout", True),
+    ("network", "download_network_error", True),
+    ("http", "download_http_error", True),
+    ("disk", "insufficient_disk_space", False),
+    ("permission", "download_write_failed", False),
+])
+async def test_download_failure_categories(isolated_download_root, monkeypatch, failure, code, retryable):
+    httpx = load_httpx()
+    request = httpx.Request("GET", "https://example.test/package")
+    errors = {
+        "timeout": httpx.ReadTimeout("timeout", request=request),
+        "network": httpx.ConnectError("network", request=request),
+        "http": httpx.HTTPStatusError("http", request=request, response=httpx.Response(503)),
+        "disk": OSError(errno.ENOSPC, "no space"),
+        "permission": PermissionError(errno.EACCES, "denied"),
+    }
+
+    async def fail(*_args, **_kwargs):
+        raise errors[failure]
+
+    monkeypatch.setattr(module, "download_package_file", fail)
+    with pytest.raises(module._DownloadAttemptError) as raised:
+        await module._download_package_once(str(request.url), {})
+    assert raised.value.code == code
+    assert raised.value.retryable is retryable
+    task_error = module._download_task_error(raised.value)
+    assert task_error.code == code
+    assert task_error.retryable is retryable
+    if failure == "http":
+        assert task_error.details == {"http_status": 503}
 
 
 class _PackageHandler(http.server.BaseHTTPRequestHandler):
@@ -504,7 +615,10 @@ async def test_filesystem_timeout_is_not_classified_as_download_deadline(
 
     monkeypatch.setattr(download_io, "_open_download_file", broken_file)
     srv = http_server(b"package")
-    with pytest.raises(TimeoutError, match="filesystem timed out") as excinfo:
+    with pytest.raises(module._DownloadAttemptError) as excinfo:
         await module._download_package_once(_url(srv), {"progress": 0.0})
-    assert not isinstance(excinfo.value, download_io.PackageDownloadDeadline)
+    assert excinfo.value.code == "download_write_failed"
+    assert excinfo.value.retryable is False
+    assert isinstance(excinfo.value.__cause__, TimeoutError)
+    assert not isinstance(excinfo.value.__cause__, download_io.PackageDownloadDeadline)
     assert list((isolated_download_root / ".downloads").iterdir()) == []
