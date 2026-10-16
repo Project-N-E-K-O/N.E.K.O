@@ -1323,6 +1323,41 @@
         return document.querySelector('[id$="-return-button-container"][data-neko-return-visible="true"]');
     }
 
+    // Read-only semantic anchor for independent surfaces such as pet-care.
+    // Consumers must not inspect model managers or model-specific containers.
+    window.nekoCatInteractionAnchor = Object.freeze({
+        getState: function getState() {
+            const container = I.getVisibleIdleReturnBallContainer();
+            if (!container || typeof container.getBoundingClientRect !== 'function') {
+                return { visible: false, busy: false, rect: null };
+            }
+            const tier = container.getAttribute('data-neko-idle-tier');
+            if (tier !== 'cat1' && tier !== 'cat2' && tier !== 'cat3') {
+                return { visible: false, busy: false, rect: null };
+            }
+            const rect = container.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) {
+                return { visible: false, busy: false, rect: null };
+            }
+            const busySelector = [
+                '.is-cat1-edge-peek-peeking', '.is-cat1-edge-peek-walking',
+                '.is-cat1-desktop-window-edge-peek-peeking',
+                '.is-cat1-desktop-window-edge-peek-walking',
+                '.is-cat1-walking',
+                '.is-cat1-dropping-from-compact-top-edge',
+                '[data-neko-dragging="true"]', '[data-neko-gravity="true"]',
+            ].join(',');
+            const busy = (container.matches && container.matches(busySelector)) ||
+                (container.querySelector && container.querySelector(busySelector));
+            return {
+                visible: true,
+                busy: !!busy || container.getAttribute('data-neko-return-busy') === 'true',
+                rect: { left: rect.left, top: rect.top, right: rect.right,
+                    bottom: rect.bottom, width: rect.width, height: rect.height },
+            };
+        },
+    });
+
     function getIdleReturnBallScreenRect(container) {
         if (!container || typeof container.getBoundingClientRect !== 'function') return null;
         const rect = container.getBoundingClientRect();

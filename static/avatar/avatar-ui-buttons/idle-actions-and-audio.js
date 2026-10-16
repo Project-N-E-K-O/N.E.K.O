@@ -238,6 +238,10 @@ function _getNekoIdleCat1StretchActionState(button) {
             fadeFrame: 0,
             fadeToken: 0,
             resumeJourney: false,
+            // Stretch has more than one owner: the local chat presentation and
+            // the journey tail are user/legacy presentation paths, while a
+            // Cat Mind run is the only owner pet-care cleanup may interrupt.
+            actionSource: '',
             presentationOnTerminal: null
         };
     }
@@ -300,6 +304,7 @@ function _cancelNekoIdleCat1StretchAction(button, options = {}) {
     state.presentationOnTerminal = null;
     state.token += 1;
     state.active = false;
+    state.actionSource = '';
     if (state.timer) {
         clearTimeout(state.timer);
         state.timer = 0;
@@ -363,6 +368,9 @@ function _playNekoIdleCat1StretchAction(button, options = {}) {
     state.active = true;
     state.token += 1;
     state.resumeJourney = shouldResumeJourney;
+    state.actionSource = typeof options.source === 'string' && options.source
+        ? options.source
+        : 'local';
     state.presentationOnTerminal = typeof options.onTerminal === 'function'
         ? options.onTerminal
         : null;
@@ -412,7 +420,7 @@ function _findNekoIdleCat1StretchPresentationButton() {
 function _requestNekoIdleCat1HissStretchPresentation() {
     if (!_isNekoCatActionResourceAvailable('cat1_hiss_stretch')) return false;
     const button = _findNekoIdleCat1StretchPresentationButton();
-    if (!button || !_playNekoIdleCat1StretchAction(button)) return false;
+    if (!button || !_playNekoIdleCat1StretchAction(button, { source: 'cat-local-chat' })) return false;
     _playNekoIdleSound(
         _getNekoIdleCat1StretchActionState(button),
         _getNekoCatVoiceUrl('cat1.hiss'),
@@ -1332,5 +1340,44 @@ function _playNekoIdleCat1SoundReaction() {
                 );
             }, remainingMs);
         });
+    });
+}
+
+// Stage 0 pet-care compatibility cleanup. The event is intentionally
+// separate from Cat Mind: callers can stop autonomous presentation runners
+// without changing the runner APIs used by future user actions.
+if (typeof window !== 'undefined') {
+    window.addEventListener('neko:pet-care:cleanup-request', function (event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const actionIds = Array.isArray(detail.actionIds) ? detail.actionIds : null;
+        const shouldClean = (actionId) => !actionIds || actionIds.indexOf(actionId) >= 0;
+        const reason = detail.reason || 'pet-care-mode-change';
+        _forEachNekoIdleReturnButton((button) => {
+            const eatState = button && button.__nekoIdleCat1EatActionState;
+            if (shouldClean('cat1_eat_snack') && eatState && eatState.catMindSource === 'cat_mind') {
+                _cancelNekoIdleCat1EatAction(button, { restoreArt: false, reason });
+            }
+            const playState = button && button.__nekoIdleCat1PlayActionState;
+            if (shouldClean('cat1_play_yarn') && playState && playState.catMindSource === 'cat_mind') {
+                _cancelNekoIdleCat1PlayAction(button, { restoreArt: false, reason });
+            }
+            const stretchState = button && button.__nekoIdleCat1StretchActionState;
+            // Stretch is the terminal presentation of cat1_small_move. It
+            // is not a separate Cat Mind request id, so inherit the parent
+            // cleanup allowance while still requiring the Cat Mind owner.
+            if ((shouldClean('cat1_stretch') || shouldClean('cat1_small_move')) && stretchState &&
+                stretchState.active && stretchState.actionSource === 'cat_mind') {
+                _cancelNekoIdleCat1StretchAction(button, { restoreArt: false, reason });
+            }
+        });
+        const sleepActionId = _nekoIdleSleepSoundState.catMindActionId || '';
+        const shouldCleanSleep = (sleepActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK &&
+            shouldClean('cat2_nap_feedback')) ||
+            (sleepActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK &&
+                shouldClean('cat3_sleep_feedback'));
+        if (shouldCleanSleep) {
+            _stopNekoIdleSleepSound({ reason });
+        }
+        if (shouldClean('cat1_social_ping')) _stopNekoIdleCat1AmbientSound({ reason });
     });
 }

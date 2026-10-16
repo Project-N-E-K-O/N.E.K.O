@@ -709,6 +709,16 @@ function _acknowledgeNekoCatMindActionRequest(request, status, detail = {}) {
 }
 function _runNekoCatMindActionRequest(request) {
     if (!request || request.source !== 'cat_mind' || !request.requestId || !request.actionId || !request.tier) return;
+    const petCareMode = typeof window !== 'undefined' ? window.nekoPetCareMode : null;
+    if (petCareMode && typeof petCareMode.shouldBlockCatMindActionRequest === 'function') {
+        const gate = petCareMode.shouldBlockCatMindActionRequest(request);
+        if (gate && gate.blocked) {
+            _acknowledgeNekoCatMindActionRequest(request, 'rejected', {
+                reason: gate.reason || 'pet-care-cat-mind-suppressed'
+            });
+            return;
+        }
+    }
     const actionId = request.actionId;
     const expectedTier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
         (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ? _NEKO_IDLE_TIER_CAT3 : _NEKO_IDLE_TIER_CAT1);

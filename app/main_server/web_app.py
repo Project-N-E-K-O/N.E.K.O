@@ -410,6 +410,7 @@ from main_routers.community_oauth import (  # noqa
     router as community_oauth_router,
 )
 from main_routers.community_remote_proxy import router as community_remote_proxy_router
+from main_routers.pet_care_router import router as pet_care_router
 app.include_router(community_remote_proxy_router)
 from main_routers.debug_router import (
     router as debug_router,
@@ -832,6 +833,7 @@ app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)
 app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.
+app.include_router(pet_care_router)
 # VMC Protocol OSC sender: REST control plane plus an isolated per-frame
 # WebSocket data plane at /api/vmc/ws (kept off the chat/session channel).
 app.include_router(vmc_router)

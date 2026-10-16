@@ -693,6 +693,51 @@
             });
         }
 
+        // Verse runs in the managed community window and cannot share the
+        // desktop page's localStorage. Accept only messages from a social
+        // window that this page opened and whose origin was recorded when it
+        // was navigated. A verified logout is reconciled through the local
+        // N.E.K.O account endpoint; the browser page never sends a bearer
+        // token through this bridge.
+        if (!window.__nekoSocialAuthBridgeInstalled) {
+            window.__nekoSocialAuthBridgeInstalled = true;
+            let authReconcileInFlight = false;
+            window.addEventListener('message', (event) => {
+                const bridgeState = getSocialThemeBridgeState();
+                const target = bridgeState.targets.find((candidate) => (
+                    event.source === candidate.targetWindow && event.origin === candidate.targetOrigin
+                ));
+                if (!target) return;
+                const data = event.data;
+                if (!data || data.source !== 'neko-auth-platform'
+                    || data.type !== 'auth-session-changed'
+                    || typeof data.logged_in !== 'boolean') return;
+                const publish = () => {
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko:auth-session-change', {
+                            detail: { logged_in: data.logged_in, source: 'neko-auth-platform' },
+                        }));
+                    } catch (_) { /* the pet surface may not be mounted yet */ }
+                };
+                if (data.logged_in) {
+                    publish();
+                    return;
+                }
+                if (authReconcileInFlight) return;
+                authReconcileInFlight = true;
+                fetch('/api/card-drop/oauth/logout', {
+                    method: 'POST', credentials: 'same-origin', cache: 'no-store',
+                    headers: { Accept: 'application/json' },
+                }).then((response) => {
+                    if (response.ok) publish();
+                }).catch(() => {
+                    // A failed local reconciliation must not be presented as
+                    // a successful logout; the next explicit status refresh
+                    // remains the recovery path.
+                }).finally(() => { authReconcileInFlight = false; });
+            });
+        }
+
         // 喵宇宙（社交平台）按钮：占用原 screen 槽位。
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置

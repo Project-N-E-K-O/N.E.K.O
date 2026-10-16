@@ -1180,6 +1180,10 @@ function _finishNekoIdleCat1Walk(button) {
     state.actionSettled = true;
     _setNekoIdleCat1Classes(button, state);
     const localStretchStarted = _playNekoIdleCat1StretchAction(button, {
+        // A stretch reached as the tail of a Cat Mind small move remains
+        // owned by that autonomous run and must be cleanable with its parent
+        // action. Standalone local journey presentation stays independent.
+        source: state.catMindSource === 'cat_mind' ? 'cat_mind' : 'cat1-journey-local',
         onTerminal(result) {
             _completeNekoIdleCat1JourneyStretch(button, targetKind, result);
         }

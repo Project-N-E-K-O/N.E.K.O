@@ -1,0 +1,143 @@
+/* Independent cat-form pet-care launcher and expandable hub. */
+#neko-pet-care-entry-overlay {
+    position: fixed; z-index: 100001; left: 0; top: 0;
+    width: 54px; display: block; pointer-events: none;
+    color: #eef2ff; opacity: 0; visibility: hidden;
+    transition: opacity 140ms ease, visibility 140ms ease;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+}
+#neko-pet-care-entry-overlay .neko-pet-care-entry-button,
+#neko-pet-care-entry-overlay .neko-pet-care-entry-panel { box-sizing: border-box; }
+#neko-pet-care-entry-overlay[data-available="true"][data-visible="true"] {
+    opacity: 1; visibility: visible; pointer-events: auto;
+}
+#neko-pet-care-entry-overlay .neko-pet-care-entry-button {
+    position: relative; z-index: 2; display: block; margin-left: auto;
+    width: 54px; min-height: 54px; padding: 7px; border: 1px solid rgba(148,163,184,.42);
+    border-radius: 18px; background: linear-gradient(145deg,rgba(41,52,86,.96),rgba(26,31,57,.96));
+    color: #f8fafc; box-shadow: 0 12px 30px rgba(5,8,24,.34),inset 0 1px 0 rgba(255,255,255,.08);
+    cursor: pointer; font-size: 12px; font-weight: 700; line-height: 1.2;
+    transition: transform 160ms ease,border-color 160ms ease,filter 160ms ease; pointer-events: auto;
+}
+#neko-pet-care-entry-overlay .neko-pet-care-entry-button::before {
+    content: "🐾"; display: block; margin-bottom: 2px; font-size: 18px; line-height: 1;
+}
+#neko-pet-care-entry-overlay .neko-pet-care-entry-button:hover,
+#neko-pet-care-entry-overlay[data-expanded="true"] .neko-pet-care-entry-button {
+    transform: translateX(-3px); border-color: rgba(129,140,248,.86); filter: brightness(1.12);
+}
+#neko-pet-care-entry-overlay[data-status="logged-out"] .neko-pet-care-entry-button,
+#neko-pet-care-entry-overlay[data-status="unknown"] .neko-pet-care-entry-button,
+#neko-pet-care-entry-overlay[data-service-status="unavailable"] .neko-pet-care-entry-button {
+    background: linear-gradient(145deg,rgba(71,78,102,.82),rgba(43,48,70,.88)); color: #cbd5e1;
+}
+#neko-pet-care-entry-overlay .neko-pet-care-entry-panel {
+    position: absolute; right: 76px; top: 50%; width: min(304px,calc(100vw - 32px));
+    max-height: min(680px,calc(100vh - 32px)); overflow-y: auto; padding: 17px;
+    border: 1px solid rgba(148,163,184,.34); border-radius: 20px;
+    background: linear-gradient(145deg,rgba(28,35,61,.98),rgba(15,20,37,.985));
+    box-shadow: 0 20px 48px rgba(4,6,20,.48),0 4px 14px rgba(4,6,20,.22),inset 0 1px 0 rgba(255,255,255,.08);
+    backdrop-filter: blur(16px) saturate(1.08);
+    opacity: 0; transform: translate(12px,-50%) scale(.97); transform-origin: right center;
+    visibility: hidden; pointer-events: none;
+    transition: opacity 160ms ease,transform 160ms ease,visibility 160ms ease;
+}
+#neko-pet-care-entry-overlay .neko-pet-care-entry-panel::before {
+    content: ""; position: absolute; left: 16px; right: 16px; top: 0; height: 2px;
+    border-radius: 0 0 999px 999px; background: linear-gradient(90deg,#818cf8,#38bdf8);
+    opacity: .9;
+}
+#neko-pet-care-entry-overlay[data-expanded="true"] .neko-pet-care-entry-panel {
+    opacity: 1; transform: translate(0,-50%) scale(1); visibility: visible; pointer-events: auto;
+}
+#neko-pet-care-entry-overlay[data-panel-side="right"] .neko-pet-care-entry-panel {
+    left: 76px; right: auto; transform: translate(-12px,-50%) scale(.97); transform-origin: left center;
+}
+#neko-pet-care-entry-overlay[data-panel-side="right"][data-expanded="true"] .neko-pet-care-entry-panel {
+    transform: translate(0,-50%) scale(1);
+}
+.neko-pet-care-panel-header,.neko-pet-care-panel-footer,.neko-pet-care-actions,
+.neko-pet-care-stat,.neko-pet-care-task { display: flex; align-items: center; }
+.neko-pet-care-panel-header { position: relative; justify-content: space-between; gap: 12px; margin-bottom: 7px; padding-right: 50px; }
+.neko-pet-care-panel-header strong { font-size: 17px; letter-spacing: .02em; }
+.neko-pet-care-status-badge {
+    padding: 4px 8px; border: 1px solid rgba(148,163,184,.28); border-radius: 999px;
+    background: rgba(15,23,42,.34); color: #c7d2fe; font-size: 11px; white-space: nowrap;
+}
+.neko-pet-care-close-button {
+    position: absolute; top: -4px; right: 0; z-index: 2;
+    display: grid; place-items: center; width: 40px; height: 40px; margin: 0; padding: 0;
+    border: 1px solid rgba(203,213,225,.56); border-radius: 999px;
+    background: rgba(15,23,42,.52); color: #f8fafc; cursor: pointer;
+    font-size: 25px; font-weight: 500; line-height: 1; text-align: center;
+    box-shadow: 0 8px 24px rgba(20,54,94,.18); backdrop-filter: blur(8px);
+}
+.neko-pet-care-close-button:hover,
+.neko-pet-care-close-button:focus-visible {
+    border-color: rgba(129,140,248,.9); background: rgba(79,70,229,.42);
+    outline: none; transform: scale(1.04);
+}
+.neko-pet-care-identity,.neko-pet-care-service { margin: 0; color: #a5b4fc; font-size: 12px; line-height: 1.55; }
+.neko-pet-care-identity { padding-bottom: 12px; border-bottom: 1px solid rgba(148,163,184,.14); color: #cbd5e1; }
+.neko-pet-care-stats { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 6px; margin: 13px 0 12px; }
+.neko-pet-care-stat {
+    min-height: 56px; padding: 8px 5px; flex-direction: column; justify-content: space-between;
+    border: 1px solid rgba(148,163,184,.16); border-radius: 12px; background: rgba(51,65,105,.23);
+    text-align: center;
+}
+.neko-pet-care-stat span { color: #94a3b8; font-size: 10px; white-space: nowrap; }
+.neko-pet-care-stat b { color: #f8fafc; font-size: 15px; }
+.neko-pet-care-actions { flex-wrap: wrap; gap: 7px; }
+.neko-pet-care-action {
+    flex: 1 1 calc(50% - 7px); min-height: 36px; padding: 7px 8px;
+    border: 1px solid rgba(129,140,248,.28); border-radius: 10px; background: rgba(67,56,202,.17);
+    color: #e0e7ff; cursor: pointer; font-size: 12px;
+}
+.neko-pet-care-action:hover:not(:disabled) { border-color: rgba(129,140,248,.66); background: rgba(79,70,229,.3); }
+.neko-pet-care-action:disabled { cursor: not-allowed; opacity: .46; }
+.neko-pet-care-task {
+    margin: 13px 0 10px; padding: 10px 11px; border-radius: 12px;
+    border: 1px solid rgba(148,163,184,.12); background: rgba(15,23,42,.5); color: #cbd5e1; font-size: 12px;
+}
+.neko-pet-care-inventory {
+    margin-top: 8px; padding-top: 9px; border-top: 1px solid rgba(148,163,184,.12);
+    color: #94a3b8; font-size: 11px; line-height: 1.45; text-align: right;
+}
+.neko-pet-care-service { min-height: 38px; margin-bottom: 10px; }
+.neko-pet-care-panel-footer { justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+.neko-pet-care-panel-footer button {
+    min-height: 31px; padding: 6px 10px; border: 1px solid rgba(129,140,248,.42);
+    border-radius: 9px; background: rgba(79,70,229,.24); color: #e0e7ff; cursor: pointer; font-size: 11px;
+}
+.neko-pet-care-panel-footer button:hover { background: rgba(99,102,241,.42); }
+.neko-pet-care-panel-footer button[hidden] { display: none; }
+@media (max-width: 600px) {
+    #neko-pet-care-entry-overlay { width: 54px; }
+    #neko-pet-care-entry-overlay .neko-pet-care-entry-panel {
+        position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px;
+        width: auto; max-height: calc(100vh - 32px); transform: translateY(12px) scale(.97);
+        transform-origin: center bottom;
+    }
+    #neko-pet-care-entry-overlay[data-panel-side="right"] .neko-pet-care-entry-panel {
+        left: 16px; right: 16px; transform-origin: center bottom;
+    }
+    #neko-pet-care-entry-overlay[data-expanded="true"] .neko-pet-care-entry-panel,
+    #neko-pet-care-entry-overlay[data-panel-side="right"][data-expanded="true"] .neko-pet-care-entry-panel {
+        transform: translateY(0) scale(1);
+    }
+    .neko-pet-care-stats { grid-template-columns: repeat(5,minmax(48px,1fr)); overflow-x: auto; }
+}
+@media (prefers-color-scheme: light) {
+    #neko-pet-care-entry-overlay { color: #1e293b; }
+    #neko-pet-care-entry-overlay .neko-pet-care-entry-panel {
+        background: linear-gradient(160deg,rgba(248,250,252,.98),rgba(226,232,240,.98));
+        box-shadow: 0 20px 50px rgba(30,41,59,.22);
+    }
+    .neko-pet-care-panel-header strong { color: #1e293b; }
+    .neko-pet-care-identity { color: #475569; }
+    .neko-pet-care-stat { background: rgba(255,255,255,.64); border-color: rgba(100,116,139,.22); }
+    .neko-pet-care-stat span { color: #64748b; }
+    .neko-pet-care-stat b { color: #1e293b; }
+    .neko-pet-care-task { background: rgba(226,232,240,.72); color: #475569; }
+    .neko-pet-care-action { color: #3730a3; background: rgba(224,231,255,.72); }
+}
