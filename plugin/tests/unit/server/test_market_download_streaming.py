@@ -235,6 +235,26 @@ async def test_raw_network_error_still_falls_back_to_direct_github(isolated_down
     path.unlink()
 
 
+@pytest.mark.parametrize("failure", [
+    asyncio.CancelledError(), download_io.PackageSizeExceeded(9, 8),
+])
+async def test_file_close_failure_preserves_the_primary_exception(tmp_path, monkeypatch, failure):
+    class File(io.BytesIO):
+        def close(self):
+            was_closed = self.closed
+            super().close()
+            if not was_closed:
+                raise OSError(errno.EIO, "close failed")
+
+    handle = File()
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: handle)
+    with pytest.raises(type(failure)) as raised:
+        async with download_io._open_download_file(tmp_path / "package"):
+            raise failure
+    assert raised.value is failure
+    assert handle.closed
+
+
 class _PackageHandler(http.server.BaseHTTPRequestHandler):
     """按 ``self.server.chunk`` 大小、``self.server.delay`` 间隔吐 ``self.server.payload``。"""
 

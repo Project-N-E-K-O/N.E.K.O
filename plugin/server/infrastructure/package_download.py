@@ -63,12 +63,16 @@ def cleanup_download_file(path: Path | None) -> None:
 @asynccontextmanager
 async def _open_download_file(path: Path) -> AsyncIterator[BinaryIO]:
     opening = asyncio.create_task(asyncio.to_thread(path.open, "wb"))
+    failed = False
     try:
         try:
             handle = await await_cancellation_safe(opening)
         except OSError as exc:
             raise PackageDownloadWriteError(exc) from exc
         yield handle
+    except BaseException:
+        failed = True
+        raise
     finally:
         if opening.done() and not opening.cancelled() and opening.exception() is None:
             try:
@@ -76,7 +80,9 @@ async def _open_download_file(path: Path) -> AsyncIterator[BinaryIO]:
                     asyncio.create_task(asyncio.to_thread(opening.result().close))
                 )
             except OSError as exc:
-                raise PackageDownloadWriteError(exc) from exc
+                if not failed:
+                    raise PackageDownloadWriteError(exc) from exc
+                logger.warning("failed to close package while propagating another exception: {}", exc)
 
 
 async def download_package_file(
