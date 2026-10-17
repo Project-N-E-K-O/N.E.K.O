@@ -1889,14 +1889,16 @@ class KnowledgeService:
         # of one type never push the other type's leader out.
         semantic_by_type: dict[str, list[SemanticMatch]] = {}
         if query_vector is not None:
-            vector_packs_by_type = {
-                material_type: [pack_id for pack_id in vector_packs if pack_id in packs]
-                for material_type, packs in type_packs.items()
-            }
-            semantic_by_type = await self._query_thread(
-                self._passive_semantic_search, snapshot, query_vector,
-                vector_packs_by_type, excluded_ids | disabled_ids,
-            )
+            vector_excluded = excluded_ids | disabled_ids
+            # One hop per type: a query cancelled or timed out between them
+            # does not go on scanning the other type while holding its slot.
+            for material_type, packs in type_packs.items():
+                type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in packs]
+                if type_vector_packs:
+                    semantic_by_type[material_type] = await self._query_thread(
+                        self._passive_semantic_search, snapshot, query_vector,
+                        type_vector_packs, vector_excluded,
+                    )
         semantic = [match for matches in semantic_by_type.values() for match in matches]
         candidate_ids = list(dict.fromkeys(
             [*exact_ids, *named_ids, *lexical_ids, *(m.entry_id for m in semantic)]
@@ -1973,23 +1975,19 @@ class KnowledgeService:
         self,
         snapshot: VectorSnapshot | None,
         query_vector: np.ndarray,
-        pack_ids_by_type: dict[str, list[str]],
+        pack_ids: list[str],
         excluded_ids: set[int],
-    ) -> dict[str, list[SemanticMatch]]:
-        """Vector candidates per material type, each type with its own cut so
-        many close cards of one type never push the other type's leader out."""
-        return {
-            material_type: semantic_candidates(
-                snapshot,
-                query_vector,
-                allowed_pack_ids=pack_ids,
-                exclude_entry_ids=excluded_ids,
-                limit=PASSIVE_SEMANTIC_CANDIDATES,
-                threshold=-1.0,
-            )
-            for material_type, pack_ids in pack_ids_by_type.items()
-            if pack_ids
-        }
+    ) -> list[SemanticMatch]:
+        """Vector candidates of one material type, with its own cut so many
+        close cards of one type never push the other type's leader out."""
+        return semantic_candidates(
+            snapshot,
+            query_vector,
+            allowed_pack_ids=pack_ids,
+            exclude_entry_ids=excluded_ids,
+            limit=PASSIVE_SEMANTIC_CANDIDATES,
+            threshold=-1.0,
+        )
 
     def _render_turn_sections(
         self,

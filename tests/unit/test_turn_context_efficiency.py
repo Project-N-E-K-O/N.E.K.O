@@ -33,7 +33,7 @@ from knowledge.retrieval import SemanticMatch, semantic_candidates
 from knowledge.store import NAME_SPAN_MAX_CHARS, KnowledgeStore, _NAME_UNIT_RE
 from knowledge.text import loose_surface, strict_surface
 from memory.hybrid_recall import _bm25_rank, _bm25_scores, _invalidate_pool_cache, _tokenize
-from tests.unit.test_knowledge_subsystem import _pack
+from tests.unit.test_knowledge_subsystem import _pack, fast_indexer  # noqa: F401
 from tests.unit.test_memory_turn_context import _fact, _no_vectors, _stores
 
 pytestmark = pytest.mark.unit
@@ -588,3 +588,38 @@ async def test_a_cancelled_embedding_keeps_the_slot_until_it_drains(tmp_path):
                 break
             await asyncio.sleep(0.01)
         assert not mtc._in_flight.get(loop)
+
+
+async def test_a_timed_out_knowledge_query_skips_the_other_material_type(tmp_path, fast_indexer):  # noqa: F811
+    """Each material type's vector scan is its own worker hop, so a query that
+    times out during the first one never starts the second."""
+    import threading
+
+    from tests.unit.test_knowledge_turn_context import TopicEmbedder, _entry, _ready
+
+    knowledge = _pack("lore", entries=[_entry("角色", "这是一位水神。")])
+    corpus = _pack("lines", material_type="corpus", entries=[_entry("台词", "愿神明保佑你。")])
+    service = await _ready(tmp_path, TopicEmbedder(), packs=[knowledge, corpus])
+    try:
+        import knowledge.service as service_module
+
+        scanned: list[tuple[str, ...]] = []
+        release = threading.Event()
+        real = service_module.semantic_candidates
+
+        def slow_scan(*args, **kwargs):
+            scanned.append(tuple(kwargs.get("allowed_pack_ids", ())))
+            release.wait(5)
+            return real(*args, **kwargs)
+
+        patcher = patch.object(service_module, "semantic_candidates", slow_scan)
+        patcher.start()
+        result = await service.turn_context(text="我想多了解一点神明", budget_ms=300)
+        assert result["result"] == "timeout"
+        release.set()
+        await asyncio.sleep(0.3)
+        assert len(scanned) == 1
+    finally:
+        release.set()
+        patch.stopall()
+        await service.stop()
