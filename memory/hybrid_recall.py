@@ -92,7 +92,7 @@ import os
 import sys
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Any
 
@@ -354,13 +354,19 @@ def _bm25_scores(
     # 上能翻排序，所以别顺手"优化"成那样）。
     #
     # Most docs share no term with the query: a C-level set intersection
-    # finds those and skips them before any per-token Python loop, and only
-    # the shared terms are counted (``list.count``). Same counts as the scan.
+    # finds those and skips them before any counting. The rest are counted
+    # in one C-level pass (``Counter``) and cut to the shared terms, so a
+    # long query never rescans a doc once per shared term. Same counts as
+    # the scan.
     df: dict[str, int] = dict.fromkeys(query_unique, 0)
     doc_tf_list: list[dict[str, int]] = []
     for terms in doc_terms_list:
         shared = query_unique.intersection(terms)
-        tf_map: dict[str, int] = {t: terms.count(t) for t in shared} if shared else {}
+        if shared:
+            counts = Counter(terms)
+            tf_map: dict[str, int] = {t: counts[t] for t in shared}
+        else:
+            tf_map = {}
         doc_tf_list.append(tf_map)
         for t in tf_map:
             df[t] += 1

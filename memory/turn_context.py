@@ -128,9 +128,22 @@ def _claim(lanlan_name: str) -> tuple[asyncio.Future | None, asyncio.Future]:
 def _release(lanlan_name: str, finished: asyncio.Future) -> None:
     if not finished.done():
         finished.set_result(None)
-    per_loop = _in_flight.get(asyncio.get_running_loop())
+    per_loop = _in_flight.get(finished.get_loop())
     if per_loop is not None and per_loop.get(lanlan_name) is finished:
         del per_loop[lanlan_name]
+
+
+def _release_after(previous: asyncio.Future, lanlan_name: str, finished: asyncio.Future) -> None:
+    """Release ``finished`` only once ``previous`` is done.
+
+    A request that gave up waiting (``busy``) did no work of its own, but the
+    one it waited for still runs: its slot stays taken until that one ends, so
+    the next request waits for it too instead of starting a pass alongside.
+    """
+    if previous.done():
+        _release(lanlan_name, finished)
+    else:
+        previous.add_done_callback(lambda _done: _release(lanlan_name, finished))
 
 
 def _is_cjk(ch: str) -> bool:
@@ -362,7 +375,12 @@ async def amemory_turn_context(
             finish=finish,
         )
     finally:
-        _release(lanlan_name, finished)
+        if previous is not None and not previous.done():
+            # Gave up waiting (busy, or cancelled): the slot stays taken
+            # until the request still running ends.
+            _release_after(previous, lanlan_name, finished)
+        else:
+            _release(lanlan_name, finished)
 
 
 async def _arecall(

@@ -479,25 +479,26 @@ async def test_a_newer_memory_request_supersedes_the_older_one(tmp_path):
 
 async def test_a_request_still_running_past_the_budget_reads_as_busy(tmp_path):
     fact_store, reflection_engine, persona_manager = _stores(tmp_path, facts=[_fact("f1", "海底捞")])
-    _previous, running = mtc._claim("小天")  # an older request that never finishes
-    try:
-        with patch.object(emb, "get_embedding_service", MagicMock(return_value=_no_vectors())):
-            result = await mtc.amemory_turn_context(
-                lanlan_name="小天", text="海底捞", fact_store=fact_store,
-                reflection_engine=reflection_engine, persona_manager=persona_manager,
-                config_manager=MagicMock(), budget_ms=200, language="zh",
-            )
-    finally:
-        mtc._release("小天", running)
-    assert result["result"] == "busy"
-    fact_store.aload_facts.assert_not_awaited()
-    # Nothing is left held: the next request runs.
+    kwargs = dict(
+        lanlan_name="小天", text="海底捞", fact_store=fact_store,
+        reflection_engine=reflection_engine, persona_manager=persona_manager,
+        config_manager=MagicMock(), language="zh",
+    )
+    _previous, running = mtc._claim("小天")  # an older request still in a worker
     with patch.object(emb, "get_embedding_service", MagicMock(return_value=_no_vectors())), \
          patch("memory.stop_names.collect_stop_names", return_value=[]):
-        result = await mtc.amemory_turn_context(
-            lanlan_name="小天", text="海底捞", fact_store=fact_store,
-            reflection_engine=reflection_engine, persona_manager=persona_manager,
-            config_manager=MagicMock(), budget_ms=1000, language="zh",
-        )
-    assert result["result"] != "busy"
+        first = await mtc.amemory_turn_context(budget_ms=200, **kwargs)
+        # The busy request did no work, but the older one still runs: the
+        # next request must wait for it as well, not start alongside it.
+        second = await mtc.amemory_turn_context(budget_ms=200, **kwargs)
+        assert first["result"] == second["result"] == "busy"
+        fact_store.aload_facts.assert_not_awaited()
+
+        mtc._release("小天", running)
+        for _ in range(3):  # each link of the chain releases on its own loop pass
+            await asyncio.sleep(0)
+        assert not mtc._in_flight.get(asyncio.get_running_loop())
+        third = await mtc.amemory_turn_context(budget_ms=1000, **kwargs)
+    assert third["result"] != "busy"
+    fact_store.aload_facts.assert_awaited()
     assert not mtc._in_flight.get(asyncio.get_running_loop())
