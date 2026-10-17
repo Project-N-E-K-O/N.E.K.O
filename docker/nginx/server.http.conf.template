@@ -1,0 +1,10 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# L1a —— 监听器层（HTTP-only，DISABLE_SSL=1）
+#
+# 渲染目标：/etc/nginx/neko/listener.conf
+# 被 include 进 neko-proxy.conf.template 的 server 块。
+#
+# 与 server.tls.conf.template 的差异就是整个系统里 HTTP / HTTPS 两种部署模式的
+# 全部差异：这里只有一行 listen。
+# ─────────────────────────────────────────────────────────────────────────────
+listen @@NGINX_PORT@@;

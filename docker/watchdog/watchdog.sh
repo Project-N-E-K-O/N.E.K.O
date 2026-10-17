@@ -4,7 +4,11 @@ set -euo pipefail
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 STATE_DIR=/opt/neko
-CONTAINER=neko
+# 容器名与 Compose 服务名。多实例（compose 里改了 NEKO_CONTAINER_NAME）时要在
+# cron 行里显式给出，因为看门狗跑在宿主 cron 中，读不到容器内的环境变量：
+#   */5 * * * * root NEKO_WATCHDOG_CONTAINER=neko-2 NEKO_WATCHDOG_SERVICE=neko-main-2 /opt/neko/watchdog.sh
+CONTAINER=${NEKO_WATCHDOG_CONTAINER:-neko}
+SERVICE=${NEKO_WATCHDOG_SERVICE:-neko-main}
 # Report pre-lock failures without writing through unsafe paths.
 early_fail() {
     local message="watchdog: $*"
@@ -57,7 +61,7 @@ read -r container_id enabled service running paused restarting started_at <<< "$
 # A prior recovery attempt plus a stopped container needs operator attention.
 # This cannot distinguish a failed start from a later intentional stop: report,
 # but never acquire authority to start a stopped container.
-if [[ "$enabled" == enabled && "$service" == neko-main && "$running" == false && "$paused" == false && "$restarting" == false && -e "$RESTART_FILE" ]]; then
+if [[ "$enabled" == enabled && "$service" == "$SERVICE" && "$running" == false && "$paused" == false && "$restarting" == false && -e "$RESTART_FILE" ]]; then
     previous=$(cat "$RESTART_FILE") || fail "Cannot read restart budget"
     read -r restart_id restart_count extra <<< "$previous" || fail "Invalid restart budget"
     [[ "$restart_count" =~ ^[0-3]$ && -z "$extra" ]] || fail "Invalid restart budget"
@@ -74,7 +78,7 @@ if [[ "$enabled" == enabled && "$service" == neko-main && "$running" == false &&
         fail "Container stopped after recorded automatic recovery; inspect startup failure or intentional stop; no start attempted (use disabled for maintenance)"
     fi
 fi
-if [[ "$enabled" != enabled || "$service" != neko-main || "$running" != true || "$paused" != false || "$restarting" != false ]]; then
+if [[ "$enabled" != enabled || "$service" != "$SERVICE" || "$running" != true || "$paused" != false || "$restarting" != false ]]; then
     rm -f "$COUNT_FILE"
     exit 0
 fi
@@ -166,7 +170,7 @@ if (( count >= 2 )); then
         # CLI timeout does not cancel a daemon restart. Confirm the new lifecycle.
         current=$(timeout 10 docker inspect --type container -f "$METADATA_FORMAT" "$container_id" 2>/dev/null) || fail "Cannot confirm restart; counter retained"
         read -r current_id current_enabled current_service current_running current_paused current_restarting current_start <<< "$current" || fail "Invalid restart metadata"
-        if [[ "$current_id" == "$container_id" && "$current_enabled" == enabled && "$current_service" == neko-main ]] &&
+        if [[ "$current_id" == "$container_id" && "$current_enabled" == enabled && "$current_service" == "$SERVICE" ]] &&
            [[ "$current_restarting" == true || ( "$current_running" == true && "$current_start" != "$started_at" ) ]]; then
             rm -f "$COUNT_FILE"
             log "Restart observed after CLI failure; next run honors startup grace"
