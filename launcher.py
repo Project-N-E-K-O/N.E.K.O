@@ -20,7 +20,11 @@ from __future__ import annotations
 import os
 import sys
 
-from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_project_root_first
+from launcher_core.bootstrap import (
+    _ensure_utf8_filesystem_encoding,
+    _pin_project_root_first,
+    _warn_if_windows7,
+)
 
 
 if __name__ == "__main__":
@@ -64,6 +68,9 @@ if __name__ == "__main__":
 _pin_project_root_first()
 
 if __name__ == "__main__":
+    # Print before importing the runtime chain, so Windows 7 users still see
+    # the setup hints if a native dependency fails to load there.
+    _warn_if_windows7()
     # Only the real entry path needs the runtime chain; spawn children import
     # what their target needs when unpickling it.
     from launcher_core.runtime import start_launcher
