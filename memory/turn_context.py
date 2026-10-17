@@ -89,6 +89,10 @@ FALLBACK_BM25_TOP = 2
 FALLBACK_MIN_QUERY_TERMS = 6
 # Time kept back from the budget for rendering once the vector is in.
 RENDER_RESERVE_SECONDS = 0.1
+# A request that waited out its predecessor starts retrieval only with at
+# least this much budget left besides the render reserve; with less, Main
+# would drop the result while the pass kept the slot from the next turn.
+MIN_RETRIEVAL_SECONDS = 0.05
 # Distinct rare terms a memory must share when no vector can confirm it.
 RARE_TERMS_WITHOUT_VECTOR = 2
 
@@ -375,6 +379,8 @@ async def amemory_turn_context(
                 await asyncio.wait({previous}, timeout=remaining)
             if not previous.done():
                 return finish("busy")
+            if deadline - time.monotonic() - RENDER_RESERVE_SECONDS < MIN_RETRIEVAL_SECONDS:
+                return finish("busy")
         if _latest_request.get(lanlan_name) != number:
             return finish("superseded")
         return await _arecall(
@@ -440,9 +446,13 @@ async def _arecall(
             # consumes the outcome nobody reads.
             embed_task.add_done_callback(lambda task: task.cancelled() or task.exception())
 
-        bm25_pool, embedding_pool = await _aload_pools(
+        # Tracked like the worker steps: a cold load parses files in threads
+        # that a cancel cannot stop, so the slot waits for it.
+        pools = asyncio.ensure_future(_aload_pools(
             lanlan_name, fact_store, reflection_engine, persona_manager, session_started_at,
-        )
+        ))
+        track(pools)
+        bm25_pool, embedding_pool = await asyncio.shield(pools)
         if not bm25_pool:
             return finish("miss")
         if superseded():

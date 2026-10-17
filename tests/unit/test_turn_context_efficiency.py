@@ -673,3 +673,64 @@ async def test_a_request_superseded_during_cosine_scoring_stops_there(tmp_path):
     assert older_result["result"] == "superseded"
     assert calls == 2  # the newer one scored; the older stopped right after
     assert len(rendered) <= 1  # only the newer request may render
+
+
+async def test_a_cancelled_pool_load_keeps_the_slot_until_it_ends(tmp_path):
+    import contextlib
+    import threading
+
+    fact_store, reflection_engine, persona_manager = _stores(tmp_path, facts=[_fact("f1", "海底捞")])
+    facts = list(fact_store.aload_facts.return_value)
+    started, proceed = threading.Event(), threading.Event()
+
+    def cold_parse():
+        started.set()
+        proceed.wait(5)
+        return facts
+
+    async def load_facts(_name):
+        return await asyncio.to_thread(cold_parse)
+
+    fact_store.aload_facts = AsyncMock(side_effect=load_facts)
+    kwargs = dict(
+        lanlan_name="小天", text="海底捞", fact_store=fact_store,
+        reflection_engine=reflection_engine, persona_manager=persona_manager,
+        config_manager=MagicMock(), language="zh",
+    )
+    loop = asyncio.get_running_loop()
+    with patch.object(emb, "get_embedding_service", MagicMock(return_value=_no_vectors())), \
+         patch("memory.stop_names.collect_stop_names", return_value=[]):
+        first = asyncio.create_task(mtc.amemory_turn_context(budget_ms=5000, **kwargs))
+        try:
+            while not started.is_set():
+                await asyncio.sleep(0.005)
+            first.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await first
+            second = await mtc.amemory_turn_context(budget_ms=200, **kwargs)
+            assert second["result"] == "busy"
+            assert fact_store.aload_facts.await_count == 1  # no second parse
+        finally:
+            proceed.set()
+        for _ in range(500):
+            if not mtc._in_flight.get(loop):
+                break
+            await asyncio.sleep(0.01)
+        assert not mtc._in_flight.get(loop)
+
+
+async def test_a_request_left_without_budget_after_waiting_does_not_start(tmp_path):
+    fact_store, reflection_engine, persona_manager = _stores(tmp_path, facts=[_fact("f1", "海底捞")])
+    _previous, running = mtc._claim("小天")
+    loop = asyncio.get_running_loop()
+    # The predecessor ends just before this request's wait would time out:
+    # 300 ms budget, 100 ms render reserve, done at 180 ms -> 20 ms left.
+    loop.call_later(0.18, mtc._release, "小天", running)
+    with patch.object(emb, "get_embedding_service", MagicMock(return_value=_no_vectors())):
+        result = await mtc.amemory_turn_context(
+            lanlan_name="小天", text="海底捞", fact_store=fact_store,
+            reflection_engine=reflection_engine, persona_manager=persona_manager,
+            config_manager=MagicMock(), budget_ms=300, language="zh",
+        )
+    assert result["result"] == "busy"
+    fact_store.aload_facts.assert_not_awaited()
