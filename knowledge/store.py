@@ -107,6 +107,10 @@ _NAME_UNIT_RE = re.compile(
 )
 
 
+def _alnum_count(unit: str) -> int:
+    return sum(1 for ch in unit if ch.isalnum())
+
+
 class KnowledgeStoreError(Exception):
     """The index could not be used as it is; the caller rebuilds it."""
 
@@ -197,6 +201,10 @@ def count_pack_chunks(pack: KnowledgePack) -> int:
 class KnowledgeStore:
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
+        # Bumped after every write that can change the name surfaces; the
+        # longest-name cache (``_name_lengths``) is valid for one generation.
+        self._names_generation = 0
+        self._name_lengths_cache: tuple[int, tuple[int, int]] | None = None
 
     # ── connections ─────────────────────────────────────────────────
 
@@ -220,7 +228,9 @@ class KnowledgeStore:
             conn.close()
 
     @contextmanager
-    def _write(self) -> Iterator[sqlite3.Connection]:
+    def _write(self, *, names: bool = False) -> Iterator[sqlite3.Connection]:
+        """One write transaction; ``names`` marks one that may change the
+        name surfaces, so the longest-name cache is dropped once it ends."""
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -232,6 +242,8 @@ class KnowledgeStore:
             conn.execute("COMMIT")
         finally:
             conn.close()
+            if names:
+                self._names_generation += 1
 
     # ── lifecycle ───────────────────────────────────────────────────
 
@@ -260,7 +272,7 @@ class KnowledgeStore:
                     return
                 if tables:
                     raise KnowledgeStoreError("unknown_database")
-            with self._write() as conn:
+            with self._write(names=True) as conn:
                 for statement in _SCHEMA:
                     conn.execute(statement)
                 conn.execute(
@@ -275,6 +287,7 @@ class KnowledgeStore:
         for suffix in ("", "-wal", "-shm", "-journal"):
             path = self.database_path.with_name(self.database_path.name + suffix)
             path.unlink(missing_ok=True)
+        self._names_generation += 1
 
     # ── pack writes ─────────────────────────────────────────────────
 
@@ -356,7 +369,7 @@ class KnowledgeStore:
             prepared.append((entry, _entry_tokens(entry), _entry_surfaces(entry), derive_chunks(entry)))
         if should_cancel is not None and should_cancel():
             raise InterruptedError("cancelled")
-        with self._write() as conn:
+        with self._write(names=True) as conn:
             reusable: dict[str, tuple[str, bytes]] = {}
             for row in conn.execute(
                 "SELECT text_hash, model_id, vector FROM chunks"
@@ -435,7 +448,7 @@ class KnowledgeStore:
         conn.execute("DELETE FROM packs WHERE pack_id=?", (pack_id,))
 
     def delete_pack(self, pack_id: str) -> None:
-        with self._write() as conn:
+        with self._write(names=True) as conn:
             self._delete_pack_rows(conn, pack_id)
 
     def set_disabled(self, pack_id: str, title: str, disabled: bool) -> bool:
@@ -633,6 +646,28 @@ class KnowledgeStore:
             )
         ]
 
+    def _name_lengths(self) -> tuple[int, int]:
+        """Characters in the longest strict and the longest loose name surface.
+
+        Read once per names generation (a full pass over ``surfaces``), so a
+        lookup can stop extending a span past any name it could still match.
+        """
+        generation = self._names_generation
+        cached = self._name_lengths_cache
+        if cached is not None and cached[0] == generation:
+            return cached[1]
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT MAX(CASE WHEN substr(surface, 1, 2)='s:' THEN length(surface) END),"
+                " MAX(CASE WHEN substr(surface, 1, 2)='l:' THEN length(surface) END)"
+                " FROM surfaces"
+            ).fetchone()
+        lengths = (max(int(row[0] or 2) - 2, 0), max(int(row[1] or 2) - 2, 0))
+        # A write that finished while this read ran may not be in it.
+        if self._names_generation == generation:
+            self._name_lengths_cache = (generation, lengths)
+        return lengths
+
     def named_candidates(
         self,
         text: str,
@@ -648,19 +683,36 @@ class KnowledgeStore:
         character counts as one) is looked up among the strict exact-match
         keys, so a named entry is found however many keyword matches outrank
         it. The caller still applies its own naming rules to what comes back.
+
+        A span stops growing once it is longer than every strict name and
+        holds more letters and digits than every loose name (a span's loose
+        form keeps all of its letters and digits), so the work follows the
+        longest name in the index rather than ``max_name_chars``.
         """
         if not pack_ids:
             return []
         view = strict_surface(text)
-        spans = [match.span() for match in _NAME_UNIT_RE.finditer(view)]
+        units = [(match.span(), _alnum_count(match.group())) for match in _NAME_UNIT_RE.finditer(view)]
+        if not units:
+            return []
+        max_strict, max_loose = self._name_lengths()
+        if max_strict <= 0 and max_loose <= 0:
+            return []
         keys: set[str] = set()
-        for first, (start, _end) in enumerate(spans):
-            for _start, end in spans[first:]:
+        for first, ((start, _end), _alnum) in enumerate(units):
+            alnum = 0
+            for (_start, end), unit_alnum in units[first:]:
                 if end - start > max_name_chars:
                     break
+                alnum += unit_alnum
+                strict_fits = end - start <= max_strict
+                loose_fits = alnum <= max_loose
+                if not strict_fits and not loose_fits:
+                    break
                 span = view[start:end]
-                keys.add(f"s:{span}")
-                if not span.isalnum():
+                if strict_fits:
+                    keys.add(f"s:{span}")
+                if loose_fits and not span.isalnum():
                     # Separator variants ("New York" for "New-York") match
                     # by their loose form, as the naming rule accepts them.
                     loose = loose_surface(span)
