@@ -623,3 +623,53 @@ async def test_a_timed_out_knowledge_query_skips_the_other_material_type(tmp_pat
         release.set()
         patch.stopall()
         await service.stop()
+
+
+async def test_a_request_superseded_during_cosine_scoring_stops_there(tmp_path):
+    import threading
+
+    from tests.unit.test_memory_turn_context import _vectors
+
+    vector = np.ones(8, dtype=np.float32)
+    fact_store, reflection_engine, persona_manager = _stores(
+        tmp_path, facts=[_fact("f1", "用户最爱吃海底捞", vector=vector)],
+    )
+    kwargs = dict(
+        lanlan_name="小天", fact_store=fact_store, reflection_engine=reflection_engine,
+        persona_manager=persona_manager, config_manager=MagicMock(), language="zh",
+    )
+    started, proceed = threading.Event(), threading.Event()
+    real = mtc._score
+    calls = 0
+
+    def slow_score(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            proceed.wait(5)
+        return real(*args)
+
+    rendered = []
+    real_render = mtc._render
+
+    def spy_render(picked, language):
+        rendered.append([doc.get("id") for doc in picked])
+        return real_render(picked, language)
+
+    with patch.object(mtc, "_score", slow_score), patch.object(mtc, "_render", spy_render), \
+         patch.object(emb, "get_embedding_service", MagicMock(return_value=_vectors(vector))), \
+         patch.object(mtc, "_ensure_probe_vectors", MagicMock()), \
+         patch("memory.stop_names.collect_stop_names", return_value=[]):
+        older = asyncio.create_task(mtc.amemory_turn_context(text="海底捞", budget_ms=5000, **kwargs))
+        try:
+            while not started.is_set():
+                await asyncio.sleep(0.005)
+            newer = asyncio.create_task(mtc.amemory_turn_context(text="周末吃海底捞", budget_ms=5000, **kwargs))
+            await asyncio.sleep(0.01)
+        finally:
+            proceed.set()
+        older_result, _newer_result = await asyncio.gather(older, newer)
+    assert older_result["result"] == "superseded"
+    assert calls == 2  # the newer one scored; the older stopped right after
+    assert len(rendered) <= 1  # only the newer request may render

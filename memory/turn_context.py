@@ -508,6 +508,8 @@ async def _arecall(
         if query_vector is not None and model_id:
             dim = parse_dim_from_model_id(model_id) or int(query_vector.size)
             matrix, rows = await in_worker(_pool_matrix, embedding_pool, model_id, dim)
+            if superseded():
+                return finish("superseded")
             if matrix is not None and matrix.shape[1] == query_vector.size:
                 probes = _probes.get(model_id)
                 # The same pool (ids and embedded texts) has the same background.
@@ -520,6 +522,8 @@ async def _arecall(
                 sims, background = await in_worker(
                     _score, matrix, query_vector, probes, cache_key,
                 )
+                if superseded():
+                    return finish("superseded")
                 cosine = sorted(zip(rows, sims.tolist()), key=lambda pair: -pair[1])
                 if background is not None:
                     thresholds = passive_thresholds(
@@ -572,6 +576,8 @@ async def _arecall(
         picked = [doc for _strength, _score, doc in ranked[:TURN_CONTEXT_MAX_ITEMS_PER_KIND]]
         if not picked:
             return finish("miss", mode=mode)
+        if superseded():
+            return finish("superseded")
         context, tokens = await in_worker(_render, picked, language)
         if not context:
             return finish("miss", mode=mode)
