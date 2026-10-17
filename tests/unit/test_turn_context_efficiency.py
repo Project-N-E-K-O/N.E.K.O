@@ -495,10 +495,54 @@ async def test_a_request_still_running_past_the_budget_reads_as_busy(tmp_path):
         fact_store.aload_facts.assert_not_awaited()
 
         mtc._release("小天", running)
-        for _ in range(3):  # each link of the chain releases on its own loop pass
+        for _ in range(50):  # each link of the chain releases on its own loop pass
+            if not mtc._in_flight.get(asyncio.get_running_loop()):
+                break
             await asyncio.sleep(0)
         assert not mtc._in_flight.get(asyncio.get_running_loop())
         third = await mtc.amemory_turn_context(budget_ms=1000, **kwargs)
     assert third["result"] != "busy"
     fact_store.aload_facts.assert_awaited()
     assert not mtc._in_flight.get(asyncio.get_running_loop())
+
+
+async def test_a_cancelled_request_keeps_its_slot_until_its_thread_ends(tmp_path):
+    import contextlib
+    import threading
+
+    fact_store, reflection_engine, persona_manager = _stores(tmp_path, facts=[_fact("f1", "海底捞")])
+    kwargs = dict(
+        lanlan_name="小天", text="海底捞", fact_store=fact_store,
+        reflection_engine=reflection_engine, persona_manager=persona_manager,
+        config_manager=MagicMock(), language="zh",
+    )
+    started, proceed = threading.Event(), threading.Event()
+    real = hr._bm25_scores
+
+    def slow_scores(*args, **kw):
+        started.set()
+        proceed.wait(5)
+        return real(*args, **kw)
+
+    loop = asyncio.get_running_loop()
+    with patch.object(hr, "_bm25_scores", slow_scores), \
+         patch.object(emb, "get_embedding_service", MagicMock(return_value=_no_vectors())), \
+         patch("memory.stop_names.collect_stop_names", return_value=[]):
+        first = asyncio.create_task(mtc.amemory_turn_context(budget_ms=5000, **kwargs))
+        while not started.is_set():
+            await asyncio.sleep(0.005)
+        first.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await first
+        # The cancelled request's BM25 thread still runs: no second pass yet.
+        second = await mtc.amemory_turn_context(budget_ms=200, **kwargs)
+        assert second["result"] == "busy"
+
+        proceed.set()
+        for _ in range(500):
+            if not mtc._in_flight.get(loop):
+                break
+            await asyncio.sleep(0.01)
+        assert not mtc._in_flight.get(loop)
+        third = await mtc.amemory_turn_context(budget_ms=1000, **kwargs)
+    assert third["result"] != "busy"

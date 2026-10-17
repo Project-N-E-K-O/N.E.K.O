@@ -133,17 +133,24 @@ def _release(lanlan_name: str, finished: asyncio.Future) -> None:
         del per_loop[lanlan_name]
 
 
-def _release_after(previous: asyncio.Future, lanlan_name: str, finished: asyncio.Future) -> None:
-    """Release ``finished`` only once ``previous`` is done.
+def _release_after(
+    running: list[asyncio.Future], lanlan_name: str, finished: asyncio.Future
+) -> None:
+    """Release ``finished`` only once everything in ``running`` is done.
 
-    A request that gave up waiting (``busy``) did no work of its own, but the
-    one it waited for still runs: its slot stays taken until that one ends, so
-    the next request waits for it too instead of starting a pass alongside.
+    Work this request can no longer stop still holds the slot: the request
+    it gave up waiting for (``busy``), or its own worker-thread pass when the
+    request itself was cancelled (a thread runs to the end regardless). The
+    next request waits for that work too instead of starting alongside it.
     """
-    if previous.done():
+    pending = [future for future in running if not future.done()]
+    if not pending:
         _release(lanlan_name, finished)
-    else:
-        previous.add_done_callback(lambda _done: _release(lanlan_name, finished))
+        return
+    # return_exceptions: the outcome is only waited on, and this also
+    # consumes an error from a worker whose request is gone.
+    waiter = asyncio.gather(*pending, return_exceptions=True)
+    waiter.add_done_callback(lambda _done: _release(lanlan_name, finished))
 
 
 def _is_cjk(ch: str) -> bool:
@@ -350,6 +357,15 @@ async def amemory_turn_context(
     number = next(_request_numbers)
     _latest_request[lanlan_name] = number
     previous, finished = _claim(lanlan_name)
+    workers: list[asyncio.Future] = []
+
+    async def in_worker(fn, /, *args, **kwargs):
+        """``asyncio.to_thread``, tracked: a cancelled request keeps its slot
+        until the thread it started has finished."""
+        work = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        workers.append(work)
+        return await asyncio.shield(work)
+
     try:
         if previous is not None and not previous.done():
             # The request still running is superseded now and stops at its
@@ -373,14 +389,13 @@ async def amemory_turn_context(
             session_started_at=session_started_at,
             superseded=lambda: _latest_request.get(lanlan_name) != number,
             finish=finish,
+            in_worker=in_worker,
         )
     finally:
-        if previous is not None and not previous.done():
-            # Gave up waiting (busy, or cancelled): the slot stays taken
-            # until the request still running ends.
-            _release_after(previous, lanlan_name, finished)
-        else:
-            _release(lanlan_name, finished)
+        # Gave up waiting (busy), or cancelled mid-pass: the slot stays taken
+        # until the request still running, and this one's own thread, end.
+        running = [future for future in (previous, *workers) if future is not None]
+        _release_after(running, lanlan_name, finished)
 
 
 async def _arecall(
@@ -396,12 +411,14 @@ async def _arecall(
     session_started_at: datetime | None,
     superseded,
     finish,
+    in_worker,
 ) -> dict[str, Any]:
     """The body of ``amemory_turn_context``, once the previous request is done.
 
     ``superseded()`` turns true once a newer request for the same character
     has arrived: Main has already dropped this one, so it stops at the next
-    checkpoint instead of finishing work nobody will read.
+    checkpoint instead of finishing work nobody will read. Thread work goes
+    through ``in_worker`` so the slot outlives a cancelled request's thread.
     """
     embed_task: asyncio.Task[Any] | None = None
     try:
@@ -430,7 +447,7 @@ async def _arecall(
         except Exception:  # noqa: BLE001
             stop_names = []
 
-        bm25_ranked = await asyncio.to_thread(_bm25_scores, query, bm25_pool, stop_names=stop_names)
+        bm25_ranked = await in_worker(_bm25_scores, query, bm25_pool, stop_names=stop_names)
         if superseded():
             return finish("superseded")
         bm25_scored = [(doc, score) for doc, score, _tf in bm25_ranked]
@@ -484,7 +501,7 @@ async def _arecall(
         cosine: list[tuple[dict, float]] = []
         if query_vector is not None and model_id:
             dim = parse_dim_from_model_id(model_id) or int(query_vector.size)
-            matrix, rows = await asyncio.to_thread(_pool_matrix, embedding_pool, model_id, dim)
+            matrix, rows = await in_worker(_pool_matrix, embedding_pool, model_id, dim)
             if matrix is not None and matrix.shape[1] == query_vector.size:
                 probes = _probes.get(model_id)
                 # The same pool (ids and embedded texts) has the same background.
@@ -494,7 +511,7 @@ async def _arecall(
                         (doc.get('id'), doc.get('embedding_text_sha256')) for doc in rows
                     )),
                 )
-                sims, background = await asyncio.to_thread(
+                sims, background = await in_worker(
                     _score, matrix, query_vector, probes, cache_key,
                 )
                 cosine = sorted(zip(rows, sims.tolist()), key=lambda pair: -pair[1])
@@ -549,7 +566,7 @@ async def _arecall(
         picked = [doc for _strength, _score, doc in ranked[:TURN_CONTEXT_MAX_ITEMS_PER_KIND]]
         if not picked:
             return finish("miss", mode=mode)
-        context, tokens = await asyncio.to_thread(_render, picked, language)
+        context, tokens = await in_worker(_render, picked, language)
         if not context:
             return finish("miss", mode=mode)
         return finish("matched", picked=picked, context=context, tokens=tokens, mode=mode)
