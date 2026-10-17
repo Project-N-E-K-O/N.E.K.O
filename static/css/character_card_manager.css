@@ -7010,6 +7010,10 @@ margin-top: 10px;
     background: linear-gradient(135deg, #6f8fbf, #8aaad9);
 }
 
+.card-meta-origin-badge.origin-molili {
+    background: linear-gradient(135deg, #9b6fd8, #b28ae6);
+}
+
 .card-meta-placeholder {
     text-align: center;
     color: #aaa;

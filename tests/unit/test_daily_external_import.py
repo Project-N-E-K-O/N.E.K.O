@@ -4,6 +4,8 @@ import pytest
 
 from memory.facts import FactStore
 
+TRANSPORT = object()  # stub sentinel: extraction failed on transport, not output
+
 
 class _DailyHarness(FactStore):
     """Minimal FactStore stand-in exercising aimport_external_daily.
@@ -43,13 +45,25 @@ class _DailyHarness(FactStore):
 
     async def _allm_extract_facts(
         self, lanlan_name, messages, *, treat_malformed_as_failure=False,
+        parse_max_retries: int = 3, failure_info=None, before_attempt=None,
     ):
+        if before_attempt is not None:
+            await before_attempt()
         text = "\n".join(getattr(m, "content", "") for m in messages)
         self.extract_inputs.append(text)
         result = self._stub(text)
+        # 桩返回 TRANSPORT = 网络/限流类失败；其余 None 按输出截断（parse）处理
+        if result is TRANSPORT:
+            if failure_info is not None:
+                failure_info["reason"] = "transport"
+            return None
+        if result is None and failure_info is not None:
+            failure_info["reason"] = "parse"
         # 忠实模拟真实 _allm_extract_facts 的非数组处理：daily 传 strict → None
         # （畸形当失败天，可重试），非 strict → []（对话路径容忍）。
         if result is not None and not isinstance(result, list):
+            if treat_malformed_as_failure and failure_info is not None:
+                failure_info["reason"] = "schema"
             return None if treat_malformed_as_failure else []
         return result
 
@@ -660,6 +674,35 @@ async def test_malformed_array_without_objects_is_failed_day():
 
 
 @pytest.mark.asyncio
+async def test_mixed_array_with_malformed_elements_is_failed_day():
+    # wehos 14：数组混有非 object 元素（[{"text": ...}, "junk"]）旧行为只留 dict
+    # 整批接受、当天指纹照记——被丢元素的内容重导时被指纹 skip，永远补不回。
+    # 与「无 object 数组」同口径：strict 失败天（split 兜底），不 checkpoint sidecar。
+    harness = _DailyHarness(lambda journal: [{"text": "real fact", "importance": 5}, "junk"])
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert harness.state_fps == set()             # 混合元素不 checkpoint
+
+
+@pytest.mark.asyncio
+async def test_dict_without_text_is_failed_day_not_silent_drop():
+    # coderabbit：[{"text": "ok"}, {"fact": "..."}] 两个都是 dict，旧行为整批
+    # 接受——persist 对缺有效 text 的 dict 直接 continue 丢弃，整天指纹却打在
+    # 收下的那条上，被丢元素重导时被指纹 skip、永远补不回。与「无 object 数组」
+    # 同口径：strict 失败天（split 兜底），不 checkpoint sidecar。
+    harness = _DailyHarness(
+        lambda journal: [{"text": "real fact", "importance": 5}, {"fact": "missing text field"}]
+    )
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert harness.state_fps == set()             # 缺 text 的 dict 不 checkpoint
+
+
+@pytest.mark.asyncio
 async def test_persist_failure_clears_concurrent_sidecar():
     # Codex：persist 抛异常时也清该天 sidecar（并发空抽取先写下的），否则残留成
     # 唯一载体、压制用户重试 skip 未变日记而永不落盘。
@@ -868,3 +911,196 @@ async def test_sidecar_non_utf8_file_degrades_to_empty(tmp_path):
     # 且下一次 record 原子重建文件。
     await harness._arecord_unpersisted_day_fp("Neko", "fp-new")
     assert await harness._aload_imported_day_fps("Neko") == {"fp-new"}
+
+
+@pytest.mark.asyncio
+async def test_daily_truncated_batch_splits_in_half_and_recovers():
+    """Batch failure (simulated output truncation) -> split in half recursively -> the day still succeeds.
+
+    Real shape: a 29-fragment day's extraction JSON hits the 4096 output guard
+    and truncates; same-batch blind retries re-truncate identically. After the
+    split each half converges. Stub policy: batches with >=3 lines are judged
+    oversized and return None; otherwise one fact per line -- asserting all 4
+    fragments of the day end up persisted."""
+    def stub(journal):
+        lines = [line for line in journal.splitlines() if line.strip()]
+        if len(lines) >= 3:
+            return None  # 模拟截断：大批必炸
+        return [{"text": f"fact: {journal}", "importance": 5}]
+
+    harness = _DailyHarness(stub)
+    candidates = _daily(
+        "memories/2026-09-16.md", "2026-09-16",
+        "event A", "event B", "event C", "event D",
+    )
+
+    result = await harness.aimport_external_daily(
+        "Neko", candidates, "molili", "2026-09-17T00:00:00",
+    )
+
+    assert result["failed_days"] == 0
+    # 拆半后的两个半批各自成功；桩每批出 1 条 fact（批=2 片段的拼接文本）
+    assert result["added"] == 2
+    # 1 次失败批 + 拆半后的 2 次成功批
+    assert len(harness.extract_inputs) == 3
+    all_persisted = [f for batch in harness.persisted for f in batch]
+    assert {f["text"] for f in all_persisted} == {
+        "fact: event A\nevent B", "fact: event C\nevent D",
+    }
+
+
+@pytest.mark.asyncio
+async def test_daily_progress_callback_reports_total_and_done():
+    """on_progress reports the batch total first, then done+1 per completed batch (progress-bar data contract)."""
+    updates = []
+
+    def stub(journal):
+        return [{"text": f"fact: {journal}", "importance": 5}]
+
+    harness = _DailyHarness(stub)
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", "a", "b", "c")
+
+    await harness.aimport_external_daily(
+        "Neko", candidates, "molili", "t", on_progress=updates.append,
+    )
+
+    assert updates[0] == {"daily_total": 1, "daily_done": 0}
+    assert updates[-1]["daily_done"] == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_split_recursion_is_bounded_by_call_budget(monkeypatch):
+    """Split-in-half retries draw from a shared extra-call budget; once spent, the day fails (retryable) instead of recursing."""
+    import memory.facts as facts_module
+
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_MAX_FILES", 2)
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
+
+    def stub(journal):
+        lines = [line for line in journal.splitlines() if line.strip()]
+        return None if len(lines) >= 2 else [{"text": f"fact: {journal}", "importance": 5}]
+
+    harness = _DailyHarness(stub)
+    candidates = _daily("memories/2026-09-16.md", "2026-09-16", "A", "B", "C", "D")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "molili", "t")
+
+    # 预算 2 = 只够拆一次：4 片批失败 → 拆半；左半 2 片再失败时预算已空 → 整天失败
+    assert result["failed_days"] == 1
+    assert len(harness.extract_inputs) == 2
+    assert harness.persisted == []
+
+
+class _FakeResponse:
+    def __init__(self, content):
+        self.content = content
+
+
+def _retry_harness(monkeypatch, outcomes):
+    """FactStore whose chat LLM yields ``outcomes`` in order (exception instances are raised)."""
+    import utils.llm_client as llm_client
+
+    calls = {"n": 0}
+
+    class _FakeLLM:
+        async def ainvoke(self, _prompt):
+            outcome = outcomes[calls["n"]]
+            calls["n"] += 1
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return _FakeResponse(outcome)
+
+        async def aclose(self):
+            return None
+
+    async def fake_create_chat_llm_async(*_args, **_kwargs):
+        return _FakeLLM()
+
+    class _Config:
+        async def aget_model_api_config(self, _tier):
+            return {"model": "m", "base_url": "http://127.0.0.1", "api_key": "k"}
+
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fake_create_chat_llm_async)
+    store = FactStore()
+    store._config_manager = _Config()
+    return store, calls
+
+
+@pytest.mark.asyncio
+async def test_parse_retry_cap_keeps_transport_retries(monkeypatch):
+    """parse_max_retries=1 stops after one malformed reply but still retries a connection error."""
+    import httpx
+    from openai import APIConnectionError
+
+    error = APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1"))
+    store, calls = _retry_harness(monkeypatch, [error, '[{"text": "ok"}]'])
+    result = await store._allm_call_with_retries(
+        "prompt", "Neko", tier="t", call_type="c", parse_max_retries=1,
+    )
+    assert result == [{"text": "ok"}]
+    assert calls["n"] == 2
+
+    store, calls = _retry_harness(monkeypatch, ["{not json at all", '[{"text": "late"}]'])
+    result = await store._allm_call_with_retries(
+        "prompt", "Neko", tier="t", call_type="c", parse_max_retries=1,
+    )
+    assert result is None
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_transport_failure_is_not_split(monkeypatch):
+    """A batch that failed on transport after its retries fails the day without splitting into more calls."""
+    import memory.facts as facts_module
+
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
+    harness = _DailyHarness(lambda _journal: TRANSPORT)
+    candidates = _daily("memories/2026-09-16.md", "2026-09-16", "A", "B", "C", "D")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "molili", "t")
+
+    assert result["failed_days"] == 1
+    assert len(harness.extract_inputs) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_wrapper_reports_failure_reason(monkeypatch):
+    """failure_info tells parse failures apart from transport failures."""
+    import httpx
+    from openai import APIConnectionError
+
+    store, _calls = _retry_harness(monkeypatch, ["{not json"])
+    info: dict = {}
+    assert await store._allm_call_with_retries(
+        "p", "Neko", tier="t", call_type="c", parse_max_retries=1, failure_info=info,
+    ) is None
+    assert info == {"reason": "parse"}
+
+    error = APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1"))
+    store, _calls = _retry_harness(monkeypatch, [error])
+    info = {}
+    assert await store._allm_call_with_retries(
+        "p", "Neko", tier="t", call_type="c", max_retries=1, failure_info=info,
+    ) is None
+    assert info == {"reason": "transport"}
+
+
+@pytest.mark.asyncio
+async def test_retry_wrapper_runs_before_attempt_hook_for_every_attempt(monkeypatch):
+    """The pacing hook runs before each provider attempt, including transport retries."""
+    import httpx
+    from openai import APIConnectionError
+
+    error = APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1"))
+    store, calls = _retry_harness(monkeypatch, [error, '[{"text": "ok"}]'])
+    hook_calls = []
+
+    async def hook():
+        hook_calls.append(calls["n"])
+
+    result = await store._allm_call_with_retries(
+        "p", "Neko", tier="t", call_type="c", before_attempt=hook,
+    )
+    assert result == [{"text": "ok"}]
+    # 每次请求前各跑一次：第 1 次请求前 n=0，重试前 n=1
+    assert hook_calls == [0, 1]

@@ -64,7 +64,7 @@ class _FakeFactStore:
     async def _apersist_new_facts(self, name, extracted, *, default_source, semantic_dedup):
         return []
 
-    async def aimport_external_daily(self, name, candidates, source_format, imported_at):
+    async def aimport_external_daily(self, name, candidates, source_format, imported_at, on_progress=None):
         if isinstance(self.daily_outcome, Exception):
             raise self.daily_outcome
         return self.daily_outcome
@@ -162,6 +162,7 @@ async def test_daily_extraction_keeps_request_locale(wire):
             candidates,
             source_format,
             imported_at,
+            on_progress=None,
         ):
             self.language = get_global_language_full()
             return await super().aimport_external_daily(
@@ -253,6 +254,7 @@ async def test_external_import_prefers_durable_then_render_without_persisting_fa
             candidates,
             source_format,
             imported_at,
+            on_progress=None,
         ):
             observed_languages["daily"] = get_global_language_full()
             return await super().aimport_external_daily(
@@ -452,7 +454,10 @@ class _DailyConcurrencyHarness(FactStore):
         # mkdir 幽灵角色目录。
         return None
 
-    async def _allm_extract_facts(self, lanlan_name, messages, **_kwargs):
+    async def _allm_extract_facts(self, lanlan_name, messages, *, before_attempt=None, **_kwargs):
+        # 忠实模拟真实路径：礼貌间隔挂在每次实际请求前
+        if before_attempt is not None:
+            await before_attempt()
         text = "\n".join(getattr(m, "content", "") for m in messages)
         return await self._extract(text)
 
@@ -496,11 +501,16 @@ async def test_daily_days_extract_concurrently():
 
 
 @pytest.mark.asyncio
-async def test_daily_concurrency_is_bounded_by_semaphore():
+async def test_daily_concurrency_is_bounded_by_semaphore(monkeypatch):
     # 交叉握手只证明「能并行」；无界 gather 同样能过。这里用活跃计数器证明
     # 峰值并发被 Semaphore 钉在 EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY 以内
     # （误删限流时本测试变红），同时峰值 ≥2 佐证确实在并发（CodeRabbit）。
     from config import EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY
+    import memory.facts as facts_module
+
+    # 本测试目标是 Semaphore 峰值；礼貌间隔会把起呼摊成匀速、与信号量无关，
+    # 置 0 隔离变量。
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0.0)
 
     active = 0
     peak = 0
@@ -546,3 +556,30 @@ async def test_daily_crashing_day_is_counted_failed_and_others_survive():
 
     assert result == {"added": 1, "days": 2, "failed_days": 1, "skipped_days": 0}
     assert len(harness.persisted) == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_polite_gap_spaces_call_starts(monkeypatch):
+    # 礼貌间隔：全局任意两次抽取起呼间隔 ≥ interval，把突发摊成匀速
+    # （免费档 WAF 配额友好）。间隔 ≫ 单批耗时时并发自然失效，是设计使然。
+    import memory.facts as facts_module
+
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0.2)
+    starts = []
+
+    async def extract(text):
+        starts.append(asyncio.get_running_loop().time())
+        return [{"text": "ok", "importance": 5}]
+
+    harness = _DailyConcurrencyHarness(extract)
+    days = [
+        _daily("memories/2026-07-%02d.md" % (10 + i), "2026-07-%02d" % (10 + i), f"day-{i}")
+        for i in range(6)
+    ]
+    await asyncio.wait_for(
+        harness.aimport_external_daily("Neko", days, "hermes", "t"), timeout=10,
+    )
+
+    assert len(starts) == 6
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert all(g >= 0.15 for g in gaps)

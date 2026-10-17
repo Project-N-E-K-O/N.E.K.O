@@ -24,6 +24,7 @@ import re
 import secrets
 
 from config import RESERVED_FIELD_SCHEMA
+from config.character_fields import CHARACTER_LEGACY_FLAT_RESERVED_FIELDS
 from utils.voice_config import read_legacy_voice_id
 
 
@@ -509,33 +510,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         changed |= delete_reserved(catgirl_data, "avatar", "live3d_sub_type")
 
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
-    for legacy_key in (
-        "voice_id",
-        "system_prompt",
-        "model_type",
-        "live3d_sub_type",
-        "live2d_item_id",
-        "item_id",
-        "live2d",
-        "live2d_idle_animation",
-        "vrm",
-        "vrm_animation",
-        "idleAnimation",
-        "idleAnimations",
-        "lighting",
-        "vrm_rotation",
-        "mmd",
-        "mmd_animation",
-        "mmd_idle_animation",
-        "mmd_idle_animations",
-        "pngtuber",
-        "pngtuber_idle_image",
-        "pngtuber_talking_image",
-        "pngtuber_happy_image",
-        "pngtuber_sad_image",
-        "pngtuber_angry_image",
-        "pngtuber_surprised_image",
-    ):
+    for legacy_key in CHARACTER_LEGACY_FLAT_RESERVED_FIELDS:
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
             changed = True

@@ -4293,7 +4293,8 @@
     const MEMORY_ROLE_ORIGIN_KEYS = {
         self: 'character.cardOriginSelf',
         imported: 'character.cardOriginImported',
-        steam: 'character.cardOriginSteam'
+        steam: 'character.cardOriginSteam',
+        molili: 'character.cardOriginMolili'
     };
 
     function syncMemoryRoleNameOverflow(button) {
@@ -4339,6 +4340,12 @@
                 ['circle', { cx: '17', cy: '15.5', r: '1' }]
             ],
             imported: [
+                ['path', { d: 'M12 3v12' }],
+                ['path', { d: 'm7 10 5 5 5-5' }],
+                ['path', { d: 'M5 18v2h14v-2' }]
+            ],
+            // Molili 导入与通用导入共用同一下载箭头图形（提示文案已区分来源）
+            molili: [
                 ['path', { d: 'M12 3v12' }],
                 ['path', { d: 'm7 10 5 5 5-5' }],
                 ['path', { d: 'M5 18v2h14v-2' }]
@@ -4749,7 +4756,7 @@
             // daily 日记每天一次 LLM 抽取；MEMORY.md facts 不调 LLM。
             // ⚠️ 后端两类调用都已并发执行（persona gather、daily 有界并发），但这里
             // 刻意按「全部串行」sum 估算——保守高估是产品决策（宁可提前完成也不要
-            // 卡超预估），改并发系数前先确认这一点。固定标注 240s 后端上限；
+            // 卡超预估），改并发系数前先确认这一点。固定标注 8 分钟后端上限；
             // 0 次 LLM 调用（纯 MEMORY.md 导入）不显示预估。
             const fusionCalls = Number(preview.persona_fusion_calls) || 0;
             const personaTokens = Number(preview.persona_candidate_tokens) || 0;
@@ -4758,7 +4765,7 @@
             const llmCalls = fusionCalls + dailyCalls;
             const llmTokens = personaTokens + dailyTokens;
             const etaSeconds = llmCalls > 0
-                ? Math.min(230, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
+                ? Math.min(470, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
                 : 0;
             const workingStartedAt = Date.now();
             // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
@@ -4774,7 +4781,7 @@
                     const elapsed = Math.round((Date.now() - workingStartedAt) / 1000);
                     etaText = ' ' + translate(
                         'memory.externalImportEta',
-                        'Estimated ~{{est}}s (up to 4 min) · {{elapsed}}s elapsed.',
+                        'Estimated ~{{est}}s (up to 8 min) · {{elapsed}}s elapsed.',
                         { est: etaSeconds, elapsed }
                     );
                 }
@@ -4784,7 +4791,7 @@
             if (etaSeconds > 0) {
                 etaTimer = window.setInterval(renderWorkingStatus, 1000);
             }
-            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=240s），
+            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=480s），
             // 覆盖 persona 融合的整段耗时。
             // The UI locale is only a render fallback. Read it at commit time so a
             // language switch made while reviewing the preview is not stale, and
@@ -4799,7 +4806,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
-            }, 270000);
+            }, 540000);
             // 融合网络返回即停表（成功/失败/太大都已无意义再计时）；finally 兜底覆盖
             // commit fetch 抛错（超时/网络）根本没走到这行的情况。
             if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }

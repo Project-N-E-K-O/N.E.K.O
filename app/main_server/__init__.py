@@ -100,6 +100,7 @@ import time  # noqa
 import signal  # noqa
 from datetime import datetime, timezone  # noqa
 from config import (
+    EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
     MAIN_SERVER_PORT,
     MONITOR_SERVER_PORT,
     USER_NOTIFICATION_ERROR_MAX_CHARS,
@@ -634,8 +635,14 @@ def _avatar_tool_multipart_preflight(scope):
 # 全局非 multipart 请求继续沿用 16 MiB Content-Length 守门。自定义道具
 # POST/PUT 另外在 FastAPI 解析 multipart 前完成本地访问、CSRF/origin 和聚合
 # 体积校验；receive 计数同时覆盖缺失或不可信的 Content-Length。
+# 外部记忆导入的 preview/commit 以 JSON 内嵌 base64 上传归档：按归档上限
+# 的 base64 体积（4/3）外加 1MiB JSON 余量放宽这两条精确路径，其余仍 16MiB。
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
+    json_path_limits={
+        "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+        "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+    },
     multipart_path_prefix="/api/avatar-tools",
     multipart_methods=("POST", "PUT"),
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,

@@ -297,3 +297,18 @@ def test_hermes_daily_split_on_section_delimiters():
     assert len(daily) >= 2  # split on §, not one blob
     assert any("first daily note" in t for t in texts)
     assert any("second daily note" in t for t in texts)
+
+
+def test_daily_batching_caps_fragments_per_extraction_batch():
+    # 片段数封顶（MAX_FRAGMENTS_PER_EXTRACTION_BATCH=40）是乐观上限：总调用数
+    # 更少（免费配额友好），密集批顶到 4096 输出护栏的情况由 facts 侧的拆半
+    # 递归兜底。这里只钉分批行为本身：45 片段 → 40 + 5 两批。
+    texts = [f"事件 {i}：彼此不同的记忆片段内容 {i} 号" for i in range(45)]
+    batches = _MODULE.batch_daily_fragments(texts, max_tokens=6000)
+
+    assert len(batches) == 2  # 40 + 5，按片段数拆
+    assert [len(group) for group in batches] == [40, 5]
+
+    # 稀疏日不受影响：片段少时输入 token 预算仍是唯一拆分边界，保持单批
+    sparse = [f"短片段 {i}" for i in range(5)]
+    assert len(_MODULE.batch_daily_fragments(sparse, max_tokens=6000)) == 1

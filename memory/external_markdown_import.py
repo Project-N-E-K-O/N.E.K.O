@@ -219,14 +219,27 @@ def _split_long_fragment(text: str) -> list[str]:
     return [item for item in out if item]
 
 
-def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[str]:
+#: 单次抽取批次里的片段数上限。这是**乐观上限**而非安全上限：片段更多 =
+#: 总调用数更少（免费配额友好），代价是密集批可能顶到 4096 输出护栏——
+#: 那由 facts 侧的拆半递归兜底（失败批二分重试，单片失败才弃天），所以
+#: 这里宁可大：封顶越保守，预先拆出的批越多、总调用越贵。
+MAX_FRAGMENTS_PER_EXTRACTION_BATCH = 40
+
+
+def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[list[str]]:
     """Greedily pack one day's journal fragments into extraction batches, each
-    within ``max_tokens``. Oversized single fragments are token-sliced instead
-    of truncated so no journal tail is silently dropped (Greptile P1); a slice
-    that cannot shrink further may exceed the budget by a fraction of a token
-    — acceptable for an extraction-input soft cap. Used by both the commit-side
+    within ``max_tokens`` input tokens AND
+    :data:`MAX_FRAGMENTS_PER_EXTRACTION_BATCH` fragments. Oversized single
+    fragments are token-sliced instead of truncated so no journal tail is
+    silently dropped (Greptile P1); a slice that cannot shrink further may
+    exceed the budget by a fraction of a token — acceptable for an
+    extraction-input soft cap. Used by both the commit-side
     extractor (memory/facts.py) and the preview ETA estimator so the per-day
     LLM call count never drifts between them.
+
+    Returns fragment groups (one list per extraction batch); the caller joins
+    each group into the extraction turn. Groups (not joined strings) so a
+    failed batch can be split in half adaptively without re-parsing.
 
     Deliberately imports the tokenizer lazily: this module stays stdlib-only
     for parsing; only batch estimation needs token counting.
@@ -246,18 +259,21 @@ def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[str]:
         if fragment:
             pieces.append(fragment)
 
-    batches: list[str] = []
+    batches: list[list[str]] = []
     current: list[str] = []
     current_tokens = 0
     for piece in pieces:
         piece_tokens = count_tokens(piece)
-        if current and current_tokens + piece_tokens > max_tokens:
-            batches.append("\n".join(current))
+        if current and (
+            current_tokens + piece_tokens > max_tokens
+            or len(current) >= MAX_FRAGMENTS_PER_EXTRACTION_BATCH
+        ):
+            batches.append(current)
             current, current_tokens = [], 0
         current.append(piece)
         current_tokens += piece_tokens
     if current:
-        batches.append("\n".join(current))
+        batches.append(current)
     return batches
 
 

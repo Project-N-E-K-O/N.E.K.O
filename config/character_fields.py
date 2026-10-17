@@ -60,6 +60,37 @@ CHARACTER_RESERVED_FIELDS = tuple(
 )
 
 
+# COMPAT(v1->v2): 迁入 _reserved 之前的旧平铺字段名。迁移时这些顶层键会被当作
+# 旧配置收进 _reserved 并从角色档案里删掉，所以任何写入角色档案的普通字段
+# （例如外部导入按标题拆出的分节字段）都不能用这些名字。
+CHARACTER_LEGACY_FLAT_RESERVED_FIELDS = (
+    "voice_id",
+    "system_prompt",
+    "model_type",
+    "live3d_sub_type",
+    "live2d_item_id",
+    "item_id",
+    "live2d",
+    "live2d_idle_animation",
+    "vrm",
+    "vrm_animation",
+    "idleAnimation",
+    "idleAnimations",
+    "lighting",
+    "vrm_rotation",
+    "mmd",
+    "mmd_animation",
+    "mmd_idle_animation",
+    "mmd_idle_animations",
+    "pngtuber",
+    "pngtuber_idle_image",
+    "pngtuber_talking_image",
+    "pngtuber_happy_image",
+    "pngtuber_sad_image",
+    "pngtuber_angry_image",
+    "pngtuber_surprised_image",
+)
+
 def get_character_reserved_fields() -> tuple[str, ...]:
     """Return the reserved character-profile fields (deduplicated, ordered)."""
     return CHARACTER_RESERVED_FIELDS

@@ -581,6 +581,28 @@ class ExternalMemoryImportRequest(BaseModel):
     render_language: str | None = None
 
 
+# ── 外部导入进度登记（Molili/前端进度条轮询用） ────────────────────────────
+# character → {stage, persona_total/done, daily_total/done, finished, ...}。
+# 写入点：_import_external_markdown（注册/融合/收尾）与 aimport_external_daily
+# 的 on_progress 回调（每完成一批）。单角色一条、条目极小，不设淘汰；
+# async 单线程事件循环内读写，无需加锁。每次导入持有自己的条目对象、只改
+# 自己那份：同一角色的重叠请求（前端超时后重试）由后来者覆盖登记，先跑完的
+# 旧请求不会把新请求的条目标成 finished，也不会往里写计数。
+_IMPORT_PROGRESS: dict[str, dict] = {}
+
+
+@app.get("/internal/memory/import_progress/{character_name}")
+async def get_import_progress(character_name: str):
+    """External import progress for the Molili import progress bar.
+
+    Pure in-memory counter read: no IO."""
+    name = validate_lanlan_name(character_name)
+    entry = _IMPORT_PROGRESS.get(name)
+    if entry is None:
+        return {'success': True, 'active': False}
+    return {'success': True, 'active': not bool(entry.get('finished')), **entry}
+
+
 @app.post("/internal/memory/import_external_markdown")
 async def import_external_markdown(request: ExternalMemoryImportRequest):
     """Join the per-character admission ledger, then run the import.
@@ -598,13 +620,18 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             {"status": "cancelled", "message": "character release in progress"},
             status_code=409,
         )
+    progress: dict = {}
     try:
-        return await _import_external_markdown(request)
+        return await _import_external_markdown(request, progress)
     finally:
         runtime._end_character_request(name, context_token)
+        progress['finished'] = True
 
 
-async def _import_external_markdown(request: ExternalMemoryImportRequest):
+async def _import_external_markdown(
+    request: ExternalMemoryImportRequest,
+    progress: dict | None = None,
+):
     """Persist already-previewed OpenClaw/Hermes entries via live managers.
 
     The persona and facts persistence paths are **asymmetric**, because their
@@ -629,7 +656,7 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     batch / changed -> replace-then-fuse).
     """
     name = validate_lanlan_name(request.character_name)
-    if request.source_format not in {"openclaw", "hermes"}:
+    if request.source_format not in {"openclaw", "hermes", "molili"}:
         raise HTTPException(status_code=400, detail="Invalid source_format")
     if not request.candidates or len(request.candidates) > MAX_ENTRIES:
         raise HTTPException(status_code=400, detail="Invalid candidate count")
@@ -725,6 +752,20 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     # entity 只改写自己的 section（CAS 校验的也是本 entity 的指纹集合），慢的
     # Phase 2（LLM）不持锁——两个 entity 真正并行的只有 LLM 往返，落盘互斥。
     persona_entities = list(persona_candidates_by_entity.items())
+
+    # 进度登记：persona 按 entity 计数，daily 的计数由 on_progress 回调补
+    if progress is None:
+        progress = {}
+    _IMPORT_PROGRESS[name] = progress
+    progress.update({
+        'stage': 'persona',
+        'persona_total': len(persona_entities),
+        'persona_done': 0,
+        'daily_total': 0,
+        'daily_done': 0,
+        'finished': False,
+        'started_at': imported_at,
+    })
     # Browser imports deliberately omit ``language``. Resolve the durable
     # character preference at execution time so a preference changed while the
     # user was reading/confirming the preview cannot be overwritten by a stale
@@ -736,11 +777,16 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
         render_language=request.render_language,
     )
     with language_context(memory_language):
+        async def _fuse_and_mark(entity: str, entity_candidates: list[dict]):
+            outcome = await runtime.persona_manager.afuse_external_facts(
+                name, entity, entity_candidates, request.source_format,
+            )
+            progress['persona_done'] = progress.get('persona_done', 0) + 1
+            return outcome
+
         fusion_outcomes = await asyncio.gather(
             *(
-                runtime.persona_manager.afuse_external_facts(
-                    name, entity, entity_candidates, request.source_format,
-                )
+                _fuse_and_mark(entity, entity_candidates)
                 for entity, entity_candidates in persona_entities
             ),
             return_exceptions=True,
@@ -829,8 +875,13 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     if daily_candidates:
         try:
             with language_context(memory_language):
+                def _on_daily_progress(update: dict) -> None:
+                    progress.update(update)
+                    progress['stage'] = 'daily'
+
                 daily_result = await runtime.fact_store.aimport_external_daily(
                     name, daily_candidates, request.source_format, imported_at,
+                    on_progress=_on_daily_progress,
                 )
         except ExternalMemoryImportTooLargeError as exc:
             # 确定性超限（真正要抽取的日记天数超 cap）：重试同一份必然再超 →

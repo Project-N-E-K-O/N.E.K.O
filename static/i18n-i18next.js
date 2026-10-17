@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Refresh all eight locales after merging voice activation feedback and turn context.
-    const LOCALE_VERSION = '2026-10-17-pr3441-main-rebase';
+    // Molili 归档导入（PR #3447）新增导入提示文案，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-17-pr3447-molili-reentry-guard';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
