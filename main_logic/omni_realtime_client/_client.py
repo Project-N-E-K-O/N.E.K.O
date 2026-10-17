@@ -23,6 +23,7 @@ from ._shared import (
     OMNI_RECENT_RESPONSES_MAX,
     OnToolCallCallback,
     Optional,
+    ToolCall,
     ToolDefinition,
     TurnDetectionMode,
     VisualDeliveryMode,
@@ -535,6 +536,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # the wire-format snapshots are rebuilt from it on each connect/
         # update_session so callers can mutate the list at any time.
         self.on_tool_call: Optional[OnToolCallCallback] = on_tool_call
+        # Internal, synchronous provenance observer. Acceptance is recorded
+        # before execution is scheduled, even when the provider terminal wins
+        # the event loop race against the actual tool task.
+        self.on_tool_call_accepted: Optional[Callable[[ToolCall], None]] = None
         self._tool_definitions: List[ToolDefinition] = list(tool_definitions or [])
         # Provider behaviour matrix:
         #   gpt   → flat schema, response.done has output[].type=function_call

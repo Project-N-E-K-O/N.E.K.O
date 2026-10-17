@@ -28,6 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
+from services.chat_sync.source import is_chat_input_source, mark_turn_origin
 from utils.external_route_registry import RouteClaim
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
@@ -887,6 +888,14 @@ class StreamingMixin:
                             speech_id=new_user_sid,
                             request_id=text_request_id,
                         )
+                        # Record consumed tool context as provenance, even when
+                        # this reply also contains ordinary conversation. Current
+                        # sync policy stores the whole mixed reply locally; later
+                        # tool sync must change the policy, not disguise its origin.
+                        if not is_chat_input_source(message_source):
+                            mark_turn_origin(self, new_user_sid, 'system')
+                        elif _agent_cb_ctx:
+                            mark_turn_origin(self, new_user_sid, 'agent')
                         # Path A (inline) Focus 凝神：score this user message and, if
                         # over the bar, run THIS reply thinking-on. Scored on
                         # ``record_data`` (= memory_text or data) — the user-VISIBLE
@@ -930,23 +939,29 @@ class StreamingMixin:
                         ) -> None:
                             await self.handle_response_complete(reply_turn=_reply_turn)
 
-                        input_transcript_callback = None
-                        if memory_text:
-                            transcript_metadata = {"source": message_source} if message_source else None
+                        transcript_metadata = {"source": message_source} if memory_text and message_source else None
 
-                            async def input_transcript_callback(
-                                _transcript: str,
-                                *,
-                                _memory_text: str = memory_text,
-                                _message_source: str = message_source,
-                                _transcript_metadata: dict | None = transcript_metadata,
-                            ) -> None:
-                                await self.handle_input_transcript(
-                                    _memory_text,
-                                    is_voice_source=False,
-                                    source=_message_source,
-                                    metadata=_transcript_metadata,
-                                )
+                        async def input_transcript_callback(
+                            _transcript: str,
+                            *,
+                            _memory_text: str = record_data,
+                            _message_source: str = message_source if memory_text else '',
+                            _transcript_metadata: dict | None = transcript_metadata,
+                            _request_id=text_request_id,
+                            _original_text: str = record_data,
+                            _original_source: str = message_source,
+                        ) -> None:
+                            # Keep complete visible input; the provider strips its callback argument.
+                            # Raw origin is separate so ordinary memory metadata stays unchanged.
+                            await self.handle_input_transcript(
+                                _memory_text,
+                                is_voice_source=False,
+                                source=_message_source,
+                                metadata=_transcript_metadata,
+                                chat_original_text=_original_text,
+                                chat_request_id=_request_id,
+                                chat_input_source=_original_source,
+                            )
 
                         stream_text_kwargs = {
                             "system_prefix": _agent_cb_ctx or None,

@@ -24,6 +24,7 @@
             "storageChanged": "後端資料目錄已切換，請重新開啟頭像編輯器後再儲存。"
         }
     },
+    "chatSync": {"oversizedLocalOnly":"超過單則同步上限、只保存在本機 {{count}} 則。","setupNeedsSave":"{{name}} 的同步設定需要處理。請檢查角色後重新儲存，或開啟「更多設定」。","title":"聊天同步","serviceUrl":"同步服務 HTTPS 位址","saveService":"儲存位址","enable":"開啟同步（含歷史）","pause":"暫停本機同步","syncNow":"立即同步","clearKnown":"清空已知聊天","close":"關閉","notConfigured":"請先設定同步服務位址。","notBound":"此角色尚未關聯聊天同步。","enabled":"本機已開啟。","paused":"本機已暫停，雲端聊天保留。","pending":"已登記待上傳 {{originals}} 則；待傳送刪除 {{deletions}} 項。","working":"正在處理…","more":"仍有歷史待下載，再次同步可繼續。","passFinished":"本輪已完成，其他裝置仍可能有待同步聊天。","loginRequired":"請登入社群帳號後重試。","failed":"同步尚未完成，本機聊天和待辦均已保留。","deleteOriginal":"雙端刪除","deleteConfirm":"確定在雙端刪除這則聊天原文？","clearConfirm":"確定在雙端清空此角色目前已知的全部聊天原文？另一端隨後新增的聊天不在本次範圍內。僅儲存在本機的回覆也會在本機清空。","unknownTime":"原發生時間未知","userLabel":"你","unfinishedChat":"請等待目前回覆結束後再刪除聊天。","profileConflict":"請選擇要使用的人設版本","profileRenamePending":"確認角色改名","profileLocal":"本機版本","profileRemote":"雲端版本","profileUseLocal":"上傳本機版本","profileUseRemote":"使用雲端版本","profileRenameConfirm":"將「{{oldName}}」改名為「{{newName}}」，並使用完整雲端人設？","profileChanged":"人設已變更或同步暫不可用。兩份版本均保留，請重新查看。","profileInitialUpload":"是否上傳「{{name}}」目前的人設？","profileUploadConfirm":"是否上傳「{{name}}」剛儲存的人設？","profileUnsupported":"人設中有暫不支援同步的欄位，本機儲存已保留。","profileSaveFailed":"人設同步未完成，本機儲存與兩份版本均保留。","profileReview":"查看角色人設","profileName":"名稱","profileNickname":"暱稱","profileSetting":"原始設定","profileStyle":"說話風格","cloudImport":"從雲端新增角色","cloudEmpty":"雲端暫無角色。","cloudProfileEmpty":"這個雲端角色尚未發布人設。","cloudCreate":"在本機新增這個角色","cloudExisting":"本機已有「{{name}}」，保留其目前同步狀態。","cloudCreated":"已新增並綁定「{{name}}」。","cloudNameConflict":"本機已有同名角色，請先為本機角色改名，或取消匯入。","profileNeedsBinding":"請在角色編輯頁的「更多設定」中綁定角色。","previewHistory":"預覽以前的聊天","historyPreview":"歷史聊天補傳預覽","historyLocalRole":"本機角色：{{name}}","historyCloudRole":"目標雲端角色：{{name}}","historyCount":"本次可核驗原文：{{count}} 則","historyUnverifiedCount":"另有 {{count}} 則舊紀錄無法核驗來源，繼續保留在本機。","historyHint":"僅包含本次固定預覽中可核驗的原文。確認後由背景分批登記及上傳；後來新增的聊天使用各自的佇列。","historyEmpty":"本次預覽沒有可補傳的已核驗原文。無法核驗的舊紀錄繼續留在本機。","historyApprove":"確認補傳這些聊天","historyCancel":"取消","historyQueued":"已批准背景分批登記及上傳，仍可能有聊天尚未傳送。","historyChanged":"角色、帳號或同步狀態已變更，請重新預覽後再確認。","historyAwaitingRegistration":"已批准的歷史原文中，仍有 {{count}} 則等待本機登記。","historyUnverifiedUnknown":"尚未掃描舊紀錄；無法核驗來源的內容繼續保留在本機。","writerRecoveryRequired":"本機同步需要核驗，舊任務已暫停，本機聊天仍可繼續。","recoverWriter":"核驗並恢復同步","recoveryChecked":"核驗完成。可在角色卡開啟含歷史同步，也可確認本次聊天補傳；待傳送的雙端刪除仍需單獨確認。","recoveryDeleteConfirm":"是否在雙端繼續刪除這 {{count}} 項待傳送記錄？本機角色：{{localName}}；目標雲端角色：{{cloudName}}。取消後仍在本機隱藏。","includeHistory":"同時同步已有聊天","initialHistoryFailed":"已有聊天同步暫未完成。角色綁定已保留，可在角色編輯頁的「更多設定」中查看進度或重試。","moreOptions":"更多設定","enableHint":"同步「{{name}}」的角色資料與聊天（含歷史）。","newRoleSync":"同步角色與聊天（含歷史）","newSyncPending":"角色已儲存在本機，登入並連線後將自動同步。","newSyncFailed":"角色已儲存在本機，同步設定尚未完成。請稍後重試。","syncChoiceSaved":"角色已儲存，同步設定已更新。"},
     "instanceAccess": {"title":"連接 NEKO 實例","description":"輸入伺服器擁有者提供的實例存取憑證，此裝置將記住連接 30 天。","key":"實例存取憑證","connect":"連接","failed":"連接未獲授權，請檢查憑證後重試。","httpsRequired":"請使用 HTTPS 或可信的 HTTPS 通道安全連接。","insecureWarning":"目前連線未加密（HTTP），同一網路路徑上的人可能看到存取憑證和工作階段。條件允許時請使用 HTTPS。"},
     "common": {
         "load": "加載",
@@ -2178,7 +2179,7 @@
             "confirmTrimmed": "使用智慧裁切後的音訊"
         }
     },
-    "memory": {
+    "memory": {"chatDeleteConfirm":"將永久刪除所有同步裝置上的 {{count}} 則聊天原文，是否繼續？","chatSyncUnavailable":"聊天同步暫時無法使用，仍可編輯本機記憶。",
         "recent": "近期記憶",
         "title": "記憶瀏覽",
         "summary": "摘要",
@@ -2295,7 +2296,12 @@
         "save": "保存",
         "clear": "清空",
         "tip1": "剛剛結束的對話內容要稍等片刻才會載入，可以重新點擊貓娘名稱刷新。",
-        "tip2": "僅顯示近期記憶；長期記憶已融入貓娘內核，無法瀏覽。",
+        "tip2": "顯示聊天原文與近期記憶；長期記憶已融入貓娘核心，無法瀏覽。",
+        "chatDeletionHint": "刪除或清空後點擊儲存：聊天原文會同步刪除，本機記憶和工具回覆僅在本機刪除。",
+        "chatOriginalsSection": "雙端聊天原文",
+        "recentMemorySection": "本機近期記憶",
+        "localRepliesSection": "僅本機的工具回覆",
+        "chatDeletionPartial": "聊天刪除已登記，但本機記憶儲存失敗。請保留目前修改並重試儲存。",
         "noFiles": "無文件",
         "loadFailed": "加載失敗",
         "noChatContent": "無聊天內容",

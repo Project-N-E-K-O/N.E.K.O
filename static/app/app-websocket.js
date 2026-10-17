@@ -3312,6 +3312,17 @@
                 }
 
                 // -------- gemini_response --------
+                if (response.type === 'chat_sync_history_changed') {
+                    // Only a local committed-page hint reaches this current socket.
+                    // The sync UI reads its own cursor/history before passive merge.
+                    if (window.nekoChatSync) window.nekoChatSync.notifyHistoryCommitted(response).catch(function () {});
+                    return;
+                }
+                if (response.type === 'chat_original_identity') {
+                    // Backend identities only join optimistic UI; they never submit new chat.
+                    if (window.nekoChatSync && response.role === 'user') window.nekoChatSync.markAcceptedUser(response);
+                    return;
+                }
                 if (response.type === 'gemini_response') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant chunk after session ended by server');
@@ -3400,6 +3411,9 @@
                             assistantResponseMeta,
                             response.request_id
                         );
+                    }
+                    if (window.nekoChatSync && response.chat_original_id) {
+                        window.nekoChatSync.markAssistantOriginal(response.chat_original_id, window._nekoAssistantTurnId);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -3630,6 +3644,10 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    // Snapshot exact display IDs before this accepted voice frame is rendered.
+                    var syncVoiceHost = window.reactChatWindowHost;
+                    var syncVoiceBefore = syncVoiceHost && typeof syncVoiceHost.getState === 'function'
+                        ? new Set(syncVoiceHost.getState().messages.map(function (item) { return item.id; })) : null;
                     // user_transcript 不带轮次身份（由 main_logic/core/turn.py 发出），
                     // 这里无法配对，只能保持无条件移除；迟到 final 误删新一轮气泡的情况
                     // 由后端在 user_transcript 之后补发该轮 preview 复原
@@ -3669,6 +3687,9 @@
                     }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
+                        // A canonical transcript owns one exact display identity.
+                        // Keep separate accepted frames separate on the React host.
+                        !(response.chat_original_id && syncVoiceBefore) &&
                         S.lastVoiceUserMessage &&
                         S.lastVoiceUserMessage.isConnected &&
                         (now - S.lastVoiceUserMessageTime) < C.VOICE_TRANSCRIPT_MERGE_WINDOW;
@@ -3690,6 +3711,14 @@
                                 }
                             }
                         }
+                    }
+
+                    if (response.chat_original_id && window.nekoChatSync && syncVoiceBefore) {
+                        syncVoiceHost.getState().messages.forEach(function (item) {
+                            if (item.role === 'user' && !syncVoiceBefore.has(item.id)) {
+                                window.nekoChatSync.markLiveOriginal(response.chat_original_id, item.id);
+                            }
+                        });
                     }
 
                 // -------- user_activity --------

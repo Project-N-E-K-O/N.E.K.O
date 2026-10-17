@@ -24,6 +24,7 @@
             "storageChanged": "后端数据目录已切换，请重新打开头像编辑器后再保存。"
         }
     },
+    "chatSync": {"oversizedLocalOnly":"超过单条同步上限、只保存在本机 {{count}} 条。","setupNeedsSave":"{{name}} 的同步设置需要处理。请检查角色后重新保存，或打开“更多设置”。","title":"聊天同步","serviceUrl":"同步服务 HTTPS 地址","saveService":"保存地址","enable":"开启同步（含历史）","pause":"暂停本机同步","syncNow":"立即同步","clearKnown":"清空已知聊天","close":"关闭","notConfigured":"请先设置同步服务地址。","notBound":"此角色尚未关联聊天同步。","enabled":"本机已开启。","paused":"本机已暂停，云端聊天保留。","pending":"已登记待上传 {{originals}} 条；待发送删除 {{deletions}} 项。","working":"正在处理…","more":"仍有历史待下载，再次同步可继续。","passFinished":"本轮已完成，其他设备仍可能有待同步聊天。","loginRequired":"请登录社区账号后重试。","failed":"同步尚未完成，本地聊天和待办均已保留。","deleteOriginal":"双端删除","deleteConfirm":"确定在双端删除这条聊天原文？","clearConfirm":"确定在双端清空此角色当前已知的全部聊天原文？另一端随后新增的聊天不在本次范围内。 仅保存在本机的回复也会在本机清空。","unknownTime":"原发生时间未知","userLabel":"你","unfinishedChat":"请等待当前回复结束后再删除聊天。","profileConflict":"请选择要使用的人设版本","profileRenamePending":"确认角色改名","profileLocal":"本机版本","profileRemote":"云端版本","profileUseLocal":"上传本机版本","profileUseRemote":"使用云端版本","profileRenameConfirm":"将“{{oldName}}”改名为“{{newName}}”，并使用完整云端人设？","profileChanged":"人设已变化或同步暂不可用。两份版本均保留，请重新查看。","profileInitialUpload":"是否上传“{{name}}”当前的人设？","profileUploadConfirm":"是否上传“{{name}}”刚保存的人设？","profileUnsupported":"人设中有暂不支持同步的字段，本机保存已保留。","profileSaveFailed":"人设同步未完成，本机保存与两份版本均保留。","profileReview":"查看角色人设","profileName":"名称","profileNickname":"昵称","profileSetting":"原始设定","profileStyle":"说话风格","cloudImport":"从云端新建角色","cloudEmpty":"云端暂无角色。","cloudProfileEmpty":"这个云端角色尚未发布人设。","cloudCreate":"在本机新建这个角色","cloudExisting":"本机已有“{{name}}”，保留其当前同步状态。","cloudCreated":"已新建并绑定“{{name}}”。","cloudNameConflict":"本机已有同名角色，请先为本机角色改名，或取消导入。","profileNeedsBinding":"请在角色编辑页的“更多设置”中绑定角色。","previewHistory":"预览以前的聊天","historyPreview":"历史聊天补传预览","historyLocalRole":"本地角色：{{name}}","historyCloudRole":"目标云角色：{{name}}","historyCount":"本次可核验原文：{{count}} 条","historyUnverifiedCount":"另有 {{count}} 条旧记录无法核验来源，继续保留在本机。","historyHint":"仅包含本次固定预览中可核验的原文。确认后由后台分批登记和上传；后来新增的聊天走各自队列。","historyEmpty":"本次预览没有可补传的已核验原文。无法核验的旧记录继续留在本机。","historyApprove":"确认补传这些聊天","historyCancel":"取消","historyQueued":"已批准后台分批登记和上传，仍可能有聊天尚未传送。","historyChanged":"角色、账号或同步状态已变化，请重新预览后再确认。","historyAwaitingRegistration":"已批准的历史原文中，仍有 {{count}} 条等待本地登记。","historyUnverifiedUnknown":"尚未扫描旧记录；无法核验来源的内容继续保留在本机。","writerRecoveryRequired":"本机同步需要核验，旧任务已暂停，本地聊天仍可继续。","recoverWriter":"核验并恢复同步","recoveryChecked":"核验完成。可在角色卡开启含历史同步，也可确认本次聊天补传；待发送的双端删除仍需单独确认。","recoveryDeleteConfirm":"是否在双端继续删除这 {{count}} 条待发送记录？本地角色：{{localName}}；目标云角色：{{cloudName}}。取消后仍在本机隐藏。","includeHistory":"同时同步已有聊天","initialHistoryFailed":"已有聊天同步暂未完成。角色绑定已保留，可在角色编辑页的“更多设置”中查看进度或重试。","moreOptions":"更多设置","enableHint":"同步“{{name}}”的角色资料与聊天（含历史）。","newRoleSync":"同步角色与聊天（含历史）","newSyncPending":"角色已保存在本机，将在登录并联网后自动同步。","newSyncFailed":"角色已保存在本机，同步设置尚未完成。请稍后重试。","syncChoiceSaved":"角色已保存，同步设置已更新。"},
     "instanceAccess": {"title":"连接 NEKO 实例","description":"输入服务器所有者提供的实例访问凭证，此设备将记住连接 30 天。","key":"实例访问凭证","connect":"连接","failed":"连接未获授权，请检查凭证后重试。","httpsRequired":"请使用 HTTPS 或可信的 HTTPS 隧道安全连接。","insecureWarning":"当前连接未加密（HTTP），同一网络路径上的人可能看到访问凭证和会话。条件允许时请使用 HTTPS。"},
     "common": {
         "load": "加载",
@@ -2178,7 +2179,7 @@
             "confirmTrimmed": "使用智能裁切后的音频"
         }
     },
-    "memory": {
+    "memory": {"chatDeleteConfirm":"将永久删除所有同步设备上的 {{count}} 条聊天原文，是否继续？","chatSyncUnavailable":"聊天同步暂不可用，仍可编辑本机记忆。",
         "recent": "近期记忆",
         "title": "记忆浏览",
         "summary": "摘要",
@@ -2295,7 +2296,12 @@
         "save": "保存",
         "clear": "清空",
         "tip1": "刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。",
-        "tip2": "仅展示近期记忆；长期记忆已融入猫娘内核，无法浏览。",
+        "tip2": "展示聊天原文与近期记忆；长期记忆已融入猫娘内核，无法浏览。",
+        "chatDeletionHint": "删除或清空后点击保存：聊天原文会同步删除，本机记忆和工具回复仅在本机删除。",
+        "chatOriginalsSection": "双端聊天原文",
+        "recentMemorySection": "本机近期记忆",
+        "localRepliesSection": "仅本机的工具回复",
+        "chatDeletionPartial": "聊天删除已登记，但本机记忆保存失败。请保留当前修改并重试保存。",
         "noFiles": "无文件",
         "loadFailed": "加载失败",
         "noChatContent": "无聊天内容",

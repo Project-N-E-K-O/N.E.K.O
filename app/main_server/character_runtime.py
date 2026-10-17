@@ -1464,8 +1464,13 @@ async def _handle_agent_event(event: dict):
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:
+                            from services.chat_sync.source import mark_turn_origin
+                            await mgr.rotate_speech_id_for_response_done()
+                            direct_reply_sid = mgr.current_speech_id
+                            mark_turn_origin(mgr, direct_reply_sid, 'agent')
                             delivered = bool(
-                                await mgr.send_lanlan_response(detail_text, True)
+                                await mgr.send_lanlan_response(detail_text, True, turn_id=direct_reply_sid,
+                                                              expected_speech_id=direct_reply_sid)
                             )
                         except Exception as e:
                             logger.warning(

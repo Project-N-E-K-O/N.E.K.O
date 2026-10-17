@@ -23,6 +23,7 @@ import time
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _strip_nonverbal_directives
 from main_logic.session_state import SessionEvent, session_reply_in_progress
+from services.chat_sync.source import mark_turn_origin
 from main_logic.startup_greeting_policy import (
     _STARTUP_GREETING_BURST_SECONDS,
     _STARTUP_GREETING_EARLIER_SAMPLES,
@@ -383,6 +384,8 @@ class GreetingMixin:
             }
 
             current_turn_id = self.current_speech_id
+            # Avatar/tool text must stay excluded even if a reset precedes its turn end.
+            mark_turn_origin(self, current_turn_id, 'avatar')
             # 本回复的快照（见 _shared._ReplyTurn）：完成回调用它自己的 meta
             # 收尾，不去读届时可能已属于新一轮的共享字段。
             reply_turn = self._begin_reply_turn(

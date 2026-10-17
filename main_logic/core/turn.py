@@ -34,6 +34,7 @@ from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
 from utils.external_route_registry import is_route_slot_taken
 from main_logic.session_state import SessionEvent, TurnOwner
+from services.chat_sync.source import is_chat_input_source, mark_tool_turn, mark_turn_origin, save_original
 from main_logic.agent_event_bus import (
     dispatch_user_utterance,
     publish_conversation_turn_observed_best_effort,
@@ -382,6 +383,18 @@ class TurnMixin:
 
     async def handle_new_message(self):
         """Handle new model output: clear the TTS queue and notify the frontend"""
+        voice_session = getattr(self, 'session', None)
+        agent_owner = getattr(voice_session, '_gemini_proactive_outcome_owner', None)
+        # The outcome owner tracks both Agent and ordinary proactive injections. Transfer the explicit
+        # origin, not the mere presence of an outcome callback, when Gemini opens its next host reply.
+        injected_origin = getattr(self, '_chat_original_turns', {}).get(str(self.current_speech_id or ''), {}).get('origin')
+        if (injected_origin not in ('agent', 'proactive')
+            and callable(getattr(voice_session, "get_conversation_turn_type", None))
+            and voice_session.get_conversation_turn_type() == "proactive_reply"):
+            # Ordinary voice nudges have no text-path finish callback. Reuse
+            # the client's fixed inject-owner proof before the first output;
+            # an explicit Agent callback remains local under its own origin.
+            injected_origin = 'proactive'
         if self._takeover_active:
             logger.info("[%s] session takeover active: suppressing ordinary realtime new-message handling", self.lanlan_name)
             return
@@ -409,6 +422,15 @@ class TurnMixin:
         async with self.lock:
             self.current_speech_id = str(uuid4())
             new_sid = self.current_speech_id
+            if (injected_origin in ('agent', 'proactive') and isinstance(agent_owner, tuple) and len(agent_owner) == 5
+                and agent_owner[0] == getattr(voice_session, '_connection_generation', None)
+                and agent_owner[1] is getattr(voice_session, '_gemini_session', None)
+                and agent_owner[4] == getattr(voice_session, '_tool_scope_generation', None)
+                and voice_session is getattr(self, "session", None)
+                and agent_owner is getattr(voice_session, "_gemini_proactive_outcome_owner", None)):
+                # Keep ordinary proactive speech syncable, while Agent stays local.
+                # A real user's changed provider generation or tool scope cannot inherit either origin.
+                mark_turn_origin(self, new_sid, injected_origin)
             # 必须在 self.lock 内同步翻 _preempted 标记，使新 sid + preempt 对
             # 同样在 self.lock 内复查 is_proactive_preempted 的 prepare_proactive_delivery
             # 原子可见；否则 proactive 会插到 lock 释放 ~ fire() 之间把 user sid
@@ -1111,6 +1133,11 @@ class TurnMixin:
                 self._pending_turn_meta = None
         if request_id:
             turn_end_msg['request_id'] = request_id
+        # Carry the same backend identity as the emitted chunks, including late ends.
+        speech_id = reply_turn.speech_id if reply_turn is not None else self.current_speech_id
+        proof = getattr(self, '_chat_original_turns', {}).get(str(speech_id or ''))
+        if proof:
+            turn_end_msg['chat_original_id'] = proof['recordId']
         self.sync_message_queue.put(turn_end_msg)
         if reply_turn is not None:
             reply_turn.turn_ended = True
@@ -1125,6 +1152,10 @@ class TurnMixin:
         cross_server ends the assistant turn without an analyze request.
         ``_send_turn_end_to_frontend`` sends its WebSocket copy."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end agent_callback'}
+        # Agent origin remains tied to this speech identity rather than shared flags.
+        proof = getattr(self, '_chat_original_turns', {}).get(str(self.current_speech_id or ''))
+        if proof:
+            turn_end_msg['chat_original_id'] = proof['recordId']
         if request_id:
             turn_end_msg['request_id'] = request_id
         if self.sync_message_queue:
@@ -2411,6 +2442,9 @@ class TurnMixin:
         source: str | None = None,
         metadata: dict | None = None,
         source_game_route_identity: Any = Ellipsis,
+        chat_original_text: str | None = None,
+        chat_request_id: str | None = None,
+        chat_input_source: str | None = None,
     ):
         """Sync transcript text into queues/cache and push it to the frontend.
 
@@ -2606,6 +2640,30 @@ class TurnMixin:
         if not is_voice_source and self._active_text_request_id:
             user_message["request_id"] = self._active_text_request_id
         self.sync_message_queue.put({"type": "user", "data": user_message})
+        # Preserve the existing queue order before any source database await.
+        # Save accepted raw text independently, even if the reply later fails.
+        original_id = None
+        raw_source = chat_input_source if chat_input_source is not None else source_value
+        if record_transcript_text and is_chat_input_source(raw_source) and getattr(self, '_config_manager', None) is not None:
+            try:
+                original_id = await save_original(
+                    self.lanlan_name, 'user',
+                    chat_original_text if chat_original_text is not None else record_transcript_text,
+                    original_time=str(int(_transcript_arrival_ts * 1000)),
+                    config_manager=self._config_manager,
+                )
+            except Exception:
+                print('[chat-sync] original_save_failed')
+        # The frontend matches its optimistic bubble using the frozen request ID.
+        if original_id and not is_voice_source and self.websocket:
+            try:
+                await self.websocket.send_json({
+                    'type': 'chat_original_identity', 'role': 'user',
+                    'request_id': chat_request_id or user_message.get('request_id'),
+                    'message_id': original_id,
+                })
+            except Exception:
+                pass
         
         # 只在语音模式（OmniRealtimeClient）下发送到前端显示用户转录
         # 文本模式下前端会自己显示，无需后端发送，避免重复
@@ -2626,6 +2684,9 @@ class TurnMixin:
                         "type": "user_transcript",
                         "text": transcript.strip()
                     }
+                    # ASR identities are also generated by the backend, never the UI.
+                    if original_id:
+                        message['chat_original_id'] = original_id
                     if source_game_route_identity is not None:
                         game_type, session_id, route_instance_id = source_game_route_identity
                         message["game_type"] = game_type
@@ -2799,6 +2860,45 @@ class TurnMixin:
             "turn_id": effective_turn_id,
             "request_id": effective_request_id,
         }
+        # Source proof is server-created and immutable for this particular reply.
+        voice_session = getattr(self, "session", None)
+        gemini_source = getattr(voice_session, "_gemini_tool_response_source", None)
+        explicit_origin = getattr(self, "_chat_original_turns", {}).get(str(effective_turn_id or ""), {}).get("origin")
+        if (getattr(voice_session, "_is_gemini", False) is True
+            and isinstance(gemini_source, tuple) and len(gemini_source) == 2
+            and explicit_origin not in ("agent", "tool")
+            and (explicit_origin != "proactive" or (
+                getattr(gemini_source[0], "proactive_outcome_owner", None) is not None
+                and gemini_source[0].proactive_outcome_owner
+                is getattr(voice_session, "_gemini_proactive_outcome_owner", None)
+            ))
+            and voice_session._tool_task_owner_is_current(gemini_source[0])):
+            # Only actual Gemini tool dispatch/result continuation may label
+            # this response local. A still-current cancellation scope alone
+            # does not prove that a later SERVER_VAD voice reply used a tool.
+            # A proactive reply can itself invoke tools, but requires that
+            # dispatch's frozen injection owner, not a preceding tool token.
+            # A fixed tool origin already carries this evidence on all chunks.
+            mark_tool_turn(self, effective_turn_id)
+        tool_owner = getattr(self, "_chat_original_tool_owner", None)
+        if tool_owner is not None:
+            session, scope, marked_speech_id = tool_owner
+            explicit_origin = getattr(self, "_chat_original_turns", {}).get(str(effective_turn_id or ""), {}).get("origin")
+            if effective_turn_id != marked_speech_id and explicit_origin in ("proactive", "agent"):
+                # A later explicit injection is independent, even when it intentionally keeps the
+                # provider tool scope. In particular, ordinary proactive speech must not inherit tools.
+                self._chat_original_tool_owner = None
+            elif session is getattr(self, "session", None) and session._tool_task_owner_is_current(scope):
+                if effective_turn_id != marked_speech_id:
+                    # Provider continuations may rotate speech IDs inside one user tool scope.
+                    # Mark each fixed reply once, retaining pre-tool prefixes and never tainting a new user turn.
+                    mark_tool_turn(self, effective_turn_id)
+                    self._chat_original_tool_owner = (session, scope, effective_turn_id)
+            else:
+                self._chat_original_tool_owner = None
+        proof = mark_turn_origin(self, effective_turn_id, 'chat')
+        message['chat_original_source'] = proof
+        message['chat_original_id'] = proof['recordId']
         if metadata:
             message["metadata"] = metadata
 

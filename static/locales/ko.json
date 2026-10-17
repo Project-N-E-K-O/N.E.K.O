@@ -24,6 +24,7 @@
             "storageChanged": "서버 데이터 디렉터리가 변경되었습니다. 아바타 편집기를 다시 연 후 저장하세요."
         }
     },
+    "chatSync": {"oversizedLocalOnly":"동기화 한도를 넘어 이 기기에만 저장: {{count}}개.","setupNeedsSave":"{{name}}의 동기화 설정을 확인하세요. 캐릭터를 다시 저장하거나 추가 설정을 여세요.","title":"채팅 동기화","serviceUrl":"동기화 서비스 HTTPS 주소","saveService":"주소 저장","enable":"동기화 시작 (이전 기록 포함)","pause":"이 기기에서 일시 중지","syncNow":"지금 동기화","clearKnown":"알려진 채팅 비우기","close":"닫기","notConfigured":"먼저 동기화 서비스 주소를 설정하세요.","notBound":"이 캐릭터는 아직 연결되지 않았습니다.","enabled":"이 기기에서 사용 중입니다.","paused":"이 기기에서 일시 중지되었습니다. 클라우드 채팅은 유지됩니다.","pending":"등록된 업로드 대기: {{originals}}개, 삭제 대기: {{deletions}}개.","working":"처리 중…","more":"다운로드할 기록이 남았습니다. 다시 동기화하세요.","passFinished":"이번 작업이 완료되었습니다. 다른 기기에 대기 중인 채팅이 있을 수 있습니다.","loginRequired":"커뮤니티 계정에 로그인한 후 다시 시도하세요.","failed":"동기화가 완료되지 않았습니다. 로컬 채팅과 대기 작업은 유지됩니다.","deleteOriginal":"양쪽 기기에서 삭제","deleteConfirm":"이 채팅 원문을 양쪽 기기에서 삭제할까요?","clearConfirm":"이 캐릭터의 현재 알려진 채팅 원문을 양쪽 기기에서 모두 비울까요? 다른 기기에서 나중에 추가한 채팅은 제외됩니다. 이 기기에만 저장된 답변도 이 기기에서 삭제됩니다.","unknownTime":"원래 시간 알 수 없음","userLabel":"나","unfinishedChat":"현재 답변이 끝난 후 대화를 삭제해 주세요.","profileConflict":"사용할 캐릭터 설정 선택","profileRenamePending":"캐릭터 이름 변경 확인","profileLocal":"이 기기의 설정","profileRemote":"클라우드 설정","profileUseLocal":"기기 설정 업로드","profileUseRemote":"클라우드 설정 사용","profileRenameConfirm":"{{oldName}}을(를) {{newName}}(으)로 바꾸고 클라우드 설정 전체를 사용할까요?","profileChanged":"설정이 바뀌었거나 동기화를 사용할 수 없습니다. 두 버전을 보관하고 다시 확인하세요.","profileInitialUpload":"{{name}}의 현재 설정을 업로드할까요?","profileUploadConfirm":"{{name}}의 저장한 설정을 업로드할까요?","profileUnsupported":"아직 동기화할 수 없는 항목이 있습니다. 기기에 저장한 내용은 유지됩니다.","profileSaveFailed":"설정 동기화를 완료하지 못했습니다. 저장한 내용과 두 버전은 유지됩니다.","profileReview":"캐릭터 설정 확인","profileName":"이름","profileNickname":"별명","profileSetting":"원본 설정","profileStyle":"말투","cloudImport":"클라우드에서 캐릭터 생성","cloudEmpty":"클라우드에 캐릭터가 없습니다.","cloudProfileEmpty":"이 캐릭터의 설정은 아직 게시되지 않았습니다.","cloudCreate":"이 기기에 생성","cloudExisting":"{{name}}이(가) 이미 있습니다. 현재 동기화 설정을 유지합니다.","cloudCreated":"{{name}}을(를) 생성하고 연결했습니다.","cloudNameConflict":"같은 이름의 캐릭터가 있습니다. 먼저 기기의 캐릭터 이름을 바꾸거나 가져오기를 취소하세요.","profileNeedsBinding":"캐릭터 편집 화면의 추가 설정에서 캐릭터를 연결하세요.","previewHistory":"이전 대화 미리 보기","historyPreview":"이전 대화 미리 보기","historyLocalRole":"로컬 캐릭터: {{name}}","historyCloudRole":"클라우드 캐릭터: {{name}}","historyCount":"이 미리 보기의 검증된 메시지: {{count}}개","historyUnverifiedCount":"출처를 확인할 수 없는 이전 기록 {{count}}개는 이 기기에 남습니다.","historyHint":"이 고정 미리 보기의 검증된 메시지만 포함됩니다. 승인하면 백그라운드에서 등록하고 업로드합니다. 새 대화는 별도 대기열을 사용합니다.","historyEmpty":"이 미리 보기에는 검증된 이전 대화가 없습니다. 검증되지 않은 기록은 이 기기에 남습니다.","historyApprove":"이 대화 승인","historyCancel":"취소","historyQueued":"백그라운드 등록 및 업로드를 승인했습니다. 아직 대기 중인 메시지가 있을 수 있습니다.","historyChanged":"캐릭터, 계정 또는 동기화 상태가 변경되었습니다. 다시 미리 본 후 승인하세요.","historyAwaitingRegistration":"승인된 이전 메시지 {{count}}개가 아직 로컬 등록을 기다리고 있습니다.","historyUnverifiedUnknown":"이전 기록은 검사하지 않았습니다. 출처를 확인할 수 없는 내용은 이 기기에 남습니다.","writerRecoveryRequired":"이 설치의 확인이 필요하여 동기화가 일시 중지되었습니다. 로컬 채팅은 계속 사용할 수 있습니다.","recoverWriter":"확인 후 동기화 복구","recoveryChecked":"검증이 완료되었습니다. 캐릭터 카드에서 기록을 포함한 동기화를 켜거나 이번 채팅 업로드를 승인하세요. 양쪽 기기의 대기 중인 삭제는 별도로 승인해야 합니다.","recoveryDeleteConfirm":"보류 중인 메시지 {{count}}개를 양쪽 기기에서 삭제할까요? 로컬 캐릭터: {{localName}}. 클라우드 캐릭터: {{cloudName}}. 취소하면 로컬에서 숨겨진 상태로 유지됩니다.","includeHistory":"기존 채팅도 동기화","initialHistoryFailed":"기존 채팅 동기화가 완료되지 않았습니다. 연결은 유지되며 캐릭터 편집 화면의 추가 설정에서 확인하거나 다시 시도할 수 있습니다.","moreOptions":"추가 설정","enableHint":"“{{name}}” 및 채팅 동기화 (이전 기록 포함).","newRoleSync":"캐릭터 및 채팅 동기화 (이전 기록 포함)","newSyncPending":"캐릭터를 기기에 저장했습니다. 로그인하고 연결되면 동기화를 시작합니다.","newSyncFailed":"캐릭터는 기기에 저장했습니다. 동기화 설정은 아직 완료되지 않았습니다. 나중에 다시 시도하세요.","syncChoiceSaved":"캐릭터를 저장하고 동기화 설정을 업데이트했습니다."},
     "instanceAccess": {"title":"NEKO 연결","description":"서버 소유자가 제공한 인스턴스 접근 키를 입력하세요. 이 기기는 연결을 30일 동안 기억합니다.","key":"인스턴스 접근 키","connect":"연결","failed":"연결이 거부되었습니다. 키를 확인하고 다시 시도하세요.","httpsRequired":"HTTPS 또는 신뢰할 수 있는 HTTPS 터널로 연결하세요.","insecureWarning":"이 연결은 암호화되지 않았습니다(HTTP). 같은 네트워크 경로의 다른 사람이 키와 세션을 볼 수 있습니다. 가능하면 HTTPS를 사용하세요."},
     "common": {
         "load": "로드",
@@ -2178,7 +2179,7 @@
             "confirmTrimmed": "트리밍된 오디오 사용"
         }
     },
-    "memory": {
+    "memory": {"chatDeleteConfirm":"동기화된 모든 기기에서 원본 채팅 {{count}}개를 영구 삭제할까요?","chatSyncUnavailable":"채팅 동기화를 사용할 수 없습니다. 로컬 기억은 편집할 수 있습니다.",
         "recent": "최근 추억",
         "title": "메모리 브라우저",
         "summary": "요약",
@@ -2295,7 +2296,12 @@
         "save": "저장",
         "clear": "지우기",
         "tip1": "최근 종료된 대화를 로드하는 데 약간의 시간이 걸립니다. 네코 이름을 다시 클릭하여 새로고침할 수 있습니다.",
-        "tip2": "최근 기억만 표시됩니다. 장기 기억은 네코 코어에 통합되어 있어 열람할 수 없습니다.",
+        "tip2": "채팅 원문과 최근 기억을 표시합니다. 장기 기억은 네코 코어에 통합되어 있어 열람할 수 없습니다.",
+        "chatDeletionHint": "삭제하거나 비운 뒤 저장하세요. 채팅 원문은 기기 간에 삭제되며, 최근 기억과 도구 응답은 이 기기에서만 삭제됩니다.",
+        "chatOriginalsSection": "기기 간 채팅 원문",
+        "recentMemorySection": "이 기기의 최근 기억",
+        "localRepliesSection": "이 기기에만 저장된 도구 응답",
+        "chatDeletionPartial": "채팅 삭제는 등록됐지만 로컬 기억 저장에 실패했습니다. 변경 사항을 유지하고 저장을 다시 시도하세요.",
         "noFiles": "파일 없음",
         "loadFailed": "로드 실패",
         "noChatContent": "채팅 콘텐츠 없음",
