@@ -390,10 +390,12 @@ async def amemory_turn_context(
             superseded=lambda: _latest_request.get(lanlan_name) != number,
             finish=finish,
             in_worker=in_worker,
+            track=workers.append,
         )
     finally:
         # Gave up waiting (busy), or cancelled mid-pass: the slot stays taken
-        # until the request still running, and this one's own thread, end.
+        # until the request still running, and this one's own threads and
+        # cancelled embedding, end.
         running = [future for future in (previous, *workers) if future is not None]
         _release_after(running, lanlan_name, finished)
 
@@ -412,13 +414,16 @@ async def _arecall(
     superseded,
     finish,
     in_worker,
+    track,
 ) -> dict[str, Any]:
     """The body of ``amemory_turn_context``, once the previous request is done.
 
     ``superseded()`` turns true once a newer request for the same character
     has arrived: Main has already dropped this one, so it stops at the next
     checkpoint instead of finishing work nobody will read. Thread work goes
-    through ``in_worker`` so the slot outlives a cancelled request's thread.
+    through ``in_worker``, and the query embedding is passed to ``track``, so
+    the slot outlives whatever native work a cancel cannot stop (the embedding
+    service keeps a cancelled inference task alive until its thread exits).
     """
     embed_task: asyncio.Task[Any] | None = None
     try:
@@ -430,6 +435,7 @@ async def _arecall(
         if model_id:
             _ensure_probe_vectors(service, model_id)
             embed_task = asyncio.create_task(service.embed_batch([query]))
+            track(embed_task)
             # An early exit cancels it (see the finally below); this only
             # consumes the outcome nobody reads.
             embed_task.add_done_callback(lambda task: task.cancelled() or task.exception())

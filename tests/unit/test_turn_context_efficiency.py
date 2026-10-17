@@ -546,3 +546,45 @@ async def test_a_cancelled_request_keeps_its_slot_until_its_thread_ends(tmp_path
         assert not mtc._in_flight.get(loop)
         third = await mtc.amemory_turn_context(budget_ms=1000, **kwargs)
     assert third["result"] != "busy"
+
+
+async def test_a_cancelled_embedding_keeps_the_slot_until_it_drains(tmp_path):
+    # The embedding service keeps a cancelled inference task alive until its
+    # native thread exits; the slot must wait for that too.
+    fact_store, reflection_engine, persona_manager = _stores(tmp_path, facts=[_fact("f1", "海底捞")])
+    kwargs = dict(
+        lanlan_name="小天", text="海底捞", fact_store=fact_store,
+        reflection_engine=reflection_engine, persona_manager=persona_manager,
+        config_manager=MagicMock(), language="zh",
+    )
+    drained = asyncio.Event()
+
+    async def embed_batch(texts):
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            await drained.wait()  # like _run_blocking waiting out its worker
+            raise
+        return [np.ones(8, dtype=np.float32) for _ in texts]
+
+    service = MagicMock()
+    service.is_available = MagicMock(return_value=True)
+    service.model_id = MagicMock(return_value="local-text-retrieval-v1-8d-int8")
+    service.embed_batch = embed_batch
+    loop = asyncio.get_running_loop()
+    with patch.object(emb, "get_embedding_service", MagicMock(return_value=service)), \
+         patch.object(mtc, "_ensure_probe_vectors", MagicMock()), \
+         patch("memory.stop_names.collect_stop_names", return_value=[]):
+        try:
+            first = await mtc.amemory_turn_context(budget_ms=200, **kwargs)
+            assert first["result"] in {"miss", "matched"}  # answered within budget
+            assert mtc._in_flight.get(loop)  # but the inference still runs
+            second = await mtc.amemory_turn_context(budget_ms=200, **kwargs)
+            assert second["result"] == "busy"
+        finally:
+            drained.set()
+        for _ in range(100):
+            if not mtc._in_flight.get(loop):
+                break
+            await asyncio.sleep(0.01)
+        assert not mtc._in_flight.get(loop)
