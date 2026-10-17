@@ -144,6 +144,128 @@ async def test_break_reminder_router_adapter_preserves_tuple_contract(
     assert domain_delivery.await_args.kwargs["config_manager"] is config_manager
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retired", [False, True], ids=("owned-round", "retired-round"))
+async def test_break_reminder_respects_round_ownership(monkeypatch, retired) -> None:
+    """A retired HTTP round's break reminder cannot advance the replacement round."""
+    from main_logic.session_state import ProactivePhase, SessionStateMachine
+
+    state_machine = SessionStateMachine("Neko")
+    assert await state_machine.try_start_proactive(session=None, round_id="current-round")
+    corpus = SimpleNamespace(apreload=AsyncMock())
+    monkeypatch.setattr(break_reminders, "get_anti_repeat_corpus", lambda: corpus)
+    monkeypatch.setattr(
+        break_reminders,
+        "create_chat_llm_async",
+        AsyncMock(side_effect=RuntimeError("synthetic model failure")),
+    )
+    mgr = SimpleNamespace(
+        prepare_proactive_delivery=AsyncMock(return_value=True),
+        current_speech_id="break-sid",
+        state=state_machine,
+        handle_new_message=AsyncMock(),
+        last_user_message_time=None,
+    )
+    config_manager = SimpleNamespace(
+        aget_model_api_config=AsyncMock(return_value={
+            "model": "fake-model",
+            "base_url": "http://127.0.0.1:9/v1",
+            "api_key": "fake-key",
+            "provider_type": "openai_compatible",
+        }),
+    )
+    round_id = "retired-round" if retired else "current-round"
+
+    result = await break_reminders._deliver_break_reminder_via_llm(
+        lanlan_name="Neko",
+        mgr=mgr,
+        config_manager=config_manager,
+        system_prompt="prompt",
+        channel="work_break",
+        lang="zh",
+        round_id=round_id,
+    )
+
+    assert result == break_reminders.BreakReminderDeliveryResult()
+    mgr.prepare_proactive_delivery.assert_awaited_once_with(
+        min_idle_secs=10.0, round_id=round_id,
+    )
+    assert state_machine.phase is (
+        ProactivePhase.PHASE1 if retired else ProactivePhase.PHASE2
+    )
+    assert state_machine.proactive_round_id == "current-round"
+
+
+@pytest.mark.asyncio
+async def test_break_reminder_stops_when_round_retires_during_generation(monkeypatch) -> None:
+    """A restart mid-generation must not let the old reminder speak or commit."""
+    from main_logic.session_state import SessionStateMachine
+
+    state_machine = SessionStateMachine("Neko")
+    assert await state_machine.try_start_proactive(session=None, round_id="old-round")
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock()
+    corpus.score_unanswered_proactive_draft.return_value = SimpleNamespace(
+        triggered=False, match_count=0, considered_count=0, best_similarity=0.0,
+        repeated_terms=(),
+    )
+    monkeypatch.setattr(break_reminders, "get_anti_repeat_corpus", lambda: corpus)
+    mgr = SimpleNamespace(
+        prepare_proactive_delivery=AsyncMock(return_value=True),
+        current_speech_id="old-sid",
+        state=state_machine,
+        feed_tts_chunk=AsyncMock(return_value=True),
+        finish_proactive_delivery=AsyncMock(return_value=True),
+        handle_new_message=AsyncMock(),
+        proactive_engagement_observation_started_at=100.0,
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+    )
+
+    class RestartingLlm:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def astream(self, _messages):
+            yield SimpleNamespace(content="记得起来活动一下。")
+            # Session restart, then a replacement round claims its own SID.
+            await state_machine.reset(force=True)
+            assert await state_machine.try_start_proactive(session=None, round_id="new-round")
+            mgr.current_speech_id = "new-sid"
+            yield SimpleNamespace(content="")
+
+    monkeypatch.setattr(
+        break_reminders, "create_chat_llm_async", AsyncMock(return_value=RestartingLlm()),
+    )
+    config_manager = SimpleNamespace(
+        aget_model_api_config=AsyncMock(return_value={
+            "model": "fake-model",
+            "base_url": "http://127.0.0.1:9/v1",
+            "api_key": "fake-key",
+            "provider_type": "openai_compatible",
+        }),
+    )
+
+    result = await break_reminders._deliver_break_reminder_via_llm(
+        lanlan_name="Neko",
+        mgr=mgr,
+        config_manager=config_manager,
+        system_prompt="prompt",
+        channel="work_break",
+        lang="zh",
+        round_id="old-round",
+    )
+
+    assert result == break_reminders.BreakReminderDeliveryResult()
+    mgr.feed_tts_chunk.assert_not_awaited()
+    mgr.finish_proactive_delivery.assert_not_awaited()
+    mgr.handle_new_message.assert_not_awaited()
+    assert state_machine.proactive_round_id == "new-round"
+
+
 @pytest.mark.parametrize(
     "module",
     (
@@ -774,6 +896,50 @@ async def test_service_missing_manager_returns_domain_result() -> None:
         "stage": contracts.PROACTIVE_STAGE_ENTRY_GUARD,
         "error": "角色 Missing 不存在",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('exit_kind', ['cancel', 'timeout', 'error', 'busy'])
+async def test_service_retires_only_its_screenshot_id_on_abnormal_exit(monkeypatch, exit_kind):
+    from main_logic.session_state import SessionStateMachine
+    from utils import preferences
+
+    state_machine = SessionStateMachine('Yui')
+    manager = SimpleNamespace(is_active=False, state=state_machine,
+                              _proactive_screenshot_request_id=None)
+    if exit_kind == 'busy':
+        await state_machine.try_start_proactive(session=None)
+        manager._proactive_screenshot_request_id = 'running-round'
+    monkeypatch.setattr(preferences, 'ais_privacy_mode_enabled', AsyncMock(return_value=False))
+    observed_ids = []
+
+    def interrupt(_privacy):
+        observed_ids.append(manager._proactive_screenshot_request_id)
+        if exit_kind == 'cancel':
+            raise asyncio.CancelledError()
+        if exit_kind == 'timeout':
+            raise asyncio.TimeoutError()
+        raise RuntimeError('synthetic service interruption')
+
+    monkeypatch.setattr(service, '_should_fetch_activity_snapshot', interrupt)
+    pending = service.handle_proactive_chat(
+        contracts.ProactiveChatCommand(lanlan_name='Yui'),
+        config_manager=SimpleNamespace(), session_manager={'Yui': manager},
+        character_data=_CHARACTER_DATA, game_route_active_for=lambda _name: False,
+        break_config_manager_provider=lambda: SimpleNamespace(),
+        run_mini_game_invite_short_circuit=AsyncMock(),
+        push_mini_game_invite_options=AsyncMock(), push_mini_game_invite_resolved=AsyncMock(),
+    )
+    if exit_kind == 'cancel':
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+    else:
+        result = await pending
+        assert result.status_code == {'timeout': 504, 'error': 500, 'busy': 409}[exit_kind]
+    assert manager._proactive_screenshot_request_id == ('running-round' if exit_kind == 'busy' else None)
+    assert state_machine.phase.value == ('phase1' if exit_kind == 'busy' else 'idle')
+    assert bool(observed_ids) is (exit_kind != 'busy')
+    assert all(observed_ids)
 
 
 @pytest.mark.asyncio

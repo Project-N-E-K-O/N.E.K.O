@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from main_logic.session_state import (
     ProactivePhase,
     SessionEvent,
@@ -672,3 +674,46 @@ async def test_snapshot_fields():
     assert snap["phase"] == ProactivePhase.PHASE1.value
     assert snap["proactive_sid"] == "sid_snap"
     assert snap["preempted"] is False
+@pytest.mark.asyncio
+@pytest.mark.parametrize('event', [
+    SessionEvent.PROACTIVE_CLAIM, SessionEvent.PROACTIVE_PHASE2,
+    SessionEvent.PROACTIVE_COMMITTING, SessionEvent.PROACTIVE_DONE,
+])
+async def test_retired_round_cannot_transition_replacement(event):
+    sm = SessionStateMachine('test')
+    assert await sm.try_start_proactive(round_id='old')
+    await sm.reset(force=True)
+    assert sm.proactive_round_id is None
+    assert await sm.try_start_proactive(round_id='new')
+    await sm.fire(event, round_id='old', sid='old-sid')
+    assert sm.proactive_round_id == 'new'
+    assert sm.phase is ProactivePhase.PHASE1
+    assert sm.proactive_sid is None
+
+
+@pytest.mark.asyncio
+async def test_done_ownership_is_rechecked_after_waiting_for_state_lock():
+    from types import SimpleNamespace
+    from main_logic.proactive_chat.delivery import ProactiveLifecycle
+
+    sm = SessionStateMachine('test')
+    assert await sm.try_start_proactive(round_id='old')
+    manager = SimpleNamespace(state=sm, _proactive_screenshot_request_id='old')
+    lifecycle = ProactiveLifecycle(manager, SessionEvent.PROACTIVE_DONE, 'test', screenshot_request_id='old')
+
+    async def replacement():
+        assert await sm.try_start_proactive(round_id='new')
+        manager._proactive_screenshot_request_id = 'new'
+
+    async with sm._write_lock:
+        reset = asyncio.create_task(sm.reset(force=True))
+        await asyncio.sleep(0)
+        start = asyncio.create_task(replacement())
+        await asyncio.sleep(0)
+        finish = asyncio.create_task(lifecycle.safe_done())
+        await asyncio.sleep(0)
+    await asyncio.gather(reset, start, finish)
+    lifecycle.clear_screenshot_request()
+    assert sm.phase is ProactivePhase.PHASE1
+    assert sm.proactive_round_id == 'new'
+    assert manager._proactive_screenshot_request_id == 'new'

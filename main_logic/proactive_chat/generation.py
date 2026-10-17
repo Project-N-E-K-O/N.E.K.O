@@ -16,13 +16,14 @@
 """Parsers and output guards for proactive Phase 1/2 generation."""
 
 import asyncio
+from contextlib import suppress
 import logging
 import unicodedata
 import re
 from dataclasses import dataclass
 from functools import partial
 from itertools import zip_longest
-from typing import Any
+from typing import Any, Callable
 
 from config import (
     ANTI_REPEAT_DROP_THRESHOLD,
@@ -384,6 +385,22 @@ def _proactive_llm_retry_error_types() -> tuple[type[BaseException], ...]:
     return _PROACTIVE_LLM_RETRY_ERROR_TYPES
 
 
+async def _check_proactive_vision_consent(
+    live_consent_check: Callable[[], bool] | None = None,
+) -> None:
+    """Require current consent before exposing proactive images to a model."""
+    from utils.preferences import aload_global_conversation_settings
+
+    if live_consent_check is not None and not live_consent_check():
+        raise PermissionError("Proactive screenshot use declined by live consent")
+    settings = await aload_global_conversation_settings(strict=True)
+    if (
+        settings.get("proactiveVisionEnabled", True) is not True
+        or (live_consent_check is not None and not live_consent_check())
+    ):
+        raise PermissionError("Proactive screenshot use declined by privacy mode")
+
+
 async def _make_proactive_llm(
     model_config: ProactiveModelConfig,
     *,
@@ -391,8 +408,18 @@ async def _make_proactive_llm(
     max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     use_vision: bool = False,
     disable_thinking: bool = True,
+    live_consent_check: Callable[[], bool] | None = None,
+    round_is_current: Callable[[], bool] | None = None,
 ):
     """Create the configured proactive-chat model without owning lifecycle state."""
+    def require_current_round() -> None:
+        if round_is_current is not None and not round_is_current():
+            raise PermissionError("Proactive round retired")
+
+    require_current_round()
+    if use_vision:
+        await _check_proactive_vision_consent(live_consent_check)
+    require_current_round()
     if use_vision and model_config.has_vision_model:
         model = model_config.vision_model
         base_url = model_config.vision_base_url
@@ -415,12 +442,24 @@ async def _make_proactive_llm(
     }
     if not disable_thinking:
         kwargs["extra_body"] = focus_extra_body(model)
-    return await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET
+    llm = await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET
         model,
         base_url,
         api_key,
         **kwargs,
     )
+    if use_vision or round_is_current is not None:
+        # Client creation awaits a worker thread; consent may change while it runs.
+        # The caller has not entered the client context yet, so denial owns cleanup.
+        try:
+            if use_vision:
+                await _check_proactive_vision_consent(live_consent_check)
+            require_current_round()
+        except BaseException:
+            with suppress(Exception):
+                await llm.aclose()
+            raise
+    return llm
 
 
 async def _llm_call_with_retry(
@@ -731,6 +770,8 @@ async def _run_phase2_generation(
     is_playing_music: bool,
     music_cooldown: bool,
     log: logging.Logger | None = None,
+    vision_consent_epoch: int | None = None,
+    round_is_current: Callable[[], bool] | None = None,
 ) -> Phase2GuardedOutput:
     """Own Phase 2 messages, model stream, and output guards."""
     active_logger = log or logger
@@ -770,7 +811,20 @@ async def _run_phase2_generation(
         f"prompt_chars={len(system_prompt)}\n{'=' * 60}\n"
     )
 
-    make_llm = partial(_make_proactive_llm, model_config)
+    if vision_consent_epoch is None:
+        vision_consent_epoch = getattr(mgr, "_proactive_vision_revocation_epoch", 0)
+
+    def live_consent_check() -> bool:
+        # A quick off/on must not restore an image held by the revoked round.
+        return (
+            getattr(mgr, "_proactive_vision_enabled", None) is not False
+            and getattr(mgr, "_proactive_vision_revocation_epoch", 0) == vision_consent_epoch
+        )
+
+    make_llm = partial(
+        _make_proactive_llm, model_config, live_consent_check=live_consent_check,
+        round_is_current=round_is_current,
+    )
     silence_since_before_generation = _proactive_silence_since(mgr)
     generated = await _generate_phase2_stream(
         mgr=mgr,

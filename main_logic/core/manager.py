@@ -118,6 +118,10 @@ class LLMSessionManager(
         self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
         self._screenshot_future: asyncio.Future | None = None
+        self._proactive_screenshot_request_id: str | None = None
+        # Live browser consent can arrive before the settings POST is persisted.
+        self._proactive_vision_enabled: bool | None = None
+        self._proactive_vision_revocation_epoch: int = 0
         self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
         # request_fresh_screenshot 与 resolve_screenshot_request 之间的一次性交接槽。
         # 与 _avatar_position 分开是刻意的：后者被每一条 stream_data 覆写（屏幕分享帧、

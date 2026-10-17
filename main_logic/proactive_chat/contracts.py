@@ -47,6 +47,7 @@ class ProactiveChatCommand:
     enabled_modes_provided: bool = False
     content_type: Any = None
     screenshot_data: Any = None
+    screenshot_allow_desktop_fallback: bool = True
     use_window_search: bool = False
     use_personal_dynamic: bool = False
     avatar_position: Any = None
@@ -74,6 +75,9 @@ class ProactiveChatCommand:
             enabled_modes_provided="enabled_modes" in payload,
             content_type=payload.get("content_type"),
             screenshot_data=payload.get("screenshot_data"),
+            screenshot_allow_desktop_fallback=(
+                payload.get("screenshot_allow_desktop_fallback", True) is True
+            ),
             use_window_search=bool(payload.get("use_window_search", False)),
             use_personal_dynamic=bool(
                 payload.get("use_personal_dynamic", False)

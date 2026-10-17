@@ -59,6 +59,7 @@ class ProactiveLifecycle:
     lanlan_name: str
     log: logging.Logger | None = None
     done_emitted: bool = False
+    screenshot_request_id: str | None = None
     next_schedule_fixed_mode: bool = False
     focus_phase2_reached: bool = False
     focus_episode_token: Any = None
@@ -76,13 +77,34 @@ class ProactiveLifecycle:
         self.focus_episode_token = snapshot.get("focus_episode_id")
         self.focus_turn_token = snapshot.get("focus_turn_count")
 
+    def owns_round(self) -> bool:
+        """Whether this execution still owns the manager and state-machine round."""
+        return (
+            self.screenshot_request_id is not None
+            and getattr(self.mgr, "_proactive_screenshot_request_id", None) == self.screenshot_request_id
+            and getattr(self.mgr.state, "proactive_round_id", self.screenshot_request_id)
+            == self.screenshot_request_id
+        )
+
+    def clear_screenshot_request(self) -> None:
+        """Retire only this round's reply ID, before another round can start."""
+        if (
+            self.screenshot_request_id is not None
+            and getattr(self.mgr, "_proactive_screenshot_request_id", None)
+            == self.screenshot_request_id
+        ):
+            self.mgr._proactive_screenshot_request_id = None
+
     async def safe_done(self) -> None:
         """Fire DONE at most once without applying normal-exit side effects."""
         if self.done_emitted:
             return
         self.done_emitted = True
+        if not self.owns_round():
+            return
+        self.clear_screenshot_request()
         try:
-            await self.mgr.state.fire(self.state_event)
+            await self.mgr.state.fire(self.state_event, round_id=self.screenshot_request_id)
         except Exception as exc:
             self._logger.warning(
                 "[%s] PROACTIVE_DONE fire 异常: %s",
