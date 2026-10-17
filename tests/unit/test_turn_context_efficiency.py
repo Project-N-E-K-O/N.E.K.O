@@ -32,7 +32,6 @@ from knowledge.models import parse_pack
 from knowledge.retrieval import SemanticMatch, semantic_candidates
 from knowledge.store import NAME_SPAN_MAX_CHARS, KnowledgeStore, _NAME_UNIT_RE
 from knowledge.text import loose_surface, strict_surface
-from memory.hybrid_recall import _bm25_rank, _bm25_scores, _invalidate_pool_cache, _tokenize
 from tests.unit.test_knowledge_subsystem import _pack, fast_indexer  # noqa: F401
 from tests.unit.test_memory_turn_context import _fact, _no_vectors, _stores
 
@@ -41,11 +40,11 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def _fresh_caches():
-    _invalidate_pool_cache()
+    hr._invalidate_pool_cache()
     mtc._probes.vectors.clear()
     mtc._backgrounds.clear()
     yield
-    _invalidate_pool_cache()
+    hr._invalidate_pool_cache()
     mtc._probes.vectors.clear()
     mtc._backgrounds.clear()
 
@@ -68,22 +67,22 @@ def _pool():
 
 def test_bm25_scores_return_the_query_terms_each_doc_holds():
     query = "周末去东京吃海底捞"
-    query_terms = set(_tokenize(query, []))
-    scored = _bm25_scores(query, _pool(), stop_names=[])
+    query_terms = set(hr._tokenize(query, []))
+    scored = hr._bm25_scores(query, _pool(), stop_names=[])
     assert scored
     for doc, _score, tf in scored:
-        assert set(tf) == set(_tokenize(doc["text"], [])) & query_terms
+        assert set(tf) == set(hr._tokenize(doc["text"], [])) & query_terms
         assert all(count > 0 for count in tf.values())
 
 
 def _reference_bm25(query, pool, stop_names, k1=1.5, b=0.75):
-    """``_bm25_rank`` as it scored before the cache and the shortcuts."""
+    """``hr._bm25_rank`` as it scored before the cache and the shortcuts."""
     import math
 
-    query_terms = _tokenize(query, stop_names)
+    query_terms = hr._tokenize(query, stop_names)
     if not query or not pool or not query_terms:
         return []
-    doc_terms_list = [_tokenize(d.get("text", "") or "", stop_names) for d in pool]
+    doc_terms_list = [hr._tokenize(d.get("text", "") or "", stop_names) for d in pool]
     n_docs = len(pool)
     total_len = sum(len(t) for t in doc_terms_list)
     if total_len == 0:
@@ -133,7 +132,7 @@ def test_bm25_scores_are_bit_identical_to_the_reference_scan():
         ]
         query = "".join(rng.choice(chars) for _ in range(rng.randint(1, 15)))
         for _repeat in range(2):  # cold, then from the token cache
-            got = _bm25_rank(query, pool, stop_names=["主人"])
+            got = hr._bm25_rank(query, pool, stop_names=["主人"])
             want = _reference_bm25(query, pool, ["主人"])
             assert [(doc["id"], score) for doc, score in got] == [
                 (doc["id"], score) for doc, score in want
@@ -142,9 +141,9 @@ def test_bm25_scores_are_bit_identical_to_the_reference_scan():
 
 def test_cached_tokens_score_exactly_like_fresh_ones():
     query = "周末去东京吃海底捞 debugging"
-    fresh = _bm25_rank(query, _pool(), stop_names=["主人"])
+    fresh = hr._bm25_rank(query, _pool(), stop_names=["主人"])
     assert hr._TOKEN_CACHE  # the first pass filled it
-    cached = _bm25_rank(query, _pool(), stop_names=["主人"])
+    cached = hr._bm25_rank(query, _pool(), stop_names=["主人"])
     assert [(doc["id"], score) for doc, score in cached] == [
         (doc["id"], score) for doc, score in fresh
     ]
@@ -152,7 +151,7 @@ def test_cached_tokens_score_exactly_like_fresh_ones():
 
 def test_a_cached_pool_is_not_tokenized_again():
     pool = _pool()
-    _bm25_rank("海底捞", pool, stop_names=[])
+    hr._bm25_rank("海底捞", pool, stop_names=[])
     calls = []
     real = hr._tokenize
 
@@ -161,35 +160,35 @@ def test_a_cached_pool_is_not_tokenized_again():
         return real(text, stop_names)
 
     with patch.object(hr, "_tokenize", counting):
-        _bm25_rank("东京旅行", pool, stop_names=[])
+        hr._bm25_rank("东京旅行", pool, stop_names=[])
     assert calls == ["东京旅行"]  # the query only
 
 
 def test_token_cache_keys_on_the_stop_names():
     pool = [{"id": "a", "text": "小天喜欢海底捞"}]
-    with_name = _bm25_scores("小天 海底捞", pool, stop_names=["小天"])
-    without = _bm25_scores("小天 海底捞", pool, stop_names=[])
+    with_name = hr._bm25_scores("小天 海底捞", pool, stop_names=["小天"])
+    without = hr._bm25_scores("小天 海底捞", pool, stop_names=[])
     assert "小天" not in with_name[0][2]
     assert "小天" in without[0][2]
 
 
 def test_text_holding_the_separator_is_tokenized_but_not_cached():
     pool = [{"id": "a", "text": "海底捞\x00火锅"}]
-    first = _bm25_scores("海底捞", pool, stop_names=[])
+    first = hr._bm25_scores("海底捞", pool, stop_names=[])
     assert not hr._TOKEN_CACHE
-    assert _bm25_scores("海底捞", pool, stop_names=[]) == first
+    assert hr._bm25_scores("海底捞", pool, stop_names=[]) == first
 
 
 def test_token_cache_stays_under_its_byte_cap(monkeypatch):
     monkeypatch.setattr(hr, "HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES", 4096)
     pool = [{"id": str(i), "text": f"用户第{i}次去海底捞吃火锅"} for i in range(200)]
-    first = _bm25_rank("海底捞", pool, stop_names=[])
+    first = hr._bm25_rank("海底捞", pool, stop_names=[])
     assert hr._TOKEN_CACHE_BYTES <= 4096
     assert 0 < len(hr._TOKEN_CACHE) < len(pool)
     # A scan never evicts what it cached itself: the pool larger than the
     # cap keeps the same resident head and still scores the same.
     resident = list(hr._TOKEN_CACHE)
-    assert _bm25_rank("海底捞", pool, stop_names=[]) == first
+    assert hr._bm25_rank("海底捞", pool, stop_names=[]) == first
     assert list(hr._TOKEN_CACHE) == resident
 
 
