@@ -27,6 +27,11 @@
 # =============================================================================
 set -eu
 
+# 备份里有 API Key（config/core_config.json）与实例访问密钥（instance_access.key），
+# 还有 TLS 私钥。宿主上 sudo 默认 umask 022，会让输出目录 0755、归档 0644 ——
+# 同机其它账号能直接读。在任何文件被创建之前先把 umask 收紧。
+umask 077
+
 DRY_RUN=0
 KEEP=0
 STOP_CONTAINER=1
@@ -123,6 +128,14 @@ fi
 
 mkdir -p "$out_dir"
 [ ! -L "$out_dir" ] || { echo "backup: 输出目录不能是符号链接: $out_dir" >&2; exit 1; }
+# 已存在的目录不会因为 umask 变紧而改变权限：显式收紧，否则早先以 022 建的
+# 目录会继续把备份暴露给同机其它账号。
+owner=$(stat -c '%u' "$out_dir")
+[ "$owner" = "$(id -u)" ] || {
+    echo "backup: ⚠️  输出目录 $out_dir 属于 uid $owner，不是你；无法确认权限是否正确" >&2
+}
+chmod 700 "$out_dir" 2>/dev/null || \
+    echo "backup: ⚠️  无法收紧 $out_dir 的权限，请确认它不对其他本机账号可读" >&2
 
 # 输出目录不能落在数据目录里面，否则备份会被下一次备份打进去
 resolved_home=$(cd -- "$home_dir" && pwd -P)
@@ -131,23 +144,58 @@ case "$resolved_out/" in
     "$resolved_home"/*) echo "backup: 输出目录不能位于数据目录内部" >&2; exit 1 ;;
 esac
 
+# 同一秒内的两次调用（手动 + 定时撞车）会选中同一个文件名，第二次的 tar -czf
+# 会截断第一份归档 —— 也就是悄悄毁掉一份可能是最后的完好备份。
+# 名字里带 PID，输出目录上一把锁，双保险。
+if command -v flock >/dev/null 2>&1; then
+    exec 8>"$out_dir/.neko-backup.lock"
+    if ! flock -n 8; then
+        echo "backup: 另一个备份正在进行（锁 $out_dir/.neko-backup.lock），本次退出" >&2
+        exit 1
+    fi
+fi
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-archive="$out_dir/neko-backup-$stamp.tar.gz"
+archive="$out_dir/neko-backup-$stamp-$$.tar.gz"
 
 # ── 冷备：先停容器，退出时恢复原来的运行状态 ────────────────────────────────
+# 冷备的前提是"确认容器已停"。无法确认时不能默默按冷备继续 —— 真实数据容器
+# 可能仍在写 SQLite，而脚本不会给出一致性警告，这等于把最危险的场景伪装成安全。
+# 注意别用 $state 这个名字：它上面是数据根（$home_dir/.local/share/N.E.K.O）。
+container_state=''
+if ! command -v docker >/dev/null 2>&1; then
+    container_state='no-docker-cli'
+elif ! container_state=$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null); then
+    container_state='inspect-failed'
+fi
+
 container_was_running=0
 if [ "$STOP_CONTAINER" = "1" ]; then
-    if command -v docker >/dev/null 2>&1; then
-        if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)" = "true" ]; then
+    case "$container_state" in
+        true)
             container_was_running=1
             echo "backup: 停止容器 $CONTAINER（冷备，保证 SQLite 一致）"
             docker stop "$CONTAINER" >/dev/null
-        else
+            if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo unknown)" != "false" ]; then
+                echo "backup: ❌ 无法确认容器 $CONTAINER 已停止" >&2
+                exit 1
+            fi
+            ;;
+        false)
             echo "backup: 容器 $CONTAINER 未在运行，按冷备继续"
-        fi
-    else
-        echo "backup: 未找到 docker CLI，无法确认容器状态；按冷备继续"
-    fi
+            ;;
+        no-docker-cli)
+            echo "backup: ❌ 未找到 docker CLI，无法确认容器 $CONTAINER 是否已停止。" >&2
+            echo "backup:    这不是"容器没跑"的证据，可能正对着一个仍在写入的数据目录。" >&2
+            echo "backup:    确认容器已停后重试，或显式接受风险：--no-stop" >&2
+            exit 1
+            ;;
+        inspect-failed)
+            echo "backup: ❌ 无法检查容器 $CONTAINER（不存在、daemon 不可用或名字写错）。" >&2
+            echo "backup:    无法确认它没在写数据，因此不能按冷备继续。" >&2
+            echo "backup:    --container 的名字或 --no-stop 由你确认后重试。" >&2
+            exit 1
+            ;;
+    esac
 else
     echo "backup: ⚠️  --no-stop：容器仍在写入。memory/time_indexed.db 等 SQLite 可能在打包"
     echo "backup:    过程中被改写到不一致状态，**本次备份不保证可恢复**。"
@@ -178,10 +226,14 @@ if [ -z "$pack_list" ]; then
 fi
 
 echo "backup: 写入 $archive"
+#.tar 的非零退出码必须当失败处理：源文件读不到或打包中消失时，tar 仍可能留下
+# 一个"可解压、非空"的残缺归档，只靠后面的 tar -tzf 是发现不了的 ——
+# 那样脚本会报成功，还可能借着 --keep 把上一份完好备份删掉。
 # shellcheck disable=SC2086
 if ! tar -czf "$archive" $EXCLUDES -C "$home_dir" $pack_list; then
-    # GNU tar 把"读取时文件被改动"也算非零；真正的判定在下面的校验
-    echo "backup: ⚠️  tar 返回非零（见上方警告），继续做完整性校验"
+    echo "backup: ❌ tar 执行失败，本次备份作废（不保留残缺归档）" >&2
+    rm -f "$archive" "$archive.manifest.txt"
+    exit 1
 fi
 
 # ── 校验：重新读一遍归档，确认可解、条目数非零 ──────────────────────────────
@@ -211,7 +263,7 @@ echo "backup: 完成，$entry_count 个条目，$(du -h "$archive" | cut -f1)"
 echo "backup: 恢复步骤:"
 echo "backup:   1) docker compose down"
 echo "backup:   2) 先把现有 neko-home 改名留档（万一恢复的是错的）"
-echo "backup:   3) tar -xzf $archive -C <neko-home 的父目录>"
+echo "backup:   3) tar -xzf $archive -C <neko-home>   # 归档内是 .local/ 与 ssl/，解到数据目录本身>"
 echo "backup:   4) docker compose up -d，然后在 Web UI 确认角色/记忆/插件都在"
 echo "backup:   5) 实例访问密钥若一并恢复，终端不需要重新配对"
 

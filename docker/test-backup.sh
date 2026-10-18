@@ -52,9 +52,11 @@ else
 fi
 
 echo
+# 测试机没有 docker（CI 上也没有名为 neko 的容器），冷备门禁会拒绝执行 ——
+# 这正是 T9 要覆盖的行为。成功路径必须显式接受风险：--no-stop。
 echo "== T2 正常备份：主副本在内、可重建的在外 =="
 make_home "$WORK/t2home"
-if sh "$BACKUP" --home "$WORK/t2home" --out "$WORK/t2out" >"$WORK/t2.log" 2>&1; then
+if sh "$BACKUP" --home "$WORK/t2home" --out "$WORK/t2out" --no-stop >"$WORK/t2.log" 2>&1; then
     archive=$(ls "$WORK/t2out"/neko-backup-*.tar.gz 2>/dev/null | head -1)
     if [ -z "$archive" ]; then
         fail "没有生成归档"
@@ -90,13 +92,18 @@ else
 fi
 
 echo
-echo "== T4 --keep 轮转 =="
+echo "== T4 归档名唯一 + --keep 轮转 =="
 make_home "$WORK/t4home"
-i=0
-while [ "$i" -lt 3 ]; do
-    sh "$BACKUP" --home "$WORK/t4home" --out "$WORK/t4out" --keep 1 >/dev/null 2>&1
-    i=$((i + 1))
-done
+# 同一秒内连做两次：如果归档名只有秒级精度，第二次会截断第一份
+sh "$BACKUP" --home "$WORK/t4home" --out "$WORK/t4out" --no-stop >/dev/null 2>&1
+sh "$BACKUP" --home "$WORK/t4home" --out "$WORK/t4out" --no-stop >/dev/null 2>&1
+both=$(ls -1 "$WORK/t4out"/neko-backup-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+if [ "$both" = "2" ]; then
+    pass "同一秒内连续两次备份生成了 2 份不同归档"
+else
+    fail "同一秒内连续两次备份只留下 $both 份（归档名冲突，前一份被覆盖）"
+fi
+sh "$BACKUP" --home "$WORK/t4home" --out "$WORK/t4out" --no-stop --keep 1 >/dev/null 2>&1
 left=$(ls -1 "$WORK/t4out"/neko-backup-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
 if [ "$left" = "1" ]; then
     pass "--keep 1 之后只剩 1 份"
@@ -143,6 +150,36 @@ if sh "$BACKUP" --home "$WORK/t8home" --out "$WORK/t8out" --no-stop >"$WORK/t8.l
     fi
 else
     fail "--no-stop 执行失败"
+fi
+
+echo
+echo "== T9 无法确认容器状态时拒绝冷备（而不是默默继续）=="
+make_home "$WORK/t9home"
+if sh "$BACKUP" --home "$WORK/t9home" --out "$WORK/t9out" >"$WORK/t9.log" 2>&1; then
+    fail "容器状态无法确认却按冷备继续了"
+else
+    if grep -q '无法确认容器' "$WORK/t9.log" && grep -q -- '--no-stop' "$WORK/t9.log"; then
+        pass "拒绝冷备并指向 --no-stop"
+    else
+        fail "拒绝了但没有给出 --no-stop 的指引"
+    fi
+fi
+
+echo
+echo "== T10 备份产物权限收紧（umask 077）=="
+make_home "$WORK/t10home"
+sh "$BACKUP" --home "$WORK/t10home" --out "$WORK/t10out" --no-stop >/dev/null 2>&1
+archive=$(ls "$WORK/t10out"/neko-backup-*.tar.gz 2>/dev/null | head -1)
+if [ -n "$archive" ]; then
+    dir_mode=$(stat -c '%a' "$WORK/t10out")
+    file_mode=$(stat -c '%a' "$archive")
+    if [ "$dir_mode" = "700" ] && [ "$file_mode" = "600" ]; then
+        pass "输出目录 700、归档 600（同机其它账号读不到 API Key 与私钥）"
+    else
+        fail "权限过宽：目录 $dir_mode / 归档 $file_mode"
+    fi
+else
+    fail "没有生成归档"
 fi
 
 echo
