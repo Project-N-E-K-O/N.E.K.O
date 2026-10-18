@@ -232,7 +232,8 @@ test('the model name is decoded out of the quoted URL before lookup', () => {
         ['/static/vrm/a.vrm#frag', 'a'],
         ['', ''],
         ['/static/vrm/', ''],
-        ['%E0%A4%A.vrm', ''],
+        ['%E0%A4%A.vrm', '%E0%A4%A'],
+        ['/user_vrm/100%cute.vrm', '100%cute'],
         ['/static/vrm/nodot', 'nodot']
     ];
     for (const [input, expected] of cases) {

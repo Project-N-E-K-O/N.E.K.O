@@ -1938,10 +1938,11 @@ class VRMManager {
         const dot = last.lastIndexOf('.');
         const stem = dot > 0 ? last.substring(0, dot) : last;
         if (!stem) return '';
+        // 与 ModelPathHelper.getVrmModelName 一致：文件名里本来就有 %（如 100%cute.vrm）时解码会失败，保留原名
         try {
             return decodeURIComponent(stem);
         } catch (error) {
-            return '';
+            return stem;
         }
     }
 
