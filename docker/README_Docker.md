@@ -176,7 +176,12 @@ docker pull docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:ci-standard
 
 ## 🚀 快速开始
 
-### 1. 使用 docker-compose（推荐）
+### 1. 使用 Docker Compose（推荐）
+
+> **前置条件：Docker Compose v2（≥ 2.24）**，即 `docker compose`（空格）而不是已停止维护的
+> `docker-compose`（v1）。本文件用了 `env_file` 的 `required: false` 形式，v1 和 2.24 之前的 v2
+> 会直接拒绝解析整份配置。
+> 只能装旧版时，把 compose 里的 `env_file:` 段改成 `env_file: [.env]` 并确保 `.env` 存在。
 
 ```bash
 # 1. 复制环境变量模板（仓库里的文件名是 env.template）
@@ -185,14 +190,14 @@ cp env.template .env
 # 2. 编辑 .env 文件，填入你的 API Key
 nano .env
 
-# 3. 启动服务
-docker-compose up -d
+# 3. 启动服务（在 docker/ 目录下执行）
+docker compose up -d
 
 # 4. 查看日志
-docker-compose logs -f
+docker compose logs -f
 
 # 5. 停止服务
-docker-compose down
+docker compose down
 ```
 
 #### 环境变量是怎么进容器的
@@ -308,8 +313,16 @@ sudo sh backup.sh                        # 冷备到 docker/backups/（默认先
 sudo sh backup.sh --keep 7               # 只保留最近 7 份
 sudo sh backup.sh --dry-run              # 只看会打包/排除什么，不写文件
 sudo sh backup.sh --no-stop              # 不停容器（放弃一致性保证，会明确警告）
+sudo sh backup.sh --slim                 # 瘦身：排除插件 vendor/（见下）
 sudo sh backup.sh --container neko-2 --home ./neko-home-2    # 多实例
 ```
+
+**插件 `vendor/` 默认会被备份。** 那是插件的 Python 依赖，容器启动时不会重建 ——
+少了它，恢复出来的插件会报依赖缺失并被跳过：**数据回来了，能力没回来**。
+确实要控制体积时用 `--slim`，代价是恢复后需要重新安装这些插件的依赖。
+
+脚本要求 **Linux 宿主**（用到 GNU `stat`/`tar`/`flock`）；BSD/macOS 上会先明确报错，
+不会静默失败。同一实例的备份会有实例级锁：即使两次调用用了不同的 `--out`，也不会重叠。
 
 **默认停机是刻意的**：`memory/` 下有 SQLite（`time_indexed.db`），容器运行中直接打包可能拷到
 **撕裂的数据库**，而症状要到恢复当天才出现。不能停机就用 `--no-stop`，脚本会明确告诉你这次没有保证。
@@ -323,6 +336,10 @@ sudo sh backup.sh --container neko-2 --home ./neko-home-2    # 多实例
 产出三件：`neko-backup-<UTC>.tar.gz`、`.sha256`（`sha256sum -c` 可验证）、`.manifest.txt`（文件清单）。
 
 **恢复**（脚本每次都会把这几步印在输出结尾）：
+
+> 多实例恢复：第 1、4 步必须**复用该实例启动时的 `-p` 与同一组 `NEKO_*` 覆盖值**
+> （尤其是 `NEKO_HOME_DIR` 与端口）。否则 Compose 会去操作默认项目，目标容器可能仍在
+> 往你要解压的目录里写 —— SQLite 会和解压出来的文件打架，`up` 起的也不是那个实例。
 
 1. `docker compose down`
 2. 先把现有 `neko-home` **改名留档** —— 万一恢复的是错的

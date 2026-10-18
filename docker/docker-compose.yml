@@ -12,9 +12,11 @@ version: '3.8'
 #   docker compose up -d                                   # 标准版
 #   NEKO_IMAGE_VERSION=latest-full docker compose up -d    # 完整版
 #
-#   # 本地构建：本文件没有 build: 段，docker compose build 不会构建任何东西
+#   # 本地构建：本文件没有 build: 段，docker compose build 不会构建任何东西。
+#   # 下面两条要在仓库根执行（构建上下文是仓库根），所以 compose 要显式给 -f；
+#   # 在 docker/ 目录里执行时省掉 -f 即可。
 #   docker build -f docker/Dockerfile -t neko:local .
-#   NEKO_IMAGE=neko:local docker compose up -d
+#   NEKO_IMAGE=neko:local docker compose -f docker/docker-compose.yml up -d
 #
 # 多实例：会互相撞车的名字、路径、端口全部可以覆盖，**并且必须给不同的 Compose
 # 项目名**。只改容器名/端口而不加 -p，Compose 仍认为是同一项目的同一个
