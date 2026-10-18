@@ -243,13 +243,13 @@ def test_overlap_replay_carries_the_real_onset_not_the_replay_instant() -> None:
             f"alongside its token, got: {window!r}"
         )
 
-    # 只认「把 SPEECH_RESUMED 重放给 _handle_independent_asr_activity」那一处，
-    # 不要把无关的集合字面量里出现的同名枚举也算进来。
-    # 只认 overlap **重放**那一处：它由「兑付一次 completed-overlap credit」的那段
-    # 代码驱动。同名枚举在别处也会被正常派发（那些是真实发生的时刻，用进函数时钟
-    # 是对的），不能一并要求它们交接 onset。
-    # overlap 有**两条**重放路径：credit 兑付那条，和 provider final 到达时的直接
-    # 重放。两条都必须把真实开口时刻交给确认分支 —— 只修其中一条正是上一轮的漏。
+    # Match only SPEECH_RESUMED replay to _handle_independent_asr_activity,
+    # never unrelated set literals containing the same enum.
+    # Match overlap replay only, driven by code redeeming one completed-overlap credit.
+    # The same enum is normally dispatched elsewhere at real event times, correctly using function-entry
+    # clocks; those dispatches need not hand over onset times.
+    # Overlap has two replay paths: credit redemption and direct replay on provider final.
+    # Both must pass real speech onset to confirmation; fixing just one caused the previous omission.
     replay = [
         index
         for index, line in enumerate(source)
@@ -259,8 +259,8 @@ def test_overlap_replay_carries_the_real_onset_not_the_replay_instant() -> None:
     assert len(replay) >= 2, f"expected both overlap replay paths, got {len(replay)}"
     for index in replay:
         window = chr(10).join(source[max(0, index - 30) : index])
-        # credit 兑付那条按队列 popleft（每张 credit 一个时刻），直接重放那条用它
-        # 自己捕获的 overlap_onset_at。两条都必须交接。
+        # Credit redemption uses queue popleft (one timestamp per credit); direct replay uses
+        # its captured overlap_onset_at. Both must hand it over.
         assert (
             "self._asr_pending_speech_onset_at = replay_onset_at" in window
             or "self._asr_pending_speech_onset_at = overlap_onset_at" in window

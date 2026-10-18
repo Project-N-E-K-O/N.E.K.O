@@ -423,7 +423,7 @@ def test_loader_drops_invalid_threshold_values():
     ('chatting',        None,           None,     'warm'),
     ('stale_returning', None,           None,     'warm'),
     ('focused_work',    None,           None,     'concise'),
-    # ``idle`` while desk-pet is up reads as 摸鱼 territory — pair with
+    # ``idle`` while the desk pet is up reads as a goofing-off state — pair it with
     # ``playful`` (light banter) instead of the businesslike ``concise``.
     # ``transitioning`` and ``away`` keep ``concise``: the former is
     # mid-context-switch, the latter doesn't render.
@@ -457,15 +457,15 @@ def _witty_snapshot() -> ActivitySnapshot:
 
 
 @pytest.mark.unit
-# zh/ja/ko/ru/en 是 _normalize_lang 能区分出的全部语言；es/pt 经 _normalize_lang
-# 回退 en，这里一并断言它们至少拿到 en 质量闸（而非什么都没有）。
+# zh/ja/ko/ru/en are all languages that _normalize_lang can distinguish; es/pt fall back to en through _normalize_lang
+# so assert here that they at least receive the en quality bar (rather than none).
 @pytest.mark.parametrize('lang', ['zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
 def test_witty_quality_bar_renders(lang):
-    """``witty`` 渲染时必须带上「没梗就 [PASS]」质量闸（区别于其它语气）。
+    """``witty`` output must include the \"if there's no joke, use [PASS]\" quality bar (unlike other tones).
 
-    回归保护：质量闸是 witty 专属的额外一行，靠 ACTIVITY_TONE_QUALITY_BARS +
-    formatter 的 .get(tone) 渲染。若任一环节回归（漏渲染 / 表里缺 lang），
-    entertainment 就退回「有啥说啥」，丢掉「没梗宁可不说」的产品意图。
+    Regression guard: the quality bar is an extra line exclusive to witty, rendered through ACTIVITY_TONE_QUALITY_BARS +
+    formatter's .get(tone). If either stage regresses (line omitted / language missing from the table),
+    entertainment falls back to \"say whatever comes to mind\", losing the product intent of \"if there's no joke, say nothing\".
     """
     out = format_activity_state_section(_witty_snapshot(), lang=lang)
     assert '[PASS]' in out, f'{lang}: witty 质量闸（[PASS] 指令）未渲染'
@@ -473,7 +473,7 @@ def test_witty_quality_bar_renders(lang):
 
 @pytest.mark.unit
 def test_non_witty_tone_has_no_quality_bar():
-    """非 witty 语气不应渲染质量闸——它是 witty 专属，别误伤其它语气。"""
+    """Non-witty tones must not render the quality bar — it is exclusive to witty; do not affect other tones."""
     snap = ActivitySnapshot(
         state='idle', state_age_seconds=10.0, previous_state=None,
         transitioned_recently=False, stale_returning=False,
@@ -565,8 +565,8 @@ def test_skip_probability_defaults():
     assert derive_skip_probability('idle') == 0.0
 
     # Gaming defaults — competitive intentionally dropped to 0 (was 0.3).
-    # 屏幕专注态的安静感现在由 /proactive_chat 的 base-interval×1.25 + 后端
-    # 抖动机制承担，skip_probability 只留 immersive_horror 这一例外。
+    # The quiet feel during focused screen activity is now handled by /proactive_chat's base-interval×1.25 plus the backend
+    # jitter mechanism; skip_probability remains only for the immersive_horror exception.
     assert derive_skip_probability('gaming', game_intensity='competitive') == 0.0
     assert derive_skip_probability(
         'gaming', game_intensity='immersive', game_genre='horror',
@@ -1081,10 +1081,10 @@ def test_activity_guess_signature_excludes_idle_bucket():
 
     loop_source = inspect.getsource(UserActivityTracker._activity_guess_loop)
     sig_source = inspect.getsource(UserActivityTracker._coarse_activity_sig)
-    # idle_bucket 是旧签名里按 idle 秒数分桶的那个变量名（空烧根因），断言它
-    # 不回归即精准守住该行为。不断言 "system_idle_seconds" not in source：那比
-    # 约束目标更宽，会误伤将来 loop 里对 idle 秒数的其它无害引用（喂 LLM 的
-    # signals 仍在 _snapshot_signals_for_llm 这个独立方法里用到它）。
+    # idle_bucket is the variable name from the old signature that bucketed idle seconds (the cause of wasted work); asserting it
+    # does not regress precisely protects that behavior. Do not assert "system_idle_seconds" not in source: that is broader
+    # than the target constraint and would wrongly reject other harmless future uses of idle seconds in the loop (LLM input
+    # signals still use it in the separate _snapshot_signals_for_llm method).
     assert "idle_bucket" not in loop_source
     assert "idle_bucket" not in sig_source
     assert "self._activity_guess_gate.should_fire(" in loop_source
@@ -1527,25 +1527,25 @@ def _tick_for_seconds(tracker, *, state: str, seconds: float, step: float = 20.0
 
 @pytest.mark.unit
 def test_context_prompt_reemits_after_session_baseline_reset():
-    """跨 session 仍在同一状态时，reset 基线后应重新算作「进入」再置 pending。
+    """When the same state continues across sessions, resetting the baseline should count it as a new entry and set pending again.
 
-    回归保护 Codex P2：tracker 跨 session 长存，若不在 session 开始清情境弹窗基线，
-    「上个 session 在游戏、新 session 仍在游戏」就检测不到进入、漏弹。也确认这只动情境
-    弹窗专属基线、状态保持期间不会重复触发。
+    Regression guard for Codex P2: the tracker persists across sessions. If the contextual-popup baseline is not cleared at session start,
+    \"gaming in the previous session and still gaming in the new session\" will not register entry, so the popup is missed. Also confirms only the baseline
+    specific to contextual popups changes and that it does not trigger repeatedly while the state persists.
     """
     tracker = _make_tracker_for_break_tests()
 
-    # session A：进入 gaming → 置 play pending
+    # Session A: enter gaming → set play pending
     tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1000.0)
     assert tracker._context_prompt_pending is not None
     assert tracker._context_prompt_pending['context'] == 'play'
 
-    # 模拟 drain 消费掉；仍在 gaming → 状态保持，下一 tick 不重复触发
+    # Simulate drain consuming it; still gaming → state persists, and the next tick does not trigger again
     tracker._context_prompt_pending = None
     tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1020.0)
     assert tracker._context_prompt_pending is None
 
-    # 新 session：清基线 → 仍在 gaming 也重新算「进入」→ 再置 play pending
+    # New session: clear baseline → still gaming counts as entering again → set play pending again
     tracker.reset_context_prompt_baseline()
     tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1040.0)
     assert tracker._context_prompt_pending is not None
@@ -1554,18 +1554,18 @@ def test_context_prompt_reemits_after_session_baseline_reset():
 
 @pytest.mark.unit
 def test_context_prompt_pending_cleared_on_leaving_target_state():
-    """进游戏置 pending 后、还没 drain 就切到非目标态(idle) → 过期 pending 应被清掉。
+    """After entering a game and setting pending, switching to a non-target state (idle) before drain → the expired pending item must be cleared.
 
-    回归保护 Codex P2：pending 可能由 get_snapshot 路径（实验组 kick）置、还没等 loop
-    drain，用户就离开了游戏/工作；不清就会把已离开的场景推成过期弹窗。
+    Regression guard for Codex P2: pending may be set through the get_snapshot path (experimental-group kick) before the loop
+    drains it, and the user may leave the game/work before then; without clearing it, an expired popup would be pushed for a scene the user left.
     """
     tracker = _make_tracker_for_break_tests()
 
-    # 进 gaming → 置 play pending（模拟 get_snapshot 置、未 drain）
+    # Enter gaming → set play pending (simulate get_snapshot setting it, not yet drained)
     tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1000.0)
     assert tracker._context_prompt_pending is not None
 
-    # 切到 idle（非目标态）→ 过期 pending 被清
+    # Switch to idle (not a target state) → clear the expired pending item
     tracker._tick_break_reminders(_snap_for_state('idle', app=None), now=1020.0)
     assert tracker._context_prompt_pending is None
 

@@ -59,7 +59,7 @@ def test_parse_gptsovits_prefix():
 
 
 def test_parse_disabled_placeholder_is_empty():
-    # 退役的 __gptsovits_disabled__| 占位符不是一个活跃音色 → 归一成空
+    # Retired __gptsovits_disabled__| placeholders are not active voices; normalize to empty.
     vc = parse_legacy_voice_id(f"{GSV_DISABLED_VOICE_PREFIX}http://127.0.0.1:9881|my_voice")
     assert vc is not None
     assert vc.is_empty()
@@ -71,7 +71,7 @@ def test_parse_empty_is_empty():
 
 
 def test_parse_bare_id_returns_none():
-    # 裸 id 无法在无上下文时定 provider/source
+    # Bare IDs cannot determine provider/source without context.
     assert parse_legacy_voice_id("voice-tone-PGLiTXeJCS") is None
     assert parse_legacy_voice_id("alloy") is None
 
@@ -79,10 +79,10 @@ def test_parse_bare_id_returns_none():
 # ── normalize_voice_id (pure, injected context) ──────────────────────────────
 
 def test_normalize_prefix_short_circuits_context():
-    # 带前缀的直接走 parse，不碰注入的上下文
+    # Parse prefixed IDs directly without consulting injected context.
     vc = normalize_voice_id(
         "eleven:abc",
-        vllm_selected=True,  # 即便 vllm 选中也不应误判（前缀优先）
+        vllm_selected=True,  # Even selected vllm must not cause misclassification: prefixes take precedence.
         clone_provider_lookup=lambda r: "cosyvoice",
     )
     assert vc == VoiceConfig(source=SOURCE_CLONE, provider="elevenlabs", ref="abc")
@@ -129,7 +129,7 @@ def test_normalize_free_preset():
 
 
 def test_normalize_hosted_preset_marks_selected_provider():
-    # 选中的 hosted/local provider 的预制音色（如 MiMo 的 Milo）→ source=preset/provider=<key>
+    # Presets from the selected hosted/local provider (e.g. MiMo Milo) -> source=preset/provider=<key>.
     vc = normalize_voice_id(
         "Milo",
         hosted_preset_provider=lambda r: "mimo" if r == "Milo" else None,
@@ -138,7 +138,7 @@ def test_normalize_hosted_preset_marks_selected_provider():
 
 
 def test_normalize_hosted_preset_after_native_before_free():
-    # 解析顺序与 validate_voice_id 一致：native 命中先于 hosted preset，hosted preset 先于 free
+    # Match validate_voice_id order: native before hosted presets, hosted presets before free.
     native_first = normalize_voice_id(
         "Milo",
         is_native=lambda r: True,
@@ -155,7 +155,7 @@ def test_normalize_hosted_preset_after_native_before_free():
 
 
 def test_normalize_hosted_preset_miss_carries_ref():
-    # lookup 返回 None（未选中该 provider / 非预制）→ 不误标，裸 ref 原样带过
+    # None lookup (provider not selected / not a preset): preserve the bare ref without mislabeling.
     vc = normalize_voice_id("Milo", hosted_preset_provider=lambda r: None)
     assert vc == VoiceConfig(ref="Milo")
 
@@ -166,7 +166,7 @@ def test_normalize_unresolved_carries_ref():
 
 
 def test_normalize_resolution_order_vllm_before_clone():
-    # vllm 选中优先于 clone 查找（与 validate_voice_id 顺序一致）
+    # Selected vllm takes precedence over clone lookup, matching validate_voice_id.
     vc = normalize_voice_id(
         "x",
         vllm_selected=True,
@@ -208,7 +208,7 @@ def test_read_legacy_from_flat_string():
 
 
 def test_read_legacy_from_object_clone_restores_prefix():
-    # 对象形态的 clone 读回 legacy 前缀串（与 dispatch/validate 既有契约一致）
+    # Read object-form clones back as legacy prefixed strings, preserving dispatch/validate contracts.
     assert read_legacy_voice_id(
         {"source": "clone", "provider": "elevenlabs", "ref": "abc"}
     ) == "eleven:abc"
@@ -218,7 +218,7 @@ def test_read_legacy_from_object_clone_restores_prefix():
 
 
 def test_read_legacy_from_object_preset_is_bare_ref():
-    # preset/native/free 无前缀，对象 round-trip 回裸 ref（与扁平存储零差异）
+    # Preset/native/free have no prefix: round-trip objects to bare refs, identical to flat storage.
     assert read_legacy_voice_id(
         {"source": "preset", "provider": "gemini", "ref": "Puck"}
     ) == "Puck"
@@ -228,7 +228,7 @@ def test_read_legacy_from_object_preset_is_bare_ref():
 
 
 def test_read_legacy_object_str_roundtrip_equivalence():
-    # 关键不变式：扁平串 normalize→to_dict 存对象，再 read 回来 == 原扁平串
+    # Key invariant: normalize flat string -> store to_dict object -> read back equals original flat string.
     for legacy in ("eleven:abc", "gsv:myv", "voice-tone-X", "Puck", ""):
         vc = parse_legacy_voice_id(legacy) or VoiceConfig(ref=legacy)
         assert read_legacy_voice_id(vc.to_dict()) == legacy

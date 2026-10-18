@@ -1,17 +1,17 @@
-"""Tests for DuckDuckGo search parsing (取代主动搭话窗口上下文里的 Google 搜索)。
+"""Tests for DuckDuckGo parsing (replaces Google search in proactive window context).
 
-无法对 html.duckduckgo.com 做端到端实跑时（如被网络屏蔽），这些测试用真实的
-DDG HTML 结构校验解析器：跳转链接解码、广告跳过、字段提取、上限裁剪。
+When html.duckduckgo.com end-to-end runs are unavailable (e.g. network blocks), use real
+DDG HTML structure to validate redirect decoding, ad skipping, field extraction, and limit trimming.
 """
 import pytest
 
 from utils.web_scraper import parse_duckduckgo_results
 
 
-# 取自 html.duckduckgo.com/html/ 的真实结构（精简）：
-# - 第 1 条：正常结果，href 是 //duckduckgo.com/l/?uddg=<urlencoded>&rut=...
-# - 第 2 条：广告（class 含 result--ad），必须被跳过
-# - 第 3 条：真实 URL 自带查询参数（含 %3D），验证 parse_qs 只解一次码、不破坏
+# Simplified real structure from html.duckduckgo.com/html/:
+# - First: normal result, href //duckduckgo.com/l/?uddg=<urlencoded>&rut=...
+# - Second: ad (class contains result--ad), must skip.
+# - Third: actual URL has query parameters including %3D; verify parse_qs decodes once without corruption.
 _DDG_HTML = """
 <html><body>
   <div class="result results_links results_links_deep web-result">
@@ -52,24 +52,24 @@ _DDG_HTML = """
 def test_parse_decodes_uddg_redirect_and_skips_ads():
     results = parse_duckduckgo_results(_DDG_HTML, limit=10)
 
-    # 广告被跳过，只剩两条真实结果
+    # Skip ad, retaining two real results only.
     assert len(results) == 2
 
     first = results[0]
     assert first['title'] == 'Project NEKO Official'
-    # uddg 跳转链接被解码成真实地址
+    # Decode uddg redirect to actual URL.
     assert first['url'] == 'https://www.example.com/neko'
     assert 'virtual desktop companion' in first['abstract']
 
-    # 任何结果都不应残留 DDG 跳转域名
+    # No result retains DDG redirect domain.
     assert all('duckduckgo.com/l/' not in r['url'] for r in results)
-    # 广告标题不应出现
+    # No ad title appears.
     assert all('Merch' not in r['title'] for r in results)
 
 
 @pytest.mark.unit
 def test_parse_preserves_target_url_query_params():
-    """真实 URL 自带的查询参数（id=42，原文 %3D）只被解一次码，不被二次破坏。"""
+    """Decode actual URL query parameters (id=42, original %3D) once only, without double-decoding corruption."""
     results = parse_duckduckgo_results(_DDG_HTML, limit=10)
     store = next(r for r in results if r['title'] == 'NEKO Store Page')
     assert store['url'] == 'https://shop.example.com/p?id=42'
@@ -88,7 +88,7 @@ def test_parse_empty_html_returns_empty_list():
 
 @pytest.mark.unit
 def test_parse_scans_past_rejected_results():
-    # 被拒绝的条目（无效 uddg 目标）排在前面时，不能因预截断漏掉后面的有效结果
+    # Rejected invalid uddg targets first must not pretruncate away valid later results.
     junk = ''.join(
         f'''
         <div class="result results_links web-result">
@@ -116,8 +116,8 @@ def test_parse_scans_past_rejected_results():
 
 @pytest.mark.unit
 def test_parse_skips_results_without_usable_url():
-    # uddg 包着非 http 目标（javascript:）或残缺目标（裸 "https://"）
-    # → 整条丢弃，不以空/无效 URL 占用结果位
+    # uddg wraps non-http target (javascript:) or incomplete bare "https://";
+    # discard entirely, never consume result slots with empty/invalid URLs.
     html = '''
     <div class="result results_links web-result">
       <div class="links_main result__body">

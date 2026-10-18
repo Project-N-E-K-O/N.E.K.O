@@ -98,14 +98,14 @@ def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
 
     The resulting file is still a valid PNG; any image viewer / Electron can preview it normally.
     """
-    # PNG IEND 块固定 12 字节: 00 00 00 00  49 45 4E 44  AE 42 60 82
+    # PNG IEND chunks are fixed at 12 bytes: 00 00 00 00  49 45 4E 44  AE 42 60 82
     if len(png_data) < 12 or png_data[-12:-4] != b'\x00\x00\x00\x00IEND':
         raise ValueError("Invalid PNG: IEND chunk not found at end of file")
 
     iend = png_data[-12:]
     before_iend = png_data[:-12]
 
-    # 构建 neKo 块: length(4B, big-endian) + type(4B) + data + CRC32(4B)
+    # Build neKo chunk: length(4B, big-endian) + type(4B) + data + CRC32(4B)
     chunk_type = b'neKo'
     chunk_length = struct.pack('>I', len(zip_data))
     chunk_crc = struct.pack('>I', zlib.crc32(chunk_type + zip_data) & 0xFFFFFFFF)
@@ -118,14 +118,14 @@ def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
 async def get_character_cards():
     """Get all character cards in the character_cards folder."""
     try:
-        # 获取config_manager实例
+        # Get the config_manager instance
         config_mgr = get_config_manager()
 
-        # 确保character_cards目录存在
+        # Ensure character_cards exists
         config_mgr.ensure_chara_directory()
 
-        # 遍历 character_cards 目录下的所有 .chara.json 文件，并行读取
-        # （角色卡多时串行 await 会 N 次线程切换 + JSON 解析，整条接口延迟线性增长）
+        # Read all .chara.json files under character_cards concurrently
+        # Serial awaits require N thread switches/JSON parses with many cards, making endpoint latency grow linearly
         candidate_filenames = [f for f in os.listdir(config_mgr.chara_dir) if f.endswith('.chara.json')]
 
         async def _read_one_card(filename: str):
@@ -135,7 +135,7 @@ async def get_character_cards():
                 if data and data.get('name'):
                     _sync_catgirl_field_order(data)
                     return {
-                        'id': filename[:-11],  # 去掉 .chara.json 后缀
+                        'id': filename[:-11],  # Remove the .chara.json suffix
                         'name': data['name'],
                         'description': data.get('description', ''),
                         'tags': data.get('tags', []),
@@ -165,20 +165,20 @@ async def save_catgirl_to_model_folder(request: Request):
     try:
         data = await request.json()
         chara_data = data.get('charaData')
-        model_name = data.get('modelName')  # 接收模型名称而不是路径
+        model_name = data.get('modelName')  # Receive model names instead of paths
         file_name = data.get('fileName')
 
         if not chara_data or not model_name or not file_name:
             return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
 
-        # 使用find_model_directory函数查找模型的实际文件系统路径
+        # Use find_model_directory to locate the model's actual filesystem path
         model_folder_path, _ = find_model_directory(model_name)
 
-        # 检查模型目录是否存在
+        # Check model-directory existence
         if not model_folder_path:
             return JSONResponse({"success": False, "error": f"无法找到模型目录: {model_name}"}, status_code=404)
 
-        # 检查是否是用户导入的模型，只允许写入用户目录的模型，不允许写入 workshop/static
+        # Allow writes only to user-imported models in user directories, never Workshop/static models
         config_mgr = get_config_manager()
         is_user_model = is_user_imported_model(model_folder_path, config_mgr)
 
@@ -191,17 +191,17 @@ async def save_catgirl_to_model_folder(request: Request):
                 }
             )
 
-        # 确保模型文件夹存在
+        # Ensure the model folder exists
         if not os.path.exists(model_folder_path):
             os.makedirs(model_folder_path, exist_ok=True)
             logger.info(f"已创建模型文件夹: {model_folder_path}")
 
-        # 防路径穿越：只允许文件名，不允许路径
+        # Prevent traversal: permit filenames only, not paths
         safe_name = os.path.basename(file_name)
         if safe_name != file_name or ".." in safe_name or safe_name.startswith(("/", "\\")):
             return JSONResponse({"success": False, "error": "非法文件名"}, status_code=400)
 
-        # 保存角色卡到模型文件夹
+        # Save the character card into the model folder
         file_path = os.path.join(model_folder_path, safe_name)
         await atomic_write_json_async(file_path, chara_data, ensure_ascii=False, indent=2)
 
@@ -239,18 +239,18 @@ async def _save_character_card_serialized(data: dict):
         if not chara_data or not character_card_name:
             return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
 
-        # 获取config_manager实例
+        # Get the config_manager instance
         _config_manager = get_config_manager()
 
-        # 加载现有的characters.json
+        # Load existing characters.json
         characters = await _config_manager.aload_characters()
 
-        # 确保'猫娘'键存在
+        # Ensure the '猫娘' (catgirl) key exists
         if '猫娘' not in characters:
             characters['猫娘'] = {}
 
-        # 获取角色卡名称（档案名）
-        # 兼容中英文字段名
+        # Get the character-card name (profile name)
+        # Support Chinese and English field names
         chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
         name_error = _validate_profile_name(chara_name)
         if name_error:
@@ -264,14 +264,14 @@ async def _save_character_card_serialized(data: dict):
         previous_catgirl_data = copy.deepcopy(characters['猫娘'].get(chara_name, {}))
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
 
-        # 创建猫娘数据，只保存非空字段
+        # Build catgirl data with nonempty fields only
         catgirl_data = {}
         for k, v in filtered_chara_data.items():
             if k != '档案名' and k != 'name':
-                if v:  # 只保存非空字段
+                if v:  # Save nonempty fields only
                     catgirl_data[k] = v
 
-        # 更新同名卡时必须保留系统身份；新卡不接受导入包携带的身份。
+        # Preserve system identity when updating same-named cards; new cards cannot import packaged identities.
         previous_character_id = get_reserved(
             previous_catgirl_data,
             "character_id",
@@ -281,17 +281,17 @@ async def _save_character_card_serialized(data: dict):
             set_reserved(catgirl_data, "character_id", previous_character_id)
         else:
             ensure_catgirl_character_id(catgirl_data)
-        # 稳定 id：覆盖已有角色时沿用它原来的 id，新建角色生成新的（卡里不带 id）。
+        # Stable IDs: retain the original when replacing characters; generate new IDs for new characters, since cards contain none.
         previous_uid = get_character_uid(previous_catgirl_data)
         if previous_uid:
             set_reserved(catgirl_data, 'character_uid', previous_uid)
         else:
             assign_new_character_uid(catgirl_data)
 
-        # 更新或创建猫娘数据
+        # Update or create catgirl data
         characters['猫娘'][chara_name] = catgirl_data
 
-        # 保存到characters.json
+        # Save characters.json
         publish_cancelled = False
         if is_new_character:
             publish_cancelled = await asave_characters_with_recent_activation(
@@ -382,15 +382,15 @@ async def export_catgirl_card(name: str):
 
         catgirl_data = characters['猫娘'][name]
 
-        # 创建临时目录
+        # Create a temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             zip_path = temp_path / 'character_data.zip'
 
-            # 创建压缩包（使用UTF-8编码支持中文文件名）
+            # Create an archive with UTF-8 support for Chinese filenames
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # 1. 添加角色设定JSON（包含所有字段，但省略指定字段）
-                # 定义要省略的字段
+                # 1. Add character-setting JSON containing every field except explicit omissions
+                # Define omitted fields
                 FIELDS_TO_EXCLUDE = {'cursor_follow', 'physics', 'voice_id'}
 
                 def filter_excluded_fields(data):
@@ -412,12 +412,12 @@ async def export_catgirl_card(name: str):
                 })
                 zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
 
-                # 2. 检查并添加模型文件
+                # 2. Check and add model files
                 model_type = get_reserved(catgirl_data, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
                 model_added = False
 
                 if model_type == 'live2d':
-                    # 获取Live2D模型路径
+                    # Get the Live2D model path
                     live2d_path = get_reserved(
                         catgirl_data,
                         'avatar',
@@ -428,26 +428,26 @@ async def export_catgirl_card(name: str):
                     )
 
                     if live2d_path and live2d_path.strip():
-                        # 解析模型名称
+                        # Parse the model name
                         live2d_name = live2d_path.replace('\\', '/').rstrip('/')
                         if live2d_name.endswith('.model3.json'):
                             live2d_name = live2d_name.split('/')[-2] if '/' in live2d_name else live2d_name.replace('.model3.json', '')
                         else:
                             live2d_name = live2d_name.split('/')[-1]
 
-                        # 检查是否是随包发的内置模型（收方一定有，不用打进包里）
+                        # Check bundled built-ins, which recipients already have and need not include
                         if live2d_name in BUILTIN_LIVE2D_MODEL_NAMES:
                             logger.info(
                                 f'猫娘 {name} 使用的是内置模型 '
                                 f'{live2d_name}，跳过模型打包'
                             )
                         else:
-                            # 查找模型目录
+                            # Locate the model directory
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
-                                # 检查是否是用户导入的模型
+                                # Check whether this is a user-imported model
                                 if is_user_imported_model(model_dir, _config_manager):
-                                    # 添加模型文件到压缩包
+                                    # Add model files to the archive
                                     model_files_added = 0
                                     for root, _dirs, files in os.walk(model_dir):
                                         for file in files:
@@ -463,24 +463,24 @@ async def export_catgirl_card(name: str):
                                 logger.warning(f'找不到模型目录: {live2d_name}')
 
                 elif model_type in ('vrm', 'live3d'):
-                    # 处理VRM/MMD模型
+                    # Handle VRM/MMD models
                     vrm_path = get_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', default='')
                     mmd_path = get_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', default='')
 
-                    # 优先处理MMD模型（需要导出整个文件夹）
+                    # Handle MMD first, requiring whole-folder export
                     if mmd_path and mmd_path.strip():
-                        # 解析MMD模型路径
+                        # Resolve the MMD model path
                         mmd_path = mmd_path.replace('\\', '/')
                         if mmd_path.startswith('/user_mmd/'):
                             model_file_name = mmd_path.replace('/user_mmd/', '')
                             model_full_path = _config_manager.mmd_dir / model_file_name
 
                             if model_full_path and model_full_path.exists():
-                                # 对于MMD模型，导出整个文件夹（包含贴图等依赖文件）
+                                # Export entire MMD folders, including textures and other dependencies
                                 model_parent_dir = model_full_path.parent
                                 model_folder_name = model_parent_dir.name
 
-                                # 添加整个模型文件夹到压缩包
+                                # Add the complete model folder to the archive
                                 model_files_added = 0
                                 for root, _dirs, files in os.walk(model_parent_dir):
                                     for file in files:
@@ -493,7 +493,7 @@ async def export_catgirl_card(name: str):
                             else:
                                 logger.warning(f'找不到MMD模型文件: {mmd_path}')
 
-                    # 处理VRM模型（单个文件）
+                    # Handle VRM models as single files
                     elif vrm_path and vrm_path.strip():
                         vrm_path = vrm_path.replace('\\', '/')
                         if vrm_path.startswith('/user_vrm/'):
@@ -512,13 +512,13 @@ async def export_catgirl_card(name: str):
                     if _add_pngtuber_assets_to_character_zip(zf, catgirl_data, _config_manager):
                         model_added = True
 
-                # 3. 读取卡面元数据 sidecar（作者 / 创建时间）
+                # 3. Read card-face metadata sidecar (author / creation time)
                 _sidecar_meta_path = _config_manager.card_face_meta_path(name)
                 _sidecar_existed = await asyncio.to_thread(_sidecar_meta_path.exists)
                 _sidecar_meta = await asyncio.to_thread(_read_card_meta, _sidecar_meta_path)
                 now_iso = datetime.now().isoformat(timespec='seconds')
-                # 优先使用已有的创建时间；未设置时使用当前时间并回写 sidecar，
-                # 以确保后续导出不会重复刷新。
+                # Prefer existing creation time; if absent, use current time and persist it in the sidecar,
+                # preventing repeated refreshes on subsequent exports.
                 _author = str(_sidecar_meta.get('author') or '').strip()[:64]
                 _existing_created_at = str(_sidecar_meta.get('created_at') or '').strip()
                 _created_at = _existing_created_at or now_iso
@@ -529,15 +529,15 @@ async def export_catgirl_card(name: str):
                         _new_meta['created_at'] = _created_at
                         if not _new_meta.get('updated_at'):
                             _new_meta['updated_at'] = now_iso
-                        # 仅当 sidecar 原本不存在且 origin 为默认值（None/空/'self'）时才推断来源，
-                        # 避免覆盖已有的 self 默认值或用户设定。
+                        # Infer origin only when the sidecar was absent and origin is default (None/empty/'self'),
+                        # preserving existing self defaults or user choices.
                         if not _sidecar_existed and _new_meta.get('origin') in (None, '', 'self'):
                             _new_meta['origin'] = _detect_card_origin_from_character(catgirl_data or {})
                         await asyncio.to_thread(_write_card_meta, _sidecar_meta_path, _new_meta)
                     except Exception as _meta_persist_err:
                         logger.warning(f"[导出角色卡] 回写创建时间到 sidecar 失败: {_meta_persist_err}")
 
-                # 4. 添加元数据文件
+                # 4. Add metadata file
                 metadata = {
                     'version': '1.0',
                     'export_time': now_iso,
@@ -549,8 +549,8 @@ async def export_catgirl_card(name: str):
                 }
                 zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
 
-            # 5. 获取卡面图：优先使用保存的 card_faces/{name}.png，
-            #    不存在时才回退到合成图。
+            # 5. Get card artwork: prefer saved card_faces/{name}.png,
+            #    falling back to generated artwork only when absent.
             from utils.screenshot_utils import _validate_image_data
             saved_face_path = _config_manager.card_faces_dir / f"{name}.png"
             png_data = None
@@ -579,7 +579,7 @@ async def export_catgirl_card(name: str):
                     png_data = None
 
             if png_data is None:
-                # 回退：合成一张默认长方形角色卡图片
+                # Fallback: generate a default rectangular character-card image
                 from PIL import Image
                 width, height = 600, 800
                 img = Image.new('RGB', (width, height), color='#E8F4F8')
@@ -588,13 +588,13 @@ async def export_catgirl_card(name: str):
                 with open(png_path, 'rb') as f:
                     png_data = f.read()
 
-            # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
+            # 6. Embed archive bytes in PNG neKo chunks, valid PNG chunks previewable in Electron
             with open(zip_path, 'rb') as f:
                 zip_data = f.read()
 
             combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
-            # 7. 返回文件下载
+            # 7. Return a file download
             from urllib.parse import quote
 
             safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
@@ -610,8 +610,8 @@ async def export_catgirl_card(name: str):
 
             return Response(
                 content=combined_data,
-                # 用 octet-stream 避免浏览器将响应作为图片在新标签中预览，
-                # 配合前端 <a download> 开启下载流程。
+                # Use octet-stream to prevent browser image previews in new tabs,
+                # working with frontend <a download> to start downloading.
                 media_type='application/octet-stream',
                 headers={
                     'Content-Disposition': content_disposition,
@@ -637,7 +637,7 @@ async def export_catgirl_settings_only(name: str):
     """
     from urllib.parse import quote
 
-    # XOR混淆密钥（仅用于防止意外编辑，非安全加密）
+    # XOR obfuscation key, preventing accidental editing rather than providing secure encryption
     XOR_KEY = b'NEKOCHARA2024'
 
     def xor_obfuscate(data: bytes, key: bytes) -> bytes:
@@ -658,7 +658,7 @@ async def export_catgirl_settings_only(name: str):
 
         catgirl_data = characters['猫娘'][name]
 
-        # 定义要省略的字段（仅导出设定时不包含模型相关信息）
+        # Omitted fields: settings-only exports exclude model information
         FIELDS_TO_EXCLUDE = {'cursor_follow', 'physics', 'voice_id', '_reserved'}
 
         def filter_excluded_fields(data):
@@ -674,17 +674,17 @@ async def export_catgirl_settings_only(name: str):
             else:
                 return data
 
-        # 准备角色设定JSON（过滤字段，不包含模型信息）
+        # Prepare character-setting JSON with filtered fields and no model information
         chara_json = {
             '档案名': name,
             **filter_excluded_fields(catgirl_data)
         }
         json_data = json.dumps(chara_json, ensure_ascii=False, indent=2).encode('utf-8')
 
-        # 加密JSON数据
+        # Encrypt JSON data
         encrypted_data = xor_obfuscate(json_data, XOR_KEY)
 
-        # 构建文件名
+        # Build filename
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
         if not safe_name:
             safe_name = "character_card"
@@ -728,7 +728,7 @@ async def import_character_card(
     import shutil
     from pathlib import Path
 
-    # XOR混淆密钥（与导出时相同，用于防止意外编辑）
+    # XOR obfuscation key, matching export, to prevent accidental editing
     XOR_KEY = b'NEKOCHARA2024'
 
     def xor_deobfuscate(data: bytes, key: bytes) -> bytes:
@@ -740,12 +740,12 @@ async def import_character_card(
 
     temp_dir = None
     try:
-        # 创建临时目录
+        # Create a temporary directory
         temp_dir = tempfile.mkdtemp()
         temp_path = Path(temp_dir)
         zip_path = temp_path / 'imported.zip'
 
-        # 保存上传的文件（使用流式读取并限制大小）
+        # Save the uploaded file with streaming reads and size limits
         try:
             file_buffer = await _read_limited_stream(zip_file, MAX_UPLOAD_SIZE)
             with open(zip_path, 'wb') as f:
@@ -754,11 +754,11 @@ async def import_character_card(
             logger.warning(f"[导入角色卡] 文件过大: {e}")
             return JSONResponse({'success': False, 'error': str(e)}, status_code=400)
 
-        # 检查是否是加密的 .nekocfg 文件（直接是加密数据，不是ZIP）
+        # Check for encrypted .nekocfg: directly encrypted data, not ZIP
         is_neko_file = zip_file.filename and zip_file.filename.endswith('.nekocfg')
 
         if is_neko_file:
-            # 直接解密 .nekocfg 文件
+            # Decrypt .nekocfg directly
             with open(zip_path, 'rb') as f:
                 encrypted_data = f.read()
             try:
@@ -783,9 +783,9 @@ async def import_character_card(
                 return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             metadata = {'encrypted': True, 'model_included': False}
         else:
-            # 解压ZIP文件（PNG角色卡格式）- 使用安全的解压方式防止 Zip Slip 攻击
-            MAX_TOTAL_UNCOMPRESSED = 500 * 1024 * 1024  # 500 MB 总解压大小限制
-            MAX_MEMBER_UNCOMPRESSED = 100 * 1024 * 1024  # 100 MB 单个文件大小限制
+            # Extract ZIP for PNG character cards safely to prevent Zip Slip
+            MAX_TOTAL_UNCOMPRESSED = 500 * 1024 * 1024  # 500 MB total extracted-size limit
+            MAX_MEMBER_UNCOMPRESSED = 100 * 1024 * 1024  # 100 MB per-file limit
             extract_path = temp_path / 'extracted'
             extract_path.mkdir()
 
@@ -820,13 +820,13 @@ async def import_character_card(
                         with zf.open(member) as src, open(dest_path, 'wb') as dst:
                             await asyncio.to_thread(shutil.copyfileobj, src, dst, length=8192)
 
-            # 读取角色设定（支持加密和非加密格式）
+            # Read character settings, supporting encrypted/plaintext formats
             character_json_path = extract_path / 'character.json'
             character_json_encrypted_path = extract_path / 'character.json.encrypted'
             imported_card_character_data = {}
 
             if character_json_path.exists():
-                # 非加密格式
+                # Unencrypted format
                 try:
                     character_data = await read_json_async(character_json_path)
                 except json.JSONDecodeError as e:
@@ -842,7 +842,7 @@ async def import_character_card(
                 if name_error:
                     return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             elif character_json_encrypted_path.exists():
-                # 加密格式，需要解密
+                # Encrypted format requires decryption
                 try:
                     with open(character_json_encrypted_path, 'rb') as f:
                         encrypted_data = f.read()
@@ -863,7 +863,7 @@ async def import_character_card(
             else:
                 return JSONResponse({'success': False, 'error': '角色卡文件损坏：缺少character.json'}, status_code=400)
 
-            # 读取元数据
+            # Read metadata
             metadata_path = extract_path / 'metadata.json'
             metadata = {}
             if metadata_path.exists():
@@ -876,9 +876,9 @@ async def import_character_card(
         async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
 
-            # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
+            # Resolve existing same-named characters with Windows-style (x) suffixes
             if character_name in characters.get('猫娘', {}):
-                # 生成新名称
+                # Generate a new name
                 base_name = character_name
                 counter = 1
                 while f"{base_name}({counter})" in characters.get('猫娘', {}):
@@ -889,8 +889,8 @@ async def import_character_card(
             if refusal is not None:
                 return refusal
 
-            # 处理模型文件（仅当不是 .nekocfg 文件时）
-            imported_model_info = None  # 记录导入的模型信息，用于自动使用
+            # Handle model files only outside .nekocfg imports
+            imported_model_info = None  # Record imported model information for automatic selection
             pngtuber_rel_map: dict[str, str] = {}
 
             def _find_model3_json(directory):
@@ -920,18 +920,18 @@ async def import_character_card(
                         if model_item.name == _PNGTUBER_CARD_MODEL_DIR:
                             continue
                         if model_item.is_dir():
-                            # 检查是 Live2D 还是 MMD 模型文件夹
-                            # MMD 模型文件夹通常包含 .pmx, .pmd 文件
+                            # Distinguish Live2D and MMD model folders
+                            # MMD folders usually contain .pmx/.pmd files
                             has_mmd_file = any(f.suffix.lower() in ('.pmx', '.pmd') for f in model_item.iterdir() if f.is_file())
-                            # Live2D 模型文件夹通常包含 .model3.json 文件（递归搜索）
+                            # Live2D folders usually contain .model3.json files; search recursively
                             model3_file = _find_model3_json(model_item)
                             has_live2d_file = model3_file is not None
 
                             if has_mmd_file:
-                                # MMD 模型（文件夹形式，包含贴图等依赖文件）
+                                # MMD model folder with textures and other dependencies
                                 original_model_name = model_item.name
 
-                                # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                                # Resolve existing models with Windows-style (x) suffixes
                                 model_name = original_model_name
                                 target_model_dir = _config_manager.mmd_dir / model_name
                                 counter = 1
@@ -941,11 +941,11 @@ async def import_character_card(
                                     target_model_dir = _config_manager.mmd_dir / model_name
                                     counter += 1
 
-                                # 复制整个模型文件夹
+                                # Copy the entire model folder
                                 await asyncio.to_thread(shutil.copytree, model_item, target_model_dir)
                                 logger.info(f'已导入MMD模型文件夹: {original_model_name} -> {model_name}')
 
-                                # 查找文件夹中的主模型文件（.pmx 或 .pmd）
+                                # Locate the main .pmx/.pmd model file inside the folder
                                 main_model_file = None
                                 for f in target_model_dir.iterdir():
                                     if f.is_file() and f.suffix.lower() in ('.pmx', '.pmd'):
@@ -963,10 +963,10 @@ async def import_character_card(
                                     logger.warning(f'MMD模型文件夹中没有找到主模型文件: {model_name}')
 
                             elif has_live2d_file:
-                                # Live2D 模型（文件夹形式）
+                                # Live2D model folder
                                 original_model_name = model_item.name
 
-                                # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                                # Resolve existing models with Windows-style (x) suffixes
                                 model_name = original_model_name
                                 target_model_dir = _config_manager.live2d_dir / model_name
                                 counter = 1
@@ -976,11 +976,11 @@ async def import_character_card(
                                     target_model_dir = _config_manager.live2d_dir / model_name
                                     counter += 1
 
-                                # 复制模型文件
+                                # Copy model files
                                 await asyncio.to_thread(shutil.copytree, model_item, target_model_dir)
                                 logger.info(f'已导入Live2D模型: {original_model_name} -> {model_name}')
 
-                                # 查找复制后的 .model3.json 文件，保留相对路径
+                                # Locate copied .model3.json files while retaining relative paths
                                 model3_file = _find_model3_json(target_model_dir)
                                 if model3_file:
                                     model3_filename = str(model3_file.relative_to(target_model_dir))
@@ -988,7 +988,7 @@ async def import_character_card(
                                     model3_filename = f'{model_name}.model3.json'
                                 logger.info(f'找到 Live2D 模型文件: {model3_filename}')
 
-                                # 记录导入的模型信息
+                                # Record imported model information
                                 imported_model_info = {
                                     'type': 'live2d',
                                     'name': model_name,
@@ -997,14 +997,14 @@ async def import_character_card(
                                 }
 
                         elif model_item.is_file():
-                            # VRM 模型（文件形式）
+                            # VRM model file
                             model_file = model_item
-                            original_model_name = model_file.stem  # 不含扩展名的文件名
+                            original_model_name = model_file.stem  # Filename without extension
                             model_ext = model_file.suffix.lower()
 
                             if model_ext == '.vrm':
-                                # VRM 模型
-                                # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                                # VRM model
+                                # Resolve existing models with Windows-style (x) suffixes
                                 model_name = original_model_name
                                 target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
                                 counter = 1
@@ -1017,7 +1017,7 @@ async def import_character_card(
                                 await asyncio.to_thread(shutil.copy2, model_file, target_model_path)
                                 logger.info(f'已导入VRM模型: {original_model_name} -> {model_name}')
 
-                                # 记录导入的模型信息
+                                # Record imported model information
                                 imported_model_info = {
                                     'type': 'vrm',
                                     'name': model_name,
@@ -1027,8 +1027,8 @@ async def import_character_card(
                 else:
                     logger.warning(f"[导入角色卡] model 目录不存在或不是目录: {model_dir}")
 
-                # 自动给猫娘使用导入的模型
-                # 使用 _reserved 字段存储模型配置（这是系统内部使用的字段）
+                # Automatically select the imported model for the catgirl
+                # Store model configuration in the internal _reserved field
                 if imported_model_info:
                     character_data['_reserved'] = character_data.get('_reserved', {})
                     character_data['_reserved']['avatar'] = character_data['_reserved'].get('avatar', {})
@@ -1036,7 +1036,7 @@ async def import_character_card(
                     if imported_model_info['type'] == 'live2d':
                         model_name = imported_model_info['name']
                         model3_filename = imported_model_info.get('model3_filename', f'{model_name}.model3.json')
-                        # 保留现有的 live2d 设置，只更新 model_path
+                        # Retain existing live2d settings, updating model_path only
                         character_data['_reserved']['avatar']['live2d'] = character_data['_reserved']['avatar'].get('live2d', {})
                         character_data['_reserved']['avatar']['live2d']['model_path'] = f'{model_name}/{model3_filename}'
                         character_data['_reserved']['avatar']['model_type'] = 'live2d'
@@ -1049,7 +1049,7 @@ async def import_character_card(
                         logger.info(f'已自动为角色 {character_name} 设置VRM模型: {imported_model_info["name"]}')
 
                     elif imported_model_info['type'] == 'mmd':
-                        # 保留现有的 mmd 设置（捏脸、动画等），只更新 model_path
+                        # Retain existing mmd settings, including face customization/animation, updating model_path only
                         character_data['_reserved']['avatar']['mmd'] = character_data['_reserved']['avatar'].get('mmd', {})
                         character_data['_reserved']['avatar']['mmd']['model_path'] = imported_model_info['path']
                         character_data['_reserved']['avatar']['model_type'] = 'live3d'
@@ -1063,25 +1063,25 @@ async def import_character_card(
                 pngtuber_rel_map,
             )
 
-            # 添加角色到characters.json
+            # Add the character to characters.json
             if '猫娘' not in characters:
                 characters['猫娘'] = {}
 
-            # 移除档案名键（因为已经用作字典键）
+            # Remove the profile-name key, already used as the dictionary key
             chara_data_to_save = {k: v for k, v in character_data.items() if k != '档案名'}
             delete_reserved(chara_data_to_save, "character_id")
             ensure_catgirl_character_id(chara_data_to_save)
-            # 导入的角色是新角色：卡里若带着别处的稳定 id 一律丢弃，重新生成。
+            # Imported characters are new: discard any external stable ID and generate another.
             assign_new_character_uid(chara_data_to_save)
             characters['猫娘'][character_name] = chara_data_to_save
 
-            # 保存到文件
+            # Save to file
             publish_cancelled = await asave_characters_with_recent_activation(
                 _config_manager, characters, character_name,
             )
             pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 
-            # 刷新内存中的角色数据，确保磁盘和内存同步
+            # Refresh in-memory character data to synchronize disk and memory
             initialize_character_data = get_initialize_character_data()
             if initialize_character_data:
                 await initialize_character_data()
@@ -1090,7 +1090,7 @@ async def import_character_card(
                 resume_derived_task_names=(character_name,),
             )
 
-            # 写入卡面元数据 sidecar（origin=imported）
+            # Write card-face metadata sidecar with origin=imported
             try:
                 _config_manager.ensure_card_faces_directory()
                 meta_path = _config_manager.card_face_meta_path(character_name)
@@ -1102,7 +1102,7 @@ async def import_character_card(
                     if not imported_created_at:
                         imported_created_at = str(metadata.get('export_time', '') or '').strip()[:32]
                 now_iso = datetime.now().isoformat(timespec='seconds')
-                # 优先使用源卡中的创建时间，未提供时才赋为当前时间
+                # Prefer the source card's creation time; use current time only if absent
                 created_at = imported_created_at or now_iso
                 meta = {
                     'author': imported_author,
@@ -1129,14 +1129,14 @@ async def import_character_card(
                     raise asyncio.CancelledError
                 return JSONResponse(partial_result, status_code=200)
 
-            # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
-            # 则直接使用该 PNG 作为卡面（带 neKo chunk 不影响质量）。
+            # Legacy-card compatibility: when frontend uploads the carrier PNG and no local same-named card artwork exists,
+            # use that PNG directly; neKo chunks do not affect quality.
             try:
                 if card_image is not None and card_image.filename:
                     face_path = _config_manager.card_faces_dir / f"{character_name}.png"
                     if not face_path.exists():
                         try:
-                            # 先用更大的上传限制读取载体 PNG（可能嵌入 ZIP）
+                            # Read the carrier PNG with a larger upload limit because it may embed ZIP data
                             face_buffer = await _read_limited_stream(card_image, MAX_UPLOAD_SIZE)
                             face_bytes = face_buffer.getvalue()
                         except _UploadTooLargeError as e:
@@ -1187,14 +1187,14 @@ async def import_character_card(
         logger.exception(f"导入角色卡失败: {e}")
         return JSONResponse({'success': False, 'error': f'导入失败: {str(e)}'}, status_code=500)
     finally:
-        # 清理临时目录
+        # Clean up temporary directories
         if temp_dir and os.path.exists(temp_dir):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
 
 
-# ====== 角色卡卡面（Card Face）存储 ======
+# ====== Character-card artwork storage ======
 
-# 卡面元数据 sidecar 默认结构
+# Default card-face metadata sidecar structure
 def _default_card_meta(origin: str = 'self') -> dict:
     """Return the default card-face metadata."""
     return {
@@ -1214,7 +1214,7 @@ def _read_card_meta(meta_path) -> dict:
             if not isinstance(data, dict):
                 logger.warning(f"卡面元数据内容无效（非字典）{meta_path}: {type(data).__name__}")
                 return _default_card_meta(origin=None)
-            # 合并默认字段，保证字段完整
+            # Merge defaults to ensure complete fields
             merged = _default_card_meta()
             merged.update({k: v for k, v in data.items() if k in merged})
             return merged
@@ -1281,20 +1281,20 @@ async def list_card_metas():
     faces_dir = _config_manager.card_faces_dir
     metas: dict = {}
     try:
-        # 先加载角色列表，构建有效名称集合
+        # Load characters first and build the valid-name set
         characters = await _config_manager.aload_characters()
         valid_names = set((characters.get('猫娘', {}) or {}).keys())
-        # 只读取属于有效角色的 sidecar
+        # Read sidecars only for valid characters
         if faces_dir.exists():
             json_files = await asyncio.to_thread(lambda: list(faces_dir.glob('*.json')))
             for p in json_files:
                 if p.stem in valid_names:
                     meta = await asyncio.to_thread(_read_card_meta, p)
                     if meta.get('origin') is None:
-                        # sidecar 损坏：当作缺失处理，重新推断 origin
+                        # Treat corrupt sidecars as missing and infer origin again
                         meta = _default_card_meta(_detect_card_origin_from_character(characters['猫娘'][p.stem]))
                     metas[p.stem] = meta
-        # 补齐缺失 sidecar 的猫娘：按配置推断 origin，返回默认值
+        # Fill catgirls lacking sidecars: infer origin from configuration and return defaults
         for cname, cdata in (characters.get('猫娘', {}) or {}).items():
             if cname in metas:
                 continue
@@ -1322,7 +1322,7 @@ async def get_card_meta(name: str):
     meta_path = _config_manager.card_face_meta_path(name)
     meta = await asyncio.to_thread(_read_card_meta, meta_path)
     if not meta_path.exists() or meta.get('origin') is None:
-        # 无 sidecar 或读取失败：根据猫娘配置推断 origin
+        # Missing/unreadable sidecar: infer origin from catgirl configuration
         meta['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
     return JSONResponse({'success': True, 'meta': meta})
 
@@ -1447,18 +1447,18 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
-    # 验证文件类型
+    # Validate file type
     content_type = image.content_type or ''
     if not content_type.startswith('image/'):
         return JSONResponse({'success': False, 'error': '文件类型无效，请上传图片'}, status_code=400)
 
-    # 流式读取并限制大小
+    # Stream reads with size limits
     try:
         image_buffer = await _read_limited_stream(image, MAX_CARD_FACE_SIZE)
     except _UploadTooLargeError:
         return JSONResponse({'success': False, 'error': '图片文件过大（最大 10MB）'}, status_code=400)
 
-    # 在线程中验证并重新编码为 PNG
+    # Validate and re-encode PNG in a thread
     try:
         from utils.screenshot_utils import _validate_image_data
 
@@ -1478,22 +1478,22 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
     except Exception:
         return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
 
-    # 重编码后再次校验大小（压缩后仍可能超过限制）
+    # Recheck size after encoding; compressed output may still exceed the limit
     if len(png_bytes) > MAX_CARD_FACE_SIZE:
         return JSONResponse({'success': False, 'error': '文件过大（重编码后超过10MB）'}, status_code=413)
 
-    # 确保目录存在
+    # Ensure the directory exists
     _config_manager.ensure_card_faces_directory()
 
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     await asyncio.to_thread(face_path.write_bytes, png_bytes)
 
-    # 同步更新 sidecar 元数据
+    # Update sidecar metadata together
     meta_path = _config_manager.card_face_meta_path(name)
     try:
         meta = await asyncio.to_thread(_read_card_meta, meta_path)
         now_iso = datetime.now().isoformat(timespec='seconds')
-        # 上传即视为本地创作；若此前是导入的，刷新创建时间
+        # Upload means local creation; refresh creation time if previously imported
         previous_origin = meta.get('origin')
         meta['origin'] = 'self'
         if previous_origin != 'self' or not meta.get('created_at'):
@@ -1547,17 +1547,17 @@ async def export_catgirl_with_portrait(
 
         catgirl_data = characters['猫娘'][name]
 
-        # 创建临时目录
+        # Create a temporary directory
         temp_dir = tempfile.mkdtemp()
         temp_path = Path(temp_dir)
         zip_path = temp_path / 'character_data.zip'
 
-        # 1. 创建ZIP压缩包（包含角色设定和模型）
+        # 1. Create ZIP containing character settings and models
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # 准备角色设定JSON
+            # Prepare character-setting JSON
             export_data = {'档案名': name, **catgirl_data}
 
-            # 过滤掉运行时字段
+            # Filter runtime fields
             def _filter_export_fields(data, keep_model_paths=False):
                 """Filter fields on export."""
                 result = {}
@@ -1588,7 +1588,7 @@ async def export_catgirl_with_portrait(
             )
             zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
 
-            # 如果需要包含模型，添加模型文件
+            # Add model files when requested
             model_added = False
             model_type = get_reserved(catgirl_data, 'avatar', 'model_type', default='live2d')
 
@@ -1648,7 +1648,7 @@ async def export_catgirl_with_portrait(
                     if _add_pngtuber_assets_to_character_zip(zf, catgirl_data, _config_manager):
                         model_added = True
 
-            # 添加元数据文件
+            # Add metadata file
             metadata = {
                 'version': '1.0',
                 'export_time': datetime.now().isoformat(),
@@ -1659,7 +1659,7 @@ async def export_catgirl_with_portrait(
             }
             zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
 
-        # 2. 读取立绘图片（带大小限制和验证）
+        # 2. Read portrait artwork with size limits and validation
         MAX_PORTRAIT_SIZE = 50 * 1024 * 1024  # 50 MB
         portrait_data = await portrait.read(MAX_PORTRAIT_SIZE + 1)
         if len(portrait_data) > MAX_PORTRAIT_SIZE:
@@ -1669,15 +1669,15 @@ async def export_catgirl_with_portrait(
 
         png_path = temp_path / 'character_card.png'
 
-        # 整段 PIL 渲染链（图片校验 + 卡片合成 + 字体扫描 + PNG 编码）放进 worker
-        # 线程，避免阻塞事件循环。校验失败用专属异常，让外层回 400 而不是 500。
+        # Run the complete PIL rendering chain (validation + card composition + font scanning + PNG encoding) in a worker
+        # to avoid blocking the event loop. Dedicated validation exceptions let outer handlers return 400 rather than 500.
         def _render_card_png(_portrait_data: bytes, _name: str, _png_path) -> None:
             try:
-                Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
+                Image.MAX_IMAGE_PIXELS = 100_000_000  # Limit pixels to prevent decompression bombs
                 portrait_img = Image.open(io.BytesIO(_portrait_data))
                 portrait_img.verify()
                 portrait_img = Image.open(io.BytesIO(_portrait_data))
-                portrait_img.load()  # 强制解码：把截断/损坏的像素错误提前到这里，与 _InvalidPortraitError 一起回 400 而不是后续 resize/save 时回 500
+                portrait_img.load()  # Force decoding here so truncated/corrupt pixels return 400 with _InvalidPortraitError rather than later resize/save 500 errors
             except Exception as exc:
                 raise _InvalidPortraitError(str(exc)) from exc
 
@@ -1693,11 +1693,11 @@ async def export_catgirl_with_portrait(
             portrait_area_width = width
             portrait_area_height = height
 
-            # 前端已按完整卡面尺寸渲染立绘，直接缩放到目标尺寸后粘贴
+            # Frontend already rendered the portrait at full-card dimensions; resize directly to target size and paste
             portrait_resized = portrait_img.resize((portrait_area_width, portrait_area_height), Image.Resampling.LANCZOS)
             logger.info(f"[导出角色卡] 立绘调整后尺寸: {portrait_resized.size}, 粘贴位置: (0, {portrait_area_y})")
 
-            # 粘贴立绘（使用alpha通道）
+            # Paste the portrait using its alpha channel
             card_img.paste(portrait_resized, (0, portrait_area_y), portrait_resized)
             logger.info("[导出角色卡] 立绘粘贴完成")
 
@@ -1712,7 +1712,7 @@ async def export_catgirl_with_portrait(
             logger.warning(f"[导出角色卡] 图片验证失败: {e}")
             return JSONResponse({'success': False, 'error': f'无效的图片文件: {str(e)}'}, status_code=400)
 
-        # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
+        # 6. Embed archive bytes in PNG neKo chunks, valid PNG chunks previewable in Electron
         with open(png_path, 'rb') as f:
             png_data = f.read()
 
@@ -1721,7 +1721,7 @@ async def export_catgirl_with_portrait(
 
         combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
-        # 7. 返回图片文件
+        # 7. Return the image file
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
         if not safe_name:
             safe_name = "character_card"

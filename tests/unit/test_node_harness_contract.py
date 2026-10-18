@@ -67,8 +67,8 @@ def _mentions_node(call: ast.Call) -> bool:
     return False
 
 
-# 全部 subprocess 入口，不只是 run：漏一个（比如 check_call）就等于给新
-# harness 留了一条绕过这条契约、退回 node -e 的合法路径（Codex P2）。
+# Cover every subprocess entry point, not just run: missing one (such as check_call) gives new
+# harnesses a valid path around this contract back to node -e (Codex P2).
 _ENTRY_POINTS = frozenset({"run", "Popen", "check_output", "check_call", "call"})
 
 

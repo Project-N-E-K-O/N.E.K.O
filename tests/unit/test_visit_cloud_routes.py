@@ -115,7 +115,7 @@ def _queued(tmp_path, visit_id=V1):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
-# ── 包路由与总闸 ───────────────────────────────────────────────────────
+# ── Package routes and master gate ───────────────────────────────────────────────────────
 
 
 def test_every_visit_route_sits_once_under_api_visit(env):
@@ -135,14 +135,14 @@ def test_release_switch_closes_only_the_start_endpoints(env, monkeypatch):
         with client.websocket_connect("/api/visit/transport/ws", headers={"Origin": ORIGIN}):
             pass
     assert exc.value.code == 4404
-    # 数据管理照常：记忆列表、历史、举报、举报队列
+    # Data management remains available: memory listing, history, reports, report queue
     assert client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD).status_code == 200
     assert client.get("/api/visit/history", headers=GOOD).status_code == 200
     assert _report(client).status_code == 200
     assert client.get("/api/visit/report/queue", headers=GOOD).status_code == 200
 
 
-# ── 本机来源闸 ─────────────────────────────────────────────────────────
+# ── Local-origin gate ─────────────────────────────────────────────────────────
 
 DATA_ENDPOINTS = [
     ("get", "/api/visit/history"),
@@ -188,7 +188,7 @@ def test_any_loopback_address_passes(env, host):
     assert local.get("/api/visit/report/queue", headers=GOOD).status_code == 200
 
 
-# ── 历史 / 详情 ────────────────────────────────────────────────────────
+# ── History / details ────────────────────────────────────────────────────────
 
 
 def test_history_cleans_peer_display_names(env):
@@ -221,7 +221,7 @@ def test_details_pass_the_cursor_through_page_by_page(env):
     fake.details_lines = [{"lp": i, "side": "host", "host": {"text": f"l{i}"}, "guest": None, "status": "only_host"}
                           for i in range(1200)]
     cursors, rows = [""], 0
-    for _ in range(10):     # 有界：丢掉 cursor 的实现会永远停在第 1 页
+    for _ in range(10):     # Bounded: an implementation dropping cursor stays on page 1 forever
         url = f"/api/visit/details/{V1}" + (f"?cursor={cursors[-1]}" if cursors[-1] else "")
         page = client.get(url, headers=GOOD).json()
         rows += len(page["lines"])
@@ -253,7 +253,7 @@ def test_malformed_visit_ids_are_rejected(env, bad):
     assert not (tmp_path / "visit_reports").exists() and not fake.requests
 
 
-# ── 举报端点 ───────────────────────────────────────────────────────────
+# ── Report endpoints ───────────────────────────────────────────────────────────
 
 
 def test_report_without_transcript_goes_immediately_even_if_uploads_fail(env):
@@ -276,7 +276,7 @@ def test_report_failures_queue_it_and_keep_retrying(env, mode):
     doc = _queued(tmp_path)
     assert set(doc) >= set(tu.REPORT_FIELDS) and doc["own_visit_uid"] == OWN and doc["note"] == "rude"
     fake.report_mode = "ok"
-    tu._report_not_before.clear()                                        # 429 的 Retry-After 已过
+    tu._report_not_before.clear()                                        # The 429 Retry-After has elapsed
     client.portal.call(tu.retry_visit_once, V1)
     assert _queued(tmp_path) is None and fake.reports[-1]["reason"] == "harassment"
 
@@ -289,7 +289,7 @@ def test_report_with_transcript_waits_for_the_upload(env):
     assert resp.status_code == 202 and fake.count("/api/visit/reports") == 0
     assert _queued(tmp_path) is not None
     fake.transcript_mode = "ok"
-    tu._upload_not_before.clear()                                        # Retry-After 已过
+    tu._upload_not_before.clear()                                        # Retry-After has elapsed
     client.portal.call(tu.retry_visit_once, V1)
     assert fake.transcript_seen_at_report == [True] and _queued(tmp_path) is None
 
@@ -327,11 +327,11 @@ def test_unknown_visit_is_404_and_kept_for_the_user(env):
     client, fake, tmp_path, _ = env
     fake.report_mode = "404"
     assert _report(client).status_code == 404
-    # 只有受理或用户放弃才删：留在队列里、标记被拒，UI 当场给「重试 / 放弃」
+    # Delete only after acceptance or user abandonment: retain rejected reports in the queue, with immediate 'Retry / Discard' UI choices
     assert _queued(tmp_path)["rejected"] == "unknown_visit"
     items = client.get("/api/visit/report/queue", headers=GOOD).json()["items"]
     assert items[0]["rejected"] == "unknown_visit"
-    # 手动重试又被拒：与 POST /report 同样回 404 unknown_visit，标记照留
+    # A manual retry is rejected again: return 404 unknown_visit like POST /report and retain the marker
     resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
     assert resp.status_code == 404 and resp.json()["code"] == "unknown_visit"
     assert _queued(tmp_path)["rejected"] == "unknown_visit"
@@ -349,7 +349,7 @@ def test_report_with_an_expired_login_is_queued_and_asks_to_sign_in(env, monkeyp
     monkeypatch.setattr(cr, "_servers_session", expired)
     resp = _report(client)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
-    assert resp.json()["queued"] is True            # 已排队：页面按已排队显示、不再让人重提
+    assert resp.json()["queued"] is True            # Already queued: show queued status and prevent resubmission
     assert _queued(tmp_path) is not None
 
 
@@ -367,7 +367,7 @@ def test_report_needs_a_login(env):
     resp = _report(client)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
     assert _queued(tmp_path) is None
-    assert "queued" not in resp.json()             # 没排队：不能说成已记录
+    assert "queued" not in resp.json()             # Not queued: must not claim it was recorded
 
 
 def test_report_persist_failure_is_500(env, monkeypatch):
@@ -391,7 +391,7 @@ def test_report_validation(env, body):
 
 def test_queued_report_retry_and_abandon(env, monkeypatch):
     client, fake, tmp_path, _ = env
-    # 后台重试在测试夹具里不睡（_sleep 打桩）：留着它会与下面的手动重试抢着提交、删文件，结果时有时无
+    # Background retries do not sleep in this fixture (_sleep is stubbed); retaining them races manual retries below to submit/delete files, causing flakiness
     monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
     fake.report_mode = "503"
     _report(client)
@@ -439,7 +439,7 @@ def test_abandon_waits_for_an_in_flight_submission(env):
         async with lock:
             holding.set()
             await release.wait()
-            # 后台提交在锁内受理并删掉了文件；随后另一账号为同一场排了自己的举报
+            # Background submission was accepted under lock and deleted the file; another account then queued its own report for the same session
             await tu.delete_report(tmp_path, V1)
             await tu.queue_report(tmp_path, {**doc, "own_account": "u2", "own_visit_uid": "b" * 24})
 
@@ -451,12 +451,12 @@ def test_abandon_waits_for_an_in_flight_submission(env):
     worker.start()
     try:
         worker.join(0.3)
-        blocked = worker.is_alive()     # 放弃在等那次提交结束，没有抢先报 removed
+        blocked = worker.is_alive()     # Discard waits for that submission instead of prematurely reporting removed
     finally:
         client.portal.call(release.set)
         worker.join(5)
     assert blocked and result["resp"].status_code == 404
-    assert _queued(tmp_path)["own_account"] == "u2"      # 别人的那份没被删
+    assert _queued(tmp_path)["own_account"] == "u2"      # The other account's report was not deleted
 
 
 async def _make_events():
@@ -470,7 +470,7 @@ def test_report_survives_clearing_the_person(env):
     fake.report_mode = "503"
     _report(client)
     before = (tmp_path / "visit_reports" / f"{V1}.json").read_bytes()
-    # 「清除这个人」只动名册 / spool / 记忆：举报文件与之无关（此处名册为空也照常）
+    # 'Clear this person' changes only roster / spool / memory, independently of report files (still valid here with an empty roster)
     client.post("/api/visit/memory/forget", headers=GOOD, json={"catgirl": "A", "peer_uid": "1" * 24})
     assert (tmp_path / "visit_reports" / f"{V1}.json").read_bytes() == before
     assert "peer_uid" not in before.decode("utf-8")
@@ -511,7 +511,7 @@ def test_a_new_report_is_queued_and_sent_inside_the_visit_lock(env):
     worker.start()
     try:
         worker.join(0.3)
-        # 另一轮持锁期间：请求在等锁，举报还没落盘——那一轮既看不到也交不掉它
+        # While another round holds the lock, this request waits and its report is not persisted; that round can neither see nor submit it
         assert worker.is_alive() and _queued(tmp_path) is None
     finally:
         client.portal.call(release.set)
@@ -530,7 +530,7 @@ def test_an_unreadable_queued_report_does_not_block_a_new_one(env, content):
     assert client.get("/api/visit/report/queue", headers=GOOD).json()["items"] == []
     resp = _report(client)
     assert resp.status_code == 200 and resp.json()["ok"] is True
-    assert (reports / f"{V1}.json.invalid").read_text(encoding="utf-8") == content    # 坏的那份改名留底
+    assert (reports / f"{V1}.json.invalid").read_text(encoding="utf-8") == content    # Rename and retain the corrupt file
     assert fake.count("/api/visit/reports") == 1
 
 
@@ -621,7 +621,7 @@ def test_an_upload_bookkeeping_error_after_queueing_still_answers_queued(env, mo
     monkeypatch.setattr(tu, "attempt_upload", disk_full_once)
     resp = _report(client, include_transcript=True)
     assert resp.status_code == 202 and resp.json() == {"queued": True}
-    assert _queued(tmp_path) is not None and V1 in tu._workers       # 举报留着，已排后台重试
+    assert _queued(tmp_path) is not None and V1 in tu._workers       # Retain the report with a background retry scheduled
 
 
 
@@ -629,7 +629,7 @@ def test_a_manual_retry_does_not_call_an_unreadable_report_delivered(env, monkey
     client, fake, tmp_path, _ = env
     fake.report_mode = "503"
     scheduled = []
-    # 不起真的后台 worker：夹具里的等待是空操作，固定返回「待处理」的轮次会让它空转
+    # Do not start a real background worker: fixture waits are no-ops, and a fixed 'pending' response would make it spin
     monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **_k: scheduled.append(visit_id))
     _report(client)
     scheduled.clear()
@@ -638,13 +638,13 @@ def test_a_manual_retry_does_not_call_an_unreadable_report_delivered(env, monkey
         return tu.RetryRound(pending=True)
 
     async def unreadable(_config_dir, _visit_id):
-        return None, True                                 # 重试后核对去向时恰好读不了
+        return None, True                                 # Reading fails exactly when checking the destination after retry
 
     monkeypatch.setattr(tu, "retry_visit_once", round_left_pending)
     monkeypatch.setattr(tu, "_read_report", unreadable)
     monkeypatch.setattr(tu, "load_report", lambda *_a: _queued_async(tmp_path))
     resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
-    assert resp.json() == {"ok": True, "delivered": False} and scheduled == [V1]     # 仍排着后台重试
+    assert resp.json() == {"ok": True, "delivered": False} and scheduled == [V1]     # A background retry remains scheduled
 
 
 async def _queued_async(tmp_path):
@@ -656,9 +656,9 @@ def test_an_attached_report_does_not_resend_a_rate_limited_transcript(env, monke
     client, fake, tmp_path, _ = env
     armed = []
     monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **kw: armed.append(kw.get("initial_delay_s")))
-    tu._note_upload_retry_after(V1, 1000)                                  # 转录刚拿到 Retry-After
+    tu._note_upload_retry_after(V1, 1000)                                  # The transcript just received Retry-After
     resp = _report(client, include_transcript=True)
-    # 不在这里同步重传：举报落盘排队，交给按 Retry-After 推后的后台重试
+    # Do not synchronously retransmit here: persist/queue the report and let background retries honor Retry-After
     assert resp.status_code == 202 and fake.count("/api/visit/transcripts") == 0
     assert armed and armed[0] > 900 and _queued(tmp_path) is not None
 
@@ -667,9 +667,9 @@ def test_an_attached_report_does_not_resend_a_rate_limited_transcript(env, monke
 def test_another_accounts_rate_limited_transcript_does_not_hold_back_a_report(env, monkeypatch):
     client, fake, tmp_path, _ = env
     monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
-    tu._note_upload_retry_after(V1, 1000, "b" * 24)                       # 限流的是另一账号那一侧的转录
+    tu._note_upload_retry_after(V1, 1000, "b" * 24)                       # Rate limiting applies to the other account's transcript side
     resp = _report(client, include_transcript=True)
-    # 本账号这一侧没有待传转录：举报照常立即提交
+    # This account's side has no pending transcript: submit the report immediately as usual
     assert resp.status_code == 200 and fake.count("/api/visit/reports") == 1
 
 
@@ -690,5 +690,5 @@ def test_a_manual_retry_waits_for_the_reports_retry_after(env, monkeypatch):
     sent = fake.count("/api/visit/reports")
     fake.report_mode = "ok"
     resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
-    # 这份举报自己的 Retry-After 还没到：手动重试也不重提
+    # This report's own Retry-After has not elapsed; even a manual retry must not resubmit
     assert resp.json() == {"ok": True, "delivered": False} and fake.count("/api/visit/reports") == sent

@@ -62,9 +62,9 @@ def env_int(name: str, default: int, *, minimum: int = 1) -> int:
 
 
 def _warn(name: str, raw: str, default: float | int) -> None:
-    # 懒导入：metadata_scanner 会被每个扫描 worker 子进程导入，而它的模块级导入
-    # 面正是单次扫描里最贵的一段。为一条几乎走不到的 warning 在模块级拉进日志栈，
-    # 等于给每次扫描都加钱。
+    # Lazy import: every scanning worker imports metadata_scanner, whose module-level imports
+    # are the most expensive part of each scan. Loading the logging stack at module level
+    # for an almost unreachable warning adds overhead to every scan.
     from plugin.logging_config import get_logger
 
     get_logger("server.application.plugins.env").warning(

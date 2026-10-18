@@ -135,34 +135,34 @@ class _AudioMixin:
 
     async def _check_silence_timeout(self):
         """Periodically check whether the silence timeout has been exceeded; if so, trigger the timeout callback"""
-        # 如果未启用静默超时（Qwen 或 Step），直接返回
+        # Return directly if silent timeout is disabled (Qwen or Step).
         if not self._enable_silence_timeout:
             logger.debug(f"静默超时检测已禁用（API类型: {self._api_type}）")
             return
 
         try:
             while self.ws:
-                # 检查websocket是否还有效（直接访问并捕获异常）
+                # Check WebSocket validity by direct access and exception handling.
                 try:
                     if not self.ws:
                         break
                 except Exception:
                     break
 
-                await asyncio.sleep(10)  # 每10秒检查一次
+                await asyncio.sleep(10)  # Check every ten seconds.
 
                 if self._silence_timeout_triggered:
                     continue
 
-                # 选择语音活动时间源：有 server VAD 用 _last_speech_time，否则用客户端 VAD
+                # Select voice-activity clock: _last_speech_time with server VAD, otherwise client VAD.
                 if self._has_server_vad:
                     speech_time = self._last_speech_time
                 else:
-                    # 无 server VAD 时（free/gemini），用客户端能量/RNNoise 检测的时间戳
+                    # Without server VAD (free/gemini), use client energy/RNNoise detection timestamps.
                     speech_time = self._client_vad_last_speech_time if self._client_vad_last_speech_time > 0 else None
 
                 if speech_time is None:
-                    # 还没有检测到任何语音，从现在开始计时
+                    # No speech detected yet: start timing now.
                     self._last_speech_time = time.time()
                     self._client_vad_last_speech_time = self._last_speech_time
                     continue
@@ -202,12 +202,12 @@ class _AudioMixin:
         """
         if use_rnnoise_path:
             return self._silence_reset_pending
-        # core.py 预处理路径：RNNoise 在 process_audio_chunk_async 中运行，
-        # 16kHz 结果送入 stream_audio → use_rnnoise_path=False，
-        # 但 _silence_reset_pending 仍可能已被 AudioProcessor 回调置位。
+        # core.py preprocessing: RNNoise runs in process_audio_chunk_async,
+        # sending 16kHz output to stream_audio → use_rnnoise_path=False,
+        # but AudioProcessor callbacks may still have set _silence_reset_pending.
         if self._silence_reset_pending:
             return True
-        # 纯非 RNNoise 路径：VAD 静音 ≥ _silence_buffer_clear_seconds 且 连续本地静音 ≥ _local_quiet_seconds
+        # Pure non-RNNoise path: VAD silence ≥ _silence_buffer_clear_seconds and continuous local silence ≥ _local_quiet_seconds.
         if self._has_server_vad:
             last_speech = self._last_speech_time
         else:

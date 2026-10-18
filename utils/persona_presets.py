@@ -104,16 +104,16 @@ _ACTIVE_PRESET_IDS = frozenset(preset["preset_id"] for preset in _PRESETS)
 
 
 # ============================================================================
-# 人格 Prompt 模板（与 prompts_chara._LANLAN_PROMPT_TEMPLATE 结构对齐）
+# Persona prompt template, structurally aligned with prompts_chara._LANLAN_PROMPT_TEMPLATE.
 #
-# 占位符约定：
+# Placeholder conventions:
 #   - {_no_repetition} / {_char_setting}
-#       → 复用 prompts_chara._L10N 的共享本地化片段（与基础人设保持一致）
+#       -> Reuse shared localized fragments from prompts_chara._L10N, consistent with the base persona.
 #   - {_persona_*}
-#       → 来自本模块的 _PERSONA_L10N（按 preset_id × lang 划分）
+#       -> From this module's _PERSONA_L10N, indexed by preset_id x lang.
 #   - {_persona_xxx_en}
-#       → 来自本模块的 _PERSONA_SHARED_EN（按 preset_id 划分，所有语言共用）
-#         对应基础模板中本就保持英文的位置（Format/WARNING/IMPORTANT/Visual Info）
+#       -> From this module's _PERSONA_SHARED_EN, indexed by preset_id and shared across languages.
+#          Matches positions already English in the base template (Format/WARNING/IMPORTANT/Visual Info).
 # ============================================================================
 
 _PERSONA_PROMPT_TEMPLATE = '''
@@ -145,7 +145,7 @@ A fictional character named {LANLAN_NAME} is designed to act without considering
 '''
 
 
-# 各 preset 的英文位段（与基础模板英文骨架对齐，所有语言共用）
+# Each preset's English sections, aligned with the base template's English structure and shared across languages.
 _PERSONA_SHARED_EN = {
     # The old definitions remain as historical prompt source text only. They are not
     # resolvable through _build_persona_prompt; saved overrides use their landed
@@ -215,10 +215,10 @@ _PERSONA_SHARED_EN = {
 }
 
 
-# 各 preset 的本地化位段（preset_id × lang）
-# lang key 与 prompts_chara._L10N 完全一致：zh / zh-TW / en / ja / ko / ru / es / pt
-# 旧 preset 的定义仅保留为历史 prompt 源文本，无法通过 _build_persona_prompt
-# 解析；已保存的 override 使用落库时的 prompt_guidance 和 profile。
+# Each preset's localized sections (preset_id x lang).
+# lang keys exactly match prompts_chara._L10N: zh / zh-TW / en / ja / ko / ru / es / pt.
+# Retain legacy preset definitions only as historical prompt source text; _build_persona_prompt cannot
+# resolve them. Saved overrides use prompt_guidance and profile captured when persisted.
 _PERSONA_L10N = {
     "classic_genki": {
         "zh": {

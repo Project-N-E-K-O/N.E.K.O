@@ -9,7 +9,7 @@ Covers the contracts from
 * concurrent request serialisation via Semaphore(1)
 * pending request timeout cleans up state (no leaked Futures)
 * duplicate mark updates capability timestamp
-"""
+"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 

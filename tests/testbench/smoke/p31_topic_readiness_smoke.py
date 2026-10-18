@@ -69,7 +69,7 @@ def check_c2_topic_units() -> tuple[bool, str]:
     if "气" not in units:
         return False, f"C2 FAIL: CJK single missing: {sorted(units)}"
 
-    # '我' / '你' are stop chars -> dropped from singles AND bigrams.
+    # '我' / '你' are stop characters -> dropped from singles AND bigrams.
     units2 = topic_sim.topic_units("我喜欢你")
     if any("我" in u or "你" in u for u in units2):
         return False, f"C2 FAIL: stop char leaked into units: {sorted(units2)}"

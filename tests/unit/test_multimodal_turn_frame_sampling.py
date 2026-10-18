@@ -59,7 +59,7 @@ def _feed(record, count):
 
 
 def test_per_turn_cap_is_three():
-    # 派生断言护栏：下面的用例按这个数字算期望值。
+    # Guard for derived assertions: cases below calculate expectations using this number.
     assert MAX_MULTIMODAL_TURN_IMAGES == 3
 
 
@@ -81,8 +81,8 @@ def test_middle_sample_tracks_the_centre_of_the_span(count):
     sampled = _feed(_record(), count)
 
     middle_index = int(sampled[1][1:])
-    # 只留最后一张会丢掉开口时的画面；只留开头两张则等于没有中间。抽样要真的
-    # 落在这段发声的中段，容差放宽到 ±25%，不锁死具体抽样步长。
+    # Keeping only the last frame loses speech-onset visuals; keeping only the first two loses the middle. Sampling must
+    # really land near the utterance midpoint; allow ±25% without pinning a sampling step.
     assert abs(middle_index - (count - 1) / 2) <= count * 0.25
 
 
@@ -90,7 +90,7 @@ def test_candidate_buffer_does_not_grow_with_the_utterance():
     record = _record()
     _feed(record, 600)
 
-    # 关键：不是"最后裁到 3 张"，而是全程都不攒——候选集本身有界。
+    # Key: avoid accumulating throughout, rather than trimming to three only at the end; the candidate set itself is bounded.
     assert len(record.middle_candidates) <= _MAX_MIDDLE_CANDIDATES
 
 
@@ -153,7 +153,7 @@ async def test_asr_turn_takes_a_snapshot_and_leaves_later_attachments_alone():
     client._pending_images = ["earlier-attachment"]
 
     async def attach_while_streaming(*_args, **_kwargs):
-        # 模拟用户在本轮 stream_text 真正消费之前又拖了一张图进来。
+        # Simulate another user-dragged image arriving before this round actually consumes stream_text input.
         await OmniOfflineClient.stream_image(client, "late-attachment")
 
     client.stream_text = AsyncMock(side_effect=attach_while_streaming)
@@ -164,16 +164,16 @@ async def test_asr_turn_takes_a_snapshot_and_leaves_later_attachments_alone():
         turn_id="turn-1",
     ) is True
 
-    # 用户开口之前投递的附件属于这次发言，跟本轮帧一起送。
-    # 顺序：本轮抽样帧在前、附件在后。下游 fit/trim 一律「从最旧丢、无条件保住
-    # 最后一张」，附件排前面等于让用户明确拖进来的图先死、环境帧反而活着。
+    # Attachments delivered before speech starts belong to this utterance and accompany its frames.
+    # Order: sampled frames first, attachments last. Downstream fit/trim discards oldest and always preserves
+    # the last image; putting explicit user attachments first kills them before ambient frames.
     assert client.stream_text.await_args.kwargs["turn_images"] == (
         "a",
         "b",
         "c",
         "earlier-attachment",
     )
-    # 本轮进行中到达的那张留给下一轮，不被这一轮吞掉；本轮帧一张都没进队列。
+    # Images arriving during this turn wait for the next, unconsumed here; none of this round's frames enter the queue.
     assert client._pending_images == ["late-attachment"]
 
 
@@ -223,7 +223,7 @@ async def test_the_budget_actually_keeps_the_attachment_and_drops_a_frame():
     from main_logic import proactive_delivery as pd
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
-    # 各占预算一半 → 三张必然超额，至少要裁掉最旧的一张。
+    # Each uses half the budget -> three exceed it, requiring at least the oldest to be trimmed.
     half = pd.TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES // 2
     frame_a = "a" * (half * 4 // 3)
     frame_b = "b" * (half * 4 // 3)
@@ -238,7 +238,7 @@ async def test_the_budget_actually_keeps_the_attachment_and_drops_a_frame():
     ) is True
 
     ordered = list(client.stream_text.await_args.kwargs["turn_images"])
-    # 三张各占预算三分之一多一点 → 必然要裁掉最旧的那张。
+    # Each of three uses just over a third of budget -> the oldest must be trimmed.
     kept, dropped = pd.trim_images_to_turn_budget(ordered)
 
     assert dropped >= 1, "夹具没造出超额，这条用例测不到裁剪"
@@ -303,7 +303,7 @@ def test_out_of_order_arrival_keeps_the_earliest_capture_as_first():
         request_id=None,
     )
 
-    # 校验任务并发跑：先拍的那帧可以后落地。
+    # Validation runs concurrently: an earlier capture may finish later.
     record.observe(later)
     record.observe(earlier)
 
@@ -318,7 +318,7 @@ def _jpeg_b64(width: int, height: int) -> str:
 
     from PIL import Image as PILImage
 
-    # 噪声图，避免被 JPEG 压到极小而测不到超限路径。
+    # Noise image prevents tiny JPEG compression from bypassing the over-budget path.
     img = PILImage.frombytes(
         "RGB",
         (width, height),
@@ -361,8 +361,8 @@ def test_oversized_multi_image_item_is_shrunk_not_dropped():
 
     shrunk = _TransportMixin._try_shrink_image_payload(event, payload)
 
-    # 关键：整条 item 不能被丢掉——那会让本轮既没有图也没有 transcript 进历史，
-    # 而 arbiter 仍然会发 response.create。
+    # Key: do not discard the entire item, which would put neither image nor transcript into history
+    # while the arbiter still sends response.create.
     assert shrunk is not None
     assert len(shrunk) <= _TransportMixin._WS_FRAME_LIMIT
     rebuilt = json.loads(shrunk)
@@ -391,7 +391,7 @@ def test_single_image_item_still_shrinks_through_the_same_path():
 
 def test_middle_is_picked_by_capture_time_not_staging_order():
     record = _record()
-    # 并发校验：落地顺序 0,4,1,3,2，但拍摄顺序是 0..4。
+    # Concurrent validation: completion order 0,4,1,3,2, capture order 0..4.
     for generation, captured_at in enumerate([0.0, 4.0, 1.0, 3.0, 2.0]):
         record.observe(
             _IndependentVisualFrame(
@@ -407,7 +407,7 @@ def test_middle_is_picked_by_capture_time_not_staging_order():
 
     sampled = [frame.image_b64 for frame in record.sampled_frames()]
 
-    # 按落地顺序取正中间会拿到 t1；按拍摄时间才是 t2。
+    # Completion-order midpoint gives t1; capture-time midpoint gives t2.
     assert sampled == ["t0", "t2", "t4"]
 
 
@@ -443,7 +443,7 @@ async def _assemble_user_message(client, text="hello", **kwargs):
 
 async def test_stream_text_with_turn_images_does_not_drain_the_queue():
     client = _stream_text_client()
-    # 本轮 await 期间到达的附件：绝不能被这一轮消费掉。
+    # Attachments arriving during this round's await must never be consumed by this round.
     client._pending_images = ["late-attachment"]
 
     message = await _assemble_user_message(client, turn_images=("a", "b"))
@@ -491,7 +491,7 @@ async def test_concurrent_text_turns_do_not_send_the_same_attachment_twice():
     first = asyncio.create_task(_assemble_user_message(client, "first"))
     await asyncio.wait_for(switching.wait(), 1.0)
 
-    # 第一轮还卡在 switch_model 里，队列此刻必须已经空了。
+    # First round is still in switch_model; the queue must already be empty.
     assert client._pending_images == []
 
     release.set()
@@ -522,15 +522,15 @@ def _feed_out_of_order(record, capture_times):
 
 
 def test_candidate_thinning_runs_in_capture_order():
-    # 落地顺序把两端交替喂进来：按落地顺序抽稀会先丢掉时间上真正居中的那几张，
-    # 事后再排序也捞不回来。
+    # Alternating endpoints in completion order makes completion-based thinning first discard the true temporal midpoint frames;
+    # sorting afterward cannot recover them.
     sampled = _feed_out_of_order(_record(), [0, 9, 1, 8, 2, 7, 3, 6, 4, 5])
 
     assert sampled[0] == "t0"
     assert sampled[-1] == "t9"
     middle_index = int(sampled[1][1:])
-    # 真实中点是 4.5；任何一步按落地顺序做都会把它拉向某一端（早先按落地顺序
-    # 抽稀退化到 2，按落地位置决定收谁则可能落到另一端）。
+    # True midpoint is 4.5; any completion-order step biases toward an endpoint (earlier completion-order
+    # thinning degraded to 2, while completion-position admission can bias to the other end).
     assert 3 <= middle_index <= 6
 
 
@@ -542,7 +542,7 @@ def test_out_of_order_thinning_keeps_a_bounded_candidate_set():
 
 
 def test_heavily_shuffled_arrival_still_lands_the_middle_near_the_centre():
-    # 两端交替喂满一整段：落地位置与拍摄位置几乎正交。
+    # Fill an entire segment alternating endpoints: completion position is nearly orthogonal to capture position.
     capture_times = [i if i % 2 == 0 else 199 - i for i in range(200)]
     sampled = _feed_out_of_order(_record(), capture_times)
 
@@ -567,7 +567,7 @@ async def test_failed_vision_switch_returns_attachments_to_the_queue():
     with pytest.raises(RuntimeError, match="vision endpoint down"):
         await OmniOfflineClient.stream_text(client, "look at this")
 
-    # 用户刚选的图既没发出去、也不能凭空消失。
+    # The user's newly selected image was not sent and cannot simply disappear.
     assert client._pending_images == ["attachment-a", "attachment-b"]
 
 
@@ -628,8 +628,8 @@ async def test_cancelled_after_history_commit_does_not_requeue_attachments():
     client._conversation_history = []
 
     async def commit_then_cancel(*_args, on_turn_committed=None, **_kwargs):
-        # stream_text 已经把带图的 HumanMessage 追加进去（并回调本次调用自己的
-        # 提交标记），随后被下一句话打断。
+        # stream_text already appended the image-bearing HumanMessage (and called this invocation's
+        # commit marker), then the next utterance interrupted it.
         client._conversation_history.append(object())
         on_turn_committed()
         raise asyncio.CancelledError()
@@ -642,7 +642,7 @@ async def test_cancelled_after_history_commit_does_not_requeue_attachments():
         turn_id="turn-1",
     ) is False
 
-    # 附件已经在上下文里了；放回队列会让下一轮再发一遍，配上无关的 transcript。
+    # The attachment is already in context; requeuing sends it again next round with an unrelated transcript.
     assert client._pending_images == []
 
 
@@ -672,8 +672,8 @@ async def test_concurrent_history_growth_does_not_block_the_attachment_rollback(
     client._conversation_history = []
 
     async def unrelated_append_then_fail(*_args, on_turn_committed=None, **_kwargs):
-        # 并发的另一条文本请求 / 收尾中的响应把 history 撑长了，但**这一轮**在
-        # 追加自己的 HumanMessage 之前就失败了。
+        # Another concurrent text request / ending response lengthened history, but **this invocation** failed
+        # before appending its own HumanMessage.
         client._conversation_history.append(object())
         raise RuntimeError("vlm down")
 
@@ -686,5 +686,5 @@ async def test_concurrent_history_growth_does_not_block_the_attachment_rollback(
             turn_id="turn-1",
         )
 
-    # 用户明确投递的图不能因为别人写了 history 就被吃掉。
+    # Explicit user images must not be consumed merely because someone else wrote history.
     assert client._pending_images == ["attachment"]

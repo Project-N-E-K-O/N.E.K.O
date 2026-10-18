@@ -1048,8 +1048,8 @@ INNER_THOUGHTS_DYNAMIC = {
     "pt": "A hora atual é {time}. Antes de iniciar a conversa, {name} revisa mentalmente os acontecimentos recentes.\n",
 }
 
-# ---------- /get_recent_history 端点文案（game/galgame 流程消费，须 i18n） ----------
-# 这两条历史上硬编码成中文，非中文用户的游戏流程会读到中文引导句。
+# -- Localized /get_recent_history prose consumed by game/galgame --
+# These two historically hardcoded Chinese strings appeared in non-Chinese game flows.
 RECENT_HISTORY_INTRO = {
     "zh": "开始聊天前，{name}又在脑海内整理了近期发生的事情。\n",
     "zh-TW": "開始聊天前，{name}又在腦海裡整理了近期發生的事情。\n",
@@ -1108,7 +1108,7 @@ _THEATER_MEMORY_TITLE_WRAPPERS = {
 
 
 def _format_theater_memory_title(title: str, lang: str) -> str:
-    """只为没有成对标题符号的剧本名补充当前语言的标题符号。"""  # noqa: DOCSTRING_CJK
+    """Add locale-appropriate title markers only when script names lack paired title delimiters."""  # noqa: DOCSTRING_CJK
 
     normalized = str(title or "").strip()
     if not normalized:
@@ -1202,7 +1202,7 @@ def get_theater_memory_context(
     story_run_count: int = 0,
     ending_titles: list[str] | None = None,
 ) -> str:
-    """把可信剧场元数据渲染成自然记忆上下文，不改写演绎正文。"""  # noqa: DOCSTRING_CJK
+    """Render trusted theater metadata as natural memory context without rewriting enactment bodies."""  # noqa: DOCSTRING_CJK
 
     normalized = _normalize_memory_prompt_lang(lang)
     context = _loc(THEATER_MEMORY_CONTEXT, normalized).format(
@@ -1250,13 +1250,13 @@ def get_theater_memory_context(
 
 
 # ---------- Locale-independent /new_dialog splitter ----------
-# new_dialog 的文本结构固定为三段拼接：
-#   [PERSONA_HEADER + 长期记忆] + [INNER_THOUGHTS_HEADER + INNER_THOUGHTS_DYNAMIC] + [对话历史]
-# 下游（proactive Phase 2）需要把"内心活动"与"对话历史"切开。历史实现硬编码
-# 单一中文哨兵 "整理了近期发生的事情" 来 split，但该句来自上面的多语言
-# INNER_THOUGHTS_DYNAMIC，非中文渲染时哨兵不存在 → 切分静默失效（内心活动恒空，
-# 整段被当历史）。这里改成：用所有 locale 的 DYNAMIC 模板各编一条正则（{time}/
-# {name} 占位转成通配），命中即在该句**结尾**切开——locale 无关、不删句、不留断标点。
+# new_dialog concatenates three fixed sections:
+#   [PERSONA_HEADER + long-term memory] + [INNER_THOUGHTS_HEADER + INNER_THOUGHTS_DYNAMIC] + [conversation history].
+# Proactive Phase 2 separates inner thoughts from history. Old code split on the single
+# Chinese sentinel "整理了近期发生的事情", emitted by multilingual
+# INNER_THOUGHTS_DYNAMIC; absent in other locales, splitting silently failed,
+# leaving thoughts empty and treating everything as history. Compile regexes for every locale's DYNAMIC
+# templates, wildcarding time/name, then split after matched sentences without deletion or broken punctuation.
 def _build_inner_thoughts_dynamic_patterns() -> list[re.Pattern[str]]:
     patterns: list[re.Pattern[str]] = []
     for template in INNER_THOUGHTS_DYNAMIC.values():
@@ -1292,8 +1292,8 @@ def split_inner_thoughts_and_history(text: str) -> tuple[str, str] | None:
 # ======= Chat gap notices ===========================================
 # =====================================================================
 
-# 时间间隔格式化模板 — {d}=天, {h}=小时, {m}=分钟
-# 组合规则：只显示非零单位，不到1天不写天，不到1小时不写小时
+# Elapsed-time formatting templates: d=days, h=hours, m=minutes.
+# Show nonzero units only, omitting days below one day and hours below one hour.
 ELAPSED_TIME_DHM = {
     "zh": "{d}天{h}小时{m}分钟",
     "zh-TW": "{d}天{h}小時{m}分鐘",
@@ -1365,7 +1365,7 @@ ELAPSED_TIME_M = {
     "pt": "{m} minutos",
 }
 
-# {elapsed}: 自然语言时间间隔（如"3小时22分钟"）
+# elapsed is natural-language duration, e.g. 3 hours 22 minutes.
 CHAT_GAP_NOTICE = {
     "zh": "距离上次与{master}聊天已经过去了{elapsed}。",
     "zh-TW": "距離上次與{master}聊天已經過了{elapsed}。",
@@ -1377,7 +1377,7 @@ CHAT_GAP_NOTICE = {
     "pt": "Já se passaram {elapsed} desde a última conversa com {master}.",
 }
 
-# 超过5小时时追加的额外提示
+# Extra hints after 5 hours.
 CHAT_GAP_LONG_HINT = {
     "zh": "{name}意识到已经很久没有和{master}说话了，这段时间里发生了什么呢？{name}很想知道{master}最近过得怎么样。",
     "zh-TW": "{name}意識到已經很久沒有和{master}說話了，這段時間裡發生了什麼呢？{name}很想知道{master}最近過得如何。",
@@ -1389,7 +1389,7 @@ CHAT_GAP_LONG_HINT = {
     "pt": "{name} percebe que faz bastante tempo que não conversa com {master}. O que aconteceu nesse período? {name} quer saber como {master} tem estado.",
 }
 
-# 超过5小时时追加的当前时间提示 — {now}: 格式化后的当前时间
+# Current-time hints after 5 hours; now is formatted current time.
 CHAT_GAP_CURRENT_TIME = {
     "zh": "现在的时间是{now}。",
     "zh-TW": "現在的時間是{now}。",
@@ -1401,7 +1401,7 @@ CHAT_GAP_CURRENT_TIME = {
     "pt": "A hora atual é {now}.",
 }
 
-# 当前节日/假期提示（附加在时间提示之后，无关消费次数，始终显示）
+# Current holiday/vacation hints follow time notices, always visible regardless of consumption count.
 CHAT_HOLIDAY_CONTEXT = {
     "zh": "今天是{holiday}。",
     "zh-TW": "今天是{holiday}。",
@@ -1517,10 +1517,10 @@ PROFILE_RENAME_EVENT_TEXT = {
     "pt": "Antes eu me chamava \"{old_name}\"; agora me chamo \"{new_name}\". Trate \"{new_name}\" como meu nome atual de agora em diante.",
 }
 
-# 主人档案的改名记录走在猫娘（AI）的 persona/master section 里——读这段的是猫娘，
-# 改名的是对面的用户。第一人称「我」会让猫娘以为是自己改了名，第二人称「你」又读着
-# 别扭，所以这里**去掉人称**，用中性陈述，和 master section 里其它无人称字段（昵称/
-# 性别…）的语气对齐。
+# User rename records live in catgirl persona/master sections; the catgirl reads them,
+# while users renamed. First-person wording suggests catgirl renames, and second person sounds
+# awkward; omit personal pronouns and use neutral statements matching other impersonal
+# master fields such as nicknames/gender.
 PROFILE_RENAME_EVENT_FIELD_MASTER = {
     "zh": "改名记录",
     "zh-TW": "改名紀錄",
@@ -1563,7 +1563,7 @@ def render_profile_rename_event_context(
 ) -> tuple[str, str]:
     """Render a rename record; returns (field_name, content).
 
-    entity="neko": written into the catgirl's own section, in the first person 「我」.
+    entity="neko": written into the catgirl's own section, in the first person, I.
     entity="master": written into the master section of the catgirl's persona — the
     reader is the catgirl while the renamer is the user, so person markers are dropped
     in favor of a neutral statement, lest the first person make the user's rename look
@@ -1872,19 +1872,19 @@ def get_fact_extraction_prompt(lang: str = "zh") -> str:
     return _localized_fact_extraction_prompt(FACT_EXTRACTION_PROMPT, lang)
 
 
-# 批抽取（/scoped_history 的 segments 形态）：一次 LLM 调用处理多个发言人
-# 各自的消息段，输出是**每段一个对象**（{"segment": n, "facts": [...]}）。
-# 归属做成结构化的（而不是每条事实自带段号）有两个理由，都在
-# memory/facts.py::extract_facts_batch 的解析里兑现：
-#   1. 有内容的事实不可能"归属不明"——它的段由所在的段对象给定，模型漏写
-#      一个字段不会让某个人的内容悄悄消失；
-#   2. 段覆盖变成显式信号——某段没出现在输出里 = 抽取失败（保留重试），
-#      而不是被当成"这段没有值得记的事实"把该成员的桶弹掉。
-# 段首标记 `[SEGMENT n:<一次性令牌> | ...]` 由代码侧渲染（locale 无关），
-# 模板只负责解释它。令牌防的是群成员在自己的消息里伪造段首把内容写进别人
-# 的 subject；模型**不需要**回吐令牌，归属仍然只用段号整数。
-# ======以下为对话====== / ======以上为对话====== 水印对与其余模板同规则：
-# 所有 locale 保持简体（运行时匹配的安全水印，非用户可见文案）。
+# Batch extraction for /scoped_history segments: one LLM call processes multiple speakers'
+# message segments, returning one object per segment: {"segment":n,"facts":[...]}.
+# Structured segment ownership, rather than per-fact segment numbers, provides two guarantees
+# enforced by memory/facts.py::extract_facts_batch:
+#   1. Nonempty facts always have ownership from enclosing segment objects;
+#      omitted per-fact fields cannot silently erase someone's content.
+#   2. Explicit coverage: absent output segments mean failed extraction requiring retry,
+#      never no-worthy-facts decisions that discard member buckets.
+# Code renders locale-independent [SEGMENT n:<one-time token> | ...] headers;
+# templates explain them. Tokens stop members forging headers to write content under
+# others' subjects; models return segment integers, not tokens.
+# The ======以下为对话====== / ======以上为对话====== watermarks follow all template rules:
+# keep simplified Chinese in every locale as runtime safety markers, not user prose.
 FACT_EXTRACTION_BATCH_PROMPT = {
     "zh": """下面的群聊消息分为多个段，每段来自一位不同的发言人。段首标记形如 [SEGMENT n:{SEGMENT_NONCE} | speaker: X]，其中 {SEGMENT_NONCE} 是本次请求专属的一次性令牌。
 
@@ -2204,17 +2204,17 @@ def get_scoped_batch_middle_omission_marker(lang: str = "zh") -> str:
 
 
 # ---------- fact_extraction_ai_aware_prompt → i18n dict ----------
-# Path B (AI-aware Stage-1) 专用 prompt：相比基础 FACT_EXTRACTION_PROMPT 多了
-#   1. {KNOWN_POOL} 块——path A 在同窗口已抽过的 fact 列表，让 LLM 输出层主动去重
-#   2. trust-tier 指导段——明确 user 段是 ground truth、ai 段是 self-disclosure
-#   3. 输出 schema 加 source 字段（'user_observation' / 'ai_disclosure'）
-# 输入侧（{CONVERSATION}）由 _format_conversation 渲染成 "博士 | xxx" / "悠怡 | xxx"
-# 的 role-tagged 形式，LLM 据此判 source 归属。
+# Dedicated Path B AI-aware Stage-1 prompt extends FACT_EXTRACTION_PROMPT with:
+#   1. KNOWN_POOL facts already extracted by path A in this window for output-level deduplication.
+#   2. Trust-tier guidance treating user segments as truth and AI segments as disclosure.
+#   3. Output source fields: user_observation / ai_disclosure.
+# _format_conversation renders CONVERSATION as role-tagged "博士 | xxx" / "悠怡 | xxx",
+# allowing models to determine source attribution.
 #
-# 单独建一个 prompt（而不是给基础 prompt 加 optional placeholder）是为了：
-# - 保护 path A 行为不被新字段污染（path A 不需要 source 字段，省 ~10 tok/fact 输出）
-# - 易于回退（删 prompt + 一个调用方法即可）
-# - 让 review 一眼看出 path B 的 prompt 改动范围
+# Separate prompts rather than optional base placeholders:
+# - Protect path A from new fields, saving about 10 output tokens per fact.
+# - Simplify rollback to removing one prompt/method.
+# - Make Path B prompt scope obvious in review.
 
 FACT_EXTRACTION_AI_AWARE_PROMPT = {
     "zh": """从以下对话中提取关于 {LANLAN_NAME} 和 {MASTER_NAME} 的重要事实信息。
@@ -2250,7 +2250,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
   ...
 ]""",
     # Known-facts-pool delimiters ARE localized (every locale translates them);
-    # only the ======以下为对话====== pair stays Simplified, being the watermark.
+    # Only the ======以下为对话====== pair stays Simplified as the watermark.
     "zh-TW": """從以下對話中擷取關於 {LANLAN_NAME} 和 {MASTER_NAME} 的重要事實資訊。
 
 ⚠️ 本次擷取的特殊點（與基礎擷取不同）：
@@ -2483,10 +2483,10 @@ fact_extraction_prompt = FACT_EXTRACTION_PROMPT["zh"]
 # =====================================================================
 # ======= Signal detection (RFC §3.4.2 Stage-2) =======================
 # =====================================================================
-# 职责：给 Stage-1 抽出的 new_facts 配上"reinforces/negates 哪条已有观察"的
-# 映射。与 Stage-1 拆开的理由：Stage-1 不能看 existing context（否则 LLM
-# 可能把已有观察当新 fact 摘出来形成自循环）；而 Stage-2 必须看，两种职责
-# prompt 结构互斥（RFC §3.4.2）。
+# Map Stage-1 new_facts onto existing observations they reinforce/negate.
+# Separation matters: Stage 1 must not see existing context, which could
+# recycle prior observations as new facts, while Stage 2 must see it; their
+# prompt requirements are mutually exclusive (RFC section 3.4.2).
 
 SIGNAL_DETECTION_PROMPT = {
     "zh": """推理限制：内部思考最多四句，不要复述原文，不要列举备选方案。思考结束后立刻输出 JSON，不要把思考过程写进 reason。
@@ -3097,14 +3097,14 @@ reflection_prompt = REFLECTION_PROMPT["zh"]
 # =====================================================================
 # ======= Memory schema v1→v2 recheck prompts (memory_server background) =
 # =====================================================================
-# 慢速重判循环用 — 给老版本（schema_version<2）reflection / fact 补标
-# temporal_scope + event_when。每 30 秒一条，非实时关键路径，Chinese-only
-# 以减少 prompt 维护成本（reflection / fact text 本身可以是任何语言，LLM
-# 不依赖 prompt 语言就能阅读和判定）。
+# Slow reclassification adds temporal_scope/event_when to old schema<2
+# reflection/fact entries, one every 30 s off critical paths. Chinese-only
+# prompts reduce maintenance; reflection/fact text may be any language,
+# which models read/evaluate independently of instruction language.
 #
-# Anchor 语义：所有相对时间偏移都以 reflection.created_at / fact.created_at
-# 为锚点。LLM 看到的"3 天前"指"早于 created_at 3 天"，系统按此减去对应天数
-# 算出绝对 ISO 写回 event_start_at / event_end_at。
+# Relative offsets anchor to reflection.created_at/fact.created_at.
+# Model three-days-ago means three days before creation, subtracted
+# into absolute event_start_at/event_end_at ISO fields.
 
 MEMORY_RECHECK_REFLECTION_PROMPT = """以下是一条老版本 reflection 条目（已 confirmed / promoted），需要按新版本 schema 重新标注两个字段。
 
@@ -3141,13 +3141,13 @@ reflection 文本（原文不要改动）：
 
 
 # Past memory block (memory/persona.py `_compose_markdown_from_trimmed`) i18n。
-# 每条目前缀 [X 天前 / X 周前 / X 月前] 由 memory.temporal.time_since_label
-# 按 active language 生成；这里只管 block 整体的开头介绍 + 六等号 below/above
-# 对偶分隔符（参见 feedback_prompt_delimiters_above_below.md：内部禁冒号破折号）。
+# memory.temporal.time_since_label renders day/week/month-ago prefixes
+# in active languages. This defines introductions and paired six-equals below/above
+# delimiters; feedback_prompt_delimiters_above_below.md forbids internal colons/dashes.
 #
-# 占位符：
-#   {AI_NAME}     —— 当前角色名（如 "小天"）
-#   {MASTER_NAME} —— 用户的 master_name
+# Placeholders:
+#   AI_NAME -> current character name, e.g. "小天".
+#   MASTER_NAME -> user's master_name.
 PAST_MEMORY_BLOCK = {
     "zh": (
         "======以下为较久前的记忆======\n"
@@ -3208,12 +3208,12 @@ PAST_MEMORY_BLOCK = {
 }
 
 
-# Scoped 渲染（/scoped_context：群聊 / 群成员 subject）用的变体。
-# legacy 私聊那份点名 {MASTER_NAME} 的"除非他先提起"在群里是双重错误：
-# 私聊对象的名字被写进群 prompt，且指令对象根本不是群里的人。这里不指认
-# 任何具体的人，只说"有人"。
+# Scoped /scoped_context variant for groups/member subjects.
+# Legacy private-chat unless-MASTER_NAME-mentions-it wording fails twice in groups:
+# it leaks private partners' names and addresses someone absent. Name
+# nobody specific; refer only to someone.
 #
-# 占位符：{AI_NAME}、{ITEMS}（无 {MASTER_NAME}）
+# Placeholders: AI_NAME/ITEMS, never MASTER_NAME.
 PAST_MEMORY_BLOCK_SCOPED = {
     "zh": (
         "======以下为较久前的记忆======\n"
@@ -3520,15 +3520,15 @@ reflection_feedback_prompt = REFLECTION_FEEDBACK_PROMPT["zh"]
 # =====================================================================
 # ======= Promotion merge (RFC §3.9.7) ===============================
 # =====================================================================
-# 当 reflection 的 evidence_score 穿过 EVIDENCE_PROMOTED_THRESHOLD 时，
-# `_apromote_with_merge` 调用 LLM 在 promote_fresh / merge_into / reject
-# 三选一。LLM 失败不静默降级到 promote_fresh（§3.9.4），所以 prompt 必
-# 须给出明确判定边界。
+# When reflection evidence_score crosses EVIDENCE_PROMOTED_THRESHOLD,
+# _apromote_with_merge asks LLM to choose promote_fresh/merge_into/reject.
+# Failures never silently downgrade to promote_fresh (section 3.9.4), requiring
+# clear decision boundaries in prompts.
 #
-# 双水印（§3.9.7）：
-#   - 印象池块界 watermark: "======以上为现有印象池======"
-# 翻译时按 CLAUDE.md 规约：水印行 (`======以上为...======`) 保留中文，
-# 不翻译——审计时用以快速定位 prompt 边界。
+# Dual watermarks, section 3.9.7:
+#   - Impression-pool boundary: "======以上为现有印象池======".
+# Follow CLAUDE.md when translating: retain Chinese watermark lines ``======以上为...======``
+# for quick prompt-boundary audits.
 PROMOTION_MERGE_PROMPT = {
     "zh": """你是一个长期印象整理专家。你在维护 {AI_NAME} 对 {MASTER_NAME} 的长期印象。现在有一条待晋升的观察：
 
@@ -3725,9 +3725,9 @@ promotion_merge_prompt = PROMOTION_MERGE_PROMPT["zh"]
 
 
 # ---------- persona_fusion_prompt → i18n dict ----------
-# 外部记忆导入专用：把 OpenClaw/Hermes 工作区的 USER.md / SOUL.md 一批自由
-# Markdown 素材，融合成一组精炼的长期印象条目，压进 persona 的 token 预算。
-# 用 .format(...) 填充 → JSON 花括号必须转义成 {{ }}。占位符：
+# External-memory imports merge OpenClaw/Hermes USER.md/SOUL.md freeform
+# Markdown into concise long-term persona impressions within token budgets.
+# .format rendering requires JSON braces escaped as {{ }}. Placeholders:
 #   AI_NAME / MASTER_NAME / ENTITY_LABEL / TOKEN_BUDGET / CANDIDATES
 PERSONA_FUSION_PROMPT = {
     "zh": """你是一个长期印象整理专家。你在为 {AI_NAME} 整理一批从外部工作区导入的长期记忆，主题是{ENTITY_LABEL}。这些是可信的、用户已确认要导入的素材，请把它们内化成 {AI_NAME} 自己的印象。
@@ -3968,8 +3968,8 @@ def get_persona_section_header(
     )
 
 
-# 融合 prompt 里 {ENTITY_LABEL} 的本地化文案：master=关于用户、neko=助手人格。
-# 必须与 prompt 同语言注入，否则中文标签会漏进 en/ja 等版本。
+# Localized ENTITY_LABEL describes master as about users and neko as assistant persona.
+# Match prompt language to prevent Chinese labels leaking into en/ja/etc.
 PERSONA_FUSION_ENTITY_LABEL = {
     "master": {
         "zh": "关于用户的长期印象",
@@ -3999,8 +3999,8 @@ def get_persona_fusion_entity_label(entity: str, lang: str = "zh") -> str:
     return _loc(table, lang)
 
 
-# 群聊 scope 化 persona 渲染的 section 标题（memory/persona/rendering.py）。
-# {subject_id} 注入平台前缀的会话/成员标识（如 "qq:12345"）。
+# Group-scoped persona section headings, memory/persona/rendering.py.
+# subject_id includes platform-prefixed conversation/member IDs, e.g. qq:12345.
 SCOPED_PERSONA_SECTION_HEADER = {
     "group_chat": {
         "zh": "群聊记忆（{subject_id}）",
@@ -4032,8 +4032,8 @@ SCOPED_PERSONA_SECTION_HEADER = {
         "es": "Memoria del miembro del grupo ({subject_id})",
         "pt": "Memória do membro do grupo ({subject_id})",
     },
-    # 串门（neko_visit 平台）专表：按 f"{kind}@{platform}" 选中，见
-    # get_scoped_persona_section_header。group_participant 沿用通用标题。
+    # Dedicated neko_visit variants select by f"{kind}@{platform}" through
+    # get_scoped_persona_section_header; group_participant retains generic headings.
     "group_chat@neko_visit": {
         "zh": "串门记忆（{subject_id}）",
         "zh-TW": "串門記憶（{subject_id}）",
@@ -4057,10 +4057,10 @@ SCOPED_PERSONA_SECTION_HEADER = {
 }
 
 
-# 带显示名的变体：display_name 来自 section 元数据（群名/成员昵称），是
-# 不可信用户输入——两侧（路由入口 + 渲染）都过 FactStore.sanitize_speaker_
-# label 后才允许进这里。subject_id 保留在标题里：显示名可变且可重复
-# （同名群、同昵称成员），稳定标识才能与消息头/存储对得上。
+# Display-name variants use section metadata from user-editable group names/cards,
+# untrusted input sanitized at both route entry and rendering through FactStore.sanitize_speaker_
+# label. Keep subject_id in headings because names change or duplicate,
+# while stable identifiers align with message headers/storage.
 SCOPED_PERSONA_SECTION_HEADER_NAMED = {
     "group_chat": {
         "zh": "群聊记忆（{display_name}，{subject_id}）",
@@ -4145,8 +4145,8 @@ def get_scoped_persona_section_header(
             )
         )
         if named is not None:
-            # str.format 只展开模板里的槽位，替换值里的花括号不会被二次
-            # 解释——display_name 含 "{x}" 也不会变成注入面。
+            # str.format expands template slots only, never braces inside replacement
+            # values; display_name containing {x} creates no second interpretation/injection.
             return _loc(named, lang).format(
                 display_name=display_name, subject_id=subject_id,
             )
@@ -4160,12 +4160,12 @@ def get_scoped_persona_section_header(
     return _loc(table, lang).format(subject_id=subject_id)
 
 
-# ---------- 召回条目的 [层级/归属] 标签 ----------
-# 召回结果每条前面挂一个 `[tier/entity]` 标签。tier / entity 是**内部枚举**
-# （hybrid_recall 的 _tier、fact 的 entity；scoped 写入时 entity 被强制成
-# subject.kind），直接回显等于把 `[fact/group_chat]` 这种英文标识符塞进
-# 中文 prompt。这里给出本地化说法，两个渲染点（memory_bridge 的群/私聊
-# 召回、tool_calling 的 recall_memory 工具结果）共用。
+# -- Recall-entry tier/entity labels --
+# Prefix each recall result with [tier/entity]. These are internal enums,
+# hybrid_recall._tier/fact.entity, forced to subject.kind for scoped
+# writes. Raw [fact/group_chat] would inject English identifiers into
+# Chinese prompts; localize labels here for both memory_bridge group/private
+# recall and tool_calling recall_memory results.
 RECALL_ENTRY_TIER_LABEL = {
     "fact": {
         "zh": "事实", "zh-TW": "事實", "en": "fact", "ja": "事実", "ko": "사실",
@@ -4180,7 +4180,7 @@ RECALL_ENTRY_TIER_LABEL = {
         "ko": "지난 사실", "ru": "архивный факт",
         "es": "hecho archivado", "pt": "fato arquivado",
     },
-    # 画像里没被渲染进系统提示的条目（预算挤出去的），召回时带回来。
+    # Recall can recover persona entries excluded from system prompts by budgets.
     "persona": {
         "zh": "长期记忆", "zh-TW": "長期記憶", "en": "long-term memory", "ja": "長期記憶",
         "ko": "장기 기억", "ru": "долговременная память",
@@ -4188,8 +4188,8 @@ RECALL_ENTRY_TIER_LABEL = {
     },
 }
 
-# entity 的 'master' 指"关于使用者的事实"，不是称谓——一律用中性的"用户"
-# 类词，绝不写成附属称呼。
+# master means facts about users, not an address form; always use neutral
+# user wording, never subordinate titles.
 RECALL_ENTRY_ENTITY_LABEL = {
     "master": {
         "zh": "关于用户", "zh-TW": "關於使用者", "en": "about the user", "ja": "ユーザーについて",
@@ -4252,8 +4252,8 @@ GROUP_DIGEST_SPEAKER_LABEL = {
 
 
 def get_group_digest_speaker_label(lang: str = "zh") -> str:
-    # keep_traditional 归一（与 fact 抽取模板同规则）：调用方可传 full
-    # locale（zh-TW 命中繁中键），短码调用方行为不变。
+    # keep_traditional normalization matches fact-extraction templates: accept full
+    # zh-TW locales without changing existing short-code behavior.
     return _loc(GROUP_DIGEST_SPEAKER_LABEL, _normalize_memory_prompt_lang(lang))
 
 
@@ -4420,7 +4420,7 @@ persona_correction_prompt = PERSONA_CORRECTION_PROMPT["zh"]
 # off entirely, and telling the model it came from cosine would label
 # the evidence wrong. This prompt asks the LLM to classify each pair
 # into merge / replace / keep_both; the detectors only nominate, since
-# no similarity score separates "主人喜欢猫" from "主人讨厌猫".
+# No similarity score separates "主人喜欢猫" from "主人讨厌猫" (likes versus hates cats).
 FACT_DEDUP_PROMPT = {
     "zh": """以下是 {COUNT} 组由相似度筛选出的候选事实对，请逐组判断是否真的指向同一件事，并选择处理方式。
 
@@ -4718,11 +4718,11 @@ memory_recall_rerank_prompt = MEMORY_RECALL_RERANK_PROMPT["zh"]
 # =====================================================================
 # ======= Recall-memory tool (function/tool call) =====================
 # =====================================================================
-# 给所有文本/语音模型注册的"回忆"工具：模型决定何时调用，
-# 当前先做成 pseudo tool —— 无论传什么参数都返回"没有找到相关记忆"，
-# 等机制层在 offline / realtime 两条路径上都跑通了再接真实检索后端。
-# description / 参数说明走 memory locale policy 按 user_language 渲染，
-# 其中繁中保留 zh-TW，其余语言归一到模板使用的短码。
+# Recall tools registered for all text/voice models let models decide invocation;
+# initially pseudo tools always return no-related-memory regardless of parameters,
+# until offline/realtime mechanisms both work, before connecting real search backends.
+# Render descriptions/parameter docs under user_language memory-locale policy,
+# retaining zh-TW while normalizing other languages to short template codes.
 
 RECALL_MEMORY_TOOL_DESCRIPTION = {
     "zh": "回忆与当前对话相关的过往记忆。当你需要查阅之前的对话内容、用户偏好、过去发生的事情，或对当前话题缺少必要背景时调用此工具。",
@@ -4768,8 +4768,8 @@ RECALL_MEMORY_TOOL_NO_RESULT = {
     "pt": "Nenhuma memória relevante encontrada.",
 }
 
-# 同时给了 query 和 time 却 0 命中时返回这条——提示模型放宽过滤条件，
-# 用「只带时间」或「只带 query」再查一次，而不是直接当作没有记忆放弃。
+# Zero hits with both query/time return this hint to relax filters and retry
+# time-only or query-only rather than immediately assume no memory.
 RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN = {
     "zh": "在该时间范围内没有找到匹配「{query}」的记忆。建议放宽过滤条件重试一次：要么只用 time（按时间回溯该时段的记忆），要么只用 query（不限时间地语义检索）。",
     "zh-TW": "在該時間範圍內沒有找到符合「{query}」的記憶。建議放寬篩選條件重試一次：可以只用 time（按時間回溯該時段的記憶），也可以只用 query（不限時間地做語意搜尋）。",
@@ -4781,10 +4781,10 @@ RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN = {
     "pt": "Nenhuma memória correspondeu a \"{query}\" nesse intervalo de tempo. Tente afrouxar o filtro e consultar novamente: apenas com time (recordar memórias daquele período) ou apenas com query (busca semântica sem limite de tempo).",
 }
 
-# 召回到 N 条记忆时的总览首句；后面接渲染条目，每条按
-# ``[层级/归属] text  (事件日期, 相对标签)`` 格式（层级/归属走
-# render_recall_entry_tag 的本地化标签表；text 是原始记忆内容，按用户
-# 拍板"不翻译"；时间锚点优先取事件真正发生时间而非记忆写盘时间）。
+# Overview sentence for N recalled entries, followed by each rendered
+# [tier/entity] text (event date,relative label). Tier/entity use
+# render_recall_entry_tag localization; original memory text remains untranslated
+# by user decision. Time anchors prefer actual events over persistence times.
 RECALL_MEMORY_TOOL_FOUND_HEADER = {
     "zh": "找到 {n} 条相关记忆：",
     "zh-TW": "找到 {n} 條相關記憶：",
@@ -4800,13 +4800,13 @@ RECALL_MEMORY_TOOL_FOUND_HEADER = {
 # =====================================================================
 # ======= MemoryRefineEngine cluster prompt (Phase A-3) ===============
 # =====================================================================
-# 跨 persona / reflection 共享的四件套（split / merge / modify / discard）
-# refine prompt。cluster 内成员同 entity（engine 层强制），可能混
-# reflection 和 fact 两类条目（fact 是原子素材，只能作 merge / modify 的
-# 信息源 absorbed_from_fact_ids，不能被 split / discard / modify —— 代码
-# 层兜底，不靠 prompt 自觉）。LLM 输出 JSON 数组；无需修改时返回 []。
-# 渲染走 .replace('{ENTITY}', ...) / .replace('{CLUSTER}', ...)，所以
-# JSON example 内的 `{...}` 字面量不需要 `{{}}` escape。
+# Shared persona/reflection split/merge/modify/discard refinement prompts.
+# Engines enforce same-entity cluster membership, potentially mixing
+# reflections/facts; facts are atomic source material usable only through
+# absorbed_from_fact_ids for merge/modify, never split/discard/modify themselves,
+# enforced by code, not prompt obedience. Output JSON arrays, [] if unchanged.
+# Rendering uses replace(ENTITY)/replace(CLUSTER), so JSON-example
+# literal braces need no double-brace escaping.
 
 MEMORY_REFINE_PROMPT = {
     "zh": """以下是一组高度相关的记忆条目（cluster），entity={ENTITY}。请判断这组条目应如何整理。
@@ -5098,17 +5098,17 @@ memory_refine_prompt = MEMORY_REFINE_PROMPT["zh"]
 
 
 # =====================================================================
-# ======= Scoped lite refine cluster prompt（群记忆系列 5/7） =========
+# ===== Scoped lightweight refinement cluster prompt, group-memory series 5/7 =====
 # =====================================================================
-# scoped（群/成员）专用轻量 refine 的单件套（merge only）prompt。与本体
-# MEMORY_REFINE_PROMPT 的刻意差异：无 {ENTITY}（分桶键是 subject，条目
-# 全部来自同一个群/成员记忆域）、只有 merge（split/modify/discard 对
-# scoped 的失效面大于价值）、要求矛盾条目必须给出结论而非并存。条目行
-# 可能带 trust= 标注（发言人信赖度，系列 7/7 接入；未接入时不出现）。
-# 渲染走 .replace('{CLUSTER}', ...) / .replace('{COUNT}', ...)，JSON
-# example 的 `{...}` 字面量无需 `{{}}` escape。8 locale 含 zh-TW（新式
-# 样板，参照 FACT_EXTRACTION_BATCH_PROMPT）；水印分隔符全 locale 保持
-# 简体（既有约定）。
+# Scoped group/member lightweight merge-only refinement deliberately differs from
+# MEMORY_REFINE_PROMPT: omit ENTITY because subject buckets contain one
+# group/member domain; allow only merge because other operations risk more
+# than they help; resolve contradictions rather than coexist. Entry lines
+# may contain trust= speaker scores after series 7/7 integration, otherwise absent.
+# Render through replace(CLUSTER)/replace(COUNT), leaving JSON-example
+# braces unescaped. Eight locales including zh-TW follow new-style
+# FACT_EXTRACTION_BATCH_PROMPT; keep watermark delimiters simplified
+# in every locale by established convention.
 
 SCOPED_MEMORY_REFINE_PROMPT = {
     "zh": """以下是同一个群聊/成员记忆域内的一组高度相关的记忆条目。请判断哪些条目应当合并。

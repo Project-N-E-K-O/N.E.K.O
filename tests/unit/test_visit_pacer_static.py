@@ -114,5 +114,5 @@ def test_only_index_loads_pacer_and_mouth_driver():
     for name in ("visit-pacer.js", "text-mouth-driver.js"):
         assert f'src="/static/visit/{name}' in index, name
         assert name not in chat, name
-    # 在 app-websocket.js 之后加载：派发与监听同在一页
+    # Load after app-websocket.js: dispatch and listeners share one page.
     assert index.index("/static/app/app-websocket.js") < index.index("/static/visit/visit-pacer.js")

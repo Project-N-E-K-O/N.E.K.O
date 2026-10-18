@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""小剧场模型提示词。"""  # noqa: DOCSTRING_CJK
+"""Theater model prompts."""  # noqa: DOCSTRING_CJK
 
 NUMERIC_V2_ACTOR_JSON_INSTRUCTION = (
     "最终回复必须且只能是一个可由 JSON.parse 直接解析的 JSON object；禁止输出 Markdown 代码围栏、"

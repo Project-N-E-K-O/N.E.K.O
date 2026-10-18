@@ -110,45 +110,45 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
         self._lock = threading.Lock()
         self._config_manager = get_config_manager()
 
-        # 尚未落盘的增量数据（save 成功后清空）
+        # Unpersisted incremental data (cleared after a successful save)
         self._delta_daily: dict = {}
         self._delta_records: deque = deque(maxlen=200)
 
-        # 持久化控制
-        self._save_interval = 60  # 秒
+        # Persistence controls
+        self._save_interval = 60  # Seconds
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
 
-        # 远程遥测上报
-        self._device_id: str = ""  # 延迟生成
-        self._branch: str = ""  # 延迟生成（首次上报时读盘/抽签）
+        # Remote telemetry reporting
+        self._device_id: str = ""  # Lazily generated
+        self._branch: str = ""  # Lazily generated (read disk/draw a sample on first report)
         self._last_report_time: float = 0.0
         self._report_interval = _TELEMETRY_REPORT_INTERVAL
-        self._unsent_daily: dict = {}  # 尚未成功上报到服务器的增量
+        self._unsent_daily: dict = {}  # Deltas not yet successfully reported to the server
         self._unsent_records: list = []
-        # batch_seq：当前正在上报或重传中的窗口标识。新窗口首次进入 _report_to_server
-        # 时分配一次（secrets.token_hex），失败重传时保留同一个值，让 server
-        # seen_batches 能 dedupe "网络 timeout 但 server 已经 commit" 的重传。
-        # 成功 200 后清空，下次窗口再分配新 seq。跟 _unsent_daily 一起持久化。
+        # batch_seq identifies the window currently reporting/retrying. Allocate once (secrets.token_hex) on a new window's first
+        # entry into _report_to_server; retain the same value for retries so the server
+        # seen_batches can deduplicate retries after a network timeout when the server already committed.
+        # Clear after a successful 200; allocate a new seq for the next window. Persist alongside _unsent_daily.
         self._pending_batch_seq: Optional[str] = None
-        self._has_recorded_app_start: bool = False  # 🔒 app_start 单次上报锁
-        self._session_start_ts: float = 0.0  # session_end 计算 duration 用
+        self._has_recorded_app_start: bool = False  # 🔒 One-time app_start reporting lock
+        self._session_start_ts: float = 0.0  # Used to calculate session_end duration
         self._session_process: str = "unknown"
-        # 本 session 用户消息轮数。note_user_message 累加，record_app_start 重置，
-        # _atexit_save(session_end) emit 成 session_turn_count histogram —— 含 0
-        # 即"零消息会话"（开了 app 一句没聊就走），D1 流失最直接信号。
+        # User-message turns this session: incremented by note_user_message, reset by record_app_start,
+        # emitted by _atexit_save(session_end) as the session_turn_count histogram, including 0
+        # for zero-message sessions (opening the app and leaving without chatting), the most direct D1 churn signal.
         self._session_msg_count: int = 0
-        self._first_user_message_recorded: bool = False  # 🔒 首条用户消息单次锁
-        self._core_loop_recorded: bool = False  # 🔒 首次完成核心 loop 单次锁
+        self._first_user_message_recorded: bool = False  # 🔒 One-time first-user-message lock
+        self._core_loop_recorded: bool = False  # 🔒 One-time first-completed-core-loop lock
 
-        # 首次启动：迁移旧版 per-instance 文件
+        # First startup: migrate legacy per-instance files
         self._migrate_legacy_files()
 
-        # 恢复上次未成功上报的远程数据
+        # Restore remote data that failed to report last time
         self._load_unsent_queue()
 
-        # atexit 兜底：不管进程如何退出（SIGTERM / 异常 / 正常结束），都尝试保存
-        # 注意：SIGKILL (kill -9) 无法被拦截，此时最多丢 60s 数据
+        # atexit fallback: attempt to save regardless of exit type (SIGTERM / exception / normal completion)
+        # Note: SIGKILL (kill -9) cannot be intercepted; at most 60s of data may be lost
         atexit.register(self._atexit_save)
 
 

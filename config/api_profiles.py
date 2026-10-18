@@ -59,7 +59,7 @@ DEFAULT_USER_PREFERENCES = []
 
 DEFAULT_VOICE_STORAGE = {}
 
-# 默认API配置（供 utils.api_config_loader 作为回退选项使用）
+# Default API configuration (fallback for utils.api_config_loader).
 DEFAULT_CORE_API_PROFILES = {
     'free': {
         'CORE_URL': "wss://www.lanlan.tech/core",
@@ -87,7 +87,7 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_MODEL': "stepaudio-3-realtime-preview",
     },
     'gemini': {
-        # Gemini 使用 google-genai SDK，而非原生 WebSocket
+        # Gemini uses google-genai SDK rather than native WebSocket.
         'CORE_MODEL': "gemini-3.8-live",
     },
     'grok': {
@@ -104,8 +104,8 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "free-model",
         'EMOTION_MODEL': "free-mini-model",
         'VISION_MODEL': "free-vision-model",
-        # 必须与 api_providers.json 的 free agent_model 及 _free_agent_model_name 一致，
-        # 否则 json 缺失回退到本 defaults 时免费 agent 不计配额、is_agent_free 误判。
+        # Must match api_providers.json free agent_model and _free_agent_model_name,
+        # or fallback to these defaults when JSON is missing skips free-agent quota and misclassifies is_agent_free.
         'AGENT_MODEL': "free-agent-model",
         'AUDIO_API_KEY': "free-access",
         'OPENROUTER_API_KEY': "free-access",

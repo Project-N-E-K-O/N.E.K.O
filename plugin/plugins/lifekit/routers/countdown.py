@@ -1,4 +1,4 @@
-"""倒计时/纪念日 router — 纯计算，零依赖。"""
+"""Countdown/anniversary router — pure computation with zero dependencies."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _parse_numeric_date(text: str) -> Optional[date]:
         except ValueError:
             continue
 
-    # MM-DD (当年或下一年)
+    # MM-DD (this year or next year)
     for fmt in ("%m-%d", "%m/%d", "%m.%d"):
         try:
             parsed = datetime.strptime(t, fmt).date()
@@ -137,7 +137,7 @@ class CountdownRouter(PluginRouter):
             ],
         }
 
-        # 推送卡片
+        # Push the card
         blocks = [{"type": "text", "text": f"{emoji} {summary}"}]
         if abs(delta) > 7:
             blocks.append({"type": "text", "text": i18n.t("date.weeks", weeks=weeks, weekday=detail["weekday"])})

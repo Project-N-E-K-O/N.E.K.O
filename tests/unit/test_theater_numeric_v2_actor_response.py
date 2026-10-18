@@ -114,7 +114,7 @@ async def test_other_transition_modes_do_not_reuse_an_old_invitation(tmp_path, m
 
 
 def test_transition_keeps_source_direction_separate_from_history_and_target():
-    # 使用与章节标题不同的具体叙事，捕获紧凑装箱遗漏来源方向的问题。
+    # Use concrete narrative distinct from the chapter title to catch compact packing that omits the source direction.
     engine = _engine()
     direction = '回应玩家逐船核对救援名单的帮助，人员安全后收束。'
     engine.nodes['start']['story_beat'].update(narrative_summary=direction)
@@ -134,7 +134,7 @@ def test_transition_keeps_source_direction_separate_from_history_and_target():
 
 @pytest.mark.asyncio
 async def test_interactive_target_direction_waits_until_after_its_opening(tmp_path):
-    # 普通转场只建立入口；整幕后续素材应在开场提交后的普通回合才可见。
+    # Ordinary transitions establish only the entry; subsequent material for the whole act should appear only in ordinary turns after the opening is committed.
     case = initiation_case()
     engine = case['engine']
     target = engine.nodes['ending_leave']['story_beat']
@@ -174,7 +174,7 @@ async def test_interactive_target_direction_waits_until_after_its_opening(tmp_pa
 
 
 def test_extra_suggestions_are_trimmed_instead_of_discarded():
-    """超过三条时保留前三条：确定性裁剪替代一次补推荐模型调用。"""  # noqa: DOCSTRING_CJK
+    """Keep the first three when there are more than three: deterministic trimming replaces an extra recommendation-model call."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_actor_output import _parse_actor_suggestions
 

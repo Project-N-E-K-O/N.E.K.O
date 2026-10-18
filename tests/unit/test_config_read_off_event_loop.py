@@ -24,20 +24,20 @@ from tests.repo_ast_cache import parse_source_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# 已转异步的目录：本仓库自有后端代码。plugin/ 与其内部的同步包装函数
-# （_get_text_guard_max_length / _start_tts_thread 等）是后续批次，不在此闸门内。
+# Already asynchronous directories: repository-owned backend code. plugin/ and its synchronous wrappers
+# (_get_text_guard_max_length / _start_tts_thread etc.) belong to later batches, outside this gate.
 GUARDED_DIRS = ("app", "brain", "main_logic", "main_routers", "memory", "utils")
 
 SYNC_CONFIG_READERS = frozenset({"get_core_config", "get_model_api_config"})
 
-# 异步对偶自身：aget_model_api_config 在调用方已给快照时直接同步解析（此时没有任何 IO），
-# 这是它存在的意义，不是违规。
+# The async counterpart itself: aget_model_api_config parses synchronously when given a snapshot (no I/O),
+# which is its intended implementation, not a violation.
 ASYNC_DUALS = frozenset({"aget_core_config", "aget_model_api_config"})
 
-# 心跳间隔与「配置读慢多久」的对比：慢读必须显著超过心跳，否则用例分辨不出阻塞。
+# Heartbeat intervals versus slow config reads: the read must be substantially slower to expose blocking.
 _HEARTBEAT_INTERVAL_S = 0.05
 _SLOW_READ_S = 0.5
-# Windows 定时器精度 ~15ms，正常心跳会落在 50-70ms；留到 200ms 仍远低于 500ms 的慢读。
+# Windows timer precision is ~15ms; ordinary beats take 50-70ms. Allow 200ms, still far below the 500ms slow read.
 _MAX_TOLERATED_GAP_S = 0.2
 
 
@@ -83,7 +83,7 @@ async def _max_heartbeat_gap(body) -> float:
             last = now
 
     beat = asyncio.create_task(heartbeat())
-    # 让心跳先跑几拍，避免把 task 启动本身算进第一个间隔
+    # Let several heartbeats run first to exclude task startup from the initial interval.
     await asyncio.sleep(_HEARTBEAT_INTERVAL_S * 3)
     try:
         await body()
@@ -183,7 +183,7 @@ def _scope_offload_facts(fn: ast.AST) -> tuple[set[str], set[str]]:
     def scan(node: ast.AST, top: bool) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                continue  # 子作用域自己算
+                continue  # Child scopes count independently.
             if isinstance(child, ast.Call):
                 func = child.func
                 name = func.attr if isinstance(func, ast.Attribute) else (
@@ -226,8 +226,8 @@ def _sync_config_reads_inside_async_defs(path: Path) -> list[tuple[int, str, str
                 inner = False
             else:
                 inner = on_loop
-            # 本作用域自己的卸载事实：同名同时被直调的，豁免撤销（fail-closed）——
-            # 一个 _resolve 既能 to_thread(_resolve) 又能在协程里 _resolve()。
+            # Offloading facts are scope-local: a same-name direct call revokes exemption, failing closed;
+            # one _resolve may be passed to to_thread and directly called in a coroutine.
             offloaded, called = _scope_offload_facts(node)
             child_exempt = frozenset(offloaded - called)
             for child in ast.iter_child_nodes(node):
@@ -239,12 +239,12 @@ def _sync_config_reads_inside_async_defs(path: Path) -> list[tuple[int, str, str
             called_name = func.attr if isinstance(func, ast.Attribute) else (
                 func.id if isinstance(func, ast.Name) else None
             )
-            # aget_model_api_config 拿到快照后直接同步解析（无 IO），那是它的实现本体，不是违规。
+            # aget_model_api_config parses snapshots synchronously without I/O as its implementation, not a violation.
             if called_name in SYNC_CONFIG_READERS and on_loop and enclosing not in ASYNC_DUALS:
                 hits.append((node.lineno, called_name, enclosing))
             offload = _is_offload_call(node)
             for arg in node.args:
-                # lambda 直接作实参时按节点身份豁免，不经名字
+                # Exempt lambdas passed directly as arguments by node identity, without name lookup.
                 walk(arg, False if (offload and isinstance(arg, ast.Lambda)) else on_loop,
                      enclosing, exempt)
             for kw in node.keywords:
@@ -332,7 +332,7 @@ async def outer():
 
     hits = _sync_config_reads_inside_async_defs(path)
 
-    # 只该报内层那次（第 10 行 vision）；外层 _resolve 是纯卸载，仍豁免
+    # Report only the inner call (line 10 vision); outer _resolve only offloads and remains exempt.
     assert len(hits) == 1, f"外层豁免泄漏进内层作用域了：{hits}"
     assert hits[0][0] == 10, f"应报内层那次读，实得 {hits}"
 
@@ -423,11 +423,11 @@ def test_get_core_config_never_writes_while_normalizing_a_legacy_port(tmp_path):
     )
     manager = _ReadOnlyMigrationManager(path)
 
-    # save_json_config raises if touched -> 用例过即证明读路径没有写盘
+    # save_json_config raises if touched: passing proves the read path never writes disk.
     config = manager.get_core_config()
 
     assert config["OPENCLAW_URL"] == "http://127.0.0.1:8088", "内存归一化没有生效"
-    # 前置条件：文件里必须仍是 8089，否则说明根本没走到迁移分支（假绿）
+    # Precondition: the file must still contain 8089, or migration never ran and passing would be false.
     assert "8089" in path.read_text(encoding="utf-8"), "读路径把迁移落盘了"
 
 
@@ -459,7 +459,7 @@ def test_legacy_port_rewrite_preserves_host_and_userinfo():
 
     assert rewrite("http://user:pw@example.test:8089") == "http://user:pw@example.test:8088"
     assert rewrite("http://[::1]:8089") == "http://[::1]:8088"
-    # 非 8089、空值、垃圾输入一律不改写
+    # Non-8089 values, empties, and garbage must never be rewritten.
     assert rewrite("http://127.0.0.1:8088") == ""
     assert rewrite("") == ""
     assert rewrite(None) == ""
@@ -536,7 +536,7 @@ def test_startup_migration_retries_a_transient_write_failure(monkeypatch):
     Losing the retry would leave openclawUrl at 8089 for the whole run, and the settings
     form would then post that stale value straight back -- the migration never converges.
     """
-    # 退避 sleep 在 core_config.migrate_openclaw_url_port 里，读时钟的就是本模块
+    # Backoff sleep lives in core_config.migrate_openclaw_url_port; this module reads the clock.
     patch_module_clock(monkeypatch, core_config_module, sleep=lambda _s: None)
     manager = _FlakyWriteManager({"openclawUrl": "http://127.0.0.1:8089"}, fail_times=2)
 
@@ -548,21 +548,21 @@ def test_startup_migration_retries_a_transient_write_failure(monkeypatch):
 @pytest.mark.unit
 def test_startup_migration_gives_up_after_the_attempt_budget(monkeypatch):
     """Bounded, not infinite: a permanently unwritable config must not hang startup."""
-    # 同上：退避 sleep 由 core_config 自己调用
+    # Likewise, core_config calls backoff sleep itself.
     patch_module_clock(monkeypatch, core_config_module, sleep=lambda _s: None)
     manager = _FlakyWriteManager({"openclawUrl": "http://127.0.0.1:8089"}, fail_times=99)
 
     assert manager.migrate_openclaw_url_port() is False
     assert manager.attempts == core_config_module._OPENCLAW_MIGRATION_ATTEMPTS
-    # 预算本身必须小：只断言 attempts==常量 是自指的，把常量调到 50 也照样过，
-    # 而那会让一个可选迁移在启动路径上退避好几秒。这里钉死量级。
+    # The budget itself must be small: asserting attempts==constant is self-referential and still passes at 50,
+    # causing optional startup migration to back off for seconds. Pin the scale here.
     assert core_config_module._OPENCLAW_MIGRATION_ATTEMPTS <= 5, "重试预算过大，会拖慢启动"
     worst_case_delay = sum(
         core_config_module._OPENCLAW_MIGRATION_RETRY_DELAY_S * (i + 1)
         for i in range(core_config_module._OPENCLAW_MIGRATION_ATTEMPTS - 1)
     )
     assert worst_case_delay <= 1.0, f"最坏退避累计 {worst_case_delay:.1f}s，启动不该为可选迁移等这么久"
-    # 读路径仍会在内存里归一化，所以运行时不受影响
+    # The read path still normalizes in memory, preserving runtime behavior.
     assert manager.stored["openclawUrl"] == "http://127.0.0.1:8089"
 
 
@@ -578,7 +578,7 @@ def test_save_choke_point_normalizes_a_resubmitted_legacy_port():
     ).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    # 静态钉住：openclawUrl 的落盘赋值必须经过 _migrated_openclaw_url
+    # Static guard: persisted openclawUrl assignments must pass through _migrated_openclaw_url.
     assigns = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
@@ -622,7 +622,7 @@ def test_startup_migration_is_serialized_in_process():
             inside.append(1)
             if len(inside) > 1:
                 overlap.append(True)
-            # 让两个线程有充分机会重叠：先都到齐，再各自往下走
+            # Allow both threads to overlap: wait for both to arrive before letting either continue.
             real_time.sleep(0.02)
             return dict(self.stored)
 

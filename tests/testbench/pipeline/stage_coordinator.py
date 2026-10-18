@@ -1,42 +1,42 @@
-"""Stage Coach — 流水线阶段引导 (P14).
+"""Stage Coach — pipeline-stage guidance (P14).
 
-PLAN §P14 约定: 维护一个 "当前阶段 + 推荐下一步 op + 上下文快照" 的只读
-引导层, UI 顶栏一枚 Stage chip 展示给测试人员看. **所有副作用动作**
-(真的编辑人设 / 写记忆 / 发消息 / 跑评分) 都靠测试人员在别的 workspace
-手动完成 — 本模块绝不自动执行任何 op, 只做:
+PLAN §P14 specifies a read-only guidance layer containing current stage + recommended next operation + context
+snapshot, shown in a Stage chip in the UI header. **Every side-effecting action**
+(actual persona editing / memory writing / message sending / scoring) is performed manually by testers
+in other workspaces. This module never executes operations automatically; it only:
 
-    1. 告知当前处于六阶段的哪一段
-    2. 基于 stage **静态**映射给出推荐的下一步 op (不看消息/记忆量等数据)
-    3. 提供无副作用的 context_snapshot 数字让测试人员自己判断该不该跑
-    4. advance / skip / rewind 三个动作只改 ``session.stage_state``, 不跑任何
-       业务逻辑
+    1. Identifies the current one of six stages
+    2. Recommends the next operation through a **static** stage mapping, independent of message/memory counts
+    3. Supplies side-effect-free context_snapshot numbers so testers decide whether to execute
+    4. Lets advance / skip / rewind change only ``session.stage_state``, never running
+       business logic
 
-设计原则
+Design principles
 --------
-* **纯静态推荐**: 推荐 op 是 stage → op 一对一常量映射, 不依赖 messages
-  数量 / memory 条目数 / clock 状态等运行时数据 — 那些数据会以
-  ``context_snapshot`` 形式返回给 UI, 由**测试人员凭直觉**决定现在是真跑
-  这一步还是 skip. 这样 coordinator 不需要和 memory_runner 的阈值逻辑重复,
-  也不会在阈值微调时悄悄改变"推荐什么". PLAN §P14 原文:
-  "永远只建议 + 预览 + 等确认, 绝不自动跑".
-* **/stage/preview 在 P14 范围内统一不支持**: Stage 层不重新包 dry-run —
-  memory op 的 dry-run 已经由 P10 的 ``/api/memory/trigger/{op}`` + modal
-  承担 (测试人员直接在 Setup → Memory 子页点 Trigger 即可); evaluation op
-  的 dry-run = "跑一次评分看分数但不存", P16 ``/api/judge/run`` 的
-  ``persist=false`` 分支已经提供, 入口在 Evaluation → Run 子页
-  (schema 选择 + 目标选择 + reference 配置等一整套参数靠子页完成,
-  Stage chip 上只放一个指路按钮, 不自己组装参数). 本期
-  ``preview_suggested_op`` 一律返回 ``PreviewUnsupported`` + 指向性文案,
-  告诉测试人员去哪个子页预览.
-* **advance / skip / rewind 都是幂等的 stage 切换**: 不会触发任何
-  LLM 调用 / 磁盘写 / clock 推进. 唯一副作用是改 ``session.stage_state``
-  的 current / history / updated_at 三字段 + 写一行 JSONL 日志.
-* **context_snapshot 必须无副作用**: 任何字段收集失败都降级到该字段为空,
-  并在 warnings 里记一条; 绝不抛异常让 Stage chip 整个渲染失败 (chip 要
-  做到 "坏了也能显示 stage 名字").
-* **i18n key 写死, 不要硬字符串**: op 的 label/description/when_to_run/
-  when_to_skip 四段都是 i18n key 回传前端, UI 侧用 ``i18n(key)`` 渲染 —
-  保证换语种时后端不需要改.
+* **Purely static recommendations**: operations use a one-to-one constant stage → op mapping, independent of messages
+  count / memory items / clock state or other runtime data. Return those values in
+  ``context_snapshot`` for the UI, leaving **testers' judgment** to choose execution
+  versus skipping. This avoids duplicating memory_runner thresholds in the coordinator
+  or silently changing recommendations when thresholds change. PLAN §P14 states:
+  'Only suggest, preview, and wait for confirmation; never execute automatically.'
+* **/stage/preview unsupported throughout P14**: Stage does not rewrap dry runs;
+  memory dry runs already use P10 ``/api/memory/trigger/{op}`` plus modal
+  (testers click Trigger under Setup → Memory). Evaluation dry runs mean
+  scoring once without saving, provided by P16 ``/api/judge/run``'s
+  ``persist=false`` branch under Evaluation → Run
+  (schema/target/reference parameters are assembled entirely by that subpage,
+  while Stage chips only link there). This iteration's
+  ``preview_suggested_op`` always returns ``PreviewUnsupported`` with guidance
+  directing testers to the relevant preview subpage.
+* **advance / skip / rewind are idempotent stage switches**: they trigger no
+  LLM calls / disk writes / clock advances. The only side effects change current / history / updated_at
+  in ``session.stage_state`` and append one JSONL log record.
+* **context_snapshot must be side-effect-free**: failed field collection yields an empty field
+  with a warning, never an exception preventing the whole Stage chip from rendering; the chip
+  must still show the stage name when something breaks.
+* **Use fixed i18n keys, never hardcoded copy**: return op label/description/when_to_run/
+  when_to_skip as i18n keys for frontend ``i18n(key)`` rendering,
+  so language changes require no backend edits.
 """
 from __future__ import annotations
 
@@ -54,11 +54,11 @@ from tests.testbench.session_store import Session
 class StageError(RuntimeError):
     """Raised when a stage operation can't proceed.
 
-    Code → HTTP status 在 router 层统一映射:
+    Code → HTTP status is mapped centrally in the router:
       - NoSession          → 404
-      - UnknownStage       → 400 (rewind target 非法)
-      - PreviewUnsupported → 412 (preview 当前 stage 不可用)
-      - InvalidTransition  → 400 (罕见, 预留)
+      - UnknownStage       → 400 (invalid rewind target)
+      - PreviewUnsupported → 412 (preview unavailable for the current stage)
+      - InvalidTransition  → 400 (rare, reserved)
     """
 
     def __init__(self, code: str, message: str, status: int = 500) -> None:
@@ -89,9 +89,9 @@ STAGE_ORDER: Final[tuple[Stage, ...]] = (
     "evaluation",
 )
 
-# evaluation → chat_turn 的循环回归点 — PLAN §9 状态图里的
-# ``evaluation --> chat_turn: 继续对话`` 边. advance() 在 evaluation 上
-# 再点一次"推进"就回到 chat_turn, 而不是掉到末端卡死.
+# evaluation → chat_turn loop-back corresponds to PLAN §9's state-diagram
+# ``evaluation --> chat_turn: continue conversation`` edge. Another advance() on evaluation
+# returns to chat_turn instead of getting stuck at the end.
 _LOOP_AFTER: Final[Stage] = "chat_turn"
 
 VALID_STAGES: Final[frozenset[Stage]] = frozenset(STAGE_ORDER)
@@ -136,9 +136,9 @@ class SuggestedOp:
     description_i18n_key: str
     when_to_run_i18n_key: str
     when_to_skip_i18n_key: str
-    # P14: 所有 op 的 dry_run 都是 False — memory op 的 dry-run 走 P10
-    # /api/memory/trigger, evaluation op 等 P15/P16. Chip 上 [预览] 按钮
-    # 会 disabled + tooltip 指向真正的 preview 入口.
+    # P14: every operation has dry_run=False; memory dry runs use P10
+    # /api/memory/trigger, while evaluation waits for P15/P16. Chip Preview buttons
+    # are disabled, with tooltips directing users to actual preview entry points.
     dry_run_available: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -196,11 +196,11 @@ _OP_MEMORY_TRIGGER: Final = SuggestedOp(
     when_to_skip_i18n_key="stage.op.memory_trigger.when_to_skip",
 )
 
-# P15/P16 落地后从 ``evaluation.pending`` (占位, 只能 toast "未上线")
-# 升级为 ``evaluation.run``: 指向 Evaluation → Run 子页, 测试人员到那里选
-# schema + 目标后点 [运行评分]; dry_run 仍然 False, 因为 stage chip 不组装
-# schema/target 参数, 真正 dry-run 由 Run 子页底层 ``/api/judge/run``
-# 的 ``persist=false`` 分支承担 (或未来在 Run 子页加"预览一次不存"按钮).
+# After P15/P16, replace ``evaluation.pending`` (a placeholder only showing 'not available')
+# with ``evaluation.run``, pointing to Evaluation → Run where testers select
+# schema/targets and Run scoring. dry_run remains False because stage chips do not assemble
+# schema/target parameters; the Run subpage handles actual dry runs through ``/api/judge/run``'s
+# ``persist=false`` branch, or a future preview-without-saving button there.
 _OP_EVALUATION_RUN: Final = SuggestedOp(
     op_id="evaluation.run",
     stage="evaluation",
@@ -233,7 +233,7 @@ def suggested_op_for(stage: Stage) -> SuggestedOp:
 def initial_stage_state() -> dict[str, Any]:
     """Fresh stage_state for a brand-new session.
 
-    ``action="init"`` 留个根锚便于 P18 时间线显示 "从 persona_setup 开始".
+    ``action=\"init\"`` leaves a root anchor so P18 timelines can show 'start from persona_setup'.
     """
     now = _iso_now()
     return {
@@ -388,18 +388,18 @@ def preview_suggested_op(
     session: Session,
     op_id: str | None = None,
 ) -> dict[str, Any]:
-    """Stage 层不包 dry-run; 所有 op 一律 raise ``PreviewUnsupported``.
+    """Stage does not wrap dry runs; every operation raises ``PreviewUnsupported``.
 
-    理由 (详见模块 docstring):
-      - memory op 的预览用 ``/api/memory/trigger/{op}`` (P10).
-      - evaluation op 的预览用 ``/api/judge/run {persist: false}``
-        (P16), UI 入口在 Evaluation → Run 子页.
-      - persona / chat / prompt 这三类 op 本身没"不执行只预览"语义
-        (编辑人设永远安全, chat 发送不该有假装版, prompt preview 已经
-        是 Chat 右栏的常规视图).
+    Rationale (see module docstring):
+      - Memory previews use ``/api/memory/trigger/{op}`` (P10).
+      - Evaluation previews use ``/api/judge/run {persist: false}``
+        (P16), accessed through Evaluation → Run.
+      - Persona / chat / prompt operations lack preview-without-execution semantics
+        (persona editing is always safe, chat sends should not have pretend versions, and prompt preview
+        already appears normally in Chat's right panel).
 
-    端点会 raise ``PreviewUnsupported(412)`` + 指向性文案, 让前端
-    toast 提示 "请去 X 子页预览".
+    Endpoints raise ``PreviewUnsupported(412)`` with directional wording so the frontend
+    toast tells users to preview in the appropriate subpage.
     """
     stage = current_stage(session)
     op = suggested_op_for(stage)

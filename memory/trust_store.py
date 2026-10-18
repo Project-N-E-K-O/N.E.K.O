@@ -1181,7 +1181,7 @@ async def aapply_trust_mutations(
         captured["result"] = result
         return dirty, result
 
-    # 被取消时等线程写完再抛：调用方可能持着别的锁等这次写（见模块头取消安全说明）
+    # On cancellation, wait for the writer thread before re-raising: callers may hold other locks while awaiting this write (see module cancellation-safety notes)
     persisted, _ = await to_thread_through_cancellation(_with_pool_write, _mutator)
     base = captured.get("result") or TrustApplyResult(
         persisted=False,
@@ -1500,7 +1500,7 @@ def _account_limit_guard(
     if len(existing) <= limit:
         return
     if reason:
-        # 按平台收紧的上限各有原因，报错要说清楚，不能只报一个数字
+        # Platform-specific tightened limits have different reasons; explain the reason rather than reporting only a number
         raise TrustIdentityError(
             f"{platform} 平台每个实体最多 {limit} 个 account，无法再关联：{reason}",
             status_code=409,

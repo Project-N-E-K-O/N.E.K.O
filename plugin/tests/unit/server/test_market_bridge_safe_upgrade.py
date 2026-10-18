@@ -816,7 +816,7 @@ async def test_market_upgrade_holds_operation_lock_for_entire_replacement(
         acquire_attempts += 1
         if acquire_attempts == 2:
             second_waiting_for_lock.set()
-        # 截止期照原样转发。吞掉它的替身会让被测的等锁预算在这条路径上静默失效。
+        # Forward the deadline unchanged. Swallowing it in the test double silently disables the lock-wait budget under test on this path.
         await original_acquire(deadline)
 
     monkeypatch.setattr(operation_lock._PROCESS_LOCK, "acquire", observed_acquire)

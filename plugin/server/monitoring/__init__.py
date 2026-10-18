@@ -1,7 +1,7 @@
 """
-监控模块
+Monitoring module
 
-提供性能指标收集和监控功能。
+Provides performance metric collection and monitoring.
 """
 from plugin.server.monitoring.metrics import metrics_collector
 

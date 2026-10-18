@@ -41,9 +41,9 @@ ALLOWED_ROLES: Final[frozenset[str]] = frozenset({ROLE_USER, ROLE_ASSISTANT, ROL
 SOURCE_MANUAL: Final[str] = "manual"          # User typed it into the composer.
 SOURCE_INJECT: Final[str] = "inject"          # /chat/inject_system (mid-conversation system note).
 SOURCE_LLM: Final[str] = "llm"                # Target chat LLM reply.
-SOURCE_SIMUSER: Final[str] = "simuser"        # Reserved for P11 (假想用户 AI).
-SOURCE_SCRIPT: Final[str] = "script"          # Reserved for P12 (脚本化对话).
-SOURCE_AUTO: Final[str] = "auto"              # Reserved for P13 (双 AI 自动对话).
+SOURCE_SIMUSER: Final[str] = "simuser"        # Reserved for P11 (simulated user AI).
+SOURCE_SCRIPT: Final[str] = "script"          # Reserved for P12 (scripted conversations).
+SOURCE_AUTO: Final[str] = "auto"              # Reserved for P13 (automatic conversations between two AIs).
 # P25 Day 2 polish r5 — pseudo-message inserted by external-event simulators
 # to mark "tester triggered a non-dialog event here" in the chat timeline.
 # The banner is a VISUAL-ONLY marker rendered like the auto-generated

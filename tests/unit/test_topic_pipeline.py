@@ -720,9 +720,9 @@ async def test_topic_pool_preserves_post_candidate_signals_after_delivery():
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段")
-    # 候选的 signal cutoff 就是这条 turn 的时间戳，新 turn 只有严格晚于它才该被保留。
-    # Windows 上 time.time() 粒度可达 15ms，固定 sleep 要么不够（新 turn 撞上 cutoff
-    # 被一起清掉）要么白等，所以直接等挂钟走过 cutoff 再记这条新 turn。
+    # Candidate signal cutoff is this turn's timestamp; retain new turns only if strictly later.
+    # Windows time.time() granularity reaches 15ms; fixed sleeps either undershoot (new turn equals cutoff
+    # and is cleared) or waste time. Wait until clock passes cutoff before recording new turn.
     cutoff = pool._signal_store.last_turn_at("妮可")
 
     await pool.process_now("妮可")
@@ -730,11 +730,11 @@ async def test_topic_pool_preserves_post_candidate_signals_after_delivery():
         await asyncio.sleep(0.005)
     pool.note_user_message("妮可", "新话题：我后来又开始纠结换工作和现实压力怎么平衡")
 
-    # 投递后的 signal 清理挂在 to_thread flush 之后，固定 sleep 只是在赌它做完了；
-    # 轮询这条链的终点，超时后照旧交给下面的断言报错。
-    # 内存里的 signal 被摘掉只是链条的中段——_discard_delivered_signals_async 先同步
-    # 摘除、之后才 await flush，所以还要等 trigger task 本身收尾，否则用例会在它仍在
-    # 飞的时候返回，落到 pytest teardown 去取消它。
+    # Postdelivery signal cleanup follows to_thread flush; fixed sleeps only guess completion.
+    # Poll chain endpoint, leaving timeout failure to assertions below.
+    # In-memory signal removal is intermediate only: _discard_delivered_signals_async removes synchronously
+    # then awaits flush, so wait for trigger task itself to finish, avoiding returning while in flight
+    # and pytest teardown cancelling it.
     deadline = time.monotonic() + 5.0
     while (
         not delivered
@@ -822,8 +822,8 @@ async def test_topic_pool_release_predicate_ignores_new_turns_during_delivery():
     )
     pool.note_user_message("妮可", "一个已经成熟、准备排队投递的话题", lang="zh-CN")
     await pool.process_now("妮可")
-    # 两次 release 检查都在 trigger 内部完成，固定 sleep 在 Windows 上可能等于零等待；
-    # 等这两条真的出现再断言（retry delay 60s，不会冒出第三条）。
+    # Both release checks occur inside trigger; fixed sleeps can mean zero wait on Windows;
+    # wait for both records before asserting (60s retry delay prevents a third).
     deadline = time.monotonic() + 5.0
     while len(release_checks) < 2 and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
@@ -1097,15 +1097,15 @@ async def test_topic_pool_clears_durable_signals_after_successful_delivery(tmp_p
     def _persisted_turns() -> list:
         if not path.exists():
             return []
-        # 这个轮询和还在跑的 trigger 任务并发：它们经 to_thread 落盘同一个文件，
-        # Windows 上 os.replace 和这里的 open() 互斥，谁输谁吃 PermissionError。
+        # Poll concurrently with running trigger writing same file through to_thread;
+        # Windows os.replace and open() exclude one another, loser gets PermissionError.
         payload = json.loads(read_text_tolerating_replace(path))
         return payload.get("characters", {}).get("妮可", [])
 
-    # 原来是 `for _ in range(20): await asyncio.sleep(0.01)`——计次而没有挂钟
-    # deadline。Windows 上忙循环里的 sleep(0.01) 会立刻返回，20 次迭代能在不到 1ms
-    # 内跑完，这个"等 200ms"实际等于没等（CI run 30479947756 就是这么红的）。
-    # 而且 _trigger_tasks 空掉离"盘上真的清了"还隔着一次落盘，只能盯真实产物。
+    # Former `for _ in range(20): await asyncio.sleep(0.01)` counted iterations without wall-clock
+    # deadline. Windows busy-loop sleep(0.01) can return immediately, finishing 20 iterations below 1ms;
+    # nominal 200ms wait was none (CI run 30479947756 failure).
+    # Empty _trigger_tasks still precedes actual disk cleanup by one write; inspect real artifacts only.
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         if not pool._trigger_tasks.get("妮可") and not _persisted_turns():
@@ -1359,10 +1359,10 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
     assert calls == 1
 
-    # 抛异常和返回 None 是同一件事——analyzer 失败了——所以必须走同一个退避记账。
-    # 异常若逃到 process_ready_topics 的 except 只打日志，dirty 还在、退避没设，
-    # 每一跳都会再打一次 LLM，正是这个退避要挡的热循环。第一档等于心跳周期，
-    # 所以下一跳放行是预期的；窗口在第二次失败后才真正拉开。
+    # Exceptions and None both mean analyzer failure, requiring identical backoff accounting.
+    # Escaping to process_ready_topics logging-only except leaves dirty without backoff,
+    # calling LLM every tick, the hot loop backoff prevents. First tier equals heartbeat,
+    # so next tick retry is intentional; spacing grows after second failure.
     assert pool._analyzer_failures["妮可"] == 1
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 80)
@@ -1375,7 +1375,7 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
 
     assert calls == 2
     assert materials[0]["interest"] == "稳定转职话题"
-    # 恢复后计数清零，下一次偶发异常从头退避而不是接着翻倍。
+    # Recovery resets count; next transient exception starts backoff anew, not continued doubling.
     assert "妮可" not in pool._analyzer_failures
 
 
@@ -1418,8 +1418,8 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
     assert calls == 1
 
-    # 失败后仍然 dirty，重试要等退避到期。第一档等于心跳周期（20s），所以窗口
-    # 内的跳是 +62/+80，到 +82 才放行；真正拉开距离要到第二次失败之后。
+    # Still dirty after failure; wait for backoff. First tier equals heartbeat (20s), so ticks
+    # at +62/+80 remain gated until +82; true spacing starts after second failure.
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 80)
     assert calls == 1
@@ -2138,20 +2138,20 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
         trigger_delay_seconds=0.01,
-        # 0.2s 的间隔只比一个 Windows 定时器 tick（约 15.6ms，且 sleep 会超发 20%+）
-        # 大一个量级；抬到 1.0s 既让「窗口还没过」有余量，也给下面那条改期延迟的
-        # 断言留出「从首投到第二次 gap 检查之间过去了多久」的不可控开销。
+        # 0.2s is only one order above Windows timer tick (~15.6ms; sleep overshoots 20%+).
+        # Raise to 1.0s for unexpired-window margin and uncontrolled time between initial delivery
+        # and second gap check in the reschedule-delay assertion below.
         min_trigger_gap_seconds=1.0,
         min_user_turns_for_topic=1,
     )
 
     pool.note_user_message("妮可", "第一轮认真聊一个深话题，里面有足够多的具体背景、现实纠结、近期计划和反复提到的细节", lang="zh-CN")
     await pool.process_now("妮可")
-    # 首投在后台 trigger task 里落地，固定 sleep 是抛硬币；等它真的投出来。
-    # 光等 delivered 不够：fake_trigger 在 _run_trigger_when_available 走到
-    # to_thread 落盘、清掉当前 pending material 之前就已经 append 了，此时第二次
-    # process_now 会撞上「已有 pending material」的提前返回，第二个话题根本不会被
-    # 分析，下面等 deferred_delays 就只能超时。所以要等 trigger task 自己收尾。
+    # Initial delivery runs in background trigger task; fixed sleeps guess. Wait for real delivery.
+    # delivered alone insufficient: fake_trigger appends before _run_trigger_when_available
+    # to_thread persistence and clearing current pending material. A second process_now then
+    # returns early for existing material, never analyzing topic two,
+    # so deferred_delays wait times out. Await trigger task completion itself.
     deadline = time.monotonic() + 5.0
     while (
         not delivered or pool._trigger_tasks.get("妮可")
@@ -2159,9 +2159,9 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
         await asyncio.sleep(0.01)
     assert delivered == ["凯迪拉克预算压力"]
 
-    # 「第二个话题被 min gap 挡住」这条负向断言不能靠 sleep 猜窗口：sleep 超发就会
-    # 越过窗口变假红，改短又会让 trigger 根本没机会跑、断言恒真。这里盯住
-    # 「trigger 跑了一遍并主动改期」这个确定性事件，再断言它没有投递。
+    # Negative assertion that min gap blocked topic two cannot guess window with sleep: overshoot
+    # falsely fails; shorter sleep may leave trigger unrun and vacuously pass. Observe deterministic
+    # trigger-executed-and-rescheduled event, then assert no delivery.
     deferred_delays = []
     original_reschedule = pool._reschedule_trigger_after_delay
 
@@ -2177,11 +2177,11 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
     while not deferred_delays and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
     assert deferred_delays, "第二个话题的 trigger 没有被 min trigger gap 改期"
-    # 改期这件事本身还不够：min gap 被误缩短时 trigger 照样会改期一小段，断言就成了
-    # 恒真。但也不能拿延迟去跟整个 gap 比——延迟是「gap 减去已经过去的时间」，而从
-    # 首投到第二次 gap 检查之间过去多久不受控（中间夹着轮询、又一次 process_now、
-    # to_thread 交接）。取一个既远大于「gap 被误缩十倍」后的上限（0.1s）、又给挂钟
-    # 留出 0.85s 余量的门槛。
+    # Rescheduling alone insufficient: mistakenly shortened min gap still briefly reschedules, vacuously passing.
+    # Nor compare delay with full gap: delay = gap minus elapsed time, with uncontrolled time between
+    # first delivery and second check (polling/process_now/to_thread handoff).
+    # Use threshold well above incorrectly tenfold-shortened gap's 0.1s maximum,
+    # leaving 0.85s wall-clock margin.
     assert deferred_delays[0] > 0.15, f"min trigger gap 没有生效: {deferred_delays}"
     assert delivered == ["凯迪拉克预算压力"]
 
@@ -2239,11 +2239,11 @@ async def test_topic_pool_suppresses_same_topic_across_calendar_day_within_48h(m
     analyzer_calls = []
     day_one_late = datetime(2026, 6, 14, 23, 50).timestamp()
     day_two_start = datetime(2026, 6, 15, 0, 1).timestamp()
-    # 两个模块各读各的时钟，必须落在同一条假时间线上：
-    # pipeline 的 _prune_used_topics / _recent_used_topics 不带 now 调用，
-    # 用它判断「昨天投过的话题是否还在 48 小时窗口内」；
-    # signals 给 note_turn 打时间戳，process_ready_topics 的 60s 成熟闸门比的就是它，
-    # 所以这里让证据落在投递窗口前 120 秒，否则候选永远不成熟、下面的断言会空过。
+    # Both modules read their own clocks; align one fake timeline:
+    # pipeline's _prune_used_topics / _recent_used_topics calls omit now,
+    # checking whether yesterday's topic remains within 48h window;
+    # signals timestamps note_turn, compared by process_ready_topics' 60s maturity gate,
+    # so place evidence 120s before delivery window, avoiding never-matured vacuous assertions.
     patch_module_clock(monkeypatch, topic_pipeline, time=lambda: day_two_start)
     patch_module_clock(monkeypatch, topic_signals, time=lambda: day_two_start - 120)
 
@@ -2287,7 +2287,7 @@ async def test_topic_pool_suppresses_same_topic_across_calendar_day_within_48h(m
     await pool.process_ready_topics(now=day_two_start, lang="zh-CN")
     await asyncio.sleep(0.03)
 
-    # 前置条件：抽取必须真的跑过，否则「没投递」只是因为候选没成熟（假绿）
+    # Precondition: extraction actually ran, or no-delivery merely means immature candidates (false pass).
     assert analyzer_calls == ["zh-CN"]
     assert delivered == []
     assert pool.get_ready_materials("妮可") == []
@@ -2516,12 +2516,12 @@ def test_used_topics_persist_failure_is_visible(tmp_path):
     try:
         with patch("main_logic.topic.pipeline.atomic_write_json",
                    side_effect=OSError("simulated read-only state dir")):
-            pool._persist_used_topics()  # 必须不抛
+            pool._persist_used_topics()  # Must not raise.
     finally:
         log.removeHandler(sink)
         log.setLevel(prior)
 
-    # 断言必须卡在 WARNING 上：收 DEBUG 的话 logger.debug 的回归也会绿。
+    # Assert WARNING level: collecting DEBUG would also pass logger.debug regression.
     warnings = [
         r.getMessage() for r in sink.records if r.levelno >= logging.WARNING
     ]
@@ -2529,9 +2529,9 @@ def test_used_topics_persist_failure_is_visible(tmp_path):
 
 
 def test_analyzer_retry_delay_doubles_from_the_base_and_saturates_at_the_cap():
-    # 常量一并断死。只断 _analyzer_retry_delay(2) == 2 * BASE 这类派生式的话，
-    # 把 BASE 改成 1 秒（等于取消退避）测试照样绿。
-    # BASE 等于心跳周期是有意的：第一档不延后，是给抖动的一次立即重试。
+    # Pin constants too. Derived assertions such as _analyzer_retry_delay(2) == 2 * BASE
+    # still pass if BASE becomes one second, effectively disabling backoff.
+    # BASE deliberately equals heartbeat: first tier gives immediate retry for transient jitter.
     assert _ANALYZER_RETRY_BASE_SECONDS == 20.0
     assert _ANALYZER_RETRY_CAP_SECONDS == 1800.0
 
@@ -2543,9 +2543,9 @@ def test_analyzer_retry_delay_doubles_from_the_base_and_saturates_at_the_cap():
     assert pool._analyzer_retry_delay(7) == 1280.0
     # 20 * 2**7 = 2560 > cap.
     assert pool._analyzer_retry_delay(8) == 1800.0
-    # 退避封顶后计数还在涨，指数不能跟着涨到溢出。
+    # Count grows after delay caps; exponent must not grow to overflow.
     assert pool._analyzer_retry_delay(500) == 1800.0
-    # 防御性：第一次失败之前不该有人问，问了也不能算出 0 延迟。
+    # Defensive: requests before first failure should still never yield zero delay.
     assert pool._analyzer_retry_delay(0) == 20.0
 
 
@@ -2574,28 +2574,28 @@ async def test_topic_pool_backs_off_instead_of_retrying_failed_analyzer_every_he
     base = pool._signal_store.last_turn_at("妮可")
     assert base is not None
 
-    # 成熟窗口一过就跑第一次。第一档 = 心跳周期，所以下一跳就放行——这一档是
-    # 给抖动的免费立即重试，真正的退避从第二次失败起。
+    # First run when maturity window passes. First tier = heartbeat, allowing next tick:
+    # free immediate retry for jitter; real backoff begins at second failure.
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
     assert len(calls) == 1
 
     await pool.process_ready_topics(now=base + 82, lang="zh-CN")
     assert len(calls) == 2
-    assert "妮可" in pool._dirty  # 仍然 dirty：是延后重试，不是放弃
+    assert "妮可" in pool._dirty  # Still dirty: deferred retry, not abandonment.
 
-    # 第二次失败后退避翻倍到 40s，期间的每一跳都必须空转。
+    # Second failure doubles to 40s; all intervening ticks must idle.
     for tick in (92, 110, 121):
         await pool.process_ready_topics(now=base + tick, lang="zh-CN")
     assert len(calls) == 2
 
-    # 82 + 40 之后放行第三次，退避再翻倍到 80s。
+    # Third allowed after 82 + 40, then doubles to 80s.
     await pool.process_ready_topics(now=base + 123, lang="zh-CN")
     assert len(calls) == 3
     for tick in (143, 183, 202):
         await pool.process_ready_topics(now=base + tick, lang="zh-CN")
     assert len(calls) == 3
 
-    # 123 + 80 之后第四次。
+    # Fourth after 123 + 80.
     await pool.process_ready_topics(now=base + 204, lang="zh-CN")
     assert len(calls) == 4
 
@@ -2625,8 +2625,8 @@ async def test_topic_pool_clears_analyzer_backoff_once_the_analyzer_answers():
 
     await pool.process_ready_topics(now=base + 82, lang="zh-CN")
     assert len(calls) == 2
-    # 一旦 analyzer 真的答了话，计数与闸门都必须归零，否则下一次偶发失败会
-    # 从上一次的退避档位继续翻倍。
+    # Actual analyzer response resets count and gate; otherwise next transient failure
+    # continues doubling from previous tier.
     assert "妮可" not in pool._analyzer_failures
     assert "妮可" not in pool._analyzer_retry_not_before
     assert pool.get_ready_materials("妮可")[0]["interest"] == "恢复后的换工作话题"
@@ -2687,7 +2687,7 @@ async def test_topic_pool_analyzer_exception_arms_the_same_backoff_as_a_none_res
         await pool.process_ready_topics(now=base + tick, lang="zh-CN")
     assert len(calls) == 1
 
-    # 退避照样翻倍：第二次失败后要等 40s，而不是回到 20s。
+    # Backoff still doubles: wait 40s after second failure, never reset to 20s.
     await pool.process_ready_topics(now=base + 82, lang="zh-CN")
     assert len(calls) == 2
     assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 122, abs=0.05)
@@ -2762,17 +2762,17 @@ async def test_topic_pool_retry_window_anchors_at_the_tick_first_then_at_complet
     assert base is not None
 
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
-    # 第一档：正好一个心跳周期后，调用耗时不算进去。
+    # First tier: exactly one heartbeat after start, excluding call duration.
     #
-    # abs= 是必须的：approx 默认走相对容差 1e-6，而这些是 1.7e9 量级的 unix
-    # 时间戳，等于 ±1700 秒——足以把整个 call_seconds 的差异吞掉，让"第一档
-    # 改回锚在完成时刻"的回归照样绿。
+    # abs= essential: approx defaults relative tolerance 1e-6; Unix timestamps near 1.7e9
+    # allow ±1700s, swallowing all call_seconds differences and passing a regression
+    # anchoring first tier at completion again.
     assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
         base + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
     )
 
     await pool.process_ready_topics(now=base + 82, lang="zh-CN")
-    # 第二档起：锚在失败完成时刻，这 50ms 必须体现出来。
+    # Tier two onward anchors at failure completion; these 50ms must appear.
     naive_deadline = base + 82 + _ANALYZER_RETRY_BASE_SECONDS * 2
     assert pool._analyzer_retry_not_before["妮可"] > naive_deadline
     assert pool._analyzer_retry_not_before["妮可"] >= naive_deadline + call_seconds * 0.8
@@ -2810,7 +2810,7 @@ async def test_topic_pool_accumulated_purge_clears_the_analyzer_backoff():
     assert "妮可" not in pool._analyzer_retry_not_before
     assert "妮可" not in pool._analyzer_failures
 
-    # purge 后重新说话，成熟窗口一过就该正常分析，不受旧 deadline 拖累。
+    # Speech after purge analyzes normally once mature, unaffected by old deadlines.
     pool.note_user_message("妮可", "换个话题，我在学做菜")
     fresh = pool._signal_store.last_turn_at("妮可")
     assert fresh is not None
@@ -2871,8 +2871,8 @@ async def test_topic_pool_retry_window_absorbs_a_stale_tick_stamp():
     )
     pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
 
-    # 第一次失败是免费重试档，锚在 tick 戳上不做补偿；陈旧补偿要从第二次
-    # 失败（真正的退避）起才生效，所以先把第一档用掉。
+    # First failure's free-retry tier anchors tick without compensation; stale-time compensation begins
+    # at second failure, true backoff, so consume first tier first.
     await pool.process_now("妮可", lang="zh-CN", now=time.time())
     assert pool._analyzer_failures["妮可"] == 1
 
@@ -2882,7 +2882,7 @@ async def test_topic_pool_retry_window_absorbs_a_stale_tick_stamp():
 
     deadline = pool._analyzer_retry_not_before["妮可"]
     delay = _ANALYZER_RETRY_BASE_SECONDS * 2
-    # 锚在陈旧戳上的话 deadline = stale_tick + 40，也就是从现在算只剩 10 秒。
+    # Stale anchoring gives deadline=stale_tick+40, only ten seconds from now.
     assert deadline > stale_tick + delay + staleness * 0.8
     assert deadline >= time.time() + delay - 1.0
 
@@ -2938,10 +2938,10 @@ async def test_topic_pool_lazy_analyzer_iterable_that_raises_still_backs_off():
     assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
         base + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
     )
-    # 半路抛的迭代不该留下半成品素材。
+    # Iterator failing midway must leave no partial material.
     assert pool.get_ready_materials("妮可") == []
 
-    # 第二次失败进入真退避，窗口内的跳空转。
+    # Second failure enters real backoff; in-window ticks idle.
     await pool.process_ready_topics(now=base + 82, lang="zh-CN")
     assert len(calls) == 2
     for tick in (92, 110, 121):
@@ -2976,20 +2976,20 @@ async def test_topic_pool_failure_count_does_not_survive_evidence_aging_out(tmp_
     base = pool._signal_store.last_turn_at("妮可")
     assert base is not None
 
-    # 攒出一段失败史，档位爬到第 3 档。
+    # Accumulate failure history to third tier.
     for tick, expected in ((61, 1), (82, 2), (123, 3)):
         await pool.process_ready_topics(now=base + tick, lang="zh-CN")
         assert len(calls) == expected
     assert pool._analyzer_failures["妮可"] == 3
 
-    # 证据整段老化掉（12h retention）：这一跳只会走到 last_turn_at is None。
+    # Entire evidence ages out (12h retention); this tick reaches last_turn_at is None only.
     pool._signal_store.clear("妮可")
     await pool.process_ready_topics(now=base + 3000, lang="zh-CN")
     assert len(calls) == 3
     assert "妮可" not in pool._analyzer_failures
     assert "妮可" not in pool._analyzer_retry_not_before
 
-    # 新语料的第一次失败要拿回那次免费立即重试，而不是从旧档位续。
+    # New corpus first failure regains free immediate retry, not old tier.
     pool.note_user_message("妮可", "换个话题，我最近在学做菜")
     fresh = pool._signal_store.last_turn_at("妮可")
     assert fresh is not None
@@ -3025,7 +3025,7 @@ async def test_global_purge_reaches_a_character_holding_only_backoff_state(use_a
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
     assert "妮可" in pool._analyzer_retry_not_before
 
-    # 落到"只剩退避状态"：dirty 没了，store 里也没了。
+    # Backoff state alone remains: neither dirty nor store data.
     pool._dirty.discard("妮可")
     pool._signal_store.clear("妮可")
     assert "妮可" not in pool._signal_store.names()
@@ -3065,8 +3065,8 @@ async def test_topic_pool_failure_count_ends_when_the_character_drops_below_read
     pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
     pool.note_user_message("妮可", "换工作这件事我反复想了好几周了")
 
-    # 两条 turn 要能分开剪，所以显式给时间戳：note_user_message 走 time.time()，
-    # 相邻两次调用在本机会落在同一个刻度上，cutoff 就无处可放。
+    # Explicit timestamps let two turns prune separately; note_user_message uses time.time(),
+    # adjacent calls hit same local clock tick, otherwise leaving nowhere for cutoff.
     store = pool._signal_store
     store.clear("妮可")
     first_at = time.time()
@@ -3081,9 +3081,9 @@ async def test_topic_pool_failure_count_ends_when_the_character_drops_below_read
         assert len(calls) == expected
     assert pool._analyzer_failures["妮可"] == 3
 
-    # 老信号先掉一部分：有效轮数跌到阈值以下，但证据还在。
-    # clear_until 保留 timestamp > cutoff 的条目，拿第一条的时间戳当 cutoff
-    # 正好剪掉它、留下第二条。
+    # Some old signals expire: valid turns fall below threshold, but evidence remains.
+    # clear_until retains timestamp > cutoff; first timestamp as cutoff
+    # removes first turn, retaining second.
     store.clear_until("妮可", timestamp=first_at)
     assert not store.is_ready("妮可")
     assert store.last_turn_at("妮可") is not None
@@ -3091,11 +3091,11 @@ async def test_topic_pool_failure_count_ends_when_the_character_drops_below_read
     await pool.process_ready_topics(now=base + 204, lang="zh-CN")
     assert len(calls) == 3
     assert "妮可" not in pool._dirty
-    # 这一步是关键：此刻不清，之后角色已不在 _dirty 里，过期清理分支再也够不到。
+    # Crucial: clear now, or character leaves _dirty and expiry-cleanup branch never reaches it again.
     assert "妮可" not in pool._analyzer_failures
     assert "妮可" not in pool._analyzer_retry_not_before
 
-    # 剩下的信号也过期，然后来了新语料。
+    # Remaining signals expire, then new corpus arrives.
     store.clear("妮可")
     pool.note_user_message("妮可", "换个话题，我最近在学做菜")
     pool.note_user_message("妮可", "做菜比想象中费时间")
@@ -3141,11 +3141,11 @@ async def test_topic_pool_pre_purge_success_does_not_clear_post_purge_backoff():
     base = pool._signal_store.last_turn_at("妮可")
     assert base is not None
 
-    # 第一次分析卡在飞行中。
+    # First analysis stuck in flight.
     slow = asyncio.create_task(pool.process_ready_topics(now=base + 61, lang="zh-CN"))
     await asyncio.wait_for(first_started.wait(), timeout=1.0)
 
-    # purge 落地，然后新证据上的第二次分析失败并武装退避。
+    # Purge finishes, then second analysis on new evidence fails and arms backoff.
     pool.purge_accumulated_signals("妮可")
     pool.note_user_message("妮可", "换个话题，我最近在学做菜")
     fresh = pool._signal_store.last_turn_at("妮可")
@@ -3154,13 +3154,13 @@ async def test_topic_pool_pre_purge_success_does_not_clear_post_purge_backoff():
     assert len(calls) == 2
     armed = pool._analyzer_retry_not_before["妮可"]
 
-    # 现在放行那次陈旧的成功返回。
+    # Release stale successful return now.
     release_first.set()
     await asyncio.wait_for(slow, timeout=1.0)
 
     assert pool._analyzer_retry_not_before.get("妮可") == armed
     assert pool._analyzer_failures.get("妮可") == 1
-    # 陈旧结果本身照旧被丢弃。
+    # Stale result itself remains discarded.
     assert pool.get_ready_materials("妮可") == []
 
 

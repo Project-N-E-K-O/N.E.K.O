@@ -42,9 +42,9 @@ async def _settle():
 
 
 async def _wait_until(predicate, *, timeout=5.0, what="condition"):
-    # 轮询到条件成立，超时才报错。不能用固定 sleep 等后台跑完：Windows 事件
-    # 循环时钟精度 15.625ms，短于一格的 sleep 会在下一轮循环立刻返回（等于零
-    # 等待），长于一格的又成倍超发，等多久完全取决于与被测逻辑无关的其它活动。
+    # Poll until the condition holds, failing only on timeout. Fixed sleeps cannot reliably wait for background work:
+    # Windows event-loop clocks have 15.625ms resolution; shorter sleeps return on the next iteration (effectively zero),
+    # while longer sleeps overshoot in multiples. Actual delay depends on unrelated activity.
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while not predicate():
@@ -54,15 +54,15 @@ async def _wait_until(predicate, *, timeout=5.0, what="condition"):
 
 
 async def _stays_true(predicate, *, until, what="condition"):
-    # 按真实时钟走到 until（绝对时刻），期间每圈复查。"窗口内还没发生"这类负向断言
-    # 只在一瞬间取样是没有牙齿的：被测窗口被误缩短十倍时单点取样照样通过（实测过），
-    # 只有按真实时钟走一段才测得出窗口本身还在。
-    # until 必须是绝对时刻而不是时长：相对时长会在前面的等待被拖长时把观察窗口推到
-    # 被测窗口之外，那时发生的放行是合法的，断言就变成假红。
+    # Follow real time until the absolute deadline, checking each iteration. A negative assertion that something
+    # has not happened within a window is toothless when sampled only once: even a tenfold-shortened window
+    # can pass a single sample (observed). Only observing real elapsed time tests the window itself.
+    # until must be an absolute time, not a duration: earlier delayed waits could shift a relative observation
+    # window beyond the tested window, where release is legitimate and the assertion falsely fails.
     loop = asyncio.get_running_loop()
     while True:
         await asyncio.sleep(0.005)
-        # 醒来后先复查挂钟再断言。这一觉可能被别的任务拖长而睡过了窗口。
+        # Recheck wall time before asserting after waking: unrelated work may extend sleep beyond the window.
         if loop.time() >= until:
             return
         assert predicate(), f"{what} broke before {until}"
@@ -190,8 +190,8 @@ async def test_noop_release_frees_inflight_slot_immediately():
 
 async def test_min_gap_delays_release():
     delivered = []
-    # min-gap 抬到 1.0s：负向断言必须落在窗口内，而 Windows 上 sleep 和 pump 各
-    # 自会超发一格时钟（15.625ms），0.2s 的窗口给"还没到点"留的余量不足十倍。
+    # Raise min-gap to 1.0s: negative assertions must occur inside the window, but Windows sleep and pump
+    # can each overshoot by one clock tick (15.625ms), leaving ten times too little margin in a 0.2s window.
     min_gap = 1.0
     mgr = _make(delivered, min_gap_s=min_gap)
     loop = asyncio.get_running_loop()
@@ -199,10 +199,10 @@ async def test_min_gap_delays_release():
     mgr.submit({"id": "x"}, priority=1)
     mgr.on_playback_end()           # records last_play_end; gap not elapsed
     window_end = loop.time() + min_gap
-    # 不能先 _settle() 再裸断言：那是 5 次不受检的真实 sleep，被拖长到超过 min-gap
-    # 之后放行是合法的，裸断言就会假红。交给 _stays_true 并给它**绝对**的窗口终点，
-    # 第一次醒来（约 5ms）时 call_later(0) 那轮 pump 早已跑过，所以「不受 min-gap
-    # 约束就会立刻放行」这个回归照样会被第一次断言抓住。走到窗口的 80% 处收手。
+    # Do not _settle() then assert: its five unchecked real sleeps can extend past min-gap,
+    # making release legitimate and the assertion falsely fail. Use _stays_true with an absolute deadline.
+    # By the first wake (~5ms), the call_later(0) pump already ran, so immediate release when min-gap
+    # is ignored is still caught by the first assertion. Stop at 80% of the window.
     await _stays_true(
         lambda: delivered == [], until=window_end - 0.2, what="min-gap window"
     )
@@ -221,18 +221,18 @@ async def test_playing_watchdog_recovers_missing_play_end():
     window_end = loop.time() + max_play
     mgr.submit({"id": "x"}, priority=1)
     armed = mgr._pump_handle         # the call_later(0) submit just scheduled
-    # 负向那半不睡固定时长：0.05s 的 sleep 在 Windows 上实际耗 62.5ms，离窗口边界
-    # 只剩几格时钟，随时滑过看门狗变假红。改成等这一轮 pump 真的跑完——它没有放
-    # 行，而是把自己重排到看门狗到点（handle 被换掉），这才是"窗口内"的确定证据。
+    # The negative half avoids fixed sleeps: 0.05s becomes 62.5ms on Windows, leaving few ticks
+    # before the deadline and risking a false watchdog failure. Wait until this pump actually finishes:
+    # it must withhold release and reschedule itself for the watchdog deadline (replacing its handle).
     await _wait_until(lambda: mgr._pump_handle is not armed, what="first pump run")
-    # 但要先确认这一轮 pump 仍落在看门狗窗口内才有资格断言「还没放行」：事件循环被
-    # 拖到窗口之后才跑第一轮 pump 时，那一轮直接走看门狗分支放行是**正确行为**。
+    # First verify this pump still occurs inside the watchdog window before asserting no release:
+    # if event-loop delays push the first pump beyond the window, watchdog release is correct behavior.
     if loop.time() < window_end:
         assert delivered == []           # still within max_play window
-        assert mgr._playing              # 闸门确实还关着，正向断言才不会空过
-        assert mgr._pump_handle is not None  # 看门狗自己会到点，不靠外部再踢一脚
-        # 上面几条只是窗口内某一瞬的取样，看门狗窗口被误缩短时它们照样通过；
-        # 只有按真实时钟走到窗口的 80% 处才能证明窗口本身还在。
+        assert mgr._playing              # Confirm the gate is closed so the positive assertion cannot pass vacuously.
+        assert mgr._pump_handle is not None  # The watchdog expires by itself, without an external nudge.
+        # The checks above sample individual instants within the window and still pass if it is incorrectly shortened;
+        # observing real time until 80% of the window proves the window itself remains intact.
         await _stays_true(
             lambda: delivered == [], until=window_end - 0.1, what="max_play window"
         )
@@ -1266,26 +1266,26 @@ async def test_over_budget_turn_samples_then_compresses_before_dropping():
     images = [_tiny_jpeg() for _ in range(10)]
     total = sum(approx_base64_decoded_bytes(i) for i in images)
 
-    # 预算宽松：一张都不动，也不打扰用户。
+    # Ample budget: leave all images unchanged and do not disturb the user.
     kept, notice = await fit_images_to_turn_budget(images, total * 2)
     assert kept == images
     assert notice is None
 
-    # 只需抽样：降到开头/中间/结尾三张，不压缩、不丢弃。
+    # Sampling suffices: reduce to beginning/middle/end images without compression or discard.
     kept, notice = await fit_images_to_turn_budget(images, total // 2)
     assert kept == [images[0], images[len(images) // 2], images[-1]]
     assert notice["sampled"] is True
     assert notice["compressed"] is False
     assert notice["dropped"] == 0
 
-    # 抽样还不够：压缩，仍然一张不丢。
+    # Sampling is insufficient: compress, still discarding no images.
     kept, notice = await fit_images_to_turn_budget(images, total // 8)
     assert len(kept) == 3
     assert notice["compressed"] is True
     assert notice["dropped"] == 0
     assert sum(approx_base64_decoded_bytes(i) for i in kept) < total // 8 * 2
 
-    # 压完仍超限才丢内容，且无条件保住至少一张。
+    # Drop content only if compression still exceeds limits, unconditionally preserving at least one image.
     kept, notice = await fit_images_to_turn_budget(images, 2000)
     assert len(kept) >= 1
     assert notice["dropped"] > 0
@@ -1530,8 +1530,8 @@ async def test_under_budget_image_is_normalized_and_stays_quiet() -> None:
     assert notice is not None, "rung 0 did something, so it has to be reported"
     assert notice["normalized"] is True
     assert notice["dropped"] == 0
-    # 例行归一化不弹窗。rung 0 几乎每个带图的回合都会跑，照旧「有 notice 就弹」
-    # 的话用户会被刷屏，而他其实什么都没损失。
+    # Routine normalization shows no popup. Rung 0 runs for nearly every image-bearing turn;
+    # showing every notice would flood users even though nothing was lost.
     assert notice["user_visible"] is False
 
 
@@ -1554,9 +1554,9 @@ async def test_model_normalization_is_a_fixed_point(monkeypatch) -> None:
     assert _size_of_b64(once)[1] <= su.COMPRESS_TARGET_HEIGHT, "fixture never normalized"
 
     class _ReEncodeAttempted(BaseException):
-        # 刻意**不**继承 Exception：normalize_image_for_model 的失败兜底和 fit
-        # 里的归一化循环都是 `except Exception`，用普通异常会被它们吞掉，这个
-        # 测试就永远绿——连「删掉头部探测的跳过分支」这种变异都照样绿。
+        # Deliberately do not inherit Exception: normalize_image_for_model's fallback and fit's normalization
+        # loop use except Exception, which would swallow ordinary exceptions, leaving this test green
+        # even if the header-probe skip branch were deleted.
         pass
 
     def _boom(*args, **kwargs):
@@ -1566,7 +1566,7 @@ async def test_model_normalization_is_a_fixed_point(monkeypatch) -> None:
 
     assert su.normalize_image_for_model(once) is once
 
-    # 再走一遍真实调用路径：rung 0 对已经合规的图必须是彻底的 no-op。
+    # Exercise the real call path again: rung 0 must be a complete no-op for already compliant images.
     kept, notice = await fit_images_to_turn_budget(
         [once], CALLBACK_IMAGE_MAX_TOTAL_BYTES
     )

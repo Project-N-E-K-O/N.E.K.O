@@ -311,12 +311,12 @@ def test_proactive_openclaw_dispatch_uses_default_sender(monkeypatch):
     ]
 
     async def _settle_dispatch(task_id):
-        # 不能靠固定 sleep 收尾 run_instruction：Windows 事件循环时钟精度 15.625ms，
-        # 循环里还挂着这个后台任务时 sleep(0.02) 会被提前弹出、实测等于零等待，任务就
-        # 留到 asyncio.run 关闭时才被取消 —— 取消分支会往真实的 _task_tracker 写一条
-        # cancelled 记录，污染进程内共享状态。dispatch 自己把句柄登记在
-        # task_async_handles 里，直接等它才是确定的同步点（已跑完则 done_callback
-        # 已把句柄摘掉，取不到即代表已收尾）。
+        # Do not finish run_instruction using a fixed sleep: Windows event-loop clock resolution is 15.625 ms,
+        # and sleep(0.02) can return early while this background task remains scheduled, effectively waiting zero time. The task then
+        # survives until asyncio.run shutdown cancels it, and cancellation writes a real _task_tracker
+        # cancelled record, polluting shared in-process state. dispatch registers its own handle in
+        # task_async_handles, so awaiting it is the deterministic synchronization point (if already complete, done_callback
+        # has removed the handle, so absence means cleanup finished).
         handle = oc._shared.Modules.task_async_handles.get(task_id)
         if handle is not None:
             await asyncio.gather(handle, return_exceptions=True)

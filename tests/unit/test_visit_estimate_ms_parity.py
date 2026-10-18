@@ -112,7 +112,7 @@ def test_js_estimate_matches_python_on_fixed_vectors():
     py = [estimate_speech_ms(v) for v in vectors]
     mismatches = [(v, p, j) for v, p, j in zip(vectors, py, js) if p != j]
     assert not mismatches, mismatches
-    # 向量要真的覆盖到两端夹值与中间值，否则「相等」证明不了什么
+    # Test vectors must cover both clamp boundaries and intermediate values for equality to prove anything
     assert vs.VISIT_CLAUSE_MIN_MS in py and vs.VISIT_CLAUSE_MAX_MS in py
     assert len(set(py)) >= 20
 

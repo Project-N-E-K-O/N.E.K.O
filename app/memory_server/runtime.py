@@ -75,34 +75,34 @@ class ContinueStorageStartupRequest(BaseModel):
 
 
 app = FastAPI()
-# 角色写端点 → 允许的方法。围栏和排空按这张表走；方法维度是必要的，
-# /prompt-locale/{name} 的 GET 只读、PUT 才写。
+# Character write endpoints -> allowed methods, driving fencing/draining. Method matters:
+# /prompt-locale/{name} GET reads only, while PUT writes.
 _CHARACTER_WRITE_ROUTES: tuple[tuple[str, frozenset[str]], ...] = (
     ("/cache/", frozenset({"POST"})),
     ("/process/", frozenset({"POST"})),
     ("/renew/", frozenset({"POST"})),
     ("/settle/", frozenset({"POST"})),
-    # 反思合成与 surfaced 冷却登记同样往角色目录写 reflections.json /
-    # surfaced.json，删除后落盘会把旧身份的目录重建出来。
+    # Reflection synthesis and surfaced cooldown registration also write reflections.json /
+    # surfaced.json under character directories; late post-deletion writes recreate old identities.
     ("/reflect/", frozenset({"POST"})),
     ("/record_surfaced/", frozenset({"POST"})),
-    # 只有 PUT 是写；GET 只读 sidecar，不进围栏。
-    # 409 对它的调用方是既有的可重试失败（云存档维护围栏也会给 409）。
+    # Only PUT writes; GET reads sidecars and bypasses fencing.
+    # Callers already treat 409 as retryable (cloud-save maintenance fences also return it).
     ("/prompt-locale/", frozenset({"PUT"})),
 )
-# 群记忆写端点走 /internal/memory/{lanlan_name}/<op>，最终同样落到该角色的
-# FactStore / TimeIndexedMemory。围栏漏掉它们的话，删除窗口里这些请求既不会被
-# 拒绝也不会被排空，仍能带着已 checkout 的 SQLite 连接跨过 dispose。
-# scoped_context 是只读的，不进这里——读路径由引擎准入检查兜底。
+# Group-memory writes use /internal/memory/{lanlan_name}/<op>, ultimately writing the character's
+# FactStore / TimeIndexedMemory. Missing fences neither reject nor drain these requests during deletion,
+# letting checked-out SQLite connections survive disposal.
+# scoped_context is read-only and excluded; engine admission protects reads.
 _CHARACTER_SCOPED_WRITE_PATH_PREFIX = "/internal/memory/"
 _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "scoped_facts",
     "scoped_history",
     "scoped_forget",
     "scoped_mentions",
-    # 串门「记成日记」的事实写入（OD-16 v4）
+    # Visit remember-as-diary fact writes (OD-16 v4).
     "visit_facts",
-    # 剧场遗忘会同时改 recent 与时间索引，角色删除期间也必须进入同一围栏。
+    # Theater forgetting changes recent and time indexes; it must share the fence during character deletion.
     "theater/forget",
     # Retracting a declined archive capsule writes recent and the time index too.
     "theater/retract",
@@ -113,10 +113,10 @@ _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
 )
 _active_character_requests: dict[str, int] = {}
 _active_character_request_events: dict[str, asyncio.Event] = {}
-# 排空预算必须小于**最紧**的调用方超时，否则调用方会先放弃、然后照样往下删文件，
-# 而这个 handler 还在排空/dispose——正好撞出这个 PR 要修的 Windows 占用失败。
-# 最紧的是取消订阅：_release_workshop_character_handles 的 per_call_timeout=2.5s
-# （改名/删除走 release_memory_server_character()，5s）。
+# Drain budget must be below the **tightest** caller timeout, or callers abandon and delete files
+# while this handler still drains/disposes, reproducing the Windows handle failure this PR fixes.
+# Tightest is unsubscribe: _release_workshop_character_handles per_call_timeout=2.5s
+# (rename/delete use release_memory_server_character(), 5s).
 _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS = 2.0
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
@@ -141,15 +141,15 @@ def _character_write_name_from_path(path: str, method: str) -> str | None:
         and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
     ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
-        # 操作名允许包含固定子路径，但仍通过完整字符串白名单精确匹配。
+        # Operation names may contain fixed subpaths but still match complete-string allowlists exactly.
         operation = "/".join(segments[1:])
         if len(segments) >= 2 and operation in _CHARACTER_SCOPED_WRITE_OPS:
             raw_name = segments[0]
     if not raw_name:
         return None
-    # 端点自己会 validate_lanlan_name 归一化后才读写角色目录；准入登记必须用
-    # 同一个键，否则 "/process/ Alice " 既躲开 " Alice " 之外的所有围栏，
-    # 请求租约也对不上引擎实际用的 "Alice"。
+    # Endpoints normalize via validate_lanlan_name before character I/O; admission must use
+    # the same key, or /process/ Alice evades all fences except the spaced name,
+    # and request leases mismatch the engine's actual Alice key.
     try:
         return validate_lanlan_name(raw_name)
     except HTTPException:
@@ -298,8 +298,8 @@ async def storage_limited_mode_guard(request: Request, call_next):
     )
 
 
-# 全局入站 body 体积守门（issue #1586）：与 main_server 对偶，memory_server 的
-# 端点（对话缓存 / reflection 记录等）都是小 JSON，统一加上同一守门保持一致。
+# Global inbound-body guard (issue #1586): mirror main_server; memory_server endpoints
+# (chat cache / reflections, etc.) use small JSON, so apply the same consistent guard.
 app.add_middleware(InboundBodySizeLimitMiddleware)
 from utils.instance_access import InstanceAccessMiddleware
 app.add_middleware(InstanceAccessMiddleware)
@@ -311,7 +311,7 @@ async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
     return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
 
 
-# ── 健康检查 / 指纹端点 ──────────────────────────────────────────
+# ── Health / fingerprint endpoints ──────────────────────────────────────────
 @app.get("/health")
 async def health():
     """Return a health response carrying the N.E.K.O signature so the launcher/frontend
@@ -321,15 +321,15 @@ async def health():
     return build_health_response("memory", instance_id=INSTANCE_ID)
 
 
-# 所有依赖 cloudsave 目录结构的初始化都推迟到 startup 钩子（见 startup_event_handler）：
-#   1. bootstrap_local_cloudsave_environment 在磁盘满/只读 FS 等场景会 raise OSError，
-#      裸调会让 module import 阶段就崩，FastAPI 根本起不来；
-#   2. bootstrap 内部的 import_legacy_runtime_root_if_needed 可能把 legacy 扁平布局的
-#      memory/{type}_{name}.ext 文件带进 target root，必须在 migrate_to_character_dirs
-#      之前跑（不然 legacy 数据留在扁平布局、components 只认 per-character 布局，数据不可达）；
-#   3. 因此 bootstrap → migrate → 组件实例化 三步必须保持顺序且都放在 startup 里。
-# Components 先声明为 None，startup hook 赋值。FastAPI 在 startup 钩子 await 完成后
-# 才开始接请求，所以 route handler 不会看到 None。
+# Defer initialization depending on cloud-save directories to startup (see startup_event_handler):
+#   1. bootstrap_local_cloudsave_environment may raise OSError on full/read-only disks;
+#      unguarded calls fail module import, preventing FastAPI startup entirely.
+#   2. Bootstrap's import_legacy_runtime_root_if_needed may bring flat legacy
+#      memory/{type}_{name}.ext into the target root; run before migrate_to_character_dirs,
+#      or legacy data remains flat and unreachable to per-character components.
+#   3. Preserve startup order: bootstrap -> migrate -> component instantiation.
+# Declare components None, then assign in startup. FastAPI accepts requests only after
+# awaited startup completes, so handlers never observe None.
 _config_manager = get_config_manager()
 
 recent_history_manager: CompressedRecentHistoryManager | None = None
@@ -340,8 +340,8 @@ persona_manager: PersonaManager | None = None
 reflection_engine: ReflectionEngine | None = None
 cursor_store: CursorStore | None = None
 outbox: Outbox | None = None
-# memory-evidence-rfc §3.3 基础设施：EventLog + Reconciler 单例。
-# 初始化时机同 persona_manager 等——startup hook 里建，reload 时重建。
+# memory-evidence-rfc §3.3 infrastructure: EventLog + Reconciler singletons.
+# Like persona_manager, construct in startup and rebuild on reload.
 event_log: EventLog | None = None
 reconciler: Reconciler | None = None
 
@@ -357,7 +357,7 @@ embedding_warmup_worker = None
 # fails or the embedding service is permanently disabled.
 fact_dedup_resolver = None
 
-# 用于保护重新加载操作的锁
+# Lock protecting reloads.
 _reload_lock = asyncio.Lock()
 _deferred_time_managers: list[TimeIndexedMemory] = []
 _memory_runtime_init_lock = asyncio.Lock()
@@ -507,7 +507,7 @@ async def reload_memory_components(
         old_time_manager = time_manager
         try:
             locale_state.invalidate_prompt_locale_caches()
-            # 先创建所有新实例
+            # Create all replacement instances first.
             new_recent = CompressedRecentHistoryManager()
             new_settings = ImportantSettingsManager()
             new_time = TimeIndexedMemory(
@@ -515,8 +515,8 @@ async def reload_memory_components(
                 engine_admission_check=_is_character_engine_admitted,
             )
             new_facts = FactStore(time_indexed_memory=new_time)
-            # EventLog 复用（per-character lock dict 没有必要跨 reload 丢弃），
-            # 但每次 reload 重建 Reconciler 以便 handlers 指向新 manager 实例。
+            # Reuse EventLog (retain per-character lock dict across reload),
+            # but rebuild Reconciler so handlers point to new managers.
             new_event_log = event_log if event_log is not None else EventLog()
             new_persona = PersonaManager(event_log=new_event_log)
             new_reflection = ReflectionEngine(new_facts, new_persona, event_log=new_event_log)
@@ -551,15 +551,15 @@ async def reload_memory_components(
                     new_fact_dedup_resolver = fact_dedup_resolver
                 else:
                     new_fact_dedup_resolver = FactDedupResolver(new_facts)
-                # 反向引用：Stage-2 的 FTS 近重复命中要投进同一个仲裁队列。
-                # rebind 只改了 resolver→store 一个方向，新 FactStore 这边
-                # 是全新对象，不接就等于 reload 之后近重复候选静默丢弃。
+                # Reverse reference: Stage-2 FTS near-duplicates enter the same arbitration queue.
+                # Rebind updates only resolver->store; the new FactStore is a fresh object,
+                # so missing reverse wiring silently discards near-duplicate candidates after reload.
                 new_facts.attach_dedup_resolver(new_fact_dedup_resolver)
             except Exception as e:
                 logger.warning(f"[MemoryServer] reload: fact_dedup_resolver 重建失败: {e}")
                 new_fact_dedup_resolver = None
 
-            # 然后原子性地交换引用
+            # Then swap references atomically.
             recent_history_manager = new_recent
             settings_manager = new_settings
             time_manager = new_time
@@ -575,9 +575,9 @@ async def reload_memory_components(
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
 
-            # /release_character 会在改名/删除发布前退休旧名的派生任务入口。
-            # 只有 reload 真正读到某个名字仍在 characters.json（回滚或后续复用）
-            # 才重新开放；成功改名后的旧名在这段窗口里不能被 /process 重生。
+            # /release_character retires old-name derived-task entry points before rename/delete publication.
+            # Reopen only when reload actually sees a name in characters.json (rollback or later reuse);
+            # /process cannot resurrect successfully renamed old names in this window.
             from . import review
 
             try:
@@ -589,8 +589,8 @@ async def reload_memory_components(
                     resume_generations=requested_resume_generations,
                 )
             except Exception as reconcile_exc:
-                # 组件引用已经完成原子替换；协调失败不能把真实成功的 reload
-                # 伪装成失败，调用方据此回滚会与当前已生效实例产生二次分叉。
+                # Component references already swapped atomically; coordination failures cannot disguise
+                # successful reload as failure, prompting caller rollback and a second divergence from active instances.
                 logger.warning(
                     "[MemoryServer] reload: 派生任务准入协调失败（组件替换已生效）: %s",
                     reconcile_exc,
@@ -603,9 +603,9 @@ async def reload_memory_components(
             return False
         finally:
             if requested_claim_releases or requested_resume_names:
-                # claim 释放与新身份显式 resume 都是 release 事务的收尾，不能
-                # 依赖 manager reload 成功。claim 必须按 token 释放，不能误清
-                # 同名并发事务仍持有的 publication hold。
+                # Claim release and explicit new-identity resume finalize release transactions and cannot
+                # depend on manager reload success. Release by token, preserving same-name concurrent
+                # transactions' publication holds.
                 from . import review
 
                 try:
@@ -647,9 +647,9 @@ async def release_character_resources(
             status_code=exc.status_code,
         )
 
-    # 改名/删除前先排空基于旧角色名快照生成的 review / backup-compress。
-    # 仅 reload manager 不会清这些按名字注册的 task；让它们在改名后继续提交，
-    # 会沿 recent redirect 把旧名字生成的 memo/correction 写进新角色。
+    # Before rename/delete, drain review / backup-compress generated from old-name snapshots.
+    # Manager reload alone does not clear these name-registered tasks; later commits would follow
+    # recent redirects and write old-persona memo/corrections to the new character.
     from . import review
 
     if not derived_task_claim_token or derived_task_claim_generation is None:
@@ -682,23 +682,23 @@ async def release_character_resources(
     # drain them and their spawned post-turn tasks before disposing any manager.
     from . import post_turn
 
-    # 整个释放流程共用一个预算：排空 + 两把锁的等待加起来都不能超出调用方的
-    # 超时窗口，否则调用方已经放弃并补偿了，这个 handler 还在背后 dispose。
+    # One budget for the whole release: drain plus both lock waits must fit caller
+    # timeouts, or abandoned/compensated calls still dispose in the background.
     deadline = (
         asyncio.get_running_loop().time()
         + _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS
     )
-    # 排空和取消 post-turn 的前提都是 publication hold 已经挡住新准入。
-    # 不取 hold 的调用方（云存档下载、取消订阅）角色事后还活着：排空等不到
-    # 计数归零（新请求随时进来），取消也留不住（下一毫秒就能派新的），
-    # 净效果只是白白打断在途的 outbox op。这两条路径保持本 PR 之前的语义。
+    # Draining and post-turn cancellation both require publication hold blocking new admission.
+    # Callers without holds (cloud downloads, unsubscribe) leave characters alive; draining cannot
+    # reach zero amid new requests, and cancellation cannot prevent new tasks a millisecond later.
+    # Net effect only interrupts in-flight outbox operations. Preserve pre-PR semantics for both paths.
     holding_publication = review.is_character_publication_held(lanlan_name)
     cancelled_post_turn_tasks = 0
     drained = True
     if holding_publication:
-        # post-turn task 不持有前台准入 lease，等前台排空期间它仍会给旧名字写
-        # fact / mention / reflection。先取消当前已登记的，再排空前台请求，
-        # 最后补一次——排空窗口里已准入的请求还会派新的 post-turn task。
+        # Post-turn tasks lack foreground leases and still write fact / mention / reflection for old
+        # names during foreground drain. Cancel registered tasks first, drain foreground requests,
+        # then cancel again because admitted requests can spawn tasks during draining.
         cancelled_post_turn_tasks = await post_turn.cancel_character_post_turn_tasks(
             lanlan_name
         )
@@ -726,8 +726,8 @@ async def release_character_resources(
         return await _fail_release(
             "timed out draining admitted character writes", 503,
         )
-    # 绑定同一个对象：`_get_settle_lock` 是函数，acquire / release 各调一次会有
-    # 拿到不同实例的风险（测试里就有把它 patch 成每次返回新锁的写法）。
+    # Bind the same object: _get_settle_lock is a function; separate acquire/release calls risk
+    # different instances (tests sometimes patch it to return fresh locks).
     settle_lock = _get_settle_lock(lanlan_name)
     if not await _acquire_within_deadline(settle_lock, deadline):
         return await _fail_release("timed out acquiring the settle lock", 503)
@@ -735,8 +735,8 @@ async def release_character_resources(
         if not await _acquire_within_deadline(_reload_lock, deadline):
             return await _fail_release("timed out acquiring the reload lock", 503)
         try:
-            # 排空和拿锁都可能久到调用方超时；那时主进程已经补偿性地释放了
-            # 本次 claim 并重新开放准入，这里不能再背着它 dispose。
+            # Drain/lock waits may exceed caller timeout, after main-process compensation releases
+            # this claim and reopens admission; do not secretly dispose afterward.
             if not review.is_character_derived_task_claim_active(
                 lanlan_name, derived_task_claim_token,
             ):
@@ -787,17 +787,17 @@ async def release_character_resources(
         settle_lock.release()
 
 
-# 全局变量用于控制服务器关闭
+# Global controlling server shutdown.
 shutdown_event = asyncio.Event()
-# 全局变量控制是否响应退出请求
+# Global controlling responses to exit requests.
 enable_shutdown = False
 
 
-# 每角色结算锁：首轮摘要期间阻塞 /new_dialog，确保热切换后读到最新数据
+# Per-character settlement locks block /new_dialog during initial summaries, ensuring fresh data after hot switching.
 _settle_locks: dict[str, asyncio.Lock] = {}
 
 
-# 强引用注册表：防止 fire-and-forget task 被 GC
+# Strong-reference registry prevents fire-and-forget task garbage collection.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
@@ -824,14 +824,14 @@ async def _reset_confirmed_at_for_all_characters() -> int:
         )
     character_data = await _config_manager.aload_characters()
     catgirl_names = list(character_data.get('猫娘', {}).keys())
-    # 角色列表为空（没配过猫娘）是合法的"0 条要迁移" case，正常返回 0。
+    # Empty character lists are valid zero-migration cases; return zero normally.
     total = 0
     for name in catgirl_names:
         try:
             count = await reflection_engine.areset_confirmed_at_to_now(name)
             total += count
         except Exception as e:
-            # 单角色失败不致命——记录后继续。最终 count 反映成功的 N 条。
+            # One character's failure is nonfatal: log and continue; final count reflects successful entries.
             logger.warning(f"[Memory] migration {name} 重置失败（其他角色继续）: {e}")
     return total
 
@@ -931,13 +931,13 @@ async def _bootstrap_embedding_worker() -> None:
             return worker
 
         worker = await asyncio.to_thread(_build)
-        # worker 与 resolver 都用 getter 读全局，天然 reload-safe。
+        # Workers/resolvers read globals via getters, inherently reload-safe.
         embedding_warmup_worker = worker
         embedding_warmup_worker.start()
     except Exception as e:
         logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
         embedding_warmup_worker = None
-        # Resolver 已在核心初始化中发布；可选 worker 失败不得影响删除队列。
+        # Resolver already published during core initialization; optional-worker failure cannot affect deletion queues.
 
 
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
@@ -988,7 +988,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         # running or when that best-effort bootstrap fails.
         from memory.fact_dedup import FactDedupResolver
         fact_dedup_resolver = FactDedupResolver(fact_store)
-        # 反向引用：FactStore 的 Stage-2 近重复命中投进这个队列等 LLM 裁决。
+        # Reverse reference: FactStore Stage-2 near-duplicates enter this LLM arbitration queue.
         fact_store.attach_dedup_resolver(fact_dedup_resolver)
         event_log = EventLog()
         persona_manager = PersonaManager(event_log=event_log)
@@ -1003,16 +1003,16 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
             install_hooks()
             TokenTracker.get_instance().start_periodic_save()
-            # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+            # process dimension distinguishes session_start/session_end diagnostics across processes.
             TokenTracker.get_instance().record_app_start(process="memory_server")
         except Exception as e:
             logger.warning(f"[Memory] Token tracker init failed: {e}")
 
-        # GeoIP 预热：memory_server 是独立进程，主进程的预热只暖主进程的类级缓存。
-        # 不预热的话，下面 outbox 补跑 / 首个记忆更新的免费路由 LLM 调用会读到临时
-        # 大陆快照（本进程的探测那时才刚起）。放在 cloudsave bootstrap 之后——与
-        # main_server 同一时序原则：配置成型后再预热。自配 API 用户零等待（不起探
-        # 测，快照无区域敏感 URL 时直接返回 True）。
+        # GeoIP warming: memory_server is separate; main-process warming affects only its class cache.
+        # Without warming, outbox recovery / first memory-update free-route LLM calls read temporary mainland
+        # snapshots while this process's probe just starts. Run after cloud-save bootstrap, matching
+        # main_server's configuration-before-warming order. Custom API users wait zero time (no
+        # probe; return True directly when snapshots lack region-sensitive URLs).
         try:
             if not await _config_manager.awarmup_region_check():
                 logger.info("[GeoIP] memory_server 预热未拿到区域结论，后续调用按退避重试")
@@ -1058,19 +1058,19 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             except Exception as e:
                 logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
 
-        # 顺序要求：reconcile 必须整体跑完，才允许 outbox 补跑起任何 op。
-        # 两边都写同一批 view 文件，但它们的读点不对称：reconcile 的 handler
-        # 是在 EventLog 锁内 load→改→save 的，而 reflection/persona 的 live
-        # writer 是在锁**外**先把整份快照读进内存，再交给 record_and_save 写回
-        # （见 memory/reflection/evidence_flow.py）。所以只要两者重叠，就存在
-        # 「live writer 用重放之前的快照整覆盖掉刚修好的结果」的窗口 —— 而哨兵
-        # 此时已经越过那条事件，之后再也不会重放，是静默永久丢失。
-        # 补跑侧是 fire-and-forget 的后台 task（_replay_pending_outbox 只 await
-        # 扫描），reconcile 这边是 await 到底的：先跑 reconcile 就没有重叠。
-        # 反向依赖不存在：补跑的 op 走 record_and_save，append+apply+save 一体，
-        # 不需要 reconcile 再补应用一次；RFC 也明写了「不得依赖 outbox 副作用先
-        # 可见」（docs/design/memory-event-log-rfc.md 启动恢复一节）。
-        # 顺带的好处：补跑 op 读到的是已经修复完的 view，而不是崩溃残留态。
+        # Reconcile must finish completely before outbox recovery starts any operation.
+        # Both write the same views but read asymmetrically: reconcile handlers
+        # load-modify-save under EventLog locks, while live reflection/persona writers
+        # first read entire snapshots **outside** locks before record_and_save writes
+        # (memory/reflection/evidence_flow.py). Overlap lets live writers overwrite repaired
+        # views with pre-replay snapshots after the sentinel already passed that event;
+        # it never replays again, causing silent permanent loss.
+        # Recovery operations are fire-and-forget tasks (_replay_pending_outbox awaits only
+        # scanning); reconcile is fully awaited, so running it first prevents overlap.
+        # No reverse dependency: record_and_save performs append+apply+save together,
+        # requiring no reconcile reapplication. RFC explicitly forbids depending on outbox effects
+        # being visible first (startup recovery in docs/design/memory-event-log-rfc.md).
+        # Bonus: recovered operations read repaired views, not crash leftovers.
         if catgirl_names:
             await asyncio.gather(
                 *(_reconcile_one(n) for n in catgirl_names),
@@ -1099,11 +1099,11 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             )
 
         if bootstrap_ok:
-            # ⚠️ 判定和写必须在同一个锁内事务里。它们以前靠"中间没有 await"隐式原子，
-            # 但那只挡得住同一条事件循环上的协程 —— merged 模式下存储变更路由跟这段同
-            # 进程，而它的写现在跑在工作线程上，完全可以插在判定和写之间提交
-            # ROOT_MODE_MAINTENANCE_READONLY，随后被这里无条件写回 NORMAL，留下一个
-            # 没有写闸的待迁移。
+            # ⚠ Decide and write within one locked transaction. Former implicit atomicity from no await
+            # blocks only same-loop coroutines. In merged mode storage routes share this process,
+            # but write in worker threads, allowing MAINTENANCE_READONLY commits
+            # between decision and write, then unconditional NORMAL overwrite here,
+            # leaving pending migration without a write gate.
             with root_state_transaction():
                 current_root_state = _config_manager.load_root_state()
                 if should_write_root_mode_normal_after_startup(current_root_state):
@@ -1135,24 +1135,24 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(routes._periodic_new_dialog_qps_log_loop())
             if MEMORY_RECHECK_ENABLED:
                 _spawn_background_task(evidence_loops._periodic_slow_memory_recheck_loop())
-            # Phase A-4 / A-5: MemoryRefineEngine cron 接入
+            # Phase A-4 / A-5: MemoryRefineEngine cron integration.
             _spawn_background_task(refine_loops._periodic_persona_refine_loop())
             _spawn_background_task(refine_loops._periodic_reflection_refine_loop())
             _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
-            # 群记忆系列 5/7: scoped 轻量 refine cron
+            # Group-memory series 5/7: lightweight scoped refine cron.
             _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
-            # 带键写入的辅助数据：过期暂存残留与墓碑（键记录永久保留）。
-            # 后台跑，不阻塞启动链路。
+            # Keyed-write auxiliary data: expired staged leftovers and tombstones (key records retained permanently).
+            # Background work does not block startup.
             from . import idempotency
             _spawn_background_task(idempotency.cleanup_expired(list(catgirl_names)))
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.
-        # 这块的 import（embedding 栈 ~0.6s）+ 服务构造原本同步跑在 startup
-        # handler 里，uvicorn 要等 handler 返回才开端口，于是把 memory 端口
-        # 就绪足足推后 ~1.3s（合并单进程下又被串行放大）。worker 本身是可选的、
-        # 自带 warmup 延迟，greeting 不依赖向量——所以挪到后台 task，重活全程
-        # 在 to_thread 里跑，绝不阻塞 event loop / 拖慢端口就绪。
+        # Imports (embedding stack ~0.6s) and construction formerly ran synchronously in startup;
+        # uvicorn waits for handler completion before opening ports, delaying memory readiness
+        # ~1.3s (further amplified by merged-process serialization). Worker is optional,
+        # already delays warm-up, and greetings need no vectors. Move to background tasks,
+        # with heavy work entirely in to_thread, never blocking event loop / port readiness.
         _spawn_background_task(_bootstrap_embedding_worker())
 
         # Public knowledge: own root, own DB, own tasks; started in the
@@ -1278,7 +1278,7 @@ async def shutdown_event_handler():
     async with _reload_lock:
         managers_to_cleanup.extend(_deferred_time_managers)
         _deferred_time_managers.clear()
-        # time_manager 在 startup 钩子里才实例化；若启动过程中就触发 shutdown 可能为 None
+        # time_manager is instantiated in startup; shutdown during startup may still see None.
         if time_manager is not None and all(existing is not time_manager for existing in managers_to_cleanup):
             managers_to_cleanup.append(time_manager)
 

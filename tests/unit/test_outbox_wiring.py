@@ -53,7 +53,7 @@ def _install_fresh_memory_state(tmpdir: str):
 
 @pytest.mark.asyncio
 async def test_spawn_outbox_happy_path_marks_done(tmp_path):
-    """Handler 成功完成 → outbox pending_ops 为空。"""
+    """Handler completed successfully → outbox pending_ops is empty."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
     from memory.outbox import OP_POST_TURN_SIGNALS
@@ -91,10 +91,10 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
 @pytest.mark.asyncio
 async def test_spawn_outbox_keeps_render_fallback_out_of_durable_language(tmp_path):
     """Only request render evidence may accompany an undeclared language."""
-    # _activate_request_language 在请求没带 language 时会回落到
-    # get_global_language_full()。那个回落值用于处理本次请求没问题，但一旦被持久化
-    # 进 outbox.ndjson，重启 replay 就会一直复用这个「猜测」——即使探测本身后来修好
-    # 也不会自愈。省掉这个键后 replay 会读取角色最新持久化的显式会话语言。
+    # _activate_request_language falls back to
+    # get_global_language_full() when the request omits language. That fallback is fine for this request, but once persisted
+    # into outbox.ndjson, restart replay will keep reusing this "guess" — even if detection is later fixed,
+    # it will never self-heal. Omitting this key makes replay use the character's latest persisted explicit session language.
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
     from memory.outbox import OP_POST_TURN_SIGNALS
@@ -689,7 +689,7 @@ async def test_legacy_deferred_locale_replay_sorts_before_newer_turn(monkeypatch
 @pytest.mark.asyncio
 async def test_replay_without_durable_language_restores_optional_render_context():
     """Legacy rows defer resolution; new rows also carry their render fallback."""
-    # 这是升级用户唯一会走的路径：#1542 之前入队的条目都没有这个键。
+    # This is the only path for upgraded users: queue entries created before #1542 do not have this key.
     from app import memory_server
     from utils.llm_client import messages_to_dict
 
@@ -822,13 +822,13 @@ async def test_handler_failure_keeps_op_pending(tmp_path):
 
 @pytest.mark.asyncio
 async def test_replay_reinvokes_pending_handler(tmp_path):
-    """模拟进程重启场景：上一跑 outbox 里有 pending，启动 replay 应重跑 handler。"""
+    """Simulate a process restart: the previous run left a pending entry in the outbox, so startup replay should rerun the handler."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
     from memory.outbox import OP_POST_TURN_SIGNALS
     from utils.llm_client import messages_to_dict
 
-    # 场景：上一跑在 append_pending 后崩溃，没跑完 handler
+    # Scenario: previous run crashed after append_pending, before the handler finished
     payload = {"messages": messages_to_dict([HumanMessage(content="反驳：不喜欢咖啡")])}
     await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, payload)
 
@@ -842,22 +842,22 @@ async def test_replay_reinvokes_pending_handler(tmp_path):
         {OP_POST_TURN_SIGNALS: _replay_handler},
         clear=False,
     ):
-        # _replay_pending_outbox 直接返回 spawn 的 task 列表，无需扫
-        # _BACKGROUND_TASKS 快照（之前的 sleep(0) drain 模式脆弱）
+        # _replay_pending_outbox returns the spawned task list directly; no need to scan
+        # a _BACKGROUND_TASKS snapshot (the previous sleep(0) drain approach was fragile)
         spawned = await memory_server._replay_pending_outbox()
         if spawned:
             await asyncio.gather(*spawned, return_exceptions=True)
 
     assert len(replay_calls) == 1
     assert replay_calls[0][0] == "小天"
-    # done 应被写入 → pending_ops 空
+    # done should be written → pending_ops empty
     assert await ob.apending_ops("小天") == []
 
 
 @pytest.mark.asyncio
 async def test_replay_skips_unknown_op_type(tmp_path):
-    """未注册的 op type 不应让 replay 崩溃，该 op 静默跳过但 append_done
-    不会被调用 → 保持 pending，等升级后兼容 handler 补跑。"""
+    """An unregistered op type must not crash replay; silently skip it without calling append_done,
+    leaving it pending until an upgraded compatible handler can replay it."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
 
@@ -869,7 +869,7 @@ async def test_replay_skips_unknown_op_type(tmp_path):
         if spawned:
             await asyncio.gather(*spawned, return_exceptions=True)
 
-    # 仍 pending（handler 没跑、也没 append_done）
+    # Still pending (handler did not run and append_done was not called)
     pending = await ob.apending_ops("小天")
     assert len(pending) == 1
     assert pending[0]["op_id"] == op_id
@@ -877,12 +877,12 @@ async def test_replay_skips_unknown_op_type(tmp_path):
 
 @pytest.mark.asyncio
 async def test_replay_respects_concurrency_semaphore(tmp_path):
-    """启动补跑不应无限 fan-out：_REPLAY_CONCURRENCY=4 应限制同时在飞 handler 数。"""
+    """Startup replay must not fan out without limit: _REPLAY_CONCURRENCY=4 should cap the number of handlers in flight."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
     from memory.outbox import OP_POST_TURN_SIGNALS
 
-    # 登记 10 个 pending op
+    # Register 10 pending ops
     for i in range(10):
         await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, {"i": i})
 
@@ -893,7 +893,7 @@ async def test_replay_respects_concurrency_semaphore(tmp_path):
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
-        # 让调度器给其他 task 机会启动（多次 yield）
+        # Give the scheduler a chance to start other tasks (yield several times)
         for _ in range(3):
             await asyncio.sleep(0)
         in_flight -= 1
@@ -938,15 +938,15 @@ async def test_locale_replay_does_not_hold_llm_replay_semaphore(tmp_path):
 
 @pytest.mark.asyncio
 async def test_replay_scans_disk_for_characters_not_in_config(tmp_path):
-    """Codex PR#905 P2: 角色从 config 移除但 outbox 还有 pending → 必须仍补跑。"""
+    """Codex PR#905 P2: if a character is removed from config while the outbox has pending entries, replay must still run them."""
     ob, mock_cm = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
     from memory.outbox import OP_POST_TURN_SIGNALS
 
-    # 登记一条 pending op（在 "小天" 的 outbox 里）
+    # Register one pending op (in "小天"'s outbox)
     await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, {"i": 1})
 
-    # 模拟 config 被改成不再包含小天（但磁盘上的 outbox 还在）
+    # Simulate config changing so it no longer includes 小天 (the on-disk outbox remains)
     _empty_characters = {"猫娘": {}, "当前猫娘": None}
     mock_cm.load_characters = MagicMock(return_value=_empty_characters)
     mock_cm.aload_characters = AsyncMock(return_value=_empty_characters)
@@ -964,25 +964,25 @@ async def test_replay_scans_disk_for_characters_not_in_config(tmp_path):
         spawned = await memory_server._replay_pending_outbox()
         await asyncio.gather(*spawned, return_exceptions=True)
 
-    # 仍然补跑了小天，尽管 config 里没有
+    # 小天 was still replayed even though it is absent from config
     assert calls == ["小天"]
     assert await ob.apending_ops("小天") == []
 
 
 @pytest.mark.asyncio
 async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
-    """端到端：handler 把 fact 写入假 FactStore 但在 append_done 前"崩溃"，
-    新进程加载 outbox → 重跑 → side effect 最终落盘。"""
+    """End to end: the handler writes a fact to a fake FactStore but \"crashes\" before append_done;
+    a new process loads the outbox and replays it, eventually persisting the side effect."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
     from memory.outbox import OP_POST_TURN_SIGNALS
 
-    # 第一跑：handler 写"fact"到 side-effect 状态但在 append_done 前进程死
+    # First run: handler writes "fact" to side-effect state, but the process dies before append_done
     side_effect_log: list[str] = []
 
     async def _handler_run1(name: str, payload: dict):
         side_effect_log.append(f"run1:{name}:{payload.get('tag')}")
-        raise RuntimeError("process killed")  # 模拟 append_done 前崩
+        raise RuntimeError("process killed")  # Simulate a crash before append_done
 
     with patch.dict(
         memory_server._OUTBOX_HANDLERS,
@@ -990,16 +990,16 @@ async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
         clear=False,
     ):
         await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, {"tag": "rebuttal_msg"})
-        # 直接触发一次 replay 模拟 "崩溃发生在第一次 replay 调用期间"
+        # Trigger replay directly to simulate "the crash happened during the first replay call"
         spawned = await memory_server._replay_pending_outbox()
         await asyncio.gather(*spawned, return_exceptions=True)
 
     assert side_effect_log == ["run1:小天:rebuttal_msg"]
-    # op 仍 pending：因为 handler raise，_run_outbox_op 不会 append_done
+    # Op remains pending: because the handler raises, _run_outbox_op does not call append_done
     pending = await ob.apending_ops("小天")
     assert len(pending) == 1
 
-    # 第二跑：新进程（fresh outbox 实例 + handler 改为正常版本）
+    # Second run: new process (fresh outbox instance + fixed handler)
     fresh_ob, _ = _install_fresh_memory_state(str(tmp_path))
 
     async def _handler_run2(name: str, payload: dict):
@@ -1013,25 +1013,25 @@ async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
         spawned = await memory_server._replay_pending_outbox()
         await asyncio.gather(*spawned, return_exceptions=True)
 
-    # side effect 在重启后被重放
+    # Side effect is replayed after restart
     assert "run2:小天:rebuttal_msg" in side_effect_log
-    # done 写入，不再 pending
+    # done is written and the op is no longer pending
     assert await fresh_ob.apending_ops("小天") == []
 
 
 @pytest.mark.asyncio
 async def test_append_pending_failure_falls_back_to_in_memory(tmp_path):
-    """Outbox 写失败 → 降级为传统内存任务；主流程不应崩溃。"""
+    """Outbox write failure → fall back to the traditional in-memory task; the main flow must not crash."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
 
-    # 强制 aappend_pending 抛异常
+    # Force aappend_pending to raise
     async def _boom(*a, **kw):
         raise OSError("disk full")
 
     ob.aappend_pending = _boom  # type: ignore[assignment]
 
-    # 同时 patch _run_post_turn_signals 成 noop，避免真 LLM 调用
+    # Also patch _run_post_turn_signals to a no-op to avoid a real LLM call
     noop = AsyncMock(return_value=None)
     with patch("app.memory_server.post_turn._run_post_turn_signals", noop):
         task = await memory_server._spawn_outbox_post_turn_signals(
@@ -1039,9 +1039,9 @@ async def test_append_pending_failure_falls_back_to_in_memory(tmp_path):
         )
         await task
 
-    # 降级路径：函数被调用过
+    # Degraded path: the function was called
     noop.assert_called_once()
-    # 没有 pending 记录产生（写盘本来就失败了）
+    # No pending record was created (the disk write had already failed)
     assert not os.path.exists(ob._outbox_path("小天"))
 
 
@@ -1137,7 +1137,7 @@ def test_startup_reconciles_before_it_resumes_the_outbox():
     gathers = _reconcile_gathers(ast, fn)
     assert gathers, 'startup 里找不到 per-character reconcile 的 gather，断言失效'
 
-    # reconcile 必须是 await 到底的：换成 create_task / spawn 就又重叠了
+    # Reconciliation must be fully awaited: using create_task / spawn would reintroduce overlap
     awaited = {id(a.value) for a in ast.walk(fn) if isinstance(a, ast.Await)}
     assert all(id(g) in awaited for g in gathers), \
         'reconcile 的 gather 没有被 await，补跑会和重放重叠'
@@ -1148,7 +1148,7 @@ def test_startup_reconciles_before_it_resumes_the_outbox():
     def _covers(stmt, lines):
         return any(getattr(n, 'lineno', None) in lines for n in ast.walk(stmt))
 
-    # 在语句序列层面比先后，而不是比行号：谁被包在 try/if 里都不影响判定
+    # Compare ordering at the statement-sequence level, not by line number; wrapping either side in try/if does not change the result
     checked = 0
     for node in ast.walk(fn):
         for field in ('body', 'orelse', 'finalbody'):
@@ -1162,8 +1162,8 @@ def test_startup_reconciles_before_it_resumes_the_outbox():
             if not idx_replay or not idx_gather:
                 continue
             if set(idx_replay) & set(idx_gather):
-                # 两者落在同一条语句里 = 这是个外层容器（async with / try），
-                # 它只说明"都在里面"，判不了先后，继续往内层找。
+                # If both are in the same statement, it is an outer container (async with / try),
+                # which only says "both are inside" and cannot determine order; continue into the inner statements.
                 continue
             checked += 1
             assert max(idx_gather) < min(idx_replay), (

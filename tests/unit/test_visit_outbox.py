@@ -105,14 +105,14 @@ class Receiver:
         self.liveness = VisitLiveness("guest" if peer_prefix == "h:" else "host", 0.0)
         self.liveness.on_peer_verified(0.0)
         self.room = room
-        self.history: list[tuple[int, str, str]] = []   # 入史 / spool / 转录（同序）
+        self.history: list[tuple[int, str, str]] = []   # History / spool / transcript, in the same order.
         self.early: list[dict] = []
         self.unknown = 0
         self.now = 0.0
 
     def _on_early(self, msg: dict, now: float) -> None:
         self.early.append(msg)
-        if msg.get("t") == "text":   # 只在「全部提前投递」的变异下会走到
+        if msg.get("t") == "text":   # Reached only by the mutation delivering everything early.
             self.history.append((msg["seq"], msg["ln"], msg["txt"]))
         elif self.room is not None:
             self.room.on_incoming_wrap_up(msg["ph"], msg["reason"], msg["lp"], now,
@@ -151,7 +151,7 @@ def pump(sender: VisitOutbox, rx: Receiver, now: float,
     """One step of the link: release frames, deliver the surviving ones, return the ack."""
     frames = sender.due(now)
     for f in frames:
-        sender.written(f, now)            # 本侧写出去了；drop 模拟的是链路上丢了
+        sender.written(f, now)            # Local write succeeded; drop simulates loss in transit.
         if drop is not None and drop(f, now):
             continue
         rx.feed(f.payload, now, cmd=f.cmd)
@@ -161,7 +161,7 @@ def pump(sender: VisitOutbox, rx: Receiver, now: float,
     return frames
 
 
-# ── leave 前的缺口补齐 ─────────────────────────────────────────────────
+# -- Fill gaps before leave --
 
 def _leave_scenario(tmp_path, drop_seq9_until: float, end: float):
     clock = Clock()
@@ -196,20 +196,20 @@ def _leave_scenario(tmp_path, drop_seq9_until: float, end: float):
 
 def test_leave_fills_the_gap_before_finalize(tmp_path):
     tx, rx, sent9, verdict_at, tick_at_leave = _leave_scenario(tmp_path, 17.5, 25.0)
-    assert tick_at_leave is None          # 缺口没补齐前不结束
-    assert rx.history[-1] == (9, "h:9", "last line")   # 最后一行进了历史
-    assert verdict_at == 18.0             # 补齐即结束
-    assert tx.leave_done(18.0)            # leave 的 ack 已到
-    # 发 leave 时 seq 9 的退避已在 8 s 档（下一次常规重传 23.5 s，落在 5 s 窗口外）
+    assert tick_at_leave is None          # Do not end before the gap is filled.
+    assert rx.history[-1] == (9, "h:9", "last line")   # The final line entered history.
+    assert verdict_at == 18.0             # End as soon as the gap fills.
+    assert tx.leave_done(18.0)            # leave ack arrived.
+    # At leave, seq 9 already has 8 s backoff; its next regular retry at 23.5 s lies outside the 5 s window.
     assert sent9[:5] == [0.5, 1.5, 3.5, 7.5, 15.5]
-    # 发 leave 的同时立即重发，之后每 1 s 重发
+    # Resend immediately with leave, then every 1 s.
     assert sent9[5:8] == [16.0, 17.0, 18.0]
 
 
 def test_leave_gap_grace_expires_when_never_filled(tmp_path):
     tx, rx, _sent9, verdict_at, tick_at_leave = _leave_scenario(tmp_path, 1e9, 30.0)
     assert tick_at_leave is None
-    assert verdict_at == 21.0             # VISIT_LEAVE_GAP_GRACE_S 到期
+    assert verdict_at == 21.0             # VISIT_LEAVE_GAP_GRACE_S expired.
     assert all(ln != "h:9" for _s, ln, _t in rx.history)
     assert rx.inbox.leave_waiting(9)
     assert tx.leave_done(21.0)
@@ -225,18 +225,18 @@ def test_leave_payload_and_no_reliable_after_leave(tmp_path):
     assert leave.payload["seq"] == 2 and leave.payload["last_seq"] == 1
     with pytest.raises(ValueError):
         tx.send(text(2), now=0.1)
-    tx.send({"t": "ack", "seq": 3}, now=0.1)   # 控制消息照发
+    tx.send({"t": "ack", "seq": 3}, now=0.1)   # Still send control messages.
 
 
 def test_drain_before_leave(tmp_path):
     tx = make_outbox(tmp_path)
     rx = Receiver()
     tx.send(text(1), now=0.0)
-    tx.due(0.0)                                  # 首发丢了
+    tx.due(0.0)                                  # Initial transmission lost.
     deadline = tx.begin_drain(0.0)
     assert deadline == 2.0
     assert not tx.drain_done(0.5)
-    pump(tx, rx, 1.0)                            # 1 s 重传送达并被 ack
+    pump(tx, rx, 1.0)                            # The 1 s retry arrives and is acknowledged.
     assert tx.drain_done(1.0)
     assert tx.send({"t": "leave", "reason": "home"}, now=1.0) == 2
 
@@ -245,10 +245,10 @@ def test_drain_before_leave(tmp_path):
     tx2.due(0.0)
     tx2.begin_drain(0.0)
     assert not tx2.drain_done(1.95)
-    assert tx2.drain_done(2.0)                   # 最多等 2 s
+    assert tx2.drain_done(2.0)                   # Wait at most 2 s.
 
 
-# ── 未知类型 / 票据 / 落盘 ─────────────────────────────────────────────
+# -- Unknown types / tickets / persistence --
 
 def test_unknown_reliable_type_advances_the_window():
     room = VisitRoom("guest")
@@ -280,7 +280,7 @@ async def test_hello_ticket_never_persisted(tmp_path):
     raw = await asyncio.to_thread(tx.path.read_text, encoding="utf-8")
     assert TICKET not in raw
     assert [rec["t"] for rec in await _read_lines(tx.path)] == ["text"]
-    # 页面重载：后端从内存重发 hello，票据与原来相同
+    # Page reload: backend resends hello from memory with the original ticket.
     tx.pause(1.0, PAUSE_PAGE_RELOAD)
     assert tx.due(1.5) == []
     assert tx.resume(1.5, PAUSE_PAGE_RELOAD)
@@ -288,10 +288,10 @@ async def test_hello_ticket_never_persisted(tmp_path):
     hello_again = [f for f in again if f.t == "hello"]
     assert hello_again and hello_again[0].payload["ticket"] == TICKET
     assert hello_again[0].seq == first[0].seq and hello_again[0].retransmit
-    # 已 ack 之后重连，同样从内存重发同一 hello
+    # Reconnecting after ack likewise resends the same in-memory hello.
     tx.on_ack(2, 2.0)
     assert tx.resend_hello(3.0)
-    assert tx.resend_hello(3.0) and tx.resend_hello(3.0)   # 连续重连只留一份待发
+    assert tx.resend_hello(3.0) and tx.resend_hello(3.0)   # Repeated reconnects leave only one pending copy.
     resent = tx.due(3.0)
     assert [f.payload["ticket"] for f in resent if f.t == "hello"] == [TICKET]
     await tx.close()
@@ -327,7 +327,7 @@ async def test_purge_outbox_files_on_startup(tmp_path):
     assert await purge_outbox_files(tmp_path / "missing") == []
 
 
-# ── ack 与重传 ────────────────────────────────────────────────────────
+# -- Acknowledgments and retransmission --
 
 def test_cumulative_ack_clears_every_item_up_to_seq(tmp_path):
     tx = make_outbox(tmp_path)
@@ -342,11 +342,11 @@ def test_cumulative_ack_clears_every_item_up_to_seq(tmp_path):
 
 
 def test_ack_cannot_release_items_that_were_never_sent(tmp_path):
-    # 对端提前发来越界的累计 ack：未发出的 text / leave 不能被当成已确认
+    # An early out-of-range cumulative ack cannot acknowledge unsent text/leave.
     tx = make_outbox(tmp_path, peer_present=False)
     tx.send(text(1), now=0.0)
     tx.send({"t": "leave", "reason": "ended"}, now=0.0)
-    assert tx.due(0.0) == []            # 对端未入房：什么都没发
+    assert tx.due(0.0) == []            # Peer has not joined; nothing sent.
     assert tx.on_ack(99, 0.1) == []
     assert tx.unacked_seqs == [1, 2]
     assert tx.ack_beyond_sent == 1
@@ -357,7 +357,7 @@ def test_ack_past_the_sent_prefix_releases_only_the_sent_part(tmp_path):
     tx = make_outbox(tmp_path)
     tx.send(text(1), now=0.0)
     assert [f.seq for f in due_and_write(tx, 0.0)] == [1]
-    tx.send(text(2), now=0.5)           # 入队但还没 due() 发出
+    tx.send(text(2), now=0.5)           # Enqueued but not yet emitted by due().
     assert tx.on_ack(2, 0.6) == [(1, "text")]
     assert tx.unacked_seqs == [2]
     assert tx.ack_beyond_sent == 1
@@ -380,7 +380,7 @@ def test_delivery_failed_after_30s_even_with_heartbeats(tmp_path):
         pump(tx, rx, t, drop=lambda f, _t: f.seq == 1)
         if t < 30.0:
             assert not tx.delivery_failed, t
-        assert rx.liveness.tick(t) is None      # 心跳照常，对端不会判死
+        assert rx.liveness.tick(t) is None      # Heartbeats continue so the peer does not declare death.
     assert tx.delivery_failed and tx.failed_seq == 1
 
 
@@ -424,12 +424,12 @@ def test_peer_tentative_leave_pauses_the_delivery_timer(tmp_path):
     tx = make_outbox(tmp_path)
     rx = Receiver()
     tx.send(text(1), now=10.0)
-    tx.due(10.0)                                  # 首发丢失
-    tx.pause(12.0, PAUSE_PEER_AWAY)               # 对端暂定离开
+    tx.due(10.0)                                  # Initial transmission lost.
+    tx.pause(12.0, PAUSE_PEER_AWAY)               # Peer provisionally considered departed.
     for t in ticks(12.0, 45.0):
         assert tx.due(t) == []
         assert not tx.delivery_failed
-    tx.resume(45.0, PAUSE_PEER_AWAY)              # 33 s 后重入
+    tx.resume(45.0, PAUSE_PEER_AWAY)              # Rejoin after 33 s.
     for t in ticks(45.0, 80.0):
         pump(tx, rx, t)
     assert rx.history == [(1, "h:1", "hello")]
@@ -452,9 +452,9 @@ def test_ack_only_advances_to_the_contiguous_seq(tmp_path):
     for n in range(1, 4):
         tx.send(text(n), now=0.0)
     pump(tx, rx, 0.0, drop=lambda f, t: f.seq == 2)
-    assert tx.unacked_seqs == [2, 3]            # 回的是 ack{1}，2 仍在 outbox
+    assert tx.unacked_seqs == [2, 3]            # Returns ack{1}; 2 remains in outbox.
     assert [s for s, _ln, _t in rx.history] == [1]
-    pump(tx, rx, 1.0)                            # 2、3 的 1 s 重传
+    pump(tx, rx, 1.0)                            # 1 s retransmissions of 2 and 3.
     assert [s for s, _ln, _t in rx.history] == [1, 2, 3]
     assert tx.unacked_seqs == []
 
@@ -473,7 +473,7 @@ def test_replay_after_reload_resends_only_unacked(tmp_path):
     assert [f.seq for f in due_and_write(tx, 5.0)] == [3]
 
 
-# ── 接收侧按序 ────────────────────────────────────────────────────────
+# -- Ordered reception --
 
 def test_in_order_effect_after_gap():
     rx = Receiver()
@@ -502,7 +502,7 @@ def test_reorder_buffer_overflow_is_a_protocol_violation():
 def test_lossy_messages_bypass_the_reorder_buffer():
     rx = Receiver()
     rx.feed(text(1, seq=1), 0.0, cmd=2)
-    rx.feed(text(3, seq=3), 0.0, cmd=2)          # 缺 2
+    rx.feed(text(3, seq=3), 0.0, cmd=2)          # Missing 2.
     res = rx.feed({**delta("h:4", "live", first=True), "i": 0}, 0.1, cmd=2)
     assert [m["t"] for m in res.deliver] == ["line_delta"]
     assert rx.inbox.poll_ack(0.1) == 1
@@ -514,8 +514,8 @@ def test_duplicate_seq_or_ln_only_acks():
     assert rx.inbox.poll_ack(0.0) == 1
     res = rx.feed(text(1, "a", seq=1), 1.0, cmd=2)
     assert res.duplicate and res.deliver == []
-    assert rx.inbox.poll_ack(1.0) == 1           # 重复也回 ack
-    res = rx.feed(text(1, "a again", seq=2), 2.0, cmd=2)   # 同一 ln 换了 seq
+    assert rx.inbox.poll_ack(1.0) == 1           # Acknowledge duplicates too.
+    res = rx.feed(text(1, "a again", seq=2), 2.0, cmd=2)   # Same ln with a different seq.
     assert res.duplicate and res.deliver == []
     assert rx.inbox.poll_ack(2.0) == 2
     assert rx.history == [(1, "h:1", "a")]
@@ -548,33 +548,33 @@ def _speaking(seq: int, ln: str = "g:4") -> dict:
 def test_wrap_up_speaking_is_not_blocked_by_a_seq_gap():
     room = VisitRoom("host")
     room.on_time_up(0.0)
-    room.on_wrap_up_sent("begin", 0.0)            # host 的 begin 已发出，15 s 步进计时开始
+    room.on_wrap_up_sent("begin", 0.0)            # Host begin was sent, starting the 15 s progression timer.
     assert room.wrap_up.step_started_at == 0.0
     rx = Receiver(peer_prefix="g:", room=room)
     rx.feed(text(1, "g one", side="g", seq=1), 0.0, cmd=2)
     rx.feed(text(2, "g two", side="g", seq=2), 0.0, cmd=2)
-    # seq 3（text）首发丢失；seq 4 是 speaking
+    # Initial seq 3 text was lost; seq 4 is speaking.
     speaking = rx.feed(_speaking(4), 1.0, cmd=1)
-    assert rx.inbox.poll_ack(1.0) == 2            # ack 仍停在 N-1
+    assert rx.inbox.poll_ack(1.0) == 2            # ack remains at N-1.
     gap_text = rx.feed(text(5, "g five", side="g", seq=5), 1.5, cmd=2)
-    eff = room.on_tick(16.0)                      # 不因 15 s 步进而收尾
+    eff = room.on_tick(16.0)                      # Do not finalize on the 15 s progression interval.
     assert not eff.say_goodbye and eff.finalize_reason is None
     assert not room.wrap_up.step_expired and room.wrap_up.step_stopped
-    # 同样缺口下的其它必达消息仍被缓存、不提前生效
+    # Other reliable messages behind the same gap remain buffered without early effects.
     assert [s for s, _l, _t in rx.history] == [1, 2]
     assert gap_text.deliver == []
     res = rx.feed(text(3, "g three", side="g", seq=3), 17.0, cmd=2)
     assert [s for s, _l, _t in rx.history] == [1, 2, 3, 5]
-    assert [m["seq"] for m in res.deliver] == [3, 5]   # 4 是 no-op
+    assert [m["seq"] for m in res.deliver] == [3, 5]   # 4 is a no-op.
     assert rx.inbox.poll_ack(17.0) == 5
-    res = rx.feed(_speaking(4), 17.5, cmd=1)       # 同 seq 重传只回 ack
+    res = rx.feed(_speaking(4), 17.5, cmd=1)       # Same-seq retransmissions receive only ack.
     assert res.duplicate
-    assert speaking.early is not None and len(rx.early) == 1   # 只提前投递一次
+    assert speaking.early is not None and len(rx.early) == 1   # Deliver early only once.
     assert room.on_tick(44.0).finalize_reason is None
-    assert room.on_tick(45.0).finalize_reason == "wrap_up"   # 只剩 45 s 硬顶
+    assert room.on_tick(45.0).finalize_reason == "wrap_up"   # Only the 45 s hard cap remains.
 
 
-# ── 限速与合并 ────────────────────────────────────────────────────────
+# -- Rate limits and coalescing --
 
 def test_full_bucket_queues_retransmits_without_dropping(tmp_path):
     tx = make_outbox(tmp_path, data_bps=100, data_burst_bytes=2000)
@@ -584,16 +584,16 @@ def test_full_bucket_queues_retransmits_without_dropping(tmp_path):
     first = tx.due(0.0)
     assert [f.seq for f in first] == [1, 2]
     size = first[0].nbytes
-    assert 2000 - 2 * size < size                # 桶里已不够一条
+    assert 2000 - 2 * size < size                # Bucket cannot cover another message.
     seen: list[tuple[float, int]] = []
     for t in ticks(0.05, 40.0):
         for f in tx.due(t):
             assert f.retransmit
             seen.append((t, f.seq))
     assert seen, "retransmits must eventually leave"
-    assert seen[0][0] > 1.0                       # 1 s 到期时桶满：不吐
-    assert [s for _t, s in seen[:2]] == [1, 2]    # 余量恢复后按序吐
-    assert tx.unacked_seqs == [1, 2]              # 排队不丢
+    assert seen[0][0] > 1.0                       # Bucket full at 1 s expiry: emit nothing.
+    assert [s for _t, s in seen[:2]] == [1, 2]    # Emit in order when capacity returns.
+    assert tx.unacked_seqs == [1, 2]              # Queue rather than discard.
 
 
 def test_message_bucket_and_byte_bucket_cap_independently(tmp_path):
@@ -615,7 +615,7 @@ def test_message_bucket_and_byte_bucket_cap_independently(tmp_path):
             pieces += f.pieces
     cap = VISIT_DATA_BUCKET_BURST_BYTES + VISIT_DATA_BUCKET_BPS * 10
     assert total <= cap
-    assert total >= cap - 5000                    # 字节桶确实是瓶颈
+    assert total >= cap - 5000                    # Byte bucket is genuinely the bottleneck.
     assert pieces < VISIT_MSG_BUCKET_BURST + VISIT_MSG_BUCKET_PER_S * 10
 
 
@@ -630,14 +630,14 @@ def test_line_delta_merge_assigns_contiguous_i_and_i_done(tmp_path):
     step(0.0)
     tx.send(delta("h:1", "p1"), now=0.1)
     step(0.1)
-    tx.send(delta("h:1", "p2"), now=0.2)          # <250 ms：并进 p1
+    tx.send(delta("h:1", "p2"), now=0.2)          # <250 ms: merge into p1.
     step(0.2)
     step(0.25)
     tx.send(delta("h:1", "p3"), now=0.6)
     step(0.6)
     tx.send(delta("h:1", "p4"), now=0.65)
     step(0.65)
-    tx.send(delta("h:1", "p5"), now=0.7, final_piece=True)   # 末片不合并
+    tx.send(delta("h:1", "p5"), now=0.7, final_piece=True)   # Never merge the final fragment.
     tx.send(text(1, "p0p1p2p3p4p5"), now=0.7)
     for t in ticks(0.7, 2.0):
         step(t)
@@ -646,7 +646,7 @@ def test_line_delta_merge_assigns_contiguous_i_and_i_done(tmp_path):
     assert [f.payload["txt"] for f in deltas] == ["p0", "p1p2", "p3", "p4", "p5"]
     assert "sp" in deltas[0].payload and all("sp" not in f.payload for f in deltas[1:])
     final = [f for f in sent if f.t == "text"]
-    assert len(final) == 1 and sent[-1] is final[0]          # text 在本行末片之后
+    assert len(final) == 1 and sent[-1] is final[0]          # text follows this line's final fragment.
     assert final[0].payload["i_done"] == len(deltas) == tx.line_pieces("h:1")
 
 
@@ -656,7 +656,7 @@ def test_line_delta_min_interval_between_pieces(tmp_path):
     emitted: list[float] = []
     for k, t in enumerate(ticks(0.0, 3.0)):
         if k % 2 == 1 and t < 2.0:
-            tx.send(delta("h:1", "b" * 300), now=t)      # 每 100 ms 一片，合并后 >900 B 则不合并
+            tx.send(delta("h:1", "b" * 300), now=t)      # One fragment every 100 ms; do not merge if the result exceeds 900 B.
         emitted.extend(t for f in tx.due(t) if f.t == "line_delta")
     gaps = [b - a for a, b in zip(emitted, emitted[1:])]
     assert gaps and min(gaps) >= 0.25 - 1e-9
@@ -667,8 +667,8 @@ def test_stale_lossy_backlog_is_dropped_and_i_done_stays_exact(tmp_path):
     tx.send(delta("h:1", "old", first=True), now=0.0)
     tx.send({"t": "typing", "lp": 1, "sp": "c"}, now=0.0)
     tx.resume(11.0, PAUSE_PEER_ABSENT)
-    assert tx.due(11.0) == []                    # 积压 >10 s 的可丢类作废
-    tx.send(delta("h:1", "later"), now=11.0)      # 本行剩余 delta 一律作废
+    assert tx.due(11.0) == []                    # Invalidate droppable entries backlogged over 10 s.
+    tx.send(delta("h:1", "later"), now=11.0)      # Invalidate all remaining deltas for this line.
     tx.send(text(1, "oldlater"), now=11.0)
     frames = tx.due(11.0)
     assert [f.t for f in frames] == ["text"]
@@ -683,7 +683,7 @@ def test_backpressure_pauses_lossy_but_not_text(tmp_path):
     assert tx.send(text(2), now=0.0) == 1
     assert [f.t for f in tx.due(0.0)] == ["text"]
     tx.set_backpressure(False)
-    assert tx.send(delta("h:1", "b"), now=0.1) == 0       # 本行剩余片作废，不报错
+    assert tx.send(delta("h:1", "b"), now=0.1) == 0       # Invalidate remaining fragments without errors.
     tx.send(text(1, "ab"), now=0.1)
     frames = tx.due(0.1)
     assert [f.t for f in frames] == ["text"] and frames[0].payload["i_done"] == 0
@@ -728,15 +728,15 @@ def test_a_line_emits_at_most_255_pieces_so_i_done_fits_the_schema(tmp_path):
         tx.send(delta("h:1", f"{n},", first=(n == 0)), now=t, final_piece=True)
         sent += sum(1 for f in tx.due(t) if f.t == "line_delta")
         t += 0.3
-    assert tx.send(text(1, txt="x"), now=t) == 1     # 不会因 i_done=256 抛错
+    assert tx.send(text(1, txt="x"), now=t) == 1     # i_done=256 must not raise.
     frames = [f for f in tx.due(t) if f.t == "text"]
     assert sent == 255
     assert frames and frames[0].payload["i_done"] == 255
 
 
 def test_stale_deltas_of_a_closed_line_are_dropped_and_i_done_follows(tmp_path):
-    # 暂停期间整行（delta + text）都排进队列，恢复时已超 10 s：字幕片作废，
-    # text 不被旧字幕堵住，i_done 等于实际发出的 0 片
+    # The entire line, delta plus text, queues during pause and exceeds 10 s before resumption: discard subtitle fragments,
+    # do not let old subtitles block text, and set i_done to the 0 fragments actually sent.
     tx = make_outbox(tmp_path, peer_present=False)
     for n in range(6):
         tx.send(delta("h:1", f"part{n}", first=(n == 0)), now=0.0 + n * 0.3, final_piece=True)
@@ -748,8 +748,8 @@ def test_stale_deltas_of_a_closed_line_are_dropped_and_i_done_follows(tmp_path):
 
 
 def test_leave_follows_queued_reliables_and_its_grace_starts_when_sent(tmp_path):
-    # 桶紧时 leave 排在已入队的 text 之后发出；宽限从 leave 真正发出起算，
-    # 所以接收方的补齐窗口不会在那几条 text 发出之前开始
+    # With tight buckets, leave follows queued text; grace starts when leave is actually written,
+    # preventing the recipient's gap window from starting before those text messages are sent.
     tx = make_outbox(tmp_path, delivery_timeout_s=10_000)
     for n in range(1, 4):
         tx.send(text(n, txt="好" * 1300), now=0.0)
@@ -773,8 +773,8 @@ async def test_an_ack_cannot_cover_an_item_that_was_never_written(tmp_path):
     tx = make_outbox(tmp_path)
     tx.send(text(1), now=0.0)
     first = [f for f in tx.due(0.0) if f.t == "text"][0]
-    tx.write_failed(first, now=0.0)                   # 一次都没写出去
-    assert tx.on_ack(first.seq, now=0.1) == []        # 越界的累计 ack 不能把它确认掉
+    tx.write_failed(first, now=0.0)                   # Never successfully written.
+    assert tx.on_ack(first.seq, now=0.1) == []        # Out-of-range cumulative ack cannot acknowledge it.
     assert tx.ack_beyond_sent == 1 and first.seq in tx.unacked_seqs
     await tx.close()
 
@@ -783,10 +783,10 @@ async def test_an_ack_cannot_cover_a_retry_whose_write_is_still_pending(tmp_path
     tx = make_outbox(tmp_path)
     tx.send(text(1), now=0.0)
     first = [f for f in tx.due(0.0) if f.t == "text"][0]
-    tx.write_failed(first, now=0.0)                   # 首发没写出去
-    retry = [f for f in tx.due(0.1) if f.t == "text"][0]    # 马上重试：放出了，写的结果还没出来
-    assert tx.on_ack(retry.seq, now=0.2) == []        # 越界的累计 ack 不能先把它确认掉
-    tx.write_failed(retry, now=0.3)                   # 这次也没写出去：还在、照常重试
+    tx.write_failed(first, now=0.0)                   # Initial write failed.
+    retry = [f for f in tx.due(0.1) if f.t == "text"][0]    # Immediate retry emitted, write result still pending.
+    assert tx.on_ack(retry.seq, now=0.2) == []        # Out-of-range cumulative ack cannot acknowledge it prematurely.
+    tx.write_failed(retry, now=0.3)                   # This write also failed; retain and retry normally.
     assert retry.seq in tx.unacked_seqs and [f for f in tx.due(0.3) if f.t == "text"]
     await tx.close()
 
@@ -794,9 +794,9 @@ async def test_an_ack_cannot_cover_a_retry_whose_write_is_still_pending(tmp_path
 async def test_the_leave_grace_starts_when_the_leave_is_written_not_when_released(tmp_path):
     tx = make_outbox(tmp_path, leave_grace_s=5.0)
     tx.send({"t": "leave", "reason": "home"}, now=0.0)
-    leave = [f for f in tx.due(0.0) if f.t == "leave"][0]    # 放出了，写还卡着
-    assert not tx.leave_done(5.0)                            # 没写出去：宽限不从放出时起算
-    tx.written(leave, now=3.0)                               # 3 s 后才写出去
+    leave = [f for f in tx.due(0.0) if f.t == "leave"][0]    # Emitted, but writing remains stuck.
+    assert not tx.leave_done(5.0)                            # Not written: grace must not start at emission.
+    tx.written(leave, now=3.0)                               # Actually written 3 s later.
     assert not tx.leave_done(7.9)
     assert tx.leave_done(8.0)
     await tx.close()
@@ -811,7 +811,7 @@ def test_unsent_leave_gives_up_after_twice_the_grace(tmp_path):
 
 
 def test_unsequenced_line_events_with_a_foreign_prefix_are_rejected():
-    # line_delta / line_abort 不经序号，也必须绑定已认证发送方的 ln 前缀
+    # Unsequenced line_delta / line_abort must also bind their ln prefix to the authenticated sender.
     rx = InboxSequencer(peer_ln_prefix="g:")
     spoof = decode_msg({"t": "line_delta", "ln": "h:3", "i": 0, "lp": 5, "txt": "x",
                         "sp": "c", "ad": "hc", "rt": "", "wu": False})
@@ -834,12 +834,12 @@ async def test_a_send_after_close_does_not_recreate_the_outbox_file(tmp_path):
     assert tx.closed and not await asyncio.to_thread(tx.path.exists)
     unacked = tx.unacked_seqs
     with pytest.raises(ValueError):
-        tx.send(text(2), now=1.0)                          # 迟到的必达一句：与 leave 之后一样报错，不分配序号
+        tx.send(text(2), now=1.0)                          # Late reliable sentence: reject without allocating seq, as after leave.
     assert tx.unacked_seqs == unacked
-    assert tx.send({"t": "typing", "lp": 2, "sp": "c"}, now=1.0) == 0  # 可丢的直接丢
+    assert tx.send({"t": "typing", "lp": 2, "sp": "c"}, now=1.0) == 0  # Discard droppable messages directly.
     await tx.flush()
-    assert tx._executor is None                            # 写线程不重建
-    assert not await asyncio.to_thread(tx.path.exists)     # 带正文的文件不重新出现
+    assert tx._executor is None                            # Do not recreate the writer thread.
+    assert not await asyncio.to_thread(tx.path.exists)     # Files containing body text do not reappear.
 
 
 async def test_a_first_send_that_failed_to_write_is_retried_as_a_first_send(tmp_path):
@@ -847,27 +847,27 @@ async def test_a_first_send_that_failed_to_write_is_retried_as_a_first_send(tmp_
     tx.send(text(1), now=0.0)
     first = [f for f in tx.due(0.0) if f.t == "text"][0]
     assert first.retransmit is False
-    tx.write_failed(first, now=0.0)                  # 传输没写出去
+    tx.write_failed(first, now=0.0)                  # Transport did not write it.
     again = [f for f in tx.due(0.0) if f.t == "text"]
-    assert again and again[0].retransmit is False    # 马上重试，且仍算首发
+    assert again and again[0].retransmit is False    # Retry immediately, still as an initial send.
     item = tx._unacked[again[0].seq]
-    assert item.emitted == 1 and item.next_due == tx._retry[0]  # 重试间隔从第一档起
+    assert item.emitted == 1 and item.next_due == tx._retry[0]  # Retry interval starts at the first tier.
     await tx.close()
 
 
 async def test_a_late_failure_of_a_first_send_written_since_keeps_the_resend(tmp_path):
     tx = make_outbox(tmp_path, leave_grace_s=5.0)
     tx.send({"t": "leave", "reason": "home"}, now=0.0)
-    stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # 旧连接上的首发，还卡在写
-    tx.replay_after_reload(1.0)                              # 新连接顶掉它、重入时补发
+    stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # Old connection's initial send is still writing.
+    tx.replay_after_reload(1.0)                              # New connection replaces it and resends on reentry.
     resent = [f for f in tx.due(1.0) if f.t == "leave"]
     assert resent and resent[0].retransmit is True
-    tx.written(resent[0], now=1.0)                           # 补发写出去了
-    tx.write_failed(stale, now=1.5)                          # 旧连接这时才报写失败
+    tx.written(resent[0], now=1.0)                           # Resend successfully written.
+    tx.write_failed(stale, now=1.5)                          # Only now does the old connection report failure.
     item = tx._unacked[stale.seq]
-    assert not item.unsent_first                             # 补发照样算数：不回滚成「没发过」
-    assert item.next_due == 2.0                              # 也不多催一次重发（仍按补发后的 1 s 间隔）
-    assert not tx.leave_done(5.9)                            # 宽限从真正写出去的那次（补发）起算
+    assert not item.unsent_first                             # The successful resend still counts; do not revert to never-sent.
+    assert item.next_due == 2.0                              # Do not prompt another extra resend; retain the 1 s interval since successful resend.
+    assert not tx.leave_done(5.9)                            # Grace starts from the actual successful write, the resend.
     assert tx.leave_done(6.0)
     await tx.close()
 
@@ -875,27 +875,27 @@ async def test_a_late_failure_of_a_first_send_written_since_keeps_the_resend(tmp
 async def test_a_stuck_first_send_written_after_its_resend_failed_counts_as_sent(tmp_path):
     tx = make_outbox(tmp_path)
     tx.send(text(1), now=0.0)
-    stuck = [f for f in tx.due(0.0) if f.t == "text"][0]    # 旧连接上的首发，还卡在写
+    stuck = [f for f in tx.due(0.0) if f.t == "text"][0]    # Old connection's initial send is still writing.
     tx.replay_after_reload(0.5)
     resent = [f for f in tx.due(0.5) if f.t == "text"][0]
-    tx.write_failed(resent, now=0.6)                         # 新连接上的补发没写出去
-    tx.written(stuck, now=0.7)                               # 卡住的首发最终写出去了
+    tx.write_failed(resent, now=0.6)                         # New connection's resend failed to write.
+    tx.written(stuck, now=0.7)                               # The stuck initial send eventually succeeds.
     again = [f for f in tx.due(0.8) if f.t == "text"]
-    assert again and again[0].retransmit is True             # 已写出去过：之后的都是重传，不再当首发
+    assert again and again[0].retransmit is True             # Now written at least once; future sends are retransmissions, not initial sends.
     await tx.close()
 
 
 async def test_a_first_send_and_its_resend_both_unwritten_do_not_count_as_sent(tmp_path):
     tx = make_outbox(tmp_path, leave_grace_s=5.0)
     tx.send({"t": "leave", "reason": "home"}, now=0.0)
-    stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # 旧连接上的首发，还卡在写
+    stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # Old connection's initial send is still writing.
     tx.replay_after_reload(1.0)
-    resent = [f for f in tx.due(1.0) if f.t == "leave"][0]   # 新连接上的补发
-    tx.write_failed(resent, now=1.5)                         # 补发也没写出去
-    tx.write_failed(stale, now=2.0)                          # 旧连接迟到的失败
-    assert not tx.leave_done(6.0)                            # 一次都没写出去：宽限不从放出时起算
+    resent = [f for f in tx.due(1.0) if f.t == "leave"][0]   # New connection's resend.
+    tx.write_failed(resent, now=1.5)                         # Resend failed too.
+    tx.write_failed(stale, now=2.0)                          # Late failure from the old connection.
+    assert not tx.leave_done(6.0)                            # Never written: grace must not start at emission.
     again = [f for f in tx.due(6.0) if f.t == "leave"]
-    assert again and again[0].retransmit is False            # 下一次仍算首发
+    assert again and again[0].retransmit is False            # The next attempt is still an initial send.
     await tx.close()
 
 
@@ -903,11 +903,11 @@ async def test_a_leave_that_failed_to_write_does_not_start_its_grace(tmp_path):
     tx = make_outbox(tmp_path)
     tx.send({"t": "leave", "reason": "home"}, now=0.0)
     leave = [f for f in tx.due(0.0) if f.t == "leave"][0]
-    tx.write_failed(leave, now=0.0)                  # leave 没写出去
-    assert not tx.leave_done(6.0)                    # 宽限不从这次失败起算（没写出去的 leave 不算发过）
+    tx.write_failed(leave, now=0.0)                  # leave was not written.
+    assert not tx.leave_done(6.0)                    # Grace does not start on failure; unwritten leave does not count as sent.
     again = [f for f in tx.due(6.0) if f.t == "leave"]
     assert again and again[0].retransmit is False
-    assert not tx.leave_done(6.1)                    # 宽限从真正写出去那一刻起算
+    assert not tx.leave_done(6.1)                    # Start grace when it is actually written.
     await tx.close()
 
 
@@ -932,7 +932,7 @@ async def test_cancelled_close_still_deletes_the_outbox_file(tmp_path):
             await closing
         pending = tx._last_write
         gate.set()
-        while not pending.done():          # 先等被挡住的那次写入真正落盘
+        while not pending.done():          # First await actual persistence of the blocked write.
             await asyncio.sleep(0.01)
         for _ in range(200):
             if not tx.path.exists():
@@ -945,7 +945,7 @@ async def test_cancelled_close_still_deletes_the_outbox_file(tmp_path):
 
 
 def test_encoded_size_is_an_upper_bound_for_text(tmp_path):
-    # i_done 由 send / 首发改写：估算按最大宽度，缺字段也不报错
+    # send/initial-send rewrites i_done; estimate using maximum width and tolerate missing fields.
     tx = make_outbox(tmp_path)
     msg = text(1, "z" * 763)
     without = {k: v for k, v in msg.items() if k != "i_done"}
@@ -956,7 +956,7 @@ def test_encoded_size_is_an_upper_bound_for_text(tmp_path):
 
 
 def test_a_rejected_first_delta_leaves_no_line_behind(tmp_path):
-    # 首片字段坏了被拒：不能把坏的头部留在 _lines 里，修正后的重试要能成功
+    # Rejecting malformed first-fragment fields must not retain a bad _lines header; corrected retries must succeed.
     tx = make_outbox(tmp_path)
     good = {"t": "line_delta", "ln": "h:1", "lp": 3, "txt": "hi", "sp": "c", "ad": "gc",
             "rt": "", "wu": False}
@@ -969,14 +969,14 @@ def test_a_rejected_first_delta_leaves_no_line_behind(tmp_path):
 
 
 def test_encoded_size_of_a_leave_does_not_raise(tmp_path):
-    # schema 要求 last_seq == seq - 1：估算不能把两者都设成 u32 最大值
+    # Schema requires last_seq == seq - 1; estimates cannot set both to maximum u32.
     tx = make_outbox(tmp_path)
     pieces, size = tx.encoded_size({"t": "leave", "reason": "home"})
     assert pieces >= 1 and size > 0
 
 
 async def test_purge_outbox_skips_entries_it_cannot_stat_or_delete(tmp_path, monkeypatch):
-    # 一个坏条目（stat / 删除失败）不能让启动清理中断，其余 outbox 照常删
+    # One entry's stat/deletion failure must not abort startup cleanup of other outboxes.
     import os
     import pathlib
 
@@ -1004,7 +1004,7 @@ async def test_purge_outbox_skips_entries_it_cannot_stat_or_delete(tmp_path, mon
     assert [p.name for p in deleted] == [names[2]]
 
 
-# ── 可释放的在途字节预留（§4.5 stream_data：预留 → 落盘 → 入队）──
+# -- Releasable in-flight byte reservations: section 4.5 stream_data reserve -> persist -> enqueue --
 
 
 def test_reservation_holds_bytes_until_released_or_consumed(tmp_path):
@@ -1016,7 +1016,7 @@ def test_reservation_holds_bytes_until_released_or_consumed(tmp_path):
     first = tx.reserve(nbytes)
     assert first is not None and first.held
     assert tx.pending_bytes == nbytes
-    # 别的行在持有者 await 期间拿不走这部分额度
+    # Other lines cannot take this capacity while its owner awaits.
     others = []
     while (r := tx.reserve(nbytes)) is not None:
         others.append(r)
@@ -1024,14 +1024,14 @@ def test_reservation_holds_bytes_until_released_or_consumed(tmp_path):
     for r in others:
         r.release()
     first.release()
-    first.release()                      # 幂等
+    first.release()                      # Idempotent.
     assert tx.pending_bytes == 0
     second = tx.reserve(nbytes)
     seq = tx.send(msg, reservation=second)
     assert seq == 1 and not second.held
     queued = tx.pending_bytes
-    assert 0 < queued <= nbytes          # 现在只算这条必达项自己的字节
-    second.release()                     # 已消费：不再退还
+    assert 0 < queued <= nbytes          # Now count only this reliable item's own bytes.
+    second.release()                     # Already consumed; do not refund.
     assert tx.pending_bytes == queued
 
 
@@ -1060,6 +1060,6 @@ def test_forced_ack_skips_the_coalescing_window():
     assert seq.poll_ack(0.0) == 1
     seq.accept({"t": "text", "seq": 2, "ln": "g:2", "lp": 2, "sp": "c", "ad": "hc", "rt": "", "wu": False,
                 "final": True, "txt": "b", "truncated": False, "i_done": 0}, 0.1)
-    assert seq.poll_ack(0.1) is None                 # 合并窗口内
+    assert seq.poll_ack(0.1) is None                 # Within the coalescing window.
     assert seq.poll_ack(0.1, force=True) == 2
-    assert seq.poll_ack(0.2, force=True) is None     # 没有欠着的
+    assert seq.poll_ack(0.2, force=True) is None     # No outstanding debt.

@@ -116,7 +116,7 @@ class BusSubscriptionManager:
             if until > 0.0:
                 self._sub_paused_until.pop(key2, None)
 
-            # 使用缓存快照避免锁竞争
+            # Use a cached snapshot to avoid lock contention.
             hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
             host = hosts_snapshot.get(plugin_id)
             if not host:

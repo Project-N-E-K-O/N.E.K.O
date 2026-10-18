@@ -65,14 +65,14 @@ async def test_switching_visits_off_ends_live_visits_once(monkeypatch, tmp_path,
     assert ended == []
     await _save({"visitEnabled": False, "focusModeEnabled": True})
     assert ended == [1]
-    # 之后再带着 false 存别的设置：已经是关，不再结束
+    # Later saving other settings with false is already disabled; do not end again.
     await _save({"visitEnabled": False, "focusModeEnabled": False})
     assert ended == [1]
 
 
 @pytest.mark.asyncio
 async def test_default_off_carried_along_does_not_end_visits(monkeypatch, tmp_path, ended):
-    # 从没打开过（缺省为关）：前端每次保存都带 visitEnabled:false，不能把串门掐掉
+    # Never enabled (default off): frontend saves always include visitEnabled:false, which must not terminate visits.
     _use_preferences_file(monkeypatch, tmp_path)
     await _save({"visitEnabled": False, "slopFilterEnabled": True})
     assert ended == []
@@ -88,19 +88,19 @@ async def test_saving_other_keys_while_on_keeps_the_visit(monkeypatch, tmp_path,
 
 
 def test_an_older_voice_push_never_overwrites_a_newer_one(monkeypatch):
-    # 两次并发保存在锁外先后恢复：修订号更旧的那次推送被丢弃（CodeRabbit）
+    # Concurrent saves resume outside the lock: discard the older revision's push (CodeRabbit).
     pushed = []
     monkeypatch.setattr(rtm, "apply_voice_setting", lambda enabled: pushed.append(enabled) or 0)
     monkeypatch.setattr(preferences_router, "_visit_voice_pushed_revision", -1)
-    preferences_router._apply_visit_voice(True, 8)       # B（更新）先恢复
-    preferences_router._apply_visit_voice(False, 7)      # A（更旧）后恢复：丢弃
+    preferences_router._apply_visit_voice(True, 8)       # B (newer) resumes first.
+    preferences_router._apply_visit_voice(False, 7)      # A (older) resumes later: discard it.
     preferences_router._apply_visit_voice(False, 9)
     assert pushed == [True, False]
 
 
 @pytest.mark.asyncio
 async def test_a_pending_admission_is_refused_when_visits_are_switched_off(tmp_path, monkeypatch):
-    # 入场还挂在 await 上（尚未登记运行时）时用户关掉串门：醒来后不登记（CodeRabbit）
+    # User disables visits while entry is suspended on await (runtime not yet registered): do not register on waking (CodeRabbit).
     import asyncio
 
     from tests.unit.visit_runtime_harness import VISIT_ID, FakeClock, make_side, patch_admission
@@ -119,7 +119,7 @@ async def test_a_pending_admission_is_refused_when_visits_are_switched_off(tmp_p
                                                  clock=clock, wall=wall))
     for _ in range(20):
         await asyncio.sleep(0)
-    assert rtm.end_visits_disabled() == 0                  # 还没登记：结束不到它
+    assert rtm.end_visits_disabled() == 0                  # Not yet registered: ending cannot reach it.
     gate.set()
     with pytest.raises(rtm.VisitRefused) as refused:
         await task
@@ -133,8 +133,8 @@ async def test_saving_the_voice_switch_pushes_it_to_live_visits(monkeypatch, tmp
     pushed = []
     monkeypatch.setattr(rtm, "apply_voice_setting", lambda enabled: pushed.append(enabled) or 0)
     _use_preferences_file(monkeypatch, tmp_path)
-    await _save({"visitVoiceEnabled": True})               # 缺省 → 开：照推一次，无害
-    await _save({"visitVoiceEnabled": True, "slopFilterEnabled": False})   # 没变：不推
+    await _save({"visitVoiceEnabled": True})               # Default -> enabled: still push once; harmless.
+    await _save({"visitVoiceEnabled": True, "slopFilterEnabled": False})   # Unchanged: no push.
     await _save({"visitVoiceEnabled": False})
     await _save({"visitVoiceEnabled": True})
     assert pushed == [True, False, True]
@@ -160,13 +160,13 @@ async def test_end_visits_disabled_finalizes_with_visit_disabled(tmp_path, monke
         assert rtm.end_visits_disabled() == 2
         assert host.rt.finalize_reason == "visit_disabled"
         assert guest.rt.finalize_reason == "visit_disabled"
-        assert rtm.end_visits_disabled() == 0          # 已在收尾的不再重起
+        assert rtm.end_visits_disabled() == 0          # Do not restart visits already ending.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
 
 def test_write_result_carries_the_snapshot_read_under_the_same_lock(monkeypatch, tmp_path):
-    # 前后值取自同一次加锁写入：读旧值与写新值之间插不进别的保存（CodeRabbit：并发保存漏判）
+    # Old and new values come from one locked write: another save cannot intervene between read and write (CodeRabbit: concurrent-save missed transition).
     from utils import preferences
 
     _use_preferences_file(monkeypatch, tmp_path)

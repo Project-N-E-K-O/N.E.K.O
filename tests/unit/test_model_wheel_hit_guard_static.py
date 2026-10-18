@@ -17,9 +17,9 @@ VRM_INTERACTION = PROJECT_ROOT / "static" / "vrm" / "vrm-interaction.js"
 def _node_path() -> str:
     node_path = shutil.which("node")
     if not node_path:
-        # 硬失败而不是 skip：这些用例取代的是无条件运行的静态检查，若 node 从
-        # PATH 上消失就静默跳过，闸门会在没有检查过滚轮行为的情况下报绿。
-        # CI runner 自带 node（见 unit-tests.yml 的说明）。
+        # Fail instead of skipping: these tests replace unconditional static checks. Silently skipping when node disappears
+        # from PATH would make the gate pass without checking wheel behavior.
+        # CI runners include node (see unit-tests.yml notes).
         raise AssertionError("node is required to run the wheel guard behaviour tests")
     return node_path
 
@@ -202,13 +202,13 @@ def _both_directions(base: dict) -> list[dict]:
 @pytest.mark.unit
 def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():
     """Off-model wheel events must reach the page; on-model ones must not."""
-    # 模型盒是 canvas 上的 100..300；中心点必然命中，远角必然不命中。
+    # The model occupies canvas coordinates 100..300; the center must hit and a distant corner must miss.
     scenarios = (
         _both_directions({"name": "on_model", "x": 200, "y": 200})
         + _both_directions({"name": "off_model", "x": 20, "y": 20})
         + _both_directions({"name": "on_model_peek", "x": 200, "y": 200, "peek": True})
-        # 探身分支必须同样以命中为前提：只测 on-model 的话，把该分支改成
-        # 无条件 preventDefault 仍能满足全部断言（实测过）。
+        # Leaning behavior must also require a hit: testing only on-model events would let unconditional
+        # preventDefault in that branch satisfy every assertion (verified experimentally).
         + _both_directions({"name": "off_model_peek", "x": 20, "y": 20, "peek": True})
         + _both_directions({"name": "locked", "x": 200, "y": 200, "locked": True})
     )
@@ -219,12 +219,12 @@ def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():
             f"指针不在模型上时吞掉滚轮（{direction}），页面就滚不动了"
         )
         assert results[f"off_model_{direction}"]["zoomed"] is False
-        # 挂边探身（#2253）同样以命中为前提。
+        # Edge-hanging leaning (#2253) must also require a hit.
         assert results[f"off_model_peek_{direction}"]["prevented"] is False
         assert results[f"off_model_peek_{direction}"]["zoomed"] is False
         assert results[f"on_model_{direction}"]["prevented"] is True, "命中模型必须消费掉滚轮"
         assert results[f"on_model_{direction}"]["zoomed"] is True, "命中模型必须真的缩放"
-        # 探身态：吞事件但不缩放。
+        # While leaning: consume the event without scaling.
         assert results[f"on_model_peek_{direction}"]["prevented"] is True
         assert results[f"on_model_peek_{direction}"]["zoomed"] is False
         assert results[f"locked_{direction}"]["prevented"] is False
@@ -263,7 +263,7 @@ def test_vrm_wheel_zoom_requires_model_hit_before_consuming_event():
             f"未命中模型时吞掉滚轮（{direction}）"
         )
         assert results[f"off_model_{direction}"]["zoomed"] is False
-        # 事件不在 canvas 上时必须完全放行，否则聊天区滚不动。
+        # Fully pass through events outside the canvas, or the chat area cannot scroll.
         assert results[f"off_canvas_{direction}"]["prevented"] is False
         assert results[f"off_canvas_{direction}"]["zoomed"] is False
         assert results[f"locked_{direction}"]["prevented"] is False

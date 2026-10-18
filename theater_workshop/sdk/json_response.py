@@ -7,15 +7,15 @@ class JSONResponseParser:
     def parse_json_response(self, response: str) -> Dict[str, Any]:
         """Parse a JSON response into structured data."""
         try:
-            # 尝试直接解析
+            # Try direct parsing.
             return json.loads(response)
         except json.JSONDecodeError:
             pass
 
-        # 尝试处理markdown格式的JSON (优先处理)
+        # First try JSON wrapped in Markdown.
         try:
             if '```json' in response:
-                # 提取markdown代码块中的JSON
+                # Extract JSON from Markdown code blocks.
                 start_marker = '```json'
                 end_marker = '```'
                 start = response.find(start_marker)
@@ -24,7 +24,7 @@ class JSONResponseParser:
                     end = response.find(end_marker, start)
                     if end != -1:
                         json_str = response[start:end].strip()
-                        # 修复常见的JSON格式问题
+                        # Fix common JSON formatting problems.
                         json_str = self._fix_json_format(json_str)
                         result = json.loads(json_str)
                         print(f"成功解析markdown JSON")
@@ -33,22 +33,22 @@ class JSONResponseParser:
             print(f"markdown JSON解析失败: {e}")
             pass
 
-        # 尝试提取JSON部分（从第一个{到最后一个}）
+        # Try extracting the JSON section, from the first { to the last }.
         try:
             start = response.find('{')
             end = response.rfind('}') + 1
             if start != -1 and end != 0:
                 json_str = response[start:end]
-                # 修复常见的JSON格式问题
+                # Fix common JSON formatting problems.
                 json_str = self._fix_json_format(json_str)
                 return json.loads(json_str)
         except json.JSONDecodeError:
             pass
 
-        # 如果无法解析，尝试提取可能的文本内容
-        # 如果响应看起来像markdown，尝试提取文本部分
+        # If parsing fails, try extracting possible text content.
+        # If the response resembles Markdown, try extracting its text section.
         if '```' in response:
-            # 尝试提取markdown中的文本内容
+            # Try extracting text from Markdown.
             lines = response.split('\n')
             text_content = []
             in_code_block = False
@@ -62,7 +62,7 @@ class JSONResponseParser:
             if text_content:
                 return {"content": '\n'.join(text_content), "parse_error": True}
 
-        # 最后尝试，返回原始文本但添加错误标记
+        # Last attempt: return raw text with an error marker.
         print(f"警告：无法解析JSON响应，返回原始文本")
         return {"content": response, "parse_error": True}
 

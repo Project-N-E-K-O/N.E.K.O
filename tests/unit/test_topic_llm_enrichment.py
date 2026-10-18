@@ -429,7 +429,7 @@ async def test_enrichment_failure_log_never_carries_the_model_reply(monkeypatch)
     assert any("reply_not_json_object" in m for m in messages), messages
     assert not any(secret in m for m in messages), messages
     assert not any("这不是 JSON" in m for m in messages), messages
-    # 提示语本身也是对话原文拼出来的，同样不能出现。
+    # The prompt itself is also assembled from raw conversation text and must not appear either.
     assert not any("换工作" in m for m in messages), messages
 
 
@@ -439,7 +439,7 @@ def test_failure_detail_reports_the_exception_class_not_its_message():
     class _ProviderError(Exception):
         status_code = 400
 
-    # 供应商 400 的 message 经常把请求体（也就是对话）原样回显出来。
+    # A provider's 400 message often echoes the request body (the conversation) verbatim.
     leaky = _ProviderError("invalid request body: 我最近一直在纠结要不要换工作")
     detail = llm_enrichment._failure_detail(leaky)
     assert detail == "_ProviderError HTTP 400"
@@ -479,7 +479,7 @@ async def test_enrichment_failure_log_throttles_repeats_of_the_same_reason(monke
         assert len(first_round) == 1, first_round
         assert "11 more suppressed" not in first_round[0]
 
-        # 窗口翻篇后重新放行一条，并把期间压掉的次数带出来。
+        # Allow one message again after the window rolls over, reporting the number suppressed in the meantime.
         monkeypatch.setattr(llm_enrichment, "_FAILURE_LOG_INTERVAL_SECONDS", 0.0)
         await llm_enrichment.call_topic_candidates(
             lang="zh-CN", global_signals="- [1min前] 用户: 换工作的事",

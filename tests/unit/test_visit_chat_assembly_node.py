@@ -35,7 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHAT_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window" / "visit-chat.js"
 PACER_PATH = PROJECT_ROOT / "static" / "visit" / "visit-pacer.js"
 
-# 前端「清洗后是否为空」的预判要与后端 sanitize.strip_control_chars + strip() 一致
+# The frontend emptiness-after-cleaning check must match backend sanitize.strip_control_chars + strip().
 RELAY_SAMPLES = [
     "\u200b", "\u200b\u202e\ufeff", " \u2066 ", "\u200d", "\u200c\u200d", "a\u200b", "\x07\x1b",
     "\t\n", "\u2028", "\u00ad", "\U0001F468\u200d\U0001F469", "\u061c", "x",
@@ -1448,7 +1448,7 @@ def test_twenty_second_stall_truncates_locally_and_final_still_wins(report):
 
 def test_cloud_transcript_exports_by_side_and_from(report):
     assert report["cloud_lines"] == 3
-    # role=guest：side guest 的是本侧，side host 的是对端；猫娘 / 亲人看 from
+    # role=guest: side guest is local, side host is remote; use from to distinguish catgirl/family.
     assert report["cloud_labels"] == ["对方的猫娘", "我家猫娘", "对方的家里人"]
     assert report["cloud_clean"] is True
     assert report["local_lines"] == 2
@@ -1491,7 +1491,7 @@ def test_preview_comes_first_and_failures_never_join(report):
     assert report["preview_fail_joins"] == 0 and report["preview_fail_dialogs"] == 0
     assert report["blocked_buttons"] == ["cancel"]
     assert "你已屏蔽此人" in report["blocked_text"]
-    # 确认框只有显示名 + 短码 + 跨区提示，没有任何技术数字
+    # The confirmation contains only a display name, short code, and cross-region notice, without technical numbers.
     assert "邻居" in report["confirm_text"] and "ABCDEF" in report["confirm_text"]
     assert "token" not in report["confirm_text"].lower() and "tts" not in report["confirm_text"].lower()
     assert report["order_after_confirm"] == ["preview", "join", "join"]
@@ -1499,7 +1499,7 @@ def test_preview_comes_first_and_failures_never_join(report):
 
 def test_persona_409_is_confirmed_before_the_single_retry(report):
     assert report["persona_calls"] == 1
-    assert report["persona_joins_before"] == 1       # 第一次 join 回 409 之后、重试之前
+    assert report["persona_joins_before"] == 1       # After the first join returns 409, before retry.
     assert report["join_count"] == 2
     assert report["join_body"] == {"catgirl": "咪咪", "invite_code": "ABCDEFGH23", "confirm": True}
 
@@ -1534,7 +1534,7 @@ def test_abandon_with_unconfirmed_writes_asks_first_and_says_so(report):
 
 
 def test_state_probe_racing_a_started_frame_keeps_the_visit_active(report):
-    # 迟到的旧快照（awaiting_accept）不能带出 active:false 盖掉帧刚驱动的状态；按帧之后的当前状态给 true 可以
+    # A late old awaiting_accept snapshot must not overwrite frame-driven state with active:false; true based on current post-frame state is allowed.
     assert report["race_detail_active"] is True
     assert report["race_pacer_armed"] is True
     assert report["race_chat_phase"] == "active"
@@ -1555,7 +1555,7 @@ def test_a_later_submission_keeps_an_old_refused_text_out_of_the_composer(report
 
 
 def test_details_label_speakers_from_the_requester_side(report):
-    # 请求者是 guest：host 侧的是对方，guest 侧的是我；differ 行两份同一口径
+    # The requester is guest: host is the other side and guest is me; both differ rows use the same perspective.
     assert report["details_labels"] == ["对方的猫娘", "我家猫娘", "我家猫娘"]
 
 
@@ -1588,7 +1588,7 @@ def test_escape_closes_a_dismissible_dialog(report):
 
 def test_a_late_snapshot_never_revives_a_visit_that_already_ended(report):
     assert report["ended_race_active"] is False
-    # 帧链里已经结束：迟到的 active 快照绝不能把这一场重新武装
+    # The frame chain has ended: a late active snapshot must never rearm this visit.
     assert report["ended_race_bound_active"] is not True
     assert report["ended_race_pacer_active"] is False
     assert report["ended_race_phase"] is None

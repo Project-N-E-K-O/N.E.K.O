@@ -7,7 +7,7 @@ from typing import Any, Mapping
 from .facts import _resolve_pointer
 from .evidence import effective_targets, fields_overlap
 
-# 评分目录与实际补丁校验共用同一组权限，防止一边显示可修、一边拒绝相同字段。
+# The scoring catalog and actual patch validation share permissions so a field cannot appear repairable while its patch is rejected.
 STORY_BEAT_FIELDS = {"summary", "opening_scene", "must_not_happen", "catgirl_situation", "transition_goal", "character_state"}
 CHARACTER_STATE_TEXT_FIELDS = {"catgirl_state", "player_state", "environment_state"}
 TRANSITION_CONTRACT_FIELDS = {"reason", "bridge_scene_narration", "must_deliver", "must_preserve", "tone"}
@@ -38,7 +38,7 @@ def context_nodes(context: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 def classify_repair(context: Mapping[str, Any], issue: Mapping[str, Any], *, protected: list[dict] | None = None, require_plan_review: bool = False) -> dict[str, Any]:
     """Preserve original suggestions completely; unclear or unauthorized fields disable direct repair without dropping findings or inventing executable plans."""
     result = deepcopy(dict(issue))
-    # 原方案留作展示，实际执行范围以逐字段复核为准；未复核的事实不能直接执行。
+    # Retain the original plan for display; execution scope follows field-by-field review, and unreviewed facts cannot execute directly.
     targets = effective_targets(issue) if issue.get("source") == "facts" else issue.get("repair_targets")
     nodes = context_nodes(context)
     reason = ""
@@ -65,7 +65,7 @@ def classify_repair(context: Mapping[str, Any], issue: Mapping[str, Any], *, pro
             reason = "部分关联节点未列出修改字段，请补全方案后再优化。"
     if not reason and issue.get("model_repair_scope", issue.get("repair_scope")) == "structure":
         reason = "方案声明需要结构调整，请手动处理。"
-    # 初次分类仅选择待复核方案；执行时必须已有肯定复核，重算权限也不能重开被拦截方案。
+    # Initial classification only selects plans for review; execution requires affirmative review, and recalculating permissions must not reopen blocked plans.
     review = issue.get("plan_review")
     if not reason and (require_plan_review or review is not None):
         if (not isinstance(review, Mapping) or review.get("status") != "ready"
@@ -88,7 +88,7 @@ def assign_shared_plans(report: dict[str, Any]) -> None:
             continue
         key = (tuple(sorted((item["node_id"], item["field"]) for item in targets)),
                tuple(sorted(issue["target_node_ids"])), issue["repair_scope"],
-               # 同文方案也可能因保留项而得到不同复核结论，不能共享到另一个执行权限。
+               # Identically worded plans may receive different reviews because of preserved items; do not share a review with another execution permission.
                (issue.get("plan_review") or {}).get("status"),
                str(issue.get("modification_plan") or issue.get("suggestion") or "").strip())
         if key in seen:

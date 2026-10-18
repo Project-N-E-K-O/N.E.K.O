@@ -16,7 +16,7 @@ NUMERIC_V2_SCHEMA = "neko.story.numeric.v2"
 NUMERIC_V2_CONTRACT_VERSION = "v2.2"
 NUMERIC_V2_MIN_PER_TURN_LIMIT = 1
 NUMERIC_V2_MAX_PER_TURN_LIMIT = 5
-# 短篇剧场把每幕的硬底线和软收束点统一压到三回合，避免目标数量把演绎拖成长篇。
+# Short theater fixes each act's hard minimum and soft ending at three turns, preventing target counts stretching length.
 DEFAULT_SCENE_MIN_TURNS = 3
 DEFAULT_SCENE_RECOMMENDED_TURNS = 3
 DEFAULT_METRIC_MIN = 0
@@ -49,8 +49,8 @@ class PresetMetric:
         """Presets supply initial wording only; authors can edit it fully after saving."""
 
         low_label, middle_label, high_label = _PRESET_BAND_LABELS[self.id]
-        # 关系数值需要跨多轮建立，默认限幅低于线索、压力等剧情数值；
-        # 作者仍可在高级设置中显式修改，不把该默认值变成隐藏硬限制。
+        # Relationship values build over many turns; default step cap is lower than plot values such as clues/pressure;
+        # authors may explicitly change advanced settings, so default is no hidden hard limit.
         default_limit = 3 if self.relationship_effect != "none" else 5
         return {
             "id": self.id,
@@ -67,7 +67,7 @@ class PresetMetric:
             "decrease_criteria": list(self.decrease_criteria),
             "visibility": "hidden",
             "bands": [
-                # 中段从 20 起、最高段从 35 起，让常用分支阈值随短篇范围一起下移。
+                # Mid tier starts at 20, highest at 35, shifting common branch thresholds down with short-story ranges.
                 {"min": 0, "max": 19, "label": low_label},
                 {"min": 20, "max": 34, "label": middle_label},
                 {"min": 35, "max": 50, "label": high_label},
@@ -152,7 +152,7 @@ def normalize_metric_drafts(metrics: list[Mapping[str, Any]]) -> list[dict[str, 
         metric.setdefault("decrease_limit", default_limit)
         for direction in ("increase", "decrease"):
             limit = metric[f"{direction}_limit"]
-            # v2.2 在作者保存阶段就拒绝越界限幅，避免到导出或运行时才暴露错误。
+            # v2.2 rejects out-of-range caps during author saving, avoiding late export/runtime errors.
             if (
                 isinstance(limit, bool)
                 or not isinstance(limit, int)
@@ -161,7 +161,7 @@ def normalize_metric_drafts(metrics: list[Mapping[str, Any]]) -> list[dict[str, 
                 raise ValueError("v2_2_turn_limit_out_of_range")
         metric.setdefault("increase_criteria", [])
         metric.setdefault("decrease_criteria", [])
-        # Numeric v2 的数值只服务剧场内部结算，不向玩家暴露。
+        # Numeric v2 values serve internal theater settlement only, never shown to players.
         metric["visibility"] = "hidden"
         metric.setdefault("bands", [
             {"min": metric["min"], "max": metric["max"], "label": "当前状态"}
@@ -207,8 +207,8 @@ def scene_turn_budget(
 ) -> tuple[int, int]:
     """Return the fixed three-turn budget for short-story nodes; author estimates are diagnostic only."""
 
-    # 两个参数只保留在内部计算签名中，不能把目标数量或 expected_turns
-    # 投影到 Story Package；Runtime 的每幕推荐回合始终固定为 3。
+    # Retain both parameters in internal calculation signatures only; never project target counts or expected_turns
+    # into Story Package. Runtime recommended turns per act always remain three.
     _ = goals
     _ = expected_turns
     return DEFAULT_SCENE_MIN_TURNS, DEFAULT_SCENE_RECOMMENDED_TURNS
@@ -367,7 +367,7 @@ class NumericV2Compiler:
 
     def compile(self, story: Mapping[str, Any]) -> Any:
         compiled = self.compile_core(story)
-        # N.E.K.O 负责合同硬错误；生成器只追加作者侧静态诊断，软预算和文本可辨识性都不阻断编译。
+        # N.E.K.O handles hard contract errors; generator appends author static diagnostics only, with soft budgets/text clarity nonblocking.
         author_warnings = tuple(
             NekoV2Warning(
                 code=warning.code,

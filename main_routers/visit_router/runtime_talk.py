@@ -124,14 +124,14 @@ class TalkMixin:
         self._handoff_stamps: dict[str, float] = {}
         self._last_tail_ms = 0
         self._session_closing: Optional[asyncio.Future] = None
-        # 已接纳、还没记进转录的亲人发言（每句一个 future，落盘结束即完成）：封存之前限时等它们
+        # Accepted family messages not yet transcribed: one future per sentence, completed on persistence; await with a deadline before archival.
         self.family_records: set[asyncio.Future] = set()
-        # 正在写 spool 的句数：简述判断「有没有可记的句子」之前限时等它们落定
+        # Number of sentences writing spool: briefly await completion before debrief decides whether anything is worth recording.
         self._spool_appending = 0
         self._spool_idle = asyncio.Event()
         self._spool_idle.set()
 
-    # ── 小工具 ───────────────────────────────────────────────────────
+    # -- Small helpers --
 
     def lang_tag(self) -> Optional[str]:
         return self.lang
@@ -152,8 +152,8 @@ class TalkMixin:
         meanwhile is not all written yet."""
         opening = getattr(self, "_journal_opening", None)
         if not self.journal.is_open:
-            # 还没开始写（对端 hello 先于本侧的入房报告到达、已被接受并激活）：同样先攒着，
-            # 入房后写上传头时一并补上，开场那几句与用量不会丢
+            # Not yet writing: peer hello arrived before our room-join report and was accepted/activated; buffer these too,
+            # then append with the upload header after joining so opening lines and usage are preserved.
             return (opening is None and not self.journal.sealed) or (opening is not None and not opening.done())
         return bool(self._journal_backlog)
 
@@ -165,7 +165,7 @@ class TalkMixin:
 
     def _on_usage(self, delta: dict) -> None:
         if self._journal_buffering():
-            # 上传头还没写完：用量同样先攒着（note_usage 在流水开起来之前什么都不记）
+            # Upload header still pending: buffer usage too, since note_usage records nothing before the journal starts.
             self._journal_backlog.append({"kind": "usage", "d": dict(delta), "ts": self.wall()})
             return
         self.journal.note_usage(delta)
@@ -179,7 +179,7 @@ class TalkMixin:
     def _on_tts_fallback(self) -> None:
         self.spawn(self.status("VISIT_TTS_FALLBACK"))
 
-    # ── 效果执行（固定顺序）──────────────────────────────────────────
+    # -- Effect execution, fixed order --
 
     def apply_effects(self, eff: Any) -> None:
         """Execute ``RoomEffects`` in the fixed order of §3.6.3."""
@@ -220,7 +220,7 @@ class TalkMixin:
         if room is None:
             return
         if decision.action == "done" and self.side == "host":
-            # 送客行播完 + tail_ms 之后才发 done（§3.2.6 第 21 条）
+            # Send done only after the farewell line finishes playing plus tail_ms (section 3.2.6 item 21).
             tail = self._last_tail_ms
             self.spawn(self._send_done_later(decision, tail / 1000.0))
             return
@@ -248,7 +248,7 @@ class TalkMixin:
             logger.warning("visit %s: wrap_up not queued: %s", self.visit_id[:6], exc)
         self.kick()
 
-    # ── 回复调度 ─────────────────────────────────────────────────────
+    # -- Reply scheduling --
 
     def _cancel_reply(self) -> None:
         task = self._reply_task
@@ -295,14 +295,14 @@ class TalkMixin:
                 else:
                     return
             if self._reply_task is me:
-                # 开口之后不再是「未开口的推理」：取消待发回复不再碰它，打断走 abort
+                # Once speaking starts, this is no longer unsaid inference: pending-reply cancellation leaves it alone; interruption uses abort.
                 self._reply_task = None
             await self.speak_line(reply_to=plan.reply_to if plan is not None and not goodbye else None,
                                   goodbye=goodbye)
         except asyncio.CancelledError:
             return
 
-    # ── 一行台词 ─────────────────────────────────────────────────────
+    # -- One dialogue line --
 
     def _next_ln(self) -> str:
         self._own_line_no += 1
@@ -345,7 +345,7 @@ class TalkMixin:
                             rt=reply_to.line_id if reply_to is not None else "", wu=goodbye, sp="c",
                             lang=(self.lang or None) and str(self.lang)[:16])
         line = _LineRun(ref=ref, header=header, reply_to=reply_to, goodbye=goodbye, prompt=prompt)
-        # 告别行开口前先发 wrap_up{speaking}（两种字幕模式都一样）
+        # Send wrap_up{speaking} before the farewell line starts, in both subtitle modes.
         self.apply_effects(room.on_local_line_started(ref, reply_to, goodbye, now))
         if self.finalizing:
             return
@@ -408,11 +408,11 @@ class TalkMixin:
             async with session.turn_lock:
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + timeout
-                # 上一轮被撇下的生成还在出字：等它停下（与这一行共用时限），等不到就不开新流，
-                # 否则它后面的字会经同一个 sink 串进这一行
+                # An abandoned previous generation still emits text: wait within this line's deadline. If it will not stop, open no new stream,
+                # or its later text leaks into this line through the same sink.
                 if not await _await_stray(session, timeout):
                     line.llm_error = "timeout"
-                    # 撇下的那次等满一个时限还在跑：之后每一行都只会再等满再超时，这场已经说不了话
+                    # Abandoned generation exceeded a full deadline: every later line would wait and time out too, so this visit can no longer speak.
                     self.request_finalize("llm_error")
                 else:
                     sort_visit_history(session)
@@ -425,7 +425,7 @@ class TalkMixin:
                     except asyncio.CancelledError:
                         if not line.llm_cancelled:
                             raise
-                    except Exception as exc:  # noqa: BLE001 - 一行生成失败按 llm_error 收口
+                    except Exception as exc:  # noqa: BLE001 - Finalize failed line generation as llm_error.
                         logger.warning("visit %s: line generation failed: %s", self.visit_id[:6],
                                        type(exc).__name__)
                         line.llm_error = "error"
@@ -436,14 +436,14 @@ class TalkMixin:
                             self._on_usage(estimate_turn_usage(session, output))
                         except Exception:  # noqa: BLE001
                             pass
-                        # 这一轮追加的提问与回复都摘掉：历史里只留真实台词（本行收口后按已放出的入史）
+                        # Remove this round's appended question/reply: keep only spoken lines in history, recorded from released text when the line closes.
                         _drop_new_messages(session, before)
         except asyncio.CancelledError:
             if not line.llm_cancelled:
                 speaker.llm_done()
                 raise
         if line.goodbye and not line.raw and not speaker.done:
-            # 告别行一个字也没生成：说固定句，收尾不能卡住
+            # Farewell generated nothing: use the fixed sentence so finalization cannot stall.
             from config.prompts.prompts_visit import get_visit_goodbye_fallback
 
             speaker.feed(get_visit_goodbye_fallback(self.side, self.lang))
@@ -454,7 +454,7 @@ class TalkMixin:
             await drive(line.speaker, clock=self.clock)
         finally:
             if line.llm_task is not None and not line.llm_task.done():
-                # text{final} 已入队：等 LLM 任务停下有上限，不肯停的不能拖着这一行进不了转录
+                # text{final} is queued: bound waiting for LLM termination so an uncooperative task cannot block transcription.
                 await asyncio.wait([line.llm_task], timeout=_LLM_SETTLE_S)
                 if not line.llm_task.done():
                     line.llm_task.cancel()
@@ -474,7 +474,7 @@ class TalkMixin:
                 logger.warning("visit %s: line_delta not queued: %s", self.visit_id[:6], exc)
             self.kick()
         ad_side, ad_kind = decode_addressee(h.ad)
-        # 本侧的分片 / 整句 / 停嘴与对端的一样走有序显示队列：页面不会先收到整句、再收到过时的分片
+        # Local chunks / full lines / speech stops use the same ordered display queue as the peer, preventing full lines preceding stale chunks.
         self._post_display({
             "type": "visit_line_delta", "visit_id": self.visit_id, "line_id": h.ln, "i": piece.index,
             "lp": h.lp, "text": defang_markdown_media(piece.text),
@@ -510,7 +510,7 @@ class TalkMixin:
         truncated = bool(result.truncated)
         reason = result.trunc_reason
         if line.llm_error is not None and not truncated:
-            # 生成中途出错：已放出的前缀照常收口，但标成截断（不当成一句说完的话）
+            # Generation failed midstream: finalize the released prefix normally, marked truncated rather than a completed sentence.
             truncated, reason = True, "llm_error"
         payload = self._final_payload(h, result.text, truncated=truncated, reason=reason, tail_ms=result.tail_ms)
         try:
@@ -547,7 +547,7 @@ class TalkMixin:
             line.booking = asyncio.ensure_future(self.record_line(
                 "own_cat", side=self.side, lp=h.lp, ln=h.ln, text=payload["txt"], truncated=payload["truncated"]))
             line.booking.add_done_callback(lambda t: t.cancelled() or t.exception())
-            # 受保护：取消收这一行的任务传不到它（spool 写盘卡住时还在跑）。交给模块级登记，场次注销之后关机也收得到
+            # Shielded from line-task cancellation while spool writes continue. Register at module level so shutdown still finds it after deregistration.
             self._keep_background(line.booking)
         await asyncio.shield(line.booking)
 
@@ -590,7 +590,7 @@ class TalkMixin:
         if line.task is not None:
             await asyncio.wait([line.task], timeout=_LINE_CLOSE_WAIT_S)
 
-    # ── 记账与入史 ───────────────────────────────────────────────────
+    # -- Accounting and history --
 
     async def record_line(self, speaker: str, *, side: str, lp: int, ln: str, text: str, truncated: bool,
                           on_journaled: Optional[Callable[[], None]] = None) -> None:
@@ -602,10 +602,10 @@ class TalkMixin:
         ts = self.wall()
         clean = clamp_text_utf8(text)
         self._ln_by_key[(lp, side)] = ln
-        # 上传流水在前：它的内存记录一进来就算数，关机时 spool 写盘慢、封存先到也不会漏掉这一行
+        # Upload journal first: its in-memory entry counts immediately, so slow spool writes cannot lose this line when archival arrives first at shutdown.
         if self._journal_buffering():
-            # 上传头还没写完（磁盘慢）：先攒着，写完后按序补写，不让开头几句从转录里丢掉；
-            # 积压还没补完时新来的行也排在后面
+            # Upload header still pending on slow disk: buffer and backfill in order afterward so opening lines remain in the transcript;
+            # queue newly arriving lines behind any remaining backlog.
             self._journal_backlog.append(dict(kind="line", lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
                                               truncated=bool(truncated)))
             if self.journal.is_open:
@@ -617,7 +617,7 @@ class TalkMixin:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: upload record failed: %s", self.visit_id[:6], type(exc).__name__)
         elif self._journal_failed():
-            # 上传头写不成（这场没有上传流水）：至少记进内存转录，/state 重放与简述照常
+            # Upload header failed, leaving no journal: at least record in-memory transcript for /state replay and debrief.
             try:
                 self.journal.remember_line(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
                                            truncated=bool(truncated))
@@ -633,7 +633,7 @@ class TalkMixin:
                 await spool.append({"lp": lp, "side": side, "ts": ts, "from": speaker, "text": clean,
                                     "ln": ln, "truncated": bool(truncated)})
                 self.spool_lines += 1
-            except Exception as exc:  # noqa: BLE001 - 写不进 spool：这一句不进串门记忆
+            except Exception as exc:  # noqa: BLE001 - Cannot write spool: exclude this sentence from visit memory.
                 logger.warning("visit %s: spool append failed: %s", self.visit_id[:6], type(exc).__name__)
             finally:
                 self._spool_appending -= 1
@@ -683,14 +683,14 @@ class TalkMixin:
         text = payload["txt"]
         reason = payload.get("trunc_reason")
         if payload.get("truncated") and (reason is None or reason in SILENCING_TRUNC_REASONS):
-            # 已说出的入史、未说出的不入史：已放出前缀 + 「被打断」标记
+            # Record spoken text only: the released prefix plus an interrupted marker.
             text = f"{text}{get_visit_mark_interrupted(self.lang)}"
         if not text.strip():
             return
-        # 与对端句子入史一样另起任务排队等锁：不肯停的 LLM 还占着锁时，这一行的收尾不能跟着卡住
+        # Like peer-line history, use another task waiting for the lock so an uncooperative LLM holding it cannot block this line's finalization.
         self._history_add(line.header.ln, AIMessage(content=text), sort_key(line.header.lp, self.side))
 
-    # ── 亲人打字（host）──────────────────────────────────────────────
+    # -- Family typing (host) --
 
     async def on_stream_message(self, message: dict) -> bool:
         """``stream_data`` while the visit owns the input (§4.5)."""
@@ -700,36 +700,36 @@ class TalkMixin:
             await self._voice_unavailable()
             return True
         if input_type in ("user_image", "avatar_drop_image"):
-            # 串门输入框只发文字（不带附件）：这类图片都来自普通提交（重载未恢复时的附件、拖到头像的图片）。
-            # 吞掉不发给对端，但回带 request_id 的拒绝，页面据此把普通气泡标失败
+            # Visit input sends text only, without attachments; these images came from ordinary submissions (unrestored reload attachments / avatar drops).
+            # Swallow without forwarding, but reject with request_id so the page marks its ordinary bubble failed.
             await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
             return True
         if input_type != "text":
-            # 截图 / 摄像头帧一律吞掉
+            # Always swallow screenshots / camera frames.
             return True
         claimed_visit = message.get("visit_id")
         if isinstance(claimed_visit, str) and claimed_visit and claimed_visit != self.visit_id:
-            # 页面以为还在另一场（重连时漏了换场）：写给那一场客人的话不能发给这一场的客人
+            # Page still believes it is in another visit after missed reconnect switch: never send that guest's message to this guest.
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
         if self.side == "guest":
             await self.status("VISIT_INPUT_REFUSED_AWAY", request_id=request_id)
             return True
         if self.finalizing:
-            # 收尾中、接管还没释放：普通聊天此刻输出被压着，这句不能漏过去
+            # Finalizing while takeover remains held: ordinary chat output is suppressed; this line must not leak through.
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
         room = self.room
         if room is None or not self.activated or not self.ready_exchanged or self.phase in WAITING_PHASES:
-            # ready 入队之前发出的句子序号会排在 ready 前面，对端按未激活收下又丢掉
+            # Lines sent before ready is enqueued get earlier sequence numbers and are accepted then discarded by the inactive peer.
             await self.status("VISIT_INPUT_REFUSED_NOT_READY", request_id=request_id)
             return True
         if room.phase == "wrap_up":
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
         if not str(message.get("source") or "").startswith("neko_visit:"):
-            # 只有串门输入框发的句子算家里人的台词。拖到头像上的文件、历史拖放、重载后页面还没恢复串门态时的
-            # 普通提交都不是写给客人的：拒掉（带 request_id，页面放回原文），不发给对端
+            # Only visit-input submissions are family dialogue. Avatar file drops, history drops, and ordinary submissions before reload
+            # restores visit state are not addressed to the guest: reject with request_id for text restoration, never forward.
             await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
             return True
         if room.phase != "active":
@@ -745,7 +745,7 @@ class TalkMixin:
         ad = addressee_code(self.side, "cat") if to_own else addressee_code(self.peer_side, "cat")
         try:
             accepted = await self._send_human_line(text, ad, now, request_id=request_id, to_own=to_own)
-        except Exception as exc:  # noqa: BLE001 - 任一步失败：预留已释放，文字留在输入框
+        except Exception as exc:  # noqa: BLE001 - Any failure releases the reservation and leaves text in the input box.
             logger.warning("visit %s: family line not sent: %s", self.visit_id[:6], type(exc).__name__)
             accepted = None
         if accepted is None:
@@ -768,13 +768,13 @@ class TalkMixin:
             "final": True, "txt": text, "truncated": False, "i_done": 0,
         }, visit_id=self.visit_id)
         _pieces, nbytes = self.outbox.encoded_size(payload)
-        # 人类行会立即打断本侧在说的那一行，它的 text{final} 会先入队：一并预留，免得挤占这句的额度
+        # Human lines immediately interrupt local speech, queuing its text{final} first; reserve for both so it cannot consume this line's quota.
         reservation = self.outbox.reserve(nbytes + self._interrupted_final_bytes())
         if reservation is None:
             return None
         ref = LineRef(ln, lp, self.side)
         try:
-            # 接纳与限速记账同步做完：紧接着的另一条输入或阶段变化看得到这句
+            # Complete acceptance and rate-limit accounting synchronously so the next input / phase change sees this line.
             self.apply_effects(room.on_local_human_line(ref, now))
             self.own_line_lp[ln] = lp
         except BaseException:
@@ -805,48 +805,48 @@ class TalkMixin:
         async def commit() -> None:
             try:
                 try:
-                    # 先落盘再发送：最坏是本侧记了一句还没发出去的话（Servers 比对标单侧）。
-                    # 上传流水一记下就算「已落盘」：封存只需要它，不等后面的 spool 写盘
+                    # Persist before sending: at worst local history contains an unsent line, which Servers marks one-sided.
+                    # Upload-journal recording counts as persistence; archival needs only that, without waiting for spool disk writes.
                     await self.record_line("own_human", side=self.side, lp=lp, ln=ln, text=payload["txt"],
                                            truncated=bool(payload["truncated"]), on_journaled=journaled)
                 finally:
                     journaled()
                 if self.outbox.closed:
-                    # 落盘卡得比收尾还久：通道已关、泵已停，这句发不出去了（转录里已记下）
+                    # Persistence outlasted finalization: channel closed and pump stopped, so this sentence cannot be sent (already transcribed).
                     logger.warning("visit %s: family line recorded after the outbox closed; not sent",
                                    self.visit_id[:6])
                     return
                 self.outbox.send(payload, now=self.clock(), reservation=reservation)
             finally:
                 reservation.release()
-            # 发出去了，本侧的历史、上屏、镜像、回复也得跟上（调用方被取消也照样做）。这几步各自出错只记日志：
-            # 冒到处理函数会回 VISIT_E_BUSY，页面留着文字，再发一次对端就收到两遍
+            # Once sent, local history, display, mirror, and replies must follow even if the caller is cancelled. Log individual failures only:
+            # propagating them returns VISIT_E_BUSY, preserving input that would reach the peer twice on retry.
             self.last_text_at = self.clock()
             self.kick()
             self._after_send_step("history", lambda: self._add_own_human_history(ln, lp, payload["txt"]))
             self._after_send_step("display", shown)
             try:
-                # 不可撤回的放最后：进 sync_message_queue 之后收不回
-                # 镜像的是裁到线上长度之后的那句：与对端、转录、上屏、历史一致
+                # Put irreversible work last: sync_message_queue entries cannot be withdrawn.
+                # Mirror the wire-length-trimmed sentence, matching peer delivery, transcript, display, and history.
                 await self.host.mirror_user_input(payload["txt"], metadata=self._mirror_meta("visit_human"),
                                                   request_id=request_id)
-            except Exception as exc:  # noqa: BLE001 - 这句已发出，只记诊断
+            except Exception as exc:  # noqa: BLE001 - Already sent: diagnostics only.
                 logger.warning("visit %s: mirror_user_input failed: %s", self.visit_id[:6], type(exc).__name__)
             self._after_send_step("reply", reply)
 
-        # 接纳之后（改了 room、可能已记进转录）这一段不能半途而废：调用方被取消（关机等）也照样落盘、入队、
-        # 入史、上屏、排回复；预留一直持有到入队，关闭通道的 leave 照样排在它后面；封存之前限时等它落盘
+        # After acceptance changes the room and possibly transcript, this sequence must finish despite caller cancellation (shutdown etc.): persist, enqueue,
+        # record history, display, and schedule replies. Retain reservation through enqueue; channel-closing leave queues after it. Bound persistence wait before archival.
         committing = asyncio.ensure_future(commit())
-        # 处理函数被取消后它还在跑（spool 写盘、镜像）：交给模块级登记，场次注销之后关机也收得到（做完即移除）
+        # Still running spool writes/mirroring after handler cancellation: module-level registration lets shutdown find it after visit deregistration; remove on completion.
         self._keep_background(committing)
-        # 还没开始跑就被取消（事件循环收尾等）：「已落盘」照样完成（不让封存白等），预留照样释放（幂等）
+        # Cancelled before execution (loop shutdown etc.): still complete the persistence future and idempotently release reservation so archival does not wait needlessly.
         committing.add_done_callback(journaled)
         committing.add_done_callback(lambda _t: reservation.release())
         committing.add_done_callback(lambda t: t.cancelled() or t.exception())
         try:
             await asyncio.shield(committing)
         except asyncio.CancelledError:
-            # 调用方已走：之后出错没人接着记，在这里留一条日志
+            # Caller has left, so log later failures here because nobody else will.
             committing.add_done_callback(self._log_orphan_commit)
             raise
         return ref
@@ -854,7 +854,7 @@ class TalkMixin:
     def _after_send_step(self, label: str, step: Callable[[], None]) -> None:
         try:
             step()
-        except Exception as exc:  # noqa: BLE001 - 这句已发出，只记诊断
+        except Exception as exc:  # noqa: BLE001 - Already sent: diagnostics only.
             logger.warning("visit %s: family line %s failed after send: %s",
                            self.visit_id[:6], label, type(exc).__name__)
 
@@ -864,7 +864,7 @@ class TalkMixin:
             try:
                 await asyncio.wait_for(self._spool_idle.wait(), timeout)
             except asyncio.TimeoutError:
-                # 到点还没写完：不再等，按此刻已写进去的句数判断（没写完的那句不进这次的判断）
+                # Deadline reached before writes finish: stop waiting and decide from currently persisted sentence counts, excluding the unfinished line.
                 logger.info("visit %s: spool appends still pending; deciding without them", self.visit_id[:6])
 
     async def settle_family_records(self, timeout: float) -> None:
@@ -878,7 +878,7 @@ class TalkMixin:
             logger.warning("visit %s: family line not sent after its handler left: %s",
                            self.visit_id[:6], type(task.exception()).__name__)
 
-    # ── 回家仪式句 ───────────────────────────────────────────────────
+    # -- Homecoming ritual line --
 
     async def say_ritual(self, reason: str, *, input_stamp: float) -> None:
         """The home-coming line: generated for natural ends, a fixed line otherwise (never an LLM then)."""
@@ -888,13 +888,13 @@ class TalkMixin:
         natural = reason in NATURAL_REASONS or (reason == "peer_left" and self.peer_reason in ("home", "wrapup"))
         text: Optional[str] = None
         if natural:
-            # 不带这场的历史：回家这一句是对家人说的，对端的原话不能有机会被复述出来
+            # Omit visit history: this line addresses family and must never have an opportunity to repeat the peer's original words.
             text = await self.one_shot_turn(get_visit_back_home_notice(self.side, self.lang),
                                             timeout=VISIT_CEREMONY_TIMEOUT_S, without_history=True)
         if not text:
             text = get_visit_fixed_line("ended" if natural else fixed_line_kind(reason), self.lang)
         if self.host.last_user_input() > input_stamp:
-            # 亲人先开口：仪式句放弃（不出声、不上屏）
+            # Family spoke first: abandon the ritual line, without speech or display.
             if handoff is not None:
                 handoff.skip("ritual")
             return
@@ -915,7 +915,7 @@ class TalkMixin:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
-            # 拿锁也算进时限：收尾时没停下来的那一轮可能还占着锁
+            # Lock acquisition counts toward the deadline; an uncooperative finalizing turn may still hold it.
             await asyncio.wait_for(session.turn_lock.acquire(), timeout)
         except asyncio.TimeoutError:
             logger.info("visit %s: home-coming turn skipped: session still busy", self.visit_id[:6])
@@ -931,9 +931,9 @@ class TalkMixin:
                 session.history[:] = [m for m in saved if isinstance(m, SystemMessage)]
             session.set_sink(chunks.append)
             try:
-                # 与拿锁共用同一个期限：整轮不超过 timeout；不肯停的客户端也不会把退出流程卡住
+                # Share one deadline with lock acquisition, keeping the whole operation within timeout even for uncooperative clients.
                 await _stream_bounded(session, prompt, max(0.0, deadline - loop.time()))
-            except Exception as exc:  # noqa: BLE001 - 超时 / 失败：调用方用固定句
+            except Exception as exc:  # noqa: BLE001 - Timeout / failure: caller uses the fixed line.
                 logger.info("visit %s: home-coming turn failed: %s", self.visit_id[:6], type(exc).__name__)
                 return None
             finally:
@@ -961,21 +961,21 @@ class TalkMixin:
         stream = None
 
         def on_failed() -> None:
-            # 流在送出结束标记之前就停了（TTS 起不来 / 入队出错 / 轮次被接走）：这一段不会有播放进度，
-            # 交还不再等它；本场之后也不再开语音流（与 finish 当场收不下同样处理）
+            # Stream stopped before its end marker (TTS failed / enqueue error / turn takeover): no playback progress will exist,
+            # so handback stops waiting and no further voice streams open this visit, as with finish failure.
             self.voice.fallen_back = True
             if handoff is not None:
                 handoff.skip(name)
 
-        # 本场已回落到估时（TTS 起不来）就不再开新的语音流
+        # Once this visit uses estimated timing after TTS failure, open no further voice streams.
         if self.voice.tts_on and not silent:
             try:
                 stream = self.host.open_speech_stream(metadata=meta, request_id=request_id,
                                                       on_enqueued=lambda _n: None, on_failed=on_failed)
-            except Exception as exc:  # noqa: BLE001 - TTS 不可用：只上屏
+            except Exception as exc:  # noqa: BLE001 - TTS unavailable: display only.
                 logger.info("visit %s: home-coming speech unavailable: %s", self.visit_id[:6], type(exc).__name__)
             if stream is None:
-                # 语音流开不起来：这一段只上屏，本场之后也不再试（与 worker 收不下同样处理）
+                # Voice-stream startup failed: display this segment only and stop retrying for this visit, as when workers reject it.
                 self.voice.fallen_back = True
         if stream is not None and handoff is not None:
             handoff.attach_speech(name, stream.speech_id)
@@ -986,7 +986,7 @@ class TalkMixin:
                 if handoff is not None:
                     handoff.mark_queued(name, est)
             else:
-                # TTS 收不下（worker 已关）：这一段不会有播放进度，交还不等它；本场之后也不再开语音流
+                # TTS worker closed and cannot accept: no progress will arrive; handback stops waiting and no later voice streams open this visit.
                 self.voice.fallen_back = True
                 try:
                     stream.abort()
@@ -998,7 +998,7 @@ class TalkMixin:
             if silent:
                 handoff.skip(name)
             else:
-                # 只上屏（语音关、已回落、或这次开不起流）：交还按显示文字的估时等，不当成已播完
+                # Display only (voice disabled, fallback active, or startup failed): handback waits estimated display duration, never assumes playback completed.
                 handoff.mark_queued(name, est)
         try:
             await self.host.mirror_assistant_output(text, metadata=meta, request_id=request_id)
@@ -1021,10 +1021,10 @@ class TalkMixin:
         if closing is None:
             stray = getattr(self.session, "stray", None)
             if stray is not None and not stray.done():
-                # 不理取消、被撇下的那次生成：会话关了它也可能还在跑，交给模块级登记，关机时 stop_all 收得到
+                # Abandoned generation ignores cancellation and may outlive session close; module-level registration lets stop_all collect it on shutdown.
                 self._keep_background(stray)
             closing = self._session_closing = asyncio.ensure_future(close_visit_session(self.session))
-            closing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 失败只是少关一次，取走异常
+            closing.add_done_callback(lambda t: t.cancelled() or t.exception())  # Failure merely means one missed close; retrieve the exception.
             self._keep_background(closing)
         return closing
 
@@ -1038,9 +1038,9 @@ class TalkMixin:
         """
         if self.session is None:
             return
-        # 只关一次：正常收尾卡住后关机再来，等的是同一个关闭任务，不对同一 client 并发再关
+        # Close once: if normal finalization stalls then shutdown retries, await the same close task rather than closing one client concurrently.
         closing = self._close_session_in_background()
-        # 关闭任务一起就登记在后台：调用方被取消 / 到点都不影响它关完（stop_all 时一并收）
+        # Register close tasks in the background immediately; caller cancellation / timeout cannot prevent completion, and stop_all collects them.
         await asyncio.wait([closing], timeout=timeout)
         if not closing.done():
             logger.warning("visit %s: isolated session still closing; continuing", self.visit_id[:6])
@@ -1057,7 +1057,7 @@ async def _stream_bounded(session: Any, prompt: str, timeout: float) -> None:
     deadline, else whatever the stream raised.
     """
     gen = asyncio.ensure_future(session.client.stream_text(prompt))
-    gen.add_done_callback(lambda t: t.cancelled() or t.exception())  # 被撇下的那个结束时取走异常
+    gen.add_done_callback(lambda t: t.cancelled() or t.exception())  # Retrieve exceptions when abandoned generation finishes.
     try:
         done, _pending = await asyncio.wait([gen], timeout=timeout)
     except asyncio.CancelledError:
@@ -1066,7 +1066,7 @@ async def _stream_bounded(session: Any, prompt: str, timeout: float) -> None:
         await _settle_or_abandon(session, gen)
         raise
     if not done:
-        session.set_sink(None)  # 到点之后它再吐的字不进这一行
+        session.set_sink(None)  # Text emitted after the deadline cannot enter this line.
         gen.cancel()
         await _settle_or_abandon(session, gen)
         raise asyncio.TimeoutError
@@ -1081,7 +1081,7 @@ async def _settle_or_abandon(session: Any, gen: asyncio.Future) -> None:
     feed the next line, and two streams would share one client. When it
     finally stops, what it appended to the history is taken out again.
     """
-    # 先登记再等：这 _LLM_SETTLE_S 里调用方再被取消一次，它也已经记在会话上
+    # Register before waiting: another caller cancellation during _LLM_SETTLE_S still leaves it tracked on the session.
     session.stray = gen
     gen.add_done_callback(lambda _t: _purge_untracked(session))
     await asyncio.wait([gen], timeout=_LLM_SETTLE_S)

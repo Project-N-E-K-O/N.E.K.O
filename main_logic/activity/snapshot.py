@@ -740,12 +740,12 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
         for thread_text in snap.open_threads[:3]:
             lines.append(f'- {thread_text}')
 
-    # 口吻（+ 质量闸）渲染在状态块**最末**，紧贴下方「决策方式」段——state_section 整体
-    # 已挪到决策段上方（见 prompts_proactive 各 generate 模板），把口吻放块尾就让它直接
-    # 挨着决策规则；AI 决定「怎么说」时口吻就在眼前，不被中间的 reasons/scores/叙述/未收
-    # 尾话题冲淡。closed snapshot 已在函数开头返回空串，这里无需再判。tone bullets 是
-    # 角度参考非台词（菜单标签已说明，每轮结合实时上下文自造、勿照搬）；多数语气没有质量
-    # 闸（key 缺失即 no-op），只有 witty 带「没梗就 [PASS]」那行。
+    # Render tone (+ quality gate) last in the state block, immediately above decision rules. state_section
+    # moved above the decision section (see prompts_proactive generate templates); placing tone last makes it
+    # adjacent to those rules, visible when the AI decides how to speak, without dilution by reasons/scores/narration/
+    # unfinished topics. Closed snapshots already return an empty string at entry, so no extra check is needed.
+    # Tone bullets suggest angles, not fixed lines (as menu labels state): create fresh wording from live context, never copy.
+    # Most tones have no quality gate (missing key is a noop); only witty includes the no-joke -> [PASS] rule.
     tone_hints = ACTIVITY_TONE_HINTS.get(L, ACTIVITY_TONE_HINTS['en'])
     tone_variants = tone_hints.get(snap.tone)
     if isinstance(tone_variants, str):

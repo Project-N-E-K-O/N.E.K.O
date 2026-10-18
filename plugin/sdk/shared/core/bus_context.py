@@ -289,9 +289,9 @@ class SdkBusFrameRecord:
     frame_id: str | None = None
     type: str = "provider_frame"
     timestamp: float | None = None
-    # 和 timestamp 同值，两个名字都留着：``timestamp`` 是所有 bus record 共用的
-    # 排序字段，``captured_at`` 是 frames 自己的对外字段名（core 的 FrameRecord
-    # 有它，SDK 文档也写了它）。只折成 timestamp 的话，照文档写的插件会直接
+    # Keep both names with the same value: ``timestamp`` is the shared sorting field
+    # for all bus records, while ``captured_at`` is the public field for frames (present on core's FrameRecord
+    # and documented in the SDK). Collapsing it to timestamp alone would cause plugins written according to the docs to
     # AttributeError。
     captured_at: float | None = None
     source: str | None = None

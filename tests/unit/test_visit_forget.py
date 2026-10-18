@@ -144,7 +144,7 @@ async def test_two_cats_forgotten_and_remove_char_waits_for_all_forgets(tmp_path
 
     with pytest.raises(Upstream502):
         await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget, void_pending=_no_void, own_char="A")
-    # 第 3 个 forget 502：by_char['A'] 仍在、日志保留，上次摘要已在第一步删掉。
+    # The third forget returns 502: by_char['A'] remains and the log is retained, while the previous summary was removed in step one.
     entry = await roster.get_char_entry(PEER_X, "A")
     assert entry is not None and "last_summary" not in entry
     record = await log.load(rev_id)
@@ -154,7 +154,7 @@ async def test_two_cats_forgotten_and_remove_char_waits_for_all_forgets(tmp_path
         forget_step_id(s) for s in plan.subjects[:2]
     ]
 
-    # 重放补完后才删。
+    # Delete only after replay completes the operation.
     assert await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget, void_pending=_no_void, own_char="A")
     assert await roster.get_char_entry(PEER_X, "A") is None
     assert await log.load(rev_id) is None
@@ -163,7 +163,7 @@ async def test_two_cats_forgotten_and_remove_char_waits_for_all_forgets(tmp_path
     assert len(unique) == 4
     kinds = sorted(s["subject_kind"] for s in plan.subjects)
     assert kinds == ["group_chat", "group_participant", "group_participant", "participant"]
-    # 每次 forget 发生时名册条目都还在（remove_char 一定排在全部 forget 之后）。
+    # The roster entry is present every time forget runs (remove_char always happens after all forget operations).
     assert all(server.entry_present_at_each_call)
 
 
@@ -180,7 +180,7 @@ async def test_forget_under_one_character_keeps_the_other(tmp_path):
     assert peer is not None and set(peer["by_char"]) == {"B"}
     c_b = derive_peer_char_id(PEER_X, TAG_Y)
     assert all(c_b not in s["subject_id"] for s in server.calls)
-    # B 下的清除照样能执行。
+    # Forget under B should still execute normally.
     plan_b = await plan_forget_person(roster, PEER_X, "B", CHAR_UID_B)
     assert any(c_b in s["subject_id"] for s in plan_b.subjects)
     rev_b = await log.open_plan(plan_b)
@@ -214,7 +214,7 @@ async def test_reopen_merges_new_subjects_and_keeps_done_steps(tmp_path):
     done_before = (await log.load(rev_id))["done_steps"]
     assert forget_step_id(plan1.subjects[0]) in done_before
 
-    # 对方后来又带了另一只猫：第二次清除合并进同一份日志。
+    # The other person later brings another cat: the second forget is merged into the same log.
     _, c_y = await seed(roster, PEER_X, "A", TAG_Y)
     plan2 = await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
     assert await log.open_plan(plan2) == rev_id
@@ -243,7 +243,7 @@ async def test_reopen_rearms_local_steps_already_done(tmp_path):
     from main_logic.visit.subjects import group_participant_subject
 
     pair = derive_pair_id(OWN_A, PEER_X)
-    extra = group_participant_subject(pair, "c_" + "9" * 24)   # 对方新带来的一只猫
+    extra = group_participant_subject(pair, "c_" + "9" * 24)   # The other person brings a new cat
     await log.open(PEER_X, CHAR_UID_A, [pair], [extra])
     record = await log.load(rev_id)
     assert STEP_REMOVE_CHAR not in record["done_steps"]
@@ -320,7 +320,7 @@ async def test_schema_invalid_log_also_fails_closed(tmp_path):
 
 
 async def test_unconfirmed_forget_is_not_recorded_and_log_is_kept(tmp_path):
-    # ScopedMemoryClient.post_forget 失败时返回 False（不抛异常）：不能记完成
+    # ScopedMemoryClient.post_forget returns False on failure (does not raise): do not mark it complete
     from main_logic.visit.forget import ForgetStepFailed
 
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
@@ -344,7 +344,7 @@ async def test_unconfirmed_forget_is_not_recorded_and_log_is_kept(tmp_path):
 
 
 async def test_unreadable_log_fails_closed_instead_of_disappearing(tmp_path):
-    # 读不出的撤销日志不能被静默跳过：补录与建房闸都靠列表判断「有没有清除在进行」
+    # An unreadable revocation log must not be silently skipped: startup replay and the session-creation gate rely on the list to determine "whether a forget is in progress"
     from main_logic.visit.forget import RevocationLogUnreadable, revocation_id
 
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
@@ -370,7 +370,7 @@ async def test_unreadable_log_fails_closed_instead_of_disappearing(tmp_path):
     {"done_steps": ["clear_last_summary", "clear_last_summary"]},
 ])
 async def test_parseable_but_inconsistent_log_fails_closed(tmp_path, corrupt):
-    # steps:[] 之类的日志若被放行，重放会什么都不清就删掉日志
+    # If a log such as steps:[] is accepted, replay deletes the log without forgetting anything
     from main_logic.visit.forget import RevocationLogUnreadable
 
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
@@ -388,7 +388,7 @@ async def test_parseable_but_inconsistent_log_fails_closed(tmp_path, corrupt):
 
 
 async def test_forget_planning_refuses_an_unreadable_roster(tmp_path):
-    # 名册读不出来时不能当空表规划：那会只清人级主体、漏掉全部 pair 与对方猫娘
+    # If the roster cannot be read, do not plan as if it were empty: that would clear only the person-level subject and miss every pair and the other person's cat
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
@@ -399,8 +399,8 @@ async def test_forget_planning_refuses_an_unreadable_roster(tmp_path):
 
 
 async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path, monkeypatch):
-    # 已结清的场次常只剩 state.json：它一时读不出（被占用）时 wipe_spool 不能记完成。
-    # 内容损坏的那种谁都用不了，由清除直接删掉（见 test_visit_spool_recovery）
+    # Settled sessions often have only state.json left: if it is temporarily unreadable (locked), wipe_spool must not mark the operation complete.
+    # A corrupt file cannot be used by anyone; forget can delete it directly (see test_visit_spool_recovery)
     from main_logic.visit import spool as spool_module
     from main_logic.visit.spool import SpoolStateUnreadable
 
@@ -443,7 +443,7 @@ async def test_a_malformed_extra_pair_id_also_fails_closed(tmp_path):
 
 
 async def test_discovery_fails_closed_on_a_malformed_jsonl_header(tmp_path):
-    # 只剩 .jsonl 且头行坏了：不能当作「不是这一对」而让 wipe_spool 记完成
+    # Only .jsonl remains and its header is corrupt: do not treat it as "not this pair" and mark wipe_spool complete
     from main_logic.visit.spool import SpoolStateUnreadable
 
     spool_dir = tmp_path / "visit_spool"
@@ -493,17 +493,17 @@ async def _damaged_log(tmp_path, mutate):
 
 
 async def test_subject_with_an_extra_scope_field_fails_closed(tmp_path):
-    # 多出的 scope 会被原样转发给 /scoped_forget，换掉删除作用域
+    # An extra scope would be forwarded unchanged to /scoped_forget and change the deletion scope
     await _damaged_log(tmp_path, lambda r: r["subjects"][0].__setitem__("scope", "other"))
 
 
 async def test_unrelated_extra_pair_id_fails_closed(tmp_path):
-    # 多出的无关 pair 会让 wipe_spool 去抹别人的场次
+    # An unrelated extra pair would make wipe_spool erase someone else's session
     await _damaged_log(tmp_path, lambda r: r["pair_ids"].append("q" * 24))
 
 
 async def test_pairs_must_belong_to_the_logs_own_identities(tmp_path):
-    # 把 pair 在 pair_ids 与 subjects 两处一起换成别人的：自洽但不属于这条日志的人
+    # Replace the pair with someone else's in both pair_ids and subjects: internally consistent, but it does not belong to the person named in this log
     other = derive_pair_id(OWN_A, PEER_Y)
 
     def swap(record):
@@ -533,7 +533,7 @@ async def test_participant_must_be_the_logs_own_peer(tmp_path):
 
 
 async def test_subjects_must_stay_on_the_visit_platform(tmp_path):
-    # qq:<pair> 能通过 pair 校验，但会被 /scoped_forget 按平台前缀删掉 QQ 记忆
+    # qq:<pair> passes pair validation but /scoped_forget removes QQ memories based on the platform prefix
     def to_qq(record):
         for s in record["subjects"]:
             if s["subject_kind"] == "group_chat":
@@ -546,7 +546,7 @@ async def test_subjects_must_stay_on_the_visit_platform(tmp_path):
 
 
 async def test_a_plan_without_the_person_subject_fails_closed(tmp_path):
-    # subjects:[] / pair_ids:[] / steps:build_steps([]) 内部自洽，但重放只删名册不清记忆
+    # subjects:[] / pair_ids:[] / steps:build_steps([]) is internally consistent, but replay would remove only the roster entry and not forget the memory
     def empty(record):
         from main_logic.visit.forget import build_steps
         record["subjects"] = []
@@ -579,8 +579,8 @@ async def test_a_recorded_pair_without_participant_subjects_fails_closed(tmp_pat
 
 
 async def test_replay_restores_a_participant_subject_dropped_from_the_log(tmp_path):
-    # 同一 pair 有两只对方猫娘，日志丢了其中一只的 group_participant 仍能通过校验；
-    # 名册还在，重放前对账把它并回来，那份记忆照样被清
+    # Two cats from the other person share one pair; the log can still pass validation if one group_participant is missing;
+    # the roster is still available, and reconciliation before replay restores it, so that memory is also forgotten
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
     pair, c_x = await seed(roster, PEER_X, "A", TAG_X)
     _, c_y = await seed(roster, PEER_X, "A", TAG_Y)
@@ -593,18 +593,18 @@ async def test_replay_restores_a_participant_subject_dropped_from_the_log(tmp_pa
     from main_logic.visit.forget import build_steps
     record["steps"] = build_steps(record["subjects"])
     path.write_text(json.dumps(record), encoding="utf-8")
-    assert await log.load(rev_id) is not None          # 单看日志是自洽的
+    assert await log.load(rev_id) is not None          # The log is internally consistent on its own
 
     server = FakeMemoryServer(roster, PEER_X, "A")
     assert await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget, void_pending=_no_void, own_char="A") is True
     assert dropped in server.calls
-    # remove_char 仍在所有 forget 之后：每次 forget 时名册条目都还在
+    # remove_char still follows every forget operation: the roster entry exists during each forget
     assert all(server.entry_present_at_each_call)
     assert await roster.get_char_entry(PEER_X, "A") is None
 
 
 async def test_an_inconsistent_plan_is_refused_before_it_is_written(tmp_path):
-    # 写进去就读不出的日志不能落盘：既执行不了，又会让全局读取 fail closed
+    # A log that cannot be read after writing must not be persisted: it cannot be executed and would make global reads fail closed
     log = RevocationLog(tmp_path, own_uid=OWN_A)
     foreign = derive_pair_id(OWN_B, PEER_X)
     pid = derive_person_id(OWN_A, PEER_X)
@@ -640,7 +640,7 @@ async def test_an_inconsistent_merge_leaves_the_existing_log_untouched(tmp_path)
     lambda pair: {"subject_kind": "group_chat", "subject_id": "neko_visit::"},
 ], ids=["kind", "kind-own-pair", "empty", "blank-speaker", "unescaped", "chat-empty"])
 async def test_noncanonical_subjects_are_refused_before_persistence(tmp_path, make_bogus):
-    # memory_server 对未知 kind / 空分量 / 非规范转义每次都 422：这样的日志落盘就永远关不掉
+    # memory_server returns 422 every time for unknown kind / empty component / non-canonical escaping; persisting such a log would leave the gate closed forever
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
     pair, _ = await seed(roster, PEER_X, "A", TAG_X)
     plan = await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
@@ -652,7 +652,7 @@ async def test_noncanonical_subjects_are_refused_before_persistence(tmp_path, ma
 
 
 async def test_void_pending_is_a_required_step_callback(tmp_path):
-    # 缺省回调不能让 void_pending 静默记完成、日志被删
+    # A missing callback must not let void_pending silently mark completion and delete the log
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
     await seed(roster, PEER_X, "A", TAG_X)
     log = RevocationLog(tmp_path, own_uid=OWN_A)
@@ -678,7 +678,7 @@ async def test_close_refuses_a_log_with_pending_steps(tmp_path):
 
 
 async def test_mark_done_refuses_out_of_order_steps(tmp_path):
-    # 乱序记完成会写出非前缀 done_steps，之后整份日志都读不出来
+    # Marking completion out of order writes non-prefix done_steps, making the whole log unreadable afterward
     from main_logic.visit.forget import STEP_WIPE_SPOOL as _WIPE
 
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
@@ -689,14 +689,14 @@ async def test_mark_done_refuses_out_of_order_steps(tmp_path):
     with pytest.raises(ValueError):
         await log.mark_done(rev_id, _WIPE)
     await log.mark_done(rev_id, plan.steps[0])
-    await log.mark_done(rev_id, plan.steps[0])          # 已完成的重复记录：幂等
+    await log.mark_done(rev_id, plan.steps[0])          # Duplicate record that is already complete: idempotent
     record = await log.load(rev_id)
     assert record["done_steps"] == [plan.steps[0]]
     assert await log.list_open() != []
 
 
 async def test_forget_planning_reads_the_roster_once(tmp_path, monkeypatch):
-    # 两次读之间的 upsert 会让 subjects 与 pair_ids 来自不同快照：规划只能读一次
+    # An upsert between two reads could make subjects and pair_ids come from different snapshots; planning must read only once
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
     await seed(roster, PEER_X, "A", TAG_X)
     reads = {"n": 0}
@@ -714,7 +714,7 @@ async def test_forget_planning_reads_the_roster_once(tmp_path, monkeypatch):
 
 
 async def test_replay_after_a_rename_uses_the_current_name(tmp_path):
-    # 清除中途失败、重放前角色改了名：按旧名找不到条目却「成功」关日志，摘要原文留下
+    # Forget failed midway and the character was renamed before replay: the old name no longer finds the entry, yet the log would be marked complete while the summary remains unchanged
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
     pair, _ = await seed(roster, PEER_X, "A", TAG_X)
     await roster.set_last_summary(PEER_X, "A", visit_id="V" * 22, ended_at=1.0,
@@ -737,7 +737,7 @@ async def test_replay_after_a_rename_uses_the_current_name(tmp_path):
 
 @pytest.mark.parametrize("body", ["[" * 5000, None], ids=["deep", "version"])
 async def test_deep_or_wrong_version_logs_fail_closed(tmp_path, body):
-    # 深层嵌套 / 版本不对的日志：与其他读不出的日志一样抛 RevocationLogUnreadable，不重放
+    # A deeply nested log or wrong version raises RevocationLogUnreadable like any other unreadable log; do not replay it
     from main_logic.visit.forget import RevocationLogUnreadable
 
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
@@ -767,7 +767,7 @@ async def test_deep_or_wrong_version_logs_fail_closed(tmp_path, body):
         await RevocationLog.list_all_open(tmp_path)
 
 
-# ── 清除代数与清除意图哨兵（PR-08）────────────────────────────────────
+# ── Forget generations and forget-intent sentinels (PR-08) ───────────────────
 
 
 async def test_forget_epoch_is_bumped_and_persisted_before_each_scoped_forget(tmp_path):
@@ -814,7 +814,7 @@ async def test_clearing_sentinels_roundtrip_and_fail_closed(tmp_path):
     assert {d["op_id"] for d in listed} == {person["op_id"], chars["op_id"]}
     assert sentinel_covers(person, CHAR_UID_A, PEER_X) and not sentinel_covers(person, CHAR_UID_A, PEER_Y)
     assert sentinel_covers(chars, CHAR_UID_B, PEER_Y) and not sentinel_covers(person, CHAR_UID_B)
-    # 撤销日志的列表不把哨兵当日志
+    # The revocation-log listing does not treat sentinels as logs
     assert await RevocationLog.list_all_open(tmp_path) == []
     removed = await store.remove(person["op_id"])
     removed_again = await store.remove(person["op_id"])
@@ -835,16 +835,16 @@ async def test_forget_after_a_local_epoch_reset_goes_above_the_server_fence(tmp_
     roster_subjects = await PeerRoster(tmp_path, own_uid=OWN_A).expand_subjects(PEER_X, "A")
     person = next(s for s in roster_subjects if s["subject_kind"] == "participant")
     server = FakeMemoryServer()
-    server.tombstones = {subject_key(person): 5}         # 本地代数被重置，服务端墓碑还在 5
+    server.tombstones = {subject_key(person): 5}         # Local generation was reset, but the server tombstone remains at 5
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=server.client())
     assert outcome.done
     sent = [body for body in server.calls("scoped_forget") if body["subject"]["subject_kind"] == "participant"]
-    # 先抬到服务端围栏再加 1：发出的代数高于已有墓碑，不会被当成已擦过的重放跳过
+    # Advance to the server fence before incrementing: the emitted generation is greater than the existing tombstone and will not be skipped as an already-erased replay
     assert sent and sent[0]["forget_epoch"] == 6
 
 
-# ── 作废步骤：读不出 / 不合 schema 的 state 与抹身份查找同一口径（PR #3293 评审）──
+# ── Invalidation steps: unreadable / schema-invalid state follows the same policy as identity lookup and erasure (PR #3293 review) ──
 
 
 def _void_record(pairs) -> dict:
@@ -871,7 +871,7 @@ async def _visit(tmp_path, n: int, *, own_uid=OWN_A, own_char_uid=CHAR_UID_A, pe
 
 def _make_schema_invalid(sp: VisitSpool, **changes) -> None:
     raw = json.loads(sp.state_path.read_text(encoding="utf-8"))
-    raw["field_from_a_newer_version"] = 1                       # 能解析、只是不合当前 schema
+    raw["field_from_a_newer_version"] = 1                       # Parseable, but not valid under the current schema
     raw.update(changes)
     sp.state_path.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -894,7 +894,7 @@ async def test_void_skips_a_locked_state_whose_header_belongs_to_another_charact
 
     other = await _visit(tmp_path, 1, own_char_uid=CHAR_UID_B, header=True)
     _lock_state(monkeypatch, other)
-    # 别的角色的一场 state 长期读不出（被杀毒软件占用）：头行明确属于别人，不挡这次清除
+    # A state file for another character has been unreadable for a long time (held by antivirus): the header clearly belongs to someone else, so do not block this forget
     await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
 
 
@@ -910,8 +910,8 @@ async def test_void_stays_pending_on_a_locked_state_it_cannot_attribute(tmp_path
 
 
 @pytest.mark.parametrize("changes", [
-    {},                                                          # 仍指认这一对
-    {"pair_id": None, "peer_uid": None, "peer_char_id": None},   # 身份已被抹掉
+    {},                                                          # Still identifies this pair
+    {"pair_id": None, "peer_uid": None, "peer_char_id": None},   # Identity has been erased
 ], ids=["names-pair", "wiped"])
 async def test_void_stays_pending_on_a_schema_invalid_state_that_may_be_this_persons(tmp_path, changes):
     from main_logic.visit.forget_runner import default_void_pending
@@ -920,8 +920,8 @@ async def test_void_stays_pending_on_a_schema_invalid_state_that_may_be_this_per
     mine = await _visit(tmp_path, 3)
     _make_schema_invalid(mine, **changes)
     before = mine.state_path.read_bytes()
-    # 降级后读到新版本写的 state、debrief 还没写：不能当坏文件跳过（升级回去后仍能「记成日记」），
-    # 作废不了就先不结清这份日志
+    # After downgrade, a state written by a newer version is readable but debrief has not been written yet: do not skip it as corrupt (the user could still "save as diary" after upgrading again);
+    # if it cannot be invalidated, do not settle this log yet
     with pytest.raises(SpoolStateUnreadable):
         await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
     assert mine.state_path.read_bytes() == before
@@ -931,7 +931,7 @@ async def test_void_stays_pending_on_a_schema_invalid_state_that_may_be_this_per
     ({"own_char_uid": CHAR_UID_B}, {}),
     ({"own_uid": OWN_B}, {}),
     ({"peer": PEER_Y}, {}),
-    ({}, {"debrief_choice": "forget"}),                         # 已有最终结果：没什么可作废
+    ({}, {"debrief_choice": "forget"}),                         # Final result already exists: nothing to invalidate
 ], ids=["other-char", "other-account", "other-pair", "final-choice"])
 async def test_void_skips_a_schema_invalid_state_that_is_clearly_not_voidable(tmp_path, kw, changes):
     from main_logic.visit.forget_runner import default_void_pending
@@ -945,7 +945,7 @@ async def test_void_skips_a_corrupt_state(tmp_path):
     from main_logic.visit.forget_runner import default_void_pending
 
     sp = await _visit(tmp_path, 5)
-    sp.state_path.write_text("[1, 2]", encoding="utf-8")         # 能解析但不是对象：谁都用不了
+    sp.state_path.write_text("[1, 2]", encoding="utf-8")         # Parseable but not an object: unusable by anyone
     await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
 
 
@@ -959,7 +959,7 @@ async def test_void_finishes_readable_visits_before_reporting_an_unreadable_one(
     with pytest.raises(SpoolStateUnreadable) as ei:
         await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
     assert ei.value.visit_ids == [locked.visit_id]
-    # 读得出的场次照常作废，不因为排在后面而等到下一次重放
+    # Invalidate readable sessions normally; do not defer them to the next replay just because they appear later
     assert (await readable.read_state())["debrief_choice"] == "forget"
 
 
@@ -973,17 +973,17 @@ async def test_replay_goes_on_past_an_unreadable_revocation_log(tmp_path):
     rev_id = await open_person_log(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                    peer_uid=PEER_X)
     broken = tmp_path / "visit_revocations" / ("f" * 32 + ".json")
-    broken.write_text("{torn", encoding="utf-8")                    # 别的一对的日志坏了
+    broken.write_text("{torn", encoding="utf-8")                    # Another pair's log is corrupt
     server = FakeMemoryServer()
     clean = await replay_forgets(tmp_path, resolve_char_name=resolver(), client=server.client())
-    # 坏的那份留着、记为未完成；读得出的日志照常重放完，不能被它一起卡住
+    # Keep the corrupt file and mark it incomplete; replay readable logs normally without letting the corrupt one block them
     assert clean is False and broken.exists()
     assert not (tmp_path / "visit_revocations" / f"{rev_id}.json").exists()
     assert server.calls("scoped_forget")
 
 
 async def test_quarantine_rereads_under_the_file_lock_and_spares_a_record_fixed_meanwhile(tmp_path):
-    # 与写入同一把文件锁：列目录时读不出、拿到锁时已被写好的记录不能被挪走
+    # Use the same file lock as writes: an entry that was unreadable during directory listing but successfully written by the time the lock is acquired must not be moved
     import asyncio
     import threading
 
@@ -1018,7 +1018,7 @@ async def test_quarantine_rereads_under_the_file_lock_and_spares_a_record_fixed_
 
 
 async def test_quarantine_rereads_once_after_a_transient_os_error(tmp_path, monkeypatch):
-    # 一次偶发读错（被占用 / EIO）不能把读得出的日志连同清除一起放弃；持续读不出的照常隔离
+    # A single transient read error (lock contention / EIO) must not cause readable logs and forget operations to be abandoned; quarantine entries that remain unreadable
     from main_logic.visit.forget import ClearingSentinels, quarantine_unreadable_records
 
     monkeypatch.setattr("main_logic.visit.forget._QUARANTINE_REREAD_DELAY_S", 0)

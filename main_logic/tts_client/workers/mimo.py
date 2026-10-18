@@ -215,12 +215,12 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="MiMo TTS")
 
 # ── MiMo（hosted SaaS）────────────────────────────────────────────────────────
-# 两种选中机制（设计文档 §3.1）合并在一个 provider 条目里：
-#   1. 配置选中（preset）——assistApi=mimo / TTS_PROVIDER=mimo 时把 MiMo 当默认 TTS，
-#      走预制音色目录。
-#   2. 音色元数据选中（custom voice）——用户挑了某个 MiMo Clone 或 Voice Design 音色
-#      （voice_meta.provider=='mimo'）。Clone 没有远端 voice_id：参考音频存在本地，dispatch
-#      时读出来内联进 voiceclone 请求；Design 保存描述并在下方优先走 voicedesign 模型。
+# Combine two selection mechanisms in one provider entry (design section 3.1):
+#   1. Config selection (preset): assistApi=mimo / TTS_PROVIDER=mimo selects MiMo as default TTS,
+#      using the preset voice catalog.
+#   2. Voice-metadata selection (custom voice): the user selects a MiMo Clone or Voice Design voice
+#      with voice_meta.provider=='mimo'. Clone has no remote voice_id; reference audio is local and read during dispatch
+#      for inline voiceclone requests. Design stores a description and preferentially uses the voicedesign model below.
 
 def _mimo_voice_meta_is_custom_voice(vm) -> bool:
     return bool(vm and vm.get('provider') == 'mimo')
@@ -237,8 +237,8 @@ def _mimo_is_selected(ctx) -> bool:
     assist_api_type = str(cc.get('assistApi') or '').strip().lower()
     if tts_provider == 'mimo' or assist_api_type == 'mimo':
         return not _mimo_has_foreign_custom_voice(ctx)
-    # 自定义音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
-    # provider 时不会触发 voice_meta 加载）。
+    # Custom-voice selection routes by the selected voice's voice_meta.provider, lazily avoiding voice_meta loading
+    # when an earlier config-selected provider matches.
     return _mimo_voice_meta_is_custom_voice(ctx.voice_meta)
 
 def _mimo_resolve(ctx):
@@ -250,13 +250,13 @@ def _mimo_resolve(ctx):
         return dummy_tts_worker, None, None
 
     assist_api_type = str(cc.get('assistApi') or '').strip().lower()
-    # 配置端点：assistApi=mimo 时（Token Plan 的唯一场景）get_core_config 已把 OPENROUTER_URL
-    # 解析成对应端点（普通 / token-plan-*），且 get_tts_api_key('mimo') 返回配套 key——必须用
-    # 它，保证 key 与端点同源；否则用默认 xiaomimimo。
+    # Configured endpoint: with assistApi=mimo, the only Token Plan case, get_core_config resolves OPENROUTER_URL
+    # to the corresponding ordinary/token-plan-* endpoint and get_tts_api_key('mimo') returns the paired key. Use
+    # that key to keep credentials and endpoint aligned; otherwise use default xiaomimimo.
     config_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
 
-    # 自定义音色优先：用户挑了具体的 MiMo Clone 或 Design 音色时，即使同时把 MiMo 配成默认
-    # TTS 也应尊重这个更具体的选择；Design 走描述驱动模型，Clone 内联参考音频。
+    # Custom voices take precedence: respect the more specific MiMo Clone/Design selection even when MiMo is also
+    # default TTS. Design uses its description-driven model; Clone inlines reference audio.
     vm = ctx.voice_meta
     if vm and vm.get('provider') == 'mimo' and vm.get('source') == 'design':
         design_prompt = str(vm.get('design_prompt') or '').strip()
@@ -277,8 +277,8 @@ def _mimo_resolve(ctx):
             logger.warning(
                 "MiMo 克隆音色 %s 缺少参考音频样本，改用 dummy TTS worker", ctx.voice_id)
             return dummy_tts_worker, None, None
-        # base_url：assistApi=mimo 用配置端点（token-plan 同源）；否则用 voice_meta 里存的
-        # mimo_base_url（对偶 minimax_base_url），缺省回落默认。
+        # base_url: assistApi=mimo uses the configured endpoint, aligned with token-plan credentials; otherwise use
+        # voice_meta's mimo_base_url, symmetric with minimax_base_url, falling back to default when absent.
         clone_base_url = config_base_url or (vm or {}).get('mimo_base_url') or None
         return (
             partial(mimo_tts_worker, base_url=clone_base_url, clone_voice=clone_voice),
@@ -286,7 +286,7 @@ def _mimo_resolve(ctx):
             'mimo',
         )
 
-    # 配置选中：MiMo 作为默认 TTS，走预制音色目录。
+    # Config selection: default MiMo TTS uses the preset voice catalog.
     return partial(mimo_tts_worker, base_url=config_base_url), mimo_api_key, 'mimo'
 
 def _build_mimo_clone_data_uri(voice_meta) -> str | None:

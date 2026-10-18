@@ -116,7 +116,7 @@ def test_locales_have_the_same_visit_settings_keys():
         assert isinstance(data["visit"]["stream"]["ttsFallback"], str), lang
     assert all(keys == key_sets["zh-CN"] for keys in key_sets.values()), key_sets
     assert REQUIRED_KEYS <= key_sets["zh-CN"]
-    # 「本地静音但保留 RMS」开关已删除（OD-15 v3）
+    # The 'mute locally but retain RMS' switch was removed (OD-15 v3)
     assert not any(re.search(r"mute|silent|silence", k, re.I) for k in key_sets["zh-CN"])
 
 
@@ -236,10 +236,10 @@ def test_release_switch_probe_and_first_enable_persona_prompt():
     assert out["url"] == "/api/visit/state?catgirl=%E5%B0%8F%E5%85%AB"
     assert out["csrf"] == "tok"
     assert out["opened_on_disable"] == 0
-    # 只在首次打开时弹一次，且要求确认
+    # Prompt only on the first opening and require confirmation
     assert out["opened"] == [["小八", {"requireConfirm": True}]]
     assert out["crop_default"] == "upper" and out["crop_after"] == "full"
-    # 后端重启后缓存的 CSRF token 失效：刷新一次再探，不把 403 当成总闸关（Codex P2）
+    # A backend restart invalidates cached CSRF tokens: refresh once and retry instead of treating 403 as the master switch being off (Codex P2)
     assert out["stale_display"] == ["", ""]
     assert out["stale_refreshed"] == 1 and out["stale_fetches"] == 2
     assert out["flip_first"] == ["", ""] and out["flip_second"] == ["none", "none"]

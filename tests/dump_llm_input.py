@@ -14,7 +14,7 @@ Usage:
     python tests/dump_llm_input.py --character 蓝蓝 --user-message "你好呀"
     python tests/dump_llm_input.py --lang en
     python tests/dump_llm_input.py --output prompt_dump.json
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import argparse

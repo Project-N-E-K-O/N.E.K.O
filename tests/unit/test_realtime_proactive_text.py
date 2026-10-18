@@ -182,16 +182,16 @@ async def test_description_mode_proactive_still_sends_its_image_with_a_lead_in()
     event_types = [event.get("type") for event in events]
     input_texts = _input_texts(events)
     assert delivered is True
-    # 图真的送出去了，而且排在文字之前。
+    # Image was actually sent, before text.
     assert event_types.index("input_image_buffer.append") < event_types.index(
         "conversation.item.create"
     )
-    # 补了一句引导，明示这不是用户说的话。
+    # Added guidance explicitly says this was not spoken by the user.
     assert any("上面这张图是此刻的屏幕画面。" in text for text in input_texts)
     assert any("describe what you notice" in text for text in input_texts)
     client._analyze_image_with_vision_model.assert_not_awaited()
-    # 原始图走 WebSocket 事件，拒绝可能晚于写成功才到——必须留下关联句柄，
-    # 否则 _on_visual_rejected() 找不到人，快照不会被重新武装。
+    # Raw images travel through WebSocket events; rejection may arrive after successful writing. Preserve the correlation handle,
+    # or _on_visual_rejected() finds no owner and cannot rearm the snapshot.
     image_event = next(
         event
         for event in events
@@ -230,9 +230,9 @@ async def test_description_mode_rejected_cue_image_keeps_the_snapshot_armed():
     delivered = await client.prompt_ephemeral("describe what you notice")
 
     assert delivered is False
-    # 图从没到过 provider：快照必须还武装着，下一次主动搭话重试。
+    # Image never reached the provider: snapshot must remain armed for the next proactive attempt.
     assert client._proactive_image_consumed is False
-    # 也不能退化成纯文本把这一轮讲掉。
+    # Nor may this turn degrade to text-only delivery.
     assert not _sent_events(client)
     await client.close()
 
@@ -256,9 +256,9 @@ async def test_description_mode_stops_when_the_cue_image_is_rejected_early():
 
     async def _reject_right_after_send(image_b64, **kwargs):
         result = await real_stream_image(image_b64, **kwargs)
-        # 前提自证：拒绝必须发生在图**真的写出去之后**。少了这一步，一个在发送
-        # 前就返回 accepted=False 的实现同样能让本用例通过——那时文字也没发，
-        # 断言全绿却什么都没测到。
+        # Prove the precondition: rejection must occur after the image was actually written. Otherwise an implementation
+        # returning accepted=False before sending would also pass, despite sending no text,
+        # making all assertions green without exercising the behavior.
         sent_image_event_ids.extend(
             event["event_id"]
             for event in _sent_events(client)
@@ -279,9 +279,9 @@ async def test_description_mode_stops_when_the_cue_image_is_rejected_early():
 
     assert delivered is False
     assert sent_image_event_ids, "夹具没走到发送那一步"
-    # 被拒的那张图不算数：快照必须还武装着，下一次主动搭话重试。
+    # Rejected image does not count: snapshot stays armed for the next proactive attempt.
     assert client._proactive_image_consumed is False
-    # 图发出去了，但拒绝已经到达——不能再投这一轮的文字。
+    # Image sent but rejection already arrived: do not deliver this turn's text.
     input_texts = _input_texts(_sent_events(client))
     assert not any("describe what you notice" in text for text in input_texts)
     await client.close()
@@ -305,7 +305,7 @@ async def test_description_mode_snapshot_is_consumed_when_activity_wins_the_race
     client._proactive_image_consumed = False
     client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
 
-    # 活动只在图送出去**之后**才抢跑：让复查恰好落在那道窗口里。
+    # Activity races ahead only after image delivery: make the recheck land precisely in that window.
     def user_turn_active() -> bool:
         return any(
             event.get("type") == "input_image_buffer.append"
@@ -1141,11 +1141,11 @@ async def test_external_voice_turn_interrupts_before_it_claims_the_new_turn(
         session,
         token,
         context,
-        # 生产代码写的是 5 元组（末位是 inject 当时的 tool scope）。少写这一位，
-        # scope_still_ours() 会因为 owner_scope is None 无条件返回 True——闸门被
-        # 短路，这条用例就变成"碰巧过"而不是真的走了那道判据。（实测过：只把这
-        # 一位删掉，本用例仍然通过，因为抓住顺序错误的是下面的事件顺序断言；写
-        # 满是为了让被测的闸门真的被求值。）
+        # Production writes a five-tuple (last element: tool scope at injection). Omitting it makes
+        # scope_still_ours() return True unconditionally because owner_scope=None, short-circuiting the gate
+        # and letting this test pass accidentally rather than evaluate that predicate. Observed: deleting only
+        # this element still passes because event-order assertions below catch the ordering bug. Supply
+        # the full tuple so the tested gate actually evaluates.
         client._tool_scope_generation,
     )
     monkeypatch.setattr(

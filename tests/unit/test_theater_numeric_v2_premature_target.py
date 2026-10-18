@@ -1,4 +1,4 @@
-"""普通回合不得把目标幕开场或桥接独有的时点演成现在时（问题2.141 B3）。"""  # noqa: DOCSTRING_CJK
+"""Normal turns must not enact the target act's opening or bridge-exclusive times as the present (issue 2.141 B3)."""  # noqa: DOCSTRING_CJK
 
 from types import SimpleNamespace
 
@@ -53,7 +53,7 @@ def test_next_scene_time_marker_in_narration_is_flagged():
 
 
 def test_source_scene_own_time_marker_is_allowed():
-    # 19:12/19:50 属于当前幕作者事实，不能因为出现在下一幕文本里就被判提前演出。
+    # 19:12/19:50 are author facts for the current act; appearing in next-act text does not make them premature enactment.
     leaked = premature_target_markers(
         _engine(), _session(), _outcome(),
         {"scene_narration": "她说19:12会把眼前的回应写进日志，预热19:50完成。"},
@@ -62,7 +62,7 @@ def test_source_scene_own_time_marker_is_allowed():
 
 
 def test_player_input_and_dialogue_may_reference_the_exit():
-    # 时点由玩家自己说出，或只出现在对白里提出邀请，都不算旁白提前交付。
+    # A time mentioned by the player, or only in a spoken invitation, does not count as premature narration delivery.
     leaked = premature_target_markers(
         _engine(), _session(), _outcome(),
         {"performance": "（看向控制台）19:47我们再出发。"},
@@ -72,7 +72,7 @@ def test_player_input_and_dialogue_may_reference_the_exit():
 
 
 def test_transition_turns_may_deliver_the_target_opening():
-    # 正式转场本来就要交付目标幕开场，逐段旁白必须放行。
+    # Formal transitions must deliver the target act's opening, so allow its narration segments.
     leaked = premature_target_markers(
         _engine(), _session(), _outcome(source="source", target="target"),
         {"segments": [{"phase": "target_opening", "scene_narration": TARGET_OPENING}]},
@@ -97,7 +97,7 @@ def test_exact_target_opening_fact_in_narration_is_flagged():
 
 
 def test_exact_target_opening_fact_in_dialogue_is_allowed():
-    # 对白可以提出将来要去目标幕，只有可见旁白才证明目标事实已经发生。
+    # Dialogue may propose visiting the target act later; only visible narration proves the target facts have occurred.
     leaked = premature_target_scene_facts(
         _engine(), _session(), _outcome(),
         {"performance": "信标预热还剩三分钟，隔壁控制台突然报警。"},
@@ -127,7 +127,7 @@ def test_transition_bridge_cannot_copy_target_opening_clause():
         target_opening="视野豁然开朗，小葵快步走向平台边缘。晚霞铺满山谷。",
         bridge_text="沿着石阶向上，视野豁然开朗，小葵快步走向平台边缘。",
     )
-    # 过短的常见短句不作为结构证据；更具体的目标动作仍会命中。
+    # Very short common phrases are not structural evidence; more specific target actions still match.
     assert leaked == ("小葵快步走向平台边缘",)
 
 

@@ -31,9 +31,9 @@ async def test_previous_turn_seal_in_the_same_tick_is_not_this_turn_cutoff() -> 
     runtime._begin_core_multimodal_turn(turn_id, token)
     record = runtime._core_multimodal_turns[turn_id]
 
-    # 上一轮的封口副本，时刻与本轮 record 的注册时刻**相等**（同一个 tick），
-    # 但身份是上一轮的。live 字段是空的——PROVIDER_FINAL 已经把它清掉了，这正是
-    # 保留副本存在的原因。
+    # The previous round's closure copy has a timestamp equal to this record's registration (same tick),
+    # but belongs to the previous round. The live field is empty because PROVIDER_FINAL cleared it:
+    # exactly why the retained copy exists.
     runtime._asr_turn_endpointed_at = None
     runtime._asr_last_turn_endpointed_at = record.registered_at
     runtime._asr_last_turn_endpointed_key = "asr-0-96"
@@ -45,7 +45,7 @@ async def test_previous_turn_seal_in_the_same_tick_is_not_this_turn_cutoff() -> 
         request_id="screen-opening",
         captured_at=record.started_at,
     )
-    # 发声中段拍的帧——如果上一轮的封口被误绑成本轮截止点，它会被 accepts() 拒掉。
+    # Frame captured mid-utterance: accepts() rejects it if the previous closure incorrectly becomes this round's cutoff.
     assert runtime._stage_independent_visual_frame(
         "middle-frame",
         source="screen",
@@ -83,7 +83,7 @@ async def test_this_turn_seal_in_the_same_tick_is_still_its_cutoff() -> None:
     runtime._begin_core_multimodal_turn(turn_id, token)
     record = runtime._core_multimodal_turns[turn_id]
 
-    # 本轮自己的封口，恰好与注册落在同一个 tick 上。
+    # This round's own closure occurs on the same tick as registration.
     runtime._asr_turn_endpointed_at = None
     runtime._asr_last_turn_endpointed_at = record.registered_at
     runtime._asr_last_turn_endpointed_key = record.turn_id
@@ -141,10 +141,10 @@ async def test_pending_turn_does_not_inherit_the_previous_turn_endpoint() -> Non
 
     previous_onset = time.monotonic() - 2.0
     previous_seal = previous_onset + 1.0
-    runtime._asr_turn_onset_at = previous_onset          # 上一轮遗留，没人清
-    runtime._asr_turn_endpointed_at = None               # PROVIDER_FINAL 已清
-    runtime._asr_last_turn_endpointed_at = previous_seal  # 永不清
-    # pending turn 在上一轮排空期间被标记，之后才激活。
+    runtime._asr_turn_onset_at = previous_onset          # Left over from the previous round; never cleared.
+    runtime._asr_turn_endpointed_at = None               # Cleared by PROVIDER_FINAL.
+    runtime._asr_last_turn_endpointed_at = previous_seal  # Never cleared.
+    # A pending turn is marked during previous-round draining, then activated later.
     runtime._asr_turn_onset_at = previous_seal + 0.2
 
     token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=101)
@@ -152,7 +152,7 @@ async def test_pending_turn_does_not_inherit_the_previous_turn_endpoint() -> Non
     runtime._begin_core_multimodal_turn(turn_id, token)
     record = runtime._core_multimodal_turns[turn_id]
 
-    # 截止点是在第一次 staging（或 final 冻结）时才认领的，所以要先喂一帧再判。
+    # Claim the cutoff only on first staging (or final freeze), so feed a frame before asserting.
     assert runtime._stage_independent_visual_frame(
         "new-utterance-frame",
         source="screen",
@@ -183,7 +183,7 @@ async def test_retained_seal_predating_registration_is_not_this_turn_cutoff() ->
 
     previous_onset = time.monotonic() - 1.0
     previous_seal = previous_onset + 0.5
-    # 模拟"激活 pending turn 时忘了补 onset"：留着上一轮的 onset。
+    # Simulate missing onset completion when activating a pending turn: retain the previous onset.
     runtime._asr_turn_onset_at = previous_onset
     runtime._asr_turn_endpointed_at = None
     runtime._asr_last_turn_endpointed_at = previous_seal
@@ -199,8 +199,8 @@ async def test_retained_seal_predating_registration_is_not_this_turn_cutoff() ->
         request_id="screen-post",
         captured_at=previous_seal + 0.5,
     )
-    # 即使 onset 是上一轮的残值（第一道防线失效），上一轮的封口也不能成为本轮的
-    # 截止点 —— 它发生在本 record 注册之前。
+    # Even if onset retains a previous-round value (first defense failed), the previous closure cannot become this
+    # round's cutoff, because it occurred before record registration.
     assert record.endpoint_at is None
     turn = runtime._snapshot_core_multimodal_turn(turn_id, "survives")
 
@@ -224,7 +224,7 @@ async def test_live_endpoint_still_seals_its_own_turn() -> None:
         request_id="screen-spoken",
         captured_at=record.started_at,
     )
-    # 极短发声：封口甚至可能早于 record 注册那一刻。live 字段仍然必须绑上。
+    # Very short utterance: closure can precede record registration; the live field must still bind.
     sealed_at = record.started_at
     runtime._asr_turn_endpointed_at = sealed_at
     runtime._mark_independent_asr_endpoint_if_sealed()
@@ -249,8 +249,8 @@ async def test_endpoint_cutoff_survives_provider_final_clearing_the_live_field()
         captured_at=record.started_at,
     )
 
-    # 封口 -> provider final：runtime 清掉了 live 字段，lifecycle 也已经离开
-    # DRAINING，只剩下不随 final 清除的那个副本。
+    # Closure -> provider final: runtime cleared the live field and lifecycle left
+    # DRAINING, leaving only the copy preserved across final.
     sealed_at = record.started_at + 1.0
     runtime._asr_turn_endpointed_at = None
     runtime._asr_last_turn_endpointed_at = sealed_at
@@ -258,7 +258,7 @@ async def test_endpoint_cutoff_survives_provider_final_clearing_the_live_field()
         snapshot=SimpleNamespace(state=VoiceLifecycleState.WARM_IDLE)
     )
 
-    # 端点之后拍的帧在 final 派发期间才校验完。
+    # A post-endpoint frame finishes validation only during final dispatch.
     runtime._stage_independent_visual_frame(
         "post-endpoint-frame",
         source="screen",

@@ -12,8 +12,8 @@ from utils import language_utils
 
 
 def test_macos_locale_reads_apple_locale(monkeypatch):
-    # _get_macos_locale 带进程级缓存；不清掉的话本用例会读到别的用例留下的值
-    # （在非 macOS 的 CI 上那个值是 None），断言就永远看不到 fake_run 的结果。
+    # _get_macos_locale has process-level caching; without clearing it, this case reads another test's cached value
+    # (None on non-macOS CI), and assertions never see fake_run's result.
     monkeypatch.setattr(
         language_utils, "_macos_locale_cache", language_utils._MACOS_LOCALE_UNSET
     )
@@ -30,10 +30,10 @@ def test_macos_locale_reads_apple_locale(monkeypatch):
 
 def test_macos_locale_is_read_once_per_process(monkeypatch):
     """Repeated lookups must not respawn `defaults`."""
-    # initialize_global_language() 会经 _is_china_region 和 _get_system_language
-    # 各调一次；每次未命中都是一个 1s 超时的 subprocess，而且整个初始化持
-    # _global_language_lock。两个全局 getter 又都能从 async 请求路径到达，
-    # 冷启动多花几秒就会卡住事件循环。
+    # initialize_global_language() calls through _is_china_region and _get_system_language
+    # once each; every cache miss is a subprocess with a 1s timeout, while initialization holds
+    # _global_language_lock. Both global getters are reachable from async request paths,
+    # so several extra cold-start seconds block the event loop.
     monkeypatch.setattr(
         language_utils, "_macos_locale_cache", language_utils._MACOS_LOCALE_UNSET
     )
@@ -54,9 +54,9 @@ def test_macos_locale_is_read_once_per_process(monkeypatch):
 
 def test_macos_locale_probe_failure_is_retried_not_cached(monkeypatch):
     """A transient `defaults` failure must not pin the process to a wrong locale."""
-    # 只缓存确定性结论。探测失败（超时 / 非零退出 / 空输出）如果也被缓存，一次
-    # 启动期超时就会让整个进程生命周期都拿不到系统 locale——区域判定会掉到
-    # non-china、语言判定会掉到英文，而「其它信号都不可靠」正是本函数要兜的场景。
+    # Cache only definitive results. Caching failed probes (timeout / nonzero exit / empty output) would let one
+    # startup timeout lose the system locale for the process lifetime, falling back to
+    # non-China region and English precisely when this function must compensate for unreliable signals.
     monkeypatch.setattr(
         language_utils, "_macos_locale_cache", language_utils._MACOS_LOCALE_UNSET
     )
@@ -66,14 +66,14 @@ def test_macos_locale_probe_failure_is_retried_not_cached(monkeypatch):
     def flaky_run(command, **_kwargs):
         attempts.append(command[-1])
         if len(attempts) <= 2:
-            # 前两次（AppleLocale + AppleLanguages）都超时 → 本轮整体失败
+            # Both initial probes (AppleLocale + AppleLanguages) time out -> this attempt fails overall.
             raise language_utils.subprocess.TimeoutExpired(command, 1.0)
         return SimpleNamespace(returncode=0, stdout='"zh_CN"\n')
 
     monkeypatch.setattr(language_utils.subprocess, "run", flaky_run)
 
     assert language_utils._get_macos_locale() is None
-    # 失败没被写进缓存，所以下一次调用会重新探测并拿到真实 locale
+    # Failure was not cached, so the next call probes again and obtains the real locale.
     assert language_utils._get_macos_locale() == "zh_CN"
 
 

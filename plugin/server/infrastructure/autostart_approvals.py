@@ -51,9 +51,9 @@ PENDING_FILENAME = "plugin_autostart_pending.json"
 
 _lock = threading.Lock()
 _cache: set[str] | None = None
-# 上一次读盘是不是失败了。读侧照常 fail-open（读不出来=照常自启），但写侧不行：
-# 拿一个"空集"当基线保存下去，会把盘上其它插件的待批准记录一起抹掉，它们从此
-# 无声地获得自启资格（codex）。
+# Whether the last disk read failed. Reads still fail open (unreadable means autostart), but writes cannot:
+# saving an empty set as the baseline also erases other plugins' pending approvals on disk, silently
+# granting them autostart permission thereafter (codex).
 _load_failed = False
 
 
@@ -61,8 +61,8 @@ def _load_locked() -> set[str]:
     global _cache, _load_failed
     if _cache is not None and not _load_failed:
         return _cache
-    # 上一次读失败留下的空集只能用来回答"能不能自启"，不能当成后续操作的基线，
-    # 所以每次都再试一次读，直到读成功为止（codex）。
+    # An empty set left by a failed read may answer only whether autostart is allowed, never serve as a mutation baseline;
+    # retry reading every time until it succeeds (codex).
     try:
         from utils.config_manager import get_config_manager
 
@@ -72,9 +72,9 @@ def _load_locked() -> set[str]:
         _cache = set()
         return _cache
     except Exception as exc:
-        # 读不出来就当作没有待批准记录。这个方向的错误是"新装插件照常自启"，
-        # 也就是这个功能出现之前的行为；反方向是"用户的插件集体不启动"。
-        # ⚠️ 但要留痕：这个空集只能用来回答"能不能自启"，不能当成写盘的基线。
+        # Treat unreadable storage as no pending approvals. The failure in this direction allows newly installed plugins to autostart,
+        # matching behavior before this feature; the reverse would prevent all the user's plugins from starting.
+        # Leave evidence, however: use this empty set only to decide autostart eligibility, never as a persistence baseline.
         logger.error("failed to load {}: {}", PENDING_FILENAME, exc)
         _load_failed = True
         _cache = set()
@@ -93,9 +93,9 @@ def _load_locked() -> set[str]:
 def _save_locked(pending: set[str]) -> bool:
     """Persist the pending set. Returns whether it actually reached disk."""
     if _load_failed:
-        # 读还是失败的，那手上这个集合就不是盘面的全集。保存是整文件替换，
-        # 用它落盘会把盘上其它插件的待批准记录一起抹掉，它们从此无声地获得
-        # 自启资格（codex）。读侧继续 fail-open，写侧到此为止。
+        # Reading still failed, so this set is not the complete disk state. Saving replaces the entire file,
+        # erasing other plugins' pending approvals and silently granting them
+        # autostart permission (codex). Reads remain fail-open; writes stop here.
         logger.error(
             "refusing to persist {}: the store could not be read, and saving now "
             "would drop the records already on disk",
@@ -131,10 +131,10 @@ def mark_autostart_pending(plugin_id: str) -> bool:
             return True
         pending.add(normalized)
         if not _save_locked(pending):
-            # 写盘失败就把内存改回去。留着的话，本进程以为这个插件被拦住了，而盘上
-            # 根本没有这条记录——重启之后它未经批准就自启，而且没有任何东西会重试
-            # （greptile 指出的是相反那半，这半更要紧）。回滚之后内存和盘面一致：
-            # 这个插件这一轮就是没被拦住，日志里留着原因。
+            # Roll back memory if persistence fails. Otherwise this process considers the plugin blocked while disk
+            # contains no record, so it autostarts unapproved after restart with nothing to retry
+            # (greptile identified the reverse case; this one matters even more). Rollback keeps memory and disk aligned:
+            # this plugin was not blocked this round, with the reason retained in logs.
             pending.discard(normalized)
             logger.error(
                 "plugin {} could not be recorded as awaiting approval; it will "
@@ -165,9 +165,9 @@ def clear_autostart_pending(plugin_id: str) -> bool:
             return True
         pending.discard(normalized)
         if not _save_locked(pending):
-            # 同上，反方向：内存说已批准而盘上还留着待批准记录的话，调用方会把这次
-            # 批准当成已完成，重启后旧文件又把它拦下来，而没有人知道为什么
-            # （greptile）。回滚，让下一次显式批准或清理重试这次写入。
+            # The reverse applies too: if memory says approved while disk still records pending approval, the caller considers
+            # approval complete, but after restart the old file blocks it again without an apparent reason
+            # (greptile). Roll back so the next explicit approval or cleanup retries this write.
             pending.add(normalized)
             logger.error(
                 "plugin {} pending approval removal could not be "

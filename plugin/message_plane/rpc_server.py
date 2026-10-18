@@ -159,13 +159,13 @@ class MessagePlaneRpcServer:
             if st is None:
                 return err_response(req_id, "invalid store")
             if st.name in HOST_OWNED_STORE_NAMES:
-                # 这条 op 没有调用方身份：RPC socket 是 loopback，任何插件进程连上
-                # 都能发，payload 里的 plugin_id 是自己写的。宿主自有 store 的记录
-                # 会直接变成用户听到的一句话（messages）、模型"看过的画面"
-                # （frames）或对话上下文（conversations），所以在这里一律拒绝，
-                # 而不是事后去猜哪条是伪造的。
+                # This operation lacks caller identity: any plugin process can connect to the loopback RPC socket
+                # and send a self-chosen plugin_id in its payload. Host-owned store records directly become
+                # speech heard by the user (messages), images 'seen' by the model
+                # (frames), or conversation context (conversations), so reject all such writes here
+                # instead of trying to identify forged records afterward.
                 #
-                # 宿主自己不受影响：它走 ingest socket（带 token），不走这条。
+                # The host is unaffected: it uses the token-protected ingest socket, not this path.
                 return err_response(req_id, "store is host-owned")
             topic = str(args.get("topic") or "")
             payload = args.get("payload")

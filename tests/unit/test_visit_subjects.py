@@ -48,7 +48,7 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-# ── 派生 ──
+# ── Derivation ──
 
 
 def test_pair_id_is_symmetric_and_pinned():
@@ -109,7 +109,7 @@ def test_recall_subjects_order_and_shape():
          "subject_id": f"{VISIT_MEMORY_PLATFORM}:{pair}:{cid}"},
         {"subject_kind": "participant", "subject_id": f"{VISIT_MEMORY_PLATFORM}:{pid}"},
     ]
-    # 第三个必须是人级 participant，而不是 group_participant。
+    # The third must be a person-level participant, not group_participant.
     assert subjects[2]["subject_kind"] == "participant"
 
 
@@ -117,7 +117,7 @@ def test_recall_subjects_match_memory_server_request_parsing():
     for wire in resolve_visit_recall_subjects(
         {"own_uid": OWN_A, "peer_uid": PEER_X, "peer_char_tag": TAG_1}
     ):
-        # memory_server 的 MemorySubjectRequest.to_domain 用 create(kind, id, scope=None)。
+        # memory_server MemorySubjectRequest.to_domain uses create(kind, id, scope=None).
         subject = MemorySubject.create(wire["subject_kind"], wire["subject_id"])
         assert subject.scope == f"{wire['subject_kind']}:{wire['subject_id']}"
 
@@ -145,7 +145,7 @@ def test_recall_subjects_accept_precomputed_peer_char_id():
     assert a == b
 
 
-# ── 名册 ──
+# ── Roster ──
 
 
 async def _upsert(roster, peer, own_char, *, tag=TAG_1, now=100.0):
@@ -165,7 +165,7 @@ async def test_roster_upsert_and_remove(tmp_path):
     assert peer["short_code"] == PEER_X[:6].upper()
     assert peer["by_char"]["A"]["pairs"] == [pair]
     assert peer["by_char"]["A"]["chars"][cid]["char_tag"] == TAG_1
-    # 重复 upsert 不重复登记 pair。
+    # Repeated upserts do not register duplicate pairs.
     await _upsert(roster, PEER_X, "A", now=200.0)
     peer = await roster.get_peer(PEER_X)
     assert peer["by_char"]["A"]["pairs"] == [pair]
@@ -188,7 +188,7 @@ async def test_roster_is_partitioned_by_own_account(tmp_path):
     assert await roster_b.get_char_entry(PEER_X, "A") is None
     subjects_b = await roster_b.expand_subjects(PEER_X, "A")
     assert all(pair not in s["subject_id"] for s in subjects_b)
-    # B 写入自己的分区不影响 A。
+    # B writing its own partition does not affect A.
     await _upsert(roster_b, PEER_Y, "A")
     roster_a2 = PeerRoster(tmp_path, own_uid=OWN_A)
     assert set(await roster_a2.list_peers()) == {PEER_X}
@@ -233,7 +233,7 @@ async def test_rename_char_moves_every_peer_and_is_reversible(tmp_path):
     assert set((await roster.get_peer(PEER_Y))["by_char"]) == {"A2", "B"}
     assert (await roster.get_last_summary(PEER_X, "A2"))["text"] == "sum"
     assert await roster.get_last_summary(PEER_X, "A") is None
-    # 幂等：再跑一次不动。
+    # Idempotent: running again changes nothing.
     assert await roster.rename_char("A", "A2") == 0
 
     await roster.rename_char("A2", "A")
@@ -266,7 +266,7 @@ async def test_expand_subjects_merges_in_flight_visit(tmp_path):
     assert [s["subject_kind"] for s in subjects] == [
         "group_chat", "group_participant", "participant",
     ]
-    # 名册里已有同一对时不重复。
+    # Do not duplicate a pair already in the roster.
     await _upsert(roster, PEER_X, "A")
     again = await roster.expand_subjects(PEER_X, "A", current=(pair, cid))
     assert again == subjects
@@ -354,7 +354,7 @@ async def test_expand_subjects_reads_the_roster_strictly(tmp_path):
         await roster.expand_subjects("peer_x", "A")
     with pytest.raises(RosterCorruptError):
         await roster.get_char_entry("peer_x", "A", strict=True)
-    assert await roster.get_char_entry("peer_x", "A") is None   # 展示用途仍宽松
+    assert await roster.get_char_entry("peer_x", "A") is None   # Display uses remain lenient.
 
 
 @pytest.mark.parametrize("damage", [
@@ -368,17 +368,17 @@ async def test_expand_subjects_reads_the_roster_strictly(tmp_path):
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__("chars", []),
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__(
         "last_summary", {"visit_id": "V" * 22, "text": "x"}),
-    # chars 的键被改坏、char_tag 还在：展开的清除计划会抹错主体
+    # Corrupted chars key with char_tag intact: expanded clear plans would erase the wrong subject.
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__(
         "chars", {"c_" + "9" * 24: {"char_tag": "f" * 32, "last_seen": 1.0}}),
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["chars"].__setitem__(
         derive_peer_char_id("peer_x", "f" * 32), {"last_seen": 1.0}),
-    # 超出浮点范围的超大整数时间戳：isfinite 会抛 OverflowError，必须判为损坏而不是让清除 500
+    # Huge integer timestamps exceeding float range make isfinite raise OverflowError; classify as corruption instead of returning clear 500.
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["chars"][
         derive_peer_char_id("peer_x", "f" * 32)].__setitem__("last_seen", 10 ** 400),
 ])
 async def test_strict_reads_reject_a_damaged_roster_structure(tmp_path, damage):
-    # JSON 合法但结构坏了：严格读不能把它当成「没有条目」
+    # Valid JSON with broken structure must not be treated as no entries by strict reads.
     import json as _json
 
     from main_logic.visit.subjects import RosterCorruptError
@@ -411,7 +411,7 @@ async def test_strict_reads_treat_missing_keys_as_absent(tmp_path):
     lambda e: e["chars"].__setitem__("", {}),
 ])
 async def test_strict_reads_reject_damaged_pair_or_char_ids(tmp_path, damage):
-    # 坏元素不能被静默过滤：那会让清除计划漏掉对应的 pair / 对方猫娘
+    # Never silently filter bad elements: that would omit their pair / peer catgirl from clear plans.
     import json as _json
 
     from main_logic.visit.subjects import RosterCorruptError
@@ -462,7 +462,7 @@ async def test_remove_char_on_an_absent_entry_is_a_no_op(tmp_path):
     lambda d: d["accounts"]["own_a"].__setitem__("peers", "x"),
 ])
 async def test_upsert_refuses_to_rebuild_damaged_containers(tmp_path, damage):
-    # 类型坏了的容器不能被重建成 {}：下一次原子写会把可恢复的数据永久冲掉
+    # Never rebuild mistyped containers as {}: the next atomic write permanently destroys recoverable data.
     import json as _json
 
     from main_logic.visit.subjects import RosterCorruptError
@@ -561,7 +561,7 @@ async def test_rename_char_refuses_a_malformed_target_entry(tmp_path):
     ("A2", {"chars": {"c_" + "1" * 24: 3}}),
     ("A", {"last_summary": "damaged"}),
     ("A2", {"last_summary": ["damaged"]}),
-    # 键与 char_tag 合法、只有 last_seen 坏：否则会先被「键推不出」拦下，last_seen 校验测不到
+    # Valid key and char_tag with only last_seen broken; otherwise key derivation rejects it first, leaving last_seen validation untested.
     ("A", {"chars": {derive_peer_char_id("peer_x", "f" * 32): {"char_tag": "f" * 32, "last_seen": "9"}}}),
     ("A2", {"chars": {derive_peer_char_id("peer_x", "f" * 32):
                       {"char_tag": "f" * 32, "last_seen": float("nan")}}}),
@@ -569,7 +569,7 @@ async def test_rename_char_refuses_a_malformed_target_entry(tmp_path):
     ("A2", {"last_summary": {"visit_id": "v", "ended_at": True, "text": "t"}}),
 ])
 async def test_rename_char_refuses_malformed_nested_data(tmp_path, side, damage):
-    # 两边都是 object 但嵌套数据坏了：合并会把字符串 pairs 拆成单个字符写回去
+    # Both objects have corrupt nested data: merging would split string pairs into characters and write them back.
     import json as _json
 
     from main_logic.visit.subjects import RosterCorruptError
@@ -596,11 +596,11 @@ def test_path_locks_are_shared_while_held_and_released_when_idle(tmp_path):
     target = tmp_path / "x.json"
     key = str(target.resolve())
     with path_lock(target) as held:
-        assert path_lock(target) is held           # 持有期间拿到的是同一把
+        assert path_lock(target) is held           # Acquire the same lock while held.
         assert path_lock(target).locked()
     del held
     gc.collect()
-    assert key not in subjects_mod._PATH_LOCKS     # 闲置后登记自动释放
+    assert key not in subjects_mod._PATH_LOCKS     # Registry entries release automatically once idle.
 
 
 @pytest.mark.parametrize("damage", [
@@ -627,7 +627,7 @@ async def test_upsert_refuses_malformed_existing_character_records(tmp_path, dam
 
 
 async def test_upsert_refuses_a_pair_id_not_derived_from_the_pair(tmp_path):
-    # 名册里存了异值 pair，之后的撤销计划会被身份绑定校验拒绝，这个人就清除不了
+    # A mismatched roster pair makes later revocation plans fail identity-binding validation, preventing this person's data from clearing.
     roster = PeerRoster(tmp_path, own_uid="own_a")
     with pytest.raises(ValueError):
         await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
@@ -689,7 +689,7 @@ async def test_a_half_damaged_entry_fails_forget_planning(tmp_path, damage):
 
 @pytest.mark.parametrize("pairs", [["q" * 24], "dup"])
 async def test_strict_reads_reject_pairs_of_another_peer(tmp_path, pairs):
-    # 混进别人的 pair（或重复）时，展开出的清除计划过不了撤销日志校验：严格读直接报损坏
+    # Foreign pairs (or duplicates) make expanded clear plans fail revocation-log validation: strict reads report corruption directly.
     import json as _json
 
     from main_logic.visit.subjects import RosterCorruptError
@@ -715,12 +715,12 @@ async def test_a_deeply_nested_roster_is_treated_as_corrupt(tmp_path):
         await _upsert(roster, PEER_X, "A")
     with pytest.raises(RosterCorruptError):
         await roster.get_char_entry(PEER_X, "A", strict=True)
-    assert await roster.get_char_entry(PEER_X, "A") is None     # 宽松读照旧按空表
+    assert await roster.get_char_entry(PEER_X, "A") is None     # Lenient reads still treat this as an empty table.
 
 
 @pytest.mark.parametrize("now", [True, float("nan"), float("inf"), "1"], ids=["bool", "nan", "inf", "str"])
 async def test_upsert_rejects_a_bad_observation_time_before_writing(tmp_path, now):
-    # 坏的 now 写进 last_seen 后，下一次严格读就把条目判坏：必须在改动前拒绝
+    # Invalid now persisted as last_seen corrupts the next strict read; reject before modifying anything.
     roster = PeerRoster(tmp_path, own_uid="own_a")
     await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
@@ -741,15 +741,15 @@ async def test_upsert_rejects_a_char_id_that_does_not_derive_from_the_tag(tmp_pa
 
 
 def test_recall_subjects_reject_a_char_id_that_disagrees_with_the_tag():
-    # 坏掉的头行带着别的 peer_char_id：不能把召回 / digest 写进另一只猫的主体
+    # A corrupted header with another peer_char_id must not write recall / digest into another cat's subject.
     base = {"own_uid": OWN_A, "peer_uid": PEER_X, "peer_char_tag": "f" * 32}
     good = resolve_visit_recall_subjects(dict(base, peer_char_id=derive_peer_char_id(PEER_X, "f" * 32)))
     assert len(good) == 3
     assert resolve_visit_recall_subjects(base) == good
     assert resolve_visit_recall_subjects(dict(base, peer_char_id="c_" + "9" * 24)) == []
-    # 空串 id 等于没给，按 tag 推出（不能把这场的召回 / digest 静默关掉）
+    # Empty string id means absent: derive from tag rather than silently disabling this visit's recall / digest.
     assert resolve_visit_recall_subjects(dict(base, peer_char_id="")) == good
-    # 数字 / 布尔之类的畸形 id 按坏输入处理，不静默改用 tag 推出的值
+    # Malformed numeric / boolean ids are bad input; do not silently substitute tag-derived values.
     for bad in (7, True, 0):
         assert resolve_visit_recall_subjects(dict(base, peer_char_id=bad)) == []
 
@@ -778,7 +778,7 @@ async def test_rename_merge_keeps_the_newer_last_visit_id(tmp_path):
     await roster.upsert(peer, "New", now=1.0, visit_id="v" * 22, **common)
     await roster.upsert(peer, "Old", now=5.0, visit_id="w" * 22, **common)
     await roster.rename_char("Old", "New")
-    await roster.upsert(peer, "New", now=6.0, visit_id="w" * 22, **common)    # 同一场再次登记
+    await roster.upsert(peer, "New", now=6.0, visit_id="w" * 22, **common)    # Register the same visit again.
     entry = await roster.get_char_entry(peer, "New")
     assert entry["last_visit_id"] == "w" * 22 and entry["visits"] == 2
 
@@ -790,5 +790,5 @@ async def test_rename_merge_keeps_the_newer_last_visit_id(tmp_path):
 def test_is_finite_number_never_raises(value, expected):
     from main_logic.visit.subjects import is_finite_number
 
-    # 超出浮点范围的超大整数：isfinite 会抛 OverflowError，这里必须按「不是数」回 False
+    # Huge integers outside float range make isfinite raise OverflowError; treat as nonnumeric and return False here.
     assert is_finite_number(value) is expected

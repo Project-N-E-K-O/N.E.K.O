@@ -62,20 +62,20 @@ def test_det_signal_magic_word():
             text, openclaw_enabled=openclaw, user_plugin_enabled=False
         )
 
-    # 字面命令：必须 `/` 开头且整条就是命令
+    # Literal commands must begin with `/` and occupy the entire input
     assert sig("/clear") is True
     assert sig("/stop") is True
     assert sig("/daemon approve") is True
-    # ⚠️ 不带斜杠的裸词**不再**是命令：它们是普通英文单词，8 个 locale 里的
-    # "Stop" / "Clear" 按钮标签就是这么被判成命令的。
+    # ⚠️ Bare words without slashes are **no longer** commands: they are ordinary English words, which caused
+    # "Stop" / "Clear" button labels across eight locales to be mistaken for commands.
     assert sig("stop") is False
     assert sig("clear") is False
-    # 自由文本里仍然能推断出来的只有 /stop（含明确档与模糊档；要不要状态佐证是
-    # 派单侧的事，跟这道前置闸无关）
+    # Only /stop can still be inferred from free text (both explicit and ambiguous levels; whether state corroboration is needed
+    # is a dispatch-side concern, unrelated to this preliminary gate)
     assert sig("取消这个任务") is True
     assert sig("停下来") is True
-    # ⚠️ `/new` `/clear` 已从自由文本路径摘掉——用户说「换个话题」九成指的是聊天
-    # 话题，不是要重置 agent 会话。
+    # ⚠️ `/new` and `/clear` were removed from free-text routing: 'change the topic' almost always means the chat
+    # topic, not resetting the agent session.
     assert sig("换个话题吧") is False
     assert sig("忘了刚才的事") is False
     assert sig("随便聊聊") is False

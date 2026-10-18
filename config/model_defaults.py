@@ -16,22 +16,22 @@
 """Default model credentials, endpoints, model identifiers, and media limits."""
 
 # ----------------------------------------------------------------------
-# Debug flags（打包给用户调试时在源码里 flip，重新打包即可生效）
+# Debug flags (flip in source and rebuild when distributing user-debug packages)
 # ----------------------------------------------------------------------
-# LLM prompt 审计：打开后每次发给 LLM 的请求体（messages、token 数、limit
-# 字段）会写到 logs/llm_prompt_audit/YYYY-MM-DD.jsonl，用于诊断 prompt
-# budget 占比。env var NEKO_LLM_PROMPT_AUDIT=1 同样可启用（任一为真即开）。
-# 生产默认 False。
+# LLM prompt auditing: when enabled, write each request body (messages, token counts, limit
+# fields) to logs/llm_prompt_audit/YYYY-MM-DD.jsonl to diagnose prompt
+# budget proportions. NEKO_LLM_PROMPT_AUDIT=1 also enables it; either true value suffices.
+# Production default: False.
 LLM_PROMPT_AUDIT_ENABLED = False
 
-# tfLink 文件上传服务配置
+# tfLink file-upload service configuration
 TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
-# tfLink 允许的主机名白名单（用于 SSRF 防护）
+# tfLink hostname allowlist for SSRF protection
 TFLINK_ALLOWED_HOSTS = [
-    '47.101.214.205',  # tfLink 官方 IP
+    '47.101.214.205',  # Official tfLink IP
 ]
 
-# API 和模型配置的默认值
+# Default API and model configuration
 DEFAULT_CORE_API_KEY = ''
 DEFAULT_AUDIO_API_KEY = ''
 DEFAULT_OPENROUTER_API_KEY = ''
@@ -40,18 +40,18 @@ DEFAULT_CORE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 DEFAULT_CORE_MODEL = "qwen3-omni-flash-realtime"
 DEFAULT_OPENROUTER_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-# 屏幕分享模式的原生图片输入限流配置（秒）
+# Native image-input throttling for screen sharing (seconds)
 NATIVE_IMAGE_MIN_INTERVAL = 1.5
-# 无语音活动时图片发送间隔倍数（实际间隔 = NATIVE_IMAGE_MIN_INTERVAL × 此值）
+# Image-send interval multiplier without voice activity (interval = NATIVE_IMAGE_MIN_INTERVAL × this value)
 IMAGE_IDLE_RATE_MULTIPLIER = 5
-# 一个独立 ASR 回合最多带几张原图（开头 / 中间 / 结尾）。
-# 一次发声是一段时间不是一个瞬间：屏幕共享按 NATIVE_IMAGE_MIN_INTERVAL 那个量级
-# 持续推帧，只留最后一张会丢掉用户开口时指的东西，全留则是无界输入——而且写进
-# provider conversation 的 item 事后删不掉。Core 先把整段抽样成这三张，provider
-# 侧再按这个数兜一次底。
+# Maximum original images per independent ASR turn (start / middle / end).
+# Utterances span time, not an instant: screen sharing continuously sends frames at roughly NATIVE_IMAGE_MIN_INTERVAL.
+# Keeping only the final image loses what users referenced when starting to speak; keeping all is unbounded input, and
+# provider-conversation items cannot be deleted afterward. Core samples the span into these three images, then the provider
+# enforces this cap again defensively.
 MAX_MULTIMODAL_TURN_IMAGES = 3
 
-# 用户自定义模型配置的默认 Provider/URL/API_KEY（空字符串表示使用全局配置）
+# Default Provider/URL/API_KEY for custom-model configuration; empty strings use global configuration
 DEFAULT_CONVERSATION_MODEL_URL = ""
 DEFAULT_CONVERSATION_MODEL_API_KEY = ""
 DEFAULT_SUMMARY_MODEL_URL = ""
@@ -62,29 +62,29 @@ DEFAULT_EMOTION_MODEL_URL = ""
 DEFAULT_EMOTION_MODEL_API_KEY = ""
 DEFAULT_VISION_MODEL_URL = ""
 DEFAULT_VISION_MODEL_API_KEY = ""
-DEFAULT_REALTIME_MODEL_URL = "" # 仅用于本地实时模型(语音+文字+图片)
-DEFAULT_REALTIME_MODEL_API_KEY = "" # 仅用于本地实时模型(语音+文字+图片)
-DEFAULT_TTS_MODEL_URL = "" # 与Realtime对应的TTS模型(Native TTS)
-DEFAULT_TTS_MODEL_API_KEY = "" # 与Realtime对应的TTS模型(Native TTS)
+DEFAULT_REALTIME_MODEL_URL = "" # Only for local realtime models (voice + text + images)
+DEFAULT_REALTIME_MODEL_API_KEY = "" # Only for local realtime models (voice + text + images)
+DEFAULT_TTS_MODEL_URL = "" # TTS model corresponding to Realtime (Native TTS)
+DEFAULT_TTS_MODEL_API_KEY = "" # TTS model corresponding to Realtime (Native TTS)
 DEFAULT_AGENT_MODEL_URL = ""
 DEFAULT_AGENT_MODEL_API_KEY = ""
 
-# 模型配置常量（默认值）
-# 注：以下退环境的常量已经从导出列表里删除（2026-04）：
-#   * SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL —— 旧的 memory.settings
-#     抽取/校验链路已被 evidence + reflection 取代，参见 memory/settings.py
-#     顶部说明。
-#   * ROUTER_MODEL —— 当年规划的"记忆路由模型"从未在代码里被读过；记忆路由
-#     已经走 tier 化的 summary/correction，没有独立模型。
-#   * SEMANTIC_MODEL —— "text-embedding-v4" 字面量没人用；嵌入服务走本地
-#     ONNX（memory/embeddings.py 的 EmbeddingService），模型 id 由
-#     profile_id+dim+quantization 拼出。
-#   * RERANKER_MODEL —— 记忆 LLM 重排（memory/recall.py::MemoryRecallReranker）
-#     按 tier="summary" 拿 api_config['model']，不再有 hardcoded 'qwen-plus'。
-# 走 LLM 的 memory 子模块一律按 tier 拿 api_config['model']，不再有 hardcoded
-# fallback；新增需求请加 tier，不要再加这种"全局默认模型字面量"。
+# Model-configuration constants (defaults)
+# Note: the following retired constants were removed from exports in 2026-04:
+#   * SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL: legacy memory.settings
+#     extraction/validation was replaced by evidence + reflection; see the explanation atop memory/settings.py
+#     for details.
+#   * ROUTER_MODEL: the planned 'memory routing model' was never read by code; memory routing
+#     uses tiered summary/correction without a separate model.
+#   * SEMANTIC_MODEL: no code uses the "text-embedding-v4" literal; embeddings use local
+#     ONNX (EmbeddingService in memory/embeddings.py), with model IDs derived from
+#     profile_id+dim+quantization.
+#   * RERANKER_MODEL: memory LLM reranking (memory/recall.py::MemoryRecallReranker)
+#     reads api_config['model'] with tier="summary", without hardcoded 'qwen-plus'.
+# Every LLM-using memory submodule reads api_config['model'] by tier, with no hardcoded
+# fallback; add tiers for new requirements rather than more global default-model literals.
 
-# 其他模型配置（仅通过 config_manager 动态获取）
+# Other model configuration, retrieved dynamically only through config_manager
 DEFAULT_CONVERSATION_MODEL = 'qwen-max'
 DEFAULT_SUMMARY_MODEL = "qwen-plus"
 DEFAULT_CORRECTION_MODEL = 'qwen-max'
@@ -92,9 +92,9 @@ DEFAULT_EMOTION_MODEL = 'qwen3.6-flash-2026-04-16'
 DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
 DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 
-# 用户自定义模型配置（可选，暂未使用）
-DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐
-DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模型(Native TTS)，与 api_providers.json 对齐
+# Custom-model configuration (optional, currently unused)
+DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # Omnimodal model (voice + text + images), aligned with api_providers.json
+DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # Realtime-corresponding TTS model (Native TTS), aligned with api_providers.json
 
 # Hide likely assistant/proactive speech that leaks back through microphone STT.
 # Conservative by design: the runtime only suppresses non-empty voice transcripts

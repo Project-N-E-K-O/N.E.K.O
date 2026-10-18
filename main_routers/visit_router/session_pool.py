@@ -63,10 +63,10 @@ class VisitSession:
     client: Any
     side: str
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # 到点 / 被取消后仍不肯停的那次生成：下一轮先等它停下（runtime_talk._await_stray）
+    # Generation still running after deadline / cancellation: await it first next round (runtime_talk._await_stray).
     stray: Optional[asyncio.Future] = None
     _sink: Optional[DeltaSink] = None
-    # id(message) -> (message, key)：同时持有对象引用，id 不会被回收后复用
+    # id(message) -> (message, key): retain the object reference too, preventing id recycling/reuse.
     _keys: dict[int, tuple[Any, SortKey]] = field(default_factory=dict)
 
     @property
@@ -147,9 +147,9 @@ async def create_visit_session(
         master_name=get_family_neutral_term(lang),
         tool_definitions=[],
     )
-    # 长度守卫不重 roll：重 roll 会把第二个回答推进已经在念的这一行
+    # The length guard does not reroll: rerolling feeds a second answer into the line already being spoken.
     client.max_response_rerolls = 0
-    # 连续相似回复不清空历史：清空会抹掉按序排好的双方发言和本轮的标记
+    # Consecutive similar replies do not clear history, which would erase ordered utterances from both sides and this round's markers.
     client.repetition_reset_enabled = False
     session = VisitSession(client=client, side=side)
     holder["session"] = session
@@ -205,7 +205,7 @@ def append_visit_message(session: VisitSession, message: Any, key: SortKey) -> N
     keys = _effective_keys(session, history[head:])
     session.tag(message, key)
     pos = len(history)
-    # 插在第一个键更大的消息之前（同键保持到达顺序）
+    # Insert before the first message with a larger key (preserve arrival order for equal keys).
     for offset, existing in enumerate(keys):
         if existing > (int(key[0]), int(key[1])):
             pos = head + offset
@@ -219,7 +219,7 @@ def tag_last_turn(session: VisitSession, *, prompt_key: SortKey | None, reply_ke
 
     history = session.history
     idx = len(history) - 1
-    # 只给还没有键的消息打标：stream_text 遇到空 prompt 什么都不追加，末尾那条是上一轮已登记的回复
+    # Mark only messages lacking keys: stream_text appends nothing for empty prompts; the last message is the previous round's registered reply.
     if (reply_key is not None and idx >= 0 and isinstance(history[idx], AIMessage)
             and session.key_of(history[idx]) is None):
         session.tag(history[idx], reply_key)
@@ -275,7 +275,7 @@ def estimate_turn_usage(session: VisitSession, output_text: str) -> dict:
 
     history = list(session.history)
     if output_text and history and isinstance(history[-1], AIMessage):
-        # 本轮有回复才会追加 AI 消息；空回复时末尾那条是上一轮的、属于这次的输入
+        # Only nonempty replies append AI messages; with an empty reply, the last message belongs to the previous round and is input to this one.
         history.pop()
     sent = sum(count_tokens(_content_text(m)) for m in history)
     return {"llm_input_tokens": sent, "llm_output_tokens": count_tokens(output_text or "")}
@@ -289,5 +289,5 @@ async def close_visit_session(session: VisitSession) -> None:
         return
     try:
         await close()
-    except Exception as exc:  # noqa: BLE001 - 收尾路径不抛
+    except Exception as exc:  # noqa: BLE001 - Do not raise on cleanup paths.
         logger.warning("visit session: close failed: %s", type(exc).__name__)

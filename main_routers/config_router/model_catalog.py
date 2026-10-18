@@ -38,9 +38,9 @@ from utils.config_manager import _as_bool
 
 
 _MODEL_LIST_TIMEOUT_SECONDS = 15.0
-# OpenRouter 一类聚合平台有数百个模型，前端下拉只需要 id，封顶防止响应失控。
+# Aggregators like OpenRouter have hundreds of models; the frontend needs only IDs, so cap response size.
 _MODEL_LIST_MAX_ITEMS = 2000
-# Gemini 的 OpenAI 兼容层列表 id 形如 models/gemini-2.5-flash，请求时用裸名；别家端点的 id 原样保留。
+# Gemini's OpenAI-compatible list IDs use models/gemini-2.5-flash; requests use bare names. Preserve other endpoints' IDs.
 _GEMINI_OPENAI_HOST = "generativelanguage.googleapis.com"
 _GEMINI_MODEL_ID_PREFIX = "models/"
 
@@ -95,7 +95,7 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
     resolved_url_key = f"assist:{provider_key}"
     use_token_plan = False
     override_url = (req.url or "").strip()
-    # 前端只能把 MiMo 切到 HTTPS 的 Token Plan 节点；其他服务商的地址一律以 api_providers.json 为准。
+    # The frontend may switch MiMo only to its HTTPS Token Plan endpoint; other providers use api_providers.json URLs exclusively.
     if override_url and provider_key == "mimo" and _is_mimo_token_plan_url(override_url):
         urls = [override_url] + [
             url for url in _normalize_provider_url_candidates(profile, "token_plan_openrouter_url")
@@ -157,7 +157,7 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
         if model_type in CORE_CONFIG_MODEL_TYPES:
             stored_url = str(core_cfg.get(f"{model_type}ModelUrl") or "").strip()
             stored_key = str(core_cfg.get(f"{model_type}ModelApiKey") or "").strip()
-        # 已保存的 Key 只能配保存时的端点：页面改了 URL 还想复用旧 Key，就是把凭证发给别家。
+        # Saved keys belong only to their saved endpoints: reusing one after editing the URL would send credentials elsewhere.
         if not (stored_url and stored_key and same_endpoint(url, stored_url)):
             return _failure("key_required", "已保存的 Key 只能用于保存时的地址，请重新填写 API Key")
         api_key = stored_key
@@ -202,7 +202,7 @@ def _classify_model_list_error(exc: Exception, provider_type: str) -> dict[str, 
         return _failure("rate_limited", "请求过于频繁，请稍后再试")
     classify = _classify_anthropic_error if provider_type == "anthropic" else _classify_openai_error
     result = classify(exc)
-    # 连通性测试把 429 等视为「可达」，拉列表没拿到数据就是失败。
+    # Connectivity checks treat responses like 429 as reachable; model-list retrieval without data is failure.
     if result.get("success"):
         return _failure("unknown", str(exc))
     return result
@@ -220,7 +220,7 @@ async def _fetch_models(url: str, api_key: str, provider_type: str) -> dict[str,
                 max_retries=0,
             )
         else:
-            client = ChatOpenAI(  # noqa: LLM_OUTPUT_BUDGET  # 只调 GET /models，不产生补全
+            client = ChatOpenAI(  # noqa: LLM_OUTPUT_BUDGET  # GET /models only, no completion generation.
                 base_url=url,
                 api_key=api_key or None,
                 timeout=_MODEL_LIST_TIMEOUT_SECONDS,

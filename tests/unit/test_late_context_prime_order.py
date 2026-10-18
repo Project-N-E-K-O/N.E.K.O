@@ -102,8 +102,8 @@ async def test_late_context_does_not_join_across_a_primed_user_turn(monkeypatch,
     )
     assert mgr.lanlan_name == LAN
     assert BODY_A in content, content
-    # Prompt order: 陪我聊聊, A, 今天好累, 辛苦啦, B -> the run before the
-    # trailing turn is [辛苦啦, B]: one screen item, no chain, so B stays
+    # Prompt order: 陪我聊聊 (chat with me), A, 今天好累 (so tired today), 辛苦啦 (thanks for your hard work), B -> the run before the
+    # trailing turn is [辛苦啦 (thanks for your hard work), B]: one screen item, no chain, so B stays
     # (without its label).
     assert BODY_B in content, content
     assert content.index("今天好累") < content.index(BODY_B), content

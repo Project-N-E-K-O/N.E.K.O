@@ -263,7 +263,7 @@ def check_r6b_happy_replace(client) -> list[str]:
         _check(len(_read_recent("NEKO")) == 3, "R6B.seed_len",
                f"{len(_read_recent('NEKO'))}")
 
-        # Now wipe session.messages (like tester pressed 清空), seed 2 new.
+        # Now wipe session.messages (like the tester pressed Clear), seed 2 new.
         session.messages = []
         _seed_messages(session, [
             {"role": "user", "content": "new A"},

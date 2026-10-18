@@ -174,18 +174,18 @@ class ZmqIpcServer:
                 await _async_sleep(0.01)
                 continue
             if len(frames) < 3:
-                # 无法解析出完整的 [ident, req_id, payload] 帧，只能丢弃
+                # Cannot parse a complete [ident, req_id, payload] frame; discard it.
                 continue
             ident = frames[0]
             try:
                 req_id = frames[1].decode("utf-8")
             except Exception:
-                # 连 request_id 都无法解析，客户端也无法匹配响应，只能丢弃
+                # Cannot even parse request_id, so the client cannot match a response; discard it.
                 continue
             try:
                 request = _loads(frames[2])
             except Exception as e:
-                # 解包失败时仍然返回一个结构化的错误响应，避免客户端一直超时拿不到任何响应
+                # Return a structured error response even after unpacking fails, preventing clients from timing out without any response.
                 try:
                     err_payload = {
                         "request_id": req_id,
@@ -198,11 +198,11 @@ class ZmqIpcServer:
                         _dumps(err_payload),
                     ])
                 except Exception:
-                    # 发送错误响应失败时静默忽略，避免影响后续循环
+                    # Silently ignore failures sending error responses, preserving the subsequent loop.
                     pass
                 continue
             if not isinstance(request, dict):
-                # payload 解码成功但不是 dict，同样返回一个标准错误响应
+                # A successfully decoded non-dict payload also gets a standard error response.
                 try:
                     err_payload = {
                         "request_id": req_id,

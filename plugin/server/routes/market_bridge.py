@@ -1,10 +1,10 @@
-"""Market Bridge — 本地客户端与插件市场的双向联动协议。
+"""Market Bridge: bidirectional coordination between local clients and plugin markets.
 
-提供以下能力：
-1. Market 前端探测本地客户端状态
-2. Market 前端触发插件安装（从 URL 下载 → 校验 → 安装）
-3. 查询本地已安装插件列表（供 Market 标记已安装状态）
-4. 安装任务进度查询
+Capabilities:
+1. Market frontend detects local client status.
+2. Market triggers plugin installation through URL download, validation, and install.
+3. List locally installed plugins for Market installed-state indicators.
+4. Query install-task progress.
 """
 
 from __future__ import annotations
@@ -80,23 +80,23 @@ def _inspect_package_sync(package_path: Path):
     return inspect_package(package_path)
 
 
-# ─── Bridge Token（本地安全令牌）───────────────────────────────────
-# 每次服务启动时生成，防止恶意网页未经授权调用本地 API。
-# Market 前端需要通过 neko:// 协议或用户手动配对获取此 token。
+# -- Bridge Token: local security token --
+# Generate at each service startup, blocking unauthorized malicious-page access to local APIs.
+# Market frontends acquire it through neko:// or manual user pairing.
 _BRIDGE_TOKEN: str = secrets.token_urlsafe(32)
 
-# 安装任务存储（内存，重启清空）
+# In-memory install tasks, cleared on restart.
 _tasks: dict[str, dict[str, Any]] = {}
 _task_workers: dict[str, asyncio.Task[None]] = {}
 _TASK_TTL_SECONDS = 60 * 60
 _TASK_MAX_ENTRIES = 200
 _MARKET_RELEASE_CHECK_TIMEOUT = 10.0
 
-# 短期一次性配对码；成功交换后立即消费。
+# Short-lived one-time pairing codes, consumed immediately on successful exchange.
 _ONE_TIME_CODES: dict[str, float] = {}
 _ONE_TIME_CODE_TTL_SECONDS = 5 * 60
 
-# OAuth 登录状态存储在本机用户目录，仅供本地插件面板使用。
+# Persist OAuth state in local user storage for the local plugin panel only.
 _OAUTH_CLIENT_ID = NEKO_AUTH_CLIENT_ID
 _OAUTH_SCOPE = "openid email profile offline"
 _OAUTH_SCOPE_ALIASES = {"offline": "offline_access"}
@@ -113,14 +113,14 @@ _OAUTH_REFRESH_LOCK = asyncio.Lock()
 _ACCOUNT_SUMMARY_LOCK = asyncio.Lock()
 _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
-# 下载限制
+# Download limits.
 _DOWNLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
-_DOWNLOAD_TIMEOUT = 120.0  # 秒
-# httpx 的超时是**每阶段**的（连接/读/写各自计时），所以一个"每次读都及时返回一点点
-# 字节"的服务器永远不会触发它——总时长必须有独立兜底。本文件里 _fetch_market_release
-# 已经为同一个理由用了 asyncio.timeout，注释就写着 "HTTPX phase timeouts alone do not
-# bound total response time"。1800s 对应 500MiB 上限下约 284KiB/s 的最低持续吞吐：低于
-# 这个速度的下载实际上已经停滞，而调用方本来就有 GitHub 直连的回退路径可以重试。
+_DOWNLOAD_TIMEOUT = 120.0  # Seconds
+# httpx timeouts apply per phase, connection/read/write; servers steadily trickling timely bytes
+# never trigger them, so independently bound total duration. _fetch_market_release already uses
+# asyncio.timeout for the same reason, noting phase timeouts do not bound total
+# response time. At the 500 MiB limit, 1800 s implies about 284 KiB/s minimum sustained throughput;
+# slower downloads are effectively stalled, and callers can retry through direct GitHub fallback.
 _DOWNLOAD_TOTAL_TIMEOUT = 1800.0
 # Keep at most one 4 MiB batch of chunks. Progress and cancellation are still
 # checked every 64 KiB, while a 200 MiB package needs only 50 worker writes.
@@ -162,22 +162,22 @@ def _normalize_required_sha256(value: str | None) -> str:
 
 
 def get_bridge_token() -> str:
-    """获取当前 bridge token（供 URI scheme handler 使用）。"""
+    """Get the current bridge token for URI-scheme handlers."""
     return _BRIDGE_TOKEN
 
 
 def _main_server_port() -> int:
-    """返回主服务的运行时端口；按 config.MAIN_SERVER_PORT 动态读取。
+    """Return main service runtime ports dynamically from config.MAIN_SERVER_PORT.
 
-    launcher 会在端口冲突时把 ``config.MAIN_SERVER_PORT`` 改成 fallback 端口，
-    所以这里始终通过 ``import config`` 拿最新值，而不是在模块加载时锁死。
+    Launchers switch this value to fallback ports after conflicts; import config
+    to read current values rather than freeze them at module import.
     """
 
     try:
         import config
 
         return int(config.MAIN_SERVER_PORT)
-    except Exception:  # pragma: no cover - 兜底，避免 bridge 写文件因配置异常崩溃
+    except Exception:  # pragma: no cover - Prevent config errors crashing bridge file writes.
         return 48911
 
 
@@ -236,7 +236,7 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
 
 def write_bridge_token_file(directory: Path) -> Path:
-    """将 bridge token 写入文件，供外部进程读取。"""
+    """Write bridge tokens to files for external-process access."""
     directory.mkdir(parents=True, exist_ok=True)
     token_file = directory / "bridge.json"
     one_time_code = _issue_one_time_code()
@@ -344,7 +344,7 @@ def _read_plugin_toml_id(manifest: Path) -> str | None:
     return _read_plugin_toml_metadata(manifest)[0]
 
 
-# ─── 请求/响应模型 ─────────────────────────────────────────────────
+# -- Request/response models --
 
 
 class MarketStatusResponse(BaseModel):
@@ -359,11 +359,11 @@ class MarketStatusResponse(BaseModel):
 
 
 class MarketInstallRequest(BaseModel):
-    """从 Market 触发安装的请求。
+    """Market-triggered install requests.
 
-    v2 (design §3.4.1) 在原有字段之上新增 ``mode`` / ``channel`` /
-    ``published_at``，让客户端区分 install / upgrade / reinstall 三种
-    语义并把 Market 已知的发布证据透传到 lock entry 上。
+    v2, design section 3.4.1, adds mode/channel/published_at to existing fields,
+    distinguishing install/upgrade/reinstall and passing Market's known publication
+    evidence into lock entries.
     """
     package_url: str = Field(..., description="插件包下载 URL")
     canonical_package_url: str | None = Field(
@@ -377,7 +377,7 @@ class MarketInstallRequest(BaseModel):
     payload_hash: str | None = Field(None, description="可选的 payload hash 二次校验")
     plugin_id: str | None = Field(None, description="Market 侧的插件标识")
     version: str | None = Field(None, description="版本号")
-    # v2: stable / beta channel 透传给客户端，让 lock entry 携带完整证据
+    # v2 passes stable/beta channels to clients so lock entries retain complete evidence.
     channel: str | None = Field(
         default=None,
         description="Market 上 latest_version.channel；None 时按 'stable' 处理",
@@ -386,7 +386,7 @@ class MarketInstallRequest(BaseModel):
         default=None,
         description="Market 上 latest_version.created_at；None 时由客户端兜底为当前时间",
     )
-    # v2: install / upgrade / reinstall mode 选择；旧客户端不传 mode 则默认 install
+    # v2 selects install/upgrade/reinstall; older clients omitting mode default to install.
     mode: Literal["install", "upgrade", "reinstall", "override_builtin"] = Field(
         default="install",
         description=(
@@ -394,9 +394,9 @@ class MarketInstallRequest(BaseModel):
             "override_builtin=以 Market 版本覆盖同 ID 的内置插件"
         ),
     )
-    # v2 (Option C): plugin 身份一致性校验 —— Market slug 透传给客户端，
-    # 客户端 unpack 后比对包内 plugin.toml [plugin].id；install 不一致时
-    # 附 warning，upgrade/reinstall 不一致时拒绝并回滚。
+    # v2 Option C validates plugin identity: pass Market slugs through,
+    # compare with unpacked plugin.toml [plugin].id; warn on install mismatches,
+    # reject/roll back upgrade/reinstall mismatches.
     expected_plugin_toml_id: str | None = Field(
         default=None,
         description=(
@@ -471,8 +471,8 @@ class MarketTaskStatus(BaseModel):
     downloaded_bytes: int = 0
     total_bytes: int | None = None
     result: dict[str, Any] | None = None
-    # v2 (R10.1 / R10.2): error 字段保留 message 以便旧前端展示；新增 error_code
-    # 让前端识别稳定错误码（upgrade_rollback_completed / package_id_change / ...）。
+    # v2 R10.1/R10.2 retains error messages for older frontend display, adding error_code
+    # for stable upgrade_rollback_completed/package_id_change/etc. recognition.
     error: str | None = None
     error_code: str | None = None
     error_details: dict[str, Any] | None = None
@@ -492,9 +492,9 @@ class MarketInstalledPlugin(BaseModel):
     market_installed: bool = False
     builtin_version: str = ""
     latest_market_version: str = ""
-    # v2 (R6.1 / R6.6 / design §3.5): 让前端在不二次请求的前提下展示 yank /
-    # channel / 版本对比信息。仅 channel="market" 的 entry 投影；非 market /
-    # 没有 lock entry 时为 None。
+    # v2 R6.1/R6.6/design section 3.5 exposes yank/channel/version comparisons
+    # without another request. Project only channel="market" entries;
+    # nonmarket or absent lock entries yield None.
     latest_install_source: dict[str, Any] | None = None
 
 
@@ -504,17 +504,17 @@ class MarketInstalledResponse(BaseModel):
 
 
 class MarketTokenExchangeRequest(BaseModel):
-    """用于 neko:// 回调后交换 token 的请求。"""
+    """Token-exchange requests after neko:// callbacks."""
     one_time_code: str = Field(min_length=1, max_length=128)
 
 
 class MarketTokenExchangeResponse(BaseModel):
     bridge_token: str
-    expires_in: int | None = None  # None = 不过期（直到重启）
+    expires_in: int | None = None  # None means no expiration before restart.
 
 
 class MarketBridgeTokenResponse(BaseModel):
-    """供同源前端（plugin-manager UI）直接获取 bridge token。"""
+    """Let same-origin plugin-manager frontends obtain bridge tokens directly."""
     bridge_token: str
     port: int = 48911
 
@@ -604,7 +604,7 @@ class MarketOAuthAccountSummaryResponse(BaseModel):
     expires_at: float | None = None
 
 
-# ─── 端点 ──────────────────────────────────────────────────────────
+# -- Endpoints --
 
 
 _CATALOG_RESPONSE_HEADERS = frozenset(
@@ -772,10 +772,10 @@ async def market_catalog_plugin(request: Request, plugin_id: str) -> Response:
 
 @router.get("/status", response_model=MarketStatusResponse)
 async def market_status():
-    """探测本地客户端是否在线。
+    """Probe local-client availability.
 
-    此端点不需要 token，供 Market 前端快速探测。
-    返回 market_url 供前端知道 Market 地址。
+    Token-free for quick Market-frontend detection.
+    Return market_url so frontends know Market's address.
     """
     try:
         cli_service = await get_plugin_cli_service()
@@ -791,9 +791,9 @@ async def market_status():
     )
 
 
-# 一整轮镜像测速的墙钟上限。单源的 per-I/O 超时乘以重定向跳数之后并不封顶，
-# 这个才封。12s 的取法：健康时实测一轮 4.6s，留出两倍余量，同时远小于用户会
-# 愿意干等的时间。
+# Whole-round mirror benchmarking wall-clock cap. Per-source IO timeouts multiplied by redirects do not bound
+# the round; this does. Healthy measured rounds take 4.6 s, so 12 s leaves over double headroom
+# while remaining below reasonable user waiting times.
 # Env: NEKO_MARKET_PROXY_PROBE_TOTAL_BUDGET
 from plugin.server.application.plugins._env_budgets import env_seconds
 
@@ -831,14 +831,14 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
             "status_code": status_code,
         }
 
-    # 整轮加一个总预算。
+    # Add one overall round budget.
     #
-    # 现有的 httpx.Timeout 是 per-I/O-op 的，而这里开了 follow_redirects 且允许
-    # 5 跳，所以单个源的上界是"跳数 × 每跳超时"，六个源在慢重定向链下能叠到几十
-    # 秒——实测六源各挂在 3s/跳、深 5 的 301 链后是 37.5s，8s 的那个超时一次都
-    # 没触发。而调用它的前端用的是裸 fetch，没有超时。
+    # Existing httpx.Timeout applies per IO, with follow_redirects and up to
+    # 5 hops. Six slow redirect chains can therefore take tens of seconds:
+    # six sources behind 5-deep 301 chains at 3 s/hop measured 37.5 s without triggering
+    # any 8 s timeout. The calling frontend uses fetch without timeout.
     #
-    # 超预算时保留已经量到的结果，而不是整批丢弃：慢但可用的镜像也是有用信息。
+    # Keep completed measurements on budget expiry rather than discard everything; slow usable mirrors still matter.
     tasks = [
         asyncio.ensure_future(probe(source_id, base_url))
         for source_id, base_url in _GITHUB_PROXY_SOURCES
@@ -849,9 +849,9 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
     for task in pending:
         task.cancel()
     if pending:
-        # cancel() 只是排一个 CancelledError，任务要到下一轮事件循环才真的停。
-        # 不等就返回的话，这些 HTTP 连接会在响应发出之后才收尾，留下一批看不见
-        # 的悬挂任务（CodeRabbit）。
+        # cancel() merely schedules CancelledError; tasks stop on the next loop turn.
+        # Returning without awaiting leaves HTTP connections cleaning up after responses,
+        # creating invisible lingering tasks (CodeRabbit).
         await asyncio.gather(*pending, return_exceptions=True)
     measured = [task.result() for task in tasks if task in done and not task.cancelled()]
     return tuple(measured)
@@ -1301,14 +1301,14 @@ async def market_install(
     payload: MarketInstallRequest,
     token: str = Query(..., description="Bridge token"),
 ):
-    """从 Market 触发插件安装。
+    """Trigger plugin installation from Market.
 
-    流程：下载包 → 校验 SHA256 → 调用 install_package → 返回任务 ID。
-    安装是异步的，前端通过 /market/tasks/{task_id} 轮询进度。
+    Download package, validate SHA256, call install_package, then return task ID.
+    Installation is asynchronous; frontends poll /market/tasks/{task_id}.
 
-    v2 (design §3.4.2): mode 字段决定走 install / upgrade / reinstall 三条
-    分支；upgrade / reinstall 在 bridge 内部协调 lifecycle stop → rename
-    旧目录 → unpack → record → start，失败时按 rollback steps 逆序回滚。
+    v2 design section 3.4.2 selects install/upgrade/reinstall by mode.
+    For upgrade/reinstall, the bridge coordinates stop, rename old directory, unpack,
+    record, and start, reversing rollback steps on failure.
     """
     _verify_token(token)
     request_error = _market_release_request_error(payload)
@@ -1428,7 +1428,7 @@ async def market_install(
         "cancel_requested": False,
     }
 
-    # 异步执行安装
+    # Run installation asynchronously.
     _task_workers[task_id] = asyncio.create_task(
         _execute_install(task_id, task_payload),
         name=f"market-install-{task_id}",
@@ -1446,7 +1446,7 @@ async def market_task_status(
     task_id: str,
     token: str = Query(..., description="Bridge token"),
 ):
-    """查询安装任务进度。"""
+    """Query install-task progress."""
     _verify_token(token)
     _cleanup_tasks()
 
@@ -1489,16 +1489,16 @@ async def cancel_market_install_task(
 async def market_installed(
     token: str = Query(..., description="Bridge token"),
 ):
-    """查询本地已安装的插件列表。
+    """List locally installed plugins.
 
-    v2 (design §3.5): 把 lock 上 ``channel="market"`` 的 entry 投影成
-    ``latest_install_source`` 一并返回，前端不再需要二次请求即可拿到
-    版本号 / channel / sha256 / payload_hash 用于 upgrade 与 yank 判定。
+    v2 design section 3.5 projects channel="market" lock entries as
+    latest_install_source, exposing version/channel/sha256/payload_hash without
+    extra requests for upgrade/yank decisions.
     """
     _verify_token(token)
 
     try:
-        # 一次性拿全量 lock 索引
+        # Fetch the complete lock index once.
         mgr = get_install_source_manager()
         if mgr is not None:
             await asyncio.to_thread(mgr.load)
@@ -1654,14 +1654,14 @@ def _project_market_source_detail(
 
 @router.post("/token-exchange", response_model=MarketTokenExchangeResponse)
 async def market_token_exchange(payload: MarketTokenExchangeRequest):
-    """通过一次性码交换 bridge token。
+    """Exchange one-time codes for bridge tokens.
 
-    流程：
-    1. N.E.K.O 客户端生成 one-time code 并通过 neko:// URI 传给浏览器
-    2. Market 前端用此 code 调用本端点换取 bridge_token
-    3. 后续请求使用 bridge_token
+    Flow:
+    1. N.E.K.O generates codes and passes them to browsers via neko://.
+    2. Market calls this endpoint with the code to obtain bridge_token.
+    3. Subsequent requests use bridge_token.
 
-    注意：此端点本身不需要 token（因为是用来获取 token 的）。
+    This endpoint requires no token because it issues one.
     """
     if not _consume_one_time_code(payload.one_time_code):
         raise HTTPException(status_code=403, detail="无效的一次性码")
@@ -1674,11 +1674,11 @@ async def market_token_exchange(payload: MarketTokenExchangeRequest):
 
 @router.get("/bridge-token", response_model=MarketBridgeTokenResponse)
 async def market_bridge_token(request: Request):
-    """供同源前端（plugin-manager UI）获取 bridge token。
+    """Provide bridge tokens to same-origin plugin-manager frontends.
 
-    plugin-manager UI 由同一个 FastAPI 进程托管，跟 /market/* 同源，所以
-    不需要走 one-time code 配对。只允许 127.0.0.1 / localhost 来源，避免
-    被外部网页拿到 token。
+    The same FastAPI process hosts plugin-manager and /market/*, requiring
+    no one-time-code pairing. Allow only 127.0.0.1/localhost origins to prevent
+    external pages obtaining tokens.
     """
     _require_local_bridge_token_access(request)
 
@@ -1705,10 +1705,10 @@ async def market_oauth_start(
     ),
     authorization: str | None = Header(None),
 ):
-    """启动 N.E.K.O → Auth OAuth 登录。
+    """Start N.E.K.O -> Auth OAuth login.
 
-    本地服务生成 PKCE verifier/challenge 并只把 verifier 存到本机文件；
-    前端只拿授权 URL，避免把可换 token 的 secret 暴露到浏览器状态里。
+    Local services generate PKCE verifier/challenge, storing verifiers only locally.
+    Frontends receive authorization URLs only, keeping exchangeable secrets out of browser state.
     """
     _verify_token(token, authorization=authorization)
     if not NEKO_AUTH_URL or not MARKET_API_URL:
@@ -1905,7 +1905,7 @@ async def market_oauth_status(
     ),
     authorization: str | None = Header(None),
 ):
-    """返回本地保存的 Auth 登录状态，并用 Market 资源侧接口复核。"""
+    """Return locally persisted Auth state and verify against Market resource APIs."""
     _verify_token(token, authorization=authorization)
     token_data = await _ensure_valid_oauth_token()
     if not token_data:
@@ -2102,7 +2102,7 @@ async def market_oauth_complete(
     ),
     authorization: str | None = Header(None),
 ):
-    """消费浏览器回调写入的授权码并换取 Auth token。"""
+    """Consume browser-callback authorization codes and exchange for Auth tokens."""
     _verify_token(token, authorization=authorization)
 
     pending = _read_json_file(_OAUTH_PENDING_FILE)
@@ -2213,7 +2213,7 @@ async def market_oauth_logout(
     ),
     authorization: str | None = Header(None),
 ):
-    """清除本地保存的 Auth OAuth token，Auth revoke 失败不影响本地退出。"""
+    """Clear local Auth OAuth tokens; revoke failures must not prevent local logout."""
     _verify_token(token, authorization=authorization)
     token_data = _read_json_file(_OAUTH_TOKEN_FILE)
     _clear_account_summary_cache()
@@ -2225,7 +2225,7 @@ async def market_oauth_logout(
     return MarketOAuthLogoutResponse(message="已退出 Auth 登录")
 
 
-# ─── 内部实现 ──────────────────────────────────────────────────────
+# -- Internal implementation --
 
 
 def _verify_token(
@@ -2233,7 +2233,7 @@ def _verify_token(
     *,
     authorization: str | None = None,
 ) -> None:
-    """验证 bridge token。
+    """Verify bridge tokens.
 
     Phase 3 dual-accept window (PR #1480 review-fix bug 1.6): the
     bridge token is accepted from EITHER the legacy ``?token=...``
@@ -3494,12 +3494,12 @@ async def _bind_market_package_hash(
 
 
 async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
-    """异步执行下载 + 校验 + 安装 / 升级流程（design §3.4）。
+    """Asynchronously download, validate, and install/upgrade, design section 3.4.
 
-    根据 ``payload.mode`` 走 ``_do_install`` / ``_do_upgrade`` 之一；后者
-    再细分为 ``upgrade`` (版本号必须前进) / ``reinstall`` (允许相同版本号)。
-    所有结构化错误都收敛到 :class:`_TaskError`，最终落到 task dict 的
-    ``error_code`` 字段供前端识别。
+    payload.mode selects _do_install or _do_upgrade; the latter distinguishes
+    upgrades requiring version advancement from reinstall allowing unchanged versions.
+    Normalize structured failures into _TaskError, ultimately populating task
+    error_code for frontend recognition.
     """
 
     task = _tasks[task_id]
@@ -4703,10 +4703,10 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
         )
         raise _DownloadAttemptError("下载网络错误", code="download_network_error") from exc
     except PackageDownloadDeadline as exc:
-        # asyncio.timeout 的**总时长**兜底到期。与上面的 httpx.TimeoutException 是两回事：
-        # 那个是某一阶段超时，这个是"每阶段都没超时、但整通下载拖得太久"（滴流式响应）。
-        # 必须单独接住并转成 _DownloadAttemptError，否则会落到最后的 except Exception
-        # 裸抛出去——既拿不到 GitHub 直连的回退重试，用户看到的也不是"下载超时"。
+        # asyncio.timeout's total-duration cap differs from per-phase httpx.TimeoutException:
+        # every phase may stay timely while the whole trickle download takes too long.
+        # Catch separately and convert to _DownloadAttemptError; otherwise final generic handling
+        # reraises, losing direct-GitHub retries and the user-facing download-timeout classification.
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4750,11 +4750,11 @@ def _format_bytes(value: int) -> str:
 
 
 def _extract_filename(url: str) -> str:
-    """从 URL 提取文件名。"""
+    """Extract filenames from URLs."""
     from urllib.parse import urlparse, unquote
     path = urlparse(url).path
     name = unquote(path.rsplit("/", 1)[-1]) if "/" in path else "package.neko-plugin"
-    # 确保有合法后缀
+    # Ensure a valid suffix.
     if not any(name.endswith(s) for s in _ALLOWED_SUFFIXES):
         name = name + ".neko-plugin"
     return name

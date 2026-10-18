@@ -223,7 +223,7 @@ async def test_audio_done_is_emitted_after_the_last_audio_chunk():
         ("__audio__", "sid-1", b"pcm-last"),
         ("__audio_done__", "sid-1"),
     )
-    # 收尾信号已送达；此时该 sid 的音频必须已经全部在它前面。
+    # Finalization signal delivered: all this sid's audio must already precede it.
     await _stop(task)
 
     assert ws.calls == [
@@ -233,7 +233,7 @@ async def test_audio_done_is_emitted_after_the_last_audio_chunk():
         ("bytes", b"pcm-last"),
         ("json", {"type": "audio_done", "speech_id": "sid-1"}),
     ]
-    # 位置断言之外再钉一次相对次序，避免有人放宽上面的全等断言后守卫失效。
+    # Pin relative order as well as positions so weakening the equality assertion above cannot disable the guard.
     assert ws.calls.index(("json", {"type": "audio_done", "speech_id": "sid-1"})) > (
         max(i for i, call in enumerate(ws.calls) if call[0] == "bytes")
     )
@@ -485,9 +485,9 @@ def test_no_call_site_schedules_audio_done_fire_and_forget():
     Discovered by scanning, not listed, so a NEW emitter (omni path included)
     is covered the day it lands.
     """
-    # 整条链上每一处「必须排在音频之后」的调用点：core 的下行发送、
-    # omni transport 触发的回调、worker 侧的哨兵投递。任一处改成
-    # fire-and-forget 都会让收尾信号插到尾音前面。
+    # Every point along the chain that must follow audio: Core downstream sending,
+    # omni transport callbacks, and worker sentinel delivery. Making any of them
+    # fire-and-forget would let finalization precede trailing audio.
     ordered_calls = {"send_audio_done", "on_audio_done", "emit_audio_done"}
     offenders = []
     for path in sorted(MAIN_LOGIC_DIR.rglob("*.py")):

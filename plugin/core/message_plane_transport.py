@@ -130,7 +130,7 @@ class MessagePlaneRpcClient:
         return str(uuid.uuid4())
     
     def _is_in_event_loop(self) -> bool:
-        """检测当前是否在事件循环中运行"""
+        """Detect whether currently running inside an event loop."""
         try:
             asyncio.get_running_loop()
             return True
@@ -138,7 +138,7 @@ class MessagePlaneRpcClient:
             return False
 
     async def _get_async_sock(self):
-        """获取异步 ZMQ socket (复用连接)"""
+        """Get asynchronous ZMQ socket, reusing connections."""
         if self._async_sock_cache is not None:
             return self._async_sock_cache
         
@@ -188,7 +188,7 @@ class MessagePlaneRpcClient:
         return sock
     
     async def request_async(self, *, op: str, args: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
-        """异步版本的 RPC 请求"""
+        """Asynchronous RPC request."""
         try:
             import zmq.asyncio
         except Exception:
@@ -208,13 +208,13 @@ class MessagePlaneRpcClient:
         }
         
         try:
-            # 零拷贝优化:直接序列化到 bytes,避免中间拷贝
+            # Zero-copy optimization: serialize directly to bytes, avoiding intermediate copies.
             raw = ormsgpack.packb(req)
         except Exception:
             return None
         
         try:
-            # 零拷贝发送:copy=False 避免 ZMQ 内部拷贝,track=False 避免跟踪开销
+            # Zero-copy send: copy=False avoids internal ZMQ copies; track=False avoids tracking overhead.
             await sock.send(raw, flags=0, copy=False, track=False)
         except Exception:
             return None
@@ -226,7 +226,7 @@ class MessagePlaneRpcClient:
                 return None
             
             try:
-                # 使用 asyncio.wait_for 实现超时
+                # Implement timeout with asyncio.wait_for.
                 events = await asyncio.wait_for(
                     sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN),
                     timeout=remaining
@@ -239,14 +239,14 @@ class MessagePlaneRpcClient:
                 return None
             
             try:
-                # 零拷贝接收:copy=False 返回 Frame,需要转换为 bytes
+                # Zero-copy receive: copy=False returns Frame, requiring bytes conversion.
                 resp_frame = await sock.recv(flags=0, copy=False)
                 resp_raw = bytes(resp_frame)  # Frame to bytes
             except Exception:
                 return None
             
             try:
-                # 直接反序列化
+                # Deserialize directly.
                 resp = ormsgpack.unpackb(resp_raw)
             except Exception:
                 continue
@@ -259,7 +259,7 @@ class MessagePlaneRpcClient:
                     return resp
     
     def request_sync(self, *, op: str, args: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
-        """同步版本的 RPC 请求 (原 request 方法)"""
+        """Synchronous RPC request (original request method)."""
         if zmq is None:
             return None
         sock = self._get_sock()
@@ -275,12 +275,12 @@ class MessagePlaneRpcClient:
             "from_plugin": self._plugin_id
         }
         try:
-            # 零拷贝优化:直接序列化
+            # Zero-copy optimization: serialize directly.
             raw = ormsgpack.packb(req)
         except Exception:
             return None
         try:
-            # 零拷贝发送:copy=False 避免 ZMQ 内部拷贝,track=False 避免跟踪开销
+            # Zero-copy send: copy=False avoids internal ZMQ copies; track=False avoids tracking overhead.
             sock.send(raw, flags=0, copy=False, track=False)
         except Exception:
             return None
@@ -296,13 +296,13 @@ class MessagePlaneRpcClient:
             except Exception:
                 return None
             try:
-                # 零拷贝接收:copy=False 返回 Frame,需要转换为 bytes
+                # Zero-copy receive: copy=False returns Frame, requiring bytes conversion.
                 resp_frame = sock.recv(flags=0, copy=False)
                 resp_raw = bytes(resp_frame)  # Frame to bytes
             except Exception:
                 return None
             try:
-                # 直接反序列化
+                # Deserialize directly.
                 resp = ormsgpack.unpackb(resp_raw)
             except Exception:
                 continue
@@ -314,20 +314,20 @@ class MessagePlaneRpcClient:
                     return resp
     
     def request(self, *, op: str, args: Dict[str, Any], timeout: float) -> Union[Optional[Dict[str, Any]], Coroutine[Any, Any, Optional[Dict[str, Any]]]]:
-        """智能 RPC 请求:自动检测执行环境,选择同步或异步执行方式
+        """Smart RPC: detect execution environment and choose sync/async execution.
         
         Returns:
-            在事件循环中返回协程,否则返回结果字典
+            Coroutine in an event loop; result dictionary otherwise
         """
         if self._is_in_event_loop():
             return self.request_async(op=op, args=args, timeout=timeout)
         return self.request_sync(op=op, args=args, timeout=timeout)
     
     async def batch_request_async(self, requests: List[Dict[str, Any]], *, timeout: float = 5.0) -> List[Optional[Dict[str, Any]]]:
-        """异步批量请求
+        """Asynchronous batch requests
         
         Args:
-            requests: List of {"op": str, "args": dict} requests
+            requests: List of {\"op\": str, \"args\": dict} requests
             timeout: Timeout for all requests
             
         Returns:
@@ -359,13 +359,13 @@ class MessagePlaneRpcClient:
             }
             
             try:
-                # 零拷贝序列化
+                # Zero-copy serialization.
                 raw = ormsgpack.packb(req)
             except Exception:
                 continue
             
             try:
-                # 零拷贝批量发送
+                # Zero-copy batch send.
                 flags = zmq.SNDMORE if i < len(requests) - 1 else 0
                 await sock.send(raw, flags=flags, copy=False, track=False)
             except Exception:
@@ -394,14 +394,14 @@ class MessagePlaneRpcClient:
                 break
             
             try:
-                # 零拷贝接收:copy=False 返回 Frame,需要转换为 bytes
+                # Zero-copy receive: copy=False returns Frame, requiring bytes conversion.
                 resp_frame = await sock.recv(flags=0, copy=False)
                 resp_raw = bytes(resp_frame)  # Frame to bytes
             except Exception:
                 break
             
             try:
-                # 直接反序列化
+                # Deserialize directly.
                 resp = ormsgpack.unpackb(resp_raw)
             except Exception:
                 continue

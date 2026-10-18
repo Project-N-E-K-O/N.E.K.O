@@ -144,8 +144,8 @@ Não retorne nada fora do JSON. Não envolva em bloco de código.""",
 # Headers used to format the dialogue context block sent to the model.
 GALGAME_DIALOGUE_HEADER = {
     'zh': "======以下为最近的对话======",
-    # 水印框「以下为 / 以上为」在本表里是跨 locale 不变的字面量（英日韩俄西葡各行
-    # 也照抄），繁中行沿用同一个框，只翻描述词，让上下水印保持成对可比。
+    # The watermark frames "以下为 / 以上为" (following/preceding content) are invariant literals across locales in this table (also copied verbatim
+    # in English, Japanese, Korean, Russian, Spanish, and Portuguese). Traditional Chinese keeps the same frames and translates only descriptions so paired watermarks remain comparable.
     'zh-TW': "======以下为最近的對話======",
     'en': "======以下为 the recent dialogue======",
     'ja': "======以下为 直近の会話======",

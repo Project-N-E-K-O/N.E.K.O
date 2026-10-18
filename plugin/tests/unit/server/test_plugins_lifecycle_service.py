@@ -121,7 +121,7 @@ async def test_runtime_mutations_wait_for_plugin_operation_lock(
         acquire_calls += 1
         if acquire_calls == 2:
             second_acquire_attempted.set()
-        # 截止期照原样转发，别在替身里把它吞掉。
+        # Forward the deadline unchanged; do not swallow it in the stub.
         await original_acquire(deadline)
 
     async def _clear_tools(_plugin_id: str) -> None:
@@ -1429,8 +1429,8 @@ async def test_start_plugin_clamps_its_startup_timeout_to_the_caller_budget(
         assert _RecordingHost.instances[0].startup_timeout == pytest.approx(2.5, abs=0.5), (
             f"剩余预算没有压到真正启动 host 的那一步：{_RecordingHost.instances[0].startup_timeout}"
         )
-        # 扫描排在 host 之后，而它自己的上限是 10s——不一起钳住的话，预算只管住了
-        # 这一次启动里的一步。
+        # Scanning follows host startup and has its own 10s limit; without clamping both, the budget covers
+        # only one step of this startup.
         assert scan_timeouts, "前提没成立：没有走到元数据扫描"
         assert scan_timeouts[0] == pytest.approx(2.5, abs=0.6), (
             f"元数据扫描没有按剩余预算收窄：{scan_timeouts}"
@@ -4011,11 +4011,11 @@ async def test_start_plugin_checks_python_requirements_off_the_event_loop(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """依赖闸门是真磁盘 I/O，不能占着事件循环跑。
+    """Dependency gates perform real disk I/O and must not occupy the event loop.
 
-    列 vendor/ 下每个 dist-info 再逐个读 METADATA，在 Windows 上冷读实测 0.31s
-    （200 个分发包）到 0.97s（600 个）。跑在循环线程上就是整台服务器这段时间不
-    响应任何请求。这条守卫盯的是"在哪个线程跑"，不是"跑没跑"。
+    Listing every vendor/ dist-info then reading each METADATA took 0.31s on cold Windows reads
+    (200 distributions), rising to 0.97s (600). On the loop thread, the whole server
+    cannot answer requests during that time. This guard checks the executing thread, not merely execution.
     """
     config_path = tmp_path / "vendor_adapter" / "plugin.toml"
     vendor_dir = config_path.parent / "vendor"
@@ -4048,10 +4048,10 @@ async def test_start_plugin_checks_python_requirements_off_the_event_loop(
         seen["thread"] = threading.current_thread()
         seen["requirements"] = list(requirements)
         seen["search_paths"] = list(search_paths or [])
-        # 返回的名字**故意跟声明的不一样**：闸门读的必须是检查器的判定，
-        # 不是插件自己声明的那张清单。两者都非空，所以只断言"抛了错"分不出
-        # 解包顺序错位——错位之后错误信息会把"缺什么"报成声明清单，用户照着
-        # 去装的就是本来就装好的那个包（变异存活验出来的）。
+        # The returned name **intentionally differs from the declared name**: the gate must read the checker's verdict,
+        # not the plugin's own declaration. Both are nonempty, so merely asserting an error cannot distinguish
+        # swapped unpacking order, which reports the declared list as missing, telling the user
+        # to install a package already installed (revealed by a surviving mutation).
         return ["missing-pkg>=9"]
 
     monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", lambda _plugin_id: {"success": True})
@@ -4195,7 +4195,7 @@ async def test_start_plugin_scans_once_when_the_packaged_schema_is_stale(
             scans.append(str(kwargs["plugin_id"]))
             kwargs.pop("timeout", None)
             scanned = inner_scan(**kwargs)
-            # 扫描结果和包里那份只差一个 name，好分辨最终注册的是哪一份。
+            # Scan results differ from the package copy by one name, revealing which version is ultimately registered.
             return IsolatedPluginMetadata(
                 entries_preview=scanned.entries_preview,
                 handlers={"packaged_adapter.list_servers": scanned_handler},
@@ -4380,7 +4380,7 @@ async def test_a_stale_package_is_upgraded_in_place_by_its_first_start(
     assert written["schema_version"] == packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION
     assert written["handlers"]["packaged_adapter.list_servers"] == scanned
     assert written["entries"][0]["id"] == "list_servers"
-    # 写出来的文件要能被读取器原样接受，下次启动才真的不再扫描。
+    # The reader must accept written files unchanged so the next startup really skips scanning.
     packaged = packaged_metadata.read_packaged_metadata(plugin_dir)
     assert packaged is not None
     assert packaged.handlers["packaged_adapter.list_servers"]["name"] == "Scanned"

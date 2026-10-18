@@ -118,10 +118,10 @@ MANAGED_MEMORY_FILENAMES = (
     # shards; otherwise a cloud restore could make pre-forget snapshots
     # eligible for subject restore again.
     "subject_forget_tombstones.json",
-    # 外部导入逐日幂等 sidecar（可选：仅导入过、且有无 fact 载体天的角色才有）。
-    # 必须与 facts.json 同处一个 cloudsave 同步/回滚单元：sidecar 记的是空抽取/
-    # 全去重天的 processed 指纹，若它随云同步而 facts 回滚（或反之）会与账本失配，
-    # 故一起 hash/上传/删除/恢复（缺失文件在各遍历处 is_file/exists 判断跳过）。
+    # External-import per-day idempotency sidecar (optional: only characters with imported days lacking fact carriers).
+    # Must share facts.json cloudsave sync/rollback unit: sidecars track processed fingerprints of empty-extraction /
+    # all-dedup days; independently syncing/rolling back them and facts desynchronizes ledger,
+    # so hash/upload/delete/restore together (missing files skipped with is_file/exists).
     "external_import_state.json",
     "prompt_locale.json",
     "scoped_prompt_locales.json",
@@ -217,16 +217,16 @@ LEGACY_RUNTIME_DIR_NAMES = (
 )
 
 
-# 这些运行时目录用点开头的暂存目录做原子更新（如 avatar_tools 的
-# ``.<tool-id>.backup`` / ``.<tool-id>.updating``）。更新被打断时，它们可能是
-# 某个道具仅存的副本，所以扫描「有没有用户内容」时不能因为点开头就跳过 ——
-# 那会让 bootstrap 判定目标根为空，进而不备份就整根替换掉。
+# Runtime directories use dot-prefixed staging for atomic updates (e.g. avatar_tools
+# ``.<tool-id>.backup`` / ``.<tool-id>.updating``). Interrupted updates may leave
+# these as an item's sole copy, so user-content scans must not skip dot-prefixed entries,
+# or bootstrap treats target root as empty and replaces it without backup.
 #
-# 模式必须和各模块自己的事务命名逐字一致，两个方向都会出事：放宽了会把无关的
-# 隐藏条目（``.cache.backup`` 之类）当成用户内容，拦下本该发生的迁移；收紧了
-# 会漏掉真正的仅存副本，重新变成静默删除。还要识别 ``.deleting.unverified``：
-# 它说明删除实际移动的对象尚未确认，旁边的 ``.deleting`` 可能保存着并发新版本。
-# ``.uploading`` 和不带未确认授权的普通 ``.deleting`` 仍不算内容。
+# Patterns must exactly match module transaction naming: too broad treats unrelated hidden
+# entries (e.g. ``.cache.backup``) as content, blocking legitimate migration; too narrow
+# misses genuine sole copies, silently deleting again. Recognize ``.deleting.unverified`` too:
+# moved deletion target is unverified; adjacent ``.deleting`` may hold concurrent newer version.
+# ``.uploading`` and ordinary ``.deleting`` lacking unverified authorization remain non-content.
 _AVATAR_TOOL_ID_PATTERN_SOURCE = (
     r"local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )

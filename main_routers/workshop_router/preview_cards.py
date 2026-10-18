@@ -315,8 +315,8 @@ def _should_refresh_workshop_card_face(face_path: Path, meta_path: Path) -> bool
 
     origin = _read_card_face_origin(meta_path)
     if origin is None:
-        # sidecar 缺失时默认保护现有自定义 PNG；但如果卡面带有本地生成的
-        # Workshop marker，说明它是渲染中断后留下的孤儿文件，允许后续重试。
+        # Without a sidecar, protect existing custom PNGs by default; a locally generated Workshop marker
+        # on the card indicates an orphan from interrupted rendering and permits later retries.
         return _has_workshop_card_face_marker(face_path)
 
     if origin in {'self', 'imported'}:
@@ -384,14 +384,14 @@ def _is_matching_workshop_character(catgirl_data: dict, item_id) -> bool:
         if not current_item_id:
             return False
 
-        # 归属判定与退订确认路径（_is_confirmed_workshop_character）保持一致：
-        #   - character_origin.source_id 表示角色最初来自哪个 Workshop 物品
-        #   - avatar.asset_source_id 表示当前实际绑定的模型来源
-        # 旧数据 / 半迁移数据可能只有 avatar 绑定（例如 live2d_item_id 迁移只写
-        # avatar.asset_source_id，或用户在模型设置里手动绑定 Workshop 模型时只写
-        # avatar.*）。若这里只看 character_origin，这类角色会被退订路径按 avatar
-        # 命中删除并打上 tombstone，却无法被恢复路径识别，导致 tombstone 永远清不掉、
-        # /sync-character/{item_id} 一直回 409。两边判定必须对偶。
+        # Ownership checks must match the unsubscribe-confirmation path (_is_confirmed_workshop_character):
+        #   - character_origin.source_id identifies the character's original Workshop item
+        #   - avatar.asset_source_id identifies the currently bound model's source
+        # Old/partially migrated data may have only an avatar binding (for example, live2d_item_id migration writes only
+        # avatar.asset_source_id, or manually binding a Workshop model in model settings writes only
+        # avatar.*). Checking only character_origin here would let unsubscribe match these characters by avatar,
+        # delete them, and set tombstones, while restoration cannot recognize them, leaving tombstones uncleared forever
+        # and /sync-character/{item_id} permanently returning 409. Both checks must remain symmetric.
         origin_source = str(
             get_reserved(catgirl_data, 'character_origin', 'source', default='') or ''
         ).strip()
@@ -513,7 +513,7 @@ async def upload_preview_image(request: Request):
     Upload a preview image, renamed uniformly to preview.* and saved into the given content folder (if provided).
     """
     try:  
-        # 接收上传的文件和表单数据
+        # Receive uploaded files and form data
         form = await request.form()
         file = form.get('file')
         content_folder = form.get('content_folder')
@@ -525,7 +525,7 @@ async def upload_preview_image(request: Request):
                 "message": "请选择要上传的图片文件"
             }, status_code=400)
         
-        # 验证文件类型
+        # Validate file type
         allowed_types = ['image/jpeg', 'image/png', 'image/jpg']
         if file.content_type not in allowed_types:
             return JSONResponse({
@@ -534,16 +534,16 @@ async def upload_preview_image(request: Request):
                 "message": "只允许上传JPEG和PNG格式的图片"
             }, status_code=400)
         
-        # 获取文件扩展名
-        # 扩展名按 content-type 固定映射，别信 filename
+        # Get the file extension
+        # Map extensions strictly from content-type; do not trust filename
         content_type_to_ext = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png"}
         file_extension = content_type_to_ext.get(file.content_type)
         if not file_extension:
             return JSONResponse({"success": False, "error": "文件类型不允许"}, status_code=400)
                     
-        # 处理内容文件夹路径
+        # Handle the content-folder path
         if content_folder:
-            # 规范化路径
+            # Normalize the path
             import urllib.parse
             content_folder = urllib.parse.unquote(content_folder)
             if os.name == 'nt':
@@ -553,23 +553,23 @@ async def upload_preview_image(request: Request):
                 else:
                     content_folder = content_folder.replace('\\', '/')
             
-            # 验证内容文件夹存在
+            # Verify that the content folder exists
             if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
-                # 如果文件夹不存在，回退到临时目录
+                # Fall back to a temporary directory if the folder does not exist
                 logger.warning(f"指定的内容文件夹不存在: {content_folder}，使用临时目录")
                 content_folder = None
         
-        # 创建统一命名的预览图路径
+        # Create a consistently named preview-image path
         if content_folder:
-            # 直接保存到内容文件夹
+            # Save directly to the content folder
             preview_image_path = os.path.join(content_folder, f'preview{file_extension}')
         else:
-            # 使用临时目录
+            # Use a temporary directory
             import tempfile
             temp_folder = tempfile.gettempdir()
             preview_image_path = os.path.join(temp_folder, f'preview{file_extension}')
         
-        # 先在异步上传对象上读完，再把完整的原子落盘单元交给 worker。
+        # Finish reading from the asynchronous upload object, then pass the complete atomic disk-write unit to the worker.
         image_bytes = await file.read()
         await asyncio.to_thread(
             _write_preview_image,

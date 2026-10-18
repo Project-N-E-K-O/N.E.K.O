@@ -38,8 +38,8 @@ def _volume_argument_error(action: str, value: Any) -> str | None:
     """
     if value is None or value == "":
         return f"INVALID_ARGUMENT: {action} requires a numeric value"
-    # bool 是 int 的子类，float(True) == 1.0 会一路放行，前端的 Number(true) 又把它
-    # 读成 1，于是 set_volume=true 悄悄变成 1%。显式挡掉。
+    # bool subclasses int: float(True) == 1.0 passes validation; frontend Number(true) reads
+    # it as 1, silently turning set_volume=true into 1%. Reject explicitly.
     if isinstance(value, bool):
         return f"INVALID_ARGUMENT: {action} value must be a number, not a boolean"
     try:
@@ -142,8 +142,8 @@ class JukeboxControllerPlugin(NekoPluginBase):
         clean_query = str(query or "").strip()
         clean_mode = str(mode or "").strip().lower()
 
-        # 动作专属参数在推给前端之前就要判掉。前端的 invalid_volume /
-        # invalid_playback_mode 是异步结果，回不到这里，模型会照样跟用户说已发送。
+        # Validate action-specific parameters before forwarding to frontend. Frontend invalid_volume /
+        # invalid_playback_mode are asynchronous results unavailable here; model would still tell users sent.
         if normalized in _VOLUME_ACTIONS:
             volume_error = _volume_argument_error(normalized, value)
             if volume_error:
@@ -155,8 +155,8 @@ class JukeboxControllerPlugin(NekoPluginBase):
             ))
         clean_target_lanlan = self._resolve_target_lanlan(kwargs) or ""
         if not clean_target_lanlan:
-            # 无归属的指令后端本来就会丢。返回 Ok 会让模型跟用户说「已发送」，
-            # 所以这里必须明确失败。
+            # Backend already discards unowned commands. Returning Ok makes models tell users sent,
+            # so explicitly fail here.
             return Err(SdkError(
                 "FAILED_PRECONDITION: jukebox control needs an invocation-local target character"
             ))
@@ -186,8 +186,8 @@ class JukeboxControllerPlugin(NekoPluginBase):
         )
         rejection = _submission_rejection(receipt)
         if rejection:
-            # 同步就被拒了（背压 / 传输不可用 / 载荷过大），前端根本收不到这条指令。
-            # 不看回执就返回 Ok，模型会跟用户说「已发送」。
+            # Synchronous rejection (backpressure / transport unavailable / oversized payload): frontend never receives command.
+            # Returning Ok without checking receipt makes model tell users sent.
             return Err(SdkError(f"UNAVAILABLE: jukebox control was not submitted: {rejection}"))
 
         if normalized == "play":

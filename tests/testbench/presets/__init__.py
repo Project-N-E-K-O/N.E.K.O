@@ -22,7 +22,7 @@ Layout
 The preset is consumed by :mod:`tests.testbench.routers.persona_router` via
 ``GET /api/persona/builtin_presets`` (listing) and
 ``POST /api/persona/import_builtin_preset/{preset_id}`` (apply).
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 from pathlib import Path

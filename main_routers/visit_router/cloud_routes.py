@@ -145,7 +145,7 @@ async def fetch_details_page(visit_id: str, *, cursor: str = "", limit: int | No
         params["limit"] = str(int(limit))
     body = await cloud_get(f"/api/visit/details/{visit_id}", op="details", params=params)
     if body.get("visit_id") != visit_id:
-        # Servers 回了别的场次：按坏响应处理，不交给前端
+        # Servers returned another session: treat as a malformed response and do not forward to the frontend
         logger.warning("visit servers details: reply names another visit")
         raise CloudError(_error(503, "servers_unreachable"))
     return body
@@ -165,7 +165,7 @@ def _finite_number(value: Any) -> bool:
     try:
         return math.isfinite(value)
     except OverflowError:
-        # 超出 float 范围的整数：isfinite 会抛，不能让一行坏数据把导出变成 500
+        # Integers beyond float range make isfinite raise; one invalid row must not turn export into 500
         return False
 
 
@@ -175,7 +175,7 @@ def _utf8_str(value: Any) -> bool:
     try:
         value.encode("utf-8")
     except UnicodeEncodeError:
-        # JSON 里转义的孤立代理字符：解析得出字符串，却编不成 UTF-8，回给前端时会 500
+        # Escaped lone surrogates in JSON parse as strings but cannot encode as UTF-8, producing 500 when returned to the frontend
         return False
     return True
 
@@ -192,7 +192,7 @@ def _cloud_line(row: Any, role: str) -> dict | None:
     if mine is None:
         return None
     if not isinstance(mine, dict):
-        # 本侧字段在、却不是对象：坏行，不能当成「这一侧没有」静默漏掉
+        # A present local-side field that is not an object is an invalid row, not an absent side to omit silently
         return _MALFORMED
     ts = mine.get("ts")
     if (
@@ -235,8 +235,8 @@ async def fetch_cloud_transcript(visit_id: str) -> dict:
         role = page_role
         next_cursor = body.get("next_cursor")
         if len(rows) > DETAILS_PAGE_LIMIT or (next_cursor not in (None, "") and len(rows) != DETAILS_PAGE_LIMIT):
-            # 契约（§4.7 details）：除最后一页外每页恰好 limit 行、任何一页都不超过 limit；
-            # 不合的页会让页数上限算出的总量不成立（少了白翻满页数，多了撑破内存上界）
+            # Contract (§4.7 details): every page except the last has exactly limit rows, and no page exceeds limit;
+            # violating this invalidates the total derived from page limits (short pages waste pagination, oversized pages exceed memory bounds)
             logger.warning("visit servers details: transcript page size off contract")
             raise CloudError(_error(503, "servers_unreachable"))
         for row in rows:
@@ -247,12 +247,12 @@ async def fetch_cloud_transcript(visit_id: str) -> dict:
                 lines.append(line)
         if next_cursor is None or next_cursor == "":
             if rejected:
-                # 不合契约的行丢掉、记一条诊断（每份转录一条，不逐行刷）
+                # Drop contract-invalid rows and emit one diagnostic per transcript, avoiding per-row spam
                 memory_bridge.diag("cloud_transcript_rows_rejected", count=rejected)
             lines.sort(key=lambda line: (line["lp"], SIDE_RANK.get(line["side"], 2)))
             return {"source": "cloud", "visit_id": visit_id, "role": role, "lines": lines}
         if not isinstance(next_cursor, str) or not _CURSOR_RE.fullmatch(next_cursor) or next_cursor in seen_cursors:
-            # 回到请求过的游标（原地不动或绕圈）会把同一页重复拼进来：按坏响应处理，不白等满页数
+            # Revisiting a requested cursor (unchanged or cyclic) duplicates pages; treat as malformed instead of exhausting the page limit
             logger.warning("visit servers details: malformed next_cursor")
             raise CloudError(_error(503, "servers_unreachable"))
         cursor = next_cursor
@@ -261,7 +261,7 @@ async def fetch_cloud_transcript(visit_id: str) -> dict:
     raise CloudTranscriptIncomplete(visit_id)
 
 
-# ── 历史 / 详情 ────────────────────────────────────────────────────────
+# ── History / details ────────────────────────────────────────────────────────
 
 
 @router.get("/history")
@@ -287,7 +287,7 @@ async def visit_history(request: Request, cursor: str = ""):
     for item in raw_items:
         if not isinstance(item, dict) or not isinstance(item.get("visit_id"), str) \
                 or not VISIT_ID_RE.fullmatch(item["visit_id"]) or item.get("role") not in ("host", "guest"):
-            # 格式闸：不合格的 visit_id 不进前端（之后还会被拿去派生路径、发请求）
+            # Format gate: invalid visit_id values must not enter the frontend, where they later derive paths and requests
             memory_bridge.diag("history_item_rejected")
             continue
         short = item.get("peer_short_code")
@@ -324,7 +324,7 @@ async def visit_details(request: Request, visit_id: str, cursor: str = ""):
         return exc.response
 
 
-# ── 举报 ───────────────────────────────────────────────────────────────
+# ── Reports ───────────────────────────────────────────────────────────────
 
 
 def _report_fields(payload: Mapping[str, Any]) -> dict | JSONResponse:
@@ -340,7 +340,7 @@ def _report_fields(payload: Mapping[str, Any]) -> dict | JSONResponse:
     if not isinstance(note, str) or len(note) > VISIT_REPORT_NOTE_MAX_CHARS:
         return _error(400, "invalid_note")
     try:
-        # 孤立代理字符（JSON 里的 "\ud800"）解析得出、却写不进 UTF-8 的举报文件：当场按无效备注拒，不落成 500
+        # Lone surrogates (JSON "\ud800") parse but cannot write UTF-8 report files: reject immediately as invalid notes instead of 500
         note.encode("utf-8")
     except UnicodeEncodeError:
         return _error(400, "invalid_note")
@@ -370,13 +370,13 @@ async def report_visit(request: Request):
         **fields,
         "own_visit_uid": own_visit_uid,
         "own_account": account,
-        # 共用电脑上另一账号那一侧的异常计数不算进这份举报
+        # Exclude anomaly counts from another account's side on a shared computer
         "anomalies": await tu.visit_anomalies(config_dir, visit_id, own_visit_uid),
         "app_version": cr._app_version(),
         "queued_at": time.time(),
     }
-    # 入队与这一次提交在同一把逐场锁里：后台轮次（会把新排的举报顺手交掉）和另一个窗口的「放弃」
-    # 都插不进两步之间，返回的结果就是这份举报的真实去向
+    # Enqueue and this submission share a per-session lock; neither background rounds (which may submit newly queued reports) nor another window's discard
+    # can intervene, so the returned result reflects this report's actual disposition
     async with tu.visit_lock(visit_id):
         try:
             await tu.queue_report(config_dir, doc)
@@ -406,54 +406,54 @@ def _queued_login_required() -> JSONResponse:
 async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
     visit_id = doc["visit_id"]
     if doc["include_transcript"]:
-        # 附转录的举报等本侧转录先到 Servers：在飞场次等收尾封存，已封存的先同步试传一次
+        # Transcript-attached reports wait until this side's transcript reaches Servers: await archival for ongoing sessions, or synchronously attempt an archived upload once
         if tu.is_live(visit_id):
             return JSONResponse({"queued": True}, status_code=202)
         deferred = tu.upload_deferred_s(visit_id, doc.get("own_visit_uid"))
         if deferred > 0:
-            # 这份举报那一侧的转录刚被 Servers 限流（Retry-After 未到）：不在这里同步重传，交给已推后的
-            # 后台重试。另一账号那一侧的转录在限流时不挡（照常走下面的归属判断）
+            # Servers just rate-limited this report's transcript side (Retry-After pending): do not retransmit synchronously; leave it to deferred
+            # background retries. Rate limiting of another account's transcript does not block this report; continue ownership checks below
             tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=deferred)
             return JSONResponse({"queued": True}, status_code=202)
         try:
             upload = await tu.attempt_upload(visit_id, config_dir=config_dir)
         except (OSError, ValueError) as exc:
-            # 举报已落盘：上传的进度记账出错（磁盘满等）不能变成 500，留给后台重试
+            # The report is persisted: upload-progress bookkeeping failures (full disk, etc.) must not become 500; leave them to background retries
             logger.warning("visit report %s: upload attempt failed: %s", visit_id, type(exc).__name__)
             tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(None))
             return JSONResponse({"queued": True}, status_code=202)
-        # 另一账号那一侧的转录不挡这份举报、也不借它的原因（仍可重试的照样排后台）
+        # Another account's transcript neither blocks this report nor supplies its reason; retryable failures still schedule background work
         upload = upload.for_report(doc)
         if not upload.pending and upload.retryable:
-            # 已传上去、只是封存文件还没删掉：后台稍后清理
+            # Already uploaded, but the archived file remains; background cleanup handles it later
             tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(None))
         if upload.pending:
             if upload.retryable:
                 tu.schedule_visit_retry(visit_id, config_dir=config_dir,
                                         initial_delay_s=_after_attempt(upload.retry_after_s))
             if upload.login_required:
-                # 已排队，但转录因登录失效传不上去：提示重新登录，并带 queued 让页面按已排队显示
+                # Queued, but transcript upload cannot authenticate: request login and include queued so the page displays queued status
                 return _queued_login_required()
             return JSONResponse({"queued": True}, status_code=202)
-        # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上；
-        # 没能写进文件（磁盘 / 权限）时原因在 upload.unavailable 里，提交的这份照样带上
+        # On terminal rejection/expiration, attempt_upload records the reason in the report file; reread to include it;
+        # if disk/permissions prevented persistence, take the reason from upload.unavailable and include it in this submission anyway
         doc = await tu.load_report(config_dir, visit_id) or doc
         if upload.unavailable and not doc.get("transcript_unavailable"):
-            # 原因只在内存里（转录先于举报结清 / 之前没写成）：补写进排队的举报，重启后补录提交时也带着
+            # If the reason exists only in memory (transcript settled before the report or persistence failed), write it into the queued report for post-restart recovery submission
             await tu.mark_report_transcript_unavailable(config_dir, visit_id, upload.unavailable)
             doc = {**doc, "transcript_unavailable": upload.unavailable}
     result = await tu.send_report(doc)
     if await tu.finish_report(config_dir, visit_id, result, doc):
         return JSONResponse({"ok": True, "report_id": result.report_id})
     if result.unknown_visit:
-        # 举报文件留着（只有受理或用户放弃才删）、标记为被拒，队列里给「重试 / 放弃」。
-        # 标记没写进去（磁盘 / 权限）时排一轮后台重试，下一轮再记
+        # Retain the rejected report file (delete only after acceptance or user discard) and offer Retry / Discard in the queue.
+        # If the marker could not persist because of disk/permissions, schedule a background retry to record it next round
         if not await tu.rejection_recorded(config_dir, visit_id):
             tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(None))
         return _error(404, "unknown_visit")
     tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(result.retry_after_s))
     if result.login_required:
-        # 已排队，但登录失效：提示重新登录（原账号回来后由后台 / 启动补录接着提交）
+        # Queued but login expired: request login; background/startup recovery resumes submission when the original account returns
         return _queued_login_required()
     return JSONResponse({"queued": True}, status_code=202)
 
@@ -485,15 +485,15 @@ async def act_on_queued_report(request: Request, visit_id: str):
 
     async def _owned_report() -> dict | None:
         report = await tu.load_report(config_dir, visit_id)
-        # 别的账号在这台机器上排的举报：不可见、不可删
+        # Reports queued by other accounts on this computer are neither visible nor deletable
         return report if report is not None and await tu.report_belongs_to(report, account) else None
 
     async def _owned() -> bool:
         return await _owned_report() is not None
 
     if action == "abandon":
-        # 与后台提交共用逐场锁，并在锁内核对归属：等锁期间原举报可能已提交删除、
-        # 另一账号又排了同一场的举报——删的必须是此刻这份、且属于当前账号
+        # Share the background submitter's per-session lock and check ownership inside it: while awaiting the lock, the original report may have been submitted/deleted,
+        # with another account queuing a new report for that session; delete only the current file belonging to the current account
         async with tu.visit_lock(visit_id):
             if not await _owned() or not await tu.delete_report(config_dir, visit_id):
                 return _error(404, "not_queued")
@@ -502,14 +502,14 @@ async def act_on_queued_report(request: Request, visit_id: str):
     if owned is None:
         return _error(404, "not_queued")
     outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir, manual=True, owner=account, expect=owned)
-    # 读不了（被占用）不等于已送达：按还在处理
+    # Unreadable because of contention does not mean delivered; treat as still processing
     current, unreadable = await tu._read_report(config_dir, visit_id)
     delivered = not unreadable and (current is None or not await tu.report_belongs_to(current, account))
     if not delivered and outcome.unknown_visit:
-        # 又被拒：与 POST /report 同样回 404 unknown_visit，UI 照旧给「重试 / 放弃」
+        # Rejected again: return 404 unknown_visit like POST /report; UI still offers Retry / Discard
         return _error(404, "unknown_visit")
     if not delivered and outcome.login_required:
-        # 原账号的登录已失效：提示重新登录（文件留着，登录后照常补提）
+        # Original account login expired: request login and retain the file for normal recovery submission afterward
         return _cloud_error(cr.VisitLoginRequired())
     if not delivered and outcome.pending:
         tu.schedule_visit_retry(visit_id, config_dir=config_dir,

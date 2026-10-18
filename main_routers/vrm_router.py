@@ -24,7 +24,7 @@ Handles VRM model-related endpoints including:
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -45,12 +45,12 @@ from utils.logger_config import get_module_logger
 router = APIRouter(prefix="/api/model/vrm", tags=["vrm"])
 logger = get_module_logger(__name__, "Main")
 
-# VRM 模型路径常量
+# VRM model-path constants.
 VRM_USER_PATH = "/user_vrm"  
 VRM_STATIC_PATH = "/static/vrm"
 VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation"
 
-# 文件上传常量
+# File-upload constants.
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for streaming
 
@@ -64,28 +64,28 @@ def safe_vrm_path(vrm_dir: Path, filename: str, subdir: str | None = None) -> tu
         subdir: subdirectory (e.g. 'animation'), optional
     """
     try:
-        # 使用 pathlib 构造路径
+        # Build paths with pathlib.
         if subdir:
             target_path = vrm_dir / subdir / filename
         else:
             target_path = vrm_dir / filename
         
-        # 解析为绝对路径（解析 ..、符号链接等）
+        # Resolve absolute paths (including .. and symlinks).
         resolved_path = target_path.resolve()
         resolved_vrm_dir = vrm_dir.resolve()
         
-        # 验证解析后的路径在 vrm_dir 内
+        # Verify the resolved path is inside vrm_dir.
         try:
             if not resolved_path.is_relative_to(resolved_vrm_dir):
                 return None, "路径越界：目标路径不在允许的目录内"
         except AttributeError:
-            # Python < 3.9 的回退方案
+            # Fallback for Python <3.9.
             try:
                 resolved_path.relative_to(resolved_vrm_dir)
             except ValueError:
                 return None, "路径越界：目标路径不在允许的目录内"
         
-        # 确保路径是文件而不是目录
+        # Ensure the path is a file, not a directory.
         if resolved_path.exists() and resolved_path.is_dir():
             return None, "目标路径是目录，不是文件"
         
@@ -106,12 +106,12 @@ async def _handle_vrm_file_upload(
         if not file:
             return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
         
-        # 检查文件扩展名
+        # Check the file extension.
         filename = file.filename
         if not filename or not filename.lower().endswith(allowed_extension):
             return JSONResponse(status_code=400, content={"success": False, "error": f"文件必须是{allowed_extension}格式"})
         
-        # 只取文件名，避免上传时夹带子目录
+        # Use only the basename, avoiding uploaded subdirectories.
         filename = Path(filename).name
 
         if allowed_extension == '.vrm':
@@ -128,7 +128,7 @@ async def _handle_vrm_file_upload(
                     "error": f"{file_type_name} {filename} 已存在，请先删除或重命名现有模型"
                 })
         
-        # 使用安全路径函数防止路径穿越
+        # Use safe path helpers to prevent path traversal.
         target_file_path, path_error = safe_vrm_path(target_dir, filename, subdir)
         if target_file_path is None:
             logger.warning(f"路径穿越尝试被阻止: {filename!r} - {path_error}")
@@ -137,10 +137,10 @@ async def _handle_vrm_file_upload(
                 "error": path_error
             })
         
-        # 边读边写，避免将整个文件加载到内存
+        # Stream reads into writes without loading the entire file into memory.
         total_size = 0
         try:
-            # 使用 'xb' 模式：原子操作，如果文件已存在会抛出 FileExistsError
+            # 'xb' creation is atomic and raises FileExistsError if the file exists.
             with open(target_file_path, 'xb') as f:
                 while True:
                     chunk = await file.read(CHUNK_SIZE)
@@ -152,7 +152,7 @@ async def _handle_vrm_file_upload(
                     f.write(chunk)
         except FileExistsError:
             error_msg = f"{file_type_name} {filename} 已存在"
-            if not subdir:  # 只有主模型才加这个提示
+            if not subdir:  # Add this notice only for the main model.
                 error_msg += "，请先删除或重命名现有模型"
             return JSONResponse(status_code=400, content={
                 "success": False,
@@ -196,7 +196,7 @@ async def _handle_vrm_file_upload(
                 "file_path": f"{VRM_USER_PATH}/animation/{filename}"
             })
         else:
-            # 获取模型名称（去掉扩展名）
+            # Get the model name without extension.
             model_name = Path(filename).stem
             return JSONResponse(content={
                 "success": True,
@@ -214,7 +214,7 @@ async def _handle_vrm_file_upload(
 @router.post('/upload')
 async def upload_vrm_model(file: UploadFile = File(...)):
     """Upload a VRM model to the user documents directory (streamed read + async write, prevents path traversal)."""
-    # 获取用户文档的vrm目录
+    # Get VRM directory under user Documents.
     config_mgr = get_config_manager()
     if not config_mgr.ensure_vrm_directory():
         return JSONResponse(status_code=500, content={"success": False, "error": "VRM目录创建失败"})
@@ -226,7 +226,7 @@ async def upload_vrm_model(file: UploadFile = File(...)):
 @router.post('/upload_animation')
 async def upload_vrm_animation(file: UploadFile = File(...)):
     """Upload a VRM animation file to the user documents directory."""
-    # 获取用户文档的vrm目录（ensure_vrm_directory 也会创建 animation 子目录）
+    # Get VRM directory under user Documents (ensure_vrm_directory also creates animation).
     config_mgr = get_config_manager()
     if not config_mgr.ensure_vrm_directory():
         return JSONResponse(status_code=500, content={"success": False, "error": "VRM目录创建失败"})
@@ -252,20 +252,20 @@ async def get_vrm_models():
         config_mgr.ensure_vrm_directory()
 
         models = []
-        seen_urls = set()  # 使用 set 避免重复（基于 URL）
+        seen_urls = set()  # Use a set to deduplicate by URL.
 
-        # 1. 搜索项目目录下的VRM文件 (static/vrm/)
+        # 1. Find project VRM files (static/vrm/).
         project_root = config_mgr.project_root
         static_vrm_dir = project_root / "static" / "vrm"
         if static_vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(static_vrm_dir):
                 url = f"/static/vrm/{quote(vrm_file.name, safe='')}"
-                # 跳过已存在的 URL（避免重复）
+                # Skip existing URLs to avoid duplicates.
                 if url in seen_urls:
                     continue
                 seen_urls.add(url)
                 
-                # 移除绝对路径，只返回公共 URL 和相对信息
+                # Remove absolute paths; return only public URLs and relative information.
                 models.append({
                         "name": vrm_file.stem,
                         "filename": vrm_file.name,
@@ -276,17 +276,17 @@ async def get_vrm_models():
                         "location": "project"  
                     })
 
-        # 2. 搜索用户目录下的VRM文件 (user_vrm/)
+        # 2. Find user VRM files (user_vrm/).
         vrm_dir = config_mgr.vrm_dir
         if vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(vrm_dir):
                 url = f"{VRM_USER_PATH}/{quote(vrm_file.name, safe='')}"
-                # 跳过已存在的 URL（避免重复）
+                # Skip existing URLs to avoid duplicates.
                 if url in seen_urls:
                     continue
                 seen_urls.add(url)
                 
-                # 移除绝对路径，只返回公共 URL 和相对信息
+                # Remove absolute paths; return only public URLs and relative information.
                 models.append({
                         "name": vrm_file.stem,
                         "filename": vrm_file.name,
@@ -297,7 +297,7 @@ async def get_vrm_models():
                         "location": "user"  
                     })
 
-        # 3. 搜索Steam创意工坊中的VRM文件
+        # 3. Find Steam Workshop VRM files.
         try:
             workshop_items_result = await get_subscribed_workshop_items()
             if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
@@ -306,7 +306,7 @@ async def get_vrm_models():
                     installed_folder = item.get('installedFolder')
                     item_id = item.get('publishedFileId')
                     if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
-                        # 检查安装目录下是否有.vrm文件
+                        # Check installation directory for .vrm files.
                         for filename in os.listdir(installed_folder):
                             if filename.lower().endswith('.vrm'):
                                 url = f"/workshop/{item_id}/{quote(filename, safe='')}"
@@ -325,7 +325,7 @@ async def get_vrm_models():
                                     "source": "steam_workshop",
                                     "item_id": str(item_id)
                                 })
-                        # 检查子目录
+                        # Check subdirectories.
                         for subdir in os.listdir(installed_folder):
                             subdir_path = os.path.join(installed_folder, subdir)
                             if os.path.isdir(subdir_path):
@@ -369,12 +369,12 @@ def get_vrm_animations():
         except Exception as ensure_error:
             logger.warning(f"确保VRM目录失败（继续尝试）: {ensure_error}")
         
-        # 检查animations目录
+        # Check animations directory.
         animations_dirs = []
         static_animation_dir = None
         user_animation_dir = None
 
-        # 1. 优先检查项目目录下的static/vrm/animation（实际文件位置）
+        # 1. Prefer project static/vrm/animation (actual file location).
         try:
             project_root = config_mgr.project_root
             static_animation_dir = project_root / "static" / "vrm" / "animation"
@@ -387,7 +387,7 @@ def get_vrm_animations():
             logger.warning(f"检查静态动画目录失败: {static_error}")
             static_animation_dir = None
 
-        # 2. 检查用户目录下的vrm/animation（兼容旧版）
+        # 2. Check user vrm/animation (legacy compatibility).
         try:
             user_animation_dir = config_mgr.vrm_animation_dir
             if user_animation_dir.exists() and user_animation_dir.is_dir():
@@ -400,11 +400,11 @@ def get_vrm_animations():
             user_animation_dir = None
         
         animations = []
-        seen_urls = set()  # 使用 set 存储已见过的 URL，O(1) 查找，避免 O(n²) 列表检查
+        seen_urls = set()  # Store seen URLs in a set for O(1) lookup, avoiding O(n²) list checks.
         
         logger.info(f"找到 {len(animations_dirs)} 个动画目录")
         
-        # 如果没有找到任何目录，直接返回空列表
+        # Return an empty list if no directories exist.
         if not animations_dirs:
             logger.info("未找到任何动画目录，返回空列表")
             return JSONResponse(content={
@@ -412,31 +412,31 @@ def get_vrm_animations():
                 "animations": []
             })
         
-        # 预先计算路径字符串，避免在循环中重复计算
+        # Precompute path strings rather than repeating inside loops.
         static_animation_dir_str = str(static_animation_dir) if static_animation_dir else None
         user_animation_dir_str = str(user_animation_dir) if user_animation_dir else None
         
         for anim_dir in animations_dirs:
             try:
-                # 根据目录确定URL前缀（使用路径字符串比较更安全）
+                # Determine URL prefix by directory (path-string comparison is safer).
                 anim_dir_str = str(anim_dir)
                 
                 if static_animation_dir_str and anim_dir_str == static_animation_dir_str:
-                    # static/vrm/animation 目录 -> /static/vrm/animation
+                    # static/vrm/animation directory -> /static/vrm/animation.
                     url_prefix = VRM_STATIC_ANIMATION_PATH
                 elif user_animation_dir_str and anim_dir_str == user_animation_dir_str:
-                    # user_vrm/animation 目录 -> /user_vrm/animation
+                    # user_vrm/animation directory -> /user_vrm/animation.
                     url_prefix = "/user_vrm/animation"
                 else:
-                    # 默认使用 /user_vrm/animation
+                    # Default /user_vrm/animation.
                     url_prefix = "/user_vrm/animation"
                 
-                # 用户导入动作保持标准 .vrma；内置动作使用 .vrma.gz，首次播放时
-                # 由前端统一解压。两种传输格式都必须出现在动作选择器中。
+                # Imported user animations remain standard .vrma; builtins use .vrma.gz, decompressed uniformly
+                # by the frontend on first playback. Both transport formats must appear in the animation selector.
                 animation_files = list(anim_dir.glob('*.vrma')) + list(anim_dir.glob('*.vrma.gz'))
                 for anim_file in animation_files:
                     try:
-                        # 引导移动内部资源需要 movement 播放选项，不提供给普通动作选择器。
+                        # Internal guided-movement assets need movement playback options and are excluded from ordinary animation selectors.
                         if url_prefix == VRM_STATIC_ANIMATION_PATH and anim_file.name in {
                             "world-walk.vrma", "world-walk.vrma.gz"
                         }:
@@ -445,12 +445,12 @@ def get_vrm_animations():
                             continue
                         
                         url = f"{url_prefix}/{anim_file.name}"
-                        # 使用 set 去重，基于 URL（逻辑路径）而不是绝对路径
+                        # Deduplicate with a set by URL (logical path), not absolute path.
                         if url in seen_urls:
                             continue
                         seen_urls.add(url)
                         
-                        # 移除绝对路径，只返回公共 URL 和相对信息
+                        # Remove absolute paths; return only public URLs and relative information.
                         display_name = anim_file.name[:-len('.vrma.gz')] \
                             if anim_file.name.endswith('.vrma.gz') else anim_file.stem
                         animations.append({
@@ -464,19 +464,19 @@ def get_vrm_animations():
                         logger.warning(f"处理动画文件失败 {anim_file}: {file_error}")
                         continue
                 
-                # 也支持.vrm文件作为动画（某些情况下）
+                # Also support .vrm files as animations in certain cases.
                 for anim_file in anim_dir.glob('*.vrm'):
                     try:
                         if not anim_file.exists() or not anim_file.is_file():
                             continue
                         
                         url = f"{url_prefix}/{anim_file.name}"
-                        # 使用 set 去重，基于 URL（逻辑路径）
+                        # Deduplicate with a set by URL (logical path).
                         if url in seen_urls:
                             continue
                         seen_urls.add(url)
                         
-                        # 移除绝对路径，只返回公共 URL 和相对信息
+                        # Remove absolute paths; return only public URLs and relative information.
                         animations.append({
                             "name": anim_file.stem,
                             "filename": anim_file.name,
@@ -520,14 +520,14 @@ async def delete_vrm_model(request: Request):
         if not url or not isinstance(url, str):
             return JSONResponse(status_code=400, content={"success": False, "error": "缺少 url 参数"})
 
-        # 只允许删除 /user_vrm/ 下的文件
+        # Allow deletion only under /user_vrm/.
         if not url.startswith(VRM_USER_PATH + '/'):
             return JSONResponse(status_code=400, content={"success": False, "error": "只能删除用户导入的 VRM 模型"})
 
-        rel = url[len(VRM_USER_PATH) + 1:]  # 去掉 '/user_vrm/'
+        rel = url[len(VRM_USER_PATH) + 1:]  # Strip '/user_vrm/'.
         config_mgr = get_config_manager()
         vrm_dir = config_mgr.vrm_dir
-        # URL 路径只解码一次，不能再用编码后的文本猜测另一个文件名。
+        # Decode URL paths only once; never infer another filename from encoded text again.
         try:
             filename = unquote(rel, errors='strict')
         except UnicodeDecodeError:
@@ -550,7 +550,7 @@ async def delete_vrm_model(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
-# 新增配置获取接口
+# Add configuration retrieval endpoint.
 @router.get('/config')
 async def get_vrm_config():
     """Get the path configuration shared between frontend and backend."""
@@ -564,9 +564,9 @@ async def get_vrm_config():
     })
 
 
-# ============== VRM 情感映射配置 API ==============
+# ============== VRM emotion-mapping configuration API ==============
 
-# 默认情感映射表
+# Default emotion mappings.
 DEFAULT_MOOD_MAP = {
     "neutral": ["neutral"],
     "happy": ["happy", "joy", "fun", "smile", "joy_01"],
@@ -579,7 +579,7 @@ DEFAULT_MOOD_MAP = {
 
 def _is_valid_vrm_model_name(model_name: str) -> bool:
     """Preserve filename stems while rejecting path syntax and reserved characters."""
-    # 保留上传时的原始名称；禁止路径分隔符、控制字符和 Windows 保留字符。
+    # Preserve original upload names; prohibit separators, control characters, and Windows-reserved characters.
     return model_name not in {'', '.', '..'} and re.search(r'[<>:"/\\|?*\x00-\x1f]', model_name) is None
 
 
@@ -591,13 +591,13 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
 
     config_mgr = get_config_manager()
 
-    # 配置文件存储在 static/vrm/configs/ 目录下
+    # Store configuration in static/vrm/configs/.
     config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     config_path = config_dir / f"{model_name}_emotion.json"
 
-    # 验证解析后的路径仍在 config_dir 内
+    # Verify resolved paths remain inside config_dir.
     try:
         config_path.resolve().relative_to(config_dir.resolve())
     except ValueError:
@@ -616,7 +616,7 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
     config_mgr = get_config_manager()
     project_root = config_mgr.project_root
 
-    # 优先项目目录和原有的小写扩展名，再兼容磁盘上已有的大小写变体。
+    # Prefer project paths and original lowercase extensions, then support existing case variants on disk.
     for vrm_dir, url_prefix in (
         (project_root / "static" / "vrm", VRM_STATIC_PATH),
         (config_mgr.vrm_dir, VRM_USER_PATH),
@@ -700,11 +700,11 @@ async def delete_vrm_model(model_name: str):
         config_mgr.ensure_vrm_directory()
         vrm_dir = config_mgr.vrm_dir
 
-        # 基本安全检查：不允许空名称或含路径分隔符
+        # Basic safety checks: reject empty names or path separators.
         if not model_name or not _is_vrm_basename(f"{model_name}.vrm"):
             return JSONResponse(status_code=400, content={"success": False, "error": f"无效的模型名称: {model_name!r}"})
 
-        # 只允许删除用户目录下的 VRM 模型
+        # Allow deleting VRM models only under the user directory.
         try:
             vrm_path = _find_vrm_model_file(vrm_dir, model_name)
         except ValueError as e:
@@ -742,7 +742,7 @@ async def get_emotion_mapping(model_name: str):
             config = await read_json_async(config_path)
             return {"success": True, "config": config}
         else:
-            # 返回默认配置
+            # Return default config.
             return {"success": True, "config": DEFAULT_MOOD_MAP}
 
     except json.JSONDecodeError as e:
@@ -763,43 +763,43 @@ async def update_emotion_mapping(model_name: str, request: Request):
     try:
         data = await request.json()
 
-        # 1. 验证顶级 payload 是 dict/object
+        # 1. Require a dict/object top-level payload.
         if not isinstance(data, dict) or not data:
             return JSONResponse(
                 status_code=400,
                 content={"success": False, "error": "无效的数据结构：必须是包含情感映射的非空对象"}
             )
 
-        # 2. 规范化每个情感映射值
+        # 2. Normalize each emotion-mapping value.
         normalized_data = {}
         for emotion_key, value in data.items():
-            # 跳过非字符串的 key
+            # Skip nonstring keys.
             if not isinstance(emotion_key, str) or not emotion_key.strip():
                 continue
 
-            # 规范化 value 为非空字符串数组
+            # Normalize values to nonempty string arrays.
             if isinstance(value, str):
-                # 单个字符串转换为数组
+                # Convert single strings to arrays.
                 if value.strip():
                     normalized_data[emotion_key] = [value.strip()]
             elif isinstance(value, list):
-                # 过滤并转换为字符串，丢弃空条目
+                # Filter/convert to strings, discarding empty entries.
                 str_items = []
                 for item in value:
                     if isinstance(item, str) and item.strip():
                         str_items.append(item.strip())
                 if str_items:
                     normalized_data[emotion_key] = str_items
-            # 其他类型跳过
+            # Skip other types.
 
-        # 3. 验证规范化后的数据不为空
+        # 3. Require nonempty normalized data.
         if not normalized_data:
             return JSONResponse(
                 status_code=400,
                 content={"success": False, "error": "无效的数据：规范化后无有效情感映射"}
             )
 
-        # 验证模型是否存在
+        # Check model existence.
         model_path, _ = _get_model_path(model_name)
         if not model_path:
             return JSONResponse(
@@ -807,7 +807,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 content={"success": False, "error": "模型不存在"}
             )
 
-        # 保存配置
+        # Save configuration
         config_path = _get_emotion_config_path(model_name)
         if not config_path:
             return JSONResponse(
@@ -844,8 +844,8 @@ async def get_model_expressions(model_name: str):
     _ = model_name  # Mark as intentionally unused
 
     try:
-        # 由于VRM文件需要前端解析，这里返回常见表情列表
-        # 前端会在加载模型后获取实际表情列表
+        # VRM parsing happens on the frontend; return common expressions here.
+        # Frontend obtains actual expressions after model loading.
 
         common_expressions = [
             "neutral", "happy", "joy", "fun", "smile", "joy_01",

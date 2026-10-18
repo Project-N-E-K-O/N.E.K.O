@@ -51,22 +51,22 @@ router = APIRouter(prefix="/api/proactive", tags=["proactive"])
 logger = get_module_logger(__name__, "Main")
 
 
-# 用户绝对控制权 —— 插件和预设禁止越权修改的字段。
-# ``proactiveVisionEnabled`` 是前端"隐私模式"开关的反面
+# Fields under exclusive user control: plugins and presets must not modify them.
+# proactiveVisionEnabled is the inverse of the frontend privacy-mode switch.
 # (``is_privacy_mode_enabled() == not proactiveVisionEnabled``)，
-# 涉及屏幕内容采集，必须由用户本人在 UI 决定，任何 API 写入路径都要拒绝。
+# Screen-content capture requires the user's own UI choice; reject every API write path.
 _USER_OWNED_FIELDS = frozenset({
     "proactiveVisionEnabled",
-    # 串门开关与串门记忆开关：让她出门、记不记串门内容都由用户本人决定
-    # （visitVoiceEnabled 只管本地出声，不在此列）。
+    # Visit and visit-memory switches: users decide whether she visits and whether visits are remembered
+    # (visitVoiceEnabled controls only local speech and is outside this list).
     "visitEnabled",
     "visitMemoryEnabled",
 })
 
-# 主动搭话所有可调字段（白名单子集；与 utils/preferences 的
-# _ALLOWED_CONVERSATION_SETTINGS 保持同步，但只暴露搭话相关字段）。
-# 注：``_PROACTIVE_FIELDS`` 仅用于**读路径**和模式反推，写路径会额外
-# 过滤掉 ``_USER_OWNED_FIELDS``。
+# All adjustable proactive-chat fields: a whitelist subset synchronized with
+# utils/preferences._ALLOWED_CONVERSATION_SETTINGS, exposing proactive-chat fields only.
+# _PROACTIVE_FIELDS serves read paths and mode inference only; write paths additionally
+# filter _USER_OWNED_FIELDS.
 _PROACTIVE_BOOL_FIELDS = (
     "proactiveChatEnabled",
     "proactiveVisionEnabled",
@@ -84,14 +84,14 @@ _PROACTIVE_INT_FIELDS = (
     "proactiveVisionInterval",
 )
 _PROACTIVE_FIELDS = _PROACTIVE_BOOL_FIELDS + _PROACTIVE_INT_FIELDS
-# 写路径允许的字段：从全集里剔除用户专有字段。
+# Writable fields: exclude user-owned fields from the full set.
 _PROACTIVE_WRITABLE_FIELDS = frozenset(_PROACTIVE_FIELDS) - _USER_OWNED_FIELDS
 
 
-# 预设模式：服务器端定义，避免每个调用方自己维护一份。
-# interval 单位与前端 ``app-state.js`` 一致 —— 秒。
-# 注：预设故意不包含 ``proactiveVisionEnabled``（隐私模式）；切换 mode
-# 不会改变用户的隐私选择。
+# Server-defined preset modes avoid separate copies in every caller.
+# interval is in seconds, matching frontend app-state.js.
+# Presets deliberately omit proactiveVisionEnabled (privacy mode); changing modes
+# never changes the user's privacy choice.
 PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
     "off": {
         "proactiveChatEnabled": False,
@@ -117,8 +117,8 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatInterval": 15,
         "proactiveVisionInterval": 10,
     },
-    # 低打扰：保留搭话与个人动态，关掉新闻/视频/音乐等噪声源，间隔放长。
-    # 不动 vision/隐私开关——是否允许看屏幕由用户自己决定。
+    # Low interruption: retain chat and personal updates, disable news/video/music noise, and lengthen intervals.
+    # Leave vision/privacy unchanged: screen access is the user's decision.
     "focus": {
         "proactiveChatEnabled": True,
         "proactiveVisionChatEnabled": False,
@@ -132,7 +132,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatInterval": 60,
         "proactiveVisionInterval": 60,
     },
-    # 高频：全开，间隔最短。
+    # High frequency: enable everything at the shortest interval.
     "frequent": {
         "proactiveChatEnabled": True,
         "proactiveVisionChatEnabled": True,
@@ -148,9 +148,9 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Self-check：预设里不应混入用户绝对控制权字段，也不应有拼写错误/不可写字段。
-# 每次模块加载时校验，把"加预设时忘了筛"和"键名打错被静默忽略"这两类回归
-# 都挡在导入阶段，而不是用户调 set_mode 才暴露。
+# Self-check: presets must contain neither exclusively user-controlled fields nor misspelled/unwritable fields.
+# Validate on each module load, catching forgotten filters and silently ignored typo keys
+# at import rather than when users call set_mode.
 for _mode_name, _preset in PROACTIVE_PRESETS.items():
     _leaked = set(_preset.keys()) & _USER_OWNED_FIELDS
     if _leaked:
@@ -255,8 +255,8 @@ async def set_proactive_mode(request: Request):
         applied, rejected = await _readback_persisted(preset)
         result: dict[str, Any] = {"success": True, "mode": mode, "applied": applied}
         if rejected:
-            # 预设里所有字段都应是合法值；若仍出现 rejected，多半是
-            # _ALLOWED_CONVERSATION_SETTINGS 漂移，需要 server 端跟进。
+            # All preset fields should be valid; rejected fields usually indicate drift in
+            # _ALLOWED_CONVERSATION_SETTINGS requiring server updates.
             result["rejected"] = rejected
         return result
     except MaintenanceModeError:
@@ -303,11 +303,11 @@ async def update_proactive_settings(request: Request):
         applied, rejected = await _readback_persisted(payload)
         result: dict[str, Any] = {"success": True, "applied": applied}
         if rejected:
-            # 字段类型/范围不合法被底层丢弃，或磁盘旧值与传入值不符。
-            # 明确告知调用方避免误判为生效。
+            # Underlying validation dropped invalid field types/ranges, or old disk values differ from input.
+            # Tell callers explicitly so they do not assume application succeeded.
             result["rejected"] = rejected
         if rejected_user_owned:
-            # 用户绝对控制权字段被拒：调用方应通过 UI 引导用户自行设置。
+            # User-owned fields rejected: callers should guide users to configure them through the UI.
             result["rejected_user_owned"] = rejected_user_owned
         return result
     except MaintenanceModeError:

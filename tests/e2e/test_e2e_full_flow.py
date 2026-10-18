@@ -51,7 +51,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     page.goto(url)
     
     # ---------------------------------------------------------
-    # Step 1: 首页加载
+    # Step 1: Load the homepage.
     # ---------------------------------------------------------
     print("\n[E2E] Step 1: Checking page load...")
     expect(page.locator("#chatContainer")).to_be_attached(timeout=15000)
@@ -59,7 +59,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 1: OK")
     
     # ---------------------------------------------------------
-    # Step 2: 开启语音通话
+    # Step 2: Start a voice call.
     # ---------------------------------------------------------
     print("[E2E] Step 2: Starting voice mode...")
     page.evaluate("document.getElementById('micButton').click()")
@@ -68,7 +68,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 2: OK")
     
     # ---------------------------------------------------------
-    # Step 3: 语音 10 轮 — 验证会话保持 + 消息增长
+    # Step 3: Run 10 voice turns, checking session continuity and message growth.
     # ---------------------------------------------------------
     print("[E2E] Step 3: Running 10 rounds of voice test...")
     
@@ -85,7 +85,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 3: OK — Voice session survived 10 rounds")
 
     # ---------------------------------------------------------
-    # Step 4: 结束语音 -> 文本模式恢复
+    # Step 4: End voice mode and restore text mode.
     # ---------------------------------------------------------
     print("[E2E] Step 4: Ending voice mode and verifying text fallback...")
     page.evaluate("document.getElementById('resetSessionButton').click()")
@@ -95,7 +95,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 4: OK")
 
     # ---------------------------------------------------------
-    # Step 5: VRM 模型切换 (Hot Reload)
+    # Step 5: Switch the VRM model (Hot Reload).
     # ---------------------------------------------------------
     print("[E2E] Step 5: Switching to VRM model via model manager popup...")
     with page.expect_popup() as popup_info:
@@ -121,7 +121,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 5: OK")
 
     # ---------------------------------------------------------
-    # Step 6: 文本对话 + LLM 评估
+    # Step 6: Text conversation and LLM evaluation.
     # ---------------------------------------------------------
     print("[E2E] Step 6: Testing text chat...")
     text_input = page.locator("#textInputBox")
@@ -154,7 +154,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 6: OK")
 
     # ---------------------------------------------------------
-    # Step 7: 插入截图后对话
+    # Step 7: Converse after inserting a screenshot.
     # ---------------------------------------------------------
     print("[E2E] Step 7: Testing fake screenshot insertion...")
     ai_msg_count_before = page.locator(".message.gemini").count()
@@ -187,7 +187,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 7: OK")
 
     # ---------------------------------------------------------
-    # Step 8: 角色弹窗切换 -> UI 完整性
+    # Step 8: Switch the character dialog and check UI integrity.
     # ---------------------------------------------------------
     print("[E2E] Step 8: Character switching in popup...")
     with page.expect_popup() as chara_popup_info:
@@ -202,7 +202,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 8: OK")
 
     # ---------------------------------------------------------
-    # Step 9: 语音<->文本切换验证
+    # Step 9: Verify voice/text switching.
     # ---------------------------------------------------------
     print("[E2E] Step 9: Re-starting voice then back to text...")
     page.evaluate("document.getElementById('micButton').click()")
@@ -230,7 +230,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     print("[E2E] Step 9: OK")
 
     # ---------------------------------------------------------
-    # Step 10: 记忆文件检查
+    # Step 10: Check memory files.
     # ---------------------------------------------------------
     print("[E2E] Step 10: Verifying memory logs...")
     page.goto(f"{running_server}/memory_browser")

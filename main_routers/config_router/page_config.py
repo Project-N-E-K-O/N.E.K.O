@@ -35,18 +35,18 @@ from config import (
 )
 
 
-# VRM 模型路径常量
-VRM_STATIC_PATH = "/static/vrm"  # 项目目录下的 VRM 模型路径
+# VRM model-path constants.
+VRM_STATIC_PATH = "/static/vrm"  # VRM model path in the project directory.
 
 
-VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
+VRM_USER_PATH = "/user_vrm"  # VRM model path in the user's Documents directory.
 
 
-# MMD 模型路径常量
-MMD_STATIC_PATH = "/static/mmd"  # 项目目录下的 MMD 模型路径
+# MMD model-path constants.
+MMD_STATIC_PATH = "/static/mmd"  # MMD model path in the project directory.
 
 
-MMD_USER_PATH = "/user_mmd"  # 用户文档目录下的 MMD 模型路径
+MMD_USER_PATH = "/user_mmd"  # MMD model path in the user's Documents directory.
 
 
 PNGTUBER_USER_PATH = "/user_pngtuber"
@@ -78,7 +78,7 @@ async def get_character_reserved_fields():
     }
 
 
-# MMD 文件扩展名
+# MMD file extensions.
 _MMD_EXTENSIONS = {'.pmx', '.pmd'}
 
 
@@ -239,29 +239,29 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
 
-        # 获取角色数据
+        # Retrieve character data.
         _config_manager = get_config_manager()
         master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
         master_display_name = _resolve_master_display_name(master_basic_config, master_name)
         
-        # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
+        # Use lanlan_name when provided; otherwise use the current character.
         target_name = lanlan_name if lanlan_name else her_name
         
-        # 获取角色配置
+        # Retrieve character configuration.
         catgirl_config = lanlan_basic_config.get(target_name, {})
         model_type = get_reserved(catgirl_config, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
         model_type = str(model_type or 'live2d').strip().lower()
-        # 归一化：旧配置中的 'vrm' 统一为 'live3d'
+        # Normalize legacy 'vrm' configuration to 'live3d'.
         if model_type == 'vrm':
             model_type = 'live3d'
         
         model_path = ""
         lighting = None
-        # live3d_sub_type: 前端用于区分 Live3D 模式下加载 VRM 还是 MMD 渲染器
+        # live3d_sub_type tells the frontend whether Live3D should load the VRM or MMD renderer.
         live3d_sub_type = ""
         pngtuber_config = None
         
-        # 根据模型类型获取模型路径
+        # Get the model path by model type.
         if model_type == 'pngtuber':
             raw_pngtuber = get_reserved(catgirl_config, 'avatar', 'pngtuber', default={})
             if not isinstance(raw_pngtuber, dict):
@@ -276,7 +276,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             model_path = pngtuber_config.get('idle_image', '') or ''
         elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'vrm':
             live3d_sub_type = 'vrm'
-            # VRM模型：处理路径转换
+            # VRM model: convert the path.
             vrm_path = get_reserved(catgirl_config, 'avatar', 'vrm', 'model_path', default='', legacy_keys=('vrm',))
             if vrm_path:
                 model_path = _resolve_vrm_path(vrm_path, _config_manager, target_name)
@@ -294,18 +294,18 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
                 lighting = dict(saved_lighting)
         elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'mmd':
             live3d_sub_type = 'mmd'
-            # MMD模型：处理路径转换
+            # MMD model: convert the path.
             mmd_path = get_reserved(catgirl_config, 'avatar', 'mmd', 'model_path', default='')
             if mmd_path:
                 model_path = _resolve_mmd_path(mmd_path, _config_manager, target_name)
             else:
                 logger.warning(f"角色 {target_name} 的MMD模型路径为空")
         elif model_type == 'live3d':
-            # live3d 但无法判断子类型（两个路径都为空），返回空路径
+            # live3d with unknown subtype (both paths empty): return an empty path.
             live3d_sub_type = ''
             logger.warning(f"角色 {target_name} 的Live3D模型路径均为空")
         else:
-            # Live2D模型：使用原有逻辑
+            # Live2D model: use existing behavior.
             live2d = get_reserved(catgirl_config, 'avatar', 'live2d', 'model_path', default='yui-lolita/yui-lolita.model3.json', legacy_keys=('live2d',))
             live2d_item_id = get_reserved(
                 catgirl_config,
@@ -318,7 +318,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             logger.debug(f"获取页面配置 - 角色: {target_name}, Live2D模型: {live2d}, item_id: {live2d_item_id}")
         
             model_response = await get_current_live2d_model(target_name, live2d_item_id)
-            # 提取JSONResponse中的内容
+            # Extract JSONResponse content.
             model_data = model_response.body.decode('utf-8')
             model_json = json.loads(model_data)
             model_info = model_json.get('model_info') or {}

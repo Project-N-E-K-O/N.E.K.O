@@ -387,7 +387,7 @@ def test_browser_scan_honours_its_file_cap(tmp_path: Path, monkeypatch) -> None:
     issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
     browser_reads = [p for p in seen if "playwright_browsers" in p.parts]
     assert len(browser_reads) <= 3
-    # 截断即「没验完」，必须 fail-closed：否则越过上限的错架构二进制会静默放行。
+    # Truncation means verification is incomplete and must fail closed, or wrong-architecture binaries past the limit would pass silently.
     assert any("could not be fully verified" in issue for issue in issues)
 
 
@@ -420,7 +420,7 @@ def test_directory_token_walk_is_capped_too(tmp_path: Path, monkeypatch) -> None
     issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
     assert any("could not be fully verified" in issue for issue in issues)
     reported = [issue for issue in issues if "non-x64 directories" in issue]
-    # 上限是 3，40 个坏目录不可能全被看到；真全看到了就说明这道遍历没受限。
+    # With a limit of 3, all 40 invalid directories cannot be visited; seeing them all means traversal was unbounded.
     assert not reported or reported[0].count("chrome-mac-arm64-") <= 3
 
 

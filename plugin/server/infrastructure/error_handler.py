@@ -1,10 +1,10 @@
 """
-错误处理工具模块
+Error-handling utilities
 
-提供统一的错误处理函数，确保：
-1. 只捕获预期的异常类型
-2. 错误信息不泄露内部细节
-3. 错误被正确记录和传播
+Provide unified error handling to ensure:
+1. Only expected exception types are caught
+2. Error messages reveal no internal details
+3. Errors are correctly recorded and propagated
 """
 import asyncio
 import os
@@ -24,10 +24,10 @@ from plugin.logging_config import get_logger
 
 logger = get_logger("server.infrastructure.error_handler")
 
-# 是否在开发模式（开发模式下可以返回更详细的错误信息）
+# Whether development mode is active (permits more detailed error messages).
 DEBUG_MODE = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 
-# 预期的异常类型（可以安全地转换为 HTTPException）
+# Expected exception types (safe to convert to HTTPException).
 EXPECTED_EXCEPTIONS = (
     PluginError,
     HTTPException,
@@ -62,37 +62,37 @@ UNEXPECTED_RUNTIME_EXCEPTIONS = (
 
 def safe_error_message(error: Exception, context: str = "") -> str:
     """
-    生成安全的错误消息，避免泄露内部细节
+    Generate a safe error message without exposing internal details.
     
     Args:
-        error: 异常对象
-        context: 上下文信息
+        error: Exception object
+        context: Context information
     
     Returns:
-        安全的错误消息
+        Safe error message
     """
     if DEBUG_MODE:
-        # 开发模式下返回详细错误信息
+        # Return detailed errors in development mode.
         return f"{context}: {str(error)}" if context else str(error)
     
-    # 生产模式下返回通用错误消息
+    # Return generic errors in production mode.
     if isinstance(error, PluginError):
-        # 插件系统异常，返回用户友好的消息
+        # Plugin-system exceptions return user-friendly messages.
         return str(error)
     elif isinstance(error, HTTPException):
-        # HTTP异常，直接返回其消息
+        # HTTP exceptions return their messages directly.
         return error.detail
     elif isinstance(error, (ValueError, TypeError, AttributeError, KeyError)):
-        # 参数错误，返回通用消息
+        # Argument errors return generic messages.
         return "Invalid request parameters"
     elif isinstance(error, (ConnectionError, OSError)):
-        # 连接错误，返回通用消息
+        # Connection errors return generic messages.
         return "Service temporarily unavailable"
     elif isinstance(error, (TimeoutError, asyncio.TimeoutError)):
-        # 超时错误，返回通用消息
+        # Timeout errors return generic messages.
         return "Request timeout"
     else:
-        # 未知错误，返回通用消息
+        # Unknown errors return generic messages.
         return "An internal error occurred"
 
 
@@ -103,22 +103,22 @@ def handle_plugin_error(
     log_level: str = "error"
 ) -> HTTPException:
     """
-    处理插件相关错误，转换为 HTTPException
+    Handle plugin errors and convert them to HTTPException.
     
     Args:
-        error: 异常对象
-        context: 上下文信息（用于日志）
-        default_status_code: 默认HTTP状态码
-        log_level: 日志级别
+        error: Exception object
+        context: Context information for logging
+        default_status_code: Default HTTP status code
+        log_level: Logging level
     
     Returns:
         HTTPException
     """
-    # 记录详细错误信息（包含堆栈跟踪）
+    # Record detailed error information including the stack trace.
     log_func = getattr(logger, log_level, logger.error)
     log_func(f"{context}: {error}", exc_info=True)
     
-    # 如果是预期的异常，使用其状态码和消息
+    # Expected exceptions use their status codes and messages.
     if isinstance(error, HTTPException):
         return error
     elif isinstance(error, PluginNotFoundError):
@@ -136,7 +136,7 @@ def handle_plugin_error(
     elif isinstance(error, (ConnectionError, OSError)):
         return HTTPException(status_code=503, detail=safe_error_message(error, context))
     else:
-        # 未知异常，返回通用错误
+        # Unknown exceptions return a generic error.
         return HTTPException(
             status_code=default_status_code,
             detail=safe_error_message(error, context)
@@ -150,13 +150,13 @@ def error_handler(
     reraise_unexpected: bool = False
 ):
     """
-    错误处理装饰器
+    Error-handling decorator.
     
     Args:
-        context: 上下文信息（用于日志和错误消息）
-        default_status_code: 默认HTTP状态码
-        log_level: 日志级别
-        reraise_unexpected: 是否重新抛出未预期的异常（用于调试）
+        context: Context information for logging and error messages
+        default_status_code: Default HTTP status code
+        log_level: Logging level
+        reraise_unexpected: Whether to reraise unexpected exceptions for debugging
     
     Example:
         @error_handler("Failed to get plugin status")
@@ -169,13 +169,13 @@ def error_handler(
             try:
                 return await func(*args, **kwargs)
             except HTTPException:
-                # HTTPException 直接传播
+                # Propagate HTTPException directly.
                 raise
             except EXPECTED_EXCEPTIONS as e:
-                # 预期的异常，转换为 HTTPException
+                # Convert expected exceptions to HTTPException.
                 raise handle_plugin_error(e, context, default_status_code, log_level) from e
             except UNEXPECTED_RUNTIME_EXCEPTIONS as e:
-                # 未预期的异常
+                # Unexpected exceptions.
                 logger.exception(f"{context}: Unexpected error type: {type(e).__name__}")
                 if reraise_unexpected:
                     raise
@@ -213,7 +213,7 @@ def error_handler(
                     raise
                 raise handle_plugin_error(cast(Exception, e), context, default_status_code, log_level) from e
         
-        # 根据函数是否为协程函数选择包装器
+        # Select the wrapper according to whether the function is a coroutine.
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         else:
@@ -229,16 +229,16 @@ def safe_execute(
     log_level: str = "warning"
 ) -> T | None:
     """
-    安全执行函数，捕获异常并返回默认值（用于非关键操作）
+    Execute a function safely, catching exceptions and returning a default for noncritical operations.
     
     Args:
-        func: 要执行的函数
-        context: 上下文信息
-        default_return: 异常时的默认返回值
-        log_level: 日志级别
+        func: Function to execute
+        context: Context information
+        default_return: Value to return on exception
+        log_level: Logging level
     
     Returns:
-        函数返回值或默认值
+        Function result or default value
     """
     try:
         return func()

@@ -1,4 +1,4 @@
-"""Numeric v2 表现内容块的兼容读取工具。"""  # noqa: DOCSTRING_CJK
+"""Compatibility readers for Numeric v2 performance content blocks."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ MAX_CONTENT_BLOCKS = 16
 
 
 def transition_source_dialogue_policy(dialogue_policy: str) -> str:
-    """来源幕只需自然收住互动；原本禁言时仍不得凭空开口。"""  # noqa: DOCSTRING_CJK
+    """The source scene need only naturally conclude interaction; an existing speech prohibition still applies."""  # noqa: DOCSTRING_CJK
 
     return "forbidden" if dialogue_policy == "forbidden" else "optional"
 
 
 def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
-    """把“括号微动作 + 括号外对白”解析成确定性的内部内容块。"""  # noqa: DOCSTRING_CJK
+    """Parse parenthesized micro-actions plus external dialogue into deterministic internal blocks."""  # noqa: DOCSTRING_CJK
 
     text = str(value or "").strip()
     if not text:
@@ -33,8 +33,8 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
         if not segment:
             return block_type == "dialogue"
         if block_type == "action":
-            # performance 括号内始终是当前猫娘的可见微动作，不是环境旁白。
-            # 明确分型后，Evaluator 才不会把抬手、侧耳等角色动作误当成环境目标证据。
+            # performance parentheses always contain the current catgirl's visible micro-actions, not environmental narration.
+            # Explicit typing prevents Evaluator from treating character actions such as raised hands or tilted ears as environment evidence.
             blocks.append({"type": "action", "text": segment})
         else:
             blocks.append({
@@ -47,7 +47,7 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
     for char in text:
         if expected_close:
             if char in openers:
-                # 微动作不允许嵌套括号，避免 TTS 边界和展示边界产生歧义。
+                # Micro-actions forbid nested parentheses to keep TTS and display boundaries unambiguous.
                 return []
             if char in closers:
                 if char != expected_close or not flush("action"):
@@ -77,7 +77,7 @@ def fixed_narration_blocks(container: Mapping[str, Any], position: str) -> list[
 
 
 def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
-    """优先解析新混合正文；旧记录继续按原内容块或分离字段读取。"""  # noqa: DOCSTRING_CJK
+    """Prefer new mixed narrative; read legacy records using existing blocks or separated fields."""  # noqa: DOCSTRING_CJK
 
     if "scene_narration" in container or "performance" in container:
         blocks: list[dict[str, str]] = []
@@ -87,7 +87,7 @@ def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
         blocks.extend(fixed_narration_blocks(container, "before"))
         blocks.extend(mixed_performance_blocks(container.get("performance")))
         blocks.extend(fixed_narration_blocks(container, "after"))
-        # 完整场景旁白是独立字段，不占混合 performance 自身的 16 块上限。
+        # Full scene narration uses a separate field, outside mixed performance's 16-block limit.
         return blocks
 
     raw_content = container.get("content")
@@ -130,7 +130,7 @@ def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def performance_content_blocks(performance: Mapping[str, Any]) -> list[dict[str, str]]:
-    """按玩家实际看到的顺序展开普通或换场 performance。"""  # noqa: DOCSTRING_CJK
+    """Expand ordinary or transition performance in the player's actual display order."""  # noqa: DOCSTRING_CJK
 
     segments = performance.get("segments")
     if isinstance(segments, list):
@@ -184,7 +184,7 @@ def valid_mixed_performance_policy(
     container: Mapping[str, Any],
     dialogue_policy: str,
 ) -> bool:
-    """按当前角色状态校验对白；禁言时仍必须有可见动作，不能提交空正文。"""  # noqa: DOCSTRING_CJK
+    """Validate dialogue against current character state; even when speech is forbidden, visible actions are required, never empty narrative."""  # noqa: DOCSTRING_CJK
 
     if dialogue_policy not in {"required", "optional", "forbidden"}:
         return False
@@ -207,7 +207,7 @@ def valid_scene_narration(
     *,
     allow_empty: bool = False,
 ) -> bool:
-    """场景旁白使用独立字段，不能夹带未声明的结构。"""  # noqa: DOCSTRING_CJK
+    """Scene narration uses its own field and must not embed undeclared structure."""  # noqa: DOCSTRING_CJK
 
     return (
         isinstance(container.get("scene_narration"), str)

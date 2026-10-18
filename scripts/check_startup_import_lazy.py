@@ -133,13 +133,13 @@ BANNED_MODULES: dict[str, str] = {
 
 # (module, symbol) -> where its sanctioned lazy home is.
 #
-# BANNED_MODULES 只认模块名，看不见符号。但同一类回归也可以由一个**符号**造成：
-# 一个模块本身很轻，却导出一个求值时才昂贵的惰性名字，任何人在模块作用域取它就
-# 把代价搬回了启动链——而 import 那个模块仍然是合法且必要的（同一个文件里还有别的
-# 轻量名字要用），所以整模块封禁会把 main 打红，只能按符号封。
+# BANNED_MODULES recognizes only module names, not symbols. The same kind of regression can also be caused by a **symbol**:
+# a module itself may be lightweight but export a lazy name that is expensive to evaluate; accessing it at module scope
+# moves the cost back into startup — yet importing the module remains valid and necessary (the same file has other
+# lightweight names in use), so banning the whole module would fail main and only a symbol-level ban works.
 BANNED_SYMBOLS: dict[tuple[str, str], str] = {
-    # 21 条封禁话题模板的 compile，实测 294-298 ms。模块 __getattr__ 里惰性求值，
-    # 预热在 utils/module_warmup.py 的表里。模块作用域取这个名字 = 回到 bind 之前。
+    # Compiling the 21 banned-topic templates takes 294–298 ms in practice. Module __getattr__ evaluates them lazily;
+    # they are warmed by the table in utils/module_warmup.py. Accessing this name at module scope moves the work before bind.
     ("config.prompts.prompts_directives", "DIRECTIVE_PATTERNS"): (
         "evaluated on first access via the module __getattr__; warmed in "
         "utils/module_warmup.py"
@@ -234,16 +234,16 @@ def _iter_eager_nodes(node: ast.AST) -> Iterator[ast.AST]:
             stack.extend(ast.iter_child_nodes(current.args))
             continue
         if isinstance(current, ast.If) and _is_type_checking_if(current):
-            # 和 _iter_module_scope_stmts 保持一致：TYPE_CHECKING 的 body 不在运行时
-            # 执行，else 分支执行。外层迭代器把这个 If **节点本身**照常 yield 出来
-            # （它先 yield 再决定要不要下降），所以这里不跳的话，走查会一头扎进那段
-            # 不执行的代码，把零代价的写法报成启动期访问——共享闸门上的误报
+            # Match _iter_module_scope_stmts: TYPE_CHECKING bodies do not execute at runtime,
+            # while else branches do. The outer iterator yields this If **node itself** as usual
+            # (it yields before deciding whether to descend), so without this check traversal would enter that
+            # Without this, unexecuted code would report a zero-cost pattern as a startup-time access — a false positive in the shared gate
             # （codex）。
             #
-            # test 不用走：_is_type_checking_if 只认裸 `TYPE_CHECKING` 或
-            # `typing.TYPE_CHECKING`，两者都不可能含被禁读取，所以走它是构造上
-            # 不可达的死代码。普通 if 的 test 会执行、也确实可能藏读取，那条路
-            # 不走这个分支，照常整棵走。
+            # The test need not be traversed: _is_type_checking_if recognizes only bare `TYPE_CHECKING` or
+            # `typing.TYPE_CHECKING`, neither of which can contain a forbidden read, so traversing it is structurally
+            # unreachable dead code. A normal if test executes and could contain a read; that path
+            # does not take this branch and traverses the full tree as usual.
             stack.extend(current.orelse)
             continue
         stack.extend(ast.iter_child_nodes(current))
@@ -294,7 +294,7 @@ def _banned_symbol_read(dotted: str, aliases: dict[str, str]) -> tuple[str, str]
     head, middle, symbol = parts[0], parts[1:-1], parts[-1]
     target = aliases.get(head)
     if target is None:
-        # 头名字不是本模块 import 进来的，解析不出模块路径——不猜。
+        # The head name was not imported into this module, so its module path cannot be resolved — do not guess.
         return None
     module = ".".join([target, *middle])
     home = BANNED_SYMBOLS.get((module, symbol))
@@ -307,14 +307,14 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
     violations: list[tuple[int, int, str]] = []
     suppressed = _noqa_lines(source)
     aliases = _module_alias_map(tree.body)
-    # 全文件去重：同一个读取点会被外层容器和内层语句各遍历一次。
+    # Deduplicate across the file: the same read point is visited once by the outer container and once by the inner statement.
     reported_symbols: set[tuple[int, int, str]] = set()
     for stmt in _iter_module_scope_stmts(tree.body):
         found: list[tuple[str, str]] = []  # (banned key, import text)
-        # (qualified name, home, text, lineno, col, whole_stmt) —— 位置取**读取点
-        # 自身**，不是
-        # 外层语句：一个嵌在模块作用域 if/try/class 里的读取，会被外层容器和内层
-        # 语句各走一遍，按语句定位就会报两条。
+        # (qualified name, home, text, lineno, col, whole_stmt) — location is the **read point
+        # itself**, not
+        # the outer statement: a read nested inside a module-scope if/try/class is visited once as part of the outer container and once as an inner
+        # statement, so locating by statement would report it twice.
         symbols: list[tuple[str, str, str, int, int, bool]] = []
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
@@ -335,18 +335,18 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                     if alias_key is not None:
                         found.append((alias_key, f"from {stmt.module} import {alias.name}"))
             if stmt.module and stmt.level == 0:
-                # 精确 (模块, 符号) 对，不做前缀匹配：同一个模块里的其它名字都是
-                # 合法导入，宽一点就会把 main 打红。
+                # Exact (module, symbol) pairs only; no prefix matching. Other names in the same module are
+                # valid imports, and a broad match would fail main.
                 #
-                # level == 0 一起卡住：相对导入的 stmt.module 是**相对**路径，
-                # 拿它去比绝对的 (模块, 符号) 对会误判——`from ...a.b import X`
-                # 解析出来的根本是另一个模块（CodeRabbit）。
+                # Also require level == 0: stmt.module for a relative import is a **relative** path,
+                # so comparing it with an absolute (module, symbol) pair would produce a false match — `from ...a.b import X`
+                # resolves to a different module entirely (CodeRabbit).
                 for alias in stmt.names:
                     if alias.name == "*":
-                        # 通配导入会把 __all__ 里每个名字都 getattr 一遍，惰性访问器
-                        # 照常触发。而 __all__ 恰恰是为了让惰性名字重新出现在通配面里
-                        # 才加的，等于亲手给这条规则开了个口子——按字面名 "*" 去查表
-                        # 永远查不中（codex）。当成"把这个模块的每个被禁符号都导了"。
+                        # A wildcard import calls getattr for every name in __all__, triggering lazy accessors as usual. And __all__ was
+                        # added specifically to expose lazy names to wildcard imports,
+                        # so this would open a hole in the rule — looking up the literal name "*"
+                        # never matches (codex). Treat it as "all banned symbols from this module were imported."
                         for (module, symbol), star_home in BANNED_SYMBOLS.items():
                             if module != stmt.module:
                                 continue
@@ -373,9 +373,9 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                                 True,
                             )
                         )
-        # 属性读法：`import ... as d` + 模块作用域的 `d.DIRECTIVE_PATTERNS`。
-        # 只认 from-import 的话，这条等价写法可以完全绕过闸门，而它触发的是同一个
-        # __getattr__、付的是同一份代价（CodeRabbit）。只看 Load，不看赋值目标。
+        # Attribute form: `import ... as d` followed by module-scope `d.DIRECTIVE_PATTERNS`.
+        # Checking only from-imports would let this equivalent form bypass the gate, even though it triggers the same
+        # __getattr__ and incurs the same cost (CodeRabbit). Only inspect Load contexts, not assignment targets.
         for node in _iter_eager_nodes(stmt):
             if not isinstance(node, ast.Attribute) or not isinstance(node.ctx, ast.Load):
                 continue
@@ -393,11 +393,11 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
             ln in suppressed for ln in range(stmt.lineno, end_lineno + 1)
         )
         for qualified, home, text, lineno, col, whole_stmt in symbols:
-            # 整条语句的 noqa 范围只给 import 语句用——多行 import 上 noqa 写在哪一行
-            # 都该算数。属性读取不能用它：一个 FunctionDef 的范围**覆盖整个函数体**，
-            # 于是函数体里随便一句 noqa 就能压掉装饰器/默认参数里的 import 期读取；
-            # if 语句同理，体里的 noqa 会压掉判断表达式里的读取（CodeRabbit）。
-            # 那些只认读取点自己那一行。
+            # Statement-level noqa applies only to import statements — a noqa on any line of a multiline import
+            # should count. Do not apply it to attribute reads: the range of a FunctionDef **covers its entire body**,
+            # so a noqa anywhere in the function could suppress an import-time read in a decorator/default argument;
+            # the same applies to an if statement, where a noqa in its body could suppress a read in the test expression (CodeRabbit).
+            # Only recognize noqa on the read's own line.
             if lineno in suppressed or (whole_stmt and stmt_suppressed):
                 continue
             if (lineno, col, qualified) in reported_symbols:

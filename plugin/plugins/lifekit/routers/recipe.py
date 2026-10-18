@@ -1,6 +1,6 @@
-"""菜谱 router — 搜索菜谱 + 随机推荐。
+"""Recipe router: search recipes and make random recommendations.
 
-数据源: TheMealDB (免费, 无需 key)。
+Data source: TheMealDB (free, no key required).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .._entry_errors import unavailable_error
 
 
 def _format_recipe_summary(r: recipe_api.Recipe) -> str:
-    """生成菜谱的 LLM 友好摘要。"""
+    """Generate an LLM-friendly recipe summary."""
     parts = [r.name]
     if r.area:
         parts.append(f"({r.area})")
@@ -28,7 +28,7 @@ def _format_recipe_summary(r: recipe_api.Recipe) -> str:
 
 
 def _format_ingredients(ingredients: List[Dict[str, str]]) -> str:
-    """格式化食材列表。"""
+    """Format the ingredient list."""
     lines = []
     for ing in ingredients:
         measure = ing.get("measure", "").strip()
@@ -41,7 +41,7 @@ def _format_ingredients(ingredients: List[Dict[str, str]]) -> str:
 
 
 def _recipe_to_dict(r: recipe_api.Recipe, brief: bool = False) -> Dict[str, Any]:
-    """转换为 JSON 可序列化的 dict。"""
+    """Convert to a JSON-serializable dictionary."""
     d: Dict[str, Any] = {
         "id": r.id,
         "name": r.name,
@@ -130,15 +130,15 @@ class RecipeRouter(PluginRouter):
                 "query": q,
             })
 
-        # 取前 3 个
+        # Take the first three.
         top = results[:3]
         recipes_data = [_recipe_to_dict(r) for r in top]
 
-        # 摘要
+        # Summary.
         names = "、".join(_format_recipe_summary(r) for r in top)
         summary = i18n.t("recipe.found", count=result_count, names=names)
 
-        # 推送卡片 — 只展示第一个的详情
+        # Push cards, showing details for the first only.
         first = top[0]
         blocks = [
             {"type": "text", "text": f"📖 {_format_recipe_summary(first)}"},
@@ -146,7 +146,7 @@ class RecipeRouter(PluginRouter):
         if first.ingredients:
             blocks.append({"type": "text", "text": f"🥘 {i18n.t('recipe.ingredients')}:\n{_format_ingredients(first.ingredients)}"})
         if first.instructions:
-            # 截取前 200 字符
+            # Limit to the first 200 characters.
             steps = first.instructions[:200]
             if len(first.instructions) > 200:
                 steps += "…"
@@ -200,7 +200,7 @@ class RecipeRouter(PluginRouter):
         recipe_data = _recipe_to_dict(meal)
         summary = i18n.t("recipe.random_summary", recipe=_format_recipe_summary(meal))
 
-        # 推送卡片
+        # Push the card.
         blocks = [
             {"type": "text", "text": i18n.t("recipe.today_try", recipe=_format_recipe_summary(meal))},
         ]

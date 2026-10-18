@@ -56,7 +56,7 @@ def test_pngtuber_transition_guard_predicate_covers_known_transitions():
         source.index("async resetModelPosition()")
     ]
 
-    # 谓词必须覆盖全部已知转场信号；新转场在此补信号而不是再造散落守卫
+    # The predicate must cover all known transition signals; add new signals here rather than scattering additional guards
     assert "window.appState.isSwitchingCatgirl" in block
     assert "window._modelReloadInFlight" in block
     assert "isMainUIHiddenByModelManager" in block
@@ -70,8 +70,8 @@ def test_pngtuber_reset_model_position_restores_default_placement():
     ]
 
     assert "if (this._dragState || this._touchZoomState) return;" in block
-    # 转场守卫收敛为共享谓词：复位入口与保存出请求前用同一套判定
-    # （角色切换 / 同角色重载 / 模型管理页持有 UI——卡面弹窗期间重载未置位）
+    # Consolidate transition guards into one shared predicate for reset entry and pre-save requests
+    # (character switching / same-character reload / model-manager UI ownership; card dialogs do not set reload)
     assert "if (this.isTransitionBlockingPlacementSave()) return;" in block
     assert block.index("if (this.isTransitionBlockingPlacementSave()) return;") < block.index(
         "if (this._dragState || this._touchZoomState) return;"
@@ -82,13 +82,13 @@ def test_pngtuber_reset_model_position_restores_default_placement():
     assert "this.setActiveScale(1);" in block
     assert "this.applyTransform();" in block
     assert "this.syncGlobalConfig();" in block
-    # 复位强制持久化：默认键与上次完成保存相同时不得被去重早退吞掉
+    # Reset must persist even when its default key matches the last completed save; deduplication must not skip it
     assert "this._lastSavedPositionKey = '';" in block
     assert block.index("this._lastSavedPositionKey = '';") < block.index(
         "await this.saveOrStageCurrentConfig();"
     )
     assert "await this.saveOrStageCurrentConfig();" in block
-    # position_anchor 是摆放偏好（居中/右下），不属于被拖走的位置，复位不改动
+    # position_anchor is a placement preference (center/bottom-right), not a dragged position, so reset leaves it unchanged
     assert "position_anchor" not in block
 
 
@@ -99,8 +99,8 @@ def test_pngtuber_load_invalidates_save_dedup_key_for_new_model():
         source.index("pngtuber-model-loading")
     ]
 
-    # 去重键只记摆放字段不记角色，管理器单例跨角色复用：换模型必须清键，
-    # 否则上个角色末次保存的键会挡掉新角色摆放相同的保存（复位恰是规范化摆放）
+    # Dedup keys contain placement but no character identity; the manager singleton spans characters, so clear keys on model change,
+    # or the previous character's final key suppresses identical placement saves for the next (reset uses canonical placement)
     assert "this._lastSavedPositionKey = '';" in load_head
     assert load_head.index("this._lastSavedPositionKey = '';") < load_head.index(
         "this.config = normalizedConfig;"
@@ -114,15 +114,15 @@ def test_pngtuber_save_dedup_key_write_binds_to_load_generation():
         source.index("        scheduleSaveCurrentConfig")
     ]
 
-    # 在途保存横跨 load() 完成时不得恢复已清空的键（Codex P2 / CodeRabbit
-    # Data Integrity）：键写回必须被加载世代守卫包住
+    # A save spanning load() completion must not restore a cleared key (Codex P2 / CodeRabbit
+    # Data Integrity): guard key writeback by the load generation
     assert "const saveGeneration = this._loadGeneration;" in save_block
     assert "if (this._loadGeneration === saveGeneration) {" in save_block
     assert save_block.index("const saveGeneration = this._loadGeneration;") < save_block.index(
         "if (this._loadGeneration === saveGeneration) {"
     )
-    # 世代校验必须在 fetch 之前拒绝过期任务（Codex P1）：同角色重载后旧快照
-    # 整对象替换会还原刚选的新配置，不能只在键写回处兜底
+    # Reject stale tasks by generation before fetch (Codex P1): after same-character reload, replacing the full object from an old snapshot
+    # restores superseded configuration, so guarding only key writeback is insufficient
     assert "if (this._loadGeneration !== saveGeneration) {" in save_block
     assert save_block.index("if (this._loadGeneration !== saveGeneration) {") < save_block.index(
         "const response = await fetch("
@@ -136,13 +136,13 @@ def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
         source.index("        scheduleSaveCurrentConfig")
     ]
 
-    # 身份与载荷必须入队时捕获、执行时复审（Codex P1）：跨类型热切换只
-    # hide() 不清保存链，惰性读名会把 A 的 pngtuber 配置 PUT 到当前角色
-    # 记录上（后端照写 model_type 保留字段）
+    # Capture identity/payload at enqueue and recheck at execution (Codex P1): cross-type hot switches call only
+    # hide(), retaining the save chain; lazy name reads would PUT A's pngtuber configuration into the current character's
+    # record (the backend still writes fields preserved by model_type)
     assert "const queuedName = this.resolveDirectLanlanName();" in save_block
     assert "const queuedPayload = {" in save_block
-    # 身份与载荷必须在同步段捕获、链槽位同步预留（append 先于任何 await）：
-    # 兜底配置的名字解析乱序完成时，先 await 后入队会让保存顺序颠倒
+    # Capture identity/payload synchronously and reserve the chain slot synchronously (append before any await):
+    # enqueueing after awaited fallback-name resolution can reverse save order when resolutions complete out of order
     assert save_block.index("const queuedPayload = {") < save_block.index(
         "const queuedName = this.resolveDirectLanlanName();"
     )
@@ -152,15 +152,15 @@ def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
     assert save_block.index("const runSave = async () => {") < save_block.index(
         "if (this.resolveDirectLanlanName() !== queuedName)"
     )
-    # 直读名不可用（需 /api/config 兜底）的配置在入队前就拒绝：身份无法安全
-    # 绑定就不发送（CodeRabbit Major）
+    # Reject configurations lacking a directly readable name before enqueue (rather than using /api/config fallback): without safely bound identity,
+    # send nothing (CodeRabbit Major)
     assert "if (!queuedName) {" in save_block
     assert save_block.index("if (!queuedName) {") < save_block.index(
         "const runSave = async () => {"
     )
     run_save_block = save_block[save_block.index("const runSave = async () => {"):]
-    # runSave 从检查到 PUT 全同步（无兜底解析 await）：无重排窗口、无检查后
-    # 漂移窗口；身份在入队时刻绑定，PUT 身份即入队名
+    # runSave is synchronous from checks through PUT, without fallback-resolution awaits: no reordering window or post-check
+    # drift window; identity binds at enqueue, and PUT uses that captured name
     assert "resolveCurrentLanlanName" not in run_save_block
     pre_fetch = run_save_block[:run_save_block.index("const response = await fetch(")]
     assert "await " not in pre_fetch
@@ -168,13 +168,13 @@ def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
     assert "JSON.stringify(queuedPayload)" in run_save_block
     assert "(window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber'" in run_save_block
     assert "this.resolveDirectLanlanName() !== queuedName" in run_save_block
-    # 出请求前复核转场状态：转场开始于入队之后（如复位排队期间打开模型
-    # 管理页并保存新包）也必须取消该笔保存
+    # Recheck transition state before sending: transitions starting after enqueue (such as opening model management
+    # and saving a new package while reset is queued) must also cancel the save
     assert "this.isTransitionBlockingPlacementSave()" in run_save_block
     assert run_save_block.index("this.isTransitionBlockingPlacementSave()") < run_save_block.index(
         "const response = await fetch("
     )
-    # 执行路径不得再惰性读 config 或以重新解析的名字作为 PUT 身份
+    # Execution must not lazily reread config or use a re-resolved name as PUT identity
     assert "Object.assign({}, this.config)" not in run_save_block
 
 
@@ -592,7 +592,7 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
     assert "this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);" in drag_block
     assert "helper.markDisplaySwitchSuccess('pngtuber');" in drag_block
     assert "await this.snapModelIntoScreen({ animate: true });" in drag_block
-    # endDrag 内部的顺序契约单独切片锚定，避免被块内其他方法的同名调用干扰
+    # Anchor endDrag's ordering contract in its own slice to avoid same-named calls in other methods within the block
     end_drag_block = source[
         source.index("        async endDrag(event) {"):
         source.index("        handleClick(event) {")
@@ -2202,13 +2202,13 @@ def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other
     assert "'live2d-lock-icon'" not in setup_block
     assert "'vrm-lock-icon'" not in setup_block
     assert "'mmd-lock-icon'" not in setup_block
-    # document 级 capture 事件必须过滤为窗口边界事件，否则相邻按钮边缘
-    # 移动会反复触发隐藏/显示（闪烁）
+    # Filter document-level capture events to window-boundary events, or moving between adjacent button edges
+    # repeatedly hides/shows controls, causing flicker
     assert "const isWindowBoundaryMouseEvent = (event) => {" in setup_block
     assert "return isDocTarget && !event.relatedTarget;" in setup_block
     assert "if (!isWindowBoundaryMouseEvent(event)) return;" in setup_block
     assert "if (isWindowBoundaryMouseEvent(event)) {" in setup_block
-    # unmarkControlsHover 必须校验 relatedTarget 仍在控件区域内再取消悬停标记
+    # unmarkControlsHover must check whether relatedTarget remains inside the controls before removing the hover marker
     assert "const related = event && event.relatedTarget;" in setup_block
     assert "buttonsContainer.contains(related)" in setup_block
 

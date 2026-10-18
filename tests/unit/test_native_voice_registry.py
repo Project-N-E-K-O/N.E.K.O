@@ -42,8 +42,8 @@ _SYNTHETIC_PROVIDER = NativeVoiceProvider(
 def _register_synthetic():
     register_provider(_SYNTHETIC_PROVIDER)
     yield
-    # 不显式 deregister —— 注册表设计为幂等覆盖，重跑 fixture 即可重置；
-    # 同时其他测试不会依赖 __test_synth__ 不存在。
+    # Do not explicitly deregister: the registry overwrites idempotently, so rerunning the fixture resets it;
+    # other tests also do not depend on __test_synth__ being absent.
 
 
 def test_is_native_voice_per_provider():
@@ -54,9 +54,9 @@ def test_is_native_voice_per_provider():
 
 
 def test_is_native_voice_across_any_provider():
-    """无 provider_key 时跨注册表查询，至少能命中合成 provider 与 Gemini。"""
+    """Without provider_key, search across registries and find at least the synthetic provider and Gemini."""
     assert is_native_voice("Alpha") is True
-    assert is_native_voice("Puck") is True  # Gemini 在 import 时注册
+    assert is_native_voice("Puck") is True  # Gemini registers during import
     assert is_native_voice("definitely-not-a-voice-id") is False
 
 
@@ -83,16 +83,16 @@ def test_get_native_voice_catalog_for_ui_shape():
 
 
 def test_resolve_for_routing_unknown_core_returns_no_native():
-    """core_api_type 不在注册表里时 use_native=False，调用方走 custom TTS。"""
+    """When core_api_type is absent from the registry, use_native=False and callers use custom TTS."""
     voice, use_native = resolve_native_voice_for_routing("nonexistent", "Alpha", None)
     assert use_native is False
     assert voice == "Alpha"
 
 
 def test_resolve_for_routing_unrecognized_voice_preserves_original_input():
-    """provider 命中但 voice 不在 catalog 时返回原始输入（strip 后），
-    与 unknown-core 分支对偶；不能把用户输入悄悄替换成 default_voice，否则
-    将来 caller 想在 use_native=False 分支用返回值时会被误导喵。"""
+    """When the provider matches but the voice is absent from its catalog, return the stripped original input,
+    symmetric with the unknown-core branch. Do not silently replace input with default_voice, or
+    future callers using the return value under use_native=False would be misled, meow."""
     voice, use_native = resolve_native_voice_for_routing(
         "__test_synth__",
         "  my_custom_clone  ",
@@ -109,7 +109,7 @@ def test_resolve_for_routing_empty_input_preserves_emptiness():
 
 
 def test_resolve_for_routing_collision_disables_native():
-    """同名克隆 voice 应该把 native routing 让给 custom TTS。"""
+    """A same-named cloned voice must yield native routing to custom TTS."""
     stored = {"alpha"}
     voice, use_native = resolve_native_voice_for_routing(
         "__test_synth__",
@@ -164,7 +164,7 @@ def test_active_realtime_returns_none_for_unregistered_provider():
 
 
 def test_active_realtime_base_is_route_agnostic_on_lanlan_app():
-    """base 函数不做路由屏蔽 —— 给校验链路用，保留 lanlan.app 下的 free 原生音色合法性。"""
+    """The base function does not mask routes; validation uses it to preserve validity of free native voices under lanlan.app."""
 
     class _CM:
         def get_model_api_config(self, model_type):
@@ -226,7 +226,7 @@ def test_active_realtime_for_ui_keeps_free_provider_on_lanlan_tech_route():
 
 
 def test_active_realtime_for_ui_falls_back_to_core_url_when_base_url_empty():
-    """realtime.base_url 缺失时回退读 CORE_URL，仍能识别 lanlan.app 路由并重映射 free_intl。"""
+    """Without realtime.base_url, read CORE_URL and still recognize lanlan.app routing and remap to free_intl."""
 
     class _CM:
         def get_model_api_config(self, model_type):
@@ -239,7 +239,7 @@ def test_active_realtime_for_ui_falls_back_to_core_url_when_base_url_empty():
 
 
 def test_get_native_tts_worker_requires_voice_match_and_resolver():
-    """worker resolver 注册前 → None；voice 不在 catalog → None；都满足才返回 tuple。"""
+    """Before worker resolver registration → None; voice absent from catalog → None; return a tuple only when both conditions hold."""
 
     class _CM:
         def get_core_config(self):
@@ -247,9 +247,9 @@ def test_get_native_tts_worker_requires_voice_match_and_resolver():
 
     cm = _CM()
 
-    # voice 不在 catalog
+    # Voice absent from the catalog
     assert get_native_tts_worker("__test_synth__", cm, "not-a-voice") is None
-    # 还没注册 resolver
+    # Resolver not registered yet
     assert get_native_tts_worker("__test_synth__", cm, "Alpha") is None
 
     sentinel_worker = object()
@@ -261,7 +261,7 @@ def test_get_native_tts_worker_requires_voice_match_and_resolver():
     result = get_native_tts_worker("__test_synth__", cm, "Alpha")
     assert result == (sentinel_worker, "synthetic-key", "__test_synth__")
 
-    # core_api_type 不匹配 provider → None（即使 voice 同名）
+    # core_api_type does not match provider → None, even with an identically named voice
     assert get_native_tts_worker("nonexistent", cm, "Alpha") is None
 
 
@@ -273,7 +273,7 @@ def test_make_native_tts_resolver_pulls_core_api_key():
         def get_core_config(self):
             return {"CORE_API_KEY": "core-key"}
 
-        def get_model_api_config(self, model_type):  # 不应该被调用
+        def get_model_api_config(self, model_type):  # Must not be called
             raise AssertionError("tts_default 不应该被 core_api_key 分支读取")
 
     worker, api_key = resolver(_CM())
@@ -286,7 +286,7 @@ def test_make_native_tts_resolver_pulls_tts_default_api_key():
     resolver = make_native_tts_resolver(sentinel_worker, 'tts_default_api_key')
 
     class _CM:
-        def get_core_config(self):  # 不应该被调用
+        def get_core_config(self):  # Must not be called
             raise AssertionError("CORE_API_KEY 不应该被 tts_default_api_key 分支读取")
 
         def get_model_api_config(self, model_type):

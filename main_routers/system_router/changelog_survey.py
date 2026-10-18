@@ -28,7 +28,7 @@ from fastapi import Request
 from ..shared_state import get_config_manager
 
 
-# --- 版本更新日志 ---
+# -- Version changelog --
 
 @router.get("/changelog")
 async def get_changelog(since: str = "", lang: str = ""):
@@ -58,13 +58,13 @@ async def get_changelog(since: str = "", lang: str = ""):
     entries: list[dict] = []
     since_ver = _parse_ver(since) if since else (0,)
 
-    # lang 来自 query string，下面会拼进 os.path.join(changelog_dir, lang, ...)，
-    # 先白名单化挡路径穿越（与 survey 下发口共用 _safe_locale）。
+    # lang comes from the query string and enters os.path.join(changelog_dir, lang, ...),
+    # so whitelist it first against path traversal, sharing _safe_locale with survey delivery.
     lang = _safe_locale(lang)
-    # 确定 fallback 链，与 survey 下发口（_load_survey_for_version）保持一致：
-    # 具体 locale（含 zh-TW 等中文变体）先试自己的子目录 -> 非中文再回退 en ->
-    # 最后都落到简体中文原文（zh_content）。zh-TW 也 startswith("zh")，但简体
-    # base 并无 zh-CN/ 子目录，所以简体请求自然落回原文，不受影响。
+    # Match the survey-delivery fallback chain (_load_survey_for_version):
+    # try the specific locale's subdirectory, including Chinese variants like zh-TW; non-Chinese falls back to en;
+    # all finally use Simplified Chinese zh_content. zh-TW also startswith("zh"), but the Simplified
+    # base has no zh-CN/ subdirectory, so Simplified requests naturally retain original behavior.
     is_chinese = lang.startswith("zh") if lang else True
     fallback_langs: list[str] = []
     if lang:
@@ -153,8 +153,8 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
     if not os.path.isfile(base_file):
         return None
 
-    # 任何具体 locale 先试自己的子目录（含 zh-TW 等中文变体，于是繁体不再被并入
-    # 简体 base）；中文变体回退到简体 base，非中文回退 en，最后都落 base。
+    # Try every specific locale's own subdirectory first, including zh-TW rather than merging it into the
+    # Simplified base; Chinese variants fall back to that base, non-Chinese to en, then all to base.
     candidates: list[str] = []
     if lang:
         candidates.append(os.path.join(surveys_dir, lang, f"{version}.json"))
@@ -172,12 +172,12 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
         except Exception:
             continue
         if isinstance(data, dict):
-            # 受众白名单：定向问卷/公告只发给列出的 locale。放在这里而不是端点里，
-            # 因为所有下发都经过本函数；且必须在回退落到 base 之后判断——正是
-            # "非该语言用户回退到简体 base" 这条路径需要被挡住。
-            # 缺字段 = 不限制；字段在但类型不对 = 不下发。作者把 ["zh-CN"] 手滑写成
-            # "zh-CN" 属于常见笔误，若按"不限制"处理，定向公告会静默发给所有语言，
-            # 恰好是这个字段要防的事——所以"写了但写坏"一律 fail closed。
+            # Audience whitelist: deliver targeted surveys/announcements only to listed locales. Keep this here, outside endpoints,
+            # because all delivery passes through this function. Evaluate after falling back to base: the path needing protection
+            # is precisely non-target-language users falling back to Simplified base.
+            # Missing field means unrestricted; present with invalid type means no delivery. Authors commonly mistype ["zh-CN"]
+            # as "zh-CN"; treating that as unrestricted silently broadcasts targeted announcements to all languages,
+            # defeating the field's purpose. Present-but-invalid values always fail closed.
             if "locales" in data:
                 allowed = data.get("locales")
                 if not isinstance(allowed, list):
@@ -188,9 +188,9 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
                     return None
                 if allowed and (not lang or lang not in allowed):
                     return None
-            # 时效：公告类内容常带截止日期（"8月20日前投票"），而安装包会被用户在
-            # 任意时间首次启动。过期后一律不再下发，免得给人推一个已经结束的活动。
-            # ISO 日期，含当天；同上——写了但写坏（含写成数字 20260820）一律不下发。
+            # Expiry: announcements often include deadlines (e.g. vote before August 20), while users can first launch
+            # packages at any time. Stop delivery after expiry rather than promoting completed events.
+            # Inclusive ISO date; malformed provided values, including numeric 20260820, prevent delivery.
             if "expires_at" in data:
                 expires_at = data.get("expires_at")
                 deadline = None
@@ -207,8 +207,8 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
                     return None
                 if _utc_today() > deadline:
                     return None
-            # 强制归一到文件版本（= APP_VERSION），不用 setdefault：本地化文件若误写了
-            # 别的 survey_version，会让前端去重键和上报版本错位、统计分裂。
+            # Force the file version (= APP_VERSION), not setdefault: a wrongly localized survey_version would misalign
+            # frontend deduplication keys with reported versions, splitting statistics.
             data["survey_version"] = version
             return data
     return None
@@ -305,8 +305,8 @@ async def submit_survey(request: Request):
     action = payload.get("action")
     if action not in ("submit", "skip"):
         action = "submit"
-    # survey_version 用服务端 APP_VERSION 权威值，不信客户端传入——否则恶意请求可写
-    # 任意版本污染远端版本维度。问卷本就只对当前版本下发，没有跨版本提交的合法场景。
+    # Use authoritative server APP_VERSION for survey_version, never client input, which could pollute remote version dimensions.
+    # Surveys target only the current version, with no legitimate cross-version submission.
     survey_version = APP_VERSION
     answers = _sanitize_survey_answers(payload.get("answers"))
 

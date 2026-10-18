@@ -1,7 +1,7 @@
 """
-插件间通信路由器
+Inter-plugin communication router
 
-处理插件之间的通信请求，将请求路由到目标插件的 cmd_queue。
+Handles communication requests between plugins, routing them to the target plugin's cmd_queue.
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def _normalize_mapping(raw: object) -> JsonObject | None:
 
 
 class PluginRouter:
-    """插件间通信路由器"""
+    """Inter-plugin communication router."""
 
     def __init__(self) -> None:
         self._router_task: asyncio.Task[None] | None = None
@@ -113,7 +113,7 @@ class PluginRouter:
             )
 
     async def start(self) -> None:
-        """启动路由器任务"""
+        """Start the router task."""
         if self._router_task is not None:
             logger.warning("Plugin router is already started")
             return
@@ -153,7 +153,7 @@ class PluginRouter:
         logger.info("Plugin router started")
 
     async def stop(self) -> None:
-        """停止路由器任务"""
+        """Stop the router task."""
         if self._router_task is None:
             return
 
@@ -287,7 +287,7 @@ class PluginRouter:
         return out
 
     async def _router_loop(self) -> None:
-        """路由器主循环"""
+        """Router main loop."""
         logger.info("Plugin router loop started")
 
         last_cleanup_time = 0.0
@@ -321,7 +321,7 @@ class PluginRouter:
                 await asyncio.sleep(0.1)
 
     async def _get_request_from_queue(self) -> JsonObject | None:
-        """从通信队列获取请求（非阻塞）"""
+        """Get a request from the communication queue without blocking."""
         queue_obj = state.plugin_comm_queue
         if queue_obj is None:
             return None
@@ -367,7 +367,7 @@ class PluginRouter:
         return _normalize_mapping(request_obj)
 
     async def _handle_request(self, request: JsonObject) -> None:
-        """处理插件间通信请求"""
+        """Handle an inter-plugin communication request."""
         request_type = request.get("type")
         handler = self._handlers.get(str(request_type))
         if handler is None:
@@ -384,7 +384,7 @@ class PluginRouter:
         error: object | None,
         timeout: float = 10.0,
     ) -> None:
-        """发送响应到源插件。"""
+        """Send a response to the source plugin."""
         response: JsonObject = {
             "type": "PLUGIN_TO_PLUGIN_RESPONSE",
             "to_plugin": to_plugin,

@@ -44,7 +44,7 @@ def _function_body(src: str, header_regex: str) -> str:
     raise AssertionError("unbalanced braces")
 
 
-# ── 静态门 ────────────────────────────────────────────────────────────
+# -- Static gates --
 
 
 def test_template_only_references_static_and_no_vendor_sdk():
@@ -80,9 +80,9 @@ def test_backend_close_stops_media_and_leaves_before_any_reconnect():
     stop = onclose.index("stopAllMedia(")
     leave = onclose.index("leaveRoom(")
     assert stop < onclose.index("setTimeout(") and leave < onclose.index("setTimeout(")
-    # 4409 只停媒体、不离房、不重连
+    # 4409 stops media only, without leaving the room or reconnecting.
     assert "code !== CLOSE_SUPERSEDED ? self.hooks.leaveRoom('backend_socket_closed') : null" in onclose
-    # 重连等上一次离房结束
+    # Reconnection waits for the previous room exit to finish.
     assert "Promise.all([delayDone, leftOrGaveUp])" in onclose
 
 
@@ -116,7 +116,7 @@ def test_sizes_come_only_from_the_framing_tables():
     for name in ("trtc-transport.js", "unpack.js", "livekit-transport.js", "loader.js"):
         code = _code_only(_src(name))
         assert not re.search(r"\b(896|448|1120|560|320|256)\b", code.replace("560) * 1000", "")), name
-    # pack.js：尺寸数字只出现在 CROP_GEOMETRY 与阶梯表的定义里
+    # pack.js: size numbers appear only in CROP_GEOMETRY and quality-ladder definitions.
     tables = re.search(r"var CROP_GEOMETRY = \{.*?\};\s*.*?var CONGESTION_LADDER = \{.*?\};", pack, re.S)
     assert tables
     rest = pack.replace(tables.group(0), "")
@@ -149,7 +149,7 @@ def test_vendor_sdks_are_registered_pinned_and_hashed():
         assert line in nuitka, line
 
 
-# ── 假 SDK 行为 ───────────────────────────────────────────────────────
+# -- Fake SDK behavior --
 
 
 def test_fragment_pacing_stays_inside_the_vendor_window():
@@ -206,7 +206,7 @@ def test_backend_socket_drop_stops_media_leaves_and_reconnects_with_same_vid():
         };
         """
     )
-    # 同步执行：先停发布，再离房；都早于 1 s 后的重连
+    # Execute synchronously: stop publishing, then leave the room, both before reconnection one second later.
     assert out["syncKinds"][:2] == ["stopLocalVideo", "exitRoom"]
     assert out["reconnected"]
     assert out["firstFrames"][:2] == ["auth", "caps:preflight"]
@@ -336,7 +336,7 @@ def test_refresh_credentials_are_accepted_without_rejoining_and_used_by_a_manual
     assert out["entersAfterRefresh"] == 1
     assert out["enterCount"] == 2
     assert out["lastSig"] == "sig3"
-    # 手动重新入房的完整顺序：先报重连中，再 joining，最后 joined
+    # Full manual rejoin order: report reconnecting, then joining, then joined.
     tail = out["states"][out["states"].index("reconnecting"):]
     assert tail == ["reconnecting", "joining", "joined"]
 
@@ -433,7 +433,7 @@ def test_stop_unpublishes_leaves_reports_left_and_closes():
 
 
 def test_unknown_or_foreign_template_free_files():
-    # 目录里只有登记过的 8 个脚本（新增脚本要同步模板与本测试）
+    # Only the eight registered scripts belong in the directory; additions require matching template/test updates.
     names = sorted(p.name for p in TRANSPORT_DIR.glob("*.js"))
     assert names == sorted([
         "transport.js", "pack.js", "unpack.js", "trtc-transport.js", "livekit-transport.js",
@@ -647,7 +647,7 @@ def test_quick_republish_after_stop_keeps_the_new_publication():
         return kinds(h.log).filter((k) => k.indexOf('LocalVideo') !== -1 || k.startsWith('start-'));
         """
     )
-    # 顺序执行：第一次发布完成 → 停止 → 第二次发布；最后停在「已发布」
+    # Sequential execution: first publication completes -> stop -> second publication; finish published.
     assert out == ["start-1-pending", "stopLocalVideo", "startLocalVideo"]
 
 
@@ -670,7 +670,7 @@ def test_superseded_while_publish_in_flight_still_stops_before_destroy():
         return { soon, later: kinds(h.log).filter((k) => ['start-pending', 'stopLocalVideo', 'exitRoom', 'destroy'].includes(k)) };
         """
     )
-    # 被顶掉（4409）不立刻离房，但在途的发布完成后必须停掉；接替页面若没入房，15 s 后兜底退房再销毁实例
+    # Replacement (4409) does not immediately leave; stop in-flight publication when it completes. If the replacement page has not joined, leave after 15s and destroy the instance.
     assert out["soon"] == ["start-pending", "stopLocalVideo"]
     assert out["later"] == ["start-pending", "stopLocalVideo", "exitRoom", "destroy"]
 
@@ -740,7 +740,7 @@ def test_leave_completion_waits_for_in_flight_publish():
     )
     assert out["reconnectedBeforePublishSettled"] == 0
     assert out["after"] == 1
-    # exitRoom 立即发出；离房后才完成的发布被停掉
+    # exitRoom is issued immediately; stop publication completing after room exit.
     assert out["kinds"] == ["start-pending", "exitRoom", "stopLocalVideo"]
 
 
@@ -802,7 +802,7 @@ def test_failed_publish_tells_the_parent_to_stop_capturing():
         return { afterFail, afterRetry: h.posted.filter((m) => m.t === 'publish').map((m) => m.on) };
         """
     )
-    # 失败时父页从没被告知开始（或已被告知停）；重试成功后才通知开始
+    # On failure the parent was never told publishing began (or was told it stopped); notify start only after successful retry.
     assert out["afterFail"] in ([], [False])
     assert out["afterRetry"][-1] is True
 
@@ -849,7 +849,7 @@ def test_stale_loss_sample_expires():
         return h.c.media.ladder;
         """
     )
-    # 旧的丢包样本 12 s 后过期，之后只看健康的 rx_fps：至多被它压下一级，不会一路压到最低档
+    # Old packet-loss samples expire after 12s; then healthy rx_fps can reduce quality at most one step, not repeatedly to the lowest tier.
     assert out <= 1
 
 
@@ -2487,7 +2487,7 @@ def test_stop_timeout_with_async_socket_close_reports_cleanup_once():
         return { at10, at13: done(), destroys: kinds(h.log).filter((k) => k === 'destroy').length };
         """
     )
-    # 第一次拆在等退房（最多 8 s）：第二次 teardown 不能在这期间抢先报 cleanup_done
+    # First teardown awaits room exit (up to 8s); a second teardown must not report cleanup_done early during it.
     assert out == {"at10": 0, "at13": 1, "destroys": 1}
 
 
@@ -2578,7 +2578,7 @@ def test_stalled_async_stats_still_emit_each_tick():
         return { early, late: stats() - before };
         """
     )
-    # 4 s 到点只发同步部分（队列长度、接收帧率等），不让后端统计和阶梯停住
+    # At 4s, send synchronous stats only (queue length, received frame rate, etc.) so backend statistics cannot stall the ladder.
     assert out == {"early": 0, "late": 1}
 
 
@@ -2604,7 +2604,7 @@ def test_stalled_receiver_stats_still_carry_the_fields_the_backend_forwards():
         return runs;
         """
     )
-    # 后端要这三项齐了才转发给对端；对端读的是新鲜的 rx_fps
+    # Backend forwards only when all three fields exist; the peer reads fresh rx_fps.
     assert out == {"afterSample": {"rx_fps": 25, "rx_kbps": 300, "rtt_ms": 40, "loss_pct": 1},
                    "neverSampled": {"rx_fps": 25, "rx_kbps": 0, "rtt_ms": 0, "loss_pct": 0}}
 
@@ -2651,8 +2651,8 @@ def test_initial_join_that_never_settles_is_left_to_the_backend_deadline():
         return { errors: errors(), instances: h.TRTC.instances.length, enters: kinds(h.log).filter((k) => k.startsWith('enterRoom')).length };
         """
     )
-    # 一开始就进不去：客户端不提前判死、也不换适配器重试，交给后端首次入房的 25 s 期限结束这一场
-    # （慢网络上 SDK 走 TURN 回退要十几秒，客户端 10 s 判死会误伤）
+    # Initial room entry failure: no premature client failure or adapter retry; let the backend's 25s first-entry deadline end the session.
+    # SDK TURN fallback can take over ten seconds on slow networks; a 10s client timeout would reject valid attempts.
     assert out == {"errors": [], "instances": 1, "enters": 1}
 
 

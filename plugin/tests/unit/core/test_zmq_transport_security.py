@@ -668,9 +668,9 @@ def test_the_control_ceiling_covers_the_widest_legitimate_control_frame():
         _message_uplink_max_bytes,
     )
 
-    # 量的是**打包后的整帧**，不是几个常量相加。第一版只对比了图片字节，
-    # 而 output 和图片走同一帧：实测两张满尺寸图 + 60 KB 文本就超限，于是
-    # 那一版把「每帧 128 MiB」换成了「合法结果被静默扯掉」。
+    # Measure the entire packed frame, not a sum of constants. The first version compared only image bytes,
+    # but output shares the frame: two full-size images plus 60 KB of text already exceed the limit, so
+    # that version replaced a 128 MiB-per-frame limit with silent truncation of valid results.
     import ormsgpack
 
     from main_logic.tool_calling import _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS
@@ -702,7 +702,7 @@ def test_the_control_ceiling_covers_the_widest_legitimate_control_frame():
         f"{worst_case_frame}——超限的帧会被 libzmq 在接收引擎里丢掉并断开对端，"
         "recv() 不报错，宿主连字节都看不到，调用方只知道「没收到」"
     )
-    # 而且必须真的比消息上行紧：借用那个数正是这条意见指出的问题。
+    # It must also be genuinely tighter than message uplink; borrowing that limit was precisely the reported problem.
     assert ceiling < _message_uplink_max_bytes(), (
         "控制上行又借用了消息上行的界（含不适用的批量乘数）"
     )
@@ -1143,9 +1143,9 @@ def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
     try:
         assert reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE == expected
 
-        # 读真实批处理器算出来的值，而不是在测试里把 max(1, ...) 再抄一遍：
-        # 抄一遍的话，实现里的钳位公式一改，测试的期望跟着一起变，这条断言
-        # 就永远成立（CodeRabbit）。
+        # Read the real batch processor's computed value instead of copying max(1, ...) into the test:
+        # otherwise changes to the implementation's clamp also change the test expectation,
+        # making the assertion always true (CodeRabbit).
         batcher = zmq_transport._AuthenticatedMessageBatcher(
             object(),  # type: ignore[arg-type]
             batch_size=int(configured),

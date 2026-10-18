@@ -146,7 +146,7 @@ class SurveyStorage:
                     (batch_id,),
                 )
                 if cur.rowcount == 0:
-                    return False  # 另一并发请求已写入同 batch，幂等跳过
+                    return False  # Another concurrent request already wrote this batch; skip idempotently
             conn.execute(
                 """INSERT INTO responses
                    (device_id, device_id_legacy, app_version, survey_version, locale,
@@ -187,8 +187,8 @@ class SurveyStorage:
         if survey_version:
             where += " AND survey_version = ?"
             params.append(survey_version)
-        # 上下界都 clamp：只夹上界的话 limit=-1 会被原样传给 SQLite，而 LIMIT -1
-        # 表示"无限"，反而绕过 5 万行上限把整表读进内存/JSON。
+        # Clamp both bounds: clamping only the upper bound passes limit=-1 to SQLite unchanged, where LIMIT -1
+        # means 'unlimited', bypassing the 50,000-row cap and reading the entire table into memory/JSON.
         try:
             limit = int(limit)
         except (TypeError, ValueError):

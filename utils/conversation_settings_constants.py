@@ -28,8 +28,8 @@ ALLOWED_CONVERSATION_SETTINGS = frozenset({
     "mergeMessagesEnabled",
     "focusModeEnabled",
     "focusCognitionEnabled",
-    # 文字对话回复前自动召回相关记忆（被动注入），默认开；后端读取见
-    # main_logic/turn_context.py 的 MEMORY_SETTING_KEY。
+    # Automatically recall relevant memories before text replies (passive injection), enabled by default; backend reads use
+    # MEMORY_SETTING_KEY in main_logic/turn_context.py.
     "autoMemoryRecallEnabled",
     "avatarReactionBubbleEnabled",
     "slopFilterEnabled",
@@ -42,9 +42,9 @@ ALLOWED_CONVERSATION_SETTINGS = frozenset({
     "independentAsrEnabled",
     "independentAsrProviderPreference",
     "voiceInputResourceOptimizationEnabled",
-    # 串门（docs/design/visit-infrastructure.md §3.7.6）：visitEnabled 默认关；
-    # visitMemoryEnabled 默认开、隐藏配置（不进设置页）；visitVoiceEnabled 默认开。
-    # 默认值见 config/visit_settings.py 的 VISIT_*_DEFAULT。
+    # Visits (docs/design/visit-infrastructure.md section 3.7.6): visitEnabled defaults off;
+    # visitMemoryEnabled defaults on and stays hidden from settings; visitVoiceEnabled defaults on.
+    # Defaults are VISIT_*_DEFAULT in config/visit_settings.py.
     "visitEnabled",
     "visitMemoryEnabled",
     "visitVoiceEnabled",

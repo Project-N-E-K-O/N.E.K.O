@@ -208,19 +208,19 @@ async def dispatch(
     trigger_user_msg_sig,
 ) -> None:
     """Handle an analyzer decision routed to the user-plugin channel."""
-    # Dispatch: 与 CU/BU 一致，由 agent_server 统一调度执行
+    # Dispatch: agent_server schedules execution centrally, matching CU/BU.
     if _shared.Modules.agent_flags.get("user_plugin_enabled", False) and _shared.Modules.task_executor:
         plugin_id = result.tool_name
         plugin_args = result.tool_args or {}
         entry_id = result.entry_id
         up_start = _now_iso()
-        # 获取插件友好名称（用于 HUD 显示）
+        # Get the plugin's friendly name for HUD display.
         plugin_name = await _get_plugin_friendly_name(plugin_id)
         logger.info(
             "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s, plugin_name=%s",
             plugin_id, entry_id, plugin_name,
         )
-        # 构建任务参数（包含友好名称）
+        # Build task arguments including the friendly name.
         task_params = {"plugin_id": plugin_id, "entry_id": entry_id}
         if plugin_name:
             task_params["plugin_name"] = plugin_name
@@ -238,7 +238,7 @@ async def dispatch(
             "error": None,
             "_trigger_user_fingerprint": trigger_user_msg_sig,
         }
-        # 记录任务分派（供后续 analyzer 去重）
+        # Record dispatch for later analyzer deduplication.
         _task_tracker.record_assigned(
             lanlan_name,
             task_id=result.task_id,
@@ -285,17 +285,17 @@ async def dispatch(
         async def _run_user_plugin_dispatch():
             try:
                 from utils.instrument import counter as _ic
-                # agent_invoked 只按 agent_type 分，保持单 key 即"plugin
-                # 总计"——本地 admin 视图 get_top_counters 按完整 metric_key
-                # GROUP BY、不做 dim 聚合，若把 plugin_id 塞进这里会把该
-                # 总计行打散成 per-plugin 行、丢掉聚合。per-plugin 细分另发
-                # 独立指标 plugin_invoked，其全量之和恒等于本行，互不重复
-                # 计数。plugin_id 基数由已安装插件数限定，截断兜底防异常长
-                # id 撑爆 counter key 空间。
+                # agent_invoked groups only by agent_type, retaining a single plugin-total
+                # key. Local admin get_top_counters groups by complete metric_key,
+                # without dimension aggregation, so including plugin_id here would split
+                # the total into per-plugin rows and lose aggregation. Emit per-plugin details
+                # separately through plugin_invoked; their sum always equals this row without
+                # double counting. Installed plugin count bounds plugin_id cardinality; truncate as fallback
+                # against abnormally long IDs expanding the counter key space.
                 _ic("agent_invoked", agent_type="plugin")
                 _ic("plugin_invoked", plugin_id=str(plugin_id or "unknown")[:48])
             except Exception:
-                pass  # 埋点 best-effort，不阻塞 plugin 分派
+                pass  # Best-effort telemetry must not block plugin dispatch.
             # Default delivery mode; overridden after the plugin result
             # is parsed below. Cancel / exception branches read this so
             # they honor whatever the plugin already declared, not a
@@ -336,9 +336,9 @@ async def dispatch(
                 # main_server which routes proactive vs passive scheduling.
                 _delivery_mode = _resolve_delivery_mode(up_result.result if isinstance(up_result.result, dict) else None)
                 _suppress_reply = _delivery_mode == "silent"
-                # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
+                # Check whether the plugin returns deferred, e.g. a scheduled memo reminder not yet triggered.
                 is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
-                # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
+                # Update task_registry; deferred tasks stay running without terminal status.
                 _reg = _shared.Modules.task_registry.get(result.task_id)
                 if _reg and _reg.get("status") == "cancelled":
                     # cancel_task pre-marked cancelled; don't clobber with a late terminal write.
@@ -350,17 +350,17 @@ async def dispatch(
                     if up_terminal != "completed":
                         _reg["error"] = _tt((detail or str(up_result.error or "")), TASK_ERROR_MAX_TOKENS)
                 if up_result.success and is_deferred:
-                    # 保持任务为 running 状态，等待 daemon 触发后回调完成
+                    # Keep the task running until the daemon triggers its completion callback.
                     reminder_id = run_data.get("reminder_id") if isinstance(run_data, dict) else None
                     logger.info("[Deferred] Task %s kept running, reminder_id=%s", result.task_id, reminder_id)
-                    # 设置超时，防止绑定失败导致任务永远卡在 running
+                    # Set a timeout so failed binding cannot leave tasks running forever.
                     if _reg:
                         _reg["deferred_timeout"] = time.time() + DEFERRED_TASK_TIMEOUT
                     if reminder_id:
-                        # 在线程中执行（含 HTTP 轮询，避免阻塞事件循环）
+                        # Run in a thread, including HTTP polling, to avoid blocking the event loop.
                         loop = asyncio.get_event_loop()
                         loop.run_in_executor(None, _bind_deferred_task, plugin_id, reminder_id, result.task_id)
-                    # 不进入后续 completed/failed 流程
+                    # Skip subsequent completed/failed handling.
                 elif up_result.success:
                     _completed = up_terminal == "completed"
                     _task_tracker.record_completed(
@@ -375,7 +375,7 @@ async def dispatch(
                     if not _suppress_reply:
                         display_id = await _get_plugin_display_id(plugin_id)
                         # summary is now plain detail; the LLM-facing
-                        # i18n wrap (来自插件「X」的任务{status}…) lives
+                        # The i18n wrapper (task {status} from plugin X...) lives
                         # in main_logic via SYSTEM_NOTIFICATION_PROACTIVE
                         # + SOURCE_DESCRIPTORS + TASK_STATUS_PHRASES.
                         try:
@@ -407,12 +407,12 @@ async def dispatch(
                         try:
                             display_id = await _get_plugin_display_id(plugin_id)
                             _err_text = (detail or str(up_result.error or "")).strip()
-                            # summary 不再套 plugin_failed_with；状态由
-                            # main_logic 的外层 SYSTEM_NOTIFICATION_PROACTIVE
-                            # （+ status="failed" → "执行失败"）表达。
-                            # 显式传 status="failed"，否则 _emit_task_result
-                            # 看到 success=False + 非空 detail 会默认推到
-                            # "partial"，把单纯失败误标成"部分完成"。
+                            # Do not wrap summary with plugin_failed_with anymore; status comes from
+                            # main_logic's outer SYSTEM_NOTIFICATION_PROACTIVE
+                            # wrapper, with status="failed" expressing execution failure.
+                            # Pass status="failed" explicitly; otherwise _emit_task_result
+                            # defaults success=False with nonempty detail to
+                            # "partial", mislabeling simple failure as partial completion.
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="user_plugin",
@@ -428,7 +428,7 @@ async def dispatch(
                             )
                         except Exception as emit_err:
                             logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
-                # Emit task_update (terminal) — deferred 任务跳过，保持 running
+                # Emit terminal task_update; skip deferred tasks, which remain running.
                 if not (up_result.success and is_deferred):
                     try:
                         await _emit_main_event(
@@ -487,7 +487,7 @@ async def dispatch(
                 _reg = _shared.Modules.task_registry.get(result.task_id)
                 if _reg and _reg.get("status") == "cancelled":
                     return
-                # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+                # Exception strings may contain raw user/LLM text; logger records metadata only.
                 logger.error("[TaskExecutor] UserPlugin dispatch failed (exc_type=%s)", type(e).__name__)
                 print(f"[TaskExecutor] UserPlugin dispatch raw error: {e}")
                 if _reg:

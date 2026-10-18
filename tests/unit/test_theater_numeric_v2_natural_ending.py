@@ -15,7 +15,7 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening, _perf
 def _engine(*, ordinary=False, blocked=False):
     story = numeric_v2_story()
     if ordinary:
-        # 让高优先级的可达普通幕胜出；即使还有可达结局，也不得绕过既有选路结果。
+        # Let the higher-priority reachable normal act win; a reachable ending must not bypass the existing routing result.
         middle = deepcopy(story['nodes'][0])
         middle.update(id='middle', type='scene')
         for route in middle['route_gates']:
@@ -24,7 +24,7 @@ def _engine(*, ordinary=False, blocked=False):
         story['nodes'][0]['route_gates'][0]['target_node_id'] = 'middle'
         story['nodes'][0]['route_gates'][0]['conditions']['all'][0]['value'] = 0
     if blocked:
-        # 保持各路线在合法数值范围内可达，只让当前 trust=20 不满足任何一路。
+        # Keep each route reachable within valid numeric bounds, while current trust=20 meets none.
         story['nodes'][0]['route_gates'][0]['conditions']['all'][0]['value'] = 90
         story['nodes'][0]['route_gates'][1]['conditions']['all'][0]['value'] = 10
     return NumericV2Engine.from_mapping(story)
@@ -65,7 +65,7 @@ def test_legacy_evaluator_completion_is_not_ending_authorization():
 
 
 def test_metric_change_cannot_reuse_authorization_for_another_ending():
-    # Evaluator 看到离开结局，本轮加分却切到留下结局；必须重新核对后者的实际前提。
+    # The evaluator sees the leave ending, but this turn's score switches to the stay ending; recheck the latter's actual prerequisites.
     engine = _engine()
     session = engine.create_session(session_id='route_switch', catgirl_binding=_binding(), opening_performance=_opening())
     session = replace(session, metrics={'trust': 69})
@@ -83,7 +83,7 @@ async def test_ending_signal_replays_without_reinterpreting_old_completion(tmp_p
     stored = await runtime.start_session(session_id='source', catgirl_binding=_binding(), opening_performance=_opening())
     outcome = runtime.prepare_turn(stored, TurnRequestV2('one', 0, '谢谢。'), (), scene_complete=True, natural_ending_ready=ready)
     if ready:
-        # 自然结束同样要求整套来源回应/桥段/结局原子交付，普通正文不可冒充已交付结局。
+        # Natural endings also require atomic delivery of the whole source response/bridge/ending; ordinary body text cannot impersonate a delivered ending.
         with pytest.raises(ValueError, match='numeric_transition_performance_invalid'):
             await runtime.commit_turn(outcome, _performance('谢谢。'))
         assert await runtime.restore_session('source') == stored
@@ -104,16 +104,16 @@ def test_natural_ending_actor_receives_authorization_without_fake_acceptance():
     payload = json.loads(messages[1].content.split('\n', 1)[1])
     assert payload['transition']['natural_ending'] is True
     assert '不声称玩家接受了未提出的邀请' in messages[0].content
-    # 同轮授权要包含最后动作和回应的交付职责，同时保留未知成败与玩家决定边界。
+    # Same-turn authorization includes delivery of the final action and response, preserving unknown success and player decision boundaries.
     assert '先在来源回应完成玩家已授权的最后互动' in messages[0].content
-    # 自然结束授权不允许把约定的未来执行通过环境旁白补成事实。
+    # Natural-ending authorization cannot turn agreed future execution into facts through environmental narration.
     compact = _turn_messages(engine, session, outcome, '谢谢。', '温和。', '小葵', '你')
     assert '不能把约定的未来行动写成已经执行' in compact[0].content
-    # 来源可静默与目标必须说话可以同时成立，模型须按两个不同字段生成。
+    # A silent source and a speaking target can coexist; the model must generate from these two distinct fields.
     assert 'target_performance 遵守 acting_context.target_dialogue_policy' in compact[0].content
     evaluator_messages = _build_messages(engine, session, '谢谢。')
     assert '不必等玩家再说一句' in evaluator_messages[0].content
-    # 顺序合同仍保留未知结果和真实风险门槛，不依赖旧版重复段落的措辞。
+    # The sequential contract retains unknown outcomes and real risk thresholds, independent of the old repeated paragraph wording.
     assert '未知成败、真实风险' in evaluator_messages[0].content
     data = json.loads(evaluator_messages[1].content.split('\n', 1)[1])
     assert 'natural_ending_context' in data['transition_preview']

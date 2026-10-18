@@ -310,7 +310,7 @@ def _signal_second_operation_lock_acquire(
         acquire_calls += 1
         if acquire_calls == 2:
             second_acquire_attempted.set()
-        # 截止期照原样转发，别在替身里把它吞掉。
+        # Forward the deadline unchanged; do not swallow it in the test double.
         await original_acquire(deadline)
 
     monkeypatch.setattr(

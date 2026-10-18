@@ -279,12 +279,12 @@ class TranscriptDispatcher:
                 break
         worker, self._worker = self._worker, None
         if worker is not None and not worker.done():
-            # 不要取消调用者自己。收口路径（例如独立 ASR final 里发现会话不可用后
-            # 调 _close_independent_asr）本身就跑在这个 worker 上：取消它会让紧接着
-            # 的那个 await 抛 CancelledError，剩下的 detector/provider 清理和
-            # send_session_ended_by_server() 全部被跳过，前端也就收不到结束通知。
-            # 队列已经清空、_worker 也已置 None，所以不取消它也不会再接新活，
-            # 当前这一条 envelope 跑完就自然结束。
+            # Do not cancel the caller itself. Closing paths (such as independent ASR final discovering an unavailable session
+            # and calling _close_independent_asr) run on this worker. Cancelling it makes the next
+            # await raise CancelledError, skipping remaining detector/provider cleanup and
+            # send_session_ended_by_server(), so the frontend never receives the end notification.
+            # The queue is already drained and _worker is None, so leaving it uncancelled accepts no new work;
+            # it naturally exits after completing this envelope.
             if worker is not asyncio.current_task():
                 worker.cancel()
         self._active = None
@@ -344,10 +344,10 @@ class TranscriptDispatcher:
                         self._active = None
                         self._set_idle_if_empty()
                 if self._worker is not worker_task:
-                    # invalidate_all() 已经把我们从 _worker 上摘掉了（而且刻意没有
-                    # 取消调用者自己）。跑完手头这条 envelope 就必须退出 —— 再回去
-                    # await self._queue.get() 会变成一个和新 worker 并存的僵尸，
-                    # 两个消费者抢同一个队列。
+                    # invalidate_all() already detached us from _worker (deliberately without
+                    # cancelling the caller). Exit after the current envelope; returning to
+                    # await self._queue.get() would leave a zombie alongside the new worker,
+                    # with two consumers competing for one queue.
                     return
         except asyncio.CancelledError:
             return

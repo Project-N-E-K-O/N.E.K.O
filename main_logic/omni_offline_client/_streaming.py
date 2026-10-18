@@ -126,7 +126,7 @@ class _StreamingMixin:
         if isinstance(max_length, int):
             self.max_response_length = max_length if max_length > 0 else _UNLIMITED_BUDGET
             if self.llm is not None:
-                # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
+                # Normal budget; summary's 3000 increase applies temporarily inside stream_text only.
                 self.llm.max_completion_tokens = _budget_to_max_tokens(self.max_response_length)
             logger.debug(f"OmniOfflineClient: token 上限已更新为 {max_length}")
 
@@ -145,8 +145,8 @@ class _StreamingMixin:
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
         self._instructions = instructions
-        # 与 realtime 侧同：close() 立起来的抄送闭锁在这里落下，否则同一个实例
-        # 被复用时，重新 connect 之后帧/对话都不再上总线。
+        # As in realtime: release close()'s bus-copy latch here; otherwise reusing this instance
+        # and reconnecting would stop all frames/conversation from reaching the bus.
         self._bus_copies_closed = False
         # Add system message to conversation history using langchain format
         self._conversation_history = [
@@ -199,7 +199,7 @@ class _StreamingMixin:
             if not new_model:
                 return True
 
-            # 选择使用的 API 配置
+            # Select API configuration.
             if use_vision_config:
                 base_url = self.vision_base_url
                 api_key = self.vision_api_key if self.vision_api_key and self.vision_api_key != '' else None
@@ -209,10 +209,10 @@ class _StreamingMixin:
                 api_key = self.api_key
                 provider_type = getattr(self, "provider_type", None)
 
-            # 模型 id 相同也不能直接返回：视觉槽可以填和对话槽同一个模型 id、却指向
-            # 另一个 URL / Key / 协议（例如本地 Ollama 专门跑多模态的那一台，或同一
-            # 网关下的 Anthropic 风格接口）。只比 id 的话截图帧会一直打在纯文本端点
-            # 上。id 和路由都没变才是真正的 no-op。
+            # Matching model IDs alone cannot return early: vision and conversation may share an ID but use
+            # different URL / key / protocol (e.g. a local Ollama multimodal host, or an Anthropic-style
+            # interface at the same gateway). Comparing IDs alone keeps screenshots hitting a text-only endpoint.
+            # Only unchanged IDs and routes constitute a true no-op.
             if new_model == self.model and _same_route(
                 base_url, api_key, provider_type,
                 self.base_url, self.api_key, getattr(self, "provider_type", None),
@@ -221,25 +221,25 @@ class _StreamingMixin:
 
             logger.info(f"Switching model from {self.model} to {new_model}")
 
-            # 先创建新 client，成功后再原子替换，避免半切换状态。
-            # max_completion_tokens 跟随当前 max_response_length 同步设置
-            # （和 __init__ 一致）。
+            # Create the new client first, then atomically replace after success to avoid partial switching.
+            # Set max_completion_tokens in sync with current max_response_length
+            # (as in __init__).
             _derived_max_tokens = _budget_to_max_tokens(self.max_response_length)
-            # 但不能只看 max_response_length：这个函数会在**回合中途**被调用
-            # （工具返回图片要切 vision 模型），而那时 stream_text 可能已经把
-            # 当前 client 的 max_completion_tokens 抬到 summary 档、或者加了
-            # 凝神轮的 token 头寸。按 max_response_length 重算等于把那一档丢掉，
-            # 追问和最终回答会被 provider 提前截断——而回合的 finally 随后又把
-            # **旧** client 存下的值写到这个新 client 上。
+            # But max_response_length alone is insufficient: this function runs mid-turn
+            # (switching to vision for tool-returned images), after stream_text may have raised
+            # the current client's max_completion_tokens to summary tier or added
+            # focused-turn token headroom. Recomputing from max_response_length loses that tier,
+            # prematurely truncating follow-ups/final answers at the provider; turn finally then writes
+            # the old client's saved value onto this new client.
             #
-            # 只往高处继承：低于基线的旧值是上一次抬升退回后的残留，不该复活。
+            # Inherit upward only: an old value below baseline is residue from a reverted increase, not to revive.
             _live_max_tokens = getattr(
                 getattr(self, "llm", None), "max_completion_tokens", None
             )
-            # None 是 unlimited sentinel（_budget_to_max_tokens 对无上限预算返回
-            # None，让请求整个省掉这个字段），它已经是最高的一档，没有什么可继承
-            # 的——拿一个有限的实时值盖上去反而是降级。而且不先判空的话，下面这个
-            # 比较就是 int > None，直接 TypeError，卡死在本修复要保护的那条路上。
+            # None is the unlimited sentinel (_budget_to_max_tokens returns None for unlimited
+            # budgets, omitting the field entirely). Already the highest tier, it has nothing to inherit;
+            # replacing it with a finite live value is a downgrade. Without this guard, the comparison
+            # below is int > None, raising TypeError on the very path this fix protects.
             if (
                 _derived_max_tokens is not None
                 and isinstance(_live_max_tokens, int)
@@ -262,16 +262,16 @@ class _StreamingMixin:
                 except Exception as e:
                     logger.warning(f"switch_model: unused client aclose failed: {e}")
                 return False
-            # 端点是否真的换了 —— 换 endpoint（或换账号）才需要清掉历史里
-            # 那些只有铸造方看得懂的 vendor 私有字段。同一个 endpoint 只换
-            # 模型（conversation → vision 都在同一家）不能清：那正是签名要
-            # 起作用的场景，清了等于把本要修的 400 又放回来。
+            # Did the endpoint really change? Only changing endpoint/account requires clearing historical
+            # vendor-private fields understood only by their issuer. Changing models at the same endpoint
+            # (conversation → vision with one vendor) must retain them: that is where signatures
+            # are needed; clearing would reintroduce the 400 this fixes.
             #
-            # 比较前把空串归一成 None：上面 vision 分支已经做过这一步而
-            # conversation 分支没有，两边留着不同的"空"表示会让同一个端点被
-            # 判成换了路由——误判方向是"多清"，正好打在本改动的目标场景上。
-            # URL 同理按 same_endpoint 比：尾斜杠、主机大小写、显式默认端口
-            # 都不算换了一家。协议不参与：签名只跟铸造它的端点和账号绑定。
+            # Normalize empty strings to None before comparison: vision above already does,
+            # conversation does not. Different empty representations would misclassify an unchanged endpoint
+            # as rerouted, clearing too much precisely in the target scenario.
+            # Compare URLs via same_endpoint too: trailing slash, host case, explicit default port
+            # do not indicate another vendor. Protocol is excluded: signatures bind to issuing endpoint/account only.
             route_changed = not _same_route(
                 base_url, api_key, None,
                 self.base_url, self.api_key, None,
@@ -279,17 +279,17 @@ class _StreamingMixin:
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model
-            # ⚠️ 同步 self.base_url / self.api_key —— 否则后续 _astream_with_tools
-            # 重新计算 _use_genai_sdk 时拿到的还是旧 conversation 配置，会
-            # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
+            # ⚠️ Sync self.base_url / self.api_key; otherwise subsequent _astream_with_tools
+            # recalculates _use_genai_sdk from old conversation config, incorrectly routing
+            # vision's Gemini endpoint to OpenAI-compatible protocol (or vice versa).
             self.base_url = base_url
             self.api_key = api_key
-            # 协议也随路由同步：下一次 switch_model 的 no-op 判据和对话侧
-            # 分支读的都是它，停在旧值会把已经切过去的会话判成「还没切」。
+            # Sync protocol with route too: next switch_model no-op check and conversation branch
+            # both read it; stale values make an already-switched session appear unswitched.
             self.provider_type = provider_type
             if route_changed:
-                # getattr 防御与本文件其余处一致：__new__ 绕过 __init__ 的测试桩
-                # 没有这个字段，helper 对 None 也是 no-op。
+                # Defensive getattr matches this file: test stubs using __new__ to bypass __init__
+                # lack this field, and the helper is also a no-op for None.
                 dropped = _strip_route_bound_tool_call_extras(
                     getattr(self, "_conversation_history", None)
                 )
@@ -299,15 +299,15 @@ class _StreamingMixin:
                         "entry/entries before replaying history on %s",
                         dropped, base_url or "(default endpoint)",
                     )
-            # 路由旗标随之刷新；旧 _genai_client 抛弃（若 api_key 变了它已失效）。
-            # genai.Client 内部持有 httpx 连接池——直接 = None 靠 GC 回收虽不
-            # 是 leak，但提早关掉能马上释放底层连接。回复走的是 .aio 那一半，
-            # 同步 close() 关不到它，所以两半都关（_close_genai_client）。
+            # Refresh routing flags and discard old _genai_client (invalid if api_key changed).
+            # genai.Client owns an httpx connection pool; setting None and relying on GC is not
+            # a leak, but closing early releases connections promptly. Responses use its .aio half,
+            # which synchronous close() cannot close; close both halves (_close_genai_client).
             old_genai = self._genai_client
             self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
             self._genai_client = None
             self._genai_tools_unsupported = False
-            # 换了模型就重新给工具一次机会：拒收 tools 是上一个模型的能力限制。
+            # Give tools another chance after switching: tools rejection was the prior model's capability limit.
             self._openai_tools_unsupported = False
             self._openai_tools_unsupported_with_images = False
             # Closed once no reply call can still be streaming on them.
@@ -456,32 +456,32 @@ class _StreamingMixin:
         if not self.repetition_reset_enabled:
             return False
 
-        # 与最近的回复比较相似度
+        # Compare similarity with recent responses.
         high_similarity_count = 0
         for recent in self._recent_responses:
             similarity = calculate_text_similarity(response, recent)
             if similarity >= self._repetition_threshold:
                 high_similarity_count += 1
 
-        # 添加到最近回复列表
+        # Add to recent response list.
         self._recent_responses.append(response)
         if len(self._recent_responses) > self._max_recent_responses:
             self._recent_responses.pop(0)
 
-        # 如果与最近2轮都高度重复（即第3轮重复），触发检测
+        # Trigger detection when highly repetitive against both prior turns (third repetition).
         if high_similarity_count >= 2:
             logger.warning(f"OmniOfflineClient: 检测到连续{high_similarity_count + 1}轮高重复度对话")
 
-            # 清空对话历史（保留系统指令）
+            # Clear conversation history, retaining system instructions.
             if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
                 self._conversation_history = [self._conversation_history[0]]
             else:
                 self._conversation_history = []
 
-            # 清空重复检测缓存
+            # Clear repetition-detection cache.
             self._recent_responses.clear()
 
-            # 触发回调
+            # Trigger callback.
             if self.on_repetition_detected:
                 await self.on_repetition_detected()
 
@@ -530,11 +530,11 @@ class _StreamingMixin:
         if not (tail and tail.strip()):
             return None
 
-        # emotion 配置在 config/api_providers.json 每个 provider 下都有
-        # `emotion_model` 字段；config_manager 拿到的就是当前 provider 的
-        # emotion 子配置（model/base_url/api_key）。
+        # Each provider in config/api_providers.json has an emotion configuration
+        # `emotion_model` field; config_manager returns the current provider's
+        # emotion subconfiguration (model/base_url/api_key).
         try:
-            from utils.config_manager import get_config_manager  # 延迟 import 防循环
+            from utils.config_manager import get_config_manager  # Lazy import avoids circular dependencies.
             cfg_mgr = get_config_manager()
             emotion_config = await cfg_mgr.aget_model_api_config('emotion') if cfg_mgr else None
         except Exception as e:
@@ -571,7 +571,7 @@ class _StreamingMixin:
             logger.warning("summary: prompt 模板取失败: %s", e)
             return None
 
-        # system 模板 persona-agnostic，无占位符直接用；user 模板只填 prefix/tail。
+        # Persona-agnostic system template has no placeholders; use directly. Fill only prefix/tail in user template.
         system_text = templates['system']
         try:
             user_text = templates['user_template'].format(
@@ -582,15 +582,15 @@ class _StreamingMixin:
             logger.warning("summary: prompt 占位符缺失: %s", e)
             return None
 
-        # 调用 token 用量打到 "long_response_summary" 类别下，与 emotion 区分。
+        # Attribute token usage to "long_response_summary", separate from emotion.
         set_call_type("long_response_summary")
         messages = [
             SystemMessage(content=system_text),
             HumanMessage(content=user_text),
         ]
-        # 不传 temperature：project policy 让 provider 默认值决定
-        # （scripts/check_no_temperature.py 会守门）。emotion-tier 模型自带
-        # 一个合适的 temperature，不需要 caller 干预。
+        # Omit temperature: project policy delegates to provider defaults
+        # (enforced by scripts/check_no_temperature.py). Emotion-tier models already have
+        # suitable temperature and need no caller intervention.
         try:
             llm = await create_chat_llm_async(
                 emotion_model, emotion_base_url, emotion_api_key,
@@ -614,18 +614,18 @@ class _StreamingMixin:
             summary = (result.content or "").strip()
         except Exception:
             summary = ""
-        # 兜底：去掉模型可能加的引号 / 元前缀。emotion-tier 模型偶尔仍会写
-        # "总之，xxx" / "总结：xxx" 之类，prompt 已禁但模型不一定听话；这里
-        # 只剥首尾的引号和最常见的元前缀，剩下的就当 character 自然口语。
+        # Fallback: strip model-added quotes / meta prefixes. Emotion-tier models occasionally write
+        # "总之，xxx" / "总结：xxx" despite prompt prohibitions; here
+        # strip outer quotes and common meta prefixes only, treating the rest as natural character speech.
         if summary and summary[0] in '“”"\'「『' and summary[-1] in '“”"\'」』':
             summary = summary[1:-1].strip()
         if not summary:
             return None
-        # 硬性收口：emotion-tier 模型即使被 prompt 约束也可能输出 3-4 句话，
-        # 直接灌进 TTS 会把"短促收尾"这个核心目标打废。最多保留 2 个 sentence-end
-        # 段，再硬截到 ``_SUMMARY_HARD_TOKEN_CAP`` 个 token。两个限制叠加：先按
-        # 句末切，再按 token 兜底——任意一条触发都收口。token 口径与 budget
-        # 一致，跨语种行为统一（字符口径会过度惩罚 CJK）。
+        # Hard stop: emotion-tier models may produce 3–4 sentences despite prompt limits;
+        # feeding all to TTS defeats the brief-ending goal. Keep at most two sentence-end
+        # segments, then hard-truncate to ``_SUMMARY_HARD_TOKEN_CAP`` tokens. Apply both limits:
+        # split on sentence ends first, then token fallback; either can shorten output. Token accounting
+        # matches budget and behaves consistently across languages (character counts overpenalize CJK).
         sentence_segments: list[str] = []
         cursor = 0
         for idx, ch in enumerate(summary):
@@ -636,7 +636,7 @@ class _StreamingMixin:
                     break
         if sentence_segments:
             trimmed = "".join(sentence_segments)
-            # 若模型在 2 句之外还塞了尾巴，丢弃
+            # Discard any tail the model added beyond two sentences.
             summary = trimmed.strip()
         if count_tokens(summary) > _SUMMARY_HARD_TOKEN_CAP:
             summary = truncate_to_tokens(summary, _SUMMARY_HARD_TOKEN_CAP).rstrip()
@@ -708,14 +708,14 @@ class _StreamingMixin:
         system_prefix: str | None = None,
         system_prefix_images: Optional[list[str]] = None,
         turn_images: Optional[Sequence[str]] = None,
-        # 这一轮 turn_images 的采集通道（"screen" / "camera"）。独立 ASR 的帧
-        # 到这里就只是一串 base64 了，看不出它是屏幕还是摄像头；不带上的话
-        # 它们会被当成普通用户附件标成 "user"，而按 source 过滤的插件正好会
-        # 拿错。realtime 那侧走的是 MultimodalTurn.source，这是它的离线对偶。
+        # Capture channel for this turn's turn_images ("screen" / "camera"). Independent ASR frames
+        # arrive here as base64 strings with no visible screen/camera distinction; without metadata,
+        # they become ordinary "user" attachments, misleading source-filtering plugins.
+        # This is the offline counterpart to realtime's MultimodalTurn.source.
         turn_source: Optional[str] = None,
-        # turn_images 里**前几张**才属于这个通道。独立 ASR 提交时会把用户已经
-        # 拖进来的附件接在抽样帧后面一起送（见 _media.py 的排序说明），而附件
-        # 是他自己给的东西，不该跟着这一轮的采集通道走。
+        # Only the first images in turn_images belong to this channel. Independent ASR submissions append
+        # user-dragged attachments after sampled frames (see _media.py ordering explanation); attachments
+        # are user-provided and must not inherit this turn's capture channel.
         turn_source_count: Optional[int] = None,
         turn_id: Optional[str] = None,
         on_turn_committed: Optional[Callable[[], None]] = None,
@@ -727,9 +727,9 @@ class _StreamingMixin:
         ] = None,
         response_done_callback: Optional[Callable[[], Awaitable[None]]] = None,
         reply_owner: Any = None,
-        # 本轮附加上下文（``_turn_context.TurnContext``）：resident 块（知识）
-        # 锚在这一轮的用户消息后，provider 应答之后留在本会话之后的请求里；
-        # ephemeral 块（语料、记忆）只进这一轮的请求。两者都不进历史。
+        # Additional turn context (``_turn_context.TurnContext``): resident knowledge blocks
+        # anchor after this turn's user message and survive the provider response in later session requests;
+        # ephemeral corpus/memory blocks enter this request only. Neither enters history.
         turn_context: Any = None,
     ) -> None:
         """
@@ -737,9 +737,9 @@ class _StreamingMixin:
         If there are pending images, temporarily switch to vision model for this turn.
         Uses langchain ChatOpenAI for streaming.
 
-        ``thinking_on`` (Focus mode 凝神, docs/design/focus-truename-mode.md):
+        ``thinking_on`` (Focus mode, docs/design/focus-truename-mode.md):
         when True, this single turn drops the auto-resolved thinking-off
-        ``extra_body`` so the provider runs its default reasoning ("放飞自我").
+        ``extra_body`` so the provider runs its default reasoning (\"reason freely\").
         It is a per-call override (``extra_body=None`` threaded into
         ``astream``) — the session LLM is NOT rebuilt and the next regular
         turn falls straight back to thinking-off. Applies to the
@@ -750,8 +750,8 @@ class _StreamingMixin:
         Purpose of ``system_prefix``: the caller (typically SessionManager rendering a
         passive agent callback into watermarked ``======[系统通知] xxx======`` text)
         splices this neutral system-notice text **in place, as a prefix to this turn's
-        user message content** — the LLM treats it as "extra context attached at the
-        moment the user spoke" and mentions it naturally within the same turn, without
+        user message content** — the LLM treats it as \"extra context attached at the
+        moment the user spoke\" and mentions it naturally within the same turn, without
         starting a separate turn or a separate SystemMessage.
 
         Symmetry with voice mode: ``OmniRealtimeClient.prime_context(skipped=False)``
@@ -794,18 +794,18 @@ class _StreamingMixin:
         turns have no such identity and leave it None.
         """  # noqa: DOCSTRING_CJK
         prefix_images = list(system_prefix_images or [])
-        # 本轮自带的用户帧（独立 ASR 抽样出的开头/中间/结尾）。刻意不走
-        # _pending_images：那条队列是 session 级的"下一个消费者拿走"，一次性附件
-        # （拖图 / 聊天贴图）随时可能在 staging 与本次消费之间挤进来，被这一轮
-        # 连带吞掉，用户那张图就配错了发言。invocation-local 才没有这个窗口。
+        # User frames supplied by this turn (independent ASR start/middle/end samples). Deliberately bypass
+        # _pending_images: that session-wide next-consumer queue can receive one-shot attachments
+        # (dragged/chat images) between staging and consumption, accidentally consuming them with this
+        # turn and pairing images with the wrong utterance. Invocation-local storage removes that race.
         own_images = [image for image in (turn_images or []) if image]
-        # 一个自带帧的回合（独立 ASR）绝不消费共享附件队列。那条队列是 session 级
-        # 的「下一个消费者拿走」：本轮 await（switch_model / provider 请求）期间到达
-        # 的附件会被顺手清掉，既配错了发言，也不再能给它自己的追问用。附件在
-        # submit 入口已经按快照取走过一次，这里只负责不再碰活的队列。
-        # 取走必须和拷贝在同一个同步步骤里完成，中间不能有 await：下面
-        # switch_model() 一让出，另一条并发的普通文本请求就会拷到同一批附件，两轮
-        # 各发一次同样的图，随后的按前缀删除还会切到别人的队列。
+        # A turn with its own frames (independent ASR) never consumes the shared attachment queue.
+        # This session-wide next-consumer queue could receive attachments during this turn's awaits
+        # (switch_model / provider request), clearing them, mispairing utterances, and losing them for
+        # their own follow-up. submit already consumed a snapshot; here leave the live queue untouched.
+        # Consume and copy in one synchronous step with no await: if switch_model() yields below,
+        # another concurrent plain-text request can copy the same attachments, sending the same images twice;
+        # later prefix deletion could then remove someone else's queue entries.
         if own_images:
             attachment_images = []
         else:
@@ -865,9 +865,9 @@ class _StreamingMixin:
         # built via __new__ (tests, legacy callers) never ran __init__, so read
         # it the same defensive way the proactive slot is read above.
         #
-        # 只在这里做**判断**，内容留到下面和用户列表一起读：切 vision model 是
-        # 个 await，此刻取快照会漏掉切换期间到达的插件图，而它随后又会被清掉，
-        # 等于从每一轮里都丢失（Codex P2）。
+        # Only test presence here; read content alongside the user list below: vision-model switching
+        # awaits, so a snapshot now misses plugin images arriving during switching, then clears them,
+        # losing them from every turn (Codex P2).
         has_images = (
             bool(proactive_image)
             or bool(prefix_images)
@@ -875,9 +875,9 @@ class _StreamingMixin:
             or bool(attachment_images)
             or len(getattr(self, "_pending_plugin_images", None) or []) > 0
         )
-        # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
-        # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
-        # 落 history，跟 voice mode user-role 注入对偶。
+        # Inject system_prefix in place, before the user content's text segment (its watermark
+        # distinguishes it without another separator). Callback text persists in history with HumanMessage,
+        # symmetrically with voice-mode user-role injection.
         _user_text = text.strip()
         _prefix_clean = (system_prefix or "").strip()
         _user_text_with_prefix = (
@@ -896,10 +896,10 @@ class _StreamingMixin:
                 try:
                     await self.switch_model(self.vision_model, use_vision_config=True)
                 except BaseException:
-                    # 附件在上面已经原子出队了。这里是出队之后、真正拼进消息之前
-                    # 唯一的 await：切 vision model 要新建 LLM 客户端，网络抖动 /
-                    # key 失效都会抛。不放回去的话用户刚选的图既没发出去也不在队列
-                    # 里了。与 submit_multimodal_turn 的失败回滚同一判据。
+                    # Attachments were atomically dequeued above. This is the sole await between dequeue
+                    # and message assembly: vision switching creates an LLM client, so network faults /
+                    # invalid keys can raise. Without restoration the user's selected image is neither sent nor
+                    # queued. Use the same failure-rollback criterion as submit_multimodal_turn.
                     if attachment_images:
                         self._pending_images[0:0] = attachment_images
                     raise
@@ -907,23 +907,23 @@ class _StreamingMixin:
             # Multi-modal message: images + text
             content = []
 
-            # 在模型切换的 await **之后**读取，且到下面的清理之间没有挂起点，
-            # 保证「附上的」和「清掉的」是同一批（用户那条列表靠就地迭代天然拥有
-            # 这个性质）。
+            # Read after the model-switch await, with no suspension before cleanup below,
+            # ensuring attached and cleared batches match (in-place iteration of the user list
+            # naturally provides this property).
             plugin_images = list(getattr(self, "_pending_plugin_images", None) or [])
-            # 就地取走所有权：读完立刻清空，中间**不能**有 await（否则模型调用期间
-            # 到达的插件图会被下面的清理连带抹掉，等于从每一轮里丢失）。取走之后
-            # 这批字节已经归本轮所有，后面再做异步的压缩/抽样就安全了。
+            # Take ownership in place: clear immediately after reading, with no await (otherwise plugin
+            # images arriving during the model call are also erased, disappearing from every turn). Once taken,
+            # these bytes belong to this turn and can safely undergo asynchronous compression/sampling.
             _plugin_pending = getattr(self, "_pending_plugin_images", None)
             if _plugin_pending is not None:
                 _plugin_pending.clear()
-            # 顺序既是时间顺序也是相关性顺序（#2964 × #2835 合并）：
-            #   1. 主动搭话截图 —— 用户开口**之前**屏幕上的东西，最远；
-            #   2. 插件提供的上下文；
-            #   3. passive callback 带的图（同样是上下文，不是用户这一刻拍的）；
-            #   4. 本回合自己抽样的帧（独立 ASR 的开头/中间/结尾）；
-            #   5. 用户显式投递的附件 —— 离它所属的文本最近。
-            # 4/5 放最后，是为了不让模型把更早的屏幕误当成用户刚拍的东西。
+            # Order is both chronological and relevance-based (#2964 × #2835 merge):
+            #   1. Proactive screenshot: screen content before the user spoke, most distant;
+            #   2. Plugin-provided context;
+            #   3. Passive callback images (also context, not captured by the user now);
+            #   4. This turn's sampled frames (independent ASR start/middle/end);
+            #   5. Explicit user attachments: closest to their associated text.
+            # Put 4/5 last so the model does not mistake older screens for newly captured user images.
             _ordered_images = (
                 ([proactive_image] if proactive_image else [])
                 + plugin_images
@@ -931,11 +931,11 @@ class _StreamingMixin:
                 + list(own_images)
                 + list(attachment_images)
             )
-            # 与上面那张列表逐位对齐的来源标签，只为帧总线服务（模型看到的还是
-            # 同一批字节，标签不进 content）。在这里算、而不是在发布点重新推断：
-            # 此刻每一张图属于哪个桶是**确定**的，fit 之后就只剩一个字符串列表了。
-            # 通道只盖住前 turn_source_count 张；没给计数就退回旧语义（要么
-            # 整段是这一轮的帧，要么整段是用户的）。
+            # Source labels aligned positionally with the list above serve the frame bus only (model sees
+            # identical bytes; labels never enter content). Calculate here rather than infer at publishing:
+            # each image's bucket is certain now; after fitting only a string list remains.
+            # Channel covers the first turn_source_count images only; missing count retains old semantics
+            # (the whole section is turn frames, or the whole section is user attachments).
             _channelled = (
                 0 if not turn_source
                 else (
@@ -951,20 +951,20 @@ class _StreamingMixin:
                 ([_FRAME_SOURCE_SCREEN] if proactive_image else [])
                 + [_FRAME_SOURCE_PLUGIN] * len(plugin_images)
                 + [_FRAME_SOURCE_PLUGIN] * len(prefix_images)
-                # own_images 是这一轮自带的帧。独立 ASR 交接过来时前 k 张是
-                # 屏幕或摄像头，其余是被并进来的用户附件——所以标签在这里按
-                # 位置切开，而不是整段套同一个通道。
+                # own_images are turn-supplied frames. In independent ASR handoff, first k images are
+                # screen/camera captures, the rest merged user attachments: split labels by position
+                # here instead of applying one channel to the entire section.
                 + _own_image_sources
                 + [_FRAME_SOURCE_USER] * len(attachment_images)
             )
-            # 各来源的**张数**配额是分开的（谁也花不了谁的额度），但它们最终落在
-            # 同一条 HumanMessage 上，provider 看到的是**总和**——超过单请求上限
-            # 会整条请求被拒，而不是丢几张图。从**前面**裁：离文本最近的那些才是
-            # 它要讲的。
-            # 超预算时按阶梯处理，**不静默丢弃**：先抽样成开头/中间/结尾三张，
-            # 还超就压缩，都不行才从最旧的开始丢——并且无论走到哪一级都告诉用户。
-            # 整条请求超限会被 provider 整个拒掉，所以必须有人让步；让步的顺序是
-            # 「先减冗余、再降质量、最后才是丢内容」。
+            # Each source has separate image-count quotas (cannot spend another's allowance), but all enter
+            # one HumanMessage, so the provider sees their sum: exceeding its per-request cap rejects
+            # the whole request, rather than discarding a few images. Trim from the front: images nearest text
+            # are what the user wants discussed.
+            # Over-budget handling is staged, never silently discarding: first sample start/middle/end,
+            # then compress if still oversized, then drop oldest only as last resort; notify users at every stage.
+            # Providers reject oversized requests entirely, so something must yield; the order is
+            # reduce redundancy, then quality, and only finally content.
             def _restore_consumed_queues() -> None:
                 """Put both queues back when this turn dies before committing.
 
@@ -989,20 +989,20 @@ class _StreamingMixin:
             except BaseException:
                 _restore_consumed_queues()
                 raise
-            # 帧总线的来源标签按**下标**对应，所以只在张数没变时成立：rung 0 的
-            # 归一化和重压都是逐张映射（长度不变），抽样和丢弃则会改变张数，而
-            # 结果本身读不回它在原列表里的下标。这时退回 unknown —— 把插件推的
-            # 图标成 "screen" 比不标来源糟得多。
+            # Frame-bus labels correspond by index and remain valid only with unchanged counts: rung 0
+            # normalization and recompression map images one-to-one; sampling/dropping change counts,
+            # and outputs do not reveal their original indices. Fall back to unknown then: labeling
+            # a plugin image "screen" is much worse than leaving its source unspecified.
             _attached_sources = (
                 _ordered_sources
                 if len(_attached_images) == len(_ordered_images)
                 else [_FRAME_SOURCE_UNKNOWN] * len(_attached_images)
             )
             if _budget_notice:
-                # 级别跟着「有没有东西真的没了」走，与弹窗同一个判据。rung 0 是
-                # 无条件的，所以随手拖进来的一张手机照片每轮都会产生一条 notice；
-                # 全按 warning 打，日志里就分不出「图小了一点」和「有几张整张没
-                # 送出去」了——而后者才是排查时要一眼找到的那类。
+                # Severity follows actual content loss, matching popup criteria. Rung 0 is unconditional,
+                # so a dragged phone photo produces a notice each turn; warnings for all cases obscure
+                # the difference between slightly smaller images and entire images not sent,
+                # whereas the latter must stand out immediately during diagnosis.
                 _budget_log = (
                     logger.warning
                     if _budget_notice.get("user_visible")
@@ -1019,11 +1019,11 @@ class _StreamingMixin:
                     _budget_notice["compressed"],
                     _budget_notice["dropped"],
                 )
-                # 日志每种情况都打，弹窗只在**整张图没了**时弹——丢弃和抽样都算：
-                # 抽样只留开头/中间/结尾三张，中间那些是整张扔掉的，用户那侧看不出
-                # 它跟丢弃有什么分别。归一化 / 重压不弹：图还在，只是小一点，而 rung 0
-                # 几乎每个带图的回合都会跑，照旧「有 notice 就弹」的话用户会被一串
-                # 「图片已调整」刷屏，而其中绝大多数他根本没损失什么。
+                # Log every case; popups only when whole images disappear, including dropping and sampling:
+                # sampling keeps start/middle/end only, discarding whole intermediate images; users cannot
+                # distinguish that from dropping. No popup for normalization/recompression: image remains smaller; rung 0
+                # runs on almost every image turn; popping up for every notice would flood users with
+                # "image adjusted" messages despite no meaningful loss in most cases.
                 if _budget_notice.get("user_visible") and self.on_status_message:
                     try:
                         await self.on_status_message(json.dumps({
@@ -1046,7 +1046,7 @@ class _StreamingMixin:
                     }
                 })
 
-            # Add text（已含 system_prefix watermark 前缀，若有）
+            # Add text (already includes system_prefix watermark when present).
             content.append({
                 "type": "text",
                 "text": _user_text_with_prefix,
@@ -1057,9 +1057,9 @@ class _StreamingMixin:
             # takes a prefix, and the proactive screenshot is that prefix's
             # first element, so it survives exactly when nothing was dropped.
             _img_count = len(_attached_images)
-            # 直接问「它在不在最终附上的那批里」。原来算的是「有没有丢过东西」，
-            # 那个近似在只有丢弃时成立；现在预算阶梯还会**抽样**（只留头/中/尾），
-            # 队头同样可能不在结果里，成员判断才是准的。
+            # Directly test membership in the final attached batch. Previously checking whether anything
+            # was dropped approximated this only for dropping; the budget ladder now samples start/middle/end,
+            # which can also omit the queue head. Membership is the accurate test.
             _proactive_attached = (
                 bool(proactive_image)
                 and proactive_image in _attached_images
@@ -1072,24 +1072,24 @@ class _StreamingMixin:
             # Clear pending images after using them (content already holds the
             # data urls). The proactive screenshot is one-shot: consumed by this
             # reply, then cleared so it never re-injects into later turns.
-            # 用户附件在上面取快照时就已经**原子地**出队了，这里不能再整体
-            # clear：那会连带吃掉模型调用期间新到的附件（本 PR 专门修过的竞态）。
-            # 插件那条列表在上面读取时就已经原子地清空了（那里到读取之间不能有
-            # await），此处不再重复。
-            # 一次性的主动搭话截图同样在这里清掉。
+            # User attachments were already atomically dequeued when snapshotted above; do not clear
+            # the entire queue again, which would consume arrivals during the model call (the race this PR fixes).
+            # The plugin list was likewise atomically cleared when read above (no await allowed between
+            # reading and clearing); do not repeat here.
+            # Clear the one-shot proactive screenshot here too.
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
         else:
-            # Text-only message（已含 system_prefix watermark 前缀，若有）
+            # Text-only message (already includes system_prefix watermark when present).
             user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history
-        # 本次调用自己的「已提交」标记。调用方不能用全局 history 长度判断：并发的
-        # 另一条文本请求或收尾中的响应同样会追加，长度增长并不代表**这一轮**进去了。
+        # Invocation-local committed flag. Callers cannot infer this from global history length:
+        # concurrent text requests or finishing responses also append; growth does not prove this turn committed.
         if callable(on_turn_committed):
             on_turn_committed()
         history_replacement_index = len(self._conversation_history) - 1
@@ -1100,19 +1100,19 @@ class _StreamingMixin:
         )
         if history_replacement_text and _prefix_clean:
             history_replacement_text = f"{_prefix_clean}\n\n{history_replacement_text}"
-        # 帧总线的待发布快照；None = 没有帧要抄（纯文本轮）或已经发过了。
+        # Pending frame-bus snapshot; None means no frames (text-only turn) or already published.
         _pending_bus_frames = None
         if has_images:
             self._evict_old_images()
-            # 这一轮真正送出的帧只先**存**在这里，等确认送达之后再抄给插件
-            # 总线。进了 _conversation_history 不等于 provider 收到了：下面的输入
-            # transcript 回调会抛、用户会在请求发出前取消、三次 attempt 也可能全
-            # 失败——那些回合一个字节都没到过 provider，在这里发布就是替它们
-            # 宣布了一次从未发生的送达。真正的发布点在下面「第一个 chunk 到达」
-            # 处，对偶于 realtime 那侧的 ``if sent:``。
+            # Store actual outgoing frames here first, then copy to the plugin bus only after confirmed delivery.
+            # Entering _conversation_history does not prove provider receipt: input transcript callbacks
+            # can raise, users can cancel before sending, and all three attempts may fail,
+            # delivering no bytes to the provider. Publishing here would falsely announce
+            # delivery that never happened. Actual publishing occurs below at first chunk arrival,
+            # symmetrically with realtime's ``if sent:``.
             #
-            # 存的是 _attached_images —— fit 之后的字节，不是调用方给的原图。
-            # 归一化几乎每轮都会重编码，总线上必须是模型真正看到的那一张。
+            # Store _attached_images: post-fit bytes, not original caller images.
+            # Normalization re-encodes almost every turn; bus images must match what the model actually saw.
             _pending_bus_frames = (_attached_images, _attached_sources)
 
         # Callback for user input
@@ -1120,11 +1120,11 @@ class _StreamingMixin:
         if transcript_callback:
             await transcript_callback(text.strip())
 
-        # Retry策略：重试2次，间隔1秒、2秒
+        # Retry policy: two retries, after 1 second and 2 seconds
         max_retries = 3
         retry_delays = [1, 2]
-        assistant_message = ""        # 仅最后一段未持久化的 text（final-segment）
-        assistant_message_total = ""  # 整轮累计（含 pre-tool），整轮级判定看它
+        assistant_message = ""        # Only final unpersisted text segment (final-segment).
+        assistant_message_total = ""  # Whole-turn accumulation (including pre-tool); whole-turn decisions use this.
         status_reported = False
         guard_exhausted = False
         # The task itself was cancelled (close(), a torn-down transcript
@@ -1145,23 +1145,23 @@ class _StreamingMixin:
         # sentinel reported.
         cut_keeps_shown = False
         segment_round = None
-        # Empty-completion 诊断字段重置：每轮 turn 独立，否则会读到上一轮的旧值。
+        # Reset empty-completion diagnostics per turn, avoiding stale values from prior turns.
         self._last_finish_reason = None
         self._last_block_reason = None
         self._last_prompt_tokens = None
 
-        # 单测会用 __new__ 绕过 __init__ 直接 mock OmniOfflineClient，此时
-        # ``enable_long_response_summary`` 属性根本不存在。这里取一次本地
-        # snapshot 避免后面每一处都 getattr，也防止运行中外部改属性导致
-        # state machine 半生效。
+        # Unit tests mock OmniOfflineClient directly via __new__, bypassing __init__, so
+        # ``enable_long_response_summary`` may not exist. Take one local snapshot here
+        # to avoid repeated getattr and prevent external runtime property changes partially activating
+        # the state machine.
         summary_mode_enabled = bool(getattr(self, "enable_long_response_summary", False))
 
-        # summary 模式临时把 API budget 抬到 _SUMMARY_API_BUDGET_FLOOR：让模型
-        # 有空间把话写完，cutover 之后的尾巴才有东西可摘要（普通 budget 下模型
-        # 在 ~budget 处就停了，没有尾巴）。**只在 stream_text 内 bump**，finally
-        # 还原，避免泄漏到共用同一 self.llm 的 prompt_ephemeral（proactive 没有
-        # 长度 guard，被抬到 3000 会吐超长回复）。snapshot 原值精确还原，兼容
-        # 运行中 update_max_response_length 改过 budget 的场景。
+        # Summary mode temporarily raises API budget to _SUMMARY_API_BUDGET_FLOOR, letting the model
+        # finish and providing a post-cutover tail to summarize (normal budgets stop the model
+        # near budget, leaving no tail). Bump only within stream_text and restore in finally,
+        # avoiding leakage to prompt_ephemeral sharing self.llm (proactive lacks a length guard
+        # and would produce very long replies at 3000). Snapshot and exactly restore the original,
+        # supporting runtime update_max_response_length budget changes.
         _summary_prev_max_tokens = None
         if summary_mode_enabled and getattr(self, "llm", None) is not None:
             _summary_prev_max_tokens = self.llm.max_completion_tokens
@@ -1170,22 +1170,22 @@ class _StreamingMixin:
             )
 
         response_generation = self._begin_response_generation(owner=reply_owner)
-        # 这一轮的工具图槽位，跨 attempt 存活。见 _astream_visible_with_tools
-        # 里的说明：由内层 finally 释放的话，一次可重试的失败会把像素换成占位
-        # 符，而重试用的是同一份历史。
+        # This turn's tool-image slots survive attempts. See _astream_visible_with_tools:
+        # releasing in its inner finally would replace pixels with placeholders after a retryable failure,
+        # yet retries reuse the same history.
         _turn_tool_image_slots: list = []
-        # 同一个理由，另一半：暂存待抄送的工具帧也必须跨 attempt 存活，否则
-        # 重试成功的那轮"模型看到了、插件读不到"。
+        # Same rationale for the other half: staged tool frames awaiting bus copies must survive attempts,
+        # otherwise a successful retry lets the model see images that plugins cannot read.
         _turn_tool_bus_frames: list = []
         # The tool rounds this turn appended, across attempts, so a cancelled
         # turn trims only its own (``_last_tool_round_of``).
         _turn_tool_rounds: list = []
-        # 本轮的 resident 块：先只属于这一轮，provider 应答后才留给后续轮次；
-        # 绑定在 try 之前，finally 才读得到。
+        # This turn's resident blocks initially belong only to it, surviving for later turns after provider response;
+        # bind before try so finally can access them.
         _resident_entry = None
         _ephemeral_context = getattr(turn_context, "ephemeral", None)
         if _ephemeral_context is not None:
-            # 打上内部标记（不发给 provider）：请求视图据此不把它当成用户这一轮。
+            # Internal marker (not sent to provider): request views must not treat this as the user's turn.
             _mark_turn_context(_ephemeral_context, "ephemeral")
         try:
             _resident_entry = self._register_resident_context(user_message, turn_context)
@@ -1195,7 +1195,7 @@ class _StreamingMixin:
             reroll_count = 0
             set_call_type("conversation")
 
-            # 防御性检查：确保对话历史中至少有用户消息
+            # Defensive check: ensure conversation history contains at least one user message.
             has_user_message = any(isinstance(msg, HumanMessage) for msg in self._conversation_history)
             if not has_user_message:
                 error_msg = "对话历史中没有用户消息，无法生成回复"
@@ -1205,35 +1205,35 @@ class _StreamingMixin:
                     status_reported = True
                 return
             for attempt in range(max_retries):
-                # close() 是唯一会把 self.llm 设为 None 的路径。它若在前一次
-                # APIConnectionError 后的 retry sleep 期间触发（用户切模式 /
-                # 断连 / session 熔断），就不再重试 —— 否则下面的 reroll while
-                # 会先把 _is_responding 重置回 True 然后对 None 调 .astream，
-                # 触发 NoneType.astream AttributeError。
-                # 同样若 cancel_response() / handle_interruption() 在 retry sleep
-                # 期间把 _is_responding 翻成 False（用户主动打断），也不该再
-                # 启动新一轮 attempt —— reroll while 会无条件 reset 回 True，
-                # 默默吞掉用户的取消意图。和 prompt_ephemeral 的守卫保持一致。
-                # 用 hasattr 守卫：单元测试用 __new__ 绕过 __init__ 不会设这个
-                # 属性，但真实代码 __init__ 必设；区分"未初始化（测试桩）"和
-                # "已关闭（生产）"两种情况。
+                # close() alone sets self.llm to None. If it runs during retry sleep after an earlier
+                # APIConnectionError (user changes mode / disconnects / session circuit breaker trips),
+                # stop retrying; otherwise the reroll while below resets _is_responding to True,
+                # then calls .astream on None,
+                # raising NoneType.astream AttributeError.
+                # Likewise, cancel_response() / handle_interruption() may set _is_responding=False
+                # during retry sleep (user interruption); do not start another attempt,
+                # since reroll while unconditionally resets True and
+                # silently ignores cancellation. Match prompt_ephemeral's guard.
+                # Guard with hasattr: unit tests bypassing __init__ via __new__ lack this property,
+                # while production __init__ always sets it; distinguish uninitialized test stubs
+                # from closed production instances.
                 if (
                     (hasattr(self, "llm") and self.llm is None)
                     or not self._response_generation_is_active(response_generation)
                 ):
                     logger.info("OmniOfflineClient.stream_text: client 已 close 或响应已被取消，终止 retry")
-                    # 标记 status_reported 抑制 finally 的 LLM_NO_RESPONSE 兜底：
-                    # 这是用户主动 cancel / close，不是 LLM 故障，前端不该看到
-                    # 红条错误。这里没有 status 要发，仅占位让 finally 跳过。
+                    # Mark status_reported to suppress finally's LLM_NO_RESPONSE fallback:
+                    # user cancel/close is not an LLM failure and must not display a red frontend error.
+                    # No status to send here; the flag only tells finally to skip.
                     status_reported = True
                     break
                 try:
                     assistant_message = ""
                     assistant_message_total = ""
                     guard_attempt = 0
-                    # Telemetry：TTFT（首 token 延迟）。从这里到第一个 chunk 到达
-                    # 的时长，D1 流失里"响应太慢"的关键信号。只记一次（首 attempt
-                    # 首 chunk）；reroll 不重置，反映用户真实等待体感。
+                    # Telemetry: TTFT (time to first token), measured from here to first chunk arrival,
+                    # a key signal for "too slow" D1 churn. Record once (first attempt,
+                    # first chunk); rerolls do not reset it, reflecting actual user waiting time.
                     _ttft_start = time.time()
                     _ttft_recorded = False
                     while guard_attempt <= self.max_response_rerolls:
@@ -1243,11 +1243,11 @@ class _StreamingMixin:
                         tail = getattr(reply_owner, "reply_tail", None)
                         if tail is not None:
                             tail.discard_attempt()
-                        assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
-                        assistant_message_total = ""     # 全轮累积，用于 _check_repetition / 长度 guard
+                        assistant_message = ""           # Final unpersisted text segment only, used for final AIMessage append.
+                        assistant_message_total = ""     # Whole-turn accumulation for _check_repetition / length guard.
                         is_first_chunk = True
-                        pipe_count = 0  # 围栏：追踪 | 字符的出现次数
-                        fence_triggered = False  # 围栏是否已触发
+                        pipe_count = 0  # Fence: count occurrences of | characters.
+                        fence_triggered = False  # Whether the fence triggered.
                         guard_triggered = False
                         discard_reason = None
                         length_guard_recovery_text = ""
@@ -1257,38 +1257,38 @@ class _StreamingMixin:
                         prefix_buffer = ""
                         prefix_checked = not bool(self._prefix_buffer_size)
 
-                        # ── Summary-mode 状态机（仅 summary_mode_enabled 时生效）──
-                        # 完整流转图，便于把散在 4 处（这里初始化 / 长度 trigger /
-                        # emit fork / 流末 epilogue）的逻辑拼成一张图：
+                        # ── Summary-mode state machine (active only when summary_mode_enabled) ──
+                        # Complete transition diagram combines logic spread over four locations (initialization here /
+                        # length trigger / emit fork / stream-end epilogue):
                         #
-                        #   idle ──(_total 越过 budget)──▶ pending_cutover
+                        #   idle ──(_total exceeds budget)──▶ pending_cutover
                         #     │                                 │
-                        #     │                  (找到 budget 之后的 terminator)
+                        #     │                  (find terminator after budget)
                         #     │                                 ▼
                         #     │                           cutover_done
                         #     │                          /     │      \
-                        #     │           (tail 攒到乱码)/      │       \(stream 结束)
+                        #     │           (tail accumulates gibberish)/      │       \(stream ends)
                         #     │                       /        │        \
-                        #     │           gibberish_fallback   │   epilogue 决策：
-                        #     │           (静默截断，          │   · final<budget+slack → abandon，tail 续 TTS
-                        #     │            history 只留 prefix) │   · 否则 → 调小模型摘要续 TTS（失败则 abandon）
+                        #     │           gibberish_fallback   │   epilogue decision:
+                        #     │           (silent truncation,  │   · final<budget+slack → abandon, continue tail TTS
+                        #     │            history keeps prefix only) │   · otherwise → small-model summary TTS (abandon on failure)
                         #     │                                 │
-                        #     └─(stream 结束仍 idle / pending)──┴─▶ 常规：完整原文进 history
+                        #     └─(stream ends idle / pending)──┴─▶ normal: full original text enters history
                         #
-                        # 各状态的 emit 去向：
+                        # Emit destinations per state:
                         #   idle / pending_cutover  → UI + TTS（both）
-                        #   cutover_done            → 仅 UI（tail 攒进 summary_tail_buffer）
-                        # tool_round_persisted 触发时：先把 cutover 后的 tail abandon 给
-                        # TTS（否则永远听不到），再把整套状态重置回 idle。
+                        #   cutover_done            → UI only (accumulate tail in summary_tail_buffer)
+                        # When tool_round_persisted triggers, first abandon the post-cutover tail to
+                        # TTS (otherwise it is never heard), then reset all states to idle.
                         summary_state = 'idle'
-                        summary_prefix_for_history = ""  # cutover 触发那一刻 assistant_message 的快照
-                        summary_tail_buffer = ""        # post-cutover UI-only 文本
+                        summary_prefix_for_history = ""  # assistant_message snapshot at cutover trigger.
+                        summary_tail_buffer = ""        # Post-cutover UI-only text.
                         summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
-                        summary_trigger_tokens = 0     # 触发 summary 时的 _total（仅日志）
-                        # 越界点 char offset：模型一口气 yield 一个超大 chunk 时
-                        # （多个 sentence/clause），budget 之前的 terminator 不算数 ——
-                        # 应该从这个点开始找 terminator。trigger chunk 之后立即
-                        # 消费回 0，下一 chunk 从头扫（因为它整段已经在 budget 之后）。
+                        summary_trigger_tokens = 0     # _total when summary triggers (logging only).
+                        # Character offset of budget crossing: if the model yields one huge chunk
+                        # (multiple sentences/clauses), terminators before budget do not count;
+                        # search for terminators from this point. Consume/reset to zero immediately after
+                        # the trigger chunk; scan subsequent chunks from their start (entirely past budget).
                         summary_overflow_offset = 0
 
                         def _has_unpersisted_recovery_suffix(recovery_text: str) -> bool:
@@ -1306,7 +1306,7 @@ class _StreamingMixin:
                         # PLACE). The yielded chunks are exactly the same
                         # shape as raw ``self.llm.astream``, so the existing
                         # prefix/fence/length-guard logic below is untouched.
-                        # Focus 凝神: thinking_on threads ``extra_body=None``
+                        # Focus mode: thinking_on threads ``extra_body=None``.
                         # down to ``astream`` (per-call override) so this turn
                         # reasons freely; regular turns pass nothing → the
                         # instance's thinking-off extra_body applies. Routed
@@ -1324,7 +1324,7 @@ class _StreamingMixin:
                                 getattr(getattr(self, "llm", None), "max_completion_tokens", None)
                             ),
                         )
-                        # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
+                        # Focus mode: leak-prone models (qwen3.5/3.6/3.7 hybrids).
                         # stream their chain-of-thought into ``content`` ending in
                         # a lone ``</think>``; hold + drop it before TTS/UI ever
                         # see it. Clean providers (reasoning_content path) get no
@@ -1337,8 +1337,8 @@ class _StreamingMixin:
                             if thinking_on and leaks_thinking_in_content(self.model)
                             else None
                         )
-                        # 工具图上总线时带上本轮的 turn_id，和这一轮的用户帧
-                        # 归到同一个回合下；普通文本轮没有 turn_id，那里就是 None。
+                        # Tool images published on the bus carry this turn's turn_id, grouping them with
+                        # its user frames; ordinary text turns lack turn_id, so it is None there.
                         _focus_overrides["_tool_frames_turn_id"] = turn_id
                         cut_keeps_shown = True
                         async for chunk in self._astream_visible_with_tools(
@@ -1358,25 +1358,25 @@ class _StreamingMixin:
                                     from utils.instrument import histogram as _instr_h
                                     _instr_h("llm_ttft_ms", max(0.0, (time.time() - _ttft_start) * 1000.0))
                                 except Exception:
-                                    # 埋点 best-effort，绝不打断流式响应主路径。
+                                    # Best-effort telemetry must never interrupt the main streaming response path.
                                     pass
-                            # 帧总线：provider 已经吐出东西了——这一轮的消息（连同那批
-                            # 图）确凿地被它收下了。这是本函数里最早能这么断言的地方：
-                            # astream 是惰性的，请求要到第一次 __anext__ 才真正发出去，
-                            # 在那之前任何位置发布都只是在赌。清标记在 await 之前：一轮
-                            # 只发一次，attempt 重试和 reroll 都不会把同一批图再抄一遍。
-                            # 同一个时刻：provider 收下了这一轮，本轮的 resident
-                            # 块（知识）从此留在本会话之后的请求里。
+                            # Frame bus: provider output proves receipt of this turn's messages and images.
+                            # This is the earliest point in this function where that can be asserted:
+                            # astream is lazy and sends the request only on first __anext__;
+                            # publishing earlier would be a guess. Clear the flag before await: publish once per turn,
+                            # never copying the same images again across attempt retries or rerolls.
+                            # At this same point, provider acceptance makes this turn's resident knowledge
+                            # blocks survive in subsequent requests of this session.
                             if _resident_entry is not None and not _resident_entry.delivered:
                                 self._settle_resident_context(_resident_entry, delivered=True)
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None
-                                # 只发布、不等待。这条 hop 可能跨 loop（见
-                                # _fire_bus_task），而这里正卡在用户回复的第一个
-                                # chunk 上：一个卡住的 bridge 不该换来一次沉默的
-                                # 回合。要抄的字节和标签在上面就已经冻结好了，
-                                # 任务里不再读任何活状态。
+                                # Publish without waiting. This hop may cross loops (see
+                                # _fire_bus_task), and this is the user's first response chunk:
+                                # a stalled bridge must not produce a silent turn.
+                                # Bytes and labels to copy were already frozen above;
+                                # the task reads no live state.
                                 self._fire_bus_task(
                                     self._publish_provider_frames(
                                         _bus_images,
@@ -1390,12 +1390,12 @@ class _StreamingMixin:
                             if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
                                 if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
                                     logger.debug(f"🔍 [Meta] {chunk.response_metadata}")
-                            # tool 轮 sentinel：``_astream_*_with_tools`` 已把
-                            # pre-tool 文本 + tool_calls + tool result inline
-                            # 写进 history。重置 final-segment buffer 防止
-                            # 之后 append 的 AIMessage 把同一段 pre-tool 文本
-                            # 第二次写进 history。``_total`` 不重置——重复检测
-                            # / token 长度 guard 仍要看完整一轮的实际文本量。
+                            # Tool-turn sentinel: ``_astream_*_with_tools`` has already
+                            # written pre-tool text + tool_calls + tool result inline
+                            # to history. Reset final-segment buffer so
+                            # the later appended AIMessage does not write the same pre-tool text
+                            # to history twice. Do not reset ``_total``: repetition detection
+                            # and token-length guard still need the full turn's actual text volume.
                             if getattr(chunk, "tool_round_persisted", False):
                                 # A cancelled round still reports what it kept
                                 # (see _settle_unfinished_tool_round); reset the
@@ -1415,9 +1415,9 @@ class _StreamingMixin:
                                 segment_round = self._last_tool_round_of(
                                     _turn_tool_rounds,
                                 )
-                                # 重置围栏 / prefix buffer：下一段是新的语义
-                                # 单元（模型基于 tool 结果重新出文本），不应
-                                # 复用之前的 fence / prefix 状态。
+                                # Reset fence / prefix buffer: the next segment is a new semantic
+                                # unit (model text based on tool results) and must not
+                                # reuse the preceding fence / prefix state.
                                 pipe_count = 0
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
@@ -1439,15 +1439,15 @@ class _StreamingMixin:
                                         await self.on_text_delta(_pretool_residual, is_first_chunk)
                                         is_first_chunk = False
                                     think_stripper.reset()
-                                # Summary 状态收尾：cutover 之后的 tail 已经 UI-only
-                                # 发出去了，但 TTS 还没听到。tool 边界处不知道
-                                # post-tool 段会有多长，没法走"final < max+slack"
-                                # 那套判断，所以一律 abandon —— 把 tail 续给 TTS
-                                # 当原文读完。`_astream_*_with_tools` 已经把含
-                                # tail 的完整 pre-tool 文本写进 assistant.tool_calls.content
-                                # 持久化到 _conversation_history，UI/TTS/history 这下
-                                # 三家口径一致。然后再重置 state 让 post-tool 重新
-                                # 走 idle 起点。
+                                # Finalize summary state: post-cutover tail was emitted UI-only,
+                                # not yet heard by TTS. At a tool boundary, post-tool segment length
+                                # is unknown, so the "final < max+slack" decision
+                                # cannot apply. Always abandon, sending the tail to TTS
+                                # to finish reading the original. `_astream_*_with_tools` already persisted
+                                # full pre-tool text including tail in assistant.tool_calls.content
+                                # within _conversation_history, aligning UI/TTS/history.
+                                # Then reset state so the post-tool segment
+                                # starts again from idle.
                                 if (
                                     # Re-read: the residual send above may have cut it.
                                     self._active_response_generation == response_generation
@@ -1487,7 +1487,7 @@ class _StreamingMixin:
                             if content and content.strip():
                                 truncated_content = content
 
-                                # ── 前缀检测阶段：缓冲初始输出，判断是否有角色名前缀 ──
+                                # ── Prefix detection: buffer initial output and detect character-name prefixes ──
                                 if not prefix_checked:
                                     prefix_buffer += truncated_content
                                     if len(prefix_buffer) >= self._prefix_buffer_size:
@@ -1505,11 +1505,11 @@ class _StreamingMixin:
                                             truncated_content = prefix_buffer[lanlan_match:]
                                         else:
                                             truncated_content = prefix_buffer
-                                        # 前缀解析完毕，将结果送入下方的通用 emit/guard 路径
+                                        # Prefix parsing complete; pass result into the generic emit/guard path below.
                                         if not (truncated_content and truncated_content.strip()):
                                             continue
                                     else:
-                                        continue  # 缓冲区未满，等更多 chunk
+                                        continue  # Buffer not full; await more chunks.
 
                                 for idx, char in enumerate(truncated_content):
                                     if char == '|':
@@ -1523,26 +1523,26 @@ class _StreamingMixin:
                                 if truncated_content and truncated_content.strip():
                                     emit_content = truncated_content
                                     if self.enable_response_guard:
-                                        # 长度 guard 看完整一轮（含 pre-tool）的 token 量。
-                                        # 必须在 on_text_delta 前裁剪本 chunk，否则 UI/TTS
-                                        # 会先收到超限尾巴，而 history 只保存截断文本。
+                                        # Length guard counts tokens for the entire turn, including pre-tool.
+                                        # Trim this chunk before on_text_delta; otherwise UI/TTS receive the over-budget
+                                        # tail first, while history saves only truncated text.
                                         candidate_total = assistant_message_total + truncated_content
                                         current_length = count_tokens(candidate_total)
                                         if current_length > self.max_response_length:
                                             if summary_mode_enabled:
-                                                # Summary 路径：长但可读 → 不 abort、不 inline truncate。
-                                                # 第一次过线把 state 切到 pending_cutover；从这 chunk 起
-                                                # 在每个 chunk 里找 terminator（含逗号），找到就走 cutover。
-                                                # 不设 guard_triggered，让 stream 继续到自然终止/3000 cap，
-                                                # 由 stream 结束后的 epilogue 决策 abandon / summarize。
+                                                # Summary path: long but readable → no abort or inline truncation.
+                                                # First crossing changes state to pending_cutover; starting with this chunk,
+                                                # search every chunk for a terminator (including commas), then cut over when found.
+                                                # Leave guard_triggered unset; stream continues to natural completion/3000 cap,
+                                                # with stream-end epilogue deciding abandon / summarize.
                                                 if summary_state == 'idle':
                                                     summary_state = 'pending_cutover'
                                                     summary_trigger_tokens = current_length
-                                                    # 算 chunk 里"刚好越过 budget"的 char offset：
-                                                    # truncate_to_tokens 把 candidate_total 砍到 budget，
-                                                    # 差出来的长度就是这一 chunk 里的越线位置。供下面
-                                                    # emit fork 从该 offset 起找 terminator，避免误把
-                                                    # budget 之前的早期逗号当 cutover。
+                                                    # Calculate the character offset just past budget within this chunk:
+                                                    # truncate_to_tokens trims candidate_total to budget;
+                                                    # the length difference gives the crossing position in this chunk. The emit fork
+                                                    # below searches for terminators from that offset, avoiding
+                                                    # early pre-budget commas as cutover points.
                                                     _capped = truncate_to_tokens(
                                                         candidate_total, self.max_response_length,
                                                     )
@@ -1556,7 +1556,7 @@ class _StreamingMixin:
                                                         current_length, self.max_response_length,
                                                         summary_overflow_offset,
                                                     )
-                                                # emit_content 保持原 chunk，下面 emit-split 块继续走
+                                                # Keep emit_content as the original chunk; continue through emit-split below.
                                             else:
                                                 guard_triggered = True
                                                 discard_reason = f"length>{self.max_response_length}"
@@ -1579,22 +1579,22 @@ class _StreamingMixin:
                                                             assistant_message_total
                                                             and _has_unpersisted_recovery_suffix(assistant_message_total)
                                                         ):
-                                                            # 已流式发出的前缀无法撤回；保持 history 与
-                                                            # UI/TTS 一致，避免可见文本和上下文分叉。
+                                                            # Already streamed prefixes cannot be retracted; align history with
+                                                            # UI/TTS to avoid divergent visible text and context.
                                                             length_guard_recovery_text = assistant_message_total
 
                                     if emit_content and emit_content.strip():
-                                        # Emit fork：summary 模式下要按 cutover 边界拆分
-                                        # UI / TTS 路径。其余场景（含 summary_state == 'idle'
-                                        # 与 'gibberish_fallback'）都走 both 默认路径。
+                                        # Emit fork: summary mode splits UI / TTS paths at
+                                        # the cutover boundary. All other cases (including summary_state == 'idle'
+                                        # and 'gibberish_fallback') use the default both path.
                                         if (
                                             summary_mode_enabled
                                             and summary_state in ('pending_cutover', 'cutover_done')
                                         ):
                                             if summary_state == 'pending_cutover':
-                                                # Trigger chunk 上 offset > 0 表示越界点在 chunk 中段，
-                                                # terminator 搜索从越界点开始；后续 chunk 整段都在
-                                                # budget 之后，offset 复位到 0 从头扫。一次性消费。
+                                                # offset > 0 in the trigger chunk means crossing occurred mid-chunk;
+                                                # terminator search starts there. Later chunks lie entirely past
+                                                # budget; reset offset to zero and scan from the start. Consume once.
                                                 search_from = summary_overflow_offset
                                                 summary_overflow_offset = 0
                                                 term_pos_in_slice = _find_summary_terminator(
@@ -1610,7 +1610,7 @@ class _StreamingMixin:
                                                         if self.on_text_delta:
                                                             await self.on_text_delta(pre, is_first_chunk)
                                                         is_first_chunk = False
-                                                    # 锁定 cutover：当前 assistant_message 即 prefix
+                                                    # Lock cutover: current assistant_message is the prefix.
                                                     summary_prefix_for_history = assistant_message
                                                     summary_state = 'cutover_done'
                                                     logger.info(
@@ -1631,14 +1631,14 @@ class _StreamingMixin:
                                                             )
                                                         is_first_chunk = False
                                                 else:
-                                                    # 没找到 terminator → 整段走 both，state 不变
+                                                    # No terminator found → emit entire segment to both, state unchanged.
                                                     assistant_message += emit_content
                                                     assistant_message_total += emit_content
                                                     if self.on_text_delta:
                                                         await self.on_text_delta(emit_content, is_first_chunk)
                                                     is_first_chunk = False
                                             else:
-                                                # cutover_done：UI only，并攒进 tail buffer
+                                                # cutover_done: UI only, accumulating in tail buffer.
                                                 assistant_message += emit_content
                                                 assistant_message_total += emit_content
                                                 summary_tail_buffer += emit_content
@@ -1649,9 +1649,9 @@ class _StreamingMixin:
                                                     )
                                                 is_first_chunk = False
 
-                                            # cutover_done 后做一次 gibberish 重检（pending→done
-                                            # 同 chunk 转换也算）：每 _SUMMARY_GIBBERISH_RECHECK_TOKENS
-                                            # tail token 重检一次，命中就跳到 fallback 让 epilogue 走
+                                            # Recheck gibberish after cutover_done (including pending→done
+                                            # within the same chunk): every _SUMMARY_GIBBERISH_RECHECK_TOKENS
+                                            # tail tokens, recheck; on detection switch to fallback for epilogue handling.
                                             # RESPONSE_INVALID。
                                             if summary_state == 'cutover_done' and summary_tail_buffer:
                                                 tail_tokens = count_tokens(summary_tail_buffer)
@@ -1678,7 +1678,7 @@ class _StreamingMixin:
                                     if guard_triggered:
                                         break
                                     if summary_state == 'gibberish_fallback':
-                                        # 不设 guard_triggered，让 epilogue 走 summary-fallback 路径
+                                        # Leave guard_triggered unset so epilogue takes the summary-fallback path.
                                         break
                             elif content and not content.strip():
                                 logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
@@ -1696,10 +1696,10 @@ class _StreamingMixin:
                             )
                             break
 
-                        # 流结束后：先 flush thinking stripper 的残留。仅漏型
-                        # provider 的 thinking_on 轮挂了它；若整轮没出现 </think>
-                        # （模型本轮没思考），它一直 hold，这里把攒住的正文还回
-                        # prefix_buffer，走下面的通用 emit/guard 路径，避免丢答案。
+                        # After stream ends, flush thinking-stripper residue first. Only thinking_on turns
+                        # for leaky providers install it; if no </think> appears all turn
+                        # (model did not think), it holds everything. Return buffered body to
+                        # prefix_buffer for generic emit/guard below, avoiding answer loss.
                         if think_stripper is not None:
                             _think_residual = think_stripper.flush()
                             if _think_residual:
@@ -1714,7 +1714,7 @@ class _StreamingMixin:
                                 # stream → prefix_buffer was never filled by the live
                                 # path, so prefix_checked carried no completed state.
                                 prefix_checked = False
-                        # 流结束后：flush 未处理的前缀缓冲区（走通用 emit/guard 路径）
+                        # After stream ends: flush unprocessed prefix buffer through generic emit/guard.
                         if prefix_buffer and not prefix_checked:
                             prefix_checked = True
                             master_match = self._match_name_prefix(prefix_buffer, self.master_name)
@@ -1739,17 +1739,17 @@ class _StreamingMixin:
                                 if flush_text and flush_text.strip():
                                     emit_flush_text = flush_text
                                     if self.enable_response_guard:
-                                        # 长度 guard 看整轮（含 pre-tool），与上方主累加块对偶。
+                                        # Length guard counts the whole turn (including pre-tool), symmetric with accumulation above.
                                         candidate_total = assistant_message_total + flush_text
                                         current_length = count_tokens(candidate_total)
                                         if current_length > self.max_response_length:
                                             if summary_mode_enabled:
-                                                # 与主累加块对偶：summary 模式下不 abort，
-                                                # 切到 pending_cutover，下面 emit-split 块处理。
+                                                # Symmetric with main accumulation: summary mode does not abort;
+                                                # switch to pending_cutover for emit-split below.
                                                 if summary_state == 'idle':
                                                     summary_state = 'pending_cutover'
                                                     summary_trigger_tokens = current_length
-                                                    # 算 flush_text 内的越界 char offset（与主累加块对偶）
+                                                    # Compute crossing character offset in flush_text, symmetric with main accumulation.
                                                     _capped = truncate_to_tokens(
                                                         candidate_total, self.max_response_length,
                                                     )
@@ -1784,13 +1784,13 @@ class _StreamingMixin:
                                                         ):
                                                             length_guard_recovery_text = assistant_message_total
                                     if emit_flush_text and emit_flush_text.strip():
-                                        # Emit fork（与主累加块对偶）：summary 模式下按 cutover 拆 UI/TTS
+                                        # Emit fork (symmetric with main accumulation): summary mode splits UI/TTS at cutover.
                                         if (
                                             summary_mode_enabled
                                             and summary_state in ('pending_cutover', 'cutover_done')
                                         ):
                                             if summary_state == 'pending_cutover':
-                                                # 与主累加块对偶：消费 trigger flush 的越界 offset
+                                                # Symmetric with main accumulation: consume crossing offset from trigger flush.
                                                 search_from = summary_overflow_offset
                                                 summary_overflow_offset = 0
                                                 term_pos_in_slice = _find_summary_terminator(
@@ -1808,9 +1808,9 @@ class _StreamingMixin:
                                                         is_first_chunk = False
                                                     summary_prefix_for_history = assistant_message
                                                     summary_state = 'cutover_done'
-                                                    # 对偶 chunk-loop emit fork 的 cutover 日志：
-                                                    # 用 summary_trigger_tokens（flush 入口写入的）
-                                                    # 把"什么时候触发的"信息留在日志里。
+                                                    # Symmetric with chunk-loop emit fork's cutover log:
+                                                    # use summary_trigger_tokens (set at flush entry)
+                                                    # to retain when the trigger occurred in logs.
                                                     logger.info(
                                                         "OmniOfflineClient summary: cutover 完成于 flush "
                                                         "(prefix_chars=%d, trigger=%d tokens)",
@@ -1872,15 +1872,15 @@ class _StreamingMixin:
                             reroll_count += 1
                             will_retry = guard_attempt <= self.max_response_rerolls
 
-                            # max_attempts 报给前端的是**总尝试次数**而非
-                            # rerolls 次数（rerolls 不含首次尝试）。前端 attempt
-                            # / max_attempts 进度条要 1/2 → 2/2 才合理。
+                            # Frontend max_attempts reports total attempts,
+                            # not rerolls (which exclude initial attempt). Frontend attempt
+                            # / max_attempts progress should advance 1/2 → 2/2.
                             total_attempts = self.max_response_rerolls + 1
 
                             recovery_text = length_guard_recovery_text
                             if discard_reason and "length>" in discard_reason:
-                                # 长回复若是正常可读文本，直接按已发出的截断文本
-                                # 收尾，不 reroll，避免 UI/TTS 和 history 分叉。
+                                # For long but readable responses, finalize using already emitted truncated text,
+                                # without reroll, avoiding divergence between UI/TTS and history.
                                 if not recovery_text and not _is_gibberish_response(assistant_message_total):
                                     capped = truncate_to_tokens(
                                         assistant_message_total, self.max_response_length,
@@ -1914,9 +1914,9 @@ class _StreamingMixin:
                             recovery_text = ""
 
                             if will_retry:
-                                # 还能 retry：发 will_retry 通知，循环继续。前端
-                                # 收到 response_discarded(will_retry=True, message=None)
-                                # 走 retry toast 路径。
+                                # Retry remains: notify will_retry and continue. Frontend receives
+                                # response_discarded(will_retry=True, message=None)
+                                # and takes the retry-toast path.
                                 await self._notify_response_discarded(
                                     discard_reason or "guard",
                                     guard_attempt,
@@ -1931,27 +1931,27 @@ class _StreamingMixin:
                                 )
                                 continue
 
-                            # Reroll 耗尽。length 超长有两类：
-                            #   (a) 模型真的写得多但还在正常说话 → 截到最后一个
-                            #       句末标点，作为 RESPONSE_LENGTH_TRUNCATED 回复
-                            #       发给前端，placeholder 不进 history（截取版进）。
-                            #   (b) 模型疯了（BPE 重复 / emoji 刷屏 / 没标点的
-                            #       连续乱码）→ 不要试图截"句子"出来，直接 filter
-                            #       走 RESPONSE_TOO_LONG（语义=故障），core 那边
-                            #       会让前端显示故障 placeholder + 把 placeholder
-                            #       写进 history（让下一轮 LLM 知道这一轮失败）。
+                            # Rerolls exhausted. Excessive length has two cases:
+                            #   (a) Verbose but normal speech → trim to the last
+                            #       sentence-ending punctuation, send as RESPONSE_LENGTH_TRUNCATED
+                            #       to frontend; history stores truncated text, not placeholder.
+                            #   (b) Model malfunction (BPE repetitions / emoji flooding / continuous
+                            #       unpunctuated gibberish) → do not extract a "sentence"; filter directly
+                            #       as RESPONSE_TOO_LONG (failure semantics). Core makes frontend
+                            #       display a failure placeholder and writes it
+                            #       to history so the next LLM turn knows this turn failed.
                             #
-                            # 触发 (b) 的条件：_is_gibberish_response（标点/符号
-                            # 密度 < 2% 或 > 60%）或截不出句末（整段无 . ! ? 。 ！ ？ …）。
+                            # Case (b) triggers on _is_gibberish_response (punctuation/symbol
+                            # density < 2% or > 60%) or no sentence ending (none of . ! ? 。 ！ ？ …).
                             #
-                            # 关键：(a) 路径要先把 assistant_message 硬截到
-                            # max_response_length 再找句末，否则截出来的句末仍
-                            # 可能在 token 上限之外（比如最后一个句号在 950 token
-                            # 处但 cap 是 300）。
+                            # Crucial: case (a) must first hard-truncate assistant_message to
+                            # max_response_length, then find sentence endings; otherwise the chosen ending
+                            # can still exceed the token cap (e.g. final period at 950 tokens
+                            # with a cap of 300).
                             if discard_reason and "length>" in discard_reason:
-                                # 整轮判定：gibberish / 截断必须看 _total，否则
-                                # tool 轮 sentinel 把 final-segment 清空之后整段
-                                # pre-tool 被忽略，明明很长却走 RESPONSE_TOO_LONG。
+                                # Whole-turn decision: gibberish/truncation must inspect _total, otherwise
+                                # the tool-turn sentinel clearing final-segment causes all pre-tool text
+                                # to be ignored, incorrectly yielding RESPONSE_TOO_LONG despite a long turn.
                                 if not _is_gibberish_response(assistant_message_total):
                                     capped = truncate_to_tokens(
                                         assistant_message_total, self.max_response_length,
@@ -1971,11 +1971,11 @@ class _StreamingMixin:
                                     "code": "RESPONSE_LENGTH_TRUNCATED",
                                     "text": recovery_text,
                                 })
-                                # 走 _notify_response_discarded（不能用
-                                # on_status_message）：前端在 response_discarded
-                                # 分支识别 RESPONSE_LENGTH_TRUNCATED 才能触发
-                                # truncate UX（不回滚输入 + 把 truncate text
-                                # 当 placeholder body）。
+                                # Use _notify_response_discarded, not
+                                # on_status_message: frontend must recognize RESPONSE_LENGTH_TRUNCATED
+                                # in the response_discarded branch to activate
+                                # truncation UX (no input rollback; truncated text
+                                # becomes placeholder body).
                                 await self._notify_response_discarded(
                                     discard_reason or "guard",
                                     guard_attempt,
@@ -1985,11 +1985,11 @@ class _StreamingMixin:
                                     callback=discard_callback,
                                 )
                                 status_reported = True
-                                # _conversation_history 由 core.handle_response_discarded
-                                # 在 RESPONSE_LENGTH_TRUNCATED 分支 append
-                                # （self.session 即本 OmniOfflineClient，二者共享同一
-                                # 个 _conversation_history 列表）。这里只维护内部
-                                # 重复检测列表。
+                                # core.handle_response_discarded appends to _conversation_history
+                                # in its RESPONSE_LENGTH_TRUNCATED branch
+                                # (self.session is this OmniOfflineClient; both share the same
+                                # _conversation_history list). Maintain only the internal
+                                # repetition-detection list here.
                                 await self._check_repetition(recovery_text)
                                 assistant_message = recovery_text
                                 guard_exhausted = True
@@ -2009,9 +2009,9 @@ class _StreamingMixin:
                                 callback=discard_callback,
                             )
                             status_reported = True
-                            # gibberish 或截不出句末 / 非 length 类 guard 失败 —
-                            # 走故障 placeholder 路径，core 会用 locale "fault"
-                            # 文案占住 history，避免下一轮 LLM 看到空助手轮次。
+                            # Gibberish, no sentence ending, or non-length guard failure:
+                            # take failure-placeholder path; core stores localized "fault"
+                            # text in history, avoiding an empty assistant turn for the next LLM request.
                             logger.warning(
                                 "OmniOfflineClient: guard 重试耗尽 (reason=%s)，"
                                 "filter 输出走故障 placeholder",
@@ -2021,33 +2021,33 @@ class _StreamingMixin:
                             guard_exhausted = True
                             break
 
-                        # ── Summary 模式 epilogue ──
-                        # 走到这里 guard_triggered 一定是 False（summary 路径不设
-                        # length 类 guard）。根据 summary_state 决定：
-                        #   - gibberish_fallback：tail 被判定胡言乱语，静默截断
-                        #     —— 不发 RESPONSE_INVALID，因为那会触发 core 端的
-                        #     _clear_tts_pipeline 把还在队列里没读完的 prefix
-                        #     音频也清掉，反而让"已经听到的话"被截断。这里只
-                        #     log + commit prefix 到 history，TTS 自然把队列
-                        #     里残余的 prefix 播完。UI 显示的 gibberish 尾巴
-                        #     与 live ≠ reload 的设计分岔本来就允许。
-                        #   - cutover_done + 最终长度 ≤ max+slack：太短没必要摘要，把
-                        #     tail 直接续给 TTS 读完，history 留完整原文。
-                        #   - cutover_done + 最终长度更长：调小模型摘要，TTS 续上摘要，
-                        #     history 写 prefix+summary。摘要失败 fallback 到 tail 续读。
-                        #   - pending_cutover：触发了但 stream 结束前没找到 terminator
-                        #     (整段无标点)。tail 全在主路径里发出去了，相当于没摘要，
-                        #     history 写完整原文。
-                        #   - idle：从未触发，常规流程，啥也不用做。
+                        # ── Summary mode epilogue ──
+                        # guard_triggered must be False here (summary path never sets
+                        # length guards). Decide from summary_state:
+                        #   - gibberish_fallback: tail classified as gibberish; silently truncate.
+                        #     Do not emit RESPONSE_INVALID: that would trigger core's
+                        #     _clear_tts_pipeline, clearing unread prefix audio still queued
+                        #     and truncating speech already underway. Here only
+                        #     log and commit prefix to history; TTS naturally finishes
+                        #     queued prefix audio. UI's gibberish tail is permitted
+                        #     by the existing live ≠ reload design divergence.
+                        #   - cutover_done + final length ≤ max+slack: too short to warrant summarizing;
+                        #     continue tail directly through TTS and retain full original history.
+                        #   - cutover_done + longer final length: small-model summary continues TTS;
+                        #     history stores prefix+summary. Summary failure falls back to reading tail.
+                        #   - pending_cutover: triggered but no terminator before stream end
+                        #     (no punctuation). Main path already emitted all tail, effectively no summary;
+                        #     store full original text in history.
+                        #   - idle: never triggered; normal flow, nothing to do.
                         if summary_mode_enabled and summary_state == 'gibberish_fallback':
                             logger.warning(
                                 "OmniOfflineClient summary: gibberish fallback, "
                                 "静默 commit prefix (%d chars) 到 history，TTS 残队列保留",
                                 len(summary_prefix_for_history),
                             )
-                            # 重复检测只看 prefix（= 真正进 history / 被 TTS 读的部分）。
-                            # 用 assistant_message_total 会把判定为乱码、已丢弃的 tail
-                            # 也塞进 _recent_responses，污染后续重复判定。
+                            # Repetition detection checks prefix only (what actually enters history / TTS).
+                            # assistant_message_total would add the discarded gibberish tail
+                            # to _recent_responses, contaminating later repetition decisions.
                             cut_keeps_shown = False
                             _live_at_commit = self._commit_reply(
                                 user_message, summary_prefix_for_history, response_generation,
@@ -2066,7 +2066,7 @@ class _StreamingMixin:
                             final_tokens = count_tokens(assistant_message_total)
                             slack_threshold = self.max_response_length + _SUMMARY_LATE_FINISH_SLACK
                             if final_tokens < slack_threshold:
-                                # 尾巴太短：放弃摘要，tail 直接续给 TTS。
+                                # Tail too short: abandon summary and continue tail directly to TTS.
                                 logger.info(
                                     "OmniOfflineClient summary: 最终 %d tokens < %d，放弃摘要，"
                                     "tail (%d chars) 续给 TTS",
@@ -2104,7 +2104,7 @@ class _StreamingMixin:
                                             summary_text, False,
                                             ui_enabled=False, tts_enabled=True,
                                         )
-                                    # history = prefix + summary，与 TTS 听到的对齐。
+                                    # history = prefix + summary, matching TTS output.
                                     # Only once the send has returned: a cut while
                                     # it waits (for the TTS cache lock) has not
                                     # queued the summary, and keeps the shown text
@@ -2120,14 +2120,14 @@ class _StreamingMixin:
                                             summary_tail_buffer, False,
                                             ui_enabled=False, tts_enabled=True,
                                         )
-                                    # assistant_message 不动 → history 写完整原文
+                                    # Leave assistant_message unchanged → history stores full original text.
 
-                        # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
-                        # 此处不再手动调用 TokenTracker.record() 避免双重计数。
+                        # _AsyncStreamWrapper hook automatically records token usage at stream end;
+                        # do not manually call TokenTracker.record() here and double count.
 
-                        # final AIMessage 只写未被 inline 持久化的最后一段
-                        # （pre-tool 文本已经在前面 ``assistant.tool_calls.content``
-                        # 里了，再 append 一次会双写历史）。
+                        # Final AIMessage stores only the final segment not already persisted inline
+                        # (pre-tool text is already in ``assistant.tool_calls.content``;
+                        # appending again would duplicate history).
                         cut_keeps_shown = False
                         _live_at_commit = self._commit_reply(
                             user_message, assistant_message, response_generation,
@@ -2136,8 +2136,8 @@ class _StreamingMixin:
                         self._mark_reply_tail_completed(
                             reply_owner, _live_at_commit, assistant_message_total,
                         )
-                        # 重复检测看完整一轮文本（含 pre-tool），与人类用户感知
-                        # 的"这一轮 AI 说了什么"一致。
+                        # Repetition detection checks all turn text (including pre-tool), matching
+                        # the human user's perception of what the AI said this turn.
                         if assistant_message_total and _live_at_commit:
                             await self._check_repetition(assistant_message_total)
                         break
@@ -2145,9 +2145,9 @@ class _StreamingMixin:
                     if guard_exhausted:
                         break
 
-                    # 整轮判定：本轮只要产生过任何文本（含 pre-tool）就算成功完成
-                    # retry 循环；用 final-segment 会让"max_tool_iterations 用尽
-                    # 时只剩 pre-tool 被持久化、没出 final 回复"的轮次被错误重试。
+                    # Whole-turn decision: any generated text (including pre-tool) completes
+                    # the retry loop successfully. final-segment would incorrectly retry turns where
+                    # max_tool_iterations exhausted after persisting pre-tool text without a final reply.
                     if assistant_message_total:
                         break
 
@@ -2162,15 +2162,15 @@ class _StreamingMixin:
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
 
                     def _count_llm_error(api_key_rejected: bool = False):
-                        # D1 失败诊断：typed API 错误（连接/认证/限流/欠费/配额/
-                        # key 拒绝）的**终态**也要计入 llm_error。只在给上的 break
-                        # 路径调，不在 retry-continue 调（重试中不算失败）。generic
-                        # except 与本块互斥，不会双计（Codex）。
+                        # D1 failure diagnostics: terminal typed API errors (connection/auth/rate limit/billing/quota/
+                        # rejected key) also count as llm_error. Call only on break paths above,
+                        # never retry-continue (ongoing retries are not failures). Generic
+                        # except is mutually exclusive with this block, avoiding double counting (Codex).
                         try:
                             from utils.instrument import counter as _ic
-                            # before_first_loop：错误发生在用户体验到核心 loop 之前 =
-                            # 首次体验障碍型流失（开了口但没收到回复）。true/false/unknown
-                            # 低基数；区分"卡在首次体验"vs"用过之后才报错"两类 D1 流失。
+                            # before_first_loop: error before the user experiences the core loop means
+                            # initial-experience barrier churn (spoke but got no reply). Low-cardinality true/false/unknown
+                            # distinguishes first-experience blockage from errors after prior usage in D1 churn.
                             try:
                                 from utils.token_tracker import TokenTracker as _TT
                                 _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
@@ -2180,10 +2180,10 @@ class _StreamingMixin:
                             if api_key_rejected:
                                 _ic("api_key_invalid", before_first_loop=_bfl)
                         except Exception:
-                            # 埋点 best-effort，绝不影响错误上报 / 重试主流程。
+                            # Best-effort telemetry must never affect error reporting / retry flow.
                             pass
 
-                    # 欠费/API Key 错误立即上报并终止；配额错误上报但继续重试
+                    # Report billing/API-key errors immediately and terminate; report quota errors but keep retrying.
                     if '欠费' in error_str_lower or 'standing' in error_str_lower:
                         logger.error(f"OmniOfflineClient: 检测到欠费错误，直接上报: {e}")
                         _count_llm_error()
@@ -2206,9 +2206,9 @@ class _StreamingMixin:
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                        # 整轮判定：本轮是否吐过任何文本到前端 —— 用 _total 才能
-                        # 覆盖 tool_round_persisted 已重置 final-segment 的场景。
-                        # 否则 pre-tool 文本残留在前端但 notify_discarded 漏触发。
+                        # Whole-turn decision: whether any text reached frontend this turn. Use _total to
+                        # cover tool_round_persisted resetting final-segment;
+                        # otherwise pre-tool text remains visible without triggering notify_discarded.
                         if assistant_message_total and discard_callback:
                             await self._notify_response_discarded(
                                 f"api_error:{error_type}",
@@ -2225,7 +2225,7 @@ class _StreamingMixin:
                     else:
                         error_msg = f"💥 LLM连接失败（{error_type}），已重试{max_retries}次: {e}"
                         logger.error(error_msg)
-                        _count_llm_error()  # 重试耗尽 = 终态失败，计入 llm_error
+                        _count_llm_error()  # Retries exhausted = terminal failure, count as llm_error.
                         if self.on_status_message:
                             if is_internal_error:
                                 await self.on_status_message(json.dumps({"code": "LLM_UPSTREAM_ERROR"}))
@@ -2236,13 +2236,13 @@ class _StreamingMixin:
                 except Exception as e:
                     cut_keeps_shown = False
                     is_api_key_rejected = _is_api_key_rejected_error(e)
-                    # Telemetry：D1 流失里 LLM 调用失败是大头。error_class 低基数
-                    # （exception 类名）；api_key_invalid 单独计——首日配错 key
-                    # 是源码版用户的常见流失坑。
+                    # Telemetry: LLM call failures drive much D1 churn. Low-cardinality error_class
+                    # uses exception class names; count api_key_invalid separately: misconfigured keys
+                    # on day one commonly lose source-build users.
                     try:
                         from utils.instrument import counter as _instr_counter
-                        # before_first_loop 与 typed 错误路径（_count_llm_error）保持
-                        # 同维度，避免 llm_error/api_key_invalid 混合标签拆裂 D1 分桶。
+                        # Match before_first_loop dimensions with typed-error path (_count_llm_error),
+                        # preventing mixed llm_error/api_key_invalid labels from splitting D1 buckets.
                         try:
                             from utils.token_tracker import TokenTracker as _TT
                             _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
@@ -2252,7 +2252,7 @@ class _StreamingMixin:
                         if is_api_key_rejected:
                             _instr_counter("api_key_invalid", before_first_loop=_bfl)
                     except Exception:
-                        # 埋点 best-effort，绝不掩盖/打断原始 LLM 错误的处理路径。
+                        # Best-effort telemetry never masks/interrupts original LLM error handling.
                         pass
                     if is_api_key_rejected:
                         status_error_payload = {"code": "API_KEY_REJECTED"}
@@ -2275,15 +2275,15 @@ class _StreamingMixin:
                         }
                         error_msg = f"💥 文本生成异常: {type(e).__name__}: {e}"
                     logger.error(error_msg)
-                    # 如果本轮已经向前端吐过文本（典型场景：genai 路径在
-                    # _astream_with_tools 已吐文本后再抛 transient/tools-
-                    # unsupported，被显式 raise 上来），必须通知前端清空
-                    # 那截半截气泡，否则用户会看到一段被中断的文本永远停
-                    # 在那。和 (APIConnectionError 等) 分支语义对偶，但
-                    # 这条路径已经决定不再重试（break 在下面），所以
-                    # ``will_retry=False``，并附带可读的错误码到前端。
-                    # 整轮判定：用 _total，覆盖 tool_round_persisted 已重置
-                    # final-segment 但 pre-tool 文本仍在前端的场景。
+                    # If this turn already emitted text to frontend (typically genai path
+                    # _astream_with_tools emits text, then raises transient/tools-unsupported
+                    # explicitly to this level), notify frontend to clear
+                    # the partial bubble, or interrupted text remains visible
+                    # forever. Symmetric with APIConnectionError and similar branches, but
+                    # this path already decided against retrying (break below), so
+                    # ``will_retry=False``, with a readable frontend error code.
+                    # Whole-turn decision: _total covers tool_round_persisted resetting
+                    # final-segment while pre-tool text remains in frontend.
                     if assistant_message_total and discard_callback:
                         try:
                             await self._notify_response_discarded(
@@ -2321,14 +2321,14 @@ class _StreamingMixin:
             task_cancelled = True
             raise
         finally:
-            # 先于其它收尾：把 base64 从历史里摘掉，别让它跟着后续每一次请求
-            # 走（token 计数器把图像部分算成短占位符，截断器看不见它）。
+            # Before other cleanup, remove base64 from history so subsequent requests do not
+            # resend it (token counter uses short image placeholders, invisible to truncation).
             response_cancelled = self._active_response_generation != response_generation
             interrupter_owned = self._take_interrupter_ownership(response_generation)
             self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
-            # 没等到 provider 应答的 resident 块不留：请求没发出去、出字前被
-            # 打断或被新消息顶替。跑过工具轮说明 provider 已经应答过。
+            # Do not retain resident blocks without provider response: request unsent, interrupted
+            # before text, or displaced by a newer message. A tool round proves provider response.
             if _resident_entry is not None and not _resident_entry.delivered:
                 self._settle_resident_context(
                     _resident_entry, delivered=bool(_turn_tool_rounds),
@@ -2344,10 +2344,10 @@ class _StreamingMixin:
                 )
                 if _replace_at >= 0:
                     _history[_replace_at] = HumanMessage(content=history_replacement_text)
-                    # 这一轮的 resident 块（知识）跟着替换后的消息走。
+                    # This turn's resident knowledge blocks follow the replacement message.
                     self._rebind_resident_anchor(user_message, _history[_replace_at])
 
-            # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
+            # Restore API budget temporarily raised by summary mode, preventing leakage to prompt_ephemeral.
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:
                 self.llm.max_completion_tokens = _summary_prev_max_tokens
 
@@ -2360,8 +2360,8 @@ class _StreamingMixin:
             if not interrupter_owned:
                 self._mark_completion_pending(response_generation, owner=reply_owner)
             try:
-                # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
-                # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
+                # Whole-turn decision: LLM_NO_RESPONSE only when all attempts produced no text, including pre-tool.
+                # final-segment would falsely report tool turns completed without final model text.
                 if (
                     not response_cancelled
                     and not task_cancelled
@@ -2369,10 +2369,10 @@ class _StreamingMixin:
                     and not guard_exhausted
                     and not status_reported
                 ):
-                    # 把最后一次 attempt 的 finish_reason / block_reason / prompt_tokens
-                    # 拼进 warning。Gemini-via-OpenAI-compat 静默 empty 时（safety /
-                    # recitation / max_tokens / 上下文超限），这条 log 是日志里能拿到
-                    # 的唯一"为什么 empty"线索。
+                    # Include the last attempt's finish_reason / block_reason / prompt_tokens
+                    # in warning. When Gemini-via-OpenAI-compatible silently returns empty (safety /
+                    # recitation / max_tokens / context overflow), this log provides the only
+                    # available clue explaining why it was empty.
                     logger.warning(
                         "OmniOfflineClient: 所有重试均未产生文本回复 "
                         "(finish_reason=%s block_reason=%s prompt_tokens=%s model=%s)",

@@ -1,11 +1,11 @@
 """
-插件依赖检查和拓扑排序模块
+Plugin dependency checking and topological sorting.
 
-从 registry.py 拆分出来，负责：
-- 版本规范解析
-- 依赖查找（按入口点、自定义事件）
-- 依赖检查
-- 拓扑排序
+Extracted from registry.py; responsible for:
+- Version-spec parsing.
+- Dependency lookup by entry points and custom events.
+- Dependency checking.
+- Topological sorting.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover
     InvalidSpecifier = Exception  # type: ignore
 
 def _parse_specifier(spec: Optional[str], logger: Any) -> Optional[Any]:
-    """解析版本规范字符串"""
+    """Parse a version-specification string."""
     if not spec or SpecifierSet is None:
         return None
     try:
@@ -40,7 +40,7 @@ def _parse_specifier(spec: Optional[str], logger: Any) -> Optional[Any]:
 
 
 def _version_matches(spec: Optional[Any], version: Any) -> bool:
-    """检查版本是否匹配规范"""
+    """Check whether a version matches a specification."""
     if spec is None:
         return False
     try:
@@ -51,27 +51,27 @@ def _version_matches(spec: Optional[Any], version: Any) -> bool:
 
 def _find_plugins_by_entry(entry_id: str) -> List[tuple[str, Dict[str, Any]]]:
     """
-    根据入口点ID查找提供该入口的所有插件（只能查找 @plugin_entry）
+    Find all plugins providing an entry ID (only @plugin_entry).
     
     Args:
-        entry_id: 入口点ID
+        entry_id: Entry-point ID.
     
     Returns:
-        (插件ID, 插件元数据) 列表
+        List of (plugin ID, plugin metadata).
     """
     matching_plugins = []
     
     with state.acquire_event_handlers_read_lock():
         event_handlers_copy = dict(state.event_handlers)
     
-    # 查找所有提供该入口点的插件
+    # Find every plugin providing this entry point.
     found_plugin_ids = set()
     for key, eh in event_handlers_copy.items():
-        # 检查 key 格式：plugin_id.entry_id 或 plugin_id:plugin_entry:entry_id
+        # Check key format: plugin_id.entry_id or plugin_id:plugin_entry:entry_id.
         if "." in key:
             parts = key.split(".", 1)
             if len(parts) == 2 and parts[1] == entry_id:
-                # 验证是 plugin_entry 类型
+                # Verify plugin_entry type.
                 meta = getattr(eh, "meta", None)
                 if meta and getattr(meta, "event_type", None) == "plugin_entry":
                     found_plugin_ids.add(parts[0])
@@ -80,7 +80,7 @@ def _find_plugins_by_entry(entry_id: str) -> List[tuple[str, Dict[str, Any]]]:
             if len(parts) == 3 and parts[1] == "plugin_entry" and parts[2] == entry_id:
                 found_plugin_ids.add(parts[0])
     
-    # 获取这些插件的元数据
+    # Get these plugins' metadata.
     with state.acquire_plugins_read_lock():
         for pid in found_plugin_ids:
             if pid in state.plugins:
@@ -95,34 +95,34 @@ def _find_plugins_by_entry(entry_id: str) -> List[tuple[str, Dict[str, Any]]]:
 
 def _find_plugins_by_custom_event(event_type: str, event_id: str) -> List[tuple[str, Dict[str, Any]]]:
     """
-    根据自定义事件类型和ID查找提供该事件的所有插件（只能查找 @custom_event）
+    Find all plugins providing a custom-event type/ID (only @custom_event).
     
     Args:
-        event_type: 自定义事件类型
-        event_id: 事件ID
+        event_type: Custom-event type.
+        event_id: Event ID.
     
     Returns:
-        (插件ID, 插件元数据) 列表
+        List of (plugin ID, plugin metadata).
     """
     matching_plugins = []
     
     with state.acquire_event_handlers_read_lock():
         event_handlers_copy = dict(state.event_handlers)
     
-    # 查找所有提供该自定义事件的插件
+    # Find every plugin providing this custom event.
     found_plugin_ids = set()
     for key, _eh in event_handlers_copy.items():
-        # 检查 key 格式：plugin_id:event_type:event_id
+        # Check key format: plugin_id:event_type:event_id.
         if ":" in key:
             parts = key.split(":", 2)
             if len(parts) == 3:
                 pid, etype, eid = parts
                 if etype == event_type and eid == event_id:
-                    # 验证不是标准类型
+                    # Verify nonstandard type.
                     if etype not in STANDARD_EVENT_TYPES:
                         found_plugin_ids.add(pid)
     
-    # 获取这些插件的元数据
+    # Get these plugins' metadata.
     with state.acquire_plugins_read_lock():
         for pid in found_plugin_ids:
             if pid in state.plugins:
@@ -143,21 +143,21 @@ def _check_single_plugin_version(
     plugin_id: str
 ) -> tuple[bool, Optional[str]]:
     """
-    检查单个插件的版本是否满足依赖要求
+    Check one plugin's version against dependency requirements.
     
     Args:
-        dep_id: 依赖插件ID
-        dep_plugin_meta: 依赖插件元数据
-        dependency: 依赖配置
-        logger: 日志记录器
-        plugin_id: 当前插件ID（用于日志）
+        dep_id: Dependency plugin ID.
+        dep_plugin_meta: Dependency plugin metadata.
+        dependency: Dependency configuration.
+        logger: Logger.
+        plugin_id: Current plugin ID for logs.
     
     Returns:
-        (是否满足, 错误信息)
+        (Satisfied, error message).
     """
     dep_version_str = dep_plugin_meta.get("version", "0.0.0")
     
-    # 如果 conflicts 是列表，检查版本是否在冲突范围内
+    # If conflicts is a list, check whether the version lies in its conflict ranges.
     if isinstance(dependency.conflicts, list) and dependency.conflicts:
         if Version and SpecifierSet:
             try:
@@ -170,11 +170,11 @@ def _check_single_plugin_version(
             except InvalidVersion:
                 logger.warning("Cannot parse dependency plugin '{}' version '{}'", dep_id, dep_version_str)
     
-    # 如果使用依赖配置，untested 是必须的
+    # Dependency configurations require untested.
     if dependency.untested is None:
         return False, "Dependency configuration requires 'untested' field"
     
-    # 检查版本是否在 untested 范围内
+    # Check whether version is in untested range.
     if Version and SpecifierSet:
         try:
             dep_version_obj = Version(dep_version_str)
@@ -185,7 +185,7 @@ def _check_single_plugin_version(
             if untested_spec:
                 in_untested = _version_matches(untested_spec, dep_version_obj)
                 if not in_untested:
-                    # 检查是否在 supported 范围内
+                    # Check supported range.
                     supported_spec = _parse_specifier(dependency.supported, logger)
                     in_supported = _version_matches(supported_spec, dep_version_obj) if supported_spec else False
                     
@@ -196,7 +196,7 @@ def _check_single_plugin_version(
                             f"(or supported range '{dependency.supported or 'N/A'}')"
                         )
             
-            # 检查 recommended 范围（警告）
+            # Check recommended range (warning).
             if dependency.recommended:
                 recommended_spec = _parse_specifier(dependency.recommended, logger)
                 if recommended_spec and not _version_matches(recommended_spec, dep_version_obj):
@@ -216,23 +216,23 @@ def _check_plugin_dependency(
     plugin_id: str
 ) -> tuple[bool, Optional[str]]:
     """
-    检查插件依赖是否满足
+    Check plugin dependency satisfaction.
     
-    支持四种依赖方式：
-    1. 依赖特定插件ID：id = "plugin_id"
-    2. 依赖特定入口点：entry = "entry_id" 或 entry = "plugin_id:entry_id"（只能引用 @plugin_entry）
-    3. 依赖特定自定义事件：custom_event = "event_type:event_id" 或 custom_event = "plugin_id:event_type:event_id"（只能引用 @custom_event）
-    4. 依赖多个候选插件：providers = ["plugin1", "plugin2"]（任一满足即可）
+    Support four dependency modes:
+    1. Depend on a specific plugin ID: id = \"plugin_id\"
+    2. Depend on a specific entry point: entry = \"entry_id\" or entry = \"plugin_id:entry_id\" (may reference only @plugin_entry)
+    3. Depend on a specific custom event: custom_event = \"event_type:event_id\" or custom_event = \"plugin_id:event_type:event_id\" (may reference only @custom_event)
+    4. Depend on multiple candidate plugins: providers = [\"plugin1\", \"plugin2\"] (any one is sufficient)
     
-    注意：entry 和 custom_event 互斥（不能同时使用）
+    Note: entry and custom_event are mutually exclusive.
     
     Args:
-        dependency: 依赖配置
-        logger: 日志记录器
-        plugin_id: 当前插件 ID（用于日志）
+        dependency: Dependency configuration.
+        logger: Logger.
+        plugin_id: Current plugin ID for logs.
     
     Returns:
-        (是否满足, 错误信息)
+        (Satisfied, error message).
     """
     def _runtime_enabled(pid: str) -> bool:
         with state.acquire_plugins_read_lock():
@@ -241,22 +241,22 @@ def _check_plugin_dependency(
             return False
         return meta is not None
 
-    # 如果 conflicts 是 true，表示冲突（不允许）
+    # conflicts=true means disallowed conflict.
     if dependency.conflicts is True:
         if not dependency.id:
             return False, "Dependency with conflicts=True requires 'id' field"
 
         if dependency.id:
-            # 检查依赖插件是否存在
+            # Check whether the dependency plugin exists.
             if _runtime_enabled(str(dependency.id)):
                 return False, f"Dependency plugin '{dependency.id}' conflicts (conflicts=true) but plugin exists"
-        return True, None  # 简化格式，插件不存在则满足
+        return True, None  # Simplified format: missing plugins satisfy the condition.
     
-    # 确定要检查的插件列表
+    # Determine plugins to check.
     plugins_to_check: List[tuple[str, Dict[str, Any]]] = []
     
     if dependency.providers:
-        # 方式3：多个候选插件（任一满足即可）
+        # Mode 3: multiple candidate plugins, any one sufficient.
         with state.acquire_plugins_read_lock():
             for provider_id in dependency.providers:
                 meta = state.plugins.get(provider_id)
@@ -269,7 +269,7 @@ def _check_plugin_dependency(
         if not plugins_to_check:
             return False, f"None of the provider plugins {dependency.providers} found"
         
-        # 检查任一插件是否满足（只要有一个满足即可）
+        # Check whether any plugin satisfies requirements.
         for dep_id, dep_plugin_meta in plugins_to_check:
             satisfied, _ = _check_single_plugin_version(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
@@ -278,18 +278,18 @@ def _check_plugin_dependency(
                 logger.debug("Plugin {}: dependency satisfied by provider '{}'", plugin_id, dep_id)
                 return True, None
         
-        # 所有候选插件都不满足
+        # No candidate satisfies requirements.
         return False, f"None of the provider plugins {dependency.providers} satisfy version requirements"
     
     elif dependency.entry:
-        # 方式2：依赖特定入口点（只能引用 @plugin_entry）
-        # 检查是否同时指定了 custom_event（互斥）
+        # Mode 2: specific entry-point dependency, referencing @plugin_entry only.
+        # Check mutually exclusive custom_event is not also specified.
         if dependency.custom_event:
             return False, "Cannot specify both 'entry' and 'custom_event' in dependency (they are mutually exclusive)"
         
         entry_spec = dependency.entry
         if ":" in entry_spec:
-            # 格式：plugin_id:entry_id
+            # Format: plugin_id:entry_id.
             parts = entry_spec.split(":", 1)
             if len(parts) != 2:
                 return False, f"Invalid entry format: '{entry_spec}', expected 'plugin_id:entry_id' or 'entry_id'"
@@ -299,7 +299,7 @@ def _check_plugin_dependency(
                 if target_plugin_id not in state.plugins:
                     return False, f"Dependency entry '{entry_spec}': plugin '{target_plugin_id}' not found"
 
-            # 验证指定插件确实提供该入口（且是 @plugin_entry）
+            # Verify that plugin really provides the entry as @plugin_entry.
             matching_plugins = _find_plugins_by_entry(target_entry_id)
             if not any(pid == target_plugin_id for pid, _ in matching_plugins):
                 return False, (
@@ -309,15 +309,15 @@ def _check_plugin_dependency(
             with state.acquire_plugins_read_lock():
                 plugins_to_check = [(target_plugin_id, state.plugins[target_plugin_id])]
         else:
-            # 格式：entry_id（任意插件提供该入口）
+            # Format: entry_id, provided by any plugin.
             entry_id = entry_spec
             matching_plugins = _find_plugins_by_entry(entry_id)
             if not matching_plugins:
                 return False, f"Dependency entry '{entry_id}' not found in any plugin"
             plugins_to_check = matching_plugins
         
-        # 检查提供该入口的插件是否满足版本要求
-        # 如果多个插件提供该入口，任一满足即可
+        # Check version requirements for entry providers.
+        # With multiple providers, any one is sufficient.
         for dep_id, dep_plugin_meta in plugins_to_check:
             satisfied, _ = _check_single_plugin_version(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
@@ -326,30 +326,30 @@ def _check_plugin_dependency(
                 logger.debug("Plugin {}: dependency entry '{}' satisfied by plugin '{}'", plugin_id, entry_spec, dep_id)
                 return True, None
         
-        # 所有提供该入口的插件都不满足版本要求
+        # No entry provider meets version requirements.
         return False, f"Dependency entry '{entry_spec}' found but version requirements not satisfied"
     
     elif dependency.custom_event:
-        # 方式3：依赖特定自定义事件（只能引用 @custom_event）
+        # Mode 3: specific custom-event dependency, referencing @custom_event only.
         custom_event_spec = dependency.custom_event
         if ":" in custom_event_spec:
-            # 解析格式：
-            # - event_type:event_id（严格 1 个 ':'）
-            # - plugin_id:event_type:event_id（允许 event_id 里包含 ':'，因此只切前两次）
+            # Parse formats:
+            # - event_type:event_id (exactly one ':').
+            # - plugin_id:event_type:event_id (event_id may contain ':'; split only twice).
             if custom_event_spec.count(":") == 1:
-                # 格式：event_type:event_id（任意插件提供该事件）
+                # Format: event_type:event_id, provided by any plugin.
                 event_type, event_id = custom_event_spec.split(":", 1)
                 matching_plugins = _find_plugins_by_custom_event(event_type, event_id)
                 if not matching_plugins:
                     return False, f"Dependency custom_event '{custom_event_spec}' not found in any plugin"
                 plugins_to_check = matching_plugins
             else:
-                # 格式：plugin_id:event_type:event_id（指定插件必须提供该事件）
+                # Format: plugin_id:event_type:event_id, provided by the specified plugin.
                 target_plugin_id, rest = custom_event_spec.split(":", 1)
                 if ":" not in rest:
                     return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
                 event_type, event_id = rest.split(":", 1)
-                # 先在锁内检查插件是否存在，并读取元数据（避免后续嵌套 plugins_lock 导致死锁）
+                # Check existence and read metadata under lock first, avoiding deadlocks from later nested plugins_lock acquisition.
                 with state.acquire_plugins_read_lock():
                     dep_meta = state.plugins.get(target_plugin_id)
                 if dep_meta is None:
@@ -358,7 +358,7 @@ def _check_plugin_dependency(
                 if isinstance(dep_meta, dict) and dep_meta.get("runtime_enabled") is False:
                     return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
 
-                # 在锁外调用，避免 _find_plugins_by_custom_event 内部再次获取 plugins_lock 造成死锁
+                # Call outside the lock, avoiding _find_plugins_by_custom_event reacquiring plugins_lock.
                 matching_plugins = _find_plugins_by_custom_event(event_type, event_id)
                 if not any(pid == target_plugin_id for pid, _ in matching_plugins):
                     return False, (
@@ -368,8 +368,8 @@ def _check_plugin_dependency(
         else:
             return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
         
-        # 检查提供该自定义事件的插件是否满足版本要求
-        # 如果多个插件提供该事件，任一满足即可
+        # Check custom-event providers' versions.
+        # With multiple providers, any one is sufficient.
         for dep_id, dep_plugin_meta in plugins_to_check:
             satisfied, _ = _check_single_plugin_version(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
@@ -378,11 +378,11 @@ def _check_plugin_dependency(
                 logger.debug("Plugin {}: dependency custom_event '{}' satisfied by plugin '{}'", plugin_id, custom_event_spec, dep_id)
                 return True, None
         
-        # 所有提供该事件的插件都不满足版本要求
+        # No event provider meets version requirements.
         return False, f"Dependency custom_event '{custom_event_spec}' found but version requirements not satisfied"
     
     elif dependency.id:
-        # 方式1：依赖特定插件ID
+        # Mode 1: specific plugin ID dependency.
         dep_id = dependency.id
         with state.acquire_plugins_read_lock():
             if dep_id not in state.plugins:
@@ -407,20 +407,20 @@ def _parse_plugin_dependencies(
     plugin_id: str
 ) -> List[PluginDependency]:
     """
-    解析插件依赖配置
+    Parse plugin dependency configuration.
     
-    支持三种格式：
-    1. [plugin].dependencies = ["plugin_id"] - 简单插件 ID 列表
-    2. [[plugin.dependency]] - 完整格式
-    3. [[plugin.dependency]] with conflicts = true - 简化格式
+    Support three formats:
+    1. [plugin].dependencies = [\"plugin_id\"]: simple plugin-ID list.
+    2. [[plugin.dependency]]: full format.
+    3. [[plugin.dependency]] with conflicts=true: simplified format.
     
     Args:
-        conf: TOML 配置字典
-        logger: 日志记录器
-        plugin_id: 插件 ID（用于日志）
+        conf: TOML configuration dictionary.
+        logger: Logger.
+        plugin_id: Plugin ID for logs.
     
     Returns:
-        依赖列表
+        Dependency list.
     """
     dependencies: List[PluginDependency] = []
 
@@ -462,10 +462,10 @@ def _parse_plugin_dependencies(
                     except Exception:
                         pass
     
-    # TOML 数组表语法 [[plugin.dependency]] 会被解析为 conf["plugin"]["dependency"] 列表
+    # TOML [[plugin.dependency]] array-of-table syntax parses as a conf["plugin"]["dependency"] list.
     dep_configs = plugin_table.get("dependency", [])
     
-    # 如果不是列表，转换为列表
+    # Convert nonlists to lists.
     if not isinstance(dep_configs, list):
         if isinstance(dep_configs, dict):
             dep_configs = [dep_configs]
@@ -477,7 +477,7 @@ def _parse_plugin_dependencies(
             logger.warning("Plugin {}: invalid dependency config (not a dict), skipping", plugin_id)
             continue
         
-        # 支持四种依赖方式：id、entry、custom_event、providers（至少需要一个）
+        # Support four dependency modes: id, entry, custom_event, providers (at least one required).
         dep_id = dep_config.get("id")
         dep_entry = dep_config.get("entry")
         dep_custom_event = dep_config.get("custom_event")
@@ -487,18 +487,18 @@ def _parse_plugin_dependencies(
             logger.warning("Plugin {}: dependency config must have at least one of 'id', 'entry', 'custom_event', or 'providers' field, skipping", plugin_id)
             continue
         
-        # 检查 entry 和 custom_event 互斥
+        # Check entry/custom_event mutual exclusion.
         if dep_entry and dep_custom_event:
             logger.warning("Plugin {}: dependency config cannot have both 'entry' and 'custom_event' fields (they are mutually exclusive), skipping", plugin_id)
             continue
         
-        # 处理简化格式：conflicts = true（仅支持 id 方式）
+        # Handle simplified conflicts=true format (id mode only).
         conflicts = dep_config.get("conflicts")
         if conflicts is True:
             if not dep_id:
                 logger.warning("Plugin {}: dependency with conflicts=true requires 'id' field, skipping", plugin_id)
                 continue
-            # 简化格式：只有 id 和 conflicts = true
+            # Simplified format: only id and conflicts=true.
             try:
                 dependencies.append(
                     PluginDependency(
@@ -523,8 +523,8 @@ def _parse_plugin_dependencies(
                         pass
             continue
         
-        # 完整格式：解析所有字段
-        # 如果使用依赖配置，untested 是必须的（除非是简化格式）
+        # Full format: parse all fields.
+        # Dependency configurations require untested except in simplified format.
         untested = dep_config.get("untested")
         if untested is None:
             logger.warning(
@@ -533,7 +533,7 @@ def _parse_plugin_dependencies(
             )
             continue
         
-        # 处理 conflicts 列表
+        # Handle conflicts lists.
         conflicts_list = None
         raw_conflicts = dep_config.get("conflicts")
         if isinstance(raw_conflicts, list):
@@ -541,7 +541,7 @@ def _parse_plugin_dependencies(
         elif isinstance(raw_conflicts, str) and raw_conflicts.strip():
             conflicts_list = [raw_conflicts.strip()]
         
-        # 处理 providers 列表
+        # Handle providers lists.
         providers_list = None
         if isinstance(dep_providers, list):
             providers_list = [str(p) for p in dep_providers if p]
@@ -576,14 +576,14 @@ def _parse_plugin_dependencies(
 
 def _get_dependency_plugin_ids(dep: PluginDependency, logger: Any) -> List[str]:
     """
-    从依赖配置中提取可能的插件 ID 列表。
+    Extract possible plugin IDs from dependency configuration.
     
     Args:
-        dep: 依赖配置
-        logger: 日志记录器
+        dep: Dependency configuration.
+        logger: Logger.
     
     Returns:
-        可能的依赖插件 ID 列表
+        List of possible dependency plugin IDs.
     """
     if getattr(dep, "conflicts", None) is True:
         return []
@@ -627,23 +627,23 @@ def _topological_sort_plugins(
     logger: Any,
 ) -> List[str]:
     """
-    Phase 2: 根据依赖关系对插件进行拓扑排序。
+    Phase 2: topologically sort plugins by dependencies.
     
     Args:
-        plugin_contexts: 插件上下文列表
-        pid_to_context: pid -> context 映射
-        logger: 日志记录器
+        plugin_contexts: Plugin-context list.
+        pid_to_context: pid -> context mapping.
+        logger: Logger.
     
     Returns:
-        排序后的插件 ID 列表
+        Sorted plugin-ID list.
     """
     logger.info("Sorting {} plugins based on dependencies...", len(plugin_contexts))
     
-    # 构建依赖图
+    # Build dependency graph.
     graph: Dict[str, set] = {ctx.pid: set() for ctx in plugin_contexts}
 
-    # 仅基于当前待加载集合构建 entry provider 映射，避免依赖运行时全局状态。
-    # 这里采用配置中声明的 entries（conf/pdata）来近似 entry provider 关系。
+    # Build entry-provider mappings only from the current loading set, independent of global runtime state.
+    # Approximate provider relationships with declared entries in conf/pdata.
     entry_providers: Dict[str, set[str]] = {}
     for pctx in plugin_contexts:
         entries = pctx.conf.get("entries") or pctx.pdata.get("entries") or []
@@ -668,7 +668,7 @@ def _topological_sort_plugins(
                         graph[ctx.pid].add(provider_pid)
                         logger.debug("Dependency edge (entry): {} -> {} via entry '{}'", ctx.pid, provider_pid, entry_spec)
     
-    # Kahn 算法：构建邻接表和入度表
+    # Kahn's algorithm: build adjacency and indegree tables.
     adj_list: Dict[str, List[str]] = {pid: [] for pid in pid_to_context}
     in_degree: Dict[str, int] = {pid: 0 for pid in pid_to_context}
     
@@ -688,11 +688,11 @@ def _topological_sort_plugins(
     
     def _queue_sort_key(pid: str) -> tuple[int, int, int, str]:
         """
-        同层节点排序规则（不改变拓扑约束，仅影响同一入度层的加载先后）：
-        1) enabled 优先
-        2) adapter 优先于普通 plugin
-        3) adapter 按 adapter.priority 升序（数字越小越先启动）
-        4) pid 字典序兜底
+        Same-level ordering (preserves topology, affecting load order within one indegree level only):
+        1) Enabled first.
+        2) Adapters before ordinary plugins.
+        3) Adapters by ascending adapter.priority (smaller starts first).
+        4) Lexicographic pid fallback.
         """
         ctx = pid_to_context.get(pid)
         if ctx is None:
@@ -715,7 +715,7 @@ def _topological_sort_plugins(
 
         return (enabled_rank, adapter_rank, adapter_priority, str(pid))
 
-    # 初始化队列（入度为 0 的节点）
+    # Initialize queue with zero-indegree nodes.
     queue = [pid for pid in pid_to_context if in_degree[pid] == 0]
     queue.sort(key=_queue_sort_key)
     
@@ -730,7 +730,7 @@ def _topological_sort_plugins(
                 queue.append(v)
         queue.sort(key=_queue_sort_key)
     
-    # 检查循环依赖
+    # Check cyclic dependencies.
     if len(final_order) != len(plugin_contexts):
         loaded_set = set(final_order)
         missing = [ctx.pid for ctx in plugin_contexts if ctx.pid not in loaded_set]

@@ -77,7 +77,7 @@ class _EmptyBlocklist:
 def keyfile(tmp_path, mint_mod, monkeypatch):
     path = tmp_path / "visit_dev_key.pem"
     mint_mod.generate_keyfile(path)
-    # 生产入口 PubkeySet.from_runtime 读的就是这个模块级常量：只指向 tmp_path
+    # The production PubkeySet.from_runtime entry reads this module constant: point it only to tmp_path.
     monkeypatch.setattr(idm, "NEKO_VISIT_DEV_KEYFILE", str(path))
     monkeypatch.setattr(visit_settings, "NEKO_VISIT_DEV_KEYFILE", str(path))
     return path
@@ -129,7 +129,7 @@ def test_kid_is_the_dev_slot_and_only_the_dev_key_verifies(mint_mod, keyfile):
     assert entry.source == "dev"
     pub_raw = b64url_decode(mint_mod.public_key_b64url(mint_mod.load_private_key(keyfile)))
     assert entry.raw_bytes() == pub_raw == load_dev_public_key(keyfile).public_bytes_raw()
-    # 没有开发键（未设 NEKO_VISIT_DEV_KEYFILE）时同一张票走同一条路径被拒：没有跳过验签的分支
+    # Without a development key (NEKO_VISIT_DEV_KEYFILE unset), reject the same ticket on the same path; no signature-verification bypass exists.
     without_dev = PubkeySet.build(
         now=NOW, fetched=FetchedPubkeys(keys={}, revoked=frozenset(), fetched_at=NOW), builtin={},
     )
@@ -141,7 +141,7 @@ def test_any_single_byte_change_is_rejected(mint_mod, keyfile):
     ticket, claims = _mint(mint_mod, keyfile)
     seg_claims, seg_sig = ticket.split(".")
     claims_bytes, sig = b64url_decode(seg_claims), b64url_decode(seg_sig)
-    _verify(ticket, vid=claims["vid"])  # 原票先要能过
+    _verify(ticket, vid=claims["vid"])  # First verify the original ticket passes.
 
     for i in range(len(claims_bytes)):
         tampered = bytearray(claims_bytes)
@@ -189,7 +189,7 @@ def test_keygen_refuses_to_overwrite_and_restricts_mode(mint_mod, tmp_path, caps
     assert path.read_bytes() != first
     if os.name == "posix":
         assert (path.stat().st_mode & 0o777) == 0o600
-    # 后端读开发键的同一个函数能读它生成的文件
+    # The same backend function that reads development keys can read its generated file.
     load_dev_public_key(path)
 
 
@@ -219,7 +219,7 @@ def test_malformed_explicit_visit_id_is_refused(mint_mod, bad):
 @pytest.mark.parametrize("field,bad", (
     ("visit_uid", "abc"),
     ("visit_uid", "G" * 24),
-    ("vid", "h_" + "0" * 24),          # guest 票不能用 host 的 vid
+    ("vid", "h_" + "0" * 24),          # A guest ticket cannot use the host's vid.
     ("vid", "g_" + "0" * 23),
     ("char_tag", "abc"),
     ("char_tag", "Z" * 32),

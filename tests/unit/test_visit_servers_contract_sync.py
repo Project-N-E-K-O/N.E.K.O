@@ -43,17 +43,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DESIGN = REPO_ROOT / "docs" / "design" / "visit-infrastructure.md"
 CONTRACT = REPO_ROOT / "docs" / "design" / "visit-servers-contract.md"
 
-FIELDSET_LABEL = "- 字段集:"  # 字段集
-FIELD_LABEL = "- 字段:"  # 字段
+FIELDSET_LABEL = "- 字段集:"  # Field set
+FIELD_LABEL = "- 字段:"  # Fields
 DESIGN_S47 = "### 4.7 Servers"
 DESIGN_S48 = "### 4.8 "
-CONTRACT_ENDPOINTS = "## 端点"  # 端点
-CONTRACT_SERVERS_LIST = "## Servers 实现清单"  # Servers 实现清单
+CONTRACT_ENDPOINTS = "## 端点"  # Endpoints
+CONTRACT_SERVERS_LIST = "## Servers 实现清单"  # Servers implementation checklist
 DESIGN_SERVERS_LIST = "### N.E.K.O. Servers"
 
 ENDPOINTS = (
     "POST /api/visit/credentials",
-    "身份票 identity_ticket（claims 全表）",  # 身份票 identity_ticket（claims 全表）
+    "身份票 identity_ticket（claims 全表）",  # Identity ticket identity_ticket (complete claims table)
     "GET /api/visit/pubkeys",
     "GET /api/visit/invites/{invite_code}/preview",
     "POST /api/visit/reports",
@@ -62,7 +62,7 @@ ENDPOINTS = (
     "GET /api/visit/details/{visit_id}",
     "POST /admin/visit/bans",
 )
-CHECKLIST = "Servers 侧需要实现的清单（供排期）"  # Servers 侧需要实现的清单（供排期）
+CHECKLIST = "Servers 侧需要实现的清单（供排期）"  # Servers-side implementation checklist (for scheduling)
 
 REPORTS_REQ = {"visit_id", "reason", "note?", "include_transcript", "anomalies", "app_version"}
 OLD_REPORTS_FRAGMENT = "transcript, reason}"
@@ -181,11 +181,11 @@ def test_field_set_names_occur_in_prose(endpoint, which, design_sections, contra
     body = sections[endpoint]
     prose = _single_line(body, FIELD_LABEL, f"{which} {endpoint}")
     if endpoint.startswith("身份票"):
-        # claims 的类型与含义写在下面的表里，表格也算正文
+        # Claim types and meanings are in the table below; tables also count as body text
         prose = "\n".join([prose, *[ln for ln in body if ln.startswith("|")]])
     for key, names in parse_fieldset(_single_line(body, FIELDSET_LABEL, which)).items():
         for name in names:
-            if key == "错误":  # 错误
+            if key == "错误":  # Errors
                 for token in name.split():
                     assert _word_in(token, prose), f"{which} {endpoint}: error {name!r} not in prose"
                 continue
@@ -217,8 +217,8 @@ def test_claims_set_matches_claims_table(which, design_sections, contract_sectio
 @pytest.mark.parametrize("path", (DESIGN, CONTRACT), ids=("design", "contract"))
 def test_no_old_reports_fragment(path):
     text = path.read_text(encoding="utf-8")
-    # 设计稿 §5 PR-16 描述本测试时会把旧片段当作被禁止的字面量引用一次，只豁免这一种写法
-    text = text.replace(f"旧格式片段 `{OLD_REPORTS_FRAGMENT}`", "")  # 旧格式片段 `...`
+    # Design §5 PR-16 quotes the old fragment once as a prohibited literal when describing this test; exempt only this notation
+    text = text.replace(f"旧格式片段 `{OLD_REPORTS_FRAGMENT}`", "")  # Old-format fragment `...`
     assert OLD_REPORTS_FRAGMENT not in text
 
 

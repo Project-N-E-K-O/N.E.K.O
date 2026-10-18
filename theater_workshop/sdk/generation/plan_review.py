@@ -7,8 +7,8 @@ from .evidence import effective_targets
 from .repair import context_nodes
 from .runtime_rules import SCORING_RUNTIME_RULES
 
-# 与评分、修订共享运行合同；字段权限仍由程序核验，不能让模型修改规则。
-# 单条范围与组合冲突分别表达，冲突只声明一次，由程序同时保护双方。
+# Share the runtime contract with scoring and revision; the program still checks field permissions, and the model cannot change the rules.
+# Express individual scope and combination conflicts separately; declare each conflict once and protect both sides programmatically.
 PLAN_REVIEW_PROMPT = SCORING_RUNTIME_RULES + "\n\n" + """你是剧本修改方案的执行前复核员。只检查给定plans中的方案文字、repair_targets和preserve是否一致，不判断文学分数，不寻找新剧情缺陷，不替作者改稿，不删除原问题。
 
 story_outline为完整作者稿；各节点text_repair_fields是当前允许直接修订的文本字段。repair_targets是这次方案明确列出的修改位置。modification_plan或suggestion是方案正文；preserve是保留要求。protected_repair_targets中的字段必须原样保留。事实问题若有evidence_review，以复核确认需改的原字段为执行范围，requires_change=false必须保留，原方案中已被该复核否定的描述不作为新增修改命令。
@@ -45,7 +45,7 @@ def validate_plan_review(context: Mapping[str, Any], plans: list[dict], payload:
     expected = {plan["issue_id"]: plan for plan in plans}
     result = {}
     try:
-        # 一对冲突只声明一次；先校验原ID与说明，再将同一结论投影到双方，不猜自然语言关联。
+        # Declare each conflict pair once; validate original IDs and explanations, then project the same conclusion onto both sides without guessing natural-language associations.
         pairs = payload["conflicts"]
         if not isinstance(pairs, list):
             raise ValueError()
@@ -75,13 +75,13 @@ def validate_plan_review(context: Mapping[str, Any], plans: list[dict], payload:
                 raise ValueError()
             if not isinstance(missing, list) or (status == "ready" and missing):
                 raise ValueError()
-            # 新模型协议只从成对声明读取冲突，不能静默忽略旧格式中的单边冲突意见。
+            # The new model protocol reads conflicts only from paired declarations; do not silently ignore one-sided conflict opinions in the old format.
             if "conflicting_issue_ids" in row:
                 raise ValueError()
             seen = set()
             for target in missing:
                 node_id, field = target["node_id"], target["field"]
-                # 可以指出别幕或结构字段的实际遗漏，但不存在的字段不能被伪造为定位结果。
+                # Actual omissions in other acts or structural fields may be identified, but nonexistent fields cannot be fabricated as located results.
                 _resolve_pointer(nodes[node_id], field)
                 key = (node_id, field)
                 if key in seen or any(node_id == t["node_id"] and
@@ -92,7 +92,7 @@ def validate_plan_review(context: Mapping[str, Any], plans: list[dict], payload:
             conflicts = by_issue[issue_id]
             result[issue_id] = deepcopy({
                 "status": "blocked" if conflicts else status,
-                # 局部肯定与组合冲突分别留档、展示；程序只收紧权限，不改写模型的原理由。
+                # Archive and display local approval separately from combination conflicts; the program only tightens permissions and does not rewrite the model's original rationale.
                 "local_status": status, "reason": reason, "missing_targets": missing,
                 "conflicting_issue_ids": [other for pair in conflicts for other in pair["issue_ids"] if other != issue_id],
                 "conflict_checks": conflicts,

@@ -53,7 +53,7 @@ from datetime import datetime, timedelta
 
 ALLOWED_UNITS = frozenset({'minute', 'hour', 'day', 'week', 'month', 'year'})
 
-# 月 / 年用平均日近似（reflection scope 不需要日历级别精度，差几小时无影响）
+# Approximate months/years using average days; reflection scope needs no calendar-level precision, so hours of error do not matter
 _UNIT_TO_SECONDS = {
     'minute': 60,
     'hour':   3600,
@@ -63,11 +63,11 @@ _UNIT_TO_SECONDS = {
     'year':   86400 * 365,
 }
 
-# Schema v1 (legacy) temporal_scope 值。render 时按 pattern 兜底。
+# Schema v1 legacy temporal_scope values; rendering falls back by pattern.
 LEGACY_TEMPORAL_SCOPES = frozenset({'current', 'ongoing'})
-# Schema v2 active 标签（LLM 可主动输出的）
+# Schema v2 active labels that the LLM may emit explicitly
 ACTIVE_TEMPORAL_SCOPES = frozenset({'pattern', 'state', 'episode'})
-# 全部合法 temporal_scope（含 past 派生 / legacy / new + None）
+# All valid temporal_scope values, including derived past / legacy / new + None
 ALL_TEMPORAL_SCOPES = (
     ACTIVE_TEMPORAL_SCOPES | LEGACY_TEMPORAL_SCOPES | {'past'}
 )
@@ -102,15 +102,15 @@ def cooldown_elapsed(
         return True
     if now is None:
         now = datetime.now()
-    # aware/naive 归一：写入路径都用 datetime.now()（naive），但迁移 / import
-    # 数据可能塞进 +00:00 / Z 的 aware ISO，直接和 naive now 相减会抛
-    # TypeError 中断冷却判定。复用全项目 tz 归一口径 to_naive_local（保瞬时）。
+    # Normalize aware/naive times: writes use naive datetime.now(), but migration/import
+    # may provide aware ISO values with +00:00 / Z; subtracting naive now directly raises
+    # TypeError and interrupts cooldown checks. Reuse project-wide to_naive_local normalization, preserving the instant.
     last = to_naive_local(last)
     now = to_naive_local(now)
     return (now - last).total_seconds() >= cooldown_seconds
 
 
-# ── offset spec 解析 ──────────────────────────────────────────────────
+# ── Offset-spec parsing ──────────────────────────────────────────────────
 
 def _validate_offset_spec(spec: object) -> dict | None:
     """Validate ``{'offset': int, 'unit': str}``. Returns canonical dict or None.
@@ -184,12 +184,12 @@ def compute_event_timestamps(
     if start_iso is None and fallback_start:
         start_iso = added_at_iso
     if end_iso is None and fallback_end:
-        # end 兜底优先用 start，再回退 added_at
+        # For end fallback, prefer start, then added_at
         end_iso = start_iso or added_at_iso
     return start_iso, end_iso
 
 
-# ── past 派生判定 ─────────────────────────────────────────────────────
+# ── Derived-past evaluation ─────────────────────────────────────────────────────
 
 def _parse_iso_safe(iso: str | None) -> datetime | None:
     if not iso:
@@ -216,9 +216,9 @@ def to_naive_local(dt: datetime | None) -> datetime | None:
         try:
             return dt.astimezone().replace(tzinfo=None)
         except (OverflowError, OSError, ValueError):
-            # 边界 aware 值（如 0001-01-01+14:00 / 9999-12-31-14:00）astimezone
-            # 加减 offset 会越过 datetime.min/max 抛 OverflowError，不能让它冒到
-            # parse_time_window / 渲染链路（Codex）。退而求其次直接剥 tz（保墙钟）。
+            # With boundary aware values (such as 0001-01-01+14:00 / 9999-12-31-14:00), astimezone's
+            # offset arithmetic can exceed datetime.min/max and raise OverflowError; do not propagate into
+            # parse_time_window or rendering (Codex). Fall back to stripping timezone while preserving wall-clock time.
             return dt.replace(tzinfo=None)
     return dt
 
@@ -291,15 +291,15 @@ def is_past_for_render(entry: dict, now: datetime | None = None) -> bool:
     ttl_days = ttl_by_scope.get(ts)
     if ttl_days is None:
         return False
-    # to_naive_local：anchor 可能是 import/迁移写进来的 aware 值，和 naive
-    # now 相减会 TypeError 把过时判定/渲染链路打断（CodeRabbit）。
+    # to_naive_local: anchors may be aware values from imports/migrations; subtracting naive
+    # now raises TypeError, interrupting staleness evaluation/rendering (CodeRabbit).
     anchor = to_naive_local(_past_anchor(entry))
     if anchor is None:
         return False
     return (now - anchor).total_seconds() > ttl_days * 86400
 
 
-# ── 距今多久 label（per Q-α: 0-6d 天 / 7-29d 周 / 30d+ 月） ──────────
+# ── Time-since labels (Q-α: 0–6d days / 7–29d weeks / 30d+ months) ──────────
 
 def days_since(anchor_iso: str | None, now: datetime | None = None) -> int | None:
     """Return integer days from anchor to now (floored; 0 days is valid).
@@ -318,11 +318,11 @@ def days_since(anchor_iso: str | None, now: datetime | None = None) -> int | Non
     return max(0, int((now - anchor).total_seconds() // 86400))
 
 
-# 键形制是刻意混用的：其余 locale 用短码，繁中用 full code 'zh-TW'。两个调用点
-# （memory/persona/rendering.py 的 get_global_language_full()、main_logic/core/
-# tool_calling.py 的 _normalize_memory_prompt_lang(keep_traditional=True)）传进来的
-# 就是 'zh-TW'，塌成短码 'zh' 会让这张表永远取不到繁体。别"统一"成短码。
-# 简中走 'zh-CN' 进来，靠 time_since_label 的 or-回落打到 'zh'，不需要单列。
+# Mixed key forms are intentional: other locales use short codes, traditional Chinese uses full 'zh-TW'. Both callers
+# (get_global_language_full() in memory/persona/rendering.py and _normalize_memory_prompt_lang
+# (keep_traditional=True) in main_logic/core/tool_calling.py) supply
+# 'zh-TW'; shortening to 'zh' makes traditional entries unreachable. Do not unify these into short codes.
+# Simplified Chinese supplies 'zh-CN' and reaches 'zh' through time_since_label's or-fallback; no separate entry is needed.
 _TIME_LABELS = {
     'zh': {'now': '当下',  'day': '{n} 天前',   'week': '{n} 周前',   'month': '{n} 月前'},
     'zh-TW': {'now': '當下', 'day': '{n} 天前',  'week': '{n} 週前',   'month': '{n} 個月前'},
@@ -343,10 +343,10 @@ def time_since_label(
 ) -> str:
     """Format the [time since] label (semantics decided in Q-α).
 
-    - 0 days    → "当下" (localized "right now")
-    - 1-6 days  → "{n} 天前" (n days ago)
-    - 7-29 days → "{n // 7} 周前" (weeks ago)
-    - 30+ days  → "{n // 30} 月前" (months ago)
+    - 0 days    → \"当下\" (localized \"right now\")
+    - 1-6 days  → \"{n} 天前\" (n days ago)
+    - 7-29 days → \"{n // 7} 周前\" (weeks ago)
+    - 30+ days  → \"{n // 30} 月前\" (months ago)
 
     Returns an empty string when the anchor cannot be parsed.
     """  # noqa: DOCSTRING_CJK
@@ -363,7 +363,7 @@ def time_since_label(
     return table['month'].format(n=days // 30)
 
 
-# ── 时间窗口解析（recall_memory 的 time 参数 / 按时间回溯反思） ────────
+# ── Time-window parsing (recall_memory time parameter / historical reflection lookup) ────────
 
 def _token_window(token: str) -> tuple[datetime, datetime] | None:
     """Parse a single time token into a [start, end) half-open interval (naive local clock).
@@ -386,22 +386,22 @@ def _token_window(token: str) -> tuple[datetime, datetime] | None:
             else x.replace(month=x.month + 1)
 
     def _commit(start: datetime, end_fn) -> tuple[datetime, datetime] | None:
-        # 一旦某个格式 strptime 命中，就锁定该粒度：右界运算（+1 小时/天 /
-        # 年月进位）越过 datetime.max 抛 OverflowError/ValueError 时返回 None，
-        # 不再降级到更细粒度（否则 9999-12-31 会被下面的小时兜底误救成 1 小时
-        # 窗），也不把异常冒到上层（Codex）。
+        # Once strptime matches a format, lock its granularity: if right-bound arithmetic (+1 hour/day /
+        # month/year carry) exceeds datetime.max and raises OverflowError/ValueError, return None,
+        # without falling back to finer granularity (which would incorrectly rescue 9999-12-31 as a one-hour
+        # window through the hourly fallback below), and without propagating exceptions (Codex).
         try:
             return (start, end_fn(start))
         except (ValueError, OverflowError):
             return None
 
-    # 精确格式从粗到细试，strptime 命中即 _commit 锁定粒度。
+    # Try exact formats from coarse to fine; a strptime match locks granularity via _commit.
     for fmt, end_fn in (
-        ('%Y-%m-%d',     lambda x: x + timedelta(days=1)),    # 整日
-        ('%Y-%m-%dT%H',  lambda x: x + timedelta(hours=1)),   # 整点小时（T）
-        ('%Y-%m-%d %H',  lambda x: x + timedelta(hours=1)),   # 整点小时（空格）
-        ('%Y-%m',        _next_month),                        # 整月
-        ('%Y',           lambda x: x.replace(year=x.year + 1)),  # 整年
+        ('%Y-%m-%d',     lambda x: x + timedelta(days=1)),    # Full day
+        ('%Y-%m-%dT%H',  lambda x: x + timedelta(hours=1)),   # Whole hour (T separator)
+        ('%Y-%m-%d %H',  lambda x: x + timedelta(hours=1)),   # Whole hour (space separator)
+        ('%Y-%m',        _next_month),                        # Full month
+        ('%Y',           lambda x: x.replace(year=x.year + 1)),  # Full year
     ):
         try:
             start = datetime.strptime(token, fmt)
@@ -409,7 +409,7 @@ def _token_window(token: str) -> tuple[datetime, datetime] | None:
             continue
         return _commit(start, end_fn)
 
-    # 兜底：带分秒的完整 ISO（含 tz）→ 向下取整到所在那一小时，精度到小时。
+    # Fallback: complete ISO with minutes/seconds and timezone → floor to its hour, yielding hourly precision.
     parsed = to_naive_local(_parse_iso_safe(token))
     if parsed is not None:
         hour = parsed.replace(minute=0, second=0, microsecond=0)

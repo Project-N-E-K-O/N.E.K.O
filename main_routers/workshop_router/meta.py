@@ -142,8 +142,8 @@ def _normalize_workshop_model_ref(raw_value: str) -> str:
 
 
 def _sanitize_workshop_ref_segments(segments: list[str]) -> list[str]:
-    # 工坊卡的 model 路径来自第三方物品内容，是跨信任边界输入。这里在摄入点
-    # 丢弃 '..'/'.'/盘符段，保证拼出的 model_ref 无法解析出 /workshop/{item_id}/ 之外。
+    # Workshop-card model paths come from third-party item content across trust boundaries; at ingestion
+    # discard '..'/'.'/drive components so model_ref cannot resolve outside /workshop/{item_id}/.
     return [
         segment
         for segment in segments
@@ -228,14 +228,14 @@ def get_workshop_meta_path(character_card_name: str) -> str:
     Raises:
         ValueError: if character_card_name contains path traversal characters
     """
-    # 防路径穿越:只允许角色卡名称,不允许携带路径或上级目录喵
+    # Prevent traversal: permit character-card names only, never paths/parent directories, meow.
     if not character_card_name:
         raise ValueError("角色卡名称不能为空")
     
-    # 使用 basename 提取纯名称，去除任何路径组件
+    # Extract bare name with basename, stripping path components.
     safe_name = os.path.basename(character_card_name)
     
-    # 验证：检查是否包含路径分隔符、.. 或与原始输入不一致
+    # Validate path separators, .., and differences from original input.
     if (safe_name != character_card_name or 
         ".." in safe_name or 
         os.path.sep in safe_name or 
@@ -247,14 +247,14 @@ def get_workshop_meta_path(character_card_name: str) -> str:
     config_mgr = get_config_manager()
     chara_dir = config_mgr.chara_dir
     
-    # 构建文件路径
+    # Build file path.
     meta_file_path = os.path.join(chara_dir, f"{safe_name}.workshop_meta.json")
     
-    # 额外安全检查：验证最终路径确实在 chara_dir 内
+    # Extra safety: verify final path is inside chara_dir.
     try:
         real_meta_path = os.path.realpath(meta_file_path)
         real_chara_dir = os.path.realpath(chara_dir)
-        # 使用 commonpath 确保路径在基础目录内
+        # Use commonpath to ensure path remains within base directory.
         if os.path.commonpath([real_meta_path, real_chara_dir]) != real_chara_dir:
             logger.warning(f"路径遍历尝试被阻止: {character_card_name} -> {meta_file_path}")
             raise ValueError("路径验证失败: 目标路径不在允许的目录内")
@@ -310,10 +310,10 @@ def write_workshop_meta(character_card_name: str, workshop_item_id: str, content
         logger.error(f"写入 .workshop_meta.json 失败: 角色卡名称验证失败 - {e}")
         raise
     
-    # 读取现有数据（如果存在）
+    # Read existing data if present.
     existing_meta = read_workshop_meta(character_card_name) or {}
     
-    # 更新数据
+    # Update data.
     now = datetime.utcnow().isoformat() + 'Z'
     if 'created_at' not in existing_meta:
         existing_meta['created_at'] = now
@@ -322,11 +322,11 @@ def write_workshop_meta(character_card_name: str, workshop_item_id: str, content
     if content_hash:
         existing_meta['content_hash'] = content_hash
     
-    # 保存上传快照
+    # Save uploaded snapshot.
     if uploaded_snapshot:
         existing_meta['uploaded_snapshot'] = uploaded_snapshot
     
-    # 写入文件
+    # Write file.
     try:
         atomic_write_json(meta_file_path, existing_meta, ensure_ascii=False, indent=2)
         logger.info(f"已更新 .workshop_meta.json: {meta_file_path}")
@@ -346,10 +346,10 @@ def calculate_content_hash(content_folder: str) -> str:
     """
     sha256_hash = hashlib.sha256()
     
-    # 收集所有文件路径并排序（确保一致性）
+    # Collect and sort all paths for consistency.
     file_paths = []
     for root, dirs, files in os.walk(content_folder):
-        # 排除 .workshop_meta.json 文件（如果存在）
+        # Exclude .workshop_meta.json if present.
         if '.workshop_meta.json' in files:
             files.remove('.workshop_meta.json')
         for file in files:
@@ -358,7 +358,7 @@ def calculate_content_hash(content_folder: str) -> str:
     
     file_paths.sort()
     
-    # 计算所有文件的哈希值
+    # Hash all files.
     for file_path in file_paths:
         try:
             with open(file_path, 'rb') as f:
@@ -395,10 +395,10 @@ async def get_workshop_meta(character_name: str):
         JSON: contains workshop_item_id, uploaded_snapshot, etc.
     """
     try:
-        # URL 解码
+        # URL decode.
         decoded_name = unquote(character_name)
         
-        # 读取元数据
+        # Read metadata.
         meta_data = await asyncio.to_thread(read_workshop_meta, decoded_name)
         
         if meta_data:

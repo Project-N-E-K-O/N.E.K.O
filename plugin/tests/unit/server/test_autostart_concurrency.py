@@ -1,23 +1,23 @@
-"""自启动按波次持锁并发，依赖方随后串行，波次之间让排队操作执行。
+"""Autostart runs locked concurrent waves, then sequential dependents, allowing queued operations between waves.
 
-串行自启动 12 个插件实测 14871ms，占冷启动的 79%（``service.start_plugin`` 的
-sum/max≈10.4 → 零重叠）。插件子进程是**独立进程**，不受 GIL 约束，16 逻辑核实测
-12 个并发冷启动整组 1430ms（串行等效 8007ms，5.6x），单个只慢 1.92x。
+Measured serial startup of 12 plugins: 14871ms, 79% of cold start (``service.start_plugin``
+sum/max≈10.4, no overlap). Independent plugin processes avoid GIL limits; on 16 logical cores,
+12 concurrent cold starts took 1430ms (serial equivalent 8007ms, 5.6×), with individual slowdown only 1.92×.
 
-每波锁内 ``asyncio.gather`` 跑未加装饰的 ``_start_plugin_under_lock``；串行使用公开入口。
-这里钉住四件在后续重构里很容易被悄悄丢掉、而丢掉之后**不是变慢而是挂死或静默失败**
-的事：
+Each wave uses ``asyncio.gather`` on undecorated ``_start_plugin_under_lock`` under lock; sequential starts use public entry.
+Pin four properties easily lost in refactoring, causing hangs/silent failures,
+not merely slower performance:
 
-1. ``_start_plugin_under_lock`` 体内不得再取锁。批次是在 gather 的**子任务**里跑它的，而
-   ``serialized_plugin_operation`` 的重入判定按 ``asyncio.current_task()`` 认
-   （``operation_lock.py`` 的 ``_OPERATION_OWNER``）：子任务里 current_task 是子任务
-   自己、owner 是父任务，判定必然失败 → 去抢一把已被父任务持有的锁 → 整批挂死。
-   这也是 ``reload_all_plugins`` 当年用 gather 一点并发都买不到的原因。
-2. 声明了依赖的插件必须排在并发组**之后**。依赖检查
-   （``core/dependency.py:_find_plugins_by_entry``）读的是 ``state.event_handlers``，
-   要求被依赖方已经启动并注册完 handler；拓扑序只在串行时天然成立。
-3. 单个插件失败不得拖垮同批其他插件——与原来 for 循环的语义一致。
-4. 并发上限设成 1 时必须完全退回串行（回退开关）。
+1. ``_start_plugin_under_lock`` must not reacquire lock. Batch runs it in gather child tasks;
+   ``serialized_plugin_operation`` recognizes reentry via ``asyncio.current_task()``
+   (``operation_lock.py``'s ``_OPERATION_OWNER``). Child current_task differs from parent owner,
+   so it tries acquiring parent's held lock and deadlocks the entire batch.
+   Same reason ``reload_all_plugins`` previously gained no concurrency from gather.
+2. Plugins declaring dependencies must follow concurrent group. Dependency checks
+   (``core/dependency.py:_find_plugins_by_entry``) read ``state.event_handlers``,
+   requiring providers started/registered; topological order guarantees this only sequentially.
+3. One plugin failure cannot fail other batch members, matching old for-loop semantics.
+4. Concurrency cap one must fully revert to sequential execution (escape hatch).
 """
 
 from __future__ import annotations
@@ -36,14 +36,14 @@ from plugin.server.application.plugins import registry_service as registry_modul
 pytestmark = pytest.mark.plugin_unit
 
 
-# ── 1. 死锁守卫：锁内跑的那个函数不得再取锁 ─────────────────────────────
+# ── 1. Deadlock guard: functions run under lock must not reacquire it ───────
 
 
 def _lock_decorated_names() -> set[str]:
-    """模块里所有被 @serialized_plugin_operation 装饰的可调用名。
+    """All module callable names decorated by @serialized_plugin_operation.
 
-    用 ``__wrapped__`` 认，而不是硬编码名单：functools.wraps 会设它，而新加一个
-    受装饰的方法时这个集合会自动跟上——硬编码名单会在最该报警的时候漏掉。
+    Detect via ``__wrapped__`` from functools.wraps, not hardcoded lists: new decorated
+    methods automatically join the set, avoiding missed alarms precisely when needed.
     """
     names: set[str] = set()
     for owner in (module, module.PluginLifecycleService):
@@ -54,11 +54,11 @@ def _lock_decorated_names() -> set[str]:
 
 
 def test_start_plugin_under_lock_never_reacquires_the_lock() -> None:
-    """变异：在 _start_plugin_under_lock 里加一句 self.stop_plugin(...) 或 hold()。
+    """Mutation: add self.stop_plugin(...) or hold() inside _start_plugin_under_lock.
 
-    批次在 gather 的子任务里跑它，重入判定认的是父任务 → 子任务会去抢一把已被
-    持有的锁 → 整个启动挂死。这个失败不会在单插件测试里出现（那时没有父任务持锁），
-    只在真实自启动批次里挂，所以必须有静态守卫。
+    Gather child tasks use parent-owned reentry checks, then try acquiring an already-held
+    lock and deadlock startup. Single-plugin tests lack parent-held locks and cannot expose
+    this failure; real autostart batches do, requiring a static guard.
     """
     source = Path(inspect.getfile(module.PluginLifecycleService)).read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -100,10 +100,10 @@ def test_start_plugin_under_lock_never_reacquires_the_lock() -> None:
 
 
 def test_start_plugin_still_owns_the_lock_for_its_other_callers() -> None:
-    """另一侧的守卫：抽函数体不能把公开入口的锁一起抽走。
+    """Counterpart guard: extracting body must preserve public-entry locking.
 
-    start_plugin 有 8 个生产调用方（HTTP 路由、reload、安装/卸载/换源事务、
-    development_service），它们靠装饰器拿锁。
+    Eight production start_plugin callers (HTTP, reload, install/uninstall/source-switch transactions,
+    development_service) rely on decorator acquisition.
     """
     assert getattr(module.PluginLifecycleService.start_plugin, "__wrapped__", None) is not None, (
         "start_plugin 不再被 @serialized_plugin_operation 装饰——其余调用方就此失去互斥"
@@ -111,9 +111,9 @@ def test_start_plugin_still_owns_the_lock_for_its_other_callers() -> None:
     assert getattr(module.PluginLifecycleService._start_plugin_under_lock, "__wrapped__", None) is None, (
         "_start_plugin_under_lock 被装饰了：批次会在子任务里抢父任务的锁，挂死"
     )
-    # 公开签名一字不变（8 个调用方按名字/关键字传参）。结构化比对而不是比字符串：
-    # 本模块有 from __future__ import annotations，str(signature) 会把注解渲染成
-    # 带引号的形式，逐字比对会在与本次改动无关的重构里假报警。
+    # Public signature unchanged (eight callers use names/keywords). Compare structurally, not strings:
+    # from __future__ import annotations makes str(signature) quote annotations;
+    # literal comparison would falsely alarm on unrelated refactors.
     signature = inspect.signature(module.PluginLifecycleService.start_plugin)
     assert [
         (p.name, p.kind.name, p.default) for p in signature.parameters.values()
@@ -127,7 +127,7 @@ def test_start_plugin_still_owns_the_lock_for_its_other_callers() -> None:
     ], f"start_plugin 的公开签名变了：{signature}"
 
 
-# ── 批次行为 ────────────────────────────────────────────────────────────
+# ── Batch behavior ─────────────────────────────────────────────────────
 
 
 class _LockHoldCounter:
@@ -151,7 +151,7 @@ class _LockHoldCounter:
 
 
 def _service_with_recorder(monkeypatch, *, delay=0.0, fail_ids=()):
-    """造一个只记录并发度的 service；_start_plugin_under_lock 被换成替身。"""
+    """Construct service recording concurrency only; replace _start_plugin_under_lock with stub."""
     service = module.PluginLifecycleService()
     state = {"live": 0, "peak": 0, "order": [], "finished": []}
 
@@ -178,7 +178,7 @@ def _service_with_recorder(monkeypatch, *, delay=0.0, fail_ids=()):
 
 @pytest.mark.asyncio
 async def test_batch_overlaps_one_independent_wave(monkeypatch) -> None:
-    """变异：把 hold() 挪进 _start_one，或把 gather 换回 for 循环。"""
+    """Mutation: move hold() into _start_one, or replace gather with for loop."""
     service, state, counter = _service_with_recorder(monkeypatch, delay=0.05)
 
     result = await service.start_plugins_batch(["a", "b", "c", "d"], concurrency=4)
@@ -193,7 +193,7 @@ async def test_batch_overlaps_one_independent_wave(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_concurrency_one_is_a_full_rollback_to_serial(monkeypatch) -> None:
-    """回退开关：上限设 1 必须完全串行。线上出问题时的逃生门。"""
+    """Escape hatch: cap one must be fully sequential, allowing production fallback."""
     service, state, counter = _service_with_recorder(monkeypatch, delay=0.02)
 
     await service.start_plugins_batch(["a", "b", "c"], concurrency=1)
@@ -205,8 +205,8 @@ async def test_concurrency_one_is_a_full_rollback_to_serial(monkeypatch) -> None
 
 @pytest.mark.asyncio
 async def test_concurrency_limit_is_respected(monkeypatch) -> None:
-    """上限是承重的一部分：PLUGIN_STARTUP_TIMEOUT 是**每插件**的，弱机上过多并发
-    会把单个子进程启动拖到撞超时，把"慢"变成"启动失败"。"""
+    """Cap is essential: PLUGIN_STARTUP_TIMEOUT applies per plugin; excess concurrency on weak hardware
+    stretches child startup into timeout, turning slowness into startup failure."""
     service, state, _ = _service_with_recorder(monkeypatch, delay=0.05)
 
     await service.start_plugins_batch([f"p{i}" for i in range(8)], concurrency=3)
@@ -217,11 +217,11 @@ async def test_concurrency_limit_is_respected(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_ordered_group_starts_only_after_the_whole_independent_group(monkeypatch) -> None:
-    """变异：把两个 for/gather 段落调个顺序，或让它们一起进 gather。
+    """Mutation: reverse for/gather groups or gather both together.
 
-    依赖检查读 state.event_handlers，要求被依赖方**已注册完 handler**。并发组没跑完
-    就放依赖方进去，依赖方会以 PLUGIN_DEPENDENCY_CHECK_FAILED 失败——那是并发化
-    引入的新失败，不是既有的。
+    Dependency checks read state.event_handlers, requiring providers already registered. Starting
+    dependents before concurrent group finishes yields PLUGIN_DEPENDENCY_CHECK_FAILED, a new
+    concurrency-induced failure absent before.
     """
     service, state, _ = _service_with_recorder(monkeypatch, delay=0.03)
 
@@ -238,14 +238,14 @@ async def test_ordered_group_starts_only_after_the_whole_independent_group(monke
         f"依赖方与它的提供者重叠了：并发组最后完成于 {last_independent}，"
         f"按序组最早开始于 {first_dependent}（完成序列 {finished}）"
     )
-    # 按序组内部保持传入的拓扑序
+    # Sequential group retains supplied topological order internally.
     dependent_starts = [p for kind, p in state["order"] if kind == "start" and p in ("dep1", "dep2")]
     assert dependent_starts == ["dep1", "dep2"]
 
 
 @pytest.mark.asyncio
 async def test_one_failure_does_not_take_down_the_batch(monkeypatch) -> None:
-    """与原来的 for 循环语义一致：单个插件起不来只记 error。"""
+    """Match old for-loop semantics: a failed plugin only logs error."""
     service, state, _ = _service_with_recorder(
         monkeypatch, delay=0.02, fail_ids={"bad1", "bad2"}
     )
@@ -451,20 +451,20 @@ async def test_borrowed_scope_cannot_be_reused_after_release(monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_cancelling_the_batch_never_cuts_a_start_in_half(monkeypatch) -> None:
-    """变异：把 _start_one 里的 asyncio.shield 去掉，直接 await。
+    """Mutation: remove asyncio.shield from _start_one and await directly.
 
-    ``_start_plugin_under_lock`` 的 except 分支只接 Exception 类族（ServerDomainError /
-    HTTPException / PluginError / ImportError / RUNTIME_ERRORS），而 CancelledError
-    是 BaseException，一个都接不住。从中间掐断就会留下一个已经 spawn、却还没走到
-    ``_register_or_replace_host_sync`` 的 host 进程——落在 host 快照之后，成为没人
-    停止的孤儿。这也是 ``serialized_plugin_operation`` 要用 shield 的同一个理由。
+    ``_start_plugin_under_lock`` catches Exception families only (ServerDomainError /
+    HTTPException / PluginError / ImportError / RUNTIME_ERRORS); CancelledError
+    subclasses BaseException, bypassing all. Midway cancellation leaves spawned hosts not yet
+    registered by ``_register_or_replace_host_sync``, outside host snapshots and never
+    stopped. Same reason ``serialized_plugin_operation`` needs shield.
     """
     completed: list[str] = []
     service = module.PluginLifecycleService()
 
     async def _slow_inner(plugin_id, restore_state=False, **kwargs):
         await asyncio.sleep(0.25)
-        completed.append(plugin_id)  # 只有真的跑完才会到这里
+        completed.append(plugin_id)  # Reached only on actual completion.
 
     monkeypatch.setattr(service, "_start_plugin_under_lock", _slow_inner)
     counter = _LockHoldCounter()
@@ -473,7 +473,7 @@ async def test_cancelling_the_batch_never_cuts_a_start_in_half(monkeypatch) -> N
     batch = asyncio.create_task(
         service.start_plugins_batch(["a", "b", "c"], concurrency=3)
     )
-    await asyncio.sleep(0.05)  # 三个都已经进到 sleep 里
+    await asyncio.sleep(0.05)  # All three entered sleep.
     batch.cancel()
 
     with pytest.raises(asyncio.CancelledError):
@@ -501,14 +501,14 @@ async def test_a_failing_sibling_does_not_cancel_the_rest(monkeypatch) -> None:
     assert len(state["finished"]) == 4
 
 
-# ── 分组：谁可以并发 ────────────────────────────────────────────────────
+# ── Grouping: who may run concurrently ───────────────────────────────────
 
 
 def test_groups_partition_preserves_topological_order(monkeypatch) -> None:
-    """变异：让分组打乱顺序，或把声明依赖的插件放进并发组。
+    """Mutation: shuffle grouping or put dependency-declaring plugins in concurrent group.
 
-    两组合起来必须还是 _get_autostart_plugin_ids_sync() 的同一个序列（只是内部
-    分组），否则"提供者在依赖方之前"这个既有保证就被破坏了。
+    Combined groups must preserve _get_autostart_plugin_ids_sync() sequence, merely partitioned,
+    or existing provider-before-dependent guarantees break.
     """
     ordered = ["prov1", "prov2", "dep1", "prov3", "dep2"]
     monkeypatch.setattr(registry_module, "_get_autostart_plugin_ids_sync", lambda: list(ordered))
@@ -522,14 +522,14 @@ def test_groups_partition_preserves_topological_order(monkeypatch) -> None:
 
     assert independent == ["prov1", "prov2", "prov3"], independent
     assert dependent == ["dep1", "dep2"], dependent
-    # 集合不变、各组内部相对顺序不变
+    # Same members, unchanged relative order within groups.
     assert sorted(independent + dependent) == sorted(ordered)
     assert independent == [p for p in ordered if p in set(independent)]
     assert dependent == [p for p in ordered if p in set(dependent)]
 
 
 def test_no_dependency_declarations_means_everything_is_concurrent(monkeypatch) -> None:
-    """内置 12 个插件都不声明依赖 —— 这是常态，必须走全并发。"""
+    """All 12 builtin plugins declare no dependencies: common case must run fully concurrently."""
     ordered = [f"p{i}" for i in range(12)]
     monkeypatch.setattr(registry_module, "_get_autostart_plugin_ids_sync", lambda: list(ordered))
     monkeypatch.setattr(
@@ -543,7 +543,7 @@ def test_no_dependency_declarations_means_everything_is_concurrent(monkeypatch) 
 
 
 def test_single_plugin_skips_the_extra_context_scan(monkeypatch) -> None:
-    """0 或 1 个插件时并发没有意义，也不该多跑一次 context 收集（那步实测 ~36ms）。"""
+    """Zero/one plugin needs no concurrency or extra context collection (~36ms measured)."""
     calls = []
     monkeypatch.setattr(registry_module, "_get_autostart_plugin_ids_sync", lambda: ["only"])
     monkeypatch.setattr(
@@ -559,11 +559,11 @@ def test_single_plugin_skips_the_extra_context_scan(monkeypatch) -> None:
 
 
 def test_autostart_ids_are_already_topologically_ordered() -> None:
-    """钉住前提：分组之所以能只按"是否声明依赖"切，是因为拿到的序列已经是拓扑序。
+    """Pin premise: grouping by dependency declarations works only on already topologically ordered input.
 
-    变异：把 _get_autostart_plugin_ids_sync 末尾的 _build_ordered_plugin_ids_sync
-    换成 sorted(candidates) —— 那样"提供者在依赖方之前"就不再成立，而并发组内
-    的顺序也就不再有任何保证。
+    Mutation: replace _build_ordered_plugin_ids_sync at end of _get_autostart_plugin_ids_sync
+    with sorted(candidates), losing provider-before-dependent order and all ordering guarantees
+    within concurrent groups.
     """
     source = Path(inspect.getfile(registry_module)).read_text(encoding="utf-8")
     tree = ast.parse(source)

@@ -1,30 +1,30 @@
-"""响应表：只有 fork 平台才需要 multiprocessing.Manager。
+"""Response maps require multiprocessing.Manager only on fork platforms.
 
-Windows 一律 spawn（``app/main_server/__init__..py:56`` 的 ``set_start_method("fork")``
-被 ``sys.platform != "win32"`` 挡着），spawn 子进程是全新解释器，**不可能**继承父进程
-的 Manager 代理。而插件子进程更是明确不用：``host.py:909`` 在子进程入口
-``_plugin_process_runner`` 里无条件调 ``state.mark_plugin_child_process()``，于是
-``plugin_response_map`` 走 ``_is_plugin_child_process`` 分支拿普通 dict、回应走 ZMQ。
+Windows always uses spawn (``app/main_server/__init__..py:56`` guards ``set_start_method("fork")``
+with ``sys.platform != "win32"``). Spawned children start fresh interpreters and cannot inherit parent
+Manager proxies. Plugin children explicitly avoid them: ``host.py:909`` unconditionally calls
+``state.mark_plugin_child_process()`` in ``_plugin_process_runner``, making
+``plugin_response_map`` use a plain dict through ``_is_plugin_child_process`` and ZMQ for responses.
 
-所以在 spawn 平台上，Manager 的跨进程共享**没有任何消费者**，却要付三笔钱：
+Thus Manager's cross-process sharing has no spawn-platform consumers, yet incurs three costs:
 
-* 一次 ``multiprocessing.Manager()`` 冷启动 —— 实测 ~320ms，占冷启动的 10%
-  （harness 阶段名 ``state.manager_create``）
-* 一个常驻的 manager 子进程（进程树 +1、RSS 增加）
-* **每次代理读写都是一次到 manager 进程的 socket 往返**，而
-  ``_get_or_create_response_event`` 造出来的 Event 是在
-  ``while True: ev.wait(timeout=0.01)`` 这样的轮询循环里被反复等的
+* Cold ``multiprocessing.Manager()`` startup, measured around 320 ms or 10% of cold startup
+  (harness stage ``state.manager_create``).
+* A resident manager subprocess, adding a process and RSS.
+* Every proxy read/write requires a socket round trip to the manager, and
+  ``_get_or_create_response_event`` creates Events repeatedly awaited in
+  polling loops like ``while True: ev.wait(timeout=0.01)``.
 
-最容易踩的坑是第二条派生出来的：把 map 换成普通 dict 之后，
-``_get_or_create_response_event`` 里 ``mgr is None`` 那条**会返回 None**，于是服务器
-失去事件唤醒、退化成纯短轮询——启动变快了，响应等待却变慢了，而且没有任何东西会红。
-所以这里既钉"不建 Manager"，也钉"必须给出一个能用的 threading.Event"。
+The easiest pitfall follows from the second consequence: after replacing maps with ordinary dicts,
+``_get_or_create_response_event`` returns None when ``mgr is None``, removing event wakeups and
+reducing the server to short polling. Startup improves but response waiting slows without any failure signal.
+Therefore test both avoiding Manager creation and providing usable threading.Event objects.
 
-变异清单（每条都应有测试变红）：
-* ``_start_method_inherits_manager_proxies`` 恒返回 True → 1 红
-* 去掉 ``_response_maps_are_local`` 分支、让 ``mgr is None`` 直接 return None → 3 红
-* 把子进程也改成返回 threading.Event → 4 红
-* 拿不到 start method 时改成返回 False（激进而非保守）→ 6 红
+Mutation checklist; each must fail tests:
+* Always return True from ``_start_method_inherits_manager_proxies`` -> test 1 fails.
+* Remove ``_response_maps_are_local`` and return None when ``mgr is None`` -> test 3 fails.
+* Return threading.Event in children too -> test 4 fails.
+* Return False rather than conservative True for unknown start methods -> test 6 fails.
 """
 
 from __future__ import annotations
@@ -36,11 +36,11 @@ import time
 
 import pytest
 
-# ⚠️ 不能用 ``from plugin.core import state``：``plugin/core/__init__.py`` 把同名的
-# 单例对象也导出了，那个名字会**遮蔽子模块**（#3242 的提交信息里专门提到
+# Never use ``from plugin.core import state``: ``plugin/core/__init__.py`` exports the same-named
+# singleton, shadowing the submodule (explicitly noted in #3242's commit message).
 # "plugin.core.state stays eager because its name collides with the submodule"）。
-# 拿到的是 GlobalState 实例而不是模块，monkeypatch 会以 AttributeError 失败。
-import plugin.core.state  # noqa: F401  - 只为把模块放进 sys.modules
+# It returns a GlobalState instance instead of the module, making monkeypatch fail with AttributeError.
+import plugin.core.state  # noqa: F401 - Imported only to populate sys.modules.
 from plugin.core.state import GlobalState
 
 state_module = sys.modules["plugin.core.state"]
@@ -50,7 +50,7 @@ pytestmark = pytest.mark.plugin_unit
 
 @pytest.fixture
 def no_real_manager(monkeypatch: pytest.MonkeyPatch):
-    """别让测试真起一个 manager 子进程：记录调用并返回一个假 Manager。"""
+    """Avoid actually starting manager subprocesses; record calls and return a fake Manager."""
     calls: list[str] = []
 
     class _FakeDict(dict):
@@ -74,7 +74,7 @@ def no_real_manager(monkeypatch: pytest.MonkeyPatch):
             calls.append("dict")
             return _FakeDict()
 
-        def Event(self):  # noqa: N802 - 与 multiprocessing.Manager 同名
+        def Event(self):  # noqa: N802 - Match multiprocessing.Manager's name.
             calls.append("Event")
             return _FakeEvent()
 
@@ -86,13 +86,13 @@ def no_real_manager(monkeypatch: pytest.MonkeyPatch):
     return calls
 
 
-# ── 1. spawn 平台：不建 Manager ─────────────────────────────────────────
+# -- 1. Spawn platforms do not create Manager --
 
 
 def test_no_manager_is_created_when_proxies_cannot_be_inherited(
     monkeypatch: pytest.MonkeyPatch, no_real_manager
 ) -> None:
-    """变异：让 _start_method_inherits_manager_proxies 恒返回 True。"""
+    """Mutation: make _start_method_inherits_manager_proxies always return True."""
     monkeypatch.setattr(state_module, "_start_method_inherits_manager_proxies", lambda: False)
 
     s = GlobalState()
@@ -110,7 +110,7 @@ def test_no_manager_is_created_when_proxies_cannot_be_inherited(
 def test_the_manager_is_still_used_under_fork(
     monkeypatch: pytest.MonkeyPatch, no_real_manager
 ) -> None:
-    """另一侧的守卫：fork 平台必须照旧用 Manager，否则子进程继承到的是私有副本。"""
+    """Opposite-side guard: fork must still use Manager, or children inherit private copies."""
     monkeypatch.setattr(state_module, "_start_method_inherits_manager_proxies", lambda: True)
 
     s = GlobalState()
@@ -132,14 +132,14 @@ def test_the_platform_helper_answers_false_on_spawn_and_true_on_fork(
     assert state_module._start_method_inherits_manager_proxies() is False
 
 
-# ── 2. 本地表必须仍然给出可用的事件（最容易静默退化的一处）──────────────
+# -- 2. Local maps must still yield usable events, the likeliest silent regression --
 
 
 def test_local_maps_still_get_a_usable_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    """变异：去掉 ``_response_maps_are_local`` 分支，让 ``mgr is None`` 直接 return None。
+    """Mutation: remove ``_response_maps_are_local`` and return None for ``mgr is None``.
 
-    那样服务器就没有事件唤醒了，``wait_for_plugin_response`` 会退化成纯短轮询：
-    启动是变快了，但每次插件响应的等待都变慢，而且没有任何东西会红。
+    The server loses event wakeups and wait_for_plugin_response degrades to short polling:
+    startup improves, but every plugin response waits longer without any failure signal.
     """
     monkeypatch.setattr(state_module, "_start_method_inherits_manager_proxies", lambda: False)
 
@@ -151,13 +151,13 @@ def test_local_maps_still_get_a_usable_event(monkeypatch: pytest.MonkeyPatch) ->
         "本地表下拿不到事件 —— 服务器会退化成纯短轮询等插件响应"
     )
     assert isinstance(ev, threading.Event), f"应该是 threading.Event，实际是 {type(ev).__name__}"
-    # 同一个 request_id 必须复用同一个事件，否则 set 的和 wait 的不是一个
+    # Reuse the same event for one request_id, or setters and waiters act on different events.
     assert s._get_or_create_response_event("req-1") is ev
     assert s._get_or_create_response_event("req-2") is not ev
 
 
 def test_the_local_event_actually_wakes_a_waiter(monkeypatch: pytest.MonkeyPatch) -> None:
-    """事件必须真的能跨线程唤醒——这是它替代 mgr.Event() 的全部理由。"""
+    """Events must genuinely wake across threads; that is their entire purpose replacing mgr.Event()."""
     monkeypatch.setattr(state_module, "_start_method_inherits_manager_proxies", lambda: False)
 
     s = GlobalState()
@@ -173,10 +173,10 @@ def test_the_local_event_actually_wakes_a_waiter(monkeypatch: pytest.MonkeyPatch
 
 
 def test_a_plugin_child_still_gets_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """变异：把子进程也改成返回 threading.Event。
+    """Mutation: return threading.Event in children too.
 
-    子进程的回应走 ZMQ，没有任何人会 set 这个事件；给它一个永远等不到的事件，
-    比直接返回 None（让调用方走短轮询后备）更糟。这是既有行为，不能改。
+    Child responses use ZMQ, so nobody sets this event. An event that can never signal is worse
+    than None, which permits callers' short-poll fallback. Preserve existing behavior.
     """
     monkeypatch.setattr(state_module, "_start_method_inherits_manager_proxies", lambda: False)
 
@@ -193,10 +193,10 @@ def test_a_plugin_child_still_gets_none(monkeypatch: pytest.MonkeyPatch) -> None
 def test_the_helper_is_conservative_when_the_start_method_is_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """变异：拿不到 start method 时返回 False（激进）而不是 True（保守）。
+    """Mutation: unknown start methods return aggressive False rather than conservative True.
 
-    猜错的代价不对称：判成"不需要 Manager"却在 fork 平台上跑，子进程会拿到私有副本，
-    表现为跨进程响应永久等不到——难查且静默。判成"需要"只是慢一点。
+    Mistake costs are asymmetric: wrongly omitting Manager on fork gives children private copies,
+    silently waiting forever for cross-process responses. Wrongly requiring it merely costs time.
     """
     def _boom():
         raise RuntimeError("context has already been set")
@@ -205,11 +205,11 @@ def test_the_helper_is_conservative_when_the_start_method_is_unknown(
     assert state_module._start_method_inherits_manager_proxies() is True
 
 
-# ── 3. 读写语义 ────────────────────────────────────────────────────────
+# -- 3. Read/write semantics --
 
 
 def test_local_map_supports_the_response_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """set_plugin_response 写、wait 侧读，换成普通 dict 后语义必须一致。"""
+    """set_plugin_response writes and wait reads must retain identical semantics with ordinary dicts."""
     monkeypatch.setattr(state_module, "_start_method_inherits_manager_proxies", lambda: False)
 
     s = GlobalState()
@@ -221,14 +221,14 @@ def test_local_map_supports_the_response_roundtrip(monkeypatch: pytest.MonkeyPat
     ev = s._get_or_create_response_event("rid-A")
     em["rid-A"] = ev
     assert em.get("rid-A") is ev
-    # 事件表与响应表是两个独立对象，不能是同一个 dict
+    # Event and response maps must be distinct objects, not one dict.
     assert em is not m
 
 
 def test_real_platform_agrees_with_the_helper() -> None:
-    """钉住前提：本机（Windows）就是 spawn，所以这条优化在用户的机器上真的生效。
+    """Pin the premise: local Windows uses spawn, so this optimization actually applies on the user's machine.
 
-    如果哪天 Windows 也改成 fork，这个测试会红，提醒重新评估——而不是让优化静默失效。
+    If Windows ever switches to fork, fail here to prompt reevaluation instead of silently losing the optimization.
     """
     import sys
 

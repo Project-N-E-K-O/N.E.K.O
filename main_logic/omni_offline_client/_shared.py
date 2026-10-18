@@ -137,7 +137,7 @@ _GIBBERISH_PS_RATIO_CEIL = 0.25    # > 25% punct/symbol → emoji/mark spam
 
 _MAX_TOKENS_SLACK = 20
 
-_UNLIMITED_BUDGET = 999999  # sentinel set when user picks the slider's "无限制"
+_UNLIMITED_BUDGET = 999999  # Sentinel set when the user selects the slider's unlimited option.
 
 _PROACTIVE_SCREENSHOT_TTL_SECONDS = 60.0
 

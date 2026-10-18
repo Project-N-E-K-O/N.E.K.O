@@ -123,7 +123,7 @@ def _websocket_jukebox_handler_source() -> str:
     seq_decl = "let _jukeboxSupersedeGeneration = 0;"
     assert seq_decl in source, "jukebox supersede generation declaration moved"
     queue_decl = queue_decl + "\n" + seq_decl
-    # 路由判定和处理器一起切出来：谁执行这条指令由它们两个共同决定。
+    # Extract routing decisions together with handlers: both determine who executes this instruction.
     handler_start = "    function isSecondaryJukeboxControlSurface() {"
     handler_end = "    function readNewUserIcebreakerStore() {"
     assert handler_start in source and handler_end in source
@@ -399,7 +399,7 @@ def test_jukebox_plugin_rejects_incomplete_action_arguments():
         ("set_volume", {"value": "loud"}),
         ("set_volume", {"value": 140}),
         ("set_volume", {"value": -1}),
-        # bool 是 int 的子类：float(True) == 1.0 会骗过纯数值校验。
+        # bool subclasses int: float(True)==1.0 fools purely numeric validation.
         ("set_volume", {"value": True}),
         ("set_volume", {"value": False}),
         ("adjust_volume", {"value": True}),
@@ -414,7 +414,7 @@ def test_jukebox_plugin_rejects_incomplete_action_arguments():
             plugin.control_jukebox(action=action, _ctx={"lanlan_name": "cat"}, **kwargs)
         )
         assert isinstance(result, Err), (action, kwargs)
-    # 被拒的调用一条都不该推到前端。
+    # Rejected calls must never reach the frontend.
     assert pushed == []
 
     accepted = [
@@ -424,7 +424,7 @@ def test_jukebox_plugin_rejects_incomplete_action_arguments():
         ("adjust_volume", {"value": -20}),
         ("adjust_volume", {"value": 0.5}),
         ("set_mode", {"mode": " RANDOM "}),
-        # 不带参数的动作不受这条校验影响。
+        # Parameterless actions are unaffected by this validation.
         ("next", {}),
         ("stop", {}),
     ]
@@ -446,7 +446,7 @@ def test_jukebox_plugin_scopes_command_to_the_invoking_context():
 
     plugin = JukeboxControllerPlugin.__new__(JukeboxControllerPlugin)
     pushed = []
-    # 另一条并发触发把共享上下文改成了别的角色。
+    # Another concurrent invocation changes shared context to a different character.
     plugin.ctx = types.SimpleNamespace(
         push_message=lambda **kwargs: pushed.append(kwargs),
         _current_lanlan="dog",
@@ -457,7 +457,7 @@ def test_jukebox_plugin_scopes_command_to_the_invoking_context():
     )
     assert pushed[-1]["target_lanlan"] == "cat"
 
-    # 显式 target_lanlan 优先级最高。
+    # Explicit target_lanlan has highest priority.
     asyncio.run(
         plugin.control_jukebox(
             action="next", target_lanlan="  fox  ", _ctx={"lanlan_name": "cat"}
@@ -465,16 +465,16 @@ def test_jukebox_plugin_scopes_command_to_the_invoking_context():
     )
     assert pushed[-1]["target_lanlan"] == "fox"
 
-    # 本次调用没带归属时，绝不回落到共享上下文：那上面只可能是别的调用留下的
-    # 角色名（它唯一的写入点就是某次调用的 _ctx["lanlan_name"]），用它等于把指令
-    # 投到别人的会话。宁可明确失败。
+    # Missing ownership in this call must never fall back to shared context, which can only contain another invocation's
+    # character name (its sole writer is some call's _ctx["lanlan_name"]); using it sends this instruction
+    # to someone else's session. Prefer explicit failure.
     from plugin.sdk.plugin import Err as _Err
 
     before = len(pushed)
     orphan = asyncio.run(plugin.control_jukebox(action="next"))
     assert isinstance(orphan, _Err)
     assert "invocation-local target" in str(orphan.error)
-    # 失败的指令一条都不该推出去。
+    # Failed instructions must never be pushed.
     assert len(pushed) == before
 
 
@@ -557,9 +557,9 @@ def test_jukebox_control_routes_to_exactly_one_executor():
         ("web_chat", "local"),
         ("forward_fails", "forward"),
     ], routed
-    # 让位的两个 chat 场景一条记录都不该有。
+    # Neither yielding chat scenario should have any records.
     assert not [entry for entry in log if entry["scenario"].startswith("chat")]
-    # 转发出去的仍是规范化命令，不是原始 response。
+    # Forward the normalized command, not the original response.
     assert log[0]["command"] == {"action": "next", "query": "", "headless": True}
 
 
@@ -602,7 +602,7 @@ def test_jukebox_control_defers_from_secondary_window_even_with_an_owner():
     )
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
-    # 有拥有者也一样让位：一条都不能发出去。
+    # Yield even with an owner: send nothing locally.
     assert json.loads(result.stdout.strip().splitlines()[-1]) == []
 
 
@@ -657,7 +657,7 @@ def test_jukebox_control_resolves_ownership_when_the_command_runs():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     log = json.loads(result.stdout.strip().splitlines()[-1])
-    # 排队时还没有拥有者，真跑起来时有了 -> 必须转发，不能在隐藏窗口里另起一条。
+    # No owner while queued, but one exists when execution starts -> forward, never start separately in the hidden window.
     assert log == [["local", "play"], ["forward", "next"]], log
 
 
@@ -712,13 +712,13 @@ def test_jukebox_stop_preempts_a_queued_playback():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    # play 自己也是替换类指令，进来时先就地作废一次（此刻没有在播）。
+    # play is itself a replacement command, so invalidate locally on arrival (nothing playing yet).
     assert payload["beforeStop"] == ["cancel", "play"]
-    # 作废是就地做的：play 还卡在动画加载里，声音已经停了，不必等它 settle。
-    # stop 与随后的 next 各带一次，所以一共三次。
+    # Invalidation is immediate: audio stops while play still waits for animation loading, without awaiting settlement.
+    # stop and the subsequent next each add one, totaling three.
     assert payload["cancelled"] == 3
     assert payload["beforeRelease"] == ["cancel", "play", "cancel", "cancel"]
-    # 次序不变：stop 仍排在它要取消的那个 play 之后，next 再之后。
+    # Preserve order: stop still follows the play it cancels, followed by next.
     assert payload["order"] == [
         "cancel", "play", "cancel", "cancel", "stop", "next",
     ]
@@ -772,10 +772,10 @@ def test_jukebox_stop_cancels_on_the_owner_when_one_is_present():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    # 有拥有者：取消投给拥有者，同时也取消本窗口——归属可以在指令排队期间变，
-    # 本窗口可能正握着一条更早起播、没人认领的播放。stop 本身仍按顺序转发过去。
+    # With an owner, cancel on both owner and this window; ownership may change while commands queue,
+    # and this window may hold earlier unclaimed playback. Forward stop itself in order.
     assert payload["withOwner"] == ["owner-cancel", "local-cancel", "forward:stop"]
-    # 没有拥有者：就地取消 + 本地执行。
+    # Without an owner: cancel and execute locally.
     assert payload["withoutOwner"] == ["local-cancel", "local:stop"]
 
 
@@ -818,7 +818,7 @@ def test_jukebox_plugin_reports_a_rejected_submission():
     reason = str(run({"ok": False, "submitted": False, "reason": "backpressure"})[0].error)
     assert "backpressure" in reason
 
-    # 成功回执与「没有回执」都算送出去了。
+    # Successful receipts and missing receipts both count as sent.
     for accepted in ({"submitted": True}, None, object()):
         result, pushed = run(accepted)
         assert not isinstance(result, Err), accepted
@@ -890,13 +890,13 @@ def test_jukebox_handoff_cancels_the_local_playback_too():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    # 替换类指令一律先就地作废，所以开头那条 play 自己也会带一次（此刻没有在播，
-    # 是空操作）。关键仍是 stop 那一拍：两个可能的播放方都取消，指令本身按当下
-    # 归属转发。
+    # Replacement commands always invalidate locally first, including the opening play (a noop
+    # with nothing playing). The key stop instant still cancels both potential players while forwarding
+    # the command according to current ownership.
     assert payload["log"] == [
         "local-cancel", "local:play", "owner-cancel", "local-cancel", "forward:stop",
     ]
-    # 关键：本窗口那条播放没有在 stop 之后活下来。
+    # Key: this window's playback must not survive stop.
     assert payload["localAudible"] is False
 
 
@@ -950,7 +950,7 @@ def test_jukebox_control_waits_for_the_parts_instead_of_dropping():
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["executedWhileLoading"] == 0
-    # 分片加载完之后必须补上，而不是把指令丢掉。
+    # Execute after the chunk loads rather than dropping the command.
     assert payload["executed"] == ["play"]
 
 
@@ -1007,7 +1007,7 @@ def test_jukebox_control_rechecks_ownership_after_the_parts_load():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    # 必须转发给刚出现的拥有者，而不是在本窗口另起一条隐藏音轨。
+    # Forward to the newly appeared owner, never start a hidden audio track in this window.
     assert payload["log"] == ["forward:play"]
 
 
@@ -1027,11 +1027,11 @@ def test_chat_surface_can_receive_jukebox_control():
     assert loader_tag in chat_html, (
         "chat.html 必须加载 jukebox-loader.js，否则 /chat 收到的点播指令无处可去"
     )
-    # 顺序也要和 index.html 一致：门面依赖 music_ui.js 的样式与 APlayer 全局。
+    # Match index.html's order too: the facade depends on music_ui.js styles and the APlayer global.
     assert chat_html.index("/static/jukebox/music_ui.js") < chat_html.index(loader_tag)
     assert "/static/libs/APlayer.min.js" in chat_html
 
-    # 加载了门面之后，网页端 /chat（非多窗口）必须真的执行，而不是让位。
+    # After loading the facade, web /chat (single-window) must really execute rather than yield.
     harness = (
         textwrap.dedent(
             """
@@ -1113,7 +1113,7 @@ def test_jukebox_stop_also_cancels_a_playback_command_still_in_the_queue():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    # B 在队列里就被 stop 顶掉了，绝不能在用户最后一条 stop 之后再响一声。
+    # stop displaced B while queued; it must not sound after the user's final stop.
     assert payload["log"] == ["play:A", "stop:"], payload["log"]
 
 
@@ -1209,7 +1209,7 @@ def test_jukebox_play_supersedes_a_playback_command_still_in_the_queue():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    # B 在队列里就被 C 顶掉了，不该抢在 C 前面响一声。
+    # C displaced B while queued; B must not sound ahead of C.
     assert payload["log"] == ["play:A", "play:C"], payload["log"]
 
 
@@ -1312,7 +1312,7 @@ def test_jukebox_supersession_is_rechecked_after_the_parts_load():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    # 那条 play 不许在分片落地之后才把声音放出来；stop 照常执行。
+    # That play must not start sounding after the chunk loads; stop still executes normally.
     assert payload["log"] == ["stop"], payload["log"]
 
 
@@ -1357,5 +1357,5 @@ def test_jukebox_relative_navigation_cancel_does_not_silence():
     result = _run_node(harness)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    # next / previous 不静音；stop / play 静音。
+    # next / previous do not mute; stop / play mute.
     assert payload["cancels"] == [False, False, True, True], payload["cancels"]

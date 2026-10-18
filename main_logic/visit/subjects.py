@@ -81,7 +81,7 @@ class RosterCorruptError(RuntimeError):
     """
 
 
-# ── 纯函数派生 ──────────────────────────────────────────────────────────
+# ── Pure derivation ──────────────────────────────────────────────────────────
 
 
 def _sha256_hex(text: str) -> str:
@@ -200,9 +200,9 @@ def resolve_visit_recall_subjects(state: Any) -> list[dict[str, str]]:
     try:
         if isinstance(char_tag, str) and char_tag:
             derived = derive_peer_char_id(peer_uid, char_tag)
-            # 两者都给时必须一致：坏掉的头行带着别的 id，会把召回 / digest 写进另一只猫的
-            # 主体，名册按 tag 推出的条目里又找不到它，清除时成了孤儿
-            # 空串等于没给；数字 / 布尔之类的畸形值不能被静默跳过，与不一致一样按坏输入返回 []
+            # Both supplied values must agree: a broken header containing another id writes recall/digest into another cat's
+            # subject, missing from tag-derived roster entries and orphaned on clearing.
+            # Empty string means absent; malformed numeric / boolean values must not be silently skipped, returning [] as inconsistent input does.
             if peer_char_id is not None and peer_char_id != "" and peer_char_id != derived:
                 return []
             peer_char_id = derived
@@ -219,7 +219,7 @@ def resolve_visit_recall_subjects(state: Any) -> list[dict[str, str]]:
         return []
 
 
-# ── 名册 visit_peers.json ───────────────────────────────────────────────
+# ── visit_peers.json roster ───────────────────────────────────────────────
 
 class PathLock:
     """A weakly referenceable wrapper around one ``threading.Lock``."""
@@ -246,8 +246,8 @@ class PathLock:
         self._lock.release()
 
 
-# 弱引用登记：持有或等待这把锁的调用方都引用着同一个实例，所以仍互斥；
-# 没人引用后条目自动消失，进程不会为每一场串门永久留下两把锁
+# Weak-reference registration: holders/waiters reference one lock instance, preserving mutual exclusion;
+# unreferenced entries disappear automatically, avoiding two permanent locks per visit.
 _PATH_LOCKS: "weakref.WeakValueDictionary[str, PathLock]" = weakref.WeakValueDictionary()
 _PATH_LOCKS_GUARD = threading.Lock()
 
@@ -303,36 +303,36 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
     pairs = entry.get("pairs", [])
     if not isinstance(pairs, list) or not all(isinstance(p, str) and p for p in pairs):
         raise RosterCorruptError(f"{where}: pairs is not a list of ids")
-    # 别的 peer 的 pair 混进来：展开出的清除计划会被撤销日志的身份绑定拒掉，这个人就清不掉
+    # Foreign peer pairs make expanded clear plans fail revocation-log identity binding, preventing this person's clearing.
     if pair is not None and (any(p != pair for p in pairs) or len(set(pairs)) != len(pairs)):
         raise RosterCorruptError(f"{where}: pairs do not belong to this account and peer")
     chars = entry.get("chars", {})
     if not isinstance(chars, dict) or not all(
         isinstance(c, str) and c and isinstance(info, dict) for c, info in chars.items()
     ):
-        # 值也要是 object：改名合并遇到同一 id 时会静默丢掉坏的一边
+        # Values must also be objects: rename merges on equal ids would silently discard a corrupted side.
         raise RosterCorruptError(f"{where}: chars is not an object of id -> object")
-    # 键必须由这个 peer 与记录里的 char_tag 推出：键被改坏时，按它展开的清除计划会抹掉
-    # 无关的主体、删掉名册条目并关日志，真正的 group_participant 记忆从此再也找不到
+    # Derive keys from this peer and recorded char_tag: corrupted keys produce clear plans erasing unrelated
+    # subjects, removing roster entries and closing logs, leaving true group_participant memories unreachable forever.
     if peer is not None and any(
         not isinstance(info.get("char_tag"), str) or not info["char_tag"]
         or cid != derive_peer_char_id(peer, info["char_tag"])
         for cid, info in chars.items()
     ):
         raise RosterCorruptError(f"{where}: chars ids do not derive from this peer and char_tag")
-    # 改名合并按 last_seen / ended_at 取较新的一边：字符串时间戳会按字典序比较，
-    # 把较新的记录覆盖掉
+    # Rename merges choose newer last_seen / ended_at; string timestamps compare lexicographically,
+    # overwriting newer records.
     if any("last_seen" in info and not is_finite_number(info["last_seen"])
            for info in chars.values()):
         raise RosterCorruptError(f"{where}: chars last_seen is not a number")
-    # upsert 总是同时写 pair 与对方猫娘：只剩其一说明条目坏了一半，按它展开的清除计划
-    # 会漏掉 group_chat / group_participant 主体（或撤销日志校验不过）
+    # Upsert always writes both pair and peer catgirl; only one remaining indicates half-corruption, producing plans
+    # missing group_chat / group_participant subjects (or failing revocation-log validation).
     if bool(pairs) != bool(chars):
         raise RosterCorruptError(f"{where}: pairs and chars must both be present")
     summary = entry.get("last_summary")
     if summary is not None and not isinstance(summary, dict):
         raise RosterCorruptError(f"{where}: last_summary is not an object")
-    # 缺 ended_at 也算坏：写者总会写上它，没有它就无从判断新旧，迟到的回调会无序覆盖
+    # Missing ended_at is corruption too: writers always add it; without freshness comparisons, delayed callbacks overwrite out of order.
     if summary is not None and not is_finite_number(summary.get("ended_at")):
         raise RosterCorruptError(f"{where}: last_summary ended_at is missing or not a number")
     return entry
@@ -345,8 +345,8 @@ def is_finite_number(value: Any) -> bool:
     try:
         return math.isfinite(value)
     except OverflowError:
-        # 超出浮点范围的超大整数：isfinite 会抛错，按「不是数」处理（名册判为损坏），
-        # 不能让清除 / 重放带着未捕获的异常中断
+        # Huge integers outside float range make isfinite raise; treat as nonnumeric (corrupt roster),
+        # not uncaught exceptions interrupting clearing/replay.
         return False
 
 
@@ -389,7 +389,7 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
         ):
             chars[char_id] = copy.deepcopy(info)
     merged["chars"] = chars
-    # 场次计数随条目合并：同一场（last_visit_id 相同）在两边各计过一次，只算一次
+    # Merge visit counts with entries: the same visit (same last_visit_id) counted on both sides counts once.
     src_visits, dst_visits = _visit_count(source), _visit_count(merged)
     if src_visits or dst_visits:
         same_last = (
@@ -397,7 +397,7 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
             and source.get("last_visit_id") == merged.get("last_visit_id")
         )
         merged["visits"] = src_visits + dst_visits - (1 if same_last else 0)
-        # last_visit_id 取较新的一边：保留旧的那个会让较新那场再次 upsert 时被当成新场次
+        # Take newer last_visit_id; retaining the old one miscounts a repeated upsert of the newer visit as new.
         if isinstance(source.get("last_visit_id"), str) and (
             not isinstance(merged.get("last_visit_id"), str)
             or _latest_seen(source) > _latest_seen(target)
@@ -521,7 +521,7 @@ async def clear_roster_marker(config_dir: str | Path, key: str, expected: Any) -
 def _set_marker_sync(path: Path, key: str, value: Any) -> tuple[bool, Any]:
     with path_lock(path):
         data = _read_top_level_sync_unlocked(path)
-        # 值为 null 的标记没有任何可对账的信息，按空位处理（否则会永远占着位置）
+        # Null-valued markers contain no reconcilable information; treat as empty slots or they occupy slots forever.
         if data.get(key) is not None:
             return False, copy.deepcopy(data[key])
         data[key] = copy.deepcopy(value)
@@ -726,7 +726,7 @@ class PeerRoster:
         self.own_uid = _require_str(own_uid, "own_uid")
         self.path = self.config_dir / VISIT_PEERS_FILENAME
 
-    # ── 底层读写（工作线程内）──
+    # ── Low-level I/O (worker thread) ──
 
     def _load(self, *, strict: bool) -> dict:
         try:
@@ -735,7 +735,7 @@ class PeerRoster:
         except FileNotFoundError:
             return {}
         except (OSError, ValueError, RecursionError) as exc:
-            # RecursionError：深层嵌套的 JSON，与其他坏 JSON 走同一条边界
+            # RecursionError from deeply nested JSON follows the same boundary as other malformed JSON.
             if strict:
                 raise RosterCorruptError(f"cannot read {self.path.name}: {exc!r}") from exc
             logger.warning("visit roster unreadable, treating as empty: %s", exc)
@@ -803,7 +803,7 @@ class PeerRoster:
             data = self._load(strict=strict)
         return fn(data)
 
-    # ── 公开 API ──
+    # ── Public API ──
 
     async def upsert(
         self,
@@ -834,26 +834,26 @@ class PeerRoster:
         replay an older one, so only the latest id needs remembering.
         """
         if not is_finite_number(now):
-            # 写进 last_seen 的 bool / NaN 会让之后的严格读把整个条目判坏，名册自己把自己写坏
+            # Writing bool / NaN into last_seen corrupts the entire entry on later strict reads: the roster corrupts itself.
             raise ValueError("now must be a finite number")
         _require_str(peer_uid, "peer_uid")
         _require_str(own_char, "own_char")
         _require_str(pair_id, "pair_id")
         _require_str(peer_char_id, "peer_char_id")
         if pair_id != derive_pair_id(self.own_uid, peer_uid):
-            # 名册里的 pair 必须是这一对推出来的：写进去的异值之后展开成撤销计划，
-            # 会被撤销日志的身份绑定校验拒绝，这个人就再也清除不了
+            # Roster pairs must derive from this pair: mismatches expand to revocation plans later rejected
+            # by identity binding, permanently preventing clearing this person.
             raise ValueError("pair_id does not match own_uid / peer_uid")
         _require_str(char_tag, "char_tag")
         if peer_char_id != derive_peer_char_id(peer_uid, char_tag):
-            # 写进去的键推不出来，下一次严格读就把整个条目判坏
+            # Underivable written keys corrupt the whole entry on the next strict read.
             raise ValueError("peer_char_id does not match peer_uid / char_tag")
 
         def fn(data: dict):
             peers = self._peers_mut(data)
             peer = peers.get(peer_uid)
             if peer_uid in peers and not isinstance(peer, dict):
-                # 已存在但类型坏了的行不能当新 peer 覆盖：by_char / 摘要 / pair 史都会丢
+                # Never overwrite existing mistyped rows as new peers; by_char / digests / pair history would be lost.
                 raise RosterCorruptError(f"{self.path.name}: peer entry is not an object")
             if peer is None:
                 peer = {
@@ -871,8 +871,8 @@ class PeerRoster:
             peer["last_seen"] = max(now, peer.get("last_seen") or 0)
             by_char = _dict_at(peer, "by_char")
             entry = _dict_at(by_char, own_char)
-            # 已有条目按严格读同一套规则校验：坏掉的 pairs 重建成 []、坏掉的 chars
-            # 记录被直接覆盖，都会在下一次原子写里永久丢掉可恢复的数据
+            # Validate existing entries by strict-read rules: rebuilding bad pairs as [] or overwriting bad chars
+            # permanently loses recoverable data on the next atomic write.
             _check_char_entry(entry, self.path.name, pair=pair_id, peer=peer_uid)
             pairs = entry.setdefault("pairs", [])
             if pair_id not in pairs:
@@ -917,7 +917,7 @@ class PeerRoster:
             peer = peers[peer_uid]
             if not isinstance(peer, dict):
                 raise RosterCorruptError(f"{self.path.name}: peer entry is not an object")
-            # upsert 建 peer 时总带 by_char：已存在的 peer 缺它只能是损坏，不能当「已删除」
+            # New peers always have by_char; its absence in an existing peer means corruption, not deletion.
             if "by_char" not in peer:
                 raise RosterCorruptError(f"{self.path.name}: peer entry has no by_char")
             by_char = peer["by_char"]
@@ -970,7 +970,7 @@ class PeerRoster:
             for key in ("accounts", self.own_uid, "peers"):
                 if key not in node:
                     if key == "peers":
-                        # upsert 建账户时总会带上 peers：账户在而 peers 缺，只能是损坏
+                        # New accounts always have peers; an existing account without it is corrupt.
                         raise RosterCorruptError(f"{self.path.name}: account entry has no peers")
                     return []
                 node = node[key]
@@ -1092,8 +1092,8 @@ class PeerRoster:
             return 0
 
         def fn(data: dict):
-            # 改名是事务的一步：任何分区结构坏了都不能跳过（pending_rename 会被清掉、
-            # 那个分区里的条目永远停在旧名下），一律报损坏让事务保留标记
+            # Rename is transactional: do not skip any corrupted partition (pending_rename would clear,
+            # leaving its entries permanently under old names). Report corruption and retain the transaction marker.
             moved = 0
             if "accounts" not in data:
                 return 0, False
@@ -1115,8 +1115,8 @@ class PeerRoster:
                     if old not in by_char:
                         continue
                     pair = _pair_of(account_uid, peer_uid)
-                    # 源或目标条目（含嵌套的 pairs / chars）坏了：覆盖或合并都会丢掉
-                    # 可恢复的数据（字符串 pairs 会被拆成单个字符），改名事务保留标记
+                    # Corrupt source/target entries (including nested pairs/chars) lose recoverable data on overwrite or merge
+                    # (string pairs split into characters); retain the rename transaction marker.
                     entry = _check_char_entry(by_char[old], self.path.name, pair=pair,
                                               peer=peer_uid)
                     target = by_char.get(new)
@@ -1142,7 +1142,7 @@ class PeerRoster:
         _require_str(own_char, "own_char")
 
         def fn(data: dict):
-            # 退役是删除事务的一步：分区结构坏了不能跳过（标记会被清掉、坏分区里的条目永远留着）
+            # Retirement is part of deletion: never skip bad partitions, which would clear markers and leave their entries forever.
             removed = 0
             if "accounts" not in data:
                 return 0, False
@@ -1193,11 +1193,11 @@ class PeerRoster:
         (``ValueError`` otherwise), the same rule strict reads apply.
         """
         if not is_finite_number(ended_at):
-            # 写进去的 bool / NaN 会让之后的严格读把整个条目判坏，连清除都删不掉它
+            # Persisted bool / NaN makes later strict reads reject the whole entry, even preventing clearing it.
             raise ValueError("ended_at must be a finite number")
 
         def fn(data: dict):
-            # 严格读：已有摘要的 ended_at 坏了时无从判断新旧，覆盖会把可恢复的记录冲掉
+            # Strict reads: invalid ended_at on an existing digest prevents freshness comparison; overwrite would destroy recoverable records.
             entry = self._char_view_strict(data, peer_uid, own_char)
             if entry is None:
                 return False, False

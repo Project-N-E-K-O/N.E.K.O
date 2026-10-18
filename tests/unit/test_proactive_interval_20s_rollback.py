@@ -1,13 +1,13 @@
-"""退役实验 proactive_interval_20s 的一次性偏好回滚。
+"""One-time preference rollback for retired proactive_interval_20s experiment.
 
-该实验把海外用户首启的 proactiveChatInterval 默认从 15s 覆写成 20s，下线后需要把落盘
-的 20s 拉回 15s。回滚绑定在 `_get_telemetry_branch` 的「退役分支判非法 → 重抽」choke
-point 上：
+The experiment changed overseas first-launch proactiveChatInterval defaults from 15s to 20s; retirement requires
+restoring persisted 20s to 15s. Rollback attaches to `_get_telemetry_branch`'s retired-branch-invalid/redraw choke
+point:
 
-- 只回滚 .telemetry_branch 落盘值正是 proactive_interval_20s 的 install（实验组确凿
-  信号），不误伤普通手选 20s / 国内用户；
-- 只回滚仍停在覆写值 20s 的偏好，用户改过的值保留；
-- 重抽即天然幂等标记，跨重启不会重复回滚，也不会压制用户日后再手选 20s。
+- Only installations with .telemetry_branch exactly proactive_interval_20s (definitive experiment signal)
+  roll back, never ordinary manual 20s choices/domestic users;
+- Roll back only preferences still at overridden 20s; preserve user changes;
+- Redraw inherently marks idempotency across restarts, without blocking later manual 20s selection.
 """
 from unittest.mock import patch
 
@@ -34,17 +34,17 @@ def test_retired_interval_branch_rolls_back_overwritten_value(tmp_path):
     ) as mock_save:
         branch = tt._get_telemetry_branch(tmp_path)
 
-    # 退役值被重抽进现池子
+    # Retired value redrawn into current pool.
     assert branch in tt._TELEMETRY_BRANCHES
     assert branch != "proactive_interval_20s"
-    # 偏好被拉回控制组 15s
+    # Preference restored to control group's 15s.
     mock_save.assert_called_once_with({"proactiveChatInterval": 15})
-    # branch 文件已被重抽覆盖（天然幂等标记）
+    # Branch file overwritten by redraw (inherently idempotent marker).
     assert _read_branch(tmp_path) == branch
 
 
 def test_user_changed_interval_is_preserved(tmp_path):
-    """实验组用户首启后又手动改成别的值（!=20）的，保留其选择，不回滚。"""
+    """Retain experiment users' manually changed values (!=20) after first launch; no rollback."""
     tt._telemetry_branch_cache.clear()
     _seed_branch(tmp_path, "proactive_interval_20s")
 
@@ -60,7 +60,7 @@ def test_user_changed_interval_is_preserved(tmp_path):
 
 
 def test_non_experiment_branch_value_20_is_not_touched(tmp_path):
-    """普通手选 20s（branch 不是退役实验）不被回滚——这正是「不误伤手选用户」的保证。"""
+    """Do not roll back ordinary manually selected 20s (branch outside retired experiment), protecting manual preferences."""
     tt._telemetry_branch_cache.clear()
     _seed_branch(tmp_path, "corrupted_or_unknown_value")
 
@@ -77,7 +77,7 @@ def test_non_experiment_branch_value_20_is_not_touched(tmp_path):
 
 
 def test_valid_main_branch_does_not_trigger_rollback(tmp_path):
-    """落盘合法分支走 fast path，根本不进重抽 choke point，不回滚。"""
+    """Valid persisted branch takes fast path, never redraw choke point or rollback."""
     tt._telemetry_branch_cache.clear()
     _seed_branch(tmp_path, "main")
 
@@ -106,7 +106,7 @@ def test_rollback_is_idempotent_across_restarts(tmp_path):
         tt._get_telemetry_branch(tmp_path)
     assert mock_save.call_count == 1
 
-    # 模拟下一次启动（新进程：清进程级缓存）。branch 已被重抽成合法值，fast path 命中。
+    # Simulate next startup (new process, clear process cache). Branch already redrawn valid, hitting fast path.
     tt._telemetry_branch_cache.clear()
     with patch(
         "utils.preferences.load_global_conversation_settings",

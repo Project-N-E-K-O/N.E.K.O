@@ -1,4 +1,4 @@
-"""把作者剧本中的双主角名称投影为当前玩家与当前猫娘。"""  # noqa: DOCSTRING_CJK
+"""Project the author's two protagonist names onto the current player and catgirl."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _PROTOCOL_FIELDS = frozenset({
 
 
 def _identity_name(identity: Any) -> str:
-    """身份首段是作者角色名；没有独立名字时不做危险的全文猜测。"""  # noqa: DOCSTRING_CJK
+    """The first identity segment is the author's character name; avoid unsafe full-text guesses when no separate name exists."""  # noqa: DOCSTRING_CJK
 
     text = str(identity or "").strip()
     separator = _NAME_SEPARATOR_RE.search(text)
@@ -34,7 +34,7 @@ def _identity_name(identity: Any) -> str:
 
 @dataclass(frozen=True, slots=True)
 class NumericV2CastProjection:
-    """运行时固定：男主由玩家扮演，女主由当前猫娘扮演。"""  # noqa: DOCSTRING_CJK
+    """Fixed at runtime: the player plays the male lead and the current catgirl plays the female lead."""  # noqa: DOCSTRING_CJK
 
     source_player_name: str
     source_catgirl_name: str
@@ -51,7 +51,7 @@ class NumericV2CastProjection:
     ) -> "NumericV2CastProjection":
         intro = story.get("intro") if isinstance(story.get("intro"), Mapping) else {}
         return cls(
-            # 新工坊显式记录完整姓名；旧包继续使用已校验的身份首段，不重写磁盘包。
+            # New Workshop packages record full names explicitly; legacy packages use the validated first identity segment without rewriting files.
             source_player_name=str(intro["player_name"]) if "player_name" in intro else _identity_name(intro.get("player_identity")),
             source_catgirl_name=str(intro["catgirl_name"]) if "catgirl_name" in intro else _identity_name(intro.get("catgirl_identity")),
             player_name=str(player_name or "你").strip() or "你",
@@ -73,7 +73,7 @@ class NumericV2CastProjection:
         if isinstance(value, str):
             return self.text(value)
         if isinstance(value, Mapping):
-            # 昵称可能恰好叫 player/turn；名称投影只影响叙事，不改角色枚举或引用 ID。
+            # Nicknames may be player/turn; name projection affects narration only, never character enums or reference IDs.
             return {
                 str(key): deepcopy(item) if (
                     str(key) in _PROTOCOL_FIELDS or str(key).endswith(("_id", "_ids"))

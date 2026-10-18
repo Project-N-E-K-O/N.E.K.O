@@ -43,10 +43,10 @@ from ._lifecycle import _LifecycleMixin
 from utils.http.url import same_endpoint
 
 
-# 端点同源判据收口到 utils.http.url：视觉槽的凭证继承与配置层「管理簿 Key 只能
-# 配该服务商自己的端点」问的是同一个问题。这里曾经手搓过一份，前后被评审挑出
-# 尾斜杠 / path 大小写 / userinfo / 畸形端口 / 默认端口 / 畸形 IPv6 六类边界；
-# 配置层后来又独立搓了第二份、把同样的坑重踩一遍。共用一份才是解法。
+# Use utils.http.url for the shared-endpoint test. Visual-slot credential inheritance and the config-layer rule "a managed Key may only
+# configure its provider's own endpoint" ask the same question. This file used to hand-roll its own version; reviewers found six edge cases
+# (trailing slash / path case / userinfo / malformed port / default port / malformed IPv6).
+# The config layer later independently reimplemented it and repeated the same mistakes. Sharing one implementation is the fix.
 _same_endpoint = same_endpoint
 
 
@@ -85,8 +85,8 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
             Callback when a response is complete.
     """
 
-    # 连续高重复时清空对话历史（只留系统指令）。历史由调用方按序维护的会话关掉它：
-    # 清空会抹掉其中每一条发言，调用方按条目打的标记也随之丢失
+    # Clear conversation history during sustained high repetition (keep only system instructions). Disable it for sessions whose history is maintained by the caller:
+    # clearing it would erase every utterance and also lose per-entry markers the caller attached.
     repetition_reset_enabled: bool = True
 
     def __init__(
@@ -95,8 +95,8 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         api_key: str,
         model: str = "",
         vision_model: str = "",
-        vision_base_url: str = "",  # 独立的视觉模型 API URL
-        vision_api_key: str = "",   # 独立的视觉模型 API Key
+        vision_base_url: str = "",  # Independent vision-model API URL
+        vision_api_key: str = "",   # Independent vision-model API key
         provider_type: str | None = None,
         vision_provider_type: str | None = None,
         voice: str = "",  # Unused for text mode but kept for compatibility
@@ -128,19 +128,19 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching
-        # 视觉模型独立配置：URL 与 Key 必须**成对**回退。
+        # Independent vision-model configuration: URL and Key must fall back **as a pair**.
         #
-        # 这两行原本各自独立判空，于是「视觉槽填了自己的 URL、Key 留空」时
-        # URL 停在视觉那一家的域名、Key 却继承了对话 provider 的凭证 —— 把用户
-        # 的付费 Key 发给了另一个厂商，既是路由错误也是凭证越界。留空 Key 让请求
-        # 不带 Authorization：本地无鉴权端点本就该如此，付费端点则会直接 401
-        # 报错，比静默把凭证送出去可诊断得多。
-        # 同源判定按归一化后的 URL 比：两个槽都指向同一家时，配置里常见的尾斜杠 /
-        # 大小写差异不该被当成「换了一家」而把继承掐掉（那会让原本能用的配置开始 401）。
+        # These two lines originally checked for emptiness independently, so when "the visual slot had its own URL but no Key,"
+        # the URL stayed on the visual provider's domain while the Key inherited the conversation provider's credential — sending the user's
+        # paid Key to another vendor, both a routing error and credential leakage. Leaving Key empty makes the request
+        # omit Authorization: correct for a local unauthenticated endpoint; a paid endpoint returns 401
+        # clearly, which is more diagnosable than silently sending credentials elsewhere.
+        # Compare normalized URLs for same-origin checks: when both slots point to the same provider, common trailing-slash /
+        # case differences should not count as "switching providers" and disable inheritance (which would make a working config return 401).
         _vision_url = vision_base_url or base_url
         self.vision_base_url = _vision_url
-        # 「无凭证」统一表示成 None，与上面 self.api_key 的归一化对齐——
-        # 否则视觉侧会出现 '' 而主侧是 None，同一个状态两种写法。
+        # Normalize "no credential" to None, matching normalization of self.api_key above —
+        # otherwise the visual side would use '' while the main side uses None for the same state.
         if _same_endpoint(_vision_url, base_url):
             self.vision_api_key = (vision_api_key or None) or self.api_key
         else:
@@ -184,12 +184,12 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
 
-        # 普通对话守卫配置（先决定 max_response_length，create_chat_llm
-        # 用得到 _budget_to_max_tokens(self.max_response_length)）。
-        # 0 / 负数 在 update_max_response_length 路径里被解释成"无限制"
-        # （= _UNLIMITED_BUDGET）；__init__ 必须用同样的语义，否则首轮
-        # 持久化配置直接读到 0 时会先按 300+20 cap 创建 LLM，直到用户再
-        # 改一次滑块才恢复 unlimited。
+        # Ordinary chat guard configuration (determine max_response_length first; create_chat_llm
+        # uses _budget_to_max_tokens(self.max_response_length)).
+        # 0 / negative values mean "unlimited" in the update_max_response_length path
+        # (= _UNLIMITED_BUDGET); __init__ must use the same semantics, or if persisted config reads 0 on the first turn,
+        # it would create the LLM with a 300+20 cap until the user moves the slider again.
+        # Maximum automatic rerolls: 1 reroll → 2 attempts total.
         self.enable_response_guard = True
         if not isinstance(max_response_length, int):
             self.max_response_length = 300
@@ -197,27 +197,27 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
             self.max_response_length = max_response_length
         else:
             self.max_response_length = _UNLIMITED_BUDGET
-        # 最多允许的自动重 roll 次数：1 次 reroll → 总共 2 次尝试。
-        # 第 2 次仍超长时不再丢弃整段，而是回退到最后一个句末标点截断。
+        # If the second attempt is still too long, do not discard the whole response; fall back to truncating at the last sentence-ending punctuation.
+        # Long-reply summary path switch: when enabled, do not inline-abort and truncate long but readable replies;
         self.max_response_rerolls = 1
 
-        # 长回复 summary 路径开关：开 → 长但可读的回复不再 inline abort+truncate，
-        # 而是让模型继续写到 budget+slack（最少 _SUMMARY_API_BUDGET_FLOOR），TTS
-        # 在 budget 后的下个 terminator 停掉，emotion-tier 小模型用人设口吻把
-        # 尾巴压成一两句话续到 TTS。前端 live 看完整原文、history 存 prefix+summary，
-        # 刻意的语义分叉。默认 False（保留 game 这种 max=100 短台词的现行 abort
-        # 行为），core 在创建 chat client 时显式打开。
+        # let the model continue to budget+slack (at least _SUMMARY_API_BUDGET_FLOOR); TTS
+        # stops at the next terminator after budget, while the small emotion-tier model uses the character's voice to
+        # write the continuation summary. Nothing changes when disabled.
+        # Summarize the tail into one or two sentences for TTS. The live frontend shows full text; history stores prefix+summary,
+        # an intentional semantic difference. Default False preserves existing abort behavior for short game lines with max=100;
+        # core explicitly enables this when creating chat clients.
         self.enable_long_response_summary = bool(enable_long_response_summary)
 
-        # Initialize ChatOpenAI client. max_completion_tokens 设为
-        # max_response_length + 20 让 LLM API 自然在 budget+20 token 处停下来，
-        # 既省掉无效生成成本，又给 fence 留 20 token slack 看到 overshoot
-        # 能区分 truncate / gibberish-filter 路径。
-        # ⚠️ 这里**永远**用普通 budget，不烤进 summary 的 3000 floor —— 因为
-        # 同一个 self.llm 既给 stream_text 又给 prompt_ephemeral（proactive）用，
-        # 把 3000 烤进 client 会让没有长度 guard 的 proactive 轮次也能吐到 3000
-        # token。summary 的 budget 抬升改成 stream_text 内临时 bump + finally
-        # 还原（见 stream_text 顶部），把 3000 严格限定在长回复流式路径里。
+        # Initialize ChatOpenAI client. Set max_completion_tokens to
+        # max_response_length + 20 so the API naturally stops at budget+20 tokens,
+        # avoiding useless generation while leaving the fence 20 tokens of overshoot slack
+        # to distinguish truncation from gibberish filtering.
+        # Always use the ordinary budget here, without baking in the summary's 3000-token floor:
+        # the same self.llm serves stream_text and prompt_ephemeral (proactive),
+        # so a 3000-token client limit would also let unguarded proactive turns emit 3000
+        # tokens. Instead temporarily raise the budget inside stream_text and restore it in finally
+        # (see stream_text's start), restricting 3000 strictly to long-response streaming.
         self.llm = create_chat_llm(
             self.model, self.base_url, self.api_key,
             streaming=True, max_retries=0,
@@ -245,11 +245,11 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
         self._genai_client = None  # initialized lazily inside _stream_text_genai
         self._genai_tools_unsupported = False  # set True if genai path falls back at runtime
-        # OpenAI-compat 端点明确拒收 ``tools``（例如 Ollama 上的 llava 返回
-        # 400 "does not support tools"）后置 True，本会话后续轮次不再带工具，
-        # 省掉每轮一次必然失败的请求。这是模型能力，只在换模型 / 关闭时清掉。
+        # Set True after an OpenAI-compatible endpoint explicitly rejects tools (e.g. Ollama llava returns
+        # 400 "does not support tools"). Omit tools on later session turns to avoid a guaranteed
+        # failed request each turn. This is model capability state; clear only on model change / close.
         self._openai_tools_unsupported = False
-        # 端点只在请求带图时拒收 tools（"tool use is not supported with images"）。
+        # The endpoint rejects tools only when images accompany the request ("tool use is not supported with images").
         self._openai_tools_unsupported_with_images = False
 
         # State management
@@ -279,42 +279,42 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self._resident_turn_context = []
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
-        # 插件 read 图片的独立暂存位。刻意不与 _pending_images 共用：两者共用时
-        # 任何淘汰策略都会伤到用户——丢最旧会丢掉用户刚暂存的帧，拒新会让插件占
-        # 满后挡住用户自己的图（两种都在 review 中试过并被正确驳回）。分开计额后
-        # 谁也花不了对方的预算，超额时裁的永远是自己那一侧最旧的一张。
-        # 与 _proactive_image_to_inject 同为「独立拥有的视觉暂存」模式。
+        # Separate staging for plugin-read images. Sharing _pending_images would make any eviction policy hurt users:
+        # dropping oldest loses their newly staged frame, while rejecting new images lets plugins occupy all slots
+        # and block user images (both were tried and rightly rejected in review). Separate quotas prevent either
+        # side spending the other's budget; overflow always removes that side's own oldest image.
+        # Same independently owned visual-staging pattern as _proactive_image_to_inject.
         self._pending_plugin_images = []
-        # 主动搭话以「屏幕」为素材投递后遗留的那张截图，待下一条用户 text 回复
-        # 时作为前导视觉背景注入（让对话模型「看到」刚才搭话评论的屏幕）。刻意
-        # 与 _pending_images（用户自己的下一帧）隔离：共用会偷走用户的待发帧，
-        # 见 core.py proactive media 注释（Codex P2）。单张、一次性消费、带 TTL
-        # （_proactive_image_staged_at = 暂存时刻的 monotonic 秒，0.0 = 无暂存）。
-        # _proactive_image_history_len = 暂存那一刻的历史长度：截图只对「紧接它的
-        # 下一条用户回复」有效，若中途又来了别的 AI 轮（greeting / agent 回调走
-        # prompt_ephemeral，不过 finish_proactive_delivery）使历史变长，这张就过时
-        # 了、注入时丢弃——把截图钉死在「最后一条 AI 轮」上（Codex P2）。
+        # Screenshot retained after screen-based proactive delivery, to inject before the next user text reply
+        # as visual context so the conversation model can see the screen just discussed. Keep separate
+        # from _pending_images, the user's own next frame: sharing would steal the user's pending image;
+        # see core.py proactive-media comments (Codex P2). Single image, consumed once, with TTL
+        # (_proactive_image_staged_at is monotonic staging time in seconds; 0.0 means none).
+        # _proactive_image_history_len records history length at staging. The screenshot is valid only for the
+        # immediately following user reply. If another AI turn intervenes (greeting / agent callbacks through
+        # prompt_ephemeral, bypassing finish_proactive_delivery) and grows history, it is stale
+        # and discarded on injection, binding it to the latest AI turn (Codex P2).
         self._proactive_image_to_inject = None
         self._proactive_image_staged_at = 0.0
         self._proactive_image_history_len = 0
 
-        # ── Empty-completion 诊断（finish_reason / prompt_tokens / block_reason）──
-        # Gemini 在 SAFETY / RECITATION / MAX_TOKENS 等场景会返回 finish_reason
-        # 非 stop 但 content 为空；走 OpenAI-compat 代理时 HTTP 仍是 200，没异常，
-        # 上层只能看到"流跑完了，0 个文本 token"。这里记最后一次 attempt 在 LLM
-        # 这一层看到的 finish_reason / block_reason / prompt_tokens，让 stream_text
-        # 的 "所有重试均未产生文本回复" / prompt_ephemeral 的 delivered=False 兜底
-        # 警告能把"为什么 empty"原样吐出来。
+        # -- Empty-completion diagnostics (finish_reason / prompt_tokens / block_reason). --
+        # Gemini may return non-stop finish_reason with empty content for SAFETY / RECITATION / MAX_TOKENS,
+        # while OpenAI-compatible proxies still return HTTP 200 without exceptions,
+        # leaving callers only a completed stream with zero text tokens. Record the last attempt's LLM-layer
+        # finish_reason / block_reason / prompt_tokens so stream_text's all-retries-empty warning
+        # and prompt_ephemeral's delivered=False fallback can report the actual
+        # reason for empty output.
         self._last_finish_reason: Optional[str] = None
         self._last_block_reason: Optional[str] = None
         self._last_prompt_tokens: Optional[int] = None
 
-        # 重复度检测
-        self._recent_responses = []  # 存储最近3轮助手回复
-        self._repetition_threshold = 0.8  # 相似度阈值
-        self._max_recent_responses = OMNI_RECENT_RESPONSES_MAX  # 最多存储的回复数
+        # Repetition detection.
+        self._recent_responses = []  # Store the latest three assistant replies.
+        self._repetition_threshold = 0.8  # Similarity threshold.
+        self._max_recent_responses = OMNI_RECENT_RESPONSES_MAX  # Maximum stored replies.
 
-        # ========== 输出前缀检测 ==========
+        # ========== Output-prefix detection ==========
         self.lanlan_name = lanlan_name
         self.master_name = master_name
         self._prefix_buffer_size = max(len(lanlan_name), len(master_name)) + 3 if (lanlan_name or master_name) else 0

@@ -112,7 +112,7 @@ LINE_REQUIRED_FIELDS = ("lp", "side", "ts", "from", "text")
 LINE_OPTIONAL_FIELDS = ("ln", "truncated")
 LINE_SPEAKERS = ("own_cat", "peer_cat", "peer_human", "own_human")
 _PEER_IDENTITY_FIELDS = ("peer_uid", "pair_id", "peer_char_id")
-# 头行还多一个对端的稳定角色标签（state.json 没有这个键），「清除这个人」时一并抹掉
+# Header also includes the peer's stable character label, absent from state.json; clear it when forgetting that person.
 _HEADER_PEER_FIELDS = _PEER_IDENTITY_FIELDS + ("peer_char_tag",)
 
 DEBRIEF_CHOICES = (
@@ -126,21 +126,21 @@ DEBRIEF_CHOICES = (
     "forget",
     "abandoned",
 )
-# 「记成日记」提交中 / 永久性失败待用户处理：state.json 里的 debrief_pending 与写入进度是
-# 补写的唯一依据，两种清理都不删它（.jsonl 不因此豁免，重试只需要 state.json）
+# Diary commit in progress / permanent failure awaiting users: state.json debrief_pending and write progress
+# are the sole retry basis; neither cleanup removes it. JSONL is not exempt because retries need state.json only.
 _COMMIT_PINNED_CHOICES = ("committing:diary", "commit_failed:diary")
 _DEBRIEF_WRITE_FLAGS = (
     "facts", "cache", "facts_unconfirmed", "cache_unconfirmed", "facts_inflight", "cache_inflight",
 )
-# mark_forget 的两种终态各自允许从哪些状态进入（同一终态重复记录幂等）
+# Allowed source states for mark_forget's two terminal outcomes; repeated same-outcome marking is idempotent.
 _FORGET_SOURCES = {
     "forget": (None, "ask_later", "generating:diary", "preview:diary", "forget"),
     "abandoned": ("commit_failed:diary", "abandoned"),
 }
-# digest 一轮的终态放弃原因（digest_writes[run].abandoned）：region_settled 按已结清
-# batches_mismatch：开轮后转录被改动；no_transcript：记忆开着、收口后转录一句都没有
+# Terminal digest abandonment reasons in digest_writes[run].abandoned; region_settled counts as settled.
+# batches_mismatch means transcript changed after round start; no_transcript means memory enabled but empty transcript after closure.
 DIGEST_ABANDON_REASONS = ("batches_mismatch", "no_transcript")
-# digest_writes[run].plan 可带的字段：切批参数 + 开轮时定格的请求渲染
+# Allowed digest_writes[run].plan fields: batching parameters and request rendering frozen at round start.
 _PLAN_FIELDS = frozenset({"max_lines", "batch_size", "language", "headers", "displays"})
 STATE_FIELDS = frozenset({
     "visit_id",
@@ -189,9 +189,9 @@ class SpoolBusy(RuntimeError):
     """Raised when a header rewrite targets a spool that is still open for appends."""
 
 
-# 进程级「仍在写」登记：在飞串门持有 .jsonl 的 O_APPEND fd，此时整文件替换式改写头行
-# 会让后续追加写进被替换掉的旧 inode（Windows 上替换还可能直接失败）。清除 / 改名
-# 遇到在飞场次时报 SpoolBusy，撤销日志保留未完成步骤，等这场结束后重放。
+# Process-level active-write registration: visits hold O_APPEND JSONL descriptors; replacing whole files to rewrite headers then
+# makes later appends target replaced old inodes, and replacement itself can fail on Windows. Clearing/renaming
+# active visits raises SpoolBusy, retaining unfinished undo-log steps for replay after the visit ends.
 _OPEN_SPOOLS: set[str] = set()
 _OPEN_SPOOLS_LOCK = threading.Lock()
 
@@ -219,7 +219,7 @@ class SpoolStateCorrupt(SpoolStateError):
     """
 
 
-# ── 编码与校验（纯函数）────────────────────────────────────────────────
+# -- Encoding and validation, pure functions --
 
 
 def _encode_line(obj: Mapping[str, Any]) -> bytes:
@@ -239,8 +239,8 @@ def _is_number(value: Any) -> bool:
     try:
         return math.isfinite(value)
     except OverflowError:
-        # 超出浮点范围的超大整数：isfinite 会抛错，按「不是数」处理（state 判为损坏），
-        # 不能让未捕获的异常中断整轮补录 / 补传
+        # isfinite raises on integers beyond floating-point range; treat them as nonnumbers and corrupt state,
+        # never letting uncaught exceptions abort whole backfill/reupload rounds.
         return False
 
 
@@ -255,7 +255,7 @@ def validate_header(header: Mapping[str, Any]) -> dict:
             % (sorted(set(HEADER_FIELDS) - keys), sorted(keys - set(HEADER_FIELDS)))
         )
     if type(header["v"]) is not int or header["v"] != 1:
-        # true / 1.0 与 1 相等：按类型判，只认整数 1
+        # true/1.0 compare equal to 1; check types and accept integer 1 only.
         raise ValueError("spool header v must be the integer 1")
     require_visit_id(header["visit_id"])
     if header["role"] not in ("host", "guest"):
@@ -265,23 +265,23 @@ def validate_header(header: Mapping[str, Any]) -> dict:
             raise ValueError(f"spool header {name} must be a non-empty string")
     for name in _HEADER_PEER_FIELDS:
         value = header[name]
-        # 对端字段可被「清除这个人」置空；否则必须是非空字符串（类型坏了不能当「不是这一对」）
+        # Forget-person may clear peer fields; otherwise require nonempty strings, never interpreting corrupt types as another pair.
         if value is not None and (not isinstance(value, str) or not value):
             raise ValueError(f"spool header {name} must be a non-empty string or null")
     if len({header[name] is None for name in _HEADER_PEER_FIELDS}) > 1:
-        # 「清除这个人」一次抹掉全部对端字段；只剩一半说明抹到一半或被改坏，
-        # 按 pair 找不到它，留下的 peer_uid 却永远不会再被清掉
+        # Forget-person clears all peer fields together. Partial identity indicates interrupted wiping/corruption;
+        # pair lookup misses it, permanently retaining the remaining peer_uid.
         raise ValueError("spool header peer fields must be all set or all null")
     if header["pair_id"] is not None and header["pair_id"] != derive_pair_id(
         header["own_uid"], header["peer_uid"]
     ):
-        # pair_id 必须是 (own_uid, peer_uid) 推出的那一对，否则清除按 pair 找不到它
+        # pair_id must match (own_uid,peer_uid), or pair-based clearing cannot find it.
         raise ValueError("spool header pair_id does not match own_uid / peer_uid")
     if header["peer_char_id"] is not None and header["peer_char_id"] != derive_peer_char_id(
         header["peer_uid"], header["peer_char_tag"]
     ):
-        # 对端猫的 id 必须由 (peer_uid, peer_char_tag) 推出：错的 id 会被抄进不带 tag 的
-        # state.json，补录 / debrief 按它把 digest 与召回写进别的猫的主体，名册也清不到
+        # Peer cat IDs must derive from peer_uid/peer_char_tag; incorrect IDs enter tagless
+        # state.json, sending backfill/debrief digests and recall to another cat's subject beyond roster clearing.
         raise ValueError("spool header peer_char_id does not match peer_uid / peer_char_tag")
     if not _is_number(header["started_at"]):
         raise ValueError("spool header started_at must be a number")
@@ -308,10 +308,10 @@ def encode_spool_line(line: Mapping[str, Any]) -> bytes:
             "spool line fields mismatch: missing=%s extra=%s" % (sorted(missing), sorted(extra))
         )
     if not _is_int(line["lp"]) or not 0 <= line["lp"] <= VISIT_LP_MAX:
-        # 与 wire / room 同一值域：越界的 lp 会把补录与上传的排序搞乱
+        # Match wire/room ranges; out-of-range lp corrupts backfill/upload ordering.
         raise ValueError("spool line lp must be an int in 0..VISIT_LP_MAX")
     if line["side"] not in ("host", "guest"):
-        # 只有两种协议角色：别的字符串会在补录排序时被错归属、上传时过不了 schema
+        # Only two protocol roles exist; other strings misattribute backfill and fail upload schemas.
         raise ValueError("spool line side must be host or guest")
     if not _is_number(line["ts"]):
         raise ValueError("spool line ts must be a number")
@@ -390,8 +390,8 @@ def new_state(
         "digest_writes": {},
     }
     for name in ("pair_id", "peer_uid", "peer_char_id"):
-        # 新建的 state 一律带着对端：盘上对端字段为 None 只可能是「清除这个人」抹掉的，
-        # 清除时作废 debrief 等步骤据此认场次，不能混进「从未绑定对端」的场次
+        # New state always includes peers; None peer fields mean forget-person cleared them,
+        # enabling debrief invalidation to recognize visits without confusing never-bound visits.
         if not isinstance(state[name], str) or not state[name]:
             raise SpoolStateError(f"new state needs a bound peer ({name})")
     return validate_state(state)
@@ -400,8 +400,8 @@ def new_state(
 def _check_batch_map(value: Any, where: str) -> None:
     if not isinstance(value, dict):
         raise SpoolStateError(f"{where} must be an object")
-    # 写入方按 0..N-1 建批次表：有缺口（{"1": true}）或非规范写法（"01"）说明丢了批次，
-    # 结清判定只看剩下的值，会在缺的那批从未确认时删掉转录
+    # Writers build contiguous 0..N-1 batch tables. Gaps ({"1":true}) or noncanonical 01 keys indicate lost batches;
+    # checking only remaining values would delete transcripts before missing batches were acknowledged.
     if set(value) != {str(i) for i in range(len(value))}:
         raise SpoolStateError(f"{where} keys must be the batch numbers 0..N-1")
     for key, done in value.items():
@@ -441,7 +441,7 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
         except ValueError as exc:
             raise SpoolStateError("state visit_id is malformed") from exc
     if visit_id is not None and stored != visit_id:
-        # 被换过 / 复制过的 state.json：别的场次的归属不能套到这一场的文件上
+        # Replaced/copied state.json must not assign another visit's ownership to this visit's files.
         raise SpoolStateError("state.json belongs to another visit")
     for name in ("own_uid", "own_char", "own_char_uid"):
         if not isinstance(state[name], str) or not state[name]:
@@ -451,12 +451,12 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
         if value is not None and (not isinstance(value, str) or not value):
             raise SpoolStateError(f"{name} must be a non-empty string or null")
     if len({state[name] is None for name in _PEER_IDENTITY_FIELDS}) > 1:
-        # 同头行：只抹了一半的对端身份按 pair 找不到，剩下的 peer_uid 会永久留在磁盘上
+        # Like headers, partially cleared identities evade pair lookup and leave peer_uid on disk forever.
         raise SpoolStateError("peer_uid / pair_id / peer_char_id must be all set or all null")
     if state["pair_id"] is not None and state["pair_id"] != derive_pair_id(
         state["own_uid"], state["peer_uid"]
     ):
-        # 同头行：pair_id 与身份对不上的场次，清除这个人时按 pair 找不到
+        # Like headers, mismatched pair IDs make forget-person miss the visit.
         raise SpoolStateError("pair_id does not match own_uid / peer_uid")
     if not _is_int(state["digested_through_lp"]) or state["digested_through_lp"] < -1:
         raise SpoolStateError("digested_through_lp must be an int >= -1")
@@ -487,8 +487,8 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
         isinstance(writes_raw, Mapping) and writes_raw.get("facts") is True
         and writes_raw.get("cache") is True
     ):
-        # 「记成日记」是两步提交，两步都成才进入 diary；半截的 diary 会被当成已结清删掉转录，
-        # 启动补录也不会再补缺的那一步
+        # Diary commit requires two successful steps; partial diary state otherwise looks settled and loses transcripts,
+        # while startup backfill never completes the missing step.
         raise SpoolStateError("diary requires both debrief writes to be done")
     writes = state["debrief_writes"]
     if (
@@ -505,7 +505,7 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
         isinstance(retry, Mapping) and set(retry) == {"attempts", "next_at"}
         and _is_int(retry["attempts"]) and retry["attempts"] >= 0 and _is_number(retry["next_at"])
     ):
-        # 退避计数与下次时间持久化，重启接着算、不绕过退避
+        # Persist attempt counts and next-retry times so restarts preserve backoff.
         raise SpoolStateError("debrief_retry must be null or {attempts: int >= 0, next_at: number}")
     error = state["debrief_commit_error"]
     if error is not None and not (
@@ -517,7 +517,7 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
             "debrief_commit_error must be null or {step: facts|cache, status: int, at: number, seq: int >= 1}"
         )
     if choice == "commit_failed:diary" and error is None:
-        # 「写入失败」块要据它说明哪步失败、按 seq 换新块；没有它就重放不出失败块
+        # Failed-write blocks need this to identify failed steps and replace blocks by seq; without it failure blocks cannot replay.
         raise SpoolStateError("commit_failed:diary requires a debrief_commit_error")
     for name in ("debrief_chip_pending", "last_summary_done", "memory_enabled"):
         if not isinstance(state[name], bool):
@@ -525,8 +525,8 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
     runs = state["digest_writes"]
     if not isinstance(runs, Mapping):
         raise SpoolStateError("digest_writes must be an object")
-    # 轮次按 0..N-1 登记；一轮全部批次成功后才 digest_runs += 1，所以最后一轮可以还在跑。
-    # 缺了某一轮（{"1": ...}）的状态会让结清判定只看剩下的轮次，在缺的那轮从未完成时删转录
+    # Runs register as 0..N-1; digest_runs advances only after all batches finish, so the last run may remain active.
+    # Missing runs ({"1":...}) let settlement inspect remaining runs and delete transcripts before absent runs complete.
     if set(runs) != {str(i) for i in range(len(runs))}:
         raise SpoolStateError("digest_writes keys must be the run numbers 0..N-1")
     if state["digest_runs"] not in (len(runs), len(runs) - 1):
@@ -539,11 +539,11 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
                 f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments"
                 f"[, epochs, plan, membership, abandoned]}}"
             )
-        # 终态放弃：开轮后转录被改动（批次成员对不上），剩下的批次再也不能用旧键发出
+        # Terminal abandonment: transcript membership changed after run start; remaining batches can no longer use old keys.
         if "abandoned" in record and record["abandoned"] not in DIGEST_ABANDON_REASONS:
             raise SpoolStateError(f"digest_writes[{run}].abandoned must be one of {DIGEST_ABANDON_REASONS}")
         membership = record.get("membership")
-        # 开轮时每个批次的成员指纹：续跑逐批核对，批数相同而边界挪了（中间某行后来读不出）也认得出
+        # Freeze batch-membership fingerprints at run start; resumed checks detect shifted boundaries even with unchanged batch counts after unreadable lines.
         if membership is not None and not (
             isinstance(membership, Mapping) and set(membership) == {"group", "segments"}
             and all(
@@ -557,9 +557,9 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
                 f"digest_writes[{run}].membership must be {{group, segments}} lists matching the batch counts"
             )
         plan = record.get("plan", {})
-        # 开轮时的切批参数（句数上限、每批句数）：升级改了常量之后续跑仍按原计划切批。
-        # 以及开轮时定格的请求渲染（实际发送的 language、group 每个说话人的前缀、segments 的两个
-        # 对端显示名）：它们都进服务端的请求指纹，续跑现算的话跨版本同键不同体会被永久 422
+        # Freeze sentence limits/batch sizes at run start so upgrades changing constants still resume the original plan.
+        # Also freeze rendered requests: actual language, speaker prefixes in groups, and both segments'
+        # peer display names. They enter server fingerprints; recalculating after upgrades causes permanent same-key/different-body 422.
         if not isinstance(plan, Mapping) or set(plan) - _PLAN_FIELDS or not all(
             _is_int(plan[name]) and plan[name] >= 1 for name in ("max_lines", "batch_size") if name in plan
         ):
@@ -574,7 +574,7 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
             ):
                 raise SpoolStateError(f"digest_writes[{run}].plan.{name} must map speakers to strings")
         epochs = record.get("epochs", {})
-        # 开轮时记下的各 subject 清除代数：同键重试沿用，服务端按它丢弃清除之前发起的产物
+        # Record subject-forget generations at run start and reuse on keyed retries; servers discard outputs initiated before clearing.
         if not isinstance(epochs, Mapping) or not all(
             isinstance(key, str) and key and _is_int(value) and value >= 0
             for key, value in epochs.items()
@@ -583,14 +583,14 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
         if not _is_number(record["requested_at"]):
             raise SpoolStateError(f"digest_writes[{run}].requested_at must be a number")
         if not _is_int(record["through_lp"]) or not 0 <= record["through_lp"] <= VISIT_LP_MAX:
-            # 越界的水位没有任何合法行够得着；digested_through_lp 必须等于某轮的 through_lp
-            # （或 -1），所以它也随之限定在 -1..VISIT_LP_MAX
+            # No legal row reaches invalid watermarks. digested_through_lp must equal some run's through_lp
+            # or -1, consequently limiting it to -1..VISIT_LP_MAX.
             raise SpoolStateError(f"digest_writes[{run}].through_lp must be an int in 0..VISIT_LP_MAX")
         _check_batch_map(record["group"], f"digest_writes[{run}].group")
         _check_batch_map(record["segments"], f"digest_writes[{run}].segments")
-    # 每轮从上一轮的水位之后开始，through_lp 严格递增；digested_through_lp 只在一轮全部
-    # 完成时推进到该轮 through_lp。对不上的水位会让结清判定与补录各说各话：恢复以为
-    # 已抽到 999，却没有任何一轮覆盖那些句子，转录照样被删
+    # Every run starts after the prior watermark, with strictly increasing through_lp; digested_through_lp advances only when
+    # all its batches complete. Inconsistent watermarks split settlement/backfill conclusions: recovery believes
+    # extraction reached 999 without any run covering those sentences, yet transcripts are deleted.
     previous = -1
     for i in range(len(runs)):
         through = runs[str(i)]["through_lp"]
@@ -634,12 +634,12 @@ def region_settled(state: Mapping[str, Any]) -> bool:
         return False
     for record in runs.values():
         if record.get("abandoned"):
-            # 终态放弃的一轮：重试也不会成功，按已结清，转录照常释放，不再每次启动空转
+            # Terminally abandoned runs cannot succeed on retry; count settled and release transcripts rather than retrying uselessly at every startup.
             continue
         for part in ("group", "segments"):
             batches = record.get(part) or {}
-            # 空表 = 批次还没登记，不是「全部完成」：先登记 run 再拆批次的写入顺序下，
-            # 两步之间点「不记」不能把还没抽取的转录删掉
+            # Empty tables mean batches not registered, not all complete. Writers register runs before batches;
+            # choosing do-not-record between steps must not delete unextracted transcripts.
             if not batches or not all(batches.values()):
                 return False
     return True
@@ -696,7 +696,7 @@ class SpoolContents:
     dropped_lines: int = 0
 
 
-# ── 文件辅助（工作线程内）──────────────────────────────────────────────
+# -- File helpers, worker-thread execution --
 
 
 def _spool_dir(config_dir: str | Path) -> Path:
@@ -734,8 +734,8 @@ def _scan(spool_dir: Path) -> list[tuple[str, str, Path, os.stat_result]]:
         except FileNotFoundError:
             continue
         except OSError as exc:
-            # 符号链接环 / 无权限之类的坏项只跳过它自己：整轮清扫、outbox 清理不能被一个
-            # 长期坏掉的条目卡住
+            # Skip only individual symlink-loop/permission failures; a permanently bad entry must not block
+            # entire sweeps and outbox cleanup.
             logger.warning("visit spool: cannot stat %s (%s); skipping it this pass", path.name, exc)
             continue
         out.append((visit_id, suffix, path, st))
@@ -753,10 +753,10 @@ def _load_state_json(path: Path) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except RecursionError as exc:
-        # 深层嵌套：解析器本身就读不了，哪个版本都用不了它
+        # Excessively nested content is unreadable by the parser and unusable by every version.
         raise SpoolStateCorrupt(f"{path.name} is too deeply nested") from exc
     except ValueError as exc:
-        # JSONDecodeError / UnicodeDecodeError（OSError 不是 ValueError，照常上抛）
+        # JSONDecodeError / UnicodeDecodeError; OSError is not ValueError and still propagates.
         raise SpoolStateCorrupt(f"{path.name} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise SpoolStateCorrupt(f"{path.name} is not a JSON object")
@@ -787,7 +787,7 @@ def _scrub_peer_identity(doc: dict) -> bool:
                 changed = True
             plan = record.get("plan") if isinstance(record, dict) else None
             if isinstance(plan, dict) and "displays" in plan:
-                # 对端自报的猫名与人名，与头行的 peer_char_tag 同一类数据
+                # Peer-reported cat/person names are the same data class as header peer_char_tag.
                 del plan["displays"]
                 changed = True
     return changed
@@ -808,15 +808,15 @@ def _raw_state_may_name(
     except (OSError, ValueError):
         return True
     if all(name in raw and raw[name] is None for name in _PEER_IDENTITY_FIELDS):
-        # 对端身份已全部抹掉（比如之前的清除按原始字段改写过）：里面没有任何人的身份可清，
-        # 不能让这份当前版本读不了的 state 把这个角色之后的每次清除都挡住
+        # Completely erased peer identity leaves nobody to clear, e.g. earlier clearing rewrote raw fields;
+        # state unreadable by this version must not block every later clear for this character.
         return False
     char = raw.get("own_char_uid")
     if isinstance(char, str) and char and char != own_char_uid:
         return False
     account = raw.get("own_uid")
     if own_uid is not None and isinstance(account, str) and account and account != own_uid:
-        # 别的账号下的场次：与这次清除无关（对端身份已抹、pair_id 为空时也能凭它排除）
+        # Visits under other accounts are unrelated, distinguishable even when peer identity and pair_id are erased.
         return False
     pair = raw.get("pair_id")
     return not (isinstance(pair, str) and pair and pair not in pair_ids)
@@ -837,12 +837,12 @@ def _raw_state_names_pair(
 
 
 def _read_state_file(path: Path) -> dict | None:
-    # 文件名就是场次：state 里没有对得上的 visit_id 时（文件被换过 / 复制过）不能信它的归属，
-    # 退役、清除、改名都会按它去动别的场次的文件
+    # Filenames identify visits; missing/mismatched state visit_id after copies/replacements makes ownership untrusted,
+    # or retirement/clearing/renaming would mutate another visit's files.
     expected = path.name[: -len(STATE_SUFFIX)] if path.name.endswith(STATE_SUFFIX) else None
     try:
-        # 内容本身坏了（含深层嵌套、顶层不是对象）抛 SpoolStateCorrupt；能解析的对象再过 schema，
-        # 不合的只抛 SpoolStateError——两者处理口径不同，后者别的版本还读得了，绝不删
+        # Corrupt content, including deep nesting/nonobjects, raises SpoolStateCorrupt. Parsed objects undergo schema checks,
+        # yielding SpoolStateError only; other versions may read those, so never delete them.
         data = _load_state_json(path)
     except FileNotFoundError:
         return None
@@ -913,8 +913,8 @@ def _read_header_strict(path: Path, *, validate: bool = True) -> dict | None:
         raise ValueError(f"spool header of {path.name} is too deeply nested") from exc
     if not isinstance(header, dict):
         raise ValueError(f"spool header of {path.name} is not an object")
-    # 完整 schema 校验（peer 字段允许被「清除这个人」置空）：{} 之类缺字段的头行
-    # 不能被当作「不是这一对」
+    # Full schema validation permits forget-person-null peer fields. Headers missing fields, such as {},
+    # cannot mean another pair.
     return validate_header(header) if validate else header
 
 
@@ -946,7 +946,7 @@ def _rewrite_header_locked(path: Path, mutate, strict: bool) -> bool:
             header = None
     if not isinstance(header, dict):
         if strict:
-            # 清除路径：头行坏了就不能当作「已抹掉」，留给重放（文件 7 天后被 sweep 回收）
+            # Clear path: corrupt headers do not prove erasure; retain for replay and seven-day sweep expiry.
             raise SpoolStateUnreadable([path.name])
         return False
     if not mutate(header):
@@ -980,8 +980,8 @@ def _sweep_unlink(path: Path) -> bool:
     try:
         return _unlink(path)
     except OSError as exc:
-        # 被占用（Windows 共享冲突）/ 没权限 / 名字像转录的目录：留到下一轮，不能中断整轮清扫，
-        # 否则一个长期锁住的旧文件会让所有其他回收都做不了
+        # Busy Windows sharing conflicts, permissions, or transcript-named directories wait until next sweep,
+        # preventing one permanently locked old file blocking all reclamation.
         logger.warning("visit spool: could not delete %s (%s); keeping it for a later sweep",
                        path.name, exc)
         return False
@@ -991,14 +991,14 @@ def _ask_is_live(is_live: Callable[[str], bool], visit_id: str) -> bool:
     """Call the sweep's ``is_live`` for one visit; an exception counts as live (keep its files)."""
     try:
         return bool(is_live(visit_id))
-    except Exception as exc:  # noqa: BLE001 - 判不了就保守地当在飞，不能让一场的异常中断整轮清扫
+    except Exception as exc:  # noqa: BLE001 - Unknown means conservatively active; one visit's failure cannot stop the sweep.
         logger.warning("visit spool: is_live(%s) failed (%r); keeping the visit this sweep", visit_id, exc)
         return True
 
 
 def _parse_spool_bytes(data: bytes, visit_id: str) -> SpoolContents:
     parts = data.split(b"\n")
-    tail = parts.pop()  # 以换行结尾时为空串
+    tail = parts.pop()  # Empty string when ending in a newline.
     dropped = 0
     if tail:
         dropped += 1
@@ -1012,12 +1012,12 @@ def _parse_spool_bytes(data: bytes, visit_id: str) -> SpoolContents:
             obj = json.loads(raw)
             if not isinstance(obj, dict):
                 raise ValueError("not an object")
-            # 能解析的对象也要过写入时同一套 schema：缺字段 / 说话人非法 / lp 越界的行
-            # 不能当作恢复出来的转录交给补录与上传
+            # Parsed objects still require write-time schema validation: missing fields, invalid speakers, and invalid lp
+            # cannot become recovered transcripts for backfill/upload.
             if index == 0:
                 obj = validate_header(obj)
                 if obj["visit_id"] != visit_id:
-                    # 被改名 / 换过的文件：别的场次的头行与转录不能挂到这一场名下
+                    # Renamed/replaced files must not attach another visit's header/transcript to this visit.
                     logger.error("visit spool %s: header belongs to another visit, ignoring the file",
                                  visit_id)
                     return SpoolContents(header=None, lines=[], dropped_lines=len(parts) + (1 if tail else 0))
@@ -1056,7 +1056,7 @@ class VisitSpool:
         self._last_fsync: float = 0.0
         self._dirty = False
 
-    # ── 转录写入 ──
+    # -- Transcript writing --
 
     @property
     def is_open(self) -> bool:
@@ -1072,12 +1072,12 @@ class VisitSpool:
         self.spool_dir.mkdir(parents=True, exist_ok=True)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | _O_BINARY
         key = _spool_key(self.jsonl_path)
-        # 先登记再打开、与头行改写同一把锁：改写方要么看到登记而报 SpoolBusy，
-        # 要么在登记之前就已替换完文件（此时 O_EXCL 打开会失败）
+        # Register before opening under the same lock as header rewrites: rewriters see registration and SpoolBusy,
+        # or finish replacement before registration, after which O_EXCL opening fails.
         with _OPEN_SPOOLS_LOCK:
             if key in _OPEN_SPOOLS:
-                # 别的实例正在写这一场：不能先 add 再在失败分支里 discard——那会撤掉
-                # 对方的登记，之后的清除 / 改名就会在对方写入时替换掉文件
+                # Another instance writes this visit: adding then discarding on failure would remove
+                # its registration, allowing clear/rename to replace a file still being written.
                 raise SpoolBusy(f"spool {self.jsonl_path.name} is already open for appends")
             _OPEN_SPOOLS.add(key)
             try:
@@ -1092,13 +1092,13 @@ class VisitSpool:
             try:
                 os.close(fd)
             except OSError as exc:
-                # close 自己报错（网络盘 / U 盘 EIO）不能跳过下面的删文件与撤登记——否则这场
-                # 在进程存活期间永远 SpoolBusy；也不能盖掉原来的异常
+                # close errors on network/removable drives must not skip file removal/deregistration,
+                # leaving SpoolBusy until process exit, or mask the original exception.
                 logger.warning("visit spool %s: closing the failed new spool failed: %s",
                                self.visit_id, exc)
             with _OPEN_SPOOLS_LOCK:
-                # 登记还在时删掉刚建的文件：留着（可能只有半截头行）的话，同一场重试的
-                # O_EXCL 打开永远 FileExistsError，一次暂时性磁盘错误就让这场再也开不了
+                # Delete newly created files while still registered; retaining partial headers makes retries
+                # fail O_EXCL with FileExistsError forever after a single transient disk fault.
                 try:
                     os.unlink(self.jsonl_path)
                 except OSError as exc:
@@ -1110,7 +1110,7 @@ class VisitSpool:
 
     @staticmethod
     def _write_all(fd: int, data: bytes) -> None:
-        # 一次 write 写完整行；普通文件极少短写，短写时续写剩余部分。
+        # Write a full line once; rare short regular-file writes continue with the remainder.
         view = memoryview(data)
         while view:
             written = os.write(fd, view)
@@ -1129,9 +1129,9 @@ class VisitSpool:
     def _close_sync(self) -> None:
         fd, self._fd = self._fd, None
         if fd is not None:
-            # 撤登记放在最外层 finally：fsync / close 任一报错（网络盘、U 盘 EIO）都不能
-            # 跳过它——_fd 已清空、执行器随后丢弃，这个实例没有第二次机会，这场会在进程
-            # 存活期间一直 SpoolBusy。fsync 已失败时 close 的报错只记日志，抛原来的异常
+            # Deregister in outermost finally: fsync/close failures on network/removable drives must never
+            # skip it. _fd is already cleared and executor discarded, leaving no second chance and SpoolBusy
+            # until process exit. If fsync failed first, merely log close errors and propagate the original.
             try:
                 try:
                     os.fsync(fd)
@@ -1159,11 +1159,11 @@ class VisitSpool:
         try:
             os.close(fut.result())
         except OSError as exc:
-            # fd 已失效也无妨：这里只负责不泄漏；登记照样要撤销
+            # Invalid fds are fine; avoid leakage and still deregister.
             logger.debug("visit spool: closing orphan fd failed: %s", exc)
         with _OPEN_SPOOLS_LOCK:
-            # 文件是这次 O_EXCL 新建的、只有头行（含对端身份）：留着会让同 visit 重试
-            # 抛 FileExistsError，也会把对端信息留到 7 天回收
+            # O_EXCL just created this header-only file containing peer identity; retaining it makes same-visit retries
+            # fail FileExistsError and keeps peer data until seven-day collection.
             try:
                 _unlink(self.jsonl_path)
             except OSError as exc:
@@ -1195,15 +1195,15 @@ class VisitSpool:
         try:
             self._fd = await asyncio.wrap_future(fut)
         except BaseException:
-            # 取消时 worker 可能已经在跑 _open_sync：它返回的 fd 没人接，
-            # 也已登记成「在写」。等它结束后关掉 fd、撤销登记，免得之后的
-            # 清除 / 改名一直报 SpoolBusy
+            # Cancellation can leave _open_sync running, returning an unclaimed registered fd.
+            # Await completion, close the fd, and deregister so later
+            # clear/rename operations do not remain SpoolBusy.
             fut.add_done_callback(self._discard_orphan_open)
             executor.shutdown(wait=False)
             raise
         self._executor = executor
-        # 计时只用调用方的时钟：started_at 是墙钟，runtime 若用单调时钟驱动，
-        # 拿它做起点会让 fsync_due 整场返回 False
+        # Use only the caller's clock: started_at is wall time; monotonic-driven runtimes using it
+        # as baseline would get fsync_due=False throughout the visit.
         self._last_fsync = float(now)
         self._dirty = False
 
@@ -1212,7 +1212,7 @@ class VisitSpool:
         data = encode_spool_line(line)
         fut = self._submit(self._append_sync, data)
         self._dirty = True
-        # 已接受并提交的一行不能因调用方被取消而撤回（排在别的写入后面时会被直接取消）
+        # Accepted submitted lines cannot be withdrawn by caller cancellation, including while queued behind writes.
         await asyncio.shield(fut)
 
     def fsync_due(self, now: float) -> bool:
@@ -1223,7 +1223,7 @@ class VisitSpool:
         return (
             self._fd is not None
             and self._dirty
-            # 写成「now >= 起点 + 间隔」：now - last 在浮点下可能是 29.999…，恰好到点时 fsync 会推迟一拍
+            # Compare now>=start+interval: floating-point now-last can be 29.999..., delaying due fsync one tick.
             and now >= self._last_fsync + VISIT_SPOOL_FSYNC_S
         )
 
@@ -1234,7 +1234,7 @@ class VisitSpool:
         :meth:`fsync_due` keeps asking for a retry.
         """
         fut = self._submit(self._fsync_sync)
-        # 提交前先清标志：提交之后才到的 append 会重新置脏，不会被这次成功误清
+        # Clear dirty flags before submission so later appends mark dirty again rather than being cleared by this success.
         self._dirty = False
         previous = self._last_fsync
         self._last_fsync = now
@@ -1275,8 +1275,8 @@ class VisitSpool:
         """
 
         def read() -> SpoolContents:
-            # 读与解析都在工作线程：长场次的转录可能有几十 MB，逐行 JSON 解码与校验放在
-            # 事件循环上会卡住在飞的 WebSocket
+            # Read/parse in workers: long transcripts can be tens of megabytes; per-line JSON decoding/validation
+            # on the event loop stalls active WebSockets.
             try:
                 data = self.jsonl_path.read_bytes()
             except FileNotFoundError:
@@ -1289,7 +1289,7 @@ class VisitSpool:
 
     def _write_state_sync(self, state: Mapping[str, Any]) -> dict:
         if not isinstance(state, Mapping):
-            validate_state(state)    # 抛出统一的 SpoolStateError
+            validate_state(state)    # Raise the shared SpoolStateError.
         given = state.get("visit_id")
         if given is not None and given != self.visit_id:
             raise SpoolStateError("state visit_id does not match this spool")
@@ -1380,7 +1380,7 @@ class VisitSpool:
 
         current = await self.read_state()
         if current is None or not applies(current):
-            # 不需要写就不重写：每次启动都重写会刷新 mtime，state.json 永远到不了按龄回收
+            # Skip unnecessary rewrites: rewriting every startup refreshes mtime and prevents age-based state.json collection forever.
             return False
         changed = False
 
@@ -1434,14 +1434,14 @@ class VisitSpool:
         return await asyncio.to_thread(self._update_state_sync, mutate)
 
     def _delete_if_settled_sync(self) -> bool:
-        # 与头行改写同一套逐路径锁（先 jsonl 后 state）：改写方读完转录、还没替换时
-        # 这里删掉，它随后的原子替换会把刚判定可删的转录复活
+        # Same per-path locks as header rewrites, JSONL before state: deletion after a rewriter reads but before
+        # replacement would let atomic replacement resurrect a transcript just deemed deletable.
         with path_lock(self.jsonl_path), path_lock(self.state_path):
             state = _read_state_file(self.state_path)
             if state is None or not transcript_releasable(state):
                 return False
-            # 另一个实例可能还持有这场的写入 fd（关闭排在队列里）：删掉后它的追加
-            # 会写进已删除的 inode、关闭时一起消失
+            # Other instances may retain write fds while close queues; deleting then makes their appends
+            # target deleted inodes, vanishing together on close.
             return _unlink_unless_open(self.jsonl_path)
 
     async def delete_if_settled(self) -> bool:
@@ -1479,7 +1479,7 @@ class VisitSpool:
 
         def mutate(state: dict) -> None:
             if state["debrief_choice"] not in _FORGET_SOURCES[final_choice]:
-                # 已开始 / 已完成的提交不能改记成「不记」；放弃只对永久性失败开放
+                # Started/completed commits cannot become do-not-record; abandonment is allowed only after permanent failure.
                 raise SpoolStateError(
                     f"cannot record {final_choice} from debrief_choice={state['debrief_choice']!r}"
                 )
@@ -1492,8 +1492,8 @@ class VisitSpool:
             await asyncio.to_thread(self._update_state_sync, mutate)
             return await self.delete_if_settled()
 
-        # 记「不记」与删已结清转录是一个事务：调用方在写 state 途中被取消时照常做完，
-        # 否则 forget 已落盘、转录却没人再删（已结清的场次没有后续回调会重试）
+        # Recording do-not-record and deleting settled transcripts are one transaction completed despite cancellation,
+        # or forget persists while nobody retries transcript deletion on already settled visits.
         return await asyncio.shield(txn())
 
     def _delete_peer_fields_sync(self) -> None:
@@ -1511,13 +1511,13 @@ class VisitSpool:
             try:
                 state = _read_state_file(self.state_path)
             except SpoolStateCorrupt:
-                # JSON 本身坏了：谁都用不了它，里面却可能还留着对端字段。直接删（与
-                # drop_corrupt_state 同口径），不能让头行已抹、这一步报错，之后每次重放都卡住
+                # Invalid JSON is unusable by everyone but may retain peer fields. Delete like drop_corrupt_state,
+                # preventing erased headers plus failed state cleanup from blocking every replay.
                 self.state_path.unlink(missing_ok=True)
                 return
             except SpoolStateError:
-                # 能解析、只是不合当前 schema（比如降级后读到新版本写的 state）：按原始对象只抹
-                # 对端身份，不经 validate_state 原样写回，新版本才有的字段一概不动
+                # Parsed objects incompatible with current schemas, e.g. downgrade reading newer state, are rewritten as raw
+                # objects clearing peer identity only, bypassing validate_state and preserving unknown newer fields.
                 raw = _load_state_json(self.state_path)
                 if _scrub_peer_identity(raw):
                     atomic_write_json(self.state_path, raw)
@@ -1541,7 +1541,7 @@ class VisitSpool:
             raise RuntimeError("cannot rewrite the header of an open spool")
         await asyncio.to_thread(self._delete_peer_fields_sync)
 
-    # ── 目录级操作（类方法）──
+    # -- Directory operations, class methods --
 
     @classmethod
     def _owner_of(cls, spool_dir: Path, visit_id: str) -> tuple[str | None, str | None]:
@@ -1559,9 +1559,9 @@ class VisitSpool:
         if header is not None:
             uid = header.get("own_char_uid")
             name = header.get("own_char")
-            # 旧版本头行可以没有 own_char_uid（按名字回退），但有就必须是非空字符串；
-            # own_char 也必须是非空字符串——坏值既匹配不上 uid 也走不了名字回退，
-            # 退役会「成功」结束而把这个角色的转录留在磁盘上
+            # Legacy headers may omit own_char_uid and fall back to names; present values must be nonempty strings.
+            # own_char must also be nonempty; bad values match neither UID nor name fallback,
+            # making retirement appear successful while leaving this character's transcripts on disk.
             if "own_char_uid" in header and (not isinstance(uid, str) or not uid):
                 raise ValueError(f"spool header of {visit_id} has a malformed own_char_uid")
             if not isinstance(name, str) or not name:
@@ -1577,8 +1577,8 @@ class VisitSpool:
     @classmethod
     def _visit_ids(cls, spool_dir: Path, suffixes: Iterable[str]) -> list[str]:
         wanted = set(suffixes)
-        # 只看名字、不 stat：stat 不了的场次也要列出来，清除 / 退役 / 改名在逐场处理时
-        # 各自 fail closed，不能因为扫描跳过它而漏掉
+        # List names without stat: unstatable visits must remain discoverable so individual clear/retire/rename
+        # operations fail closed rather than silently missing them in scans.
         return sorted({vid for vid, suffix, _p in _list_names(spool_dir) if suffix in wanted})
 
     @classmethod
@@ -1593,7 +1593,7 @@ class VisitSpool:
             try:
                 owner_uid, owner_name = cls._owner_of(spool_dir, visit_id)
             except (OSError, ValueError):
-                # 读不出归属不能当「不是这个角色的」：上抛让删除事务保留退役标记、启动对账重试
+                # Unknown ownership cannot mean another character: propagate so deletion retains retirement markers for startup reconciliation.
                 unreadable.append(visit_id)
                 continue
             if owner_uid:
@@ -1604,13 +1604,13 @@ class VisitSpool:
                 continue
             jsonl = visit_path(spool_dir, visit_id, SPOOL_SUFFIX)
             state_path = visit_path(spool_dir, visit_id, STATE_SUFFIX)
-            # 与 state / 头行写者同一套逐路径锁（先 jsonl 后 state）：正在读改写
-            # state.json 的更新要么先做完再被删掉，要么之后读到「不存在」而报错，
-            # 不会在退役之后把文件重新写回来
+            # Same per-path locks as state/header writers, JSONL then state: concurrent read-modify-write
+            # updates either complete before deletion or later fail on absence,
+            # never recreating files after retirement.
             with path_lock(jsonl), path_lock(state_path), _OPEN_SPOOLS_LOCK:
-                # 与改名 / 清除同一语义：仍在写的场次跳过，最后报 SpoolBusy 让事务保留
-                # 标记、等这场结束后重放；删除本身失败（Windows 上被占用的 PermissionError）
-                # 并入读不出，不能冲出循环卡住其余场次
+                # Like rename/clear, skip active visits then raise SpoolBusy, retaining transaction
+                # markers for replay afterward. Deletion failures such as Windows PermissionError
+                # count as unreadable without escaping the loop and blocking other visits.
                 if _spool_key(jsonl) in _OPEN_SPOOLS:
                     busy.append(visit_id)
                     continue
@@ -1668,21 +1668,21 @@ class VisitSpool:
             changed = False
             jsonl = visit_path(spool_dir, visit_id, SPOOL_SUFFIX)
             state_path = visit_path(spool_dir, visit_id, STATE_SUFFIX)
-            # 改名是事务的一步：读不出来的场次不能静默跳过，否则 pending_rename 被清掉、
-            # 这场留在已不存在的旧名下。先改完能改的，最后上抛让标记保留、对账重跑
+            # Rename is transactional: never silently skip unreadable visits or pending_rename clears while
+            # they remain under nonexistent old names. Process available visits, then raise for retained markers/reconciliation.
             try:
                 with path_lock(jsonl):
                     try:
                         changed |= _rewrite_header(jsonl, fix_header, strict=True)
                     except SpoolBusy:
-                        # 正在写的场次：只有它属于被改名的角色才算 busy。改名在运行期执行时，
-                        # 别的角色可能正在串门，不能因为它们把这次迁移卡住
+                        # Active visits are busy only when owned by the renamed character; other characters may be visiting
+                        # during runtime rename and must not block migration.
                         try:
                             header = _read_header_strict(jsonl, validate=False)
                         except (OSError, ValueError):
-                            # 刚登记、头行还没写完（_open_sync 出锁后才写）：归属未知，可能正是被改名
-                            # 角色自己的新场次，跳过会让它留在旧名下。按仍在写处理（busy，标记留着稍后重试），
-                            # 不算读不出；这个窗口只有一次写入那么长
+                            # Just registered with incomplete header (_open_sync writes after unlocking): ownership is unknown and may
+                            # belong to the renamed character. Treat as busy, retaining markers for retry rather than leaving it under
+                            # the old name; not unreadable. This window lasts only one write.
                             raise SpoolBusy(f"spool {jsonl.name} is being opened") from None
                         if header is not None and header.get("own_char") == old:
                             raise
@@ -1733,8 +1733,8 @@ class VisitSpool:
         found = []
         unreadable: list[str] = []
         for visit_id in cls._visit_ids(spool_dir, (SPOOL_SUFFIX, STATE_SUFFIX)):
-            # 清除路径要严格读：已结清的场次常常只剩 state.json，读不出来就跳过
-            # 会让 wipe_spool 记完成、撤销日志被删，而 peer 字段仍留在文件里
+            # Clear paths read strictly: settled visits often retain only state.json. Skipping unreadable state
+            # would complete wipe_spool and remove undo logs while peer fields remain.
             state_unreadable = False
             state_corrupt = False
             state_schema = False
@@ -1745,15 +1745,15 @@ class VisitSpool:
             except FileNotFoundError:
                 state = None
             except SpoolStateCorrupt:
-                # 内容本身坏了（不是 JSON / 不是对象 / 嵌套过深）：谁都用不了它（与 OSError 的
-                # 一时读不出不同）
+                # Intrinsically corrupt content (invalid JSON/nonobjects/excessive nesting) is unusable by everyone,
+                # unlike transient OSError unreadability.
                 state = None
                 state_unreadable = True
                 state_corrupt = True
             except SpoolStateError:
-                # 能解析、只是不合当前 schema（比如降级后读到新版本写的 state）：别的版本还读得了，
-                # 不是「谁都用不了」，绝不删。先记下它的原始字段是否明确排除这次清除，
-                # 头行照常检查（头行仍指认这一对时照样要清它的对端字段）
+                # Parsed but current-schema-incompatible state may be readable by other versions;
+                # never delete. Record whether raw fields explicitly exclude this clear,
+                # while checking headers normally and clearing peer fields if they still identify this pair.
                 schema_excludes = not _raw_state_may_name(
                     visit_path(spool_dir, visit_id, STATE_SUFFIX), own_char_uid, pair_ids, own_uid,
                 )
@@ -1764,16 +1764,16 @@ class VisitSpool:
                 state_unreadable = True
                 state_schema = True
             except OSError:
-                # state 读不出时先看头行：头行明确属于别的角色、或指认的是别的一对，就不是
-                # 这次要清的场次——一份无关的坏文件不能把所有清除永远卡住。头行也读不出、
-                # 或身份已被抹掉而角色相同（分不清是不是这个人）时才按读不出处理
+                # For unreadable state, inspect headers first. Explicit other-character/other-pair headers exclude the visit;
+                # unrelated corrupt files cannot block all clears forever. Only unreadable headers or erased identity
+                # for the same character, leaving person ambiguity, count as unreadable.
                 state = None
                 state_unreadable = True
             if _names_pair(state, own_char_uid, pair_ids):
                 found.append(visit_id)
                 continue
-            # 只剩 .jsonl（或 state 已不指认）时靠头行认场次：头行坏了不能当作
-            # 「不是这一对」，否则 wipe_spool 记完成而原始 peer 字段留在文件里
+            # With only JSONL or state no longer identifying ownership, headers identify visits. Corrupt headers cannot mean
+            # another pair or wipe_spool completes with original peer fields still present.
             try:
                 header = _read_header_strict(visit_path(spool_dir, visit_id, SPOOL_SUFFIX))
             except (OSError, ValueError):
@@ -1785,38 +1785,38 @@ class VisitSpool:
             if _names_pair(header, own_char_uid, pair_ids):
                 found.append(visit_id)
             elif schema_names and (header is None or header_wiped):
-                # 不合 schema 的 state 原始字段仍指认这一对，头行不在 / 已抹（比如抹完头行、改写
-                # state 时失败）：抹身份步骤按原始对象改写它，不能每次重放都按读不出卡住
+                # Incompatible state raw fields identify this pair but headers are absent/erased, e.g. header wiped before failed
+                # state rewrite: wipe raw state identity rather than blocking every replay as unreadable.
                 found.append(visit_id)
             elif schema_names:
-                # 不合 schema 的 state 原始字段明确指认这一对，头行却指向别处：两处对不上，不能凭
-                # 头行把它排除掉，也不能照着去抹别人的头行，按读不出处理（fail closed）
+                # Incompatible raw state identifies this pair while headers identify elsewhere: inconsistent identities cannot
+                # be excluded by headers or justify erasing another person's header. Fail closed as unreadable.
                 unreadable.append(visit_id)
             elif state_unreadable and (header is None or header_wiped):
                 if schema_excludes:
-                    # 头行没指认这一对（或不在 / 已抹），而不合 schema 的 state 原始字段明确属于
-                    # 别的角色 / 别的一对 / 别的账号：两处都排除，跳过（不挡、不删）
+                    # Headers absent/erased or unrelated, with incompatible raw state explicitly identifying another
+                    # character/pair/account: both exclude this clear, so skip without blocking/deleting.
                     continue
                 if state_corrupt and header is None:
-                    # 只剩 state.json（已结清的场次常常如此）且内容损坏：谁都用不了，也认不出
-                    # 是谁的。挡住会让本机每个角色的每次清除都卡死；它若正属于被清的人，删掉
-                    # 本就是清除要做的事。同样只报给调用方，由清除路径删
+                    # Corrupt state.json alone, common after settlement, is unusable and ownership unknown. Blocking
+                    # would stall every character's clears; if it belongs to the erased person, deletion is appropriate anyway.
+                    # Report separately for deletion by the clear path.
                     if corrupt_wiped is not None:
                         corrupt_wiped.append(visit_id)
                     continue
                 if state_corrupt and header is not None:
-                    # 头行身份已抹（同一角色）而 state.json 内容损坏：这份 state 谁都用不了，
-                    # 不能让这个角色之后每一次清除都卡死。这里只是查找（开场交接也调用），
-                    # 不删任何文件；单独报给调用方，由清除的抹身份步骤把它（连同可能残留
-                    # 的对端字段）删掉
-                    # 只报同一账号下的（头行的 own_uid 抹身份时保留）：别的账号的场次与这次清除无关
+                    # Header identity erased for this character and state.json corrupt: nobody can use it,
+                    # and it must not block all future clears. This function only finds files, also during startup handoff,
+                    # so delete nothing here; report separately for the clear path to remove it and any residual
+                    # peer fields.
+                    # Report only same-account visits, using own_uid preserved in headers during wiping; other accounts are unrelated.
                     if corrupt_wiped is not None and (own_uid is None or header.get("own_uid") == own_uid):
                         corrupt_wiped.append(visit_id)
                     continue
                 if state_schema and header is None:
-                    # 只剩一份不合当前 schema 的 state，原始字段既没指认这一对、也没明确排除：
-                    # 认不出是谁的，又不是坏文件（别的版本读得了），跳过——不删也不挡，否则
-                    # 降级后本机每个角色的每次清除都被它卡住
+                    # Only incompatible state remains, with raw fields neither identifying nor excluding this pair:
+                    # ownership unknown but not corrupt because other versions can read it. Skip without deleting/blocking,
+                    # or downgrades would block every local character's clears.
                     continue
                 unreadable.append(visit_id)
         if unreadable and strict:
@@ -1848,16 +1848,16 @@ class VisitSpool:
         path = visit_path(_spool_dir(config_dir), visit_id, STATE_SUFFIX)
 
         def drop() -> None:
-            # 与 state.json 的其他写入者同一把文件锁：不与并发的 update_state 交错
+            # Share state.json writers' file lock to prevent interleaving with update_state.
             with path_lock(path):
                 try:
                     _load_state_json(path)
                 except FileNotFoundError:
-                    # 已经不在了：没什么可删
+                    # Already absent: nothing to delete.
                     return
                 except SpoolStateCorrupt:
-                    # 仍是内容本身坏了（与查找时同一口径：不是 JSON / 不是对象 / 嵌套过深）才删；
-                    # 能解析成对象的（哪怕不合当前 schema）一律不动
+                    # Delete only intrinsically corrupt content, matching discovery's invalid JSON/nonobject/deep-nesting criteria;
+                    # never touch parsed objects, even when schema-incompatible.
                     path.unlink(missing_ok=True)
 
         await asyncio.to_thread(drop)
@@ -1870,9 +1870,9 @@ class VisitSpool:
         deleted: list[Path] = []
         remaining = []
         scanned = _scan(spool_dir)
-        # 还有待传文件的场次：封存要从 state.json 读 finalized，只剩上传文件时要拿它核对角色与
-        # 账号、给旧版无主文件补账号。推迟待传文件的那一遍连它的 state.json 一起留到补传之后
-        # （之后照常按龄回收），否则正常结束的场次会被封成 crash、无主文件永远传不出去
+        # Visits with pending uploads need state.json finalized for sealing, or for account/character checks and
+        # legacy ownerless-file account recovery when upload files stand alone. Keep state with deferred uploads until retry
+        # completes, then age-collect normally; otherwise normal endings seal as crashes and ownerless files never upload.
         pending_uploads = {visit_id for visit_id, suffix, _p, _st in scanned if suffix in _UPLOAD_SUFFIXES}
         for visit_id, suffix, path, st in scanned:
             is_upload = suffix in _UPLOAD_SUFFIXES
@@ -1886,8 +1886,8 @@ class VisitSpool:
                 remaining.append((visit_id, suffix, path, st))
                 continue
             state_path = visit_path(spool_dir, visit_id, STATE_SUFFIX)
-            # 与 state / 头行写者同一套逐路径锁（先 jsonl 后 state），锁内重判是否过期：
-            # 改写方读完过期转录、还没原子替换时删掉，它的替换会以新 mtime 把转录复活
+            # Share state/header per-path locks, JSONL then state, and recheck expiry under lock:
+            # deleting after a rewriter reads but before replacement resurrects expired transcripts with fresh mtime.
             with path_lock(visit_path(spool_dir, visit_id, SPOOL_SUFFIX)), path_lock(state_path):
                 try:
                     st = path.stat()
@@ -1899,18 +1899,18 @@ class VisitSpool:
                 if now - st.st_mtime <= _RETENTION_S:
                     remaining.append((visit_id, suffix, path, st))
                     continue
-                # 「记成日记」提交中 / 永久性失败待处理（committing / commit_failed:diary）
-                # 不设期限：state.json 里的 debrief_writes / debrief_pending 是补写的唯一依据，
-                # 删了就永远半截。只豁免 state.json：.jsonl 照常到期，否则几场被忽略的
-                # 永久失败就能把转录一直堆着
-                # 只对 state.json 本身判豁免，宽限就按它自己的年龄算
+                # Diary commits in progress / permanent failures awaiting handling (committing / commit_failed:diary)
+                # never expire: state.json debrief_writes/debrief_pending are the sole completion basis,
+                # whose deletion leaves permanent partial work. Exempt state only, not JSONL, or ignored
+                # permanent failures accumulate transcripts forever.
+                # Apply exemptions only to state.json itself, using its own age for grace periods.
                 if suffix == STATE_SUFFIX and _retention_exempt(state_path, now - st.st_mtime):
                     remaining.append((visit_id, suffix, path, st))
                     continue
-                # 还开着写的场次（墙钟往前跳过 7 天也会显得过期）整场不动：逐路径锁挡不住
-                # append，删掉后追加写进已删除的 inode、关闭时连同恢复数据一起消失。
-                # 判定与删除在同一把登记锁里，open 不能夹在中间登记
-                # 关了记忆的在飞场次只有上传流水、没有登记的记忆 spool：靠调用方的在飞判断兜住
+                # Leave entire actively written visits untouched, even if clock jumps make them look seven days old. Per-path locks cannot stop
+                # append; deletion sends writes into unlinked inodes, disappearing with recovery data on close.
+                # Check and delete under the registration lock so open cannot register between them.
+                # Memory-disabled active visits have upload journals only, no registered memory spool; use caller active-visit checks.
                 live = visit_id in live_ids
                 with _OPEN_SPOOLS_LOCK:
                     busy = live or _spool_key(visit_path(spool_dir, visit_id, SPOOL_SUFFIX)) in _OPEN_SPOOLS
@@ -1930,7 +1930,7 @@ class VisitSpool:
         total = sum(st.st_size for _v, _s, _p, st in remaining)
         if total <= VISIT_SPOOL_DIR_CAP_BYTES:
             return deleted
-        # 超过回收阈值：只回收已结清场次（最旧优先），待传文件与未结清场次一律不动。
+        # Above collection limits, reclaim settled visits oldest-first; leave pending uploads and unsettled visits untouched.
         by_visit: dict[str, list[tuple[str, Path, os.stat_result]]] = {}
         for visit_id, suffix, path, st in remaining:
             by_visit.setdefault(visit_id, []).append((suffix, path, st))
@@ -1939,9 +1939,9 @@ class VisitSpool:
             if visit_id in live_ids:
                 continue
             if any(suffix in _UPLOAD_SUFFIXES for suffix, _p, _st in files):
-                # 还有待传文件（与第 1 步同一口径）：流水封存时要从 state.json / 记忆 spool 补账号与
-                # 结束原因，只剩上传文件时要拿 state.json 核对角色与账号、给无主旧文件补账号。
-                # 整场留到上传成功或到期放弃、待传文件删掉之后，下一轮再回收
+                # Pending-upload sealing needs state.json/memory spool for account/end reasons, or state to verify identity and
+                # backfill account ownership in legacy ownerless upload files.
+                # Retain the whole visit until upload succeeds or expires and pending files disappear, then reclaim next round.
                 continue
             state = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             if state is None or not transcript_releasable(state):
@@ -1956,22 +1956,22 @@ class VisitSpool:
                 break
             jsonl = visit_path(spool_dir, visit_id, SPOOL_SUFFIX)
             state_path = visit_path(spool_dir, visit_id, STATE_SUFFIX)
-            # 与 state / 头行写者同一套逐路径锁（先 jsonl 后 state），锁内重判是否结清：
-            # 改写方读完转录、还没原子替换时删掉，它随后的替换会把文件复活
+            # Share per-path state/header locks, JSONL then state, rechecking settlement under lock:
+            # deleting between a rewriter's read and atomic replacement would resurrect the file.
             with path_lock(jsonl), path_lock(state_path):
                 state = _try_read_state(state_path)
                 if state is None or not transcript_releasable(state):
                     continue
-                # 提交中 / 永久性失败的场次（锁内重判）：转录可以回收，state.json 必须留着
+                # Recheck committing/permanently failed visits under lock: transcripts are reclaimable, state.json must remain.
                 if debrief_pins_state(state):
                     files = [(p, st) for p, st in files if p != state_path]
-                # 这场还被某个实例开着写（关闭排在队列里）：整场跳过，不能只删 state.json
-                # 留下转录，下一轮就再也判不出它已结清
+                # Some instance still writes this visit with closure queued: skip the whole visit; deleting state alone
+                # leaves transcripts whose settlement can never be recognized next sweep.
                 with _OPEN_SPOOLS_LOCK:
                     if _spool_key(jsonl) in _OPEN_SPOOLS:
                         continue
-                    # state.json 最后删，且前面有任何一个删不掉就留着它：先删了 state、转录却
-                    # 删不掉，下一轮读不到 state 就再也判不出这场已结清，转录一直占着容量
+                    # Delete state.json last and retain it if any earlier deletion fails. Otherwise an undeletable transcript
+                    # survives without readable settlement state and occupies capacity forever.
                     failed = False
                     for path, st in sorted(files, key=lambda f: f[0] == state_path):
                         if path == state_path and failed:
@@ -1980,8 +1980,8 @@ class VisitSpool:
                             deleted.append(path)
                             total -= st.st_size
                         else:
-                            # 不再用 exists() 区分「本来就没了」：访问出错时它也返回 False。
-                            # 偏保守：这一轮留下 state，下一轮读到它再回收
+                            # Do not use exists() to distinguish already absent: access errors also return False.
+                            # Conservatively retain state this round; reclaim after reading it next round.
                             failed = True
         return deleted
 
@@ -1995,14 +1995,14 @@ class VisitSpool:
                 st = path.stat()
             except FileNotFoundError:
                 continue
-            # 其余 stat 错误（共享冲突、权限）上抛：大小不明的文件不能当作不占额度，调用方按已满拒绝
+            # Propagate other stat sharing/permission errors: unknown-size files cannot count as free; callers reject as full.
             by_visit.setdefault(visit_id, []).append((suffix, st))
         total = 0
         for visit_id, files in by_visit.items():
             if not any(suffix in _UPLOAD_SUFFIXES for suffix, _st in files):
                 state = _try_read_state(visit_path(_spool_dir(config_dir), visit_id, STATE_SUFFIX))
                 if state is not None and transcript_releasable(state):
-                    # 已结清：容量回收会删它，不占准入额度；日记提交中 / 失败待处理的场次只留 state.json
+                    # Settled visits occupy no admission quota because capacity collection removes them; diary committing/failed visits retain state.json only.
                     if debrief_pins_state(state):
                         total += sum(st.st_size for suffix, st in files if suffix == STATE_SUFFIX)
                     continue
@@ -2076,9 +2076,9 @@ class VisitSpool:
         """
         live_ids: frozenset[str] = frozenset()
         if is_live is not None:
-            # 在事件循环上把在飞场次快照下来再进工作线程：is_live 读的是事件循环持有的注册表，
-            # 跨线程读可能撞上「迭代中字典被改」。快照之后才开场的串门文件都是新的，按龄回收
-            # 碰不到；容量回收只动已结清的场次，同样碰不到
+            # Snapshot active visits on the event loop before offloading: is_live reads loop-owned registries,
+            # and cross-thread iteration can race mutations. Visits starting afterward create new files untouched by age
+            # collection; capacity collection targets settled visits only, also excluding them.
             candidates = await asyncio.to_thread(cls._visit_ids, _spool_dir(config_dir), _KNOWN_SUFFIXES)
             live_ids = frozenset(visit_id for visit_id in candidates if _ask_is_live(is_live, visit_id))
         if uploads not in ("all", "defer", "only"):

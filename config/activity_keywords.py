@@ -77,7 +77,7 @@ Editorial rules: process executable names are only included when
 verified from official or well-known sources. Skipped if unsure —
 title-only is fine, fabricated process names are worse than nothing.
 No adult / NSFW entries.
-"""
+"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -314,13 +314,13 @@ OWN_APP_PROCESS_NAMES: list[str] = [
 #
 #   competitive            → propensity=restricted_screen_only, skip 0.0,
 #                            tone=terse  (LoL team fight, CS round, etc.)
-#                            screen-only 的安静感由 /proactive_chat 的
-#                            前端固定 base_interval + 后端 uniform(0, 0.5*base)
-#                            抖动承担（实际间隔 [base, 1.5*base]，0.5*base 上限
-#                            兜底 60s）；skip 不再叠加。
+#                            Screen-only quietness comes from /proactive_chat's
+#                            fixed frontend base_interval plus backend uniform(0, 0.5*base)
+#                            jitter, giving [base, 1.5*base] intervals with the 0.5*base upper bound
+#                            capped at 60s; skip no longer adds another delay.
 #   immersive horror       → propensity=restricted_screen_only, skip 0.3,
 #                            tone=hushed (silent hill, RE2, etc.) —
-#                            氛围比信息密度更怕打扰，保留整轮 skip
+#                            Ambience is more interruption-sensitive than information density; retain whole-round skip.
 #   immersive (other)      → propensity=restricted_screen_only, skip 0.0,
 #                            tone=mellow (RPG, story-driven)
 #   casual                 → propensity=open, skip 0.0, tone=playful
@@ -382,7 +382,7 @@ GAME_TITLE_KEYWORDS: list = [
     ('Love and Deepspace', ['Love and Deepspace', '恋与深空', '戀與深空'], 'casual', 'rpg'),
 
     # ============================================================
-    # Xishanju / 西山居
+    # Xishanju.
     # ============================================================
     ('JX3 / Jian Wang 3', ['JX3', 'Jian Wang 3', 'JianXia', '剑网3', '劍網3', '劍俠情緣網絡版叁']),
     ('JX3 Online HD', ['剑网3 缘起', '剑网3缘起']),
@@ -2043,10 +2043,10 @@ ENTERTAINMENT_PROCESS_NAMES: list[tuple[str, str]] = [
     ('spotify.exe', 'music'),
     ('applemusic.exe', 'music'),
     ('itunes.exe', 'music'),
-    ('cloudmusic.exe', 'music'),            # 网易云音乐
+    ('cloudmusic.exe', 'music'),            # NetEase Cloud Music.
     ('qqmusic.exe', 'music'),
     ('kugou.exe', 'music'),
-    ('kwmusic.exe', 'music'),               # 酷我音乐
+    ('kwmusic.exe', 'music'),               # Kuwo Music.
     ('foobar2000.exe', 'music'),
     ('aimp.exe', 'music'),
     ('musicbee.exe', 'music'),
@@ -2075,7 +2075,7 @@ ENTERTAINMENT_PROCESS_NAMES: list[tuple[str, str]] = [
     ('kodi.exe', 'video'),
     ('iqiyi.exe', 'video'),
     ('youku.exe', 'video'),
-    ('qqlive.exe', 'video'),                # 腾讯视频
+    ('qqlive.exe', 'video'),                # Tencent Video.
     ('bilibili.exe', 'video'),
     ('哔哩哔哩.exe', 'video'),
     ('douyin.exe', 'video'),
@@ -2088,7 +2088,7 @@ ENTERTAINMENT_PROCESS_NAMES: list[tuple[str, str]] = [
     ('kindle.exe', 'ebook'),
     ('calibre.exe', 'ebook'),
     ('calibre-ebook-viewer.exe', 'ebook'),
-    ('weread.exe', 'ebook'),                # 微信读书
+    ('weread.exe', 'ebook'),                # WeChat Reading.
     ('digitaleditions.exe', 'ebook'),
     ('kobo.exe', 'ebook'),
     ('hamster ebook converter.exe', 'ebook'),
@@ -2268,8 +2268,8 @@ ENTERTAINMENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('audius.co', 'music'),
     ('jamendo.com', 'music'),
     # Regional music
-    ('music.163.com', 'music'),             # 网易云
-    ('y.qq.com', 'music'),                  # QQ 音乐
+    ('music.163.com', 'music'),             # NetEase Cloud Music.
+    ('y.qq.com', 'music'),                  # QQ Music.
     ('kugou.com', 'music'),
     ('kuwo.cn', 'music'),
     ('music.migu.cn', 'music'),
@@ -2288,7 +2288,7 @@ ENTERTAINMENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('gaana.com', 'music'),
     ('music.yandex.ru', 'music'),
     # Podcasts
-    ('xiaoyuzhoufm.com', 'music'),          # 小宇宙
+    ('xiaoyuzhoufm.com', 'music'),          # Xiaoyuzhou.
     ('podcasts.apple.com', 'music'),
     ('pca.st', 'music'),                    # Pocket Casts
     ('overcast.fm', 'music'),
@@ -2304,8 +2304,8 @@ ENTERTAINMENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('tapas.io', 'comic'),
     ('tappytoon.com', 'comic'),
     ('kuaikanmanhua.com', 'comic'),
-    ('ac.qq.com', 'comic'),                 # 腾讯动漫
-    ('u17.com', 'comic'),                   # 有妖气
+    ('ac.qq.com', 'comic'),                 # Tencent Comics.
+    ('u17.com', 'comic'),                   # U17 Comics.
     ('comic-walker.com', 'comic'),
     ('shonenjumpplus.com', 'comic'),
     ('pocket.shonenmagazine.com', 'comic'),
@@ -2341,7 +2341,7 @@ ENTERTAINMENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('cracked.com', 'news'),
     ('mashable.com', 'news'),
     ('news.ycombinator.com', 'news'),
-    ('s.weibo.com', 'news'),                # 微博热搜
+    ('s.weibo.com', 'news'),                # Weibo trending searches.
     ('4chan.org', 'forum'),
     ('boards.4chan.org', 'forum'),
     ('news.nicovideo.jp', 'news'),
@@ -2607,7 +2607,7 @@ COMMUNICATION_PROCESS_NAMES: list[tuple[str, str]] = [
     ('thebat.exe', 'email'),
     ('thebat64.exe', 'email'),
     ('Spark.exe', 'email'),
-    ('MailMaster.exe', 'email'),  # NetEase 邮箱大师
+    ('MailMaster.exe', 'email'),  # NetEase Mail Master.
     ('HxOutlook.exe', 'email'),   # Windows 10/11 built-in Mail
     ('HxMail.exe', 'email'),
     ('hxtsr.exe', 'email'),

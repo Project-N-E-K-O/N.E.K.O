@@ -73,7 +73,7 @@ async def test_one_line_is_one_stream_raw_to_tts_and_redacted_outbound(tmp_path,
         await wait_for(lambda: _texts(wire, "host"))
         stream = host.host.streams[0]
         assert stream.request_id == _texts(wire, "host")[0]["ln"]
-        assert "".join(stream.pushed) == "小明今天也很开心。我们玩吧！"     # TTS 收原文
+        assert "".join(stream.pushed) == "小明今天也很开心。我们玩吧！"     # TTS receives raw text.
         assert stream.finished
         outbound = [p.get("txt", "") for p in wire.sent["host"] if p.get("t") in ("line_delta", "text")]
         assert outbound and all("小明" not in t for t in outbound)
@@ -81,7 +81,7 @@ async def test_one_line_is_one_stream_raw_to_tts_and_redacted_outbound(tmp_path,
         deltas = "".join(p["txt"] for p in wire.sent["host"] if p.get("t") == "line_delta" and p["ln"] == final["ln"])
         assert deltas == final["txt"] and final["truncated"] is False
         assert len([s for s in host.host.streams if s.request_id == final["ln"]]) == 1
-        # 本侧台词也进 spool 与上传流水（同一前缀）
+        # Local dialogue also enters spool/upload logs with the same prefix.
         lines = host.rt.journal.lines()
         assert any(r["from"] == "own_cat" and r["text"] == final["txt"] for r in lines)
         spool = (host.config_dir / "visit_spool" / f"{host.rt.visit_id}.jsonl").read_text(encoding="utf-8")
@@ -128,11 +128,11 @@ async def test_family_line_order_reserve_room_persist_enqueue_mirror(tmp_path, m
         assert ok is True
         human = [o for o in order if ":h:" in o or o == "record:own_human"]
         assert human == ["record:own_human", "send:text:h:"]
-        # 正在想的开场行被人类行打断：它的 text{truncated} 排在人类行之前
+        # A human interrupts the opening line still being generated; its truncated text precedes the human line.
         assert order.index("send:text:c:human_interrupt") < order.index("send:text:h:")
         assert host.host.events[-1] == "mirror_user_input" and host.host.user_inputs == ["你们好呀"]
         assert rt.outbox.pending_bytes >= 0
-        # 本页显示帧带上发起提交的 request_id（页面按它认领本地气泡）；/state 重放同样带；上线的消息不带
+        # Display frames carry the submitting request_id for local-bubble matching, as does /state replay; upstream wire messages omit it.
         def own_line():
             return [f for f in host.host.frames if f.get("type") == "visit_line"
                     and f["speaker"]["self"] is True and f["speaker"]["kind"] == "human"]
@@ -162,7 +162,7 @@ async def test_busy_refusal_has_no_side_effects(tmp_path, monkeypatch):
         assert host.host.user_inputs == []
         assert rt.room.cat_turns_since_human == turns
         assert len(rt.room._own_text_sends) == own_sends and rt.room._last_human_key is None
-        assert rt._line is line and not line.speaker.done          # 正在说的那行没被打断
+        assert rt._line is line and not line.speaker.done          # The speaking line was not interrupted.
         assert not [r for r in rt.journal.lines() if r["from"] == "own_human"]
     finally:
         hgate.set()
@@ -233,7 +233,7 @@ async def test_refusals_by_phase_and_side(tmp_path, monkeypatch):
         assert await rtm.on_start_session("Host", {"input_type": "audio", "request_id": "s2"}) is True
         assert host.host.failed == [("audio", "s2")]
         assert await rtm.route_voice_transcript("Host", "说话") is True
-        # 收尾期间：WRAPUP，不是 NOT_READY
+        # During finalization: WRAPUP, not NOT_READY.
         host.rt.apply_effects(host.rt.room.on_local_recall(host.rt.clock()))
         await rtm.route_stream_message("Host", {"input_type": "text", "data": "再见", "request_id": "w1"})
         assert host.host.statuses[-1][0] == "VISIT_INPUT_REFUSED_WRAPUP"
@@ -245,7 +245,7 @@ async def test_refusals_by_phase_and_side(tmp_path, monkeypatch):
 
 
 async def test_visit_line_for_another_visit_is_refused(tmp_path, monkeypatch):
-    # 页面以为还在另一场（重连漏了换场）：带着别的 visit_id 的串门句不能发给这一场的客人
+    # Page still thinks another visit is active after missed reconnection transitions; reject mismatched visit_id speech rather than send it to current guests.
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
     try:
@@ -261,7 +261,7 @@ async def test_visit_line_for_another_visit_is_refused(tmp_path, monkeypatch):
 
 
 async def test_only_visit_composer_lines_reach_the_peer(tmp_path, monkeypatch):
-    # 拖到头像的文件、历史拖放、页面没恢复串门态时的普通提交：拒掉，不发给对端、不镜像
+    # Reject avatar file drops/history drops/ordinary submissions before visit-state restoration, without peer delivery or mirroring.
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
     try:
@@ -271,7 +271,7 @@ async def test_only_visit_composer_lines_reach_the_peer(tmp_path, monkeypatch):
                 message["source"] = source
             assert await rtm.route_stream_message("Host", message) is True
             assert host.host.statuses[-1] == ("VISIT_INPUT_REFUSED_SOURCE", {"visit_id": rt.visit_id, "request_id": "d1"})
-        # 普通提交带的图片同样回带 request_id 的拒绝（不再静默吞掉）
+        # Ordinary image submissions likewise receive request_id-tagged rejection instead of silent loss.
         for kind in ("user_image", "avatar_drop_image"):
             assert await rtm.route_stream_message("Host", {"input_type": kind, "data": "data:image/png;base64,AA",
                                                            "request_id": "i1"}) is True
@@ -319,13 +319,13 @@ async def test_human_interrupt_stops_now_and_keeps_only_the_released_prefix(tmp_
         cat, human = _texts(wire, "host")[:2]
         assert cat["sp"] == "c" and cat["truncated"] and cat["trunc_reason"] == "human_interrupt"
         assert cat["txt"] == "第一句话。" and human["sp"] == "h"
-        # 之后前端因清管线回报 ended：不会把未念的文字当作播完放出
+        # Frontend later reports ended after pipeline cleanup; unspoken text must not count as played for handoff.
         await rtm.on_page_signal("Host", {"speech_id": stream.speech_id, "played_ms": 99999, "ended": True,
                                           "final": True})
         await settle()
         assert all("第二" not in p.get("txt", "") for p in wire.sent["host"])
         await wait_for(lambda: rt._line is None)
-        # 入史是另起的后台任务（要拿 turn_lock），行收口时可能还没写完：等它写进去再断言
+        # History writes run in separate turn_lock background tasks and may lag line closure; await actual persistence before asserting.
         await wait_for(lambda: any(
             c.startswith("第一句话。") and "第二" not in c and c != "第一句话。"
             for c in (getattr(m, "content", "") for m in host.clients[0]._conversation_history)), timeout=10)
@@ -347,8 +347,8 @@ async def test_peer_cannot_use_our_line_prefix(tmp_path, monkeypatch):
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "h:1", "i": 0, "lp": 5, "txt": "冒", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)
-        assert rt.sequencer.contiguous_seq == seq                       # 照常按 seq 推进（会回 ack）
-        await settle()  # 页面帧经显示队列异步发出
+        assert rt.sequencer.contiguous_seq == seq                       # Advance seq normally and acknowledge.
+        await settle()  # Display frames send asynchronously through the display queue.
         assert not [f for f in host.host.frames[before_frames:] if str(f.get("type")).startswith("visit_line")]
         assert rt.anomaly_count() >= anomalies + 2
         assert not [r for r in rt.journal.lines() if r["text"] == "冒充"]
@@ -370,7 +370,7 @@ async def test_a_final_text_rejected_for_its_lp_closes_the_shown_line(tmp_path, 
         await settle()
         assert [f for f in host.host.frames if f.get("type") == "visit_line_delta" and f.get("line_id") == "g:700"]
         before = len(host.host.frames)
-        # 收口这条换了 lp（lp_changed）：被拒，但 seq 照常消费、回 ack，之后不会再来
+        # Closing line changed lp, yielding lp_changed rejection while consuming seq/ack normally; it will not recur.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:700", "lp": lp + 1, "seq": seq, "sp": "c", "ad": "hc", "rt": "",
             "wu": False, "final": True, "txt": "半截话", "truncated": False, "i_done": 1}, nbytes=200)
@@ -378,9 +378,9 @@ async def test_a_final_text_rejected_for_its_lp_closes_the_shown_line(tmp_path, 
         assert rt.sequencer.contiguous_seq == seq
         aborts = [f for f in host.host.frames[before:] if f.get("type") == "visit_line_abort"
                   and f.get("line_id") == "g:700"]
-        assert aborts                                       # 已上屏的半截气泡撤掉，不留一句永远不完整的话
-        assert "g:700" not in rt.room._peer_open            # room 不再当它未收口
-        assert rt._deltas.closed("g:700")                   # 之后的分片不再上屏
+        assert aborts                                       # Remove partial displayed bubbles rather than leave permanently incomplete speech.
+        assert "g:700" not in rt.room._peer_open            # Room no longer considers it unclosed.
+        assert rt._deltas.closed("g:700")                   # Later fragments no longer display.
     finally:
         hgate.set()
         ggate.set()
@@ -390,18 +390,18 @@ async def test_a_final_text_rejected_for_its_lp_closes_the_shown_line(tmp_path, 
 async def test_peer_text_flood_is_acked_dropped_and_ends_the_visit(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
-    rt.limiter._recv_bps = 10 ** 9            # 只看 text 令牌桶，帧级字节桶放开
+    rt.limiter._recv_bps = 10 ** 9            # Isolate text token buckets, removing frame-byte constraints.
     for st in rt.limiter._senders.values():
         st.recv_bytes.rate = st.recv_bytes.capacity = st.recv_bytes.tokens = 10 ** 9
         st.recv_msgs.rate = st.recv_msgs.capacity = st.recv_msgs.tokens = 10 ** 9
-        st.text.rate = 0                      # 只看 burst：不随真实时间回填（慢机器上洪泛期间会补进令牌）
+        st.text.rate = 0                      # Isolate bursts without real-time refill, which slow-machine flooding could replenish.
     rt.limiter._recv_msgs_per_s = 10 ** 9
-    assert rt.limiter._senders                # 对端的 sender 已建好，上面的设置生效
+    assert rt.limiter._senders                # Peer sender exists, so settings above take effect.
     seq = rt.sequencer.contiguous_seq
     try:
         for i in range(200):
             seq += 1
-            # 对端人类行：不计入 80 行违约守卫，只受 text 令牌桶与整场上限约束
+            # Peer human lines do not count toward the 80-catgirl-line violation guard, only text buckets and visit totals.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": f"g:{100 + i}", "lp": 10 + i, "seq": seq, "sp": "h", "ad": "gh",
                 "rt": "", "wu": False, "final": True, "txt": f"第{i}条", "truncated": False, "i_done": 0},
@@ -419,7 +419,7 @@ async def test_peer_text_flood_is_acked_dropped_and_ends_the_visit(tmp_path, mon
 
 
 async def test_simultaneous_openings_sort_the_same_on_both_sides(tmp_path, monkeypatch):
-    # 两侧都以 lp=1 开场，guest 那句先说完、先到 host：两侧下一轮喂给 LLM 的历史都是「host 句、guest 句」
+    # Both sides open at lp=1; guest finishes/reaches host first, but both next-turn LLM histories order host then guest.
     host_open = asyncio.Event()
     after = asyncio.Event()
     host_replies = Replies(queue=[[host_open, "主人家开场。"]])
@@ -444,7 +444,7 @@ async def test_simultaneous_openings_sort_the_same_on_both_sides(tmp_path, monke
             return h[0] < g[0]
 
         assert host_first(host.clients[0].seen[-1]) and host_first(guest.clients[0].seen[-1])
-        # 历史里只有真实台词：上一轮的提问（到达通知）已摘掉
+        # History contains only real dialogue; the prior arrival-notification question was removed.
         from config.prompts.prompts_visit import get_visit_arrival_notice
 
         assert get_visit_arrival_notice("host", host.rt.lang) not in host.clients[0].seen[-1]
@@ -471,7 +471,7 @@ async def test_goodbye_line_is_capped_at_forty_characters(tmp_path, monkeypatch)
         assert len(goodbye["txt"]) == 40 and goodbye["trunc_reason"] == "goodbye_cap"
         stream = [s for s in guest.host.streams if s.request_id == goodbye["ln"]][0]
         assert "".join(stream.pushed) == goodbye["txt"]
-        assert "wrap_up" in wire.sent_types("guest")              # 告别行开口前先发 wrap_up{speaking}
+        assert "wrap_up" in wire.sent_types("guest")              # Send wrap_up{speaking} before farewell speech starts.
         speaking = [p for p in wire.sent["guest"] if p.get("t") == "wrap_up" and p.get("ph") == "speaking"]
         assert speaking and speaking[0]["ln"] == goodbye["ln"]
     finally:
@@ -504,7 +504,7 @@ async def test_ending_closes_the_line_in_progress_before_leave(tmp_path, monkeyp
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "line_delta"])
         status, _ = await rtm.end_visit("Host", host.rt.visit_id, "route_end")
         assert status == 200
-        # 收口这一行期间接管还在：输入仍归串门（拒掉），释放接管之后才交还普通聊天
+        # Takeover remains held while closing this line, so visits still reject input; return ordinary chat only after release.
         assert rtm.is_visit_route_active("Host") and host.rt.takeover_token is not None
         await wait_for(lambda: host.host.released)
         assert not rtm.is_visit_route_active("Host") and rtm.is_visit_route_locked("Host")
@@ -586,7 +586,7 @@ async def test_a_peer_goodbye_is_cleaned_and_capped_before_it_reaches_our_prompt
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
     try:
-        forged = "再见" * 200                                # 对端不守 LineSpeaker 的 40 字上限
+        forged = "再见" * 200                                # Peer violates LineSpeaker's 40-character limit.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:90", "lp": 90, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
             "ad": "hc", "rt": "", "wu": True, "final": True, "txt": forged, "truncated": False, "i_done": 0,
@@ -605,10 +605,10 @@ async def test_peer_back_after_a_timeout_class_drop_restarts_the_heartbeat_clock
     rt = host.rt
     try:
         now = clock()
-        rt.liveness.peer_last_seen = now - 25               # 心跳快到 30 s 判死
-        rt._on_peer_presence(False, 1, now)                 # 超时类断开：不起重入宽限
+        rt.liveness.peer_last_seen = now - 25               # Heartbeat approaches the 30 s death threshold.
+        rt._on_peer_presence(False, 1, now)                 # Timeout disconnection creates no reentry grace period.
         assert rt.liveness.peer_departed_at is None
-        rt._on_peer_presence(True, None, now + 1)           # vendor 又确认对端在场
+        rt._on_peer_presence(True, None, now + 1)           # Vendor confirms peer presence again.
         assert rt.liveness.peer_last_seen == now + 1
     finally:
         hgate.set()
@@ -644,10 +644,10 @@ async def test_a_rate_limited_peer_line_shows_none_of_its_deltas(tmp_path, monke
             "t": "text", "v": 1, "ln": "g:77", "lp": 77, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
             "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "片0片1", "truncated": False, "i_done": 2,
         }, nbytes=200)
-        await settle()  # 页面帧经显示队列异步发出
+        await settle()  # Display frames send asynchronously through the display queue.
         shown = [f for f in host.host.frames[before:] if str(f.get("type")).startswith("visit_line")]
-        assert shown == []                                   # 增量与整行都不上屏
-        assert len(text_calls) == 1                          # 一行只取一次配额
+        assert shown == []                                   # Neither deltas nor whole lines display.
+        assert len(text_calls) == 1                          # Reserve quota once per line.
         assert rt.rate_dropped == dropped + 1
         assert not [r for r in rt.journal.lines() if r["text"] == "片0片1"]
     finally:
@@ -683,7 +683,7 @@ async def test_an_overlapping_peer_line_counts_as_one_anomaly(tmp_path, monkeypa
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
     try:
-        for ln, lp in (("g:60", 60), ("g:61", 61)):          # 旧行还没收口就开了新行
+        for ln, lp in (("g:60", 60), ("g:61", 61)):          # New line begins before the old closes.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "line_delta", "v": 1, "ln": ln, "i": 0, "lp": lp, "txt": "嗯", "sp": "c", "ad": "hc",
                 "rt": "", "wu": False}, nbytes=200)
@@ -730,7 +730,7 @@ async def test_a_family_line_reserves_room_for_the_final_of_the_line_it_cuts(tmp
                                                 "source": "neko_visit:guest_cat"})
         family = [n for sp, n in sizes if sp == "h"][0]
         cut = [n for sp, n in sizes if sp == "c"][0]
-        assert asked == [family + cut] and cut > 0          # 被打断那行的 final 一并预留
+        assert asked == [family + cut] and cut > 0          # Reserve the interrupted line's final too.
     finally:
         pause.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -744,7 +744,7 @@ async def test_repeated_lp_violations_end_the_visit(tmp_path, monkeypatch):
     try:
         before = rt.journal._anomalies
         for i in range(VISIT_ANOMALY_FINALIZE_COUNT):
-            far = rt.room.max_lp_seen + VISIT_LP_MAX_JUMP + 100 + i     # 跳得太远：lp_out_of_range
+            far = rt.room.max_lp_seen + VISIT_LP_MAX_JUMP + 100 + i     # Excessive jump: lp_out_of_range.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "line_delta", "v": 1, "ln": f"g:{300 + i}", "i": 0, "lp": far, "txt": "嗯", "sp": "c",
                 "ad": "hc", "rt": "", "wu": False}, nbytes=200)
@@ -771,13 +771,13 @@ async def test_repeated_line_meta_mismatches_end_the_visit(tmp_path, monkeypatch
     rt.limiter._recv_msgs_per_s = 10 ** 9
     try:
         n = VISIT_ANOMALY_FINALIZE_COUNT + 2
-        for i in range(n):                                    # 先把这些行都按「人类」开口
+        for i in range(n):                                    # Open all these lines as human first.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "line_delta", "v": 1, "ln": f"g:{400 + i}", "i": 0, "lp": 400 + i, "txt": "嗯", "sp": "h",
                 "ad": "hc", "rt": "", "wu": False}, nbytes=200)
         for i in range(n):
             ln, lp = f"g:{400 + i}", 400 + i
-            # 收口改成猫娘：同一行两种解释，按协议异常丢弃；连续这样就按协议违约结束
+            # Closing as catgirl contradicts the same line's type; discard as protocol error and end on repeated violations.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": ln, "lp": lp, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
                 "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "嗯", "truncated": False, "i_done": 1,
@@ -795,12 +795,12 @@ async def test_the_owed_ack_still_goes_out_after_our_leave_completed(tmp_path, m
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
     try:
-        monkeypatch.setattr(rt.outbox, "leave_done", lambda now=None: True)   # 本侧 leave 已确认 / 宽限到点
+        monkeypatch.setattr(rt.outbox, "leave_done", lambda now=None: True)   # Local leave acknowledged or grace expired.
         owed = {"seq": 7}
         monkeypatch.setattr(rt.sequencer, "poll_ack", lambda now, force=False: owed.pop("seq", None))
         await rt._close_channel("peer_left")
         acks = [p for p in wire.sent["host"] if p.get("t") == "ack"]
-        assert acks and acks[-1]["seq"] == 7                    # 对端的 leave 不用白等补传窗口
+        assert acks and acks[-1]["seq"] == 7                    # Peer leave need not waste time waiting for gap repair.
     finally:
         hgate.set()
         ggate.set()
@@ -812,7 +812,7 @@ async def test_early_speaking_wrap_ups_with_bad_lp_count_toward_the_cutoff(tmp_p
 
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
-    for st in rt.limiter._senders.values():                  # 只看违约计数：ctl 4/s 的限速放开
+    for st in rt.limiter._senders.values():                  # Isolate violation counts by removing the 4/s control rate limit.
         st.ctl.rate = st.ctl.capacity = st.ctl.tokens = 10 ** 9
         st.recv_msgs.rate = st.recv_msgs.capacity = st.recv_msgs.tokens = 10 ** 9
     rt.limiter._recv_msgs_per_s = 10 ** 9
@@ -820,7 +820,7 @@ async def test_early_speaking_wrap_ups_with_bad_lp_count_toward_the_cutoff(tmp_p
         before = rt.journal._anomalies
         for i in range(VISIT_ANOMALY_FINALIZE_COUNT + 2):
             far = rt.room.max_lp_seen + VISIT_LP_MAX_JUMP + 100 + i
-            # wrap_up{speaking} 一律走提前交付，不经过 _rx_wrap_up
+            # wrap_up{speaking} always delivers early, bypassing _rx_wrap_up.
             await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
                 "t": "wrap_up", "v": 1, "seq": rt.sequencer.contiguous_seq + 1, "lp": far, "ph": "speaking",
                 "ln": f"g:{500 + i}", "reason": "quiet", "initiated_by": "host"}, nbytes=200)
@@ -845,10 +845,10 @@ async def test_replayed_transcript_lines_keep_their_own_line_ids(tmp_path, monke
         live = {key(f): f["line_id"] for f in host.host.frames if f.get("type") == "visit_line"}
         replay = rt.snapshot()["transcript"]
         ids = [r["line_id"] for r in replay]
-        assert all(ids) and len(set(ids)) == len(ids)       # 页面按 line_id 建气泡：不能塌成一个
+        assert all(ids) and len(set(ids)) == len(ids)       # Page bubbles key by line_id and must not collapse together.
         matched = [r for r in replay if key(r) in live]
         assert len(matched) >= 2
-        assert all(r["line_id"] == live[key(r)] for r in matched)   # 与直播时同一行同一个 id
+        assert all(r["line_id"] == live[key(r)] for r in matched)   # Same line, same ID as live display.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -876,12 +876,12 @@ async def test_a_valid_early_wrap_up_resets_the_violation_streak(tmp_path, monke
         rt.room.violation_streak = 19
         rt._on_early_wrap_up({"t": "wrap_up", "ph": "speaking", "lp": rt.room.max_lp_seen + 1, "ln": "g:900",
                               "reason": "quiet"}, clock())
-        assert rt.room.violation_streak == 0                 # 合法的这一条同样算「中间有过正常消息」
+        assert rt.room.violation_streak == 0                 # This valid message also breaks a consecutive violation sequence.
         monkeypatch.setattr(rt.room, "on_incoming_wrap_up", lambda *a, **k: RoomEffects(violation="wrap_up_order"))
         rt.room.violation_streak = 3
         rt._on_early_wrap_up({"t": "wrap_up", "ph": "speaking", "lp": rt.room.max_lp_seen + 1, "ln": "g:901",
                               "reason": "quiet"}, clock())
-        assert rt.room.violation_streak == 3                 # 本身违约的不清零
+        assert rt.room.violation_streak == 3                 # A violating message cannot reset violations itself.
     finally:
         hgate.set()
         ggate.set()
@@ -900,16 +900,16 @@ async def test_replayed_or_late_line_deltas_are_not_forwarded(tmp_path, monkeypa
         before = len(host.host.frames)
         anomalies = rt.journal._anomalies
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(0, "原本的"), nbytes=200)
-        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(0, "改写的"), nbytes=200)   # 同一个 i 重放
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(0, "改写的"), nbytes=200)   # Replay the same i.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:70", "lp": 70, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
             "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "原本的", "truncated": False, "i_done": 1,
         }, nbytes=200)
-        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(1, "收口之后"), nbytes=200)  # 已收口
-        await settle()  # 页面帧经显示队列异步发出
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(1, "收口之后"), nbytes=200)  # Already finalized.
+        await settle()  # Display frames send asynchronously through the display queue.
         shown = [f["text"] for f in host.host.frames[before:] if f.get("type") == "visit_line_delta"]
         assert shown == ["原本的"]
-        assert rt.journal._anomalies == anomalies + 1          # 重放计一次异常；收口后的晚到静默丢
+        assert rt.journal._anomalies == anomalies + 1          # Replay counts as one error; silently drop late fragments after closure.
     finally:
         hgate.set()
         ggate.set()
@@ -922,7 +922,7 @@ async def test_soft_decoder_anomalies_are_counted_without_the_streak(tmp_path, m
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
     try:
-        rt.room.violation_streak = VISIT_ANOMALY_FINALIZE_COUNT - 1    # 再来一次连续违约就收尾
+        rt.room.violation_streak = VISIT_ANOMALY_FINALIZE_COUNT - 1    # Another consecutive violation finalizes.
         journal, room, streak = rt.journal._anomalies, rt.room.anomalies_total, rt.room.violation_streak
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:80", "lp": 80, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
@@ -930,7 +930,7 @@ async def test_soft_decoder_anomalies_are_counted_without_the_streak(tmp_path, m
             "tail_ms": 999999,
         }, nbytes=200)
         assert rt.journal._anomalies == journal + 1 and rt.room.anomalies_total == room + 1
-        assert rt.room.violation_streak <= streak                # 消息本身照常处理，不算进连续违约
+        assert rt.room.violation_streak <= streak                # Process the message normally without counting a consecutive violation.
         assert rt.exit_task is None
         assert [r for r in rt.journal.lines() if r["text"] == "你好"]
     finally:
@@ -950,7 +950,7 @@ async def test_a_line_rejected_as_an_overlap_is_dropped_whole(tmp_path, monkeypa
     try:
         before = len(host.host.frames)
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta("g:60", 60), nbytes=200)
-        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta("g:61", 60), nbytes=200)   # 同 lp 又开一行
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta("g:61", 60), nbytes=200)   # Another line opens at the same lp.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:61", "lp": 60, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
             "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "交叠的那行", "truncated": False, "i_done": 1,
@@ -980,7 +980,7 @@ async def test_abort_and_typing_with_a_bad_lp_are_dropped_as_anomalies(tmp_path,
             nbytes=200)
         await rt.on_recv(from_vid=GUEST_VID, cmd=3, payload={"t": "typing", "v": 1, "lp": far + 1, "sp": "c"},
                          nbytes=200)
-        await settle()  # 页面帧经显示队列异步发出
+        await settle()  # Display frames send asynchronously through the display queue.
         types = [f.get("type") for f in host.host.frames[before:]]
         assert "visit_line_abort" not in types and "visit_typing" not in types
         assert rt.journal._anomalies == anomalies + 2
@@ -998,7 +998,7 @@ async def test_family_input_waits_until_ready_is_queued(tmp_path, monkeypatch):
 
     def spy(msg, **kw):
         if msg.get("t") == "ready" and "status" not in seen:
-            # ready 入队前一刻：激活已完成、阶段已是 active，亲人这时打的字必须被拒
+            # Just before ready enqueue: activation completed and phase is active, so family text must already be rejected.
             seen["phase"] = hrt.phase
         return real_send(msg, **kw)
 
@@ -1030,7 +1030,7 @@ async def test_only_the_verified_peer_can_end_the_visit_by_overflowing(tmp_path,
     try:
         await rt.on_recv(from_vid="g_" + "z" * 24, cmd=3, payload={"t": "typing", "v": 1, "lp": 1, "sp": "c"},
                          nbytes=200)
-        assert rt.exit_task is None                         # 同房第三人刷爆自己的桶：结束不了这场
+        assert rt.exit_task is None                         # A third room participant exhausting their own bucket cannot end this visit.
         await rt.on_recv(from_vid=GUEST_VID, cmd=3, payload={"t": "typing", "v": 1, "lp": 1, "sp": "c"},
                          nbytes=200)
         assert rt.finalize_reason == "peer_protocol_violation"
@@ -1051,10 +1051,10 @@ async def test_frames_sent_elsewhere_get_the_same_bookkeeping(tmp_path, monkeypa
     monkeypatch.setattr(rt.outbox, "written", lambda frame, now=None: written.append(frame.seq))
     try:
         rt.on_frame_sent(SimpleNamespace(seq=9, t="wrap_up", retransmit=False, payload={"ph": "begin"}))
-        assert calls == ["begin"] and len(sent) == 1        # 收尾步骤计时器照常起，存活计时也记上
-        assert written == [9]                               # outbox 记下真正写出去的时刻（宽限 / 投递计时的起点）
+        assert calls == ["begin"] and len(sent) == 1        # Start finalization-step timers and record liveness timing normally.
+        assert written == [9]                               # Outbox records actual write time, the starting point for grace/delivery timers.
         rt.on_frame_sent(SimpleNamespace(seq=9, t="wrap_up", retransmit=True, payload={"ph": "begin"}))
-        assert calls == ["begin", "begin"]                  # 重传也报：首发可能没写出去，room 只认第一次
+        assert calls == ["begin", "begin"]                  # Report retransmissions too because initial writes may fail; room uses only the first successful write.
     finally:
         hgate.set()
         ggate.set()
@@ -1082,7 +1082,7 @@ async def test_a_failing_sent_bookkeeping_does_not_stop_the_rest_of_the_batch(tm
     monkeypatch.setattr(rt, "on_frame_sent", broken)
     try:
         await rt.flush()
-        assert sent == [1, 2] and failed == []                 # 记账出错：这一批后面的帧照样发出
+        assert sent == [1, 2] and failed == []                 # Accounting failure must not block later frames in this batch.
     finally:
         hgate.set()
         ggate.set()
@@ -1104,10 +1104,10 @@ async def test_a_line_abort_after_the_final_text_changes_nothing(tmp_path, monke
         before = len(host.host.frames)
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_abort", "v": 1, "ln": "g:71", "lp": 71, "i_done": 0, "reason": "human_interrupt"},
-            nbytes=200)                                      # 迟到 / 重放的 abort
-        await settle()  # 页面帧经显示队列异步发出
+            nbytes=200)                                      # Late/replayed abort.
+        await settle()  # Display frames send asynchronously through the display queue.
         assert not [f for f in host.host.frames[before:] if f.get("type") == "visit_line_abort"]
-        # 被接受的 abort 之后，那一行的分片不再上屏
+        # After accepted abort, that line's fragments no longer display.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:72", "i": 0, "lp": 72, "txt": "第一片", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)
@@ -1119,7 +1119,7 @@ async def test_a_line_abort_after_the_final_text_changes_nothing(tmp_path, monke
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:72", "i": 1, "lp": 72, "txt": "停嘴之后", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)
-        await settle()  # 页面帧经显示队列异步发出
+        await settle()  # Display frames send asynchronously through the display queue.
         assert not [f for f in host.host.frames[mark:] if f.get("type") == "visit_line_delta"]
     finally:
         hgate.set()
@@ -1141,11 +1141,11 @@ async def test_an_early_speaking_wrap_up_does_not_make_the_gap_filler_look_reord
     try:
         seq = rt.sequencer.contiguous_seq
         lp = rt.room.max_lp_seen
-        # begin（seq+1）丢了；speaking（seq+2）先到、提前交付
+        # begin at seq+1 was lost; speaking at seq+2 arrives first and delivers early.
         await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
             "t": "wrap_up", "v": 1, "seq": seq + 2, "lp": lp + 11, "ph": "speaking", "ln": "g:600",
             "reason": "quiet", "initiated_by": "host"}, nbytes=200)
-        # 缺口补到：同一发送方更早的 begin，lp 更小
+        # Gap fills with the same sender's earlier begin and lower lp.
         await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
             "t": "wrap_up", "v": 1, "seq": seq + 1, "lp": lp + 10, "ph": "begin", "ln": "g:600",
             "reason": "quiet", "initiated_by": "host"}, nbytes=200)
@@ -1168,7 +1168,7 @@ async def test_a_stuck_display_does_not_hold_up_the_receive_path(tmp_path, monke
     real_send = host.host.send_frame
 
     async def slow_send(payload):
-        await stuck.wait()                                   # 页面 socket 背压：每次写都卡住
+        await stuck.wait()                                   # Page socket backpressure blocks every write.
         return await real_send(payload)
 
     host.host.send_frame = slow_send
@@ -1183,11 +1183,11 @@ async def test_a_stuck_display_does_not_hold_up_the_receive_path(tmp_path, monke
                 "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "整句", "truncated": False, "i_done": 100,
             }, nbytes=200)
 
-        await asyncio.wait_for(burst(), 2)                   # 收包路径不等页面
-        assert rt.display_dropped > 0                        # 积压时丢的是字幕分片
+        await asyncio.wait_for(burst(), 2)                   # Receive processing does not wait for the page.
+        assert rt.display_dropped > 0                        # Discard subtitle fragments under backlog.
         stuck.set()
         await wait_for(lambda: any(f.get("type") == "visit_line" and f.get("line_id") == "g:73"
-                                   for f in host.host.frames))   # 整句从不丢
+                                   for f in host.host.frames))   # Never drop whole sentences.
     finally:
         stuck.set()
         hgate.set()
@@ -1208,7 +1208,7 @@ async def test_the_upload_record_is_taken_before_a_slow_spool_write(tmp_path, mo
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(rt.record_line("own_cat", side="host", lp=500, ln="h:500", text="最后一句",
                                                   truncated=True), 0.2)
-        # spool 还卡着，关机这时封存：上传记录里已经有这一行
+        # Spool remains stuck when shutdown seals; upload records already contain this line.
         assert [r for r in rt.journal.lines() if r["text"] == "最后一句"]
     finally:
         stuck.set()
@@ -1225,12 +1225,12 @@ async def test_the_display_queue_is_bounded_and_dropped_when_the_visit_ends(tmp_
 
     async def slow_send(payload):
         if payload.get("type") == "visit_line":
-            await stuck.wait()                               # 只有显示队列这一路卡住
+            await stuck.wait()                               # Only the display queue path is blocked.
         return await real_send(payload)
 
     host.host.send_frame = slow_send
     try:
-        for i in range(10):                                   # 队首是整句：满了也不能先丢它们
+        for i in range(10):                                   # Whole sentences at queue head must survive even when full.
             rt._post_display({"type": "visit_line", "line_id": f"g:{i}"})
         for i in range(50):
             rt._post_display({"type": "visit_line_delta", "line_id": f"g:{i}", "i": 0}, droppable=True)
@@ -1238,14 +1238,14 @@ async def test_the_display_queue_is_bounded_and_dropped_when_the_visit_ends(tmp_
             rt._post_display({"type": "visit_line", "line_id": f"g:{i}"})
         queued = list(rt._display)
         finals = [f for f in queued if f["type"] == "visit_line"]
-        # 满了先丢最旧的字幕分片；整句一条不丢（整句受每场句数上限约束，堆不到无限）
+        # When full, discard oldest subtitle fragments first; keep all whole sentences, whose per-visit count bounds backlog.
         assert len(finals) == 250 and len(queued) == 256
         assert len([f for f in queued if f["type"] == "visit_line_delta"]) == 6
         task = rt._display_task
         rt.request_finalize("route_end")
         await finish(rt, clock)
         await settle()
-        assert not rt._display and task.cancelled()          # 场次结束：队列清空、发帧任务停掉
+        assert not rt._display and task.cancelled()          # Visit ended: clear the queue and stop frame-sending tasks.
     finally:
         stuck.set()
         hgate.set()
@@ -1261,7 +1261,7 @@ async def test_peer_line_effects_apply_before_the_line_is_persisted(tmp_path, mo
     real_apply = rt.apply_effects
 
     async def slow_record(*args, **kwargs):
-        await stuck.wait()                                   # 磁盘慢：落盘卡住
+        await stuck.wait()                                   # Slow disk blocks persistence.
 
     def spy(eff):
         applied.append(eff)
@@ -1283,9 +1283,9 @@ async def test_peer_line_effects_apply_before_the_line_is_persisted(tmp_path, mo
             "t": "text", "v": 1, "ln": "g:74", "lp": 74, "seq": rt.sequencer.contiguous_seq + 1, "sp": "h",
             "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "等一下", "truncated": False, "i_done": 0,
         }, nbytes=200))
-        await wait_for(lambda: produced and produced[0] in applied)   # 这一行的停嘴 / 取消待发回复不等落盘
+        await wait_for(lambda: produced and produced[0] in applied)   # Stop speech/cancel pending replies without waiting for this line's persistence.
         assert not receiving.done()
-        assert produced[0].reply is None and not produced[0].say_goodbye  # 回复留到进了历史之后
+        assert produced[0].reply is None and not produced[0].say_goodbye  # Reply waits until history insertion.
         stuck.set()
         await asyncio.gather(receiving)
     finally:
@@ -1304,7 +1304,7 @@ async def test_a_line_whose_generation_failed_midway_is_marked_truncated(tmp_pat
     try:
         await wait_for(lambda: [p for p in _texts(wire, "host") if p.get("trunc_reason") == "llm_error"], timeout=10)
         failed = [p for p in _texts(wire, "host") if p.get("trunc_reason") == "llm_error"][0]
-        assert failed["truncated"] is True and failed["txt"]     # 有前缀也标截断，不当成说完的一句
+        assert failed["truncated"] is True and failed["txt"]     # Mark truncated even with a spoken prefix, never as a completed sentence.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -1316,7 +1316,7 @@ async def test_no_display_frame_after_the_visit_ended(tmp_path, monkeypatch):
         rt.request_finalize("route_end")
         await finish(rt, clock)
         before = len(host.host.frames)
-        rt._post_display({"type": "visit_line", "line_id": "g:1"})   # 慢落盘的 _rx_text 这时才回来
+        rt._post_display({"type": "visit_line", "line_id": "g:1"})   # Slow-persisting _rx_text only returns now.
         await settle()
         assert len(host.host.frames) == before and not rt._display
     finally:
@@ -1376,9 +1376,9 @@ async def test_a_ceremony_turn_gives_up_when_the_session_lock_stays_busy(tmp_pat
                            forget_untracked=lambda: None)
     real_session, rt.session = rt.session, stub
     try:
-        await stub.turn_lock.acquire()                        # 收尾时没停下的那一轮还占着锁
+        await stub.turn_lock.acquire()                        # The unstoppable round still holds its lock during finalization.
         out = await asyncio.wait_for(rt.one_shot_turn("回家说一句", timeout=0.2), 3)
-        assert out is None                                    # 用固定句，不无限等
+        assert out is None                                    # Use fixed fallback speech rather than wait forever.
     finally:
         rt.session = real_session
         hgate.set()
@@ -1406,16 +1406,16 @@ async def test_a_ceremony_turn_shares_one_deadline_between_lock_and_generation(t
     async def slow_stream(text, **kwargs):
         await asyncio.sleep(2)
 
-    # 替身会话：只看 one_shot_turn 自己的计时，不受正在进行的那一轮占锁影响
+    # Double session isolates one_shot_turn's own timing from the ongoing round's lock.
     stub = SimpleNamespace(turn_lock=asyncio.Lock(), history=[], client=SimpleNamespace(stream_text=slow_stream),
                            set_sink=lambda sink: None, forget_untracked=lambda: None)
     real_session, rt.session = rt.session, stub
     try:
         await stub.turn_lock.acquire()
-        asyncio.get_running_loop().call_later(0.3, stub.turn_lock.release)    # 锁用掉大半个期限才放出来（留 200 ms 余量给调度）
+        asyncio.get_running_loop().call_later(0.3, stub.turn_lock.release)    # Release the lock after most of the deadline, leaving 200 ms scheduling margin.
         out = await asyncio.wait_for(rt.one_shot_turn("回家说一句", timeout=0.5), 3)
         assert out is None
-        # 生成只拿到拿锁之后剩下的那点时限（约 0.2 s），不是另给一个完整的 0.5 s；看参数、不靠墙钟
+        # Generation gets only remaining time, about 0.2 s, not a fresh 0.5 s; inspect arguments rather than wall time.
         assert len(budgets) == 1 and budgets[0] < 0.35
     finally:
         rt.session = real_session
@@ -1435,7 +1435,7 @@ async def test_state_replay_keeps_the_full_visit_line_shape(tmp_path, monkeypatc
         assert common
         for ln in common:
             for key in ("addressee", "reply_to", "goodbye", "i_done", "speaker", "text"):
-                assert replay[ln][key] == live[ln][key]       # 重载后与直播时同一份形状
+                assert replay[ln][key] == live[ln][key]       # Reload preserves the live frame shape.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -1456,11 +1456,11 @@ async def test_a_line_whose_llm_ignores_cancellation_still_reaches_the_transcrip
         line = rt._line
         llm = line.llm_task
         real_cancel = llm.cancel
-        llm.cancel = lambda *a, **k: False                    # LLM 协程不肯停（还占着会话锁）
+        llm.cancel = lambda *a, **k: False                    # LLM coroutine refuses to stop and retains the session lock.
         rt.interrupt_line("human_interrupt")
         await wait_for(lambda: [r for r in rt.journal.lines() if r["from"] == "own_cat" and r["truncated"]],
-                       timeout=3)                             # 已发出的那行照样进转录
-        await wait_for(lambda: line.task.done(), timeout=3)   # 这一行的任务本身也收得了尾，不卡在入史等锁上
+                       timeout=3)                             # Emitted lines still enter transcripts.
+        await wait_for(lambda: line.task.done(), timeout=3)   # The line task also finalizes without hanging on locked history insertion.
         llm.cancel = real_cancel
     finally:
         pause.set()
@@ -1479,7 +1479,7 @@ async def test_a_line_whose_llm_ignores_the_deadline_still_ends(tmp_path, monkey
             try:
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
-                continue                                      # 吞掉取消：到点了也不停
+                continue                                      # Swallow cancellation and continue after the deadline.
 
     monkeypatch.setattr(harness.FakeClient, "stream_text", stubborn)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
@@ -1487,7 +1487,7 @@ async def test_a_line_whose_llm_ignores_the_deadline_still_ends(tmp_path, monkey
     try:
         await wait_for(lambda: rt._line is not None)
         line = rt._line
-        await wait_for(lambda: line.task.done(), timeout=3)   # 到点就收口，不等不肯停的生成
+        await wait_for(lambda: line.task.done(), timeout=3)   # Finalize at deadline without waiting for uncooperative generation.
         assert line.llm_error == "timeout"
     finally:
         release.set()
@@ -1507,7 +1507,7 @@ async def test_an_abandoned_generation_cannot_leak_into_the_next_line(tmp_path, 
 
     async def stream_text(self, text, **kw):
         if self.replies is not host_replies:
-            # 只卡主人这侧：客人照常说话，不会先按 llm_error 收尾、把主人带进 peer_left
+            # Stall only the host; guests speak normally, avoiding premature llm_error causing host peer_left.
             await real_stream(self, text, **kw)
             return
         calls[id(self)] = calls.get(id(self), 0) + 1
@@ -1519,8 +1519,8 @@ async def test_an_abandoned_generation_cannot_leak_into_the_next_line(tmp_path, 
             try:
                 await asyncio.sleep(0.02)
             except asyncio.CancelledError:
-                continue                                      # 吞掉取消，到点后还在跑
-        await self.on_text_delta("串话", True)                 # 被撇下之后才出的字
+                continue                                      # Swallow cancellation and keep running after deadline.
+        await self.on_text_delta("串话", True)                 # Text emitted after abandonment.
         self._conversation_history.append(AIMessage(content="幽灵回复"))
 
     monkeypatch.setattr(harness.FakeClient, "stream_text", stream_text)
@@ -1531,29 +1531,29 @@ async def test_an_abandoned_generation_cannot_leak_into_the_next_line(tmp_path, 
     real_finish = rt._finish_line
 
     async def finish_spy(line):
-        finished.append(line)                                 # 每一行收口时的结局（不靠抓 rt._line 的瞬时状态）
+        finished.append(line)                                 # Outcomes at each line closure, without racing transient rt._line state.
         return await real_finish(line)
 
     rt._finish_line = finish_spy
     try:
         await wait_for(lambda: rt._line is not None, timeout=10)
-        opening = rt._line                                    # 主人的开场那行
-        await wait_for(lambda: session.stray is not None, timeout=10)  # 开场那行到点，生成被撇下
-        rt.schedule_reply(None)                               # 撇下的还在跑时轮到下一行（已有一行在排 / 在说就排在它后面）
+        opening = rt._line                                    # Host opening line.
+        await wait_for(lambda: session.stray is not None, timeout=10)  # Opening deadline expires and abandons generation.
+        rt.schedule_reply(None)                               # Next line starts while abandoned generation runs, queuing behind any already queued/speaking line.
         await wait_for(lambda: rt.finalize_reason is not None, timeout=10)
-        assert rt.finalize_reason == "llm_error"              # 等满一个时限还停不下：这场说不了话，按 llm_error 收尾
-        # 先置 finalize_reason，那一行的收口在 _run_line 的 finally 里稍后才到
+        assert rt.finalize_reason == "llm_error"              # Still unstoppable after one full timeout: speech is unavailable, finalize as llm_error.
+        # Set finalize_reason first; _run_line's finally closes the line afterward.
         await wait_for(lambda: any(line is not opening for line in finished), timeout=10)
         later = [line for line in finished if line is not opening]
         assert later and all(line.llm_error == "timeout" for line in later)
-        assert calls[id(session.client)] == 1                 # 不开新流（同一个 client 上不并发两次生成）
-        release.set()                                         # 撇下的那次这时吐字、往历史里追加
+        assert calls[id(session.client)] == 1                 # Do not open another stream concurrently on the same client.
+        release.set()                                         # Abandoned generation now emits text and appends history.
         await wait_for(lambda: session.stray is None or session.stray.done(), timeout=10)
         await settle()
         contents = [getattr(m, "content", "") for m in session.history]
-        assert not [c for c in contents if "幽灵回复" in str(c)]  # 它追加的回复被摘掉
+        assert not [c for c in contents if "幽灵回复" in str(c)]  # Remove its appended reply.
         own = [r["text"] for r in rt.journal.lines() if r["from"] == "own_cat"]
-        assert not [t for t in own if "串话" in t]             # 它的字没进任何一行
+        assert not [t for t in own if "串话" in t]             # Its text entered no line.
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1583,7 +1583,7 @@ async def test_a_home_coming_turn_is_bounded_even_if_the_llm_ignores_cancellatio
     try:
         text = await asyncio.wait_for(
             rtm_talk.TalkMixin.one_shot_turn(owner, "回家了", timeout=0.2, without_history=True), 3)
-        assert text is None                                   # 到点按失败收口，退出流程不被卡住
+        assert text is None                                   # Fail/finalize at deadline without blocking exit.
         assert session.stray is not None and not session.stray.done()
         assert not session.turn_lock.locked()
     finally:
@@ -1611,12 +1611,12 @@ async def test_a_stream_abandoned_while_its_caller_is_cancelled_twice_is_still_r
     caller = asyncio.ensure_future(rtm_talk._stream_bounded(session, "x", 10))
     try:
         await asyncio.sleep(0.05)
-        caller.cancel()                                       # 收尾取消这一轮
-        await asyncio.sleep(0.05)                             # 它正在等不肯停的流停下
-        caller.cancel()                                       # 再被取消一次
+        caller.cancel()                                       # Finalization cancels this round.
+        await asyncio.sleep(0.05)                             # It awaits the uncooperative stream stopping.
+        caller.cancel()                                       # Cancel again.
         with pytest.raises(asyncio.CancelledError):
             await caller
-        assert session.stray is not None and not session.stray.done()   # 照样记在会话上，下一轮会先等它
+        assert session.stray is not None and not session.stray.done()   # Still register on the session so the next round waits for it first.
     finally:
         release.set()
         await asyncio.sleep(0.05)
@@ -1630,9 +1630,9 @@ async def test_own_line_frames_reach_the_page_in_order(tmp_path, monkeypatch):
 
     async def send_frame(payload):
         if (payload.get("type") == "visit_line_delta" and not slowed
-                and payload.get("speaker", {}).get("side") == "host"):  # 只拖本侧这一行（客人那行也会上屏）
+                and payload.get("speaker", {}).get("side") == "host"):  # Delay only the local line; the guest line displays too.
             slowed.append(payload)
-            await asyncio.sleep(0.2)                          # 第一片写页面时被背压
+            await asyncio.sleep(0.2)                          # First-fragment page write encounters backpressure.
         return await real_send(payload)
 
     host.host.send_frame = send_frame
@@ -1646,7 +1646,7 @@ async def test_own_line_frames_reach_the_page_in_order(tmp_path, monkeypatch):
                and f.get("speaker", {}).get("side") == "host"]
         ln = slowed[0]["line_id"]
         kinds = [f["type"] for f in own if f.get("line_id") == ln]
-        assert kinds[-1] == "visit_line"                      # 整句最后到，过时的分片不会排在它后面
+        assert kinds[-1] == "visit_line"                      # Whole sentence arrives last; stale fragments must not queue behind it.
         assert "visit_line_delta" in kinds
     finally:
         host.host.send_frame = real_send
@@ -1662,7 +1662,7 @@ async def test_an_admitted_family_line_still_reaches_the_peer_after_the_close_wa
 
     async def slow_record(speaker, **kwargs):
         if speaker == "own_human":
-            await stuck.wait()                                # 亲人那句落盘慢过关闭通道的等待
+            await stuck.wait()                                # Family speech persists more slowly than channel-close waiting permits.
         return await real_record(speaker, **kwargs)
 
     rt.record_line = slow_record
@@ -1671,14 +1671,14 @@ async def test_an_admitted_family_line_still_reaches_the_peer_after_the_close_wa
             "input_type": "text", "data": "等一下再走", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)
         rt.request_finalize("delivery_failed")
-        await asyncio.sleep(1.0)                              # 已超过 _CLOSE_WAIT_S
-        assert not rt._ended_published                        # 预留还在：退出流程仍在等关闭任务，不往下走
-        assert rtm.get_runtime("Host") is rt                  # teardown 不先拆发送通道
+        await asyncio.sleep(1.0)                              # _CLOSE_WAIT_S exceeded.
+        assert not rt._ended_published                        # Reservation remains: exit still awaits closure rather than proceeding.
+        assert rtm.get_runtime("Host") is rt                  # teardown must not remove the send channel first.
         stuck.set()
         await asyncio.gather(sending)
         await finish(rt, clock)
         humans = [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"]
-        assert humans and humans[0].get("txt") == "等一下再走"     # 这句照样送到对端
+        assert humans and humans[0].get("txt") == "等一下再走"     # This sentence still reaches the peer.
     finally:
         stuck.set()
         hgate.set()
@@ -1701,10 +1701,10 @@ async def test_a_closed_line_whose_llm_lingers_is_booked_before_the_shutdown_sea
         line = rt._line
         llm = line.llm_task
         real_cancel = llm.cancel
-        llm.cancel = lambda *a, **k: False                    # LLM 不肯停：_finish_line 要等 _LLM_SETTLE_S
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 关机只等 0.5 s
+        llm.cancel = lambda *a, **k: False                    # Unstoppable LLM makes _finish_line wait _LLM_SETTLE_S.
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # Shutdown waits only 0.5 s.
         own = [r for r in rt.journal.lines() if r["from"] == "own_cat"]
-        assert own and own[-1]["truncated"]                   # 已收口的那一行在封存之前记进了转录
+        assert own and own[-1]["truncated"]                   # Closed line enters transcript before sealing.
         assert rt.journal.sealed
         llm.cancel = real_cancel
     finally:
@@ -1724,7 +1724,7 @@ async def test_booking_a_line_survives_its_caller_being_cancelled(tmp_path, monk
 
     async def slow_record(*args, **kwargs):
         calls.append(kwargs.get("ln"))
-        await gate.wait()                                 # 写转录时磁盘慢
+        await gate.wait()                                 # Disk slows transcript writing.
         return await real_record(*args, **kwargs)
 
     rt.record_line = slow_record
@@ -1733,11 +1733,11 @@ async def test_booking_a_line_survives_its_caller_being_cancelled(tmp_path, monk
     line.payload = {"txt": "收口的这一行", "truncated": True}
     try:
         with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(rt.book_line(line), 0.1)   # 关机限时到点，取消了调用方
+            await asyncio.wait_for(rt.book_line(line), 0.1)   # Shutdown deadline cancels the caller.
         gate.set()
-        await rt.book_line(line)                          # 另一个调用方等的是同一次写入
-        assert calls == ["h:99"]                          # 只写一次
-        assert [r for r in rt.journal.lines() if r["text"] == "收口的这一行"]   # 写入没被那次取消打断
+        await rt.book_line(line)                          # Another caller awaits the same write.
+        assert calls == ["h:99"]                          # Write once only.
+        assert [r for r in rt.journal.lines() if r["text"] == "收口的这一行"]   # That cancellation did not interrupt writing.
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1751,25 +1751,25 @@ async def test_an_admitted_family_line_is_sent_even_if_its_handler_is_cancelled(
 
     async def slow_record(speaker, **kwargs):
         if speaker == "own_human":
-            await stuck.wait()                                # 亲人那句落盘慢
+            await stuck.wait()                                # Family speech persists slowly.
         return await real_record(speaker, **kwargs)
 
     rt.record_line = slow_record
     try:
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "被取消也要发出去", "source": "neko_visit:guest_cat"}))
-        await wait_for(lambda: rt.outbox.reserved_bytes > 0)  # 已接纳（改了 room）
-        sending.cancel()                                      # 处理函数被取消（关机等）
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)  # Already accepted and room mutated.
+        sending.cancel()                                      # Handler canceled, e.g. during shutdown.
         await asyncio.gather(sending, return_exceptions=True)
-        assert [t for t in rtm._detached if not t.done()]     # 还在跑的提交登记在模块级，关机收得到
+        assert [t for t in rtm._detached if not t.done()]     # Register ongoing commits at module level for shutdown collection.
         stuck.set()
         await rt.flush()
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"],
-                       timeout=5)                             # 照样落盘、入队、发到对端
-        await wait_for(lambda: "human" in rt._line_kinds.values())  # 本侧历史也有这句
+                       timeout=5)                             # Still persist, enqueue, and send to the peer.
+        await wait_for(lambda: "human" in rt._line_kinds.values())  # Local history contains it too.
         await wait_for(lambda: [f for f in host.host.frames
-                                if f.get("type") == "visit_line" and f.get("text") == "被取消也要发出去"])  # 也上屏
-        await wait_for(lambda: "被取消也要发出去" in host.host.user_inputs)  # 也镜像进主会话
+                                if f.get("type") == "visit_line" and f.get("text") == "被取消也要发出去"])  # Also displayed.
+        await wait_for(lambda: "被取消也要发出去" in host.host.user_inputs)  # Also mirrored into the main session.
     finally:
         stuck.set()
         hgate.set()
@@ -1798,7 +1798,7 @@ async def test_a_cancelled_family_line_to_the_own_cat_still_schedules_its_reply(
         sending.cancel()
         await asyncio.gather(sending, return_exceptions=True)
         stuck.set()
-        await wait_for(lambda: [p for p in plans if p is not None])  # 处理函数走了，回复照样排上
+        await wait_for(lambda: [p for p in plans if p is not None])  # Handler exited, but replies still queue.
     finally:
         stuck.set()
         hgate.set()
@@ -1819,7 +1819,7 @@ async def test_shutdown_waits_for_an_admitted_family_line_before_sealing(tmp_pat
             inner = kwargs.get("on_journaled")
 
             def journaled():
-                order.append("recorded")                      # 记进上传流水（封存只需要它）
+                order.append("recorded")                      # Record upload log; sealing needs only this.
                 if inner is not None:
                     inner()
 
@@ -1838,11 +1838,11 @@ async def test_shutdown_waits_for_an_admitted_family_line_before_sealing(tmp_pat
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "关机前这句", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)
-        asyncio.get_running_loop().call_later(0.3, stuck.set)  # 落盘要一会儿才完
+        asyncio.get_running_loop().call_later(0.3, stuck.set)  # Persistence takes some time.
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
         await asyncio.gather(sending, return_exceptions=True)
         assert "recorded" in order and "seal" in order
-        assert order.index("recorded") < order.index("seal")  # 先记进转录，再封存
+        assert order.index("recorded") < order.index("seal")  # Record transcript before sealing.
     finally:
         stuck.set()
         hgate.set()
@@ -1856,7 +1856,7 @@ async def test_settling_family_records_does_not_wait_for_the_mirror(tmp_path, mo
     mirror_stuck = asyncio.Event()
 
     async def stuck_mirror(text, *, metadata, request_id):
-        await mirror_stuck.wait()                             # 镜像进主会话卡住
+        await mirror_stuck.wait()                             # Main-session mirroring stuck.
 
     host.host.mirror_user_input = stuck_mirror
     try:
@@ -1864,9 +1864,9 @@ async def test_settling_family_records_does_not_wait_for_the_mirror(tmp_path, mo
             "input_type": "text", "data": "镜像卡住", "source": "neko_visit:guest_cat"}))
         await rt.flush()
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"])
-        await asyncio.wait_for(rt.settle_family_records(5), 1)  # 只等记进转录，不等镜像
+        await asyncio.wait_for(rt.settle_family_records(5), 1)  # Wait only for transcripts, not mirroring.
         assert not rt.family_records
-        assert not sending.done()                             # 镜像确实还卡着
+        assert not sending.done()                             # Mirroring is indeed still blocked.
     finally:
         mirror_stuck.set()
         hgate.set()
@@ -1887,7 +1887,7 @@ async def test_the_normal_seal_waits_for_an_admitted_family_line(tmp_path, monke
             inner = kwargs.get("on_journaled")
 
             def journaled():
-                order.append("recorded")                      # 记进上传流水（封存只需要它）
+                order.append("recorded")                      # Record upload log; sealing needs only this.
                 if inner is not None:
                     inner()
 
@@ -1906,11 +1906,11 @@ async def test_the_normal_seal_waits_for_an_admitted_family_line(tmp_path, monke
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "收尾前这句", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)
-        asyncio.get_running_loop().call_later(0.3, stuck.set)  # 落盘要一会儿才完
-        await asyncio.wait_for(rt.seal_and_finalize("peer_left"), 15)  # 正常收尾（对端先走，不等预留）
+        asyncio.get_running_loop().call_later(0.3, stuck.set)  # Persistence takes some time.
+        await asyncio.wait_for(rt.seal_and_finalize("peer_left"), 15)  # Normal finalization after peer departure, without waiting for reservations.
         await asyncio.gather(sending, return_exceptions=True)
         assert "recorded" in order and "seal" in order
-        assert order.index("recorded") < order.index("seal")  # 先记进转录，再封存
+        assert order.index("recorded") < order.index("seal")  # Record transcript before sealing.
     finally:
         stuck.set()
         hgate.set()
@@ -1932,9 +1932,9 @@ async def test_a_failure_after_a_family_line_is_sent_does_not_report_busy(tmp_pa
         await rt.flush()
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"])
         await wait_for(lambda: [f for f in host.host.frames
-                                if f.get("type") == "visit_line" and f.get("text") == "已经发出"])  # 上屏不受影响
-        assert "已经发出" in host.host.user_inputs              # 镜像也不受影响
-        assert "VISIT_E_BUSY" not in host.host.status_codes()  # 已发出就不回「忙」（否则用户再发一遍）
+                                if f.get("type") == "visit_line" and f.get("text") == "已经发出"])  # Display unaffected.
+        assert "已经发出" in host.host.user_inputs              # Mirroring unaffected too.
+        assert "VISIT_E_BUSY" not in host.host.status_codes()  # Once sent, never return busy or users may resend.
     finally:
         hgate.set()
         ggate.set()
@@ -1949,7 +1949,7 @@ async def test_a_family_line_recorded_after_the_outbox_closed_is_not_sent(tmp_pa
 
     async def slow_record(speaker, **kwargs):
         if speaker == "own_human":
-            await stuck.wait()                                # 落盘卡得比收尾还久
+            await stuck.wait()                                # Persistence remains blocked longer than finalization.
         return await real_record(speaker, **kwargs)
 
     rt.record_line = slow_record
@@ -1957,14 +1957,14 @@ async def test_a_family_line_recorded_after_the_outbox_closed_is_not_sent(tmp_pa
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "迟到的一句", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)
-        await rt.outbox.close()                               # 收尾已关掉 outbox
+        await rt.outbox.close()                               # Finalization already closed outbox.
         stuck.set()
         await asyncio.gather(sending, return_exceptions=True)
         await rt.flush()
         await settle()
         assert not [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"]
         assert not await asyncio.to_thread(rt.outbox.path.exists)
-        assert rt.outbox.reserved_bytes == 0                  # 预留照样释放
+        assert rt.outbox.reserved_bytes == 0                  # Still release reservations.
     finally:
         stuck.set()
         hgate.set()
@@ -1981,15 +1981,15 @@ async def test_settling_family_records_does_not_wait_for_the_spool(tmp_path, mon
 
     async def stuck_append(record):
         if record.get("from") == "own_human":
-            await spool_stuck.wait()                          # spool 写盘卡住
+            await spool_stuck.wait()                          # Spool persistence blocked.
         return await real_append(record)
 
     rt.spool.append = stuck_append
     try:
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "spool 卡住", "source": "neko_visit:guest_cat"}))
-        await wait_for(lambda: any(r.get("text") == "spool 卡住" for r in rt.journal._records))  # 上传流水已记下
-        await asyncio.wait_for(rt.settle_family_records(5), 1)  # 只等上传流水，不等 spool
+        await wait_for(lambda: any(r.get("text") == "spool 卡住" for r in rt.journal._records))  # Upload log already recorded.
+        await asyncio.wait_for(rt.settle_family_records(5), 1)  # Wait only for upload logs, not spool.
         assert not rt.family_records and not sending.done()
     finally:
         spool_stuck.set()
@@ -2006,7 +2006,7 @@ async def test_a_family_commit_cancelled_before_it_runs_still_settles(tmp_path, 
     def ensure_future(coro, **kw):
         task = real_ensure(coro, **kw)
         if getattr(coro, "__qualname__", "").endswith("._send_human_line.<locals>.commit"):
-            task.cancel()                                     # 还没开始跑就被取消（事件循环收尾等）
+            task.cancel()                                     # Canceled before execution starts, e.g. event-loop shutdown.
         return task
 
     monkeypatch.setattr(rtm_talk.asyncio, "ensure_future", ensure_future)
@@ -2016,8 +2016,8 @@ async def test_a_family_commit_cancelled_before_it_runs_still_settles(tmp_path, 
         await asyncio.gather(sending, return_exceptions=True)
         monkeypatch.undo()
         await settle()
-        assert not rt.family_records                          # 照样完成，之后的封存不会白等
-        assert rt.outbox.reserved_bytes == 0                  # 预留也照样释放
+        assert not rt.family_records                          # Still finish so later sealing does not wait pointlessly.
+        assert rt.outbox.reserved_bytes == 0                  # Release reservations too.
     finally:
         monkeypatch.undo()
         hgate.set()
@@ -2034,11 +2034,11 @@ async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeyp
 
     async def slow_record(speaker, **kwargs):
         if speaker == "own_human":
-            await stuck.wait()                                # 这句一直落不了盘
+            await stuck.wait()                                # This sentence never persists.
         return await real_record(speaker, **kwargs)
 
     async def slow_seal(reason, **kw):
-        await seal_stuck.wait()                               # 封存也卡着
+        await seal_stuck.wait()                               # Sealing stuck too.
         return await real_seal(reason, **kw)
 
     rt.record_line = slow_record
@@ -2051,7 +2051,7 @@ async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeyp
         loop = asyncio.get_running_loop()
         started = loop.time()
         assert await asyncio.wait_for(rt.seal_and_finalize("peer_left"), 5) is False
-        assert loop.time() - started < 1.6                    # 两段等待合计不超过一个 _SEAL_MAX_S
+        assert loop.time() - started < 1.6                    # Combined waits must not exceed one _SEAL_MAX_S.
         sending.cancel()
     finally:
         stuck.set()
@@ -2068,7 +2068,7 @@ async def test_the_mirrored_family_line_is_the_wire_fitted_text(tmp_path, monkey
     def fit(payload, **kw):
         out = real_fit(payload, **kw)
         if out.get("sp") == "h":
-            out = dict(out, txt="裁短了", truncated=True)       # 线上放不下：被裁短
+            out = dict(out, txt="裁短了", truncated=True)       # Too large for the wire: truncated.
         return out
 
     monkeypatch.setattr(rtm_talk, "fit_text_to_wire", fit)
@@ -2076,7 +2076,7 @@ async def test_the_mirrored_family_line_is_the_wire_fitted_text(tmp_path, monkey
         await rtm.route_stream_message("Host", {
             "input_type": "text", "data": "一句很长很长的话", "source": "neko_visit:guest_cat"})
         await wait_for(lambda: host.host.user_inputs)
-        assert host.host.user_inputs[-1] == "裁短了"             # 镜像与对端 / 转录一致，不是裁之前的原文
+        assert host.host.user_inputs[-1] == "裁短了"             # Mirror matches peer/transcript text, not the pretruncation original.
     finally:
         hgate.set()
         ggate.set()
@@ -2092,7 +2092,7 @@ async def test_a_reliable_message_is_handled_even_if_its_receive_is_cancelled(tm
     handled: list[str] = []
 
     async def slow_wrap_up(rt_, m, from_vid, now):
-        await stuck.wait()                                    # 处理要 await 一阵
+        await stuck.wait()                                    # Processing awaits for a while.
         handled.append(m["t"])
 
     monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
@@ -2101,11 +2101,11 @@ async def test_a_reliable_message_is_handled_even_if_its_receive_is_cancelled(tm
         receiving = asyncio.ensure_future(rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
             "t": "wrap_up", "v": 1, "seq": seq, "lp": rt.room.max_lp_seen, "ph": "propose", "reason": "recall",
             "initiated_by": "guest"}, nbytes=200))
-        await wait_for(lambda: rt.sequencer.contiguous_seq == seq)  # 序号层已收下（对端不会再重传）
-        receiving.cancel()                                    # 收包处理被取消（连接断开）
+        await wait_for(lambda: rt.sequencer.contiguous_seq == seq)  # Sequencing accepted it, so the peer will not retransmit.
+        receiving.cancel()                                    # Reception handler canceled by disconnection.
         await asyncio.gather(receiving, return_exceptions=True)
         stuck.set()
-        await wait_for(lambda: handled == ["wrap_up"])        # 照样处理完，不会永远丢掉
+        await wait_for(lambda: handled == ["wrap_up"])        # Still complete processing without permanent loss.
     finally:
         stuck.set()
         hgate.set()
@@ -2124,13 +2124,13 @@ async def test_receives_waiting_on_the_same_batch_are_still_handled_one_by_one(t
 
     async def slow_wrap_up(rt_, m, from_vid, now):
         if running:
-            overlaps.append((tuple(running), m["seq"]))       # 上一条还没处理完就开始了下一条
+            overlaps.append((tuple(running), m["seq"]))       # Next message begins before previous processing completes.
         running.append(m["seq"])
         await gates.setdefault(m["seq"], asyncio.Event()).wait()
         running.remove(m["seq"])
 
     monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
-    for st in rt.limiter._senders.values():                  # 限流放开：只看交付顺序
+    for st in rt.limiter._senders.values():                  # Remove rate limits to isolate delivery order.
         for bucket in (st.recv_bytes, st.recv_msgs, st.ctl, st.lossy, st.text):
             bucket.rate = bucket.capacity = bucket.tokens = 10 ** 9
 
@@ -2144,12 +2144,12 @@ async def test_receives_waiting_on_the_same_batch_are_still_handled_one_by_one(t
         first = asyncio.ensure_future(wrap_up(base + 1))
         await wait_for(lambda: running == [base + 1])
         later = [asyncio.ensure_future(wrap_up(base + 2)), asyncio.ensure_future(wrap_up(base + 3))]
-        await settle()                                        # 两次收包同时在等同一批
+        await settle()                                        # Both receives await the same batch.
         for seq in (base + 1, base + 2, base + 3):
             gates.setdefault(seq, asyncio.Event()).set()
             await settle()
         await asyncio.wait_for(asyncio.gather(first, *later), 5)
-        assert overlaps == []                                 # 一批一批来，没有两批并发
+        assert overlaps == []                                 # Process batches serially, never concurrently.
         assert rt.sequencer.contiguous_seq == base + 3
     finally:
         for g in gates.values():
@@ -2168,7 +2168,7 @@ async def test_shutdown_waits_for_a_received_batch_before_sealing(tmp_path, monk
     stuck = asyncio.Event()
 
     async def slow_wrap_up(rt_, m, from_vid, now):
-        await stuck.wait()                                    # 收下的这条还在处理
+        await stuck.wait()                                    # Accepted message still processing.
         order.append("handled")
 
     monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
@@ -2188,7 +2188,7 @@ async def test_shutdown_waits_for_a_received_batch_before_sealing(tmp_path, monk
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
         await asyncio.gather(receiving, return_exceptions=True)
         assert "handled" in order and "seal" in order
-        assert order.index("handled") < order.index("seal")   # 先处理完收下的这批，再封存
+        assert order.index("handled") < order.index("seal")   # Finish accepted batches before sealing.
     finally:
         stuck.set()
         hgate.set()
@@ -2209,7 +2209,7 @@ async def test_settling_deliveries_also_waits_for_the_batch_queued_behind(tmp_pa
         handled.append(m["seq"])
 
     monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
-    for st in rt.limiter._senders.values():                  # 限流放开：只看交付顺序
+    for st in rt.limiter._senders.values():                  # Remove rate limits to isolate delivery order.
         for bucket in (st.recv_bytes, st.recv_msgs, st.ctl, st.lossy, st.text):
             bucket.rate = bucket.capacity = bucket.tokens = 10 ** 9
 
@@ -2222,16 +2222,16 @@ async def test_settling_deliveries_also_waits_for_the_batch_queued_behind(tmp_pa
         base = rt.sequencer.contiguous_seq
         first = asyncio.ensure_future(wrap_up(base + 1))
         await wait_for(lambda: rt._delivering is not None and not rt._delivering.done())
-        queued = asyncio.ensure_future(wrap_up(base + 2))    # 排在后面、停在 on_recv 里等
+        queued = asyncio.ensure_future(wrap_up(base + 2))    # Later arrival waits inside on_recv.
         await settle()
-        settling = asyncio.ensure_future(rt._settle_delivering(5))  # 封存前的等待
+        settling = asyncio.ensure_future(rt._settle_delivering(5))  # Presealing wait.
         await settle()
-        gates.setdefault(base + 1, asyncio.Event()).set()     # 第一批做完：排着的那条先醒、交出第二批
+        gates.setdefault(base + 1, asyncio.Event()).set()     # First batch finishes; queued arrival wakes first and yields batch two.
         await settle()
-        assert not settling.done()                            # 还在等第二批
+        assert not settling.done()                            # Still awaiting batch two.
         gates.setdefault(base + 2, asyncio.Event()).set()
         await asyncio.wait_for(settling, 5)
-        assert handled == [base + 1, base + 2]                # 两批都在「封存」之前处理完
+        assert handled == [base + 1, base + 2]                # Both batches finish before sealing.
         await asyncio.gather(first, queued)
     finally:
         for g in gates.values():
@@ -2267,13 +2267,13 @@ async def test_a_receive_waiting_when_the_receive_path_closes_takes_nothing(tmp_
         base = rt.sequencer.contiguous_seq
         first = asyncio.ensure_future(wrap_up(base + 1))
         await wait_for(lambda: rt._delivering is not None and not rt._delivering.done())
-        queued = asyncio.ensure_future(wrap_up(base + 2))    # 排在后面等
+        queued = asyncio.ensure_future(wrap_up(base + 2))    # Waiting behind earlier work.
         await settle()
-        rt._rx_closed = True                                  # 收尾划下封存的边界
+        rt._rx_closed = True                                  # Finalization establishes the sealing boundary.
         stuck.set()
         await asyncio.wait_for(asyncio.gather(first, queued), 5)
-        assert handled == [base + 1]                          # 边界之前收下的照常处理
-        assert rt.sequencer.contiguous_seq == base + 1        # 之后的那条不进序号器、不起交付
+        assert handled == [base + 1]                          # Process arrivals accepted before it normally.
+        assert rt.sequencer.contiguous_seq == base + 1        # Later arrivals never enter sequencing or start delivery.
     finally:
         stuck.set()
         hgate.set()
@@ -2284,11 +2284,11 @@ async def test_a_receive_waiting_when_the_receive_path_closes_takes_nothing(tmp_
 async def test_closing_the_session_hands_a_stray_generation_to_stop_all(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
-    stray = asyncio.get_running_loop().create_future()        # 被撇下、还在跑的生成
+    stray = asyncio.get_running_loop().create_future()        # Abandoned generation still running.
     rt.session.stray = stray
     try:
         rt._close_session_in_background()
-        assert stray in rtm._detached                         # 会话关了它也可能还在跑：交给模块级登记
+        assert stray in rtm._detached                         # It may outlive session closure; transfer to module-level registration.
     finally:
         stray.cancel()
         rt.session.stray = None
@@ -2306,7 +2306,7 @@ async def test_a_stalled_own_line_booking_is_registered_for_stop_all(tmp_path, m
 
     async def stalled_append(record):
         if record.get("from") == "own_cat":
-            await stuck.wait()                                # 自家这句写 spool 卡住
+            await stuck.wait()                                # Local speech spool write blocked.
         return await real_append(record)
 
     rt.spool.append = stalled_append
@@ -2316,9 +2316,9 @@ async def test_a_stalled_own_line_booking_is_registered_for_stop_all(tmp_path, m
                 and getattr(t.get_coro(), "__qualname__", "").endswith("record_line")]
 
     try:
-        await wait_for(lambda: rt._line is None, timeout=10)  # 开场那句已收完
-        rt.schedule_reply(None)                               # 再说一句：这次写 spool 卡住
-        await wait_for(lambda: bookings(), timeout=10)        # 受保护的记账任务登记在模块级，关机收得到
+        await wait_for(lambda: rt._line is None, timeout=10)  # Opening line already finalized.
+        rt.schedule_reply(None)                               # Another line now blocks on spool writing.
+        await wait_for(lambda: bookings(), timeout=10)        # Register protected accounting tasks at module level for shutdown collection.
     finally:
         stuck.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2338,8 +2338,8 @@ async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tm
     try:
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "同步接纳", "source": "neko_visit:guest_cat"}))
-        assert await sending is True                          # 这场的路由收下了这句
-        assert seen and seen[0] is sending                    # 接纳在处理函数里同步做完，不推迟到落盘任务
+        assert await sending is True                          # This visit's route accepted the sentence.
+        assert seen and seen[0] is sending                    # Acceptance completes synchronously in handlers, not deferred to persistence tasks.
     finally:
         hgate.set()
         ggate.set()
@@ -2354,7 +2354,7 @@ async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypat
 
     async def slow_record(speaker, **kwargs):
         if speaker == "own_human":
-            await stuck.wait()                                # 只有亲人那句落盘慢
+            await stuck.wait()                                # Only family speech persists slowly.
         return await real_record(speaker, **kwargs)
 
     rt.record_line = slow_record
@@ -2362,14 +2362,14 @@ async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypat
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "我们先走啦", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)
-        rt.request_finalize("delivery_failed")                # 这时开始收尾（不排空、直接发 leave 的那类）
+        rt.request_finalize("delivery_failed")                # Begin finalization that sends leave directly without draining.
         await asyncio.sleep(0.2)
         stuck.set()
         await asyncio.gather(sending)
         await finish(rt, clock)
         sent = [p.get("t") for p in wire.sent["host"]]
         humans = [i for i, p in enumerate(wire.sent["host"]) if p.get("t") == "text" and p.get("sp") == "h"]
-        assert humans and "leave" in sent and humans[0] < sent.index("leave")   # 那句排在 leave 前面
+        assert humans and "leave" in sent and humans[0] < sent.index("leave")   # This sentence queues before leave.
     finally:
         stuck.set()
         hgate.set()
@@ -2378,12 +2378,12 @@ async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypat
 
 
 def test_reply_runner_has_no_await_between_admission_and_taking_the_line():
-    # 准入检查与 self._line = line 之间不能有 await：否则等待期间另一个 runner 也能准入，两行同时开口
+    # No await between admission checks and self._line=line, or another runner can enter during suspension and speak concurrently.
     import inspect
     import re
 
     runner = inspect.getsource(rtm_talk.TalkMixin._reply_runner)
-    # 准入成功（break 出准入循环）之后到进入 speak_line 之间；循环里的 sleep 会回到准入检查，不算
+    # From successful admission break to speak_line entry; loop sleeps return to admission checks and do not count.
     after = runner[runner.index("if self._reply_task is me:"):]
     assert re.findall(r"\bawait\b", after[:after.index("await self.speak_line(")]) == []
     speak = inspect.getsource(rtm_talk.TalkMixin.speak_line)
@@ -2391,22 +2391,22 @@ def test_reply_runner_has_no_await_between_admission_and_taking_the_line():
 
 
 async def test_voice_switched_mid_visit_applies_from_the_next_line(tmp_path, monkeypatch):
-    # §3.7.6：visitVoiceEnabled 中途切换从下一句生效；单向的 TTS 兜底不被重新读到的值覆盖
+    # Section 3.7.6: visitVoiceEnabled changes apply next sentence, without overwriting one-way TTS fallback from reread settings.
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     try:
         first_ln = host.rt._line.ref.line_id
-        assert rtm.apply_voice_setting(False) == 2            # 开场白已按「开」开了语音流
+        assert rtm.apply_voice_setting(False) == 2            # Opening already started streaming with voice enabled.
         hgate.set()
         ggate.set()
         await wait_for(lambda: len(_texts(wire, "host")) >= 2, timeout=10)
         lns = [p["ln"] for p in _texts(wire, "host")]
         streamed = {s.request_id for s in host.host.streams}
         assert first_ln in streamed
-        assert not (set(lns) - {first_ln}) & streamed         # 之后的各句都只上屏
+        assert not (set(lns) - {first_ln}) & streamed         # All later sentences display silently.
         assert host.rt.voice.enabled is False
         host.rt.voice.fallen_back = True
         rtm.apply_voice_setting(True)
-        assert host.rt.voice.enabled is True and host.rt.voice.tts_on is False   # 兜底不被改回
+        assert host.rt.voice.enabled is True and host.rt.voice.tts_on is False   # Do not reverse the fallback.
     finally:
         hgate.set()
         ggate.set()

@@ -237,7 +237,7 @@ class FakeHost:
         stream.metadata = metadata
         stream.on_failed = on_failed
         if self.dead_worker_prefix and request_id.startswith(self.dead_worker_prefix):
-            stream.closed = True           # TTS worker 已关：push / finish 都收不下
+            stream.closed = True           # TTS worker closed: accepts neither push nor finish.
         self.streams.append(stream)
         return stream
 
@@ -301,7 +301,7 @@ class FakeClient:
         from utils.llm_client import AIMessage, HumanMessage
 
         self.prompts.append(text)
-        # LLM 这一轮实际收到的历史（不含本轮提问）
+        # History actually received by LLM this turn (excluding current question).
         self.seen.append([getattr(m, "content", "") for m in self._conversation_history])
         self._conversation_history.append(HumanMessage(content=text))
         chunks = await self.replies.next(text)
@@ -309,11 +309,11 @@ class FakeClient:
         for chunk in chunks:
             await asyncio.sleep(0)
             if isinstance(chunk, asyncio.Event):
-                # 生成途中的停顿点：测试在这里插入打断 / 结束
+                # Mid-generation pause: tests inject interruption / ending here.
                 await chunk.wait()
                 continue
             if isinstance(chunk, BaseException):
-                raise chunk                            # 生成到一半出错
+                raise chunk                            # Fail midway through generation.
             out.append(chunk)
             await self.on_text_delta(chunk, len(out) == 1)
         self._conversation_history.append(AIMessage(content="".join(out)))
@@ -598,7 +598,7 @@ async def finish(rt: rtm.VisitRuntime, clock: Optional[FakeClock] = None, *, tim
     while rt.exit_task is None or not rt.exit_task.done():
         if loop.time() > end:
             raise AssertionError("exit flow did not finish")
-        # 只快进到足够跳过排空与 leave 补传窗口：不能把交还回调的兜底期限也跳过去
+        # Advance only past drain/leave retransmission windows, never past handback callback fallback deadline.
         if clock is not None and rt.exit_task is not None and jumped < 12.0:
             clock.advance(0.5)
             jumped += 0.5
@@ -617,6 +617,6 @@ async def teardown(*sides: Side, wire: Optional[Wire] = None, clock: Optional[Fa
             try:
                 await finish(rt, clock, timeout=30)
             except AssertionError:
-                pass  # 收尸尽力而为：没收完的场次由各测试文件的 _reset_for_tests 夹具兜底
+                pass  # Best-effort cleanup: each test file's _reset_for_tests fixture covers unfinished visits.
     if wire is not None:
         await wire.close()

@@ -60,9 +60,9 @@ from config.prompts.prompts_emotion import (
 from utils.language_utils import detect_prompt_language
 
 
-# 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
+# utils.meme_fetcher maintains the shared meme-image-source whitelist; import it here only.
 
-# 多语言关键词/别名表统一在 config/prompts/prompts_emotion.py 维护，此处只做扁平索引。
+# Multilingual keywords/aliases live in config/prompts/prompts_emotion.py; flatten indexes here only.
 _EMOTION_LABEL_ALIASES = get_emotion_label_aliases_flat()
 
 
@@ -94,7 +94,7 @@ _EMOTION_FUZZY_COMPACT_KEYS = tuple(_EMOTION_COMPACT_ALIAS_LOOKUP.keys())
 _ASCII_EMOTION_ALIAS_RE = re.compile(r"^[a-z0-9]+(?:\s+[a-z0-9]+)*$")
 
 
-# 否定词表同样按语种维护在 config/prompts/prompts_emotion.py，此处只做扁平索引。
+# Negation vocabularies likewise live by language in config/prompts/prompts_emotion.py; flatten indexes here only.
 _EMOTION_NEGATION_WORDS = frozenset(get_emotion_negation_words_flat())
 
 
@@ -111,8 +111,8 @@ _EMOTION_NEGATION_SUFFIX_EXCEPTIONS = tuple(sorted({
 }, key=len, reverse=True))
 
 
-# 保留撇号：否则 `don't` 被切成 `don` + `t`，两半都不在否定词表里，而
-# `_is_negated_ascii_match` 正是按 token 回看三个词来判 `don't be sad` 的。
+# Preserve apostrophes: splitting don't into don+t loses both from negation tables, while
+# _is_negated_ascii_match scans three preceding tokens to evaluate don't be sad.
 _EMOTION_TOKEN_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", flags=re.UNICODE)
 
 
@@ -178,8 +178,8 @@ def _strip_degree_adverbs(text):
     entry can be the tail of a longer one -- strip the short one and the
     remainder no longer matches anything.
     """
-    # 具体例子：`不怎麼開心` 的窗口是 `不怎麼`，剥掉 `怎麼` 才 endswith `不`；
-    # `不是很特別開心` 要连剥 `特別` 和 `很` 两次。
+    # Example: 不怎麼開心 has window 不怎麼; strip 怎麼 before checking endswith 不;
+    # 不是很特別開心 needs 特別 and 很 stripped successively.
     previous = None
     while text and text != previous:
         previous = text
@@ -270,7 +270,7 @@ def _marker_attaches_to_head(head):
     the thing the marker sits against; a head with none is still handed to the
     fuzzy test, which is what it was for.
     """
-    # 上面那句对应的是 `難過哭不出來`，`不出來` 否定的是 `哭` 不是 `難過`。
+    # For 難過哭不出來, 不出來 negates 哭 rather than 難過.
     present = [alias for alias in _EMOTION_COMPACT_ALIAS_LOOKUP if alias and alias in head]
     return any(head.endswith(alias) for alias in present) if present else True
 
@@ -388,7 +388,7 @@ def _has_negated_emotion_phrase(
     return False
 
 
-# 启发式关键词/patterns 全部在 config/prompts/prompts_emotion.py 按语种维护，此处只做扁平化。
+# All heuristic keywords/patterns are maintained by language in config/prompts/prompts_emotion.py; flatten here only.
 _EMOTION_KEYWORDS = get_emotion_keywords_flat()
 
 
@@ -432,7 +432,7 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         looks adjacent, and the denial in that clause would be read as denying
         the emotion the first clause asserts.
         """
-        # 例：`開心，不下去了` —— `不下去` 属于后一小句。
+        # Example: 開心，不下去了 -- 不下去 belongs to the following clause.
         if position <= 0 or position >= len(compact_origin):
             return True
         return compact_origin[position] == compact_origin[position - 1] + 1
@@ -648,7 +648,7 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
     return max(0.0, min(1.0, confidence))
 
 
-# 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts/prompts_emotion.py 按语种维护。
+# Maintain heuristic negation-lookback tokens / contrast conjunctions by language in config/prompts/prompts_emotion.py.
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
 
 
@@ -705,13 +705,13 @@ _HEURISTIC_CONTRAST_CONJUNCTIONS = get_heuristic_contrast_conjunctions_flat()
 _HEURISTIC_NEGATION_LOOKBACK = 14
 
 
-# zh 单字否定（`不/没/别/未` 等）假阳率高，必须紧邻情绪词才算真否定，
-# 避免 `不错/不思议/不具合` 等非否定词组里的单字误触发。
+# Single-character Chinese negation (不/没/别/未 etc.) has many false positives; require immediate emotion-word adjacency
+# to avoid triggering on nonnegative compounds such as 不错/不思议/不具合.
 _HEURISTIC_TIGHT_NEGATION_LOOKBACK = 2
 
 
-# 子句分隔符：回看窗口越过分隔符后的内容视为另一小句，不再修饰本次命中。
-# 避免 "我不是难过，我是生气" 中 `生气` 的回看抓到前一小句的 `不` 而被误判否定。
+# Clause separators: content beyond a separator belongs to another clause and no longer modifies this match.
+# Avoid matching the earlier 不 as negation of 生气 in 我不是难过，我是生气.
 _HEURISTIC_CLAUSE_DELIMITERS = (
     '.', ',', ';', '!', '?', '\n',
     '，', '。', '；', '！', '？', '、', '：', ':',
@@ -723,7 +723,7 @@ def _has_heuristic_negation_before(text_value, position):
         return False
     start = max(0, position - _HEURISTIC_NEGATION_LOOKBACK)
     window = text_value[start:position]
-    # 1) 窗口越过子句分隔符（标点）的部分丢掉，只看与命中关键词同小句的前文
+    # 1. Discard window content before punctuation separators; inspect only preceding text in the matched keyword's clause.
     last_delim = -1
     for delim in _HEURISTIC_CLAUSE_DELIMITERS:
         idx = window.rfind(delim)
@@ -731,10 +731,10 @@ def _has_heuristic_negation_before(text_value, position):
             last_delim = idx
     if last_delim >= 0:
         window = window[last_delim + 1:]
-    # 2) 句首场景补一个前导空格，统一处理带前导空格的 token（否定 ` no `、连词 ` but `）
+    # 2. Prefix sentence starts with a space to handle space-delimited tokens uniformly, such as ` no ` / ` but `.
     window = ' ' + window
-    # 3) 让步/转折连词同样切断否定范围：处理 "not X but Y / 不是 X 而是 Y" 对比句，
-    #    避免前半的否定被错误带到后半的情绪关键词。
+    # 3. Concessive/contrast conjunctions also terminate negation scope for not X but Y / 不是 X 而是 Y,
+    #    preventing first-half negation from carrying onto the second emotion keyword.
     last_conj = -1
     for conj in _HEURISTIC_CONTRAST_CONJUNCTIONS:
         idx = window.rfind(conj)
@@ -744,24 +744,24 @@ def _has_heuristic_negation_before(text_value, position):
                 last_conj = end_pos
     if last_conj >= 0:
         window = window[last_conj:]
-    # 4) 排除非否定固定搭配（`not only / 不仅 / не только` 等肯定结构里的 not/不/не
-    #    并不是真否定）：把这些短语从 window 里替换成等长空白后再做 token 匹配。
+    # 4. Exclude fixed nonnegative phrases: not/不/не in affirmative not only / 不仅 / не только constructions
+    #    are not actual negation; replace such phrases with equal-length spaces before token matching.
     sanitized = _strip_negation_blocklist(window)
-    # 5) 多字否定 token（宽 lookback）
+    # 5. Multicharacter negation tokens, with broad lookback.
     if any(token in sanitized for token in _HEURISTIC_CJK_NEGATION_TOKENS):
         return True
     if _HEURISTIC_ASCII_NEGATION_RE.search(sanitized):
         return True
-    # 5.5) 情态复合否定（`不會 / 不算 / 不再 / 未必`）：这些词只有紧贴情绪词时
-    #      才是在否定它 —— 放进上面那张宽回看表会否定同一小句里**另一个**谓语
-    #      （`我不会唱歌也很开心`）。所以剥掉尾部的程度副词之后，要求它就压在
-    #      情绪词前面。
-    #      剥前剥后各判一次。剥后是为了 `不會真的開心`；剥前是为了**重叠关键词**：
-    #      `有什麼好開心的` 命中的是更长的 `好開心`，窗口只剩 `有什麼` —— 那一段
-    #      本身就是否定，而剥掉 `什麼` 把它拆散了，短的那个 `開心` 命中被正确压住、
-    #      长的这个反而漏过去，整句读成 happy。
-    #      窗口末尾的空白要先去掉：情态表是压缩过的（无空格），而窗口是原文切片，
-    #      拉丁语里关键词前那个空格会让 `nada ` 对不上 `nada`。
+    # 5.5. Modal compound negations (不會 / 不算 / 不再 / 未必) negate emotion only immediately adjacent;
+    #      adding them to broad lookback would negate another predicate in the same clause,
+    #      e.g. 我不会唱歌也很开心. Strip trailing intensifiers, then require immediate
+    #      placement before the emotion word.
+    #      Check before and after stripping: after handles 不會真的開心; before handles overlapping keywords.
+    #      有什麼好開心的 matches longer 好開心, leaving 有什麼 in the window, itself
+    #      negation. Stripping 什麼 breaks it, letting the longer match escape even though shorter 開心
+    #      is correctly suppressed, misclassifying the sentence as happy.
+    #      Strip trailing window whitespace first: modal-table entries are compacted, while windows are raw slices;
+    #      the pre-keyword space in Latin-script text prevents nada<space> matching nada.
     window_tail = sanitized.rstrip()
     peeled_window = _strip_degree_adverbs(window_tail)
     if any(
@@ -769,8 +769,8 @@ def _has_heuristic_negation_before(text_value, position):
         for modal in _HEURISTIC_MODAL_NEGATIONS
     ):
         return True
-    # 6) zh 单字否定 token：仅在紧邻命中关键词的尾部窗口里才算真否定，
-    #    避免 `不错/不思议/不具合` 等非否定词组里的单字误触发整个否定。
+    # 6. Single-character Chinese negations count only at the window's end immediately before the keyword,
+    #    preventing nonnegative compounds such as 不错/不思议/不具合 from triggering broad negation.
     if _HEURISTIC_TIGHT_NEGATION_TOKENS:
         tight_window = sanitized[-_HEURISTIC_TIGHT_NEGATION_LOOKBACK:]
         if any(token in tight_window for token in _HEURISTIC_TIGHT_NEGATION_TOKENS):
@@ -778,12 +778,12 @@ def _has_heuristic_negation_before(text_value, position):
     return False
 
 
-# 英文 keyword 用 ASCII-only 词边界匹配，避免 `happy` 命中 `unhappy`、`surprised`
-# 命中 `unsurprised` 这类反向情绪嵌入。
-# 注意：不能用 `\b`，因为 Python regex 默认 Unicode 模式下 CJK 也算 \w，
-# 在 mixed-script 文本（如 `好happy啊 / 超annoyed欸`）里 `好` 和 `h` 之间没有
-# word boundary，导致英文 keyword 完全失配。改用前后 ASCII 字母断言：
-# `(?<![a-zA-Z])keyword(?![a-zA-Z])`，CJK / 标点 / 空白都允许作为边界。
+# Match English keywords with ASCII-only word boundaries, preventing happy inside unhappy and surprised
+# inside unsurprised from reversing emotion meaning.
+# Do not use \b: Python's default Unicode regex treats CJK as \w too, so mixed-script
+# text such as 好happy啊 / 超annoyed欸 has no word boundary between 好 and h,
+# making English keywords miss entirely. Use ASCII-letter lookarounds instead:
+# (?<![a-zA-Z])keyword(?![a-zA-Z]), allowing CJK / punctuation / whitespace as boundaries.
 _ASCII_WORD_KEYWORD_RE_CACHE = {}
 
 
@@ -864,12 +864,12 @@ def _infer_emotion_from_text(text):
     if angry_attack_hits:
         scores["angry"] += angry_attack_hits * 2
     if happy_playful_hits and not sad_vulnerable_hits and not angry_attack_hits:
-        # playful patterns（哈哈/嘿嘿/嘻嘻/可爱/好耶 等）大量与 happy keyword 重叠，
-        # 重复出现时 keyword 那边已经按命中数累加分数；这里只额外 +1 作为信号 boost，
-        # 避免 `haha haha haha / 哈哈哈哈哈` 类 filler 文本被双倍放大触发 override。
+        # Playful patterns (哈哈/嘿嘿/嘻嘻/可爱/好耶 etc.) overlap heavily with happy keywords.
+        # Keyword scoring already accumulates repeated hits; add only one extra signal boost here,
+        # avoiding double amplification of fillers such as haha haha haha / 哈哈哈哈哈 triggering overrides.
         scores["happy"] += 1
     if sad_vulnerable_hits and happy_playful_hits:
-        # 撒娇外壳下的委屈/想哭，优先视为 sad 而不是 happy
+        # Treat hurt feelings / wanting to cry beneath an affectionate surface as sad before happy.
         scores["sad"] += 1
 
     best_emotion = None
@@ -885,12 +885,12 @@ def _infer_emotion_from_text(text):
 
 
 def _resolve_emotion_prompt_language(text, lanlan_name=None):
-    # detect_language 分不出繁简（都是 zh），所以繁中使用者过去一律拿到简体 prompt。
-    # detect_prompt_language 在 zh 这一支上用界面语言细分，其余语种原样短码。
+    # detect_language merges Simplified/Traditional as zh, formerly giving Traditional users Simplified prompts.
+    # detect_prompt_language refines zh by interface language, leaving other languages as short codes.
     #
-    # 界面语言优先取**该角色 session** 的 user_language：它由前端 i18n 真值设定，
-    # 而进程级全局值来自 Steam/系统 locale。两者不一致时（在简体机器上切繁中，或
-    # 反过来）全局值两个方向都会给错。取不到 session 才回落到全局。
+    # Prefer this character session's user_language, set from authoritative frontend i18n;
+    # the process global comes from Steam/system locale. When they differ (Traditional on a Simplified machine,
+    # or vice versa), globals are wrong in either direction. Fall back globally only without a session.
     return detect_prompt_language(text, ui_language=_session_user_language(lanlan_name))
 
 
@@ -936,14 +936,14 @@ async def emotion_analysis(request: Request):
         api_key = data.get('api_key')
         model = data.get('model')
         
-        # 使用参数或默认配置，使用 .get() 安全获取避免 KeyError
+        # Use parameters or defaults, reading safely with .get() to avoid KeyError.
         emotion_config = await _config_manager.aget_model_api_config('emotion')
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
         emotion_provider_type = emotion_config.get('provider_type')
         
-        # 优先使用请求参数，其次使用配置
+        # Prefer request parameters, then configuration.
         api_key = api_key or emotion_api_key
         model = model or emotion_model
         
@@ -955,7 +955,7 @@ async def emotion_analysis(request: Request):
        
         prompt_lang = _resolve_emotion_prompt_language(text, lanlan_name)
 
-        # 构建请求消息
+        # Build request messages.
         messages = [
             {
                 "role": "system", 
@@ -970,41 +970,41 @@ async def emotion_analysis(request: Request):
         from utils.token_tracker import set_call_type
         set_call_type("emotion")
 
-        # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
+        # Call models asynchronously through the shared factory, handling extra_body / provider compatibility automatically.
         llm = await create_chat_llm_async(
             model,
             emotion_base_url,
             api_key,
             provider_type=emotion_provider_type,
             temperature=0.3,
-            # Gemini 模型可能返回 markdown 格式，需要更多 token
+            # Gemini may return Markdown requiring more tokens.
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
             timeout=30,
         )
         async with llm:
             result = await llm.ainvoke(messages)
 
-        # 解析响应
+        # Parse the response.
         result_text = result.content.strip()
 
-        # 处理 markdown 代码块格式（Gemini 可能返回 ```json {...} ``` 格式）
-        # 首先尝试使用正则表达式提取第一个代码块
+        # Handle Markdown code blocks; Gemini may return ```json {...} ```.
+        # First extract the initial code block via regex.
         code_block_match = re.search(r"```(?:json)?\s*(.+?)\s*```", result_text, flags=re.S)
         if code_block_match:
             result_text = code_block_match.group(1).strip()
         elif result_text.startswith("```"):
-            # 回退到原有的行分割逻辑
+            # Fall back to existing line-splitting behavior.
             lines = result_text.split("\n")
             if lines[0].startswith("```"):
-                lines = lines[1:]  # 移除第一行
+                lines = lines[1:]  # Remove the first line.
             if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]  # 移除最后一行
+                lines = lines[:-1]  # Remove the last line.
             result_text = "\n".join(lines).strip()
         
         reaction_eligible = False
         model_emoji = None
 
-        # 尝试解析JSON响应
+        # Try parsing the JSON response.
         emotion = "neutral"
         confidence = 0.5
         decision_source = "degraded_fallback"
@@ -1013,17 +1013,17 @@ async def emotion_analysis(request: Request):
             heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
             if heuristic_emotion:
                 return heuristic_emotion, min(0.62, 0.34 + heuristic_score * 0.1)
-            # 当模型结果不可用或缺少足够关键词线索时，回退到 neutral。
+            # Fall back to neutral when model results are unavailable or keyword evidence is insufficient.
             return "neutral", 0.5
 
         try:
             from utils.file_utils import robust_json_loads
             result = robust_json_loads(result_text)
             if not isinstance(result, dict):
-                # 有效 JSON 也可能是 null/[]/"text"，此时复用降级启发式处理。
+                # Valid JSON can also be null/[]/"text"; reuse fallback heuristics then.
                 emotion, confidence = _apply_degraded_emotion_fallback()
             else:
-                # 获取emotion和confidence
+                # Get emotion and confidence.
                 model_emoji = result.get("emoji")
                 raw_emotion = result.get("emotion", "neutral")
                 raw_confidence = result.get("confidence", 0.5)
@@ -1055,8 +1055,8 @@ async def emotion_analysis(request: Request):
 
                 heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
                 if heuristic_emotion:
-                    # 强 override：启发式分数较高（≥4）且模型置信度不算很高（<0.8）时
-                    # 才推翻模型判断；避免单个吐槽词把模型 happy/neutral 翻成 angry。
+                    # Strong override: overturn the model only with high heuristic scores (>=4) and model confidence below 0.8,
+                    # preventing one complaint word from changing happy/neutral to angry.
                     if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.8:
                         emotion = heuristic_emotion
                         confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
@@ -1078,7 +1078,7 @@ async def emotion_analysis(request: Request):
                         confidence = max(confidence, min(0.65, 0.35 + heuristic_score * 0.1))
                         decision_source = "heuristic_from_low_confidence"
 
-                # 当confidence很低时，自动将emotion设置为neutral，避免误报
+                # Very low confidence automatically becomes neutral to avoid false positives.
                 if confidence < 0.2:
                     emotion = "neutral"
                     decision_source = "neutral_fallback"

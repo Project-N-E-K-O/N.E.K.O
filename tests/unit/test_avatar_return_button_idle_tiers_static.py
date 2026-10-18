@@ -2035,8 +2035,8 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
     assert "movedDistancePx: 0" in source
     assert "dispatchReturnBallClick();" in source
     assert "window.nekoPetDrag.stop(stopScreenX, stopScreenY)" in source
-    # 已经移动过的拖拽被中断（截图/blur/超时）时也要传播取消标记，
-    # 否则 moved 分支照常派发 drag-end，app-auto-goodbye 会当成真实释放降级猫档
+    # Propagate cancellation when an already-moved drag is interrupted by a screenshot, blur, or timeout;
+    # otherwise the moved branch emits drag-end and app-auto-goodbye treats it as a real release, lowering the cat tier.
     assert "dragCancelled: suppressClick" in source
 
 
@@ -4367,16 +4367,16 @@ def test_cat1_minimized_ball_inside_cat_finishes_without_side_retarget_jitter():
         "function _getNekoIdleCat1CompactTopEdgeBounds",
         1,
     )[0]
-    # #1758 把“按朝向算侧位点”的计算抽到了 _computeNekoIdleCat1SideTargetForLook /
-    # _pickNekoIdleCat1ForwardSideTarget，_getNekoIdleCat1SideTarget 里只剩“提交侧 + 滞回”选向，
-    # 再对最终 target（无论来自首帧 forward-pick 还是提交侧）套用本贴球护栏——避免贴球时倒退取侧抽搐。
+    # #1758 extracted orientation-based side-point calculation into _computeNekoIdleCat1SideTargetForLook /
+    # _pickNekoIdleCat1ForwardSideTarget; _getNekoIdleCat1SideTarget now only chooses the committed side with hysteresis.
+    # Apply this ball-contact guard to the final target, whether from the first-frame forward pick or committed side, avoiding backward side-picking jitter near the ball.
     assert "_pickNekoIdleCat1ForwardSideTarget(rect, chatRect)" in side_target_block
     assert "_computeNekoIdleCat1SideTargetForLook(rect, chatRect, lookFacingRight)" in side_target_block
     assert "_isNekoIdleRectCenterInsideRect(chatRect, rect)" in side_target_block
     assert "target.moveFacingRight !== target.lookFacingRight" in side_target_block
     assert "_makeNekoIdleCat1CurrentSideTarget(rect, chatRect" in side_target_block
     assert "contactDistance <= profile.target.exitDistancePx" not in side_target_block
-    # 护栏必须在解析出 target 之后、提交/返回之前生效，且 inside 判定先于取“原地侧目标”。
+    # Apply the guard after resolving target but before committing/returning; check inside before selecting the stationary side target.
     assert side_target_block.index("const target = lookFacingRight === null") < side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)")
     assert side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)") < side_target_block.index("_makeNekoIdleCat1CurrentSideTarget(rect, chatRect")
 

@@ -39,17 +39,17 @@ import unicodedata
 
 logger = get_module_logger(__name__, "Memory")
 
-# ``token_overlap`` 上的两条线（消费点：memory/facts.py 的 Stage-2）。
+# Two thresholds for ``token_overlap`` (consumed by Stage-2 in memory/facts.py).
 #
-# 0.25 = 值得请 LLM 看一眼的下限，**不是**「判定为重复」的线。实测这个量本身
-# 分不开语义：「养了一只猫」vs「养了一只狗」0.87（必须各留一条），而
-# 「用户是一名程序员」vs「用户的职业是程序员」只有 0.29（该合并）。所以它按
-# 召回定：宁可多送几对无关的进仲裁（每条新 fact 至多送一对，裁掉即止），也
-# 不要把该合的挡在闸外——真正的裁决权在 fact_dedup 的 LLM 那里。
+# 0.25 is the lower bound worth showing an LLM, **not** the duplicate threshold. Measurements
+# cannot separate semantics: '养了一只猫' vs '养了一只狗' scores 0.87 (keep both), whereas
+# '用户是一名程序员' vs '用户的职业是程序员' scores only 0.29 (merge them). Thus set it for
+# recall: prefer sending unrelated pairs to arbitration (at most one per new fact; stop if rejected)
+# over excluding pairs that should merge; the fact_dedup LLM makes the actual decision.
 FACT_NEAR_DUP_ARBITRATE_OVERLAP = 0.25
-# 投递候选时最多等 resolver 的锁多久。它会被 aresolve 攥着跑完整个 LLM 调用
-# （那边超时 60s），而投递发生在**已经提交完** fact 之后的请求路径上——为一
-# 次无关的后台仲裁把请求拖住一分钟不值得。等不到就放掉：这是尽力而为的旁路。
+# Maximum wait for the resolver lock when submitting candidates. aresolve holds it throughout the LLM call
+# (with a 60s timeout), and submission is on the request path **after committing** the fact;
+# delaying a request a minute for unrelated background arbitration is not worthwhile. Drop it on timeout: a best-effort side path.
 FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS = 5.0
 
 
@@ -400,33 +400,33 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     """
     from memory.script_fold import fold_script
 
-    # 懒 import：hybrid_recall 会拉起 persona，import-time 硬依赖在
-    # memory-only 的 entrypoint 上不成立（同 hybrid_recall 自己的做法）。
+    # Lazy import: hybrid_recall loads persona; a hard import-time dependency is invalid
+    # for memory-only entrypoints (matching hybrid_recall's own approach).
     #
-    # persona 单独 import 一次不是多余：_tokenize **自己**对 persona 的
-    # import 失败留了一条空白切分兜底，那条兜底同样会把整句中文当一个
-    # token 写进索引。在这里先把它拉起来，失败就直接抛——去掉 fts_tokens
-    # 自己的兜底而放任下游那条，等于什么都没防住。
+    # Importing persona separately is necessary: _tokenize **itself** falls back to whitespace splitting
+    # if its persona import fails, which likewise indexes an entire Chinese sentence as one
+    # token. Load it here first and propagate failures; removing fts_tokens' fallback
+    # while leaving the downstream fallback would provide no protection.
     from memory.hybrid_recall import _tokenize
     from memory.persona import _SPLIT_RE  # noqa: F401
 
     raw = _strip_marks(fold_script(str(content or "")).replace('"', ' ').lower())
-    # stop-name 要走**完全相同**的一串归一（折叠 + 小写 + 剥组合符）：
-    # strip_stop_names 是逐字面替换 / 词边界匹配，两侧形态差一点就永远撞不
-    # 上——配置里写 `José`、正文已经归一成 `jose`，这个名字就再也剥不掉了。
+    # Stop names must use the **exact same** normalization chain (fold + lowercase + strip combining marks):
+    # strip_stop_names uses literal replacement / word boundaries; even slight differences prevent matches
+    # forever: configured `José` can never be stripped from text already normalized to `jose`.
     folded_stop_names = [
         _strip_marks(fold_script(n).lower()) for n in (stop_names or [])
     ] or None
     tokens = _alnum_runs(_tokenize(raw, folded_stop_names))
     if tokens:
         return tokens
-    # _tokenize 的 CJK 段从 2-gram 起步、拉丁段要求长度 >= 2，所以归一后只
-    # 剩一个字的事实（`猫`，或去掉停用名后只剩一个字）会得到空 token 列表
-    # ——存进去是一行空 content，查询侧也会提前返回，这条 fact 就整个绕过了
-    # Stage-2。两侧同样回落到单字，至少让它参与检索。
+    # _tokenize starts CJK at 2-grams and requires Latin length >= 2, so facts reduced by normalization
+    # to one character (`猫`, or one character left after stripping stop names) yield an empty token list,
+    # producing empty indexed content and an early query return; the fact completely bypasses
+    # Stage-2. Fall back to individual characters on both sides so it can at least participate in retrieval.
     #
-    # ⚠️ 回落也必须先剥停用名：直接拿 raw 切的话，`兰兰猫` 会原样存成一个
-    # token，停用名白剥了，还会跟别的含这个名字的事实互相命中。
+    # Warning: strip stop names before fallback too: tokenizing raw `兰兰猫` directly stores it as one
+    # token, defeating name stripping and matching other facts containing the same name.
     residue_source = (
         strip_stop_names(raw, folded_stop_names)
         if folded_stop_names else raw
@@ -465,21 +465,21 @@ class TimeIndexedMemory:
         *,
         engine_admission_check: Callable[[str], bool] | None = None,
     ):
-        self.engines = {}  # 存储 {lanlan_name: engine}
-        self.db_paths = {} # 存储 {lanlan_name: db_path}
-        self._engine_readonly_flags = {}  # 存储 {lanlan_name: bool}
-        self._writable_bootstrapped = set()  # 存储已完成可写初始化的角色
-        # 每角色一把可重入锁，串行化引擎的初始化与释放。见 _get_engine_lock。
+        self.engines = {}  # Store {lanlan_name: engine}
+        self.db_paths = {} # Store {lanlan_name: db_path}
+        self._engine_readonly_flags = {}  # Store {lanlan_name: bool}
+        self._writable_bootstrapped = set()  # Store characters whose writable initialization is complete.
+        # One reentrant lock per character serializes engine initialization and release. See _get_engine_lock.
         self._engine_locks: dict[str, threading.RLock] = {}
         self._engine_locks_guard = threading.Lock()
-        # {lanlan_name: {connection_string}}：dispose 失败、仍扣着文件句柄的 pool。
-        # 按连接串记账而不是靠 db_path 现推——路径漂移重建会覆盖 db_path，
-        # 那之后就再也推不出失败 pool 的键了。
+        # {lanlan_name: {connection_string}}: pools whose dispose failed and still hold file handles.
+        # Track by connection string rather than deriving from current db_path: rebuilding after path drift overwrites db_path,
+        # making the failed pool's key impossible to recover afterward.
         self._undisposed_pools: dict[str, set[str]] = {}
         self.recent_history_manager = recent_history_manager
         self._engine_admission_check = engine_admission_check
-        # 懒加载：不在构造器里同步初始化每角色 engine，首次访问时按需创建
-        # （MaintenanceModeError 在 _ensure_engine_exists 内部按需处理）
+        # Lazy loading: create each character's engine on first access instead of initializing all synchronously in the constructor.
+        # (MaintenanceModeError is handled on demand inside _ensure_engine_exists.)
 
     def _assert_timeindex_writable(self, lanlan_name: str) -> None:
         assert_cloudsave_writable(
@@ -600,13 +600,13 @@ class TimeIndexedMemory:
             cached_db_path = str(self.db_paths[lanlan_name])
             cached_readonly = bool(self._engine_readonly_flags.get(lanlan_name, False))
 
-            # Path-drift defense: 罕见但可能——/reload 期间 storage_policy
-            # 重写 selected_root，新实例已经 reload 过但旧实例还在被某条
-            # async path 持有；或测试场景里 monkeypatch 了 memory_dir。
-            # 一旦 cached db_path 与当前 memory_dir 推导出的目标不一致，
-            # 老 SQLAlchemy engine 会继续往旧文件写，前端表象就是 db 永远
-            # 不更新（/process 的 except Exception 又把 SQL 错误吞掉）。
-            # 嗅探到漂移就 dispose 让下面的新建分支用 expected 重建。
+            # Path-drift defense: rare but possible: storage_policy rewrites selected_root during /reload;
+            # the new instance has reloaded but an async path still holds the old instance,
+            # or a test monkeypatches memory_dir.
+            # If cached db_path differs from the target derived from current memory_dir,
+            # the old SQLAlchemy engine keeps writing to the old file; the frontend sees a database that never
+            # updates (/process's except Exception also swallows SQL errors).
+            # Detect drift and dispose so the creation branch below rebuilds using expected.
             expected_db_path = db_path
             if expected_db_path is None:
                 try:
@@ -621,7 +621,7 @@ class TimeIndexedMemory:
                 )
                 self.dispose_engine(lanlan_name)
                 db_path = expected_db_path
-                # 落到下面"新建 engine"分支
+                # Fall through to the 'create engine' branch below.
             elif not readonly and cached_readonly and lanlan_name not in self._writable_bootstrapped:
                 logger.info("[TimeIndexedMemory] 角色 %s 当前为只读引擎，切换为可写引擎后再执行迁移", lanlan_name)
                 self.dispose_engine(lanlan_name)
@@ -662,8 +662,8 @@ class TimeIndexedMemory:
                 return False
             engine = create_engine(connection_string)
             if not readonly:
-                # 先完成所有初始化/迁移，再注册到 self.engines，
-                # 避免失败后引擎被标记为"已初始化"而跳过后续修复
+                # Complete all initialization/migrations before registering in self.engines,
+                # so a failed engine is not marked 'initialized' and excluded from later repair.
                 self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
                 self._check_and_migrate_schema(engine, lanlan_name)
                 self._writable_bootstrapped.add(lanlan_name)
@@ -758,7 +758,7 @@ class TimeIndexedMemory:
         released = engine is not None
         errors: list[Exception] = []
         engine_disposed = engine is None
-        # 本次要处理的连接串 = 当前 db_path 推出来的两个 + 以前失败留账的那些。
+        # Connection strings to process: the two derived from current db_path plus previously recorded failures.
         connection_strings: set[str] = set(
             self._undisposed_pools.get(lanlan_name, ())
         )
@@ -781,13 +781,13 @@ class TimeIndexedMemory:
                 engine_disposed = True
                 logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
             except Exception as exc:
-                # 继续走下面的 _engine_cache 清理：真正扣着文件句柄的往往是
-                # 缓存里的那个 pool，不能因为这一步失败就整段跳过。
+                # Continue with _engine_cache cleanup below: the pool actually holding file handles is often
+                # cached there, so failure at this step must not skip the entire section.
                 errors.append(exc)
                 _remember_undisposed(connection_strings)
         for connection_string in sorted(connection_strings):
-            # 只在确认释放成功之后才摘缓存条目：先摘后放的话，dispose 一抛
-            # 这个 pool 就再也找不回来，重试摸不到它，句柄会一直扣到进程退出。
+            # Remove cache entries only after confirmed release: removing first means a dispose exception
+            # loses the pool permanently; retries cannot find it and its handle remains held until process exit.
             cached_engine = SQLChatMessageHistory._engine_cache.get(connection_string)
             if cached_engine is None:
                 self._undisposed_pools.get(lanlan_name, set()).discard(connection_string)
@@ -839,7 +839,7 @@ class TimeIndexedMemory:
             table_name=TIME_COMPRESSED_TABLE_NAME,
         )
 
-        # 验证表是否真的被创建了喵~
+        # Verify that the table was actually created, meow~
         with engine.connect() as conn:
             for table in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
                 result = conn.execute(text(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"))
@@ -877,7 +877,7 @@ class TimeIndexedMemory:
 
     def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         self._assert_timeindex_writable(lanlan_name)
-        # 确保数据库引擎和路径存在
+        # Ensure the database engine and path exist.
         if not self._ensure_engine_exists(lanlan_name):
             logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
             return
@@ -898,7 +898,7 @@ class TimeIndexedMemory:
         )
 
         origin_history.add_messages(messages)
-        # NOTE: compressed table 写入已废弃，fact/reflection 层已取代其功能
+        # NOTE: compressed table writes are deprecated; the fact/reflection layer replaces their functionality.
 
         with self.engines[lanlan_name].connect() as conn:
             conn.execute(
@@ -966,7 +966,7 @@ class TimeIndexedMemory:
 
     @staticmethod
     def _parse_serialized_theater_message(serialized_message: object) -> dict | None:
-        """识别时间索引中的新旧剧场行并返回解析结果；非剧场或解析失败时返回 None（宁可保留）。"""  # noqa: DOCSTRING_CJK
+        """Identify old/new theater rows in the time index and return parsed results; return None for non-theater rows or parse failures (prefer retention)."""  # noqa: DOCSTRING_CJK
 
         try:
             payload = json.loads(str(serialized_message or ""))
@@ -985,7 +985,7 @@ class TimeIndexedMemory:
         lanlan_name,
         timestamp=None,
     ):
-        """用 recent 的有界剧场胶囊原子重建时间索引。"""  # noqa: DOCSTRING_CJK
+        """Atomically rebuild the time index using recent's bounded theater capsules."""  # noqa: DOCSTRING_CJK
 
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
@@ -1010,7 +1010,7 @@ class TimeIndexedMemory:
             ))
 
         with self.engines[lanlan_name].begin() as conn:
-            # 先由 SQL 按稳定来源标记收窄候选，再逐条反序列化复验，避免每次归档扫描全表。
+            # Narrow candidates in SQL by stable source tags, then deserialize and revalidate each to avoid full-table scans on every archive.
             rows = conn.execute(
                 text(
                     f"SELECT id, session_id, message, timestamp FROM {original_table} "
@@ -1663,15 +1663,15 @@ class TimeIndexedMemory:
                 remaining -= len(rows)
             yield rows
 
-    # ── FTS5 事实索引 ─────────────────────────────────────────────
+    # ── FTS5 fact index ─────────────────────────────────────────────
 
     FACTS_FTS_TABLE = "facts_fts_v2"
     FACTS_FTS_META_TABLE = "facts_fts_meta"
-    # v1（``facts_fts``）存的是原文 + unicode61，对中文整段只产出一个 token，
-    # 近重复检索永远打不中（#2703）。v2 换成「Python 端折叠 + n-gram」后两侧
-    # 口径都变了，旧表的行一条也不能复用——建 v2 时直接 DROP，不是省空间，是
-    # 隐私擦除必须只有一份索引：留着 v1 就等于 delete_fact_from_index 之后
-    # 原文还躺在另一张表里。
+    # v1 (``facts_fts``) stores original text + unicode61, producing one token for a whole Chinese passage,
+    # so near-duplicate retrieval never matches (#2703). v2 uses Python-side folding + n-grams, changing
+    # both sides' semantics; no old rows are reusable. DROP v1 when creating v2, not to save space but because
+    # privacy erasure requires a single index: retaining v1 leaves original text in another table
+    # even after delete_fact_from_index.
     _LEGACY_FACTS_FTS_TABLES = ("facts_fts",)
 
     def _ensure_fts_table(self, lanlan_name: str, readonly: bool = False) -> bool:
@@ -1702,8 +1702,8 @@ class TimeIndexedMemory:
         self._assert_timeindex_writable(lanlan_name)
         try:
             with self.engines[lanlan_name].connect() as conn:
-                # fact_id 必须 UNINDEXED：它进 FTS 词表的话，OR 查询里的拉丁
-                # token（"fact"）会命中每一行的 id 列，候选集直接退化成全表。
+                # fact_id must be UNINDEXED: otherwise the Latin token 'fact' in an OR query
+                # matches every row's id column and turns the candidate set into the entire table.
                 conn.execute(text(
                     f"CREATE VIRTUAL TABLE IF NOT EXISTS {self.FACTS_FTS_TABLE} "
                     f"USING fts5(fact_id UNINDEXED, content, tokenize='unicode61')"
@@ -1740,13 +1740,13 @@ class TimeIndexedMemory:
         indexed_content = " ".join(fts_tokens(content, stop_names))
         try:
             with self.engines[lanlan_name].connect() as conn:
-                # 先检查是否已存在
+                # Check for existence first.
                 result = conn.execute(
                     text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
                     {"fid": fact_id}
                 )
                 if result.fetchone():
-                    return  # 已索引
+                    return  # Already indexed.
                 conn.execute(
                     text(f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)"),
                     {"fid": fact_id, "content": indexed_content}
@@ -1758,7 +1758,7 @@ class TimeIndexedMemory:
     async def aindex_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
         await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content)
 
-    # ── v1 → v2 索引回填 ──────────────────────────────────────────
+    # ── v1 → v2 index backfill ──────────────────────────────────────────
 
     _FTS_BACKFILL_META_KEY = "backfilled_at"
 
@@ -1774,10 +1774,10 @@ class TimeIndexedMemory:
         """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
-                # 连只读都打不开（db 文件还不存在，或这一刻不可读）——当作
-                # 「要回填」：写路径会顺手建库、建表、盖标记，一次就收敛。
-                # 反过来当作「不用回填」的话，一个还没有 db 的角色会永久
-                # 错过回填，而这条路径正是全新角色的常态。
+                # Even read-only open fails (the db file does not exist or is currently unreadable): treat this
+                # as 'backfill needed'; the write path creates the database, tables, and marker in one convergent pass.
+                # Treating it as 'no backfill needed' would permanently exclude a character without a database
+                # from backfill, even though this is the normal path for brand-new characters.
                 return True
             with self.engines[lanlan_name].connect() as conn:
                 present = {
@@ -1793,9 +1793,9 @@ class TimeIndexedMemory:
                         },
                     ).fetchall()
                 }
-                # 标记表在、索引表不在（局部修库 / 手工恢复），说明标记在说
-                # 谎：认它的话历史行永远补不回来，下一次 index_fact 只会建
-                # 一张空表再塞进当前这一条。
+                # A marker table without an index table (partial repair / manual restore) means the marker is
+                # wrong: trusting it permanently loses historical rows; the next index_fact only creates
+                # an empty table and inserts the current row.
                 if (
                     self.FACTS_FTS_META_TABLE not in present
                     or self.FACTS_FTS_TABLE not in present
@@ -1812,11 +1812,11 @@ class TimeIndexedMemory:
         except MaintenanceModeError:
             raise
         except Exception as e:
-            # 读不出标记时报「要回填」，与上面打不开只读引擎同一个道理：
-            # 报「不用回填」会让调用方把本进程记成已完成，历史 fact 在这个
-            # 进程剩下的时间里都不在索引里，而 Stage-2 看上去在工作。报要
-            # 回填最多让写路径白跑一次（它自己失败会返回 None，同样不落
-            # 标记），下次写入再试。
+            # Report 'backfill needed' if the marker is unreadable, for the same reason as read-only open failure above:
+            # reporting no backfill would make the caller mark this process complete, leaving historical facts
+            # absent from the index for the rest of the process while Stage-2 appears functional. Requesting
+            # backfill costs at most one redundant write attempt (failure returns None without writing
+            # a marker), then the next write retries.
             logger.debug(f"[TimeIndexedMemory] 检查 FTS 回填标记失败: {e}")
             return True
 
@@ -1847,13 +1847,13 @@ class TimeIndexedMemory:
                         text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE}")
                     ).fetchall()
                 }
-                # 输入按 fact_id 去重（活跃行优先——它排在 rows 前半段）：
-                # 归档提交被打断时同一个 id 可以同时躺在 facts.json 和
-                # facts_archive.json 里，而 FTS 表没有唯一约束，两份都插进去
-                # 会各占一个候选名额，把真正的近重复挤出窗口。
-                # 去重键带上类型：id 1 和 "1" 是本仓库刻意区分的两行
-                # （_speaker_trust_fact_id 同样按类型标注），合并掉等于把
-                # 其中一行永久排除在近重复检索之外。
+                # Deduplicate input by fact_id (prefer active rows, which appear first in rows):
+                # an interrupted archive commit can leave the same id in both facts.json and
+                # facts_archive.json. FTS has no uniqueness constraint, so inserting both consumes
+                # two candidate slots and pushes actual near-duplicates out of the window.
+                # Include the type in deduplication keys: id 1 and '1' intentionally identify distinct rows here
+                # (_speaker_trust_fact_id also tags types); merging them permanently excludes
+                # one row from near-duplicate retrieval.
                 seen: set[tuple[str, object]] = set()
                 payload = []
                 for fact_id, content in rows:
@@ -1861,9 +1861,9 @@ class TimeIndexedMemory:
                         key = (type(fact_id).__name__, fact_id)
                         skip = fact_id is None or fact_id in indexed or key in seen
                     except TypeError:
-                        # 不可哈希的 id（list / dict）：调用方按 _readable_fact_id
-                        # 已经滤过一道，这里是第二道——一行畸形数据不该让整轮
-                        # 回填抛异常、把标记永远拦在门外。
+                        # Unhashable ids (list / dict): the caller already filters via _readable_fact_id;
+                        # this is a second defense. A malformed row must not abort the whole
+                        # backfill and prevent the marker from ever being written.
                         continue
                     if skip:
                         continue
@@ -1930,16 +1930,16 @@ class TimeIndexedMemory:
         stop_names = collect_stop_names(get_config_manager(), lanlan_name)
         query_tokens = fts_tokens(query, stop_names)
         if not query_tokens:
-            # 折叠 + stripping 后什么都没剩——多半是纯名字查询，不让 FTS5
-            # 在空 query 上抛 syntax error。
+            # Nothing remains after folding + stripping, probably a name-only query; prevent FTS5
+            # from raising a syntax error on an empty query.
             return []
         try:
-            # 每个 token 单独加引号：FTS5 的布尔关键字（AND / OR / NOT）在
-            # 裸 term 位置会被当运算符，而拉丁 token 恰好可能就是这几个词。
-            # token 里不可能再出现 `"`（fts_tokens 已经先剔掉），所以引号
-            # 不会被自身内容截断；OR 连接是 issue #2703 的正题——AND 语义
-            # 要求改写后的句子含有原句**全部** token，差一个词就归零，
-            # 「近重复」这层闸因此对任何改写都不成立。
+            # Quote each token separately: FTS5 Boolean keywords (AND / OR / NOT) in bare
+            # term positions become operators, and Latin tokens may happen to be these words.
+            # Tokens cannot contain `"` (fts_tokens strips it first), so their own contents cannot
+            # terminate the quotes. OR joining addresses issue #2703: AND semantics
+            # require a rewritten sentence to contain **all** original tokens; one changed word gives zero matches,
+            # making the near-duplicate gate ineffective for any rewrite.
             fts_query = ' OR '.join(
                 f'"{t}"' for t in dict.fromkeys(query_tokens)
             )

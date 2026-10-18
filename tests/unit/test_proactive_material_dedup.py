@@ -43,7 +43,7 @@ def test_exempt_regen_has_no_synthetic_bm25_after_score():
     corpus.score_draft.assert_not_called()
 
 
-# ── 1. material key 计算 ─────────────────────────────────────
+# -- 1. Calculate the material key --
 
 
 def test_material_key_music_is_title_artist():
@@ -52,7 +52,7 @@ def test_material_key_music_is_title_artist():
 
 
 def test_material_key_meme_is_search_keyword_not_image():
-    # MEME 取搜索关键词，与 url/title 无关
+    # MEME uses the search keyword, independent of url/title.
     key = sr._proactive_material_key(
         "MEME", None, {"keyword": "Disaster Girl", "url": "https://x/y.png"}
     )
@@ -71,13 +71,13 @@ def test_material_key_empty_for_non_material_channels():
 
 
 def test_material_key_empty_when_no_material():
-    # 随机热词 fallback 的 MEME（空关键词）→ 空 key
+    # Random-hotword fallback MEME with an empty keyword -> empty key.
     assert sr._proactive_material_key("MEME", None, {"keyword": ""}) == ""
-    # MUSIC 但没选中曲目 → 空 key
+    # MUSIC with no selected track -> empty key.
     assert sr._proactive_material_key("MUSIC", None, None) == ""
 
 
-# ── 2. 近期素材去重判定 ──────────────────────────────────────
+# -- 2. Check recent material deduplication --
 
 
 def test_recent_material_same_is_repeat_different_is_not():
@@ -105,12 +105,12 @@ def test_tags_are_separate_buckets():
     name = "测试角色"
     _clear(name)
     sr._record_proactive_material(name, "MUSIC", "lofi cat")
-    # 同字串落在 MEME 桶时不应命中 MUSIC 桶记录
+    # The same string in the MEME bucket must not match MUSIC bucket records.
     assert sr._is_recent_proactive_material(name, "MEME", "lofi cat") is False
     assert sr._is_recent_proactive_material(name, "MUSIC", "lofi cat") is True
 
 
-# ── 3. 近期窗口过期 ──────────────────────────────────────────
+# -- 3. Expire the recent window --
 
 
 def test_recent_material_expires_after_window():
@@ -118,7 +118,7 @@ def test_recent_material_expires_after_window():
     _clear(name)
     from collections import deque
 
-    # 手动塞一条"很久以前"的记录，超出 _RECENT_CHAT_MAX_AGE_SECONDS
+    # Insert an old record manually, beyond _RECENT_CHAT_MAX_AGE_SECONDS.
     stale_ts = time.time() - sr._RECENT_CHAT_MAX_AGE_SECONDS - 10
     sr._proactive_material_history[name] = {
         "MUSIC": deque([(stale_ts, "old song|x")], maxlen=sr._PROACTIVE_MATERIAL_HISTORY_MAX)
@@ -126,7 +126,7 @@ def test_recent_material_expires_after_window():
     assert sr._is_recent_proactive_material(name, "MUSIC", "old song|x") is False
 
 
-# ── 5. MEME 逐字复读判定 ─────────────────────────────────────
+# -- 5. Check verbatim MEME repetition --
 
 
 def _seed_chat_history(monkeypatch, name, *entries):
@@ -148,18 +148,18 @@ def test_verbatim_guard_matches_pure_repeat_only(monkeypatch):
         monkeypatch, name, (time.time(), "快看这个，真的笑死我了！😂", "meme")
     )
 
-    # 只差标点 / 空格 / emoji：单纯复读
+    # Differences only in punctuation / whitespace / emoji: mere repetition.
     match = state._find_verbatim_recent_proactive_chat(name, "快看这个 真的笑死我了。")
     assert match.is_duplicate is True
     assert match.common_fragment == "快看这个 真的笑死我了。"
-    # 相似但不完全一样（SequenceMatcher ≥0.90 也放行）：可以接受
+    # Similar but not identical, even with SequenceMatcher >=0.90: acceptable.
     assert state._find_verbatim_recent_proactive_chat(
         name, "快看这个，真是笑死我了！"
     ).is_duplicate is False
     assert state._find_verbatim_recent_proactive_chat(
         name, "快看这个，笑死我了！"
     ).is_duplicate is False
-    # emoji 的变体选择符 / ZWJ 也不算内容，但重音等真实组合字符保留
+    # Emoji variation selectors / ZWJ are not content either; retain real combining characters such as accents.
     state = _seed_chat_history(
         monkeypatch,
         name,
@@ -168,18 +168,18 @@ def test_verbatim_guard_matches_pure_repeat_only(monkeypatch):
     )
     assert state._verbatim_key("快看❤️") == "快看"
     assert state._verbatim_key("快看👩\u200d💻") == "快看"
-    # 地区旗帜（🏴 + tag 字符序列）同样只是 emoji
+    # Regional flags (black flag + tag sequence) are also only emoji.
     assert state._verbatim_key(
         "快看\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F"
     ) == "快看"
     assert state._find_verbatim_recent_proactive_chat(name, "快看").is_duplicate is True
     assert state._verbatim_key("café") != state._verbatim_key("cafe")
-    # 兼容符号按原始类别剔除，不被 NFKC 展开成字母；全角字母照常归一
+    # Exclude compatibility symbols by original category before NFKC expands them into letters; normalize fullwidth letters normally.
     assert state._verbatim_key("快看™") == "快看"
     assert state._verbatim_key("快看℡") == "快看"
     assert state._verbatim_key("Ｋｕａｉ") == "kuai"
     assert state._verbatim_key("cafe\u0301") == state._verbatim_key("café")
-    # 只有标点的草稿没有可比的内容
+    # Punctuation-only drafts have no comparable content.
     assert state._find_verbatim_recent_proactive_chat(name, "！！😂").is_duplicate is False
 
 

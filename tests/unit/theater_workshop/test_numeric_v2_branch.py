@@ -270,7 +270,7 @@ def _path_result(plan: dict) -> dict:
         "title": f"支线第{index + 1}幕",
         "summary": "猫娘展示新的证据，让误会转化为共同调查。",
         "opening_scene": "旧仓库的灯光落在一只封存的证物盒上。",
-        # 支线作者估算只用于诊断，不能把 Runtime 推荐回合从 3 拉长。
+        # Author branch estimates are diagnostic only; they must not extend Runtime's recommended three turns.
         "expected_turns": 12,
         "ordered_goals": [_ordered_goal("猫娘主动展示带日期的旧照片")],
         "must_not_happen": ["不得提前宣布最终结论"],
@@ -364,7 +364,7 @@ def test_branch_options_hide_raw_thresholds_and_require_exact_rejoin_node():
     assert options["rejoin"]["targets"][1]["node_id"] == "main_3"
     assert options["rejoin"]["targets"][1]["skipped_nodes"][0]["node_id"] == "main_2"
     serialized_candidates = str(options["condition_candidates"])
-    assert "愿意托付秘密" not in serialized_candidates  # fixture 使用“信赖”这一语义标签
+    assert "愿意托付秘密" not in serialized_candidates  # The fixture uses the semantic trust label.
     assert "value" not in serialized_candidates
     assert "min" not in serialized_candidates
     assert "priority" not in serialized_candidates
@@ -477,7 +477,7 @@ def test_branch_conditions_are_ranked_by_source_scene_reachability():
         "difficult",
     ]
     assert early[-1]["available"] is False
-    # v2.2 按每轮约 2 点估算；从初始 20 到高位 70 仍需超过 8 回合。
+    # v2.2 estimates about two points per turn; moving from initial 20 to high 70 still takes over eight turns.
     assert middle[-1]["available"] is False
 
 
@@ -509,7 +509,7 @@ def test_fixed_condition_rejects_mathematically_unreachable_band():
 
 
 def test_d7_pacing_keeps_distinct_entry_scenarios_and_warns_on_partial_reachability():
-    # 两条前序路线分别把入口代表值落在高位和低位，验证不能压成一个统一入口。
+    # Two predecessor routes yield high and low entry representatives, verifying they cannot collapse into one common entry.
     project = branchable_project(mainline_count=3)
     start = next(node for node in project["story"]["nodes"] if node["id"] == "main_1")
     start["route_gates"] = [
@@ -533,7 +533,7 @@ def test_d7_pacing_keeps_distinct_entry_scenarios_and_warns_on_partial_reachabil
 
 
 def test_d7_pacing_blocks_when_every_entry_scenario_is_too_slow():
-    # 所有入口都需要超过 8 轮时，候选必须阻断而不是继续交给模型。
+    # If every entry needs over eight turns, block the candidate rather than passing it to the model.
     project = branchable_project(mainline_count=3)
     start = next(node for node in project["story"]["nodes"] if node["id"] == "main_1")
     start["route_gates"] = [{
@@ -550,7 +550,7 @@ def test_d7_pacing_blocks_when_every_entry_scenario_is_too_slow():
 
 
 def test_d7_pacing_blocks_unknown_cycle_before_source():
-    # 无法可靠穿过循环得到来源幕时，诊断必须明确是未知前序而非“困难可达”。
+    # If loops prevent reliable source-scene resolution, diagnose an unknown predecessor rather than difficult reachability.
     project = branchable_project(mainline_count=3)
     start = next(node for node in project["story"]["nodes"] if node["id"] == "main_1")
     start["route_gates"] = [{
@@ -844,7 +844,7 @@ def test_branch_scene_persists_key_prop_state_change_on_stable_node_id(opening_t
     story, _, key_props = service.build_story(project, draft)
 
     branch_node = next(node for node in story["nodes"] if node["id"] == "node_branch_scene")
-    # 本幕的显式状态可能已经在开场改变持有者；旧道具台账不能覆盖入幕状态。
+    # Explicit scene state may already change the holder at entry; old prop ledgers must not override entry state.
     assert "仅定义用途，不表示已取得或操作完成" in branch_node["story_beat"]["catgirl_situation"]
     assert "当前归属为女主" not in branch_node["story_beat"]["catgirl_situation"]
     assert "保存带日期的旧照片" in branch_node["story_beat"]["catgirl_situation"]
@@ -1088,7 +1088,7 @@ def test_branch_draft_persists_without_revision_and_applies_idempotently(tmp_pat
 
 @pytest.mark.parametrize("boundaries", [[], ["不得把女主展示证物的职责转交给男主"]])
 def test_branch_api_and_service_preserve_state_boundary_scope(boundaries):
-    # API 接收、支线归一化共用允许空数组的合同，已有硬边界仍逐字保留。
+    # API acceptance and branch normalization share the empty-array contract; preserve existing hard boundaries verbatim.
     from theater_workshop.sdk.contracts import BranchCharacterStatePayload
     state = _character_state()
     state["scene_boundaries"] = boundaries
@@ -1102,7 +1102,7 @@ def test_branch_api_and_service_preserve_state_boundary_scope(boundaries):
 def test_branch_boundary_relaxation_keeps_shape_and_upper_limit(boundaries):
     from pydantic import ValidationError
     from theater_workshop.sdk.contracts import BranchCharacterStatePayload
-    # 两层都拒绝非法形状与超长数组；不是依靠下一层兜住接口漏验。
+    # Both layers reject invalid shapes and oversized arrays rather than relying on downstream validation.
     state = _character_state()
     state["scene_boundaries"] = boundaries
     with pytest.raises(ValidationError):

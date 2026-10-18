@@ -38,8 +38,8 @@ from config.prompts.prompts_sys import (
 from ._shared import logger
 
 
-# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
-# 表达，emoji 仅作快速视觉识别用。
+# Visual markers for internal item rendering. State information is already expressed by the outer SYSTEM_NOTIFICATION_TASK_ACTIVE;
+# emoji only aid quick visual recognition.
 _STATUS_EMOJI = {
     "completed": "✅",
     "partial": "⚠️",

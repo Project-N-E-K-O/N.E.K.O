@@ -111,7 +111,7 @@ class MemoryClient:
     ctx: "PluginContext"
     
     def _is_in_event_loop(self) -> bool:
-        """检测当前是否在事件循环中运行"""
+        """Detect whether execution is inside an event loop."""
         try:
             asyncio.get_running_loop()
             return True
@@ -119,7 +119,7 @@ class MemoryClient:
             return False
 
     def get_sync(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> MemoryList:
-        """同步版本:获取内存数据"""
+        """Synchronous version: retrieve memory data."""
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.memory.get")
 
@@ -179,12 +179,12 @@ class MemoryClient:
             except Exception as e:
                 raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
 
-            # 使用 state 的事件驱动等待（per-request Event），避免 busy-wait 轮询
+            # Use state's event-driven wait (per-request Event) instead of busy-wait polling.
             response = state.wait_for_plugin_response(request_id, timeout)
 
             if response is None:
-                # 超时后兜底检查一次：wait_for_plugin_response 内部已做多次 fast-path 检查，
-                # 但仍可能在返回后有极晚到达的响应，这里尝试 pop 以清理孤儿响应。
+                # Check once more after timeout: wait_for_plugin_response already checks several fast paths,
+                # but a very late response may still arrive after return; pop here to clean up orphan responses.
                 orphan_response = None
                 try:
                     orphan_response = state.get_plugin_response(request_id)
@@ -228,7 +228,7 @@ class MemoryClient:
         return MemoryList(records, bucket_id=bucket_id)
 
     async def get_async(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> MemoryList:
-        """异步版本:获取内存数据"""
+        """Asynchronous version: retrieve memory data."""
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.memory.get")
 
@@ -288,7 +288,7 @@ class MemoryClient:
             except Exception as e:
                 raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
 
-            # 使用 state 的异步事件驱动等待，避免 busy-wait 污染事件循环
+            # Use state's asynchronous event-driven wait to avoid busy-waiting on the event loop.
             response = await state.wait_for_plugin_response_async(request_id, timeout)
 
             if response is None:
@@ -335,10 +335,10 @@ class MemoryClient:
         return MemoryList(records, bucket_id=bucket_id)
     
     def get(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Union[MemoryList, Coroutine[Any, Any, MemoryList]]:
-        """智能版本:自动检测执行环境,选择同步或异步执行方式
+        """Adaptive version: detect the execution environment and choose synchronous or asynchronous execution.
         
         Returns:
-            在事件循环中返回协程,否则返回 MemoryList
+            Return a coroutine inside an event loop, otherwise a MemoryList.
         """
         if self._is_in_event_loop():
             return self.get_async(bucket_id=bucket_id, limit=limit, timeout=timeout)

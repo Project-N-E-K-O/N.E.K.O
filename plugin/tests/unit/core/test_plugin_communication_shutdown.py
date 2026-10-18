@@ -545,14 +545,14 @@ async def test_entry_update_register_keeps_the_declared_controls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# push_message 的实际投递路径：message plane
+# Actual push_message delivery path: message plane
 # ---------------------------------------------------------------------------
 #
-# 插件推送要走到用户耳朵里，唯一的路是 message plane —— ProactiveBridge 订阅
-# 它的 "messages." 前缀，收到才会推给 main_server。控制面那个 store 是缓存
-# （append_message_record 自己的注释禁止把它镜像进 plane），而
-# _message_target_queue 全仓没有消费者。这条链断过一次：push_message() 返回
-# submitted=True，角色一句话都不说。
+# Plugin pushes reach the user's ears only through message plane; ProactiveBridge subscribes
+# to its "messages." prefix and forwards received records to main_server. The control-plane store is a cache
+# (append_message_record's own comment forbids mirroring it into the plane), while
+# _message_target_queue has no consumers anywhere in the repository. This chain previously broke: push_message() returned
+# submitted=True while the character said nothing.
 
 
 def _capture_plane(monkeypatch, *, accepted: bool = True) -> list[dict]:
@@ -598,10 +598,10 @@ async def test_a_pushed_message_reaches_the_message_plane(monkeypatch) -> None:
 
     assert len(written) == 1, "消息没有进入 message plane"
     hop = written[0]
-    # ProactiveBridge 订阅 "messages." 前缀，而 PUB 的 topic 是 f"{store}.{topic}"。
+    # ProactiveBridge subscribes to "messages.", while PUB topics use f"{store}.{topic}".
     assert hop["store"] == MESSAGES_STORE_NAME
     assert hop["topic"] == MESSAGES_TOPIC
-    # 身份是宿主在认证传输上绑定的那个，不是 payload 自称的。
+    # Identity is bound by the host on authenticated transport, not self-declared in the payload.
     assert hop["record"]["plugin_id"] == "authenticated-plugin"
 
 
@@ -674,18 +674,18 @@ async def test_a_failing_plane_does_not_take_down_the_message_loop(monkeypatch) 
         {"type": "MESSAGE_PUSH", "parts": [{"type": "text", "text": "hello"}]}
     )
 
-    # 回合继续：legacy 队列照常收到，异常没有向上冒。
+    # The turn continues: the legacy queue receives normally and no exception propagates.
     assert target_queue.qsize() == 1
 
 
 # ---------------------------------------------------------------------------
-# SDK 量的和宿主发的必须是同一个东西
+# SDK measurements and host transmissions must represent exactly the same thing
 # ---------------------------------------------------------------------------
 #
-# push_message() 的体积闸存在的意义，是把「拿到 submitted=True 之后在 ingest
-# 那边被静默丢掉」变成一次同步拒绝。它成立的前提是两边量的是同一份字节。宿主
-# 成为写入方之后这个前提被打破过：宿主会在写 plane 之前给记录补字段，于是它
-# 打包出来的比 SDK 量到的大，刚好卡在上限下沿的推送就落进了那个窗口。
+# push_message()'s size gate turns 'silently dropped by ingest after
+# submitted=True' into synchronous rejection, provided both sides measure identical bytes. This invariant
+# broke when the host became the writer: it adds record fields before writing to the plane, producing
+# larger packets than the SDK measured and exposing pushes just below the limit to silent drops.
 
 
 @pytest.mark.asyncio
@@ -710,17 +710,17 @@ async def test_the_host_does_not_inflate_the_payload_the_sdk_measured(monkeypatc
     monkeypatch.setattr(state, "append_message_record", lambda record: None)
 
     manager = PluginCommunicationResourceManager(
-        # 长度也读常量：它是漂移里最大的一项，写死会和推导式脱钩。
+        # Read the length constant too: it is the largest source of drift, and hardcoding would detach it from the derivation.
         plugin_id="p" * ctx_mod._HOST_PLUGIN_ID_MAX_CHARS,
         transport=_Transport(),
         logger=_Logger(),
     )
     manager._message_target_queue = asyncio.Queue()
 
-    # **最坏形状**，不是顺手的那一种：message_id 与 time 都缺（宿主要各补一
-    # 个），plugin_id 取 schema 允许的最长值（宿主按认证身份盖上）。挑一种
-    # 「正常」形状来量正是上一版栽的地方——它只漂 31 字节，看着余量充足，而
-    # 128 字符 plugin_id 的最坏形状漂 222。
+    # Use the **worst-case shape**, not a convenient one: omit both message_id and time (the host adds
+    # each), and use the schema's longest plugin_id (overwritten by authenticated identity). Measuring a
+    # normal shape caused the previous failure: only 31 bytes of drift seemed safe, whereas
+    # a worst-case 128-character plugin_id drifts by 222 bytes.
     sdk_payload = {
         "type": "MESSAGE_PUSH",
         "source": "demo",
@@ -736,11 +736,11 @@ async def test_the_host_does_not_inflate_the_payload_the_sdk_measured(monkeypatc
     host_size = len(ormsgpack.packb(written[0]))
     drift = host_size - sdk_size
 
-    # 直接读常量，不再从源码里正则抠数字：它现在是个推导式，而正则只认字面量
-    # ——那样的读法在这个数变成计算式的那一刻就失效了。
+    # Read the constant directly instead of extracting digits from source with regex: it is now a derivation, while regex recognizes only literals
+    # and fails the moment the number becomes a calculated expression.
     headroom = ctx_mod._HOST_ENVELOPE_HEADROOM_BYTES
 
-    # plugin_id 是宿主按认证身份盖上去的，本来就该算进漂移里——余量要罩得住它。
+    # The host stamps plugin_id from authenticated identity, so account for it in drift and cover it with the margin.
     assert drift >= 0
     assert drift <= headroom, (
         f"宿主把 payload 撑大了 {drift} 字节，超过 SDK 预留的 {headroom}："
@@ -783,7 +783,7 @@ async def test_an_authenticated_batch_over_the_item_limit_is_refused(monkeypatch
     import plugin.core.communication as comm_mod
 
     async def _drive(payload):
-        # 直接走消费者里的那段分支逻辑，不去伪造整条 transport。
+        # Exercise the consumer branch directly without fabricating the whole transport.
         items = payload.get("items")
         if not isinstance(items, list):
             raise ValueError("invalid authenticated message batch")
@@ -792,7 +792,7 @@ async def test_an_authenticated_batch_over_the_item_limit_is_refused(monkeypatch
         for item in items:
             await manager._route_message(item)
 
-    # 先确认实现里确实有这道闸，再确认它挡住的是什么。
+    # First confirm the implementation contains this gate, then establish what it blocks.
     source = _inspect_source(comm_mod, "PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE")
     assert "over the item limit" in source, (
         "_consume_message_uplink 里没有条数上限"

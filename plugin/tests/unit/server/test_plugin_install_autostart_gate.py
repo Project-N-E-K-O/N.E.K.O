@@ -91,8 +91,8 @@ async def test_the_mark_lands_before_any_source_recording(
     monkeypatch.setattr(service, "plan_install", _plan_install)
     monkeypatch.setattr(service, "_install_sync", lambda **_kwargs: install_result)
 
-    # 上传路径自己登记来源，走的是 _record_install_source_best_effort，
-    # 完全不经过 _record_requested_install_source。
+    # Upload paths record their own source through _record_install_source_best_effort,
+    # never passing through _record_requested_install_source.
     async def _record(*, install_result, package, source):
         raise AssertionError(
             "前提没成立：这条路本不该经过 _record_requested_install_source"
@@ -115,8 +115,8 @@ def _installed(tmp_path: Path, directory_name: str, manifest_id: str) -> dict:
     (target / "plugin.toml").write_text(
         "\n".join(["[plugin]", f"id = '{manifest_id}'", ""]), encoding="utf-8"
     )
-    # 安装结果里没有 plugin_id 字段：InstalledPlugin 带的是 target_plugin_id，
-    # 而那个值就是目录名。
+    # Install results have no plugin_id field: InstalledPlugin carries target_plugin_id,
+    # whose value is the directory name.
     return {"target_plugin_id": directory_name, "target_dir": str(target)}
 
 
@@ -141,7 +141,7 @@ def test_the_gate_does_not_consult_the_registry_snapshot(
     )
     from plugin.core.state import state
 
-    # 并发刷新已经把它登记进注册表了——这不该让它逃过批准闸。
+    # Concurrent refresh already registered it; that must not bypass approval.
     monkeypatch.setattr(
         state, "plugins", {"already_seen": {"id": "already_seen"}}, raising=False
     )
@@ -246,7 +246,7 @@ def test_packaging_probes_the_tree_it_ships(
     for directory in (source_dir, staged_dir):
         (directory / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
         (directory / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
-    # 只在源目录里、被构建规则排除在包外的文件。
+    # File exists only in source and is excluded from the package by build rules.
     (source_dir / "dev_only.py").write_text("SECRET = 2\n", encoding="utf-8")
     assert packaged_metadata.compute_source_sha256(
         source_dir
@@ -270,7 +270,7 @@ def test_packaging_probes_the_tree_it_ships(
 
     def _record_ctx(config_path, processed, logger, *, apply_user_overlays=True):
         probed.append(Path(config_path).parent)
-        # 打包必须不带用户覆盖，否则作者机器上的 profile 会被导出去。
+        # Packages must exclude user overrides, or the author's machine profile gets exported.
         assert apply_user_overlays is False, (
             "打包期解析带上了用户覆盖：作者的 profile 会被写进发出去的元数据"
         )
@@ -405,9 +405,9 @@ def test_metadata_is_obtained_before_the_host_process_starts(tmp_path: Path) -> 
 
     from plugin.server.application.plugins import lifecycle_service
 
-    # 函数体现在在 _start_plugin_under_lock 里：start_plugin 只剩一层加锁的薄包装，
-    # 好让每一波自启动在持锁期间并发（见 start_plugins_batch）。
-    # 这里钉的是元数据与 host 启动的相对顺序，顺序本身没变，只是搬了个地方。
+    # The function body now lives in _start_plugin_under_lock; start_plugin is a thin locking wrapper,
+    # allowing each autostart wave to run concurrently while locked (see start_plugins_batch).
+    # Assert metadata retrieval relative to host startup: the ordering is unchanged, only relocated.
     source = inspect.getsource(lifecycle_service.PluginLifecycleService._start_plugin_under_lock)
     metadata_at = source.find("_read_packaged_isolated_metadata")
     host_start_at = source.find("_start_host_with_timeout(")
@@ -416,9 +416,9 @@ def test_metadata_is_obtained_before_the_host_process_starts(tmp_path: Path) -> 
     assert metadata_at < host_start_at, (
         "元数据 import 排在 host 启动之后，会和插件进程自己的 import 并发"
     )
-    # 取元数据自己要花时间（最多一个 scan_timeout），所以启动上限必须在它之后再
-    # 算——算在前面的话，等真正启动时那个上限已经是过期快照，reload 的启动阶段
-    # 会比设计值多出"每个插件一次扫描"。
+    # Metadata retrieval itself takes up to scan_timeout, so calculate the startup limit afterward;
+    # calculating before retrieval yields an expired snapshot at actual startup and extends reload startup
+    # by one metadata scan per plugin beyond the intended limit.
     assert metadata_at < clamp_at < host_start_at, (
         "启动超时的钳位没有夹在取元数据和启动之间，算出来的是过期预算"
     )
@@ -501,8 +501,8 @@ def test_the_override_gate_is_written_before_the_source_switch() -> None:
     assert mark_at < switch_at, (
         "待批准登记排在源切换之后，中间那段窗口里第三方代码已经被提升甚至启动了"
     )
-    # 失败要还原：切换回滚到内置插件之后，这条记录会把一个用户本来就在自启的内置
-    # 插件拦下来。
+    # Restore on failure: after rollback to a bundled plugin, this record would otherwise block
+    # a bundled plugin the user already had autostarting.
     assert "clear_autostart_pending, plan.plugin_id" in source, (
         "切换失败后没有还原批准状态，一次失败的覆盖安装会误伤内置插件的自启动"
     )
@@ -752,7 +752,7 @@ def test_every_approval_write_checks_whether_it_persisted() -> None:
         except (OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
-            # 裸表达式语句 = 调用了但把返回值扔了。
+            # Bare expression statement: called but return value discarded.
             if not isinstance(node, ast.Expr):
                 continue
             for inner in ast.walk(node):
@@ -1141,7 +1141,7 @@ async def _drive_failed_uninstall(
     )
     autostart_approvals._reset_cache_for_testing()
     if seed_pending:
-        # 卸载之前这个插件从没被用户启动过。
+        # The user had never started this plugin before uninstall.
         assert autostart_approvals.mark_autostart_pending(plugin_id)
 
     class _Manager:
@@ -1183,7 +1183,7 @@ async def _drive_failed_uninstall(
 
     def _commit_fails(_staged):
         if not code_survives_the_failure:
-            # 半途提交：代码已经删掉了，收尾才炸。回滚拿不回任何东西。
+            # Partial commit: code is already deleted; finalization alone failed. Rollback restores nothing.
             import shutil
 
             shutil.rmtree(plugin_dir, ignore_errors=True)
@@ -1192,7 +1192,7 @@ async def _drive_failed_uninstall(
     monkeypatch.setattr(uninstall, "_commit_staged_plugin_code_sync", _commit_fails)
 
     async def _rollback(**_kwargs):
-        # 真实回滚会把文件放回去；这里文件根本没被删掉，等价于恢复成功。
+        # Real rollback restores files; here they were never deleted, equivalent to successful restoration.
         return uninstall._RollbackOutcome(
             filesystem_rollback="restored",
             runtime_restart="not_needed",
@@ -1638,7 +1638,7 @@ def test_the_scan_budget_is_computed_after_the_packaged_read() -> None:
         PluginLifecycleService,
     )
 
-    # 同上一个测试：函数体搬到了 _start_plugin_under_lock，钳位顺序本身没变。
+    # As above, the body moved to _start_plugin_under_lock without changing clamp order.
     source = inspect.getsource(PluginLifecycleService._start_plugin_under_lock)
     read_at = source.find("_read_packaged_isolated_metadata,")
     clamp_at = source.find("scan_timeout = _clamp_step_timeout(")
@@ -1730,7 +1730,7 @@ def test_the_gate_move_reads_the_live_registry_not_the_round_snapshot(
         "注册表里根本没有 demo，却说这个 id 被占了"
     )
 
-    # 同一轮里先注册的那个——快照里没有它，注册表里有。
+    # Registered earlier in this round: absent from the snapshot, present in the registry.
     monkeypatch.setattr(
         state, "plugins", {"demo": {"config_path": str(theirs)}}, raising=False
     )
@@ -1858,15 +1858,15 @@ def test_a_probe_that_rewrites_the_tree_yields_no_metadata(
     )
 
     def _scan_with_side_effect(**_kwargs):
-        # 模块级代码在 import 时初始化了一个状态文件。
+        # Module-level code initialized a state file on import.
         (plugin_dir / "state.json").write_text("{}", encoding="utf-8")
         return _Isolated()
 
     marker = plugin_dir / "marker"
 
     def _scan_that_only_moves_a_directory(**_kwargs):
-        # 按空标记目录的存在与否注册入口，然后把它删掉——文件一个没动，
-        # 前后内容摘要完全相同。
+        # Register an entry based on an empty marker directory, then delete that directory; no files change,
+        # so before/after content digests are identical.
         marker.rmdir()
         return _Isolated()
 

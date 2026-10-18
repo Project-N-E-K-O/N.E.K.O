@@ -55,7 +55,7 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ignore_previous", re.compile(r"\b(?:ignore|disregard)\b.{0,40}\b(?:previous|prior|above)\b.{0,30}\b(?:instructions?|prompts?|rules?)\b", re.IGNORECASE)),
     # Both orthographies on every alternation. Simplified-only meant a Traditional
     # injection only tripped this when its wording happened to be script-neutral —
-    # "忽略以上指令" fired, "無視上述規則" did not. The middle group (以上/上述/之前)
+    # "忽略以上指令" (ignore previous instructions) fired, while "無視上述規則" (ignore the above rules) did not. The middle group (以上/上述/之前)
     # is spelled the same in both, which is exactly why the misses looked random.
     ("ignore_previous_zh", re.compile(
         r"(?:忽略|无视|無視|不要理会|不要理會)(?:以上|上述|之前).{0,12}"
@@ -238,7 +238,7 @@ def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[str]:
         fragment = (text or "").strip()
         while fragment and count_tokens(fragment) > max_tokens:
             head = truncate_to_tokens(fragment, max_tokens)
-            # decode 可能比原切点略短；只要有推进就切下去，推不动则整段成一批。
+            # Decoding may end slightly before the original cut; split whenever it advances, otherwise keep the entire segment as one batch.
             if not head or len(head) >= len(fragment):
                 break
             pieces.append(head)
@@ -394,8 +394,8 @@ def build_import_candidates(
                 ) from exc
         fragments = split_markdown_entries(
             source.content,
-            # daily 也吃 § 切分：daily→facts 是逐条落盘（非融合再消化），§ 分块必须
-            # 切开，否则一整份日记会当成一条 fact（Codex P2）。SOUL 走融合故不需要。
+            # daily also uses section-sign splitting: daily->facts persists entries individually rather than merging and redigesting them, so split
+            # section-sign chunks or an entire diary becomes a single fact (Codex P2). SOUL merges, so it does not need this.
             hermes_delimiter=(detected == "hermes" and kind in {"user", "memory", "daily"}),
         )
         for fragment in fragments:

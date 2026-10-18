@@ -1,8 +1,8 @@
 """proactive_source_history.json must be persisted inside _source_history_lock."""
 
-# 这是个跨角色的单文件：锁只盖内存不盖落盘时，(a) 两个并发投递会同时 os.replace 同一个
-# 目标（Windows 上互相 PermissionError/WinError 5），(b) 快照在锁内取、写在锁外发，两次
-# 投递抵达磁盘的顺序可以和取快照的顺序反过来，把新历史写回旧值。这里两条都钉住。
+# This cross-character single file needs a lock covering disk writes, not only memory: (a) concurrent submissions
+# can os.replace the same target simultaneously (PermissionError/WinError 5 on Windows); (b) snapshots taken
+# inside the lock but written outside may land in reverse order, overwriting newer history. Pin both properties.
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ def _isolate_source_history():
     saved_loaded = state._source_history_loaded
     saved_path = state._source_history_loaded_path
     state._source_history.clear()
-    # 从「完全没加载过」起步：_record_source_used 现在自己会先
-    # _ensure_source_history_loaded，用例的 tmp_path 下没有历史文件，那次加载走
-    # FileNotFoundError（正常的空历史），落到临界区的仍然只有本用例写进去的条目。
+    # Start from never-loaded state: _record_source_used now calls
+    # _ensure_source_history_loaded itself. No history file exists under this test's tmp_path, so loading hits
+    # FileNotFoundError (normal empty history); only entries written by this test reach the critical section.
     state._source_history_loaded = False
     state._source_history_loaded_path = None
     yield
@@ -37,7 +37,7 @@ async def test_source_history_write_happens_inside_the_lock(monkeypatch, tmp_pat
     observed: list[tuple[bool, frozenset[str]]] = []
 
     async def fake_write(path, payload, **kwargs):
-        # 这个用例里 _source_history_lock 只可能有一个持有者，locked() 是有效代理。
+        # Only one holder of _source_history_lock is possible in this test, making locked() a valid proxy.
         observed.append((state._source_history_lock.locked(), frozenset(payload["entries"])))
 
     monkeypatch.setattr(state, "atomic_write_json_async", fake_write)
@@ -65,7 +65,7 @@ async def test_concurrent_source_records_serialize_and_never_reorder(
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
-        # 让出事件循环：落盘在锁外时，另一个投递会在这里挤进来。
+        # Yield the event loop: if persistence is outside the lock, another submission can enter here.
         await asyncio.sleep(0)
         landed.append(frozenset(payload["entries"]))
         in_flight -= 1
@@ -84,10 +84,10 @@ async def test_concurrent_source_records_serialize_and_never_reorder(
         ]
     )
 
-    # (a) 串行化：任一时刻只有一个写者在飞 → 不会有两个并发 os.replace 打同一目标。
+    # (a) Serialization: only one writer in flight at any instant, preventing concurrent os.replace on one target.
     assert max_in_flight == 1
-    # (b) 不反转：后落盘的必须是前一次的严格超集。写成「最终文件有 5 条」是恒真的，
-    #     抓不到「快照顺序与写入顺序反过来」这个形态。
+    # (b) No inversion: later persistence must be a strict superset of the previous write. Merely asserting five final entries
+    #     always passes and cannot detect reversed snapshot/write order.
     assert len(landed) == 5
     for previous, current in zip(landed, landed[1:]):
         assert previous < current, f"落盘顺序反转: {sorted(previous)} 之后落了 {sorted(current)}"
@@ -99,9 +99,9 @@ async def test_cancelling_a_record_does_not_release_the_lock_before_the_write_en
     monkeypatch, tmp_path
 ) -> None:
     """A cancelled _record_source_used must keep the lock until its in-flight write finishes."""
-    # atomic_write_json_async 内部是 asyncio.to_thread，交出去就取消不掉。直接 await 的话，
-    # 退出时的 cancel 会让 async with 在 CancelledError 穿过的一刻放锁，而那次 os.replace
-    # 还在飞 —— 另一个投递就能进临界区并发 replace 同一个目标。
+    # atomic_write_json_async uses asyncio.to_thread, which cannot be cancelled once submitted. A direct await
+    # lets exit cancellation release async with's lock as CancelledError propagates, while os.replace
+    # remains in flight, allowing another submission to enter and concurrently replace the same target.
     write_started = asyncio.Event()
     let_write_finish = asyncio.Event()
 
@@ -120,8 +120,8 @@ async def test_cancelling_a_record_does_not_release_the_lock_before_the_write_en
     assert state._source_history_lock.locked(), "前置条件：写在飞的时候锁是持有状态"
 
     task.cancel()
-    # 不靠「固定 yield 几次」猜取消传播完没有：按真实时钟走一小段，期间每圈都复查。
-    # 顺带把重复取消也覆盖掉 —— 超时取消之后再来一次应用退出，是真实会发生的组合。
+    # Do not guess cancellation propagation with a fixed number of yields: observe real time briefly and recheck every iteration.
+    # Also cover repeated cancellation: timeout cancellation followed by application exit is a real combination.
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 0.1
     while loop.time() < deadline:
@@ -138,8 +138,8 @@ async def test_cancelling_a_record_does_not_release_the_lock_before_the_write_en
 
 def test_source_history_persist_helper_takes_its_own_snapshot() -> None:
     """The persist helper takes no snapshot argument: snapshot and write are inseparable."""
-    # 一旦有人给它加回 snapshot 形参，调用方就又能在锁内取快照、到锁外去写，顺序反转
-    # 窗口重新出现。这条守卫的是那个设计决定本身，不是某一次的行为。
+    # Restoring a snapshot parameter would let callers snapshot inside the lock and write outside again,
+    # reopening ordering inversions. This guards the design decision itself, not one observed execution.
     import inspect
 
     parameters = inspect.signature(state._persist_source_history_unlocked).parameters

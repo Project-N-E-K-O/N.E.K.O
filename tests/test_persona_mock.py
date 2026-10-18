@@ -8,7 +8,7 @@ and land in persona via add_fact? Does contradiction detection block them?
 
 Usage:
     python -m tests.test_persona_mock
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import os

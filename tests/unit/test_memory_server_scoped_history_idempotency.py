@@ -115,7 +115,7 @@ def env(tmp_path, monkeypatch):
     memory_root = tmp_path / "memory"
     memory_root.mkdir()
     cm = _cm(memory_root)
-    # 真实运行时根目录绝不能被碰到：所有路径都必须落在 tmp_path 下。
+    # Never touch actual runtime roots: every path must lie under tmp_path.
     assert str(memory_root).startswith(str(tmp_path))
     monkeypatch.setattr(runtime, "_config_manager", cm)
     monkeypatch.setattr(trust_store, "pool_path", lambda: str(tmp_path / "trust.json"))
@@ -160,7 +160,7 @@ def _single_body(key: str | None = KEY_GROUP, **extra) -> dict:
     }
     if key is not None:
         body["idempotency_key"] = key
-        # 带键请求必须为每个 wire subject 给出清除代数（缺了不能当成 0）
+        # Keyed requests must provide a clearing generation for every wire subject; missing values cannot mean zero.
         body["subject_epochs"] = {GROUP_KEY: 0}
     body.update(extra)
     return body
@@ -198,7 +198,7 @@ SINGLE_FACTS = [
     {"text": "家里阳台种着猫薄荷", "importance": 6},
     {"text": "下次会带团子来玩", "importance": 5},
 ]
-# 第一段被清除后只送第二段去抽取：模型看到的是唯一的一段（段号 1）
+# After clearing the first segment, extract only the second: the model sees one segment, numbered 1.
 PART_ONLY_BATCH_FACTS = [
     {"segment": 1, "facts": [
         {"text": "Mika 的猫下午在窗台睡觉", "importance": 6},
@@ -321,7 +321,7 @@ async def test_segments_keyed_applies_then_same_key_is_duplicate(env):
 # ── crash during apply → retry resumes from the journal ───────────────────
 
 async def test_crash_mid_apply_retry_skips_llm_and_applies_only_the_rest(env):
-    # 二次抽取会给出不同的事实：若重试重新调 LLM，池里就会出现近重复。
+    # A second extraction returns different facts; retries invoking the LLM again would introduce near-duplicates in the pool.
     env.llm.responses = [
         BATCH_FACTS,
         [{"segment": 1, "facts": [{"text": "团子很爱晒太阳", "importance": 6}]},
@@ -343,7 +343,7 @@ async def test_crash_mid_apply_retry_skips_llm_and_applies_only_the_rest(env):
     texts = sorted(row["text"] for row in _facts_of(env, GP) + _facts_of(env, PART))
     assert texts == sorted(["团子喜欢晒太阳", "Mika 的猫下午在窗台睡觉", "Mika 想再来玩"])
     assert (GP_KEY, "团子") in env.persona.display_names
-    # 从暂存恢复的重试用本次请求带来的当前显示名补上
+    # Retries restored from staging fill in the current display name from this request.
     assert (PART_KEY, "Mika") in env.persona.display_names
     assert _key_state(env, KEY_SEGMENTS) == "done"
     assert not _staging_file(env, KEY_SEGMENTS).exists()
@@ -371,8 +371,8 @@ async def test_fact_row_written_but_journal_not_updated_is_not_duplicated(env):
     staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
     assert staging["applied"] == []
 
-    # 让精确 SHA 去重失效（模拟仲裁改写过这两行的 hash）：只剩 effect_key
-    # 能挡住重放。
+    # Disable exact SHA deduplication (simulate adjudication rewriting these two rows' hashes): only effect_key
+    # can prevent replay.
     for row in env.fs._facts[NAME]:
         row["hash"] = "rewritten-" + row["id"]
     env.fs.save_facts(NAME)
@@ -382,7 +382,7 @@ async def test_fact_row_written_but_journal_not_updated_is_not_duplicated(env):
     rows = _facts_of(env, GROUP)
     assert len(rows) == 2
     assert len({row["effect_key"] for row in rows}) == 2
-    # 重放命中的效果把已有的行作为这次的结果带回：调用方拿得到这些事实的身份
+    # Replay-hit effects return existing rows as this request's result, exposing those facts' identities to the caller.
     assert result["created"] == 2 and set(result["fact_ids"]) == {row["id"] for row in rows}
     assert env.llm.calls == 1
     assert _key_state(env, KEY_GROUP) == "done"
@@ -439,7 +439,7 @@ async def test_forget_while_generation_in_flight_drops_every_item(env):
     assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []
     final_journal = journals[-1]
     assert final_journal["applied"]
-    # 生成期间清除推进了 generation：产物在落暂存时就记为丢弃（墓碑是第二道）
+    # Clearing advanced generation during generation: mark output discarded when staging it (tombstones provide a second defense).
     assert all(
         entry.get("dropped_tombstone") or entry.get("dropped_forget_during_generation")
         for entry in final_journal["applied"]
@@ -450,7 +450,7 @@ async def test_forget_while_generation_in_flight_drops_every_item(env):
     )
     assert tombstones[GP_KEY]["forget_epoch"] == 1
 
-    # 清除之后新开的一轮（代数 1）照常写入。
+    # A new pass after clearing (generation 1) writes normally.
     env.llm.gate = None
     env.llm.responses = [BATCH_FACTS]
     fresh = await _post(env, _segments_body(
@@ -459,7 +459,7 @@ async def test_forget_while_generation_in_flight_drops_every_item(env):
     ))
     assert [seg["created"] for seg in fresh["segments"]] == [1, 2]
 
-    # 迟到的旧请求（清除之前发出、之后才到达，代数 0）照样被挡。
+    # Late old requests sent before clearing but arriving afterward (generation 0) are still blocked.
     env.llm.responses = [BATCH_FACTS]
     late = await _post(env, _segments_body(
         key="visit-digest:OldVisitIdBbbbbbbbbbbb:0:segments:0",
@@ -482,7 +482,7 @@ async def test_clock_rollback_does_not_change_the_tombstone_decision(env):
     )
     assert tombstones[GROUP_KEY]["forgotten_at"] < real_now - 3000
 
-    # 旧代数的迟到请求：客户端时钟比清除时刻「晚」，按时间比会被放行。
+    # Late request with old generation: its client clock is later than clearing, so time comparisons would allow it.
     env.llm.responses = [SINGLE_FACTS]
     stale = await _post(env, _single_body(
         key="visit-digest:StaleVisitIdCccccccccc:0:group:0",
@@ -492,7 +492,7 @@ async def test_clock_rollback_does_not_change_the_tombstone_decision(env):
     assert stale["created"] == 0
     assert _facts_of(env, GROUP) == []
 
-    # 新代数的请求：客户端时钟比清除时刻「早」，按时间比会被误挡。
+    # New-generation request: its client clock is earlier than clearing, so time comparisons would wrongly block it.
     fresh = await _post(env, _single_body(
         key="visit-digest:FreshVisitIdDddddddddd:0:group:0",
         subject_epochs={GROUP_KEY: 1},
@@ -530,7 +530,7 @@ async def test_crash_during_generation_regenerates_on_retry(env):
     with pytest.raises(RuntimeError):
         await _post(env, _single_body())
     assert not _staging_file(env, KEY_GROUP).exists()
-    # 调 LLM 之前就记了 pending（生成失败也留有可被清除取消的持久记录）；没有暂存，重试照常重新生成
+    # Persist pending before invoking the LLM (generation failure still leaves a durable record clearing can cancel); without staging, retry generates again normally.
     assert _key_state(env, KEY_GROUP) == "pending"
 
     result = await _post(env, _single_body())
@@ -543,7 +543,7 @@ async def test_pending_key_without_staging_regenerates_instead_of_duplicate(env)
     """Staging lost (e.g. swept) while the key is pending: regenerate, never skip."""
     env.llm.responses = [RuntimeError("LLM failed"), SINGLE_FACTS]
     with pytest.raises(RuntimeError):
-        await _post(env, _single_body())                     # 记下带请求身份的 pending，生成失败、没有暂存
+        await _post(env, _single_body())                     # Record pending with request identity; generation fails without staging.
     assert _key_state(env, KEY_GROUP) == "pending" and not _staging_file(env, KEY_GROUP).exists()
     result = await _post(env, _single_body())
     assert result.get("duplicate") is None
@@ -556,7 +556,7 @@ async def test_identityless_pending_key_without_staging_is_not_adopted(env):
     env.llm.responses = [SINGLE_FACTS]
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
-    # 既没有请求身份也没有暂存：核对不了是不是同一个请求，不能当成全新请求接手
+    # Neither request identity nor staging exists: cannot verify the same request, so do not take over as a new one.
     assert excinfo.value.status_code == 503 and env.llm.calls == 0
 
 
@@ -600,7 +600,7 @@ async def test_keyed_request_with_owner_signal_is_422(env, shape):
         body = _single_body(speaker_is_owner=True)
     else:
         body = _segments_body()
-        # admin 档才是合法的 owner 组合（否则既有校验先 422，测不到本守卫）。
+        # Only the admin profile is a valid owner combination; otherwise existing validation returns 422 before reaching this guard.
         body["segments"][0]["speaker_is_owner"] = True
         body["segments"][0]["speaker_tier"] = "admin"
     with pytest.raises(HTTPException) as excinfo:
@@ -638,7 +638,7 @@ async def test_twenty_keys_of_one_character_never_lose_a_record(env):
 
     def _slow_read(path):
         data = real_read(path)
-        time.sleep(0.005)  # 放大「读完、写回之前」的窗口
+        time.sleep(0.005)  # Widen the window between reading and writing back.
         return data
 
     env.monkeypatch.setattr(env.idem, "_read_json_object", _slow_read)
@@ -697,7 +697,7 @@ async def test_startup_cleanup_drops_expired_staging_and_tombstones_only(env):
     await idem.record_tombstones(NAME, ["a:new"], 1, now=now - 5)
     for state, key in (("done", "k-done"), ("cancelled", "k-cancelled"), ("pending", "k-pending")):
         await idem.update_key(NAME, key, idem.transition(state))
-        # 让记录本身也「很旧」：键记录无论多旧都不清。
+        # Make the record itself old too: keyed records are never cleared regardless of age.
     report = await idem.cleanup_expired([NAME], ttl_s=ttl, now=now)
     assert report == {"staging_removed": 1, "tombstones_removed": 1, "retired_removed": 0}
     assert not Path(idem.staging_path(NAME, "old-key")).exists()
@@ -708,7 +708,7 @@ async def test_startup_cleanup_drops_expired_staging_and_tombstones_only(env):
         "k-done": "done", "k-cancelled": "cancelled", "k-pending": "pending",
     }
     report = await idem.cleanup_expired([NAME], ttl_s=0, now=now + 10**9)
-    # 再过很久：剩下的暂存与墓碑都过期被清，键记录仍一字不动
+    # Much later, remaining staging and tombstones expire and are cleared, while keyed records remain byte-for-byte unchanged.
     assert report == {"staging_removed": 1, "tombstones_removed": 1, "retired_removed": 0}
     records_after = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))
     assert records_after == records
@@ -740,7 +740,7 @@ async def test_forget_without_epoch_during_generation_still_drops_the_write(env)
     task = asyncio.create_task(_post(env, _single_body(display_name=None)))
     await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
     assert not _staging_file(env, KEY_GROUP).exists()
-    await _forget(env, GROUP)                      # 不带 forget_epoch：不写墓碑
+    await _forget(env, GROUP)                      # Without forget_epoch, write no tombstone.
     assert not Path(env.idem.tombstones_path(NAME)).exists()
     env.llm.gate.set()
     result = await asyncio.wait_for(task, timeout=5)
@@ -758,7 +758,7 @@ async def test_unreadable_archive_fails_the_keyed_apply_instead_of_guessing(env)
         await _post(env, _single_body(display_name=None))
     assert excinfo.value.status_code == 503
     assert _facts_of(env, GROUP) == []
-    assert _staging_file(env, KEY_GROUP).exists()      # 留着暂存，同键重试只补应用
+    assert _staging_file(env, KEY_GROUP).exists()      # Retain staging; same-key retry only completes application.
     archive.write_text("[]", encoding="utf-8")
     result = await _post(env, _single_body(display_name=None))
     assert result["created"] == 2 and env.llm.calls == 1
@@ -867,12 +867,12 @@ async def test_forget_during_generation_survives_a_crash_before_apply(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash_before_apply)
     task = asyncio.create_task(_post(env, _single_body(display_name=None)))
     await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
-    await _forget(env, GROUP)                      # 不带代数的清除落在生成期间
+    await _forget(env, GROUP)                      # Clearing without a generation occurs during generation.
     env.llm.gate.set()
     with pytest.raises(HTTPException):
         await asyncio.wait_for(task, timeout=5)
     env.llm.gate = None
-    result = await _post(env, _single_body(display_name=None))     # 重试读到的是清除之后的 generation
+    result = await _post(env, _single_body(display_name=None))     # Retry reads the generation after clearing.
     assert result["created"] == 0 and _facts_of(env, GROUP) == []
 
 
@@ -894,7 +894,7 @@ async def test_same_key_with_different_content_is_rejected(env):
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, changed)
     assert excinfo.value.status_code == 422
-    # 显示名不进内容哈希：同一批句子换了显示名重试照样是 duplicate
+    # Display names do not enter content hashes: retrying the same sentences with a different display name is still duplicate.
     again = await _post(env, _single_body(display_name="新名字"))
     assert again["duplicate"] is True
 
@@ -906,7 +906,7 @@ async def test_pending_staging_rejects_a_retry_with_different_content(env):
         await _post(env, _single_body(display_name=None))
     path = Path(env.idem.keys_path(NAME))
     data = json.loads(path.read_text(encoding="utf-8"))
-    data[KEY_GROUP].pop("request", None)            # 只剩暂存里的内容哈希可核对
+    data[KEY_GROUP].pop("request", None)            # Only the staged content hash remains for verification.
     path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(display_name=None, input_history=_history("另一批")))
@@ -931,13 +931,13 @@ async def test_unreadable_active_facts_fail_the_keyed_apply(env):
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(display_name=None))
     assert excinfo.value.status_code == 503
-    assert facts_path.read_text(encoding="utf-8") == "{torn"       # 没被覆盖
+    assert facts_path.read_text(encoding="utf-8") == "{torn"       # Not overwritten.
 
 
 
 async def test_staged_retry_stamps_the_current_request_display_name_not_the_stale_one(env):
     env.llm.responses = [SINGLE_FACTS]
-    original_apply = _fail_on_item(env, failing_seq=1)   # seq0 facts 已写，seq1 显示名中断
+    original_apply = _fail_on_item(env, failing_seq=1)   # seq0 facts written; seq1 display-name update interrupted.
     with pytest.raises(HTTPException):
         await _post(env, _single_body(display_name="旧群名"))
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original_apply)
@@ -974,7 +974,7 @@ async def test_same_key_in_another_language_is_rejected(env):
 async def test_repaired_facts_file_is_not_overwritten_by_a_stale_empty_cache(env):
     facts_path = Path(env.fs._facts_path(NAME))
     facts_path.write_text("{torn", encoding="utf-8")
-    assert await env.fs.aload_facts(NAME) == []            # 宽松加载器把坏文件缓存成空
+    assert await env.fs.aload_facts(NAME) == []            # The permissive loader caches a corrupt file as empty.
     kept = {"id": "kept-1", "text": "修好的旧事实", "importance": 6, "hash": "h-kept",
             **{k: v for k, v in GROUP.items()}, "scope": f"{GROUP['subject_kind']}:{GROUP['subject_id']}"}
     facts_path.write_text(json.dumps([kept], ensure_ascii=False), encoding="utf-8")
@@ -1016,8 +1016,8 @@ async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(
     async def forget_then_write(lanlan_name, key, document):
         if not state["forgot"]:
             state["forgot"] = True
-            # 清除整个落在「生成后的检查」与暂存落盘之间：两遍取消扫描都看不到暂存，
-            # 键锁又被占着（跳过），只能靠暂存落盘之后的复核
+            # Clearing occurs entirely between the post-generation check and staging persistence: neither cancellation scan sees staging,
+            # and the occupied key lock is skipped; only the check after staging persistence can catch it.
             await _forget(env, GROUP)
         return await real_write(lanlan_name, key, document)
 
@@ -1031,7 +1031,7 @@ async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash_before_apply)
     with pytest.raises(HTTPException):
         await _post(env, _single_body(display_name=None))
-    # 请求在应用前中断：暂存留在盘上，但被清 subject 的抽取原文已随丢弃标记一并抹掉
+    # Request interrupted before application: staging remains on disk, but cleared subjects' extraction source was erased with discard markers.
     raw = _staging_file(env, KEY_GROUP).read_text(encoding="utf-8")
     assert all(fact["text"] not in raw for fact in SINGLE_FACTS)
     result = await _post(env, _single_body(display_name=None))
@@ -1129,20 +1129,20 @@ async def test_unreadable_key_file_does_not_block_a_forget_with_staging(env):
     keys_file = Path(env.idem.keys_path(NAME))
     intact = keys_file.read_text(encoding="utf-8")
     keys_file.write_text("{torn", encoding="utf-8")
-    result = await _forget(env, GROUP)                     # 不带 forget_epoch：没有墓碑
+    result = await _forget(env, GROUP)                     # Without forget_epoch, no tombstone exists.
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
-    # 键文件读不出、取消记不进去：改记在暂存里，暂存留着
+    # Key file unreadable and cancellation cannot be recorded: record it in staging instead, retaining staging.
     raw = _staging_file(env, KEY_GROUP).read_text(encoding="utf-8")
     staging = json.loads(raw)
     assert staging["cancelled_by_forget"] is True
-    # 留下的只是取消标记：被清 subject 的抽取原文与显示名都不在磁盘上
+    # Only cancellation markers remain: cleared subjects' extraction source and display names are absent from disk.
     for fact in SINGLE_FACTS:
         assert fact["text"] not in raw
     assert "串门群" not in raw
-    keys_file.write_text(intact, encoding="utf-8")         # 键文件修好，记录仍是 pending
+    keys_file.write_text(intact, encoding="utf-8")         # Key file repaired; record remains pending.
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     again = await _post(env, _single_body())
-    # 同键重试不会按清除之后的 generation 重新抽取写回
+    # Same-key retry must not regenerate and write using the post-clear generation.
     assert again["duplicate"] is True and _facts_of(env, GROUP) == []
     assert env.llm.calls == 1
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
@@ -1159,14 +1159,14 @@ async def test_cleanup_judges_unreadable_staging_by_its_filename_owner(env, owne
     path.write_text("{torn", encoding="utf-8")
     os.utime(path, (now - 500, now - 500))
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
-    # 按文件名反查到 pending 键就保留（它的唯一副本）；已终结或没有任何键记录的孤儿过期即删
+    # Retain staging whose filename resolves to a pending key (its only copy); remove expired orphans with terminal or absent key records.
     kept = owner_state == "pending"
     assert path.exists() is kept and report["staging_removed"] == (0 if kept else 1)
 
 
 async def test_unreadable_key_file_does_not_block_a_forget(env):
     env.llm.responses = [SINGLE_FACTS]
-    await _post(env, _single_body(key=None, display_name=None))       # 不带键写入两条事实
+    await _post(env, _single_body(key=None, display_name=None))       # Write two facts without a key.
     assert _facts_of(env, GROUP)
     Path(env.idem.keys_path(NAME)).write_text("{torn", encoding="utf-8")
     result = await _forget(env, GROUP)
@@ -1180,7 +1180,7 @@ async def test_forget_cancels_a_pending_key_whose_staging_is_unreadable(env):
         await _post(env, _single_body())
     _staging_file(env, KEY_GROUP).write_text("{torn", encoding="utf-8")
     result = await _forget(env, GROUP)
-    # 坏暂存不挡清除：按键记录取消，坏暂存一并删掉
+    # Corrupt staging does not block clearing: cancel by key record and delete corrupt staging too.
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     assert _key_state(env, KEY_GROUP) == "cancelled"
     assert not _staging_file(env, KEY_GROUP).exists()
@@ -1194,7 +1194,7 @@ async def test_forget_cancels_staging_written_after_its_staging_scan(env):
     assert _staging_file(env, KEY_GROUP).exists()
 
     async def stale_snapshot(_name):
-        return []          # 暂存扫描的快照取在这份暂存写成之前
+        return []          # The staging-scan snapshot predates this staging file's creation.
 
     env.monkeypatch.setattr(env.idem, "list_staging", stale_snapshot)
     result = await _forget(env, GROUP)
@@ -1213,7 +1213,7 @@ async def test_forget_keeps_staging_issued_after_it_by_epoch(env, forget_epoch, 
     with pytest.raises(HTTPException):
         await _post(env, _single_body(subject_epochs={GROUP_KEY: 2}))
     await _forget(env, GROUP, forget_epoch=forget_epoch)
-    # 请求代数 >= 这次清除的代数：它是知道这次清除之后才发起的新写入，不取消
+    # Request generation >= this clear's generation: a new write initiated knowing about the clear, so do not cancel.
     assert _staging_file(env, KEY_GROUP).exists() is kept
     assert _key_state(env, KEY_GROUP) == ("pending" if kept else "cancelled")
 
@@ -1234,17 +1234,17 @@ async def test_forget_of_one_segment_keeps_the_other_segments_for_retry(env, cra
     assert len(_facts_of(env, GP)) == (0 if crash_segment == 0 else 1) and _facts_of(env, PART) == []
     result = await _forget(env, GP)
     assert result["status"] == "forgotten" and _facts_of(env, GP) == []
-    # 只丢被清的那一段：键仍 pending、暂存留着，且其中没有被清段的抽取原文
+    # Discard only the cleared segment: key stays pending and staging remains without that segment's extraction source.
     assert _key_state(env, KEY_SEGMENTS) == "pending"
     assert "团子喜欢晒太阳" not in _staging_file(env, KEY_SEGMENTS).read_text(encoding="utf-8")
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     again = await _post(env, _segments_body())
     assert again.get("duplicate") is None
-    # 重试补写没被清的那一段，被清的那一段不会写回
+    # Retry completes the uncleared segment without restoring the cleared one.
     assert len(_facts_of(env, PART)) == 2 and _facts_of(env, GP) == []
-    # 被清段已应用的结果也清掉：响应不再报出已被擦除的事实
+    # Clear already-applied results for the cleared segment too: responses must no longer expose erased facts.
     assert again["segments"][0]["created"] == 0 and again["segments"][0]["fact_ids"] == []
-    # 被清段未应用的显示名项同样不补写（重试时显示名取自当前请求，不记丢弃就会写回）
+    # Do not complete the cleared segment's unapplied display-name item either: retry gets the current request's name and would restore it without a discard marker.
     assert (GP_KEY, "团子") not in env.persona.display_names
     assert env.llm.calls == 1
     assert _key_state(env, KEY_SEGMENTS) == "done"
@@ -1257,7 +1257,7 @@ async def test_forget_over_a_malformed_tombstone_erases_and_rebuilds_it(env):
     path = Path(env.idem.tombstones_path(NAME))
     path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": "9"}}), encoding="utf-8")
     result = await _forget(env, GROUP, forget_epoch=1)
-    # 坏墓碑不挡擦除：照常擦掉；擦完按「本次围栏 + 本次完成标记」重建这一行，而不是永久 503
+    # Corrupt tombstones do not block erasure: erase normally, then rebuild this row using the current fence + completion marker instead of permanent 503.
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     row = json.loads(path.read_text(encoding="utf-8"))[GROUP_KEY]
     assert row["forget_epoch"] == 1 and row["erased_epoch"] == 1
@@ -1270,7 +1270,7 @@ async def test_cleanup_judges_staging_by_its_filename_not_its_embedded_key(env, 
     await idem.update_key(NAME, "key-a", idem.transition(owner_state))
     path = Path(idem.staging_path(NAME, "key-a"))
     path.parent.mkdir(parents=True, exist_ok=True)
-    # key-a 的暂存文件里键被改成了 key-b（key-b 没有任何记录）
+    # key-a's staging file contains a key changed to key-b, which has no record.
     path.write_text(json.dumps({"key": "key-b", "subjects": [], "created_at": now - 500}), encoding="utf-8")
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
     kept = owner_state == "pending"
@@ -1283,7 +1283,7 @@ async def test_same_key_with_another_scope_is_a_different_request(env):
     await _post(env, _single_body())
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(subject={**GROUP, "scope": "another_scope"}))
-    # 同 kind:id、不同 scope 是两个隔离的 subject：不能当作同一个请求回 duplicate
+    # The same kind:id with different scopes denotes isolated subjects, not one request eligible for duplicate.
     assert excinfo.value.status_code == 422
 
 
@@ -1296,7 +1296,7 @@ async def test_forget_cancels_staging_by_its_routed_subject(env):
         "segments": [{"wire_key": GROUP_KEY, "subject": routed, "tombstone_keys": [GROUP_KEY]}],
         "items": [], "applied": [],
     })
-    # 当前扇出已不含这份暂存的 wire subject，但它应用时写的是记下的路由后 subject
+    # Current fanout no longer includes this staging file's wire subject, but application wrote its recorded routed subject.
     cancelled = await env.routes._cancel_staged_writes_for_subjects(
         NAME, {"participant:neko_visit:routed-person"},
     )
@@ -1308,7 +1308,7 @@ async def test_forget_scrubs_a_misplaced_staging_file_in_place(env):
     idem = env.idem
     path = _staging_file(env, KEY_GROUP)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # 文件名属于 KEY_GROUP，内容里的键却是另一个
+    # Filename belongs to KEY_GROUP, but embedded content names another key.
     path.write_text(json.dumps({
         "key": "other-key", "shape": "single", "subjects": [GROUP_KEY], "created_at": time.time(),
         "segments": [{"wire_key": GROUP_KEY, "subject": GROUP}],
@@ -1318,11 +1318,11 @@ async def test_forget_scrubs_a_misplaced_staging_file_in_place(env):
     result = await _forget(env, GROUP)
     assert result["status"] == "forgotten"
     raw = path.read_text(encoding="utf-8")
-    # 就地抹成取消标记：被清 subject 的原文不留；也不顺着内嵌键去碰别的路径
+    # Erase in place into a cancellation marker, retaining no cleared-subject source; do not follow embedded keys to other paths.
     assert "家里阳台种着猫薄荷" not in raw and json.loads(raw)["cancelled_by_forget"] is True
     assert not other.exists()
     with pytest.raises(idem.IdempotencyStateError):
-        await idem.read_staging(NAME, KEY_GROUP)               # 同键重试照样 fail closed
+        await idem.read_staging(NAME, KEY_GROUP)               # Same-key retry still fails closed.
 
 
 
@@ -1331,21 +1331,21 @@ async def test_replayed_or_stale_forget_does_not_erase_writes_made_after_it(env)
     await _post(env, _single_body(key=None, display_name=None))
     first = await _forget(env, GROUP, forget_epoch=2)
     assert first["status"] == "forgotten" and _facts_of(env, GROUP) == []
-    # 清除之后、带着新代数的合法写入
+    # Legitimate write after clearing, carrying a new generation.
     await _post(env, _single_body(subject_epochs={GROUP_KEY: 2}, display_name=None))
     assert len(_facts_of(env, GROUP)) == 2
-    for epoch in (2, 1):                       # 同代数重放、迟到的旧清除
+    for epoch in (2, 1):                       # Replay of the same generation; late older clearing.
         again = await _forget(env, GROUP, forget_epoch=epoch)
         assert again["status"] == "forgotten" and again.get("duplicate") is True
         assert len(_facts_of(env, GROUP)) == 2
-    newer = await _forget(env, GROUP, forget_epoch=3)   # 更新的清除照常擦
+    newer = await _forget(env, GROUP, forget_epoch=3)   # Newer clearing erases normally.
     assert newer.get("duplicate") is None and _facts_of(env, GROUP) == []
 
 
 async def test_forget_whose_erase_did_not_finish_is_not_skipped_on_retry(env):
     env.llm.responses = [SINGLE_FACTS]
     await _post(env, _single_body(key=None, display_name=None))
-    # 墓碑已落盘、擦除还没完成（崩在两步之间）：重试必须照常擦
+    # Tombstone persisted but erasure unfinished (crash between the steps): retry must still erase.
     await env.idem.record_tombstones(NAME, [GROUP_KEY], 2)
     result = await _forget(env, GROUP, forget_epoch=2)
     assert result.get("duplicate") is None and _facts_of(env, GROUP) == []
@@ -1363,12 +1363,12 @@ async def test_older_forget_rechecks_the_erased_epoch_under_the_transaction_lock
     async def check(*args):
         calls["n"] += 1
         if calls["n"] == 1:
-            return False        # 锁外那次核对发生在较新的清除完成之前
+            return False        # The unlocked check occurs before newer clearing completes.
         return await real_check(*args)
 
     env.monkeypatch.setattr(env.routes, "_forget_epoch_already_erased", check)
     stale = await _forget(env, GROUP, forget_epoch=2)
-    # 持锁后再核一次：看到较新的清除已擦完，旧清除不再擦掉之后的合法写入
+    # Recheck under the lock: newer clearing is complete, so older clearing must not erase subsequent legitimate writes.
     assert stale.get("duplicate") is True and calls["n"] == 2
     assert len(_facts_of(env, GROUP)) == 2
 
@@ -1386,13 +1386,13 @@ async def test_record_pass_matches_late_staging_by_its_routed_subject(env):
     })
 
     async def stale_snapshot(_name):
-        return []          # 暂存扫描的快照取在这份暂存写成之前
+        return []          # The staging-scan snapshot predates this staging file's creation.
 
     env.monkeypatch.setattr(idem, "list_staging", stale_snapshot)
     cancelled = await env.routes._cancel_staged_writes_for_subjects(
         NAME, {"participant:neko_visit:routed-person"},
     )
-    # 键记录里只有 wire key，但读到的暂存记着路由后的被清 subject：照样取消
+    # Key record contains only the wire key, but staging records the routed cleared subject: still cancel.
     assert cancelled == 1 and _key_state(env, KEY_GROUP) == "cancelled"
     assert not _staging_file(env, KEY_GROUP).exists()
 
@@ -1402,7 +1402,7 @@ async def test_forget_is_not_blocked_by_an_unrelated_key_holding_its_lock(env):
     await idem.update_key(NAME, "unrelated", idem.transition(
         "pending", request={"shape": "single", "wire_keys": [PART_KEY], "content_hash": "h"},
     ))
-    async with idem.key_lock(NAME, "unrelated"):       # 无关请求正持着自己的键锁等 LLM
+    async with idem.key_lock(NAME, "unrelated"):       # An unrelated request holds its own key lock while awaiting the LLM.
         cancelled = await asyncio.wait_for(
             env.routes._cancel_staged_writes_for_subjects(NAME, {GROUP_KEY}), timeout=2,
         )
@@ -1415,7 +1415,7 @@ async def test_pending_record_keeps_routed_subjects_for_forget_without_staging(e
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
     records = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))
-    # 路由后实际写入的 subject 单独记在 pending 记录上，不进请求身份
+    # Record the actual routed write subject separately on pending records, outside request identity.
     assert records[KEY_GROUP]["routed_keys"] == [GROUP_KEY]
     assert "routed_keys" not in records[KEY_GROUP]["request"]
 
@@ -1426,15 +1426,15 @@ async def test_record_pass_matches_routed_keys_when_staging_is_not_written_yet(e
         "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
         routed_keys=["participant:neko_visit:routed-person"],
     ))
-    # 暂存还没写成：只能靠记录里的路由后 subject 认出它。请求里还有没被清的 subject：只记下被清的，
-    # 不整键取消
+    # Staging does not yet exist; recognize it only through the record's routed subject. Some request subjects remain uncleared: record only cleared ones,
+    # without canceling the entire key.
     cancelled = await env.routes._cancel_staged_writes_for_subjects(
         NAME, {"participant:neko_visit:routed-person"},
     )
     record = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
     assert cancelled == 1 and record["state"] == "pending"
     assert record["forgotten_keys"] == ["participant:neko_visit:routed-person"]
-    # 请求涉及的 subject 全被清除：整键取消
+    # Every subject in the request was cleared: cancel the entire key.
     await env.routes._cancel_staged_writes_for_subjects(
         NAME, {"participant:neko_visit:routed-person", GROUP_KEY},
     )
@@ -1449,13 +1449,13 @@ async def test_concurrent_older_forget_waits_for_the_newer_one_to_publish_its_ep
 
     async def slow_mark(*args, **kwargs):
         reached.set()
-        await gate.wait()        # 较新的清除已擦完、放了擦除锁，还没记完成标记
+        await gate.wait()        # Newer clearing finished erasure and released the erasure lock but has not written its completion marker.
         return await real_mark(*args, **kwargs)
 
     env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", slow_mark)
     newer = asyncio.create_task(_forget(env, GROUP, forget_epoch=20))
     await reached.wait()
-    # 较新清除之后、带着新代数的合法写入
+    # Legitimate write after newer clearing, carrying a new generation.
     await _post(env, _single_body(subject_epochs={GROUP_KEY: 20}, display_name=None))
     assert len(_facts_of(env, GROUP)) == 2
     real_check = env.routes._forget_epoch_already_erased
@@ -1467,8 +1467,8 @@ async def test_concurrent_older_forget_waits_for_the_newer_one_to_publish_its_ep
 
     env.monkeypatch.setattr(env.routes, "_forget_epoch_already_erased", counted)
     older = asyncio.create_task(_forget(env, GROUP, forget_epoch=10))
-    # 给旧清除足够时间：没有栅栏时它会跑到持锁复核（第 2 次核对）并擦除；
-    # 有栅栏时它一直挡在栅栏外，一次核对都做不了
+    # Give older clearing enough time: without a fence it reaches the locked recheck (second check) and erases;
+    # with a fence it remains blocked outside, unable to perform even one check.
     for _ in range(200):
         if checks["n"] >= 2 or older.done():
             break
@@ -1476,7 +1476,7 @@ async def test_concurrent_older_forget_waits_for_the_newer_one_to_publish_its_ep
     gate.set()
     assert (await newer)["status"] == "forgotten"
     stale = await older
-    # 旧清除排在较新清除公布完成代数之后才核对：不再擦掉那批合法写入
+    # Older clearing checks only after newer clearing publishes its completed generation; it no longer erases legitimate writes.
     assert stale.get("duplicate") is True
     assert len(_facts_of(env, GROUP)) == 2
 
@@ -1488,14 +1488,14 @@ async def test_generation_failing_after_a_forget_keeps_the_forget_on_the_record(
     env.llm.entered = asyncio.Event()
     task = asyncio.create_task(_post(env, _single_body()))
     await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
-    # 生成期间的清除：键锁被占着，它不排队，只在记录上持久记下被清的 subject
+    # Clearing during generation: the key lock is occupied, so do not queue; durably record cleared subjects on the record only.
     await _forget(env, GROUP)
     env.llm.gate.set()
     with pytest.raises(RuntimeError):
         await asyncio.wait_for(task, timeout=5)
     records = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))
     assert records[KEY_GROUP]["state"] == "pending" and records[KEY_GROUP]["forgotten_keys"] == [GROUP_KEY]
-    # 生成失败（或进程被杀）之后同键重试：重新生成但按这份记录丢弃被清的段，不写回旧内容
+    # Same-key retry after generation fails (or process termination): regenerate but discard cleared segments according to this record without restoring old content.
     env.llm.gate = None
     env.llm.responses = [SINGLE_FACTS]
     again = await _post(env, _single_body())
@@ -1508,7 +1508,7 @@ async def test_generation_failing_after_forgetting_one_segment_keeps_the_others(
     env.llm.entered = asyncio.Event()
     task = asyncio.create_task(_post(env, _segments_body()))
     await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
-    await _forget(env, GP)                                   # 只清其中一段的 subject
+    await _forget(env, GP)                                   # Clear the subject of only one segment.
     env.llm.gate.set()
     with pytest.raises(RuntimeError):
         await asyncio.wait_for(task, timeout=5)
@@ -1523,15 +1523,15 @@ async def test_generation_failing_after_forgetting_one_segment_keeps_the_others(
 
     env.fs._allm_call_with_retries = recording
     again = await _post(env, _segments_body())
-    # 只丢被清的那一段，另一段照常补写，而不是整键取消
+    # Discard only the cleared segment and complete the other normally, rather than canceling the entire key.
     assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
     assert [seg["created"] for seg in again["segments"]] == [0, 2]
-    # 被清参与者的原文不再送去抽取
+    # Do not send the cleared participant's original text for extraction again.
     assert prompts and all("我最喜欢晒太阳了" not in prompt for prompt in prompts)
 
 
 async def test_terminal_key_record_without_request_identity_fails_closed(env):
-    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # 记录坏了：没有请求身份
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # Corrupt record: no request identity.
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
     assert excinfo.value.status_code == 503 and env.llm.calls == 0
@@ -1543,14 +1543,14 @@ async def test_damaged_journal_markers_fail_closed(env, damage):
     original = _fail_on_item(env, failing_seq=0)
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
-    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)    # 重试时应用本身不再出错
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)    # Application itself no longer fails during retry.
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
     facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
     if damage == "applied_seq_bool":
-        staging["applied"].append({"seq": True})            # True == 1：会把第 1 项当成已应用跳过
+        staging["applied"].append({"seq": True})            # True == 1: would skip item 1 as already applied.
     else:
-        facts_item["effect_keys"][0] = "0" * 32 + ":7"      # 形状合法、却不是这个键推出来的效果键
+        facts_item["effect_keys"][0] = "0" * 32 + ":7"      # Valid shape, but not an effect key derived from this key.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
@@ -1561,9 +1561,9 @@ async def test_forget_cancels_a_pending_key_whose_generation_failed_earlier(env)
     env.llm.responses = [RuntimeError("LLM failed")]
     with pytest.raises(RuntimeError):
         await _post(env, _single_body())
-    assert _key_state(env, KEY_GROUP) == "pending"       # 生成失败，留下 pending、没有暂存
+    assert _key_state(env, KEY_GROUP) == "pending"       # Generation fails, leaving pending without staging.
     await _forget(env, GROUP)
-    # 键锁空着：清除把它取消，之后同键重试只得到 duplicate
+    # Key lock available: clearing cancels it, and subsequent same-key retry returns only duplicate.
     assert _key_state(env, KEY_GROUP) == "cancelled"
     env.llm.responses = [SINGLE_FACTS]
     again = await _post(env, _single_body())
@@ -1576,7 +1576,7 @@ async def test_damaged_staging_items_fail_closed(env, damage):
     original = _fail_on_item(env, failing_seq=0)
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
-    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)    # 重试时应用本身不再出错
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)    # Application itself no longer fails during retry.
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
     facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
@@ -1591,7 +1591,7 @@ async def test_damaged_staging_items_fail_closed(env, damage):
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
-    # 条目坏了绝不应用（负段号会写到另一个 subject 上）：503，什么都不写
+    # Never apply corrupt items (a negative segment number writes to another subject): return 503 and write nothing.
     assert excinfo.value.status_code == 503 and _facts_of(env, GROUP) == []
 
 
@@ -1600,7 +1600,7 @@ async def test_deeply_nested_staging_does_not_block_a_forget(env):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
     result = await _forget(env, GROUP)
-    # 嵌套过深的暂存按读不出处理，不让每次清除都 500
+    # Treat excessively nested staging as unreadable instead of returning 500 on every clear.
     assert result["status"] == "forgotten"
 
 
@@ -1610,7 +1610,7 @@ async def test_client_key_named_like_the_forget_fence_does_not_deadlock(env):
     await idem.update_key(NAME, clash, idem.transition(
         "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
     ))
-    # 栅栏用独立的登记表：与它同名的客户端键不会让清除自己等自己
+    # Fences use a separate registry: a same-named client key cannot make clearing wait on itself.
     result = await asyncio.wait_for(_forget(env, GROUP, forget_epoch=1), timeout=5)
     assert result["status"] == "forgotten" and _key_state(env, clash) == "cancelled"
 
@@ -1618,7 +1618,7 @@ async def test_client_key_named_like_the_forget_fence_does_not_deadlock(env):
 async def test_keyed_write_requires_the_default_scope(env):
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(subject={**GROUP, "scope": "another_scope"}))
-    # 墓碑 / 取消 / 已擦代数都按 kind:id 记：带键写入只接受默认 scope
+    # Tombstones / cancellation / erased generations are recorded by kind:id; keyed writes accept only the default scope.
     assert excinfo.value.status_code == 422 and env.llm.calls == 0
 
 
@@ -1635,7 +1635,7 @@ async def test_forgetting_another_scope_does_not_cancel_default_scope_writes(env
         await _post(env, _single_body())
     assert _key_state(env, KEY_GROUP) == "pending"
     result = await _forget(env, {**GROUP, "scope": "another_scope"})
-    # 清的是同一 kind:id 的另一个 scope：默认 scope 的带键写入与它无关，不取消
+    # Clearing another scope of the same kind:id is unrelated to the default-scope keyed write; do not cancel it.
     assert result["status"] == "forgotten"
     assert _key_state(env, KEY_GROUP) == "pending" and _staging_file(env, KEY_GROUP).exists()
 
@@ -1643,10 +1643,10 @@ async def test_forgetting_another_scope_does_not_cancel_default_scope_writes(env
 async def test_pending_key_issued_after_the_forget_is_not_cancelled_without_staging(env):
     env.llm.responses = [RuntimeError("LLM failed")]
     with pytest.raises(RuntimeError):
-        await _post(env, _single_body(subject_epochs={GROUP_KEY: 5}))   # 知道代数 5 的清除之后才发起
+        await _post(env, _single_body(subject_epochs={GROUP_KEY: 5}))   # Initiated only after learning of generation-5 clearing.
     assert _key_state(env, KEY_GROUP) == "pending"
     await _forget(env, GROUP, forget_epoch=5)
-    # 没有暂存，但记录里的请求代数 >= 清除代数：合法的新写入，不取消
+    # No staging, but record request generation >= clear generation: legitimate new write, do not cancel.
     assert _key_state(env, KEY_GROUP) == "pending"
     env.llm.responses = [SINGLE_FACTS]
     again = await _post(env, _single_body(subject_epochs={GROUP_KEY: 5}))
@@ -1657,9 +1657,9 @@ async def test_corrupt_tombstone_file_does_not_block_an_epoch_forget(env):
     env.llm.responses = [SINGLE_FACTS]
     await _post(env, _single_body(key=None, display_name=None))
     path = Path(env.idem.tombstones_path(NAME))
-    path.write_text("{torn", encoding="utf-8")                 # 整个墓碑文件读不出
+    path.write_text("{torn", encoding="utf-8")                 # Entire tombstone file unreadable.
     result = await _forget(env, GROUP, forget_epoch=2)
-    # 辅助文件坏了不挡隐私清除：照常擦除；坏文件改名隔离，按本次清除重建，不永久 503
+    # Corrupt auxiliary files must not block privacy clearing: erase normally, rename corrupt files into quarantine, and rebuild from this clear, avoiding permanent 503.
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 2
     assert list(path.parent.glob(path.name + ".corrupt-*"))
@@ -1670,7 +1670,7 @@ async def test_keyed_request_without_epochs_is_rejected(env):
     body.pop("subject_epochs")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, body)
-    # 缺了的代数不能当成 0（否则被带代数清除过的 subject 之后的写入会全部被静默丢弃）
+    # Missing generation cannot mean zero, or every write after generation-bearing clearing would be silently discarded.
     assert excinfo.value.status_code == 422 and env.llm.calls == 0
 
 
@@ -1685,7 +1685,7 @@ async def test_retry_whose_every_segment_was_forgotten_skips_the_llm(env):
     await env.idem.update_key(NAME, KEY_GROUP, mark)
     env.monkeypatch.setattr(env.routes, "_keyed_request_hash", lambda _req: "h")
     result = await _post(env, _single_body())
-    # 产物注定全部丢弃：不再持键锁跑一遍抽取，直接按取消收尾
+    # All output is destined for discard: do not hold the key lock for another extraction; finish directly as canceled.
     assert result["duplicate"] is True and env.llm.calls == 0
     assert _key_state(env, KEY_GROUP) == "cancelled"
 
@@ -1701,12 +1701,12 @@ async def test_key_file_read_rides_out_a_concurrent_replace(env, monkeypatch):
         if state["busy"]:
             state["busy"] = False
             exc = PermissionError(13, "sharing violation")
-            exc.winerror = 32                                  # Windows：别的写入正在 os.replace
+            exc.winerror = 32                                  # Windows: another writer is performing os.replace.
             raise exc
         return real_read(path, **kwargs)
 
     monkeypatch.setattr(file_utils, "read_json", busy_once)
-    # 替换窗口里的瞬时共享冲突退避重试，不当成「状态读不出」
+    # Back off and retry transient sharing conflicts during replacement rather than treating state as unreadable.
     assert (await env.idem.read_key(NAME, KEY_GROUP))["state"] == "pending"
 
 
@@ -1717,19 +1717,19 @@ async def test_forget_fails_when_the_completion_marker_cannot_be_written(env):
     env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", broken)
     with pytest.raises(HTTPException) as excinfo:
         await _forget(env, GROUP, forget_epoch=1)
-    # 「这个代数已擦完」没落盘就不回成功：调用方重试到它落盘
+    # Do not report success until this generation's erasure completion is durable; callers retry until persisted.
     assert excinfo.value.status_code == 500
 
 
 async def test_damaged_applied_result_fields_fail_closed(env):
     env.llm.responses = [SINGLE_FACTS]
-    original = _fail_on_item(env, failing_seq=1)               # seq0 已应用，seq1 中断
+    original = _fail_on_item(env, failing_seq=1)               # seq0 applied; seq1 interrupted.
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
-    staging["applied"][0]["fact_ids"] = 1                      # 结果字段坏了
+    staging["applied"][0]["fact_ids"] = 1                      # Corrupt result field.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
@@ -1745,8 +1745,8 @@ async def test_fresh_write_routed_into_the_fanout_is_not_cancelled(env):
         "segments": [{"wire_key": GROUP_KEY, "subject": routed, "tombstone_keys": [GROUP_KEY]}],
         "items": [], "applied": [],
     })
-    # 清除 GROUP 扇出到它路由后的 canonical：交集是两个 key，但这段的 wire 就是请求 subject、
-    # 代数够新，它是清除之后的合法写入
+    # Clearing GROUP fans out to its routed canonical subject: intersection contains two keys, but this segment's wire is the request subject,
+    # with a sufficiently new generation, making it a legitimate post-clear write.
     cancelled = await env.routes._cancel_staged_writes_for_subjects(
         NAME, {GROUP_KEY, "participant:neko_visit:canonical"},
         request_subject_key=GROUP_KEY, forget_epoch=3,
@@ -1764,7 +1764,7 @@ def test_replaying_a_forgotten_marker_drops_locale_items_too(env):
         "applied": [],
     }
     env.routes._drop_segments_for_keys(doc, {GROUP_KEY})
-    # 清除之后才预留的语言序号证明不了请求早于清除：一并丢弃
+    # Language sequence numbers reserved only after clearing cannot prove the request predates clearing: discard too.
     assert {entry["seq"] for entry in doc["applied"]} == {0, 1}
 
 
@@ -1778,10 +1778,10 @@ async def test_restored_journal_destinations_and_facts_are_validated(env, damage
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
     if damage == "foreign_destination":
-        staging["segments"][0]["subject"] = PART                # 写入目标被改成另一个合法 subject
+        staging["segments"][0]["subject"] = PART                # Write target changed to another valid subject.
     else:
         facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
-        facts_item["facts"][0] = "not a fact"                  # 坏掉的事实会被静默跳过却记成已应用
+        facts_item["facts"][0] = "not a fact"                  # Corrupt facts would be silently skipped yet marked applied.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
@@ -1818,13 +1818,13 @@ async def test_more_journal_damage_fails_closed(env, damage):
         staging["applied"] = [{"seq": facts_seq} if e["seq"] == facts_seq else e for e in staging["applied"]]
         assert any(e == {"seq": facts_seq} for e in staging["applied"])
     elif damage == "applied_facts_empty_ids":
-        # 空的 fact_ids 也是合法结果：只凭它不能证明这一项应用过
+        # Empty fact_ids is a valid result too and alone cannot prove this item was applied.
         facts_seq = next(item["seq"] for item in staging["items"] if item["kind"] == "facts")
         staging["applied"] = [
             {"seq": facts_seq, "fact_ids": []} if e["seq"] == facts_seq else e for e in staging["applied"]
         ]
     elif damage == "applied_facts_drop_marker_typo":
-        # 名字像丢弃标记、但不是本模块写的那几个：不能当成完成证据
+        # Names resemble discard markers but are not those written by this module: they cannot prove completion.
         facts_seq = next(item["seq"] for item in staging["items"] if item["kind"] == "facts")
         staging["applied"] = [
             {"seq": facts_seq, "dropped_typo": True} if e["seq"] == facts_seq else e
@@ -1838,9 +1838,9 @@ async def test_more_journal_damage_fails_closed(env, damage):
         if damage == "locale_order_string":
             locale["order"] = "1"
         elif damage == "locale_language_other":
-            locale["language"] = "en"                           # 另一个受支持的语言码，与请求不符
+            locale["language"] = "en"                           # Another supported language code, inconsistent with the request.
         else:
-            locale["language"] = "invalid"                    # 会被语言存储转成 None、清掉原有语言
+            locale["language"] = "invalid"                    # Language storage would convert it to None and clear the existing language.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, body)
@@ -1863,15 +1863,15 @@ async def test_yet_more_journal_damage_fails_closed(env, damage):
     if damage == "orphan_foreign_destination":
         keys_path = Path(env.idem.keys_path(NAME))
         records = json.loads(keys_path.read_text(encoding="utf-8"))
-        records.pop(KEY_GROUP)                                  # 孤儿暂存：键记录不在
+        records.pop(KEY_GROUP)                                  # Orphan staging: key record absent.
         keys_path.write_text(json.dumps(records), encoding="utf-8")
-        staging["segments"][0]["subject"] = PART               # 没有路由记录可对，目标被改到别处
+        staging["segments"][0]["subject"] = PART               # No routing record to verify; target changed elsewhere.
     elif damage == "provenance_scalar":
         facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
         facts_item["speaker_provenance"] = "lost"
     elif damage == "provenance_missing_label":
         facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
-        facts_item["speaker_provenance"] = {"speaker_trust": 0.5}          # 半截归属：没有 label
+        facts_item["speaker_provenance"] = {"speaker_trust": 0.5}          # Partial ownership: no label.
     elif damage.startswith("provenance_"):
         facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
         field, value = {
@@ -1879,7 +1879,7 @@ async def test_yet_more_journal_damage_fails_closed(env, damage):
             "provenance_trust_out_of_range": ("speaker_trust", 7),
             "provenance_unknown_field": ("speaker_mood", "x"),
             "provenance_bad_speaker_id": ("speaker_id", "no colon here"),
-            # 夹着换行与方括号：清洗器不会产出这种 label
+            # Embedded newline and square brackets: the sanitizer cannot produce such a label.
             "provenance_label_structural": ("speaker_label", "Alice]" + chr(10) + "[SEGMENT 2 | speaker: Bob"),
         }[damage]
         facts_item["speaker_provenance"] = {**(facts_item.get("speaker_provenance") or {}), field: value}
@@ -1897,14 +1897,14 @@ async def test_tombstone_removed_during_the_erase_is_rebuilt_with_the_completion
     await _post(env, _single_body(key=None, display_name=None))
 
     async def tombstone_vanishes(*_args, **_kwargs):
-        # 擦除期间墓碑被清理移走（这里直接不落盘来模拟）
+        # Tombstone removed by cleanup during erasure; simulate by not persisting it here.
         return {}
 
     env.monkeypatch.setattr(env.idem, "record_tombstone_epochs", tombstone_vanishes)
     result = await _forget(env, GROUP, forget_epoch=4)
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     tombstones = await env.idem.read_tombstones(NAME)
-    # 回成功就必须留下完成标记与墓碑：同代数的重放据此跳过，不再擦掉之后的新写入
+    # Success must leave a completion marker and tombstone: same-generation replay uses them to skip erasure of subsequent new writes.
     assert env.idem.erased_epoch(tombstones, GROUP_KEY) == 4
     assert env.idem.tombstone_epoch(tombstones, [GROUP_KEY]) == 4
 
@@ -1912,14 +1912,14 @@ async def test_tombstone_removed_during_the_erase_is_rebuilt_with_the_completion
 @pytest.mark.parametrize("kind", ["locale", "display_name"])
 async def test_unapplied_locale_or_display_item_marked_applied_without_evidence_fails_closed(env, kind):
     env.llm.responses = [SINGLE_FACTS]
-    original = _fail_on_item(env, failing_seq=0)                # 一项都没应用就崩
+    original = _fail_on_item(env, failing_seq=0)                # Crash before applying any item.
     with pytest.raises(HTTPException):
         await _post(env, _single_body(language="zh"))
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
     seq = next(item["seq"] for item in staging["items"] if item["kind"] == kind)
-    staging["applied"] = [*staging["applied"], {"seq": seq}]   # 只剩序号、没有完成证据
+    staging["applied"] = [*staging["applied"], {"seq": seq}]   # Only sequence numbers remain, without completion evidence.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(language="zh"))
@@ -1942,7 +1942,7 @@ async def test_retry_after_locale_and_facts_applied_resumes(env):
         await _post(env, _single_body(language="zh"))
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     applied = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))["applied"]
-    # 已应用的语言项、事实项都带着各自的完成证据，恢复时校验得过、接着补应用
+    # Applied language/fact items each carry completion evidence; recovery validates it and completes remaining application.
     assert any(entry.get("locale_recorded") is True for entry in applied)
     result = await _post(env, _single_body(language="zh"))
     assert result["created"] == 2 and _key_state(env, KEY_GROUP) == "done"
@@ -1955,7 +1955,7 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"key": "orphan-key", "subjects": [], "created_at": now - 500}), encoding="utf-8")
     lock = idem.key_lock(NAME, "orphan-key")
-    await lock.acquire()                                         # 同键重试正持键锁认领这份孤儿暂存
+    await lock.acquire()                                         # Same-key retry holds the key lock to claim this orphan staging.
     try:
         sweep = asyncio.create_task(idem.cleanup_expired([NAME], ttl_s=100.0, now=now))
         for _ in range(20):
@@ -1964,7 +1964,7 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
     finally:
         lock.release()
     report = await sweep
-    # 枚举前的键记录快照里它还是孤儿；删之前拿键锁重读，已被认领成 pending 的不删
+    # The pre-enumeration key-record snapshot still shows an orphan; lock and reread before deletion, retaining staging claimed as pending.
     assert path.exists() and report["staging_removed"] == 0
 
 
@@ -1991,25 +1991,25 @@ async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env,
     elif damage == "items_scalar":
         staging["items"] = 1
     elif damage == "applied_null":
-        staging["applied"] = None                                # 字段在、值却是 null
+        staging["applied"] = None                                # Field exists but value is null.
     elif damage == "kept_effect_keys_scalar":
-        # 没被清的那段（PART）还没应用的事实项，载荷坏了：留下来也永远重放不了
+        # Corrupt payload in an unapplied fact item of uncleared PART: retaining it would never allow replay.
         part_facts = next(item for item in staging["items"] if item["kind"] == "facts" and item["segment"] == 1)
         part_facts["effect_keys"] = 5
     elif damage == "item_bad_kind":
-        staging["items"][0]["kind"] = "bogus"                   # 条目是对象，但类型坏了
+        staging["items"][0]["kind"] = "bogus"                   # Item is an object but has a corrupt type.
     elif damage == "applied_bad_seq":
-        staging["applied"].append({"seq": "bad"})               # 对象，但序号坏了
+        staging["applied"].append({"seq": "bad"})               # Object with corrupt sequence number.
     elif damage == "applied_scalar_entry":
-        staging["applied"].append(7)                             # 已应用记录里混进一个标量
+        staging["applied"].append(7)                             # A scalar mixed into applied records.
     elif damage == "items_empty_object":
-        staging["items"] = {}                                    # 假值：不能经 `or []` 当成空列表放过
+        staging["items"] = {}                                    # Falsy value: must not pass as an empty list via `or []`.
     else:
         staging["items"].append(7)
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     assert _facts_of(env, GP)
     result = await _forget(env, GP)
-    # 只丢被清段做不了：整个键按取消处理，隐私擦除照常完成
+    # Cannot discard only the cleared segment: cancel the whole key while completing privacy erasure normally.
     assert result["status"] == "forgotten" and _facts_of(env, GP) == []
     assert _key_state(env, KEY_SEGMENTS) == "cancelled"
 
@@ -2025,12 +2025,12 @@ async def test_restored_journal_missing_a_locale_item_fails_closed(env):
     items = [item for item in staging["items"] if item["kind"] != "locale"]
     assert len(items) < len(staging["items"])
     for position, item in enumerate(items):
-        item["seq"] = position                                   # 序号重排后其余检查都过得去
+        item["seq"] = position                                   # Other checks still pass after sequence-number reordering.
     staging["items"] = items
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(language="zh"))
-    # 语言在请求身份里、开轮时必有一项：整条没了就不能按它收尾
+    # Language belongs to request identity and must have an item at pass creation; if the entire item disappears, it cannot authorize completion.
     assert excinfo.value.status_code == 503 and _key_state(env, KEY_GROUP) == "pending"
 
 
@@ -2043,10 +2043,10 @@ async def test_restored_journal_missing_its_display_item_is_completed_from_the_r
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
     assert staging["items"][-1]["kind"] == "display_name"
-    staging["items"].pop()                                       # 末尾的显示名项整条丢了
+    staging["items"].pop()                                       # Entire trailing display-name item missing.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     result = await _post(env, _single_body())
-    # 用重试请求带的显示名补回这一项，不能就此收尾、永久漏掉
+    # Restore this item using the retry request's display name; do not finalize and permanently omit it.
     assert result["created"] == 2 and _key_state(env, KEY_GROUP) == "done"
     assert (GROUP_KEY, "串门群") in env.persona.display_names
 
@@ -2057,7 +2057,7 @@ async def test_damaged_erased_marker_never_skips_a_forget(env):
     path = Path(env.idem.tombstones_path(NAME))
     path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": "bad", "erased_epoch": 999}}), encoding="utf-8")
     result = await _forget(env, GROUP, forget_epoch=5)
-    # 围栏坏了的行上的完成标记不算数：照常擦除，不当成已擦过回 duplicate；擦完按本次重建这一行
+    # A completion marker on a row with a corrupt fence is invalid: erase normally instead of returning duplicate, then rebuild the row from this clear.
     assert result.get("duplicate") is None and _facts_of(env, GROUP) == []
     assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 5
     assert env.idem.erased_epoch({GROUP_KEY: {"forget_epoch": 3, "erased_epoch": 4}}, GROUP_KEY) is None
@@ -2066,11 +2066,11 @@ async def test_damaged_erased_marker_never_skips_a_forget(env):
 async def test_erase_behind_a_higher_fence_marks_that_fence_erased(env):
     env.llm.responses = [SINGLE_FACTS]
     await _post(env, _single_body(key=None, display_name=None))
-    # 更新的清除（代数 9）已立起墓碑、还没擦就失败了
+    # Newer clearing (generation 9) erected a tombstone but failed before erasing.
     await env.idem.record_tombstones(NAME, {GROUP_KEY}, 9)
     result = await _forget(env, GROUP, forget_epoch=4)
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
-    # 这次擦除在代数 9 的围栏之后进行：一并记为擦到 9，代数 9 的重试不再擦掉之后的合法写入
+    # This erasure occurs after generation 9's fence: record completion through 9 too, so its retry cannot erase subsequent legitimate writes.
     assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 9
 
 
@@ -2082,11 +2082,11 @@ async def test_forget_scrubs_a_journal_whose_subject_index_is_damaged(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
-    staging.pop("subjects")                                    # 索引丢了，各段仍指认被清的 subject
+    staging.pop("subjects")                                    # Index missing, but individual segments still identify the cleared subject.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
-    Path(env.idem.keys_path(NAME)).unlink()                    # 孤儿：没有键记录可按记录取消
+    Path(env.idem.keys_path(NAME)).unlink()                    # Orphan: no key record to cancel through.
     await _forget(env, GROUP)
-    # 不能凭坏索引跳过：抽取原文不能留在磁盘上，之后的同键重试也不能把清除前的事实写回去
+    # Do not skip because the index is corrupt: extraction source must leave disk, and future same-key retries must not restore pre-clear facts.
     assert "猫薄荷" not in (path.read_text(encoding="utf-8") if path.exists() else "")
     result = await _post(env, _single_body())
     assert result.get("duplicate") is True and _facts_of(env, GROUP) == []
@@ -2122,11 +2122,11 @@ async def test_cleanup_continues_past_a_malformed_key_record(env):
 
     async def bad_first(name):
         rows = await real_list(name)
-        return sorted(rows, key=lambda row: Path(row[0]) != paths["bad-key"])   # 坏记录的暂存先被扫到
+        return sorted(rows, key=lambda row: Path(row[0]) != paths["bad-key"])   # The corrupt record's staging is scanned first.
 
     env.monkeypatch.setattr(idem, "list_staging", bad_first)
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
-    # 坏的那条只保留它自己的暂存，其余过期暂存照常清理
+    # The corrupt record retains only its own staging; other expired staging is cleaned normally.
     assert paths["bad-key"].exists() and not paths["done-key"].exists()
     assert report["staging_removed"] == 1
 
@@ -2137,13 +2137,13 @@ async def test_forget_scrubs_an_unreadable_orphan_journal(env):
     orphan.parent.mkdir(parents=True, exist_ok=True)
     await env.idem.update_key(NAME, "owned-key", env.idem.transition("done"))
     for path in (owned, orphan):
-        path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # 读不出
+        path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # Unreadable.
     await _forget(env, GROUP)
-    # 没有键记录认领、读不出的暂存认不出涉及谁：原地抹成不含原文的占位，不留抽取原文
+    # Unreadable staging unclaimed by key records cannot identify involved subjects: erase in place into a source-free placeholder, retaining no extraction source.
     assert "猫薄荷" not in orphan.read_text(encoding="utf-8")
-    # 有键记录认领的不归这一步管
+    # Staging claimed by a key record is outside this step's scope.
     assert "猫薄荷" in owned.read_text(encoding="utf-8")
-    # 同键重试按已取消收尾：不能当成「没有暂存」重新生成、把被清 subject 写回去
+    # Same-key retry finishes as canceled; never treat it as absent staging and regenerate cleared subjects.
     env.llm.responses = [SINGLE_FACTS]
     result = await _post(env, _single_body())
     assert result.get("duplicate") is True and env.llm.calls == 0 and _facts_of(env, GROUP) == []
@@ -2156,7 +2156,7 @@ async def test_unreadable_staging_without_a_key_file_is_left_alone(env):
     orphan.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")
     assert not Path(env.idem.keys_path(NAME)).exists()
     await _forget(env, GROUP)
-    # 有暂存、没有键文件：归属未知（丢了 / 被还原过），原样保留
+    # Staging exists but no key file: ownership unknown (lost / restored); preserve unchanged.
     assert "猫薄荷" in orphan.read_text(encoding="utf-8")
 
 
@@ -2170,7 +2170,7 @@ async def test_retry_spelling_out_the_default_scope_is_the_same_request(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     default_scope = MemorySubject.create(GROUP["subject_kind"], GROUP["subject_id"]).scope
     result = await _post(env, _single_body(subject={**GROUP, "scope": default_scope}))
-    # 省略 scope 与显式写默认 scope 是同一个 subject：同键重试照常接着应用，不回 422
+    # Omitted scope and explicit default scope denote the same subject: same-key retry continues application normally instead of returning 422.
     assert result["created"] == 2 and env.llm.calls == 1
 
 
@@ -2182,7 +2182,7 @@ async def test_over_fence_erased_marker_is_repaired_by_the_next_erase(env):
                     encoding="utf-8")
     result = await _forget(env, GROUP, forget_epoch=5)
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
-    # 回成功就必须留下读端认的完成标记：超出围栏的坏标记被这次擦除改写成 5
+    # Success must leave a completion marker recognized by readers: this erasure rewrites an invalid beyond-fence marker to 5.
     assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 5
 
 
@@ -2194,22 +2194,22 @@ async def test_cancelled_flag_on_an_unstripped_journal_fails_closed(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
-    staging["cancelled_by_forget"] = True                       # 只改了一个布尔值，条目都还在
+    staging["cancelled_by_forget"] = True                       # Only one boolean changed; all items remain.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
-    # 不是清除写出的抹干净形状：不能凭这个布尔值把整个请求记成取消
+    # Not the fully scrubbed shape written by clearing: this boolean alone cannot cancel the entire request.
     assert excinfo.value.status_code == 503 and _key_state(env, KEY_GROUP) == "pending"
     assert path.exists()
 
 
 async def test_forgotten_locale_only_segment_gets_no_display_name_on_retry(env):
     env.llm.responses = [[
-        {"segment": 1, "facts": []},                             # 被清的那段没抽出事实
+        {"segment": 1, "facts": []},                             # No facts extracted from the cleared segment.
         {"segment": 2, "facts": [{"text": "Mika 的猫下午在窗台睡觉", "importance": 6}]},
     ]]
     body = _segments_body(language="zh")
-    body["segments"][0].pop("display_name")                      # 开轮时这段也没有显示名：只剩语言项
+    body["segments"][0].pop("display_name")                      # This segment also lacked a display name at pass creation, leaving only the language item.
     original = env.routes._apply_keyed_item
 
     async def _flaky(lanlan_name, item, segment, generation):
@@ -2223,9 +2223,9 @@ async def test_forgotten_locale_only_segment_gets_no_display_name_on_retry(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     await _forget(env, GP)
     assert _key_state(env, KEY_SEGMENTS) == "pending"
-    retry = _segments_body(language="zh")                       # 重试带上了显示名（不在请求身份里）
+    retry = _segments_body(language="zh")                       # Retry supplies a display name outside request identity.
     await _post(env, retry)
-    # 被清除丢弃的段不补显示名：清除前的键不能把元数据盖到之后重建的 section 上
+    # Do not fill display names for cleared/discarded segments: pre-clear keys must not overwrite metadata in subsequently rebuilt sections.
     assert (GP_KEY, "团子") not in env.persona.display_names
     assert (PART_KEY, "Mika") in env.persona.display_names
 
@@ -2239,17 +2239,17 @@ async def test_damaged_forgotten_keys_do_not_block_the_erase(env):
     ))
 
     def damage(old):
-        return {**old, "forgotten_keys": [{"bad": 1}, "kept:key"]}   # 夹着对象的坏旧值
+        return {**old, "forgotten_keys": [{"bad": 1}, "kept:key"]}   # Corrupt old value containing an object.
 
     await env.idem.update_key(NAME, KEY_GROUP, damage)
     lock = env.idem.key_lock(NAME, KEY_GROUP)
-    await lock.acquire()                                         # 同键请求正在生成、还没有暂存
+    await lock.acquire()                                         # Same-key request is generating with no staging yet.
     try:
         result = await _forget(env, GROUP)
     finally:
         lock.release()
-    # 坏的辅助状态不能让清除在擦除之前就 500：照常擦除。旧标记是「生成期间被清过」的唯一证据，
-    # 坏了不能丢掉了事：保守地把这个键记录里的全部 subject 都记上
+    # Corrupt auxiliary state must not make clearing return 500 before erasure; erase normally. Old markers are the only evidence of clearing during generation,
+    # so do not simply discard corrupt ones: conservatively record every subject in this key record.
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
     assert record["forgotten_keys"] == sorted({GROUP_KEY, "participant:neko_visit:routed"})
@@ -2267,7 +2267,7 @@ async def test_retry_after_a_failed_generation_reuses_the_reserved_locale_order(
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
     locale = next(item for item in staging["items"] if item["kind"] == "locale")
-    # 生成失败后的同键重试沿用第一次预留的序号，不拿更新的序号把旧请求往后排
+    # Same-key retry after generation failure reuses initially reserved sequence numbers instead of moving an old request later with newer numbers.
     assert locale["order"] == first_order
 
 
@@ -2282,7 +2282,7 @@ async def test_malformed_locale_reservation_fails_closed(env):
     await env.idem.update_key(NAME, KEY_GROUP, damage)
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(language="zh"))
-    # 已有的预留坏了：不能另分一批记不上的新序号、每次重试都把旧请求往后排
+    # Existing reservations corrupt: do not allocate an unrecordable new batch that moves the old request later on every retry.
     assert excinfo.value.status_code == 503 and env.llm.calls == 1
 
 
@@ -2295,14 +2295,14 @@ async def test_fenced_segment_does_not_move_the_trust_pool(env):
         return await real(states)
 
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
-    await _forget(env, GROUP, forget_epoch=5)                   # 清除之后才到的旧请求（代数 0）
+    await _forget(env, GROUP, forget_epoch=5)                   # Old request arriving only after clearing (generation 0).
     env.llm.responses = [SINGLE_FACTS]
     body = _single_body(
         speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
         speaker_activity_events=[{"id": "evt-00001", "count": 1}],
     )
     await _post(env, body)
-    # 记忆被墓碑挡下的段，它的 activity 也不能进信赖池
+    # A segment whose memories are blocked by tombstones must not add its activity to the trust pool either.
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
     assert _facts_of(env, GROUP) == []
@@ -2310,7 +2310,7 @@ async def test_fenced_segment_does_not_move_the_trust_pool(env):
 
 async def test_duplicate_forget_still_cancels_a_late_pre_forget_staging(env):
     env.llm.responses = [SINGLE_FACTS]
-    await _forget(env, GROUP, forget_epoch=5)                   # 原擦除已完成
+    await _forget(env, GROUP, forget_epoch=5)                   # Original erasure completed.
     real_apply = env.routes._apply_keyed_staging
 
     async def crash(*_args, **_kwargs):
@@ -2318,11 +2318,11 @@ async def test_duplicate_forget_still_cancels_a_late_pre_forget_staging(env):
 
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash)
     with pytest.raises(HTTPException):
-        await _post(env, _single_body())                        # 之后才到的清除前请求：落了暂存就崩
+        await _post(env, _single_body())                        # Pre-clear request arrives later: crash immediately after staging.
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
     assert _staging_file(env, KEY_GROUP).exists()
-    result = await _forget(env, GROUP, forget_epoch=5)          # 重放同一代数的清除
-    # 不再擦存储（duplicate），但残留的明文暂存照常取消，不会被 TTL 清理永久保护
+    result = await _forget(env, GROUP, forget_epoch=5)          # Replay clearing for the same generation.
+    # Do not erase storage again (duplicate), but cancel leftover plaintext staging normally so TTL cleanup does not protect it forever.
     assert result.get("duplicate") is True
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
 
@@ -2330,11 +2330,11 @@ async def test_duplicate_forget_still_cancels_a_late_pre_forget_staging(env):
 async def test_erase_completion_restores_a_fence_lowered_meanwhile(env):
     path = Path(env.idem.tombstones_path(NAME))
     path.parent.mkdir(parents=True, exist_ok=True)
-    # 擦除期间旧的高围栏被清理移走、又被一次较低代数的清除重建成 3
+    # During erasure, cleanup removed the old high fence, then lower-generation clearing rebuilt it as 3.
     path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": 3, "forgotten_at": 1.0}}), encoding="utf-8")
     await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 3, covered_epoch=8)
     row = json.loads(path.read_text(encoding="utf-8"))[GROUP_KEY]
-    # 完成的是更高的代数：围栏抬回去、完成标记记 8，较高代数的重放据此跳过
+    # A higher generation completed: restore the fence upward and mark completion at 8 so higher-generation replay skips.
     assert row["forget_epoch"] == 8 and row["erased_epoch"] == 8
     assert env.idem.erased_epoch({GROUP_KEY: row}, GROUP_KEY) == 8
 
@@ -2353,18 +2353,18 @@ async def test_swapped_segment_destinations_fail_closed(env):
     path = _staging_file(env, KEY_SEGMENTS)
     staging = json.loads(path.read_text(encoding="utf-8"))
     first, second = staging["segments"]
-    first["subject"], second["subject"] = second["subject"], first["subject"]   # 两段目标互换
+    first["subject"], second["subject"] = second["subject"], first["subject"]   # Swap the two segment targets.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _segments_body())
-    # 两个目标都在整批的路由集合里，但不在各自的位置上：不能按它写进彼此的记忆域
+    # Both targets belong to the batch's routed set but occupy incorrect positions; never write them into each other's memory domains.
     assert excinfo.value.status_code == 503
     assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []
 
 
 async def test_stale_duplicate_forget_cancels_against_the_effective_fence(env):
     env.llm.responses = [SINGLE_FACTS]
-    await _forget(env, GROUP, forget_epoch=10)                  # 围栏与完成标记都是 10
+    await _forget(env, GROUP, forget_epoch=10)                  # Fence and completion marker are both 10.
     real_apply = env.routes._apply_keyed_staging
 
     async def crash(*_args, **_kwargs):
@@ -2372,10 +2372,10 @@ async def test_stale_duplicate_forget_cancels_against_the_effective_fence(env):
 
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash)
     with pytest.raises(HTTPException):
-        await _post(env, _single_body(subject_epochs={GROUP_KEY: 7}))   # 早于围栏的迟到请求
+        await _post(env, _single_body(subject_epochs={GROUP_KEY: 7}))   # Late request predating the fence.
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
-    result = await _forget(env, GROUP, forget_epoch=5)          # 陈旧的清除重放
-    # 按有效围栏 10 比：代数 7 的暂存早于它，照常取消，不因 7 > 5 被当成合法新写入留下
+    result = await _forget(env, GROUP, forget_epoch=5)          # Stale clearing replay.
+    # Compare against effective fence 10: generation-7 staging predates it and is canceled, not retained as a legitimate new write because 7 > 5.
     assert result.get("duplicate") is True
     assert _key_state(env, KEY_GROUP) == "cancelled"
     assert not _staging_file(env, KEY_GROUP).exists()
@@ -2399,12 +2399,12 @@ async def test_malformed_positional_routes_fail_closed(env):
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
 
     def truncate(old):
-        return {**old, "routed_positions": old["routed_positions"][:1]}   # 截断按位置的路由
+        return {**old, "routed_positions": old["routed_positions"][:1]}   # Truncate positional routing.
 
     await env.idem.update_key(NAME, KEY_SEGMENTS, truncate)
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _segments_body())
-    # 有这个字段却坏了：不能退回只看集合的核对，否则互换的目标就放过去了
+    # This field exists but is corrupt: do not fall back to set-only verification, which would accept swapped targets.
     assert excinfo.value.status_code == 503
     assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []
 
@@ -2423,7 +2423,7 @@ async def test_failed_display_name_write_is_retried_not_marked_done(env):
     env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", flaky)
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
-    # 显示名没写成：这一项不能记成已应用、键不能收尾
+    # Display name not written: do not mark this item applied or finalize the key.
     assert _key_state(env, KEY_GROUP) == "pending"
     assert (GROUP_KEY, "串门群") not in env.persona.display_names
     await _post(env, _single_body())
@@ -2444,10 +2444,10 @@ async def test_corrupt_payload_in_the_forgotten_segment_keeps_the_other_segment(
     path = _staging_file(env, KEY_SEGMENTS)
     staging = json.loads(path.read_text(encoding="utf-8"))
     gp_display = next(item for item in staging["items"] if item["kind"] == "display_name" and item["segment"] == 0)
-    gp_display["display_name"] = 5                              # 坏在要被清除的那段
+    gp_display["display_name"] = 5                              # Corruption lies in the segment being cleared.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     await _forget(env, GP)
-    # 被清段的载荷本来就要抹掉：不因它取消整个键，没被清的段照常重试补写
+    # The cleared segment's payload must be erased anyway: do not cancel the entire key; retry and complete uncleared segments normally.
     assert _key_state(env, KEY_SEGMENTS) == "pending"
     await _post(env, _segments_body())
     assert len(_facts_of(env, PART)) == 2 and _facts_of(env, GP) == []
@@ -2464,7 +2464,7 @@ async def test_keyed_display_name_write_runs_strict(env):
 
     env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", record)
     await _post(env, _single_body())
-    # 带键日志路径要求读不出 persona 时抛出（返回 False 分不清是失败还是正常空操作）
+    # Keyed logging paths must raise on unreadable persona; False cannot distinguish failure from a legitimate no-op.
     assert seen == [True]
 
 
@@ -2473,7 +2473,7 @@ async def test_cleanup_protects_tombstones_named_only_by_segments(env):
     now = time.time()
     path = Path(idem.staging_path(NAME, "orphan-seg"))
     path.parent.mkdir(parents=True, exist_ok=True)
-    # 索引丢了，各段仍指认 GROUP；它还是新的（未过期），会被留下
+    # Index missing, but segments still identify GROUP; staging is still fresh and will be retained.
     path.write_text(json.dumps({
         "key": "orphan-seg", "created_at": now,
         "segments": [{"wire_key": GROUP_KEY, "subject": GROUP}],
@@ -2481,7 +2481,7 @@ async def test_cleanup_protects_tombstones_named_only_by_segments(env):
     tombstones = Path(idem.tombstones_path(NAME))
     tombstones.write_text(json.dumps({GROUP_KEY: {"forget_epoch": 1, "forgotten_at": now - 500}}), encoding="utf-8")
     await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
-    # 留下来的暂存仍引用这个 subject：它的墓碑不能先过期，否则之后被认领时清除前的事实会写回
+    # Retained staging still references this subject: its tombstone must not expire first, or a later claim could restore pre-clear facts.
     assert path.exists() and GROUP_KEY in json.loads(tombstones.read_text(encoding="utf-8"))
 
 
@@ -2498,7 +2498,7 @@ async def test_locale_orders_are_recorded_before_the_reservation_is_durable(env)
     with pytest.raises(Exception):
         await _post(env, _single_body(language="zh"))
     record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
-    (recorded,) = record["locale_orders"]                      # 预留落盘之前就已记在键上
+    (recorded,) = record["locale_orders"]                      # Recorded on the key before reservation persistence.
     env.monkeypatch.setattr(locale_state, "reserve_subject_prompt_locale_orders", real_reserve)
     original = _fail_on_item(env, failing_seq=0)
     with pytest.raises(HTTPException):
@@ -2522,11 +2522,11 @@ async def test_restored_retry_refreshes_an_already_written_display_name(env):
     with pytest.raises(HTTPException):
         await _post(env, _segments_body())
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
-    assert (GP_KEY, "团子") in env.persona.display_names       # 第一段的显示名已写过、已记进日志
+    assert (GP_KEY, "团子") in env.persona.display_names       # The first segment's display name was written and logged already.
     retry = _segments_body()
-    retry["segments"][0]["display_name"] = "团子新名"           # 键停在 pending 期间改了名字
+    retry["segments"][0]["display_name"] = "团子新名"           # Name changed while the key remained pending.
     await _post(env, retry)
-    # 显示名不在请求身份里：恢复的重试按当前值再盖一次，不能带着旧名收尾
+    # Display names are outside request identity: recovery retry must overwrite with the current value rather than finalize with an old name.
     assert (GP_KEY, "团子新名") in env.persona.display_names
     assert _key_state(env, KEY_SEGMENTS) == "done"
 
@@ -2547,12 +2547,12 @@ async def test_restored_journal_missing_a_facts_item_fails_closed(env):
     items = [item for item in staging["items"] if not (item["kind"] == "facts" and item["segment"] == 1)]
     assert len(items) < len(staging["items"])
     for position, item in enumerate(items):
-        item["seq"] = position                                   # 序号重排，其余逐项核对都过得去
+        item["seq"] = position                                   # Sequence numbers reordered; every other item-level check passes.
     staging["items"] = items
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _segments_body())
-    # 事实项整条丢了：不能按剩下的收尾、永久漏掉已生成的事实
+    # Entire fact item missing: do not finalize the remainder and permanently omit generated facts.
     assert excinfo.value.status_code == 503 and _key_state(env, KEY_SEGMENTS) == "pending"
 
 
@@ -2562,7 +2562,7 @@ async def test_unrelated_subject_epochs_do_not_change_the_request_identity(env):
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
-    # 重试多带了一个与本请求无关的 subject 的代数：效果完全相同，不能 422
+    # Retry includes an extra generation for an unrelated subject: identical effect, so do not return 422.
     result = await _post(env, _single_body(subject_epochs={GROUP_KEY: 0, "participant:neko_visit:other": 3}))
     assert result["created"] == 2 and env.llm.calls == 1
 
@@ -2577,15 +2577,15 @@ async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
         await _post(env, _segments_body(language="zh"))
 
     def forgotten_meanwhile(old):
-        # 生成期间到达的清除只在记录上记下被清的 subject（键锁被占着），清除本身已删掉它的语言行
+        # Clearing arriving during generation only records cleared subjects (key lock occupied); clearing itself already removed the language row.
         return {**old, "forgotten_keys": [GP_KEY], "locale_orders": None}
 
     await env.idem.update_key(NAME, KEY_SEGMENTS, forgotten_meanwhile)
     sidecar = Path(locale_state._subject_locale_path(NAME))
-    assert str(sidecar).startswith(tempfile.gettempdir())       # 绝不碰真实运行时根目录
+    assert str(sidecar).startswith(tempfile.gettempdir())       # Never touch real runtime root directories.
     locale_state.invalidate_prompt_locale_caches()
     if sidecar.exists():
-        sidecar.unlink()                                         # 被清后语言存储里没有 GP 了
+        sidecar.unlink()                                         # GP is absent from language storage after clearing.
     locale_state.invalidate_prompt_locale_caches()
     original = env.routes._apply_keyed_item
 
@@ -2594,13 +2594,13 @@ async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
 
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
     with pytest.raises(HTTPException):
-        await _post(env, _segments_body(language="zh"))         # 落了暂存（被清段没有语言项）就崩
+        await _post(env, _segments_body(language="zh"))         # Crash after staging, with no language item for the cleared segment.
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
-    # 从暂存恢复：被清除丢弃的段没有语言项也能通过恢复校验
+    # Restore from staging: cleared/discarded segments pass recovery validation without language items.
     result = await _post(env, _segments_body(language="zh"))
     assert result["segments"][1]["created"] == 2
     rows = json.loads(sidecar.read_text(encoding="utf-8")).get("subjects", {}) if sidecar.exists() else {}
-    # 被清的段不再预留：不能把被清 subject 重新写进语言存储
+    # Do not reserve again for cleared segments or restore cleared subjects to language storage.
     assert not any(GP["subject_id"] in key for key in rows)
     assert any(PART["subject_id"] in key for key in rows)
 
@@ -2619,10 +2619,10 @@ async def test_listing_skips_a_forgotten_staging_segment(env):
         await _post(env, _segments_body())
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     await _forget(env, GP)
-    assert _key_state(env, KEY_SEGMENTS) == "pending"           # 暂存留给没被清的段
+    assert _key_state(env, KEY_SEGMENTS) == "pending"           # Retain staging for uncleared segments.
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     staged = {row["subject_id"] for row in result["subjects"] if row["staged"]}
-    # 被清的段已抹掉内容：不能作为「待应用的暂存」让已清除的对象又冒出来
+    # The cleared segment's content was erased: do not treat it as pending staging and resurrect cleared objects.
     assert GP["subject_id"] not in staged and PART["subject_id"] in staged
 
 
@@ -2649,19 +2649,19 @@ async def test_partial_forget_cancels_a_journal_with_a_broken_kept_locale(env, d
         part_locale["language"] = "en"
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     await _forget(env, GP)
-    # 留下来的段语言项坏了：之后的重试只会 503，不能只丢被清段留着它，整键取消
+    # Retained segment has a corrupt language item; retries would only return 503. Cancel the whole key rather than retaining it after discarding only the cleared segment.
     assert _key_state(env, KEY_SEGMENTS) == "cancelled"
 
 
 async def test_forget_epochs_endpoint_reports_the_current_fence(env):
     await _forget(env, GROUP, forget_epoch=6)
     result = await env.routes.get_forget_epochs(NAME, subject=[GROUP_KEY, PART_KEY])
-    # 有墓碑的 key 报当前围栏，没有的不出现
+    # Keys with tombstones report their current fences; others are absent.
     assert result == {"epochs": {GROUP_KEY: 6}}
     Path(env.idem.tombstones_path(NAME)).write_text(json.dumps({GROUP_KEY: {"forget_epoch": "bad"}}), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await env.routes.get_forget_epochs(NAME, subject=[GROUP_KEY])
-    # 认不出的围栏不能当成「没有围栏」
+    # An unrecognizable fence cannot mean no fence.
     assert excinfo.value.status_code == 503
 
 
@@ -2671,7 +2671,7 @@ async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
     from app.memory_server import locale_state
 
     sidecar = Path(locale_state._subject_locale_path(NAME))
-    assert str(sidecar).startswith(tempfile.gettempdir())       # 绝不碰真实运行时根目录
+    assert str(sidecar).startswith(tempfile.gettempdir())       # Never touch real runtime root directories.
     locale_state.invalidate_prompt_locale_caches()
     if sidecar.exists():
         sidecar.unlink()
@@ -2682,7 +2682,7 @@ async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
         result = await real_update(name, key, fn)
         record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8")).get(key) or {}
         if record.get("locale_orders") and not record.get("forgotten_keys"):
-            # 记下序号的这一刻，一次清除恰好把第一段记进 forgotten_keys
+            # At the moment sequence numbers are recorded, clearing adds the first segment to forgotten_keys.
             await real_update(name, key, lambda old: {**old, "forgotten_keys": [GP_KEY]})
         return result
 
@@ -2691,7 +2691,7 @@ async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
     with pytest.raises(RuntimeError):
         await _post(env, _segments_body(language="zh"))
     rows = json.loads(sidecar.read_text(encoding="utf-8")).get("subjects", {}) if sidecar.exists() else {}
-    # 落盘预留之前再核一次：刚被清的段不预留，不把它写回语言存储
+    # Recheck before persisting reservations: do not reserve newly cleared segments or restore them to language storage.
     assert not any(GP["subject_id"] in key for key in rows)
     assert any(PART["subject_id"] in key for key in rows)
 
@@ -2707,10 +2707,10 @@ def test_a_reservation_older_than_a_forget_does_not_recreate_the_locale_row():
     sidecar = Path(locale_state._subject_locale_path(name))
     assert str(sidecar).startswith(tempfile.gettempdir())
     (stale,) = locale_state.allocate_subject_prompt_locale_orders(name, [subject])
-    locale_state.forget_subject_prompt_locale(name, subject)     # 清除在分配之后、预留落盘之前完成
+    locale_state.forget_subject_prompt_locale(name, subject)     # Clearing completes after allocation but before reservation persistence.
     locale_state.reserve_subject_prompt_locale_orders(name, [subject], orders=[stale])
     rows = json.loads(sidecar.read_text(encoding="utf-8")).get("subjects", {}) if sidecar.exists() else {}
-    # 早于清除的预留注定被拒：不能借它把已被清除的 subject 重新写回语言存储
+    # Pre-clear reservations will necessarily be rejected: do not use them to restore cleared subjects to language storage.
     assert not any("u_race" in key for key in rows)
 
 
@@ -2728,11 +2728,11 @@ async def test_facts_item_moved_to_another_segment_fails_closed(env):
     path = _staging_file(env, KEY_SEGMENTS)
     staging = json.loads(path.read_text(encoding="utf-8"))
     gp_facts = next(item for item in staging["items"] if item["kind"] == "facts" and item["segment"] == 0)
-    gp_facts["segment"] = 1                                     # 序号、效果键、各段目标都还合法
+    gp_facts["segment"] = 1                                     # Sequence numbers, effect keys, and segment targets remain valid.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _segments_body())
-    # 事实项被挪到另一段：不能把这段的事实写进另一个 subject 的记忆域
+    # Fact item moved to another segment: do not write this segment's facts into another subject's memory domain.
     assert excinfo.value.status_code == 503
     assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []
 
@@ -2748,7 +2748,7 @@ async def test_staging_deletes_pass_the_cloudsave_gate(env):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{}", encoding="utf-8")
     await env.idem.delete_staging(NAME, KEY_GROUP)
-    # 删暂存与写入同一道闸：cloudsave 只读 / 快照导入期间 memory 目录不能被删改
+    # Staging deletion uses the write gate too: memory directories cannot be modified during cloudsave read-only mode / snapshot import.
     assert ("delete", f"memory/{NAME}/idempotency_staging/{path.name}") in calls
 
 
@@ -2765,12 +2765,12 @@ async def test_restored_retry_drops_segments_forgotten_during_generation(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
 
     def forgotten_meanwhile(old):
-        # 生成期间到达的不带代数清除只在记录上记下了被清的 subject
+        # Generation-time clearing without a generation only recorded cleared subjects on the record.
         return {**old, "forgotten_keys": [GP_KEY]}
 
     await env.idem.update_key(NAME, KEY_SEGMENTS, forgotten_meanwhile)
     await _post(env, _segments_body())
-    # 恢复路径同样按记录上的标记丢弃被清段：不把清除前抽出的事实写回去
+    # Recovery likewise discards cleared segments using record markers, never restoring facts extracted before clearing.
     assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
 
 
@@ -2789,9 +2789,9 @@ async def test_failing_pre_erase_cancellation_does_not_block_the_forget(env):
 
     env.monkeypatch.setattr(env.routes, "_cancel_staged_writes_for_subjects", flaky)
     result = await _forget(env, GROUP)
-    # 擦除前那遍只是尽力而为：辅助暂存出错不能在删除任何东西之前就让清除 500
+    # Pre-erasure scanning is best-effort: auxiliary staging errors must not cause clearing to return 500 before deleting anything.
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == [] and calls["n"] == 2
-    # 擦除前那遍逐份容错，擦除后那遍不容错
+    # Pre-erasure scanning tolerates individual failures; post-erasure scanning does not.
     assert calls["first_best_effort"] is True
 
 
@@ -2804,10 +2804,10 @@ async def test_legacy_integer_fact_ids_in_the_journal_do_not_wedge_the_key(env):
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
     entry = next(e for e in staging["applied"] if e.get("facts_applied"))
-    entry["reconciled"] = [12345]                               # reconcile 命中了一条旧版整数 id 的事实
+    entry["reconciled"] = [12345]                               # reconcile finds a fact with a legacy integer ID.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     result = await _post(env, _single_body())
-    # 旧版整数 id 是合法的应用结果：不能把这份暂存判成损坏、让键永远 503
+    # Legacy integer IDs are valid application results: do not classify this staging as corrupt and leave the key permanently at 503.
     assert _key_state(env, KEY_GROUP) == "done" and result.get("duplicate") is None
 
 
@@ -2819,7 +2819,7 @@ async def test_locale_only_segment_forgotten_after_staging_is_marked_on_disk(env
         {"segment": 2, "facts": [{"text": "Mika 的猫下午在窗台睡觉", "importance": 6}]},
     ]]
     body = _segments_body(language="zh")
-    body["segments"][0].pop("display_name")                      # 第一段只剩语言项
+    body["segments"][0].pop("display_name")                      # Only the language item remains in the first segment.
     real_write = env.idem.write_staging
     writes = {"n": 0}
 
@@ -2827,11 +2827,11 @@ async def test_locale_only_segment_forgotten_after_staging_is_marked_on_disk(env
         await real_write(name, key, document)
         writes["n"] += 1
         if writes["n"] == 1:
-            # 暂存落盘之后、复核之前，一次清除推进了第一段的 generation
+            # Clearing advances the first segment's generation after staging persistence but before rechecking.
             env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))
 
     async def _crash(*_args, **_kwargs):
-        # 复核之后、应用循环写任何东西之前进程被杀：盘上只有复核自己写的那份
+        # Process killed after rechecking but before any application-loop writes: only the recheck's own writes remain on disk.
         raise RuntimeError("injected crash before applying anything")
 
     env.monkeypatch.setattr(env.idem, "write_staging", write_then_forget)
@@ -2839,7 +2839,7 @@ async def test_locale_only_segment_forgotten_after_staging_is_marked_on_disk(env
     with pytest.raises(HTTPException):
         await _post(env, body)
     staging = json.loads(_staging_file(env, KEY_SEGMENTS).read_text(encoding="utf-8"))
-    # 只剩语言项的段也要把段级丢弃标记写到盘上：否则恢复重试会给它补显示名
+    # Persist segment-level discard markers even for language-only segments, or recovery retry will add a display name.
     assert staging["segments"][0].get("dropped_by_forget") is True
 
 
@@ -2851,7 +2851,7 @@ async def test_forget_landing_during_apply_fences_the_segment_from_trust(env):
 
     async def forget_meanwhile(lanlan_name, item, segment, generation):
         if item["kind"] == "facts":
-            env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))   # 不带代数的清除到达
+            env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))   # Clearing without a generation arrives.
         return await original(lanlan_name, item, segment, generation)
 
     captured = []
@@ -2868,7 +2868,7 @@ async def test_forget_landing_during_apply_fences_the_segment_from_trust(env):
         speaker_activity_events=[{"id": "evt-00002", "count": 1}],
     )
     await _post(env, body)
-    # 事实层已静默丢弃这批写入：信赖隔离与记忆丢弃用同一个依据，activity 不进信赖池
+    # The fact layer silently discarded these writes: trust isolation and memory discard share one criterion, excluding activity from the trust pool.
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
 
@@ -2887,7 +2887,7 @@ async def test_display_name_that_keeps_failing_stops_blocking_the_key(env):
             outcomes.append("ok")
         except HTTPException as exc:
             outcomes.append(exc.status_code)
-    # 展示用数据：重试几次仍写不进就放弃这一项，不能无限期挡住键（连带信赖写入）
+    # Display data: abandon the item after several failed writes rather than blocking the key and trust writes indefinitely.
     assert outcomes == [503, 503, "ok"] and _key_state(env, KEY_GROUP) == "done"
 
 
@@ -2903,7 +2903,7 @@ async def test_duplicate_forget_cancels_only_the_request_subject(env):
     env.monkeypatch.setattr(env.routes, "_cancel_staged_writes_for_subjects", capture)
     subject, fanned = coerce_subject(GROUP), coerce_subject(PART)
     result = await env.routes._forget_duplicate_after_cancel(NAME, subject, [subject, fanned], 5)
-    # 重复清除只取消请求 subject 自己的暂存：扇出目标之后带自己代数的写入比不了，是合法的
+    # Duplicate clearing cancels only the request subject's own staging: later fanout writes with their own generations are incomparable and legitimate.
     assert result.get("duplicate") is True and seen == [{GROUP_KEY}]
 
 
@@ -2932,13 +2932,13 @@ async def test_epoch_found_erased_under_the_locks_still_cancels_staging(env):
     async def staging_written_after_pre_pass(*args, **kwargs):
         cancels["n"] += 1
         if cancels["n"] == 1:
-            return 0                                             # 擦除前那遍扫描时暂存还没写下
+            return 0                                             # Staging was not yet written during pre-erasure scanning.
         return await real_cancel(*args, **kwargs)
 
     env.monkeypatch.setattr(env.routes, "_forget_epoch_already_erased", erased_only_under_locks)
     env.monkeypatch.setattr(env.routes, "_cancel_staged_writes_for_subjects", staging_written_after_pre_pass)
     result = await _forget(env, GROUP, forget_epoch=5)
-    # 锁外复核没拦下、持锁复核才发现已擦过：放锁后同样跑那遍取消，不留清除前的明文暂存
+    # The unlocked recheck passed but the locked recheck detects completed erasure: run cancellation after unlocking too, leaving no pre-clear plaintext staging.
     assert result.get("duplicate") is True and checks["n"] == 2
     assert _key_state(env, KEY_GROUP) == "cancelled"
 
@@ -2950,7 +2950,7 @@ async def test_malformed_forgotten_keys_marker_fails_closed(env):
     await env.idem.update_key(NAME, KEY_GROUP, lambda old: {**old, "forgotten_keys": GROUP_KEY})
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
-    # 「生成期间被清过」的唯一持久证据坏了：不能当成空集重新抽取、把被清 subject 写回去
+    # The only durable evidence of clearing during generation is corrupt: do not interpret it as empty and reextract cleared subjects.
     assert excinfo.value.status_code == 503 and env.llm.calls == 1
 
 
@@ -2961,7 +2961,7 @@ async def test_none_locale_order_outside_a_forgotten_segment_fails_closed(env):
     await env.idem.update_key(NAME, KEY_GROUP, lambda old: {**old, "locale_orders": [None]})
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(language="zh"))
-    # None 只可能出现在已被清除的段上：别处的 None 是坏值，不能静默跳过语言写入
+    # None is valid only on cleared segments; elsewhere it is corrupt and must not silently skip language writes.
     assert excinfo.value.status_code == 503
 
 
@@ -2978,7 +2978,7 @@ async def test_record_with_routed_keys_but_no_positions_fails_closed(env):
     await env.idem.update_key(NAME, KEY_GROUP, drop_positions)
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
-    # 两个字段总是一起写入：只剩集合时不能退回只看集合的核对
+    # Both fields are always written together: when only the set remains, do not fall back to set-only verification.
     assert excinfo.value.status_code == 503
 
 
@@ -2996,7 +2996,7 @@ async def test_unreadable_tombstones_at_the_trust_step_answer_503(env):
     Path(env.idem.tombstones_path(NAME)).write_text("{torn", encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
-    # 认不出哪些段被清除挡下：不能把整批信赖写入丢掉后照常收尾，回 503 等墓碑读得出再重试
+    # Cannot identify segments blocked by clearing: do not discard all trust writes and finalize normally; return 503 until tombstones are readable.
     assert excinfo.value.status_code == 503 and _key_state(env, KEY_GROUP) == "pending"
 
 
@@ -3017,10 +3017,10 @@ async def test_pre_erase_pass_skips_only_the_failing_journal(env):
 
     env.monkeypatch.setattr(env.idem, "read_staging", read_fails_for_one)
     cancelled = await env.routes._cancel_staged_writes_for_subjects(NAME, {GROUP_KEY}, best_effort=True)
-    # 擦除前那遍逐份容错：一份暂存出错只跳过它自己，其余涉及被清 subject 的暂存照常取消
+    # Pre-erasure scanning tolerates individual failures: skip only the failing staging file and cancel other staging involving cleared subjects normally.
     assert cancelled == 1 and _key_state(env, other) == "cancelled" and _key_state(env, KEY_GROUP) == "pending"
     with pytest.raises(OSError):
-        # 擦除后那遍不容错：出错就上抛，让清除整体重试
+        # Post-erasure scanning does not tolerate failures: propagate errors so the entire clear retries.
         await env.routes._cancel_staged_writes_for_subjects(NAME, {GROUP_KEY})
 
 
@@ -3036,7 +3036,7 @@ async def test_cancellation_marker_inside_a_real_journal_fails_closed(env):
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
-    # 只认不含别的字段的占位：标记混进一份正常日志是损坏，不能借它把键当成已取消、丢掉未应用的效果
+    # Accept only placeholders without other fields: a marker mixed into a normal log is corruption, not proof of cancellation allowing loss of unapplied effects.
     assert excinfo.value.status_code == 503 and _key_state(env, KEY_GROUP) == "pending"
 
 
@@ -3051,7 +3051,7 @@ async def test_concurrent_erase_marks_on_a_corrupt_tombstone_file_keep_both_rows
         env.idem.mark_tombstone_erased(NAME, "B", 4),
     )
     tombstones = await env.idem.read_tombstones(NAME)
-    # 两次清除并发完成：后到的那个不能读到前者重建的文件就跳过自己那一行（回成功却没有围栏与完成标记）
+    # Two clears finish concurrently: the later one must not skip its row merely because it reads the file rebuilt by the first, reporting success without fence/completion markers.
     assert env.idem.erased_epoch(tombstones, "A") == 3 and env.idem.erased_epoch(tombstones, "B") == 4
 
 
@@ -3067,7 +3067,7 @@ async def test_failed_backup_copy_does_not_block_the_rebuild(env):
 
     env.monkeypatch.setattr(shutil, "copy2", no_space)
     await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 2)
-    # 留底只是排查用：复制不了也照样记下擦除已完成，否则同代数重试会再擦一遍
+    # Backup copies are diagnostic only: even if copying fails, record erasure completion, or same-generation retry erases again.
     assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 2
 
 
@@ -3082,7 +3082,7 @@ async def test_failed_rebuild_of_a_corrupt_tombstone_file_leaves_it_in_place(env
     env.monkeypatch.setattr(env.idem, "atomic_write_json", disk_full)
     with pytest.raises(OSError):
         await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 2)
-    # 重建写不回去：原路径上仍是那份坏文件（读路径照旧 fail closed），不能变成「没有墓碑」
+    # Cannot persist the rebuild: preserve the corrupt file at the original path (readers still fail closed), never turn it into absent tombstones.
     assert path.read_text(encoding="utf-8") == "{not json"
     with pytest.raises(env.idem.IdempotencyStateError):
         await env.idem.read_tombstones(NAME)
@@ -3102,7 +3102,7 @@ async def test_tombstone_read_failure_is_not_treated_as_corruption(env):
     env.monkeypatch.setattr(env.idem, "read_json_tolerating_replace", locked)
     with pytest.raises(env.idem.IdempotencyStateError):
         await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 2)
-    # 读失败不等于内容坏了：完好的墓碑文件不能被隔离掉、丢掉别的 subject 的围栏
+    # Read failure does not imply corruption: do not quarantine a healthy tombstone file and lose other subjects' fences.
     assert not list(path.parent.glob(path.name + ".corrupt-*"))
     assert json.loads(path.read_text(encoding="utf-8"))["other"]["forget_epoch"] == 9
 
@@ -3120,7 +3120,7 @@ async def test_corrupt_tombstone_file_is_not_renamed_while_writes_are_fenced(env
     env.monkeypatch.setattr(env.idem, "assert_cloudsave_writable", fenced)
     with pytest.raises(MaintenanceModeError):
         await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 2)
-    # 只读 / 快照导入期间改了名却写不回去，磁盘上就一份墓碑都没有了：先过闸再改名
+    # Renaming during read-only mode / snapshot import without writing back would leave no tombstone file: pass the gate before renaming.
     assert path.exists() and not list(path.parent.glob(path.name + ".corrupt-*"))
 
 
@@ -3134,12 +3134,12 @@ async def test_display_name_after_a_segment_dropped_during_apply_is_not_written(
     async def forget_meanwhile(lanlan_name, item, segment, generation):
         kinds.append(item["kind"])
         if item["kind"] == "facts":
-            env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))   # 不带代数的清除到达
+            env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))   # Clearing without a generation arrives.
         return await original(lanlan_name, item, segment, generation)
 
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", forget_meanwhile)
     await _post(env, _single_body())
-    # 段刚被标成清除丢弃：同段排在事实项之后的显示名不能再写，否则把清除刚擦掉的名字写回去
+    # Segment just marked discarded by clearing: its display-name item after facts must not restore the name clearing just erased.
     assert env.routes._KEYED_ITEM_DISPLAY_NAME not in kinds and "facts" in kinds
 
 
@@ -3166,11 +3166,11 @@ async def test_given_up_display_name_is_written_once_persona_recovers(env):
 
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", trust_crash)
     with pytest.raises(Exception):
-        await _post(env, _single_body())                          # 第 3 次放弃显示名，但信赖池落盘失败
+        await _post(env, _single_body())                          # Third attempt abandons the display name, but trust-pool persistence fails.
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", real_trust)
     env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", record)
     await _post(env, _single_body())
-    # 放弃过的显示名项在末尾刷新里照样试：persona 恢复可写后，键收尾前的重试把名字补上
+    # Retry abandoned display-name items during final refresh too: once persona becomes writable, fill the name before key finalization.
     assert _key_state(env, KEY_GROUP) == "done" and len(written) == 1
 
 
@@ -3183,7 +3183,7 @@ async def test_failing_display_name_refresh_does_not_block_the_recovery_retry(en
 
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", trust_crash)
     with pytest.raises(Exception):
-        await _post(env, _single_body())                          # 显示名已写过，信赖池落盘失败
+        await _post(env, _single_body())                          # Display name written, but trust-pool persistence fails.
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", real_trust)
 
     async def always_fail(*args, **kwargs):
@@ -3191,7 +3191,7 @@ async def test_failing_display_name_refresh_does_not_block_the_recovery_retry(en
 
     env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", always_fail)
     await _post(env, _single_body(display_name="新名字"))
-    # 末尾那段只是刷新成当前值，尽力而为：写不进就记日志，键照常收尾
+    # The final refresh to current values is best-effort: log write failures and finalize the key normally.
     assert _key_state(env, KEY_GROUP) == "done"
 
 
@@ -3200,7 +3200,7 @@ async def test_scalar_wire_keys_do_not_break_the_conservative_forgotten_merge(en
     await _post(env, _single_body(key=None, display_name=None))
     await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition(
         "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
-        routed_keys="pq",                                          # 列表坏成了字符串
+        routed_keys="pq",                                          # List corrupted into a string.
     ))
     await env.idem.update_key(NAME, KEY_GROUP, lambda old: {**old, "forgotten_keys": [{"bad": 1}]})
     lock = env.idem.key_lock(NAME, KEY_GROUP)
@@ -3209,19 +3209,19 @@ async def test_scalar_wire_keys_do_not_break_the_conservative_forgotten_merge(en
         result = await _forget(env, GROUP)
     finally:
         lock.release()
-    # 记录里的列表坏成标量：不能 TypeError 让清除 500，也不能把字符串拆成单个字符
+    # Record list corrupted into a scalar: do not cause TypeError/500 during clearing or split strings into individual characters.
     record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
     assert result["status"] == "forgotten" and record["forgotten_keys"] == [GROUP_KEY]
 
 
 async def test_forget_of_one_segment_after_a_failed_generation_keeps_the_other_segment(env):
-    # 被清的段不再送去抽取：重试时只剩第一段
+    # Do not extract the cleared segment again: retry has only the first segment remaining.
     env.llm.responses = [RuntimeError("LLM 502"), [BATCH_FACTS[0]]]
     with pytest.raises(RuntimeError):
         await _post(env, _segments_body())
-    assert _key_state(env, KEY_SEGMENTS) == "pending"      # 生成失败：pending、没有暂存、键锁已放开
+    assert _key_state(env, KEY_SEGMENTS) == "pending"      # Generation failed: pending, no staging, key lock released.
     await _forget(env, PART)
-    # 只清了一段：不能整键取消，否则另一段的记忆永久写不进去（客户端拿到 duplicate 不会重发）
+    # Only one segment cleared: do not cancel the whole key, permanently losing the other's memories because duplicate responses prevent client resends.
     assert _key_state(env, KEY_SEGMENTS) == "pending"
     result = await _post(env, _segments_body())
     assert result.get("duplicate") is None and _key_state(env, KEY_SEGMENTS) == "done"
@@ -3236,15 +3236,15 @@ async def test_orphan_staging_without_its_identity_is_cancelled_with_a_placehold
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
-    staging.pop("shape")                                       # 暂存里的请求身份字段坏了
+    staging.pop("shape")                                       # Staging request-identity fields corrupt.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     keys = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))
-    keys.pop(KEY_GROUP)                                        # 孤儿暂存：没有键记录
+    keys.pop(KEY_GROUP)                                        # Orphan staging: no key record.
     Path(env.idem.keys_path(NAME)).write_text(json.dumps(keys), encoding="utf-8")
     await _forget(env, GROUP)
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
-    # 取消记录带着一个不会被任何请求匹配的占位身份：重试按「键被别的请求用过」422，不永久 503
+    # Cancellation record uses an identity placeholder matching no request: retries get key-already-used 422 rather than permanent 503.
     assert excinfo.value.status_code == 422
 
 
@@ -3264,10 +3264,10 @@ async def test_keys_file_read_failure_during_forget(env, failure):
 
     env.monkeypatch.setattr(env.idem, "_read_json_object", failing)
     if failure == "corrupt":
-        # 内容坏了：带键请求本身都 fail closed，跳过认领、清除照常完成
+        # Corrupt content: keyed requests already fail closed; skip claiming and complete clearing normally.
         assert (await _forget(env, GROUP))["status"] == "forgotten"
     else:
-        # 一时读不出：下一次同键重试可能读得到，不能静默跳过认领；清除报错重试
+        # Temporarily unreadable: next same-key retry may succeed, so do not silently skip claiming; clearing errors and retries.
         with pytest.raises(Exception):
             await _forget(env, GROUP)
 
@@ -3278,14 +3278,14 @@ async def test_cleanup_skips_a_staging_whose_key_lock_is_held(env):
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
-    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # 收尾时没删掉的残留暂存
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # Residual staging not deleted at finalization.
     lock = env.idem.key_lock(NAME, KEY_GROUP)
-    await lock.acquire()                                        # 同键请求正持锁调 LLM
+    await lock.acquire()                                        # Same-key request holds its lock while invoking the LLM.
     try:
         report = await asyncio.wait_for(env.idem.cleanup_expired([NAME], ttl_s=0, now=time.time() + 10), 5)
     finally:
         lock.release()
-    # 清理持着角色请求租约：不排在键锁后面等，这一份留到下次启动再扫
+    # Cleanup holds a character request lease: do not queue behind the key lock; leave this staging for next startup cleanup.
     assert report["staging_removed"] == 0 and _staging_file(env, KEY_GROUP).exists()
 
 
@@ -3297,11 +3297,11 @@ async def test_damaged_staging_identity_does_not_overwrite_the_records_own(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
-    staging.pop("shape")                                       # 暂存的身份字段坏了，键记录里的身份完好
+    staging.pop("shape")                                       # Staging identity corrupt, key-record identity intact.
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     await _forget(env, GROUP)
     result = await _post(env, _single_body())
-    # 记录里正确的身份不能被占位身份盖掉：同键重试照常拿到 duplicate，不是一直 422
+    # Do not overwrite the correct record identity with a placeholder: same-key retries should get duplicate normally, not perpetual 422.
     assert result["duplicate"] is True and _key_state(env, KEY_GROUP) == "cancelled"
 
 
@@ -3311,9 +3311,9 @@ async def test_duplicate_reply_removes_a_terminal_keys_leftover_staging(env):
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
-    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # 收尾时没删掉的残留暂存
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # Residual staging not deleted at finalization.
     result = await _post(env, _single_body())
-    # 持着键锁回 duplicate 时顺手删掉：不必等下次启动清理（它遇到被占的键锁会跳过）
+    # Delete it while returning duplicate under the key lock, without waiting for startup cleanup that skips occupied key locks.
     assert result["duplicate"] is True and not _staging_file(env, KEY_GROUP).exists()
 
 
@@ -3357,7 +3357,7 @@ async def test_opted_in_forget_missing_a_fanout_target_is_409_before_anything(en
     _fan_out_to(env, PART)
     with pytest.raises(HTTPException) as excinfo:
         await _forget(env, GROUP, forget_epoch=7, target_epochs={})
-    # 带了 target_epochs 却漏了扇出目标：列出缺的 key，墓碑一行不写、记忆一条不擦
+    # target_epochs supplied but missing fanout targets: list missing keys, write no tombstones, and erase no memories.
     assert excinfo.value.status_code == 409
     assert excinfo.value.detail == {"error": "missing_target_epochs", "missing_target_epochs": [PART_KEY]}
     assert _tombstones(env) == {} and _facts_of(env, GROUP)
@@ -3366,7 +3366,7 @@ async def test_opted_in_forget_missing_a_fanout_target_is_409_before_anything(en
 async def test_forget_without_target_epochs_keeps_the_old_behaviour(env):
     _fan_out_to(env, PART)
     result = await _forget(env, GROUP, forget_epoch=7)
-    # 没带 target_epochs：不 409，扇出目标照常擦、只是不记墓碑（与改动前一致）
+    # Without target_epochs, do not return 409; erase fanout targets normally without tombstones, matching previous behavior.
     assert result["status"] == "forgotten"
     assert set(_tombstones(env)) == {GROUP_KEY}
 
@@ -3374,19 +3374,19 @@ async def test_forget_without_target_epochs_keeps_the_old_behaviour(env):
 async def test_fanout_target_is_fenced_at_its_own_epoch_against_a_delayed_write(env):
     _fan_out_to(env, PART)
     full = await _forget(env, GROUP, forget_epoch=7, target_epochs={PART_KEY: 2})
-    # 完整擦除：实际擦除的就是整个扇出
+    # Full erasure: actual erasure covers the entire fanout.
     assert full["erased_subjects"] == full["forgotten_subjects"]
     tombstones = _tombstones(env)
-    # 每个 key 各记自己的代数：扇出目标是 2，不是请求 subject 的 7；擦完都记上完成标记
+    # Each key records its own generation: fanout target is 2, not request subject's 7; mark all complete after erasure.
     assert tombstones[GROUP_KEY]["forget_epoch"] == 7 and tombstones[GROUP_KEY]["erased_epoch"] == 7
     assert tombstones[PART_KEY]["forget_epoch"] == 2 and tombstones[PART_KEY]["erased_epoch"] == 2
-    # 清除之前就开了轮、服务端从没见过的 PART digest（代数 1）在清除之后才到：键记录 / 暂存都没有，
-    # 取消扫描看不到它，generation 也是清除之后的，只有 PART 自己的墓碑挡得住
+    # Previously unseen PART digest (generation 1) began before clearing but arrives afterward: no key record or staging,
+    # so cancellation scans miss it and generation is already post-clear; only PART's own tombstone can block it.
     env.llm.responses = [SINGLE_FACTS]
     late = "visit-digest:LateLateLateLateLateLa:0:group:0"
     await _post(env, _single_body(key=late, subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
     assert _facts_of(env, PART) == []
-    # 清除之后开的新一轮（客户端已把 PART 加到 2）照常写入，不被请求 subject 的 7 挡下
+    # A new post-clear pass (client advanced PART to 2) writes normally, unblocked by request subject's 7.
     fresh = "visit-digest:FreshFreshFreshFreshFr:0:group:0"
     await _post(env, _single_body(key=fresh, subject=PART, display_name=None, subject_epochs={PART_KEY: 2}))
     assert len(_facts_of(env, PART)) == len(SINGLE_FACTS)
@@ -3401,8 +3401,8 @@ async def test_fanout_fence_is_durable_before_the_erase_finishes(env):
     env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", marker_lost)
     with pytest.raises(HTTPException):
         await _forget(env, GROUP, forget_epoch=7, target_epochs={PART_KEY: 2})
-    # 擦完了、完成标记没落盘（调用方还没重试）：扇出目标的墓碑必须早在擦除之前就落盘了，
-    # 这期间到达的清除前写入照样被挡，不能等完成标记顺手把墓碑补出来
+    # Erasure finished but completion marker not persisted (caller has not retried): fanout tombstones must already be durable before erasure,
+    # blocking pre-clear writes arriving meanwhile, rather than being added alongside completion markers afterward.
     assert _tombstones(env)[PART_KEY]["forget_epoch"] == 2
     env.llm.responses = [SINGLE_FACTS]
     late = "visit-digest:LateLateLateLateLateLa:0:group:0"
@@ -3412,7 +3412,7 @@ async def test_fanout_fence_is_durable_before_the_erase_finishes(env):
 
 async def test_target_epochs_outside_the_fanout_are_not_recorded(env):
     await _forget(env, GROUP, forget_epoch=3, target_epochs={PART_KEY: 9})
-    # 两次请求之间解绑了：多给的 key 不在这次擦除面上，不给它记墓碑
+    # Unlinked between requests: extra supplied keys outside this erasure surface receive no tombstones.
     assert set(_tombstones(env)) == {GROUP_KEY}
 
 
@@ -3422,7 +3422,7 @@ async def test_fanout_target_staging_is_judged_by_its_own_fence(env, staged_epoc
     await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: staged_epoch}))
     _fan_out_to(env, PART)
     await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
-    # wire 是扇出目标、代数够它自己的围栏：清除之后的合法写入，不取消；早于围栏的照常取消
+    # Wire is a fanout target with generation meeting its own fence: legitimate post-clear write, do not cancel; cancel pre-fence writes normally.
     assert _staging_file(env, KEY_GROUP).exists() is kept
     assert _key_state(env, KEY_GROUP) == ("pending" if kept else "cancelled")
 
@@ -3432,7 +3432,7 @@ async def test_mixed_batch_drops_only_the_stale_fanout_segment(env):
     await _stage_then_crash(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
     _fan_out_to(env, GP, PART)
     await _forget(env, GROUP, forget_epoch=5, target_epochs={GP_KEY: 1, PART_KEY: 2})
-    # GP 段早于它的围栏（0 < 1）被丢，PART 段够新（2 >= 2）留着：键仍 pending，不整键取消
+    # GP segment predates its fence (0 < 1) and is discarded; PART is new enough (2 >= 2) and retained: keep pending without canceling the whole key.
     assert _key_state(env, KEY_SEGMENTS) == "pending"
     again = await _post(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
     assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
@@ -3442,11 +3442,11 @@ async def test_mixed_batch_drops_only_the_stale_fanout_segment(env):
 @pytest.mark.parametrize("staged_epoch, kept", [(2, True), (1, False)])
 async def test_duplicate_forget_cancels_late_fanout_staging_by_its_own_fence(env, staged_epoch, kept):
     _fan_out_to(env, PART)
-    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})   # 原擦除已完成
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})   # Original erasure completed.
     env.llm.responses = [SINGLE_FACTS]
     await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: staged_epoch}))
     result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
-    # 重放走 duplicate 捷径：扇出目标有可比的代数，早于它围栏的残留暂存一并取消，够新的留着
+    # Replay uses the duplicate shortcut: fanout generations are comparable, so cancel residual pre-fence staging and retain newer staging.
     assert result.get("duplicate") is True
     assert _staging_file(env, KEY_GROUP).exists() is kept
     assert _key_state(env, KEY_GROUP) == ("pending" if kept else "cancelled")
@@ -3465,7 +3465,7 @@ async def test_fanout_markers_land_before_the_request_subjects(env):
     with pytest.raises(HTTPException) as excinfo:
         await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
     assert excinfo.value.status_code == 500
-    # 扇出目标的完成标记没落盘时，请求 subject 的也不能先落：否则重试走 duplicate 捷径，目标再也补不上
+    # Request subject's completion marker must not persist before fanout targets' markers, or duplicate shortcuts on retry prevent completing targets forever.
     assert env.idem.erased_epoch(_tombstones(env), GROUP_KEY) is None
     env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", real_mark)
     result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
@@ -3474,19 +3474,19 @@ async def test_fanout_markers_land_before_the_request_subjects(env):
 
 
 async def test_replay_naming_a_newly_linked_target_erases_only_that_target(env):
-    await _forget(env, GROUP, forget_epoch=5)                   # 原擦除已完成，当时还没有关联账号
+    await _forget(env, GROUP, forget_epoch=5)                   # Original erasure completed before any account linkage.
     env.llm.responses = [SINGLE_FACTS]
-    await _post(env, _single_body(key=None, display_name=None))  # 清除之后合法写入的 GROUP 记忆
+    await _post(env, _single_body(key=None, display_name=None))  # Legitimate GROUP memories written after clearing.
     env.llm.responses = [SINGLE_FACTS]
     await _post(env, _single_body(key=None, subject=PART, display_name=None))
     assert _facts_of(env, GROUP) and _facts_of(env, PART)
-    _fan_out_to(env, PART)                                      # 之后 PART 关联进来
+    _fan_out_to(env, PART)                                      # PART linked afterward.
     result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
-    # 重放带上了新目标的代数：只擦这个还没擦到该代数的目标，不走 duplicate、也不重擦 GROUP
+    # Replay includes the new target's generation: erase only the target not yet cleared through that generation, without duplicate or re-erasing GROUP.
     assert result.get("duplicate") is None
     assert _facts_of(env, PART) == [] and _facts_of(env, GROUP)
     assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
-    # 回执分得出补擦：这次只擦了 PART，forgotten_subjects 仍列出整个扇出
+    # Receipt identifies supplemental erasure: only PART erased this time, while forgotten_subjects lists the entire fanout.
     assert [s["subject_id"] for s in result["erased_subjects"]] == [PART["subject_id"]]
     assert {s["subject_id"] for s in result["forgotten_subjects"]} == {GROUP["subject_id"], PART["subject_id"]}
     again = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
@@ -3495,20 +3495,20 @@ async def test_replay_naming_a_newly_linked_target_erases_only_that_target(env):
 
 async def test_partial_replay_does_not_mark_the_request_subject_through_a_higher_fence(env):
     await _forget(env, GROUP, forget_epoch=5)
-    # 围栏 8、完成标记 5：现有写入路径抬围栏时会连完成标记一起重写，这里直接构造这份状态，
-    # 守住「只补擦扇出目标时不碰请求 subject 的完成标记」这条不变量
+    # Fence 8, completion marker 5: existing write paths rewrite completion markers when raising fences; construct this state directly
+    # to protect the invariant that supplemental fanout erasure does not touch the request subject's completion marker.
     path = Path(env.idem.tombstones_path(NAME))
     data = _tombstones(env)
     data[GROUP_KEY] = {"forgotten_at": time.time(), "forget_epoch": 8, "erased_epoch": 5}
     path.write_text(json.dumps(data), encoding="utf-8")
     env.llm.responses = [SINGLE_FACTS]
-    await _post(env, _single_body(key=None, display_name=None))  # 代数 8 本该擦掉的 GROUP 记忆
+    await _post(env, _single_body(key=None, display_name=None))  # GROUP memories generation 8 should have erased.
     _fan_out_to(env, PART)
     await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
-    # 这次只补擦了 PART：GROUP 没被擦，它的完成标记不能借已在位的围栏 8 抬上去
+    # Only PART was supplementally erased: GROUP was not, so its completion marker cannot rise to the existing fence 8.
     assert env.idem.erased_epoch(_tombstones(env), GROUP_KEY) == 5
     retry = await _forget(env, GROUP, forget_epoch=8, target_epochs={PART_KEY: 1})
-    # 代数 8 的重试照常擦除，不走 duplicate 捷径
+    # Generation-8 retry erases normally without the duplicate shortcut.
     assert retry.get("duplicate") is None and _facts_of(env, GROUP) == []
 
 
@@ -3520,12 +3520,12 @@ async def test_unfenced_wire_routed_into_the_forgotten_subject_is_marked_without
         routed_keys=[GROUP_KEY], routed_positions=[GROUP_KEY, GROUP_KEY],
         epochs={GROUP_KEY: 5},
     ))
-    # 只有记录、没有暂存：GROUP 这个 wire 够新，PART 早已解绑、不在扇出里，却按位置路由进了 GROUP
+    # Record only, no staging: GROUP wire is new enough, but PART, already unlinked and outside fanout, was positionally routed into GROUP.
     await env.routes._cancel_staged_writes_for_subjects(
         NAME, {GROUP_KEY}, request_subject_key=GROUP_KEY, forget_epoch=5,
     )
     record = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_SEGMENTS]
-    # 不能因为 GROUP 够新就整条放过：经路由写进被清 subject 的 PART 必须记下，重试时丢掉它那段
+    # GROUP's freshness cannot justify accepting the whole record: record PART routed into the cleared subject and discard that segment on retry.
     assert record["state"] == "pending"
     assert record.get("forgotten_keys") == [PART_KEY]
 
@@ -3535,26 +3535,26 @@ async def test_tombstones_are_raised_per_key_at_their_own_epochs(env):
     await idem.record_tombstone_epochs(NAME, {GROUP_KEY: 7, PART_KEY: 2})
     await idem.record_tombstone_epochs(NAME, {GROUP_KEY: 3, PART_KEY: 4})
     rows = _tombstones(env)
-    # 各 key 各自单调：GROUP 不被较小的 3 拉低，PART 被抬到 4，互不影响
+    # Keys are independently monotonic: GROUP is not lowered to 3, PART rises to 4, with no interference.
     assert rows[GROUP_KEY]["forget_epoch"] == 7 and rows[PART_KEY]["forget_epoch"] == 4
     path = Path(idem.tombstones_path(NAME))
     damaged = {**rows, GP_KEY: {"forget_epoch": "9"}}
     path.write_text(json.dumps(damaged), encoding="utf-8")
     await idem.record_tombstone_epochs(NAME, {GP_KEY: 1, PART_KEY: 5})
     rows = _tombstones(env)
-    # 坏行原样保留（读路径对它 fail closed），同一次写入里的其它 key 照常抬高
+    # Preserve corrupt rows unchanged (readers fail closed), while other keys in the same write rise normally.
     assert rows[GP_KEY] == {"forget_epoch": "9"} and rows[PART_KEY]["forget_epoch"] == 5
 
 
 def test_damaged_routed_positions_fall_back_to_the_routed_keys(env):
     record = {
         "request": {"wire_keys": [PART_KEY]},
-        "routed_positions": [123],                              # 长度对得上，内容坏了
+        "routed_positions": [123],                              # Length matches, content corrupt.
         "routed_keys": [GROUP_KEY],
         "epochs": {PART_KEY: 2},
     }
     marks = env.routes._stale_record_marks(record, {GROUP_KEY}, {GROUP_KEY: 5, PART_KEY: 2})
-    # 坏的按位置路由不能当成对齐：退回按 routed_keys 保守标记被清的落点
+    # Corrupt positional routing cannot count as alignment: conservatively mark cleared destinations using routed_keys instead.
     assert GROUP_KEY in marks
 
 
@@ -3573,9 +3573,9 @@ async def test_retry_after_a_partly_recorded_completion_skips_marked_targets(env
     env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", real_mark)
     assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
     env.llm.responses = [SINGLE_FACTS]
-    await _post(env, _single_body(key=None, subject=PART, display_name=None))   # PART 擦完之后的合法写入
+    await _post(env, _single_body(key=None, subject=PART, display_name=None))   # Legitimate writes after PART erasure.
     result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
-    # 重试补完请求 subject；PART 的完成标记早已落盘，不再重擦它擦完之后的写入
+    # Retry completes the request subject; PART's completion marker is already durable, so never re-erase its subsequent writes.
     assert result.get("duplicate") is None
     assert _facts_of(env, PART) and env.idem.erased_epoch(_tombstones(env), GROUP_KEY) == 5
 
@@ -3593,11 +3593,11 @@ async def test_partial_retry_still_cancels_a_stale_journal_of_a_completed_target
     with pytest.raises(HTTPException):
         await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
     env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", real_mark)
-    # PART 的完成标记已落盘之后，一份清除前（代数 1）的 PART 请求落了暂存就崩溃
+    # After PART's completion marker persisted, a pre-clear PART request (generation 1) crashed after staging.
     env.llm.responses = [SINGLE_FACTS]
     await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
     result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
-    # 这次只补擦 GROUP，但取消扫描仍覆盖带了代数的 PART：留着明文的旧暂存被取消
+    # Only GROUP is supplementally erased now, but cancellation scanning still covers generation-bearing PART and cancels old plaintext staging.
     assert result.get("duplicate") is None
     assert [s["subject_id"] for s in result["erased_subjects"]] == [GROUP["subject_id"]]
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
@@ -3606,13 +3606,13 @@ async def test_partial_retry_still_cancels_a_stale_journal_of_a_completed_target
 async def test_partial_replay_does_not_mark_a_target_through_its_own_higher_fence(env):
     group = MemorySubject.create(GROUP["subject_kind"], GROUP["subject_id"])
     part = MemorySubject.create(PART["subject_kind"], PART["subject_id"])
-    # GROUP 与 PART 互为扇出（同一个参与者）
+    # GROUP and PART are mutual fanout targets (same participant).
     env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", lambda subject: sorted(
         [group, part], key=lambda t: (t.key, t.scope),
     ))
     await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})         # 1. GROUP=5、PART=1
     env.llm.responses = [SINGLE_FACTS]
-    await _post(env, _single_body(key=None, display_name=None))                    # 2. GROUP 之后合法写入
+    await _post(env, _single_body(key=None, display_name=None))                    # 2. Legitimate writes to GROUP afterward.
     real_begin = env.fs.abegin_subject_forget
 
     async def fail_once(name, subject):
@@ -3620,24 +3620,24 @@ async def test_partial_replay_does_not_mark_a_target_through_its_own_higher_fenc
 
     env.monkeypatch.setattr(env.fs, "abegin_subject_forget", fail_once)
     with pytest.raises(HTTPException):
-        await _forget(env, PART, forget_epoch=10)                                 # 3. PART 围栏 10，擦除前失败
+        await _forget(env, PART, forget_epoch=10)                                 # 3. PART fence 10, failure before erasure.
     env.monkeypatch.setattr(env.fs, "abegin_subject_forget", real_begin)
-    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})         # 4. 重放：只补擦 PART
-    # PART 只按自己这次的代数记完成标记，不借那次擦除前就失败的围栏 10
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})         # 4. Replay: supplementally erase only PART.
+    # PART records completion using only this pass's generation, not fence 10 from the attempt that failed before erasure.
     assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 1
-    retry = await _forget(env, PART, forget_epoch=10)                              # 5. 重试 PART 那次清除
+    retry = await _forget(env, PART, forget_epoch=10)                              # 5. Retry that PART clear.
     assert retry.get("duplicate") is None and _facts_of(env, GROUP) == []
 
 
 async def test_replay_after_unlink_still_cancels_a_stale_journal_of_the_former_target(env):
     original = env.routes._forget_fanout_targets
     _fan_out_to(env, PART)
-    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})   # 原擦除：PART 的围栏是 2
-    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", original)  # 之后 PART 解绑
+    await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})   # Original erasure: PART fence is 2.
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", original)  # PART unlinked afterward.
     env.llm.responses = [SINGLE_FACTS]
     await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
     result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
-    # PART 已不在扇出里，不再擦它；但它以前被围过：清除前（代数 1）的残留明文暂存照样取消
+    # PART is no longer in fanout, so do not erase it again; its previous fence still cancels residual pre-clear plaintext staging (generation 1).
     assert result.get("duplicate") is True
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
 
@@ -3646,13 +3646,13 @@ async def test_never_fenced_key_outside_the_fanout_is_not_cancelled(env):
     env.llm.responses = [SINGLE_FACTS]
     await _stage_then_crash(env, _single_body(subject=PART, display_name=None, subject_epochs={PART_KEY: 1}))
     await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
-    # PART 从没被清除围过、也不在这次扇出里：它自己的写入是合法的，不能按调用方给的代数取消
+    # PART was never fenced by clearing and is outside current fanout: its writes are legitimate; do not cancel based on caller-supplied generation.
     assert _key_state(env, KEY_GROUP) == "pending" and _staging_file(env, KEY_GROUP).exists()
     assert PART_KEY not in _tombstones(env)
 
 
 async def test_overlapping_alias_forgets_serialize_until_markers_land(env):
-    _fan_out_to(env, PART)                                      # GROUP 与 GP 的扇出都含 PART
+    _fan_out_to(env, PART)                                      # GROUP and GP fanouts both include PART.
     entered, gate = asyncio.Event(), asyncio.Event()
     real_cancel = env.routes._cancel_staged_writes_for_subjects
 
@@ -3672,15 +3672,15 @@ async def test_overlapping_alias_forgets_serialize_until_markers_land(env):
 
     env.monkeypatch.setattr(env.fs, "abegin_subject_forget", spy_begin)
     first = asyncio.create_task(_forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2}))
-    await asyncio.wait_for(entered.wait(), timeout=5)           # 第一次已擦完、放了擦除锁，完成标记还没写
+    await asyncio.wait_for(entered.wait(), timeout=5)           # First erasure completed and released its lock, but has not written completion markers.
     second = asyncio.create_task(_forget(env, GP, forget_epoch=3, target_epochs={PART_KEY: 2}))
     await asyncio.sleep(0.05)
-    # 第二次清除点名的是另一个别名，但与第一次共享 PART：第一次写完完成标记之前它不能动手
+    # Second clear names another alias but shares PART: it must wait until the first writes completion markers.
     assert begun.count(PART_KEY) == 1 and GP_KEY not in begun
     gate.set()
     await asyncio.wait_for(first, timeout=5)
     result = await asyncio.wait_for(second, timeout=5)
-    # 它看到 PART 已擦到 2：只擦自己的 GP，不再重擦 PART（否则会删掉两次之间合法写入的记忆）
+    # It sees PART already erased through 2, so erases only GP without re-erasing PART and losing legitimate intervening memories.
     assert begun.count(PART_KEY) == 1
     assert [s["subject_id"] for s in result["erased_subjects"]] == [GP["subject_id"]]
 
@@ -3693,7 +3693,7 @@ async def test_fanout_growing_while_fences_are_taken_retakes_them(env):
     def growing_fanout(subject):
         calls["n"] += 1
         base = list(original(subject))
-        # 第一次（外层拿栅栏时）还没关联 PART，之后关联上了
+        # PART was unlinked when the first outer fence was acquired, then became linked.
         return base if calls["n"] == 1 else sorted(base + [linked], key=lambda t: (t.key, t.scope))
 
     env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", growing_fanout)
@@ -3706,7 +3706,7 @@ async def test_fanout_growing_while_fences_are_taken_retakes_them(env):
 
     env.monkeypatch.setattr(env.idem, "forget_fence", spy_fence)
     result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
-    # 扇出在拿栅栏期间多出了 PART：放掉重拿，PART 的栅栏也拿到之后才擦
+    # Fanout gains PART during fence acquisition: release and reacquire, erasing only after acquiring PART's fence too.
     assert result["status"] == "forgotten" and PART_KEY in fenced
     assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 2
 
@@ -3719,13 +3719,13 @@ async def test_fanout_fence_raised_before_the_erase_locks_is_recorded_as_erased(
     async def plan(*args):
         calls["n"] += 1
         if calls["n"] == 2:
-            # 锁外读完围栏之后、擦除之前：另一次清除把 PART 的围栏抬到 6
+            # After unlocked fence reads but before erasure, another clear raises PART's fence to 6.
             await env.idem.record_tombstones(NAME, {PART_KEY}, 6)
         return await real_plan(*args)
 
     env.monkeypatch.setattr(env.routes, "_targets_still_to_erase", plan)
     await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 2})
-    # 本次擦除在围栏 6 之后进行：完成标记按擦除前最后在位的围栏记，6 的重试不再重擦
+    # This erasure follows fence 6: mark completion through the last fence present before erasure, so generation-6 retry does not re-erase.
     assert calls["n"] == 2
     assert env.idem.erased_epoch(_tombstones(env), PART_KEY) == 6
 
@@ -3743,12 +3743,12 @@ async def test_recheck_under_the_locks_narrows_to_the_unerased_targets(env):
     async def check(*args):
         calls["n"] += 1
         if calls["n"] == 1:
-            return False        # 锁外那次核对发生在请求 subject 的擦除完成之前
+            return False        # Unlocked check precedes request-subject erasure completion.
         return await real_check(*args)
 
     env.monkeypatch.setattr(env.routes, "_forget_epoch_already_erased", check)
     result = await _forget(env, GROUP, forget_epoch=5, target_epochs={PART_KEY: 1})
-    # 持锁后看到请求 subject 已擦完：只擦还没擦到代数的 PART，GROUP 之后的合法写入不动
+    # Locked check finds request subject already erased: erase only PART's outstanding generation, leaving GROUP's subsequent legitimate writes untouched.
     assert result.get("duplicate") is None and calls["n"] >= 2
     assert _facts_of(env, PART) == [] and _facts_of(env, GROUP)
 
@@ -3760,7 +3760,7 @@ async def test_failed_generation_keeps_the_fresh_wire_of_a_mixed_batch(env):
     assert _key_state(env, KEY_SEGMENTS) == "pending" and not _staging_file(env, KEY_SEGMENTS).exists()
     _fan_out_to(env, GP, PART)
     await _forget(env, GROUP, forget_epoch=5, target_epochs={GP_KEY: 1, PART_KEY: 2})
-    # 只有记录、没有暂存：GP 早于它的围栏、PART 够新。不能整键取消，只记下 GP
+    # Record only, no staging: GP predates its fence, PART is new enough. Record only GP, without canceling the entire key.
     assert _key_state(env, KEY_SEGMENTS) == "pending"
     env.llm.responses = [PART_ONLY_BATCH_FACTS]
     again = await _post(env, _segments_body(subject_epochs={GP_KEY: 0, PART_KEY: 2}))
@@ -3790,15 +3790,15 @@ def test_target_epochs_reject_negative_values(env):
         )
 
 
-# ── #3337 核对补测：#3292 合并前已修、但原测试守不住的几处 ─────────────────
+# ── #3337 additional verification tests: fixes predating #3292 merge that original tests did not protect ──
 
 
 async def test_orphan_scrub_reads_the_key_records_under_the_character_lock(env):
     idem = env.idem
     path = Path(idem.staging_path(NAME, KEY_GROUP))
     path.parent.mkdir(parents=True, exist_ok=True)
-    await idem.update_key(NAME, "other-key", idem.transition("done"))          # 键文件在、但没人认领它
-    path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # 读不出
+    await idem.update_key(NAME, "other-key", idem.transition("done"))          # Key file exists but is unclaimed.
+    path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # Unreadable.
     keys_file = os.path.normcase(os.path.abspath(idem.keys_path(NAME)))
     lock = idem.idempotency_lock(NAME)
     held_at_read = []
@@ -3811,7 +3811,7 @@ async def test_orphan_scrub_reads_the_key_records_under_the_character_lock(env):
 
     env.monkeypatch.setattr(idem, "_read_json_object", spy)
     assert await idem.drop_unreadable_orphan_staging(NAME, str(path)) is True
-    # 归属判断用的键记录必须在角色锁里读：锁外的快照与改写之间，update_key 可能已把这条路径认领成 pending
+    # Read ownership key records under the character lock: update_key may claim this path as pending between an unlocked snapshot and rewriting.
     assert held_at_read and all(held_at_read)
     assert "猫薄荷" not in path.read_text(encoding="utf-8")
 
@@ -3822,7 +3822,7 @@ async def test_legacy_integer_fact_ids_are_journaled_as_strings(env):
 
     async def legacy_ids(lanlan_name, extracted, **kwargs):
         created = await real_persist(lanlan_name, extracted, **kwargs)
-        # reconcile 命中、新建结果里都混着旧版整数 id 的事实（FactStore 仍认这种 id）
+        # Both reconcile hits and newly created results include legacy integer-ID facts (still supported by FactStore).
         kwargs["reconciled_facts"].append({**created[0], "id": 12345})
         return [{**created[0], "id": 67890}, *created[1:]]
 
@@ -3833,7 +3833,7 @@ async def test_legacy_integer_fact_ids_are_journaled_as_strings(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
     entry = next(e for e in staging["applied"] if e.get("facts_applied"))
-    # 与 _keyed_fact_identity 同口径一律记成字符串
+    # Record all as strings, matching _keyed_fact_identity.
     assert "12345" in entry["reconciled"] and "67890" in entry["fact_ids"]
     assert all(isinstance(v, str) for v in entry["reconciled"] + entry["fact_ids"])
 
@@ -3854,14 +3854,14 @@ async def test_keyed_fact_reads_ride_out_a_concurrent_replace(env):
             target = os.path.normcase(os.path.abspath(os.fspath(file)))
             if target in watched and watched[target] < 2:
                 watched[target] += 1
-                # 归档 / 去重写入方正 os.replace 这个文件：Windows 上的共享冲突
+                # Archival/deduplication writer is performing os.replace: a Windows sharing conflict.
                 exc = PermissionError(13, "Access is denied")
                 exc.winerror = 32
                 raise exc
         return real_open(file, *args, **kwargs)
 
     env.monkeypatch.setattr(builtins, "open", busy_twice)
-    # 带键 facts 项应用时在工作线程里读这两份文件：替换窗口里的共享冲突先退避重试，不能当成读不出
+    # Keyed fact application reads these files in a worker thread: back off and retry replacement-window sharing conflicts rather than declaring unreadable.
     assert await asyncio.to_thread(fs._assert_active_facts_readable, NAME) == 1
     assert await asyncio.to_thread(fs._read_archived_effect_keys, NAME) == {"ek-0"}
     assert set(watched.values()) == {2}
@@ -3870,11 +3870,11 @@ async def test_keyed_fact_reads_ride_out_a_concurrent_replace(env):
 async def test_forget_after_the_recheck_fences_an_activity_only_segment_from_trust(env):
     from memory.scopes import coerce_subject
 
-    env.llm.responses = [[]]                                     # 没抽出事实：这段只有 activity
+    env.llm.responses = [[]]                                     # No facts extracted: segment contains only activity.
     real_apply = env.routes._apply_keyed_staging
 
     async def forget_before_apply(*args, **kwargs):
-        # 落盘后的复核之后、信赖步骤之前，一次不带代数的清除推进了 generation
+        # Clearing without a generation advances generation after the post-persistence recheck but before the trust step.
         env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
         return await real_apply(*args, **kwargs)
 
@@ -3893,7 +3893,7 @@ async def test_forget_after_the_recheck_fences_an_activity_only_segment_from_tru
         speaker_activity_events=[{"id": "evt-00003", "count": 1}],
     )
     await _post(env, body)
-    # 没有事实项去比 generation 的段也要按清除挡下：activity 不进信赖池
+    # Segments without fact items to compare generation must also respect clearing: exclude activity from the trust pool.
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
 
@@ -3914,7 +3914,7 @@ async def test_activity_only_segment_without_a_forget_still_moves_the_trust_pool
         speaker_activity_events=[{"id": "evt-00004", "count": 1}],
     )
     await _post(env, body)
-    # 对照：期间没有清除时这段的 activity 照常进信赖池
+    # Control: without intervening clearing, this segment's activity enters the pool normally.
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is not None
 
@@ -3951,7 +3951,7 @@ async def test_trust_step_fence_mark_is_on_disk_for_the_same_key_retry(env):
 
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
     await _post(env, body)
-    # 恢复的重试读不到生成前的 generation，只能靠盘上的段级标记认出这段被清除挡下
+    # Recovery retry cannot read pre-generation generation; only durable segment-level markers identify this segment as clearing-blocked.
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
 
@@ -3967,7 +3967,7 @@ async def test_forget_cannot_slip_between_the_trust_recheck_and_the_trust_write(
     forgets = []
 
     async def forget():
-        # 与 scoped_forget 同一入口推进 generation（持事实存储的持久化锁）
+        # Advance generation through scoped_forget's same entry point, holding the fact store's persistence lock.
         await env.fs.abegin_subject_forget(NAME, subject)
         await env.fs.aend_subject_forget(NAME, subject)
 
@@ -3993,10 +3993,10 @@ async def test_forget_cannot_slip_between_the_trust_recheck_and_the_trust_write(
     )
     await _post(env, body)
     await asyncio.gather(*forgets)
-    # 复核与信赖写入之间插不进清除：activity 进了池，就说明写入时 generation 还是生成前那个
+    # Clearing cannot intervene between recheck and trust write: activity entering the pool proves generation still matched its pre-generation value when written.
     ((moved, generation_moved),) = seen
     assert not (moved and generation_moved)
-    assert env.fs._subject_forget_generation(NAME, subject) != captured_generation    # 清除确实发生了
+    assert env.fs._subject_forget_generation(NAME, subject) != captured_generation    # Clearing did occur.
 
 
 async def test_cancelled_request_keeps_the_guard_until_the_trust_worker_finishes(env):
@@ -4023,7 +4023,7 @@ async def test_cancelled_request_keeps_the_guard_until_the_trust_worker_finishes
         request.cancel()
         for _ in range(20):
             await asyncio.sleep(0)
-        # 线程里的池写入取消不掉：写完之前持久化锁不能放，否则清除能在写入落盘前推进 generation
+        # Threaded pool writes cannot be canceled: retain the persistence lock until completion, preventing clearing from advancing generation before persistence.
         assert env.fs._get_persist_alock(NAME).locked()
     finally:
         release.set()
@@ -4052,7 +4052,7 @@ async def test_restored_retry_fences_an_activity_only_segment_forgotten_during_a
     real_apply = env.routes._apply_keyed_staging
 
     async def forget_during_apply(*args, **kwargs):
-        # 恢复的重试持键锁应用时，一次不带代数的清除推进了 generation（擦除前那遍扫描恰好跳过了这份暂存）
+        # While recovery retry applies under the key lock, generation-less clearing advances generation; pre-erasure scanning happened to skip this staging.
         env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
         return await real_apply(*args, **kwargs)
 
@@ -4065,7 +4065,7 @@ async def test_restored_retry_fences_an_activity_only_segment_forgotten_during_a
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_during_apply)
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
     await _post(env, body)
-    # 恢复的重试也按应用前取的 generation 复核：这段的 activity 不进信赖池
+    # Recovery retry also rechecks against generation read before application, excluding this segment's activity from the trust pool.
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
 
@@ -4090,7 +4090,7 @@ async def test_cancelled_trust_write_returns_only_after_its_worker_finished(env)
         activity_events=(trust_store.ActivityEvent(id="evt-00009", count=1),),
         signal_events=(), channel=None,
     )
-    # 取消扫描直接取消跑这次写入的任务（不只是外层请求）：线程停不下来，任务必须等它写完才结束
+    # Cancellation scanning cancels the task performing this write itself, not only the outer request: the thread cannot stop, so task completion must await its write.
     write = asyncio.create_task(trust_store.aapply_trust_mutations([mutation]))
     try:
         assert await asyncio.to_thread(entered.wait, 5)
@@ -4115,13 +4115,13 @@ async def test_restored_retry_drops_facts_forgotten_during_apply_on_the_same_bas
         speaker_activity_events=[{"id": "evt-00010", "count": 1}],
     )
     with pytest.raises(HTTPException):
-        await _post(env, body)                                   # 暂存已落盘、事实一项没写
+        await _post(env, body)                                   # Staging persisted; no fact items written.
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     real_apply = env.routes._apply_keyed_staging
     subject = coerce_subject(GROUP)
 
     async def forget_during_apply(*args, **kwargs):
-        # 擦除前那遍扫描跳过了这份暂存：一次不带代数的清除在恢复的重试应用期间完整跑完
+        # Pre-erasure scanning skipped this staging: generation-less clearing completes entirely during recovery retry application.
         await env.fs.abegin_subject_forget(NAME, subject)
         await env.fs.aend_subject_forget(NAME, subject)
         return await real_apply(*args, **kwargs)
@@ -4136,7 +4136,7 @@ async def test_restored_retry_drops_facts_forgotten_during_apply_on_the_same_bas
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_during_apply)
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
     await _post(env, body)
-    # 事实层与信赖层按同一份基线：清除之前生成的事实不在清除之后写回，activity 也不进池
+    # Fact and trust layers share one baseline: do not restore pre-clear generated facts afterward or add activity to the pool.
     assert _facts_of(env, GROUP) == []
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
@@ -4150,14 +4150,14 @@ async def test_restored_baseline_watches_the_journal_subject_not_todays_routing(
     from memory.scopes import coerce_subject
 
     routes = env.routes
-    staging = _one_segment_staging(GROUP)                        # 暂存记的是 GROUP
-    contexts = [{"subject": coerce_subject(GP)}]                 # 之后路由变了，当下解析成 GP
+    staging = _one_segment_staging(GROUP)                        # Staging records GROUP.
+    contexts = [{"subject": coerce_subject(GP)}]                 # Routing later changes to resolve GP.
     baseline = routes._capture_forget_generations(NAME, routes._staged_segment_subjects(staging, contexts))
     env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))
-    # 只是当下路由到的 subject 动了：这份暂存写的是 GROUP，不能误判成被清除
+    # Only the currently routed subject changed: this staging writes GROUP and must not be misclassified as cleared.
     assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == set()
     env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
-    # 暂存记的 subject 被清除：要认出来
+    # The staged subject was cleared: recognize it.
     assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {0}
     assert staging["segments"][0].get("dropped_by_forget") is True
 
@@ -4171,7 +4171,7 @@ async def test_baseline_captured_inside_a_running_forget_still_fences(env):
     contexts = [{"subject": subject}]
     await env.fs.abegin_subject_forget(NAME, subject)
     try:
-        # 基线取在 abegin 推进之后、aend 推进之前：generation 相等，但事实层此刻已拒收这段
+        # Baseline falls after abegin advances but before aend advances: generation matches, but the fact layer currently rejects this segment.
         baseline = routes._capture_forget_generations(NAME, [subject])
         assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {0}
     finally:
@@ -4197,7 +4197,7 @@ async def test_cancelled_staging_write_returns_only_after_the_file_is_written(en
         write.cancel()
         for _ in range(20):
             await asyncio.sleep(0)
-        # 调用方持着键锁：写入还在线程里时不能先返回、先放锁
+        # Caller holds the key lock: do not return or unlock while the threaded write remains running.
         assert not write.done()
     finally:
         release.set()
@@ -4225,12 +4225,12 @@ async def test_request_arriving_inside_a_running_forget_is_fenced_from_trust(env
         speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
         speaker_activity_events=[{"id": "evt-00011", "count": 1}],
     )
-    await env.fs.abegin_subject_forget(NAME, subject)            # 清除已推进 generation、还没收尾
+    await env.fs.abegin_subject_forget(NAME, subject)            # Clearing advanced generation but has not finished.
     try:
         await _post(env, body)
     finally:
         await env.fs.aend_subject_forget(NAME, subject)
-    # 事实层在清除进行中拒收这段；信赖步骤用同一个依据挡下 activity
+    # The fact layer rejects this segment during clearing; the trust step blocks activity by the same criterion.
     assert _facts_of(env, GROUP) == []
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
@@ -4244,20 +4244,20 @@ async def test_restored_retry_keeps_its_journal_subject_when_routing_changed(env
     original = _fail_on_item(env, failing_seq=0)
     body = _single_body(display_name=None)
     with pytest.raises(HTTPException):
-        await _post(env, body)                                   # 暂存记下的写入目标是 GROUP
+        await _post(env, body)                                   # Staging's recorded write target is GROUP.
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     rerouted = coerce_subject(GP)
-    env.fs._bump_subject_forget_generation(NAME, rerouted)       # 两个 subject 的计数器不同
+    env.fs._bump_subject_forget_generation(NAME, rerouted)       # The two subjects have different counters.
     real_canonical = subject_identity.canonical_subject
 
     def reroute(subject, snap=None):
         if subject.key == GROUP_KEY:
-            return rerouted                                      # 之后路由变了：当下解析成 GP
+            return rerouted                                      # Routing later changes to resolve GP.
         return real_canonical(subject, snap)
 
     env.monkeypatch.setattr(subject_identity, "canonical_subject", reroute)
     result = await _post(env, body)
-    # 恢复的重试照暂存写 GROUP：基线也得取 GROUP 的，不能拿 GP 的计数器去比、把事实误丢
+    # Recovery retry writes GROUP as staged: use GROUP's baseline too, not GP's counter, which would wrongly discard facts.
     assert result["created"] == 2 and len(_facts_of(env, GROUP)) == 2
 
 
@@ -4268,15 +4268,15 @@ async def test_restored_retry_inside_a_running_forget_writes_no_display_name(env
     env.llm.responses = [responses]
     original = _fail_on_item(env, failing_seq=0)
     with pytest.raises(HTTPException):
-        await _post(env, _single_body())                         # 暂存已落盘、第一项就中断
+        await _post(env, _single_body())                         # Staging persisted; interrupted at the first item.
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     subject = coerce_subject(GROUP)
-    await env.fs.abegin_subject_forget(NAME, subject)            # 恢复的重试赶上清除正在进行
+    await env.fs.abegin_subject_forget(NAME, subject)            # Recovery retry overlaps clearing in progress.
     try:
         await _post(env, _single_body())
     finally:
         await env.fs.aend_subject_forget(NAME, subject)
-    # 事实层此刻拒收这段：同段的显示名也不能写进被清 subject（persona 写入没有清除保护）
+    # The fact layer rejects this segment now: its display name must not enter the cleared subject either, since persona writes lack clearing protection.
     assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
     assert _facts_of(env, GROUP) == []
 
@@ -4334,12 +4334,12 @@ async def test_failed_trust_step_fence_write_leaves_a_durable_fallback(env):
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, body)
     assert excinfo.value.status_code == 503 and state["failed"]
-    # 暂存没打上标记：被挡的 subject 记在键记录上，恢复的重试据此丢弃这段
+    # Staging lacks a marker, but the key record identifies blocked subjects; recovery retry discards this segment accordingly.
     record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
     assert GROUP_KEY in record["forgotten_keys"]
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
     captured = _capture_trust(env)
-    await _post(env, body)                                       # 基线取在清除之后的同键重试
+    await _post(env, body)                                       # Same-key retry takes its baseline after clearing.
     (states,) = captured
     assert env.routes._trust_mutation_for(states[0]) is None
 
@@ -4357,14 +4357,14 @@ async def test_failed_restored_fence_write_leaves_a_durable_fallback(env):
     await env.fs.abegin_subject_forget(NAME, subject)
     try:
         with pytest.raises(HTTPException) as excinfo:
-            await _post(env, _single_body())                     # 恢复的重试赶上清除进行中，标记写失败
+            await _post(env, _single_body())                     # Recovery retry overlaps clearing; marker write fails.
         assert excinfo.value.status_code == 503 and state["failed"]
     finally:
         await env.fs.aend_subject_forget(NAME, subject)
     record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
-    assert GROUP_KEY in record["forgotten_keys"]                 # 走的是键记录兜底
-    await _post(env, _single_body())                             # 清除之后再重试：基线已是新的
-    # 键记录上的兜底标记让这段照样丢弃：显示名、事实都不写进被清 subject
+    assert GROUP_KEY in record["forgotten_keys"]                 # Use the key-record fallback.
+    await _post(env, _single_body())                             # Retry again after clearing: baseline is now fresh.
+    # The key-record fallback marker still discards this segment, writing neither display name nor facts into the cleared subject.
     assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
     assert _facts_of(env, GROUP) == []
 
@@ -4380,19 +4380,19 @@ async def test_failed_post_write_recheck_fence_write_leaves_a_durable_fallback(e
         await real_write(name, key, document)
         writes["n"] += 1
         if writes["n"] == 1:
-            # 暂存首次落盘之后、复核之前，一次不带代数的清除推进了 generation
+            # Generation-less clearing advances generation after initial staging persistence but before rechecking.
             env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
 
     env.monkeypatch.setattr(env.idem, "write_staging", write_then_forget)
-    state = _fail_fence_writes_once(env)                         # 复核新打的标记那次写失败
+    state = _fail_fence_writes_once(env)                         # Writing the newly added recheck marker fails.
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
     assert excinfo.value.status_code == 503 and state["failed"]
     record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
     assert GROUP_KEY in record["forgotten_keys"]
     env.monkeypatch.setattr(env.idem, "write_staging", real_write)
-    await _post(env, _single_body())                             # 基线取在清除之后的同键重试
-    # 生成路径落暂存后那次复核也有兜底：清除之前抽出的事实不写回、显示名不写
+    await _post(env, _single_body())                             # Same-key retry takes its baseline after clearing.
+    # The generation path's post-staging recheck has a fallback too: do not restore pre-clear facts or write display names.
     assert _facts_of(env, GROUP) == []
     assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
 
@@ -4421,7 +4421,7 @@ async def test_cancelled_fence_write_still_records_the_fallback(env):
 
     async def cancelled_on_fence(name, key, document):
         if any(isinstance(seg, dict) and seg.get("dropped_by_forget") is True for seg in document.get("segments") or []):
-            # 写入在线程里失败、请求同时被取消：等待方只看得到取消
+            # Threaded write fails while the request is canceled; the waiter observes only cancellation.
             raise asyncio.CancelledError()
         return await real_write(name, key, document)
 
@@ -4429,7 +4429,7 @@ async def test_cancelled_fence_write_still_records_the_fallback(env):
     body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00013", "count": 1}])
     with pytest.raises(asyncio.CancelledError):
         await _post(env, body)
-    # 写入成没成看不出：照样把被挡的 subject 记进键记录
+    # Write success is unknown: still record blocked subjects on the key record.
     assert GROUP_KEY in _forgotten_keys_on_record(env)
 
 
@@ -4441,7 +4441,7 @@ async def test_fallback_fence_record_completes_before_the_key_lock_is_released(e
     entered, gate = asyncio.Event(), asyncio.Event()
 
     async def gated_update(name, key, fn):
-        if state["failed"]:                                      # 暂存写失败之后的那次就是兜底
+        if state["failed"]:                                      # The write after staging failure is the fallback.
             entered.set()
             await gate.wait()
         return await real_update(name, key, fn)
@@ -4453,7 +4453,7 @@ async def test_fallback_fence_record_completes_before_the_key_lock_is_released(e
     request.cancel()
     for _ in range(20):
         await asyncio.sleep(0)
-    # 兜底还没写完：请求不能先结束、先放键锁
+    # Fallback unfinished: do not finish the request or release its key lock yet.
     assert not request.done() and env.idem.key_lock(NAME, KEY_GROUP).locked()
     gate.set()
     with pytest.raises(asyncio.CancelledError):
@@ -4466,13 +4466,13 @@ async def test_fallback_fence_keys_are_the_newly_fenced_journal_subjects_only(en
 
     staging = {
         "segments": [
-            # 早先因别的原因丢弃的段：它的路由目标可能被一个有效段共用，不能借它去挡别人
+            # Segments discarded earlier for other reasons may share routing targets with valid segments; do not use them to block others.
             {"subject": dict(PART), "wire_key": GP_KEY, "dropped_by_forget": True},
             {"subject": dict(GROUP), "wire_key": PART_KEY, "dropped_by_forget": True},
         ],
         "items": [], "applied": [],
     }
-    # 本次新挡的段：暂存记的写入目标 + 它稳定的 wire key；早先丢弃段的 key 一个都不带
+    # Newly blocked segments: recorded staging targets + stable wire keys, excluding all previously discarded segments' keys.
     assert env.routes._fenced_journal_keys(staging, {1}) == {GROUP_KEY, PART_KEY}
 
 
@@ -4484,7 +4484,7 @@ async def test_fallback_task_cancelled_alone_still_answers_503(env):
 
     async def swept_update(name, key, fn):
         if state["failed"]:
-            # 关停时的取消扫描只取消了兜底任务本身：调用方没被取消
+            # Shutdown cancellation scanning cancels only the fallback task; the caller remains uncanceled.
             asyncio.current_task().cancel()
             await asyncio.sleep(0)
         return await real_update(name, key, fn)
@@ -4493,7 +4493,7 @@ async def test_fallback_task_cancelled_alone_still_answers_503(env):
     body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00015", "count": 1}])
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, body)
-    # 没被取消的调用方不能收到 CancelledError：按兜底没写成照常回 503
+    # An uncanceled caller must not receive CancelledError: report 503 normally for failed fallback persistence.
     assert excinfo.value.status_code == 503
 
 
@@ -4514,18 +4514,18 @@ async def test_fallback_fence_survives_a_lost_journal_and_changed_routing(env):
     real_apply = env.routes._apply_keyed_staging
 
     async def forget_before_apply(*args, **kwargs):
-        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))   # 清除了当时的路由目标
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))   # Clear the routing target used at that time.
         return await real_apply(*args, **kwargs)
 
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
     _fail_fence_writes_once(env)
     with pytest.raises(HTTPException):
-        await _post(env, _single_body())                         # 标记写失败，只剩键记录兜底
+        await _post(env, _single_body())                         # Marker write fails, leaving only the key-record fallback.
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
-    _staging_file(env, KEY_GROUP).unlink()                       # 之后暂存丢了
-    route["to"] = coerce_subject(PART)                           # 路由也变了
+    _staging_file(env, KEY_GROUP).unlink()                       # Staging subsequently disappears.
+    route["to"] = coerce_subject(PART)                           # Routing changes too.
     await _post(env, _single_body())
-    # 兜底带着稳定的 wire key：重新生成时照样认出这段，清除前的输入不会写进新目标
+    # Fallback carries stable wire keys: regeneration still recognizes this segment, preventing pre-clear input from entering a new target.
     assert _facts_of(env, PART) == [] and _facts_of(env, GP) == []
 
 
@@ -4539,7 +4539,7 @@ async def test_fallback_written_while_the_caller_is_cancelled_is_reported_as_wri
     async def update_then_cancel_caller(name, key, fn):
         result = await real_update(name, key, fn)
         if state["failed"]:
-            caller["task"].cancel()                              # 兜底刚写完，调用方同一时刻被取消
+            caller["task"].cancel()                              # Fallback finishes exactly when the caller is canceled.
         return result
 
     env.monkeypatch.setattr(env.idem, "update_key", update_then_cancel_caller)
@@ -4550,7 +4550,7 @@ async def test_fallback_written_while_the_caller_is_cancelled_is_reported_as_wri
     with pytest.raises((asyncio.CancelledError, HTTPException)):
         await caller["task"]
     assert GROUP_KEY in _forgotten_keys_on_record(env)
-    # 写成了就按写成了记，不能被说成「没写成」
+    # Record successful persistence as success, never as failure.
     assert any("recorded in forgotten_keys" in line for line in logged)
     assert not any("cancelled before it was written" in line for line in logged)
 
@@ -4561,7 +4561,7 @@ async def test_recheck_reports_only_the_segments_it_newly_fenced(env):
     routes = env.routes
     staging = {
         "segments": [
-            {"subject": dict(GP), "wire_key": GP_KEY, "dropped_by_forget": True},     # 早先那次复核已挡下
+            {"subject": dict(GP), "wire_key": GP_KEY, "dropped_by_forget": True},     # An earlier recheck already blocked it.
             {"subject": dict(PART), "wire_key": PART_KEY},
         ],
         "items": [
@@ -4572,7 +4572,7 @@ async def test_recheck_reports_only_the_segments_it_newly_fenced(env):
     }
     contexts = [{"subject": coerce_subject(GP)}, {"subject": coerce_subject(PART)}]
     baseline = routes._capture_forget_generations(NAME, routes._staged_segment_subjects(staging, contexts))
-    env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))      # 第 0 段早已挡下，generation 仍不同
-    env.fs._bump_subject_forget_generation(NAME, coerce_subject(PART))    # 第 1 段这次才被清除
-    # 只报这次新挡的第 1 段：第 0 段不再并进兜底
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))      # Segment 0 was already blocked; generation still differs.
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(PART))    # Segment 1 is newly cleared now.
+    # Report only newly blocked segment 1, without adding segment 0 to the fallback again.
     assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {1}

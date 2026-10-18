@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Phase A-3 — PersonaManager.apply_refine_actions: 四件套 + protected 兜底。"""
+"""Phase A-3 — PersonaManager.apply_refine_actions: all four actions + protected-entry safeguards."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -103,8 +103,8 @@ async def test_split_consumes_source_and_produces_multiple(tmp_path):
 
 @pytest.mark.asyncio
 async def test_split_carries_forward_evidence_proportionally(tmp_path):
-    """Codex P1 修复：split 不能默默清零 evidence。可分配 counters 按
-    1/N 分摊，时间戳/天数/溯源直接继承。"""
+    """Codex P1 fix: split must not silently erase evidence. Divide distributable counters
+    by N; inherit timestamps/day counts/provenance directly."""
     pm = _install(str(tmp_path))
     src = await _seed(
         pm, "小天", "主人喜欢咖啡且早起",
@@ -133,11 +133,11 @@ async def test_split_carries_forward_evidence_proportionally(tmp_path):
     produced = [e for e in section if e.get('text') in ('主人喜欢咖啡', '主人早起')]
     assert len(produced) == 2
     for e in produced:
-        # 等分：reinforcement 6/2=3.0, disputation 2/2=1.0, user_count 4//2=2
+        # Divide equally: reinforcement 6/2=3.0, disputation 2/2=1.0, user_count 4//2=2
         assert e['reinforcement'] == pytest.approx(3.0)
         assert e['disputation'] == pytest.approx(1.0)
         assert e['user_fact_reinforce_count'] == 2
-        # 时间戳 / 天数 / 溯源直接继承（不分摊）
+        # Inherit timestamps / day counts / provenance directly, without splitting
         assert e['rein_last_signal_at'] == '2026-04-01T10:00:00'
         assert e['disp_last_signal_at'] == '2026-04-02T10:00:00'
         assert e['sub_zero_days'] == 3
@@ -185,7 +185,7 @@ async def test_discard_removes_entry(tmp_path):
 
 @pytest.mark.asyncio
 async def test_discard_rejected_for_protected_entry(tmp_path):
-    """protected (character-card) entry 不可被 discard，即使采集层漏检也兜住。"""
+    """A protected (character-card) entry cannot be discarded, even if collection missed the protection."""
     pm = _install(str(tmp_path))
     src = await _seed(pm, "小天", "character card item", id='p_card_1', protected=True)
     cluster = [_annotate(src)]
@@ -217,7 +217,7 @@ async def test_invalid_action_ignored_but_others_still_apply(tmp_path):
 
 @pytest.mark.asyncio
 async def test_survivor_gets_cluster_hash_stamp(tmp_path):
-    """未被 consume 的 cluster 成员应 stamp 上 cluster_hash + last_refine_at。"""
+    """Stamp unconsumed cluster members with cluster_hash + last_refine_at."""
     pm = _install(str(tmp_path))
     s1 = await _seed(pm, "小天", "kept entry", id='p_keep')
     s2 = await _seed(pm, "小天", "to discard", id='p_drop')
@@ -235,8 +235,8 @@ async def test_survivor_gets_cluster_hash_stamp(tmp_path):
 
 @pytest.mark.asyncio
 async def test_all_malformed_actions_does_not_stamp(tmp_path):
-    """Codex P2 修复：非空 actions 但全部 reject (语义垃圾) 不应 stamp，
-    否则 cluster 会被错误标记为 fresh 推迟 1 个月才重审。"""
+    """Codex P2 fix: nonempty actions that are all rejected as semantic garbage must not stamp,
+    or the cluster is incorrectly marked fresh and will not be reviewed for another month."""
     pm = _install(str(tmp_path))
     s1 = await _seed(pm, "小天", "kept", id='p_keep')
     cluster = [_annotate(s1)]
@@ -257,8 +257,8 @@ async def test_all_malformed_actions_does_not_stamp(tmp_path):
 
 @pytest.mark.asyncio
 async def test_empty_actions_still_stamps_cluster_members(tmp_path):
-    """Codex P1 修复：LLM 返回 [] (no-op) 也必须 stamp 整个 cluster，
-    否则下轮 cron 重复审视同 cluster，cluster_hash skip 失效。"""
+    """Codex P1 fix: an LLM response of [] (no-op) must still stamp the entire cluster,
+    or the next cron reviews the same cluster again and cluster_hash skipping fails."""
     pm = _install(str(tmp_path))
     s1 = await _seed(pm, "小天", "entry one", id='p_one')
     s2 = await _seed(pm, "小天", "entry two", id='p_two')

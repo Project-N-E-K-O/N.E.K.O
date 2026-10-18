@@ -1130,9 +1130,9 @@ async def faster_whisper_asr_worker(
                                 pass
                             else:
                                 pcm16 = buffers.pop(key, None)
-                                # 只数还没完成的：本轮刚解完、下面才出队的不占积压名额。
-                                # 名额在拷贝 PCM、建任务之前占：本会话积压上限之外，
-                                # 还有一个跨所有会话的进程级上限。
+                                # Count only unfinished tasks: those decoded this round and dequeued below do not occupy backlog slots.
+                                # Reserve slots before copying PCM or creating tasks: in addition to this session's backlog limit,
+                                # a process-wide limit applies across all sessions.
                                 if pcm16 and (
                                     _decodes_in_flight(pending) >= _MAX_PENDING_DECODES
                                     or not pool.try_reserve_decode()

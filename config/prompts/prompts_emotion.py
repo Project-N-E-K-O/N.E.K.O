@@ -45,8 +45,8 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 
 只返回 JSON，不要附加任何解释文本。""",
 
-    # 开头那句「你是一个情感分析专家。」在所有语种里都保持简体原样——它在 en/ja/ko
-    # 等每一条模板里都是同一串字面量，繁中这条跟着走，不做转换。
+    # Opening '你是一个情感分析专家。' remains literal Simplified Chinese in every language; en/ja/ko
+    # and all templates share it, so Traditional Chinese follows without conversion.
     'zh-TW': """你是一个情感分析专家。請判斷輸入的角色回覆中說話者自身最主導、最外顯的一種情緒，並只回傳 JSON：{"emotion": "情感類型", "confidence": 信賴度, "emoji": null}。
 
 可選情感只有這五種：
@@ -225,11 +225,11 @@ outward_emotion_analysis_prompt = get_outward_emotion_analysis_prompt('zh')
 
 
 # ============================================================================
-# Master（用户）情绪画像：二维 valence-arousal 分析 prompt
+# Master (user) emotion profile: two-dimensional valence-arousal analysis prompt.
 # ============================================================================
-# 与上面的 OUTWARD（驱动角色头像表情）严格分开：这里分析的是「对话里说话者
-# （用户）自己」的情绪，产出连续的 valence（效价）/ arousal（唤醒度）二维读数，
-# 供凝神等后端基建消费。module-agnostic，不绑定任何具体角色 / 场景。
+# Strictly separate from OUTWARD above (character-avatar expression): analyze the conversation speaker's
+# own (user) emotion, producing continuous valence / arousal coordinates
+# for backend infrastructure such as focused cognition. Module-agnostic, tied to no character/scenario.
 MASTER_EMOTION_VA_PROMPT = {
     'zh': """你是一个情感分析专家。请分析下面这段对话中说话者流露出的情绪状态，并只返回 JSON：{"valence": 效价, "arousal": 唤醒度, "confidence": 置信度, "complexity": 认知复杂度, "external_intent": 外部意图}。
 
@@ -374,29 +374,29 @@ def get_master_emotion_va_prompt(lang: str = 'zh') -> str:
 
 
 # ============================================================================
-# 启发式情感分类的 i18n 关键词表
+# i18n keyword tables for heuristic emotion classification.
 # ============================================================================
-# 以下为按语种组织的关键词字典；system_router._infer_emotion_from_text 会通过
-# 下方 helper 把它们合并成扁平结构后做子串匹配。新增/调整某语言的词，直接改
-# 对应语种 block 即可，不必改 system_router。
-# 以下为数据。
+# Dictionaries below are organized by language; system_router._infer_emotion_from_text uses
+# helpers below to flatten them for substring matching. Add/change a language's words in
+# its block without editing system_router.
+# Data follows.
 
-# 各语种、各 emotion 的关键词（命中 +1 分）
+# Keywords per language and emotion (each match adds 1).
 #
-# zh 与 zh-TW 是两个独立的语种 block，不是同一份词表的两种写法。下面的表都会被
-# 拍平成一张跨语种的表后做子串匹配（见本文件末尾的 *_flat helper），所以匹配的是
-# 用户实际打出来的字，与界面语言无关：繁中使用者写「好開心」时，只有繁体写法在
-# 表里才会得分——`开心` 一条对他一个字都匹配不上。
+# zh and zh-TW are independent language blocks, not two spellings of the same table. Flatten
+# into one cross-language table before substring matching (see *_flat helpers at file end), matching
+# actual user text regardless of UI language. Traditional users typing '好開心' score only if Traditional spelling
+# exists in table; `开心` matches none of those characters.
 #
-# 两个 block 逐条对应（含两种写法相同的条目，如 `哈哈`），这样改一侧时另一侧该
-# 改什么一目了然；拍平时 dict.fromkeys 会把重复条目去掉，不会重复计分。
+# Pair blocks entry by entry, including identical spellings such as `哈哈`, so changes on one side clearly show
+# what to change on the other; dict.fromkeys removes duplicate entries during flattening, preventing duplicate scoring.
 EMOTION_KEYWORDS_BY_LANG = {
     'zh': {
         'happy': ('哈哈', '嘿嘿', '嘻嘻', '开心', '高兴', '喜欢', '太棒', '可爱', '好耶', '真好', '好开心', '爱你'),
         'sad': ('难过', '伤心', '委屈', '想哭', '要哭', '哭了', '呜呜', '遗憾', '失落', '沮丧', '低落', '心疼', '欺负', '最怕'),
         'angry': ('气死', '生气', '烦死', '烦人', '真烦', '心烦', '恼火', '可恶', '炸毛', '火大',
-                  # `气得直跺脚` 这一族此前一个都没收，`他气得直跺脚` 在主分支上就得不到分。
-                  # 之所以以前看着像对的，是因为 `学生气得` 的接缝里碰巧浮出个 `生气`。
+                  # The `气得直跺脚` family was previously absent, so `他气得直跺脚` scored nothing on main.
+                  # It previously seemed correct only because `学生气得` accidentally contains `生气` across the boundary.
                   '气炸', '气哭', '气得', '气坏', '气疯', '气愤'),
         'surprised': ('哇', '居然', '竟然', '不会吧', '啊这', '天哪', '真的假的', '怎么会'),
     },
@@ -408,8 +408,8 @@ EMOTION_KEYWORDS_BY_LANG = {
         'surprised': ('哇', '居然', '竟然', '不會吧', '啊這', '天哪', '真的假的', '怎麼會'),
     },
     'en': {
-        # 英文 keyword 在 _count_keyword_hits 里走 \b 词边界匹配，所以裸词
-        # `happy/sad/surprised` 不会被 `unhappy/unsurprised` 等反向情绪嵌入命中。
+        # English keywords use \b word boundaries in _count_keyword_hits, so bare
+        # `happy/sad/surprised` do not match opposite-emotion embeddings such as `unhappy/unsurprised`.
         'happy': ('haha', 'hehe', 'happy', 'glad', 'lovely', 'yay', 'awesome'),
         'sad': ('sad', 'upset', 'depressed', 'regret', 'heartbroken'),
         'angry': ('angry', 'furious', 'annoyed', 'irritated', 'infuriating', 'outraged'),
@@ -431,8 +431,8 @@ EMOTION_KEYWORDS_BY_LANG = {
         'happy': ('счастлив', 'рада', 'весело', 'люблю', 'милый'),
         'sad': ('грустно', 'печально', 'обидно', 'жаль', 'тоск', 'плак'),
         'angry': ('злюсь', 'бесит', 'раздраж', 'ненавиж', 'разозли'),
-        # `ого` (3 字符) 作为子串在所有 `-ого` 属格结尾词（`мирового/другого/много`）
-        # 里假阳，去掉。剩余 `ничего себе/внезапно/удив` 已能覆盖真惊讶表达。
+        # `ого` (3 characters) falsely matches all `-ого` genitive endings (`мирового/другого/много`),
+        # so remove it; remaining `ничего себе/внезапно/удив` cover genuine surprise.
         'surprised': ('ничего себе', 'внезапно', 'удив'),
     },
     'es': {
@@ -449,7 +449,7 @@ EMOTION_KEYWORDS_BY_LANG = {
     },
 }
 
-# 强烈攻击/敌意表达：命中后启发式给 angry 分数 ×2
+# Strong aggressive/hostile expressions: heuristic angry score ×2 on match.
 ANGRY_ATTACK_PATTERNS_BY_LANG = {
     'zh': ('气死', '真生气', '烦死了', '恼火', '可恶', '火大', '别烦我', '受不了', '闭嘴', '炸毛了', '气炸了'),
     'zh-TW': ('氣死', '真生氣', '煩死了', '惱火', '可惡', '火大', '別煩我', '受不了', '閉嘴', '炸毛了', '氣炸了'),
@@ -461,12 +461,12 @@ ANGRY_ATTACK_PATTERNS_BY_LANG = {
     'pt': ('cala a boca', 'vai embora', 'me deixa em paz', 'chega', 'para com isso'),
 }
 
-# 脆弱/受伤表达：命中后启发式给 sad 分数 ×2
+# Vulnerable/hurt expressions: heuristic sad score ×2 on match.
 SAD_VULNERABLE_PATTERNS_BY_LANG = {
     'zh': ('委屈', '想哭', '要哭', '哭了', '呜呜', '别欺负', '不要欺负', '欺负我',
            '不要这样对我', '别这样对我', '最怕', '怕你这样说', '心里难受', '好难过', '可怜'),
-    # `心裡` 不是 `心里` 的机械转换：台湾用字里表「内部」的是 `裡`，`心里` 会被读成
-    # 别的意思。这种台湾正字用法不能靠繁简对照表推出来。
+    # `心裡` is not a mechanical conversion of `心里`: Taiwan uses `裡` for 'inside'; `心里` reads
+    # differently. A Simplified/Traditional lookup table cannot infer such Taiwan orthography.
     'zh-TW': ('委屈', '想哭', '要哭', '哭了', '嗚嗚', '別欺負', '不要欺負', '欺負我',
               '不要這樣對我', '別這樣對我', '最怕', '怕你這樣說', '心裡難受', '好難過', '可憐'),
     'en': ('want to cry', 'feel hurt', 'feel awful', 'miss you so', 'broke my heart'),
@@ -477,7 +477,7 @@ SAD_VULNERABLE_PATTERNS_BY_LANG = {
     'pt': ('quero chorar', 'me machucou', 'me sinto magoado', 'me sinto magoada', 'partiu meu coração'),
 }
 
-# 撒娇/玩闹表达：命中后启发式给 happy 分数 +1（仅在没有 sad/angry 信号时）
+# Affectionate/playful expressions: heuristic happy score +1 on match (only without sad/angry signals).
 HAPPY_PLAYFUL_PATTERNS_BY_LANG = {
     'zh': ('哈哈', '嘿嘿', '嘻嘻', '贴贴', '撒娇', '可爱', '好耶'),
     'zh-TW': ('哈哈', '嘿嘿', '嘻嘻', '貼貼', '撒嬌', '可愛', '好耶'),
@@ -489,61 +489,61 @@ HAPPY_PLAYFUL_PATTERNS_BY_LANG = {
     'pt': ('haha', 'hehe', 'eba', 'que bom'),
 }
 
-# ⚠️ 这张表是**宽回看**（命中词前 14 字符内出现即算），所以只放「无论后面接什么
-# 都在否定它」的词。情态类复合否定（`不会 / 不再 / 不算 / 未必`）不能放进来：它们
-# 可以否定同一小句里**另一个**谓语 —— `我不会唱歌也很开心` 会被判成没有情绪。
-# 那几个词在 label 解析器的 EMOTION_NEGATION_PREFIXES_BY_LANG 里（那侧是相邻判定，
-# 不是宽回看），两张表的收词标准本来就不同。
+# Warning: this table uses **broad lookback** (within 14 characters before match), so include only words negating
+# the target regardless of following text. Exclude modal compound negatives (`不会 / 不再 / 不算 / 未必`): they
+# may negate **another** predicate in the clause; `我不会唱歌也很开心` would wrongly be classified emotionless.
+# Those words belong to label parser's EMOTION_NEGATION_PREFIXES_BY_LANG (adjacency checks rather than broad
+# lookback); the two tables intentionally use different inclusion criteria.
 #
-# 否定上下文回看 token：关键词命中前 N 字符内若出现这些 token，本次命中作废，
-# 避免 "我不生气 / not angry / 화 안 나 / не злюсь" 被误判为对应情绪。
+# Negation-context lookback tokens: appearances within N characters before keyword invalidate that match,
+# preventing false emotion detection for '我不生气 / not angry / 화 안 나 / не злюсь'.
 HEURISTIC_NEGATION_TOKENS_BY_LANG = {
-    # 多字否定 token：假阳率低，启用宽 lookback（关键词前 _HEURISTIC_NEGATION_LOOKBACK 字符内）。
-    # zh 这里收常见的 `不/没 + 程度副词` 模式，覆盖紧凑 lookback 抓不到的 2-3 字符间隔
-    # 否定（如 `不是很 X / 不怎么 X / 没那么 X`）。
-    # ⚠️ `并不 / 並不` 不在这里而在下面的情态表：它只否定紧跟着的那个谓语，
-    # 放进 14 字符宽窗口会把同一句里后半截的情绪一起灭掉
-    # （`我並不討厭而且覺得太棒` 实测整句无情绪）。
+    # Multi-character negations have low false positives; use broad lookback (_HEURISTIC_NEGATION_LOOKBACK characters before keyword).
+    # zh includes common `不/没 + degree adverb` patterns, covering 2–3-character-separated negations missed by tight lookback
+    # (such as `不是很 X / 不怎么 X / 没那么 X`).
+    # Warning: `并不 / 並不` belongs to the modal table below, negating only the immediately following predicate;
+    # a broad 14-character window would also erase later emotion in the same sentence
+    # (observed: `我並不討厭而且覺得太棒` classified entirely emotionless).
     'zh': ('不太', '不是很', '不算很', '不那么', '不怎么',
            '没那么', '没怎么', '没什么'),
     'zh-TW': ('不太', '不是很', '不算很', '不那麼', '不怎麼',
               '沒那麼', '沒怎麼', '沒什麼'),
-    # ⚠️ 不收 `without`：与 `sin / sem` 完全同类，是**介词**只否定自己的补语。
-    # `I am without doubt happy` 里被否定的是 `doubt` 不是 `happy`。补语开放，
-    # 加固定短语豁免堵不住（`without doubt` 只是其中一个）。
+    # Warning: exclude `without`; like `sin / sem`, it is a **preposition** negating only its complement.
+    # In `I am without doubt happy`, negation applies to `doubt`, not `happy`. Complements are open-ended,
+    # so fixed-phrase exemptions cannot solve it (`without doubt` is only one example).
     'en': ('not ', ' no ', 'never ', 'neither ', 'nor ',
            "don't", "doesn't", "didn't", "won't",
            "isn't", "aren't", "wasn't", "weren't", "can't", "cannot"),
     'ja': ('ない', 'ません', 'なくて'),
     'ko': ('안 ', '안은', '안이', '못 ', '않', '없'),
     'ru': ('не ', 'нет ', 'никогда'),
-    # ⚠️ 这张表和 EMOTION_NEGATION_WORDS_BY_LANG 必须同步收词：两张表各服务一条
-    # 管线（这张只给启发式读用户原文，那张只给 label parser 读模型标签）。只补一边
-    # 的后果是同一句话两条路径给相反答案 —— `ni triste ni feliz` 曾经 label 侧
-    # neutral、启发式侧 happy。
-    # ⚠️ 不收 `sin` / `sem`（＝without）：它们是**介词**，只否定自己的补语，
-    # `sin miedo y feliz`（无所畏惧而且开心）里被否定的是 `miedo` 不是 `feliz`。
-    # 要判对得做补语作用域分析，这不在本门的能力范围内 —— 加固定短语豁免也堵不住，
-    # 因为补语是开放的。宁可漏掉 `sin estar feliz`（＝主分支上的现状），
-    # 也不要把肯定句读成否定。
+    # Warning: synchronize additions with EMOTION_NEGATION_WORDS_BY_LANG: each table serves one
+    # pipeline (this heuristic reads user text; label parser reads model labels). Updating only one
+    # yields opposite answers for one sentence: `ni triste ni feliz` once gave label-parser
+    # neutral but heuristic happy.
+    # Warning: exclude `sin` / `sem` (=without); these **prepositions** negate only complements,
+    # so `sin miedo y feliz` ('fearless and happy') negates `miedo`, not `feliz`.
+    # Correct handling needs complement-scope analysis beyond this gate; fixed-phrase exemptions cannot cover
+    # open-ended complements. Prefer missing `sin estar feliz` (current main behavior)
+    # over interpreting affirmative sentences as negative.
     'es': ('no ', 'nunca ', 'jamás ', 'jamas ',
            'ni ', 'tampoco ', 'ninguno ', 'ningún ', 'ningun '),
     'pt': ('não ', 'nao ', 'nunca ', 'jamais ',
            'nem ', 'tampouco ', 'nenhum '),
 }
 
-# 情态复合否定：整词才是否定，且**只有紧贴情绪词时**才是在否定它。
-# 单独列一张表而不是并进上面的宽回看表 —— 那张表按 14 字符窗口搜索，
-# `我不会唱歌也很开心` 会被它把不相干的情绪词也灭掉（实测过，已回退）。
-# 判定方式：剥掉尾部程度副词后要求它压在情绪词前面。
+# Modal compound negations: the whole word negates, and **only immediately before emotion words**.
+# Separate from broad-lookback table, whose 14-character search
+# wrongly erases unrelated emotion in `我不会唱歌也很开心` (observed and reverted).
+# Strip trailing degree adverbs, then require adjacency before emotion word.
 HEURISTIC_MODAL_NEGATIONS_BY_LANG = {
     'zh': ('不会', '不算', '不再', '未必', '不至于', '算不上', '谈不上', '说不上',
            '没什么好', '没什么可', '有什么好', '没什么', '有什么', '并不', '并非',
-           # 裸 `没有`：紧凑窗口只有 2 字符，中间一夹程度副词（`我没有很开心`）就
-           # 看不到它了。这里剥完副词再判相邻，正好接住。
+           # Bare `没有`: tight window is only 2 characters, so intervening degree adverbs (`我没有很开心`)
+           # hide it. Strip adverbs before checking adjacency here to catch it.
            '没有', '并没有',
-           # `难以置信令人开心` 里的 `难以` 修饰的是 `置信` 不是 `开心` —— 与 `并不`
-           # 同理，无能力否定只作用在紧跟着的那个谓语上，放宽表会灭掉后面的情绪。
+           # `难以` in `难以置信令人开心` modifies `置信`, not `开心`; like `并不`,
+           # inability negation affects only the next predicate, so broad lookback would erase later emotion.
            '无法', '难以', '没办法', '没法', '并无', '毫无', '绝无',
            '不要', '不觉得', '不认为', '没觉得', '没有觉得', '没有在', '没有到'),
     'zh-TW': ('不會', '不算', '不再', '未必', '不至於', '算不上', '談不上', '說不上',
@@ -551,43 +551,43 @@ HEURISTIC_MODAL_NEGATIONS_BY_LANG = {
               '沒有', '並沒有',
               '無法', '難以', '沒辦法', '沒法', '並無', '毫無', '絕無',
               '不要', '不覺得', '不認為', '沒覺得', '沒有覺得', '沒有在', '沒有到'),
-    # `nada / nenhum` 作「一点也不」时是程度否定，只作用在**紧跟着的形容词**
-    # （`nada feliz`）；隔一个词就换了词性 —— `no hay nada más feliz que...`
-    # 里的 `nada` 是名词「什么都没有」，整句是最高级比较，说的正是很开心。
+    # `nada / nenhum` as 'not at all' negate degree only for the **immediately following adjective**
+    # (`nada feliz`); an intervening word changes the part of speech: in `no hay nada más feliz que...`,
+    # `nada` is the noun 'nothing', making a superlative comparison expressing strong happiness.
     'es': ('nada',),
     'pt': ('nada',),
 }
 
-# 紧凑否定 token：仅在命中关键词紧邻前若干字符（_HEURISTIC_TIGHT_NEGATION_LOOKBACK）
-# 内出现才算真否定。这是 zh 单字否定的特殊处理——`不/没/別/未` 等单字在中文里
-# 假阳率极高（`不错/不思议/不具合/不愧/不仅/不可思议` 等都不是否定），但作为否定
-# 又不可或缺；只要它紧邻情绪词（如 `不开心 / 不太烦`）就识别为真否定。
+# Tight negation tokens count only within a few characters immediately preceding the keyword
+# (_HEURISTIC_TIGHT_NEGATION_LOOKBACK). Special handling for single-character zh negations: `不/没/別/未`
+# have high false positives (`不错/不思议/不具合/不愧/不仅/不可思议` are not negations), but remain
+# essential as negators; accept when adjacent to emotion words (e.g. `不开心 / 不太烦`).
 HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG = {
-    # zh 删除单字 `莫`：`莫名开心 / 莫名生气 / 莫名其妙` 等是常用非否定表达，
-    # 而 `莫` 单字作真否定（`莫怪 / 莫管`）在现代汉语极罕见，留之假阳大于真阳。
+    # Remove single-character zh `莫`: `莫名开心 / 莫名生气 / 莫名其妙` are common nonnegative expressions,
+    # while actual negation (`莫怪 / 莫管`) is rare in modern Chinese; false positives exceed true positives.
     #
-    # 这张表原先把 `別 / 沒` 混在 zh 里，是全仓库唯一已经覆盖到繁体的地方。按语种
-    # 拆开只是让它和其它表一样对偶，拍平后的集合与拆之前完全相同（token 用
-    # `any(token in window)` 匹配，顺序不影响判定）。
+    # This table previously mixed `別 / 沒` into zh, the repository's sole Traditional coverage. Splitting by language
+    # merely makes it symmetric with other tables; the flattened set remains identical
+    # (`any(token in window)` matching is order-independent).
     'zh': ('不', '别', '没', '未', '勿'),
     'zh-TW': ('不', '別', '沒', '未', '勿'),
-    # ko: 韩语口语里 `안좋아 / 안슬퍼 / 안화나 / 못좋아` 这种句中连写否定常见。
-    # 单字 `안/못` 也会出现在 `안녕/안내/안전/안경/못이` 等非否定词组里，所以走紧凑
-    # lookback：仅在命中关键词紧邻前若干字符内才算否定。
+    # ko: colloquial Korean commonly joins negatives mid-sentence, such as `안좋아 / 안슬퍼 / 안화나 / 못좋아`.
+    # Single `안/못` also appear in nonnegative words `안녕/안내/안전/안경/못이`, so use tight
+    # lookback, counting negation only within a few immediately preceding keyword characters.
     'ko': ('안', '못'),
     'es': ('no',),
     'pt': ('não', 'nao'),
 }
 
-# 否定回看的非否定固定搭配白名单：window 中含这些短语时，把它们替换成空白后
-# 再做否定 token 匹配，避免 `not only / 不仅 / не только` 这类肯定结构里的 `not / 不 / не`
-# 被错误识别为真否定（`not only happy` → 应是 happy）。
+# Allowlist nonnegative fixed phrases during negation lookback: replace matching phrases in window with whitespace
+# before negation-token matching, avoiding false negation from `not / 不 / не` in affirmative `not only / 不仅 / не только`
+# (`not only happy` must remain happy).
 HEURISTIC_NEGATION_BLOCKLIST_BY_LANG = {
     'en': ('not only', 'no doubt', 'no wonder'),
-    # `别` 一族：`特别开心` 里的 `别` 紧邻情绪词，会被紧凑否定判成真否定，于是
-    # 「我今天特别开心」整句一个分都得不到。这些是含单字否定的常用词，不是否定。
-    # `有没有` 方向不同但同类：`有没有很开心` 是反问/感叹，语义正是很开心，而裸
-    # `没有` 在情态表里有真实职责（`我没有很开心`），所以只能从这一侧挡。
+    # `别` family: `别` directly precedes emotion in `特别开心`, so tight negation would wrongly negate it,
+    # giving '我今天特别开心' no score. These common words contain negator characters but are not negations.
+    # `有没有` differs in direction but is similar: `有没有很开心` is rhetorical/exclamatory happiness; bare
+    # `没有` is genuinely needed in the modal table (`我没有很开心`), so block false matches here.
     'zh': ('不仅', '不只', '不但', '不光', '有没有',
            '特别', '告别', '分别', '个别', '区别', '差别', '级别', '性别',
            '识别', '辨别', '送别', '离别', '道别', '差不多'),
@@ -599,25 +599,25 @@ HEURISTIC_NEGATION_BLOCKLIST_BY_LANG = {
     'pt': ('não só', 'nao so', 'não apenas', 'nao apenas'),
 }
 
-# 让步/转折连词：window 内出现这些词时，词后才算与命中关键词同小句的前文。
-# 用于阻断 "not X but Y / 不是 X 而是 Y" 这种对比句把前半的否定带到后半。
+# Concessive/adversative conjunctions: when present in window, only text following them shares the keyword's clause.
+# Prevent first-half negation leaking into the second half of contrasts such as 'not X but Y / 不是 X 而是 Y'.
 HEURISTIC_CONTRAST_CONJUNCTIONS_BY_LANG = {
     'zh': ('但', '但是', '不过', '然而', '可是', '而是'),
     'zh-TW': ('但', '但是', '不過', '然而', '可是', '而是'),
-    # 并列连词也算边界：`não cansado e feliz` 里被否定的是 `cansado`。只收拉丁 ——
-    # 中文的 `和/與` 常连接同一个否定的两个宾语（`不開心和難過`），当边界会读错。
+    # Coordinating conjunctions also mark boundaries: `não cansado e feliz` negates `cansado`. Latin only:
+    # Chinese `和/與` often joins objects sharing one negation (`不開心和難過`), so boundaries would misread it.
     'en': (' but ', ' however', ' yet ', ' though', ' instead', ' and '),
     'ja': ('けど', 'けれど', 'でも', 'しかし', 'だが'),
-    # ko: `하지만/그러나/근데/대신` 是独立连接词，但口语里更常见的对比是绑定词尾
-    # `-지만/-는데`（如 `슬프지 않지만 행복해`），这两个也加进来
+    # ko: `하지만/그러나/근데/대신` are independent conjunctions, but colloquial contrasts more often use bound endings
+    # `-지만/-는데` (e.g. `슬프지 않지만 행복해`); include both.
     'ko': ('하지만', '그러나', '근데', '대신', '지만', '는데'),
     'ru': (' но ', ' однако', ' зато', ' а '),
     'es': (' pero ', ' aunque ', ' sin embargo', ' en cambio', ' y '),
     'pt': (' mas ', ' porém', ' porem', ' embora ', ' no entanto', ' em vez disso', ' e '),
 }
 
-# 模型可能输出的 emotion label 别名/同义词，归一化到 canonical 5 类。
-# 'common' block 收的是 canonical 英文 label 本身及其常见英文同义词。
+# Model emotion-label aliases/synonyms normalize to five canonical classes.
+# 'common' includes canonical English labels and common English synonyms.
 EMOTION_LABEL_ALIASES_BY_LANG = {
     'common': {
         'happy': 'happy', 'happiness': 'happy', 'joy': 'happy', 'joyful': 'happy',
@@ -635,8 +635,8 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
         '惊讶': 'surprised', '震惊': 'surprised', '意外': 'surprised',
         '平静': 'neutral', '冷静': 'neutral', '中性': 'neutral', '普通': 'neutral',
     },
-    # 这张表读的是**模型输出**的 label，不是用户输入：拿到繁中 prompt 的模型会照着
-    # 繁体回答，所以少了这一 block，`驚訝` 会一路掉到 neutral。
+    # This table reads **model-output labels**, not user input. Models receiving Traditional prompts answer
+    # in Traditional too; without this block, `驚訝` would fall through to neutral.
     'zh-TW': {
         '開心': 'happy', '高興': 'happy', '興奮': 'happy', '快樂': 'happy',
         '難過': 'sad', '傷心': 'sad', '失落': 'sad', '委屈': 'sad',
@@ -694,13 +694,13 @@ def get_emotion_keywords_flat() -> dict:
     for lang_map in EMOTION_KEYWORDS_BY_LANG.values():
         for emotion, words in lang_map.items():
             merged[emotion] = merged.get(emotion, ()) + tuple(words)
-    # 跨语种去重：同一词条出现在多个语种块（如 en/pt 都收了 `haha`）时只保留一份，
-    # 否则启发式按词条逐一累加命中数会对同一段文本重复计分。
+    # Cross-language deduplication: retain one copy when a term appears in multiple blocks (e.g. `haha` in en/pt),
+    # or heuristic per-entry hit accumulation would score the same text repeatedly.
     return {emotion: tuple(dict.fromkeys(words)) for emotion, words in merged.items()}
 
 
 def _flatten_lang_tuples(by_lang: dict) -> tuple:
-    # dict.fromkeys 保序去重，理由同上：跨语种重复词条不能导致重复计分。
+    # dict.fromkeys deduplicates preserving order for the same reason: cross-language duplicates must not double-count.
     return tuple(dict.fromkeys(item for words in by_lang.values() for item in words))
 
 
@@ -741,33 +741,33 @@ def get_heuristic_contrast_conjunctions_flat() -> tuple:
 
 
 # ============================================================================
-# 模型 label 解析器的否定词表
+# Negation tables for model-label parser.
 # ============================================================================
-# 上面 EMOTION_LABEL_ALIASES_BY_LANG 是「哪些字面量算某个情绪」，这三张是它的
-# 反面：模型有时不照 5 个 canonical label 答，而是回一句描述（`{"emotion":
-# "沒有生氣"}`）。别名表按子串命中，所以命中点前后的否定成分必须先被识别出来，
-# 否则整句意思会被读反。
+# EMOTION_LABEL_ALIASES_BY_LANG above defines literals denoting emotions; these three tables handle
+# the converse: models sometimes answer with descriptions rather than five canonical labels (`{"emotion":
+# "沒有生氣"}`). Aliases match substrings, requiring detection of negation around matches first,
+# or the sentence's meaning is reversed.
 #
-# 三张表原先硬编码在 system_router/emotion.py 里，与本文件顶部注释声明的
-# 「多语言关键词/别名表统一在这里按语种维护」不一致；一并搬过来，形态与上面
-# 那些表相同（按语种 block + 拍平 helper）。
+# Previously hardcoded in system_router/emotion.py, these three tables conflicted with this file's stated
+# centralized language-organized keyword/alias maintenance; move them together into the same
+# per-language blocks + flattening-helper shape as above.
 
-# 前缀否定：出现在命中词**之前**（`不开心` / `not happy` / `не злюсь`）
+# Prefix negation occurs **before** matches (`不开心` / `not happy` / `не злюсь`).
 EMOTION_NEGATION_PREFIXES_BY_LANG = {
     'zh': ('不是', '并不', '并非', '不太', '没那么', '没有', '并没有',
            '不会', '不算', '不再', '未必', '不至于', '算不上', '谈不上', '说不上',
            '不怎么', '没怎么',
-           # 中间夹的不是程度副词时（`好 / 可 / 要 / 觉得 / 在 / 到`），剥离够不到，
-           # 所以整词收进来。⚠️ 不要改成把 `好` 加进程度副词表：`心情不好难过`
-           # 剥掉 `好` 会露出 `心情不`，反而把「心情不好，难过」判成否定。
+           # If intervening text is not degree adverbs (`好 / 可 / 要 / 觉得 / 在 / 到`), stripping cannot reach it,
+           # so include whole words. Warning: do not add `好` as a degree adverb: stripping it in `心情不好难过`
+           # exposes `心情不`, wrongly treating 'in a bad mood, sad' as negated.
            '没什么好', '没什么可', '有什么好', '不要', '不觉得', '不认为',
            '没觉得', '没有觉得', '没有在', '没有到',
-           # 单字 `无` 要求剩下整段就是别名，够不到 `无法开心` 里的 `法`
+           # Single `无` requires the entire remainder to be an alias, missing `法` in `无法开心`.
            '无法', '难以', '没办法', '没法',
            '不', '没', '无', '非', '别'),
-    # 繁体这一 block 是必需的而不是锦上添花：别名表加了繁体 label 之后，
-    # `沒有生氣` 会命中 `生氣` 子串，而这里若只有简体 `没有`，否定就识别不到，
-    # 结果把「没有生气」判成 angry —— 比加繁体别名之前更糟。
+    # Traditional block is necessary, not optional: with Traditional aliases,
+    # `沒有生氣` matches `生氣`, but Simplified-only `没有` would not recognize negation,
+    # classifying 'not angry' as angry, worse than before adding Traditional aliases.
     'zh-TW': ('不是', '並不', '並非', '不太', '沒那麼', '沒有', '並沒有',
               '不會', '不算', '不再', '未必', '不至於', '算不上', '談不上', '說不上',
               '不怎麼', '沒怎麼',
@@ -775,45 +775,45 @@ EMOTION_NEGATION_PREFIXES_BY_LANG = {
               '沒覺得', '沒有覺得', '沒有在', '沒有到',
               '無法', '難以', '沒辦法', '沒法',
               '不', '沒', '無', '非', '別'),
-    # `nada / nenhum` 放前缀表而不是独立否定词表：这里是**相邻**判定（否定必须整个
-    # 就是第一个词，后面紧跟别名），正好把 `nada feliz`（一点也不开心）和
-    # `nada más feliz que`（最高级比较，说的是很开心）区分开 —— 后者中间隔着 `más`。
+    # Put `nada / nenhum` in prefixes, not standalone negations: **adjacency** requires whole negator
+    # as the first word immediately followed by alias, distinguishing `nada feliz` ('not happy at all') from
+    # `nada más feliz que` (superlative, very happy), where `más` intervenes.
     'es': ('nada',),
     'pt': ('nada',),
     'ko': ('안', '아니', '못'),
     'ru': ('не', 'нет', 'никогда'),
 }
 
-# 关键词的假朋友：字面包含情绪关键词、但整词根本不是那个情绪的固定搭配。
-# 与否定无关 —— 这些句子里没有任何否定成分，是关键词本身一词多义。
+# Keyword false friends: fixed phrases contain emotion keywords but do not express those emotions as whole words.
+# Unrelated to negation: these sentences contain no negator; the keyword itself is polysemous.
 #
-# `生氣` 在繁中同时是「发怒」和「生机、活力」。本 PR 把它加进 angry 关键词表之后，
-# `這幅畫充滿生氣`（这幅画充满生机）被判成 angry。启发式在没有模型结果时是唯一
-# 的情绪来源，判成 angry 会直接影响角色反应。
+# Traditional `生氣` means both anger and vitality. After adding it to angry keywords,
+# `這幅畫充滿生氣` ('this painting is full of life') became angry. Heuristics are the sole
+# emotion source without model results, so angry directly changes character reactions.
 #
-# ⚠️ 故意**不收** `有生氣`：台湾华语的 `有 + 动词` 是完成体（`他有生氣` ＝ 他生气了），
-# 收进来会把真正的怒气抹掉。代价是 `活潑有生氣` 这类书面语仍会误判 —— 这个方向
-# 选错的代价更小，而且这个 PR 服务的正是繁中使用者。
+# Warning: deliberately **exclude** `有生氣`: Taiwanese Mandarin `有 + verb` marks perfective (`他有生氣` = he got angry),
+# and including it would erase genuine anger. Written `活潑有生氣` still misclassifies, but this direction
+# is less harmful, and Traditional users are this PR's audience.
 EMOTION_KEYWORD_FALSE_FRIENDS_BY_LANG = {
-    # 第二类假朋友：词本身不是情绪词，但它和**后面那个词**拼接时跨边界拼出了
-    # 关键词 —— `困難` + `過程` 中间浮出一个 `難過`。子串匹配没有词边界概念，
-    # 只能把左边那个词整个剥掉。
-    # ⚠️ 收左词的**反向风险**：剥掉的那个词若能出现在**真**关键词前面，就会把真
-    # 关键词的头一起吃掉。`為難` 撤了 —— `因為` + `難過` 的接缝里也有它，
-    # 剥掉就把 `我因為難過不想說話` 读没了；`苦難` 同理（`痛苦難過`）。
-    # 留下的四条找不到常用词以 `困/艱/災/劫` 结尾再接 `難過`。
+    # Second false-friend class: a word itself is not emotional, but joining it to the **next word** creates
+    # a cross-boundary keyword: `困難` + `過程` contains `難過`. Substring matching has no word boundaries,
+    # so remove the complete left word.
+    # Warning: **reverse risk** of left-word removal: if that word can precede a **real** keyword, stripping also eats
+    # its beginning. Removed `為難`: it also spans `因為` + `難過`,
+    # so stripping erases `我因為難過不想說話`; likewise `苦難` (`痛苦難過`).
+    # The remaining four have no common words ending in `困/艱/災/劫` before `難過`.
     'zh': ('充满生气', '生气勃勃', '生气蓬勃', '毫无生气', '了无生气', '死气沉沉',
            '困难', '艰难', '灾难', '劫难',
-           # `X生` + `气Y`：学生+气质 / 陌生+气息 / 发生+气爆 / 产生+气泡。
-           # `生` 和 `气` 都是高频字，这是开放叉乘，只能从左词这侧收。
-           # ⚠️ 逐条做过反向碰撞检查：`一生/先生/人生/医生` 撤掉 —— `他一生气就摔东西`
-           # `他先生气再说话` `那人生气了` `那医生气坏了` 里，左边那个字是独立成分，
-           # 剥掉整个词就把真怒气吃了。留下的这些找不到「单字 + 生气」的常用读法。
+           # `X生` + `气Y`: 学生+气质 / 陌生+气息 / 发生+气爆 / 产生+气泡.
+           # `生` and `气` are frequent characters, creating an open cross-product; collect left words only.
+           # Warning: reverse-collision checked individually; remove `一生/先生/人生/医生`: in `他一生气就摔东西`,
+           # `他先生气再说话`, `那人生气了`, `那医生气坏了`, the left character is independent,
+           # so stripping the whole word erases real anger. Remaining entries have no common single-character + 生气 reading.
            '学生', '陌生', '发生', '产生', '天生', '卫生',
            '花生', '养生', '野生', '出生', '终生', '毕生',
-           # 新收的 `气得/气坏` 把接缝挪到了另一侧：`语气`+`得体`、`口气`+`得罪`、
-           # `天气`+`得看`、`空气`+`坏了`。这四个都过了反向检查（`语/口/天/空`
-           # 单字接不上 `气得`）；`脾气` 故意不收 —— `他脾气坏` 本来就是怒气。
+           # Newly added `气得/气坏` shifts collisions to the other side: `语气`+`得体`, `口气`+`得罪`,
+           # `天气`+`得看`, `空气`+`坏了`. All four passed reverse checks (`语/口/天/空`
+           # cannot independently precede `气得`); deliberately exclude `脾气`, since `他脾气坏` really expresses anger.
            '语气', '口气', '天气', '空气'),
     'zh-TW': ('充滿生氣', '生氣勃勃', '生氣蓬勃', '毫無生氣', '了無生氣', '死氣沉沉',
               '困難', '艱難', '災難', '劫難',
@@ -823,18 +823,18 @@ EMOTION_KEYWORD_FALSE_FRIENDS_BY_LANG = {
 }
 
 
-# 独立否定词：按 token 匹配，不做子串
+# Standalone negations: match tokens, not substrings.
 EMOTION_NEGATION_WORDS_BY_LANG = {
-    # 缩写形式要单列：tokenizer 现在保留撇号，但 `isnt` 这类无撇号写法也收。
-    # `without` 与 `sin / sem` 同类，见上面宽回看表的说明。
+    # List contractions separately: tokenizer now retains apostrophes, but include apostrophe-free forms such as `isnt` too.
+    # `without` is like `sin / sem`; see broad-lookback explanation above.
     'en': ('not', 'no', 'never', 'neither', 'nor',
            "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't",
            "won't", "can't", 'cannot', 'isnt', 'arent', 'wasnt', 'werent', 'dont', 'doesnt', 'didnt',
            'wont', 'cant'),
-    # 西语此前是蹭英文的 `no` 才碰巧对，葡语一个都没有。
-    # ⚠️ 这张表只喂 label parser，上面的 HEURISTIC_NEGATION_TOKENS_BY_LANG 只喂启发式。
-    # 两边收词口径必须一致，否则同一句话两条管线给相反答案。
-    # `sin` / `sem` 同上：介词只否定补语，不收。
+    # Spanish previously worked accidentally via English `no`; Portuguese had none.
+    # Warning: this table serves label parser only, while HEURISTIC_NEGATION_TOKENS_BY_LANG serves heuristics only.
+    # Keep inclusion criteria synchronized, or the same sentence yields opposite answers across pipelines.
+    # As above, exclude `sin` / `sem`: prepositions negate only complements.
     'es': ('no', 'nunca', 'jamás', 'jamas', 'ni', 'tampoco',
            'ninguno', 'ningún', 'ningun'),
     'pt': ('não', 'nao', 'nunca', 'jamais', 'nem',
@@ -843,15 +843,15 @@ EMOTION_NEGATION_WORDS_BY_LANG = {
     'ru': ('не', 'нет', 'никогда'),
 }
 
-# 程度副词：夹在否定词和情绪词之间的成分（`不怎麼開心` 里的 `怎麼`）。
+# Degree adverbs between negation and emotion (e.g. `怎麼` in `不怎麼開心`).
 #
-# 英文那条路径按 token 回看三个词，所以 `not very happy` 天然认得；中文压掉标点
-# 后是一整串，没有词边界，回看窗口只能看到 `不怎麼` 这样的串，`endswith('不')`
-# 就为假 —— 结果 `不怎麼開心` 被判成 happy，意思正好反了。剥掉尾部的程度副词再
-# 判否定，就是中文这一侧的等价物。
+# English token-based lookback spans three words, naturally recognizing `not very happy`; Chinese without punctuation
+# is one string without word boundaries. A window sees strings such as `不怎麼`, so `endswith('不')`
+# is false, incorrectly labeling `不怎麼開心` happy, reversing meaning. Stripping trailing degree adverbs before
+# negation checks is the Chinese counterpart.
 #
-# 副作用是对的那种：`特別` 本身就是程度副词，列进来之后 `特別開心` 的窗口被剥空，
-# 不再因为单字 `別` 命中而被误判成否定。
+# Desirable side effect: `特別` is itself a degree adverb; adding it strips `特別開心`'s window empty,
+# avoiding false negation from single-character `別`.
 EMOTION_NEGATION_DEGREE_ADVERBS_BY_LANG = {
     'zh': ('怎么', '那么', '什么', '这么', '那样', '非常', '特别', '十分', '相当',
            '比较', '有点', '有些', '真的', '真正', '超级', '一直', '很', '太', '超',
@@ -863,13 +863,13 @@ EMOTION_NEGATION_DEGREE_ADVERBS_BY_LANG = {
               '更', '最', '真'),
 }
 
-# 后缀否定：韩语特有——否定绑定在词尾（`슬프지 않아`），其余语种没有对应形态
-# 后缀否定的例外：这些串以某个后缀条目**开头**，但整体不是否定。
-# `ないし` ＝「或者」，`悲しいないし平穏` 是并列不是否定。子串匹配分不出来，
-# 只能在命中后回头看紧跟的那几个字。
+# Suffix negation: Korean-specific bound endings (`슬프지 않아`); other languages lack corresponding forms.
+# Suffix exceptions: these strings **start** with suffix entries but are not negation overall.
+# `ないし` means 'or'; `悲しいないし平穏` coordinates, not negates. Substring matching cannot distinguish,
+# so inspect immediately following characters after a match.
 EMOTION_NEGATION_SUFFIX_EXCEPTIONS_BY_LANG = {
-    # `開心不了解你為什麼生氣` 里的 `不了` 属于 `不了解`，不是「開心不了」。
-    # 这条尤其要挡：否定掉 `開心` 之后赢的是同句里的 `生氣`，答出的是相反情绪。
+    # `不了` in `開心不了解你為什麼生氣` belongs to `不了解`, not 'unable to be happy'.
+    # Especially important: negating `開心` leaves `生氣` winning in the same sentence, producing the opposite emotion.
     'zh': ('不了解', '不了了之'),
     'zh-TW': ('不了解', '不了了之'),
     'ja': ('ないし', 'ないしは'),
@@ -877,23 +877,23 @@ EMOTION_NEGATION_SUFFIX_EXCEPTIONS_BY_LANG = {
 
 
 EMOTION_NEGATION_SUFFIXES_BY_LANG = {
-    # 中文的后置否定：否定跟在情绪词**后面**（`開心不起來`）。这一支要求它前面
-    # 那段整个看起来就是个别名，所以不会牵连同小句里别的成分。
-    # `不了` 是动补式（`开心不了` ＝ 开心不起来）；`才怪 / 个屁 / 个头` 是口语后置
-    # 反驳。都要求紧贴情绪词，所以不会牵连同句里别的成分。
+    # Chinese postposed negation follows **after** emotion (`開心不起來`). Require the entire preceding
+    # span to look like an alias, avoiding effects on other components in the clause.
+    # `不了` is a verb-complement construction (`开心不了` = unable to feel happy); `才怪 / 个屁 / 个头` are colloquial trailing
+    # rebuttals. All require adjacency to emotion, leaving other clause components unaffected.
     'zh': ('不起来', '不下去', '不出来', '不了', '才怪', '个屁', '个头'),
     'zh-TW': ('不起來', '不下去', '不出來', '不了', '才怪', '個屁', '個頭'),
-    # 日语的否定是后置假名。本 PR 把 `興奮 / 憤怒 / 傷心 / 可愛` 这些**中日同形**
-    # 汉字加进繁中表之后，日语句子第一次能命中别名，就落进了这个洞。
-    # ⚠️ `ない` 很宽：日语里有非否定的 `切ない / 情けない / もったいない`。目前
-    # 别名表里没有这些词所以不冲突；将来若加，它会被自己的 `ない` 灭掉。
-    # 另外 `_has_heuristic_negation_after` 是从关键词末尾紧贴锚定的，所以
-    # `可愛` 后面跟的是 `くない` 而不是 `ない` —— 两个都要收。
-    # ⚠️ 逐匹配那条判定要求后缀**紧贴**别名（从别名末尾 `startswith`），所以丁宁体
-    # 不能只收结尾的 `ません` —— `興奮していません` 里别名后面接的整段是
-    # `していません`，中间隔着的 `してい` 不在表里就一个都对不上。复合形态要整条收。
-    # 反过来，只有**别名能直接接**的形态才值得收：动词 te 形（`ていません` 等）这里
-    # 一条都没有，因为别名表里没有能接它的词。每条都用删除变异验过是活的。
+    # Japanese negation is trailing kana. Adding **identical Chinese/Japanese kanji** `興奮 / 憤怒 / 傷心 / 可愛`
+    # to Traditional aliases allowed Japanese sentences to match for the first time, exposing this gap.
+    # Warning: `ない` is broad; Japanese has nonnegative `切ない / 情けない / もったいない`. Currently
+    # aliases omit them, so no conflict, but future inclusion would negate them with their own `ない`.
+    # Also `_has_heuristic_negation_after` anchors immediately at keyword end, so
+    # `可愛` is followed by `くない`, not `ない`; include both.
+    # Warning: per-match suffix must be **adjacent** to alias (startswith from alias end), so polite forms
+    # cannot include only final `ません`: after the alias in `興奮していません`, the whole suffix is
+    # `していません`; without intervening `してい` in table nothing matches. Include full composite forms.
+    # Conversely include only forms that **can follow aliases directly**: no verb te-forms (`ていません`, etc.)
+    # appear here because no aliases accept them. Deletion mutations verified each entry is active.
     'ja': ('くない', 'くなかった', 'じゃない', 'ではない', 'じゃなかった',
            'ではありません', 'じゃありません',
            'くありません', 'くありませんでした',
@@ -902,11 +902,11 @@ EMOTION_NEGATION_SUFFIXES_BY_LANG = {
            'しなかった', 'していなかった', 'してなかった',
            'していません', 'してません', 'しておりません', 'しません',
            'しませんでした', 'していませんでした', 'せず',
-           # て形中止与助词插入型：`幸せじゃなくて` / `意外でもない` —— 这些都还是
-           # 紧贴别名的，补表就能覆盖。
+           # Te-form continuation and inserted particles: `幸せじゃなくて` / `意外でもない` remain
+           # adjacent to aliases, so table additions cover them.
            'じゃなくて', 'くなくて', 'ではなく', 'しなくて',
            'でもない', 'くもない', 'くはない',
-           # 形式名词否定：`嬉しいわけじゃない` / `腹が立つことはない`
+           # Formal-noun negation: `嬉しいわけじゃない` / `腹が立つことはない`.
            'わけじゃない', 'わけではない', 'ことはない', 'はずがない',
            'ません', 'ない'),
     'ko': ('지 않', '지않', '지 않아', '지않아', '지 않다', '지않다', '지 않음', '지않음',

@@ -75,8 +75,8 @@ from ._shared import _as_bool, logger
 from .json_update import update_json_config
 
 
-# 启动期迁移的写盘重试：Windows 上 os.replace 会被杀软扫描短暂占用而抛
-# PermissionError(WinError 5)，一次就放弃会让旧端口留到下次启动。
+# Startup migration write retries: Windows os.replace can encounter transient antivirus sharing locks and raise
+# PermissionError(WinError 5); abandoning after one attempt leaves old ports until the next startup.
 _OPENCLAW_MIGRATION_ATTEMPTS = 3
 _OPENCLAW_MIGRATION_RETRY_DELAY_S = 0.1
 
@@ -86,13 +86,13 @@ from utils.http.url import same_endpoint
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
 
-    # 背景探测循环的失败退避：开机自启动时本程序常跑在网络栈就绪之前，首探必超时。
-    # Steam 缺席的机器上 IP 是唯一判据，永久放弃会把整台机器锁死国内，而网络可能
-    # 几十分钟后才好（用户开机后才连 WiFi），故不设次数上限，只指数退避到封顶。
+    # Background probe failure backoff: autostart often precedes network-stack readiness, guaranteeing an initial timeout.
+    # On machines without Steam, IP is the only criterion; permanent abandonment would lock the machine to domestic routing even if networking
+    # recovers minutes later (e.g. user connects WiFi after boot). Use unlimited retries with capped exponential backoff.
     _IP_CHECK_RETRY_BASE_S = 30.0
     _IP_CHECK_RETRY_MAX_S = 600.0
-    # 指数先于乘法封顶：不封的话长期离线攒够失败次数后 float * (2**巨大整数) 会抛
-    # OverflowError 而非溢出成 inf。2**32 * base 已远超封顶，截在这里无损。
+    # Cap the exponent before multiplication: after prolonged offline failures, float * (2**huge integer) raises
+    # OverflowError rather than becoming inf. 2**32 * base already exceeds the cap, so truncating here loses nothing.
     _IP_CHECK_MAX_EXPONENT = 32
 
     @classmethod
@@ -124,14 +124,14 @@ class CoreConfigMixin:
 
     # --- Core config helpers ---
 
-    # 原始配置里只有 lanlan.tech 会被区域改写；lanlan.app 只在「循环复查自己读到的
-    # 已改写快照」时才算数。两者不能混：把 .app 也算进原始配置的判据，会让显式配了
-    # lanlan.app 的自配用户被当成免费路由而白白探测 IP（不变量 #2）。
+    # Only lanlan.tech in original configuration is region-rewritten; lanlan.app counts only when the loop rechecks
+    # its own rewritten snapshot. Do not conflate these: treating .app as eligible original configuration makes users explicitly configuring
+    # lanlan.app look like free-route users and needlessly probes their IP (invariant #2).
     _REGION_HOSTS_RAW = ('lanlan.tech',)
     _REGION_HOSTS_ADJUSTED = ('lanlan.tech', 'lanlan.app')
 
-    # 文本类槽位 → 服务商 profile 里对应档位的模型字段。omni/tts 不在表里：它们的模型
-    # 不是 chat 档位，由核心 API / TTS 链路各自决定。
+    # Text slots map to corresponding tier model fields in provider profiles. omni/tts are excluded because their models
+    # are not chat tiers; core API / TTS paths choose them independently.
     _SLOT_PROFILE_MODEL_KEYS = {
         'conversation': 'CONVERSATION_MODEL',
         'summary': 'SUMMARY_MODEL',
@@ -212,17 +212,17 @@ class CoreConfigMixin:
                 )
                 if last:
                     return False
-                # Windows: os.replace 撞上杀软/资源管理器占用会抛 PermissionError(WinError 5)，
-                # 扫描通常几十毫秒内结束，短暂退避后重试即可越过。POSIX 的 rename(2) 不受此限，
-                # 这里的重试对它是无害空转。
+                # Windows: antivirus/Explorer sharing locks can make os.replace raise PermissionError(WinError 5).
+                # Scans typically finish within tens of milliseconds, so short backoff/retry succeeds. POSIX rename(2) has no such restriction;
+                # these retries are harmless there.
                 time.sleep(_OPENCLAW_MIGRATION_RETRY_DELAY_S * (attempt + 1))
                 continue
             except Exception as exc:
-                # 文件损坏 / 顶层不是对象 / 写栅栏拒写：重试也不会变，原样保留文件。
+                # Corrupt files / non-object top-level values / write-fence rejection will not change on retry; preserve files unchanged.
                 from utils.cloudsave_runtime import MaintenanceModeError
 
                 if isinstance(exc, MaintenanceModeError):
-                    # 维护模式下启动（云存档恢复进行中）是预期情形，读路径仍会在内存里归一化。
+                    # Startup during maintenance mode (cloudsave restoration) is expected; readers still normalize in memory.
                     logger.debug("维护模式下跳过 openclawUrl 8088 迁移: %s", exc)
                     return False
                 logger.warning("跳过 openclawUrl 8088 迁移（core_config.json 不可改写）: %s", exc)
@@ -281,17 +281,17 @@ class CoreConfigMixin:
             livestream = is_livestream_active()
             livestream_prefix = get_livestream_config()['server_prefix'] if livestream else ''
         except Exception:
-            # 读不到 livestream 配置时按「未启用」处理：那只会让判定更保守
-            # （不排除任何 URL），不会漏掉需要区域判定的路由。
+            # Treat unreadable livestream configuration as disabled, making eligibility more conservative
+            # (exclude no URLs), never missing routes needing region selection.
             livestream, livestream_prefix = False, ''
 
         for key, value in (config or {}).items():
             if not (key.endswith('_URL') and isinstance(value, str)):
                 continue
-            # AGENT_MODEL_URL 永不参与区域改写（free-agent-model 固定 CN 入口，
-            # 见 _normalize_agent_url 与改写循环里的豁免），区域判定对它零作用
-            # ——把它算进「需要区域」会在 core/assist 皆非免费时为一个不会被改
-            # 写的 URL 启动探测，纯暴露 IP（不变量 #2）。
+            # AGENT_MODEL_URL never undergoes region rewriting (free-agent-model uses a fixed CN endpoint;
+            # see _normalize_agent_url and the rewrite-loop exemption), so region selection has no effect on it.
+            # Including it as needing region would start probing an unrewritten URL when neither core nor assist is free,
+            # exposing IP pointlessly (invariant #2).
             if key == 'AGENT_MODEL_URL':
                 continue
             try:
@@ -299,23 +299,23 @@ class CoreConfigMixin:
                 host = (parsed.hostname or '').lower()
                 path = parsed.path or ''
             except Exception:
-                # URL 解析不了 → 不可能是我们那两个官方 host，按「不需要区域」跳过。
-                # 保守方向正确：宁可不探测，也不为一个畸形 URL 暴露用户 IP。
+                # Unparseable URLs cannot be either official host; skip as not needing region.
+                # Correct conservative direction: avoid probing rather than exposing IP for malformed URLs.
                 continue
-            # 按 hostname 判而不是子串包含：自配用户把 URL 写成
-            # https://custom.example/v1/lanlan.tech 时，子串检查会把它误当官方免费
-            # 路由并因此探测 IP——纯属白白暴露。
+            # Match hostname, not substrings: a custom URL such as
+            # https://custom.example/v1/lanlan.tech would otherwise be mistaken for an official free
+            # route and trigger entirely needless IP exposure.
             #
-            # 两个 host 都要算：本函数既用于 get_core_config 的原始配置（此时是
-            # lanlan.tech），也用于探测循环复查资格时读到的**已改写**快照（判海外
-            # 后是 lanlan.app）。只认 lanlan.tech 会让「Steam 判海外 + IP 未定」的
-            # 用户在第一次失败后就被判定为「不再需要区域」而停掉探测。
+            # Include both hosts: this function handles original get_core_config configuration (lanlan.tech)
+            # and rewritten snapshots read by probe-loop eligibility checks (lanlan.app after overseas
+            # classification). Recognizing only lanlan.tech would stop probing after the first failure for users
+            # classified overseas by Steam while IP remains undecided, incorrectly deciding region selection is no longer needed.
             if not any(host == h or host.endswith('.' + h) for h in hosts):
                 continue
-            # 该 URL 会被 livestream 前缀接管时用不到区域判定——但必须确认派生**真能
-            # 成功**再排除：server_prefix 非空却畸形（比如缺 scheme 的
-            # "localhost:8080/tok"）时 _derive_livestream_url 会返回空串、回落到区域
-            # 改写，此时若已判定「不需要区域」，海外用户就被钉在 lanlan.tech 了。
+            # URLs overridden by a livestream prefix need no region selection, but confirm derivation **actually succeeds**
+            # before excluding them: a nonempty malformed server_prefix (e.g. missing scheme in
+            # "localhost:8080/tok") makes _derive_livestream_url return empty and fall back to region
+            # rewriting; incorrectly declaring no need for region would pin overseas users to lanlan.tech.
             if livestream and path in cls._LIVESTREAM_DERIVE_PATHS:
                 if cls._derive_livestream_url(value, livestream_prefix):
                     continue
@@ -330,7 +330,7 @@ class CoreConfigMixin:
             "http://ip-api.com/json/?fields=countryCode",
             headers={"User-Agent": "Mozilla/5.0"},
         )
-        # 显式禁用代理，避免探测到代理服务器所在国家而非用户真实 IP 所在地。
+        # Explicitly disable proxies so probing detects the user's real IP location, not the proxy server's country.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(req, timeout=3) as resp:
             data = json.loads(resp.read().decode())
@@ -354,11 +354,11 @@ class CoreConfigMixin:
         failures = 0
         try:
             while ConfigManager._ip_check_cache is None:
-                # 资格复查放在「发请求之前」而不是之后：用户可能在退避期间切走免费
-                # 线路（改用自配 API），放在之后会让循环醒来先白敲一次 ip-api.com
-                # 才收工——那一次正是本该省掉的 IP 暴露。首轮跳过：调用方刚刚才据
-                # needs_region 授权过，没必要再读一次配置。判据走共享的
-                # _config_needs_region，不在这里另立一套（不变量 #2）。
+                # Recheck eligibility **before** the request: users may leave free routing for custom APIs during backoff.
+                # Checking afterward would make the loop wake and needlessly contact ip-api.com once
+                # before stopping, exposing precisely the IP it should protect. Skip the first recheck: the caller just
+                # authorized via needs_region, so rereading configuration is unnecessary. Use shared
+                # _config_needs_region instead of defining another criterion here (invariant #2).
                 if failures and not ConfigManager._free_route_still_needs_region():
                     print("[GeoIP] free route no longer selected, stopping probe", file=sys.stderr)
                     return
@@ -372,16 +372,16 @@ class CoreConfigMixin:
                 except Exception as e:
                     print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
                 finally:
-                    # 退避期间不算「在飞」：此时不可能有结论到达，等待方据此直接跳过
-                    # join，免得每个会话白付一次 join 超时（见 join_ip_probe）。
-                    # 例外：wake 已 set（kick 恰落在本次尝试期间）时保留标记——循环
-                    # 马上会消费这次唤醒立即重试，但要先做一轮资格复查（读盘）才会
-                    # 再次置位；在这个滚动窗口里清掉标记，会话 join 会把被刻意唤醒
-                    # 的重试误判成普通退避而放弃。若资格复查判收工或 stopping 退出，
-                    # outer finally 兜底清位，不会悬挂。
-                    # 「检查 wake + 清位」在 _geo_probe_lock 内，与 _kick_ip_probe
-                    # 的两步写互斥——无锁时 kick 的 in_flight 预置与 wake 置位之间
-                    # 若恰被本 finally 插进来，会读到 wake 未置而误清刚预置的标记。
+                    # Backoff is not in-flight: no result can arrive then, so waiters skip join,
+                    # avoiding a needless join timeout for each session (see join_ip_probe).
+                    # Exception: retain the flag when wake is already set (kick arrived during this attempt): the loop
+                    # immediately consumes the wake and retries, but first performs eligibility rechecking (disk read) before
+                    # setting the flag again. Clearing it during this rolling window makes session joins mistake deliberately awakened
+                    # retries for ordinary backoff and give up. If eligibility checks finish probing or stopping exits,
+                    # outer finally clears the flag, leaving no stale state.
+                    # Checking wake and clearing the flag occur under _geo_probe_lock, excluding _kick_ip_probe's
+                    # two writes. Without locking, this finally could intervene between kick's in_flight preset and wake set,
+                    # observe unset wake, and wrongly clear the newly preset flag.
                     with ConfigManager._geo_probe_lock:
                         if not ConfigManager._ip_probe_wake.is_set():
                             ConfigManager._ip_probe_in_flight.clear()
@@ -389,11 +389,11 @@ class CoreConfigMixin:
                 failures += 1
                 wait = ConfigManager._ip_check_backoff_s(failures)
                 print(f"[GeoIP] HTTP IP check will retry in {wait:.0f}s", file=sys.stderr)
-                # 可中断退避。唤醒有两种含义，靠 _ip_probe_stopping 区分：
-                #   stopping=True  → shutdown / 测试清理，干净退出；
-                #   stopping=False → 「别等了，现在就重试」（启动预热用，见
-                #                     _kick_ip_probe），跳过剩余退避进入下一轮。
-                # 生产正常运行时两者都不发生，行为等同 time.sleep(wait)。
+                # Interruptible backoff. _ip_probe_stopping distinguishes two wake meanings:
+                #   stopping=True -> shutdown / test cleanup; exit cleanly;
+                #   stopping=False -> retry now without waiting (startup warmup; see
+                #                     _kick_ip_probe), skipping remaining backoff for the next iteration.
+                # Neither occurs in normal production operation, matching time.sleep(wait).
                 if ConfigManager._ip_probe_wake.wait(wait):
                     if ConfigManager._ip_probe_stopping:
                         return
@@ -408,18 +408,18 @@ class CoreConfigMixin:
 
         try:
             cfg = get_config_manager().get_core_config() or {}
-            # 先看**路由选择**：这些字段不会被区域改写，所以能区分「免费线路被改写成
-            # lanlan.app」和「用户自己就把自配端点配在 lanlan.app」。只靠 URL host 判
-            # 会把后者也当成免费路由，用户切走了却还在敲 ip-api.com。
+            # Check **route selection** first: these fields are never region-rewritten, distinguishing free routing rewritten to
+            # lanlan.app from users explicitly choosing lanlan.app for custom endpoints. Host-only checks
+            # misclassify the latter as free routing and keep contacting ip-api.com after users switch away.
             if not ConfigManager._any_free_provider(cfg):
                 return False
-            # 仍是免费路由：再确认确实有 URL 需要区域判定（livestream 可能已全接管）。
-            # 这里读到的是**已改写**的快照，故用 ADJUSTED 集合。
+            # Still free routing: confirm some URL actually needs region selection (livestream may override them all).
+            # This snapshot is **already rewritten**, so use the ADJUSTED set.
             return ConfigManager._config_needs_region(
                 cfg, ConfigManager._REGION_HOSTS_ADJUSTED,
             )
         except Exception:
-            return True    # 读不到配置时保守continue，别因为一次读失败放弃探测
+            return True    # Conservatively continue on unreadable configuration rather than abandoning probing after one read failure.
 
     @staticmethod
     def _ensure_ip_probe_started():
@@ -438,23 +438,23 @@ class CoreConfigMixin:
                 return
             thread = ConfigManager._ip_probe_thread
             if thread is not None and thread.is_alive():
-                # 活着 == 重试计划正在运行，所以这里返回是对的，不需要「替代探测」。
-                # 该线程是 _ip_probe_loop 的循环体，不是一次性探测：卡在 getaddrinfo
-                # 的那次迭代等到 OS 解析超时后抛异常，循环 except → 退避 → 下一次重试。
-                # 反过来，起一个替代线程调的还是同一个 getaddrinfo、一样卡，只换来
-                # 多写者和线程泄漏——那正是本结构要消除的（见模块 docstring）。
+                # Alive means the retry plan is running, so returning here is correct and needs no replacement probe.
+                # This thread runs _ip_probe_loop, not a single probe: an iteration blocked in getaddrinfo
+                # raises after the OS resolver timeout, then the loop catches, backs off, and retries.
+                # A replacement thread would call the same getaddrinfo and block identically, only introducing
+                # multiple writers and thread leaks, precisely what this design eliminates (see module docstring).
                 return
             thread = threading.Thread(
                 target=ConfigManager._ip_probe_loop,
                 name="geoip-probe",
                 daemon=True,
             )
-            # 起新循环前清掉停止信号（上一轮可能因切走免费线路而 set 过），
-            # 并预置 in-flight——线程还没来得及进入 lookup 时也应被视为在飞，
-            # 否则紧随其后的 join 会误判成「只是在退避」而直接跳过。
-            # _ip_probe_stopping 同样要复位：它是留给 shutdown / 测试清理的停止位，
-            # 一旦设过而不清，重启的新循环会在第一次唤醒时误退出，且 _kick_ip_probe
-            # 会拒绝催醒——停止位只该管它被设置时的那一个循环。
+            # Clear the stop signal before a new loop (previously set when leaving free routing),
+            # and preset in-flight: even before the thread enters lookup, treat it as active,
+            # preventing an immediately following join from mistaking it for backoff and skipping.
+            # Reset _ip_probe_stopping too: this shutdown/test-cleanup flag, if left set,
+            # makes restarted loops exit on their first wake and _kick_ip_probe refuse to wake them;
+            # a stop flag should affect only the loop for which it was set.
             ConfigManager._ip_probe_stopping = False
             ConfigManager._ip_probe_wake.clear()
             ConfigManager._ip_probe_in_flight.set()
@@ -471,20 +471,20 @@ class CoreConfigMixin:
         """
         from utils.config_manager import ConfigManager
 
-        # 两步写（预置 in-flight + set wake）与探测循环 finally 的「看 wake 决定
-        # 清位」必须互斥（共用 _geo_probe_lock）：无锁时可交错成 finally 读到
-        # wake 未置、把这里刚预置的标记清掉——预置形同虚设，join 在滚动窗口里
-        # 照样把被唤醒的重试当退避放弃。锁下两个临界区谁先行都成立：kick 先行
-        # 则 finally 看到 wake 已置而保留标记；finally 先行则 kick 随后整体
-        # 置位、标记依然存续到下一轮接手。
+        # The two writes (preset in-flight + set wake) must exclude the probe loop finally's wake-dependent
+        # clearing through shared _geo_probe_lock. Without it, finally can observe wake unset and
+        # erase the new preset flag, nullifying it and making join mistake awakened
+        # retries for backoff in the rolling window. Either critical-section order works:
+        # kick first lets finally see wake set and retain the flag; finally first lets kick subsequently
+        # set both, retaining the flag until the next iteration takes over.
         with ConfigManager._geo_probe_lock:
             thread = ConfigManager._ip_probe_thread
             if thread is not None and thread.is_alive() and not ConfigManager._ip_probe_stopping:
-                # 先预置 in-flight 再唤醒，与 _ensure_ip_probe_started 同一习语：
-                # 被唤醒的循环要等 OS 调度后才自己 set in_flight，若调用方（典型
-                # 序列：切回免费路由后立刻开会话）在那之前到达 join，会把这次
-                # **刻意唤醒**的尝试误判成普通退避而直接放弃等待。循环若醒来后
-                # 因资格复查收工，outer finally 会清掉这个预置位，不会悬挂。
+                # Preset in-flight before waking, following _ensure_ip_probe_started:
+                # the awakened loop only sets in_flight after OS scheduling. If callers (typically starting a session
+                # immediately after returning to free routing) reach join earlier, they would mistake this
+                # **deliberately awakened** attempt for ordinary backoff and stop waiting. If eligibility rechecks
+                # end the awakened loop, outer finally clears the preset flag without leaving stale state.
                 ConfigManager._ip_probe_in_flight.set()
                 ConfigManager._ip_probe_wake.set()
 
@@ -505,40 +505,40 @@ class CoreConfigMixin:
         """
         from utils.config_manager import ConfigManager
 
-        # 调试开关强制区域时判定即刻可用（_check_non_mainland 直接返回强制值、
-        # 不写缓存不起探测）——只认缓存会让免费路由在 override 下永远报「未落定」，
-        # 启动预热每次白等满 timeout。
+        # A forced-region debug override is immediately resolved (_check_non_mainland returns it directly
+        # without caching or probing). Cache-only checks would keep free routes unresolved under override,
+        # wasting the full warmup timeout every startup.
         if GEOIP_FORCE_NON_MAINLAND is not None:
             return True
         if ConfigManager._steam_check_cache is not None:
             return True
-        # 只在探测「真的在发请求」时才值得等。循环在退避 sleep 里同样是 alive，
-        # 但那段时间不可能有结论到达——照等就是每个会话白付一次 join 超时，
-        # 而 GeoIP 被墙时退避可长达 10 分钟，等于每场会话都固定慢 1.5 秒。
-        # 等的是「本次请求」，不是线程。join(thread) 会一直等到循环整个结束，可循环
-        # 在一次失败后就进入 30~600 秒退避且仍然 alive——那段时间不可能有结论到达，
-        # 却要白白等满 timeout。所以盯 in_flight：它一落下就说明本次尝试已收工。
-        # through_backoff 是给启动预热的：那里的目的就是「拿到结论再放开会话准入」，
-        # 而首探常常在网络栈就绪前失败并转入退避——若照会话路径那样一见退避就返回，
-        # 预热等于没做（这正是把探测起点提前到启动期清理之后暴露出来的）。
-        # 会话路径保持 False：那 1.5 秒是为了不让会话钉错线路，不值得为退避空等。
+        # Wait only while a probe is **actually making a request**. A loop sleeping in backoff is alive,
+        # but no result can arrive; waiting would charge every session a needless join timeout.
+        # When GeoIP is blocked, backoff reaches ten minutes, adding a fixed 1.5s to every session.
+        # Wait for **this request**, not the thread. join(thread) waits until the entire loop ends, but
+        # failures enter 30–600s backoff while remaining alive, with no possible result,
+        # needlessly consuming timeout. Watch in_flight instead: clearing it means this attempt finished.
+        # through_backoff serves startup warmup, whose goal is resolving region before admitting sessions.
+        # Initial probes often fail before network readiness and enter backoff; returning immediately on backoff as sessions do
+        # would nullify warmup, exposed when probing moved earlier into startup cleanup.
+        # Session paths retain False: their 1.5s prevents wrong route pinning, not worthwhile for empty backoff waiting.
         deadline = time.monotonic() + max(timeout, 0.0)
         while True:
             if ConfigManager._ip_check_cache is not None:
                 return True
             if not ConfigManager._ip_probe_in_flight.is_set():
-                # through_backoff 的含义是「等穿退避」，不是「无论如何等满 timeout」。
-                # 压根没有探测在跑（自配 API / livestream 全派生 → 免费路由门根本没起
-                # 探测；或循环已因切走免费线路收摊）时，等到天荒地老也不会有结论——
-                # 而启动预热正是 through_backoff=True 的唯一调用方，照等就是让每个
-                # 非 Steam 的自配 API 用户白等满 5 秒才开放会话准入。
-                # 靠 in_flight 先筛：_ensure_ip_probe_started 在 start() 前就预置了
-                # in_flight，所以「刚起还没跑起来」的线程不会被误判成不存在。
+                # through_backoff means wait across backoff, not always consume the full timeout.
+                # If no probe runs (custom APIs / all livestream-derived URLs mean the free-route gate never
+                # started one, or the loop ended after leaving free routing), no amount of waiting yields a result.
+                # Startup warmup is the sole through_backoff=True caller; waiting would make every
+                # non-Steam custom-API user wait five needless seconds before session admission.
+                # Filter using in_flight first: _ensure_ip_probe_started presets it before start(),
+                # preventing newly created but not yet executing threads from being mistaken for absent.
                 thread = ConfigManager._ip_probe_thread
                 if thread is None or not thread.is_alive():
                     return False
                 if not through_backoff:
-                    return False    # 已进入退避：本次尝试已收工，再等也等不到
+                    return False    # Backoff entered: this attempt finished, so no further waiting can yield its result.
             if time.monotonic() >= deadline:
                 return ConfigManager._ip_check_cache is not None
             time.sleep(0.02)
@@ -557,29 +557,29 @@ class CoreConfigMixin:
         """
         from utils.config_manager import ConfigManager
 
-        # 调试开关强制区域 = 判定已定（_check_non_mainland 恒返回强制值），
-        # 不写缓存也不起探测，等待没有意义。
+        # Debug-forced region means resolved (_check_non_mainland always returns the forced value),
+        # without caching or probing; waiting is pointless.
         if GEOIP_FORCE_NON_MAINLAND is not None:
             return True
         if ConfigManager._region_cache is not None or ConfigManager._ip_check_cache is not None:
             return True
-        # Steam 已经给出结论：足够选线路了，不必再为 IP 付等待。IP 落地后照样接管
-        # （Steam 票不落定），所以这里省下的是延迟、不是正确性。
+        # Steam already resolved enough to choose a route, avoiding IP wait. IP still takes over when available
+        # (Steam results never finalize resolution), saving latency without sacrificing correctness.
         if self._check_steam_non_mainland() is not None:
             return True
 
-        # 读一次配置以确保背景探测已启动（幂等）。刻意走 aget_core_config 而不是
-        # 直接戳 _ensure_ip_probe_started：免费路由门在 get_core_config 里
-        # （needs_region + _check_non_mainland），直接戳会让自配 API / livestream
-        # 用户也启动探测、把 IP 发给 ip-api.com——他们的线路根本不经过区域改写。
+        # Read configuration once to ensure background probing starts idempotently. Deliberately use aget_core_config,
+        # not _ensure_ip_probe_started directly: the free-route gate lives in get_core_config
+        # (needs_region + _check_non_mainland). Direct calls would probe custom-API / livestream
+        # users and send IPs to ip-api.com despite their routes never undergoing regional rewriting.
         cfg = await self.aget_core_config()
         if ConfigManager._ip_check_cache is not None:
             return True
-        # 空真判定提前到「不看探测死活」：配置里没有区域敏感 URL（自配 API /
-        # livestream 全派生）就是已落定，与旧探测是否还卡在 DNS 无关——用户从
-        # 免费路由切走后，残留探测可以 alive+in_flight 很久（getaddrinfo 不受
-        # socket timeout 约束），只在线程死后才认空真会让之后每个会话/插件请求
-        # 都为一条区域无关的线路白等满 timeout。
+        # Resolve vacuous truth before checking probe liveness: configuration without region-sensitive URLs (custom APIs /
+        # entirely livestream-derived routes) is resolved regardless of old probes stuck in DNS. After leaving
+        # free routing, residual probes may remain alive+in_flight for a long time because getaddrinfo ignores
+        # socket timeouts. Waiting for thread death would charge every later session/plugin request a full timeout
+        # for region-independent routes.
         if not (
             ConfigManager._any_free_provider(cfg)
             and ConfigManager._config_needs_region(
@@ -590,17 +590,17 @@ class CoreConfigMixin:
         thread = ConfigManager._ip_probe_thread
         if ((thread is None or not thread.is_alive())
                 and not ConfigManager._ip_probe_in_flight.is_set()):
-            # 免费路由却没有探测在跑（循环恰在上面读配置后落地退出，或已收工）。
-            # in_flight 同查：_ensure_ip_probe_started 先预置 in-flight 再 start()，
-            # 「已赋值未启动」的线程不该被误判成不存在——与 join_ip_probe 里的
-            # 护栏同一习语，那种窗口该落到下面的 join 去等。
-            # 复查一次结论：写完 cache 线程即结束的窗口里 thread 已死但结论已有。
+            # Free routing but no running probe (the loop exited just after the configuration read above or already finished).
+            # Check in_flight too: _ensure_ip_probe_started presets it before start(),
+            # so assigned-but-not-started threads must not appear absent. Follow join_ip_probe's
+            # same guard, sending that window to join below.
+            # Recheck resolution: the thread may have died just after writing cache, leaving a valid result.
             return ConfigManager._ip_check_cache is not None
         resolved = await asyncio.to_thread(self.join_ip_probe, timeout)
         if not resolved:
-            # 等满仍无结论：这一场会话会用大陆兜底线路，且中途不会改。无限等不是
-            # 选项（会话会挂死），所以这里只把失败态记下来，让现场可诊断——否则
-            # 「海外用户偶尔一整场很慢」在日志里没有任何痕迹。
+            # Still unresolved after waiting: this session pins the mainland fallback for its entire lifetime. Waiting forever
+            # would hang sessions, so record the failure for diagnosis; otherwise occasional whole-session slowness
+            # for overseas users leaves no log evidence.
             logger.warning(
                 "[GeoIP] 区域判定在会话开始前仍未落地（等待 %.1fs），本场会话按大陆线路启动",
                 timeout,
@@ -621,12 +621,12 @@ class CoreConfigMixin:
         from utils.config_manager import ConfigManager
 
         cfg = await self.aget_core_config()
-        # 空真提前且不看探测死活：自配 API / livestream 全派生的配置根本不需要
-        # 区域结论（隐私门），对它们返回 False 只会让启动日志报一条不存在的
-        # 「后续按退避重试」；而残留的旧探测（用户刚从免费路由切走）可以卡在
-        # DNS 里 alive 很久，等它纯属白付启动时长。语义与 aensure_region_resolved
-        # 对偶，判据同样取 _any_free_provider 合取（显式自配在 lanlan.app 的端点
-        # 不是免费路由）。
+        # Resolve vacuous truth early regardless of probe liveness: custom-API / all-livestream configuration needs no
+        # regional result (privacy gate). Returning False would log a nonexistent subsequent backoff retry;
+        # old probes left after switching away from free routing may remain alive in DNS
+        # for ages, wasting startup time if awaited. Match aensure_region_resolved
+        # symmetrically, using the same _any_free_provider conjunction (explicit custom endpoints
+        # on lanlan.app are not free routes).
         if not (
             ConfigManager._any_free_provider(cfg)
             and ConfigManager._config_needs_region(
@@ -701,8 +701,8 @@ class CoreConfigMixin:
         # assembled ConfigManager; resolve it through the package facade.
         from utils.config_manager import ConfigManager
 
-        # 调试开关：config.GEOIP_FORCE_NON_MAINLAND 非 None 时直接返回它，绕过真实检测。
-        # 生产保持 None（走下方判定）。改 config/__init__.py 那个常量即可，不动这里。
+        # Debug override: return non-None config.GEOIP_FORCE_NON_MAINLAND directly, bypassing actual detection.
+        # Keep None in production to use detection below. Change that constant in config/__init__.py, not here.
         if GEOIP_FORCE_NON_MAINLAND is not None:
             print(
                 f"[GeoIP] override active: forcing non-mainland={GEOIP_FORCE_NON_MAINLAND} "
@@ -714,11 +714,11 @@ class CoreConfigMixin:
         if ConfigManager._region_cache is not None:
             return ConfigManager._region_cache
 
-        # 确保后台探测在跑（幂等；免费路由门在调用者侧，见 _ensure_ip_probe_started）。
+        # Ensure background probing is running idempotently; callers enforce the free-route gate (see _ensure_ip_probe_started).
         self._ensure_ip_probe_started()
 
-        # IP 权威：探测有结论就落定它。探测是唯一写者，读到什么就是什么，没有
-        # 「过期结论覆盖」的问题——单线程循环成功即退出。
+        # IP is authoritative: finalize its result once available. The probe is the sole writer, so every observed value is current;
+        # no stale-result overwrite exists, since the single-threaded loop exits on success.
         ip_result = self._check_ip_non_mainland_http()
         if ip_result is not None:
             ConfigManager._region_cache = ip_result
@@ -727,9 +727,9 @@ class CoreConfigMixin:
             return ip_result
 
         steam_result = self._check_steam_non_mainland()
-        # 探测在后台跑，可能恰好在上面这次 Steam 查询期间落地。不复查就会让兜底票
-        # 压过刚到手的权威结论；而 get_core_config 对每个 URL 各判一次，同一份快照
-        # 里就可能一半按 IP、一半按 Steam（挂代理时两者方向相反）。
+        # Background probing may resolve during the Steam query above. Without rechecking, a fallback result
+        # would override newly available authority; get_core_config checks each URL separately, potentially mixing
+        # IP and Steam decisions in one snapshot (opposite directions under a proxy).
         ip_result = self._check_ip_non_mainland_http()
         if ip_result is not None:
             ConfigManager._region_cache = ip_result
@@ -738,12 +738,12 @@ class CoreConfigMixin:
             return ip_result
 
         if steam_result is not None:
-            # IP 探测无结论时才轮到 Steam。它反映的是 Steam 服务端看到的出口 IP，
-            # 挂代理时同样会跟着代理走，所以只当兜底票、**永不落定** _region_cache：
-            #  - 冷启动首探超时那一刻 Steam 往往已有票，落定它等于让这一票永久裁决，
-            #    IP 的重试再没机会接管；
-            #  - 探测长期失败也不代表 Steam 就对——Steam 走海外代理而直连 GeoIP 暂时
-            #    不可用时两者会分歧，网络恢复后必须让 IP 接管。
+            # Consult Steam only while IP probing is unresolved. It reflects the outbound IP Steam's server sees,
+            # following proxies too, so it is only fallback evidence and **never finalizes** _region_cache:
+            #  - Steam often has a result when the first cold-start probe times out; finalizing it would make that result permanent,
+            #    preventing IP retries from ever taking over;
+            #  - Prolonged probe failure does not make Steam correct: overseas-proxied Steam can disagree with temporarily
+            #    unavailable direct GeoIP, which must take over after network recovery.
             if not ConfigManager._geo_steam_fallback_logged:
                 ConfigManager._geo_steam_fallback_logged = True
                 print(
@@ -764,8 +764,8 @@ class CoreConfigMixin:
             print("[GeoIP] Both sources indeterminate, transient mainland default", file=sys.stderr)
         return False
 
-    # Livestream 派生只接管 free 路这三个已知端点，避免劫持其他 lanlan.tech 路径
-    # （例如未来新增 /docs /metrics 之类的非数据端点）
+    # Livestream derivation overrides only these three known free endpoints, avoiding hijacking other lanlan.tech paths
+    # such as future non-data /docs or /metrics endpoints.
     _LIVESTREAM_DERIVE_PATHS = frozenset({'/core', '/text/v1', '/tts'})
 
     def _adjust_free_api_url(self, url: str, is_free: bool, non_mainland=None) -> str:
@@ -788,9 +788,9 @@ class CoreConfigMixin:
 
         if not url:
             return url
-        # 按 hostname 判而不是子串包含，与 _config_needs_region 同一判据：自配
-        # URL 的路径里恰含 "lanlan.tech" 子串（如 https://custom.example/v1/lanlan.tech）
-        # 时，子串门会放行、下面的替换会把路径一并改写——自定义端点被污染。
+        # Match hostname rather than substrings, as _config_needs_region does: if a custom
+        # URL's path contains "lanlan.tech" (e.g. https://custom.example/v1/lanlan.tech),
+        # substring gating passes and replacement below rewrites its path, corrupting the custom endpoint.
         try:
             parsed = urlparse(url)
             host = (parsed.hostname or '').lower()
@@ -814,13 +814,13 @@ class CoreConfigMixin:
         try:
             overseas = non_mainland if non_mainland is not None else self._check_non_mainland()
             if overseas:
-                # 海外免费统一走 www.lanlan.app（含 /tts）：该节点透传客户端
-                # voice 字段到 Gemini，支持 Gemini 全量 + yui。早期把 /tts 降级到
-                # 裸 lanlan.app（硬覆盖 Leda 的旧端点）的 .replace 已移除。
-                # 只换 netloc（host 已确认命中官方域），path/query 原样保留。
-                # 先 lower 再替换：host 门用的是归一化小写 hostname，netloc 里的
-                # 大小写变体（WWW.LANLAN.TECH）大小写敏感替换会静默不生效，海外
-                # 用户被留在大陆端点。netloc 大小写对 DNS 无语义，lower 无损。
+                # Overseas free routing uniformly uses www.lanlan.app, including /tts. That node passes the client's
+                # voice field through to Gemini, supporting all Gemini voices + yui. The old .replace downgrading /tts
+                # to bare lanlan.app, an older endpoint forcing Leda, has been removed.
+                # Replace only netloc after confirming the official host; preserve path/query unchanged.
+                # Lowercase before replacement: the host gate uses normalized lowercase hostname, but case-sensitive netloc
+                # replacement would silently miss variants like WWW.LANLAN.TECH, leaving overseas
+                # users on mainland endpoints. DNS ignores netloc case, so lowercasing loses nothing.
                 return urlunparse(parsed._replace(
                     netloc=parsed.netloc.lower().replace('lanlan.tech', 'lanlan.app')))
         except Exception:
@@ -931,18 +931,18 @@ class CoreConfigMixin:
         neither claims a provider identity of its own.
         """
         candidate = (provider or '').strip()
-        # follow_assist 在这个槽上没有独立含义：实时会话跟的是核心 API。前端早就
-        # 这么做了（omni 分支的 follow_assist 取的是**核心** provider 的 url/key），
-        # 只有后端的 Key 派生还在按 assist 走，于是快照里留下一把「assist 的 Key
-        # 配核心的端点」。目前它到不了下游（follow_* 下 REALTIME_MODEL_URL 恒为空，
-        # 自定义三元组凑不齐），但那是个只等一次改动就会点着的陷阱。归一掉。
+        # follow_assist has no independent meaning in this slot: realtime follows core API. The frontend already
+        # uses the **core** provider's url/key for omni follow_assist;
+        # only backend key derivation still follows assist, leaving an assist key paired with a core
+        # endpoint in snapshots. It cannot currently reach downstream because follow_* leaves REALTIME_MODEL_URL empty,
+        # preventing a full custom triple, but one change could activate this latent trap. Normalize it.
         if candidate == 'follow_assist':
             return 'follow_core'
         if not candidate or candidate == 'custom' or candidate.startswith('follow_'):
             return candidate
-        # 落回 follow_core 而不是空串：空串会让下面的 URL/模型/Key 覆盖分支照旧
-        # 写入前端自动填好的残留值，follow_core 才是「等同于没选」的既有路径
-        # （URL 跳过、模型回落 CORE_MODEL、Key 取 CORE_API_KEY）。
+        # Fall back to follow_core, not empty: an empty string lets URL/model/key override branches below write
+        # leftover frontend-autofilled values. follow_core is the existing equivalent-to-unselected path
+        # (skip URL, model falls back to CORE_MODEL, key comes from CORE_API_KEY).
         return 'follow_core'
 
     def get_core_config(self):
@@ -956,7 +956,7 @@ class CoreConfigMixin:
             get_core_api_profiles,
         )
 
-        # 从 config 模块导入所有默认配置值
+        # Import all default configuration values from config.
         from config import (
             DEFAULT_CORE_API_KEY,
             DEFAULT_AUDIO_API_KEY,
@@ -1060,10 +1060,10 @@ class CoreConfigMixin:
                 file_data = json.load(f)
             if isinstance(file_data, dict):
                 core_cfg.update(file_data)
-                # 模板默认 assistApi='qwen' 会把文件里从未保存过的 assistApi 填
-                # 上，导致下方「core=free 时 assist 默认 free」的跟随逻辑收不到
-                # 缺失信号。仅当文件显式选了 core=free 且从未保存 assistApi 时
-                # 恢复跟随语义；其余缺失场景维持模板默认。
+                # Template default assistApi='qwen' fills a value never saved in the file,
+                # hiding absence from the following default-assist-to-free-when-core-is-free logic.
+                # Restore following only when the file explicitly selects core=free and has never saved assistApi;
+                # preserve template defaults for other missing-value cases.
                 if 'assistApi' not in file_data and file_data.get('coreApi') == 'free':
                     core_cfg['assistApi'] = 'free'
             else:
@@ -1082,7 +1082,7 @@ class CoreConfigMixin:
             else {}
         )
 
-        # API Keys — 仅对与 coreApi/assistApi 匹配的服务商回退到 CORE_API_KEY
+        # API keys: fall back to CORE_API_KEY only for providers matching coreApi/assistApi.
         if core_cfg.get('coreApiKey'):
             config['CORE_API_KEY'] = core_cfg['coreApiKey']
 
@@ -1108,9 +1108,9 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
         config['ASSIST_API_KEY_DOUBAO_TTS'] = core_cfg.get('assistApiKeyDoubaoTts', '')
-        # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
-        # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401，
-        # 掩盖"未配置 TTS provider key"的真实提示。
+        # MiniMax / MiMo are assist-only TTS providers; coreApiKey is not necessarily compatible.
+        # Do not fall back, which would put invalid keys in TTS credentials and cause 401,
+        # hiding the real missing-TTS-provider-key guidance.
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
         config['ASSIST_API_KEY_MIMO'] = core_cfg.get('assistApiKeyMimo', '')
@@ -1128,9 +1128,9 @@ class CoreConfigMixin:
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
 
         openclaw_url = core_cfg.get('openclawUrl')
-        # 只在内存里归一化 8089→8088，绝不落盘：get_core_config 现在普遍跑在 to_thread
-        # 里，读路径写盘会和 /core_api 的保存互相顶掉。持久化交给启动期的
-        # migrate_openclaw_url_port（那时还没有并发写者）。
+        # Normalize 8089->8088 only in memory, never on disk: get_core_config commonly runs in to_thread,
+        # so reader-side writes race with /core_api saves. Persist through startup's
+        # migrate_openclaw_url_port, before concurrent writers exist.
         _migrated_openclaw_url = self._migrated_openclaw_url(openclaw_url)
         if _migrated_openclaw_url:
             core_cfg['openclawUrl'] = _migrated_openclaw_url
@@ -1152,9 +1152,9 @@ class CoreConfigMixin:
         core_api_profiles = get_core_api_profiles()
         assist_api_profiles = get_assist_api_profiles()
         assist_api_key_fields = get_assist_api_key_fields()
-        # provider → 管理簿在 core_config.json 里的**原始**字段名（assistApiKeyQwen 之类）。
-        # 用来区分「管理簿里真存了一条」和「ASSIST_API_KEY_* 只是被 _fb() 派生成了
-        # CORE_API_KEY」——后者不该压过用户存在槽位里的 Key。
+        # Provider -> **original** ledger field names in core_config.json (e.g. assistApiKeyQwen).
+        # Distinguishes actual persisted ledger entries from ASSIST_API_KEY_* values merely derived by _fb()
+        # from CORE_API_KEY; the latter must not override keys saved in slots.
         try:
             from utils.api_config_loader import get_config as _get_api_config
             _raw_api_config = _get_api_config()
@@ -1165,7 +1165,7 @@ class CoreConfigMixin:
             _raw_assist_providers = {}
 
         def _uses_fixed_models(provider_key: str) -> bool:
-            # 免费版与 fixed_model 服务商（如 Kimi Code）只认自家模型，用户存的模型 ID 不能下发。
+            # Free and fixed_model providers (e.g. Kimi Code) accept only their own models; never send user-saved model IDs.
             if provider_key == 'free':
                 return True
             raw_profile = _raw_assist_providers.get(provider_key)
@@ -1193,11 +1193,11 @@ class CoreConfigMixin:
                 config['CORE_URL'] = resolved_core_url
 
         # Assist API profile
-        # 显式选择的 assistApi 一律被尊重，即使 coreApi=free。这样用户可以组合
-        # 「免费实时（core=free）+ 付费文本/Agent（assist=qwen 等）」——免费 realtime
-        # 端点和付费 assist 端点是独立的两条链路，没有理由把后者绑死在 free 上。
-        # 仅当用户没有显式选 assist 时，沿用 coreApi 的偏好做默认：core=free 默认 free，
-        # 其他默认 qwen。
+        # Always honor explicitly selected assistApi, even when coreApi=free. Users may combine
+        # free realtime (core=free) + paid text/Agent (assist=qwen, etc.); free realtime
+        # and paid assist are independent paths with no reason to pin the latter to free.
+        # Only when assist is not explicitly selected, inherit coreApi preference: core=free defaults to free,
+        # others to qwen.
         assist_api_value = core_cfg.get('assistApi')
         if not assist_api_value:
             assist_api_value = 'free' if core_api_value == 'free' else 'qwen'
@@ -1246,7 +1246,7 @@ class CoreConfigMixin:
                 'OPENROUTER_URLS',
             )
             config['OPENROUTER_URL'] = token_plan_url or token_plan_profile['OPENROUTER_URL']
-        # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
+        # Agent API defaults to assist API's agent_model, falling back to VISION_MODEL when absent.
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
         config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
@@ -1273,29 +1273,29 @@ class CoreConfigMixin:
         elif not config['OPENROUTER_API_KEY']:
             config['OPENROUTER_API_KEY'] = _core_key_fallback
 
-        # Agent API Key 回退：未显式配置时跟随辅助 API Key
+        # Agent API key fallback: follow assist API key unless explicitly configured.
         if not config.get('AGENT_MODEL_API_KEY'):
             config['AGENT_MODEL_API_KEY'] = config.get('OPENROUTER_API_KEY', '')
 
-        # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
+        # Map custom API configuration using uppercase underscore internal keys, retaining existing defaults for omitted fields.
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
-        # GPT-SoVITS「是否启用」收口到 ttsModelProvider 下拉这单一真相（见
-        # docs/design/tts-voice-source-unification.md §3/§4）。choke-point 在此派生，
-        # 13 个下游读点（core.py 路由 / 本文件 URL 解析与 TTS_VOICE_ID override /
-        # get_model_api_config 的 is_custom 自愈 / 各 router）以及 worker 的
-        # _gptsovits_is_selected 全部沿用 GPTSOVITS_ENABLED 不变。
-        # 派生语义：ttsModelProvider 一旦「显式选了某个 TTS provider」即唯一真相——选中
-        # gptsovits 才启用、选别家（vllm_omni/mimo/custom…）就关，旧 gptsovitsEnabled 不参与。
-        # 仅当未显式选择时（provider 缺失/空串，或 follow_assist/follow_core 这两个「跟随
-        # assist/core」哨兵——它们是各 model provider 下拉的默认值，等同未选）才回落旧开关，
-        # 兜住 pre-#1830 存量（用 checkbox 开 GSV、下拉仍停在默认 follow_* 的用户）。
-        # ⚠️ 不能把 follow_* 当显式 provider，否则存量 GSV 用户（gptsovitsEnabled=true +
-        # ttsModelProvider='follow_assist'）会被误判为关 → 升级后 GSV 失效（Codex PR#1850 P1）。
-        # 刻意不用 `旧flag OR 下拉` 的纯 OR：前端已退役 gptsovitsEnabled 写路径，旧 flag 在
-        # 增量合并下会粘住；显式切走由「下拉为准」关掉，follow_* 切走由 config_router 的
-        # save choke point 惰性落 False 清掉（见该处注释）。
+        # GPT-SoVITS enablement uses ttsModelProvider as the single source of truth (see
+        # docs/design/tts-voice-source-unification.md §3/§4). Derive it at this choke point;
+        # all 13 downstream readers (core.py routing / URL resolution and TTS_VOICE_ID override here /
+        # get_model_api_config is_custom self-healing / routers), plus workers'
+        # _gptsovits_is_selected, continue using GPTSOVITS_ENABLED unchanged.
+        # Derivation: an **explicit** ttsModelProvider selection is authoritative: enable only for
+        # gptsovits, disable for others (vllm_omni/mimo/custom…), ignoring legacy gptsovitsEnabled.
+        # Only absent explicit selection (missing/empty provider, or follow_assist/follow_core sentinels
+        # meaning follow assist/core, the default unselected dropdown values) falls back to the old toggle,
+        # preserving pre-#1830 users who enabled GSV by checkbox while retaining default follow_*.
+        # Never treat follow_* as explicit providers, or existing GSV users (gptsovitsEnabled=true +
+        # ttsModelProvider='follow_assist') would be wrongly disabled after upgrade (Codex PR#1850 P1).
+        # Deliberately avoid legacy-flag OR dropdown: the frontend retired gptsovitsEnabled writes, so incremental
+        # merges make old flags sticky. Explicit switching follows the dropdown; switching to follow_* is lazily cleared
+        # to False by config_router's save choke point (see its comment).
         _tts_model_provider = str(core_cfg.get('ttsModelProvider', '') or '').strip()
         if _tts_model_provider in ('', 'follow_assist', 'follow_core'):
             config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
@@ -1305,10 +1305,10 @@ class CoreConfigMixin:
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
 
-        # 将 vLLM-Omni TTS 的前端原始字段放进 core_config snapshot，供
-        # core.py 判断是否启用外部 TTS，并生成与实际 worker 参数一致的复用 key。
-        # 凭证字段 ttsModelApiKey 不放入 snapshot；它仍由 tts_client.py 从持久化
-        # 配置读取，避免扩大通用配置快照中的敏感字段范围。
+        # Include raw frontend vLLM-Omni TTS fields in the core_config snapshot so
+        # core.py can determine external TTS enablement and derive reuse keys matching actual worker arguments.
+        # Exclude credential ttsModelApiKey; tts_client.py still reads it from persisted
+        # configuration, avoiding expanding sensitive fields in general configuration snapshots.
         for _model_provider_prefix in (
             'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
             'emotion', 'vision', 'agent', 'omni', 'tts',
@@ -1321,15 +1321,15 @@ class CoreConfigMixin:
                 if _model_provider_prefix == 'omni'
                 else _raw_provider
             )
-        # omniModelUrl 的**原始存盘值**（不是解析后的 REALTIME_MODEL_URL）：用来区分
-        # 「用户真的手填过一个实时端点」和「URL 只是从 provider profile 默认值填出来的」。
-        # 老配置在 omniModelProvider 这个键存在之前就能手填 URL，那种必须继续按 local 处理。
+        # **Raw persisted** omniModelUrl, not resolved REALTIME_MODEL_URL: distinguishes
+        # an actually hand-entered realtime endpoint from a provider-profile default.
+        # Legacy configurations could hand-enter URLs before omniModelProvider existed; keep treating those as local.
         config['omniModelUrl'] = str(core_cfg.get('omniModelUrl', '') or '')
         config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
         config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
         config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
 
-        # 禁用TTS
+        # Disable TTS.
         _raw_disable_tts = core_cfg.get('disableTts', False)
         if isinstance(_raw_disable_tts, bool):
             config['DISABLE_TTS'] = _raw_disable_tts
@@ -1338,8 +1338,8 @@ class CoreConfigMixin:
         else:
             config['DISABLE_TTS'] = False
 
-        # 文本模式回复长度守卫上限（tiktoken o200k_base tokens，超限触发 reroll；
-        # reroll 耗尽后回退到最后一个句末标点截断后落定）
+        # Text-reply length guard ceiling (tiktoken o200k_base tokens; reroll above limit;
+        # after rerolls exhaust, finalize after truncating at the last sentence-ending punctuation).
         try:
             config['TEXT_GUARD_MAX_LENGTH'] = int(core_cfg.get('textGuardMaxLength', 300))
             if config['TEXT_GUARD_MAX_LENGTH'] <= 0:
@@ -1347,13 +1347,13 @@ class CoreConfigMixin:
         except (TypeError, ValueError):
             config['TEXT_GUARD_MAX_LENGTH'] = 300
         
-        # GPT-SoVITS 是本地 TTS 运行时，不依赖 enableCustomApi 总开关。用户
-        # 保存的 ttsModelUrl 是 GSV server URL，不能被 follow_core/follow_assist
-        # 的 LLM URL 覆盖；空值只在运行时默认到 127.0.0.1，不写回配置文件。
+        # GPT-SoVITS is a local TTS runtime independent of enableCustomApi. Saved
+        # ttsModelUrl is the GSV server URL and must not be overwritten by follow_core/follow_assist
+        # LLM URLs. Empty values default at runtime to 127.0.0.1 without configuration writes.
         if config['GPTSOVITS_ENABLED']:
             config['TTS_MODEL_URL'] = normalize_gsv_api_url(core_cfg.get('ttsModelUrl'))
 
-        # 只有在启用自定义API时才允许覆盖各模型相关字段
+        # Allow model-field overrides only when custom API is enabled.
         if enable_custom_api:
             assist_model_defaults = {
                 key: config.get(key, '') for key in self._SLOT_PROFILE_MODEL_KEYS.values()
@@ -1361,10 +1361,10 @@ class CoreConfigMixin:
             assist_model_defaults['SUMMARY_MODEL'] = (
                 assist_profile.get('SUMMARY_MODEL') or assist_profile.get('CONVERSATION_MODEL', '')
             )
-            # URL / Model ID 字段：空值回退到已有配置。
-            # API Key 字段：根据用户选择的 provider 决定是否覆盖：
-            #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值
-            #   - 具体服务商或 'custom' → 允许覆盖（空串合法，本地服务商可能不需要 key）
+            # URL / Model ID fields: empty values fall back to existing configuration.
+            # API-key override policy depends on selected provider:
+            #   - follow_core / follow_assist / '' (legacy absent field): retain values derived above
+            #   - specific provider or 'custom': allow overrides, including empty strings for local providers needing no key
             def _resolve_follow_model_url(prefix: str, provider: str) -> str:
                 """Recompute follow_* URLs for the current provider, avoiding stale regions saved historically."""
                 if provider == 'follow_assist':
@@ -1410,8 +1410,8 @@ class CoreConfigMixin:
                     return ''
                 is_game_slot = prefix in ('gameMain', 'gameSummary')
                 if provider == 'follow_core':
-                    # URL 和 Key 已换成核心服务商的，模型也必须取核心服务商的；沿用快照里
-                    # 的值（辅助 API 的模型）会把 A 家的模型名发到 B 家的端点。
+                    # URL and key now use the core provider, so the model must too; retaining the snapshot's
+                    # assist model would send provider A's model name to provider B's endpoint.
                     follow_core_profile = assist_api_profiles.get(core_api_value)
                     if isinstance(follow_core_profile, dict):
                         return (follow_core_profile.get(profile_key, '')
@@ -1441,7 +1441,7 @@ class CoreConfigMixin:
                            or named_profile.get('CONVERSATION_MODEL') or '').strip()
 
             _custom_api_fields = [
-                # (前端字段前缀, 模型config键, URL config键, API Key config键)
+                # (frontend field prefix, model config key, URL config key, API-key config key)
                 ('conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
                 ('summary',      'SUMMARY_MODEL',      'SUMMARY_MODEL_URL',      'SUMMARY_MODEL_API_KEY'),
                 ('gameMain',     'GAME_MAIN_MODEL',    'GAME_MAIN_MODEL_URL',    'GAME_MAIN_MODEL_API_KEY'),
@@ -1454,27 +1454,27 @@ class CoreConfigMixin:
                 ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
             ]
             for prefix, model_key, url_key, apikey_key in _custom_api_fields:
-                # 读上面归一化过的快照值而不是 core_cfg 原值：omni 槽选了一个没有
-                # realtime 实现的服务商时，快照已把它落回 follow_core，URL/模型/Key
-                # 三条覆盖必须跟着走同一条路，否则残留的自动填充值还是会被写进去。
+                # Read normalized snapshot values above rather than raw core_cfg: when omni selects a provider
+                # without realtime support, the snapshot already falls back to follow_core. URL/model/key
+                # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
-                # follow_core / follow_assist 的 URL 是前端联动 readonly 自填的提示值
-                # （static/js/api_key_settings.js: onCustomModelProviderChange），不代表
-                # 用户选择"自定义部署"。但只在 omni/tts 才会出问题：
-                #   - omni: get_model_api_config 看见 REALTIME_MODEL+_URL 都非空 →
-                #     强行 api_type='local'（TODO 未实现）→ core_api_type='local' →
-                #     TTS 调度落 dummy_tts_worker → 静音
-                #   - tts:  TTS_MODEL_URL 被联动值污染让 tts_custom 走错 provider
-                # 其他 model type（conversation/summary/correction/emotion/vision/agent）
-                # 走 chat completion REST，没有 'local' 分支；跳 URL 反而会改变它们的
-                # follow_* 路由（详见 PR #1084 review thread），故仅对 omni/tts 跳。
-                # 注：follow_* 下 omni/tts 仍不能依赖 get_model_api_config fallback
-                # 读取用户填的 modelId（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
-                # 因此这些特殊前缀继续走既有 follow 解析。
+                # follow_core / follow_assist URLs are readonly frontend-linked hints autofilled by
+                # static/js/api_key_settings.js: onCustomModelProviderChange, not evidence
+                # of user-selected custom deployments. Only omni/tts are affected:
+                #   - omni: get_model_api_config sees nonempty REALTIME_MODEL + _URL ->
+                #     forces api_type='local' (TODO unimplemented) -> core_api_type='local' ->
+                #     TTS dispatch reaches dummy_tts_worker -> silence
+                #   - tts: linked values pollute TTS_MODEL_URL and send tts_custom to the wrong provider
+                # Other model types (conversation/summary/correction/emotion/vision/agent)
+                # use chat-completion REST without a local branch; skipping URLs would alter their
+                # follow_* routing (see PR #1084 review thread), so skip only for omni/tts.
+                # Note: under follow_*, omni/tts cannot rely on get_model_api_config fallback
+                # to read user-entered modelId (fallback uses CORE_MODEL, not REALTIME_MODEL/TTS_MODEL),
+                # so these special prefixes retain existing follow resolution.
                 is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_summary')
-                # GSV 启用时 ttsModelUrl 是 GPT-SoVITS server URL，不是 follow_*
-                # 联动出来的 LLM URL。即便 ttsModelProvider 仍是默认 follow_assist，
-                # 也必须优先保留 GSV URL，否则对话 TTS 会连到辅助 LLM endpoint。
+                # With GSV enabled, ttsModelUrl is the GPT-SoVITS server URL, not a follow_*-linked
+                # LLM URL. Even with default ttsModelProvider=follow_assist,
+                # preserve the GSV URL first, or conversation TTS would connect to assist LLM endpoints.
                 gsv_enabled_for_url = config['GPTSOVITS_ENABLED']
                 gsv_tts_url_override = prefix == 'tts' and gsv_enabled_for_url
                 skip_url_for_follow = (
@@ -1483,7 +1483,7 @@ class CoreConfigMixin:
                     and not gsv_tts_url_override
                 )
 
-                # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
+                # URL: empty falls back to existing configuration; skip omni/tts follow_*.
                 cfg_url = core_cfg.get(f'{prefix}ModelUrl')
                 if gsv_tts_url_override:
                     config[url_key] = normalize_gsv_api_url(cfg_url or config.get(url_key))
@@ -1496,7 +1496,7 @@ class CoreConfigMixin:
                         if cfg_url is not None:
                             config[url_key] = cfg_url or config.get(url_key, '')
 
-                # Model ID: 空值回退到已有配置
+                # Model ID: empty falls back to existing configuration.
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
                 named_model = _resolve_named_provider_model_id(
                     prefix, provider, str(config.get(url_key) or '').strip()
@@ -1523,25 +1523,25 @@ class CoreConfigMixin:
                     _uses_fixed_models(provider)
                     or not (isinstance(cfg_model, str) and cfg_model.strip())
                 ):
-                    # 具名服务商槽留空时取该服务商自己的档位默认；custom / 老配置的 '' 没有
-                    # 默认可取，仍走下面的原有回退。
+                    # Empty named-provider slots use that provider's tier defaults; custom / legacy '' have no
+                    # defaults and retain the fallback below.
                     config[model_key] = named_model
                 elif cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 
-                # API Key 处理：
-                #   follow_core   → 从核心 API Key 派生
-                #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
-                #   具名服务商    → 从 API 管理簿（ASSIST_API_KEY_*）解析，见下方 _book_key
-                #   custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                # API-key handling:
+                #   follow_core -> derive from core API key
+                #   follow_assist -> derive from assist API key (OPENROUTER_API_KEY includes assist->core fallback)
+                #   named provider -> resolve API ledger ASSIST_API_KEY_*; see _book_key below
+                #   custom / legacy '' -> use stored value, including empty strings for local providers needing no key
                 #
-                # GSV 启用 + prefix='tts' + ttsModelProvider 默认 'follow_*' 时跳过派生：
-                # 派生会把 TTS_MODEL_API_KEY 写成 OPENROUTER_API_KEY / CORE_API_KEY（这俩是
-                # LLM key，可能是 Gemini / DeepSeek 等），随后 get_model_api_config('tts_custom')
-                # 的 is_gsv_url 分支会原样返回这个无关 key；get_tts_api_key('cosyvoice') 因此
-                # 拿到错的 key，CosyVoice clone 鉴权失败。跳过后 TTS_MODEL_API_KEY 保留其持久化
-                # 值（用户开 GSV 一般不会同时填这个字段，留空即可），让下游 is_gsv_url 分支的
-                # ASSIST_API_KEY_QWEN fallback 接手。
+                # Skip derivation for GSV enabled + prefix='tts' + default ttsModelProvider='follow_*':
+                # derivation would set TTS_MODEL_API_KEY to OPENROUTER_API_KEY / CORE_API_KEY (LLM
+                # keys, possibly Gemini / DeepSeek), then get_model_api_config('tts_custom')'s
+                # is_gsv_url branch returns the unrelated key unchanged; get_tts_api_key('cosyvoice')
+                # receives a wrong key and CosyVoice clone authentication fails. Skipping retains persisted TTS_MODEL_API_KEY
+                # (usually empty because GSV users need not fill it), allowing the downstream is_gsv_url branch's
+                # ASSIST_API_KEY_QWEN fallback to take over.
                 skip_key_for_follow_gsv = (
                     is_follow
                     and prefix == 'tts'
@@ -1558,42 +1558,42 @@ class CoreConfigMixin:
                 elif provider == 'follow_summary':
                     config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '')
                 else:
-                    # 具名服务商槽：Key 的唯一真相是 API 管理簿（ASSIST_API_KEY_*），
-                    # 不是槽位字段。前端在选中服务商时把管理簿的值拷进只读的槽位输入框
+                    # Named-provider slots: the API ledger (ASSIST_API_KEY_*) is authoritative for keys,
+                    # not slot fields. Selecting a provider copies ledger values into a readonly slot input,
                     # （api_key_settings.js: onCustomModelProviderChange → setKeyReadonly），
-                    # 但 GET /core_api 已把管理簿脱敏成哨兵（#2559），拷过去的是哨兵，
-                    # 保存时被 apply_core_config_secret_update 拒写 —— 槽位字段因此永远
-                    # 停在空串，运行时拿空 Key 请求。改为在这里直接读管理簿：
-                    #   - 存量已经写坏的配置无需重新保存即可自愈；
-                    #   - 与「Key 从 API 管理簿自动填充」这个只读 UI 语义对齐；
-                    #   - 不碰哨兵不落盘这条安全不变量。
-                    # 管理簿没有该服务商（custom / 老配置的 '' / gptsovits 这类只在 TTS
-                    # 注册表里的 provider）时回落到槽位存储值，保住这些既有路径。
-                    # 优先级：管理簿里真存的那条 > 槽位存量值 > 管理簿派生值。
+                    # but GET /core_api masks the ledger with a sentinel (#2559), so the copied value is a sentinel,
+                    # rejected on save by apply_core_config_secret_update. The slot consequently remains
+                    # empty forever and runtime requests use empty keys. Read the ledger directly here:
+                    #   - existing broken configurations heal without resaving;
+                    #   - matches the readonly UI meaning of keys autofilled from the API ledger;
+                    #   - preserves the safety invariant that sentinels never persist.
+                    # Providers absent from the ledger (custom / legacy '' / TTS-registry-only providers such as
+                    # gptsovits) fall back to stored slot values, preserving existing paths.
+                    # Priority: explicitly stored ledger key > existing slot value > derived ledger value.
                     #
-                    # 中间那级不能省：ASSIST_API_KEY_* 对匹配 coreApi/assistApi 的
-                    # 服务商会被 _fb() 派生成 CORE_API_KEY。那是「默认值」不是「用户
-                    # 存过」，拿它压掉老配置里槽位自己的 Key 会把能用的配置改坏。
+                    # The middle level is essential: _fb() derives ASSIST_API_KEY_* from CORE_API_KEY for
+                    # providers matching coreApi/assistApi. That is a default, not something the user
+                    # saved; overriding legacy slot keys with it would break working configurations.
                     #
-                    # 三处都先转字符串再 strip：core_config.json 用户可手改，字段里
-                    # 可能落进任意 JSON 类型，直接 .strip() 会让整个 get_core_config()
-                    # 抛 AttributeError —— 那是启动即崩，不是某个槽降级。
+                    # Convert all three sources to strings before strip: users can edit core_config.json manually,
+                    # so fields may contain any JSON type. Direct .strip() could make all of get_core_config()
+                    # raise AttributeError, crashing startup rather than degrading one slot.
                     _raw_cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
                     cfg_key = (
                         str(_raw_cfg_key).strip() if _raw_cfg_key is not None else None
                     )
-                    # 豆包语音例外：它虽然在管理簿映射里，但凭证真相是槽位字段——
-                    # voice_storage.get_tts_api_key('doubao_tts') 槽位优先、管理簿兜底，
-                    # POST 侧的仲裁也刻意保住「只存在 ttsModelApiKey 的 legacy key」。
-                    # 这里跟着走管理簿优先就会让同一份凭证出现两条反向的解析路径。
-                    # TTS 槽整体不走管理簿改道。这个槽的下拉里有一批「注册表认得、
-                    # 但派发根本不读 ttsModelProvider」的伪选项（minimax / elevenlabs /
-                    # cosyvoice…），选中它们时 worker 仍由核心 API 决定；一旦这里把
-                    # 该厂商的真实 Key 解析进 TTS_MODEL_API_KEY，那把 Key 就会被送给
-                    # 核心厂商的 TTS 端点——又一次跨厂商凭证外发。
-                    # TTS 的凭证真相本来就在槽位字段与各 provider 自己的解析路径上
-                    # （voice_storage.get_tts_api_key / workers 直接读 raw ttsModelApiKey），
-                    # 保持原样即可。
+                    # Doubao speech exception: although present in the ledger mapping, slot fields are authoritative;
+                    # voice_storage.get_tts_api_key('doubao_tts') prefers the slot, with ledger fallback,
+                    # and POST arbitration deliberately preserves legacy keys stored only in ttsModelApiKey.
+                    # Preferring the ledger here would create opposite resolution paths for identical credentials.
+                    # Never redirect the entire TTS slot through the ledger. Its dropdown includes pseudo-options recognized by
+                    # the registry but whose dispatch never reads ttsModelProvider (minimax / elevenlabs /
+                    # cosyvoice…); workers still depend on core API. Resolving those providers' genuine
+                    # keys into TTS_MODEL_API_KEY here would send them to the
+                    # core provider's TTS endpoint, another cross-provider credential disclosure.
+                    # TTS credentials are already governed by slot fields and provider-specific resolution
+                    # (voice_storage.get_tts_api_key / workers reading raw ttsModelApiKey directly);
+                    # preserve those paths.
                     _uses_key_book = bool(provider) and prefix != 'tts'
                     _raw_book_field = (
                         assist_api_key_raw_fields.get(provider, '') if _uses_key_book else ''
@@ -1605,14 +1605,14 @@ class CoreConfigMixin:
                     _derived_book = (
                         str(config.get(_book_field) or '').strip() if _book_field else ''
                     )
-                    # 管理簿里这家的 Key 只能配这家的端点。走过 UI 的配置里两者
-                    # 一定同源（选中服务商时 URL 被自动填成该家地址且只读），但
-                    # 存量 / 导入 / 手改的配置可能留着另一家的 URL —— 那时把这家的
-                    # 真 Key 解析出来，就是把 A 家的凭证发给 B 家。
-                    # URL 为空不构成风险：自定义三元组凑不齐，下游整体回退。
-                    # 两个来源装的是**同一把**密钥（_derived_book 只是多一层
-                    # ASSIST_API_KEY_* 派生），所以要一起把关：只 gate 显式那个
-                    # 会从派生那条漏出去。
+                    # A provider's ledger key belongs only with its own endpoint. UI-generated configurations
+                    # guarantee matching origins because selecting providers autofills readonly URLs, but
+                    # legacy/imported/manually edited configurations may retain another provider's URL; resolving a genuine
+                    # key then sends provider A's credentials to provider B.
+                    # Empty URLs pose no risk: the incomplete custom triple causes a full downstream fallback.
+                    # Both sources contain the **same** key (_derived_book merely adds
+                    # ASSIST_API_KEY_* derivation), so guard both; guarding only the explicit source
+                    # leaks through derivation.
                     _slot_url = str(config.get(url_key) or '').strip()
                     if (_explicit_book or _derived_book) and _slot_url:
                         _profile = assist_api_profiles.get(provider)
@@ -1623,14 +1623,14 @@ class CoreConfigMixin:
                             if isinstance(_profile, dict)
                             else []
                         )
-                        # 同源判据用 utils.http.url.same_endpoint，不在这里另搓一份：
-                        # 视觉槽的凭证继承已经为这件事打磨过六轮（尾斜杠 / path 大小写 /
-                        # userinfo / 畸形端口 / 默认端口 / 畸形 IPv6），本地再写一个
-                        # 「转小写去尾斜杠」只会把同样的坑重踩一遍——事实上第一版就
-                        # 踩了：把 /V1 当成 /v1，也认不出显式写出的 :443。
+                        # Reuse utils.http.url.same_endpoint for origin matching rather than reinventing it:
+                        # vision-slot credential inheritance already refined it over six rounds (trailing slashes / path case /
+                        # userinfo / malformed ports / default ports / malformed IPv6). A local
+                        # lowercase-and-strip-slash implementation repeats those pitfalls; indeed the first version
+                        # equated /V1 with /v1 and failed to recognize explicit :443.
                         if not any(same_endpoint(_slot_url, c) for c in _candidates):
-                            # 端点不是这家的 → 不交出这家的 Key。回落到槽位存量值，
-                            # 请求不带（或带旧的）凭证会 401，比静默发错家可诊断。
+                            # Endpoint belongs elsewhere: withhold this provider's key, falling back to existing slot values.
+                            # Missing/old credentials yield diagnosable 401s instead of silent disclosure to the wrong provider.
                             _explicit_book = ''
                             _derived_book = ''
                     if _explicit_book:
@@ -1642,28 +1642,28 @@ class CoreConfigMixin:
                     elif cfg_key is not None:
                         config[apikey_key] = cfg_key
 
-            # TTS Voice ID 作为角色 voice_id 的回退
+            # TTS Voice ID serves as fallback for character voice_id.
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
         if config['GPTSOVITS_ENABLED'] and core_cfg.get('ttsVoiceId') is not None:
             config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
-        # 整份快照共用一次区域判定：判定尚未落定时它每次都会重算，Steam 若在循环
-        # 中途初始化完成，前面的 URL 会停在 lanlan.tech、后面的却变成 lanlan.app，
-        # 同一份 core_config 指向两个区域。
+        # Share one region decision across the whole snapshot: unresolved decisions are recomputed every time, so Steam
+        # initialization mid-loop could leave early URLs on lanlan.tech and later ones on lanlan.app,
+        # splitting one core_config snapshot across regions.
         #
-        # 但提到循环外之前必须先确认「确实有 URL 需要它」：区域判定会发起 GeoIP
-        # 探测，而免费路由门原本就长在 _adjust_free_api_url 的首行早退里
-        # （不变量 #2）。无条件判定 = 自配 API 用户也把 IP 发给第三方。
+        # Before moving this outside the loop, confirm some URL **actually needs it**: region selection starts GeoIP
+        # probing, and the free-route gate originally lived in _adjust_free_api_url's initial early return
+        # (invariant #2). Unconditional selection exposes custom-API users' IPs to third parties too.
         needs_region = self._config_needs_region(config)
-        # 运行时从自配/付费切到免费路由：探测可能正睡在上一轮失败留下的退避里（最长
-        # 600 秒），而这条路径没有任何催醒点——只有启动预热调 _kick_ip_probe。用户刚
-        # 切过来就开会话，线路一冻结整场不再复议，等于被钉在大陆兜底最长 600 秒。
-        # 只在「未选中 → 选中」这个边沿催一次：每次读配置都催会让退避形同虚设，被墙
-        # 时退化成对 ip-api.com 的请求风暴。进程首次读到免费路由时同样是边沿，但那时
-        # 探测线程还没起（_ensure_ip_probe_started 在下面的 _check_non_mainland 里），
-        # _kick_ip_probe 见 thread is None 直接 no-op，不会平白吃掉首轮退避。
+        # Switching at runtime from custom/paid to free routing: probing may be asleep in a failed attempt's backoff (up to
+        # 600s), with no wake point here; only startup warmup invokes _kick_ip_probe. Starting a session immediately after switching
+        # freezes routing for its lifetime, pinning it to the mainland fallback for up to 600s.
+        # Kick only on the unselected -> selected edge: every configuration read waking probes defeats backoff and causes
+        # ip-api.com request storms when blocked. The process's first free-route read is also an edge, but the probe
+        # thread has not started (_ensure_ip_probe_started lives in _check_non_mainland below);
+        # _kick_ip_probe sees thread is None and no-ops, preserving the first backoff.
         from utils.config_manager import ConfigManager
         if needs_region != ConfigManager._free_route_selected:
             ConfigManager._free_route_selected = needs_region
@@ -1674,9 +1674,9 @@ class CoreConfigMixin:
             try:
                 snapshot_non_mainland = self._check_non_mainland()
             except Exception:
-                # _check_non_mainland 内部已层层兜底，能抛到这里的都是真意外；
-                # 静默吞掉的话，海外用户整份快照钉在大陆线路且日志无痕——现场
-                # 只会看到「偶尔一整场很慢」。记一笔再兜底。
+                # _check_non_mainland already has layered fallbacks; exceptions reaching here are unexpected.
+                # Swallowing them silently pins overseas snapshots to mainland routing without logs, leaving only
+                # reports of occasional whole-session slowness. Record the failure before falling back.
                 logger.warning(
                     "[GeoIP] 区域判定抛出异常，本次快照按大陆线路组装", exc_info=True
                 )
@@ -1685,12 +1685,12 @@ class CoreConfigMixin:
             if key.endswith('_URL') and isinstance(value, str):
                 config[key] = self._adjust_free_api_url(
                     value, True,
-                    # AGENT_MODEL_URL 豁免区域改写：free-agent-model 有意固定 CN 的
-                    # lanlan.tech text 入口（见 _normalize_agent_url——它是恒等函数，
-                    # **撤销不了**本循环已做的改写，豁免必须发生在这里）。传
-                    # non_mainland=False 而不是跳过整个调用：livestream 前缀派生在
-                    # _adjust_free_api_url 里优先于区域改写，豁免的是「区域」，
-                    # 不是「本地转发」。
+                    # Exempt AGENT_MODEL_URL from region rewriting: free-agent-model deliberately pins the CN
+                    # lanlan.tech text endpoint (see _normalize_agent_url, an identity function
+                    # **unable to undo** this loop's rewrite, so exemption must happen here). Pass
+                    # non_mainland=False rather than skipping the call entirely: livestream-prefix derivation
+                    # precedes region rewriting in _adjust_free_api_url. Exempt region selection,
+                    # not local forwarding.
                     non_mainland=False if key == 'AGENT_MODEL_URL' else snapshot_non_mainland,
                 )
 
@@ -1761,20 +1761,20 @@ class CoreConfigMixin:
                 "model": image.model, "api_key": image.api_key, "is_custom": True,
             }
 
-        # GPT-SoVITS 启用时，tts_custom slot 视为自定义 API：UI 上勾 GSV 在产品语义上
-        # 就是 "启用一个自定义 TTS"，但前端 (api_key_settings.js) 并不会顺手把
-        # ENABLE_CUSTOM_API 也勾上。后端这里自愈，避免 "勾了 GSV 但没勾 ENABLE_CUSTOM_API"
-        # 这条用户极易踩中的路径让 is_custom=False、整条 GSV 链路（dispatcher /
-        # check_custom_tts_voice_allowed / /custom_tts_voices）全部失效。
-        # 仅扩到 tts_custom，不影响其他 slot 的开关行为。
+        # With GPT-SoVITS enabled, tts_custom counts as custom API: selecting GSV means enabling custom TTS in
+        # product terms, but frontend api_key_settings.js does not also select
+        # ENABLE_CUSTOM_API. Heal this backend state so the common GSV-only selection does not
+        # produce is_custom=False and disable the entire GSV path (dispatcher /
+        # check_custom_tts_voice_allowed / /custom_tts_voices).
+        # Extend only tts_custom, leaving other slot-toggle behavior unchanged.
         gsv_enabled_for_tts = (
             model_type == 'tts_custom'
             and core_config.get('GPTSOVITS_ENABLED', False)
         )
         treat_as_custom = enable_custom_api or gsv_enabled_for_tts
 
-        # 模型类型到配置字段的映射
-        # fallback_type: 'assist' = 辅助API, 'core' = 核心API
+        # Map model types to configuration fields.
+        # fallback_type: 'assist' = assist API, 'core' = core API.
         model_type_mapping = {
             'conversation': {
                 'custom_model': 'CONVERSATION_MODEL',
@@ -1837,21 +1837,21 @@ class CoreConfigMixin:
                 'custom_url': 'REALTIME_MODEL_URL',
                 'custom_key': 'REALTIME_MODEL_API_KEY',
                 'default_model': 'CORE_MODEL',
-                'fallback_type': 'core',  # 实时模型回退到核心API
+                'fallback_type': 'core',  # Realtime models fall back to core API.
             },
             'tts_default': {
                 'custom_model': 'TTS_MODEL',
                 'custom_url': 'TTS_MODEL_URL',
                 'custom_key': 'TTS_MODEL_API_KEY',
                 'default_model': 'CORE_MODEL',
-                'fallback_type': 'core',  # 默认TTS回退到核心API
+                'fallback_type': 'core',  # Default TTS falls back to core API.
             },
             'tts_custom': {
                 'custom_model': 'TTS_MODEL',
                 'custom_url': 'TTS_MODEL_URL',
                 'custom_key': 'TTS_MODEL_API_KEY',
                 'default_model': 'CORE_MODEL',
-                'fallback_type': 'assist',  # 自定义TTS回退到辅助API
+                'fallback_type': 'assist',  # Custom TTS falls back to assist API.
             },
         }
         
@@ -1922,14 +1922,14 @@ class CoreConfigMixin:
                     return _resolved_provider_type_for_model('summary', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
 
-            # 具名服务商的**协议**同样只在「这个槽的 URL 确实属于它」时才成立。
-            # 槽位没填完时上游会把 URL 回填成 assist 的地址（AGENT_MODEL_URL 尤其
-            # 明显：它有一条 VISION → OPENROUTER 的兜底链），此时仍按下拉值取协议，
-            # 就造出「assist 地址 + Anthropic 协议」——这正是 Fix D 要消灭的错配，
-            # 只是从「关掉自定义 API」换成了「开着但槽位没填完」这条入口。
+            # Named-provider **protocols** likewise apply only when the slot URL truly belongs to that provider.
+            # Incomplete slots have URLs filled from assist upstream (especially AGENT_MODEL_URL's
+            # VISION -> OPENROUTER fallback chain). Choosing protocol from the dropdown then creates
+            # assist URL + Anthropic protocol, precisely the mismatch Fix D removes,
+            # via enabled-but-incomplete custom API instead of disabled custom API.
             #
-            # 判据与凭证那一处共用（same_endpoint + provider 候选集）：协议和凭证
-            # 要么一起给、要么一起不给，不会出现「按 A 家协议、拿 B 家的 key」。
+            # Share credential criteria (same_endpoint + provider candidates): provide protocol and credentials
+            # together or neither, never provider A's protocol with provider B's key.
             if provider:
                 _slot_url = str(
                     core_config.get(
@@ -1979,10 +1979,10 @@ class CoreConfigMixin:
             omni_provider = str(core_config.get('omniModelProvider') or '').strip()
             if omni_provider == 'custom':
                 return 'local'
-            # 老配置在 omniModelProvider 这个键出现之前就能手填实时端点，那种存量
-            # 没有 provider 值可读，但它确实是自配端点，行为必须与改动前一致。
-            # 判据是「存盘里真有 omniModelUrl」——profile 默认值填出来的 URL 不进
-            # 这个键，所以不会把「什么都没选」误判成自配。
+            # Legacy configurations allowed hand-entered realtime endpoints before omniModelProvider existed; they have
+            # no provider value but are genuinely custom endpoints and must preserve previous behavior.
+            # Require actually persisted omniModelUrl; profile-default-filled URLs never enter
+            # this key, avoiding misclassification of unselected configurations as custom.
             if not omni_provider and str(core_config.get('omniModelUrl') or '').strip():
                 return 'local'
             return str(core_config.get('CORE_API_TYPE', '') or '')
@@ -1996,30 +1996,30 @@ class CoreConfigMixin:
             if not treat_as_custom or provider == 'follow_summary':
                 return self.get_model_api_config('summary', _core_config=core_config)
         
-        # agent 始终走专用字段 AGENT_MODEL_URL，但 is_custom 仅在 enableCustomApi 开启
-        # 时为 True。注意 AGENT_MODEL_URL **不**参与区域改写：它走 _normalize_agent_url，
-        # 而那是个恒等函数（free-agent-model 有意固定用 CN 的 text 入口）。此处原本写着
-        # 「有 lanlan.app 归一化」，与实现相反，已让 review 据此误判过一次。
+        # Agent always uses dedicated AGENT_MODEL_URL, but is_custom is True only with enableCustomApi.
+        # AGENT_MODEL_URL does **not** undergo region rewriting: _normalize_agent_url
+        # is an identity function because free-agent-model deliberately pins the CN text endpoint. The former comment
+        # claimed lanlan.app normalization, contradicting implementation and already misleading a review.
         if treat_as_custom or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
             custom_key = core_config.get(mapping['custom_key'], '')
 
-            # GSV 模式下 voice_id 即定位（无 model 概念），URL 即可视为已配置；
-            # 不放宽到全部 tts_custom 场景，避免改变 cosyvoice 用户原有的 fallthrough 行为。
+            # In GSV mode, voice_id identifies the voice with no model concept, so URL alone counts as configured;
+            # do not broaden all tts_custom cases, preserving cosyvoice users' existing fallthrough.
             is_gsv_url = (
                 gsv_enabled_for_tts
                 and custom_url.startswith(('http://', 'https://'))
             )
 
-            # 自定义配置完整时使用自定义配置
+            # Use complete custom configuration when available.
             if (custom_model and custom_url) or is_gsv_url:
                 resolved_api_key = custom_key
-                # 仅勾选 GSV、未填 TTS_MODEL_API_KEY 时，tts_custom slot 仍会被
-                # CosyVoice clone 路径复用 (register_voice → get_tts_api_key('cosyvoice')
-                # → 这里取 api_key)。直接返回空 key 会让 CosyVoice 报
-                # TTS_AUDIO_API_KEY_MISSING，回退到 ASSIST_API_KEY_QWEN 才能保住用户
-                # 在 GSV 开启前就在用的 CosyVoice 克隆能力。
+                # With only GSV enabled and TTS_MODEL_API_KEY empty, the CosyVoice clone path still reuses
+                # tts_custom (register_voice -> get_tts_api_key('cosyvoice')
+                # -> api_key here). Returning an empty key makes CosyVoice report
+                # TTS_AUDIO_API_KEY_MISSING; ASSIST_API_KEY_QWEN fallback preserves the CosyVoice cloning
+                # capability users had before enabling GSV.
                 if is_gsv_url and not resolved_api_key and model_type == 'tts_custom':
                     resolved_api_key = (core_config.get('ASSIST_API_KEY_QWEN') or '').strip()
                 return {
@@ -2027,30 +2027,30 @@ class CoreConfigMixin:
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
                     'is_custom': treat_as_custom,
-                    # 槽位下拉值只在「该槽的自定义配置真的生效」时才代表协议。
-                    # agent 槽是唯一会绕过 treat_as_custom 直接进这个分支的
-                    # （上面的 `if treat_as_custom or model_type == 'agent'`），
-                    # 关掉自定义 API 后它的 URL/Key 已经回落 assist，协议必须跟着回落，
-                    # 否则残留的 claude/kimi_code 会配出「assist 地址 + Anthropic 协议」。
-                    # GSV 那条路 treat_as_custom 为真（= enable_custom_api or gsv_enabled），
-                    # 不受影响。
+                    # Slot dropdown values represent protocol only while their custom configuration actually applies.
+                    # Agent alone bypasses treat_as_custom to enter this branch directly
+                    # (`if treat_as_custom or model_type == 'agent'` above).
+                    # Disabling custom API falls URL/key back to assist; protocol must follow,
+                    # or leftover claude/kimi_code selections create assist URL + Anthropic protocol.
+                    # GSV keeps treat_as_custom true (= enable_custom_api or gsv_enabled),
+                    # so remains unaffected.
                     'provider_type': (
                         _resolved_provider_type_for_model(model_type)
                         if treat_as_custom
                         else _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
                     ),
-                    # realtime 的 api_type 必须表达「这个 WebSocket 说的是谁家的方言」。
-                    # 原来这里无条件写 'local'，而 'local' 至今没有实现，还会经
-                    # lifecycle 的 core_api_type 赋值污染全局（TTS 因此落 dummy）。
-                    # 只有用户自己填的端点才是真 'local'；显式选中的具名服务商要保住
-                    # 自己的身份，其余（follow_core / 老配置空值）跟随核心 API。
+                    # Realtime api_type must identify the WebSocket provider's dialect.
+                    # Previously unconditional local remains unimplemented and also pollutes global state through
+                    # lifecycle core_api_type assignment, causing dummy TTS dispatch.
+                    # Only hand-entered endpoints are truly local. Explicit named providers retain
+                    # their identities; others (follow_core / legacy empty) follow core API.
                     'api_type': (
                         _resolved_realtime_api_type() if model_type == 'realtime' else None
                     ),
                 }
         
-        # 自定义音色(CosyVoice)的特殊回退逻辑：优先尝试用户保存的 Qwen Cosyvoice API，
-        # 只有在缺少 Qwen Cosyvoice API 时才再回退到辅助 API（CosyVoice 目前是唯一支持 voice clone 的）
+        # Custom CosyVoice voice fallback: prefer the user's saved Qwen CosyVoice API,
+        # falling back to assist API only when absent (CosyVoice is currently the sole provider supporting voice cloning).
         if model_type == 'tts_custom':
             active_assist = str(core_config.get('assistApi') or '').strip()
             qwen_candidates = []
@@ -2087,22 +2087,22 @@ class CoreConfigMixin:
                         or qwen_profile.get('OPENROUTER_URL', core_config.get('OPENROUTER_URL', ''))
                     )
                 return {
-                    'model': core_config.get(mapping['default_model'], ''), # 占位值，下游会覆盖成实际模型
+                    'model': core_config.get(mapping['default_model'], ''), # Placeholder; downstream replaces it with the actual model.
                     'api_key': qwen_api_key,
                     'base_url': base_url,
                     'is_custom': False,
                     'provider_type': _provider_type_from_assist_key(qwen_provider),
                 }
 
-        # 根据 fallback_type 回退到不同的 API
+        # Select API fallback based on fallback_type.
         #
-        # 协议必须与地址同源。这里返回的 base_url / api_key 全部来自 core（或下面的
-        # assist），而 provider_type 原本走 _resolved_provider_type_for_model —— 那是
-        # 按槽位下拉值解析的，且下拉值不受 ENABLE_CUSTOM_API 门控。于是「把某槽选成
-        # claude/kimi_code 之后再关掉自定义 API」会得到 assist 的地址+Key 配 Anthropic
-        # 协议，该槽的请求直接打死。回退分支按回退目标取协议，错配就不可能构造出来。
+        # Protocol must share the URL's origin. Returned base_url / api_key come entirely from core (or assist
+        # below), while provider_type previously used _resolved_provider_type_for_model,
+        # based on dropdown values ungated by ENABLE_CUSTOM_API. Selecting claude/kimi_code
+        # and later disabling custom API therefore paired assist URL/key with Anthropic
+        # protocol, breaking requests. Fallback protocols follow fallback targets, making mismatch impossible.
         if mapping['fallback_type'] == 'core':
-            # 回退到核心 API 配置
+            # Fall back to core API configuration.
             return {
                 'model': core_config.get(mapping['default_model'], ''),
                 'api_key': core_config.get('CORE_API_KEY', ''),
@@ -2111,7 +2111,7 @@ class CoreConfigMixin:
                 'provider_type': _provider_type_from_core_key(
                     core_config.get('CORE_API_TYPE', '')
                 ),
-                # 对于 realtime 模型，回退到核心API时使用配置的 CORE_API_TYPE
+                # Realtime models falling back to core use configured CORE_API_TYPE.
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
         elif mapping['fallback_type'] == 'conversation':
@@ -2119,7 +2119,7 @@ class CoreConfigMixin:
         elif mapping['fallback_type'] == 'summary':
             return self.get_model_api_config('summary', _core_config=core_config)
         else:
-            # 回退到辅助 API 配置（协议同源，理由见上面 fallback 分支的注释）
+            # Fall back to assist API configuration with matching protocol, as explained above.
             return {
                 'model': core_config.get(mapping['default_model'], ''),
                 'api_key': core_config.get('OPENROUTER_API_KEY', ''),

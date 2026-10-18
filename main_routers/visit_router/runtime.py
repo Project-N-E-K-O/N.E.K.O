@@ -131,27 +131,27 @@ _PUMP_IDLE_S = 0.25
 _INTERRUPT_MAIN_TURN_S = 3.0
 _CLOSE_WAIT_S = VISIT_LEAVE_GAP_GRACE_S * 2 + 2.0
 _HANDOFF_POLL_S = 0.25
-# 关机总预算 VISIT_SHUTDOWN_BUDGET_S：每一步各有上限（_SHUTDOWN_TASK_WAIT_S），且都截到总期限的剩余；
-# 撤销未配对房间一开始就起、与封存并行，最后最多再等 _SHUTDOWN_ROOM_CANCEL_S
+# Total VISIT_SHUTDOWN_BUDGET_S bounds every independently capped _SHUTDOWN_TASK_WAIT_S step by remaining total time.
+# Cancel unmatched rooms immediately alongside archival, then wait at most _SHUTDOWN_ROOM_CANCEL_S afterward.
 _SHUTDOWN_TASK_WAIT_S = 0.5
 _JOURNAL_OPEN_MAX_S = 10.0
 _SESSION_CLOSE_S = 5.0
 _RESERVED_SEND_MAX_S = 10.0
 _SEAL_MAX_S = 10.0
 _DISPLAY_FLUSH_S = 2.0
-_ENDED_AFTER_DISPLAY_S = 2.0  # 「已结束」在后台排在没退下的显示写后面时，最多等它这么久再尽力发
+_ENDED_AFTER_DISPLAY_S = 2.0  # Bound waiting for ended notifications queued behind stubborn display writes, then send best effort.
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
 _SHUTDOWN_ROOM_CANCEL_S = 1.0
 _RENEW_RETRY_BASE_S = 5.0
 _RENEW_RETRY_MAX_S = 60.0
 _VOICE_STATUS_THROTTLE_S = 5.0
-_ACCOUNT_CHANGE_SEAL_WAIT_S = 30.0  # 登出 / 切换社区账号前等在飞串门封存上传文件的上限
-# 按住账号的一次复盘推送（核账号 + 写出）最长多久：必须短于切号的等待，切号放行时它一定已结束或被截断
+_ACCOUNT_CHANGE_SEAL_WAIT_S = 30.0  # Maximum wait for active-visit upload archival before logout/account switching.
+# Maximum account-bound replay push, checking account then writing; shorter than account-switch waits so it finishes or truncates before switches proceed.
 _ACCOUNT_BOUND_PUSH_MAX_S = 10.0
 
 # ═════════════════════════════════════════════════════════════════════
-# 依赖注入
+# Dependency injection.
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -166,7 +166,7 @@ async def _default_settings() -> dict:
 
     try:
         return dict(await aload_global_conversation_settings())
-    except Exception as exc:  # noqa: BLE001 - 读不出按默认值
+    except Exception as exc:  # noqa: BLE001 - Unreadable means defaults.
         logger.warning("visit: conversation settings unreadable: %s", type(exc).__name__)
         return {}
 
@@ -257,7 +257,7 @@ def set_runtime_deps(deps: Optional[RuntimeDeps]) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 模块级登记
+# Module-level registration.
 # ═════════════════════════════════════════════════════════════════════
 
 _runtimes: dict[str, "VisitRuntime"] = {}
@@ -291,7 +291,7 @@ def end_visits_disabled() -> int:
     ended.
     """
     global _disabled_gen
-    _disabled_gen += 1  # 还挂在入场途中的 start_visit 醒来后看到它就不登记
+    _disabled_gen += 1  # In-flight start_visit checks this after waking and skips registration.
     return sum(1 for rt in live_runtimes() if rt.request_finalize("visit_disabled"))
 
 
@@ -315,7 +315,7 @@ def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
 
 
 def _prune_recent(now: float) -> None:
-    # 没人再查的场次也要放掉（它们持有转录、会话与 manager）
+    # Release unqueried visits too, since they hold transcripts/sessions/managers.
     for visit_id, rt in list(_recent.items()):
         if rt.ended_at_mono is None or now - rt.ended_at_mono > VISIT_TRANSCRIPT_MEMORY_TTL_S:
             del _recent[visit_id]
@@ -420,7 +420,7 @@ def _account_change_mutex() -> asyncio.Lock:
 def has_visit_background_tasks(lanlan_name: str) -> bool:
     """Registry ``has_background_tasks``: this character's visit background writes are running."""
     if _resolving_names:
-        # 有后台任务还没认出它属于哪个名字（启动补录派生的）：宁可短暂挡住改名 / 删除
+        # Background tasks not yet associated with names, from startup backfill, conservatively block rename/delete briefly.
         return True
     uid = _character_uid_of(lanlan_name)
     tasks = _visit_bg_tasks.get(uid) if uid else None
@@ -428,13 +428,13 @@ def has_visit_background_tasks(lanlan_name: str) -> bool:
 
 
 async def _remember_name(character_uid: str) -> None:
-    # 守卫按名字查：补录派生的任务只带 uid（这个角色在本进程可能没串过门），先认出它现在叫什么；
-    # 每次都重新解析：角色空闲时改过名，旧名字的映射作废
+    # Guards query names; backfill tasks have UIDs only, so resolve current names even for characters never visited in this process.
+    # Resolve every time: idle-time renames invalidate old mappings.
     try:
         from main_logic.visit import local_chars
 
         name = await local_chars.resolve_char_name(character_uid)
-    except Exception:  # noqa: BLE001 - 认不出名字就只按 uid 登记
+    except Exception:  # noqa: BLE001 - Unknown names register by UID only.
         return
     if not name:
         return
@@ -529,8 +529,8 @@ def current_instance(lanlan_name: str) -> Optional[str]:
 
 def _register(rt: "VisitRuntime") -> None:
     _runtimes[rt.lanlan_name] = rt
-    # 先登记的那个留着：本机另一个角色兑换本机发出的邀请会被 Servers 以 self_invite 拒掉，
-    # 被拒之前它不能顶掉仍在进行的这一场
+    # Keep first registration: another local character redeeming a local invitation gets Servers self_invite rejection;
+    # before rejection it must not replace the ongoing visit.
     _by_visit.setdefault(rt.visit_id, rt)
     if rt.character_uid:
         _uid_by_name[rt.lanlan_name] = rt.character_uid
@@ -574,7 +574,7 @@ def _reset_for_tests() -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# transport 会话
+# Transport sessions.
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -614,7 +614,7 @@ class _Transport(VisitTransportSession):
 
     def on_page_attached(self, now: float) -> None:
         super().on_page_attached(now)
-        # 顶替旧连接时旧连接的 finally 不再报 page_lost：同样把它留下的东西作废
+        # Replaced connections' finally no longer reports page_lost; invalidate their residue too.
         self._rt.on_page_gone()
 
     def on_page_rejoined(self, now: float) -> None:
@@ -630,7 +630,7 @@ class _Transport(VisitTransportSession):
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 运行时
+# Runtime.
 # ═════════════════════════════════════════════════════════════════════
 
 _vp8_next_visit = False
@@ -675,7 +675,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.phase = PHASE_PENDING
         self.slot: dict = {}
         self.liveness = VisitLiveness(side, now)
-        # 等待期限在入房（joined）时才按侧位起算：之前只有能力门与入房自己的计时
+        # Waiting deadlines start by side only after joined; beforehand use capability/room-entry timers only.
         self.liveness.wait_deadline = math.inf
         self.outbox = VisitOutbox(visit_id, side, clock=clock, spool_dir=self.spool_dir)
         self.sequencer = InboxSequencer(on_early=self._on_early_wrap_up,
@@ -693,11 +693,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.family_names: tuple[str, ...] = ()
         self.char_names: tuple[str, ...] = ()
 
-        # 凭证与能力门
+        # Credentials and capability gates.
         self.grant: Optional[cr.VisitGrant] = None
-        # 准入检查（清除进行中、被封缓存）按的社区账号：领到的凭证必须属于它
+        # Admission clear/block-cache checks use a community account; issued credentials must belong to it.
         self.admitted_account: Optional[str] = None
-        # 准入时的账号变更代数（account_epoch）：领凭证之前必须仍是它
+        # Admission account_epoch must remain current before credential acquisition.
         self.admitted_epoch: Optional[int] = None
         self._livekit_codec: Optional[str] = None
         self._creds_task: Optional[asyncio.Task] = None
@@ -730,25 +730,25 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.pre_room_anomalies = 0
         self._last_voice_status = -math.inf
 
-        # 接管与回调
+        # Takeover and callbacks.
         self.takeover_token: Any = None
         self.hold_token: Any = None
         self.inbox = _make_inbox()
 
-        # 任务
+        # Tasks.
         self._kick_event = asyncio.Event()
         self._pump_task: Optional[asyncio.Task] = None
         self._pump_stop = False
         self._ended_sending: Optional[asyncio.Future] = None
         self._memory_off_unsaved = False
-        self._state_writing: Optional[asyncio.Future] = None  # 激活被取消时还在写的那次 state（收尾先等它落定）
+        self._state_writing: Optional[asyncio.Future] = None  # State write still running after activation cancellation; finalization awaits completion first.
         self._renew_task: Optional[asyncio.Task] = None
         self._renew_failures = 0
         self._renew_retry_at: Optional[float] = None
         self._exit_task: Optional[asyncio.Task] = None
         self._tasks: set[asyncio.Task] = set()
 
-        # 收尾
+        # Finalization.
         self.finalize_reason: Optional[str] = None
         self.peer_reason: Optional[str] = None
         self.status_code: Optional[str] = None
@@ -785,7 +785,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._init_rx()
         self._init_talk()
 
-    # ── 小工具 ───────────────────────────────────────────────────────
+    # -- Small helpers --
 
     def spawn(self, coro: Awaitable[Any], *, name: str = "") -> asyncio.Task:
         """A task owned by this runtime (cancelled when the runtime is torn down)."""
@@ -829,7 +829,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def _send_after_display(self, display: asyncio.Future, payload: dict) -> None:
         await asyncio.wait([display], timeout=_ENDED_AFTER_DISPLAY_S)
         if not display.done():
-            # 到点那次写还没退下：仍尽力发一次（页面停在「收尾中」比偶尔并发一次写更糟）
+            # Previous write exceeded its deadline: still send best effort; stuck finalizing UI is worse than occasional concurrent writes.
             logger.warning("visit %s: display write never retired; sending ended anyway", self.visit_id[:6])
         try:
             await self.host.send_frame(payload)
@@ -837,7 +837,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: ended not sent: %s", self.visit_id[:6], type(exc).__name__)
 
     async def _status_after(self, previous: asyncio.Future, code: str, details: dict) -> None:
-        await asyncio.wait([previous])  # previous 自带期限
+        await asyncio.wait([previous])  # previous has its own deadline.
         try:
             await self.host.send_status(code, details)
         except Exception as exc:  # noqa: BLE001
@@ -857,7 +857,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if action == PHASE_ENDED:
             display = self._display_task
             if display is not None and not display.done():
-                # 显示队列那次写到点还没退下：「已结束」排在它后面（后台、限时），不与它并发写同一个页面、不先到
+                # Display write exceeded deadline: queue ended after it in background with bounds, never writing concurrently or arriving first.
                 ended = self._ended_sending = asyncio.ensure_future(self._send_after_display(display, payload))
                 self._keep_background(ended)
                 return
@@ -869,12 +869,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         details = {"visit_id": self.visit_id, **{k: v for k, v in details.items() if v is not None}}
         ended = self._ended_sending
         if ended is not None and not ended.done():
-            # 「已结束」还排在卡住的显示写后面：这条 status 跟在它后面发，不先到、不与那次写并发
+            # ended still waits behind blocked display writes; queue this status afterward without overtaking/concurrent writes.
             self._keep_background(asyncio.ensure_future(self._status_after(ended, code, details)))
             return
         await self.host.send_status(code, details)
 
-    # ── 启动 ─────────────────────────────────────────────────────────
+    # -- Startup --
 
     def start(self) -> None:
         """Register the runtime and its transport; the page builds the iframe on ``pending``."""
@@ -883,7 +883,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._pump_task = asyncio.ensure_future(self._pump_loop())
         self.spawn(self.push(PHASE_PENDING, transport=None))
 
-    # ── 能力门与凭证 ─────────────────────────────────────────────────
+    # -- Capability gates and credentials --
 
     async def on_preflight(self, caps: dict) -> None:
         """``caps{stage:'preflight'}``: ``preflight_ok:false`` ends the visit without contacting Servers."""
@@ -900,18 +900,18 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         """First ``credentials`` of a transport connection (first issue, or page re-entry)."""
         if self.finalizing:
             return None
-        gen = self._page_gen  # 期间这条连接被顶替 / 断开：期限不能装在新连接头上（它会自己来要凭证）
+        gen = self._page_gen  # Connection replaced/disconnected meanwhile: never impose its deadline on new connections, which request credentials themselves.
         if self.grant is None:
             if self._creds_task is None:
                 self._creds_task = asyncio.ensure_future(self._obtain_credentials())
             task = self._creds_task
-            # 只等不连带取消（页面重连会再来要）；关机取消了它就按没领到
+            # Await without cancelling underlying work so page reconnects can retry; shutdown cancellation means no credentials acquired.
             await asyncio.wait([task])
             if task.cancelled():
                 return None
             if task.exception() is not None:
-                # 契约外的本地失败（例如打断主对话的适配层抛错）：这场开不起来，与打断不了同样按忙收尾、
-                # 释放路由；不把异常抛进传输回调，也不留一个失败的任务让重连反复等它
+                # Noncontract local errors, e.g. main-chat interruption adapters failing, prevent startup; finalize busy like interruption failure,
+                # releasing routes without throwing into transport callbacks or leaving failed tasks retried forever on reconnect.
                 logger.warning("visit %s: credential setup failed: %r", self.visit_id[:6], task.exception())
                 self.request_finalize("busy")
                 return None
@@ -929,7 +929,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 self.request_finalize("kicked")
                 return None
             except cr.VisitServersError as exc:
-                # 续期失败沿用手里那份：凭证过期之前照样能重新入房
+                # Failed renewal retains existing credentials, still valid for room reentry until expiry.
                 logger.warning("visit %s: vendor grant renewal failed (%s)", self.visit_id[:6], exc.code)
             if self.finalizing or gen != self._page_gen:
                 return None
@@ -944,7 +944,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if creds is not None and creds.transport == "trtc":
             return "h264"
         if self._livekit_codec is None:
-            # 上一场软编过载只影响下一场：这一场取走标记，续期 / 重连沿用同一个选择
+            # Prior software-encoding overload affects this next visit only; consume marker once and preserve choice across renewal/reconnect.
             self._livekit_codec = "vp8" if _vp8_next_visit else "vp9"
             _vp8_next_visit = False
         return self._livekit_codec
@@ -957,21 +957,21 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def _obtain_credentials(self) -> bool:
         """Main turn interrupt → Servers credentials → takeover (§3.2.1 steps 4–6)."""
-        # 两侧一样：普通文字回复还在生成就先打断（接管只压输出，不停离线会话的生成）
+        # Both sides interrupt ongoing ordinary-text generation first; takeover suppresses output without stopping offline generation.
         if not await self.host.interrupt_main_turn(_INTERRUPT_MAIN_TURN_S):
             self.request_finalize("busy")
             return False
         if self.finalizing:
-            # 等主对话轮期间这场已被结束：不再去领凭证（guest 会兑掉一次性邀请码、扣配额，且撤不回）
+            # Visit ended while awaiting main-chat turns: never acquire irreversible guest credentials consuming invitations/quota.
             return False
         if self.admitted_epoch is not None and account_epoch() != self.admitted_epoch:
-            # 准入之后有过登出 / 换账号（或正在进行）：领凭证撤不回（guest 兑掉一次性邀请码），发请求之前就结束。
-            # 同步判断、紧接着发请求；此后才开始的账号变更会先结束本场、等它收尾，再改本机会话——
-            # 这次请求用的仍是准入时的会话
+            # Logout/account changes after admission or in progress must end before irreversible credential redemption.
+            # Check synchronously and request immediately. Later account changes finalize this visit before mutating local sessions,
+            # so this request still uses its admitted account.
             self.request_finalize("busy")
             return False
-        # 与上面的代数判断之间没有让出：此后开始的账号变更会先等这次请求结束，再改本机会话
-        # 钉在准入账号上：请求取会话快照时若已换成别的账号，凭证客户端不发请求（不会按新账号兑邀请码）
+        # No yield since generation checks; later account changes await this request before changing local sessions.
+        # Pin admitted accounts: credential clients send nothing if their session snapshot already changed accounts, preventing wrong-account redemption.
         request = asyncio.ensure_future(self.deps.fetch_credentials(
             role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
             tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
@@ -985,21 +985,21 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except cr.VisitServersError as exc:
             self._finalize_for_servers_error(exc)
             return False
-        except Exception as exc:  # noqa: BLE001 - 契约外的失败按 Servers 不可达
+        except Exception as exc:  # noqa: BLE001 - Noncontract failures count as Servers unreachable.
             logger.warning("visit %s: credentials failed: %s", self.visit_id[:6], type(exc).__name__)
             self.request_finalize("servers_unreachable")
             return False
         self.grant = cr.VisitGrant(creds, display_name=self.lanlan_name,
                                    invite_code=self.invite_code if self.side == "guest" else None)
         try:
-            # 有界：本地记账卡住（文件锁 / 磁盘）不能让这场停在 pending、一直占着路由
+            # Bound local file-lock/disk accounting so pending visits cannot hold routing forever.
             await asyncio.wait_for(self.deps.record_account(creds.account, creds.visit_uid), _ACCOUNT_RECORD_S)
-        except Exception as exc:  # noqa: BLE001 - 映射写不进不挡串门（凭证已签发、配额已扣），后台补写
+        except Exception as exc:  # noqa: BLE001 - Failed mappings do not block issued/quota-charged visits; backfill asynchronously.
             logger.warning("visit %s: account mapping not recorded: %r", self.visit_id[:6], exc)
-            # 转录 / 举报上传按这张映射认账号：没写成就一直补写，写成之前上传只是排队等着
+            # Transcript/report uploads use this account mapping; retry indefinitely, leaving uploads queued until persistence succeeds.
             _detach(_retry_record_account(self.deps, creds.account, creds.visit_uid, self.visit_id))
         if self.admitted_account is not None and creds.account != self.admitted_account:
-            # 准入检查（清除进行中、被封缓存）按的是另一个社区账号：期间换了账号，这份凭证不能用，host 的房间撤掉
+            # Account changed since admission clear/block checks: reject credentials and cancel host rooms.
             logger.warning("visit %s: community account changed before credentials", self.visit_id[:6])
             self.request_finalize("busy")
             self._cancel_room_once()
@@ -1009,19 +1009,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("servers_unreachable")
             return False
         if self.finalizing:
-            # 等 Servers 期间这场已被结束：收尾流程可能已经走过取消那一步，这里补一次（只发一次）
+            # Visit ended while waiting for Servers; finalization may already have passed cancellation, so attempt once here too.
             self._cancel_room_once()
             return False
         try:
             self.takeover_token = self.host.acquire_takeover(self._voice_dispatcher, self.inbox.accept)
-        except Exception as exc:  # noqa: BLE001 - 别的路由抢先接管：按 busy 结束
+        except Exception as exc:  # noqa: BLE001 - Another route acquired first: finalize busy.
             logger.warning("visit %s: takeover refused: %s", self.visit_id[:6], type(exc).__name__)
             self.request_finalize("busy")
             return False
         try:
-            # 有界：页面不收时它会一直等，而此刻已持有接管、能力门计时还没装上
+            # Bound waiting when pages refuse; takeover already exists but capability deadlines are not yet installed.
             await asyncio.wait_for(self.host.interrupt_ordinary_speech(), _INTERRUPT_MAIN_TURN_S)
-        except Exception as exc:  # noqa: BLE001 - 切不掉普通语音：释放接管、按 busy 结束
+        except Exception as exc:  # noqa: BLE001 - Cannot interrupt ordinary speech: release takeover and finalize busy.
             logger.warning("visit %s: ordinary speech not interrupted: %s", self.visit_id[:6], type(exc).__name__)
             self.request_finalize("busy")
             return False
@@ -1048,7 +1048,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         elif isinstance(exc, cr.VisitCrossRegionUnsupported):
             reason = "cross_region_unsupported"
         elif isinstance(exc, cr.VisitInviteInvalid):
-            # 预览时有效、确认时已进入到期前 60 s：按邀请过期告诉用户
+            # Valid at preview but now within 60s of expiry: report expired invitation.
             reason = "invite_expired" if exc.reason == "invite_expiring" else "invite_invalid"
             details["reason"] = exc.reason
         else:
@@ -1067,7 +1067,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._preflight_deadline = None
         self._sdk_deadline = None
         self._join_deadline = None
-        self._sdk_ok = False  # 能力门 ③ 按连接：新连接要自己再报一次
+        self._sdk_ok = False  # Capability gate 3 is per connection; new connections report independently.
         self._page_gen += 1
 
     async def on_sdk_caps(self, caps: dict) -> None:
@@ -1082,12 +1082,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.codecs = list(caps.get("codecs") or [])
         self._sdk_ok = True
         if self._pending_join is not None and not self.joined:
-            # 旧连接的首次入房还没结束（joined 仍为真）时不取走：留给它作废时补做
+            # Do not consume while old first-join work remains joined; retain for retry when it invalidates.
             pending, self._pending_join = self._pending_join, None
             await self.on_transport_state(pending)
             return
         if not self.joined and self._join_deadline is None:
-            # 能力门通过不代表入房成功：25 s 内没报 joined 按 relay_lost 结束，不发邀请码
+            # Capability success is not room-entry success: no joined within 25s ends relay_lost without issuing invitations.
             self._join_deadline = self.clock() + VISIT_SELF_RECONNECT_S
 
     # ── transport state ─────────────────────────────────────────────
@@ -1102,33 +1102,33 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.local_hidden = msg["hidden"]
             self._announce_view()
         if state not in ("joined", "connected"):
-            # 之后又报了断线 / 出错 / 被踢：记下的那次入房作废，不能在能力门通过后被当成仍在房里
+            # Later disconnect/error/kick invalidates remembered joins; capability success must not treat them still present.
             self._pending_join = None
         if state in ("joined", "connected"):
             reconnected = self.liveness.self_disconnected_at is not None
             self.liveness.on_self_connected(now)
             self.outbox.resume(now, reason=PAUSE_SELF_RECONNECT)
             if self._first_join_gen is not None and self._first_join_gen != self._page_gen:
-                # 旧连接的首次入房还在写上传头、它的连接已经没了：新连接这次报告先记下，旧的那次结束后补做
+                # Old first-join header writes continue after connection loss; record new joins and process after old work ends.
                 self._pending_join = dict(msg)
                 return
             if not self.joined:
                 if self.creds is not None and not self._sdk_ok:
-                    # 入房报告比能力门 ③ 先到（iframe 一次入房只报一次）：记下，能力门过了再补做
+                    # joined may precede gate 3 and occurs once per iframe entry; retain and replay after gate success.
                     self._pending_join = dict(msg)
                     return
-                # 首次入房的记账（写上传头、代数、阶段）是运行时自己的受保护任务：收包处理被取消也照样走完，
-                # 否则 _first_join_gen 卡在旧代数，重连后的入房报告只会一直搁在 _pending_join 里
+                # First-join header/generation/phase accounting is runtime-owned protected work that finishes despite cancelled receive handlers,
+                # or _first_join_gen sticks on old generations and reconnect joins remain in _pending_join forever.
                 joining = self.spawn(self._on_first_join(now), name="first_join")
                 await asyncio.shield(joining)
             elif reconnected:
-                # SDK 自己重连成功：重发 hello 与当前媒体快照（手动重新入房后 iframe 的发布 / 订阅都没了）
+                # SDK reconnect success resends hello/current-media snapshots; manual room reentry lost iframe publication/subscription.
                 self.outbox.resend_hello(now)
                 self.spawn(self.send_media())
         elif state in ("reconnecting", "left"):
-            # left：iframe 离开了 vendor 房间。照约定只在执行 stop 时报（那时已在收尾、上面已返回），
-            # 报完随即关闭传输连接；若连接没关，按本侧断线走有上限的自重连：期限内回来照常，
-            # 传输随后断开转页面重载宽限，都没有就按 relay_lost 结束，不一直挂着占路由
+            # left means iframe left the vendor room, normally only during stop/finalization, already returned above.
+            # Transport then closes; otherwise bounded local reconnect pauses deadlines, allowing return within grace,
+            # or later transport disconnection enters page-reload grace. Without either, end relay_lost rather than holding routes forever.
             if self.liveness.self_disconnected_at is None:
                 self.reconnects += 1
             self.liveness.on_self_disconnected(now)
@@ -1149,44 +1149,44 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def _on_first_join(self, now: float) -> None:
         creds = self.creds
         if creds is None or not self._sdk_ok or self.finalizing:
-            # 还没下发凭证 / 能力门 ③ 还没过的连接报的入房不算：等真正入房的那一次再做首次入房的事
+            # Ignore joins before credential delivery/gate 3; perform initial-join work on actual entry later.
             return
         self.joined = True
         gen = self._first_join_gen = self._page_gen
-        # 进入本场：先写上传头，之后的每一行、用量与异常都追加在它后面。独立任务：
-        # 收尾 / 关机封存之前先等它写完（否则封存时流水还没装好、封存成空操作）。只写一次：
-        # 连接被顶替后新连接再次首次入房时沿用这一份
+        # On entry, write upload headers before lines/usage/errors. Use an independent task;
+        # finalization/shutdown await it before sealing, preventing empty-noop archival. Write once,
+        # reusing across replacement connections' first joins.
         opening = self._start_journal()
-        # 写上传头有界：磁盘卡住时收包循环不能一直挂着（入房期限仍在走，到点按 relay_lost 结束）
+        # Bound upload-header writes so blocked disks cannot hang receives while room-entry deadlines expire as relay_lost.
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S)
         self._first_join_gen = None
         if not opening.done():
             logger.warning("visit %s: upload journal still opening, buffering its lines", self.visit_id[:6])
         if opening.done() and not opening.cancelled() and opening.exception() is not None:
-            # 上传流水建不起来：转录少一份，串门照常
+            # Failed upload journals lose one transcript copy, not visit operation.
             logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6],
                            type(opening.exception()).__name__)
         if self.finalizing:
-            # 写上传头期间这场已被结束：不再把阶段翻回等待
+            # Visit ended during header write: never return phase to waiting.
             return
         self._join_deadline = None
         if gen != self._page_gen:
-            # 写上传头期间报入房的那条连接没了 / 被顶替：这次入房不算；新连接期间报过的入房这时补做
+            # Joining connection vanished/replaced during header writing: invalidate its join and process new-connection reports afterward.
             self.joined = False
             pending, self._pending_join = self._pending_join, None
             if pending is not None:
                 await self.on_transport_state(pending)
             elif self._sdk_ok and self._join_deadline is None:
-                # 新连接已过能力门 ③（那时 joined 还为真、没起入房期限），却还没报 joined：补起入房期限，
-                # 一直报不上就按 relay_lost 结束，不停在等待入房
+                # New connection passed gate 3 while joined was still true, without its own joined report: install entry deadline,
+                # ending relay_lost if no join arrives rather than waiting forever.
                 self._join_deadline = self.clock() + VISIT_SELF_RECONNECT_S
             return
         if self.peer is not None:
-            # 对端的 hello 先于本侧的入房报告到达、已核验并进了等待接待：阶段与期限已由核验接管，不翻回去
+            # Peer hello arrived earlier, verified, and entered reception waiting; verification owns phase/deadline, never reset them.
             return
-        now = self.clock()  # 写上传头 await 过：等待期限从这一刻算
+        now = self.clock()  # Header write awaited; start waiting deadlines now.
         if self.side == "host":
-            # 等客：只受邀请期限约束；观察到对端入房时由 liveness 延长
+            # Hosts await guests under invitation expiry only; observed peer entry extends through liveness.
             from config.visit_settings import VISIT_INVITE_WAIT_S
 
             self.liveness.wait_deadline = now + VISIT_INVITE_WAIT_S
@@ -1205,9 +1205,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         opening = self._journal_opening
         if opening is None:
             creds = self.creds
-            # 对端 hello 先于入房报告、已开口：积压里的台词比此刻早。开始时间不晚于最早那句，
-            # 流水里不会出现台词 ts < started_at（补录按最后一条算 ended_at 时也不会早于开始）。
-            # 只看台词：入房前的用量 / 异常记录不把开始时间往前拉（duration_s 不多算入房前的空档）
+            # Peer hello/speech preceded our joined report; backlog lines are earlier than now. Start no later than earliest speech,
+            # preserving ts>=started_at and backfill ended_at>=start when using final records.
+            # Consider lines only: prejoin usage/errors never extend start backward or inflate duration with idle setup time.
             started_at = min([self.wall()] + [float(r["ts"]) for r in self._journal_backlog
                                               if r.get("kind") == "line" and isinstance(r.get("ts"), (int, float))
                                               and not isinstance(r.get("ts"), bool)])
@@ -1216,14 +1216,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
                 transport=creds.transport, started_at=started_at, app_version=cr._app_version(),
             ))
-            # 上传头一落盘就补记等待期间攒下的行 / 用量 / 异常（写失败时 is_open 为假，什么都不做）
+            # After header persistence, immediately backfill waiting lines/usage/errors; is_open=False after failure makes this noop.
             opening.add_done_callback(lambda _t: self._flush_journal_backlog())
         return opening
 
     async def _settle_delivering(self, timeout: float) -> None:
-        # 两条收尾路径都先置 _rx_closed 再调这里：排在 on_recv 里的收包醒来就退出、不再交出新的一批（封存的
-        # 边界），所以这里等的是边界之前已收下的那批。循环只为接收还开着时的调用：那时排着的下一条可能先醒、
-        # 同步交出新一批，只等一次快照的话新这批会落在后面
+        # Both finalization paths set _rx_closed first, stopping queued on_recv handlers before new batches cross archival
+        # boundaries. Wait only preboundary accepted batches here. Loop for calls while receiving remains open,
+        # when queued handlers can wake first and synchronously hand off new batches beyond a one-time snapshot.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while self._delivering is not None and not self._delivering.done():
@@ -1233,8 +1233,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await asyncio.wait([self._delivering], timeout=remaining)
 
     def _start_journal_for_backlog(self) -> None:
-        # 对端 hello 先到、这场已开口，却一直没等来本侧的入房报告就收尾：上传头还没开始写，
-        # 攒下的那几句只在积压里。此刻开始写上传头，之后照常封存（关机时照常放弃并留给补录）
+        # Peer hello was verified and speech began, but no local joined report arrived before finalization, leaving lines only
+        # in backlog. Start headers now, then seal normally; shutdown abandons for startup backfill as usual.
         if (self._journal_opening is None and self.creds is not None and not self.journal.sealed
                 and any(r.get("kind") == "line" for r in self._journal_backlog)):
             self._start_journal()
@@ -1244,7 +1244,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             if not self.peer_present:
                 self.peer_present = True
                 if self.liveness.peer_departed_at is not None or self.peer is not None:
-                    # 显式离开后的重入，或超时类断开后再出现：vendor 刚确认对端在场，心跳从现在算
+                    # Reentry after explicit leave/timeout confirms peer presence afresh; heartbeat starts now.
                     self.liveness.on_peer_vendor_rejoined(now)
                 self.liveness.on_peer_entered(now)
                 self.outbox.resume(now, reason=PAUSE_PEER_AWAY)
@@ -1255,7 +1255,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self.peer_present = False
         if str(vendor_reason) in EXPLICIT_VENDOR_LEAVES:
-            # 暂定离开：35 s 重入宽限，期间心跳判死暂停、投递计时暂停
+            # Tentative departure: 35s reentry grace pauses heartbeat-death detection and delivery timers.
             self.liveness.on_peer_vendor_left(now)
             self.outbox.pause(now, reason=PAUSE_PEER_AWAY)
         else:
@@ -1340,7 +1340,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         for frame in self.bind_replay_frames():
             self._post_display(frame)
 
-    # ── 媒体 ─────────────────────────────────────────────────────────
+    # -- Media --
 
     def media_snapshot(self) -> dict:
         """The full ``media`` state of this phase (§4.3; never ``true`` before ``ready``)."""
@@ -1358,24 +1358,24 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def send_media(self) -> bool:
         return await self.transport.send({"type": "media", **self.media_snapshot()})
 
-    # ── 计时 ─────────────────────────────────────────────────────────
+    # -- Timing --
 
     async def _pump_loop(self) -> None:
         """Flush the outbox, acks and heartbeats; wakes on :meth:`kick` or every 250 ms."""
-        # 停下的泵不再转：取消被一次不理取消的写吞掉、正常返回时，也不在已注销的运行时上接着 flush。
-        # 看专门的 _pump_stop（只在取消泵的地方置上），不看 _terminated：关机一开始就置后者，之后那几步
-        # （收口在说的那行、补齐对端欠的 ack）还要靠泵发出去
+        # Stopped pumps never resume: if cancellation is swallowed by uncooperative writes returning normally, do not flush deregistered runtimes.
+        # Check _pump_stop, set only when cancelling pumps, not _terminated set at shutdown entry; subsequent
+        # closing lines and peer acknowledgments still require pumping.
         while not self._pump_stop:
             try:
                 await asyncio.wait_for(self._kick_event.wait(), _PUMP_IDLE_S)
             except asyncio.TimeoutError:
-                pass  # 没人 kick：按空闲间隔照常冲一遍
+                pass  # Without kicks, flush at ordinary idle intervals.
             self._kick_event.clear()
             try:
                 await self.flush()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - 一次发送失败不能停掉整场的出站
+            except Exception as exc:  # noqa: BLE001 - One send failure cannot stop all visit outbound work.
                 logger.warning("visit %s: pump failed: %r", self.visit_id[:6], exc)
 
     async def flush(self, *, force_ack: bool = False) -> None:
@@ -1388,7 +1388,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         ack = self.sequencer.poll_ack(now, force=force_ack)
         if ack is not None and ack > 0:
             if self.outbox.leave_done(now):
-                # 本侧 leave 已完成：队列不再出帧，排进去就送不出了（欠账却已清掉）。对端的 leave 等这个 ack，直接送
+                # Local leave completed, so queues emit no frames and enqueuing loses delivery while clearing debt. Send peer-leave ack directly.
                 await self.transport.send(self.outbox.final_ack_frame(ack, now=now).to_ws())
             else:
                 self.outbox.send({"t": "ack", "v": 1, "seq": ack}, now=now)
@@ -1401,10 +1401,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             if await self.transport.send(frame.to_ws()):
                 try:
                     self.on_frame_sent(frame)
-                except Exception as exc:  # noqa: BLE001 - 记账出错不能让这一批后面的帧既不发出、也不回滚
+                except Exception as exc:  # noqa: BLE001 - Accounting errors must neither drop nor leave unrolled-back later frames in this batch.
                     logger.warning("visit %s: on_frame_sent failed: %r", self.visit_id[:6], exc)
             else:
-                # 没写出去：必达项马上重试；首发没写出去不算发过（leave 的宽限、wrap_up 的步骤计时都不从这里起算）
+                # Failed writes immediately retry required frames; failed initial sends do not start leave grace/wrap_up timers.
                 self.outbox.write_failed(frame, now=self.clock())
         if self.outbox.delivery_failed and not self.finalizing:
             self.request_finalize("delivery_failed")
@@ -1413,13 +1413,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         """Bookkeeping after an outbox frame went out (the pump, or the page re-entry flush)."""
         now = self.clock()
         if frame.seq:
-            # 第一次真正写出去的那次才是 leave 宽限、投递计时的起点（首发可能没写出去，写出去的是补发）
+            # First actual writes start leave grace/delivery timers, whether initial delivery or retransmission.
             self.outbox.written(frame, now=now)
         if frame.seq or frame.t == "hb":
             self.liveness.on_message_sent(now)
         if frame.t == "wrap_up" and self.room is not None:
-            # 重传也报：首发那次可能没写出去（被顶掉的旧连接上），真正写出去的是这次补发。
-            # 步骤计时器只在第一次写出去时起，之后的重传不会把它往后推（room 自己判）
+            # Report retransmits too: initial sends may target displaced connections; this retry may be first actual delivery.
+            # Step timers start on first successful write only; later retries never postpone them, enforced by room.
             self.room.on_wrap_up_sent(frame.payload.get("ph"), now)
 
     async def tick(self) -> None:
@@ -1430,8 +1430,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not self.host.is_current():
             self.request_finalize("manager_replaced")
             return
-        # 存活判定在建连期限之前：页面重载期间能力门期限按「绝对期限剩余」截短，两者同时到点时
-        # 是页面没在期限内回来（local_page_lost），不是这台机器不支持串门
+        # Check liveness before connection deadlines: reload capability timers cap at absolute remaining grace, so simultaneous
+        # expiry means local_page_lost, not unsupported visit capabilities.
         verdict = self.liveness.tick(now)
         if verdict is not None:
             self.request_finalize(self.leave_verdict_reason(verdict), peer_reason=self.pending_peer_reason)
@@ -1443,7 +1443,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("unsupported", status_details={"reason": "sdk_timeout"})
             return
         if self._join_deadline is not None and now >= self._join_deadline and not self.joined:
-            # 已报入房、只是还在写上传头（它本身有 _JOURNAL_OPEN_MAX_S 上限）：不按入房超时结束
+            # Already joined but writing bounded _JOURNAL_OPEN_MAX_S headers: never end for room-entry timeout.
             self.request_finalize("relay_lost")
             return
         if self._accept_deadline is not None and now >= self._accept_deadline and not self.ready_exchanged:
@@ -1483,23 +1483,23 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         try:
             refreshed = await self.grant.ensure_fresh()  # type: ignore[union-attr]
             if refreshed and not self.finalizing:
-                # 等 Servers 期间这场进了收尾：不再发（会排在 leave / stop 之后写给页面）
+                # Visit finalized while awaiting Servers: do not send afterward, behind leave/stop to the page.
                 await self.transport.send(self._credentials_message(refresh=True))
             self._renew_failures = 0
             self._renew_retry_at = None
         except cr.VisitRoomEnded:
             self.request_finalize("kicked")
-        except Exception as exc:  # noqa: BLE001 - 任何失败（Servers 报错、网络、页面写不出）都退避
+        except Exception as exc:  # noqa: BLE001 - All server/network/page-write failures back off.
             logger.warning("visit %s: vendor grant renewal failed (%s)", self.visit_id[:6],
                            getattr(exc, "code", None) or type(exc).__name__)
-            # 退避：暂时出错时不在每个 tick 上重发（宕机期间每场每分钟几十次请求只会放大故障）
+            # Back off transient errors rather than retry every tick, amplifying outages with dozens of requests per visit/minute.
             self._renew_failures += 1
             delay = min(_RENEW_RETRY_MAX_S, _RENEW_RETRY_BASE_S * 2 ** (self._renew_failures - 1))
             self._renew_retry_at = self.clock() + delay
         finally:
             self._renew_task = None
 
-    # ── 接待 ─────────────────────────────────────────────────────────
+    # -- Reception --
 
     async def accept(self, accept: bool) -> tuple[int, dict]:
         """``POST /rooms/{visit_id}/accept`` (host): activate first, ``ready`` last."""
@@ -1512,8 +1512,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("declined")
             return 200, {"ok": True}
         self._accept_deadline = None
-        # 已接受、接受期限已撤：接下来的激活与 ready 是一个整体，HTTP 请求被取消（页面断开等）也照样走完，
-        # 不然这场既不会开始、也没有期限能把它拒掉，路由一直锁着。任务归运行时，收尾时一起取消
+        # Accepted with acceptance deadlines removed: activation+ready must finish despite HTTP cancellation/page disconnection,
+        # or visits neither start nor retain rejection deadlines, locking routes forever. Runtime owns tasks and cancels at cleanup.
         accepting = self.spawn(self._accept_flow(), name="accept")
         await asyncio.shield(accepting)
         return 200, {"ok": True}
@@ -1525,13 +1525,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: activation exceeded its allowance", self.visit_id[:6])
             self.request_finalize("declined")
             return
-        except Exception as exc:  # noqa: BLE001 - 隔离会话建不起来：这场没法说话
+        except Exception as exc:  # noqa: BLE001 - Failed isolated sessions mean no visit speech.
             logger.warning("visit %s: activation failed: %r", self.visit_id[:6], exc)
             self.request_finalize("llm_error")
             return
         if self.finalizing:
             return
-        # ready 发出时本侧已能接收并处理对方台词
+        # When ready sends, local handling of peer lines must already work.
         self.outbox.send({"t": "ready", "v": 1}, now=self.clock())
         self.ready_exchanged = True
         self.kick()
@@ -1543,12 +1543,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side != "guest" or self.ready_exchanged or self._activation is not None or self.finalizing:
             return
         self.liveness.on_ready(self.clock())
-        # ready 是可靠消息：它所在的那批交付是运行时自己的受保护任务（on_recv），收包处理被取消也照样走完整个
-        # ready 流程；下一次收包会等它做完，之后到的台词不会被当成早到的丢掉
+        # ready is reliable: on_recv owns its protected batch delivery; cancelled receive processing still completes
+        # ready, and subsequent receives wait, preventing later lines being dropped as early arrivals.
         await self._ready_flow()
 
     async def _ready_flow(self) -> None:
-        # 在收包循环里同步激活（之后的台词要有 room 才能处理），所以必须有上限：卡住就结束，不拖住心跳与 leave
+        # Activate synchronously in receives so later lines have rooms, with bounded waits to avoid blocking heartbeats/leave.
         try:
             await asyncio.wait_for(self.activate(), VISIT_ACTIVATION_ALLOWANCE_S)
         except asyncio.TimeoutError:
@@ -1566,7 +1566,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await self._after_start()
 
     async def _after_start(self) -> None:
-        # 前面 send_media 等页面写入可能卡了一阵：这期间已开始收尾就不再把页面翻回进行中
+        # Earlier send_media/page writes may stall; if finalization began meanwhile, never mark the page active again.
         if self.finalizing:
             return
         await self.push("started", peer_crop=self.room.peer_crop if self.side == "host" and self.room else None)
@@ -1578,22 +1578,22 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 return
         self.start_opening_line()
 
-    # ── 激活 ─────────────────────────────────────────────────────────
+    # -- Activation --
 
     async def activate(self) -> None:
         """The single activation: isolated session, proactive parked, spool, ``VisitRoom`` active."""
         if self.activated or self._activation is not None:
             return
-        # 独立任务：收尾流程在收口 spool / 关会话之前等它停下（_settle_activation）
+        # Independent task: finalization awaits termination through _settle_activation before closing spool/sessions.
         task = asyncio.ensure_future(self._activate())
         self._activation = task
         try:
             await asyncio.wait([task])
         except asyncio.CancelledError:
-            task.cancel()  # 调用方超时 / 被取消：激活一起停
+            task.cancel()  # Caller timeout/cancellation cancels activation too.
             raise
         if not task.cancelled():
-            task.result()  # 激活失败照常抛给调用方；被关机取消就静默返回（调用方看 finalizing）
+            task.result()  # Propagate activation failures to callers; shutdown cancellation returns silently, with callers observing finalizing.
 
     async def _settle_activation(self) -> None:
         """Let an in-flight activation notice ``finalizing`` and stop before teardown (bounded)."""
@@ -1604,7 +1604,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await asyncio.wait_for(asyncio.shield(task), VISIT_ACTIVATION_ALLOWANCE_S)
         except asyncio.TimeoutError:
             task.cancel()
-        except Exception:  # noqa: BLE001 - 激活失败由发起方处理，这里只等它结束
+        except Exception:  # noqa: BLE001 - Initiators handle activation failures; await completion only here.
             return
 
     async def _activate(self) -> None:
@@ -1646,7 +1646,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 handoff=self._summary_handoff, protected_names=protected,
                 generic_label=self.speaker_label("peer_cat"),
             )
-        except Exception as exc:  # noqa: BLE001 - 记忆块读不到按空开场
+        except Exception as exc:  # noqa: BLE001 - Missing memory blocks mean empty opening context.
             logger.warning("visit %s: memory block unavailable: %s", self.visit_id[:6], type(exc).__name__)
         instructions = build_visit_instructions(
             self.lanlan_name, self.side, self.lang, persona_text=self.persona_text,
@@ -1655,12 +1655,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.neutral_term = get_family_neutral_term(self.lang)
         if self.finalizing:
             return
-        # 之后的 session / spool 一挂到 self 上，收尾流程就负责关闭（它先等激活停下）
+        # Once session/spool attaches to self, finalization owns closure after activation settles.
         self.session = await self.deps.create_session(self.lanlan_name, self.side,
                                                       instructions=instructions, lang=self.lang)
         if self.finalizing:
             if self._terminated:
-                # 激活拖过了收尾的等待、teardown 关会话时它还不在：晚到的客户端自己关掉
+                # Activation outlasted finalization waits and teardown closed before clients attached; late clients close themselves.
                 self._close_session_in_background()
             return
         self.host.park_proactive()
@@ -1669,7 +1669,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             chain_pending = self._files_deferred and not self._deferred_files_done
             if self._files_done and not chain_pending and self._seal_settled() and not self._shutdown_started \
                     and not self._spool_finalized and self.spool is not None:
-                # 收尾封存时 spool 还没挂上：晚到的这份自己关掉、标 finalized
+                # Spool absent during sealing: late spool closes itself and marks finalized.
                 reason = self.finalize_reason or "route_end"
                 spawn_visit_background(self.character_uid, lambda: self._finalize_late_spool(reason))
             return
@@ -1711,13 +1711,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         try:
             pair_id = derive_pair_id(creds.visit_uid, peer.uid)
             peer_char_id = derive_peer_char_id(peer.uid, peer.char_tag)
-        except Exception as exc:  # noqa: BLE001 - 对端身份推不出主体：这场不进记忆
+        except Exception as exc:  # noqa: BLE001 - Cannot derive peer subject: omit visit memory.
             logger.warning("visit %s: peer subjects not derivable: %s", self.visit_id[:6], type(exc).__name__)
             self.memory_enabled = False
             return
         spool = VisitSpool(self.config_dir, self.visit_id)
         memory_on = bool(self.memory_enabled and subjects)
-        # 写 state 在线程里，取消等它的人撤不掉写：单独成任务，激活被取消时留给收尾先等它落定
+        # Threaded state writes survive waiter cancellation; use separate tasks for finalization to settle after activation cancellation.
         writing = asyncio.ensure_future(spool.write_state(new_state(
             own_uid=creds.visit_uid, own_char=self.lanlan_name, own_char_uid=self.character_uid,
             pair_id=pair_id, peer_uid=peer.uid, peer_char_id=peer_char_id, memory_enabled=memory_on,
@@ -1733,23 +1733,23 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     "started_at": self.wall(), "lang": self.lang or "und",
                 }, now=self.clock())
         except asyncio.CancelledError:
-            # 激活在写 state / 打开 spool 途中被取消（超出激活时限 / 收尾）。state 可能已经写下了（取消落在写 state
-            # 期间也一样：线程照样会写完）：挂上 spool 交给收尾写 finalized，不然启动补录把这场当崩溃中断。
-            # 原来是记忆开的还要一并改回记忆关：不会有转录，否则启动补录每次都去提交一份不存在的转录、永远结不清。
-            # state 真没写成时收尾那次写会报错、只记日志
+            # Cancellation during state writing/spool opening from timeout/finalization may still leave persisted state because workers
+            # finish. Attach spool for finalization marking, preventing startup backfill misclassifying it as a crash.
+            # Also reset formerly enabled memory to off: no transcript will exist, or startup retries nonexistent transcripts forever without settlement.
+            # If state was never written, finalization writes fail and log only.
             self.memory_enabled = False
             self.spool = spool
             if not writing.done():
-                # 收尾那次 update_state 不能抢在它前面：文件还没建出来会报错，随后这次写才落地、留下没收尾的 state
+                # Finalization update_state cannot run first against absent files; later initial writes would leave unfinalized state.
                 self._state_writing = writing
             if memory_on:
                 self._memory_off_unsaved = True
             raise
-        except Exception as exc:  # noqa: BLE001 - spool 打不开：本场不记串门记忆，对话照常
+        except Exception as exc:  # noqa: BLE001 - Spool unavailable: keep visiting without visit memory.
             logger.warning("visit %s: spool not opened: %s", self.visit_id[:6], type(exc).__name__)
             if memory_on:
-                # 状态已按「记忆开」写下：改回记忆关，否则启动补录每次都去提交一份不存在的转录、这场永远结不清。
-                # 这次也写不成（同一次磁盘故障）就记下，收尾写 finalized 时一并带上
+                # State already said memory enabled: reset off or startup submits nonexistent transcripts forever.
+                # If the same disk fault prevents resetting, remember it and include with finalized writes.
                 try:
                     await spool.update_state(memory_enabled=False)
                 except Exception as state_exc:  # noqa: BLE001
@@ -1767,10 +1767,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 char_tag=peer.char_tag, display_name=peer.display, now=self.wall(),
                 visit_id=self.visit_id,
             )
-        except Exception as exc:  # noqa: BLE001 - 名册是附带的：写不进不影响已打开的转录
+        except Exception as exc:  # noqa: BLE001 - Rosters are auxiliary; failures cannot affect opened transcripts.
             logger.warning("visit %s: peer roster not updated: %s", self.visit_id[:6], type(exc).__name__)
 
-    # ── 输入接管（注册表入口）─────────────────────────────────────────
+    # -- Input takeover, registry entry --
 
     async def _voice_dispatcher(self, _lanlan: str, _transcript: str, **_kwargs: Any) -> bool:
         await self._voice_unavailable()
@@ -1792,7 +1792,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await self.host.ack_text_session(request_id)
         return True
 
-    # ── 收尾 ─────────────────────────────────────────────────────────
+    # -- Finalization --
 
     def request_finalize(
         self, reason: str, *, peer_reason: Optional[str] = None, status_details: Optional[dict] = None,
@@ -1804,7 +1804,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         the slot stays locked until the exit flow completed.
         """
         if self._exit_task is not None or self._terminated:
-            # 关机已开始（或已收尾完）：不再起新的收尾流程，免得它和关机的文件收口并发
+            # Shutdown started/already finalized: start no concurrent finalization racing shutdown file closure.
             return False
         if reason not in FINALIZE_REASONS and reason not in ABORT_REASONS:
             logger.warning("visit %s: unknown finalize reason %r, using route_end", self.visit_id[:6], reason)
@@ -1824,7 +1824,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         return self._exit_task
 
     def _sends_leave(self) -> Optional[str]:
-        # 有人能收到才发：核验过的对端，或已在房、刚被拒绝核验的对端（让它也立刻结束）
+        # Send only to potential recipients: verified peers or joined peers just rejected verification, so they end immediately too.
         if self.peer is None and not self.peer_present:
             return None
         return leave_reason_for(self.finalize_reason or "", side=self.side, done_received=self.done_received)
@@ -1833,21 +1833,21 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         reason = self.finalize_reason or "route_end"
         try:
             await self._exit_steps(reason)
-        except Exception as exc:  # noqa: BLE001 - 收尾每一步都尽力而为，最后一定注销
+        except Exception as exc:  # noqa: BLE001 - Every finalization step is best effort; always deregister at the end.
             logger.error("visit %s: exit flow failed: %r", self.visit_id[:6], exc)
         finally:
             if self._shutdown_started:
-                # 关机取消了收尾流程：文件、接管与注销都由 shutdown() 按「文件优先」的顺序做，
-                # 这里不能并发 teardown（会抢在封存之前关会话、注销）
+                # Shutdown cancelled finalization: shutdown() handles files/takeover/deregistration in file-first order;
+                # never run concurrent teardown closing/deregistering before archival.
                 return
             if not self._files_done:
-                # 前面的步骤抛了：转录与 spool 的收口是必做的（关机路径自己收口）
+                # Prior steps failed: transcript/spool closure remains mandatory; shutdown handles its own path.
                 try:
                     await self._finish_files(reason)
                 except Exception as exc:  # noqa: BLE001
                     logger.error("visit %s: files not finalized: %r", self.visit_id[:6], exc)
             if not self._handback_started:
-                # 中途失败 / 被取消：没排上的段落不再等，回调照样交还（不丢、也不一直暂扣）
+                # Intermediate failure/cancellation stops waiting for unqueued segments but still returns callbacks, neither dropping nor withholding forever.
                 if self.handoff is not None:
                     self.handoff.abandon()
                 self._start_handback()
@@ -1858,11 +1858,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         _detach(self._hand_back_callbacks())
 
     async def _exit_steps(self, reason: str) -> None:
-        # ① 先收口本侧进行中的行：这一行的 text{final} 排在 leave 之前、进得了本场转录
+        # 1. Finish current local line first, placing text{final} before leave and into this transcript.
         await self.close_current_line("visit_end")
-        # ② 后台关闭数据通道（排空 → leave → 补传窗口），不阻塞下面任何一步
+        # 2. Close data channels in background: drain -> leave -> retransmission grace, blocking no later steps.
         closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
-        # ③ 回调暂扣 → 立即释放接管（此后亲人就能普通聊天）
+        # 3. Retain callbacks temporarily, immediately release takeover so family resumes ordinary chat.
         input_stamp = self.host.last_user_input()
         input_released = True
         if self.takeover_token is not None:
@@ -1872,53 +1872,53 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 logger.warning("visit %s: callback hold failed: %s", self.visit_id[:6], type(exc).__name__)
             try:
                 self.host.release_takeover(self.takeover_token)
-            except Exception as exc:  # noqa: BLE001 - token 留着：teardown 再试一次
+            except Exception as exc:  # noqa: BLE001 - Retain token for teardown retry.
                 logger.warning("visit %s: takeover release failed: %s", self.visit_id[:6], type(exc).__name__)
                 input_released = False
             else:
-                # 返回 False = 令牌已不是当前持有者（输入早已不归串门）：同样算交还
+                # False means token no longer owns input; takeover already moved, counting as handback.
                 self.takeover_token = None
-        # 「结束中」在接管释放之后才推：页面一看到它就把输入框交还普通聊天，此时普通输入已不会再被串门拦下；
-        # 释放之前页面仍按串门处理，这期间提交的句子由 finalizing 拒掉（带 request_id，页面标未送达、放回原文）
+        # Push ending only after takeover release, because the page restores ordinary input immediately and visit routing must not block it;
+        # before release, finalizing rejects visit submissions with request_id for undelivered marking/text restoration.
         if input_released:
             await self.push(PHASE_ENDING, reason=reason)
-        # 释放失败：不推 ending，页面留在串门态（这期间的提交由 finalizing 拒掉并收尾），等 teardown 重试释放后的 ended
+        # Release failed: do not push ending; remain visit UI, rejecting/finalizing submissions until teardown retries then sends ended.
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
-        # ④ 回家仪式句（亲人先开口则放弃）；可选步骤：失败不挡后面的封存与交还
+        # 4. Optional homecoming line, abandoned if family speaks first; failure cannot block archival/handback.
         if self.activated:
             try:
                 await self.say_ritual(reason, input_stamp=input_stamp)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: home-coming line failed: %r", self.visit_id[:6], exc)
                 if self.handoff is not None:
-                    self.handoff.skip("ritual")  # 不会再播：交还不等它
+                    self.handoff.skip("ritual")  # No playback will occur; handback stops waiting.
         await self._settle_activation()
-        # ⑤ 等关闭任务结束（数据通道要靠 iframe 发 leave，所以 iframe 留到这时）
+        # 5. Await channel closure; iframe must remain to send leave until then.
         await asyncio.wait([closing], timeout=_CLOSE_WAIT_S)
         if not closing.done() and self.outbox.reserved_bytes:
-            # 已接纳的亲人那句还在落盘（持有预留）：它入队、leave 跟上之前 teardown 不能先拆掉 pump 与传输，
-            # 否则这句已落盘、已改过 room 的话到不了对端。再多等一段（有界：磁盘一直卡着就放弃）
+            # Accepted family lines still persisting with reservations must enqueue before leave; teardown cannot remove pump/transport
+            # prematurely or persisted/room-updated lines never reach peers. Wait additionally, bounded against stuck disk.
             await asyncio.wait([closing], timeout=_RESERVED_SEND_MAX_S)
         if not closing.done():
-            # 到点还没关完：先收掉接收通道（注销传输、停掉关闭任务）再封存。否则之后对端重传来的整句
-            # 回了 ack、却落在封存之后，进不了转录
+            # Closure exceeded deadline: stop receives first, unregister transport/cancel closure, then seal; otherwise late retransmitted
+            # peer lines get acknowledgments after archival but never enter transcripts.
             logger.warning("visit %s: channel close did not finish; retiring it", self.visit_id[:6])
-            closing.cancel()  # 它的 finally 先发对端欠着的 ack 与 stop{reason}，再注销
+            closing.cancel()  # Its finally sends owed acknowledgments/stop{reason} before deregistration.
             await asyncio.wait([closing], timeout=_SHUTDOWN_TASK_WAIT_S)
-            # 无条件再注销一次（幂等）：finally 里的发送还卡着、或取消落在别处时，封存之前都不再收对端的帧
+            # Deregister again idempotently so blocked finally sends/cancellation elsewhere cannot permit receives before archival.
             unregister_transport_session(self.transport)
-        flushed = await self._flush_display(_DISPLAY_FLUSH_S)  # 告别句等整句先上屏，再发「已结束」
-        self._ended_published = True  # 从这里起不再往显示队列放帧（收尾中补到的整句只进转录）
+        flushed = await self._flush_display(_DISPLAY_FLUSH_S)  # Display the full farewell before ended.
+        self._ended_published = True  # Queue no more display frames after this point; complete late-finalization lines enter transcripts only.
         if not flushed:
-            # 页面卡着送不完：停掉显示队列（转录由 GET /state 重放），「已结束」不和它并发写、不排在它后面
+            # Stuck page delivery stops display queues; GET /state replays transcripts. ended neither writes concurrently nor waits behind them.
             await self._retire_display(_DISPLAY_FLUSH_S)
         if self.takeover_token is not None:
-            # 收尾开头那次释放抛错过：「已结束」推出去之前再试一次。页面一看到它就交还输入框，输入不能还归串门、
-            # 一直拒到 teardown
+            # Retry failed early takeover release before ended; seeing it restores page input, which cannot remain visit-owned
+            # and reject until teardown.
             try:
                 self.host.release_takeover(self.takeover_token)
-            except Exception as exc:  # noqa: BLE001 - 令牌留着：teardown 还会再试（管理器仍持有接管时不能丢掉唯一的令牌）
+            except Exception as exc:  # noqa: BLE001 - Retain token for teardown retry; managers still holding takeover need its sole token.
                 logger.warning("visit %s: takeover release failed again before ended: %s",
                                self.visit_id[:6], type(exc).__name__)
             else:
@@ -1928,9 +1928,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await self.status(self.status_code, reason=self.status_details.get("reason"),
                               retry_after_s=self.status_details.get("retry_after_s"))
         self._set_phase(PHASE_ENDED)
-        # ⑥⑦ 收口转录（先 .upload.json）→ spool finalize（后 finalized）→ 后台 digest 与上次摘要
+        # 6/7. Seal transcript .upload.json first -> spool finalize -> background digest/last-summary work.
         await self._finish_files(reason)
-        # ⑧ debrief（只有真的串过门）；可选步骤，失败照样交还
+        # 8. Optional debrief only after actual visits; failures still permit handback.
         if self.activated:
             from main_routers.visit_router.debrief import run_debrief
 
@@ -1940,8 +1940,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 logger.warning("visit %s: debrief failed: %r", self.visit_id[:6], exc)
                 if self.handoff is not None:
                     self.handoff.skip("debrief")
-        # ⑨ 交还 VisitInbox：仪式句与简述都播完（或兜底期限）。独立任务，不占角色锁：
-        # 路由 pop 之后到的 ended 经 inbox_handoff 表照样转给它
+        # 9. Return VisitInbox after ritual/debrief playback or fallback deadline; independent tasks without character locks.
+        # After route pop, inbox_handoff still forwards ended events to it.
         self._start_handback()
 
     async def _finish_files(self, reason: str) -> None:
@@ -1964,15 +1964,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     while not self.outbox.drain_done(self.clock()) and self.clock() < deadline:
                         self.kick()
                         await asyncio.sleep(0.1)
-                # 已接纳、正在落盘的亲人那句（持有预留）要排在 leave 前面：等到它入队或放弃预留。
-                # 这里不设上限：收尾流程只限时等这个关闭任务（_CLOSE_WAIT_S，持有预留时再多等
-                # _RESERVED_SEND_MAX_S），到点就取消它；关机也会取消它
+                # Accepted family lines persisting with reservations must precede leave; wait until enqueue/reservation abandonment.
+                # No limit here: finalization bounds this close task by _CLOSE_WAIT_S plus
+                # _RESERVED_SEND_MAX_S while reserved, then cancels; shutdown cancels too.
                 while self.outbox.reserved_bytes:
                     await asyncio.sleep(0.05)
                 try:
                     self.outbox.send({"t": "leave", "v": 1, "reason": leave_reason}, now=self.clock())
                 except ValueError as exc:
-                    # 没入队就没有补传窗口可等（leave_done 永远不会成立）
+                    # Without enqueue, no retransmission window can occur because leave_done never becomes true.
                     logger.warning("visit %s: leave not queued: %s", self.visit_id[:6], exc)
                 else:
                     self.kick()
@@ -1981,13 +1981,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                         await asyncio.sleep(0.1)
         finally:
             if self.peer is None:
-                # 没配上对的 host：邀请码与配额占用要撤销。放在 finally：排空 / leave / 补传卡住、
-                # 关闭任务被收尾流程到点取消时也照样起
+                # Unmatched hosts must revoke invitation/quota reservations. Use finally so drain/leave/retry stalls
+                # and deadline cancellation still initiate revocation.
                 self._cancel_room_once()
             try:
                 try:
-                    # 对端的 leave 还欠着 ack（peer_left / 两侧同时收尾）：直接送出（本侧 leave 完成后队列不再出帧），
-                    # 免得对方白等补传窗口
+                    # Send owed peer-leave acks directly after peer_left/simultaneous finalization, since queues stop after local leave,
+                    # avoiding unnecessary peer retransmission waits.
                     ack = self.sequencer.poll_ack(self.clock(), force=True)
                     if ack is not None and ack > 0:
                         await self.transport.send(self.outbox.final_ack_frame(ack, now=self.clock()).to_ws())
@@ -1998,7 +1998,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 except Exception:  # noqa: BLE001
                     pass
             finally:
-                # 上面的发送被取消（退出流程到点收掉它）也要走到：注销与关 outbox 不能被跳过
+                # Even cancelled sends must reach deregistration/outbox closure.
                 unregister_transport_session(self.transport)
                 try:
                     await self.outbox.close()
@@ -2006,8 +2006,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     logger.warning("visit %s: outbox close failed: %s", self.visit_id[:6], type(exc).__name__)
 
     def _cancel_room_once(self) -> None:
-        # host 在对端核验之前就结束：邀请码还可能被兑换，后台取消房间（不扣对方配额）。
-        # 收尾流程与晚到的凭证各调一次，只发一次
+        # Hosts ending before peer verification may still have redeemable invites; cancel rooms asynchronously without charging peers.
+        # Finalization and late credentials each invoke cancellation, but send once.
         creds = self.creds
         if self.side != "host" or creds is None or self._room_cancel_sent:
             return
@@ -2015,53 +2015,53 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._room_cancel_task = self.spawn(self.deps.cancel_room(
             self.visit_id, invite_expires_at=creds.invite_expires_at, account=creds.account))
         self._room_cancel_at = asyncio.get_running_loop().time()
-        # 运行时正常拆掉（已注销）之后它可能还在飞：单独登记，关机时 stop_all 也能限时等它发完
+        # Cancellation may outlive deregistered runtimes; register separately so stop_all can bound waiting at shutdown.
         _room_cancels.add(self._room_cancel_task)
         self._room_cancel_task.add_done_callback(_room_cancels.discard)
 
     def transport_alive(self) -> bool:
         from main_routers.visit_router.transport_ws import is_transport_attached
 
-        # 对端 hello 先于本侧的入房报告到达、已核验：数据通道已经通了，收尾照样发可靠的 leave（不只等 joined）
+        # Verified peer hello before local joined proves the data channel works; send reliable leave even without joined.
         return (self.joined or self.peer is not None) and is_transport_attached(self.visit_id, self.side)
 
     async def _settle_journal_open(self, timeout: Optional[float] = None) -> None:
-        # 收尾等它写完，但有上限；还没写完就登记一条后台链：它晚到写完时立刻封存，不留没封存的流水
-        # （关机除外：不起这条链，流水留给下次启动补录）
+        # Bound header-write waits; unfinished writes get a background chain sealing immediately on late completion,
+        # except shutdown, which starts no chain and leaves journals for startup backfill.
         opening = self._journal_opening
         if opening is None or opening.done():
             return
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S if timeout is None else timeout)
         if not opening.done() and self._shutdown_started:
-            # 关机：不起不设上限的后台封存链，并主动取消写上传头的任务
+            # Shutdown starts no unbounded archival chains and actively cancels header tasks.
             self._abandon_journal_open(opening)
             return
         if not opening.done():
             reason = self.finalize_reason or "shutdown"
-            ended_at = self.wall()  # 收尾这一刻：磁盘卡多久不该算进这场的时长
+            ended_at = self.wall()  # Use current finalization time; disk stalls must not inflate visit duration.
 
-            # 现在就按 uid 登记（不等上传头落盘）：这段后台收尾会写 spool 与串门记忆，跑完之前角色不能改名 / 删除。
-            # 它不设上限地等写盘：磁盘一直卡着时，这个角色在本进程内都改不了名、删不掉（守卫宁可保守）
+            # Register UID now before header persistence; background work mutates spool/memory and must block rename/delete until complete.
+            # Unbounded disk waits conservatively block rename/delete for this process if disks stay stuck.
             gen = _stop_gen
             chain = spawn_visit_background(self.character_uid,
                                            lambda: self._seal_after_header(opening, reason, ended_at, gen))
 
             def on_chain_done(task: asyncio.Task) -> None:
-                # stop_all 取消这条后台链（不管落在哪一步，包括还在读角色名、_seal_after_header 都没进入时）：
-                # 运行时已注销，没有别人再替它收掉写上传头的任务，与关机路径一样放弃并取消，
-                # 不让它在事件循环销毁时走「等写盘结束」那条路把关机挂住
+                # stop_all cancels chains at any step, even name lookup before _seal_after_header;
+                # deregistered runtimes have nobody else to cancel headers. Abandon/cancel as in shutdown,
+                # preventing wait-for-disk cleanup hanging event-loop destruction.
                 if task.cancelled() and not opening.done():
                     self._abandon_journal_open(opening)
 
             chain.add_done_callback(on_chain_done)
 
     def _abandon_journal_open(self, opening: asyncio.Future) -> None:
-        # abandon_open 之后写上传头的任务被取消就立刻结束（不再等卡住的写盘），事件循环这一层不会被它挂住；
-        # 等待期间攒下的记录排在建文件之后由写线程补上。注意线程池的写盘线程不是 daemon：磁盘一直卡着时，
-        # 解释器退出仍会等它（所有走线程池写盘的地方都一样）。留在磁盘上的流水由下次启动补录
+        # After abandon_open, cancelled header tasks finish immediately without waiting for stuck writes, avoiding loop-level hangs.
+        # Writer threads append buffered records after file creation. Thread-pool writers are not daemon threads;
+        # interpreter exit still awaits stuck disks, as for all thread-pool writes. Startup backfills remaining journals.
         try:
             self.journal.abandon_open(self._backlog_stream_records())
-        except Exception as exc:  # noqa: BLE001 - 转换失败也照样放弃并取消：关机后面的步骤一定要走到
+        except Exception as exc:  # noqa: BLE001 - Even conversion failure must abandon/cancel so later shutdown steps execute.
             logger.warning("visit %s: buffered records not kept at shutdown: %s", self.visit_id[:6],
                            type(exc).__name__)
             self.journal.abandon_open()
@@ -2069,14 +2069,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         opening.cancel()
 
     async def _seal_after_header(self, opening: asyncio.Future, reason: str, ended_at: float, gen: int) -> None:
-        await asyncio.wait([opening])  # 被取消时由 spawn 处的 done 回调放弃写上传头
-        # 上传头没写成（异常在这里取走）：没有流水可封存，spool 照样收尾
+        await asyncio.wait([opening])  # Spawn-time done callbacks abandon headers on cancellation.
+        # Header creation failed, consuming its exception here; no journal to seal, but spool still finalizes.
         header_ok = not opening.cancelled() and opening.exception() is None
         await self._seal_late_journal(reason, ended_at, header_ok=header_ok, gen=gen)
 
     def _not_before_start(self, ts: Any) -> float:
-        # 入房前攒下的用量 / 异常可能早于上传头的开始时间（开始时间只看台词）：补写时夹到开始时间，
-        # 流水里没有早于 started_at 的记录（补录按最后一条算 ended_at 也不会早于开始）
+        # Prejoin usage/errors may predate speech-based started_at; clamp during backfill so records never precede
+        # started_at and ended_at from final records never predates start.
         start = self._journal_started_at
         return float(ts) if start is None else max(float(ts), start)
 
@@ -2109,7 +2109,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         Every seal path calls it first; it also runs when the header lands.
         """
         if self._journal_failed():
-            # 上传头写不成：积压里的行至少进内存转录（/state 重放、简述），用量与异常没有流水可记
+            # Failed headers still preserve backlog lines in in-memory transcript for /state/debrief, but usage/errors have no journal.
             backlog, self._journal_backlog = self._journal_backlog, []
             for record in backlog:
                 if record.get("kind") == "line":
@@ -2145,13 +2145,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             if header_ok:
                 try:
                     self._flush_journal_backlog()
-                    # 走 _start_seal：这一场只有一个封存 future，关机 / teardown 看到的是同一次写盘
+                    # _start_seal provides one archival future per visit, shared by shutdown/teardown as one disk write.
                     sealing = self._start_seal(reason, ended_at=ended_at)
                     await asyncio.wait([sealing])
                     self._take_seal(sealing)
-                except Exception as exc:  # noqa: BLE001 - 封存出错也照常往下：已挂上的 spool 照样收
+                except Exception as exc:  # noqa: BLE001 - Sealing failure still allows attached spool closure.
                     logger.warning("visit %s: late seal failed: %s", self.visit_id[:6], type(exc).__name__)
-                # 封存失败也排一次：上传重试会从留下的 .upload.jsonl 重封，不必等下次启动
+                # Queue retry even after sealing failure; remaining .upload.jsonl reseals without waiting for restart.
                 try:
                     self.deps.schedule_upload(self.visit_id)
                 except Exception as exc:  # noqa: BLE001
@@ -2160,7 +2160,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 await self._finalize_spool(reason)
                 self._spawn_memory_commits()
         finally:
-            self._deferred_files_done = True  # 链中途出错也置位：之后才挂上的 spool 由激活那边自己收尾
+            self._deferred_files_done = True  # Set flags despite intermediate chain failures; late-attached spool finalizes from activation itself.
 
     async def seal_and_finalize(self, reason: str) -> bool:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3).
@@ -2177,36 +2177,36 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         def remaining() -> float:
             return max(0.0, seal_deadline - loop.time())
 
-        # 已接纳的亲人发言还在落盘（对端先走 / 传输已断时关闭通道不等预留）、收下的那批对端消息还在处理：
-        # 先等它们记进转录。这几段等待与写上传头、封存共用一个期限
+        # Accepted family lines may still persist after peer departure/disconnection, with closure not awaiting reservations; received peer batches may still process.
+        # Await transcript recording, sharing one deadline with header writes/sealing.
         await self.settle_family_records(remaining())
-        self._rx_closed = True  # 封存的边界：从这里起不再收下新的对端消息
+        self._rx_closed = True  # Archival boundary: accept no new peer messages after this point.
         await self._settle_delivering(remaining())
         self._start_journal_for_backlog()
         await self._settle_journal_open(min(_JOURNAL_OPEN_MAX_S, remaining()))
         if self._header_pending():
-            # 上传头还在写：seal() 这时什么都不封（会立即返回 None）。封存、spool finalize、记忆提交
-            # 都交给上传头落盘后的那条后台链，仍是先封存后 finalized
+            # Pending headers make seal() immediately return None. Delegate sealing, spool finalization, and memory commit
+            # to the post-header background chain, still sealing before finalized.
             self._files_deferred = True
             return False
-        self._flush_journal_backlog()  # 上传头在等待中落盘：积压的记录先补进去再封存
+        self._flush_journal_backlog()  # Headers persisted while waiting: backfill accumulated records before sealing.
         sealing = self._start_seal(reason)
         await asyncio.wait([sealing], timeout=max(0.0, seal_deadline - loop.time()))
         if not sealing.done():
             logger.warning("visit %s: upload seal still writing; finishing it in the background", self.visit_id[:6])
-            # 按 uid 登记：后台这段跑完（会写 spool 与串门记忆）之前，这个角色不能改名 / 删除
+            # Register UID, blocking rename/delete until this background spool/memory work finishes.
             gen = _stop_gen
-            # 封存真正写盘的那个任务已在 _start_seal 里登记（外层后台链被取消也收得到）
+            # Actual sealing writes already register through _start_seal, surviving outer-chain cancellation.
             spawn_visit_background(self.character_uid, lambda: self._finalize_after_seal(sealing, reason, gen))
             return False
         self._take_seal(sealing)
         finalizing = asyncio.ensure_future(self._finalize_spool(reason))
         await asyncio.wait([finalizing], timeout=_SEAL_MAX_S)
         if not finalizing.done():
-            # spool 写盘卡住：照常注销、释放占位；记忆提交在后台等它写完再起（同样按 uid 登记）
+            # Stuck spool persistence still allows deregistration/reservation release; memory commits start asynchronously afterward, registered by UID too.
             logger.warning("visit %s: spool still finalizing; finishing it in the background", self.visit_id[:6])
             gen = _stop_gen
-            # 外层后台链被取消不会传到它（asyncio.wait 不传取消）：它本身也登记，关机时一并取消、限时等
+            # asyncio.wait shields from outer-chain cancellation; register the task itself for bounded shutdown cancellation/wait.
             self._keep_background(finalizing)
             spawn_visit_background(self.character_uid, lambda: self._commit_after_spool(finalizing, gen))
             return False
@@ -2223,16 +2223,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if sealing is None:
             sealing = self._sealing = asyncio.ensure_future(self.journal.seal(
                 reason, ended_at=self.wall() if ended_at is None else ended_at))
-            sealing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 结果由 _take_seal 取
-            # 真正写盘的是 seal() 第一步里起的 journal.seal_write（外层只是 shield 着等它，取消外层传不到它）：
-            # 等外层跑完第一步再把它交给模块级登记，三个调用方（正常收尾、后台补封、关机）都覆盖到
+            sealing.add_done_callback(lambda t: t.cancelled() or t.exception())  # _take_seal retrieves results.
+            # journal.seal_write starts actual writes in seal()'s first step; outer shielding prevents cancellation propagation.
+            # Await that first step before module registration, covering ordinary finalization, deferred sealing, and shutdown.
             asyncio.get_running_loop().call_soon(self._keep_seal_write)
         return sealing
 
     def _keep_seal_write(self) -> None:
         write = self.journal.seal_write
         if write is not None and not write.done():
-            # 只等不取消：它可能还排在单线程写盘队列里，取消会把这次封存一并撤掉（.upload.json 永远不写）
+            # Await without cancelling: it may queue behind single-thread disk work, and cancellation would remove archival entirely, never writing .upload.json.
             _awaited_writes.add(write)
             write.add_done_callback(_awaited_writes.discard)
 
@@ -2274,7 +2274,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     def _take_seal(self, sealing: asyncio.Future) -> None:
         if sealing.cancelled() or sealing.exception() is not None:
-            # 封存失败：流水留着给下次启动补录
+            # Sealing failed: retain journals for next startup backfill.
             logger.warning("visit %s: upload not sealed: %s", self.visit_id[:6],
                            "cancelled" if sealing.cancelled() else type(sealing.exception()).__name__)
             return
@@ -2283,7 +2283,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def _settle_state_write(self) -> None:
         writing = self._state_writing
         if writing is not None and not writing.done():
-            await asyncio.wait([writing])  # 调用方各自限时（收尾 / 关机都有上限）
+            await asyncio.wait([writing])  # Callers impose independent finalization/shutdown deadlines.
 
     async def _finalize_spool_at_shutdown(self, spool: Any) -> None:
         try:
@@ -2299,7 +2299,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: spool not finalized at shutdown: %s", self.visit_id[:6], type(exc).__name__)
 
     async def _finalize_late_spool(self, reason: str) -> None:
-        # 在后台任务里再看 stop_all：派生之后它先解析角色名，这段时间里进程可能已经开始关机
+        # Recheck stop_all inside background tasks; shutdown can start while they resolve names after spawning.
         if _stopped_since(self._files_gen):
             return
         await self._finalize_spool(reason)
@@ -2312,7 +2312,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 await self.spool.close()
                 changes: dict[str, Any] = {"finalized": reason}
                 if self._memory_off_unsaved:
-                    changes["memory_enabled"] = False  # 激活时改回记忆关没写成：这次一并写上
+                    changes["memory_enabled"] = False  # Include earlier failed memory-disable writes during activation now.
                 await self.spool.update_state(**changes)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: spool not finalized: %s", self.visit_id[:6], type(exc).__name__)
@@ -2340,7 +2340,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         spool = self.spool
         if spool is None or not self.memory_enabled:
             if spool is not None:
-                # 记忆关：不 digest，只把上次摘要记成已处理（commit_last_summary 自己判门控）
+                # Memory disabled: skip digest, mark last summary handled; commit_last_summary gates itself.
                 family = self.family_names
                 spawn_visit_background(self.character_uid,
                                        lambda: self.deps.commit_summary(spool, family_names=family))
@@ -2355,7 +2355,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             try:
                 await self.deps.commit_region(spool, resolve_char_name=local_chars.resolve_char_name,
                                               family_names=family, local_char_names=chars)
-            except Exception as exc:  # noqa: BLE001 - 下次启动补录接着做
+            except Exception as exc:  # noqa: BLE001 - Resume through startup backfill.
                 logger.warning("visit %s: digest failed: %r", self.visit_id[:6], exc)
             await track_last_summary(self.visit_id, self.deps.commit_summary(spool, family_names=family))
 
@@ -2371,7 +2371,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     handoff.interrupted_since(self.host.last_user_input(), stamps)
                     await asyncio.sleep(_HANDOFF_POLL_S)
         finally:
-            # 关机取消了它也一样：暂扣的回调放出来、speech id 注销，不能一直扣着
+            # Shutdown cancellation still releases held callbacks/deregisters speech IDs, never retaining them forever.
             self._finish_handback(handoff)
 
     def _finish_handback(self, handoff: Optional[inbox_handoff.InboxHandoff]) -> None:
@@ -2398,10 +2398,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
-        # 准入时按住的、被打断那一轮欠下的收尾（可能换代、放出排队的回调）：等退出流程（仪式句、简述）
-        # 全部用完这个管理器之后才结清；准入失败 / 没接管成的路径也在这里放开
+        # Settle interrupted admission-time turn cleanup only after exit ritual/debrief finishes using this manager;
+        # this may advance generations/release queued callbacks. Admission/takeover failures release here too.
         self._release_turn_wrap_up()
-        # 客户端关不掉（取消排空 / HTTP 关闭卡住）也照样注销：不能让这个角色一直锁在已结束的场次里
+        # Unclosable clients from cancelled drain/stuck HTTP closure still deregister, never locking characters into ended visits.
         await self.close_session(_SESSION_CLOSE_S)
         self.speech_router.clear()
         if self._pump_task is not None:
@@ -2414,25 +2414,25 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             finalize_visit_route_state(self.lanlan_name)
         self._set_phase(PHASE_ENDED)
         self._terminated = True
-        # 拆掉的场次不再收任何对端消息：封存那步半路出错、没走到置标志时也成立
+        # Torn-down visits accept no peer messages even if archival failed before setting the flag.
         self._rx_closed = True
         self.ended_at_mono = self.clock()
         _prune_recent(self.ended_at_mono)
         _recent[self.visit_id] = self
         cleanup = self.outbox.close_task
         if cleanup is not None and not cleanup.done():
-            # 关闭通道到点被收掉时 outbox 的清理（写完、删掉带正文的 .outbox.jsonl）还在跑：注销之后
-            # stop_all 看不到这个运行时，交给模块级登记，关机时一并收
+            # Outbox cleanup writing/removing text-bearing .outbox.jsonl may outlive close deadlines/deregistration;
+            # register at module level because stop_all can no longer find the runtime.
             _outbox_cleanups.add(cleanup)
             cleanup.add_done_callback(_outbox_cleanups.discard)
-        # 激活卡在不理取消的操作里、等满上限还没停（以及还在等它的接受 / ready 流程等运行时任务）：
-        # 注销之后 stop_all 看不到这个运行时，交给模块级登记，关机时限时收掉（spool 照旧留给启动补录）
+        # Activation ignores cancellation beyond limits, along with runtime accept/ready tasks still awaiting it:
+        # Once unregistered, stop_all cannot see this runtime; register it at module level for bounded shutdown cleanup (leave the spool for startup recovery).
         lingering = [t for t in list(self._tasks) + [self._activation, self._closing_task, self._pump_task, self._creds_task]
                      if t is not None and not t.done() and t is not self._room_cancel_task]
         for task in lingering:
             self._keep_background(task)
         _unregister(self)
-        # 封存还没落盘（后台收尾链会在落盘后排上传）：这时排的上传只会找不到 .upload.json、白退避一轮
+        # Sealing has not reached disk yet (background cleanup schedules upload afterward); an upload now would only miss .upload.json and waste a backoff cycle.
         if self._seal_settled() and (
                 self.journal.sealed or transcript_upload.upload_pending_sync(self.config_dir, self.visit_id)):
             try:
@@ -2440,7 +2440,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: upload not scheduled: %s", self.visit_id[:6], type(exc).__name__)
 
-    # ── 关机 ─────────────────────────────────────────────────────────
+    # ── Shutdown ──
 
     async def shutdown(self) -> None:
         """``stop_all``: no ``leave`` (the pages are already gone), files first, takeover released.
@@ -2456,7 +2456,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         def left(cap: float) -> float:
             return max(0.0, min(cap, budget_end - loop.time()))
 
-        # 先置终态：挂起中的凭证 / 激活醒来看到 finalizing 就不再接管、不再建会话
+        # Mark the terminal state first: pending credentials / activation see finalizing on waking and neither take over nor create a session.
         self._terminated = True
         self._shutdown_started = True
         if self._exit_task is not None and not self._exit_task.done():
@@ -2464,8 +2464,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.finalize_reason = self.finalize_reason or "shutdown"
         self._set_phase(PHASE_ENDED)
         if not self._handback_started:
-            # 收尾流程已取消，它的 finally 看到这个标记就不再另起交还
-            # 进程要退了：不等仪式句，暂扣的回调立即交还
+            # Cleanup was cancelled; its finally sees this flag and does not launch another handback.
+            # The process is exiting: return the withheld callback immediately without waiting for a ceremonial line.
             self._handback_started = True
             if self.handoff is not None:
                 self.handoff.close()
@@ -2478,66 +2478,66 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             parked = self.inbox.close() or []
             if parked:
                 self.host.resubmit_callbacks(parked)
-        # 收尾流程另起的关闭通道任务也停掉：关机不发 leave，也不能在封存之后还在排空
+        # Stop the channel-close task launched by cleanup too: shutdown sends no leave and must not keep draining after sealing.
         inflight = [t for t in (self._exit_task, self._creds_task, self._activation, self._closing_task)
                     if t is not None and not t.done()]
         for task in inflight:
             task.cancel()
         if self.peer is None:
-            # 没配上对的 host 房间：邀请码与配额占用别留到过期（不发 leave，但房间要取消）；
-            # 最先起，与后面每一步并行
+            # No matching host room: release the invite code and quota rather than waiting for expiry (cancel the room without sending leave);
+            # start this first, in parallel with every subsequent step.
             self._cancel_room_once()
         if inflight:
             await asyncio.wait(inflight, timeout=left(_SHUTDOWN_TASK_WAIT_S))
-        # 先收口本侧在说的那一行：它的 text{final} 与用量要在封存之前进上传流水
+        # Finalize the line being spoken locally first: its text{final} and usage must enter the upload stream before sealing.
         try:
             await asyncio.wait_for(self.close_current_line("visit_end"), left(_SHUTDOWN_TASK_WAIT_S))
-        except Exception as exc:  # noqa: BLE001 - 收不完也照样封存
+        except Exception as exc:  # noqa: BLE001 - Seal even if cleanup cannot finish.
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
         line = self._line
         if line is not None and line.payload is not None and (line.booking is None or not line.booking.done()):
-            # 这一行已收口（text{final} 已入队、已上屏），只是 LLM 还没停下、_finish_line 没跑到：
-            # 先记进转录再封存，不然关机取消它之后这一行就丢了。记账是共享、受保护的任务：
-            # 这里限时等到点被取消，也不会打断写入
+            # This line is finalized (text{final} is queued and displayed), but the LLM has not stopped and _finish_line has not run:
+            # record it in the transcript before sealing, or shutdown cancellation would lose it. Accounting is a shared, shielded task:
+            # cancelling this bounded wait at its deadline does not interrupt the write.
             try:
                 await asyncio.wait_for(self.book_line(line), left(_SHUTDOWN_TASK_WAIT_S))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: closed line not booked at shutdown: %r", self.visit_id[:6], exc)
-        # 已接纳的亲人发言还在落盘：先等它记进转录（限时），再划封存的边界
+        # An accepted relative utterance is still being persisted: wait for its transcript entry (with a deadline) before defining the seal boundary.
         await self.settle_family_records(left(_SHUTDOWN_TASK_WAIT_S))
-        # 封存之前先收掉接收通道：之后 iframe 还送来的可靠整句不会被收下、回 ack，却落在封存之后
+        # Close the receive channel before sealing so later reliable sentences from the iframe cannot be accepted and acked after the seal.
         unregister_transport_session(self.transport)
-        self._rx_closed = True  # 与注销同一刻：之前到的照常收下，之后到的（排着的 on_recv）不再收
-        # 已收下（对端不会再重传）、还在处理的那批对端消息：先等它记进转录（限时），之后的任务取消才不会掐断它
+        self._rx_closed = True  # Use the same instant as unregistration: accept earlier arrivals, but reject later ones (queued on_recv calls).
+        # These peer messages were already accepted (the peer will not retransmit) and are still processing: wait for transcript recording (bounded) so later cancellation cannot cut it off.
         await self._settle_delivering(left(_SHUTDOWN_TASK_WAIT_S))
         self._start_journal_for_backlog()
         await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
         self._flush_journal_backlog()
         sealed = False
         if self._header_pending():
-            # 上传头还在写：不调 seal()（它这时什么都不封、只会返回 None，还会被当成这一场的封存缓存下来）；
-            # 关机不起后台封存链，流水与 spool 都留给下次启动补录
+            # The upload header is still being written: do not call seal() (it seals nothing and returns None, which would then be cached as this visit's seal);
+            # shutdown starts no background seal chain; leave the stream and spool for recovery on the next startup.
             logger.warning("visit %s: upload header still writing at shutdown", self.visit_id[:6])
         else:
-            sealing = self._start_seal("shutdown")  # 退出流程已经在封存：等同一个，不再封第二次
+            sealing = self._start_seal("shutdown")  # The exit flow is already sealing: await that same operation instead of sealing twice.
             await asyncio.wait([sealing], timeout=left(_SHUTDOWN_TASK_WAIT_S))
             sealed = sealing.done()
             if sealed:
                 self._take_seal(sealing)
             else:
-                # 外层只是 shield 着等写盘，取消它撤不掉写：交给模块级登记一并收；真正的写盘已登记为只等不取消
+                # The outer task only waits under shield; cancelling it cannot stop the write. Register it at module level; the real disk write is registered as wait-only, never cancel.
                 self._keep_background(sealing)
-                # 磁盘卡住：写盘在线程里照样落地；spool 不标 finalized（顺序是先封存后 finalized），下次启动补录
+                # Disk is stuck: the thread still completes its write; the spool is not marked finalized (seal precedes finalized), so startup can recover it.
                 logger.warning("visit %s: upload seal still writing at shutdown", self.visit_id[:6])
         if self.spool is not None and sealed and not self._spool_finalized:
             self._spool_finalized = True
-            # 关机预算内限时：写盘卡住就不等了（线程里的写照样落地，没落地的由下次启动补录）
+            # Bound the wait by the shutdown budget: stop waiting for stuck disk writes (the thread still persists them; startup recovers anything missing).
             closing = asyncio.ensure_future(self._finalize_spool_at_shutdown(self.spool))
             closing.add_done_callback(lambda t: t.cancelled() or t.exception())
             await asyncio.wait([closing], timeout=left(_SHUTDOWN_TASK_WAIT_S))
             if not closing.done():
-                # 交给模块级登记：stop_all 末尾一并取消并限时等，不留到事件循环销毁时还挂着、或在关机返回后
-                # 才写 state.json。线程里已开始的写照样落地，没落地的由下次启动补录
+                # Register at module level: stop_all cancels and waits with a deadline at the end, avoiding tasks left pending at loop destruction or writing
+                # state.json after shutdown returns. Writes already running in threads still complete; startup recovers anything missing.
                 logger.warning("visit %s: spool still finalizing at shutdown", self.visit_id[:6])
                 self._keep_background(closing)
         if self.takeover_token is not None:
@@ -2546,12 +2546,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
-        # 被打断那一轮欠下的收尾：关机时不放开。放开后关机途中会话一空闲就会去结清（续期 / 换代），
-        # 进程马上就退出了，计数留着也没有影响
+        # Cleanup owed by the interrupted cycle remains held during shutdown. Releasing it would settle renewal / replacement whenever the session becomes idle during shutdown;
+        # the process is about to exit, so retaining the counter has no effect.
         cancel = self._room_cancel_task
         if cancel is not None and not cancel.done():
-            # 撤销房间是对外请求（邀请码与配额占用）：从它派生那一刻算至少给它 _SHUTDOWN_ROOM_CANCEL_S，
-            # 前面的步骤把总预算用完了也一样（它与那些步骤并行，正常不超预算）
+            # Room cancellation is an external request (invite code and quota): allow at least _SHUTDOWN_ROOM_CANCEL_S from when it is spawned,
+            # even if earlier steps consume the total budget (it runs in parallel with them and normally stays within budget).
             floor = self._room_cancel_at + _SHUTDOWN_ROOM_CANCEL_S - loop.time()
             await asyncio.wait([cancel], timeout=max(left(_SHUTDOWN_ROOM_CANCEL_S), floor, 0.0))
         for task in list(self._tasks):
@@ -2559,22 +2559,22 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self._pump_task is not None:
             self._pump_stop = True
             self._pump_task.cancel()
-        # 取消之后还活着的（卡在不理取消的依赖里）：注销之后 stop_all 看不到这个运行时，交给模块级登记一并收
+        # Tasks still alive after cancellation (stuck in cancellation-ignoring dependencies): after unregistration stop_all cannot see this runtime, so register them at module level for cleanup.
         for task in list(self._tasks) + [self._pump_task] + inflight:
             if task is not None and not task.done():
                 self._keep_background(task)
         self._stop_display()
-        # 正常收尾由关闭通道 / teardown 做的两件事，关机路径也要做（各自限时，不超关机预算）：
-        # .outbox.jsonl 带正文，不能比这场活得久；隔离会话的客户端要关掉它自己的任务与 HTTP 连接
+        # Perform the two normal channel-close / teardown actions on the shutdown path too (each bounded by the shutdown budget):
+        # .outbox.jsonl contains message bodies and must not outlive the visit; the isolated-session client must close its own tasks and HTTP connections.
         outbox_closing = asyncio.ensure_future(self.outbox.close())
         outbox_closing.add_done_callback(lambda t: t.cancelled() or t.exception())
-        # outbox 与隔离会话同时关，共用剩余预算
+        # Close the outbox and isolated session concurrently using the remaining budget.
         await asyncio.gather(asyncio.wait([outbox_closing], timeout=left(_SHUTDOWN_TASK_WAIT_S)),
                              self.close_session(left(_SHUTDOWN_TASK_WAIT_S)))
         cleanup = self.outbox.close_task
         if cleanup is not None and not cleanup.done():
             logger.warning("visit %s: outbox still closing at shutdown", self.visit_id[:6])
-            # 与 teardown 同一个登记：stop_all 末尾先限时等它删掉文件，到点才取消
+            # Use the same registration as teardown: stop_all first waits with a deadline for file removal, cancelling only at the deadline.
             _outbox_cleanups.add(cleanup)
             cleanup.add_done_callback(_outbox_cleanups.discard)
         unregister_transport_session(self.transport)
@@ -2583,7 +2583,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             finalize_visit_route_state(self.lanlan_name)
         _unregister(self)
 
-    # ── 状态 ─────────────────────────────────────────────────────────
+    # ── State ──
 
     def _replay_lines(self) -> list[dict]:
         """Every line of this visit so far, ``(lp, side_rank)`` order: the journal plus what is still buffered.
@@ -2613,8 +2613,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         transcript = [self.visit_line_payload_from_record(r) for r in self._replay_lines()[-50:]]
         reconnecting = self.phase != PHASE_ENDED and (
             self.liveness.self_disconnected_at is not None or self.liveness.page_departed_at is not None)
-        # 收尾已开始、接管还没释放（释放前或释放抛错等 teardown 重试）：页面看到 ending 就会交还输入框，
-        # 而此时输入仍归串门——快照照旧报收尾前的阶段，与「接管释放后才推 ending 帧」一致
+        # Cleanup has begun but takeover has not been released (before release or after a release error awaiting teardown retry): the page returns its input box on ending,
+        # while visits still own input. Keep reporting the pre-cleanup phase, consistent with sending ending only after takeover release.
         phase = self.phase
         if phase == PHASE_ENDING and self.takeover_token is not None:
             phase = self._was_phase
@@ -2628,7 +2628,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 "cat_name": peer.display, "short_id": peer.short_id, "human_label": None,
                 "lang": peer.lang, "hidden": bool(self.room.peer_hidden) if self.room else False,
             },
-            # 页面重载期间（传输页还没回到房间）同样算重连中：这时没有页面能收发帧
+            # Page reloads (before the transport page rejoins the room) also count as reconnecting: no page can send or receive frames then.
             "connected": self.joined and not reconnecting,
             "reconnecting": reconnecting,
             "rtt_ms": self.stats.get("rtt_ms"), "rx_fps": self.stats.get("rx_fps"),
@@ -2705,7 +2705,7 @@ def _make_inbox() -> Any:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 发起 / 加入（HTTP 层在 C3a-3b 调用）
+# Start / join (called by the HTTP layer in C3a-3b).
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -2765,7 +2765,7 @@ async def start_visit(
     disabled_gen = _disabled_gen
     if _account_changes:
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
-    # 用户的串门开关（visitEnabled）关着：拒绝一切邀请、也不能出门（§3.7.6）；在人设闸之前，不触发人设重生成
+    # The user's visitEnabled switch is off: reject all invites and outbound visits (§3.7.6); check before the persona gate to avoid regenerating the persona.
     switch_off = await visit_switch_refusal(deps)
     if switch_off is not None:
         raise switch_off
@@ -2776,20 +2776,20 @@ async def start_visit(
     if host is None:
         raise VisitRefused(409, {"reason": "busy"})
     vid = visit_id or secrets.token_urlsafe(16)
-    # 锁检查与占位之间没有 await：查完立刻占位，别的路由插不进来；占位之后它必为真，不能再查
+    # No await between checking the lock and reserving it: reserve immediately so other routes cannot intervene; it is necessarily true afterward and must not be checked again.
     if is_external_route_locked(name):
         reason = "already_visiting" if name in _runtimes or get_visit_route_state(name) else "route_owned"
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": reason})
     key = (vid, side)
     if key in _pending_visits or any(r.visit_id == vid and r.side == side for r in _runtimes.values()):
-        # 锁按角色：另一个角色正以同一侧进同一场（同一张邀请），不能互相顶掉登记
+        # Lock per role: another role entering the same side of the same visit (the same invite) must not replace its registry entry.
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "visit_in_progress"})
     config_dir = Path((deps or runtime_deps()).config_dir())
     if (any(pending[0] == vid and pdir == config_dir for pending, pdir in _pending_visits.items())
             or any(r.visit_id == vid and r.config_dir == config_dir for r in _runtimes.values())):
-        # 本机已在跑这一场的另一侧、文件落在同一个配置目录：两侧的 spool / state / 上传流水 / outbox 都只按
-        # visit_id 命名，会互相覆盖。同账号兑换本机发出的邀请本来就被 Servers 以 self_invite 拒掉；桌面端中途
-        # 换了社区账号时 Servers 拦不住，这里在本地按同一个原因拒掉（提示与 Servers 拒的一样）
+        # This machine already runs the other side of this visit with files in the same config directory: both sides name their spool / state / upload stream / outbox only by
+        # visit_id and would overwrite each other. Servers already rejects redeeming this machine's invite with the same account as self_invite; if the desktop switches
+        # community accounts midway, Servers cannot catch it, so reject locally for the same reason (with the same message as Servers).
         status, body = cr.VisitInviteInvalid("self_invite").to_local_error()
         raise VisitRefused(status, body)
     slot = activate_visit_route(name, phase=PHASE_PENDING, visit_id=vid)
@@ -2800,15 +2800,15 @@ async def start_visit(
             raise VisitRefused(409, {"reason": failure})
         account = await _local_account()
         if _account_gen != account_gen or _account_changes:
-            # 入场途中开始了登出 / 换账号：这一场会跑在已不存在 / 别人的账号下，不登记
+            # Logout / account switching began during entry: this visit would run under a nonexistent / different user's account, so do not register it.
             raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
         if _stop_gen != stop_gen or _stopping:
-            # 入场途中 stop_all 跑过 / 正在跑（它只看得到已登记的运行时）：不再登记、不再起传输
+            # stop_all ran / is running during entry (it sees only registered runtimes): do not register or start transport.
             raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "shutdown"})
         if _disabled_gen != disabled_gen:
-            # 入场途中用户在设置里关掉了串门（关闭钩子只结束已登记的运行时）：不再登记
+            # The user disabled visits in settings during entry (the disable hook only ends registered runtimes): do not register.
             raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "visit_disabled"})
-        # 查账号期间（还没登记运行时、输入还不归串门）语音会话 / 热切换可能已经起来、manager 也可能被换掉：再查一次
+        # While checking the account (before runtime registration and visit input ownership), a voice session / hot switch may have started and replaced the manager: check again.
         if not host.is_current():
             raise VisitRefused(409, {"reason": "busy"})
         failure = host.precondition_failure()
@@ -2841,12 +2841,12 @@ async def _local_account() -> Optional[str]:
 
     try:
         return await local_account()
-    except Exception:  # noqa: BLE001 - 读不出本机登录态按未登录
+    except Exception:  # noqa: BLE001 - Treat unreadable local login state as logged out.
         return None
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 注册表入口
+# Registry entry point.
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -2859,8 +2859,8 @@ async def route_stream_message(lanlan_name: str, message: dict) -> bool:
         return False
     origin = DISPLAY_SOCKET_CONNECTION.get()
     if origin is not None and not display_socket.is_bound(origin):
-        # 来自没 visit_bind 的 display socket（分派途中路由换成了串门）：吞掉、把未授权提示发回发起的
-        # 那条连接（不是当前的 mgr.websocket），不代亲人发言
+        # From a display socket without visit_bind (the route changed to visits during dispatch): swallow it and send the unauthorized notice back to the originating
+        # connection (not the current mgr.websocket), without speaking for the relative.
         request_id = message.get("request_id") if isinstance(message, dict) else None
         await display_socket.refuse(origin, request_id)
         return True
@@ -2917,7 +2917,7 @@ async def end_visit(lanlan_name: str, visit_id: str, reason: str) -> tuple[int, 
         return 404, {"error": "unknown_visit"}
     if reason == "recall":
         if rt.room is None or rt.phase in WAITING_PHASES:
-            # 还没开始聊：叫回来就是直接结束
+            # Chat has not started: recalling directly ends the visit.
             started = rt.request_finalize("recall")
             return 200, {"ok": True, "mode": "finalize", "exit_task_started": started}
         if rt.room.phase != "active" or rt.finalizing:
@@ -2957,18 +2957,18 @@ async def account_change(
     _account_changes += 1
     _account_gen += 1
     try:
-        # 准入闸先立起再排队：前一次变更还在等某场封存时，那场可能已从 _runtimes 注销，
-        # 后一次看到空表就会抢先改凭证——账号变更一次一个
+        # Raise the admission gate before queuing: while an earlier change waits for a visit to seal, that visit may already have unregistered from _runtimes,
+        # letting a later change see an empty registry and replace credentials first. Serialize account changes.
         async with _account_change_mutex():
             if (_runtimes or _seals_in_background()) and (ends_visits is None or await ends_visits()):
                 try:
                     await end_visits_for_account_change(timeout)
-                except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
+                except Exception as exc:  # noqa: BLE001 - Cleanup failure must not block logout / login; startup recovers unsealed visits.
                     logger.warning("visit: ending live visits before the account change failed: %r", exc)
-            # 还在途的领凭证请求（场次可能已注销、请求仍在后台）读会话时必须仍是旧账号：先等它们结束再改会话
+            # In-flight credential requests (the visit may be unregistered while requests remain in the background) must still read the old account session: await them before changing it.
             await _settle_in_flight(_credential_requests, timeout, "credential requests")
-            # 已核过账号、正往页面推复盘块的也先推完：核完账号到写出去之间不会换成另一个账号。
-            # 至少等满推送的时限（调用方传了更短的 timeout 也一样）：放行时它们一定已结束或被截断
+            # Let recap pushes that already verified the account finish too, preventing account changes between verification and writing.
+            # Wait at least the push timeout (even if the caller supplied a shorter timeout): on release, all pushes have finished or been cut off.
             await _settle_in_flight(_account_bound_pushes, max(timeout, _ACCOUNT_BOUND_PUSH_MAX_S + 1.0),
                                     "debrief pushes")
             yield
@@ -3014,8 +3014,8 @@ async def _settle_in_flight(futures: set[asyncio.Future], timeout: float, what: 
     pending = [f for f in futures if not f.done()]
     if not pending:
         return
-    # 只等不取消：领凭证请求已发出时取消也撤不回 Servers 那边的签发（与兑掉的邀请码）；
-    # 复盘推送由它自己的时限截断（hold_account_for_push），这里也不取消
+    # Wait without cancelling: once sent, cancelling a credential request cannot undo issuance on Servers (or the redeemed invite code);
+    # recap pushes are bounded by their own timeout (hold_account_for_push), so do not cancel those here either.
     _done, still = await asyncio.wait(pending, timeout=max(0.0, timeout))
     if still:
         logger.warning("visit: account change proceeds with %d %s still in flight after %.0fs",
@@ -3039,7 +3039,7 @@ async def end_visits_for_account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WA
     for rt in runtimes:
         if rt.request_finalize("route_end"):
             ended += 1
-    # 刚注销、封存还在后台写的场次（退出流程超过封存期限）同样要等：它们已不在 _runtimes 里
+    # Also await visits just unregistered whose seals are still being written in the background (exit exceeded its seal deadline): they are no longer in _runtimes.
     runtimes += [rt for rt in _seals_in_background() if rt not in runtimes]
     if runtimes:
         loop = asyncio.get_running_loop()
@@ -3054,21 +3054,21 @@ async def end_visits_for_account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WA
 async def stop_all(reason: str = "shutdown") -> None:
     """Shutdown hook (PR-09b, within ``VISIT_SHUTDOWN_BUDGET_S``): files first, never a ``leave``."""
     global _stop_gen, _stopping
-    _stop_gen += 1  # 还挂在入场途中的 start_visit 醒来后看到它就不登记
-    _stopping = True  # stop_all 进行中新到的入场同样拒绝
+    _stop_gen += 1  # In-flight start_visit checks this after waking and skips registration.
+    _stopping = True  # Reject new entries arriving while stop_all runs too.
     loop = asyncio.get_running_loop()
     budget_end = loop.time() + VISIT_SHUTDOWN_BUDGET_S
     try:
         runtimes = list(_runtimes.values())
-        # 已拆掉的场次发出的撤销房间请求（邀请码与配额占用）：与各场关机并行限时等它发完，到点才取消，
-        # 不在关机之后再多出一段
-        # 还登记着的场次自己发出的那份不算：它的 shutdown() 按自己的规则（保底时长）等
+        # Room-cancellation requests from dismantled visits (invite code and quota): wait with a deadline in parallel with visit shutdown, cancelling only at the deadline,
+        # without adding another wait after shutdown.
+        # Exclude requests from visits still registered: their shutdown() awaits them under its own rules (minimum duration).
         owned = {rt._room_cancel_task for rt in runtimes}
         orphans = [t for t in _room_cancels if not t.done() and t not in owned]
-        # 已拆掉的场次还没做完的 outbox 清理（删掉带正文的 .outbox.jsonl）同样先限时等、到点才取消：
-        # 先取消会在 flush 处打断，文件要留到下次启动才删
+        # Also wait with a deadline for unfinished outbox cleanup from dismantled visits (removing body-containing .outbox.jsonl), cancelling only at the deadline:
+        # cancelling first interrupts flush and leaves the file until next startup.
         orphans += [t for t in _outbox_cleanups if not t.done()]
-        # 线程池写盘（上传封存）：只限时等、不取消（取消会撤掉还在排队的那次写）
+        # Thread-pool disk writes (upload sealing): wait with a deadline without cancellation (cancelling would remove a queued write).
         writes = [t for t in _awaited_writes if not t.done()]
 
         async def settle_orphan_cancels() -> None:
@@ -3081,34 +3081,34 @@ async def stop_all(reason: str = "shutdown") -> None:
                                        return_exceptions=True)
         for rt, result in zip(runtimes, results):
             if isinstance(result, BaseException):
-                # 这一场没封存 / 没 finalize，留给下次启动补录：至少在日志里能查到是哪一场、出了什么错
+                # This visit was not sealed / finalized; leave it for startup recovery and at least log which visit failed and why.
                 logger.error("visit %s: shutdown failed: %r", rt.visit_id[:6], result, exc_info=result)
-        # 脱离运行时的后台任务（账号映射补写、交还回调、没关完的会话）也一并停掉，不留给事件循环销毁
-        # 按角色登记的后台写入（digest、最后总结、延后的 spool 收尾、启动补录）同样停掉：没写完的留给下次启动补录
-        # 还没完成的撤销房间请求（某一场 shutdown() 半路出错、没走到它自己的撤销等待）同样取消再限时等
-        # （正常路径下这时都已完成）
+        # Stop background tasks detached from runtimes (account-map updates, handback callbacks, sessions not fully closed) too, rather than leaving them to loop destruction.
+        # Also stop per-role registered background writes (digest, final summary, deferred spool cleanup, startup recovery); recover unfinished writes on next startup.
+        # Cancel and then wait with a deadline for unfinished room-cancellation requests too (a visit's shutdown() failed before its own cancellation wait).
+        # (On the normal path they have all finished by now.)
         detached = [t for t in _detached if not t.done()]
         detached += [t for bucket in list(_visit_bg_tasks.values()) for t in list(bucket) if not t.done()]
         detached += [t for t in _room_cancels if not t.done()]
-        # 开头那次快照里的 outbox 清理已经等过、取消过：还没停下的同样限时等
+        # Outbox cleanup in the initial snapshot has already been awaited and cancelled: wait with a deadline for any tasks still running too.
         detached += [t for t in orphans if not t.done() and t in _outbox_cleanups]
-        # 关机途中才登记的 outbox 清理（各场 shutdown() 自己的）：与开头那批一样先限时等、到点才取消——
-        # 先取消会在 flush 处打断，带正文的 .outbox.jsonl 要留到下次启动才删
+        # Outbox cleanup registered during shutdown (by each visit's shutdown()) gets the same bounded wait before cancellation as the initial batch;
+        # cancelling first interrupts flush, leaving the body-containing .outbox.jsonl until next startup.
         late_cleanups = [t for t in _outbox_cleanups if not t.done() and t not in orphans]
-        # 打断主会话到点没停、被撇下的任务（ManagerHost 登记）
+        # Tasks abandoned after the deadline for interrupting the main session (registered by ManagerHost).
         from main_routers.visit_router import host_port as _host_port
 
         detached += _host_port.abandoned_interrupts()
-        # 注销传输时起的关闭连接任务（关机途中各场注销时起的也在内）：背压下可能还在等发送锁与 close 帧
+        # Connection-close tasks started when unregistering transport (including visits unregistered during shutdown): backpressure may leave them waiting for the send lock and close frame.
         from main_routers.visit_router import transport_ws as _transport_ws
 
         detached += _transport_ws.pending_close_tasks()
         for task in detached:
             task.cancel()
-        # 关机途中才登记的线程池写盘（各场 shutdown() 里才起的上传封存）：开头那次快照里没有，这里同样只等不取消，
-        # 只用关机总预算剩下的部分（各场自己已经等过一轮）
+        # Thread-pool disk writes registered during shutdown (upload sealing started in each visit's shutdown()) were absent from the initial snapshot; also wait without cancelling,
+        # using only the remaining total shutdown budget (each visit has already waited once).
         late_writes = [t for t in _awaited_writes if not t.done() and t not in writes]
-        # 两段等待都截到关机总预算的剩余：各场 shutdown() 已经把预算用完时不再多等
+        # Cap both waits at the remaining total shutdown budget: do not wait further if visit shutdown() calls have consumed it.
         left = max(0.0, min(_SHUTDOWN_TASK_WAIT_S, budget_end - loop.time()))
         waits = []
         if detached:
@@ -3121,10 +3121,10 @@ async def stop_all(reason: str = "shutdown") -> None:
         for task in stuck:
             task.cancel()
         if stuck:
-            # 与开头那批一样：取消之后再给它处理取消的机会（截到剩余预算，用完也至少让出一轮）
+            # As with the initial batch, allow cancellation handling after cancelling (cap at the remaining budget, but yield at least once even when exhausted).
             await asyncio.wait(stuck, timeout=max(0.0, budget_end - loop.time()))
     finally:
-        _stop_gen += 1  # stop_all 进行中才开始、它结束后才醒的入场：代数已变，同样不登记
+        _stop_gen += 1  # Entry started during stop_all and woke after it finished: the generation changed, so do not register it either.
         _stopping = False
 
 
@@ -3136,12 +3136,12 @@ async def visit_sweep_loop() -> None:
         for rt in list(_runtimes.values()):
             try:
                 await rt.tick()
-            except Exception as exc:  # noqa: BLE001 - 一场的计时出错不拖累别的场次
+            except Exception as exc:  # noqa: BLE001 - A timing failure in one visit must not affect other visits.
                 logger.warning("visit %s: tick failed: %r", rt.visit_id[:6], exc)
 
 
 def _wire_upload_hooks() -> None:
-    # 转录补传 / 举报重试跳过本进程在飞的场次（transcript_upload 留的钩子）
+    # Transcript recovery upload / report retries skip this process's in-flight visits (hook retained by transcript_upload).
     from main_routers.visit_router import transcript_upload
 
     transcript_upload.is_live = is_visit_live

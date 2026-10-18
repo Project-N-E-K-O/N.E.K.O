@@ -25,8 +25,8 @@ class _FakeConfigManager:
         return self._core_config
 
     def load_json_config(self, name, default=None):
-        # gptsovits 选中已不再 raw load core_config.json；保留此方法只为别的
-        # provider（vllm_omni 等）共用 ctx 时不抛属性错。
+        # Selecting gptsovits no longer loads core_config.json directly; retain this method so other
+        # providers (vllm_omni etc.) sharing ctx do not raise attribute errors.
         return default if default is not None else {}
 
     def get_model_api_config(self, model_type):

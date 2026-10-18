@@ -9,7 +9,7 @@ app, polls the resulting task to completion, then verifies:
 2. ``GET /market/installed`` projects ``latest_install_source`` from
    that lock entry.
 
-This is the hard-evidence test for "下载链路真的通了". It exercises the
+This proves the download path actually works. It exercises the
 full chain — HTTP download → sha256 check → unpack → ISM record →
 lock atomic write → ``/market/installed`` projection — without any
 network mocks except a Market catalogue populated from the served packages.

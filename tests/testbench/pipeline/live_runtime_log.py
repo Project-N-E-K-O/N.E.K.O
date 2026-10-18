@@ -283,8 +283,8 @@ def rotate_for_boot() -> dict[str, Any]:
     except OSError:
         return stats
 
-    # Drop the old ``previous`` if any (user asked: "每次开启服务自检
-    # 的时候可以清理上一次留下的实时转存日志").
+    # Drop the old ``previous`` if any (the user requested clearing the previous
+    # live-dump log whenever service self-check starts).
     if PREVIOUS_FILE.exists():
         try:
             stats["previous_bytes"] = PREVIOUS_FILE.stat().st_size

@@ -17,17 +17,17 @@
 
 import logging
 
-# 应用程序名称与版本配置
+# Application name and version configuration
 APP_NAME = "N.E.K.O"
 APP_VERSION = "0.9.0"
 logger = logging.getLogger(f"{APP_NAME}.{__package__}")
 
-# GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
+# GPT-SoVITS voice_id prefix (character management identifies GPT-SoVITS voices using "gsv:<voice_id>")
 GSV_VOICE_PREFIX = "gsv:"
 
-# GeoIP 区域判定的调试开关（ConfigManager._check_non_mainland 读取）：
-#   None  → 正常走真实检测（HTTP IP geo + Steam geo 双判），生产默认值
-#   True  → 强制判定为非中国大陆（走 lanlan.app 免费路径）
-#   False → 强制判定为中国大陆
-# 调试时改这里即可，不用动 config_manager 的检测逻辑；上线保持 None。
+# GeoIP region-detection debug switch (read by ConfigManager._check_non_mainland):
+#   None  → Run real detection (HTTP IP geo + Steam geo checks); production default
+#   True  → Force non-mainland China (use the lanlan.app free route)
+#   False → Force mainland China
+# Change this for debugging without modifying config_manager detection logic; retain None in production.
 GEOIP_FORCE_NON_MAINLAND = None

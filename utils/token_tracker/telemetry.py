@@ -51,9 +51,9 @@ def _get_app_version_from_changelog() -> str:
         return "unknown"
 
 _MACHINE_ID_PLACEHOLDERS = {
-    # systemd 在 first-boot 前的占位
+    # systemd placeholder before first boot
     "uninitialized",
-    # 全零/全 F：VM 镜像克隆未重置、sysprep 异常、虚拟主板默认值的常见非真实 ID
+    # All zeros/all Fs: common invalid IDs from unreset VM clones, sysprep failures, or virtual motherboard defaults
     "00000000000000000000000000000000",
     "ffffffffffffffffffffffffffffffff",
     "00000000-0000-0000-0000-000000000000",
@@ -243,7 +243,7 @@ def _rollback_retired_proactive_interval(branch_path: Path) -> None:
 
         settings = load_global_conversation_settings()
         interval = settings.get("proactiveChatInterval")
-        # 只回滚仍停在实验覆写值（20s）的；用户首启后又手动改过（!=20）的保留其选择。
+        # Roll back only preferences still at the experimental override (20s); retain manual changes after first startup (!=20).
         if interval == _RETIRED_INTERVAL_EXPERIMENT_VALUE:
             save_global_conversation_settings(
                 {"proactiveChatInterval": _CONTROL_PROACTIVE_INTERVAL}
@@ -254,9 +254,9 @@ def _rollback_retired_proactive_interval(branch_path: Path) -> None:
                 _CONTROL_PROACTIVE_INTERVAL,
             )
         else:
-            # 实验组 install 但偏好已不是 20s：用户改过值 / 国内本就没被覆写（停在 15s）/
-            # 偏好读取失败返回 {} → None。打出实际值方便排查「这台为何没回滚」（None 多半
-            # 是缺 key 或读取失败，具体数值是用户手选）。
+            # Experimental-group installation no longer using 20s: user changes / mainland never overridden (still 15s) /
+            # preference-read failure returning {} → None. Log actual values to explain skipped rollbacks; None usually means
+            # missing keys/read failure, while numeric values indicate user choices.
             logger.debug(
                 "Telemetry: retired proactive_interval_20s install skipped rollback "
                 "(proactiveChatInterval=%r)",
@@ -287,16 +287,16 @@ def _get_telemetry_branch(config_dir: Path) -> str:
     p = config_dir / _TELEMETRY_BRANCH_FILE
 
     def _read() -> Optional[str]:
-        # 返 None 只表示「文件不存在 / 内容非法」两种确定状态；transient I/O 错误
-        # 故意向上冒泡。否则老设备一次读盘失败会被吞成 None，slow path 把
-        # FileExistsError 当成「文件存在但内容坏」走自愈覆盖，静默把设备改组。
-        # 让 OSError 透出，让 `/conversation-settings` 的 except 把 telemetryBranch
-        # 返 None，前端保留 pending marker，下次启动 fast path 读到合法值收敛。
+        # None means only definite absence or invalid content; transient I/O errors
+        # intentionally propagate. Otherwise one failed read on an existing device becomes None, and the slow path
+        # mistakes FileExistsError for corrupt existing content, overwriting it and silently regrouping the device.
+        # Let OSError propagate so `/conversation-settings` catches it and returns telemetryBranch
+        # as None; the frontend retains its pending marker, and the next startup fast path converges on the valid persisted value.
         #
-        # 严格校验：活跃分支都在 _TELEMETRY_BRANCHES 里，所以正常情况下不会误杀。
-        # 唯一例外是退役实验（如 privacy_default_off_v1）——它被有意移出池，落盘旧值
-        # 在这里判非法、触发按当前池重抽（见上方退役说明），正是「让老实验群退出原
-        # 分支」的预期路径。
+        # Strict validation: all active branches are in _TELEMETRY_BRANCHES, so ordinary values remain valid.
+        # The exception is retired experiments, such as privacy_default_off_v1, deliberately removed from the pool; their saved values
+        # become invalid here, triggering resampling from the current pool (see retirement notes above), the intended path
+        # for moving old experiment cohorts out of their original branches.
         if not p.exists():
             return None
         value = p.read_text(encoding="utf-8").strip()
@@ -304,7 +304,7 @@ def _get_telemetry_branch(config_dir: Path) -> str:
             return value
         return None
 
-    # Fast path：文件已存在直接读
+    # Fast path: read an existing file directly
     cached = _read()
     if cached is not None:
         return _telemetry_branch_cache.setdefault(cache_key, cached)
@@ -315,8 +315,8 @@ def _get_telemetry_branch(config_dir: Path) -> str:
     except Exception as e:
         logger.debug(f"Token tracker: failed to create config dir for branch file: {e}")
 
-    # Slow path：原子创建。两个进程同时走到这里只有一个成功，另一个回读拿到
-    # 同一 branch，保证 device-stable。
+    # Slow path: create atomically. Of two concurrent processes, only one succeeds; the other rereads
+    # the same branch, preserving device stability.
     try:
         fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         try:
@@ -325,17 +325,17 @@ def _get_telemetry_branch(config_dir: Path) -> str:
             os.close(fd)
         return _telemetry_branch_cache.setdefault(cache_key, branch)
     except FileExistsError:
-        # 另一个进程抢先写了 —— 回读它写的值，确保两个进程返回同一 branch
+        # Another process wrote first; reread its value so both processes return the same branch
         peer = _read()
         if peer is not None:
             return _telemetry_branch_cache.setdefault(cache_key, peer)
-        # peer 是 None 说明文件存在但内容不在 _TELEMETRY_BRANCHES 里（截断/损坏/
-        # 跨版本残留）。这种情况下若只返回本进程抽到的值不修盘，下次进程重启会
-        # 再走一次「读到坏值 → fast path miss → slow path 拿到 FileExistsError →
-        # 重抽」，cohort 在多次启动间反复翻滚。覆盖修盘保证只有这一次重抽，
-        # 之后就稳定。
-        # 修盘前：若旧值是会覆写用户偏好的退役实验（proactive_interval_20s），趁这次
-        # 「判非法 → 重抽」做一次性偏好回滚（见函数 docstring；重抽即天然幂等标记）。
+        # peer=None means the file exists but contains a value outside _TELEMETRY_BRANCHES (truncated/corrupt/
+        # legacy across versions). Returning only this process's sample without repairing disk would repeat
+        # 'invalid read → fast-path miss → slow-path FileExistsError →
+        # resample' next startup, churning cohorts across launches. Overwriting repairs disk and limits resampling to this once,
+        # keeping subsequent runs stable.
+        # Before repair, if the old value is a retired experiment overriding user preferences (proactive_interval_20s), use this
+        # invalidation/resampling for a one-time preference rollback (see docstring; resampling naturally marks idempotency).
         _rollback_retired_proactive_interval(p)
         try:
             with open(p, "w", encoding="utf-8") as f:
@@ -344,10 +344,10 @@ def _get_telemetry_branch(config_dir: Path) -> str:
             logger.debug(f"Token tracker: failed to heal corrupt branch file: {e}")
         return _telemetry_branch_cache.setdefault(cache_key, branch)
     except Exception as e:
-        # 写盘失败不致命：进程级缓存 setdefault 保证同一进程后续所有调用方拿到
-        # 相同分支，TokenTracker 上报和前端 API 不会互相打架。下次进程重启时若
-        # 写盘仍然失败，缓存重新随机抽——按设计这就是 server 端看到的分布噪声
-        # 来源，不构成「同一 install 多个分支」的错误数据。
+        # Persistence failure is nonfatal: process-cache setdefault ensures later callers in this process receive
+        # one branch, keeping TokenTracker reporting and frontend APIs consistent. If persistence still fails after
+        # restart, cache sampling repeats; this intentionally contributes server-observed distribution noise,
+        # not erroneous multiple branches for one installation.
         logger.debug(f"Token tracker: failed to persist telemetry branch: {e}")
         return _telemetry_branch_cache.setdefault(cache_key, branch)
 
@@ -394,9 +394,9 @@ def _is_release_build() -> bool:
 
     if getattr(sys, "frozen", False):
         return True
-    # Nuitka 在每个编译模块的 globals 里注入 __compiled__；主模块还有
-    # __nuitka_binary_dir。先看当前模块 globals，再兜底主模块属性，确保 standalone
-    # 和 onefile 两种 Nuitka 模式都能识别。
+    # Nuitka injects __compiled__ into every compiled module's globals; the main module also has
+    # __nuitka_binary_dir. Check current globals, then main-module attributes to recognize both standalone
+    # and onefile Nuitka modes.
     if "__compiled__" in globals() or "__nuitka_binary_dir" in globals():
         return True
     main_mod = sys.modules.get("__main__")
@@ -439,8 +439,8 @@ def _get_telemetry_metadata() -> tuple[str, str]:
     if not _is_release_build():
         return "source", ""
 
-    # 实时探测：GetSteamID() 只调一次，结果同时决定 distribution 和
-    # steam_user_id —— 这是修复 race 的核心，不再分两次调用跨越 ready 边界。
+    # Live detection: call GetSteamID() once, using the result for both distribution and
+    # steam_user_id; this fixes the race by avoiding two calls straddling readiness.
     try:
         from utils.steam_state import get_steamworks
         sw = get_steamworks()
@@ -452,7 +452,7 @@ def _get_telemetry_metadata() -> tuple[str, str]:
                 sid = 0
             if sid > 0:
                 return "steam", str(sid)
-            # 没拿到登录用户，但订阅过工坊也算 Steam 版（steam + 空 ID）。
+            # No logged-in user, but prior Workshop subscriptions still indicate Steam distribution (steam + empty ID).
             try:
                 if int(sw.Workshop.GetNumSubscribedItems() or 0) > 0:
                     return "steam", ""
@@ -463,8 +463,8 @@ def _get_telemetry_metadata() -> tuple[str, str]:
         # Steamworks can be unavailable while the application is still usable.
         pass
 
-    # 磁盘兜底：之前任何一次会话写过 workshop_config.json 即证明跑过 Steam
-    # 版，即使本次 Steam 客户端没开（cloudsave 会把它带走）。
+    # Disk fallback: any earlier session writing workshop_config.json proves the Steam distribution ran,
+    # even if Steam is not running now; cloudsave carries the file across devices.
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
@@ -493,13 +493,13 @@ def _get_telemetry_timezone() -> str:
         local_tz = now_local.tzinfo
         if local_tz is not None:
             name = str(local_tz)
-            # Windows 上 astimezone 可能给出 "China Standard Time" 这类非 IANA 字串，
-            # 没有 '/' 时退到 offset 表示，避免污染按 IANA 切片的分析。
+            # Windows astimezone may return non-IANA names such as "China Standard Time";
+            # without '/', fall back to offsets to avoid contaminating IANA-based analysis.
             if name and "/" in name:
                 return name[:64]
-        # 取实际 UTC 偏移（aware datetime 反映当前 DST 状态）。time.altzone /
-        # time.daylight 不行：time.daylight 只表示"locale 有没有 DST 制度"，
-        # 不是"现在是不是 DST"，在有 DST 的时区会全年报 DST 偏移。
+        # Use actual UTC offset, since aware datetime reflects current DST. time.altzone /
+        # time.daylight are insufficient: time.daylight indicates only whether the locale has a DST regime,
+        # not whether DST applies now; DST-observing timezones would report the DST offset year-round.
         offset = now_local.utcoffset()
         if offset is not None:
             total_sec = int(offset.total_seconds())
@@ -555,14 +555,14 @@ def _get_device_hw() -> str:
         ram_tag = ("lt8" if gb < 8 else "8to16" if gb < 16
                    else "16to32" if gb < 32 else "ge32")
     except Exception:
-        ram_tag = "unknown"  # psutil 缺失/异常：降级 unknown，埋点不能挡上报
+        ram_tag = "unknown"  # Missing/failing psutil: fall back to unknown; instrumentation must not block reporting
 
     try:
         n = os.cpu_count() or 0
         cpu_tag = ("unknown" if n <= 0 else "le4" if n <= 4 else "5to8" if n <= 8
                    else "9to16" if n <= 16 else "gt16")
     except Exception:
-        cpu_tag = "unknown"  # cpu_count 异常：降级 unknown，不抛
+        cpu_tag = "unknown"  # cpu_count failure: use unknown without raising
 
     _DEVICE_HW_CACHE = f"{os_tag}|{arch}|{ram_tag}|{cpu_tag}"
     return _DEVICE_HW_CACHE

@@ -17,13 +17,13 @@ import main_logic.core.turn as turn_module
 from main_logic.core.game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
 from tests.fake_clock import patch_module_clock
 
-# 假时钟一律打到「真正读 time.time() 的那个模块」上，而不是 core_module
-# （main_logic.core 是门面包，自身不读时钟）。本文件里三类被测方法分别落在：
-#   - main_logic.core.turn      转写 / send_lanlan_response / 语音回声缓存
-#   - main_logic.core.streaming 输入 ingress 时间戳（_stream_data_now 等）
-#   - main_logic.core.tts_runtime  TTS 响应处理与管线清理
-# 旧写法 `setattr(core_module.time, "time", ...)` 其实换掉了整个 stdlib time
-# 模块，靠全局副作用才恰好覆盖到这些模块。
+# Patch fake clocks on **the module actually reading time.time()**, not core_module
+# (main_logic.core is a facade reading no clock). Tested methods here live in:
+#   - main_logic.core.turn: transcription / send_lanlan_response / voice echo cache.
+#   - main_logic.core.streaming: input ingress timestamps (_stream_data_now, etc.).
+#   - main_logic.core.tts_runtime: TTS response handling and pipeline cleanup.
+# The old `setattr(core_module.time, "time", ...)` actually replaced the entire stdlib time
+# module, covering these modules accidentally through global side effects.
 
 
 FIXED_TS = 1_700_000_000.0
@@ -198,7 +198,7 @@ def _make_manager():
         mgr.user_activity.append(interrupted_speech_id)
 
     async def send_lanlan_response(text, is_first_chunk=False, turn_id=None, metadata=None, **_kwargs):
-        # 真实实现在发布边界复查 publish_if，发布后同步调用 on_published。
+        # Real implementation rechecks publish_if at publishing and synchronously calls on_published afterward.
         publish_if = _kwargs.get("publish_if")
         if publish_if is not None and not publish_if():
             return None
@@ -209,9 +209,9 @@ def _make_manager():
             "metadata": metadata,
             "request_id": _kwargs.get("request_id"),
         })
-        # 真实实现在 track_ai_turn 为真时同步累加 AI turn buffer（turn end 时
-        # 交给 activity tracker）。stub 不照做的话，凡是断言 buffer 内容的用例
-        # 都会对"send 到底 track 了没有"失明。
+        # Real implementation synchronously accumulates AI turn buffer when track_ai_turn=True
+        # (delivered to activity tracker at turn end). Stubs must mirror it or buffer-content assertions
+        # cannot see whether send actually tracked anything.
         if _kwargs.get("track_ai_turn", True):
             mgr._current_ai_turn_text += text
         on_published = _kwargs.get("on_published")
@@ -1698,10 +1698,10 @@ async def test_voice_observer_does_not_prime_gemini_context_from_main(monkeypatc
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_voice_transcript_runs_mini_game_invite_keyword(monkeypatch):
-    """语音口头回应 mini-game 邀请必须和打字 / 点按钮一样过关键词匹配器——否则
-    语音用户说"现在不想玩"永远触发不了 decline 冷却，会被下一个 proactive tick
-    当成隐式 dismiss（只抑制 5min），邀请反复重来。回归：handle_input_transcript
-    必须把原话喂给 dispatch_text_user_message（与文本路径对偶）。"""
+    """Spoken mini-game invitation responses must pass the same keyword matcher as typed/button responses; otherwise
+    voice users saying 现在不想玩 never trigger decline cooldown, and the next proactive tick
+    treats it as implicit dismiss (only 5min suppression), repeatedly inviting. Regression: handle_input_transcript
+    must feed original wording to dispatch_text_user_message, symmetric with text input."""  # noqa: DOCSTRING_CJK
     mgr = _make_transcript_manager()
     seen = []
     monkeypatch.setattr(
@@ -1713,15 +1713,15 @@ async def test_voice_transcript_runs_mini_game_invite_keyword(monkeypatch):
         mgr, "  现在不想玩  ", is_voice_source=True,
     )
 
-    # 传原话（未 strip），matcher 内部自己 lower+strip；与文本路径一致
+    # Forward original unstripped text; matcher lowercases/strips internally, matching text input.
     assert seen == [("Lan", "  现在不想玩  ")]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_voice_transcript_keyword_outcome_pushes_invite_resolved(monkeypatch):
-    """关键词命中时，语音路径推 mini_game_invite_resolved 让前端 dismiss
-    ChoicePrompt（accept 兼带 game_url 当 launch 信号）。"""
+    """On keyword hits, voice input pushes mini_game_invite_resolved so the frontend dismisses
+    ChoicePrompt (accept also includes game_url as the launch signal)."""
     mgr = _make_transcript_manager()
     mgr.websocket = MagicMock()
     mgr.websocket.send_json = AsyncMock()
@@ -1971,10 +1971,10 @@ async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
 
     async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
-        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
-        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        # In-place offline session replacement must retain pending_input_data: concurrent user input cached
+        # during session teardown awaits cannot be cleared with teardown.
         assert preserve_pending_input is True
-        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        # Internal in-place replacements must not push CHARACTER_LEFT to the frontend.
         assert by_server is True
         mgr.session = None
         mgr.is_active = False
@@ -2110,10 +2110,10 @@ async def test_attachment_stages_before_inputs_cached_during_offline_handoff(
 
     async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
-        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
-        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        # In-place offline session replacement must retain pending_input_data: concurrent user input cached
+        # during session teardown awaits cannot be cleared with teardown.
         assert preserve_pending_input is True
-        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        # Internal in-place replacements must not push CHARACTER_LEFT to the frontend.
         assert by_server is True
         mgr.session = None
         mgr.is_active = False
@@ -2206,12 +2206,12 @@ async def test_initiating_text_submits_before_inputs_cached_during_handoff(
         mgr.session = offline_session
         mgr.is_active = True
         mgr.session_ready = True
-        # 拆 session 期间到达的第二条消息被保留了下来。
+        # Retain the second message arriving during session teardown.
         mgr.pending_input_data.append(
             {"input_type": "text", "data": "second message"}
         )
         await core_module.LLMSessionManager._flush_pending_input_data(mgr)
-        # 发起本次 handoff 的那条还没提交，缓存的这条必须被挡住。
+        # The input initiating this handoff is uncommitted; block cached input meanwhile.
         assert delivery_order == []
 
     mgr.end_session = AsyncMock(side_effect=_end_session)
@@ -2253,8 +2253,8 @@ async def test_one_shot_user_image_records_engagement(
         return "img-b64"
 
     monkeypatch.setattr(core_module, "process_screen_data", _process_after_clock_advance)
-    # ingress 时间戳取自 main_logic.core.streaming._user_input_ingress_time，
-    # 门面 core_module 自己不读时钟。
+    # Ingress timestamps come from main_logic.core.streaming._user_input_ingress_time;
+    # core_module's facade reads no clock.
     patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
 
     await core_module.LLMSessionManager._process_stream_data_internal(
@@ -2289,7 +2289,7 @@ async def test_cached_user_image_preserves_server_ingress_time(
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     clock = {"now": FIXED_TS}
-    # 同上：ingress 时间戳来自 main_logic.core.streaming。
+    # Likewise, ingress timestamps come from main_logic.core.streaming.
     patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
     monkeypatch.setattr(
         core_module,
@@ -2321,7 +2321,7 @@ async def test_stream_data_preserves_router_stamped_text_ingress(monkeypatch):
     mgr._starting_session_count = 1
     mgr.input_cache_lock = asyncio.Lock()
     mgr.pending_input_data = []
-    # _stream_data_now 的 fallback 采样点在 main_logic.core.streaming。
+    # _stream_data_now's fallback sampling occurs in main_logic.core.streaming.
     patch_module_clock(
         monkeypatch,
         streaming_module,
@@ -2461,7 +2461,7 @@ async def test_cached_text_preserves_server_ingress_time(monkeypatch):
     mgr.pending_agent_callbacks = []
     mgr._fire_task = Mock()
     clock = {"now": FIXED_TS}
-    # 同上：文本 ingress / last_user_*_time 都在 main_logic.core.streaming 采样。
+    # Likewise, text ingress / last_user_*_time are sampled in main_logic.core.streaming.
     patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
     monkeypatch.setattr(
         core_module,
@@ -2587,10 +2587,10 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
 
     async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
-        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
-        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        # In-place offline session replacement must retain pending_input_data: concurrent user input cached
+        # during session teardown awaits cannot be cleared with teardown.
         assert preserve_pending_input is True
-        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        # Internal in-place replacements must not push CHARACTER_LEFT to the frontend.
         assert by_server is True
         mgr.session = None
         mgr.is_active = False
@@ -3843,8 +3843,8 @@ def test_session_end_request_tagged_screenshot_selection_falls_back_to_latest_re
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatch):
-    """真实非空语音消息既刷 last_user_activity_time 也刷 last_user_message_time。
-    后者喂给 mini-game 邀请隐式 dismiss，必须只反映真用户输入。"""
+    """Real nonempty voice messages refresh both last_user_activity_time and last_user_message_time.
+    The latter drives mini-game implicit dismissal and must reflect only actual user input."""
     mgr = _make_transcript_manager()
     patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
@@ -3871,9 +3871,9 @@ async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypa
         mgr, "要不要现在跟我一起踢一会儿足球小游戏", is_voice_source=True,
     )
 
-    # 回声照样污染 last_user_activity_time（说明旧字段为何不能用于邀请判定）
+    # Echo still pollutes last_user_activity_time, explaining why invitations cannot use that old field.
     assert mgr.last_user_activity_time == FIXED_TS
-    # 但真消息时间戳保持干净
+    # True-message timestamps remain clean.
     assert mgr.last_user_message_time is None
     assert mgr.last_user_engagement_time is None
 
@@ -3910,17 +3910,17 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
         calls["n"] += 1
         return 100.0 + calls["n"]
 
-    # 打到真正读时钟的模块上：转写到达时刻取自 main_logic.core.turn 的
-    # time.time()，core_module（main_logic.core 门面）自己不读。此前那版
-    # `setattr(core_module.time, "time", ...)` 之所以生效，靠的正是它其实
-    # replace 了整个 stdlib time 模块——即这条用例一直依赖的是全局副作用。
+    # Patch the actual clock reader: transcription arrival uses main_logic.core.turn's
+    # time.time(); core_module (main_logic.core facade) reads none. The former
+    # `setattr(core_module.time, "time", ...)` worked only by replacing the whole stdlib time
+    # module, so this test had always relied on global side effects.
     patch_module_clock(monkeypatch, turn_module, time=_ticking_time)
     monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
 
     async def _dispatcher(name, text, request_id=None):
-        turn_module.time.time()  # 模拟 await 期间时钟流逝
+        turn_module.time.time()  # Simulate time passing during await.
         mgr.note_user_engagement(at=200.0)
-        return False             # 未处理 → 继续普通流程走到真消息块
+        return False             # Unhandled -> continue normal flow to the real-message block.
 
     mgr._takeover_input_dispatcher = _dispatcher
     mgr.session = object()
@@ -4317,7 +4317,7 @@ async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypa
 @pytest.mark.asyncio
 async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
     mgr = _make_manager()
-    # tts_response_handler 定义在 main_logic.core.tts_runtime，读时钟的也是它。
+    # tts_response_handler is defined in main_logic.core.tts_runtime, which also reads the clock.
     patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
     mgr.tts_response_queue.put(b"sidless-audio")
@@ -4350,7 +4350,7 @@ async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_tts_audio_send_drops_unplayed_pending_echo(monkeypatch):
     mgr = _make_manager()
-    # 同上：tts_response_handler 在 main_logic.core.tts_runtime。
+    # Likewise, tts_response_handler is in main_logic.core.tts_runtime.
     patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
     mgr.tts_response_queue.put(("__audio__", "speech-1", b"failed-audio"))
@@ -4382,7 +4382,7 @@ async def test_failed_tts_audio_send_drops_unplayed_pending_echo(monkeypatch):
 @pytest.mark.asyncio
 async def test_clear_tts_pipeline_drops_only_unplayed_echo_cache(monkeypatch):
     mgr = _make_manager()
-    # _clear_tts_pipeline 在 main_logic.core.tts_runtime。
+    # _clear_tts_pipeline is in main_logic.core.tts_runtime.
     patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_thread = _FakeAliveThread()
     mgr._recent_ai_voice_echo_text = "已经播出的尾音"
@@ -4521,8 +4521,8 @@ async def test_handle_input_transcript_reports_acceptance_for_asr_bridge():
 async def test_discarded_retry_drops_stream_text_from_activity_buffer():
     """A discarded reply must not stay queued for the tracker across the retry."""
     mgr = _make_manager()
-    # 流式阶段每个 chunk 都走 send_lanlan_response，默认 track_ai_turn=True，
-    # 所以被丢弃的那版正文此刻还躺在 buffer 里。
+    # Each streaming chunk uses send_lanlan_response with default track_ai_turn=True,
+    # leaving the discarded draft's body in the buffer for now.
     mgr._current_ai_turn_text = "discarded stream body"
 
     await core_module.LLMSessionManager.handle_response_discarded(
@@ -4546,11 +4546,11 @@ async def test_truncated_recovery_flushes_only_recovery_body_to_tracker():
     mgr.session._conversation_history = []
     mgr._finalize_turn_after_emit = AsyncMock()
 
-    # fixture 的 send_lanlan_response stub 已经照真实实现按 track_ai_turn 累加；
-    # recovery 路径显式传 track_ai_turn=False，改由 _track_recovery_ai_turn_text
-    # 在 turn end 前一步补记。
+    # Fixture send_lanlan_response mirrors real accumulation by track_ai_turn;
+    # recovery explicitly passes track_ai_turn=False, using _track_recovery_ai_turn_text
+    # to account immediately before turn end instead.
     #
-    # _flush_ai_turn_text_to_tracker 由 _emit_turn_end 调用，捕获调用当刻的 buffer。
+    # _emit_turn_end calls _flush_ai_turn_text_to_tracker, capturing the buffer at that instant.
     buffer_at_turn_end = []
 
     async def capture_emit(request_id, **_kwargs):
@@ -4680,13 +4680,13 @@ async def test_callback_media_returns_to_the_queue_when_its_turn_never_commits(
         core_module, "dispatch_text_user_message", lambda _n, _t: None
     )
 
-    # 外层 handler 会把 provider 异常吞成日志，这里不该期待它冒出来。
+    # The outer handler logs and swallows provider exceptions; do not expect propagation here.
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
         {"input_type": "text", "data": "什么情况"},
     )
 
-    # 这一轮确实是带图的（否则本用例根本没测到回滚路径）。
+    # This round really has images, or this case never exercises rollback.
     assert seen_kwargs.get("system_prefix_images") == ["cb-image-b64"]
     assert mgr.pending_agent_callbacks == [callback]
     assert callback["media_images"] == ["cb-image-b64"]
@@ -4715,7 +4715,7 @@ async def test_callback_media_is_not_requeued_once_its_turn_reached_history(
         core_module, "dispatch_text_user_message", lambda _n, _t: None
     )
 
-    # 外层 handler 会把 provider 异常吞成日志，这里不该期待它冒出来。
+    # The outer handler logs and swallows provider exceptions; do not expect propagation here.
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
         {"input_type": "text", "data": "什么情况"},
@@ -4759,7 +4759,7 @@ async def test_typed_text_cancels_the_in_flight_offline_stream_first(monkeypatch
     )
 
     assert order == ["interrupt", "stream_text"]
-    # 取消要发生在 speech_id 轮换**之前**，否则旧流的 delta 会挂到新 id 上。
+    # Cancel **before** speech_id rotates, or old-stream deltas attach to the new id.
     assert sid_at_interrupt["sid"] == old_sid
     assert mgr.current_speech_id != old_sid
 
@@ -4975,14 +4975,14 @@ async def test_callback_media_returns_when_cancelled_before_the_stream_begins(
         core_module, "dispatch_text_user_message", lambda _n, _t: None
     )
 
-    # 取消必须继续向上传播（回滚是顺手做的，不是把取消吃掉）。
+    # Cancellation must keep propagating; rollback is incidental, not cancellation suppression.
     with pytest.raises(asyncio.CancelledError):
         await core_module.LLMSessionManager._process_stream_data_internal(
             mgr,
             {"input_type": "text", "data": "什么情况"},
         )
 
-    # 这一轮从没到达 stream_text，callback 必须完好回队。
+    # This round never reached stream_text; return its callback intact to the queue.
     session.stream_text.assert_not_awaited()
     assert mgr.pending_agent_callbacks == [callback]
     assert callback["media_images"] == images
@@ -5009,7 +5009,7 @@ async def test_focus_pulse_is_cleared_when_its_own_send_is_cancelled(monkeypatch
     async def push_focus_thinking(active):
         pulses.append(active)
         if active:
-            # 拆除正好卡在这次投递上。
+            # Teardown is blocked on precisely this delivery.
             raise asyncio.CancelledError()
 
     mgr._push_focus_thinking = push_focus_thinking
@@ -5024,7 +5024,7 @@ async def test_focus_pulse_is_cleared_when_its_own_send_is_cancelled(monkeypatch
         )
 
     session.stream_text.assert_not_awaited()
-    # 关键：亮起之后必须有一次熄灭，否则气泡一直卡着。
+    # Key: lighting up must be followed by turning off, or the bubble stays stuck.
     assert pulses == [True, False]
 
 

@@ -44,7 +44,7 @@ from config.prompts.prompts_sys import (
 )
 
 
-# ── 语言工具 ──────────────────────────────────────────────────────────
+# -- Language helpers --
 
 def _get_lang(lang: str | None) -> str:
     """Get the current language code. Prefers the explicitly passed value, then the global setting, falling back to 'zh'."""
@@ -68,7 +68,7 @@ def _phrase(key: str, lang: str, **kwargs: Any) -> str:
         return template
 
 
-# ── 辅助 ────────────────────────────────────────────────────────────────
+# -- Helpers --
 
 def _try_extract_error_message(error: str, lang: str) -> str:
     """If error is a JSON string, extract the human-readable part; otherwise return as-is."""
@@ -107,14 +107,14 @@ def _format_error(error: Any, lang: str) -> str:
     s = str(error).strip()
     if not s:
         return ""
-    # 已知错误码精确匹配
+    # Exact match against known error codes.
     if s in RESULT_PARSER_ERROR_CODES:
         return _loc(RESULT_PARSER_ERROR_CODES[s], lang)
-    # 已知子串匹配
+    # Match known substrings.
     for substr, i18n_dict in RESULT_PARSER_ERROR_SUBSTRINGS.items():
         if substr in s:
             return _loc(i18n_dict, lang)
-    # 可能是 JSON 字符串
+    # Possibly a JSON string.
     return _try_extract_error_message(s, lang)
 
 
@@ -140,7 +140,7 @@ def _truncate(s: str, limit: int | None = None) -> str:
     return truncate_to_tokens(s, limit - suffix_tokens) + suffix
 
 
-# ── ComputerUse / BrowserUse 共用 ───────────────────────────────────────
+# -- Shared by ComputerUse / BrowserUse --
 
 def _parse_tool_result(res: Any, lang: str) -> tuple[bool, str]:
     """Parse ComputerUse / BrowserUse return values → (succeeded, natural-language summary).
@@ -163,10 +163,10 @@ def _parse_tool_result(res: Any, lang: str) -> tuple[bool, str]:
     raw_err = res.get("error")
     err = _format_error(raw_err, lang)
     if not err:
-        # ComputerUse 的 terminate(status="failure", answer=CODE) 把失败原因放进
-        # res["result"] 而非 res["error"]（见 brain/computer_use.py run_instruction 的
-        # 返回结构）。若 result 恰好是已知错误码（如 AGENT_QUOTA_EXCEEDED），同样翻成
-        # 本地化人话；普通自由文本失败仍走下面的通用 'exec_failed'，不外泄原始文本。
+        # ComputerUse terminate(status="failure", answer=CODE) puts failure reasons in
+        # res["result"], not res["error"] (see run_instruction's return structure in brain/computer_use.py).
+        # Translate known result codes such as AGENT_QUOTA_EXCEEDED into localized human-readable text too;
+        # other free-text failures still use generic 'exec_failed' below, without exposing raw text.
         result_code = str(res.get("result") or "").strip()
         if result_code in RESULT_PARSER_ERROR_CODES:
             err = _loc(RESULT_PARSER_ERROR_CODES[result_code], lang)
@@ -210,7 +210,7 @@ def parse_plugin_result(
     """Parse a Plugin execution result → natural-language summary."""
     lang = _get_lang(lang)
 
-    # 失败路径
+    # Failure path.
     if error:
         err = _format_error(error, lang)
         return _phrase('failed', lang, detail=_truncate(err)) if err else _phrase('exec_error', lang)
@@ -240,7 +240,7 @@ def parse_plugin_result(
     if not parts:
         return fallback
 
-    # 单字段：直接输出值（不带字段名）
+    # Single field: output its value directly, without the field name.
     if len(parts) == 1:
         return _truncate(parts[0][1])
 

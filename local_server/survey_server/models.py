@@ -24,7 +24,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Any, Dict
 
-# Pydantic v1/v2 兼容
+# Pydantic v1/v2 compatibility.
 PYDANTIC_V2 = int(getattr(__import__('pydantic'), 'VERSION', '1.0').split('.')[0]) >= 2
 
 
@@ -59,19 +59,19 @@ class SurveyPayload(BaseModel):
     and the dashboard interprets them per the survey definition.
     """
     device_id: str
-    # 迁移期同时带旧算法 device id（与 telemetry 对齐），便于跨表 JOIN 同一个人。
+    # Include the old device-ID algorithm during migration, aligned with telemetry, to JOIN the same person across tables.
     device_id_legacy: str = ""
     app_version: str = "unknown"
-    # 问卷自身的版本号（= 触发它的 app 版本，来自 config/surveys/<ver>.json）。
+    # Survey version (= the app version triggering it, from config/surveys/<ver>.json).
     survey_version: str = "unknown"
     locale: str = "unknown"
     branch: str = "unknown"
     distribution: str = "unknown"
-    # Steam64（十进制字符串，缓存优先）。survey 是 steam-only，但允许为空：
-    # Steam 版从未观测到登录 id 的尾部情况（与 telemetry 的 "steam + 空 id" 一致）。
+    # Steam64 (decimal string, cache first). Surveys are Steam-only but allow an empty value for
+    # Steam installations where no login ID has ever been observed, matching telemetry's Steam + empty ID case.
     steam_user_id: str = ""
-    # 'submit'（用户填完提交）或 'skip'（用户点跳过）。skip 也上报一条，
-    # 用来算弹出量/跳过率/完成率漏斗。
+    # 'submit' when the user completes the survey, or 'skip' when skipped. Report skips too,
+    # to calculate the display/skip/completion funnel.
     action: str = "submit"
     answers: Dict[str, Any] = Field(default_factory=dict)
 
