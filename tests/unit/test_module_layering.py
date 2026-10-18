@@ -464,6 +464,7 @@ def test_unregistered_package_check_reads_git_index(
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 def test_tree_inside_another_checkout_falls_back_to_the_filesystem(
     script_module, tmp_path, monkeypatch,
 ) -> None:
