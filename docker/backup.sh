@@ -171,6 +171,21 @@ esac
 # 同一秒内的两次调用（手动 + 定时撞车）会选中同一个文件名，第二次的 tar -czf
 # 会截断第一份归档 —— 也就是悄悄毁掉一份可能是最后的完好备份。
 # 名字里带 PID，输出目录上一把锁，双保险。
+# 冷备必须能串行化：没有 flock 时两把锁都会被静默跳过，而冷备照做 ——
+# 两次调用（不同 --out）就可能重叠：第一次结束时把容器拉起来，第二次还在读
+# SQLite，结果是一份"报告成功但没有一致性保证"的备份。
+# --no-stop 本来就不承诺一致性，那边只告警。
+if ! command -v flock >/dev/null 2>&1; then
+    if [ "$STOP_CONTAINER" = "1" ]; then
+        echo "backup: ❌ 冷备需要 flock（util-linux）来串行化同一实例的备份。" >&2
+        echo "backup:    没有它时两次备份可能重叠：第一次结束时把容器拉起来，" >&2
+        echo "backup:    第二次还在读 SQLite —— 备份会报告成功，但一致性保证不成立。" >&2
+        echo "backup:    装上 flock，或用 --no-stop 明确接受无锁。" >&2
+        exit 1
+    fi
+    echo "backup: ⚠️  未找到 flock：本次不做并发保护（--no-stop 已明确接受风险）"
+fi
+
 if command -v flock >/dev/null 2>&1; then
     exec 8>"$out_dir/.neko-backup.lock"
     if ! flock -n 8; then
@@ -325,11 +340,13 @@ fi
 echo "backup: 完成，$entry_count 个条目，$(du -h "$archive" | cut -f1)"
 
 # 恢复要点直接印出来，避免出事时还要去翻文档
-echo "backup: 恢复步骤:"
-echo "backup:   1) docker compose down"
+# 这里刻意不打印裸的 "docker compose up"：多实例部署下它会操作**默认项目**，
+# 而目标容器可能仍在往要解压的目录里写。把命令前缀留给操作者填。
+echo "backup: 恢复步骤（把 <COMPOSE> 换成该实例启动时的命令前缀，多实例还要带上 -p 与同一组 NEKO_* 覆盖）:"
+echo "backup:   1) <COMPOSE> down"
 echo "backup:   2) 先把现有 neko-home 改名留档（万一恢复的是错的）"
-echo "backup:   3) tar -xzf $archive -C <neko-home>   # 归档内是 .local/ 与 ssl/，解到数据目录本身>"
-echo "backup:   4) docker compose up -d，然后在 Web UI 确认角色/记忆/插件都在"
+echo "backup:   3) tar -xzf $archive -C <neko-home>   # 归档内是 .local/ 与 ssl/，解到数据目录本身"
+echo "backup:   4) <COMPOSE> up -d，然后在 Web UI 确认角色/记忆/插件都在"
 echo "backup:   5) 实例访问密钥若一并恢复，终端不需要重新配对"
 
 # ── 轮转（只在调用方明确要求时执行，且只删本脚本自己命名的文件）─────────────
