@@ -541,13 +541,17 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
     ``global`` / ``nonlocal``, match captures and nested def/class names
     make it untrusted. Bodies of nested functions and classes, and
     comprehension targets, belong to their own scopes and are skipped (a
-    walrus inside a comprehension still binds here), except that any name
-    a nested body declares ``nonlocal`` / ``global`` may be rebound from
-    there and is untrusted here too. ``scope`` may also be a ``ClassDef``,
-    whose body is analysed as its own namespace.
+    walrus inside a comprehension still binds here), except that a name
+    bound here which a nested body declares ``nonlocal`` (function scopes)
+    or ``global`` (the module) may be rebound from there and is untrusted.
+    ``scope`` may also be a ``ClassDef``, whose body is analysed as its own
+    namespace.
     """
     verdicts: dict[str, bool] = {}
     owner_targets: set[int] = set()
+    # Names a nested body declares ``global`` / ``nonlocal``.
+    rebound_globals: set[str] = set()
+    rebound_nonlocals: set[str] = set()
 
     def bind(name: str, trusted: bool) -> None:
         verdicts[name] = verdicts.get(name, True) and trusted
@@ -565,9 +569,10 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bind(node.name, False)
             for inner in ast.walk(node):
-                if isinstance(inner, (ast.Global, ast.Nonlocal)):
-                    for name in inner.names:
-                        bind(name, False)
+                if isinstance(inner, ast.Global):
+                    rebound_globals.update(inner.names)
+                elif isinstance(inner, ast.Nonlocal):
+                    rebound_nonlocals.update(inner.names)
             continue
         if isinstance(node, ast.Lambda):
             continue
@@ -599,6 +604,15 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
         elif isinstance(node, ast.MatchMapping) and node.rest:
             bind(node.rest, False)
         stack.extend(ast.iter_child_nodes(node))
+    # A nested ``global`` can only reach the module; a nested ``nonlocal``
+    # only a function scope that binds the name itself (an intermediate
+    # function binding the same name is not resolved, which errs towards
+    # reporting).
+    rebound = rebound_globals if isinstance(scope, ast.Module) else (
+        set() if isinstance(scope, ast.ClassDef) else rebound_nonlocals
+    )
+    for name in rebound & verdicts.keys():
+        verdicts[name] = False
     return verdicts
 
 

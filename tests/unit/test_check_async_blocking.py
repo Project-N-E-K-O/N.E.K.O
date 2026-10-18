@@ -537,6 +537,22 @@ def test_a_nested_nonlocal_or_global_rebinding_revokes_trust(source):
     assert "socket.recv" in out[0][2]
 
 
+def test_a_nested_global_does_not_touch_a_function_local_of_the_same_name():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = asyncio.get_running_loop()
+
+        def swap_module_runner():
+            global runner
+            runner = scheduler
+
+        runner.create_task(socket.recv())
+    ''')
+    assert out == []
+
+
 def test_a_class_body_has_its_own_namespace_hidden_from_its_methods():
     out = _violations('''
     import asyncio
