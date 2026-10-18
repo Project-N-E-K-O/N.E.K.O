@@ -224,8 +224,14 @@ docker-compose down
 
 ```bash
 NEKO_CONTAINER_NAME=neko-2 NEKO_HOME_DIR=./neko-home-2 \
-NEKO_HTTP_PORT=48921 NEKO_HTTPS_PORT=48922 docker compose up -d
+NEKO_HTTP_PORT=48921 NEKO_HTTPS_PORT=48922 \
+docker compose -p neko-2 up -d
 ```
+
+`-p neko-2` 不能省：只改容器名/端口而沿用同一个 Compose 项目名，Compose 仍认为是同一项目的
+同一个 `neko-main` 服务，会去**更新第一个实例**而不是起第二个。
+
+装看门狗时每个实例要在 cron 行上给出容器名与宿主端口，见 [`watchdog/README.md`](watchdog/README.md)。
 
 ### 2. 使用 docker run
 
@@ -308,13 +314,19 @@ sudo sh backup.sh --container neko-2 --home ./neko-home-2    # 多实例
 **默认停机是刻意的**：`memory/` 下有 SQLite（`time_indexed.db`），容器运行中直接打包可能拷到
 **撕裂的数据库**，而症状要到恢复当天才出现。不能停机就用 `--no-stop`，脚本会明确告诉你这次没有保证。
 
+**无法确认容器状态时脚本会拒绝执行**（docker CLI 缺失、容器名写错、daemon 不可用）：那不是
+"容器没跑"的证据，可能正对着一个仍在写入的数据目录。此时要么修好 `--container`，要么显式
+用 `--no-stop` 接受风险 —— 不会默默按冷备继续。
+
+备份产物默认只有本人可读（`umask 077`：目录 700、归档 600）：归档里有 API Key 与 TLS 私钥。
+
 产出三件：`neko-backup-<UTC>.tar.gz`、`.sha256`（`sha256sum -c` 可验证）、`.manifest.txt`（文件清单）。
 
 **恢复**（脚本每次都会把这几步印在输出结尾）：
 
 1. `docker compose down`
 2. 先把现有 `neko-home` **改名留档** —— 万一恢复的是错的
-3. `tar -xzf <归档> -C <neko-home 的父目录>`
+3. `tar -xzf <归档> -C <neko-home>`（归档内是 `.local/` 与 `ssl/`，所以解到数据目录本身，不是它的父目录）
 4. `docker compose up -d`
 5. 在 Web UI 确认角色 / 记忆 / 插件都在；实例访问密钥若一并恢复，终端**不需要重新配对**
 

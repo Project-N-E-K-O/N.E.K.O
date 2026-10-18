@@ -122,5 +122,7 @@ bash docker/nginx/test-render.sh
 ```
 
 不需要容器、root 或网络：它把渲染目标指向临时 prefix，跑完即删。PATH 里有 nginx 时
-额外执行 `nginx -t`。当前该脚本**尚未接入 CI**（`.github/workflows/` 里还没有引用），
-属于待接线项。
+额外执行 `nginx -t`（测试里会先生成一张一次性自签证书，否则 nginx 会因证书缺失拒绝加载）。
+
+CI 里由 `.github/workflows/docker-config.yml` 的「Nginx 分层 + 宿主脚本」job 运行，
+同一个 job 还会跑看门狗、宿主预检和备份三个 harness，以及 `docker compose config` 校验。

@@ -43,7 +43,9 @@ render_nginx_template() {
     fi
 
     mkdir -p "$(dirname "$dst")"
-    sed \
+    # sed 或 mv 失败必须把状态传出去：否则渲染出一半的配置也能"成功"，
+    # 启动流程会继续往下走，最后 nginx -t 或运行期才炸。
+    if ! sed \
         -e "s|@@NGINX_PORT@@|$(nginx_sed_escape "${NGINX_PORT}")|g" \
         -e "s|@@NGINX_SSL_PORT@@|$(nginx_sed_escape "${NGINX_SSL_PORT}")|g" \
         -e "s|@@NEKO_MAIN_SERVER_PORT@@|$(nginx_sed_escape "${NEKO_MAIN_SERVER_PORT}")|g" \
@@ -54,8 +56,16 @@ render_nginx_template() {
         -e "s|@@NGINX_SSL_KEY@@|$(nginx_sed_escape "${NGINX_SSL_KEY_PATH}")|g" \
         -e "s|@@NGINX_NEKO_DIR@@|$(nginx_sed_escape "${NGINX_NEKO_DIR}")|g" \
         -e "s|@@NGINX_CONF_D_DIR@@|$(nginx_sed_escape "${NGINX_CONF_D_DIR}")|g" \
-        "$src" > "$dst.tmp"
-    mv -f "$dst.tmp" "$dst"
+        "$src" > "$dst.tmp"; then
+        rm -f "$dst.tmp"
+        echo "❌ Failed to render $src -> $dst" >&2
+        return 1
+    fi
+    if ! mv -f "$dst.tmp" "$dst"; then
+        rm -f "$dst.tmp"
+        echo "❌ Failed to publish $dst" >&2
+        return 1
+    fi
 }
 
 # render_nginx_configuration <证书路径> <私钥路径>
@@ -81,20 +91,20 @@ render_nginx_configuration() {
     NGINX_SSL_KEY_PATH="$key_file"
 
     # L0 + L1b
-    render_nginx_template "$NGINX_TEMPLATE_DIR/nginx.conf.template" "$NGINX_CONF_PATH"
-    render_nginx_template "$NGINX_TEMPLATE_DIR/neko-proxy.conf.template" "$NGINX_SITE_PATH"
+    render_nginx_template "$NGINX_TEMPLATE_DIR/nginx.conf.template" "$NGINX_CONF_PATH" || return 1
+    render_nginx_template "$NGINX_TEMPLATE_DIR/neko-proxy.conf.template" "$NGINX_SITE_PATH" || return 1
 
     # L1a：整个部署里 HTTP / HTTPS 两种模式的唯一差异
     if [ "${DISABLE_SSL:-0}" = "1" ]; then
         echo "🌐 Generating HTTP-only configuration (SSL disabled)..."
-        render_nginx_template "$NGINX_TEMPLATE_DIR/server.http.conf.template" "$NGINX_NEKO_DIR/listener.conf"
+        render_nginx_template "$NGINX_TEMPLATE_DIR/server.http.conf.template" "$NGINX_NEKO_DIR/listener.conf" || return 1
     else
         echo "🌐 Generating HTTP+HTTPS configuration..."
-        render_nginx_template "$NGINX_TEMPLATE_DIR/server.tls.conf.template" "$NGINX_NEKO_DIR/listener.conf"
+        render_nginx_template "$NGINX_TEMPLATE_DIR/server.tls.conf.template" "$NGINX_NEKO_DIR/listener.conf" || return 1
     fi
 
     # L1c：路由表，两种模式共用同一份
-    render_nginx_template "$NGINX_TEMPLATE_DIR/locations.conf.template" "$NGINX_NEKO_DIR/locations.conf"
+    render_nginx_template "$NGINX_TEMPLATE_DIR/locations.conf.template" "$NGINX_NEKO_DIR/locations.conf" || return 1
 
     # 片段：自身不含端口类占位符，但统一走同一渲染路径，日后加变量无需改流程
     for snippet in "$NGINX_TEMPLATE_DIR"/snippets/*.conf; do
@@ -102,7 +112,7 @@ render_nginx_configuration() {
             echo "❌ No Nginx snippets found in $NGINX_TEMPLATE_DIR/snippets" >&2
             return 1
         fi
-        render_nginx_template "$snippet" "$NGINX_NEKO_DIR/snippets/$(basename "$snippet")"
+        render_nginx_template "$snippet" "$NGINX_NEKO_DIR/snippets/$(basename "$snippet")" || return 1
     done
 
     # 渲染后自检：模板改名或漏配变量时，宁可在这里失败也不要交给 nginx -t 猜

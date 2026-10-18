@@ -551,7 +551,12 @@ setup_nginx_proxy() {
     # HTTP 与 HTTPS 两种模式的差异只存在于 L1a（listener.conf）；路由表与转发头
     # 片段两种模式共用一份，因此不存在"改了一处忘了另一处"的静默回归。
     # 分层依据、不变量与改法见 docker/nginx/README.md。
-    render_nginx_configuration "$cert_file" "$key_file"
+    # 失败必须中止启动：渲染一半的配置交给 nginx -t 是"先崩后查"，而渲染器自己
+    # 已经知道哪里失败了（模板缺失 / 变量未注入 / 写入失败）。
+    if ! render_nginx_configuration "$cert_file" "$key_file"; then
+        echo "❌ 渲染 Nginx 配置失败（模板缺失 / 变量未注入 / 写入失败），停止启动"
+        exit 1
+    fi
 
     # 测试Nginx配置
     echo "🔧 Testing Nginx configuration..."

@@ -11,11 +11,17 @@ version: '3.8'
 # 使用方法：
 #   docker compose up -d                                   # 标准版
 #   NEKO_IMAGE_VERSION=latest-full docker compose up -d    # 完整版
-#   docker compose build && docker compose up -d           # 本地构建
 #
-# 多实例：会互相撞车的名字、路径、端口全部可以覆盖，例如
+#   # 本地构建：本文件没有 build: 段，docker compose build 不会构建任何东西
+#   docker build -f docker/Dockerfile -t neko:local .
+#   NEKO_IMAGE=neko:local docker compose up -d
+#
+# 多实例：会互相撞车的名字、路径、端口全部可以覆盖，**并且必须给不同的 Compose
+# 项目名**。只改容器名/端口而不加 -p，Compose 仍认为是同一项目的同一个
+# neko-main 服务，会去更新第一个实例而不是起第二个：
 #   NEKO_CONTAINER_NAME=neko-2 NEKO_HOME_DIR=./neko-home-2 \
-#   NEKO_HTTP_PORT=48921 NEKO_HTTPS_PORT=48922 docker compose up -d
+#   NEKO_HTTP_PORT=48921 NEKO_HTTPS_PORT=48922 \
+#   docker compose -p neko-2 up -d
 # ============================================================================
 
 services:
