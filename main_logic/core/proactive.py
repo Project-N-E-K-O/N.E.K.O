@@ -282,7 +282,7 @@ class ProactiveMixin:
                             "[%s] request_fresh_screenshot WS compress failed, using raw: %s",
                             self.lanlan_name, comp_err,
                         )
-                    # 用户可能在等待前端或压缩期间开启隐私；旧客户端也不能绕过它。
+                    # Privacy may be enabled while waiting for the frontend or compressing; legacy clients must honor it too.
                     if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
                         return FreshScreenshot(declined=True)
                     return FreshScreenshot(
@@ -297,7 +297,7 @@ class ProactiveMixin:
                     self._screenshot_future = None
                     self._pending_screenshot_avatar_position = None
 
-        # 窗口约束随初始请求传来，前端超时/断线时也不能扩大到整桌面。
+        # The initial request carries window constraints; frontend timeouts or disconnects must not expand capture to the desktop.
         if not still_owned():
             return FreshScreenshot(declined=True)
         if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
@@ -341,7 +341,7 @@ class ProactiveMixin:
             except Exception as e2:
                 logger.warning("[%s] request_fresh_screenshot backend fallback failed: %s", self.lanlan_name, e2)
 
-        # 采集异常也要复查隐私，避免异常被当作“允许回用旧图”的普通失败。
+        # Recheck privacy after capture errors so a refusal is not treated as an ordinary failure that permits reusing an old image.
         return FreshScreenshot(declined=(
             await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned()
         ))
@@ -374,7 +374,7 @@ class ProactiveMixin:
             self._pending_screenshot_avatar_position = (
                 avatar_position if isinstance(avatar_position, dict) and avatar_position else None
             )
-            # 明确拒绝优先于图片内容，不能被解释成普通空图而再次补截。
+            # An explicit refusal takes precedence over image content; do not treat it as an empty image and capture again.
             self._screenshot_future.set_result(FreshScreenshot(
                 b64="" if declined else b64,
                 source="websocket",

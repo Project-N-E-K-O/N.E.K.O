@@ -1442,7 +1442,7 @@ async def handle_proactive_chat(
             # without vision), making sources empty; do not pass, let Phase2 use dialogue
             # history + state_section for text-only [CHAT] follow-up.
             if not _has_unfinished_thread and vision_sources_withheld:
-                # 撤权拿走了全部来源：这是隐私跳过，不是技术失败。
+                # Consent revocation removed every source: skip for privacy, not because of a technical failure.
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_pass_body(
@@ -1696,11 +1696,11 @@ async def handle_proactive_chat(
         # At most one LLM call total.
         # ================================================================
 
-        # 收集之后等待记忆/跟进期间也可能撤权：屏幕/窗口内容不能再进入任何模型调用。
+        # Consent may be revoked while waiting for memory or follow-ups after collection; screen/window content must not enter any model call.
         await _withhold_revoked_vision_sources(
             sources, vision_consent_check, lanlan_name=lanlan_name, stage="Phase 1 前",
         )
-        # 本轮带着屏幕/窗口内容：之后每次模型调用和最终提交前都要复查授权。
+        # This round uses screen/window content: recheck consent before every subsequent model call and the final commit.
         round_uses_vision_material = bool(_PROACTIVE_VISION_SOURCE_MODES.intersection(sources))
         vision_content = sources.get("vision")  # Retain only for Phase2; Phase1 does not process it.
         music_content = sources.get("music")
@@ -1899,7 +1899,7 @@ async def handle_proactive_chat(
             has_meme_task=has_meme_task,
             log=logger,
             live_consent_check=vision_consent_check,
-            # 只有窗口内容会拼进 Phase 1 合并文本；截图只给 Phase 2。
+            # Only window content enters the combined Phase 1 text; screenshots go only to Phase 2.
             vision_consent_required="window" in sources,
         )
 
@@ -2274,7 +2274,7 @@ async def handle_proactive_chat(
                 print(
                     f"[{lanlan_name}] Phase 2 获取到最新截图 ({len(fresh_b64) // 1024}KB)"
                 )
-            # 技术失败可用旧图；明确拒绝不能通过旧图恢复本轮视觉输入。
+            # Technical failures may reuse an old image; explicit refusals must not restore this round's visual input through an old image.
             elif not fresh.declined:
                 screenshot_b64_for_phase2 = vision_content.get("screenshot_b64", "")
                 if screenshot_b64_for_phase2:
@@ -2550,7 +2550,7 @@ async def handle_proactive_chat(
             return await _end_proactive(ProactiveChatResult(
                 body=_proactive_preempted_json("phase2_post_generation"),
             ))
-        # 生成期间撤权：回复源自屏幕/窗口内容，截图还会暂存到下一轮，不能再提交。
+        # Consent was revoked during generation: the response uses screen/window content, and the screenshot would persist into the next round; do not commit it.
         if round_uses_vision_material and await _vision_consent_declined(vision_consent_check):
             logger.info("[%s] 视觉授权在生成期间撤回，放弃本轮投递", lanlan_name)
             return await _end_proactive(ProactiveChatResult(
