@@ -529,12 +529,23 @@ def _is_task_owner_constructor(expr: ast.expr | None) -> bool:
     )
 
 
-def _definition_time_exprs(node: ast.AST) -> list[ast.AST]:
+def _annotations_are_postponed(tree: ast.Module) -> bool:
+    """True under ``from __future__ import annotations`` (annotations never run)."""
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
+    )
+
+
+def _definition_time_exprs(node: ast.AST, *, annotations: bool = True) -> list[ast.AST]:
     """Parts of a def / lambda / class statement evaluated in the enclosing scope.
 
     Decorators, argument defaults and annotations, the return annotation,
     and class bases / keywords run when the statement executes; only the
-    body runs in the new scope.
+    body runs in the new scope. Pass ``annotations=False`` when they are
+    postponed (``from __future__ import annotations``) and never evaluated.
     """
     if isinstance(node, ast.ClassDef):
         return [*node.decorator_list, *node.bases, *node.keywords]
@@ -544,6 +555,8 @@ def _definition_time_exprs(node: ast.AST) -> list[ast.AST]:
         *args.defaults,
         *(d for d in args.kw_defaults if d is not None),
     ]
+    if not annotations:
+        return exprs
     for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg):
         if arg is not None and arg.annotation is not None:
             exprs.append(arg.annotation)
@@ -553,7 +566,7 @@ def _definition_time_exprs(node: ast.AST) -> list[ast.AST]:
     return exprs
 
 
-def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
+def _task_owner_verdicts(scope: ast.AST, *, annotations: bool = True) -> dict[str, bool]:
     """Map every name bound in ``scope`` to whether it is a trusted task owner.
 
     Mirrors Python scoping: a name bound anywhere in a function is local to
@@ -598,7 +611,7 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
                     rebound_globals.update(inner.names)
                 elif isinstance(inner, ast.Nonlocal):
                     rebound_nonlocals.update(inner.names)
-            stack.extend(_definition_time_exprs(node))
+            stack.extend(_definition_time_exprs(node, annotations=annotations))
             continue
         if isinstance(node, ast.Lambda):
             stack.extend(_definition_time_exprs(node))
@@ -789,23 +802,26 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         self._task_owner_scopes: list[tuple[dict[str, bool], bool]] = []
         # Set per module in visit_Module; see ``_asyncio_is_module``.
         self._asyncio_is_module = True
+        # Set per module in visit_Module; see ``_annotations_are_postponed``.
+        self._annotations_run = True
 
     # ── function tracking ────────────────────────────────────────────────
     def visit_Module(self, node: ast.Module) -> None:
         self._asyncio_is_module = _asyncio_is_module(node)
+        self._annotations_run = not _annotations_are_postponed(node)
         self._task_owner_scopes.append((self._verdicts(node), False))
         self.generic_visit(node)
         self._task_owner_scopes.pop()
 
     def _verdicts(self, scope: ast.AST) -> dict[str, bool]:
-        verdicts = _task_owner_verdicts(scope)
+        verdicts = _task_owner_verdicts(scope, annotations=self._annotations_run)
         if not self._asyncio_is_module:
             # Constructor bindings are only meaningful on the real module.
             verdicts = dict.fromkeys(verdicts, False)
         return verdicts
 
     def _visit_function(self, node: ast.AST, kind: str) -> None:
-        for expr in _definition_time_exprs(node):
+        for expr in _definition_time_exprs(node, annotations=self._annotations_run):
             self.visit(expr)
         self._func_stack.append(kind)
         self._task_owner_scopes.append((self._verdicts(node), False))
@@ -818,7 +834,7 @@ class AsyncBlockingChecker(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         # Decorators, bases and keywords run in the enclosing scope; the
         # body runs in the class namespace.
-        for expr in _definition_time_exprs(node):
+        for expr in _definition_time_exprs(node, annotations=self._annotations_run):
             self.visit(expr)
         self._task_owner_scopes.append((self._verdicts(node), True))
         for stmt in node.body:

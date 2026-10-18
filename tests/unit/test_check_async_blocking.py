@@ -587,6 +587,18 @@ def test_definition_time_wildcard_chain_and_boolop_cases_still_flag(source):
     assert "socket.recv" in out[0][2]
 
 
+@pytest.mark.parametrize("future, expected", [("", 1), ("from __future__ import annotations\n    ", 0)])
+def test_nested_annotations_are_checked_only_when_they_run(future, expected):
+    out = _violations(f'''
+    {future}import time
+
+    async def handler():
+        def helper(x: time.sleep(1)) -> None:
+            return x
+    ''')
+    assert len(out) == expected
+
+
 def test_the_last_boolean_operand_fills_the_slot():
     out = _violations('''
     import asyncio
