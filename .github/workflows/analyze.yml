@@ -265,11 +265,17 @@ jobs:
 
       - name: Enforce top-level module layering (no inversions, no cycles)
         # Top-level packages have a strict ordering — only higher layers may
-        # depend on lower ones (config/steamworks → utils → memory/main_logic
-        # → main_routers → plugin → brain → app). The walker descends into
+        # depend on lower ones (config/steamworks → utils →
+        # knowledge/memory/main_logic/services → main_routers/theater_workshop
+        # → plugin → brain → app/launcher_core). The walker descends into
         # function bodies and string-form dynamic imports
         # (importlib.import_module / __import__), so deferred / conditional
-        # imports cannot smuggle in a layer inversion or cycle. Run
+        # imports cannot smuggle in a layer inversion or cycle. FORBIDDEN_EDGES
+        # pins what layers cannot express (e.g. services never imports
+        # main_logic; Main-side code reaches knowledge over HTTP only), and a
+        # top-level directory with tracked Python code that is in no layer
+        # fails the check (scripts/ is exempt as tooling; tests/, docs/ and
+        # deps/ are never scanned). Run
         # `python scripts/check_module_layering.py --show-layers` to print
         # the hierarchy. Companion unit test: tests/unit/test_module_layering.py.
         run: python scripts/check_module_layering.py
