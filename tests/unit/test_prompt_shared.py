@@ -281,3 +281,38 @@ def test_request_prompt_display_invalidates_stale_same_key_guard_results():
             {"name": "second", "value": None},
         ],
     }
+
+
+@pytest.mark.unit
+def test_token_refresh_request_that_hangs_is_cancelled_and_retried():
+    result = _run_prompt_shared_node_scenario(
+        """
+  // 计时器换成手动触发：10 s 的取消上限不用真等
+  const timers = [];
+  const realSetTimeout = global.setTimeout;
+  global.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+  global.clearTimeout = () => {};
+  let calls = 0;
+  global.fetch = (url, opts) => {
+    calls += 1;
+    if (calls === 1) {
+      // 第一次一直挂着，只有被取消时才失败
+      return new Promise((_, reject) => {
+        if (opts && opts.signal) opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ autostart_csrf_token: 'fresh' }) });
+  };
+  const sec = window.nekoLocalMutationSecurity;
+  const first = sec.refreshToken();
+  sec.refreshToken();                                   // 还在路上：共用，不另发
+  const whilePending = calls;
+  const cancel = timers.find((t) => t.ms === 10000);
+  if (cancel) cancel.fn();
+  const firstResult = await first;
+  const second = await sec.refreshToken();              // 上一次已被取消：另发新请求
+  global.setTimeout = realSetTimeout;
+  return { whilePending, hasCancel: !!cancel, firstResult, second, calls };
+        """
+    )
+    assert result == {"whilePending": 1, "hasCancel": True, "firstResult": "", "second": "fresh", "calls": 2}

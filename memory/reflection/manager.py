@@ -58,24 +58,24 @@ class ReflectionEngine(
         self._config_manager = get_config_manager()
         self._fact_store = fact_store
         self._persona_manager = persona_manager
-        # memory-evidence-rfc §3.3.3：evidence 写路径必须走 record_and_save。
-        # event_log 注入；None 时 aapply_signal 不可用（冷启动 / 纯单元测试
-        # 路径仍可用 synthesize / auto_promote 等不触 evidence 的方法）。
+        # memory-evidence-rfc section 3.3.3: evidence writes must go through record_and_save.
+        # Inject event_log; when None, aapply_signal is unavailable (cold-start/pure unit-test paths can
+        # still use synthesize, auto_promote, and other methods that do not touch evidence).
         self._event_log = event_log
         # Per-character asyncio.Lock (P2.a.2). ReflectionEngine's async mutating
         # methods span multiple awaits (e.g. aauto_promote_stale calls
         # persona.aadd_fact across an await boundary) — so asyncio.Lock is the
-        # right choice per CLAUDE rule "threading.Lock 持锁跨 await → 改用
+        # right choice per the CLAUDE rule: when threading.Lock spans an await, switch to
         # asyncio.Lock". Lock is lazily created to avoid event-loop binding
         # at module-import time.
         self._alocks: dict[str, asyncio.Lock] = {}
         # threading.Lock guards the dict itself (reads/writes of _alocks are
         # pure Python, no await inside this critical section).
         self._alocks_guard = threading.Lock()
-        # synth 失败退避的进程内镜像 {name: {key: {"n", "at"}}}。它是 session 内
-        # 的权威工作副本，磁盘只是持久化 + 重启恢复。这样即使 synth_backoff.json
-        # 写盘失败（只读 FS / 权限），失败计数也不会丢、dead-letter 闸门照常生效
-        # （Codex P2）。对齐 review 的 _maint_state 进程内持久语义。
+        # In-process synthesis-failure backoff mirror {name: {key: {"n", "at"}}}, the authoritative working copy
+        # within the session; disk provides only persistence and restart recovery. Thus even if synth_backoff.json
+        # cannot be written (read-only filesystem/permissions), failure counts remain and the dead-letter gate still works
+        # (Codex P2). Match review's in-process _maint_state persistence semantics.
         self._synth_backoff_mem: dict[str, dict] = {}
         # Process-local erase generations for scoped subjects. A synthesis
         # captures one before its out-of-lock LLM call and rechecks it before

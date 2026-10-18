@@ -140,7 +140,7 @@ async def test_browser_save_keeps_theater_capsule_while_applying_ordinary_edits(
     def _build(loaded_items):
         chat = _browser_chat(loaded_items)
         chat[1]["text"] = "h1 edited"
-        del chat[4]  # 用户删除最后一条普通消息
+        del chat[4]  # The user deletes the last ordinary message
         return chat
 
     response, saved = await _save_through_route(tmp_path, monkeypatch, _build)
@@ -234,7 +234,7 @@ def test_browser_item_flagged_theater_is_never_written_as_ordinary():
     chat = [
         {"role": "system", "text": "先前对话的备忘录: 旧摘要", "source_index": 0},
         {"role": "human", "text": "h1", "source_index": 1},
-        # 下标失效（例如指向越界位置）时也不能把剧场条目当普通文本写回。
+        # An invalid index (for example, out of bounds) must not cause theater entries to be written back as ordinary text.
         {"role": "system", "text": "被改写的剧场摘要", "source_index": 99, "theater": True},
         {"role": "ai", "text": "a1", "source_index": 3},
     ]

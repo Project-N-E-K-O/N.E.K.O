@@ -1,7 +1,7 @@
 """
 User Plugin Server
 
-HTTP 服务器主入口文件。
+Main entry point for the HTTP server.
 """
 from __future__ import annotations
 
@@ -108,11 +108,11 @@ _ensure_plugin_zmq_endpoint_available()
 from config import USER_PLUGIN_SERVER_PORT
 
 # ──────────────────────────────────────────────────────────────────────────
-#  ⚠ 严禁再引入 loguru。所有 plugin/* 已统一走 plugin.logging_config →
-#  utils.logger_config.RobustLoggerConfig。曾经的 brace-compat 与
-#  loguru→stdlib bridge 已迁入 plugin/logging_config.py。
-#  规则：再有人在本仓库 import loguru —— 就把谁杀了。
-#  lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/analyze.yml）
+#  ⚠ Never reintroduce loguru. All plugin/* modules now use plugin.logging_config →
+#  utils.logger_config.RobustLoggerConfig. The former brace-compat and
+#  loguru-to-stdlib bridge have been moved into plugin/logging_config.py.
+#  Rule: if anyone imports loguru in this repository again, kill them.
+#  Lint guard: scripts/check_no_loguru.py (CI: .github/workflows/analyze.yml)
 # ──────────────────────────────────────────────────────────────────────────
 
 # -- Unified stdlib logger, same as agent_server / memory_server --
@@ -130,22 +130,22 @@ except ModuleNotFoundError:
     _spec.loader.exec_module(_module)
     setup_logging = getattr(_module, "setup_logging")
 
-# 提前固定主 PluginServer 进程的 service_name —— plugin.logging_config.get_logger()
-# 通过 NEKO_PLUGIN_SERVICE_NAME 决定 logger 父节点（N.E.K.O.<service>.<comp>）。
-# 不设的话会 fallback 到 "Plugin"，导致 message_plane / runs / config 等模块的日志
-# 跑去 N.E.K.O_Plugin_*.log，与 PluginServer 自身的 N.E.K.O_PluginServer_*.log 分裂。
+# Set the service_name for the main PluginServer process early — plugin.logging_config.get_logger()
+# uses NEKO_PLUGIN_SERVICE_NAME to determine the logger parent (N.E.K.O.<service>.<comp>).
+# Without it, the fallback is "Plugin", causing logs from message_plane / runs / config and other modules
+# to go to N.E.K.O_Plugin_*.log, separate from PluginServer's N.E.K.O_PluginServer_*.log.
 #
-# 用 ``=`` 而不是 ``setdefault``：父进程（Electron / launcher 脚本）若意外携带
-# 旧的 ``Plugin_<id>`` 环境（比如复用了一个调试 shell），setdefault 会保留旧值，
-# 然后下面的 ``setup_logging("PluginServer")`` 和 ``get_logger()`` 会路由到两个
-# 不同的 namespace，再次造成日志分裂。这里强制覆盖。
+# Use ``=`` instead of ``setdefault``: if the parent process (Electron / launcher script) accidentally carries
+# an old ``Plugin_<id>`` environment (for example, by reusing a debug shell), setdefault would preserve the old value,
+# and then ``setup_logging("PluginServer")`` and ``get_logger()`` below would route to two
+# different namespaces, splitting logs again. Force the value here.
 os.environ["NEKO_PLUGIN_SERVICE_NAME"] = "PluginServer"
 
 logger, _log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
 
-# Side-effect import：触发 plugin/logging_config.py 顶层的
-# _install_logging_brace_compat()，让所有 plugin/* 子模块共享 brace-format
-# 兼容（logger.info("msg {}", x) 不抛 TypeError）。模块本身不需要 alias。
+# Side-effect import: triggers the top-level
+# _install_logging_brace_compat() in plugin/logging_config.py, so all plugin/* submodules share brace-format
+# compatibility (logger.info("msg {}", x) does not raise TypeError). This module itself does not need an alias.
 import plugin.logging_config  # noqa: E402,F401  -- side-effect only
 
 # -- uvicorn logging bridge --
@@ -198,8 +198,8 @@ _disable_windows_plugin_zmq_when_tornado_missing()
 from plugin.server.http_app import build_plugin_server_app  # noqa: E402
 
 
-# 独立跑的时候没有别人管生命周期，所以这里显式认领。内嵌进 agent_server 的那条
-# 路径（app/agent_server/plugin_host.py）不认领，由 user_plugin_enabled 开关驱动。
+# When run standalone, no one else manages its lifecycle, so explicitly claim it here. The embedded path
+# in agent_server (app/agent_server/plugin_host.py) does not claim it; the user_plugin_enabled switch controls it.
 app = build_plugin_server_app(manage_lifecycle=True)
 
 
@@ -208,8 +208,8 @@ def _can_register_faulthandler_signal() -> bool:
 
 
 def _enable_fault_handler_dump_file() -> IO[str] | None:
-    # 路径来自本体 RobustLoggerConfig（5 级可写目录回退，AppImage squashfs 安全）。
-    # 严禁再用 Path(__file__).parent / "log" —— 那是只读 squashfs，会直接崩。
+    # The path comes from the main app's RobustLoggerConfig (five levels of writable-directory fallback, safe with AppImage squashfs).
+    # Never use Path(__file__).parent / "log" again — that is a read-only squashfs path and will crash.
     try:
         from utils.logger_config import RobustLoggerConfig
         dump_dir = Path(RobustLoggerConfig(service_name="PluginServer").get_log_directory_path())

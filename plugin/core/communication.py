@@ -1,8 +1,8 @@
-"""插件进程间通信资源管理器 - ZMQ 版
+"""Plugin interprocess communication resource manager, ZMQ implementation.
 
-通过 :class:`~plugin.core.zmq_transport.HostTransport` 与子进程通信。
-控制消息复用 downlink / uplink 并按 channel tag 分流；图片字节使用独立
-media uplink，避免大 payload 阻塞结果、状态和停止命令。
+Communicates with subprocesses through :class:`~plugin.core.zmq_transport.HostTransport`.
+Control messages share downlink/uplink and route by channel tag; image bytes use a dedicated
+media uplink so large payloads cannot block results, status, or stop commands.
 """
 from __future__ import annotations
 
@@ -381,8 +381,8 @@ class PluginCommunicationResourceManager:
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:
         req_id = str(uuid.uuid4())
-        # 把本侧预算一起发过去：子进程要在它到期之前收手并回一个降级结果
-        # （actions + context_error），否则父进程先超时，降级分支等于白写。
+        # Send our budget too: the child must stop and return degraded actions + context_error
+        # before expiry, or the parent times out first and the degradation branch is useless.
         msg = {
             "type": "UI_CONTEXT",
             "req_id": req_id,
@@ -617,11 +617,11 @@ class PluginCommunicationResourceManager:
                     items = payload.get("items")
                     if not isinstance(items, list):
                         raise ValueError("invalid authenticated message batch")
-                    # 条数上限用的就是 socket 那道 MAXMSGSIZE 推导时假设的批量
-                    # 大小（见 zmq_transport 的 _message_uplink_max_bytes：
-                    # payload_max * batch_max）。字节界拦不住「很多条很小的」，
-                    # 而每一条现在都会写一次 message plane，所以绕过 SDK 批量器
-                    # 的插件可以用一条合法大小的帧换来任意多次宿主侧工作。
+                    # The item limit matches the batch size assumed when deriving socket MAXMSGSIZE
+                    # (see zmq_transport _message_uplink_max_bytes:
+                    # payload_max * batch_max). Byte limits cannot stop many tiny items,
+                    # each of which now writes to the message plane. A plugin bypassing the SDK batcher
+                    # could otherwise trigger unbounded host work with one legally sized frame.
                     if len(items) > PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE:
                         raise ValueError(
                             "authenticated message batch over the item limit: "
@@ -972,9 +972,9 @@ class PluginCommunicationResourceManager:
                     dynamic=True,
                     metadata=ipc_metadata,
                 )
-                # 动态入口和静态入口走同一份契约。只抄显示字段的话，/plugins 对
-                # 运行时注册的入口报 timeout=null、没有结果 schema，Agent 按默认预算
-                # 掐掉长任务。metadata 已在上面合成，dynamic 固定为真，这两个不覆盖。
+                # Dynamic and static entries share one contract. Copying display fields alone makes /plugins report
+                # timeout=null and no result schema for runtime entries, so Agent cuts long tasks at its default budget.
+                # metadata is already synthesized above and dynamic is always true; do not overwrite either.
                 for field_name, value in entry_contract_fields(meta_dict).items():
                     if field_name in ("metadata", "dynamic"):
                         continue
@@ -1064,6 +1064,7 @@ class PluginCommunicationResourceManager:
                 parameters=parameters,
                 timeout_seconds=float(timeout_seconds),
                 role=role,
+                **({"reply_tail": True} if msg.get("reply_tail") is True else {}),
             )
             self.logger.info(
                 "LLM tool registered with main_server: plugin={} name={}",

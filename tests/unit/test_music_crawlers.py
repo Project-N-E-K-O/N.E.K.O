@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from typing import List, Dict, Any
 import httpx
 
-# 添加项目根目录到 sys.path，确保可以导入 utils
+# Add the project root to sys.path so utils can be imported.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from utils.music_crawlers import (
@@ -18,22 +18,22 @@ from utils.music_crawlers import (
 )
 
 # ==========================================
-# 辅助函数 (Helpers)
+# Helpers.
 # ==========================================
 
 @pytest.fixture(autouse=True)
 async def clear_music_caches():
-    """每个测试前清理全局缓存，防止干扰"""
-    # 清理去重缓存
+    """Clear global caches before each test to prevent interference."""
+    # Clear the deduplication cache.
     music_cache.cache = []
-    # 关闭并重置爬虫实例缓存
+    # Close and reset the crawler-instance cache.
     await close_all_crawlers()
     yield
-    # 测试后再次清理
+    # Clean up again after the test.
     await close_all_crawlers()
 
 # ==========================================
-# 模拟数据 (Mock Data)
+# Mock data.
 # ==========================================
 
 MOCK_NETEASE_JSON = {
@@ -111,7 +111,7 @@ MOCK_MUSOPEN_HTML = """
 """
 
 # ==========================================
-# 1. MusicCache 测试
+# 1. MusicCache tests.
 # ==========================================
 
 @pytest.mark.unit
@@ -119,10 +119,10 @@ def test_music_cache_deduplication():
     cache = MusicCache(expire_seconds=10)
     track = {"url": "http://test.url", "name": "Test", "artist": "Artist"}
     
-    # 初始状态不重复
+    # Initially not a duplicate.
     assert not cache.is_duplicate(track['url'], track['name'], track['artist'])
     
-    # 添加后重复
+    # Duplicate after adding.
     cache.add(track)
     assert cache.is_duplicate(track['url'], track['name'], track['artist'])
     assert cache.is_duplicate("http://test.url", "", "")
@@ -142,7 +142,7 @@ def test_music_cache_diversity():
     assert score['score'] > 0
 
 # ==========================================
-# 2. 爬虫单元测试 (Mocked)
+# 2. Mocked crawler unit tests.
 # ==========================================
 
 @pytest.mark.unit
@@ -1497,23 +1497,23 @@ async def test_bandcamp_crawler_falls_back_when_autocomplete_fails():
 async def test_soundcloud_crawler_token_logic():
     crawler = SoundCloudCrawler()
     
-    # 模拟首页 HTML 以提取 JS 链接
+    # Mock homepage HTML to extract JS links.
     mock_home = MagicMock(status_code=200, text='<script src="test.js"></script>')
-    # 模拟 JS 内容以提取 client_id
+    # Mock JS content to extract client_id.
     mock_js = MagicMock(status_code=200, text='client_id:"12345678901234567890123456789012"')
     
-    # 模拟搜索响应
+    # Mock search responses.
     mock_search = MagicMock(status_code=200)
     mock_search.json.return_value = {"collection": [{"title": "SC Song", "media": {"transcodings": [{
         "url": "http://sc.url/stream",
         "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
     }]}}]}
     
-    # 模拟音频流 URL 响应
+    # Mock audio-stream URL responses.
     mock_stream = MagicMock(status_code=200)
     mock_stream.json.return_value = {"url": "http://sc.real/audio.mp3"}
 
-    # 按顺序触发不同的 get 请求
+    # Trigger different GET requests in sequence.
     with patch.object(httpx.AsyncClient, 'get', new=AsyncMock(side_effect=[mock_home, mock_js, mock_search, mock_stream])):
         results: List[Dict[str, Any]] = await crawler.search("test", limit=1)
         assert len(results) == 1
@@ -1650,19 +1650,19 @@ async def test_soundcloud_crawler_rejects_progressive_endpoint_resolving_to_hls(
     await crawler.close()
 
 # ==========================================
-# 3. 调度逻辑测试
+# 3. Scheduling tests.
 # ==========================================
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fetch_music_content_orchestration():
-    """验证主调度函数是否根据不同参数正确聚合结果 (Mocked Crawlers)"""
+    """Verify the main scheduler aggregates results correctly for different parameters (mocked crawlers)."""
     
-    # 使用更健壮的 Mock 策略：直接 Patch 工厂加载器，避免单例缓存 _crawlers_cache 污染
+    # Robust mocking: patch the factory loader directly to avoid singleton _crawlers_cache contamination.
     mock_netease = MagicMock()
     mock_itunes = MagicMock()
     
-    # 定义异步 Mock 返回
+    # Define asynchronous mock returns.
     async def mock_netease_search(*args, **kwargs):
         return [{"name": "Mock Netease", "url": "url1", "artist": "A1"}]
         
@@ -1680,7 +1680,7 @@ async def test_fetch_music_content_orchestration():
     
     with patch('utils.music_crawlers.get_music_crawlers', return_value={'netease': mock_netease, 'itunes': mock_itunes}):
         with patch('utils.music_crawlers.is_china_region', return_value=True):
-            # 在中国区域，应该包含网易云
+            # Include NetEase Cloud Music in the China region.
             response = await fetch_music_content("keyword", limit=1)
             assert response['success'] is True
             assert any(r['name'] == "Mock Netease" for r in response['data'])
@@ -2184,7 +2184,7 @@ async def test_fetch_music_content_rejects_unrelated_requested_song():
 @pytest.mark.manual
 @pytest.mark.asyncio
 async def test_real_itunes_integration():
-    """集成测试：验证真实 iTunes API 连接性"""
+    """Integration test: verify real iTunes API connectivity."""
     crawler = iTunesCrawler()
     try:
         results: List[Dict[str, Any]] = await crawler.search("lofi", limit=1)
@@ -2193,7 +2193,7 @@ async def test_real_itunes_integration():
     except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
         pytest.skip(f"iTunes 集成测试跳过 (网络错误): {e}")
     except Exception as e:
-        # 非网络错误（如 AssertionError）应该让测试失败，而不是跳过
+        # Non-network errors (e.g. AssertionError) must fail tests, not skip them.
         raise e
     finally:
         await crawler.close()

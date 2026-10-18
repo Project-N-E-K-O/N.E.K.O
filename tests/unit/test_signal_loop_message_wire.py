@@ -14,7 +14,7 @@ once the Stage-2 ``signal_processed=False`` backlog drained (~2026-05-15).
 
 These tests pin down the wire path so a future refactor can't reintroduce
 the same mistake without it lighting up red immediately.
-"""
+"""  # noqa: DOCSTRING_CJK
 from utils.llm_client import convert_to_messages
 
 

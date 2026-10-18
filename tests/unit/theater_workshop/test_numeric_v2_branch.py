@@ -270,7 +270,7 @@ def _path_result(plan: dict) -> dict:
         "title": f"支线第{index + 1}幕",
         "summary": "猫娘展示新的证据，让误会转化为共同调查。",
         "opening_scene": "旧仓库的灯光落在一只封存的证物盒上。",
-        # 支线作者估算只用于诊断，不能把 Runtime 推荐回合从 3 拉长。
+        # Author branch estimates are diagnostic only; they must not extend Runtime's recommended three turns.
         "expected_turns": 12,
         "ordered_goals": [_ordered_goal("猫娘主动展示带日期的旧照片")],
         "must_not_happen": ["不得提前宣布最终结论"],
@@ -364,7 +364,7 @@ def test_branch_options_hide_raw_thresholds_and_require_exact_rejoin_node():
     assert options["rejoin"]["targets"][1]["node_id"] == "main_3"
     assert options["rejoin"]["targets"][1]["skipped_nodes"][0]["node_id"] == "main_2"
     serialized_candidates = str(options["condition_candidates"])
-    assert "愿意托付秘密" not in serialized_candidates  # fixture 使用“信赖”这一语义标签
+    assert "愿意托付秘密" not in serialized_candidates  # The fixture uses the semantic trust label.
     assert "value" not in serialized_candidates
     assert "min" not in serialized_candidates
     assert "priority" not in serialized_candidates
@@ -477,7 +477,7 @@ def test_branch_conditions_are_ranked_by_source_scene_reachability():
         "difficult",
     ]
     assert early[-1]["available"] is False
-    # v2.2 按每轮约 2 点估算；从初始 20 到高位 70 仍需超过 8 回合。
+    # v2.2 estimates about two points per turn; moving from initial 20 to high 70 still takes over eight turns.
     assert middle[-1]["available"] is False
 
 
@@ -509,7 +509,7 @@ def test_fixed_condition_rejects_mathematically_unreachable_band():
 
 
 def test_d7_pacing_keeps_distinct_entry_scenarios_and_warns_on_partial_reachability():
-    # 两条前序路线分别把入口代表值落在高位和低位，验证不能压成一个统一入口。
+    # Two predecessor routes yield high and low entry representatives, verifying they cannot collapse into one common entry.
     project = branchable_project(mainline_count=3)
     start = next(node for node in project["story"]["nodes"] if node["id"] == "main_1")
     start["route_gates"] = [
@@ -533,7 +533,7 @@ def test_d7_pacing_keeps_distinct_entry_scenarios_and_warns_on_partial_reachabil
 
 
 def test_d7_pacing_blocks_when_every_entry_scenario_is_too_slow():
-    # 所有入口都需要超过 8 轮时，候选必须阻断而不是继续交给模型。
+    # If every entry needs over eight turns, block the candidate rather than passing it to the model.
     project = branchable_project(mainline_count=3)
     start = next(node for node in project["story"]["nodes"] if node["id"] == "main_1")
     start["route_gates"] = [{
@@ -550,7 +550,7 @@ def test_d7_pacing_blocks_when_every_entry_scenario_is_too_slow():
 
 
 def test_d7_pacing_blocks_unknown_cycle_before_source():
-    # 无法可靠穿过循环得到来源幕时，诊断必须明确是未知前序而非“困难可达”。
+    # If loops prevent reliable source-scene resolution, diagnose an unknown predecessor rather than difficult reachability.
     project = branchable_project(mainline_count=3)
     start = next(node for node in project["story"]["nodes"] if node["id"] == "main_1")
     start["route_gates"] = [{
@@ -734,6 +734,86 @@ def test_branch_path_rejects_missing_or_generic_accept_input():
         service.finish_path(plan, result)
 
 
+def _silent_exit_path(position, initial, changes):
+    from utils.tokenize import count_tokens
+    project = branchable_project()
+    if position == "source":
+        beat = next(node for node in project["story"]["nodes"] if node["id"] == "main_3")["story_beat"]
+        beat["acting_contract"] = {**_character_state()["acting_contract"], "dialogue_policy": initial}
+        beat["acting_contract"].pop("assertable_self_facts")
+        base = beat["goals"][0]
+        beat["goals"] = [
+            {**deepcopy(base), "id": f"main_3_goal_{index + 1:02d}",
+             "evidence": {"mode": "semantic", "anchors": []},
+             "delivery": {**base["delivery"], "type": "catgirl_action", "output_field": "performance_action",
+                          **({"state_effects": {"dialogue_policy": policy}} if policy != "unchanged" else {})}}
+            for index, policy in enumerate(changes)
+        ]
+    service = NumericV2BranchService(id_factory=iter(["scene", "r0", "r1", "draft"]).__next__,
+                                     token_counter=count_tokens)
+    options = service.options(project, "main_3")
+    plan = service.prepare_path(project, source_node_id="main_3", endpoint_mode="mainline",
+        endpoint_node_id="main_4", direction="根据当前证据继续核对。", length=1,
+        condition_selection={"mode": "fixed", "key": options["condition_candidates"][0]["key"]})
+    result = _path_result(plan)
+    if position == "scene":
+        scene = result["scenes"][0]
+        scene["character_state"]["acting_contract"]["dialogue_policy"] = initial
+        scene["ordered_goals"] = [
+            {**_ordered_goal("猫娘收好已经展示的证据"), "delivery_type": "catgirl_action",
+             "dialogue_policy_after": policy}
+            for policy in changes
+        ]
+    index = 0 if position == "source" else 1
+    result["transitions"][index].pop("fallback_offer")
+    result["transitions"][index]["silent_choice"] = {
+        "destination": "下一处核对地点", "arrangement": "继续核对证据"}
+    return project, service, plan, result, index
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("initial,changes,allowed", [
+    ("optional", ["forbidden"], True),
+    ("forbidden", ["unchanged"], True),
+    ("optional", ["forbidden", "unchanged"], True),
+    ("optional", ["forbidden", "required"], False),
+    ("optional", ["forbidden", "optional"], False),
+    ("optional", ["unchanged"], False),
+])
+def test_branch_missing_fallback_requires_final_typed_forbidden_policy(position, initial, changes, allowed):
+    project, service, plan, result, index = _silent_exit_path(position, initial, changes)
+    if not allowed:
+        with pytest.raises(NumericV2BranchError, match="branch_transition_fallback_offer_required"):
+            service.finish_path(plan, result)
+        return
+
+    draft = service.finish_path(plan, result)
+    story, _, _ = service.build_story(project, draft)
+    node_id = "main_3" if position == "source" else "node_branch_scene"
+    node = next(node for node in story["nodes"] if node["id"] == node_id)
+    contract = node["route_gates"][-1 if position == "source" else 0]["transition_contract"]
+
+    assert "fallback_offer" not in contract
+    assert contract["accept_input"] == result["transitions"][index]["accept_input"]
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("field,missing,code", [
+    ("accept_input", True, "branch_transition_accept_input_required"),
+    ("fallback_offer", False, "branch_transition_fallback_offer_required"),
+])
+def test_branch_forbidden_exit_keeps_acceptance_and_present_value_validation(position, field, missing, code):
+    _, service, plan, result, index = _silent_exit_path(position, "optional", ["forbidden"])
+    if missing:
+        result["transitions"][index].pop(field)
+    else:
+        result["transitions"][index][field] = None
+
+    with pytest.raises(NumericV2BranchError, match=code):
+        service.finish_path(plan, result)
+
+
 @pytest.mark.parametrize("opening_transfer", [False, True])
 def test_branch_scene_persists_key_prop_state_change_on_stable_node_id(opening_transfer):
     project = branchable_project()
@@ -764,7 +844,7 @@ def test_branch_scene_persists_key_prop_state_change_on_stable_node_id(opening_t
     story, _, key_props = service.build_story(project, draft)
 
     branch_node = next(node for node in story["nodes"] if node["id"] == "node_branch_scene")
-    # 本幕的显式状态可能已经在开场改变持有者；旧道具台账不能覆盖入幕状态。
+    # Explicit scene state may already change the holder at entry; old prop ledgers must not override entry state.
     assert "仅定义用途，不表示已取得或操作完成" in branch_node["story_beat"]["catgirl_situation"]
     assert "当前归属为女主" not in branch_node["story_beat"]["catgirl_situation"]
     assert "保存带日期的旧照片" in branch_node["story_beat"]["catgirl_situation"]
@@ -1008,7 +1088,7 @@ def test_branch_draft_persists_without_revision_and_applies_idempotently(tmp_pat
 
 @pytest.mark.parametrize("boundaries", [[], ["不得把女主展示证物的职责转交给男主"]])
 def test_branch_api_and_service_preserve_state_boundary_scope(boundaries):
-    # API 接收、支线归一化共用允许空数组的合同，已有硬边界仍逐字保留。
+    # API acceptance and branch normalization share the empty-array contract; preserve existing hard boundaries verbatim.
     from theater_workshop.sdk.contracts import BranchCharacterStatePayload
     state = _character_state()
     state["scene_boundaries"] = boundaries
@@ -1022,7 +1102,7 @@ def test_branch_api_and_service_preserve_state_boundary_scope(boundaries):
 def test_branch_boundary_relaxation_keeps_shape_and_upper_limit(boundaries):
     from pydantic import ValidationError
     from theater_workshop.sdk.contracts import BranchCharacterStatePayload
-    # 两层都拒绝非法形状与超长数组；不是依靠下一层兜住接口漏验。
+    # Both layers reject invalid shapes and oversized arrays rather than relying on downstream validation.
     state = _character_state()
     state["scene_boundaries"] = boundaries
     with pytest.raises(ValidationError):
@@ -1038,3 +1118,35 @@ def test_entrance_projection_does_not_ignore_untracked_metric(mode):
     assert NumericV2BranchService._condition_alternatives(conditions, schema, "trust", 0) is None
     conditions[mode][0].update(metric="trust", value=20)
     assert NumericV2BranchService._condition_alternatives(conditions, schema, "trust", 0) == [20]
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("choice", [None, {}, {"destination": "石桥"},
+    {"destination": "石桥", "arrangement": ""},
+    {"destination": "石桥", "arrangement": "核对\n记录"}])
+def test_generated_silent_branch_rejects_missing_or_malformed_choice(position, choice):
+    _, service, plan, result, index = _silent_exit_path(position, "optional", ["forbidden"])
+    if choice is None:
+        result["transitions"][index].pop("silent_choice")
+    else:
+        result["transitions"][index]["silent_choice"] = choice
+    with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+        service.finish_path(plan, result)
+
+
+@pytest.mark.parametrize("field", ["destination", "arrangement"])
+@pytest.mark.parametrize("tokens", [30, 31])
+def test_branch_silent_choice_enforces_compiler_token_limit(field, tokens):
+    _, service, plan, result, index = _silent_exit_path("scene", "optional", ["forbidden"])
+    result["transitions"][index]["silent_choice"][field] = " a" * tokens
+    if tokens > 30:
+        with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+            service.finish_path(plan, result)
+    else:
+        service.finish_path(plan, result)
+
+
+def test_silent_branch_without_counter_returns_validation_error():
+    _, _, plan, result, _ = _silent_exit_path("scene", "optional", ["forbidden"])
+    with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+        NumericV2BranchService().finish_path(plan, result)

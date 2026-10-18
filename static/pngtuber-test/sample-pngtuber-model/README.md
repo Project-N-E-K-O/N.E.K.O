@@ -12,7 +12,7 @@ Use this package to verify that PNGTuber can be imported, selected, previewed, s
 - `idle.gif`: Default idle avatar image, 512x512, 253 frames.
 - `talking.gif`: Talking avatar image, 512x512, 81 frames.
 - `talking.gif`: Also used as the default `click_image` for click-feedback tests.
-- `/static/assets/neko-idle/cat-idle-cat-move-1.gif`: Built-in hold/drag feedback image used as `drag_image`.
+- `/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif`: Built-in hold/drag feedback image used as `drag_image`.
 - `happy.png`: Optional happy expression image, 2480x2480.
 - `sad.png`: Optional sad expression image, 2480x2480.
 - `angry.png`: Optional angry expression image, 2480x2480.
@@ -30,7 +30,7 @@ Default preset:
   "idle_image": "idle.gif",
   "talking_image": "talking.gif",
   "click_image": "talking.gif",
-  "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-1.gif"
+  "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif"
 }
 ```
 
@@ -38,10 +38,10 @@ Alternate Cat 2 preset:
 
 ```json
 {
-  "idle_image": "/static/assets/neko-idle/cat-idle-cat2.gif",
-  "talking_image": "/static/assets/neko-idle/cat-idle-cat2-click.gif",
-  "click_image": "/static/assets/neko-idle/cat-idle-cat2-click.gif",
-  "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-2.gif"
+  "idle_image": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif",
+  "talking_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif",
+  "click_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif",
+  "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif"
 }
 ```
 
@@ -49,10 +49,10 @@ Alternate Cat 3 preset:
 
 ```json
 {
-  "idle_image": "/static/assets/neko-idle/cat-idle-cat3.gif",
-  "talking_image": "/static/assets/neko-idle/cat-idle-cat3-click.gif",
-  "click_image": "/static/assets/neko-idle/cat-idle-cat3-click.gif",
-  "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-3.gif"
+  "idle_image": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif",
+  "talking_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif",
+  "click_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif",
+  "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif"
 }
 ```
 
@@ -60,9 +60,9 @@ Optional action GIFs can be assigned to expression fields for playback checks:
 
 ```json
 {
-  "happy_image": "/static/assets/neko-idle/cat-idle-cat4-1.gif",
-  "sad_image": "/static/assets/neko-idle/cat-idle-cat4-2.gif",
-  "surprised_image": "/static/assets/neko-idle/cat-idle-cat4-3.gif"
+  "happy_image": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif",
+  "sad_image": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-2.gif",
+  "surprised_image": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif"
 }
 ```
 
@@ -120,7 +120,7 @@ The uploaded `pngtuber` config can be saved to a character with:
     "idle_image": "/user_pngtuber/Sample_PNGTuber_Test_Model/idle.gif",
     "talking_image": "/user_pngtuber/Sample_PNGTuber_Test_Model/talking.gif",
     "click_image": "/user_pngtuber/Sample_PNGTuber_Test_Model/talking.gif",
-    "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-1.gif",
+    "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif",
     "happy_image": "/user_pngtuber/Sample_PNGTuber_Test_Model/happy.png",
     "sad_image": "/user_pngtuber/Sample_PNGTuber_Test_Model/sad.png",
     "angry_image": "/user_pngtuber/Sample_PNGTuber_Test_Model/angry.png",

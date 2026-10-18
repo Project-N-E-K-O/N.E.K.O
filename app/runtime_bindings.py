@@ -126,10 +126,10 @@ def install_runtime_bindings() -> None:
             # issue gets fixed in-process.
 
     # ---- main_logic.agent_event_bus ← memory.user_directives sink ----------
-    # ``memory`` 层在 ``main_logic`` 之下（check_module_layering.py），不能
-    # 自己向上 import event bus；所以把 ``_on_user_utterance`` 的注册放在 L6
-    # app 层（本模块）。``register_user_utterance_sink`` dedupes-on-identity，
-    # 重复调用 / 重复 install 都安全。
+    # The memory layer is below main_logic (check_module_layering.py) and cannot
+    # import the event bus upward, so register _on_user_utterance in the L6
+    # application layer (this module). register_user_utterance_sink deduplicates by identity,
+    # making repeated calls / installations safe.
     if not _INSTALLED["user_directives_sink"]:
         try:
             from main_logic.agent_event_bus import register_user_utterance_sink
@@ -137,8 +137,8 @@ def install_runtime_bindings() -> None:
             register_user_utterance_sink(_on_user_utterance)
             _INSTALLED["user_directives_sink"] = True
         except Exception as exc:
-            # memory / main_logic 不在 sys.path（memory-only worker / 偏窄测试
-            # 环境）——静默退出。集成路径走 ``app/__init__`` 调本函数。
+            # memory / main_logic absent from sys.path (memory-only worker / restricted test
+            # environment): exit silently. Integration calls this via app/__init__.
             _expected_absent = {
                 "memory",
                 "memory.user_directives",
@@ -160,15 +160,15 @@ def install_runtime_bindings() -> None:
                         exc_info=True,
                     )
                 except Exception:
-                    # Logger 本身不可用（极早期 import / 配置坏）；同
-                    # config_runtime block 的策略——咽掉避免 startup 二次崩，
-                    # caller (app/__init__) 已经印过 stderr 面包屑。
+                    # Logger itself unavailable (very early import / broken configuration): follow the
+                    # config_runtime block's policy and swallow to avoid a second startup crash;
+                    # caller (app/__init__) already printed a stderr breadcrumb.
                     pass
 
     # ---- main_logic.agent_event_bus ← main_logic.quota dropper -----------
-    # N.E.K.O.Servers 社交平台配额掉落 hooks（M2-j）。挂载本身不依赖环境变量，
-    # 是否真触发取决于 dropper._enabled()（要求 NEKO_QUOTA_DROPPER_ENABLED=1
-    # + NEKO_SOCIAL_BASE_URL 已配）。默认 noop，挂着也无害。
+    # N.E.K.O.Servers social-platform quota drop hooks (M2-j). Installation does not depend on environment variables;
+    # actual triggering depends on dropper._enabled() (requires NEKO_QUOTA_DROPPER_ENABLED=1
+    # and configured NEKO_SOCIAL_BASE_URL). Default no-op; harmless to install.
     if not _INSTALLED["quota_hooks"]:
         try:
             from main_logic.agent_event_bus import (
@@ -177,7 +177,7 @@ def install_runtime_bindings() -> None:
             )
             from main_logic.quota import on_text_message, on_utterance
 
-            # text-message hook 是 first-hit-wins，dropper 已确保返回 None
+            # Text-message hooks use first-hit-wins; dropper already guarantees returning None.
             register_text_user_message_hook(on_text_message)
             register_user_utterance_sink(on_utterance)
             _INSTALLED["quota_hooks"] = True
@@ -187,7 +187,7 @@ def install_runtime_bindings() -> None:
                 "main_logic.agent_event_bus",
                 "main_logic.quota",
                 "main_logic.quota.dropper",
-                "yaml",  # PyYAML 缺失也算预期场景（memory-only worker）
+                "yaml",  # Missing PyYAML is also expected (memory-only worker).
             }
             _is_expected_absent = (
                 isinstance(exc, ModuleNotFoundError)

@@ -65,37 +65,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
-# 模块级状态
+# Module-level state.
 # ---------------------------------------------------------------------------
 
 _PROCESS_START_MONO = time.monotonic()
-# Ring buffer：~16 小时（5min × 200）。重启即丢，这是诊断而非审计，可接受。
+# Ring buffer: ~16 hours (5min x 200). Losing it on restart is acceptable for diagnostics rather than auditing.
 _HEALTH_RING: deque[dict[str, Any]] = deque(maxlen=200)
 _WATCHDOG_TASK: asyncio.Task | None = None
-_WATCHDOG_INTERVAL_SECONDS = 5 * 60  # 5 分钟
-# 「Deep」字段（``gc.get_objects()`` 45ms + Windows ``num_threads()`` 8ms）
-# 是 C 调用不释放 GIL，watchdog 跑就直接阻塞 event loop 50ms+。本来想降频
-# 到 30min 一次缓和，但用户体感「致命」否决——索性 watchdog **不收**这俩，
-# 只在按需 endpoint ``/api/debug/health?deep=1`` 触发。代价：ring/jsonl 没
-# 有 gc 时序数据；用户排查内存问题时手动多次访问 endpoint 自己构建时序。
+_WATCHDOG_INTERVAL_SECONDS = 5 * 60  # Five minutes.
+# Deep fields (gc.get_objects() 45ms + Windows num_threads() 8ms) are C calls
+# that hold the GIL, directly blocking the event loop for 50ms+ in watchdog. Reducing frequency
+# to 30 minutes was rejected as perceptibly fatal; watchdog omits both entirely,
+# collecting only on demand through /api/debug/health?deep=1. Ring/jsonl loses GC time series;
+# users investigating memory can query repeatedly to build their own series.
 
-# psutil.Process 复用：cpu_percent(None) 必须**用同一个 Process 实例**多次调用，
-# 第一次返回 0（建立基线），之后每次返回距上次的 CPU 利用率%。每次 new Process
-# 都是新基线 → 永远 0%，等于没采。`None` 表示尚未尝试初始化或环境缺 psutil。
-# ⚠️ 双 channel 隔离：cpu_percent baseline 在同实例上被共享——watchdog 和
-# endpoint 共用一个 Process 时，任意 endpoint 调用都会重置 watchdog 的窗口
-# 起点，导致下次 watchdog 拿到的 cpu_percent 不是真实 5min 窗口（可能短到几
-# 秒）。所以维护**两个独立** Process 实例：``watchdog`` channel 给 5min 周期
-# task 用，``endpoint`` channel 给按需 HTTP 用，两个 baseline 互不影响。
-# 其他 psutil 调用（memory_info / num_handles / num_threads）都是无状态瞬时
-# 查询，用哪个实例都一样——所以这俩 channel 在它们身上等价。
+# Reuse psutil.Process: cpu_percent(None) needs repeated calls on the same instance.
+# The first returns zero to establish a baseline; later calls measure CPU since the previous call. New Process
+# each time resets the baseline and always yields zero, effectively no sampling. None means uninitialized or psutil unavailable.
+# Isolate two channels: cpu_percent shares its baseline within an instance. Sharing one Process between watchdog
+# and endpoints makes every endpoint request reset the watchdog window's start,
+# so its next sample no longer represents five minutes and may cover mere seconds.
+# Maintain two independent Process instances: watchdog for periodic five-minute
+# tasks, endpoint for on-demand HTTP. Their baselines cannot interfere.
+# Other psutil calls (memory_info / num_handles / num_threads) are stateless instantaneous
+# queries, so either instance behaves identically for those fields.
 _PSUTIL_PROCESS_WATCHDOG: Any = None
 _PSUTIL_PROCESS_ENDPOINT: Any = None
 _PSUTIL_INIT_TRIED = False
 
 
 # ---------------------------------------------------------------------------
-# Snapshot 采集
+# Snapshot collection.
 # ---------------------------------------------------------------------------
 
 def _get_psutil_process(channel: str = "watchdog") -> Any:
@@ -118,7 +118,7 @@ def _get_psutil_process(channel: str = "watchdog") -> Any:
             import psutil  # type: ignore
             w = psutil.Process()
             e = psutil.Process()
-            # Prime 两个实例：首次调用约定回 0，立刻丢掉，下次才有真值。
+            # Prime both instances: discard the initial zero so later samples contain real values.
             w.cpu_percent(interval=None)
             e.cpu_percent(interval=None)
             _PSUTIL_PROCESS_WATCHDOG = w
@@ -144,7 +144,7 @@ def _safe_rss_mb(channel: str = "watchdog") -> float | None:
     try:
         return proc.memory_info().rss / (1024 * 1024)
     except Exception:
-        # 进程突然不存在 / 权限丢失等极端态：返 None 不挂诊断。
+        # Process disappearance / lost permissions: return None without breaking diagnostics.
         return None
 
 
@@ -168,8 +168,8 @@ def _safe_psutil_extras(channel: str = "watchdog") -> dict[str, Any]:
       first, then POSIX num_fds; None when neither is available.
     """
     out: dict[str, Any] = {
-        "cpu_percent": None,       # 任务管理器规模（占总 CPU 百分比）
-        "cpu_percent_raw": None,   # psutil 原始值（占单核百分比，多核可 > 100）
+        "cpu_percent": None,       # Task Manager scale: percentage of total CPU.
+        "cpu_percent_raw": None,   # Raw psutil percentage of one core, possibly over 100 on multicore systems.
         "cpu_count": None,
         "num_handles": None,
     }
@@ -182,20 +182,20 @@ def _safe_psutil_extras(channel: str = "watchdog") -> dict[str, Any]:
         raw = proc.cpu_percent(interval=None)
         out["cpu_percent_raw"] = raw
         out["cpu_count"] = cpu_count
-        # 归一化到任务管理器规模：raw / cpu_count
+        # Normalize to Task Manager scale: raw / cpu_count.
         out["cpu_percent"] = raw / cpu_count
     except Exception:
-        # 故意吞：psutil 子调用（cpu_count / cpu_percent）失败留 None 即可，
-        # 曲线上看到 cpu_percent=null 知道是 psutil 异常不是「真有 leak」。
+        # Deliberately swallow psutil subcall failures (cpu_count / cpu_percent), leaving None;
+        # cpu_percent=null on the chart identifies psutil failure rather than an actual leak.
         pass
-    # Windows: num_handles; POSIX: num_fds. psutil 在错误平台抛 AttributeError。
+    # Windows uses num_handles, POSIX num_fds; wrong-platform psutil APIs raise AttributeError.
     try:
         out["num_handles"] = proc.num_handles()
     except Exception:
         try:
             out["num_handles"] = proc.num_fds()
         except Exception:
-            # 故意吞：两个平台 API 都拿不到（容器 / 罕见 OS），num_handles 留 None。
+            # Deliberately swallow: if neither platform API exists (containers / rare OS), leave num_handles None.
             pass
     return out
 
@@ -211,7 +211,7 @@ def _safe_psutil_heavy(channel: str = "watchdog") -> dict[str, Any]:
     try:
         out["num_threads"] = proc.num_threads()
     except Exception:
-        # 故意吞：num_threads 拿不到留 None，零侵入语义保留。
+        # Deliberately swallow unavailable num_threads, preserving nonintrusive semantics.
         pass
     return out
 
@@ -309,7 +309,7 @@ def _safe_conv_history_lengths() -> dict[str, int]:
     try:
         from main_routers.shared_state import get_session_manager
         session_manager = get_session_manager()
-        # session_manager 是 _RoleStateFieldView，dict-like
+        # session_manager is a dictionary-like _RoleStateFieldView.
         for name in list(session_manager.keys()):
             try:
                 core = session_manager.get(name)
@@ -318,11 +318,11 @@ def _safe_conv_history_lengths() -> dict[str, int]:
                 if history is not None:
                     out[name] = len(history)
             except Exception:
-                # 单 lanlan 失败不影响其他：可能正在 end_session / hot-swap，
-                # core / session 暂态为 None，下一轮自然恢复。
+                # One lanlan failure must not affect others: end_session / hot-swap may temporarily
+                # leave core / session None; the next round naturally recovers.
                 continue
     except Exception:
-        # shared_state 启动早期可能还没 ready；故意吞，零侵入。
+        # shared_state may not be ready early in startup; swallow nonintrusively.
         return out
     return out
 
@@ -332,7 +332,7 @@ def _safe_ack_waiters_size() -> int | None:
         from main_logic.agent_event_bus import _ack_waiters
         return len(_ack_waiters)
     except Exception:
-        # 故意吞：agent_event_bus 模块未加载 / 重构改名都允许优雅降级。
+        # Deliberately swallow: unloaded / renamed agent_event_bus modules degrade gracefully.
         return None
 
 
@@ -344,10 +344,10 @@ def _safe_proactive_history_size() -> dict[str, int]:
             try:
                 out[name] = len(dq)
             except Exception:
-                # 单条 deque 取 len 失败极小概率：跳过不让整轮废。
+                # Rare deque len failures: skip rather than aborting the whole round.
                 continue
     except Exception:
-        # 故意吞：system_router 未加载 / 内部命名变更都允许优雅降级。
+        # Deliberately swallow: unloaded system_router / internal renames degrade gracefully.
         return out
     return out
 
@@ -426,7 +426,7 @@ def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> 
         snap["asyncio_tasks"] = None
     snap["asyncio_task_top"] = _safe_asyncio_task_top()
     snap["rss_mb"] = _safe_rss_mb(channel)
-    # psutil extras 一次 dict 展平进顶层，方便画曲线时直接索引同级 key。
+    # Flatten psutil extras into the top-level dictionary for direct peer-key chart access.
     snap.update(_safe_psutil_extras(channel))
     snap["conv_history"] = _safe_conv_history_lengths()
     snap["tts_queue_size"] = _safe_tts_queue_sizes()
@@ -444,14 +444,14 @@ def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> 
             snap['session_lifecycle'] = _safe_session_lifecycle()
         except Exception as exc:
             snap['session_lifecycle'] = {'error_type': type(exc).__name__}
-        # Deep 字段——~50 ms 阻塞但有 30 min 间隔，长跑曲线仍能画时序。
+        # Deep fields block ~50ms but have a 30-minute interval, preserving long-running time-series plots.
         snap["gc_object_top"] = _safe_gc_object_top()
         snap.update(_safe_psutil_heavy(channel))
     return snap
 
 
 # ---------------------------------------------------------------------------
-# 文件落盘（默认关）
+# File persistence, disabled by default.
 # ---------------------------------------------------------------------------
 
 def _resolve_log_path() -> Path | None:
@@ -469,19 +469,19 @@ def _resolve_log_path() -> Path | None:
         if config_dir:
             return Path(config_dir) / "debug_health.jsonl"
     except Exception:
-        # shared_state 没 ready / config_manager 未注入：落到下面 sys.argv[0]
-        # 兜底路径。本身就是诊断文件，写哪里都比不写好。
+        # shared_state not ready / config_manager not injected: use the sys.argv[0]
+        # fallback below. This is a diagnostic file; writing somewhere is better than nowhere.
         pass
-    # 兜底：launcher 旁
+    # Fallback: beside the launcher.
     try:
         return Path(sys.argv[0]).resolve().parent / "debug_health.jsonl"
     except Exception:
         return None
 
 
-# 单文件大小上限。超过则 rotate 到 .1（覆盖旧 .1），总占用硬封 ~20MB。
-# 算下来：3 个 lanlan + client merged 行 ≈ 500B，10MB ≈ 21000 行 ≈ 73 天数据，
-# 触发 rotation 后还能再写 73 天到新文件——对「报完问题忘关 env」场景完全够用。
+# Per-file limit: rotate to .1, replacing old .1; total storage is hard-capped around 20MB.
+# Three lanlans plus merged client row is about 500B; 10MB holds ~21000 rows or ~73 days,
+# then another 73 days in the new file, enough if users forget to disable the diagnostic environment variable.
 _LOG_ROTATE_BYTES = 10 * 1024 * 1024
 
 
@@ -491,26 +491,26 @@ def _append_to_log(snap: dict[str, Any]) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Rotate：超阈值则 os.replace 到 .1。os.replace 在 Windows / POSIX 都
-        # 原子，且会原子覆盖已有 .1——所以总占用 = current + .1 ≤ 2×10MB。
-        # 用 path.name + ".1" 而不是 with_suffix('.1')——后者会把 .jsonl 替成
-        # .1 得到 debug_health.1，丢了 .jsonl 后缀。
+        # Rotate above threshold with os.replace to .1, atomic on Windows/POSIX and atomically replacing existing .1;
+        # total storage = current + .1 <= 2x10MB.
+        # Use path.name + ".1" rather than with_suffix('.1'), which replaces .jsonl
+        # and produces debug_health.1, losing the JSONL suffix.
         try:
             if path.exists() and path.stat().st_size > _LOG_ROTATE_BYTES:
                 os.replace(path, path.parent / (path.name + ".1"))
         except OSError as e:
-            # rotation 失败不挂主路径，让 append 照旧写——大不了文件继续涨
-            # 一阵子，下次 tick 还会再试。
+            # Rotation failure must not break the main path: continue appending, allowing temporary growth
+            # and retrying next tick.
             logger.debug("debug_health: rotate failed: %s", e)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(snap, ensure_ascii=False) + "\n")
     except Exception as e:
-        # 文件写失败不抛——诊断功能不能拖垮主程序
+        # Never propagate diagnostic-file write failures into the main application.
         logger.debug("debug_health: append jsonl failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
-# Watchdog 后台任务
+# Background watchdog task.
 # ---------------------------------------------------------------------------
 
 def _absorb_recent_client_payload(server_snap: dict[str, Any]) -> None:
@@ -536,14 +536,14 @@ def _absorb_recent_client_payload(server_snap: dict[str, Any]) -> None:
     hours, unchanged."""
     absorbed_client: dict[str, Any] | None = None
     server_ts = float(server_snap.get("ts") or 0)
-    # 倒序消化尾部连续 client-only 条目；保留最新（第一次循环取到的）payload。
+    # Consume consecutive client-only tail entries in reverse, retaining the newest payload encountered first.
     while _HEALTH_RING:
         last = _HEALTH_RING[-1]
-        # 「client-only」标识：缺 asyncio_tasks 键（server snapshot 永远有）
+        # Client-only means no asyncio_tasks key; server snapshots always have it.
         if "asyncio_tasks" in last:
             break
-        # 超出吸收窗口的属于「上上轮残留」，不动它（也不吸收 payload）让 ring
-        # 自然按 maxlen 排出，避免强行 pop 破坏历史顺序。
+        # Entries outside the absorption window belong to an older round: leave them and their payload untouched,
+        # letting ring maxlen evict them naturally rather than disrupting historical order by popping.
         if server_ts - float(last.get("ts") or 0) > _WATCHDOG_INTERVAL_SECONDS:
             break
         if absorbed_client is None and last.get("client") is not None:
@@ -564,21 +564,21 @@ async def _watchdog_loop() -> None:
     streaming, WS ping/pong) is delayed. So collect must run in the thread
     pool via ``asyncio.to_thread`` while the event loop keeps working. The
     append/log operations (≤1ms) stay on the loop."""
-    # 启动后先睡一段，避开冷启动 noise（asyncio task 数在 startup 阶段会高一下）。
+    # Sleep initially to avoid cold-start noise from temporarily high startup asyncio-task counts.
     try:
         await asyncio.sleep(60)
     except asyncio.CancelledError:
         return
     while True:
         try:
-            # Watchdog **不收 deep 字段**——cheap snapshot 自身 < 0.05ms，直接同
-            # 步调反而比 to_thread 更轻（to_thread 有线程调度 overhead）。Deep
-            # 字段（gc / num_threads）改成按需 endpoint，详见 _collect_snapshot
-            # 注释。
+            # Watchdog omits deep fields. Cheap snapshots take <0.05ms, so direct synchronous calls
+            # are lighter than to_thread scheduling overhead. Deep fields
+            # (GC / thread counts) move to on-demand endpoints; see _collect_snapshot
+            # comments.
             snap = _collect_snapshot(include_deep=False)
             _absorb_recent_client_payload(snap)
             _HEALTH_RING.append(snap)
-            # 文件 IO 可能十几 ms（rotation 时 os.replace）：丢 thread 避免阻塞。
+            # File I/O may take tens of milliseconds during os.replace rotation; offload to avoid blocking.
             await asyncio.to_thread(_append_to_log, snap)
         except asyncio.CancelledError:
             raise
@@ -600,12 +600,12 @@ def start_watchdog() -> None:
         logger.info("debug_health watchdog started (interval=%ds, log_file=%s)",
                     _WATCHDOG_INTERVAL_SECONDS, _resolve_log_path())
     except RuntimeError:
-        # 没有 running loop——startup 路径不该走到这里
+        # No running loop: startup should never reach here.
         logger.warning("debug_health: no running loop, watchdog NOT started")
 
 
 # ---------------------------------------------------------------------------
-# HTTP 端点
+# HTTP endpoints.
 # ---------------------------------------------------------------------------
 
 @router.get("/api/debug/health")
@@ -642,17 +642,17 @@ async def debug_health(deep: bool = False) -> dict[str, Any]:
     }
 
 
-# 端点接受的客户端 payload 白名单。HTTP 边界做这层约束有两个理由：
-# (1) 协议契约——「只记计数」必须在边界强制而不是依赖前端自觉，否则任何调用方
-#     都能往 ring/jsonl 写入大对象或敏感字段；
-# (2) 文件占用——单次 payload bound 住，长跑 jsonl 不会被异常调用爆出 GB 级。
-# 字段名跟 static/debug-health.js 的 ``collectSnapshot()`` 同步。新增字段时
-# 两边一起改，未在白名单的会被静默丢弃。
+# Whitelist accepted client payload fields at the HTTP boundary for two reasons:
+# (1) Enforce the counts-only protocol at the boundary, not by frontend convention, or arbitrary callers
+#     could write large objects / sensitive fields into ring/jsonl.
+# (2) Bound per-call payloads so abnormal calls cannot inflate long-running JSONL files to gigabytes.
+# Keep names synchronized with static/debug-health.js collectSnapshot(); update both sides
+# for new fields. Non-whitelisted fields are silently dropped.
 _CLIENT_NUMERIC_FIELDS = frozenset({
     "ts", "live_intervals", "live_timeouts", "raf_fps_60s",
     "dom_nodes", "js_heap_mb", "ws_state",
     "proactive_backoff_level", "agent_task_map_size",
-    # 新增（与 debug-health.js collectSnapshot 同步）
+    # Added, matching debug-health.js collectSnapshot.
     "live_object_urls", "error_count", "unhandled_rejection_count",
 })
 _CLIENT_BOOL_FIELDS = frozenset({"proactive_running", "is_recording"})
@@ -669,17 +669,17 @@ def _sanitize_client_payload(raw: Any) -> dict[str, Any]:
             if v is None:
                 out[k] = v
             elif isinstance(v, (int, float)) and not isinstance(v, bool):
-                # 拒 NaN / Infinity / 1e10000：stdlib json 默认会输出 "NaN" /
-                # "Infinity" 字面量（非标准 JSON），前端 JSON.parse / 第三方
-                # jsonl 工具直接挂。try-except 同时兜超大 int（10**500 等）：
-                # math.isfinite 内部把 int 转 float 时会 OverflowError，那种
-                # 数字在「只记计数」语义里也不该出现，一并丢。
+                # Reject NaN / Infinity / 1e10000: standard json emits nonstandard NaN /
+                # Infinity literals by default, breaking frontend JSON.parse / third-party
+                # JSONL tools. try/except also guards huge integers such as 10**500:
+                # math.isfinite converts integers to floats internally and may raise OverflowError.
+                # Such numbers violate counts-only semantics anyway; discard them too.
                 try:
                     if math.isfinite(v):
                         out[k] = v
                 except (OverflowError, TypeError):
-                    # 故意丢：超大 int / 异常 numeric subtype 进不来 isfinite。
-                    # 「只记计数」语义里本来不该出现，丢弃即可，不影响其他字段。
+                    # Deliberately discard huge integers / abnormal numeric subtypes that isfinite cannot handle.
+                    # They do not belong in counts-only data; discard without affecting other fields.
                     pass
         elif k in _CLIENT_BOOL_FIELDS:
             if isinstance(v, bool):
@@ -688,7 +688,7 @@ def _sanitize_client_payload(raw: Any) -> dict[str, Any]:
             if isinstance(v, str):
                 cap = _CLIENT_STRING_FIELDS_WITH_CAP[k]
                 out[k] = v[:cap]
-        # 其余字段静默丢弃——「只记计数」契约由这里强制
+        # Silently drop remaining fields, enforcing the counts-only contract here.
     return out
 
 

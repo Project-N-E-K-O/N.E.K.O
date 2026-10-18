@@ -32,9 +32,9 @@ from .reserved_schema import get_reserved, set_reserved
 
 DEFAULT_YUI_LIVE2D_MODEL_PATH = "yui-lolita/yui-lolita.model3.json"
 
-# 默认皮肤从 yui-origin 换成 yui-lolita 之后，存量用户的 YUI 卡里仍然写着
-# yui-origin。两个内置模型都算"还在用原装 YUI 卡"，否则老用户会在换默认皮肤
-# 那一刻掉出免费 YUI 音色的兜底（见 ensure_default_yui_voice_for_free_api）。
+# After the default skin changed from yui-origin to yui-lolita, existing YUI cards
+# still contained yui-origin. Both built-in models count as original YUI cards;
+# otherwise existing users lose the free YUI voice fallback when the skin changes (see ensure_default_yui_voice_for_free_api).
 _BUILTIN_YUI_LIVE2D_MODEL_NAMES = ("yui-lolita", "yui-origin")
 BUILTIN_YUI_LIVE2D_MODEL_PATHS = frozenset(
     f"{name}/{name}.model3.json" for name in _BUILTIN_YUI_LIVE2D_MODEL_NAMES
@@ -68,13 +68,13 @@ def _is_default_yui_character(character_name: str, character_data: dict) -> bool
     return _normalize_live2d_model_path(model_path) in BUILTIN_YUI_LIVE2D_MODEL_PATHS
 
 
-# 历史上 free_voices["yui_cn"] 用过、现已被替换的免费 YUI 预设音色 ID。
-# 这些值仍残留在存量用户的 characters.json 里，但已不在 free_voices 白名单中，
-# 会被 cleanup_invalid_voice_ids 判为 invalid 清空 → 空 voice 落到 free/step
-# provider 的 default_voice（qingchunshaonv），导致「一直吃默认 YUI、从没手动
-# 选过音色」的免费用户在音色 ID 更替后无声掉档到通用女声。cleanup 在判 invalid
-# 前先把这些值平移到现役 yui_cn 即可兜住。将来再更替 YUI 音色时，把被替换掉的
-# 旧值追加进这个集合。
+# Former free YUI preset voice IDs historically used by free_voices["yui_cn"].
+# These remain in existing users' characters.json but are no longer on the free_voices allowlist.
+# cleanup_invalid_voice_ids would clear them as invalid, sending an empty voice to the free/step
+# provider's default_voice (qingchunshaonv). Free users who always used the default YUI
+# and never manually selected a voice would silently fall back to a generic female voice after an ID change.
+# Remap them to the current yui_cn before cleanup checks validity. On future YUI voice changes,
+# append the replaced values to this set.
 _DEPRECATED_FREE_YUI_VOICE_IDS = frozenset({"voice-tone-R6NtLH3Hk0"})
 
 
@@ -117,22 +117,22 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
             core_cfg = {}
     if not isinstance(core_cfg, dict):
         return False
-    # 免费预设 YUI 音色只在 core=free 运行时可用，与 assist 无关。
+    # The free preset YUI voice is available only with core=free, independently of assist.
     if (core_cfg.get("coreApi") or core_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
-    # 组装快照只读一次（offload 过的 aget），后面的 provisional 守卫、免费路由复查、
-    # overseas 判定全用这一份——既保证一份快照一判定，也让 provisional 谓词走纯内存
-    # 分支（它自读配置是同步 open()+json.load()，本函数的调用方全在事件循环上）。
+    # Read the assembled snapshot once (offloaded aget). Reuse it for the provisional guard,
+    # free-route recheck, and overseas decision, ensuring one snapshot per decision and a pure-memory
+    # provisional predicate (its own configuration read uses synchronous open()+json.load(); all callers run on the event loop).
     try:
         assembled_cfg = await config_manager.aget_core_config() or {}
     except Exception:
         logger.debug("[GeoIP] 读取组装后的核心配置失败，跳过本轮默认音色绑定", exc_info=True)
         return False
 
-    # 区域判定还没落定时不要绑：国内绑 yui_cn、海外绑字面量 "yui"，两者不通用，而
-    # 本函数一旦写入非空 voice_id 就不会再覆盖——猜错了，稍后拿到的权威结论也纠正
-    # 不回来。等下一次（判定落定后）再绑，代价只是晚一轮。
+    # Do not bind before the region settles: mainland uses yui_cn, overseas uses literal "yui"; they are not interchangeable.
+    # Once this function writes a nonempty voice_id, it never overwrites it, so even a later authoritative
+    # result cannot correct a wrong guess. Binding on the next settled call costs only one round.
     try:
         if config_manager._region_verdict_is_provisional(assembled_cfg):
             logger.info("[GeoIP] 区域判定尚未落定，暂不绑定默认 YUI 音色，等落定后再绑")
@@ -141,41 +141,41 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
         logger.debug("[GeoIP] 区域落定状态判断失败，跳过本轮默认音色绑定", exc_info=True)
         return False
 
-    # 组装快照才是权威：调用方快照过了上面的免费门后，用户可能恰在这个 await 期间
-    # 把 coreApi 从 free 切到付费——不复查就会拿 overseas=False 给付费配置绑上
-    # free 专属的 yui_cn（写入非空后本函数不再纠正）。
+    # The assembled snapshot is authoritative: after the caller's snapshot passes the free gate above,
+    # the user may switch coreApi from free to paid during this await. Without rechecking, overseas=False
+    # could bind the free-only yui_cn to paid configuration (a nonempty value is never corrected here).
     if (assembled_cfg.get("coreApi") or assembled_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
-    # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
-    # 下发字面量 "yui"。国内免费（lanlan.tech）仍按语言绑定 free_voices 里的 yui 音色。
+    # Overseas free (free + *.lanlan.app): the default is branded yui (free_intl default_voice),
+    # sent as literal "yui". Mainland free (lanlan.tech) still binds the language-specific YUI voice from free_voices.
     #
-    # 区域结论直接问权威源，**不从 URL 反推**。从 URL 反推曾是这里的做法，也是它
-    # 出错的原因：两个调用方传进来的快照语义根本不同——保存路径传刚写盘的 raw 配置
-    # （CORE_URL 仍是 lanlan.tech），会话路径传更早组装的已改写快照。后者要命：Steam
-    # 临时判海外时快照已是 .app，而权威 IP 结论随后可能判大陆，照 URL 反推就会把
-    # "yui" 永久写进大陆用户的角色卡（本函数不覆盖非空 voice_id），而 free 与
-    # free_intl 两套目录不相交——这是「yui 必须配国外、国内音色必须配国内」那条不许
-    # 出意外的线。改问 _check_non_mainland 后，两个调用方拿到的是同一个结论。
+    # Ask the authoritative region source directly; **do not infer from the URL**. URL inference was the old
+    # bug: the callers pass snapshots with different semantics. Save passes freshly persisted raw config
+    # (CORE_URL still lanlan.tech), while session passes an earlier assembled, rewritten snapshot. The latter is dangerous:
+    # a provisional Steam overseas decision already rewrites it to .app, but authoritative IP may later report mainland.
+    # URL inference would permanently store "yui" in a mainland character card (nonempty voice_id is never overwritten),
+    # and the free/free_intl catalogs do not overlap. The requirement that yui use overseas routing and mainland voices
+    # use mainland routing must hold. _check_non_mainland gives both callers the same conclusion.
     #
-    # needs_region 那道门有两个作用：
-    #  - livestream 已派生掉全部免费端点的用户线路是确定的、不需要区域判定，而
-    #    _check_non_mainland 内部会 _ensure_ip_probe_started——不该为绑个音色把他们
-    #    的 IP 发给 ip-api.com（不变量 #2）。他们绑国内 free 音色，正确：派生出来的
-    #    就是 lanlan.tech 那套路径结构的等价物。
-    #  - 门放行时，上面的 provisional 守卫已保证 _region_cache 必已落定，所以这次
-    #    _check_non_mainland 是纯读缓存，不会真的起探测。
+    # The needs_region gate serves two purposes:
+    #  - Livestream users with all free endpoints derived already have a fixed route and need no regional decision.
+    #    _check_non_mainland internally calls _ensure_ip_probe_started; binding a voice must not send their
+    #    IP to ip-api.com (invariant #2). Binding a mainland free voice is correct:
+    #    the derived routes are equivalent to the lanlan.tech path structure.
+    #  - When the gate passes, the provisional guard above guarantees _region_cache has settled, so this
+    #    _check_non_mainland call only reads cache and starts no actual probe.
     #
-    # 走 classmethod 而不是 config_manager 实例：这是个纯判据，从实例上取只会白白
-    # 要求每个调用方（含测试替身）都实现它。
+    # Use the classmethod rather than config_manager instance: this is a pure predicate; instance lookup
+    # would needlessly require every caller (including test doubles) to implement it.
     from utils.config_manager import ConfigManager
 
-    # needs_region 这道门必须拿**组装后**的配置判（函数开头读的那份 assembled_cfg），
-    # 不能拿调用方传进来的那份：保存路径传的是持久化的 raw 配置，里面只有
-    # coreApi / assistApi 这类选择字段，压根没有 *_URL（URL 是 get_core_config 按
-    # profile 组装时才填的）。拿 raw 判会恒为 False，于是跳过区域判定、把**所有**
-    # 海外免费用户永久绑成大陆 yui_cn——正好是这个函数最不能出错的地方。
-    # provisional 守卫用的也是同一份组装配置，两边就此一致。
+    # Evaluate needs_region against the **assembled** configuration (assembled_cfg read at entry),
+    # not the caller's snapshot. The save path passes persisted raw configuration with selection fields
+    # such as coreApi / assistApi, but no *_URL fields (get_core_config fills URLs when assembling
+    # a profile). Testing raw config always returns False, skipping region resolution and permanently
+    # binding **all** overseas free users to mainland yui_cn, precisely the failure this function must prevent.
+    # The provisional guard uses the same assembled configuration, keeping both decisions consistent.
     overseas = False
     if ConfigManager._config_needs_region(assembled_cfg, ConfigManager._REGION_HOSTS_ADJUSTED):
         try:
@@ -187,11 +187,11 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if not yui_voice_id:
         return False
 
-    # 角色数据放到**最后**才读：load 与 save 之间隔的 await 越多，与并发角色编辑
-    # 互相覆盖（本函数是全量 load→save，last-writer-wins）的窗口越大。区域/配置
-    # 判定全部就绪后再 load，改写是纯内存操作、紧跟着 save，窗口缩到最小。彻底
-    # 消除竞态需要 characters 写路径统一的原子更新原语——所有 save_characters
-    # 调用点共有的问题，不在本函数单点修。
+    # Read character data **last**: each await between load and save enlarges the overlap with concurrent
+    # character edits (this function performs whole-file load→save, last-writer-wins). Load only after
+    # region/configuration decisions settle; mutate in memory and save immediately to minimize the window.
+    # Eliminating the race requires a shared atomic update primitive for all character writes;
+    # this affects every save_characters call and cannot be fixed solely here.
     characters = await config_manager.aload_characters()
     if not isinstance(characters, dict):
         return False
@@ -291,9 +291,14 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
     guidance = ""
     from_preset = False
     preset_id = str(override.get("preset_id") or "").strip()
-    if preset_id:
-        # 运行时按当前全局语言重新解析，使 persona prompt 与基础 LANLAN prompt
-        # 一样跟随语言切换；仅当 preset_id 已被代码移除时才退回到落盘字符串。
+    if override.get("source") == "chat_sync":
+        # Synced static guidance is the reviewed portable version. A same-named
+        # preset installed on this device may contain a different style/version.
+        guidance = str(override.get("prompt_guidance") or "").strip()
+        from_preset = bool(preset_id and guidance)
+    elif preset_id:
+        # Resolve using the current global language at runtime so the persona prompt follows language changes,
+        # like the base LANLAN prompt. Fall back to the stored string only if code removed preset_id.
         try:
             from utils.persona_presets import get_persona_prompt_guidance
             guidance = (get_persona_prompt_guidance(preset_id) or "").strip()
@@ -307,12 +312,12 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
     if not guidance:
         return prompt_text
 
-    # preset 的 guidance 是一份**完整独立**的人设 prompt，骨架（fictional-character
-    # 前言 + <Context Awareness> + <WARNING> + <IMPORTANT>）与默认 base 逐字相同。
-    # 直接 append 会让整套骨架重复一遍（~1500 字），且这段经 lanlan_prompt_map 流向
-    # 主对话 system prompt、proactive、break reminder、各插件等**所有**消费点。
-    # 当 base 仍是默认 prompt 时，preset 本身就是完整人设 → 用它替换 base，避免重复；
-    # 仅当用户写过自定义 system_prompt（非默认）时才退回 append 以保留其自定义内容。
+    # A preset's guidance is a **complete standalone** persona prompt whose skeleton (fictional-character
+    # introduction + <Context Awareness> + <WARNING> + <IMPORTANT>) exactly matches the default base.
+    # Appending directly repeats the whole skeleton (~1500 characters), and lanlan_prompt_map sends it to
+    # **every** consumer: main-chat system prompt, proactive messages, break reminders, plugins, etc.
+    # If base is still the default prompt, the preset already supplies the complete persona: replace base to avoid duplication.
+    # Append only when the user wrote a nondefault custom system_prompt, preserving their content.
     if from_preset and is_default_prompt(prompt_text):
         return guidance
 
@@ -462,8 +467,8 @@ def _resolve_effective_character_prompt(character_payload: dict) -> str:
     if stored_prompt is None or is_default_prompt(stored_prompt):
         return get_lanlan_prompt()
 
-    # 旧版人格功能会把整段模板化人格 prompt 直接写进 system_prompt。
-    # 不论当前是否仍保留 persona_override，这类历史片段都不应继续直接喂给模型。
+    # The old personality feature wrote the entire templated personality prompt directly into system_prompt.
+    # Such historical fragments must no longer be fed directly to the model, whether or not persona_override remains.
     if _has_generated_persona_selection_prompt(stored_prompt):
         cleaned_prompt = strip_generated_persona_selection_prompt(stored_prompt)
         return cleaned_prompt or get_lanlan_prompt()

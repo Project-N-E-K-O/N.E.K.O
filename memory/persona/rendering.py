@@ -17,8 +17,9 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 
 from datetime import datetime
 
@@ -39,6 +40,35 @@ from memory.evidence import evidence_score
 from ._shared import logger
 
 from utils.tokenize import acount_tokens, count_tokens, tokenizer_identity
+
+
+# Token counts by (tokenizer identity, text), for entries that cannot carry
+# their own cache (``writeback=False``: reflections, re-read per load). Those
+# used to be re-counted, one worker-thread hop each, on every render; recall
+# now runs the render's selection on every text turn
+# (``arecall_residency``), so the counts are kept here instead. A count is a
+# pure function of the key, so a hit is always right.
+_TOKEN_COUNT_MEMO: OrderedDict[tuple[str, str], int] = OrderedDict()
+_TOKEN_COUNT_MEMO_MAX = 4096
+_TOKEN_COUNT_MEMO_LOCK = threading.Lock()
+
+
+def _memo_token_count(tid: str, text: str) -> int | None:
+    key = (tid, text)
+    with _TOKEN_COUNT_MEMO_LOCK:
+        count = _TOKEN_COUNT_MEMO.get(key)
+        if count is not None:
+            _TOKEN_COUNT_MEMO.move_to_end(key)
+        return count
+
+
+def _remember_token_count(tid: str, text: str, count: int) -> None:
+    with _TOKEN_COUNT_MEMO_LOCK:
+        _TOKEN_COUNT_MEMO[(tid, text)] = count
+        _TOKEN_COUNT_MEMO.move_to_end((tid, text))
+        while len(_TOKEN_COUNT_MEMO) > _TOKEN_COUNT_MEMO_MAX:
+            _TOKEN_COUNT_MEMO.popitem(last=False)
+
 
 class _RenderPrep(NamedTuple):
     """Everything the sync and async render paths derive identically.
@@ -105,13 +135,13 @@ class RenderingMixin:
                 if include_legacy_private:
                     view[section_key] = section
                 continue
-            # 逐条授权而非按 section metadata 整段放行：section key 只含
-            # kind:subject_id 不含 scope，同 kind/id 不同自定义 scope 的两个
-            # 隔离域共享同一个 section，metadata 是"最后写入者"的 scope——
-            # 按它放行会把 A 域条目渲染给 B（泄漏），按它拒绝会让 A 自己的
-            # 条目随最后写入者隐身（对称翻转）。entry 写入时都带 subject 戳，
-            # 以戳为准；无戳/损坏条目 fail-closed 掉队。metadata 仅保留上面
-            # persona_subject_from_section 的损坏检查职责。
+            # Authorize entries individually, not whole sections by metadata: section keys contain
+            # kind:subject_id without scope. Same kind/ID under distinct custom scopes
+            # share sections whose metadata records the last writer's scope.
+            # Allowing by it leaks A entries to B; rejecting hides A's own entries
+            # depending on last writers, symmetric inversion. Entries carry subject stamps,
+            # authoritative; missing/corrupt stamps fail closed. Metadata retains only
+            # persona_subject_from_section corruption-check duties above.
             if not allowed_keys:
                 continue
             from memory.scopes import filter_entries_for_subjects
@@ -219,7 +249,13 @@ class RenderingMixin:
             and entry.get('token_count_tokenizer') == tid
         ):
             return cached_count
-        n = count_tokens(text)
+        if writeback:
+            n = count_tokens(text)
+        else:
+            n = _memo_token_count(tid, text)
+            if n is None:
+                n = count_tokens(text)
+                _remember_token_count(tid, text, int(n))
         if writeback:
             entry['token_count'] = int(n)
             entry['token_count_text_sha256'] = fp
@@ -250,7 +286,13 @@ class RenderingMixin:
             and entry.get('token_count_tokenizer') == tid
         ):
             return cached_count
-        n = await acount_tokens(text)
+        if writeback:
+            n = await acount_tokens(text)
+        else:
+            n = _memo_token_count(tid, text)
+            if n is None:
+                n = await acount_tokens(text)
+                _remember_token_count(tid, text, int(n))
         if writeback:
             entry['token_count'] = int(n)
             entry['token_count_text_sha256'] = fp
@@ -457,10 +499,10 @@ class RenderingMixin:
                     # the blank gate below and render an empty bullet.
                     # _renderable_text itself returns "" for every
                     # non-dict, so the string must be judged before the
-                    # promotion, not through that helper. isinstance 限定
-                    # str：裸 str() 会把 None/False/0 变成非空文本
-                    # "None"/"False"/"0" 渲染出来，而 legacy 数据形态
-                    # 只有裸字符串这一种。
+                    # promotion, not through that helper. isinstance restricts
+                    # strings: bare str() converts None/False/0 to nonempty
+                    # "None"/"False"/"0", rendering values where legacy shapes
+                    # only bare strings were supported.
                     if isinstance(entry, str) and entry.strip():
                         entry = {
                             'text': str(entry),
@@ -632,18 +674,18 @@ class RenderingMixin:
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and entry.get('suppress'):
                 if self._entry_is_skipped(entry, skipped, marker_aliases):
-                    # 该 subject 整段被跳过了，它的免预算段也不能单独露出来。
-                    # 必须过 aliases：`skipped` 装的是参与者的 primary marker，
-                    # 而 suppress 条目可能戳在同一个人的非 canonical account 上，
-                    # 不折叠就会让整段被丢的参与者漏出一条残片。
+                    # This subject's entire section was skipped; its budget-exempt section must not leak out independently.
+                    # Resolve aliases: `skipped` contains participants' primary markers,
+                    # while suppression entries may target the same person's noncanonical account;
+                    # without folding them, a fragment leaks from an otherwise discarded participant.
                     continue
                 text = self._renderable_text(entry)
                 if text:
                     if text in seen_suppressed:
-                        # 同一条事实可能同时存在于群和多个成员 subject 下，
-                        # 而这一段是不分 subject 的统一标题。逐份计数会让
-                        # 重复项占满条数上限，把真正另一条「别主动提」挤出
-                        # prompt——模型于是主动提起了那件事。
+                        # The same fact may exist under the group and multiple member subjects,
+                        # but this section has one subject-independent heading. Counting each copy
+                        # lets duplicates fill the entry limit and push a distinct "do not proactively mention"
+                        # item out of the prompt, causing the model to bring it up.
                         continue
                     seen_suppressed.add(text)
                     suppressed_total += 1
@@ -696,8 +738,8 @@ class RenderingMixin:
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                # 与拆分侧同一空白判据（#2578 修了 reflection 那半，这里是
-                # persona 半）：裸 truthiness 会把 '   ' 渲成空 bullet。
+                # Use the same whitespace criterion as splitting (#2578 fixed the reflection half;
+                # this is the persona half): bare truthiness renders '   ' as an empty bullet.
                 if self._renderable_text(entry):
                     lines.append(f"- {entry.get('text', '')}")
             if lines:
@@ -717,10 +759,10 @@ class RenderingMixin:
                         get_scoped_persona_section_header,
                     )
                     from memory.facts import FactStore
-                    # display_name 是不可信用户输入（群名/群名片），路由入口
-                    # 已中和过一次，这里再过一次——渲染是唯一把它拼进 prompt
-                    # 的地方，而 persona.json 可被手改（与 speaker_label 的
-                    # 双侧中和同一道理，#2605）。中和后为空按无名回退。
+                    # display_name is untrusted user input (group name/member card). The routing entry
+                    # already neutralizes it; repeat here, the sole place that inserts it into the prompt,
+                    # because persona.json can be manually edited (the same two-sided neutralization
+                    # rationale as speaker_label, #2605). Fall back to unnamed if neutralization empties it.
                     display_name = FactStore.sanitize_speaker_label(
                         self._group_display_name(
                             persona, member_keys, primary_key,
@@ -751,10 +793,10 @@ class RenderingMixin:
                 )
 
         # Split confirmed reflections into active vs past at render time.
-        # Past = derived (state/episode 超 TTL) or stored 'past'。Pending
-        # reflections不参与 past 拆分（pending 本就是"还不太确定"，自身已
-        # 带不确定语义；要么被信号 reinforce 升 confirmed，要么被低分归档，
-        # 不需要再叠一层过时降级）。
+        # Past = derived (state/episode beyond TTL) or stored 'past'. Pending
+        # reflections do not participate in past splitting (pending already means uncertain;
+        # signals either reinforce it to confirmed or low scores archive it,
+        # so another stale downgrade is unnecessary).
         from memory.temporal import (
             is_past_for_render as _is_past,
             time_since_label as _time_label,
@@ -782,12 +824,12 @@ class RenderingMixin:
             )
 
         if past_confirmed:
-            # 过时 block — 用本项目六等号 below/above 对偶分隔符（参见
-            # feedback_prompt_delimiters_above_below.md：分隔符内部禁冒号
-            # 和破折号）。每条前缀 [X 天前 / X 周前 / X 月前] 由
-            # time_since_label 按 0-6d / 7-29d / 30d+ 三档生成。整段按
-            # get_global_language_full() 本地化（Codex review on PR #1316
-            # P2 catch：之前硬编码 zh 让非 zh locale 看到中文时间标签）。
+            # Stale block: use the project's paired six-equals below/above delimiters (see
+            # feedback_prompt_delimiters_above_below.md: no colons or dashes
+            # inside delimiters). Each entry's [X days/weeks/months ago] prefix comes from
+            # time_since_label using three ranges: 0-6d / 7-29d / 30d+. Localize the whole block
+            # using get_global_language_full() (Codex review on PR #1316
+            # caught P2: hardcoded zh previously exposed Chinese time labels in other locales).
             from config.prompts.prompts_memory import render_past_memory_block
             lang = render_lang
             past_lines = []
@@ -806,8 +848,8 @@ class RenderingMixin:
                     ai_name=ai_name,
                     master_name=master_name,
                     items_text="\n".join(past_lines),
-                    # 群/成员 subject 的渲染里点名私聊对象是双重错误：名字
-                    # 泄漏进群 prompt，指令对象也不是群里的人。
+                    # Naming a private-chat counterpart while rendering group/member subjects is doubly wrong:
+                    # it leaks the name into the group prompt and addresses someone outside the group.
                     scoped_only=scoped_only,
                 )
             )
@@ -1423,6 +1465,45 @@ class RenderingMixin:
             pending_reflections, subjects, include_legacy_private,
             skipped=skipped,
         )
+
+    async def arecall_residency(
+        self, name: str,
+        pending_reflections: list[dict] | None = None,
+        confirmed_reflections: list[dict] | None = None,
+    ) -> tuple[list[dict], set[str]]:
+        """What the private persona render keeps in the system prompt, for recall.
+
+        Runs the same selection as the legacy (private) path of
+        ``arender_persona_markdown`` without composing any text. Returns the
+        non-protected persona entries that selection leaves out, each copied
+        with its ``entity`` section key, and the ids of the reflections it
+        keeps. Left-out entries are not in the prompt, so recall may bring
+        them back; kept reflections already are. Suppressed entries never
+        reach either list (they render in their own section, and recall's
+        hard filter drops them anyway); protected entries always render.
+        """
+        persona = await self.aensure_persona(name)
+        now = datetime.now()
+        prep = self._prepare_render(persona, pending_reflections, confirmed_reflections)
+        kept_persona, _ = await self._ascore_trim_entries(
+            prep.flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
+        )
+        kept_reflections, _ = await self._ascore_trim_entries(
+            prep.reflections, REFLECTION_RENDER_MAX_TOKENS, now,
+            cache_writeback=False,
+        )
+        kept = {id(entry) for entry in kept_persona}
+        left_out = [
+            {**entry, 'entity': prep.non_protected_entity_index.get(id(entry))}
+            for entry in prep.flat_non_protected
+            if id(entry) not in kept
+        ]
+        resident_reflection_ids = {
+            str(reflection.get('id'))
+            for reflection in kept_reflections
+            if isinstance(reflection, dict) and reflection.get('id')
+        }
+        return left_out, resident_reflection_ids
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:
         """Check if a given text matches any suppressed entry."""

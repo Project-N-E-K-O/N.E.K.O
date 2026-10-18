@@ -64,6 +64,11 @@ def instance_key() -> str:
         existing = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         existing = ""
+    except PermissionError:
+        # Windows publication can deny a concurrent read without winerror.
+        # Wait for the publisher, then recheck under its lock; an unreadable
+        # existing key must still raise rather than silently rotate credentials.
+        existing = ""
     if existing:
         if len(existing) < 32:
             raise ValueError("instance key file is incomplete")
@@ -74,7 +79,10 @@ def instance_key() -> str:
     # Publish complete bytes under a cross-process lock. A crash cannot leave
     # a new empty credential visible; repair old zero-byte creation artifacts.
     with FileLock(str(path) + ".lock", timeout=5):
-        key = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        try:
+            key = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            key = ""
         if not key:
             key = secrets.token_urlsafe(32)
             fd, temporary = tempfile.mkstemp(prefix=".instance-key-", dir=path.parent)

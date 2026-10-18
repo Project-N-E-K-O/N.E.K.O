@@ -829,7 +829,7 @@ def test_settings_peek_copy_matches_existing_voice_audio_script():
 def test_zh_cn_intro_basic_copy_matches_step_fallback_and_voice_script():
     day1_source = _read_day1_guide()
     # The intro-basic scene now drives its copy purely from the i18n key (no inline
-    # fallback string); the audio filename encodes the same "神奇的按钮" script theme.
+    # fallback string); the audio filename encodes the same "神奇的按钮" (magical button) script theme.
     assert "textKey: 'tutorial.yuiGuide.lines.introBasic'" in day1_source
     assert "voiceKey: 'intro_basic'" in day1_source
     assert "intro_basic: '这里有一个神奇的按钮.mp3'" in day1_source

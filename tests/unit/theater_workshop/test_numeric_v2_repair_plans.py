@@ -21,7 +21,7 @@ def fixture(field="/character_state/catgirl"):
 
 @pytest.mark.parametrize("field", ["/goals/0/description", "/acting_contract/dialogue_policy", "/outgoing_routes/0/transition_contract/source_ids", "/narrative_focus", "/unknown", "/character_state"])
 def test_text_label_cannot_grant_permission_to_structural_unknown_or_parent_fields(field):
-    # 模型说text不能覆盖真实字段权限；问题和原方案仍然可供作者查看。
+    # The model's text claim cannot override actual field permissions; keep the issue and original plan visible to the author.
     _, _, _, _, report = fixture(field)
     issue = report["issues"][0]
     assert issue["model_repair_scope"] == "text"
@@ -40,7 +40,7 @@ def test_state_permission_uses_story_structure_not_author_cache():
 
 
 def test_shared_plan_preserves_all_impacts_and_never_merges_different_targets_or_text():
-    # 精确一致才共用方案；同节点的不同修法或同修法的不同字段必须分开。
+    # Share plans only on exact matches; different fixes for one node or different fields for one fix must remain separate.
     _, _, _, _, report = fixture()
     first = report["issues"][0]
     duplicate = deepcopy(first)

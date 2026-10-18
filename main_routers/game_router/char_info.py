@@ -89,9 +89,9 @@ def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
     raw = data.get('i18n_language') or data.get('language') or data.get('lang')
     if not raw:
         return None
-    # 前端 / 第三方客户端可能传 ``'undefined'`` / corrupted localStorage / 任意 garbage，
-    # ``normalize_language_code`` 对未识别值默认回退 ``'en'``，会静默把 mgr.user_language
-    # 翻成英文。回写 session 状态前先用公共白名单 helper 挡掉。
+    # Frontend/third-party clients may send 'undefined', corrupted localStorage, or arbitrary garbage;
+    # normalize_language_code falls back to 'en' for unrecognized values, silently switching mgr.user_language
+    # to English. Apply the shared allowlist helper before writing session state back.
     if not is_supported_language_code(raw):
         return None
     try:
@@ -344,18 +344,18 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     master_data = characters.get('主人', {})
     if not isinstance(master_data, dict):
         master_data = {}
-    # 显式 str 归一化：'档案名' 来自用户编辑的角色配置 JSON，可能是 None / 数字
-    # / 其他非字符串。下面 .replace 的第二个参数必须是 str，且 master_name 还会
-    # 直接进入返回 dict 给下游消费，统一在源头收口。
+    # Normalize with str explicitly: the profile-name field comes from user-edited character JSON and may be None, numeric,
+    # or another non-string. The second .replace argument below must be str; master_name also enters
+    # the returned dict directly for downstream consumers, so normalize at the source.
     master_name = str(resolved_master_name or master_data.get('档案名', '玩家') or '玩家')
 
-    # 获取角色人格 prompt
-    # Why: lanlan_prompt_map 存的是带 {LANLAN_NAME} / {MASTER_NAME} 占位符的原始
-    # 模板（普通会话路径在 main_server 写入 SessionManager 时才替换）。Game 流程
-    # 直接从 config_manager 拿，必须在源头补这一步替换，否则下游 _build_game_prompt
-    # / quick_lines / pregame context AI 拼出来的 prompt 会含字面占位符，触发
-    # llm_prompt_leak_check 警告并污染人设。
-    # 模板本身也用 str() 兜底：极端情况下 lanlan_prompt_map 里的值可能是 None。
+    # Get the character persona prompt.
+    # Why: lanlan_prompt_map stores raw templates with {LANLAN_NAME} / {MASTER_NAME}
+    # placeholders (ordinary conversations replace them when main_server writes SessionManager). Games
+    # read directly from config_manager and must replace them here, or downstream _build_game_prompt
+    # / quick_lines / pregame context AI prompts retain literal placeholders, triggering
+    # llm_prompt_leak_check warnings and polluting the persona.
+    # Also protect the template with str(): extreme cases may leave None in lanlan_prompt_map.
     lanlan_prompt = str(lanlan_prompt_map.get(current_name, '') or '') \
         .replace('{LANLAN_NAME}', current_name) \
         .replace('{MASTER_NAME}', master_name)
@@ -370,7 +370,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         master_name=master_name,
     )
 
-    # 获取小游戏主模型配置；默认跟随文本对话模型，用户可在 API 设置中独立覆盖。
+    # Get the minigame main-model config; follow the text-chat model by default, with independent overrides in API settings.
     conversation_config = config_manager.get_model_api_config('game_main')
 
     prompt_locale = _resolve_game_prompt_locale(current_name)

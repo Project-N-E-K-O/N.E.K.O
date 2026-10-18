@@ -6,7 +6,7 @@ from copy import deepcopy
 import hashlib
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from ..model import ModelAgent, LLMCallFailure
 
@@ -16,6 +16,9 @@ from ..numeric_v2 import (
     _GOAL_DELIVERY_OUTPUTS,
     goals_to_package,
     acting_contract_to_package,
+    has_dialogue_policy_conflict,
+    final_dialogue_policy,
+    valid_silent_choice,
     character_state_to_package,
     _is_actionable_player_exit,
     metrics_to_package,
@@ -25,12 +28,12 @@ from ..numeric_v2 import (
 
 from .runtime_rules import GOAL_METADATA_RULE, PUBLIC_TEXT_RULE
 
-# 用户要求用具体行为代替抽象的“难度”；所有生成、完善和续写入口共用作者合同。
-# 沿用现有叙事和边界字段，由模型按事实编写；程序不扫描关键词，也不新增运行时门槛。
-# 禁止项还须保留主体与表达范围，避免把角色嘴硬扩大成所有角色都不能回应剧情结果。
-# 普通转场与自然结局分开编写；不为结局制造第二次邀请，也不替 Runtime 选路。
+# Users require concrete behavior instead of abstract difficulty; generation/refinement/continuation share one author contract.
+# Keep existing narrative/boundary fields, letting models write facts; no keyword scans or new runtime thresholds.
+# Prohibitions preserve actors and expression scope, avoiding extending one character's stubbornness into everyone's inability to react to outcomes.
+# Separate ordinary transitions from natural endings; invent no second ending invitation or Runtime route choices.
 _SCENE_PROCESS_AUTHORING_RULE = (
-    # 固定原文属于作者资产，模型只编排触发与前后反应，不承担逐字复制的运行职责。
+    # Fixed originals are author assets; models arrange triggers/reactions, not runtime verbatim-copy responsibilities.
     "作者明确要求原样展示日志、信件等旁白时，须在章节、ending 或支线 scene/ending 对象中用 fixed_narrations 保存原文；"
     "没有这种需求则省略，不把普通台词或所有叙事冻结。每项仅含 id、text、trigger、after、required_before_exit。"
     "id 同幕唯一；text 保存完整原文，只可用 {{catgirl_name}}、{{player_name}} 显式适配姓名，序列号等文字不替换。"
@@ -54,7 +57,7 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "下文男女主是职责说明；状态文本以对应完整姓名开头，owner、id 等结构值仍使用原协议枚举与引用。"
     "知道用户昵称不等于剧情已经披露姓名；尚未介绍时的公开前情和称呼仍使用‘你’，"
     "保留关系弧 address_state，不因预先传入姓名而改成已知。"
-    # 用户收窄为双人主导演绎；各写稿入口减少对配角的依赖，不删除运行时的基本回应能力。
+    # Users narrowed to two lead performers; reduce supporting-cast dependence without removing basic runtime response capabilities.
     "演绎重心规则：主线、支线及结局的关键互动优先由男主与女主推进，"
     "围绕两人的交流、探索、协作、分歧和实际结果展开。配角（NPC）主要提供必要背景、简短线索与直接回应，"
     "不扩写为常驻同行的第三主角，不安排独立人物弧或连续多人轮流互动来撑篇幅。"
@@ -66,47 +69,48 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "不擅改目标或路线，不把既有配角动作改成男主已经执行，也不让女主代答她并不知道的配角感受。"
     "具体过程写作规则：用主体、操作对象、行为和可观察结果表达剧情，"
     "不用‘体现难度／不得轻易解决’等抽象要求代替具体内容。"
-    "narrative、summary、narrative_focus 与 ordered_goals 应表达角色如何行动、结果如何发生；"
-    "这些是待演绎方向，不是已发生事实或逐项任务，没有阻碍的互动也不必强加阻碍。"
-    # 运行包不直接导出策划规则与参与能力；只写在那里会丢失本来已具备的行动前提。
+    "narrative、summary 与 narrative_focus 表达整幕因果规划，写清角色如何行动、结果如何发生；"
+    "ordered_goals 按 timing 区分开场已交付与普通回合待演的内容，不把规划当作已发生事实或逐项任务。"
+    "没有阻碍的互动也不必强加阻碍。"
+    # Runtime packages do not directly export planning rules/participation capabilities; action prerequisites recorded only there disappear.
     "影响眼前行动的公开前提（可用场地、工具、参与条件）须写入 world.background 或相关幕开场、状态与边界，"
     "不能只留在 world.rules 或 intervention_capacity；这两个策划字段不直接进入运行包。"
     "隐藏数值和未公开内幕仍留在策划信息中，不把整份规则搬入公开前情；普通协助不另加专业资历或证明要求。"
-    # 作者提供角色为何回应的因果素材，实际台词由运行时人格决定，避免人人同一种认可。
+    # Authors explain causal reasons for responses; runtime personas determine dialogue, avoiding identical approval from everyone.
     "必要角色反应写清她回应哪项选择或结果，以及为什么在意；用判断、态度或行为表示，"
     "不要只写‘表示认可／情绪变化／感到释然’，也不预设所有角色都直接夸奖或关系升温。"
     "不把示例台词固定为必说原文；来源互动完成后，桥段承接结果状态，结局回应其意义，不重复执行同一动作。"
-    # 在现有叙事/状态字段交代反应的来由，不新增情感打分、必经目标或人物创伤模板。
+    # Explain reactions through existing narrative/state fields, without emotional scoring, mandatory goals, or trauma templates.
     "narrative 或 summary 用连贯因果连接女主原先在意的具体事、男主可作出的相关选择及她据此形成的判断；"
     "catgirl_situation 保留开场演完时的立场，不能把本幕尚待发生的反应提前写成入幕事实。"
     "不要求每幕改变立场：她可以保留分歧、承认不知道或维持原有关系，照常给出有依据的回应；"
     "没有冲突时不补创伤、试探或考验，只为现有互动提供表达素材。"
-    # 完整演绎曾把不可修复资源扩成寻物链、把关系回应扩成新日常事件；出口须在正文因果里闭合。
+    # Full performances expanded irreparable resources into search chains and relationship reactions into daily events; close exits through narrative causality.
     "关键资源缺失或失效时，写清本幕能否取得、修复及已有替代方案，不给无来源的碎片、材料或新能力留下补全暗示。"
     "summary 与 narrative_focus 写到核心回应后的具体出口；感受得到回应即可承接，不要求反复安慰或认证关系。"
     "出口已成熟后不另开日常事件代替下一阶段；玩家暂缓可回应当前话题，不能代替玩家接受安排。"
-    # 结局的变化必须有来源，余韵只呈现已成立状态，不另起一次验证或和解互动。
+    # Ending changes require sources; aftereffects show established states without new validation/reconciliation interactions.
     "结局先核对最后一幕已交付的结果，再写她现在如何看待这件事，以及仍保留的边界；"
     "ending.summary 承接变化的原因，ending.opening_scene 与 ending_stage 只呈现结束时已成立的可见状态。"
     "可用同一物件的保留状态或对同一件事的不同态度呼应前文，不重复执行此前已经完成的动作；"
     "不为了制造变化强行和解、彻底改观或升温，不把新承诺、新任务或未知结果当作结局变化。"
-    # 终局实跑把专业记忆损失扩成关系重置，并向已关闭输入的玩家追问；限定损失对象与收句职责。
+    # Finale runs expanded professional-memory loss into relationship resets and questioned input-closed players; constrain loss targets and closing duties.
     "损失、遗忘或能力减退写清具体范围，不自动扩成忘记同行者、丧失生活能力或重置已建立关系。"
     "终局交付后不再等待玩家输入，最后一句用女主自己的回应或动作收住，不另抛必须回答的问题。"
-    # 真实结局将“无新互动”写成禁言并使演员留空；终止输入不取消角色的收束表演。
+    # Real endings misread no-new-interaction as silence and blanked actors; closing input does not cancel their final performance.
     "结束交流不等于失去发声能力，不能仅因是结局就把 dialogue_policy 改成 forbidden；"
     "普通清醒角色保留 required 或 optional，只有已有事实确实限制发声时才禁言，且仍须保留可见动作回应。"
     "不写‘不得再出现任何互动’这类全面禁止回应的边界，改为‘不得提出需要玩家回答的新问题、任务或约定’。"
     "continuity_from_previous 与 must_preserve 只承接来源已交付的状态，不预写目标幕才发生的离开或交付；"
     "同一物品只由来源或目标的一处首次交付，其他字段保留交付后状态，不同时写未领取、已手持和已经归还。"
-    # 多个既有字段描述同一时点；收束不自动授权玩家收拾、离开或执行新的配合。
+    # Existing fields describe one instant; closure never automatically authorizes player cleanup, departure, or new cooperation.
     "写完后将结局摘要、开场及三个主体状态放在同一时点核对：物件位置、操作是否完成、角色站位须一致；"
     "同一对象不能同时处于互斥状态，已结束的过程不能同时等待新操作。结束不等于散场，不默认男主执行作者未写明的附加动作。"
     "男主状态只承接上游已明确的事实，信息不足就保留原有位置与状态，不以‘准备离开’替代结局。"
     "must_not_happen、scene_boundaries、forbidden_behaviors 每条限制写明主体、对象及受限行为或必要前提，"
     "不写省略主体的孤立动词；只限制口头表达时，不扩大为禁止行动反馈，也不约束其他角色。"
     "禁止项须与本幕安排的事件及角色反应相容，不能一边要求反应发生、一边将该反应全部禁止。"
-    # 防抢演被写成永久禁令会拖住已经完成的活动；条件、范围和完成结果须成对写明。
+    # Permanent anti-premature-acting prohibitions trap completed activities; explicitly pair conditions, scope, and completion results.
     "不得用‘不得结束本幕活动’或‘不得在此幕邀请下一阶段参与者’维持章节长度；"
     "只在确有必要前提时限制该前提未满足的行为，结果成立后允许结束测试、提出下一步或自然收束。"
     "区分现在执行与邀请未来执行；限制当前操作的条款不能含糊地连同合法的出口邀请一起禁止。"
@@ -116,10 +120,10 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "没有需要单列的状态边界时 scene_boundaries 写空数组，不为凑数量制造限制。"
     "必要的工具、角色协作或玩家决定必须明确；条件满足后交付本幕结果与直接反应，即可自然收束，"
     "不追加检验、机制或任务来拖延，也不替玩家接受换幕。"
-    # 实测中调查扩写拖住出口，配角条件留空又被禁止补充；作者须提供能演出的有限因果。
+    # Tests found investigative expansion trapping exits and empty supporting-cast conditions forbidding additions; supply bounded playable causality.
     "任何任务都应写清本幕有限的处理对象、可观察的完成结果与下一阶段去向；"
     "线索出现不等于必须在本幕追查到底，不把下一幕的调查拆成当前出口前的新任务。"
-    # 实跑发现“一回合一个目标”把已具备因果拆成反复过门；目标条数不应成为演出限速器。
+    # Runs found one-goal-per-turn splitting established causal chains into repeated gates; goal counts cannot throttle performance.
     "不按目标条数限制每回合能发生几件事；同一操作的直接结果与女主自主回应可以连贯呈现，"
     "在新的玩家决定或尚不明确的结果前停下，不把观察、确认、进入、再进入拆成多轮。"
     "开场给出当前即可感知的核心线索及其观察方式，不只写空泛景色让演员另造屏障或试炼。"
@@ -127,22 +131,22 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "不要只写用途不明的凭证，让演员自行改成别的任务、杜撰失效原因或要求新证明。"
     "与本幕选择无关的背景细节可以明确保留未知；这不妨碍完成当前已经定义的选择，"
     "不以必须查清所有背景为出口条件，也不为了延长调查新增证据。"
-    # 仅给“寻找支援”等目的会使普通演员补造任务；出口须有来源已知的具体去向与同行者。
+    # Vague aims like finding support make ordinary actors invent tasks; exits need concrete destinations/companions with known sources.
     "普通出口写清下一步去哪里、去做什么、谁同行及配角留在哪里；目的与已知路径相连，"
     "不只写抽象的后续目标再把实际入口藏在目标开场里，也不以含糊标识诱导另造设施或重复任务。"
     "目标入口在来源可被说明，不等于目标结果已经发生；具体解锁、抵达或操作仍按所属阶段演出。"
-    # 来源邀请含两个地点、实际却只通往其中一个时，会诱发接受后候选换幕错配。
+    # Invitations naming two locations while routing to one cause accepted candidate/scene mismatches.
     "逐条对照来源 exit_plan.trigger_fact_ids/trigger_fact、proposal/player_decision、导出后的 transition_contract.reason、"
     "目标 entry_bridge 与 opening_scene：这四处必须兑现同一去向、时段和开始的活动。"
     "单个出口不能写‘去A或去B’却只通往C，也不能只用‘继续逛逛’掩盖实际要进入的具体地点。"
     "有多个候选分支时，来源先邀请各入口都能兑现的共同行动；不同后续体验在目标幕再公开，"
     "不能让隐藏数值把已答应的目的地换成别处。没有共同入口时，调整本次获准的剧情安排，不能虚构路线承诺。"
     "沿途经过某处须有已公开的路径依据，不能在换幕后临时编造新路径、外部阻碍或玩家改主意来圆场。"
-    # 幕内带路曾被误当成跨阶段授权；作者须区分当前活动和真正出口。
+    # In-scene guidance was misread as cross-stage authorization; distinguish current activities from true exits.
     "本幕内的局部行动、场内移动与普通出口分别写清目的；接受本幕带路不等于接受另一个地点或时段的出口。"
     "summary 与 narrative_focus 给出本幕核心互动及其直接回应，再连接真正出口；"
     "可选活动不串成必做清单，角色已安定或问题已解决后不另加琐事来推迟下一阶段。"
-    # 转场前提在作者侧收敛成可演出的因果，不让运行时逐项补齐可选素材才能离幕。
+    # Authors resolve prerequisites into playable causality; runtime need not complete all optional material to leave scenes.
     "每个普通出口用现有 exit_plan 写清三件事：trigger_fact 只列离开真正必要的具体结果；"
     "trigger_fact_ids 必须逐项引用本幕 completion_facts 中已经成立且真正决定离幕的 id，"
     "Runtime 的 completion_contract 只由这些 id 组成；不要用‘接受安慰’等中间事实提前打开依赖后续回应的出口。"
@@ -150,7 +154,7 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "player_decision 保留接受邀请或主动要求前往的实际选择。"
     "必要结果成立且玩家明确要求继续该去向后即可转场，不再要求逐项演完可选对白、展示全部设定或重复确认；"
     "下一幕的操作、调查和角色选择不得反写为本幕离开的前提。"
-    # 目标开场的持有/认知状态需要明确来源，避免运行时把作者预期误当历史存量。
+    # Explicitly source target-opening possession/knowledge, preventing expected states being mistaken for existing history.
     "下一幕依赖的关键物品、知识或操作结果，应在来源 narrative/summary 写明由谁、在什么已具备条件下、"
     "通过什么可见行为交付，并让 exit_plan.trigger_fact 指向该结果；不能只在目标开场写‘已经取得／获知／完成’。"
     "必要交付先于可立即出发的 proposal；玩家询问去向不代表交付已经发生，也不应把本幕核心发现推迟到下一幕。"
@@ -159,29 +163,29 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "转场与目标开场须允许承接实际持有者及完成程度；实际历史未成立的结果不能靠回忆补造，已成立事件不能重演。"
     "桥段与 must_deliver 不用‘已取得若干物品’重复作者预期来代替来源交付；"
     "需要保留的上游状态注明承接实际取得结果，本次路程或环境变化另写清楚，不能让转场文字自证旧事件已经发生。"
-    # 后半程容易只剩章节跳转语，或让设备等待在下一幕凭空结束；用当前角色可提出的行动连接。
+    # Later stages risk empty chapter transitions or magically ended equipment waits; connect through actions current characters can propose.
     "出口不能只写‘转入某事件／某章节’：写角色此刻能公开并让玩家决定的移动、等候或协作安排；"
     "未来袭击、发现或未知结果由目标幕交付，不要求角色预知它才能提出下一步。"
     "设备预热、旅程或长时间等候若尚未完成，先交代所需时间与等候安排，玩家同意后再由桥段承接时间经过；"
     "目标开场不能在没有时间经过或已知加速原因时把未完成状态改成完成。"
-    # 跨时段等候的授权与下一幕才提出的新话题分开。
+    # Separate cross-period waiting authorization from new topics proposed only next scene.
     "若转场本身是休息或等候到下一时段，目标开场仅由女主提出新话题，出口可聚焦当前地点等到何时；"
     "不额外要求玩家预先同意尚未提出的话题内容或决定，下一幕仍保留玩家对此的实际选择。"
-    # 仅补出口说明仍可能在入睡后失去提议机会；核心就是陪伴等候时，把可回应请求放在开场。
+    # Exit notes alone may lose proposal opportunities after sleep; when companionship during waiting is central, put answerable requests in openings.
     "若本幕核心选择就是是否陪伴、留下或等候，可在开场公开角色的具体请求、位置与持续时段；"
     "不要依赖演员在互动已结束后再补一句出口。玩家接受后，来源回应先交付角色的自主反馈，再承接已授权的等候。"
     "这不免除独立前提：需要先取得物品或完成操作的出口仍先实际交付，不能靠开场请求跳过。"
-    # 复合邀约容易只响应前半句；邀请应聚焦真正需要接受的下一次互动。
+    # Compound invitations often get first-half-only responses; focus on the next interaction actually requiring acceptance.
     "下一幕是约定的未来互动时，来源幕先用可见日程、角色说明或既有约定交代具体时段与地点，"
     "proposal 聚焦下一次互动本身，不把可选的收拾、散场或回家串成另一项需要确认的任务；"
-    # 运行联调中未来约定被改成现在商量，导致下一阶段提前演完却仍困在来源幕。
+    # Integration changed future agreements to present discussion, prematurely performing next stages while trapped in source scenes.
     "来源回应玩家对下一步的询问时，应能说明该时段、地点与行动；"
     "不要把未来互动改成现在先讨论或实施同一任务，询问安排也不等于玩家同意执行。"
     "必要的等候或路程仍保留，今天道别不自动表示玩家已经同意未来安排。"
-    # 多出口预览按当轮数值计算，接受时重新选路；作者不能把预览方向写成已发生结果。
+    # Multi-exit previews use current values and reroute on acceptance; never portray previews as established outcomes.
     "多出口各自写清从当前已成立结果出发的下一步理由，不要求把全部候选支线的调查都完成才离幕；"
     "角色会按当前数值提示方向，玩家接受时仍按最新数值确定路线，因此不在来源幕预先交付某条支线独有的事实或结果。"
-    # 接受时重新选路仍须兑现公开邀请的行动，不能用分支切换把撤离改成原地继续劳动。
+    # Acceptance rerouting still honors publicly invited actions; switching branches must not turn evacuation into work in place.
     "核对每条分支的来源地点、邀请动作与目标入口：已经在场不能再次写进入同一地点；"
     "多个出口共享转移邀请时，各目标入口先兑现这项共同行动，再展开各自后续，不把支线任务变成原邀请的额外前提。"
     "确需配角参与时，在开场或已知状态中交代必要的位置、可见能力及阻碍；"
@@ -189,89 +193,91 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "也不要要求玩家自行编造配角才能推进。"
     "保护玩家行动权不等于禁止配角说话或行动；配角的自主回应与玩家尚未实施的操作、护送、承诺分开，"
     "不把单一信号预写成整项任务完成，也不以空白状态和笼统禁令堵住所有直接反馈。"
-    # 约定与执行有不同的完成范围，来源幕和结局必须一致，避免运行时追加未来任务。
+    # Agreement/execution have distinct completion scopes; align source scenes/endings to avoid invented future tasks.
     "本幕要交付达成约定还是实际执行，必须在 narrative、summary 与结局方向中写清并保持一致："
     "若结果是双方商定方案，写明双方同意及角色回应即可收束，不把未来执行列为本幕缺项；"
     "若结果是完成操作，写明操作与可观察结果，不能只用同意方案代替完成。"
-    # 防止主体与数量在摘要、出口和结局之间变化，把示范误写成参与者已体验。
+    # Preserve actors/counts across summaries/exits/endings, never turning demonstrations into participants' completed experiences.
     "完成条件写清实际参与者及必要范围；一人示范不代替另一人的亲手操作，"
     "一轮体验足以收束时，出口和结局不得改写成所有参与者均已完成。"
     "允许概括已开始的同质重复过程，但不能用概括跳过尚未发生的首次核心互动；"
     "也不为此强制逐人逐步演完，已授权且结果可确定的最后互动仍可同轮交付。"
-    # 先按相邻幕分配交付归属，再写各字段，避免桥段抢演目标幕或重复最后互动。
+    # Assign delivery ownership between neighboring scenes before fields, avoiding premature target scenes or repeated final interactions.
     "跨幕编排先确定每次核心互动归属哪一幕，再同时核对来源幕目标、出口、目标幕状态、桥段和开场："
     "来源幕交付当前互动及回应；普通出口只邀请开始下一阶段，不要求先完成下一幕的操作才能转场；"
     "桥段只建立玩家已接受或主动发起的时空变化，不实施目标幕需要玩家参与的核心互动；"
     "目标幕开场可展示女主或环境已获授权的交付，入场状态承接开场结束的位置；"
     "涉及玩家的新互动仍停在玩家输入之前，不能一处写已完成、另一处又要求重做。"
     "结局没有新的互动阶段，桥段、开场和状态只承接最后一幕的结果与余韵。"
-    # 所有转场允许按真实历史适配文字，作者必须把不可变事实与可变过程分清。
+    # Transitions adapt wording to actual history; distinguish immutable facts from flexible processes.
     "运行时会依据实际游玩历史改写桥段与开场措辞；写清必须保留的时间、地点、必要结果和阶段边界，"
     "不要预定玩家未选择的行动，也不要用固定的附加动作来代表收束。"
     "来源幕已经交付的动作在桥段与目标开场只承接结果状态；没有真实阻碍时，普通出口直接邀请下一阶段，"
-    # 分幕先服务完整互动，减少本可连贯完成却被普通换幕打断的任务；不绑定某个剧本或道具。
+    # Divide scenes for complete interactions, reducing unnecessary interruptions of continuous tasks without tying rules to particular scripts/props.
     "同一地点且前提已具备的同一件事，其商量、实施与直接回应通常放在同一幕，允许玩家分轮或合并行动；"
     "只有下一阶段带来实际的时空变化、新的实质选择或不同的核心互动时才另起一幕，"
     "不要仅按拿工具、决定措辞、动手、看结果等微小步骤拆幕，也不要为凑章节数量拆碎同一次互动。"
     "在用户指定篇幅范围内规划各幕各自的互动与变化，不因此擅改章节数量要求；"
     "优化已有节点时仍遵守本次可修改范围，合并或删除节点须有结构修改权限。"
-    # 用户允许提前完成眼前可执行的连续动作，不能以章节编排制造重复劳动。
+    # Users allow early completion of immediate action chains; chapter arrangement cannot manufacture repeated labor.
     "玩家提前明确实施后，运行时会承接结果，"
     "后续桥段、开场和状态据此适配，不要求再做一次，不为强守节点顺序新增禁令。"
     "未知结果及作者明确的事实限制仍保留，普通换幕须由玩家接受公开提议，或主动要求进入已公开的下一地点、下一阶段。"
-    # 玩家主动请求可直接换幕；作者提前公开去向和条件，不为流程强补邀请与确认。
+    # Explicit player requests may transition directly; disclose destinations/conditions early without forced extra invitations/confirmations.
     "主动请求只承接已公开且条件具备的去向，询问、考虑或准备不算开始；目标幕新的实质选择仍留给玩家。"
-    # 真实历史优先；不能用“低风险细节”把已经发生的状态改回去。
+    # Actual history prevails; low-risk details cannot revert established states.
     "玩家输入的前提若与已发生剧情冲突，角色应自然提醒实际情况并保留玩家意图；"
     "不倒退状态或补造前置动作来顺从输入，从当前状态实施的新可行动作仍正常承接。"
-    # 邀请的公开事实保留在历史中；改变主意可直接接受，不新增重复确认环节。
+    # Public invitation facts remain historical; changed minds can accept directly without repeat confirmation.
     "玩家曾拒绝或暂缓，后来明确接受同一已公开邀请时可以直接继续，不必再邀请、再确认一次。"
     "不把再等一会儿、再确认一遍或追加告别作为必经步骤。"
     "编写或评改转场计划时，trigger_fact 写使下一步合理的本幕事实，proposal 写进入下一阶段的具体邀请或机会，"
     "player_decision 保留玩家可接受或拒绝的同一个后续行动，并与下一幕实际开场相容。"
-    # 实测中来源幕邀请转移却反复阻止通行；先写清现成通路与风险，避免演员靠猜补出死局。
+    # Tests found source invitations promising relocation while blocking passage repeatedly; specify available routes/risks rather than force guesses into deadlocks.
     "换场依赖现成通路时，来源场景须明确它连接的区域、当前可用条件及仍存在的风险；"
     "邀请、开场和禁止项保持一致，不一边邀请通过、一边无依据宣称同一路径无法通行。"
-    # 正式转场复核保留完整作者限制；同义禁令在多个字段反复扩写会挤满输入预算。
+    # Formal transition checks retain full author restrictions; repeated synonymous prohibitions across fields overflow budgets.
     "硬边界用简洁的一条表达同一限制，避免在状态、禁止项和表演合同中反复扩写同义要求；"
     "保留主体、适用阶段、前提和例外，不用删掉必要风险或玩家选择权来缩短文字。"
     "本幕的角色评价、奖励和普通劳动属于本幕反馈，不能单独冒充跨阶段提议；"
-    # 现在的分工与另一时段的见面不能合成一个含混邀约。
+    # Current work division and meetings in another period cannot become one ambiguous invitation.
     "本幕准备任务与未来见面分开提出；答应分工、整理资料或协助准备不等于接受另一时段的新安排，出口写清所需同意的具体事项。"
     "只让玩家察觉、询问或见证反馈，不等于提供了进入下一阶段的行动。"
     "上述邀请要求适用于角色提出的普通换幕；玩家主动要求进入已公开的下一阶段时不补造邀请；通向结局时，已有问题解决、必要角色反应完成且没有未决选择即可自然收束。"
     "结局的 player_decision 可以为空，proposal 写收束方向，不为填字段新增邀约、劳动、承诺或下次活动。"
     "若作者结局仍需要玩家尚未作出的选择，必须在本幕留出选择，不得把预期答案写成已发生事实。"
-    # 同轮最后互动已获用户允许，作者仍须区分行动、直接反应与收束后的余韵。
+    # Users permit final interactions within one turn; distinguish actions, direct reactions, and after-closure aftereffects.
     "玩家明确实施或授权最后互动，且前提已具备、没有未知成败或新的选择时，可以在同一轮完成互动、角色回应并自然结束。"
     "仅考虑或准备不算授权；不为同轮结束预定玩家答案。最后动作在来源回应交付，桥段与结局开场承接结果，不再重演同一动作。"
-    # 结局是关闭输入后的实际交付，不能把空 player_decision 和待回答邀请拼成假收束。
+    # Endings deliver after input closes, never fake closure combining empty player_decision with unanswered invitations.
     "结局进入后不再接收玩家输入，opening_scene、summary 与结局角色状态必须一致交付收束后的事实，"
     "不能停在等待玩家回答、接受邀请或继续实施任务的时刻；原故事未要求的后续邀约也不能作为留白新增。"
-    # 生成与评改均保留同一终局交付方式，不能在完善后把结局恢复成普通互动节点。
+    # Generation/revision retain the same finale-delivery rules; refinement cannot restore endings to ordinary interactive nodes.
     "结局目标只声明开场已经交付的环境事实，不安排 turn 目标、后续玩家输入或目标触发的发声状态变化；"
     "必要角色回应由结局开场与演绎方向表达，不另列待执行任务。普通幕的发声策略也不能因说完一句话或关系缓和而改变。"
     "输入边界可能夹杂写作要求：保留具体事实限制，删除抽象评价，沿用已有的行为和结果；"
     "不要把抽象评价改写为必须反复操作、额外确认或增加失败次数。"
-    # 用户确定统一取开场结束时点；开场可有角色动作，状态记录其结果而非动作前姿态。
+    # Users chose opening-completion time; openings may act, while states record outcomes rather than prior poses.
     "character_state、character_state_arc 与 catgirl_situation 统一记录开场演完、第一条玩家输入之前的状态；"
     "先核对开场实际展示了什么，再写结束时各主体的位置、持物、认知与态度，不混入整幕完成后的结果。"
-    # 与事实初检的开场终态对照一致，复写到角色处境中的物理状态也不能停在动作前。
+    # Match initial fact-check opening outcomes; rewritten physical situations cannot remain pre-action.
     "按开场动作顺序取最后实际完成的状态变化；后来又恢复的以恢复后为准，计划或动作中途不算完成。"
-    # 状态是开场的结果摘要，不能另编一幅同时点画面；分清站位、姿态和视线，避免把转头写成移位。
+    # States summarize opening results, never invent simultaneous alternatives. Distinguish position/pose/gaze so head-turning never means moving.
     "状态字段直接摘录开场结束时的位置、姿态、视线和持物结果，不另设计站位或追加未展示的动作；"
     "身体朝向与目光方向分别记录，转头不代表身体转向或人物移动。开场未交代的细节可承接上游已成立的事实，不补造新的动作。"
     "catgirl_situation 中若复写了同一物理状态，也与 character_state 同步，不保留互相冲突的动作前姿态。"
     "开场已明确完成的动作只承接结果，不再列为 turn 目标；尚待玩家参与的互动留在 turn，"
     "不能把 turn 目标的预期结果提前写入状态。opening 目标只标记开场已经展示的交付，不另行重演。"
-    "同一物件不能同时在手中和已放下；开场仍在进行的操作不能写成已完工。"
+    "同一时点的同一物件，其持有人与位置须相容；观察、查验本身不表示换手，换手须有已成立的交接；开场仍在进行的操作不能写成已完工。"
+    "narrative、summary 或 narrative_focus 中明确归于开场已完成的结果，须与 opening_scene 实际展示或明确的前情、上游事实相容；"
+    "本幕后续才交付的结果保留待演因果，不能以整幕规划自证开场完成。"
     "修订已有稿时不机械保留互相冲突的状态；以开场确实交付的内容校对状态与目标，但不能为凑完成而把待执行目标搬进开场。"
-    # 数值门槛由确定性编译与节奏诊断负责；正文负责提供可发生的行为机会，不能靠重复刷分。
+    # Deterministic compilation/pacing handles numeric thresholds; narrative supplies real behavior opportunities, never repeated score farming.
     "编排数值相关支线时，只把到入口之前实际可发生的互动算作积累机会，不能借用后续幕回合；"
     "每轮各指标实际变化受[-5,5]限幅；推荐回合预算统一按每轮增减2点估算，不用±5极值或零散模型抽测代替该口径。"
     "在本次提供了数值依据时，让相关互动自然对应具体行为，并留出普通聊天与不同选择的空间；"
     "不靠重复同一行为、追加检验或延长已解决的剧情刷分，也不因达到推荐回合数自动奖励。"
-    # 与运行时按事件去重一致；规划必须提供不同的真实机会，不能用同义对白凑回合收益。
+    # Match runtime event deduplication: provide distinct real opportunities, never synonymous dialogue to accumulate turn rewards.
     "新的有意义行为可沿同一数值依据连续计分，不设固定四回合冷却；同一事件的重复确认、改述和回顾不再计分。"
     "事件按对象、时点和实际结果区分，不以玩家对白字面相同与否判断是否重复。"
     "按每轮两点估算是规划参考，不保证每段闲聊都有收益；到支线入口前要有足够互不重复且符合依据条件的行为机会。"
@@ -279,7 +285,7 @@ _SCENE_PROCESS_AUTHORING_RULE = (
 ) + "\n\n" + PUBLIC_TEXT_RULE
 
 
-# 主线输出与续写路径共享同一份结构/枚举示例，避免缺失整段时让模型猜字段。
+# Main output/continuation share structural/enumeration examples so models never guess missing sections' fields.
 _MAINLINE_OUTPUT_CONTRACT = """{
   "world": {
     "background": "直接展示给玩家的自然前情提要；像小说或电视剧前情介绍一样衔接第一章，不含策划标签或规则清单",
@@ -406,8 +412,9 @@ _MAINLINE_OUTPUT_CONTRACT = """{
         "proposal_owner": "catgirl | environment",
         "proposal": "由女主提出或由环境促成的具体下一步",
         "player_decision": "普通换幕保留可执行选择；最后一幕自然收束且没有未决选择时为空字符串",
-        "fallback_offer": "非最后一幕填写一条可直接展示的角色邀请文案；最后一幕填写空字符串",
+        "fallback_offer": "非最后一幕填写一条可直接展示的角色邀请文案；仅明确最终发声策略为 forbidden 时可填空字符串；最后一幕填写空字符串",
         "accept_input": "非最后一幕填写一条明确接受同一邀请的玩家输入；最后一幕填写空字符串",
+        "silent_choice": {"destination": "仅禁言普通出口省略 fallback_offer 时必填的具体去向，其他出口省略整个对象", "arrangement": "待接受的具体安排；每项非空单行且最多30 tokens"},
         "preserve_facts": ["换场后仍必须成立的非道具剧情事实"],
         "carry_props": ["需带入下一幕的 key_props.id"]
       },
@@ -436,9 +443,9 @@ _MAINLINE_OUTPUT_CONTRACT = """{
 }"""
 
 
-# 输出示例区分普通幕的行动选择与最终自然收束，避免强制给结局凑出一个新任务；
-# 既有空值兼容及编译、导出校验仍由原链路处理。
-# 结构示例之后重申共享交付规则，避免长篇字段说明淹没反应因果与结局边界。
+# Examples distinguish ordinary-scene action choices from natural finale closure, never forcing a new ending task;
+# existing null compatibility, compilation, and export checks remain on original paths.
+# Restate shared delivery rules after examples so lengthy fields cannot bury reaction causality and ending boundaries.
 _MAINLINE_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: 资深互动小说叙事架构师与逻辑审查员
 
 你精通互动小说、AVG 和双角色驱动叙事，重视因果关系、人物动机和分支逻辑的自洽。你拒绝套路化发展、机械降神、角色强行降智和没有铺垫的突兀结局。
@@ -475,7 +482,7 @@ core_idea 是剧情创作依据，cast_names 只确定双主角姓名和角色�
 7. 不生成数值、阈值、Numeric v2 节点、route gate、Session、Ledger 或 Story Package 字段。
 8. world.background 是直接展示给玩家的“前情提要”，必须使用小说或电视剧开场前情的自然叙述，交代时代地点、两人开场前已经成立的处境与故事触发点，并自然停在第一章即将开始的位置。凡是在这段可见正文中指代玩家，一律使用第二人称“你”，不得出现“玩家”“男主”等作者侧角色槽位称谓，也不要用第三人称“他”指代玩家。不得出现“世界规则”“核心悬念”“核心矛盾”等策划标签，不得罗列规则或解释创作方法。
 9. 第一章必须从玩家尚未进行任何输入的状态开始。world.background、player_role.identity 和 relationship 只能写第一章开始前已经成立的事实，不能提前写入第一章才会交付或由男主决定的结果。opening_scene 可以写环境、女主的可见行动和她主动发起的交流，但不得替玩家说出台词、作出选择、完成关键行动，或把尚未展示的玩家行为写成已经发生的事实。narrative 是作者侧梗概，可以概述本幕预计发生的双角色互动，但必须保留玩家实际决定和表达的空间。
-10. 每章必须给出 opening_scene、entry_bridge、narrative_focus、expected_turns、transition_goal、completion_facts、exit_plan 和 1—6 项 ordered_goals。opening_scene 是进入本幕后唯一直接展示的完整开场，不得藏入 narrative；第一章 entry_bridge 写空字符串，后续章节必须写一段只承接上幕已完成事实、再建立本幕时空的确定性换场旁白。opening_scene 和 entry_bridge 都不能新增男主的主动行为、心理决定或台词，只能展示环境变化、上幕已确定的客观结果，以及女主当前可见的行动或交流；需要男主实施的内容必须留在 player 目标中等待玩家输入。entry_bridge 不得把 narrative、ordered_goals 或 exit_plan 中的预期内容写成已经完成，只写玩家接受或主动发起已公开转场后必然发生的时空移动与客观环境变化。换场不得复制 opening_scene。narrative_focus 只写一句当前最值得继续发展的因果或互动方向，不得写成任务清单、完成度、固定台词或强制玩家行动。expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计，只填 3—120 的整数；以 length.scene_expected_turns_target 为短篇节奏软目标，超过该目标只有在新增事实不可合并时才允许。它只是诊断依据，不是 Runtime 硬门槛。transition_goal 只说明本幕如何逐步收束并靠近下一幕，不能写成伏笔总结或“完成目标后进入下一幕”。completion_facts 必须列出 1—8 项让本幕核心因果已经成立的最小可观察结果；id 在本幕内唯一且使用稳定英文标识，description 写清主体、对象和已经成立的结果，不能只写“目标完成”“关系提升”。bool 的 target_value 通常为 true；计数可用 int，明确状态可用 string，类型必须匹配。能让玩家看见的结果用 public，仅供剧情控制且不应直接公开的状态用 story。不得把下一幕已发生、玩家已接受换幕、proposal 已执行或纯风格要求写成完成事实。非结局出口的 exit_plan 必须用这些结果已经成立后的 trigger_fact 解释为什么现在要进行 proposal，并把可执行的跨阶段选择保留在 player_decision，不得用旁观充数。最后一幕通向结局时，trigger_fact 写已解决的问题和必要角色反应，proposal 写自然收束方向；没有尚待玩家决定的事情时 player_decision 写空字符串，不为结束新增邀请、劳动或下次活动。若结局仍依赖玩家尚未作出的实际选择，必须先在本幕交付选择，不能靠自然结束替玩家决定。除 fallback_offer 与 accept_input 外不得指定台词原文。非最后一幕的 fallback_offer 必须是一条可直接展示的完整角色文案，明确 proposal 的具体下一阶段并把决定留给玩家；accept_input 必须以玩家视角明确接受同一具体安排，不能只表示理解、追问、暂缓或替换成另一个去向。最后一幕两项都填空字符串，不为自然结束新增邀请。
+10. 每章必须给出 opening_scene、entry_bridge、narrative_focus、expected_turns、transition_goal、completion_facts、exit_plan 和 1—6 项 ordered_goals。opening_scene 是进入本幕后唯一直接展示的完整开场，不得藏入 narrative；第一章 entry_bridge 写空字符串，后续章节必须写一段只承接上幕已完成事实、再建立本幕时空的确定性换场旁白。opening_scene 和 entry_bridge 都不能新增男主的主动行为、心理决定或台词，只能展示环境变化、上幕已确定的客观结果，以及女主当前可见的行动或交流；需要男主实施的内容必须留在 player 目标中等待玩家输入。entry_bridge 不得把 narrative、ordered_goals 或 exit_plan 中的预期内容写成已经完成，只写玩家接受或主动发起已公开转场后必然发生的时空移动与客观环境变化。换场不得复制 opening_scene。narrative_focus 只写一句当前最值得继续发展的因果或互动方向，不得写成任务清单、完成度、固定台词或强制玩家行动。expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计，只填 3—120 的整数；以 length.scene_expected_turns_target 为短篇节奏软目标，超过该目标只有在新增事实不可合并时才允许。它只是诊断依据，不是 Runtime 硬门槛。transition_goal 只说明本幕如何逐步收束并靠近下一幕，不能写成伏笔总结或“完成目标后进入下一幕”。completion_facts 必须列出 1—8 项让本幕核心因果已经成立的最小可观察结果；id 在本幕内唯一且使用稳定英文标识，description 写清主体、对象和已经成立的结果，不能只写“目标完成”“关系提升”。bool 的 target_value 通常为 true；计数可用 int，明确状态可用 string，类型必须匹配。能让玩家看见的结果用 public，仅供剧情控制且不应直接公开的状态用 story。不得把下一幕已发生、玩家已接受换幕、proposal 已执行或纯风格要求写成完成事实。非结局出口的 exit_plan 必须用这些结果已经成立后的 trigger_fact 解释为什么现在要进行 proposal，并把可执行的跨阶段选择保留在 player_decision，不得用旁观充数。最后一幕通向结局时，trigger_fact 写已解决的问题和必要角色反应，proposal 写自然收束方向；没有尚待玩家决定的事情时 player_decision 写空字符串，不为结束新增邀请、劳动或下次活动。若结局仍依赖玩家尚未作出的实际选择，必须先在本幕交付选择，不能靠自然结束替玩家决定。除 fallback_offer 与 accept_input 外不得指定台词原文。非最后一幕的 fallback_offer 必须是一条可直接展示的完整角色文案，明确 proposal 的具体下一阶段并把决定留给玩家；accept_input 必须以玩家视角明确接受同一具体安排，不能只表示理解、追问、暂缓或替换成另一个去向。仅当本幕 character_state_arc.stages 的 acting_contract.dialogue_policy 按 ordered_goals 顺序应用所有显式 dialogue_policy_after（unchanged 不覆盖）后最终为 forbidden，才允许 fallback_offer 填空字符串；省略 fallback_offer 时必须额外提供 silent_choice={"destination":"具体去向","arrangement":"待玩家接受的具体安排"}，每项为不超过30 tokens的非空单行文本；Runtime 由两项生成完整按钮，不直接使用 accept_input，也不依赖此前口头邀请。不能因 optional 或描述里的词语省略邀请，后续恢复 required 或 optional 后仍须填写。最后一幕两项都填空字符串，不为自然结束新增邀请。
 11. ordered_goals 必须按真实可完成顺序排列，每项只表达一个原子交付，并显式填写 owner、delivery_type、evidence_mode、anchors、sources、timing 与 dialogue_policy_after。timing 只能是 opening 或 turn，每幕最多一个 opening 目标，且 opening 只允许 catgirl 或 environment 交付；player 与 shared 目标必须使用 turn，player 目标还必须在 sources 中包含 player_input，shared 目标可以承接 player_input 或 previous_goal。其余目标都必须在普通回合逐步交付，换场当回合不得打包执行目标幕目标。owner 只能是 catgirl、player、shared、environment；delivery_type 只能是 catgirl_dialogue、catgirl_action、environment_fact、player_action、shared_agreement、semantic_state，且职责必须匹配。catgirl_dialogue、catgirl_action、environment_fact、player_action 和 shared_agreement 默认使用 semantic 且 anchors 写空数组：delivery_type 记录作者预期的表现位置，description 供作者检查与修订参考，不是运行时完成判定。只有 core_idea 明确要求某段不可改写文本必须逐字出现时，才使用 exact 并给出 1—4 个最终可见短锚点；在这种 exact 情况下，catgirl_action 的锚点必须是可直接放入括号动作块的可见动作短语，不得写成猫娘说出口的命令、行动说明或结果宣告。semantic_state 仍使用 semantic 且 anchors 必须为空。sources 是 1—3 项数组，每项只能是 opening、player_input、previous_goal；第一项目标不能引用 previous_goal。dialogue_policy_after 只能是 required、optional、forbidden 或 unchanged；仅在作者规划确有睡眠、昏迷、禁言或恢复发声时记录预期变化；该字段不切换实际发声策略，发声权限仍以节点 acting_contract 和 Session 为准。男主表态与女主承接属于两个顺序交付，必须拆成 player 目标和后续 catgirl 目标，不能写成一个 shared_agreement 复合目标。exact anchors 属于最终可见文本，指代玩家时必须使用第二人称“你”，不得写作者侧“男主”或“玩家”，保持作者证据与叙事人称一致。不要把完整策划句当字面锚点，也不要用“确立基调”“加深关系”等抽象主题充当目标。
 12. 若目标涉及期限、时长、金额、价格、赔偿、编号、日期或具体条款，可核对的实际值必须直接写进 description；除非 core_idea 明确要求固定文本逐字出现，否则仍使用 semantic 且 anchors 写空数组。既定事实没有实际值时只能安排协商、报价或共同填写，不能让演绎模型临时编造。可以把男主作为女主行动对象，但不得通过 catgirl 目标强迫男主完成行动；需要玩家决定时使用 owner=player 或 shared，并在 sources 中包含 player_input。
 13. 关系变化必须由共同经历、信息确认、边界协商或实际选择逐步支撑。若亲密关系是主要剧情弧，主线章节数量优先取 length 范围的上半区，并至少拆出“维持初始距离—出现有限软化—建立主动信任—确认亲密关系”这些可观察阶段；相邻章节只能推进一小级，不得从警惕或疏离直接跳到粘人、暧昧、占有、依赖、伴侣式称呼或彼此倾心。温柔、甜美、傲娇等是表达风格，不代表关系已经建立。每章 narrative 与 catgirl_situation 必须延续上一章已经成立的关系事实，并遵守同章 stage_ceiling：guarded 不得出现依赖、拥抱、牵手或亲密结论；cooperative 不得出现暧昧、爱意、恋人式行为或确认彼此心意；trusted 可以表达主动信任和关心，但不得直接宣布恋爱、相爱或“关系达到亲密”。不能只用抽象的“关系升温”代替铺垫。
@@ -495,7 +502,7 @@ core_idea 是剧情创作依据，cast_names 只确定双主角姓名和角色�
 只返回最终结果一次。""" + "\n\n" + _SCENE_PROCESS_AUTHORING_RULE
 
 
-# 结构示例之后重申共享交付规则，避免长篇字段说明淹没反应因果与结局边界。
+# Restate shared delivery rules after examples so lengthy fields cannot bury reaction causality and ending boundaries.
 _MAINLINE_CONTINUATION_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 主线续写编辑
 
 你将收到一份已经生成且大部分有效的主线大纲，以及确定性校验器要求继续补全的少量路径。只修正这些路径，不要重写已经有效的内容。
@@ -511,7 +518,7 @@ _MAINLINE_CONTINUATION_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric
 7. 若修正 world.background，这是直接展示给玩家的正文；凡指代玩家必须统一使用“你”，不得返回包含“玩家”“男主”或以“他”指代玩家的作者侧称谓。
 8. 修正 mainline_chapters、narrative、narrative_focus 或 catgirl_situation 时，必须保持相邻章节的关系变化只推进一小级，并遵守对应 relationship_arc stage_ceiling：guarded 不得出现依赖、拥抱、牵手或亲密结论；cooperative 不得出现暧昧、爱意、恋人式行为或确认彼此心意；trusted 不得直接宣布恋爱、相爱或“关系达到亲密”。
 9. 修正 relationship_arc 时必须保持 stages 与主线章节一一对应，opening_relationship 与 relationship 完全一致；stage_ceiling 和 address_state 只能使用附带 output_contract 中的枚举值，相邻 stage_ceiling 最多变化一级。只有进入当前章时已经发生失忆、人格重置等明确事件，才可填写 reset_reason 并向下跨级重置；此时称呼和已知事实也必须同步清空或重新介绍。第一章不得声称称呼来自上游。
-10. 若请求路径以 progress_opportunity 结尾，替换字符串必须由输入的女主姓名或“环境”作为明确主体（旧无姓名稿用“女主”），不能预写男主的承诺、选择或回应。若请求路径是整个 mainline_chapters[n]，必须返回包含 title、narrative、narrative_focus、expected_turns、opening_scene、entry_bridge、transition_goal、completion_facts、exit_plan、ordered_goals、catgirl_situation 的完整章节对象；exit_plan 必须包含 fallback_offer 与 accept_input，非最后一幕分别为可直接展示的完整邀请和玩家明确接受同一安排的输入，最后一幕两项都为空字符串；completion_facts 只列本幕核心结果，不含换幕接受或下一幕结果。若问题指出短篇预计超过 8 回合，必须合并可合并事件并把 expected_turns 压回 8 回合以内，同时保留普通换幕所需的具体 player_decision；最终自然收束且没有未决选择时不要求补写决定。若请求返回 key_props，只登记影响剧情的关键道具；id 不得重复，states 只记录首次出现或状态变化。
+10. 若请求路径以 progress_opportunity 结尾，替换字符串必须由输入的女主姓名或“环境”作为明确主体（旧无姓名稿用“女主”），不能预写男主的承诺、选择或回应。若请求路径是整个 mainline_chapters[n]，必须返回包含 title、narrative、narrative_focus、expected_turns、opening_scene、entry_bridge、transition_goal、completion_facts、exit_plan、ordered_goals、catgirl_situation 的完整章节对象；exit_plan 必须包含 fallback_offer 与 accept_input，非最后一幕分别为可直接展示的完整邀请和玩家明确接受同一安排的输入，最后一幕两项都为空字符串。仅当本幕 character_state_arc.stages 的 acting_contract.dialogue_policy 按 ordered_goals 顺序应用所有显式 dialogue_policy_after（unchanged 不覆盖）后最终为 forbidden，才允许 fallback_offer 填空字符串；省略 fallback_offer 时必须额外提供 silent_choice={"destination":"具体去向","arrangement":"待玩家接受的具体安排"}，每项为不超过30 tokens的非空单行文本；Runtime 由两项生成完整按钮，不直接使用 accept_input，也不依赖此前口头邀请。不能因 optional 或描述里的词语省略邀请，后续恢复 required 或 optional 后仍须填写。completion_facts 只列本幕核心结果，不含换幕接受或下一幕结果。若问题指出短篇预计超过 8 回合，必须合并可合并事件并把 expected_turns 压回 8 回合以内，同时保留普通换幕所需的具体 player_decision；最终自然收束且没有未决选择时不要求补写决定。若请求返回 key_props，只登记影响剧情的关键道具；id 不得重复，states 只记录首次出现或状态变化。
 11. 修正 character_state_arc 时必须保持 stages 与主线章节一一对应，并明确女主、男主和环境三个状态主体。普通换场不得重置记忆；只有剧情已明确发生首次启动、真正重启或记忆切断时才能返回 fresh_boot/limited。fresh_boot 必须同时使用 empty、system_neutral、style_only，并给出至少一条 assertable_self_facts。后续幕和结局的 continuity_from_previous 不能为空。key_props.states 是生命周期规划；本章互动后才发生的换主、操作或损坏，不能提前写成入幕角色状态或 catgirl_situation。
 12. 只输出 JSON object，不要 Markdown、解释或代码围栏。
 
@@ -528,8 +535,8 @@ _MAINLINE_CONTINUATION_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric
 
 _PATH_TOKEN_RE = re.compile(r"([^.\[\]]+)|\[(\d+)\]")
 _MAINLINE_GENERATION_MAX_ATTEMPTS = 3
-# 结局结构/叙事约 2000 tokens，另为最多 2000 tokens 的原文及 JSON 转义预留容量。
-# 单次额度仍受宿主和供应商限制；不能为适应额度截断或改写作者原文。
+# Ending structure/narrative uses about 2,000 tokens; reserve additional capacity for 2,000 original-text tokens and JSON escaping.
+# Per-call limits still depend on hosts/providers; never truncate or rewrite authors' originals to fit budgets.
 _BRANCH_ENDING_MAX_OUTPUT_TOKENS = 8192
 _RELATIONSHIP_STAGE_ORDER = {
     "stranger": 0,
@@ -604,6 +611,7 @@ def _validate_character_state_stage(
     expected_chapter_index: int | None,
     continuity_required: bool,
     cast_names: Mapping[str, str] | None = None,
+    ordered_goals: Any = None,
 ) -> dict[str, Any]:
     """Validate author state arcs using explicit character slots, without inferring injury or memory ownership from prose."""
 
@@ -623,7 +631,7 @@ def _validate_character_state_stage(
             issues.append({"code": code, "path": f"{path}.{field}", "message": f"{field} 必须以‘{prefix}’开头并只描述该槽位的入幕状态。"})
     for field, required, maximum in (
         ("continuity_from_previous", continuity_required, 4),
-        # N.E.K.O 允许空边界；没有具体限制时不能要求模型凭空凑一条禁令。
+        # N.E.K.O permits empty boundaries; without concrete restrictions, never demand invented prohibitions.
         ("scene_boundaries", False, 4),
     ):
         rows = stage.get(field)
@@ -636,6 +644,11 @@ def _validate_character_state_stage(
     if not isinstance(contract, Mapping):
         issues.append({"code": "character_state_acting_contract_required", "path": f"{path}.acting_contract", "message": "每个状态阶段必须明确猫娘演绎合同。"})
         return stage
+    if has_dialogue_policy_conflict(contract.get("dialogue_policy"), ordered_goals):
+        issues.append({
+            "code": "node_dialogue_policy_conflict", "path": f"{path}.acting_contract.dialogue_policy",
+            "message": "同幕发声阶段不同须使用 optional 并写明阶段边界；硬切换须放在节点边界，不能依靠目标状态效果。",
+        })
     for field, allowed in (
         ("cognition_state", _ACTING_COGNITION_STATES),
         ("memory_state", _ACTING_MEMORY_STATES),
@@ -734,15 +747,15 @@ def _continuation_output_contract(path: str) -> Any:
         return pieces
     try:
         for token in _path_tokens(path):
-            # 数组只有一个类型示例；实际索引仍保留在 requested_paths，不改写作者数据。
+            # Arrays contain one type example; actual indices remain in requested_paths without rewriting author data.
             value = value[0 if isinstance(token, int) else token]
     except (KeyError, IndexError, TypeError):
-        # 禁止字段等旧稿问题可能不在首轮示例中，继续保留原 issue，不猜修补值。
+        # Legacy issues such as forbidden fields may lack first-round examples; retain original issues without guessing repairs.
         return None
     return value
 
 
-# 结构示例之后重申共享交付规则，避免长篇字段说明淹没反应因果与结局边界。
+# Restate shared delivery rules after examples so lengthy fields cannot bury reaction causality and ending boundaries.
 _NODE_ENHANCEMENT_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: 互动小说节点完善编辑
 
 你将根据作者已经建立的主线、上游剧情、进入路线、关键道具台账、数值定义，以及作者预填的节点标题和摘要，完善一个 Numeric v2 节点的演绎约束。
@@ -808,7 +821,7 @@ _NODE_ENHANCEMENT_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: 互动小说
 只返回最终结果一次。""" + "\n\n" + _SCENE_PROCESS_AUTHORING_RULE
 
 
-# 结构示例之后重申共享交付规则，避免长篇字段说明淹没反应因果与结局边界。
+# Restate shared delivery rules after examples so lengthy fields cannot bury reaction causality and ending boundaries.
 _BRANCH_ENDING_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 支线结局编辑
 
 你将收到一个固定来源、作者期望的结局结果、必要上游事实，以及一个已经选定或可供推荐的人类可读触发状态。先确定这条路线为什么会成立，再生成一个可由作者编辑的结局语义草稿。
@@ -874,7 +887,7 @@ start_after/end_before 都逐字引用 author_intent.direction，边界文字不
 只返回最终结果一次。""" + "\n\n" + _SCENE_PROCESS_AUTHORING_RULE
 
 
-# 结构示例之后重申共享交付规则，避免长篇字段说明淹没反应因果与结局边界。
+# Restate shared delivery rules after examples so lengthy fields cannot bury reaction causality and ending boundaries.
 _BRANCH_PATH_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 终点先行支线架构师
 
 你将收到固定来源、原顺序出口、固定终点、作者方向、目标幕数、人类可读触发状态，以及可能被绕过的主线和连续性事项。请从固定终点反推必要因果，再按玩家实际经历的正向顺序输出过程。
@@ -885,7 +898,7 @@ _BRANCH_PATH_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 终点
 2. condition_selection.mode 为 fixed 时使用唯一候选并省略 condition_key；为 recommend 时只能从 condition_candidates 返回一个原样 key。
 3. 不输出 metric ID、数值、阈值、比较符、priority、route、正式节点 ID、Choice、推荐输入、Session 或 Ledger。
 4. 每幕必须给出唯一 opening_scene、narrative_focus、expected_turns 和 1—4 项 ordered_goals。narrative_focus 只用一句非任务化的话说明本幕最值得继续发展的因果。expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计，只填 3—120 的整数；以 author_intent.scene_expected_turns_target 为软目标，超过 8 回合只有在事件不可合并时才允许。它只是作者诊断依据，不是 Runtime 硬门槛。目标使用与主线相同的 v2.2 typed goal 合同；opening 目标只允许 catgirl 或 environment，玩家与共同目标必须使用 turn，玩家目标还必须引用 player_input，共同目标可以承接 player_input 或 previous_goal。通向结局且没有未决选择时可自然收束，不为结局补写离幕行动；若本幕需要玩家确认或实施离幕，最后应保留一个 owner=player 的具体、可提交行动目标，不能写“无”“无需决定”“仅作观察者”，也不能伪装成女主或环境职责。
-5. transitions 必须严格按 source -> scene:0 -> ... -> endpoint 排列，并为每次移动提供 reason、bridge_scene_narration、must_preserve 和 tone。每条通往普通 scene 或主线节点的路线还必须提供 fallback_offer 与 accept_input：前者是明确写出下一去向的角色邀请，后者是玩家视角、明确接受同一具体安排的一句话；不得使用“我接受这个安排，继续进入下一阶段”等泛化句。只有通往 ending 的最后路线将两项省略。bridge_scene_narration 提供进入下一节点所需的时空、必要结果与边界，Runtime 按实际历史适配措辞；原样旁白使用显式 fixed_narrations。
+5. transitions 必须严格按 source -> scene:0 -> ... -> endpoint 排列，并为每次移动提供 reason、bridge_scene_narration、must_preserve 和 tone。每条通往普通 scene 或主线节点的路线还必须提供 fallback_offer 与 accept_input：前者是明确写出下一去向的角色邀请，后者是玩家视角、明确接受同一具体安排的一句话；不得使用“我接受这个安排，继续进入下一阶段”等泛化句。只有通往 ending 的最后路线将两项省略。普通出口仅在来源最终发声策略为 forbidden 时可省略 fallback_offer，accept_input 仍须填写；source 从 story_beat.acting_contract.dialogue_policy 起按 goals.delivery.state_effects.dialogue_policy 顺序应用，生成 scene 从 character_state.acting_contract.dialogue_policy 起按 ordered_goals.dialogue_policy_after 顺序应用，unchanged 不覆盖。optional 不构成例外，恢复 required 或 optional 后仍须邀请；无法在完成后发声且省略 fallback_offer 时，必须提供 silent_choice={"destination":"具体去向","arrangement":"待玩家接受的具体安排"}，每项为不超过30 tokens的非空单行文本；Runtime 据此生成完整按钮、不补台词，不直接使用 accept_input。bridge_scene_narration 提供进入下一节点所需的时空、必要结果与边界，Runtime 按实际历史适配措辞；原样旁白使用显式 fixed_narrations。
 6. 每个 continuity_items key 必须恰好返回一次，mode 只能是 carried，并放入一个 scene:n 或 transition:n。不得返回 intentionally_replaced。
 7. 不推翻上游既定事实、内容边界或固定终点。
 8. 支线沿用 global.intro 中的明确姓名及角色归属，不另取名；仅没有明确姓名的旧工坊稿沿用“女主”“男主”。不把当前设备的新名字混入既有作者项目。
@@ -957,8 +970,9 @@ _BRANCH_PATH_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 终点
       "to": "scene:n | endpoint",
       "reason": "移动原因",
       "bridge_scene_narration": "进入下一节点所需的时空与必要结果；Runtime 按实际历史适配措辞",
-      "fallback_offer": "普通路线的具体角色邀请；通往 ending 的最后路线省略",
+      "fallback_offer": "普通路线的具体角色邀请；仅来源最终发声策略为 forbidden 时可省略；通往 ending 的最后路线省略",
       "accept_input": "玩家明确接受同一具体安排的一句话；通往 ending 的最后路线省略",
+      "silent_choice": {"destination": "仅禁言普通出口省略 fallback_offer 时必填的具体去向，其他出口省略整个对象", "arrangement": "待接受的具体安排；每项非空单行且最多30 tokens"},
       "must_preserve": ["移动时必须保持的事实"],
       "tone": "过渡语气"
     }
@@ -977,8 +991,8 @@ _BRANCH_PATH_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 终点
 
 
 _LENGTH_PRESETS = {
-    # 短篇可按自然剧情分为三幕；结局另计，避免为旧下限额外拆幕。
-    # 首次生成、定向续写与校验共用此范围，其它篇幅和逐幕回合预算保持原值。
+    # Short stories may naturally use three acts, excluding endings, without extra splits for obsolete minimums.
+    # Initial generation, directed continuation, and validation share this range; other lengths/per-act turn budgets remain unchanged.
     "short": (3, 6),
     "standard": (6, 10),
     "long": (10, 16),
@@ -1022,19 +1036,19 @@ def _pacing_diagnostics_for_outline(candidate: Mapping[str, Any]) -> dict[str, A
         if not trigger_fact or not proposal:
             warning_codes.append("scene_natural_exit_incomplete")
         player_exit_actionable = _is_actionable_player_exit(player_decision)
-        # 主线最后一幕直接通向 Normal 结局，允许无额外决定；不能给中途换幕同样豁免。
+        # Mainline final acts lead directly to Normal endings without extra decisions; never extend this exemption to intermediate transitions.
         natural_ending = index == len(chapters) - 1 and not player_decision
         if not player_decision and not natural_ending:
-            # 没有玩家可亲自执行的最后一步时，模型只能不断解释，容易出现长幕空转。
+            # Without a final action players can perform personally, models only explain repeatedly, making long acts spin without progress.
             warning_codes.append("scene_natural_exit_player_action_missing")
         elif player_decision and not player_exit_actionable:
-            # “仅作观察者”看似填写了字段，实际仍没有可提交的玩家动作，单独提示作者修正。
+            # Observer-only fills fields nominally but supplies no actionable player submission; specifically ask authors to fix it.
             warning_codes.append("scene_natural_exit_player_action_not_actionable")
         if expected_turns is None:
-            # 无法从作者数据确认展开长度时仍允许生成，但明确提示作者不要把它当作已估算。
+            # If author data cannot establish expanded length, generation remains allowed but clearly warns it is unestimated.
             warning_codes.append("scene_expected_turns_unknown")
 
-        # 声明值优先于结构下限；结构下限只防止作者填入过小值掩盖目标数量。
+        # Declared values outrank structural minima, which only prevent tiny declarations concealing goal counts.
         structural_estimate = max(3, turn_goal_count + (1 if player_exit_actionable else 0))
         estimated_turns = max(structural_estimate, expected_turns or 0)
         if estimated_turns > _SCENE_PACING_SOFT_LIMIT:
@@ -1148,6 +1162,7 @@ def _validate_idea_outline(
     maximum: int,
     scene_expected_turns_target: int | None = None,
     cast_names: Mapping[str, str] | None = None,
+    token_counter: Callable[[str], int] | None = None,
 ) -> list[dict[str, str]]:
     """Check structural contracts and chapter counts without turning prose length into a blocking rule."""
 
@@ -1346,6 +1361,8 @@ def _validate_idea_outline(
             expected_chapter_index=index + 1,
             continuity_required=index > 0,
             cast_names=cast_names,
+            ordered_goals=(chapters[index].get("ordered_goals")
+                           if index < len(chapters) and isinstance(chapters[index], Mapping) else None),
         )
     ending_state = _validate_character_state_stage(
         character_state_arc.get("ending_stage"),
@@ -1465,7 +1482,7 @@ def _validate_idea_outline(
         fixed_narrations(chapter, path)
         for field in ("title", "narrative", "narrative_focus", "catgirl_situation"):
             text(chapter.get(field), f"{path}.{field}")
-        # 模型写出的固定旁白会原样进入剧本包；此处拦截，交给续写修复而非留到编译失败。
+        # Model-generated fixed narration enters story packages unchanged; intercept for continuation repair before compilation failure.
         issues.extend(_fixed_narration_issues(chapter, path, terminal=False))
         stage = relationship_stages[index] if index < len(relationship_stages) else {}
         if isinstance(stage, Mapping) and str(stage.get("reset_reason") or "").strip():
@@ -1597,7 +1614,7 @@ def _validate_idea_outline(
             and not isinstance(expected_turns, bool)
             and expected_turns > scene_expected_turns_target
         ):
-            # 短篇超出软目标时只请求当前章节重写，让模型合并可合并事件，不影响旧稿读取。
+            # Short stories above soft targets request rewriting only this chapter, merging mergeable events without affecting legacy reads.
             issues.append({
                 "code": "scene_expected_turns_exceed_target",
                 "path": path,
@@ -1651,13 +1668,23 @@ def _validate_idea_outline(
                 "message": "玩家决定必须是字符串；无需决定时使用空字符串。",
             })
         fallback_offer = exit_plan.get("fallback_offer")
+        source_stage = character_state_stages[index] if index < len(character_state_stages) else {}
+        source_stage = source_stage if isinstance(source_stage, Mapping) else {}
+        acting = source_stage.get("acting_contract")
+        acting = acting if isinstance(acting, Mapping) else {}
+        chapter_goals = chapter.get("ordered_goals")
+        chapter_goals = chapter_goals if isinstance(chapter_goals, list) else []
+        completion_policy = final_dialogue_policy(
+            acting.get("dialogue_policy"),
+            (goal.get("dialogue_policy_after") for goal in chapter_goals if isinstance(goal, Mapping)),
+        )
         if not isinstance(fallback_offer, str):
             issues.append({
                 "code": "transition_fallback_offer_invalid",
                 "path": f"{path}.exit_plan.fallback_offer",
                 "message": "确定性兜底邀请必须是字符串；最后一幕使用空字符串。",
             })
-        elif index < len(chapters) - 1 and not fallback_offer.strip():
+        elif index < len(chapters) - 1 and not fallback_offer.strip() and completion_policy != "forbidden":
             issues.append({
                 "code": "transition_fallback_offer_required",
                 "path": f"{path}.exit_plan.fallback_offer",
@@ -1668,6 +1695,14 @@ def _validate_idea_outline(
                 "code": "terminal_transition_fallback_offer_forbidden",
                 "path": f"{path}.exit_plan.fallback_offer",
                 "message": "最后一幕自然收束，不得新增兜底邀请。",
+            })
+        if (index < len(chapters) - 1 and completion_policy == "forbidden"
+                and isinstance(fallback_offer, str) and not fallback_offer.strip()
+                and not valid_silent_choice(exit_plan.get("silent_choice"), token_counter=token_counter)):
+            issues.append({
+                "code": "transition_silent_choice_required",
+                "path": f"{path}.exit_plan.silent_choice",
+                "message": "Silent exits require nonempty single-line destination and arrangement.",
             })
         accept_input = exit_plan.get("accept_input")
         if not isinstance(accept_input, str):
@@ -1843,8 +1878,8 @@ def _validate_node_enhancement(
             issues.append({"code": "goal_source_invalid", "path": f"{path}.sources", "message": "目标来源引用无效。"})
     if opening_goal_count > 1:
         issues.append({"code": "too_many_opening_goals", "path": "ordered_goals", "message": "每幕最多只能有一项 opening 目标。"})
-    # 完善入口沿用支线结局的已交付标记合同；结局关闭输入，无法执行普通回合目标。
-    # 拒绝不合格候选而非静默删除任务或禁言变化，避免以结构修复冒充剧情已经完成。
+    # Refinement retains branch-ending delivered-marker contracts; closed-input endings cannot execute ordinary turn goals.
+    # Reject invalid candidates rather than silently deleting tasks or muting changes, never passing structural repairs off as completed plot.
     if node_type == "ending":
         ending_fields = {
             "owner": "environment", "delivery_type": "environment_fact",
@@ -1873,9 +1908,10 @@ def _validate_node_enhancement(
         "character_state",
         issues=issues,
         expected_chapter_index=None,
-        # start是正式合同中的首幕类型，没有上一幕；其余节点仍必须给出连续性依据。
+        # start is the contract's first-act type without predecessors; other nodes still require continuity evidence.
         continuity_required=node_type != "start",
         cast_names=cast_names,
+        ordered_goals=goals,
     )
     allowed = {"opening_scene", "narrative_focus", "ordered_goals", "must_not_happen", "character_state", "catgirl_situation", "transition_goal"}
     for field in sorted(set(candidate).difference(allowed)):
@@ -1906,8 +1942,9 @@ class NumericV2GenerationError(RuntimeError):
 class NumericV2Generator(ModelAgent):
     """Generate a mainline and one Normal ending, then project an editable map draft."""
 
-    def __init__(self, model_call=None) -> None:
+    def __init__(self, model_call=None, *, token_counter: Callable[[str], int] | None = None) -> None:
         super().__init__("NEKO_Numeric_drama Generator", model_call)
+        self._token_counter = token_counter
 
     def process(self, input_data: dict[str, Any]) -> dict[str, Any]:
         title = str(input_data.get("title") or "").strip()
@@ -1936,8 +1973,8 @@ class NumericV2Generator(ModelAgent):
         minimum, maximum = _LENGTH_PRESETS[length_preset]
         saved_candidate = checkpoint.get("candidate") if isinstance(checkpoint, Mapping) else None
         candidate = deepcopy(dict(saved_candidate)) if isinstance(saved_candidate, Mapping) else None
-        # 续写绑定原候选的姓名快照，避免跨请求切换角色后把同一大纲写成两组人。
-        # 无快照的旧检查点保持旧角色槽位；新建请求才取调用方当前姓名。
+        # Continuation binds original candidates' name snapshots, avoiding role changes across requests turning one outline into two casts.
+        # Legacy checkpoints without snapshots retain original role slots; new requests alone use current caller names.
         if candidate is not None:
             cast_names = checkpoint.get("cast_names")
         if cast_names is not None:
@@ -1974,6 +2011,7 @@ class NumericV2Generator(ModelAgent):
 
             issues = _validate_idea_outline(
                 candidate,
+                token_counter=self._token_counter,
                 cast_names=cast_names,
                 minimum=minimum,
                 maximum=maximum,
@@ -2033,6 +2071,7 @@ class NumericV2Generator(ModelAgent):
         if candidate is not None:
             issues = _validate_idea_outline(
                 candidate,
+                token_counter=self._token_counter,
                 cast_names=cast_names,
                 minimum=minimum,
                 maximum=maximum,
@@ -2085,7 +2124,7 @@ class NumericV2Generator(ModelAgent):
                                 "preset": length_preset,
                                 "mainline_chapter_min": minimum,
                                 "mainline_chapter_max": maximum,
-                                # 只给模型一个可调节的幕级软目标，不把它写成 Runtime 硬门槛。
+                                # Give models an adjustable act-level soft target, never a Runtime hard threshold.
                                 "scene_expected_turns_target": 8,
                             },
                         },
@@ -2198,7 +2237,7 @@ class NumericV2Generator(ModelAgent):
             "key_props": self._project_key_props(candidate["key_props"]),
             "relationship_arc": self._project_relationship_arc(candidate["relationship_arc"]),
             "character_state_arc": self._project_character_state_arc(candidate["character_state_arc"]),
-            # 节奏诊断属于作者元数据，不写入 Story Package，也不交给 Runtime。
+            # Pacing diagnostics are author metadata, excluded from Story Package and Runtime.
             "pacing_diagnostics": _pacing_diagnostics_for_outline(candidate),
         }
 
@@ -2217,7 +2256,7 @@ class NumericV2Generator(ModelAgent):
         if not isinstance(node, Mapping):
             raise NumericV2GenerationError("node_not_found")
         node_type = str(node.get("type") or "")
-        # 首幕与普通幕共用演绎字段，但保留start类型及原图，不把它改写成新节点。
+        # First/ordinary acts share performance fields but retain start type and original graph rather than creating new nodes.
         if node_type not in {"start", "scene", "ending"}:
             raise NumericV2GenerationError("node_enhancement_type_unsupported")
 
@@ -2307,8 +2346,8 @@ class NumericV2Generator(ModelAgent):
             "node_type": node_type,
             "node_type_label": "幕节点" if node_type in {"start", "scene"} else "结局节点",
             "author_input": {"title": title, "summary": summary},
-            # 完善不是从摘要重新生成；保留当前稿供模型核对开场、状态与反应时点。
-            # 深复制避免候选构造或调用方误改传入故事，实际回填范围仍由原返回合同限定。
+            # Refinement is not summary-based regeneration; retain drafts for checking opening/state/reaction timing.
+            # Deep copies prevent candidate/caller mutation of input stories; original return contracts still bound actual writeback.
             "existing_story_beat": deepcopy(beat),
             "story_intro": deepcopy(story_data.get("intro") or {}),
             "catgirl_binding": deepcopy(story_data.get("catgirl_binding") or {}),
@@ -2337,7 +2376,7 @@ class NumericV2Generator(ModelAgent):
         candidate = self.parse_json_response(response)
         if not isinstance(candidate, dict) or candidate.get("parse_error"):
             raise NumericV2GenerationError("invalid_model_json")
-        # 使用作者节点的确定类型校验，不能让模型以普通幕目标重新打开结局交互。
+        # Validate definite author-node types, preventing ordinary-act goals reopening ending interactions.
         issues = _validate_node_enhancement(
             candidate, node_type=node_type, cast_names=story_data.get("intro"),
         )
@@ -2491,13 +2530,13 @@ class NumericV2Generator(ModelAgent):
                     "key": fact_key,
                     "equals": completion_fact["target_value"],
                 }
-            # 只有作者明确标为离幕触发的事实才会进入 Runtime 完成合同；
-            # 其它事实仍保留在 fact_contract 中，供演绎和复核引用，但不会提前打开出口。
+            # Only facts explicitly marked by authors as act-exit triggers enter Runtime completion contracts;
+            # retain other fact_contract facts for performance/review without prematurely opening exits.
             completion_requirements = [
                 completion_by_id[fact_id]
                 for fact_id in chapter["exit_plan"]["trigger_fact_ids"]
             ]
-            # expected_turns 只供作者侧节奏诊断，不能改变 Runtime 的三回合推荐值。
+            # expected_turns serves author pacing diagnostics only, never changes Runtime's three-turn recommendation.
             min_turns, recommended_turns = scene_turn_budget(_chapter_ordered_goals(chapter))
             routes: list[dict[str, Any]] = []
             exit_plan = chapter["exit_plan"]
@@ -2506,7 +2545,7 @@ class NumericV2Generator(ModelAgent):
                 exit_plan["carry_props"],
                 chapter_index=index + 1,
             )
-            # 道具规划不是已提交事实；携带项只保留名称与用途，状态约束由作者显式声明。
+            # Prop planning is not committed fact; carried items retain names/uses only, with states explicitly declared by authors.
             scene_prop_facts = self._key_prop_facts(
                 key_props,
                 [prop["id"] for prop in key_props],
@@ -2521,6 +2560,7 @@ class NumericV2Generator(ModelAgent):
                     reason=self._transition_reason(exit_plan, catgirl_name=catgirl_name),
                     fallback_offer=str(exit_plan["fallback_offer"]).strip(),
                     accept_input=str(exit_plan["accept_input"]).strip(),
+                    silent_choice=exit_plan.get("silent_choice"),
                     bridge_scene_narration=str(target["entry_bridge"]).strip(),
                     source_ids=[f"goal.{goals[-1]['id']}"],
                     trigger_fact_ids=list(exit_plan["trigger_fact_ids"]),
@@ -2539,6 +2579,7 @@ class NumericV2Generator(ModelAgent):
                     reason=self._transition_reason(exit_plan, catgirl_name=catgirl_name),
                     fallback_offer=str(exit_plan["fallback_offer"]).strip(),
                     accept_input=str(exit_plan["accept_input"]).strip(),
+                    silent_choice=exit_plan.get("silent_choice"),
                     bridge_scene_narration=str(ending["entry_bridge"]).strip(),
                     source_ids=[f"goal.{goals[-1]['id']}"],
                     trigger_fact_ids=list(exit_plan["trigger_fact_ids"]),
@@ -2553,8 +2594,8 @@ class NumericV2Generator(ModelAgent):
                 "id": node_id,
                 "type": "start" if index == 0 else "scene",
                 "chapter": chapter["title"].strip(),
-                # 最短门槛和建议收束默认都保持三回合；作者声明的预计时长只保留在诊断中，
-                # 不会把自然语言目标转换成 Runtime 回合预算。
+                # Minimum and recommended closure both default to three turns; declared durations remain diagnostics,
+                # never converting natural-language goals into Runtime turn budgets.
                 "min_turns": min_turns,
                 "recommended_turns": recommended_turns,
                 "completion_contract": {"all": completion_requirements},
@@ -2570,8 +2611,8 @@ class NumericV2Generator(ModelAgent):
                         *character_state_stage["scene_boundaries"],
                     ])),
                     "relationship_ceiling": relationship_stage["stage_ceiling"],
-                    # 生命周期记录包含本章互动后的换主/签署结果，不能充当入幕事实。
-                    # 入幕持物由显式角色状态提供；道具规划仍保留在作者侧及出幕合同。
+                    # Lifecycle records include post-chapter ownership/signature outcomes, never entry facts.
+                    # Explicit character states define entry possessions; prop planning remains author-side and in exit contracts.
                     "catgirl_situation": "\n".join(filter(None, [
                         self._character_scene_context(
                             character_state_stage,
@@ -2651,13 +2692,13 @@ class NumericV2Generator(ModelAgent):
                 "author": "NEKO_Numeric_drama",
                 "revision": "draft_1",
                 "language": "zh-CN",
-                # 新生成包必须显式声明当前 N.E.K.O 运行合同，避免导出后才被运行时拒绝。
+                # Newly generated packages explicitly declare current N.E.K.O contracts, avoiding post-export runtime rejection.
                 "contract_version": NUMERIC_V2_CONTRACT_VERSION,
             },
             "intro": {
-                # 显式存完整姓名供运行时适配，避免从含标点的用户昵称中猜首段。
+                # Explicitly store full names for runtime adaptation, avoiding guessed first segments from punctuated nicknames.
                 **(dict(cast_names) if cast_names is not None else {}),
-                # 世界规则、悬念与矛盾用于大纲推演，不直接暴露给玩家；背景只保留自然前情提要。
+                # World rules/suspense/conflicts support outlining, not direct player exposure; backgrounds retain natural recaps only.
                 "background": world["background"].strip(),
                 "player_identity": self._join_profile_parts(player["identity"].strip()),
                 "catgirl_identity": self._join_profile_parts(
@@ -2758,7 +2799,7 @@ class NumericV2Generator(ModelAgent):
             relationship_contract += f"；禁止：{forbidden}"
         return NumericV2Generator._join_profile_parts(
             str(catgirl_situation or "").strip(),
-            # N.E.K.O 超预算时保留最后一个完整句，因此短关系合同必须放在末尾。
+            # N.E.K.O retains the last complete sentence when over budget, so short relationship contracts must go last.
             relationship_contract,
         )
 
@@ -2775,8 +2816,8 @@ class NumericV2Generator(ModelAgent):
             str(stage.get("environment_state") or "").strip(),
         )
         context = str(existing_context or "").strip()
-        # 完善时模型可能原样沿用已组装说明；只移除完全相同的状态前缀，
-        # 保留独立补充、引用及不同状态，不做语义去重或改写作者事实。
+        # Refinement may copy assembled descriptions; remove identical state prefixes only,
+        # preserving independent additions/quotes/different states without semantic deduplication or rewriting author facts.
         while state_context and context.startswith(state_context):
             context = context[len(state_context):].lstrip()
         return NumericV2Generator._join_profile_parts(state_context, context)
@@ -2845,7 +2886,7 @@ class NumericV2Generator(ModelAgent):
             if isinstance(prop, Mapping) and str(prop.get("id") or "").strip()
         }
         facts: list[str] = []
-        # 调用方明确选择本幕资料或出幕携带项，均不能暴露以后章节才出现的道具。
+        # Callers explicitly select current-act material or exit-carried items, neither revealing later-chapter props.
         selected_ids = list(dict.fromkeys(str(item or "").strip() for item in prop_ids))
         for prop_id in selected_ids:
             prop = props_by_id.get(prop_id)
@@ -2861,7 +2902,7 @@ class NumericV2Generator(ModelAgent):
                     active_state = raw_state
             if active_state is None:
                 continue
-            # 生命周期仍留在作者稿；持有人、位置和结果须由实际演出建立。
+            # Lifecycle stays in author drafts; actual performance establishes holders/locations/outcomes.
             description = (
                 f"关键道具“{str(prop.get('name') or '').strip()}”[{prop_id}]："
                 f"用途为{str(prop.get('purpose') or '').strip()}"
@@ -2878,6 +2919,7 @@ class NumericV2Generator(ModelAgent):
         reason: str,
         fallback_offer: str,
         accept_input: str,
+        silent_choice: Mapping[str, Any] | None = None,
         bridge_scene_narration: str,
         source_ids: list[str],
         trigger_fact_ids: list[str],
@@ -2893,10 +2935,13 @@ class NumericV2Generator(ModelAgent):
             "must_preserve": [item.strip() for item in must_preserve if item.strip()],
             "tone": tone,
         }
+        if not fallback_offer and accept_input and silent_choice is not None:
+            transition_contract["silent_choice"] = deepcopy(silent_choice)
         if fallback_offer:
-            # 普通幕保留作者可直接展示的邀请；结局路线不写空字段。
+            # Ordinary acts retain directly displayable invitations; ending routes omit empty fields.
             transition_contract["fallback_offer"] = fallback_offer
-            # 接受输入与同一作者邀请成对发布，运行端无需再次请求模型解释。
+        if accept_input:
+            # Retain legacy acceptance inputs for author material; structured destinations/plans generate silent buttons.
             transition_contract["accept_input"] = accept_input
         return {
             "id": route_id,

@@ -750,9 +750,8 @@ function _clearNekoIdleCat1EdgePeekForTierExit(container) {
 function _getNekoIdleCat1RapidDragAssetUrl(button, tier) {
     if (_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1) return '';
     const state = button && button.__nekoIdleReturnDragActionState;
-    return state && state.active && state.rapidActive
-        ? `${_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL}${_getNekoIdleReturnAssetVersionSuffix()}`
-        : '';
+    if (!state || !state.active || !state.rapidActive || !_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL) return '';
+    return `${_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL}${_getNekoIdleReturnAssetVersionSuffix()}`;
 }
 
 function _isNekoIdleCat1RapidDragCurrentTier(button) {
@@ -1323,6 +1322,7 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
     const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect);
     const catRect = _getNekoDesktopVirtualElementRect(container);
     if (!surfaceScreenRect || !catRect || catRect.width <= 0 || catRect.height <= 0) return false;
+    const assetUrl = options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1);
     const target = options.target || null;
     const anchorRatio = target && Number.isFinite(Number(target.anchorRatio))
         ? Math.max(0, Math.min(1, Number(target.anchorRatio)))
@@ -1341,7 +1341,8 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
         },
         overlapPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX,
         sidePaddingPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX,
-        assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1),
+        assetUrl,
+        wideArt: _isNekoCatAppearanceWideArtUrl('action.cat1.play_yarn', assetUrl),
         facingRight: !!(state && state.facingRight)
     });
     if (!posted) return false;

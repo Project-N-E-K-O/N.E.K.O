@@ -767,7 +767,7 @@ async def test_fetch_neko_community_feed_shuffles_card_order(monkeypatch):
         def stream(self, method, url, **kwargs):
             return _FakeCommunityStream(CommunityResponse())
 
-    # reverse 补丁让洗牌效果可断言：实现若不洗牌，返回序仍是载荷原序，测试失败。
+    # The reverse patch makes shuffling assertable: without shuffling, returned order matches payload order and the test fails.
     monkeypatch.setattr(
         trending_content.random, "shuffle", lambda seq: seq.reverse()
     )
@@ -821,7 +821,7 @@ async def test_fetch_neko_community_feed_shuffle_keeps_whole_pool():
     ):
         result = await fetch_neko_community_feed(limit=5)
 
-    # 真实随机洗牌下顺序不定，但卡池必须一张不少（无序集合断言，不抖动）。
+    # Real random shuffling has no fixed order, but the card pool must retain every card (unordered-set assertion avoids flakiness).
     assert {post["id"] for post in result["posts"]} == {
         f"post-{n}" for n in range(1, 6)
     }

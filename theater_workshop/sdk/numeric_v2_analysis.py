@@ -10,9 +10,9 @@ import re
 from typing import Any, Mapping
 
 
-# 比较条件只会在阈值附近改变真假；枚举这些代表点即可精确判断当前合同支持的条件。
+# Comparisons change truth only near thresholds; enumerating representative points exactly evaluates supported conditions.
 _MAX_REPRESENTATIVE_STATES = 50_000
-# 路径诊断只服务作者提示；复杂图超过上限时明确返回未知，不用猜测替代结论。
+# Path diagnostics serve author guidance only; graphs above the complexity cap return unknown explicitly, never guesses.
 _MAX_PACING_PATH_STATES = 512
 _COMPARATORS = {
     "==": lambda left, right: left == right,
@@ -22,9 +22,9 @@ _COMPARATORS = {
     ">=": lambda left, right: left >= right,
     "<=": lambda left, right: left <= right,
 }
-# 条件以这些主体的自身动作为准时，运行时的唯一证人可能只是演员本轮写下的正文。
+# For conditions based on these subjects' own actions, the only runtime witness may be narrative written by Actor this turn.
 _ACTOR_WITNESS_SUBJECTS = ("猫娘", "女主", "新载体", "机体", "猫耳")
-# 玩家主体与排除从句：条件句里出现它们时不代表条件由猫娘满足。
+# Player subjects and exclusion clauses do not mean the catgirl satisfies a condition merely by appearing in its text.
 _PLAYER_ACTOR_TOKENS = ("玩家", "男主", "你")
 _EXCLUSION_MARKERS = ("不算", "不作为", "不能算", "不表示", "不算作", "并非", "不能代替")
 
@@ -45,7 +45,7 @@ def _condition_actor(condition: str) -> str:
     the actor; exclusion clauses such as "玩家拿着不算" are skipped, and a clause without a subject
     inherits the previous actor.
     """  # noqa: DOCSTRING_CJK
-    # 条件文本本身是中文，示例必须保留原句才能说明判定方式。
+    # Conditions are written in Chinese; retain original example sentences to explain evaluation.
 
     actor = ""
     for clause in re.split(r"[，。；、,.;!?！？\n]+", condition):
@@ -108,7 +108,7 @@ def _metric_definitions(story: Mapping[str, Any]) -> dict[str, dict[str, int]]:
                 "decrease": int(limits["decrease"]),
             }
         except (KeyError, TypeError, ValueError):
-            # 正式编译会先拒绝非法定义；独立调用分析器时保留未知而不是抛出第二套错误。
+            # Formal compilation rejects invalid definitions first; standalone analysis returns unknown rather than introducing separate errors.
             continue
     return definitions
 
@@ -258,11 +258,11 @@ def _selected_bounds_from_points(
     for index, domain in enumerate(dimensions):
         values = sorted({point[index] for point in unique_points})
         positions = [position for position, value in enumerate(domain) if value in values]
-        # 一维上出现空洞时，min/max 会把实际不可达的中间状态错误带入下一幕。
+        # For a dimension with holes, min/max incorrectly propagates unreachable intermediate states to the next scene.
         if positions != list(range(positions[0], positions[-1] + 1)):
             return None, True
         selected_values.append(values)
-    # 各维分别连续仍不够；还要确认没有丢失多指标之间的相关性。
+    # Individually continuous dimensions are insufficient; verify cross-metric correlations are preserved too.
     if len(unique_points) != math.prod(len(values) for values in selected_values):
         return None, True
     selected_bounds = dict(bounds)
@@ -444,7 +444,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
     }
     start_node_id = str(story.get("start_node_id") or "")
     if not definitions or start_node_id not in nodes_by_id:
-        # 没有隐藏数值的故事同样需要固定旁白证人检查：这条诊断不依赖数值可达性。
+        # Stories without hidden metrics still need fixed-narration witness checks, independent of numeric reachability.
         return tuple((
             *_duplicate_transition_warnings(ordered_nodes),
             *_fixed_narration_witness_warnings(ordered_nodes),
@@ -469,7 +469,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
                 message="该幕的条件组合数量过多或结构超出当前确定性分析范围，无法可靠判断全部路线。",
             ))
 
-    # 理论可达图使用完整 metric 声明范围；软推荐回合不会被误当成硬上限。
+    # Theoretical reachability uses full metric declaration ranges; soft recommended turns must not become hard limits.
     eventually_reachable = {start_node_id}
     reachability_unknown: set[str] = set()
     stack = [start_node_id]
@@ -480,7 +480,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
         if not selection:
             continue
         if selection["unknown"]:
-            # 当前幕不能精确枚举时，下游只能标记为未知，不能反推为数学不可达。
+            # If the current scene cannot be enumerated exactly, downstream remains unknown, never inferred mathematically unreachable.
             unknown_targets = {
                 str(route.get("target_node_id") or "")
                 for route in node.get("route_gates") or []
@@ -558,7 +558,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
 
     route_stats: dict[str, dict[str, Any]] = {}
     recommended_reachable = {start_node_id}
-    # 循环及其下游、非凸入口及其下游都只能保留 unknown，不能再生成确定性节奏警告。
+    # Loops and nonconvex entries, plus their downstream nodes, remain unknown without deterministic pacing warnings.
     pacing_unknown_nodes = set(cycle_affected_nodes).union(reachability_unknown)
     pacing_stack: list[tuple[str, dict[str, tuple[int, int]], tuple[str, ...]]] = [(
         start_node_id,
@@ -708,8 +708,8 @@ def analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analysi
         return warnings
     normal_story = deepcopy(dict(story))
     for metric_id, definition in definitions.items():
-        # 用户指定每轮增减2点作为推荐回合估算口径，不从模型抽测强度反推预算。
-        # 保留作者更低的硬限幅；复用路径、优先级和累计回合分析，不借用后续幕回合。
+        # The user's two-point-per-turn estimate sets recommended-turn budgets; do not infer budgets from sampled model intensity.
+        # Preserve lower author hard clamps; reuse path, priority, and accumulated-turn analysis without borrowing later scenes' turns.
         normal_story["metric_schema"][metric_id]["per_turn_limit"] = {
             direction: min(2, definition[direction])
             for direction in ("increase", "decrease")

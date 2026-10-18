@@ -49,8 +49,8 @@ class TurnOwner(Enum):
     """Who owns the current turn."""
 
     NONE = "none"
-    USER = "user"          # 用户输入中 / AI 正在为用户回复
-    PROACTIVE = "proactive"  # 主动搭话流水线持有
+    USER = "user"          # User is typing / AI is replying to the user
+    PROACTIVE = "proactive"  # Held by the proactive conversation pipeline
 
 
 class ProactivePhase(Enum):
@@ -59,7 +59,7 @@ class ProactivePhase(Enum):
     IDLE = "idle"
     PHASE1 = "phase1"            # fetch + unified LLM
     PHASE2 = "phase2"            # astream → TTS
-    COMMITTING = "committing"    # finish_proactive_delivery 内
+    COMMITTING = "committing"    # Inside finish_proactive_delivery
 
 
 class CognitionMode(Enum):
@@ -82,15 +82,15 @@ class CognitionMode(Enum):
 class SessionEvent(Enum):
     """Write-path events. Emitters go through ``fire()``; the read path only reads state fields."""
 
-    USER_INPUT = "user_input"                  # 用户新一轮输入触发的 sid 轮换
-    USER_ACTIVITY = "user_activity"            # 不轮换 sid 的用户活动（transcript 等）
-    PROACTIVE_START = "proactive_start"        # 进入 phase1
-    PROACTIVE_CLAIM = "proactive_claim"        # prepare 生成 sid，正式持有 turn
-    PROACTIVE_PHASE2 = "proactive_phase2"      # 进入流式 TTS
-    PROACTIVE_COMMITTING = "proactive_committing"  # 进入 finish_proactive_delivery
-    PROACTIVE_DONE = "proactive_done"          # 主动搭话退出（成功 / pass / abort）
-    FOCUS_ENTER = "focus_enter"                # REGULAR → FOCUS（凝神进入）
-    FOCUS_EXIT = "focus_exit"                  # FOCUS → REGULAR（凝神退出，附带 episode 切片定位）
+    USER_INPUT = "user_input"                  # sid rotation triggered by new user input
+    USER_ACTIVITY = "user_activity"            # User activity that does not rotate sid (transcript, etc.)
+    PROACTIVE_START = "proactive_start"        # Enter phase1
+    PROACTIVE_CLAIM = "proactive_claim"        # prepare creates the sid and formally claims the turn
+    PROACTIVE_PHASE2 = "proactive_phase2"      # Enter streaming TTS
+    PROACTIVE_COMMITTING = "proactive_committing"  # Enter finish_proactive_delivery
+    PROACTIVE_DONE = "proactive_done"          # Proactive conversation exits (success / pass / abort)
+    FOCUS_ENTER = "focus_enter"                # REGULAR → FOCUS (enter Focus)
+    FOCUS_EXIT = "focus_exit"                  # FOCUS → REGULAR (exit Focus, with episode slice location)
 
 
 Subscriber = Callable[[SessionEvent, dict], Union[None, Awaitable[None]]]
@@ -138,10 +138,11 @@ class SessionStateMachine:
     owner: TurnOwner = TurnOwner.NONE
     phase: ProactivePhase = ProactivePhase.IDLE
     proactive_sid: Optional[str] = None
+    proactive_round_id: Optional[str] = None
     user_sid: Optional[str] = None
     last_user_activity: float = 0.0
     _preempted: bool = False
-    # ── Focus mode 凝神（docs/design/focus-truename-mode.md）─────────────
+    # ── Focus mode (docs/design/focus-truename-mode.md) ───────────────────
     # ``mode`` is read on the O(1) lock-free path (callers building the LLM
     # check ``sm.mode is CognitionMode.FOCUS`` before deciding thinking-on).
     # The hysteresis counters are mutated only inside ``update_focus`` under
@@ -157,7 +158,7 @@ class SessionStateMachine:
     )
     _write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    # ── 读路径（O(1)，热路径）─────────────────────────────────────────
+    # ── Read path (O(1), hot path) ────────────────────────────────────────
     def is_proactive_preempted(self, claim_token: Optional[str] = None) -> bool:
         """Whether the proactive-chat path should abort immediately.
 
@@ -179,7 +180,7 @@ class SessionStateMachine:
         if self._preempted:
             return True
         if claim_token is not None:
-            # proactive_sid 可能为 None（start 但尚未 claim），此时不判 mismatch
+            # proactive_sid may be None (started but not yet claimed); do not report a mismatch then
             if self.proactive_sid is not None and self.proactive_sid != claim_token:
                 return True
         return False
@@ -238,11 +239,12 @@ class SessionStateMachine:
         """
         async with self._write_lock:
             if not force and self.phase in _PROACTIVE_ACTIVE_PHASES:
-                # 活动中的 proactive 自身负责 PROACTIVE_DONE 清理；此处跳过
+                # An active proactive run handles its own PROACTIVE_DONE cleanup; skip it here
                 return
             self.owner = TurnOwner.NONE
             self.phase = ProactivePhase.IDLE
             self.proactive_sid = None
+            self.proactive_round_id = None
             self.user_sid = None
             self._preempted = False
             # Focus is session-scoped: a new session always starts REGULAR
@@ -277,7 +279,7 @@ class SessionStateMachine:
             return False
         return True
 
-    async def try_start_proactive(self, session: Any = None) -> bool:
+    async def try_start_proactive(self, session: Any = None, *, round_id: str | None = None) -> bool:
         """Atomic "check + claim": only flips ``IDLE → PHASE1`` when ``can_start_proactive``
         returns True, avoiding the TOCTOU window between two lock-free checks that
         would let two concurrent proactive paths enter PHASE1 simultaneously.
@@ -294,7 +296,7 @@ class SessionStateMachine:
                 return False
             if session_reply_in_progress(session):
                 return False
-            self._apply(SessionEvent.PROACTIVE_START, {})
+            self._apply(SessionEvent.PROACTIVE_START, {"round_id": round_id})
             snap_subs = list(self._subscribers.get(SessionEvent.PROACTIVE_START, ())) + list(
                 self._subscribers.get(_WILDCARD, ())
             )
@@ -302,7 +304,7 @@ class SessionStateMachine:
         _dispatch_subscribers(snap_subs, SessionEvent.PROACTIVE_START, {})
         return True
 
-    # ── Focus mode 凝神 ─────────────────────────────────────────────
+    # ── Focus mode ────────────────────────────────────────────────────────
     async def update_focus(
         self, score: float, *, topic_changed: bool = False,
         retention_override: float | None = None,
@@ -449,7 +451,7 @@ class SessionStateMachine:
             "focus_episode_id": self._focus_episode_id,
         }
 
-    # ── 写路径 ──────────────────────────────────────────────────────
+    # ── Write path ─────────────────────────────────────────────────────────
     async def fire(self, event: SessionEvent, **payload: Any) -> None:
         """Fire an event; applied inside ``_write_lock``, then dispatched to subscribers asynchronously outside the lock.
 
@@ -457,6 +459,17 @@ class SessionStateMachine:
         "post-event" state.
         """
         async with self._write_lock:
+            # Check ownership under the same lock as the transition. A retired
+            # HTTP task must not claim, advance or finish a replacement round.
+            if (
+                event in {
+                    SessionEvent.PROACTIVE_CLAIM, SessionEvent.PROACTIVE_PHASE2,
+                    SessionEvent.PROACTIVE_COMMITTING, SessionEvent.PROACTIVE_DONE,
+                }
+                and payload.get("round_id") is not None
+                and payload["round_id"] != self.proactive_round_id
+            ):
+                return
             self._apply(event, payload)
             snap_subs = list(self._subscribers.get(event, ())) + list(
                 self._subscribers.get(_WILDCARD, ())
@@ -467,7 +480,7 @@ class SessionStateMachine:
     def _apply(self, event: SessionEvent, payload: dict) -> None:
         """Internal state transition. Caller already holds ``_write_lock``."""
         if event is SessionEvent.USER_INPUT:
-            # 任何 proactive 阶段遇到 USER_INPUT 都 sticky preempt
+            # USER_INPUT during any proactive phase causes a sticky preemption
             if self.phase in _PROACTIVE_ACTIVE_PHASES:
                 self._preempted = True
             self.owner = TurnOwner.USER
@@ -476,17 +489,18 @@ class SessionStateMachine:
 
         elif event is SessionEvent.USER_ACTIVITY:
             self.last_user_activity = time.time()
-            # 不轮换 owner / sid（voice transcript 等静默信号）
+            # Do not rotate owner / sid for silent signals such as voice transcripts
 
         elif event is SessionEvent.PROACTIVE_START:
-            # 进入 phase1：清 sticky flag，owner 翻到 proactive
+            # Enter phase1: clear the sticky flag and switch owner to proactive
             self._preempted = False
             self.owner = TurnOwner.PROACTIVE
             self.phase = ProactivePhase.PHASE1
             self.proactive_sid = None
+            self.proactive_round_id = payload.get("round_id")
 
         elif event is SessionEvent.PROACTIVE_CLAIM:
-            # 只在 proactive 路径存活时 claim sid；否则丢弃（已被抢）
+            # Claim sid only while the proactive path is still active; otherwise discard it (it was preempted)
             sid = payload.get("sid")
             if self.phase is ProactivePhase.PHASE1 and not self._preempted:
                 self.proactive_sid = sid
@@ -500,15 +514,16 @@ class SessionStateMachine:
                 self.phase = ProactivePhase.COMMITTING
 
         elif event is SessionEvent.PROACTIVE_DONE:
-            # 清 proactive 半边；owner 由最近事件决定 —— 若中途被 USER_INPUT
-            # 抢占，owner 已是 USER，本事件只清 phase，不覆盖 owner。
+            # Clear the proactive half; owner is determined by the latest event — if USER_INPUT preempted it mid-run,
+            # owner is already USER, so this event clears only the phase and does not overwrite owner.
             self.phase = ProactivePhase.IDLE
             self.proactive_sid = None
+            self.proactive_round_id = None
             self._preempted = False
             if self.owner is TurnOwner.PROACTIVE:
                 self.owner = TurnOwner.NONE
 
-    # ── 订阅 ────────────────────────────────────────────────────────
+    # ── Subscription ───────────────────────────────────────────────────────
     def subscribe(self, event: Optional[SessionEvent], cb: Subscriber) -> None:
         """Subscribe to events; ``event=None`` means subscribe to all."""
         key = _WILDCARD if event is None else event
@@ -519,7 +534,7 @@ class SessionStateMachine:
         try:
             self._subscribers[key].remove(cb)
         except (KeyError, ValueError):
-            # idempotent unsubscribe：重复取消或取消未注册的 cb 视为 no-op
+            # Idempotent unsubscribe: cancelling twice or cancelling an unregistered callback is a no-op
             return
 
 
@@ -537,13 +552,13 @@ def _dispatch_subscribers(
         try:
             res = cb(event, payload)
         except Exception:
-            # 订阅者同步异常不能影响事件流；订阅者自行日志/上报
+            # A subscriber's synchronous exception must not affect the event stream; subscribers handle their own logging/reporting
             continue
         if res is None:
             continue
         if asyncio.iscoroutine(res) or asyncio.isfuture(res) or hasattr(res, "__await__"):
-            # ensure_future 对 coroutine 包成 Task；对 Future 原样返回；对自定义
-            # awaitable 通过 __await__ 包成 Task —— 三类都能挂 done-callback。
+            # ensure_future wraps a coroutine in a Task and returns a Future unchanged; for a custom
+            # An awaitable is wrapped in a Task via __await__, so all three kinds can have a done-callback.
             try:
                 fut = asyncio.ensure_future(res)
             except Exception:
@@ -564,8 +579,8 @@ def _swallow_subscriber_exc(task: "asyncio.Task") -> None:
     except asyncio.CancelledError:
         return
     except Exception:
-        # 故意吞：避免订阅者异常冒泡污染事件流，也避免 "Task exception was
-        # never retrieved" 刷屏。订阅者自己负责在 callback 内部落日志。
+        # Intentionally swallow exceptions: prevent subscriber failures from bubbling up and polluting the event stream, and avoid spamming "Task exception was
+        # never retrieved". Subscribers are responsible for logging inside their callbacks.
         return
 
 
@@ -711,10 +726,10 @@ def _focus_thresholds_from_config() -> FocusThresholds:
     )
 
 
-# 不对外导出 —— 内部哨兵，用于 ``subscribe(None, ...)``
+# Not exported externally — internal sentinel used for ``subscribe(None, ...)``
 _WILDCARD = "__wildcard__"
 
-# phase 判定"proactive 正在干活、应被 USER_INPUT 抢占"的集合
+# Set of phases where "proactive work is underway and should be preempted by USER_INPUT"
 _PROACTIVE_ACTIVE_PHASES = frozenset(
     {ProactivePhase.PHASE1, ProactivePhase.PHASE2, ProactivePhase.COMMITTING}
 )

@@ -98,7 +98,7 @@ def default_client() -> ScopedMemoryClient:
 
 
 def _shutdown_client(client: ScopedMemoryClient) -> ScopedMemoryClient:
-    # 关机：同一个 memory_server，但不做 502 退避（单次、受 VISIT_SHUTDOWN_BUDGET_S 约束）
+    # Shutdown: same memory_server, but no 502 backoff (single attempt bounded by VISIT_SHUTDOWN_BUDGET_S).
     return client.with_retry_delays(())
 
 
@@ -112,7 +112,7 @@ async def _bounded(coro: Awaitable[Any], *, shutdown: bool, failed: Any) -> Any:
         return failed
 
 
-# ── 读 ────────────────────────────────────────────────────────────────
+# ── Read ──────────────────────────────────────────────────────────────
 
 
 async def fetch_visit_context(
@@ -171,13 +171,70 @@ async def forget_in_progress(
     if await RevocationLog(config_dir, own_uid=own_uid).is_pair_open(peer_uid, own_char_uid):
         return True
     sentinels, unreadable = await ClearingSentinels(config_dir).list_open_with_unreadable()
-    # 读不出来的清除意图不能当作「没有在清除」；但只挡还能认出的那部分范围，一份坏文件
-    # 不能让全机所有账号、所有角色的串门记忆永久停用
+    # Unreadable clear intent cannot mean no clear underway; block only recognizable scopes, so one corrupt file
+    # cannot permanently disable visit memory for all machine accounts/characters.
     if any(ClearingSentinels.hint_covers(hint, own_uid, own_char_uid, peer_uid) for hint in unreadable):
         return True
     return any(
         doc["own_uid"] == own_uid and sentinel_covers(doc, own_char_uid, peer_uid) for doc in sentinels
     )
+
+
+FORGET_REFUSAL_IN_PROGRESS = "in_progress"
+""":func:`char_forget_refusal`: an unfinished forget covers the character."""
+
+FORGET_REFUSAL_UNREADABLE = "forget_record_unreadable"
+""":func:`char_forget_refusal`: a forget record cannot be read, so the gate fails closed (discarding it helps)."""
+
+FORGET_REFUSAL_UNLISTABLE = "records_unlistable"
+""":func:`char_forget_refusal`: the record directory itself cannot be listed (discarding cannot help)."""
+
+
+async def char_forget_refusal(config_dir: str | Path, own_char_uid: str, *, own_uid: str | None) -> str | None:
+    """Why an unfinished local forget blocks local character ``own_char_uid`` (any peer); ``None`` when none does.
+
+    The admission check of ``POST /rooms`` and ``join`` (design §3.2.1 step 0):
+    the peer is not known yet, so every open revocation log and clearing
+    sentinel naming the character counts. ``own_uid`` narrows them to that
+    community account (rosters and memory subjects are partitioned by
+    account); ``None`` (the account's ``visit_uid`` is not known on this
+    machine) counts every account's.
+
+    Returns :data:`FORGET_REFUSAL_IN_PROGRESS` when a readable record covers
+    the character, else :data:`FORGET_REFUSAL_UNREADABLE` when the gate can
+    only fail closed on damaged records: an unreadable revocation log cannot
+    be attributed to a character without its peer, so it counts for every
+    character; an unreadable sentinel counts for whatever scope still parses.
+    A directory that cannot be listed at all fails closed as
+    :data:`FORGET_REFUSAL_UNLISTABLE`: the discard action would hit the same
+    error, so it is not offered. A real forget wins over damage, so
+    discarding damaged records is only offered when it would help.
+    """
+
+    def ours(owner: Any) -> bool:
+        return own_uid is None or owner is None or owner == own_uid
+
+    config_dir = Path(config_dir)
+    try:
+        logs, unreadable_logs = await RevocationLog.list_all_open_with_unreadable(config_dir)
+        sentinels, hints = await ClearingSentinels(config_dir).list_open_with_unreadable()
+    except OSError as exc:
+        logger.warning("visit admission: forget record directory unreadable, refusing: %s", type(exc).__name__)
+        return FORGET_REFUSAL_UNLISTABLE
+    if any(log["own_char_uid"] == own_char_uid and ours(log["own_uid"]) for log in logs):
+        return FORGET_REFUSAL_IN_PROGRESS
+    if any(ours(doc["own_uid"]) and sentinel_covers(doc, own_char_uid) for doc in sentinels):
+        return FORGET_REFUSAL_IN_PROGRESS
+    damaged = [
+        hint for hint in hints
+        if ours(hint.get("own_uid"))
+        and (hint.get("own_char_uids") is None or own_char_uid in hint["own_char_uids"])
+    ]
+    if unreadable_logs or damaged:
+        logger.warning("visit admission: %d unreadable forget record(s), refusing",
+                       len(unreadable_logs) + len(damaged))
+        return FORGET_REFUSAL_UNREADABLE
+    return None
 
 
 async def build_visit_memory_block(
@@ -229,7 +286,7 @@ async def build_visit_memory_block(
         except asyncio.TimeoutError:
             diag("last_summary_handoff_timeout", own_char_uid=own_char_uid,
                  short_id=derive_short_code(peer_uid))
-        except Exception as exc:  # noqa: BLE001 - 交接失败不挡开场，按现有那份开场
+        except Exception as exc:  # noqa: BLE001 - Handoff failure does not block opening; use existing opening context.
             diag("last_summary_handoff_failed", error=repr(exc))
     if await forget_in_progress(config_dir, own_char_uid, peer_uid, own_uid=own_uid):
         diag("memory_block_skipped_forget_in_progress", own_char_uid=own_char_uid,
@@ -259,7 +316,7 @@ async def build_visit_memory_block(
         if context:
             parts.append(context)
     result = _CONTEXT_JOINER.join(parts)
-    # 拼接处的换行可能与两侧合并成别的 token：最后整体再量一次，超了就截
+    # Joined newlines may merge with adjacent tokens; remeasure whole result, truncate if over budget.
     if await acount_tokens(result) > max_tokens:
         result = await atruncate_to_tokens(result, max_tokens)
     return result
@@ -275,7 +332,7 @@ async def list_visit_subjects(name: str, *, client: ScopedMemoryClient | None = 
     return await client.list_scoped_subjects(name, platform=VISIT_MEMORY_PLATFORM)
 
 
-# ── 写 ────────────────────────────────────────────────────────────────
+# ── Write ─────────────────────────────────────────────────────────────
 
 
 async def post_visit_digest(
@@ -321,7 +378,7 @@ async def post_visit_digest(
             name, subject=subject, messages=messages,
             idempotency_key=idempotency_key, client_requested_at=client_requested_at,
             subject_epochs=dict(subject_epochs) if subject_epochs is not None else None,
-            # 转录记录时定格的语言：抽取语境与语言状态都按它，而不是补录时的当前界面语言
+            # Language frozen at transcript recording drives extraction and language state, not UI language during later backfill.
             language=lang,
         ),
         shutdown=shutdown, failed=False,
@@ -422,7 +479,7 @@ async def post_visit_segments(
         ),
         shutdown=shutdown, failed=False,
     )
-    # 同一个幂等键下整批成败：服务端按键记录整批，部分成功也只能同键整批重试
+    # Whole-batch success/failure under one idempotency key: server records batches, so partial success still retries whole batch with same key.
     return bool(result)
 
 

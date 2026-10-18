@@ -22,7 +22,7 @@ Handles memory-related endpoints including:
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -33,12 +33,14 @@ import hashlib
 import os
 import re
 import json
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from contextlib import suppress
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.character_memory import (
@@ -49,8 +51,8 @@ from utils.character_memory import (
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
-# merged 单进程（发行版默认）下，本模块与 memory_server 的写者同处一个进程，
-# 共用 utils.recent_file 的 per-path 锁；裸 atomic_write_json_async 会绕过它。
+# In merged single-process mode (release default), this module and memory_server writers share a process
+# and utils.recent_file's per-path lock; bare atomic_write_json_async bypasses it.
 from utils.recent_file import (
     RecentFileDeletedError,
     capture_recent_generation,
@@ -71,6 +73,13 @@ from memory.external_markdown_import import (
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
+# Request-level serialization for memory switches differs from core_config.json's file-write lock:
+# - config_manager.aupdate_json_config guarantees file consistency, preventing stale-snapshot overwrite
+#   across read-modify-write. /core_api saves and startup migration use the same lock.
+# - This additional lock covers the up-to-10-second memory_server migration when disabling strong memory, making
+#   switch requests and frontend-recovery GET reads wait for the in-flight operation's final result.
+# Slow migration runs outside the file lock, leaving /core_api and other writers unblocked during those ten seconds.
+_memory_toggle_write_lock = asyncio.Lock()
 
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
 # Uses blacklist approach instead of whitelist to support CJK characters
@@ -453,20 +462,20 @@ def validate_catgirl_name(name: str, allow_dots: bool = False, *, reject_reserve
     return True, ""
 
 
-# 单条消息文本上限(字符)。现场触发的内存尖峰复盘:用户从外部
-# 复制一坨长文本粘贴进 recent → 整段以单条 message 形式落盘 → 后续
-# memory pipeline 把这条当成「stale entry」喂给 embedder → batch 内
-# pad-to-longest 把激活内存顶到多 GB(虽然 embedder 侧已加 token 预算
-# 兜底,这里仍在边界堵住「单条 megablob」的入口,避免把异常大对象
-# 漫到 ndjson / db / recall 等所有下游)。32K 字符 ≈ 32K token(中文)
-# 对正常对话足够宽松(单条 5K 中文 = 一篇较长文章),又把 worst-case
-# 入站体积钉住。
+# Per-message text limit in characters. Incident: a user pasted a large external text
+# into recent, persisted as one message. The memory pipeline later fed it
+# to the embedder as a stale entry; pad-to-longest across the batch pushed
+# activation memory into multiple gigabytes. Even with embedder token-budget
+# safeguards, block single huge blobs at this boundary so oversized objects cannot
+# spread through NDJSON / database / recall. 32K characters is about 32K Chinese tokens,
+# generous for normal chats (5K Chinese characters is already a long article) while bounding
+# worst-case inbound size.
 _RECENT_MESSAGE_TEXT_MAX_CHARS = 32 * 1024
-# 整个 chat payload 的累计文本上限。控制「一次粘贴 1000 条 30K 文本」
-# 这种总量攻击/误操作。2 MB 对真实长会话仍宽裕,异常体积会被打回。
+# Cumulative chat-payload text limit prevents accidents/attacks such as pasting 1000 messages of 30K characters.
+# 2MB still accommodates real long chats while rejecting abnormal volume.
 _RECENT_CHAT_TOTAL_CHARS_MAX = 2 * 1024 * 1024
-# 消息条数上限。冗余防御:即使每条都很短,几十万条也能把后续
-# scan/embed/render 全拖死。
+# Message-count limit provides redundant protection: hundreds of thousands of short messages
+# can still overwhelm downstream scan/embed/render work.
 _RECENT_CHAT_MAX_MESSAGES = 10000
 
 
@@ -798,9 +807,14 @@ def _recent_browser_identity_token(path: Path) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
-def _read_recent_browser_text_unlocked(path: Path) -> str:
+def _read_recent_browser_text_unlocked(path: Path, *, allow_missing: bool = False) -> str:
     """Build one editable disk-plus-pending snapshot while its lock is held."""
-    content = read_recent_text_unlocked(path)
+    try:
+        content = read_recent_text_unlocked(path)
+    except FileNotFoundError:
+        if not allow_missing:
+            raise
+        content = '[]'
     pending = get_recent_pending_unlocked(path)
     if not pending:
         return content
@@ -822,11 +836,11 @@ def _read_recent_browser_text(path: Path) -> str:
         return _read_recent_browser_text_unlocked(resolved_path)
 
 
-def _read_recent_browser_snapshot(path: Path) -> tuple[str, str]:
+def _read_recent_browser_snapshot(path: Path, *, allow_missing: bool = False) -> tuple[str, str]:
     """Read editable content and its opaque identity while holding one lock."""
     with recent_file_access(path) as resolved_path:
         return (
-            _read_recent_browser_text_unlocked(resolved_path),
+            _read_recent_browser_text_unlocked(resolved_path, allow_missing=allow_missing),
             _recent_browser_identity_token(Path(resolved_path)),
         )
 
@@ -899,7 +913,7 @@ def _merge_browser_payload_with_theater(
             and not isinstance(source, bool)
             and cursor <= source < len(current)
         ):
-            # 旧客户端只回传 {role, text}：按类型 + 原文向前对齐，编辑过的条目对不上。
+            # Legacy clients return only {role, text}: align forward by type and original text; edited entries will not match.
             source = None
             item_key = _recent_payload_type_and_content(item)
             for index in range(cursor, len(current)):
@@ -908,7 +922,7 @@ def _merge_browser_payload_with_theater(
                     break
         if source is None:
             if chat_item.get("theater"):
-                # 浏览器标成剧场的条目绝不能以普通文本写回；原件会从快照补回。
+                # Browser-labeled theater entries must never be saved as ordinary text; restore originals from snapshots.
                 continue
             has_unresolved_item = True
             merged.append(item)
@@ -928,8 +942,8 @@ def _merge_browser_payload_with_theater(
         merged.append(item)
     merged.extend(current[index] for index in theater_indexes[next_theater:])
     if has_unresolved_item and len(matched_theater) < len(theater_indexes):
-        # 有剧场胶囊没被对上，同时又有对不上原文的条目：它可能正是被旧页面改过的
-        # 胶囊，写回就会把剧场虚构当成日常记忆。宁可拒绝，让用户重新加载。
+        # Unmatched theater capsules alongside entries differing from original text may be capsules edited by old pages;
+        # writing them back turns theater fiction into everyday memory. Reject and require reload instead.
         raise _RecentBrowserTheaterEditRejected()
     return merged
 
@@ -942,13 +956,15 @@ def _write_recent_browser_payload(
     expected_identity_token: str | None,
     expected_generation: tuple[str, int],
     browser_chat: list | None = None,
+    allow_missing: bool = False,
+    before_write=None,
 ) -> tuple[bool, str, str]:
     """Replace a browser snapshot unless disk or pending state changed since read."""
     with recent_file_access(
         path, expected_generation=expected_generation,
     ) as resolved_path:
         current_identity_token = _recent_browser_identity_token(Path(resolved_path))
-        current_text = _read_recent_browser_text_unlocked(resolved_path)
+        current_text = _read_recent_browser_text_unlocked(resolved_path, allow_missing=allow_missing)
         current_fingerprint = _recent_browser_fingerprint(current_text)
         if (
             expected_identity_token is not None
@@ -958,10 +974,15 @@ def _write_recent_browser_payload(
             and expected_fingerprint != current_fingerprint
         ):
             return False, current_fingerprint, current_identity_token
-        # 剧场胶囊只能经 /cache 与 /theater/forget 维护；浏览器保存原样保留。
+        # Maintain theater capsules only through /cache and /theater/forget; browser saves preserve them unchanged.
         payload = _merge_browser_payload_with_theater(
             current_text, payload, browser_chat,
         )
+        # Register exact deletion intent only after CAS and theater validation.
+        # The callback commits local outboxes, never remote I/O. It runs before
+        # JSON replacement so a crash cannot silently lose an approved deletion.
+        if before_write is not None:
+            before_write()
         write_recent_payload_unlocked(resolved_path, payload)
         set_recent_pending_unlocked(resolved_path, [])
         saved_text = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -1233,11 +1254,54 @@ async def get_recent_files():
             seen.add(logical_name)
             file_names.append(logical_name)
 
+    # A role with phone-only history may not have a recent-memory file yet.
+    # Listing its logical editor target never writes memory or binds a role.
+    loader = getattr(cm, 'aload_characters', None)
+    if loader is not None:
+        from utils.config_manager.reserved_schema import get_character_uid
+        characters = await loader()
+        for name, profile in characters.get('猫娘', {}).items():
+            logical_name = f'recent_{name}.json'
+            if (isinstance(profile, dict) and get_character_uid(profile)
+                    and validate_recent_filename(logical_name)[0] and logical_name not in seen):
+                seen.add(logical_name)
+                file_names.append(logical_name)
+
     return {"files": sorted(file_names)}
 
 
+async def _memory_chat_uid(cm, name: str) -> str | None:
+    """Resolve saved role identity; never associate raw chats by display text."""
+    from utils.config_manager.reserved_schema import get_character_uid
+    loader = getattr(cm, 'aload_characters', None)
+    if loader is None:
+        return None
+    data = await loader()
+    profile = data.get('猫娘', {}).get(name)
+    return get_character_uid(profile) if isinstance(profile, dict) else None
+
+
+def _memory_chat_binding(binding) -> dict | None:
+    """Fence an editor against account, binding and generation changes."""
+    if binding is None:
+        return None
+    return {key: binding[key] for key in ('owner_id', 'binding_id', 'generation')}
+
+
+async def _memory_chat_snapshot(cm, uid: str) -> dict:
+    from services.chat_sync.runtime import get_desktop_chat_sync_runtime
+    runtime = await get_desktop_chat_sync_runtime(cm)
+    binding = _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid))
+    originals = await runtime.history(uid)
+    local_replies = await runtime.local_replies(uid)
+    if binding != _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid)):
+        raise HTTPException(409, 'chat_sync_binding_changed')
+    return {'characterSyncId': uid, 'binding': binding,
+            'originals': originals, 'localReplies': local_replies}
+
+
 @router.get('/recent_file')
-async def get_recent_file(filename: str):
+async def get_recent_file(filename: str, request: Request = None, include_chat_sync: bool = False):
     """Get the content of the specified recent*.json file."""
     # Reject path traversal attempts
     if '/' in filename or '\\' in filename or '..' in filename:
@@ -1249,27 +1313,39 @@ async def get_recent_file(filename: str):
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
 
-    resolved_path, path_error, path_error_code, _catgirl_name = resolve_recent_file_path(cm, filename)
+    uid = None
+    if include_chat_sync:
+        from main_routers.chat_sync_router import _local_access
+        await _local_access(request, Response())
+        uid = await _memory_chat_uid(cm, extract_catgirl_name_from_recent_filename(filename))
+
+    resolved_path, path_error, path_error_code, catgirl_name = resolve_recent_file_path(cm, filename)
+    if resolved_path is None and uid and path_error_code == PATH_ERROR_NOT_FOUND:
+        resolved_path = Path(cm.memory_dir) / catgirl_name / 'recent.json'
     if resolved_path is None:
         status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
-    # offload 同步 read 到线程池：recent.json 单文件可达数 MB。
-    # 走文件锁：Windows 上一个裸 open() 就能让并发的 os.replace 抛 PermissionError。
+    # Offload synchronous reads: recent.json can reach several megabytes.
+    # Hold the file lock: on Windows even a bare open() can make concurrent os.replace raise PermissionError.
     try:
         content, identity_token = await asyncio.to_thread(
-            _read_recent_browser_snapshot, resolved_path,
+            _read_recent_browser_snapshot, resolved_path, **({'allow_missing': True} if uid else {}),
         )
     except RecentFileDeletedError:
         return JSONResponse(
             {"success": False, "error": "文件不存在"},
             status_code=path_error_status_code(PATH_ERROR_NOT_FOUND),
         )
-    return {
+    result = {
         "content": content,
         "fingerprint": _recent_browser_fingerprint(content),
         "identity_token": identity_token,
     }
+    if include_chat_sync:
+        result['chat_sync'] = await _memory_chat_snapshot(cm, uid) if uid else None
+        return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+    return result
 
 
 @router.post('/recent_file/save')
@@ -1314,8 +1390,28 @@ async def save_recent_file(request: Request):
         logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
-    # 保存到读取时会解析到的同一布局；旧版 flat/project 文件不能被悄悄
-    # 改写到一个尚不存在的 runtime nested 路径，否则 CAS 比较失去对象。
+    sync_edit = data.get('chat_sync')
+    runtime = None
+    if sync_edit is not None:
+        from main_routers.chat_sync_router import _local_access
+        from services.chat_sync.ledger import _message_ids
+        from services.chat_sync.runtime import get_desktop_chat_sync_runtime
+        await _local_access(request, Response())
+        try:
+            if (not isinstance(sync_edit, dict)
+                    or set(sync_edit) != {'characterSyncId', 'binding', 'messageIds', 'localMessageIds'}):
+                raise ValueError('chat_sync_invalid_editor_save')
+            _message_ids(sync_edit['messageIds'], allow_empty=True)
+            _message_ids(sync_edit['localMessageIds'], allow_empty=True)
+        except (ValueError, TypeError):
+            raise HTTPException(400, 'chat_sync_invalid_editor_save') from None
+        uid = await _memory_chat_uid(cm, catgirl_name)
+        if not uid or uid != sync_edit['characterSyncId']:
+            raise HTTPException(409, 'chat_sync_binding_changed')
+        runtime = await get_desktop_chat_sync_runtime(cm)
+
+    # Save into the same layout reads resolve; never silently move legacy flat/project files into nonexistent
+    # runtime nested paths, or CAS comparisons lose their target.
     resolved_path, _path_error, path_error_code, _ = resolve_recent_file_path(
         cm, filename,
     )
@@ -1350,17 +1446,58 @@ async def save_recent_file(request: Request):
                 **({"tool_calls": [], "invalid_tool_calls": [], "usage_metadata": None} if t == "ai" else {})
             }
         })
+    deletion_receipt = None
+    loop = asyncio.get_running_loop()
+
+    async def _register_chat_deletions():
+        nonlocal deletion_receipt
+        from services.chat_sync.source import clear_local_replies
+        from services.chat_sync.profile_sync import DesktopProfileAdapter
+        if (sync_edit['messageIds'] or sync_edit['localMessageIds']) and DesktopProfileAdapter(cm).busy(catgirl_name):
+            raise HTTPException(409, 'chat_sync_reply_in_progress')
+        # Recheck inside the locked save, after the recent-file CAS succeeded.
+        if (uid != await _memory_chat_uid(cm, catgirl_name)
+                or sync_edit['binding'] != _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid))):
+            raise HTTPException(409, 'chat_sync_binding_changed')
+        ids = sync_edit['messageIds']
+        try:
+            deletion_receipt = (await runtime.delete(uid, ids, expected_binding=sync_edit['binding']) if ids else
+                                {'messageIds': [], 'deletionIds': [], 'pending': False})
+        except ValueError as exc:
+            if str(exc) == 'chat_sync_binding_changed':
+                raise HTTPException(409, 'chat_sync_binding_changed') from None
+            raise
+        deletion_receipt['localMessageIds'] = []
+        deletion_receipt['localMessageIds'] = await clear_local_replies(runtime, uid, sync_edit['localMessageIds'])
+        if ids:
+            runtime.start_deletion_flush(uid)
+
+    def _before_write():
+        # The event loop remains free while the recent-file worker owns its lock.
+        # Reuse the normal durable deletion/outage pipeline; never infer IDs from
+        # edited memory, source indexes, text, or timestamps. Tool reply deletion
+        # stays local until a future explicit tool-sync protocol is approved.
+        asyncio.run_coroutine_threadsafe(_register_chat_deletions(), loop).result()
+
     async def _commit_browser_save():
         try:
-            saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
-                _write_recent_browser_payload,
-                resolved_path,
-                arr,
-                expected_fingerprint=snapshot_fingerprint,
-                expected_identity_token=snapshot_identity_token,
-                expected_generation=admission_generation,
-                browser_chat=chat,
-            )
+            # The locked file worker must not occupy the pool used by its
+            # async deletion callback; even a one-worker default pool can finish.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-save") as save_executor:
+                saved, saved_fingerprint, saved_identity_token = await loop.run_in_executor(
+                    save_executor, partial(
+                        _write_recent_browser_payload,
+                        resolved_path,
+                        arr,
+                        expected_fingerprint=snapshot_fingerprint,
+                        expected_identity_token=snapshot_identity_token,
+                        expected_generation=admission_generation,
+                        browser_chat=chat,
+                        allow_missing=runtime is not None,
+                        before_write=_before_write if runtime is not None else None,
+                    ),
+                )
+
         except _RecentBrowserTheaterEditRejected:
             return JSONResponse(
                 {
@@ -1386,10 +1523,10 @@ async def save_recent_file(request: Request):
             )
         
         if catgirl_name:
-            # 中断 memory_server 的 review 任务
+            # Interrupt memory_server review tasks.
             import httpx
             from config import MEMORY_SERVER_PORT
-            # per-call AsyncClient: 用户手动保存最近对话触发，冷路径
+            # Per-call AsyncClient: cold path triggered by manually saving recent conversations.
             try:
                 async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                     await client.post(
@@ -1400,14 +1537,18 @@ async def save_recent_file(request: Request):
             except Exception as e:
                 logger.warning(f"Failed to cancel correction task: {e}")
         
-        # 返回成功并提示需要刷新上下文
-        return {
+        # Return success with a context-refresh hint.
+        result = {
             "success": True,
             "need_refresh": True,
             "catgirl_name": catgirl_name,
             "fingerprint": saved_fingerprint,
             "identity_token": saved_identity_token,
         }
+        if deletion_receipt is not None:
+            result['chat_deletion'] = deletion_receipt
+            result['characterSyncId'] = uid
+        return result
 
     try:
         result, save_cancelled = await _await_browser_save_transaction(
@@ -1418,8 +1559,15 @@ async def save_recent_file(request: Request):
         return result
     except MaintenanceModeError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to save recent file: {e}")
+        if deletion_receipt is not None:
+            # The outbox is durable even if JSON replacement fails. Keep this
+            # partial outcome visible; retries of the same exact IDs are safe.
+            return JSONResponse({'success': False, 'code': 'CHAT_DELETION_SAVED_MEMORY_FAILED',
+                                 'chat_deletion': deletion_receipt, 'characterSyncId': uid}, status_code=503)
         return {"success": False, "error": str(e)}
 
 
@@ -1455,7 +1603,7 @@ async def update_catgirl_name(request: Request):
         characters = await cm.aload_characters()
         catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
 
-        # 兼容旧客户端在 canonical rename 成功后重复调用本端点的幂等路径。
+        # Idempotent compatibility for old clients calling this endpoint after canonical rename succeeds.
         if old_name not in catgirls and new_name in catgirls:
             if character_memory_exists(cm, old_name):
                 return JSONResponse(
@@ -1472,8 +1620,8 @@ async def update_catgirl_name(request: Request):
                 "already_renamed": True,
             }
 
-        # 单独移动 memory 会绕过角色改名事务的 task drain、配置发布和回滚。
-        # 统一委托 canonical route，避免旧派生任务沿 recent redirect 写进新角色。
+        # Moving memory separately bypasses rename-transaction task draining, configuration publication, and rollback.
+        # Delegate to the canonical route so old derived tasks cannot follow recent redirects into a new character.
         from .characters_router.crud import rename_catgirl
 
         return await rename_catgirl(old_name, request)
@@ -1484,19 +1632,42 @@ async def update_catgirl_name(request: Request):
         return {"success": False, "error": str(exc)}
 
 
+class _InvalidMemoryToggleValue(ValueError):
+    """A readable configuration contains a setting that can be explicitly repaired."""
+
+
+def _load_memory_toggle_config(config_manager):
+    """Default a missing file to an empty object without hiding read errors."""
+    from utils.config_manager.json_update import load_json_config_snapshot
+    return load_json_config_snapshot(config_manager, 'core_config.json')
+
+
+def _load_memory_toggle_enabled(config_manager, key):
+    """Default missing settings to on, but reject invalid stored values."""
+    config_data = _load_memory_toggle_config(config_manager)
+    enabled = config_data.get(key, True)
+    if not isinstance(enabled, bool):
+        raise _InvalidMemoryToggleValue('Invalid memory setting value')
+    return enabled
+
+
 @router.get('/review_config')
 async def get_review_config():
     """Get the memory review configuration."""
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = await asyncio.to_thread(
-            config_manager.load_json_config, 'core_config.json', default_value={}
-        )
-        return {"enabled": config_data.get('recent_memory_auto_review', True)}
+        async with _memory_toggle_write_lock:
+            enabled = await asyncio.to_thread(
+                _load_memory_toggle_enabled, config_manager, 'recent_memory_auto_review'
+            )
+        return {"enabled": enabled}
     except Exception as e:
         logger.error(f"读取记忆整理配置失败: {e}")
-        return {"enabled": True}
+        error = {"error": "Failed to read memory review configuration"}
+        if isinstance(e, _InvalidMemoryToggleValue):
+            error["code"] = "invalid_memory_setting"
+        return JSONResponse(error, status_code=503)
 
 
 @router.post('/review_config')
@@ -1504,24 +1675,23 @@ async def update_review_config(request: Request):
     """Update the memory review configuration."""
     try:
         data = await request.json()
-        enabled = data.get('enabled', True)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"success": False, "error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(data, dict) or not isinstance(data.get('enabled'), bool):
+        return JSONResponse({"success": False, "error": "enabled must be a boolean"}, status_code=400)
+    enabled = data['enabled']
 
+    try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = await asyncio.to_thread(
-            config_manager.load_json_config, 'core_config.json', default_value={}
-        )
+        async with _memory_toggle_write_lock:
+            def _set_review(config_data):
+                config_data['recent_memory_auto_review'] = enabled
 
-        # 更新配置
-        config_data['recent_memory_auto_review'] = enabled
+            await config_manager.aupdate_json_config('core_config.json', _set_review)
 
-        # 保存配置
-        await asyncio.to_thread(
-            config_manager.save_json_config, 'core_config.json', config_data
-        )
-
-        logger.info(f"记忆整理配置已更新: enabled={enabled}")
-        return {"success": True, "enabled": enabled}
+            logger.info(f"记忆整理配置已更新: enabled={enabled}")
+            return {"success": True, "enabled": enabled}
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -1535,13 +1705,17 @@ async def get_powerful_memory_config():
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = await asyncio.to_thread(
-            config_manager.load_json_config, 'core_config.json', default_value={}
-        )
-        return {"enabled": config_data.get('powerful_memory_enabled', True)}
+        async with _memory_toggle_write_lock:
+            enabled = await asyncio.to_thread(
+                _load_memory_toggle_enabled, config_manager, 'powerful_memory_enabled'
+            )
+        return {"enabled": enabled}
     except Exception as e:
         logger.error(f"读取强力记忆配置失败: {e}")
-        return {"enabled": True}
+        error = {"error": "Failed to read powerful memory configuration"}
+        if isinstance(e, _InvalidMemoryToggleValue):
+            error["code"] = "invalid_memory_setting"
+        return JSONResponse(error, status_code=503)
 
 
 @router.post('/powerful_memory_config')
@@ -1556,66 +1730,77 @@ async def update_powerful_memory_config(request: Request):
     """
     try:
         data = await request.json()
-        enabled = data.get('enabled', True)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"success": False, "error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(data, dict) or not isinstance(data.get('enabled'), bool):
+        return JSONResponse({"success": False, "error": "enabled must be a boolean"}, status_code=400)
+    enabled = data['enabled']
 
+    try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = await asyncio.to_thread(
-            config_manager.load_json_config, 'core_config.json', default_value={}
-        )
+        async with _memory_toggle_write_lock:
+            config_data = await asyncio.to_thread(
+                _load_memory_toggle_config, config_manager
+            )
 
-        prev_enabled = config_data.get('powerful_memory_enabled', True)
-        config_data['powerful_memory_enabled'] = enabled
+            prev_enabled = config_data.get('powerful_memory_enabled', True)
 
-        # 开→关切换：先跑 migration（重置所有角色 confirmed reflection 的
-        # confirmed_at 到 now，让 time-driven fallback 走完整 14 天计时），
-        # **成功后**再 save config。否则 migration 失败后 config 已经
-        # `False`，下一次用户点关也不会再进 prev_enabled and not enabled 分
-        # 支，旧 confirmed_at 锚点永久漏迁移，旧 confirmed 可能立刻被 time-
-        # driven 抓走 promote。必须原子：要么两者都成功，要么都失败。
-        # 必须走 HTTP 调 memory_server——本 router 在 main_server 进程，直接
-        # `from memory_server import ...` 拿到的是 fresh 副本，reflection_engine
-        # 是 None，migration 会静默 no-op。memory_server 跑在独立进程
-        # (MEMORY_SERVER_PORT)，那里 reflection_engine 由 startup hook 初始化。
-        if prev_enabled and not enabled:
-            try:
-                from config import MEMORY_SERVER_PORT
-                from utils.internal_http_client import get_internal_http_client
-                client = get_internal_http_client()
-                resp = await client.post(
-                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/reset_confirmed_at",
-                    timeout=10.0,
-                )
-                if resp.status_code != 200:
-                    logger.warning(
-                        f"强力记忆切换 migration HTTP 状态码 {resp.status_code}，配置未保存"
+            # ON -> OFF: migrate first, resetting every character's confirmed-reflection confirmed_at
+            # to now so time-driven fallback gets a full 14-day countdown;
+            # save configuration only after success. Otherwise failed migration leaves configuration
+            # False, and later disable clicks never enter prev_enabled and not enabled again,
+            # permanently missing old confirmed_at anchors; old confirmed reflections may immediately
+            # promote through time-driven fallback. Require atomic success or failure of both.
+            # Call memory_server via HTTP: this router lives in main_server; directly importing
+            # memory_server gets a fresh copy with reflection_engine None, making migration
+            # silently noop. memory_server runs separately at MEMORY_SERVER_PORT,
+            # where startup hooks initialize reflection_engine.
+            # Only a confirmed false may skip migration; legacy values are unknown.
+            if prev_enabled is not False and not enabled:
+                try:
+                    from config import MEMORY_SERVER_PORT
+                    from utils.internal_http_client import get_internal_http_client
+                    client = get_internal_http_client()
+                    resp = await client.post(
+                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/reset_confirmed_at",
+                        timeout=10.0,
                     )
-                    return {
-                        "success": False,
-                        "error": f"migration HTTP {resp.status_code}",
-                    }
-                payload = resp.json()
-                if not isinstance(payload, dict) or not payload.get('ok'):
-                    err = payload.get('error', 'migration returned ok=false') if isinstance(payload, dict) else 'migration payload invalid'
-                    logger.warning(f"强力记忆切换 migration 失败，配置未保存: {err}")
-                    return {"success": False, "error": err}
-                migrated = int(payload.get('count', 0))
-                logger.info(
-                    f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
-                    f"reflection 的 confirmed_at 锚点"
-                )
-            except Exception as e:
-                logger.warning(f"强力记忆切换 migration 异常，配置未保存: {e}")
-                return {"success": False, "error": str(e)}
+                    if resp.status_code != 200:
+                        logger.warning(
+                            f"强力记忆切换 migration HTTP 状态码 {resp.status_code}，配置未保存"
+                        )
+                        return {
+                            "success": False,
+                            "error": f"migration HTTP {resp.status_code}",
+                        }
+                    payload = resp.json()
+                    if not isinstance(payload, dict) or not payload.get('ok'):
+                        err = payload.get('error', 'migration returned ok=false') if isinstance(payload, dict) else 'migration payload invalid'
+                        logger.warning(f"强力记忆切换 migration 失败，配置未保存: {err}")
+                        return {"success": False, "error": err}
+                    migrated = int(payload.get('count', 0))
+                    logger.info(
+                        f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
+                        f"reflection 的 confirmed_at 锚点"
+                    )
+                except Exception as e:
+                    logger.warning(f"强力记忆切换 migration 异常，配置未保存: {e}")
+                    return {"success": False, "error": str(e)}
 
-        # Migration 成功（或非 ON→OFF 切换）才落盘配置——保证用户从前端
-        # 视角看到的 toggle 状态与 reflection_engine 实际状态一致。
-        await asyncio.to_thread(
-            config_manager.save_json_config, 'core_config.json', config_data
-        )
+            # Persist configuration only after successful migration or a non-ON->OFF change, keeping
+            # frontend toggle state consistent with actual reflection_engine state.
+            # config_data above determines prev_enabled only. Reread the file after migration before
+            # writing, preserving fields others saved during the migration seconds.
+            # Only this route writes the key and _memory_toggle_write_lock serializes it,
+            # so prev_enabled remains valid at persistence time.
+            def _set_powerful(fresh_config):
+                fresh_config['powerful_memory_enabled'] = enabled
 
-        logger.info(f"强力记忆配置已更新: enabled={enabled} (prev={prev_enabled})")
-        return {"success": True, "enabled": enabled}
+            await config_manager.aupdate_json_config('core_config.json', _set_powerful)
+
+            logger.info(f"强力记忆配置已更新: enabled={enabled} (prev={prev_enabled})")
+            return {"success": True, "enabled": enabled}
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -1624,14 +1809,14 @@ async def update_powerful_memory_config(request: Request):
 
 
 # ---------------------------------------------------------------
-# Legacy memory 扫描 / 手动清理（对应前端"清理遗留记忆"按钮）
+# Legacy memory scanning / manual cleanup for the frontend's clean-legacy-memory button.
 # ---------------------------------------------------------------
 #
-# 设计目标：列出不在当前 runtime ``memory_dir`` 下、但可能有历史遗留角色
-# 记忆的根目录（Documents / CFA 回退原路径 / 历史可读 Documents 候选），让
-# 用户主动勾选清理。默认不自动删，任何删除必须由 POST /legacy/purge 带
-# 明确路径列表触发，且路径必须落在 scan 返回的 ``legacy_roots[].root``
-# 白名单下（防路径逃逸）。
+# List roots outside current runtime memory_dir that may hold historical character memories
+# (Documents / former CFA fallback path / historical readable Documents candidates), letting
+# users explicitly select cleanup. Never delete automatically: POST /legacy/purge must
+# supply explicit paths under scan's legacy_roots[].root whitelist
+# to prevent path escape.
 
 
 def _collect_legacy_memory_roots(config_manager) -> list[tuple[Path, str]]:
@@ -1787,23 +1972,23 @@ async def preview_external_memory_import(request: Request):
         counts = {
             "persona": len(persona_cands),
             "facts": sum(1 for item in analysis["candidates"] if item["target"] == "facts"),
-            # daily 日记走 commit 阶段 LLM 抽取，preview 显示的是解析出的片段数（近似）。
+            # Daily diaries use commit-stage LLM extraction; preview shows an approximate parsed-fragment count.
             "daily": sum(1 for item in analysis["candidates"] if item.get("kind") == "daily"),
         }
-        # ETA 估算用料（前端据此估时、标注 240s 上限）：persona 融合按 entity
-        # (neko / master) 分组，每组一次 LLM 往返；daily 日记按天（=source_file）
-        # 各一次 LLM 抽取；MEMORY.md facts 走纯写盘、不调 LLM。0 次调用 → 前端
-        # 回退到无预估文案。
+        # ETA inputs (frontend estimates time and labels the 240s limit): persona fusion groups by entity
+        # (neko/master), with one LLM roundtrip each; diaries get one extraction per day/source_file;
+        # MEMORY.md facts are disk writes without LLM calls. Zero calls makes the frontend
+        # use text without an estimate.
         persona_fusion_calls = len({(item.get("entity") or "master") for item in persona_cands})
         daily_cands = [item for item in analysis["candidates"] if item.get("kind") == "daily"]
         daily_by_file: dict[str, list[str]] = {}
         for item in daily_cands:
             daily_by_file.setdefault(str(item.get("source_file") or ""), []).append(item["text"])
 
-        # count_tokens / 分批逐条编码；接近 8 MiB / 1000 条上限的导入会阻塞事件
-        # 循环，与上面 _prepare_external_import 一致 offload 到线程池。daily 调用
-        # 次数用与 commit 侧同一个 batch_daily_fragments 算（超长天会拆多批），
-        # 保证 ETA 的调用计数与实际执行永不漂移。
+        # count_tokens encodes items in batches; imports near 8MiB / 1000 entries block the event
+        # loop, so offload like _prepare_external_import above. Count diary calls with the same
+        # batch_daily_fragments used at commit (long days split into multiple batches),
+        # ensuring estimated call counts never drift from execution.
         def _eta_inputs():
             from config import EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS
             persona_tokens = sum(count_tokens(item["text"]) for item in persona_cands)
@@ -1880,9 +2065,9 @@ async def commit_external_memory_import(request: Request):
             # a durable preference. ``render_language`` is a validated, render-only
             # fallback; the memory server still resolves durable state at execution.
             json=memory_payload,
-            # persona 导入现在按 entity 同步跑 LLM 融合（每 entity 可数十秒），
-            # 30s 不够；放宽到 240s 覆盖 master+neko 两段融合。前端 commit 超时
-            # (memory_browser.js, 270s) 再略大于此，保证后端先返回而非前端先断。
+            # Persona import now runs synchronous LLM fusion per entity, potentially tens of seconds each;
+            # 30s is insufficient. Allow 240s for master+neko; frontend commit timeout
+            # (memory_browser.js, 270s) stays slightly higher so backend responses arrive before frontend disconnect.
             timeout=240.0,
         )
         if response.status_code != 200:
@@ -1894,9 +2079,9 @@ async def commit_external_memory_import(request: Request):
                 detail = None
             error_code = upstream_error.get("error_code")
             if error_code in ("external_import_partial", "external_import_too_large"):
-                # 透传上游错误码 + partial 元数据（含已落盘的 added_persona）+ 状态码
-                # （partial=500 / too_large=413），否则前端拿不到对应分支的引导与
-                # memory_edited 广播（Codex P2）。
+                # Forward upstream error codes, partial metadata including persisted added_persona, and status
+                # (partial=500 / too_large=413), or the frontend loses branch-specific guidance
+                # and memory_edited broadcasts (Codex P2).
                 return JSONResponse(
                     {
                         "success": False,
@@ -2179,7 +2364,7 @@ async def purge_legacy_memory(request: Request):
             })
             continue
 
-        # 通过所有校验，执行删除（PermissionError 重试一次）
+        # All checks passed: delete, retrying PermissionError once.
         async def _rmtree_once(p: Path) -> None:
             if p.is_dir():
                 await asyncio.to_thread(shutil.rmtree, p, ignore_errors=False)
@@ -2198,7 +2383,7 @@ async def purge_legacy_memory(request: Request):
             removed.append(str(target_resolved))
             logger.info(f"purge_legacy_memory: 已删除 {target_resolved}")
         except FileNotFoundError:
-            # 已经不存在，视为成功（幂等）
+            # Already absent counts as success, idempotently.
             removed.append(str(target_resolved))
             logger.debug(f"purge_legacy_memory: {target_resolved} 不存在，跳过（视为已删）")
         except Exception as exc:

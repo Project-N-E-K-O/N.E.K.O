@@ -93,17 +93,17 @@ _FORMAT_BY_PLATFORM = {"mac": MACHO, "linux": ELF, "win": PE}
 
 _NATIVE_SUFFIXES = (".so", ".dylib", ".pyd", ".dll", ".exe")
 _ARCH_TOKENS = ("x64", "arm64")
-# 供应商目录里出现的架构写法不止一种（chrome-mac-x64 / chrome-linux-arm64 / mac-arm64 ...），
-# 用「对立架构的词元」做黑名单，比要求某个确切目录名更耐得住 Playwright 改布局。
+# Vendor catalogs use multiple architecture spellings (chrome-mac-x64 / chrome-linux-arm64 / mac-arm64 ...);
+# blacklisting opposite-architecture tokens withstands Playwright layout changes better than exact directory names.
 _OPPOSITE_TOKENS = {
     "x64": ("-arm64", "_arm64", "aarch64"),
     "arm64": ("-x64", "_x64", "-x86_64", "_x86_64", "amd64"),
 }
 _VENDORED_BROWSER_DIR = "playwright_browsers"
-# 只是别让畸形目录把这一步拖死；正常 Chromium 包也就几千个文件。
+# Bound malformed-directory traversal; normal Chromium packages contain only a few thousand files.
 _BROWSER_SCAN_FILE_LIMIT = 50000
-# PE 的 e_lfanew 指向可执行头。真实文件里它是几百字节；给个宽松上界，免得
-# 一个伪造值让我们去读整个文件。
+# PE e_lfanew points to the executable header, usually a few hundred bytes in real files. Use a generous upper limit
+# so forged offsets cannot cause whole-file reads.
 _MAX_PE_HEADER_OFFSET = 4 * 1024 * 1024
 
 
@@ -136,7 +136,7 @@ def read_binary(path: Path) -> BinaryInfo | None:
     if magic in _MACHO_FAT_MAGICS:
         endian, record_size = _MACHO_FAT_MAGICS[magic]
         (count,) = struct.unpack(endian + "I", head[4:8])
-        # 限个上界，别让畸形头把内存吃穿。
+        # Bound malformed headers to avoid exhausting memory.
         if count > 64:
             return None
         blob = _read_head(path, 8 + record_size * count)
@@ -160,9 +160,9 @@ def read_binary(path: Path) -> BinaryInfo | None:
         return BinaryInfo(ELF, [_ELF_MACHINE.get(machine, f"unknown({machine})")])
 
     if magic[:2] == b"MZ":
-        # 浏览器树里每个普通文件都会流经这里，其中不乏「恰好以 MZ 开头」的数据文件。
-        # 头不足 0x40 字节时切片是空的，struct.unpack 会抛 struct.error 把闸门整个
-        # 打崩；伪造的巨大 pe_offset 还会让 _read_head 去要一个无界的读。两处都挡住。
+        # Every regular browser-tree file passes here, including data files coincidentally starting with MZ.
+        # Headers shorter than 0x40 yield empty slices; struct.unpack would raise struct.error and crash the gate.
+        # Forged huge pe_offset values would also make _read_head request unbounded reads. Guard both.
         if len(head) < 0x40:
             return None
         (pe_offset,) = struct.unpack("<I", head[0x3C:0x40])
@@ -197,8 +197,8 @@ def _entry_binary(dist_root: Path, platform: str) -> Path | None:
     if platform == "win":
         candidates = [dist_root / "projectneko_server.exe"]
     for candidate in candidates:
-        # macOS 的 dist 根上还有个同名 shell wrapper（exec 进 .app），它不是 Mach-O，
-        # read_binary 返回 None —— 跳过继续找真的那个，别把 wrapper 当主程序放行。
+        # macOS dist roots also contain same-named shell wrappers executing into .app, not Mach-O files;
+        # read_binary returns None. Continue to the actual executable instead of accepting a wrapper as the main program.
         if candidate.is_file() and read_binary(candidate) is not None:
             return candidate
     return None
@@ -213,7 +213,7 @@ def _iter_native_binaries(dist_root: Path):
     for path in dist_root.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
-        # 用相对路径判断，别把 dist_root 的祖先目录名算进来。
+        # Test relative paths, excluding dist_root ancestor-directory names.
         if _VENDORED_BROWSER_DIR in path.relative_to(dist_root).parts:
             continue
         if _looks_native(path):
@@ -250,12 +250,12 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
     for lib in _iter_native_binaries(dist_root):
         info = read_binary(lib)
         if info is None:
-            # 名字像原生库但根本不是可执行格式（占位文件、文本 stub）——不是架构问题。
+            # Native-library-like names with non-executable contents (placeholders/text stubs) are not architecture issues.
             continue
         relative = lib.relative_to(dist_root)
         if info.format != expect_format:
-            # 跨平台库混进来时架构反而是「对」的（Windows DLL 也是 PE x64），
-            # 只有格式这一维能抓住它，所以单独归一类报。
+            # Wrong-platform libraries may have the correct architecture (Windows DLLs are also PE x64);
+            # only binary format detects them, so report a separate category.
             foreign_format.append(f"{relative} is {info.format}")
         elif expect_arch not in info.arches:
             mismatched.append(f"{relative} is {'/'.join(info.arches)}")
@@ -278,9 +278,9 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
         bad_paths: list[str] = []
         wrong_binaries: list[str] = []
         wrong_format: list[str] = []
-        # 目录名和字节两道检查走同一次遍历。分两次走的话上限只约束得住第二次，
-        # 第一次照样把整棵树走完，那个上限就是摆设。也别先 sorted() 把树物化，
-        # 只对最后要打印的结果排序。
+        # Check directory names and bytes in one traversal. With two passes, only the second is bounded,
+        # while the first still walks the whole tree, defeating the cap. Do not materialize the tree with sorted();
+        # sort only final printable results.
         scanned = 0
         truncated = False
         for path in browser_root.rglob("*"):
@@ -303,14 +303,14 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
             if info is None:
                 continue
             if info.format != expect_format:
-                # 和 dist 主体同一条判据：装错平台的浏览器架构反而是「对」的
-                # （chrome-mac 底下的 PE x64 满足 x64），只有格式这维抓得住。
+                # Match dist's rule: a wrong-platform browser can still have the correct architecture
+                # (PE x64 under chrome-mac satisfies x64); only format catches it.
                 wrong_format.append(f"{relative} is {info.format}")
             elif expect_arch not in info.arches:
-                # 和 dist 主体同一条判据：不含期望架构就是错的，不只是「恰好是对立
-                # 架构」才算。原来这里放宽成只禁对立架构，理由是「Chromium 带一两个
-                # 32 位小工具属正常」—— 那是推测，拿不出证据，而且让 x86 的浏览器
-                # 二进制在 x64 包里畅通无阻。
+                # Match dist's rule: absence of the expected architecture is invalid, not merely presence of its opposite.
+                # Previously only opposite architectures were banned, assuming Chromium normally ships
+                # one or two 32-bit utilities. That was unsupported speculation and allowed x86 browser
+                # binaries unrestricted into x64 packages.
                 wrong_binaries.append(f"{relative} is {'/'.join(info.arches)}")
         if bad_paths:
             issues.append(
@@ -332,8 +332,8 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
                 + (" ..." if len(wrong_format) > 5 else "")
             )
         if truncated:
-            # 截断了就等于「后面那截没验过」。这里必须 fail-closed：否则一个越过
-            # 上限的错架构二进制会让整个闸门静默放行，比不设上限更糟。
+            # Truncation means the tail was never checked. Fail closed, or a wrong-architecture binary
+            # beyond the cap silently passes the entire gate, worse than having no cap.
             issues.append(
                 f"vendored browser tree exceeds the {_BROWSER_SCAN_FILE_LIMIT}-file scan "
                 "cap, so it could not be fully verified"

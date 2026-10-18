@@ -1089,6 +1089,13 @@
                     I.prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });
                     if (modelReturnEnterRect) {
                         I.playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);
+                    } else {
+                        // 无回归动画时清掉 prepare 留下的内联 opacity/transition（有动画时由
+                        // playModelReturnEnter 收尾清理），否则内联 opacity:1 会压过
+                        // #pngtuber-container.locked-hover-fade，锁定悬停淡化不生效（同 showLive2d）
+                        void pngtuberContainer.offsetWidth;
+                        pngtuberContainer.style.removeProperty('transition');
+                        pngtuberContainer.style.removeProperty('opacity');
                     }
                     pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
                     pngtuberContainer.querySelectorAll('.pngtuber-image').forEach((pngtuberImage) => {

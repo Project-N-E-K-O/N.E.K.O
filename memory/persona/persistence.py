@@ -141,7 +141,7 @@ class PersistenceMixin:
         Every call automatically syncs the character_card entries with characters.json.
         """
         if name in self._personas:
-            # 每次读取时同步 character card
+            # Synchronize character card on every read.
             if self._sync_character_card(name, self._personas[name]):
                 self.save_persona(name, self._personas[name])
             return self._personas[name]
@@ -156,7 +156,7 @@ class PersistenceMixin:
                     if self._is_persona_empty(data):
                         self._migrate_from_settings(name, data)
                         migrated = True
-                    # 同步 character card
+                    # Synchronize character card.
                     if self._sync_character_card(name, data):
                         migrated = True
                     if migrated:
@@ -419,10 +419,10 @@ class PersistenceMixin:
                     v = '、'.join(str(item) for item in v)
                 entry_id = self._card_entry_id(entity, k)
                 if str(k).startswith("__ai_context."):
-                    # 合成运行时上下文字段（如 __ai_context.profile_rename_events）：
-                    # value 已是自带本地化标签的完整句子，不能再前缀内部键名，
-                    # 否则裸键 "__ai_context.xxx: ..." 会原样泄漏进模型读到的 fact。
-                    # 用带点的前缀精确匹配约定命名，避免误伤 __ai_contextual_* 这类普通键。
+                    # Synthesized runtime-context fields (e.g. __ai_context.profile_rename_events):
+                    # value already contains a complete sentence with localized labels; never prefix the internal key,
+                    # or the bare "__ai_context.xxx: ..." key leaks unchanged into model-facing facts.
+                    # Match the dotted prefix precisely to avoid ordinary keys such as __ai_contextual_*.
                     text = str(v)
                 else:
                     text = f"{k}: {v}"
@@ -436,7 +436,7 @@ class PersistenceMixin:
             expected = _build_expected(card_data, entity)
             expected_ids = {eid for eid, _ in expected}
 
-            # 分离 card 条目和非 card 条目
+            # Separate card and non-card entries.
             existing_card = {}  # id → entry
             other_entries = []
             for entry in facts:
@@ -445,32 +445,32 @@ class PersistenceMixin:
                 else:
                     other_entries.append(entry)
 
-            # 按 card 顺序构建新的 card 条目列表
+            # Build the new card-entry list in card order.
             modified = False
             new_card_entries = []
             for eid, text in expected:
                 if eid in existing_card:
                     entry = existing_card[eid]
                     if entry.get('text') != text:
-                        # 文本变化 → 更新
+                        # Text changed → update.
                         old_text = entry.get('text', '')
                         entry['text'] = text
-                        # token_count 缓存是从 text 派生的；这里原地改写
-                        # text 必须同步失效缓存，否则渲染路径要等到
-                        # fingerprint mismatch 才补算，还会额外浪费一次
-                        # sha256（对偶于 amerge_into 的 _sync_mutate_entry）。
+                        # token_count cache derives from text; in-place text mutation here
+                        # must invalidate it, or rendering recalculates only after fingerprint
+                        # mismatch, wasting an additional sha256
+                        # (symmetric with amerge_into's _sync_mutate_entry).
                         self._invalidate_token_count_cache(entry)
                         # Same logic for the embedding cache: a stale
                         # vector under the old text would slip into
                         # cosine-based retrieval matches.
                         self._invalidate_embedding_cache(entry)
                         modified = True
-                        # persona 文本不写 logger
+                        # Never write persona text to logger.
                         logger.info(f"[Persona] {name}: card 同步更新 [{entity}] (old_len={len(old_text)} new_len={len(text)})")
                         print(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
                     new_card_entries.append(entry)
                 else:
-                    # 新字段 → 创建
+                    # New field → create.
                     entry = self._normalize_entry(text)
                     entry['id'] = eid
                     entry['source'] = 'character_card'
@@ -480,7 +480,7 @@ class PersistenceMixin:
                     logger.info(f"[Persona] {name}: card 同步新增 [{entity}] (len={len(text)})")
                     print(f"[Persona] {name}: card 同步新增 [{entity}] \"{text[:40]}\"")
 
-            # 检查是否有 card 中已删除的条目
+            # Check entries removed from the card.
             removed_ids = set(existing_card.keys()) - expected_ids
             if removed_ids:
                 modified = True
@@ -491,17 +491,17 @@ class PersistenceMixin:
 
 
             if modified:
-                # card 条目在前，其他条目在后
+                # Card entries first, other entries afterward.
                 section['facts'] = new_card_entries + other_entries
 
             return modified
 
-        # 同步 neko entity
+        # Synchronize neko entity.
         if name in (lanlan_basic_config or {}):
             if _sync_entity('neko', lanlan_basic_config[name]):
                 changed = True
 
-        # 同步 master entity
+        # Synchronize master entity.
         if master_basic_config and isinstance(master_basic_config, dict):
             if _sync_entity('master', master_basic_config):
                 changed = True

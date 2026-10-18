@@ -4490,7 +4490,7 @@ async def test_pregame_context_ai_human_message_keeps_watermark(monkeypatch):
     )
 
     human_message = captured["messages"][1]
-    # 收尾水印必须在 human message 末尾，且把近期记录原文包在水印之上。
+    # The closing watermark must end the human message, with the original recent records above it.
     assert human_message.content.endswith(PREGAME_CONTEXT_INPUT_WATERMARK)
     assert "昨天一起聊了很久" in human_message.content
 
@@ -6004,7 +6004,7 @@ async def test_route_start_finalizes_other_game_types_for_same_lanlan(monkeypatc
 
     _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", fake_submit)
 
-    # 假设的另一种游戏 game_type=chess；非 soccer 路径会跳过 _build_soccer_pregame_context。
+    # Hypothetical other game game_type=chess; non-soccer paths skip _build_soccer_pregame_context.
     result = await gr_runtime.game_route_start(
         "chess",
         _FakeRequest({"lanlan_name": "Lan", "session_id": "chess_match"}),
@@ -7050,9 +7050,9 @@ async def test_finalize_continues_when_voice_input_resume_fails(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_finalize_skips_voice_resume_when_lease_stayed_with_core(monkeypatch):
-    # realtime-STT 游戏：前端保持普通麦克风上传，租约 owner 全程停留在
-    # core。退出时不得调用 resume——core->core 空转换会 bump transition
-    # generation 并清空在途麦克风 PCM（codex P2）。
+    # realtime-STT game: the frontend retains normal microphone uploads, and lease ownership remains with
+    # core throughout. Do not resume on exit: a core->core no-op transition would bump transition
+    # generation and clear in-flight microphone PCM (codex P2).
     mgr = _FakeGameRouteManager()
     mgr._voice_lease_owner = "core"
     mgr._resume_independent_voice_input_after_game = AsyncMock()
@@ -7087,8 +7087,8 @@ async def test_finalize_skips_voice_resume_when_lease_stayed_with_core(monkeypat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lease_owner", ["game", "none"])
 async def test_finalize_resumes_voice_when_lease_left_core(monkeypatch, lease_owner):
-    # 浏览器 STT gate 游戏：租约被游戏接管（或接管后玩家中途关麦变 none）。
-    # 只有 game_release 能把 SUSPENDED 的 runtime 拉回来，退出时必须 resume。
+    # Browser STT gate game: the game took the lease (or ownership became none when the player later muted).
+    # Only game_release restores the SUSPENDED runtime, so exit must resume.
     mgr = _FakeGameRouteManager()
     mgr._voice_lease_owner = lease_owner
     mgr._resume_independent_voice_input_after_game = AsyncMock()
@@ -7119,9 +7119,9 @@ async def test_finalize_resumes_voice_when_lease_left_core(monkeypatch, lease_ow
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_finalize_resumes_voice_when_core_owner_but_lifecycle_suspended(monkeypatch):
-    # 边界：浏览器 STT gate 中途失败回退普通麦克风，owner 已回 core 但
-    # lifecycle 仍卡在 SUSPENDED（lease_sync 不触发 resume）。退出时仍要
-    # 补一次 game_release，否则本会话语音永久失效。
+    # Edge case: browser STT gate fails mid-game and falls back to the normal microphone; ownership returns to core but
+    # lifecycle remains SUSPENDED (lease_sync does not trigger resume). Exit must still
+    # issue game_release, or voice stays permanently broken for this session.
     mgr = _FakeGameRouteManager()
     mgr._voice_lease_owner = "core"
     mgr._asr_runtime = SimpleNamespace(

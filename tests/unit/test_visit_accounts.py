@@ -37,7 +37,7 @@ def cfg(tmp_path, monkeypatch):
 async def test_record_then_lookup(cfg):
     assert await accounts.lookup_visit_uid("u1") is None
     assert await accounts.record_account_visit_uid("u1", UID_1) is True
-    assert await accounts.record_account_visit_uid("u1", UID_1) is False      # 没变就不重写
+    assert await accounts.record_account_visit_uid("u1", UID_1) is False      # Do not rewrite unchanged data
     assert await accounts.record_account_visit_uid("u2", UID_2) is True
     assert await accounts.lookup_visit_uid("u1") == UID_1
     assert await accounts.lookup_visit_uid("u2") == UID_2
@@ -94,7 +94,7 @@ async def test_a_corrupt_map_is_kept_aside_before_recording(cfg):
     path = cfg / "visit_accounts.json"
     path.write_text("{not json", encoding="utf-8")
     assert await accounts.record_account_visit_uid("u2", UID_2) is True
-    assert (cfg / "visit_accounts.json.corrupt").read_text(encoding="utf-8") == "{not json"   # 原文件留底
+    assert (cfg / "visit_accounts.json.corrupt").read_text(encoding="utf-8") == "{not json"   # Preserve the original file
     assert await accounts.lookup_visit_uid("u2") == UID_2
 
 
@@ -104,7 +104,7 @@ async def test_a_corrupt_map_that_cannot_be_moved_aside_defers_the_write(cfg, mo
     monkeypatch.setattr(accounts, "move_aside", lambda *_a, **_k: None)
     with pytest.raises(accounts.AccountMapDeferred):
         await accounts.record_account_visit_uid("u2", UID_2)
-    assert path.read_text(encoding="utf-8") == "{not json"  # 没覆盖
+    assert path.read_text(encoding="utf-8") == "{not json"  # Not overwritten
 
 
 async def test_an_unreadable_map_is_not_replaced(cfg, monkeypatch):
@@ -114,10 +114,10 @@ async def test_an_unreadable_map_is_not_replaced(cfg, monkeypatch):
         raise PermissionError(13, "locked by another process")
 
     monkeypatch.setattr(accounts, "open", busy, raising=False)
-    with pytest.raises(accounts.AccountMapDeferred) as caught:  # 写不成要报出来（调用方据此补写），不是「已记过」的 False
+    with pytest.raises(accounts.AccountMapDeferred) as caught:  # Report write failures (so the caller can retry), rather than returning False for 'already recorded'
         await accounts.record_account_visit_uid("u2", UID_2)
-    assert "PermissionError(errno=13" in str(caught.value)  # 底层原因与 errno 留着，分得清暂时冲突与一直失败
+    assert "PermissionError(errno=13" in str(caught.value)  # Preserve the underlying cause and errno to distinguish temporary conflicts from persistent failures
     monkeypatch.undo()
     monkeypatch.setattr(accounts, "config_dir_provider", lambda: cfg)
-    assert await accounts.lookup_visit_uid("u1") == UID_1                 # u1 的映射没被只含 u2 的表覆盖
-    assert await accounts.record_account_visit_uid("u2", UID_2) is True   # 读得到了再记
+    assert await accounts.lookup_visit_uid("u1") == UID_1                 # The u1 mapping was not overwritten by the table containing only u2
+    assert await accounts.record_account_visit_uid("u2", UID_2) is True   # Record only after a successful read

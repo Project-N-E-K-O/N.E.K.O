@@ -320,6 +320,9 @@ _NATIVE_OK_THEN_SWITCH = (
 )
 
 _HELPER_TMPL = """
+const isHomeTutorialFeatureSuppressed = () => false;
+const isProactiveVisionEnabledNow = () => true;
+const releaseProactiveVisionStream = () => {};
 const results = {};
 let selected = __SOURCE_ID__;
 const S = {
@@ -360,7 +363,13 @@ def _helper_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> 
         .replace("__STREAM__", stream)
         .replace("__NATIVE__", native)
         .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
-        .replace("__HELPER__", _fn(proactive_src, "captureProactiveChatScreenshotWithSource"))
+        .replace(
+            "__HELPER__",
+            _fn(proactive_src, "isProactiveScreenshotBlocked")
+            + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+        )
     )
 
 
@@ -386,12 +395,21 @@ def test_helper_marks_backend_fallback_as_full_screen():
     assert out["data"].endswith("BACKEND")
 
 
-@pytest.mark.parametrize("mode", ["cached", "native", "stream", "retry"])
+@pytest.mark.parametrize("mode", ["cached", "native", "stream", "retry", "fail", "fail-switched"])
 def test_proactive_chat_discards_frames_when_remembered_identity_changes(mode: str):
-    """Every successful async capture route must reject a superseded window frame."""
+    """Every successful async capture route must reject a superseded window frame.
+
+    ``fail``: the confirmed window simply could not be captured. That is a
+    technical failure, not a decline, and must still not widen to the desktop.
+    ``fail-switched``: capture failed after the remembered window changed; the
+    old Phase 1 image belongs to an unconfirmed window, so this is a decline.
+    """
     proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
     script = """
 const mode = '__MODE__';
+const isHomeTutorialFeatureSuppressed = () => false;
+const isProactiveVisionEnabledNow = () => true;
+const releaseProactiveVisionStream = () => {};
 const results = {};
 let current = true;
 function makeStream(label) {
@@ -434,6 +452,7 @@ const getDesktopProvider = () => mode === 'native'
 let acquireCount = 0;
 const acquireOrReuseCachedStream = async () => {
   acquireCount += 1;
+  if (mode === 'fail-switched') current = false;
   if (mode === 'stream') return firstStream;
   if (mode === 'retry') return acquireCount === 1 ? firstStream : retryStream;
   return null;
@@ -445,14 +464,17 @@ const captureFrameFromStream = async () => {
   current = false;
   return { dataUrl: 'data:image/jpeg;base64,OLD' };
 };
-const fetchBackendScreenshot = async () => ({
-  dataUrl: 'data:image/jpeg;base64,BACKEND'
-});
+const fetchBackendScreenshot = async () => {
+  results.backend = true;
+  return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+};
 __RESOLVE__
 __HELPER__
 captureProactiveChatScreenshotWithSource().then((shot) => {
   results.data = shot && shot.dataUrl;
   results.via = shot && shot.via;
+  results.declined = shot && shot.declined === true;
+  results.allowDesktopFallback = shot && shot.allowDesktopFallback;
   console.log(JSON.stringify(results));
 });
 """
@@ -462,7 +484,10 @@ captureProactiveChatScreenshotWithSource().then((shot) => {
         .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
         .replace(
             "__HELPER__",
-            _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            _fn(proactive_src, "isProactiveScreenshotBlocked")
+            + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
         )
     )
 
@@ -470,6 +495,10 @@ captureProactiveChatScreenshotWithSource().then((shot) => {
 
     assert out.get("data") is None
     assert out.get("via") is None
+    assert out.get("backend") is None
+    assert out["allowDesktopFallback"] is False
+    # A superseded window is unconfirmed (decline); a failed capture is not.
+    assert out["declined"] is (mode != "fail")
 
 
 _SCREENSHOT_ENTRY_TMPL = """
@@ -1158,6 +1187,9 @@ recaptureWithoutNeko({
 
 
 _PROACTIVE_REMEMBERED_TMPL = """
+const isHomeTutorialFeatureSuppressed = () => false;
+const isProactiveVisionEnabledNow = () => true;
+const releaseProactiveVisionStream = () => {};
 const results = { calls: [] };
 const S = {
   selectedScreenSourceId: __SOURCE_ID__,
@@ -1208,7 +1240,10 @@ def _proactive_remembered_script(
         .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
         .replace(
             "__HELPER__",
-            _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            _fn(proactive_src, "isProactiveScreenshotBlocked")
+            + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
         )
     )
 
@@ -1282,7 +1317,7 @@ def test_helper_never_classifies_a_native_frame_by_a_leftover_stream():
 # --------------------------------------------------------------------------
 
 _FRAME_TMPL = """
-const results = { sent: [] };
+const results = { sent: [], stopped: 0, released: 0 };
 const window = {
   screen: { width: 1920, height: 1080, isExtended: false },
   appUtils: { isMobile: () => false },
@@ -1303,11 +1338,18 @@ const S = {
   selectedScreenSourceId: __SOURCE_ID__
 };
 let proactiveVisionFrameInFlight = false;
-const isProactiveVisionEnabledNow = () => true;
-const stopProactiveVisionDuringSpeech = () => {};
+let visionEnabled = true;
+const isProactiveVisionEnabledNow = () => visionEnabled;
+let tutorialSuppressed = false;
+const isHomeTutorialFeatureSuppressed = () => tutorialSuppressed;
+const stopProactiveVisionDuringSpeech = () => { results.stopped += 1; };
+const releaseProactiveVisionStream = () => { results.released += 1; };
 const getDesktopProvider = () => ({ nativeFrameCapture: true, captureSourceAsDataUrl: () => {} });
 const acquireOrReuseCachedStream = async () => __STREAM__;
-const captureFrameFromStream = async () => ({ dataUrl: 'data:image/jpeg;base64,STREAM' });
+const captureFrameFromStream = async () => {
+  __AFTER_CAPTURE__
+  return { dataUrl: 'data:image/jpeg;base64,STREAM' };
+};
 const fetchBackendScreenshot = async () => ({ dataUrl: 'data:image/jpeg;base64,BACKEND' });
 const normalizeNativeCaptureDataUrlForStream = async () => 'data:image/jpeg;base64,NATIVE';
 const getAvatarScreenPosition = (captureType) =>
@@ -1326,6 +1368,7 @@ def _frame_script(
     source_id: str,
     stream: str,
     native: str = _NATIVE_OK,
+    after_capture: str = "",
     remembered_capture: str = (
         "({ required: false, allowed: true, isCurrent: () => true })"
     ),
@@ -1337,11 +1380,30 @@ def _frame_script(
         .replace("__SOURCE_ID__", source_id)
         .replace("__STREAM__", stream)
         .replace("__NATIVE__", native)
+        .replace("__AFTER_CAPTURE__", after_capture)
         .replace("__PREPARE__", remembered_capture)
         .replace("__DETECT__", _fn(screen_src, "detectScreenshotCaptureType"))
         .replace("__BUILD__", _fn(screen_src, "buildStreamDataMessage"))
         .replace("__FRAME__", _fn(proactive_src, "sendOneProactiveVisionFrame"))
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("after_capture", "released"),
+    [
+        ("S.isRecording = false;", 0),
+        ("visionEnabled = false;", 1),
+        ("tutorialSuppressed = true;", 1),
+    ],
+)
+def test_inflight_vision_keeps_cache_only_when_recording_ends(after_capture, released):
+    out = _run(_frame_script(
+        source_id="null", stream="({})", after_capture=after_capture,
+    ))
+    assert out["sent"] == []
+    assert out["stopped"] == 1
+    assert out["released"] == released
 
 
 @pytest.mark.unit
@@ -1382,6 +1444,8 @@ def test_proactive_vision_enable_does_not_accept_backend_for_remembered_window()
     proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
     script = """
 const results = { backendCalls: 0, streamCalls: 0 };
+const isHomeTutorialFeatureSuppressed = () => false;
+const releaseProactiveVisionStream = () => {};
 const window = {
   prepareRememberedWindowCapture: async () => ({
     required: true,

@@ -24,15 +24,15 @@ import threading
 
 
 # ---------------------------------------------------------------------------
-# 重要通知缓冲池
-# 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
-# 前端通过 GET /api/pending-notices 拉取（返回通知列表和游标），
-# 用户全部确认后通过 POST /api/pending-notices/ack?cursor=N 只删除已展示的通知，
-# 避免 peek→ack 两次 HTTP 往返之间新入队的通知被静默清空（TOCTOU）。
+# Prominent-notice buffer
+# Any module may enqueue messages at any time using enqueue_prominent_notice();
+# the frontend retrieves a notice list and cursor through GET /api/pending-notices,
+# then acknowledges all displayed notices via POST /api/pending-notices/ack?cursor=N, deleting only those shown,
+# so notices arriving between the peek→ack HTTP round trips are not silently cleared (TOCTOU).
 # ---------------------------------------------------------------------------
 _prominent_notice_queue: list[dict] = []
 _prominent_notice_lock = threading.Lock()
-_prominent_notice_seq: int = 0  # 单调递增，每条通知入队时分配
+_prominent_notice_seq: int = 0  # Monotonically increasing; assigned when each notice is enqueued
 
 
 def enqueue_prominent_notice(notice: "str | dict"):
@@ -82,7 +82,7 @@ def drain_prominent_notices(up_to_cursor: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# CosyVoice 旧版音色通知去重（模块级，startup 和 LLMSessionManager 共享）
+# Deduplicate legacy CosyVoice voice notices (module-level, shared by startup and LLMSessionManager)
 # ---------------------------------------------------------------------------
 _notified_legacy_voices: set[str] = set()
 

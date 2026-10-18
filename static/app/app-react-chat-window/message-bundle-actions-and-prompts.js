@@ -408,6 +408,14 @@
         }
         I.state.rollbackDraft = '';
 
+        // 串门接管了输入框（visit-chat.js）：按阶段先拦、带收件人发出；被拦下时文字留在输入框
+        if (typeof I.isVisitChatActive === 'function' && I.isVisitChatActive()) {
+            if (typeof I.submitVisitChatText === 'function' && I.submitVisitChatText(detail)) {
+                requestAutoCollapseAfterAcceptedEnter(detail);
+            }
+            return;
+        }
+
         if (I.state.choicePrompt && I.state.choicePrompt.source === 'new_user_icebreaker') {
             var prompt = I.state.choicePrompt;
             var icebreakerDetail = {
@@ -651,9 +659,9 @@
         if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
             // Electron 多窗口模式：通过 IPC 请求 Pet 窗口截取头像
             if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
-                // 优先使用已缓存的外部头像
-                if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
-                    var cached = window.appChatAvatar.getCurrentAvatarDataUrl();
+                // Model preview broadcasts must never contain a custom display image.
+                if (window.appChatAvatar && typeof window.appChatAvatar.getModelAvatarDataUrl === 'function') {
+                    var cached = window.appChatAvatar.getModelAvatarDataUrl();
                     if (cached) {
                         window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
                             detail: { dataUrl: cached, source: 'cached' }
@@ -1660,6 +1668,8 @@
     I.getRevealedChoicePrompt = function getRevealedChoicePrompt() {
         var prompt = I.state.choicePrompt;
         if (!prompt) return null;
+        // 串门接管输入框期间不出选项按钮（小游戏邀请等：点了会让正在接待客人的她去开普通活动）
+        if (typeof I.isVisitChatActive === 'function' && I.isVisitChatActive()) return null;
         if (prompt.revealAt && Date.now() < prompt.revealAt) return null;
         return prompt;
     }

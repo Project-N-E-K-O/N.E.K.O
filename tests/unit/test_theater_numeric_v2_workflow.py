@@ -188,7 +188,7 @@ async def test_unscoped_opening_skips_semantic_review(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_opening_skips_suggestion_fill_even_when_module_is_enabled(monkeypatch) -> None:
-    """开场不因补推荐再串行等待一次模型调用，且保留单条合法选项。"""  # noqa: DOCSTRING_CJK
+    """The opening does not serially wait for an extra recommendation-model call and retains a single valid option."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     captured: dict[str, Any] = {}
@@ -414,7 +414,7 @@ async def test_actor_format_errors_keep_four_attempts(route_changed) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("format_failures", [0, 1, 2])
 async def test_tagged_repeated_output_stops_after_retry_and_records_guard(format_failures) -> None:
-    """真实重复保护不会因先前格式失败而延长重试预算。"""  # noqa: DOCSTRING_CJK
+    """Actual repetition protection does not extend the retry budget after an earlier formatting failure."""  # noqa: DOCSTRING_CJK
 
     class RetryActor:
         def __init__(self) -> None:
@@ -454,7 +454,7 @@ async def test_tagged_repeated_output_stops_after_retry_and_records_guard(format
 async def test_accepted_transition_allows_one_source_repeat_retry_when_output_retry_is_disabled(
     repetition_guard: str,
 ) -> None:
-    """正式接受换场的来源复用命中不应因通用重试关闭而卡死。"""  # noqa: DOCSTRING_CJK
+    """A source-reuse hit for an officially accepted scene transition must not stall when general retries are disabled."""  # noqa: DOCSTRING_CJK
 
     class RetryActor:
         def __init__(self) -> None:
@@ -565,7 +565,7 @@ async def test_ordinary_review_keeps_committed_history_watermark_with_projected_
 
     async def review(self, **kwargs):
         snapshot = kwargs['session']
-        # 计分后可用出口仍由本轮候选数值预览；历史必须来自已提交快照。
+        # After scoring, available exits are still previewed using this turn's candidate values; history must come from committed snapshots.
         assert snapshot.metrics['trust'] == current.session.metrics['trust'] + 2
         assert snapshot.revision == current.session.revision
         assert snapshot.node_turn_count == current.session.node_turn_count
@@ -602,7 +602,7 @@ async def test_ordinary_review_keeps_committed_history_watermark_with_projected_
 @pytest.mark.parametrize("path", ["missed_recovery", "review_rewrite", "contract_rewrite", "terminal_rewrite",
                                   "terminal_rewrite_authored"])
 async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(tmp_path, monkeypatch, path):
-    """Every later formal transition draft must pass the bridge-leak and terminal-question checks or roll back."""
+    """Reject unsafe later drafts; speculative recovery may retain its reviewed ordinary transaction."""
     from services.theater import numeric_v2_evaluator as ev
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_missed_transition import QUOTE
@@ -684,12 +684,20 @@ async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(t
     diagnostics: dict[str, Any] = {}
     terminal = path.startswith("terminal_rewrite")
     expected = "segment_overlap" if terminal else "terminal_new_question"
-    with pytest.raises(NumericV2ActorOutputError, match=expected):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
-            config_manager=object(), runtime=runtime, current=current,
-            turn=TurnRequestV2("later", 0, message), ensure_current_binding=lambda _: _binding(),
-            diagnostics_sink=diagnostics)
+    execution = numeric_v2_workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("later", 0, message), ensure_current_binding=lambda _: _binding(),
+        diagnostics_sink=diagnostics)
+    if path == "missed_recovery":
+        result = await execution
+        assert result.stored.session.current_node_id == current.session.current_node_id
+        assert result.stored.session.revision == current.session.revision + 1
+        assert result.performance["performance"] == "（点头）我听到了。"
+        assert "segments" not in result.performance
+        assert diagnostics["recovered_ordinary_drafts_reused"] == 1
+    else:
+        with pytest.raises(NumericV2ActorOutputError, match=expected):
+            await execution
     assert diagnostics["transition_structure_rejected" if terminal else "terminal_structure_rejected"]
     assert len(generations) == 2
-    # The failed turn is atomic: nothing reached storage.
-    assert await runtime.restore_session(f"later_{path}") == current
+    assert await runtime.restore_session(f"later_{path}") == (result.stored if path == "missed_recovery" else current)

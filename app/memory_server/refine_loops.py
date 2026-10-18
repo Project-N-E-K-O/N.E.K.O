@@ -48,7 +48,7 @@ def _scoped_prompt_trust_band(entry: dict) -> str:
     return scoped_prompt_trust_band(entry)
 
 
-# ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────
+# ── Phase A-4 / A-5: Connect MemoryRefineEngine to cron ─────────────────────
 
 _reflection_refine_subject_cursor: dict[
     str,
@@ -78,13 +78,13 @@ async def _run_persona_refine_for_character(character: str) -> None:
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
         section = pm._get_section_facts(persona, entity)
-        # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
-        # entry 不再进 cluster gather。Site 4 dead-letter——同 entry 在多
-        # cluster 反复 LLM 失败后被 frozen，避免持续占用 starvation-first
-        # ordering 名额空跑 LLM。recovery 路径：apply_refine_actions 在
-        # stamp 成功时会清回 0；或人工编辑 persona.json；或时间自愈——
-        # 冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 放行一次 probe，让
-        # 一次性 correction 模型宕机恢复后自愈（不再永久冻死无辜 entry）。
+        # Liveness filter: entries with refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS
+        # are no longer included in cluster gathering. Site 4 dead-letter: after repeated LLM failures for the same entry across
+        # clusters, freeze it so it cannot keep consuming LLM calls in starvation-first
+        # ordering. Recovery paths: apply_refine_actions resets the count to 0 when
+        # stamping succeeds; or manually edit persona.json; or recover with time —
+        # after MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS in the frozen state, allow one probe so
+        # a one-off correction-model outage can self-heal (do not permanently freeze an innocent entry).
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section
@@ -107,7 +107,7 @@ async def _run_persona_refine_for_character(character: str) -> None:
     engine = MemoryRefineEngine(runtime._config_manager)
 
     async def _apply(cluster, actions, cluster_hash):
-        # cluster 内成员同 entity（engine 强制），从第一个非空成员读
+        # Members within a cluster share the same entity (enforced by the engine); read from the first non-empty member
         ent = next(
             (e.get(REFINE_ENTITY_KEY) for e in cluster
              if isinstance(e, dict) and e.get(REFINE_ENTITY_KEY)),
@@ -187,7 +187,7 @@ async def _run_reflection_refine_for_character(
         annotate_entry,
     )
 
-    # 用 `engine_ref` 而不是 `re` —— 后者遮蔽 Python 内置 `re` 模块
+    # Use `engine_ref` instead of `re` — the latter shadows Python's built-in `re` module
     # （CodeRabbit nitpick #1392）。
     engine_ref = runtime.reflection_engine
     fs = runtime.fact_store
@@ -201,11 +201,11 @@ async def _run_reflection_refine_for_character(
 
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
-        # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
-        # reflection 不再进 cluster gather（同 persona refine）。fact 不算
-        # ——fact 是 readonly 信息源，不会被 refine 改，自然不会 bump
-        # attempts。时间自愈：冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
-        # 放行一次 probe，让一次性宕机恢复后自愈。
+        # Liveness filter: reflections with refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS
+        # are no longer included in cluster gathering (same as persona refinement). Facts do not count
+        # — facts are read-only information sources and are not changed by refinement, so their
+        # attempt count is naturally never bumped. Time-based recovery: after MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS in the frozen state,
+        # allow one probe so it can self-heal after a transient outage recovers.
         entity_refls = [
             annotate_entry(r, type_='reflection', entity=entity)
             for r in refls
@@ -228,7 +228,7 @@ async def _run_reflection_refine_for_character(
             and f.get('absorbed') and f.get('id')
             and entry_matches_subject(f, subject)
         ]
-        if entity_refls:  # 至少要有 reflection；fact 是只读补料
+        if entity_refls:  # At least one reflection is required; facts are read-only supplementary material
             candidates_by_entity[entity] = entity_refls + entity_facts
     if not candidates_by_entity:
         return 0
@@ -384,8 +384,8 @@ async def _periodic_reflection_refine_loop():
         await asyncio.sleep(interval)
 
 
-# scoped refine 的进程内轮转游标（对偶 synthesize_scoped_reflections 的
-# _scoped_synth_cursor：重启从头轮即可，无须持久化）。
+# In-process round-robin cursor for scoped refinement (paired with
+# _scoped_synth_cursor in synthesize_scoped_reflections; restart from the beginning is fine, so persistence is unnecessary).
 _scoped_refine_cursor: dict[str, tuple] = {}
 _scoped_refine_character_cursor: str | None = None
 
@@ -421,8 +421,8 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
     lite = ScopedLiteRefineEngine(runtime._config_manager)
 
     async def _apply(bucket, cluster, actions, cluster_hash):
-        # 返回应用成功的 action 数：engine 用它把「非空 actions 全被拒」
-        # 判成 cluster 失败（计 refine_attempts，防毒 cluster 无限重打）。
+        # Return the number of actions successfully applied: the engine uses this to treat "all non-empty actions were rejected"
+        # as a cluster failure (increment refine_attempts to prevent a toxic cluster from being retried forever).
         if bucket.store == STORE_PERSONA:
             return await apply_scoped_persona_merge(
                 pm, character, bucket.subject, cluster, actions, cluster_hash,
@@ -451,7 +451,7 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
         scope_label=f"scoped/{character}",
         failure_fn=_failure,
         start_after=_scoped_refine_cursor.get(character),
-        # prompt 只看 coarse band；精确值仅供 apply 的代码侧 margin 仲裁。
+        # The prompt sees only coarse bands; exact values are used only by code-side margin arbitration during apply.
         trust_of=_scoped_prompt_trust_band,
         prompt_locale_resolver=_prompt_locale,
     )
@@ -574,9 +574,9 @@ async def _periodic_reflection_synthesis_loop():
                         name,
                     )
                 except Exception as legacy_error:
-                    # 两遍隔离：legacy 侧的持久失败（例如手改出的无 id
-                    # 事实让 sorted(f['id']) 抛错）不得饿死 scoped 侧——
-                    # 否则该角色的群/成员反思永远不产出。
+                    # Two-pass isolation: persistent failures on the legacy side (for example, a manually edited fact without an id
+                    # causing sorted(f['id']) to raise) must not starve the scoped side —
+                    # otherwise that character's group/member reflections would never be produced.
                     logger.warning(
                         f"[ReflectionSynth] {name} legacy 合成异常: {legacy_error}"
                     )
@@ -600,6 +600,6 @@ async def _periodic_reflection_synthesis_loop():
                         "（legacy=pending / scoped=confirmed）"
                     )
             except Exception as e:
-                # 单角色合成失败不阻塞其他角色 / 下轮重试
+                # A failure for one character does not block other characters or the next retry
                 logger.warning(f"[ReflectionSynth] {name} 合成异常: {e}")
         await asyncio.sleep(interval)

@@ -7,19 +7,19 @@ from main_routers.workshop_router.meta import _build_subscriber_workshop_model_r
 @pytest.mark.parametrize(
     ("raw_model_ref", "expected"),
     [
-        # 正常路径保持原有语义
+        # Preserve existing semantics on the normal path.
         ("example/example.model3.json", "/workshop/999/example/example.model3.json"),
         ("/workshop/123/model/foo.model3.json", "/workshop/999/model/foo.model3.json"),
         ("/workshop/123", "/workshop/999"),
         ("", ""),
-        # 工坊卡是第三方内容，'..' 段在摄入点被剥掉，
-        # 拼出的 model_ref 无法解析出 /workshop/{item_id}/ 之外
+        # Workshop cards are third-party content; strip '..' segments at ingestion,
+        # so the resulting model_ref cannot resolve outside /workshop/{item_id}/.
         ("../../secrets/config.json", "/workshop/999/secrets/config.json"),
         ("/workshop/123/../../secrets/config.json", "/workshop/999/secrets/config.json"),
         ("foo/../../../bar.model3.json", "/workshop/999/foo/bar.model3.json"),
         ("..\\..\\evil.model3.json", "/workshop/999/evil.model3.json"),
         ("..", "/workshop/999"),
-        # '.' 段与盘符段同样被剥掉
+        # Strip '.' and drive-letter segments too.
         ("./model/foo.model3.json", "/workshop/999/model/foo.model3.json"),
         ("C:/evil/foo.model3.json", "/workshop/999/evil/foo.model3.json"),
     ],
@@ -30,5 +30,5 @@ def test_build_subscriber_workshop_model_ref_strips_traversal_segments(raw_model
 
 @pytest.mark.unit
 def test_build_subscriber_workshop_model_ref_without_item_id_returns_ref_unchanged():
-    # 没有 item_id 时不加前缀；调用方（sync_cards）在 item_id 为空时不会入库 avatar 绑定
+    # Without item_id, add no prefix; sync_cards does not store avatar bindings when item_id is empty.
     assert _build_subscriber_workshop_model_ref("", "model/foo.model3.json") == "model/foo.model3.json"

@@ -21,8 +21,8 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
-# bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
-# system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
+# Lazy bs4 import on first parser use, backed by utils.module_warmup background warmup: this module is
+# imported at system_router's top level in main_server's startup chain; eager bs4 delays port readiness.
 if TYPE_CHECKING:
     pass
 
@@ -162,7 +162,7 @@ def _get_bilibili_credential(
         if not cookies:
             return None
         
-        # 兼容原版逻辑，加入 buvid3 防止被 B站 API 风控拦截
+        # Preserve original behavior; add buvid3 to avoid Bilibili API risk-control blocking.
         return Credential(
             sessdata=cookies.get('SESSDATA', ''),
             bili_jct=cookies.get('bili_jct', ''),

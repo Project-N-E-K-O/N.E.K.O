@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "group_id": "dev_neko",
+  "kind": "appearance",
+  "slots": {
+    "idle.cat1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "idle.cat2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "idle.cat3": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "click.cat1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat1-click.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "click.cat2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "click.cat3": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "drag.cat1": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif", "media_type": "image/gif"},
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif", "media_type": "image/gif"}
+      ]
+    },
+    "drag.cat2": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif", "media_type": "image/gif"},
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif", "media_type": "image/gif"}
+      ]
+    },
+    "drag.cat3": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif", "media_type": "image/gif"},
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-4.gif", "media_type": "image/gif"}
+      ]
+    },
+    "drag.rapid": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-5.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "movement.cat1.walking": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "movement.cat1.stretch": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-2.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "movement.cat1.interactive": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "action.cat1.eat": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "action.cat1.play_yarn": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif",
+        "media_type": "image/gif"
+      }],
+      "metadata": {
+        "wideArt": true
+      }
+    },
+    "playground.cat1.air": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif",
+        "media_type": "image/gif"
+      }]
+    }
+  }
+}

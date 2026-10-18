@@ -45,7 +45,7 @@ from ._shared import (
 # the former monolith computed two levels up from app/agent_server.py.
 _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 插件名称缓存（避免频繁 HTTP 调用）
+# Plugin-name cache to avoid frequent HTTP calls.
 _plugin_name_cache: Dict[str, str] = {}
 _plugin_name_cache_time: float = 0.0
 _plugin_name_cache_lock = asyncio.Lock()
@@ -57,7 +57,7 @@ def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) ->
     try:
         import time as _time
         with httpx.Client(timeout=5.0, proxy=None, trust_env=False) as client:
-            # 1. 触发 bind_task entry
+            # 1. Trigger the bind_task entry.
             resp = client.post(
                 f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs",
                 json={
@@ -72,7 +72,7 @@ def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) ->
             run_id = resp.json().get("run_id")
             if not run_id:
                 return
-            # 2. 短暂轮询等待完成（bind_task 应在 <1s 内完成）
+            # 2. Poll briefly for completion (bind_task should finish in <1 s).
             for _ in range(20):
                 _time.sleep(0.1)
                 r = client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs/{run_id}")
@@ -120,7 +120,7 @@ async def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     except Exception as e:
         logger.warning("[AgentServer] Failed to fetch plugin names from port %s: %s", USER_PLUGIN_SERVER_PORT, e)
 
-    # HTTP 调用失败，尝试本地 state（兼容某些部署场景）
+    # HTTP call failed; try local state for compatibility with some deployments.
     try:
         from plugin.core.state import state
         with state.acquire_plugins_read_lock():
@@ -209,18 +209,18 @@ async def _start_embedded_user_plugin_server() -> None:
     if not started or startup_error or not getattr(server, "started", False):
         server.should_exit = True
         detail = str(startup_error[0]) if startup_error else "timeout or server not started"
-        # 超时路径上线程可能仍在 uvicorn 启动中途。先有界 join 让它观察
-        # 到 should_exit 自行退出；仍存活则整体移交 _stop_embedded_user_
-        # plugin_server 收尾（join(10s) + force_exit 升级、由它清 handle）
-        # ——线程所有权保持到退出或强制收尾完成，孤儿线程不会占着端口
-        # 跟后续重试抢 bind。
+        # On timeout the thread may still be starting uvicorn. First join with a bound so it can observe
+        # should_exit and exit; if still alive, transfer full cleanup to _stop_embedded_user_
+        # plugin_server (join(10s), force_exit escalation, and handle clearing).
+        # Retain thread ownership until exit or forced cleanup completes, so orphan threads cannot occupy the port
+        # and compete with later retries for bind.
         await asyncio.to_thread(t.join, 5.0)
         if t.is_alive():
             logger.warning("[Agent] Embedded plugin server thread still alive after failed startup; delegating to stop path")
             await _stop_embedded_user_plugin_server()
         else:
-            # 线程已退——清残留 handle：否则函数顶部的 early-return 守卫
-            # 会把死 server 当成「已在跑」，后续任何重试路径都静默 no-op。
+            # The thread exited; clear the residual handle, or the early-return guard at function entry
+            # treats the dead server as running and silently turns every later retry into a no-op.
             _shared.Modules.user_plugin_http_server = None
             _shared.Modules.user_plugin_http_task = None
         raise RuntimeError(f"embedded user plugin server failed: {detail}")

@@ -7,6 +7,7 @@ from playwright.sync_api import Page, expect
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_DIR = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
 AVATAR_UI_BUTTON_PART_NAMES = (
+    "cat-resource-registry.js",
     "core.js",
     "idle-assets-and-question.js",
     "idle-playground.js",
@@ -32,6 +33,7 @@ AVATAR_UI_BUTTON_TEMPLATE_PATHS = (
     PROJECT_ROOT / "templates/index.html",
     PROJECT_ROOT / "templates/card_maker.html",
     PROJECT_ROOT / "templates/character_card_manager.html",
+    PROJECT_ROOT / "templates/drawing_guess.html",
     PROJECT_ROOT / "templates/live2d_parameter_editor.html",
     PROJECT_ROOT / "templates/model_manager.html",
     PROJECT_ROOT / "templates/soccer_demo.html",

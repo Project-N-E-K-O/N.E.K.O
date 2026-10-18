@@ -150,9 +150,9 @@ class _ResponseMixin:
             return
 
         if self._is_gemini:
-            # Gemini Live API 没有 session.update 机制，只能通过
-            # send_client_content 注入上下文（会创建 user turn）。
-            # on_response_done 由 _handle_messages_gemini 自然触发。
+            # Gemini Live API lacks session.update; inject context only via
+            # send_client_content (creates a user turn).
+            # _handle_messages_gemini naturally triggers on_response_done.
             await self._create_response_gemini_with_skip_guard(
                 text,
                 skipped=skipped,
@@ -162,14 +162,14 @@ class _ResponseMixin:
             return
 
         if not skipped and "qwen" not in self._model_lower:
-            # skipped=False：需要模型主动响应（任务结果汇报）
-            # 通过 create_response 注入 user 消息 + 触发响应
-            # Qwen 不支持 conversation.item.create，走下方 update_session
+            # skipped=False: request active model response (task-result reporting).
+            # Inject user message and trigger response through create_response.
+            # Qwen lacks conversation.item.create; use update_session below.
             # Transport-only user message: a task-result report is not the
             # real user's turn, so it must not retire in-flight tool calls.
             await self.create_response(text, starts_user_turn=False)
         else:
-            # skipped=True 或 Qwen：仅追加到 session instructions
+            # skipped=True or Qwen: append only to session instructions.
             lock = getattr(self, "_prime_context_lock", None)
             if lock is None:
                 lock = asyncio.Lock()
@@ -221,7 +221,7 @@ class _ResponseMixin:
         ``prompt_ephemeral()`` (guarded proactive text turn) for the other two
         injection channels.
         """
-        # Gemini 使用 send_client_content 发送文本内容
+        # Gemini sends text through send_client_content.
         if self._is_gemini:
             if not instructions or not instructions.strip():
                 logger.info("Gemini: skipping empty content in create_response")
@@ -234,7 +234,7 @@ class _ResponseMixin:
             )
             return
 
-        # 跳过空内容的发送，避免触发 API 错误
+        # Skip empty content to avoid API errors.
         if not instructions or not instructions.strip():
             logger.info("Skipping empty content in create_response")
             return
@@ -249,8 +249,8 @@ class _ResponseMixin:
         response_event_id = f"event_user_response_{uuid.uuid4().hex}"
         item_id = new_client_item_id()
         expected_item_id = item_id
-        # 通过 conversation.item.create 添加用户消息，再触发响应。两步都
-        # 进入全局仲裁器，直到 response.done 才释放下一次 create 的资格。
+        # Add user message via conversation.item.create, then trigger response. Both steps enter
+        # the global arbiter, which releases the next create only at response.done.
         item_event = {
             "type": "conversation.item.create",
             "event_id": item_event_id,
@@ -482,21 +482,21 @@ class _ResponseMixin:
         )
 
         if self._is_gemini:
-            # 上面只管了**张数**和**单张**上限；三张各自合规的帧加起来仍可能逼近
-            # 30 MB。WebSocket 分支后面还有按聚合大小重压/摘帧那一步，Offline 走
-            # fit_images_to_turn_budget —— 只有 Gemini 这条直接把 bytes 交给
-            # send_client_content()，没有任何聚合闸。超限时 provider 整条请求拒收，
-            # 用户这一轮就没了。
+            # Above limits only image **count** and **individual** size; three valid frames can still total nearly
+            # 30 MB. WebSocket later recompresses/drops frames by aggregate size; Offline uses
+            # fit_images_to_turn_budget. Only Gemini directly passes bytes to
+            # send_client_content() without an aggregate gate, so provider rejects the whole oversized request,
+            # losing the user's turn.
             #
-            # 用与 Offline 同一条阶梯：先抽样、再压缩、都不行才丢，并且至少留一张。
+            # Use Offline's ladder: sample, compress, and drop only as last resort, keeping at least one image.
             _fitted, _notice = await fit_images_to_turn_budget(
                 list(staged_images),
                 TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
             )
             if _notice:
-                # 这条路没有 on_status_message，本来就只落日志——但级别要跟着
-                # user_visible 走：归一化是每回合都会发生的例行事，用 warning 打
-                # 等于把日志淹掉；真丢了图才是 warning 级的事。
+                # This path lacks on_status_message and logs only, but severity must follow
+                # user_visible: routine normalization occurs every turn, so warning would flood
+                # logs; only actual image loss deserves warning.
                 _emit = (
                     logger.warning if _notice.get("user_visible") else logger.info
                 )
@@ -516,28 +516,28 @@ class _ResponseMixin:
                     self._decode_multimodal_turn_image(image)
                     for image in _fitted
                 )
-                # 上面那步是 asyncio.to_thread 压几张 MB 级截图，是真实耗时的让
-                # 出点。后继发声可以整段跑完 _begin_core_multimodal_turn（同步把
-                # 本轮 record invalidated）+ prepare_external_voice_turn +
-                # handle_interruption —— 这两条路互不互斥（前者不拿 swap lock，
-                # 本函数也不拿 turn admission lock）。不复查的话，我们会把已经不
-                # 属于这一轮的帧发给 provider，而 Core 收不到任何信号，既有的
-                # "降级成纯文本"出口根本走不到。
+                # Above asyncio.to_thread compresses several MB-sized screenshots, a real, lengthy yield
+                # during which a successor utterance can complete _begin_core_multimodal_turn (synchronously invalidating
+                # this turn's record) + prepare_external_voice_turn +
+                # handle_interruption. The paths do not mutually exclude (first takes no swap lock,
+                # this function no turn-admission lock). Without rechecking, frames no longer owned by
+                # this turn reach provider without any signal to Core, so existing text-only
+                # degradation cannot run.
                 #
-                # 判据用调用方穿进来的 visual_still_owned，与 Offline 交接那条路
-                # 同源（asr_runtime.py 的 lambda: not visual_ownership_lost()）。
-                # 刻意**不**用 _tool_scope_generation 代理：create_response 和
-                # submit_external_text_turn 也会推进它，会在根本没有语音后继时
-                # 把这一轮误降级。
+                # Use caller-supplied visual_still_owned, same criterion as Offline handoff
+                # (asr_runtime.py's lambda: not visual_ownership_lost()).
+                # Deliberately do **not** proxy with _tool_scope_generation: create_response and
+                # submit_external_text_turn also advance it, falsely degrading this turn
+                # even without a successor voice turn.
                 #
-                # 丢帧只降级成纯文本，话照送 —— 与本 PR 其它三处所有权判据一致。
+                # Dropping frames degrades to text only, still sending speech, consistent with this PR's three other ownership checks.
                 #
-                # ⚠️ 复查**不**放在这里，而是穿到 _submit_external_gemini_turn 里
-                # 紧贴 SDK 送出的那一刻。理由有二：
-                #   1. 放这里会被关在 `if _notice:` 之内，不裁剪时根本不跑；
-                #   2. 这之后还有一个让出点——_submit_external_gemini_turn 头部的
-                #      _await_gemini_external_quarantine()，后继回合可以在那段等待
-                #      里让本轮 record 失效。
+                # Warning: recheck **not** here but inside _submit_external_gemini_turn,
+                # immediately before SDK send, for two reasons:
+                #   1. Here it would be inside `if _notice:`, never running without image trimming;
+                #   2. Another yield follows at _submit_external_gemini_turn's initial
+                #      _await_gemini_external_quarantine(), where a successor turn may
+                #      invalidate this turn's record.
             await self._submit_external_gemini_turn(
                 clean,
                 images_bytes=images_bytes,
@@ -560,9 +560,9 @@ class _ResponseMixin:
                 "id": item_id,
                 "type": "message",
                 "role": "user",
-                # 开头/中间/结尾同属一个 user item：一次发声是一段时间，三张按
-                # 时间顺序排在 transcript 前面，模型才知道这段话对着的是哪段画面。
-                # 仍然只触发一次回复。
+                # Beginning/middle/end share one user item: an utterance spans time, so three frames in
+                # temporal order before transcript tell the model which visuals accompany it.
+                # Still trigger one response only.
                 "content": [
                     *(
                         {
@@ -579,19 +579,19 @@ class _ResponseMixin:
             "type": "response.create",
             "event_id": f"event_asr_multimodal_response_{event_suffix}",
         }
-        # 传输上限在这里先判一次，而不是等 send_event 里再判。原因是那条路失败
-        # 只会 return False，而 arbiter 的 _worker_send 不看这个布尔值：整条
-        # conversation.item.create（连同 transcript）被丢掉之后，它照样会发
-        # response.create，用户拿到一个和自己这句话无关的回复。
+        # Check transport limit here rather than waiting for send_event. That path only returns
+        # False on failure, ignored by arbiter _worker_send; after dropping the whole
+        # conversation.item.create including transcript, it still sends
+        # response.create, giving an answer unrelated to this utterance.
         #
-        # 这里把重压/摘帧提前做掉（helper 会就地改写 item_event，所以 send_event
-        # 之后不会重复做）；连一张都压不进上限时抛错，让 Core 走既有的整轮
-        # fail-closed（ASR_MULTIMODAL_TURN_FAILED）。不静默降级成纯文本 —— 那是
-        # 本 PR 明确禁止的行为。
-        # ⚠️ 降级要跑在超限判断**之前**。所有权已经丢了的话这些帧本来就不会送
-        # 出去，先摘掉再判大小：否则一批注定要丢的帧压不进上限时会抛
-        # RealtimeImagePayloadTooLargeError，把这一轮整个判死（Core 走
-        # ASR_MULTIMODAL_TURN_FAILED），而它其实只该降级成纯文本、话照送。
+        # Recompress/drop frames early (helper mutates item_event in place so send_event
+        # does not repeat it). Raise if even one image cannot fit, letting Core use existing whole-turn
+        # fail-closed handling (ASR_MULTIMODAL_TURN_FAILED), rather than silent text-only degradation,
+        # explicitly forbidden by this PR.
+        # Warning: degrade **before** size checking. Lost-ownership frames will not be sent,
+        # so remove first; otherwise frames destined for discard that cannot fit would raise
+        # RealtimeImagePayloadTooLargeError and fail the whole turn (Core's
+        # ASR_MULTIMODAL_TURN_FAILED), instead of text-only degradation with speech still sent.
         def _downgrade_if_visual_ownership_lost(event: Dict[str, Any]) -> None:
             if visual_still_owned is None or visual_still_owned():
                 return
@@ -616,13 +616,13 @@ class _ResponseMixin:
                 )
                 _item["content"] = _kept
 
-        # 跑两次，位置不同、作用也不同：
-        #   这里（enqueue 之前）—— 覆盖上面重压/摘帧那段 to_thread 让出点，并且
-        #     能在还没占用 arbiter 名额时就把负载降下来；
-        #   pre_commit（dispatch、_worker_send 之前）—— 覆盖 arbiter 内部的等待
-        #     （等活跃响应结束、等发送信号量），那段窗口调用方够不着。
-        # 两次都只摘图、保留 transcript，不走"整条拒"：拒是**提交之后**才发生的，
-        # 要等待补偿删除确认后才能降级（issue #2982）。
+        # Run twice at different positions for different purposes:
+        #   Here before enqueue: cover recompression/frame-dropping to_thread yield above and
+        #     reduce payload before occupying an arbiter slot;
+        #   pre_commit before dispatch/_worker_send: cover waits inside arbiter
+        #     (active response completion, send semaphore), beyond caller's reach.
+        # Both remove only images and retain transcript, never reject the whole item; rejection occurs **after commit**,
+        # requiring compensating-deletion acknowledgement before degradation (issue #2982).
         _downgrade_if_visual_ownership_lost(item_event)
 
         item_payload = json.dumps(item_event)
@@ -646,18 +646,18 @@ class _ResponseMixin:
             len(staged_images),
             text_hash,
         )
-        # 送进 arbiter 之前的最后一道视觉所有权复查，与 Gemini 那条路对偶。
+        # Final visual-ownership recheck before arbiter submission, symmetric with Gemini path.
         #
-        # 上面的重压/摘帧是 asyncio.to_thread，真实让出点。后继回合的
-        # _begin_core_multimodal_turn 是**同步**把本轮 record invalidated 的，
-        # 但它随后的 prepare_external_voice_turn 可能还堵在 turn-admission 锁上、
-        # 尚未更新 _external_voice_turn_pause_id —— 于是下面那条 admission_check
-        # 拿着没变的 pause id 照样放行，过期的帧就进了 provider 历史。两个判据的
-        # 时机不同，admission_check 覆盖不了这一段。
+        # Recompression/frame dropping above runs through asyncio.to_thread, a real yield. Successor turn's
+        # _begin_core_multimodal_turn **synchronously** invalidates this turn's record,
+        # but subsequent prepare_external_voice_turn may still wait for turn-admission lock,
+        # leaving _external_voice_turn_pause_id unchanged. admission_check below
+        # would pass using that stale pause id, sending expired frames into provider history. The two criteria
+        # act at different times; admission_check cannot cover this interval.
         #
-        # 就地摘掉图片、保留 transcript，而不是让 admission_check 去拒整条：
-        # 那是**提交之后**才拒，需要等待补偿删除确认（见 issue #2982），
-        # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
+        # Remove images in place while retaining transcript instead of admission_check rejecting the whole item:
+        # that rejection happens **after commit**, requiring compensating-deletion confirmation (issue #2982),
+        # far costlier than removing frames before commit. Frame loss degrades only visuals; speech still sends.
         arbiter = self._ensure_response_arbiter()
         # send_event's boolean is the only place the transport ever says "these
         # bytes left the socket", and the arbiter drops it on the floor
@@ -695,11 +695,11 @@ class _ResponseMixin:
                 None,
             ) in (None, stable_turn_id),
             pre_commit=_downgrade_if_visual_ownership_lost,
-            # 第三处，也是最后一处：arbiter 交给传输之后，send_event 还要等
-            # _send_semaphore；那段等待里所有权同样可能翻转，而 payload 是拿到
-            # 信号量之后才序列化的。用 main(#2837) 引入的每-ticket event_sender
-            # 把同一个降级函数送进那个临界区（见上面的 _send_turn_event），
-            # 序列化自然会带上结果。
+            # Third and final check: after arbiter passes to transport, send_event still awaits
+            # _send_semaphore; ownership can change during that wait too, and payload serializes only after
+            # semaphore acquisition. Use per-ticket event_sender introduced by main (#2837)
+            # to carry the same degradation function into that critical section (see _send_turn_event above),
+            # naturally reflecting its result in serialization.
             event_sender=_send_turn_event,
         )
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
@@ -1006,16 +1006,16 @@ class _ResponseMixin:
                     )
                     self._gemini_proactive_quarantine_task = proactive_quarantine
                 await self._await_gemini_proactive_quarantine()
-            # ⚠️ 必须在上面这段 Gemini 隔离**之后**才宣告新用户回合。
-            # note_user_turn_started() 会推进 _tool_scope_generation，而
-            # _interrupt_and_quarantine_gemini_proactive_outcome 的第一道闸
-            # scope_still_ours() 正是拿 owner 里记下的 scope 跟它比：先推进的话这
-            # 个判据恒不相等，隔离每次都走 retire_without_touching_the_live_turn，
-            # 一次 client_content 打断都不发。那条已被 SDK 收下、还在生成的主动
-            # 搭话回合于是完全没被打断，外部 ASR 回合直接压在同一个 unscoped SDK
-            # session 上，两个回合的音频/文本交错——正是这道围栏要防的事。
-            # 隔离针对的是**上一轮**（主动搭话）那一轮，所以它必须在上一轮的
-            # scope 下跑完；跑完之后这一轮才真正开始。
+            # Warning: announce new user turn only **after** Gemini quarantine above.
+            # note_user_turn_started() advances _tool_scope_generation, while
+            # _interrupt_and_quarantine_gemini_proactive_outcome's first gate
+            # scope_still_ours() compares recorded owner scope against it. Advancing first
+            # always mismatches, making quarantine take retire_without_touching_the_live_turn every time,
+            # never sending client_content interruption. The proactive turn accepted by SDK and still
+            # generating is thus never interrupted; external ASR overlays another turn on the same unscoped SDK
+            # session, interleaving their audio/text, exactly what this fence prevents.
+            # Quarantine targets the **previous proactive turn**, so finish it under that turn's
+            # scope before this turn truly starts.
             self.note_user_turn_started()
             preparation_arbiter = None
             preparation_token = None
@@ -1263,26 +1263,26 @@ class _ResponseMixin:
             source or getattr(self, "_latest_image_source", "") or "unknown"
         )
         submit_task = asyncio.current_task()
-        # 上一轮 external turn 可能还没等到终结事件：重叠发声时 B 的 prepare 会跑
-        # 在 A 的 SDK send **之前**，那一刻还没有 token 可隔离，于是 prepare 里的
-        # 隔离空转。到这里再直接覆盖 A 的活 token，两个回合就并存了——两份响应
-        # 交错，或者 B 的所有权被 A 的终结顺手带走。
+        # Previous external turn may still await its terminal event: overlapping utterance B's prepare can run
+        # **before** A's SDK send, when no token exists to quarantine, so prepare's
+        # quarantine does nothing. Overwriting A's live token here would leave both turns active,
+        # interleaving responses or letting A's terminal also clear B's ownership.
         #
-        # 用与 prepare 相同的隔离，不另立判据：settle 掉旧的并退掉这条连接。
-        # 「连接是能证明旧回合的迟到内容不会串进后继的最小范围」是这个文件已有的
-        # 结论（见 _quarantine_gemini_external_submit）。
+        # Reuse prepare's quarantine criterion: settle the old token and retire this connection.
+        # This file already concludes that connection is the smallest scope proving old-turn late content cannot leak into
+        # successors (see _quarantine_gemini_external_submit).
         if getattr(self, "_gemini_external_outcome_token", None) is not None:
             self._start_gemini_external_submit_quarantine()
             await self._await_gemini_external_quarantine()
-        # 外部 ASR 回合**就是**一次新的用户发声，但这条路径不经过
-        # _transport 里更新 _user_recent_activity_time 的那些点（音频没走 provider）。
-        # 不更新的话 _is_new_turn 会把这一轮的首个内容判成「迟到续帧」：内容被
-        # _interrupted 抑制、欠账不作废，随后它自己的终结把欠账消费掉、跳过结算
-        # —— token 永远挂着，会话被钉成「忙」，她再也不会主动开口。
-        # 送出前的最后一道视觉所有权复查。上面的
-        # _await_gemini_external_quarantine() 是一个真实让出点（前一轮的 token
-        # 还挂着时要等隔离跑完），后继回合可以在那段等待里让本轮 record 失效。
-        # 与图片预算那一步同一判据：丢帧只降级成纯文本，话照送。
+        # An external-ASR turn **is** a new user utterance, but bypasses
+        # _transport's _user_recent_activity_time update sites (audio never reaches provider).
+        # Without updating, _is_new_turn classifies its first content as late continuation: _interrupted suppresses
+        # content, debt remains, then its own terminal consumes debt and skips settlement,
+        # leaving token forever and session pinned busy, silencing proactive speech permanently.
+        # Final visual-ownership check before sending. The preceding
+        # _await_gemini_external_quarantine() genuinely yields (waits while previous token remains
+        # until quarantine finishes), letting successor turn invalidate this record during the wait.
+        # Same criterion as image budgeting: dropping frames degrades to text, still sends speech.
         if (
             images_bytes
             and visual_still_owned is not None
@@ -1306,20 +1306,20 @@ class _ResponseMixin:
             )
             accepted = True
         except asyncio.CancelledError:
-            # 取消只结束了**我们的 await**，Gemini 可能已经收下这一轮：
-            # TranscriptDispatcher 的 invalidate_all() 会把取消沿 worker 一路传到
-            # 这里，而那时 send 早就交给 SDK 了。此时按"没送成"结算 token，等于对
-            # 外宣称没有在飞的回合，下一轮 prepare 便不会起隔离，那一轮的迟到
-            # transcript / 响应会串进后继回合。
+            # Cancellation ends only **our await**; Gemini may already have accepted the turn:
+            # TranscriptDispatcher.invalidate_all() propagates cancellation through worker to
+            # here after send already reached SDK. Settling token as unsent falsely claims
+            # no turn remains in flight, so next prepare skips quarantine and late transcript/response
+            # leaks into the successor.
             #
-            # 所以保住 token，改为就地武装隔离——隔离本体会 join 掉这条 submit、
-            # settle token 再退掉这条连接，所以忙标志不会因此永久挂住（
-            # is_active_response() 读的就是这个 token）。这与 proactive 那条路
-            # 在 CancelledError 上的处理对偶，判据一致。
+            # Preserve token and arm quarantine in place; it joins this submit task,
+            # settles token, and retires connection, so the busy flag cannot remain stuck permanently
+            # (is_active_response() reads this token). Symmetric with proactive path's
+            # CancelledError handling and criterion.
             #
-            # 不走 _start_gemini_external_submit_quarantine：它有
-            # "submit_task is asyncio.current_task() → return" 的自保，从这里调
-            # 是空转。直接 fire 隔离本体，由它去 join 我们自己。
+            # Do not use _start_gemini_external_submit_quarantine: its self-protection
+            # 'submit_task is asyncio.current_task() → return' makes calls from here
+            # no-op. Fire quarantine body directly and let it join us.
             quarantined = True
             _existing = getattr(self, "_gemini_external_quarantine_task", None)
             if _existing is None or _existing.done():
@@ -1334,16 +1334,16 @@ class _ResponseMixin:
             if getattr(self, "_gemini_external_submit_task", None) is submit_task:
                 self._gemini_external_submit_task = None
             if not accepted and not quarantined:
-                # 同步发送失败（provider 直接拒）才立刻结算：那一轮确实没被收下。
+                # Settle immediately only on synchronous send failure (direct provider rejection): turn was truly not accepted.
                 self._settle_gemini_external_turn(outcome_token)
-        # 第四个投递点的 Gemini 半边。放在 try/finally **之后**：CancelledError
-        # 在上面重新抛出（provider 可能已经收下，但我们无从确认），
-        # 同步发送失败则 accepted 为假 —— 两种“没送成”都到不了这里。
+        # Gemini half of fourth delivery site, **after** try/finally: CancelledError
+        # re-raises above (provider may have accepted, but unverifiable),
+        # while synchronous failure leaves accepted false; neither unsent case reaches here.
         #
-        # 这条路非覆盖不可，不是对称性洁癖：独立 ASR 会武装 raw-visual
-        # fence，stream_image 于是拒掉每一张环境帧，这一轮就成了整个会话唯一的
-        # 画面通道。少了它，跑独立 ASR 的 Gemini 用户每句话都在把画面推给
-        # provider，而插件那侧的 frames 总线是空的。
+        # This path needs coverage for correctness: independent ASR arms a raw-visual
+        # fence, making stream_image reject every ambient frame. This turn becomes the session's only
+        # visual channel. Without it, Gemini independent-ASR users send visuals to provider with every utterance,
+        # while plugin frames bus remains empty.
         #
         # Encoded here and published in the background, the same split the
         # WebSocket half makes: this turn's return must not wait on a bus hop
@@ -1406,11 +1406,11 @@ class _ResponseMixin:
         response" against the realtime API's "one active response at a time"
         constraint.
         """
-        # Gemini 的 external-ASR 回合在 SDK send 返回之后、第一个模型内容事件到达
-        # 之前，_is_responding 还是 False、arbiter 也已经空闲，但那一轮其实已经被
-        # provider 接下了（_gemini_external_outcome_token 活着，要到 turn_complete
-        # / interrupted 才落地）。这段窗口里不认它，排队的主动搭话就能过掉所有忙检
-        # 查、再插一个不受管辖的 Gemini 回合，两者的终结事件互相顶掉。
+        # Between Gemini external-ASR SDK send return and first model-content event,
+        # _is_responding remains False and arbiter idle, but provider already accepted the turn
+        # (_gemini_external_outcome_token remains live until turn_complete
+        # / interrupted). Ignoring it during this interval lets queued proactive speech pass all busy checks
+        # and inject another unmanaged Gemini turn, whose terminal events interfere with this turn's.
         return bool(
             self._is_responding
             or getattr(self, "_gemini_external_outcome_token", None) is not None
@@ -1565,12 +1565,12 @@ class _ResponseMixin:
                 existing_submit_task is not None
                 and existing_submit_task is not submit_task
                 and not existing_submit_task.done()
-                # 按 session 收窄，与上面 outcome owner 同一判据。两条 send 只有落
-                # 在**同一个** SDK session 上才会互相交错；卡在退休 session 上的那
-                # 条不该挡住替换连接的 inject——_on_connection_attached 正是为此退
-                # 掉了前一条的 outcome，如果这里还拦着，替换连接依然要等到 60s 过
-                # 期或隔离结束才做得成自己的主动搭话。退休那条由拆除路径
-                # (_cancel_gemini_submit_tasks) 取消，不会漏。
+                # Narrow by session, same criterion as outcome owner above. Sends interleave only on
+                # **the same** SDK session; one stuck on a retired session must not block
+                # replacement connection's injection. _on_connection_attached retires its earlier
+                # outcome for exactly this reason; blocking here still forces replacement to wait for 60s
+                # expiry or quarantine completion before proactive speech. Teardown
+                # (_cancel_gemini_submit_tasks) cancels the retired send without leaks.
                 and existing_submit_session is proactive_session
             ):
                 outcome = getattr(self, "_gemini_proactive_outcome", None)
@@ -2283,36 +2283,36 @@ class _ResponseMixin:
             )
             return False
         _now = time.time()
-        # ── AI-speech guard（对称于 _user_recent_activity_time）─────────
-        # _is_responding 已被 response.done / turn_complete flip False，但 AI 侧
-        # content 流可能还在滴水：
-        #   1. Gemini turn_complete 早于最后几帧音频送达
-        #   2. Gemini 长回复 sub-turn 间的 False 瞬间
-        #   3. response.created 到首 content chunk 的空窗（_is_responding 已 True
-        #      覆盖这一条，但加这层冗余保险无害）
-        # 3s 窗口覆盖上述抢跑 gap，避免主动文本踩着 AI 尾巴打断自己。
+        # ── AI-speech guard (symmetric with _user_recent_activity_time) ─────────
+        # response.done / turn_complete set _is_responding False, but AI-side
+        # content may continue trickling:
+        #   1. Gemini turn_complete precedes final audio-frame delivery.
+        #   2. Brief False between sub-turns of long Gemini responses.
+        #   3. Gap from response.created to first content chunk (_is_responding True already
+        #      covers this, but redundant protection is harmless).
+        # A 3s window covers those premature-completion gaps, preventing proactive text from interrupting the AI's own tail.
         if _now - self._ai_recent_activity_time < self._ai_recent_activity_window:
             logger.debug("prompt_ephemeral: skipped — AI recently active (%.2fs ago)",
                          _now - self._ai_recent_activity_time)
             return False
         # ── User-speech guards ───────────────────────────────────────
-        # B: 先用独立的 _user_recent_activity_time 判定近期是否有语音帧；
-        # 此信号不依赖 sustain，覆盖用户说话首 500ms 与句间停顿缝隙。
-        # 适用所有 VAD 源（RNNoise / server-VAD / RMS），所以不再门控在
-        # _rnnoise_vad_active 下 —— RMS 阈值 500 已较保守，误触可接受，
-        # 相比主动搭话切断用户说话的体验损失值得。
+        # B: First check recent voice frames via independent _user_recent_activity_time;
+        # signal is independent of sustain, covering first 500ms of user speech and between-sentence pauses.
+        # Applies to every VAD source (RNNoise / server-VAD / RMS), no longer gated by
+        # _rnnoise_vad_active. RMS threshold 500 is conservative; false positives are acceptable
+        # compared with proactively interrupting user speech.
         if _now - self._user_recent_activity_time < self._user_recent_activity_window:
             logger.debug("prompt_ephemeral: skipped — user recently active (%.2fs ago)",
                          _now - self._user_recent_activity_time)
             return False
-        # A: 现有 _client_vad_active + grace 检查（sustained VAD 信号兜底）。
-        # Grace 已从 2s 扩到 6s，覆盖自然停顿。
-        # 门控条件：存在可靠 VAD 信号源。
-        #   - server-VAD 后端（Qwen/OpenAI）：server 的 speech_started/stopped 可靠，
-        #     不依赖 RNNoise。特别覆盖 16kHz 移动端长句 >8s 的场景（_user_recent_activity
-        #     在 speech_started 打点后 8s 过期，而用户还在说，需要 _client_vad_active 兜底）。
-        #   - RNNoise 客户端 VAD（48kHz 桌面 + Gemini/lanlan.app+free）
-        # RMS-only 路径（16kHz 无 server-VAD）信号太噪，不信任，依赖 _user_recent_activity。
+        # A: Existing _client_vad_active + grace check (sustained VAD fallback).
+        # Grace extended from 2s to 6s for natural pauses.
+        # Gate: reliable VAD source available.
+        #   - Server-VAD backends (Qwen/OpenAI): reliable speech_started/stopped,
+        #     independent of RNNoise, covering 16kHz mobile utterances >8s (_user_recent_activity
+        #     expires 8s after speech_started while user still speaks, requiring _client_vad_active fallback).
+        #   - RNNoise client VAD (48kHz desktop + Gemini/lanlan.app+free).
+        # RMS-only path (16kHz without server-VAD) is too noisy to trust; rely on _user_recent_activity.
         if self._has_server_vad or self._rnnoise_vad_active:
             if self._client_vad_active:
                 logger.debug("prompt_ephemeral: skipped — user speaking (VAD active)")
@@ -2332,8 +2332,8 @@ class _ResponseMixin:
         rejection_message = ""
         visual_event_id: str | None = None
         events_before_text: tuple[Dict[str, Any], ...] = ()
-        # 这一轮有没有真的把原始帧写进 provider context。竞态早退时要靠它决定
-        # 快照该不该记成已消费。
+        # Whether this turn actually wrote raw frames into provider context; on race-related early returns,
+        # use this to decide whether snapshot is consumed.
         _raw_frame_sent = False
         external_visual_delivery = getattr(
             self,
@@ -2398,12 +2398,12 @@ class _ResponseMixin:
                 "prompt_ephemeral: skipped — StepFun visual analysis is pending"
             )
             return False
-        # 独立 ASR 给会话上了原始帧栅栏：麦克风路线归 Core，帧不许走 provider 连
-        # 接，但 stage_multimodal_frame 仍然为「主动观察」把缓存喂得温热。栅栏期还
-        # 把 has_vision 算成真的话，下面那次 native inject 必被栅栏拒掉、整条主动搭
-        # 话连文本一起发不出去；而屏幕共享期间帧持续到达，缓存一直被重新装填，于是
-        # 整场都哑了。栅栏期按无视觉处理：这一轮退化成纯文本，帧留着不消费，等栅栏
-        # 解除之后的某一轮再用。
+        # Independent ASR fenced raw frames: microphone routing belongs to Core and frames cannot use provider
+        # connection, but stage_multimodal_frame still keeps observation cache warm. During fencing,
+        # treating has_vision as true makes native injection below fail against the fence, losing the entire proactive
+        # message including text. Screen-sharing frames continuously refill cache,
+        # silencing the whole session. Treat fenced turns as no vision: degrade to text, leave frames unconsumed,
+        # and use them in a later turn after the fence lifts.
         raw_delivery_fenced = (
             getattr(self, "_raw_visual_delivery_blocked", False)
             and not external_visual_delivery
@@ -2483,9 +2483,9 @@ class _ResponseMixin:
             has_vision
             and not self._is_gemini
             and (
-                # 描述模式下的一次性 cue 图现在也走原始 WebSocket 事件，同样会被
-                # 异步拒绝，所以同样需要这个关联句柄——否则拒绝到达时
-                # _on_visual_rejected() 找不到人，快照不会被重新武装。
+                # One-shot description-mode cue images now use raw WebSocket events and may also be
+                # rejected asynchronously, requiring this correlation handle too; otherwise
+                # _on_visual_rejected() finds no owner and never rearms the snapshot.
                 (self._supports_native_image and snapshot_image_b64)
                 or (
                     not self._supports_native_image
@@ -2520,10 +2520,10 @@ class _ResponseMixin:
                     bypass_rate_limit=True,
                     cache_latest=False,
                     event_id=visual_event_id,
-                    # 与下面 external-description 那一支同源：这是主动搭话/问候
-                    # 那一轮附的图，用户根本不知道有这么一轮。漏了这个参数就落成
-                    # 默认值，帧抄送里按 "proactive" 过滤的插件会漏掉 native
-                    # provider 这条路。
+                    # Same basis as external-description below: this image accompanies a proactive/greeting
+                    # turn unknown to the user. Omitting this parameter uses the default,
+                    # making frame-copy plugins filtering 'proactive' miss native-provider
+                    # delivery.
                     source="proactive",
                 )
             except asyncio.CancelledError:
@@ -2583,11 +2583,11 @@ class _ResponseMixin:
                 and not bool(getattr(stage_result, "accepted", False))
                 and _stage_mode == VisualDeliveryMode.NATIVE.value
             ):
-                # 原始 cue 图**根本没送出去**：等发送信号量 / 重压缩超大图期间路由
-                # 模式翻转了，或者传输断了，send_event 返回 False。这不是"分析出
-                # 空结果"那种终局失败，不能按它处置——那会把一张从未到达 provider
-                # 的图记成已消费，本轮还降级成纯文本。与上面原生投递分支同一处置：
-                # 摘掉关联句柄、快照留着武装，下一次主动搭话重试。
+                # Raw cue image **never sent**: routing mode changed while waiting for send semaphore /
+                # recompressing oversized images, or transport disconnected, and send_event returned False. This is not terminal
+                # empty-analysis failure; treating it that way consumes an image that never reached provider
+                # and degrades the turn to text. Match native delivery above:
+                # detach correlation handle, retain armed snapshot, retry next proactive turn.
                 _remove_visual_rejection_handler()
                 logger.info(
                     "prompt_ephemeral: raw cue image was not delivered; keeping snapshot for retry"
@@ -2599,19 +2599,19 @@ class _ResponseMixin:
             ):
                 _raw_frame_sent = True
                 if delivery_rejected:
-                    # provider 在这一轮的文字注入之前就已经把这张图拒了（原始图
-                    # 走 WebSocket 事件，error.event_id 可能比写返回还早到）。
-                    # 照常投文字等于让她描述一张根本没进上下文的画面。与上面原生
-                    # 投递分支的 `if delivery_rejected:` 同一处置。
+                    # Provider rejected the image before this turn's text injection (raw image travels
+                    # by WebSocket event; error.event_id may arrive before write returns).
+                    # Sending text normally would describe an image absent from context. Match native
+                    # delivery's `if delivery_rejected:` handling above.
                     _remove_visual_rejection_handler()
                     logger.info(
                         "prompt_ephemeral: raw cue image rejected before proactive text inject"
                     )
                     return False
-                # 图已经原样送进去了（描述模式下的一次性 cue 图走原生通道）。
-                # 只补一句简单引导告诉模型这是什么，不再为它单独跑一次
-                # VISION_MODEL 注释——省一次付费调用，也少一层转述失真。
-                # 说明文字与下面描述分支同一口径：明示这不是用户说的话。
+                # Image already delivered raw (description-mode one-shot cues use native channel).
+                # Add only a brief explanation of what it is, avoiding a separate
+                # VISION_MODEL annotation call, saving paid invocation and paraphrase distortion.
+                # Same description policy as branch below: explicitly identify it as not user speech.
                 events_before_text = ({
                     "type": "conversation.item.create",
                     "item": {
@@ -2712,10 +2712,10 @@ class _ResponseMixin:
                 # the exact rejection handler alive so a late provider error
                 # can re-arm the snapshot.
                 #
-                # 判据是"这一轮到底送没送出原始帧"，不是"处在哪个投递模式"：描述
-                # 模式下的一次性 cue 图现在也走原始通道，按模式判会漏掉它——那张
-                # 图已经在 provider context 里，快照却还武装着，下一次主动搭话会
-                # 把同一张图再发一遍。
+                # Criterion is whether raw frames actually sent this turn, not current delivery mode: description-mode
+                # one-shot cues now also use raw channel, so mode checks miss them. That
+                # image is already in provider context but snapshot stays armed, resending it
+                # on the next proactive turn.
                 _mark_snapshot_consumed_if_current()
             else:
                 # Step's description is only queued below, so no visual event

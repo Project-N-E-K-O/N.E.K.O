@@ -65,14 +65,14 @@ def t(key: str, *, lang: str | None = None, **fmt: Any) -> str:
     text = text or bundle[DEFAULT_LANG]
     if fmt:
         text = text.format(**fmt)
-    # ``{{MASTER_NAME}}`` 是双花括号转义，只有在 ``str.format`` 真正跑过时才会被
-    # 降成单花括号 ``{MASTER_NAME}``。但很多键（KEEP_GOING_BODY、
+    # ``{{MASTER_NAME}}`` escapes double braces, reduced to ``{MASTER_NAME}`` only when
+    # str.format actually runs. Many keys such as KEEP_GOING_BODY and
     # TASK_DISPATCHED_ACK、IN_PROGRESS_FOLLOWUP、SYSTEM_PROMPT_IDLE_BODY、
-    # INTERNAL_STATE_GAG 等）没有任何 fmt 参数，上面的 ``if fmt`` 分支不执行，
-    # 双花括号原样留下。下游 main_server 用 ``text.replace("{MASTER_NAME}", …)``
-    # 找的是单花括号，匹配到 ``{{MASTER_NAME}}`` 里层后会留下多余的外层花括号
-    # （替换出 ``{博士}``），占位符等于没替换干净。这里无条件收口成单花括号，
-    # 保证不管走没走 format，最终都是下游认识的 ``{MASTER_NAME}``。
+    # INTERNAL_STATE_GAG have no fmt arguments, skipping the ``if fmt`` branch above
+    # and retaining double braces. Downstream main_server uses ``text.replace("{MASTER_NAME}", …)``,
+    # matching the inner single-brace token and leaving surplus outer braces
+    # such as ``{博士}``, so substitution remains incomplete. Always reduce to single braces here,
+    # ensuring downstream receives its recognized ``{MASTER_NAME}`` whether formatting ran or not.
     text = text.replace("{{MASTER_NAME}}", "{MASTER_NAME}")
     return text
 
@@ -591,7 +591,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         # Used when the late frame's status is NOT a genuine completion
         # (interrupted / superseded / failed / timeout). The plain
         # RETROACTIVE_HEADER asserts "actually finished", which would
-        # contradict the status and re-tell 猫娘 a completion that never
+        # contradict the status and re-tell the catgirl a completion that never
         # happened. {task_text} = the earlier task, {status} = final status.
         "zh": "你之前派出去的「{task_text}」已经结束了，但没真正跑完（结果 {status}）。",
         "zh-TW": "你之前派出去的「{task_text}」已經結束了，但沒真正跑完（結果 {status}）。",

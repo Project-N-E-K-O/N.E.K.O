@@ -6,7 +6,7 @@ Covered:
 - ``memory.temporal``: normalize_event_when / compute_event_timestamps /
   is_past_for_render / time_since_label / weighted_sample_no_replace
 - ``persona._compose_markdown_from_trimmed``: outdated block with
-  六等号 delimiters, time labels, mixed active + past
+  six-equals-sign delimiters, time labels, mixed active + past
 - ``reflection._filter_followup_candidates``: weighted sampling by
   evidence_score
 """
@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ── cooldown_elapsed (dead-letter 时间自愈) ──────────────────────────
+# ── cooldown_elapsed (time-based dead-letter recovery) ──────────────────────────
 
 
 def test_cooldown_elapsed_true_after_window():
@@ -37,7 +37,7 @@ def test_cooldown_elapsed_false_within_window():
 
 
 def test_cooldown_elapsed_missing_or_garbage_is_eligible():
-    """无时间戳 / 无法解析 → True（给一次 probe，比永久冻死安全）。"""
+    """Missing/unparseable timestamp → True (one probe is safer than permanent freezing)."""
     from memory.temporal import cooldown_elapsed
     assert cooldown_elapsed(None, 5 * 3600) is True
     assert cooldown_elapsed("", 5 * 3600) is True
@@ -48,15 +48,15 @@ def test_cooldown_elapsed_respects_now_arg():
     from memory.temporal import cooldown_elapsed
     base = datetime(2026, 5, 24, 12, 0, 0)
     last = (base - timedelta(hours=4)).isoformat()
-    # 4h < 5h 窗口
+    # 4h < 5h window.
     assert cooldown_elapsed(last, 5 * 3600, now=base) is False
-    # 同一时间戳，6h 窗口外
+    # Same timestamp, outside the 6h window.
     assert cooldown_elapsed(last, 3 * 3600, now=base) is True
 
 
 def test_cooldown_elapsed_handles_aware_timestamp():
-    """aware ISO（+00:00 / Z）不应让相减抛 TypeError（迁移/import 数据防御，
-    CodeRabbit）。aware 与 naive now 经 to_naive_local 归一后正常比较。"""
+    """Aware ISO (+00:00 / Z) must not cause TypeError in subtraction (migration/import defense,
+    CodeRabbit). Normalize aware values and naive now via to_naive_local before comparison."""
     from datetime import timezone
     from memory.temporal import cooldown_elapsed
     last_aware_old = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
@@ -79,7 +79,7 @@ def test_normalize_event_when_rejects_garbage():
     from memory.temporal import normalize_event_when
     assert normalize_event_when("nope") is None
     assert normalize_event_when({'start': 'bad'}) is None
-    # 单边坏掉但另一边 OK 时仍返回（半结构容忍）
+    # Return the valid side even if the other is broken (tolerate partial structure).
     out = normalize_event_when({
         'start': {'offset': 'x', 'unit': 'day'},
         'end': {'offset': 0, 'unit': 'day'},
@@ -133,15 +133,15 @@ def _entry(scope, **overrides):
 
 def test_pattern_never_past():
     from memory.temporal import is_past_for_render
-    now = datetime(2027, 1, 1)  # 一年后
+    now = datetime(2027, 1, 1)  # One year later.
     assert is_past_for_render(_entry('pattern'), now) is False
 
 
 def test_state_past_after_7_days():
     from memory.temporal import is_past_for_render
     now = datetime(2026, 5, 20)
-    fresh = _entry('state', event_end_at='2026-05-17T00:00:00')  # 3 天前
-    old = _entry('state', event_end_at='2026-05-10T00:00:00')    # 10 天前
+    fresh = _entry('state', event_end_at='2026-05-17T00:00:00')  # 3 days ago.
+    old = _entry('state', event_end_at='2026-05-10T00:00:00')    # 10 days ago.
     assert is_past_for_render(fresh, now) is False
     assert is_past_for_render(old, now) is True
 
@@ -149,21 +149,21 @@ def test_state_past_after_7_days():
 def test_episode_past_after_3_days():
     from memory.temporal import is_past_for_render
     now = datetime(2026, 5, 20)
-    fresh = _entry('episode', event_end_at='2026-05-18T00:00:00')  # 2 天前
-    old = _entry('episode', event_end_at='2026-05-15T00:00:00')    # 5 天前
+    fresh = _entry('episode', event_end_at='2026-05-18T00:00:00')  # 2 days ago.
+    old = _entry('episode', event_end_at='2026-05-15T00:00:00')    # 5 days ago.
     assert is_past_for_render(fresh, now) is False
     assert is_past_for_render(old, now) is True
 
 
 def test_stored_past_always_past():
     from memory.temporal import is_past_for_render
-    # 即使 event_end_at 是今天，stored 'past' 也立刻进过时 block
+    # Even with event_end_at today, stored 'past' immediately enters the outdated block.
     e = _entry('past', event_end_at='2026-05-20T00:00:00')
     assert is_past_for_render(e, datetime(2026, 5, 20)) is True
 
 
 def test_legacy_scopes_never_past():
-    """v1 legacy: current / ongoing / None 不淡出（等慢速重判循环修正）。"""
+    """v1 legacy: do not fade current / ongoing / None (wait for slow reclassification to correct them)."""
     from memory.temporal import is_past_for_render
     now = datetime(2026, 5, 20)
     for legacy in ('current', 'ongoing', None):
@@ -172,10 +172,10 @@ def test_legacy_scopes_never_past():
 
 
 def test_past_anchor_prefers_event_end():
-    """anchor 优先级 end > start > added > created（与 time_since 一致）。"""
+    """Anchor priority: end > start > added > created (consistent with time_since)."""
     from memory.temporal import is_past_for_render
     now = datetime(2026, 5, 20)
-    # episode TTL=3d；end 较远（10d 前）→ past；start/created 都是今天但应被忽略
+    # Episode TTL=3d; distant end (10d ago) → past; ignore start/created even though both are today.
     e = {
         'temporal_scope': 'episode',
         'event_end_at': '2026-05-10T00:00:00',
@@ -186,15 +186,15 @@ def test_past_anchor_prefers_event_end():
 
 
 def test_is_past_tz_aware_anchor_does_not_crash():
-    """aware anchor（import/迁移的 +00:00）和 naive now 相减不能 TypeError
-    把过时判定打断（CodeRabbit）。"""
+    """Subtracting an aware anchor (imported/migrated +00:00) from naive now must not raise TypeError
+    and interrupt outdated classification (CodeRabbit)."""
     from memory.temporal import is_past_for_render
     now = datetime(2026, 5, 20)
-    old = _entry('episode', event_end_at='2026-05-10T00:00:00+00:00')  # 10d 前 aware
+    old = _entry('episode', event_end_at='2026-05-10T00:00:00+00:00')  # Aware timestamp 10d ago.
     assert is_past_for_render(old, now) is True
 
 
-# ── time_since_label：Q-α 0-6d 天 / 7-29d 周 / 30d+ 月 ────────────────
+# ── time_since_label: Q-α 0-6d days / 7-29d weeks / 30d+ months ────────────────
 
 
 def test_time_since_zero_days():
@@ -265,23 +265,23 @@ def test_time_since_simplified_is_unchanged_by_the_traditional_row():
 
 
 def test_to_naive_local_converts_then_strips():
-    """aware → 转本地再剥 tz（保留瞬时，不是直接 replace 丢墙钟）；naive /
-    None 原样返回。"""
+    """Aware → convert to local then strip tz (preserve the instant rather than replace and lose wall time); return naive /
+    None unchanged."""
     from datetime import datetime, timezone, timedelta
     from memory.temporal import to_naive_local
     aware = datetime(2026, 5, 1, 8, 0, 0, tzinfo=timezone(timedelta(hours=2)))
     out = to_naive_local(aware)
     assert out.tzinfo is None
-    # 等价于先 astimezone 本地再剥 tz —— 即保留的是同一瞬时的本地墙钟
+    # Equivalent to astimezone(local) then stripping tz: retain local wall time for the same instant.
     assert out == aware.astimezone().replace(tzinfo=None)
-    # naive / None 不动
+    # Leave naive / None unchanged.
     naive = datetime(2026, 5, 1, 8, 0, 0)
     assert to_naive_local(naive) == naive
     assert to_naive_local(None) is None
 
 
 def test_parse_time_window_hour_granularity():
-    """整点小时 token → 1 小时窗口 [HH:00, HH+1:00)；T 和空格分隔都认。"""
+    """Exact-hour token → 1-hour window [HH:00, HH+1:00); accept both T and space separators."""
     from datetime import datetime
     from memory.temporal import parse_time_window
     for tok in ('2026-05-01T14', '2026-05-01 14'):
@@ -290,7 +290,7 @@ def test_parse_time_window_hour_granularity():
 
 
 def test_parse_time_window_iso_with_minutes_floors_to_hour():
-    """带分秒的 ISO 向下取整到所在那一小时（精度到小时）。"""
+    """Floor ISO with minutes/seconds to its containing hour (hour precision)."""
     from datetime import datetime
     from memory.temporal import parse_time_window
     assert parse_time_window('2026-05-01T14:37:12') == (
@@ -298,7 +298,7 @@ def test_parse_time_window_iso_with_minutes_floors_to_hour():
 
 
 def test_parse_time_window_hour_range_union():
-    """小时区间取两端并集：当天 9 点到 19 点。"""
+    """Take the union of hour-range endpoints: 09:00 to 19:00 that day."""
     from datetime import datetime
     from memory.temporal import parse_time_window
     assert parse_time_window('2026-05-01T09/2026-05-01T18') == (
@@ -306,7 +306,7 @@ def test_parse_time_window_hour_range_union():
 
 
 def test_parse_time_window_date_still_whole_day():
-    """纯日期不带时间仍是整日窗口（不被小时分支误抢）。"""
+    """A date without time remains a full-day window (the hour branch must not intercept it)."""
     from datetime import datetime
     from memory.temporal import parse_time_window
     assert parse_time_window('2026-05-01') == (
@@ -314,19 +314,19 @@ def test_parse_time_window_date_still_whole_day():
 
 
 def test_parse_time_window_boundary_overflow_returns_none():
-    """边界输入让窗口右界越过 datetime.max（+1 天 / 年月进位）时返回 None，
-    不冒 OverflowError/ValueError 到上层（Codex）。"""
+    """Return None if boundary input moves the window's right edge beyond datetime.max (+1 day / year-month carry),
+    rather than propagating OverflowError/ValueError (Codex)."""
     from memory.temporal import parse_time_window
     for tok in ('9999-12-31', '9999-12', '9999', '9999-12-31T23:59:59'):
         assert parse_time_window(tok) is None, tok
 
 
 def test_to_naive_local_boundary_overflow_falls_back_to_strip():
-    """边界 aware 值 astimezone 加减 offset 会越过 datetime.min/max 抛
-    OverflowError；to_naive_local 退回直接剥 tz（保墙钟）而非崩（Codex）。"""
+    """astimezone offset arithmetic at aware boundaries may cross datetime.min/max and raise
+    OverflowError; to_naive_local falls back to stripping tz while preserving wall time instead of crashing (Codex)."""
     from datetime import datetime, timezone, timedelta
     from memory.temporal import to_naive_local
-    # min 附近 + 正 offset → astimezone 转本地（机器 tz）可能下溢
+    # Near min + positive offset → astimezone(local machine tz) may underflow.
     near_min = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=14)))
     out = to_naive_local(near_min)
     assert out is not None and out.tzinfo is None
@@ -336,22 +336,22 @@ def test_to_naive_local_boundary_overflow_falls_back_to_strip():
 
 
 def test_parse_time_window_tz_aware_token_returns_naive():
-    """带 tz 的 ISO time token 不该崩，且返回 naive 区间。带分秒 → 精度到
-    小时（1 小时窗口），tz 先转本地再 floor。"""
+    """ISO time tokens with tz must not crash and return naive intervals. Minutes/seconds → hour
+    precision (1-hour window); convert tz to local before flooring."""
     from memory.temporal import parse_time_window
     win = parse_time_window('2026-05-01T23:30:00+00:00')
     assert win is not None
     start, end = win
     assert start.tzinfo is None and end.tzinfo is None
-    assert (end - start).total_seconds() == 3600  # 精度到小时
+    assert (end - start).total_seconds() == 3600  # Hour precision.
 
 
 def test_time_since_tz_aware_anchor_does_not_crash():
-    """tz-aware anchor（import/迁移路径会写 +00:00 / Z）不能因为和 naive
-    now 相减而 TypeError —— days_since 内部把 aware 转本地剥 tz（Codex）。"""
+    """A tz-aware anchor (import/migration may write +00:00 / Z) must not cause TypeError with naive
+    now; days_since converts aware to local and strips tz internally (Codex)."""
     from memory.temporal import days_since, time_since_label
     now = datetime(2026, 5, 20)
-    # 3 天前的 UTC aware 时间戳；只要不抛异常且落进合理桶即可
+    # UTC-aware timestamp 3 days ago; just require no exception and a reasonable bucket.
     assert days_since('2026-05-17T00:00:00+00:00', now=now) is not None
     assert time_since_label('2026-05-17T00:00:00+00:00', now=now, lang='zh').endswith('天前')
 
@@ -365,7 +365,7 @@ def test_weighted_sample_empty():
 
 
 def test_weighted_sample_all_zero_weights():
-    """全 0 权重应返回 [] 而非 ZeroDivision。"""
+    """All-zero weights should return [] rather than ZeroDivision."""
     from memory.temporal import weighted_sample_no_replace
     assert weighted_sample_no_replace([1, 2, 3], [0, 0, 0], 2) == []
 
@@ -377,17 +377,17 @@ def test_weighted_sample_k_exceeds_n():
 
 
 def test_weighted_sample_high_weight_dominates():
-    """高权重条目应在多次采样中显著多次被选中。"""
+    """High-weight entries should be selected significantly more often over repeated samples."""
     from memory.temporal import weighted_sample_no_replace
     items = list(range(10))
-    # idx 1, 4, 7 权重 5；其余 1
+    # idx 1, 4, 7 have weight 5; all others weight 1.
     weights = [1, 5, 1, 1, 5, 1, 1, 5, 1, 1]
     counts = {i: 0 for i in items}
     for seed in range(200):
         picked = weighted_sample_no_replace(items, weights, 3, rng=random.Random(seed))
         for p in picked:
             counts[p] += 1
-    # 高权重三个 (1, 4, 7) 累计计数应 > 普通三个 (2, 3, 5) 累计计数
+    # Total selection count for high-weight (1, 4, 7) should exceed ordinary (2, 3, 5).
     high = counts[1] + counts[4] + counts[7]
     low = counts[2] + counts[3] + counts[5]
     assert high > low, f"high={high} not > low={low}"
@@ -439,10 +439,10 @@ def _refl(text, scope, event_end_at=None, status='confirmed'):
 
 
 def test_render_outdated_block_uses_six_equals(tmp_path):
-    """过时 block 必须用六个等号包裹 below/above 对偶分隔符。
+    """Outdated blocks require paired below/above delimiters wrapped in six equals signs.
 
-    显式 pin lang='zh' 验证 zh locale 行为；其他 locale 由
-    test_render_past_block_localizes_to_active_language 覆盖。
+    Explicitly pin lang='zh' to verify zh behavior; other locales are covered by
+    test_render_past_block_localizes_to_active_language.
     """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
@@ -472,11 +472,11 @@ def test_render_outdated_block_uses_six_equals(tmp_path):
     assert '======以上为较久前的记忆======' in md
     # past entry rendered with time label
     assert '过时状态' in md
-    assert '[1 周前]' in md or '[10 天前]' in md  # 10d falls in 7-29d → "1 周前"
+    assert '[1 周前]' in md or '[10 天前]' in md  # 10d falls in 7-29d → '1 周前' (1 week ago).
 
 
 def test_render_omits_past_block_when_all_active(tmp_path):
-    """没有任何过时条目时不应出现过时 block 分隔符。"""
+    """No outdated-block delimiters should appear without outdated entries."""
     pm, _ = _persona_manager(str(tmp_path))
     md = pm._compose_markdown_from_trimmed(
         name='小天',
@@ -497,8 +497,8 @@ def test_render_omits_past_block_when_all_active(tmp_path):
 
 
 def test_render_legacy_temporal_scope_not_past(tmp_path):
-    """legacy 'current' / 'ongoing' / None 应当 fall back into active section,
-    not the past block (保守不淡出，等慢速重判修正)。"""
+    """Legacy 'current' / 'ongoing' / None should fall back into the active section,
+    not the past block (conservatively avoid fading until slow reclassification corrects them)."""
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=60)).isoformat()  # 60 days old
     md = pm._compose_markdown_from_trimmed(
@@ -516,19 +516,19 @@ def test_render_legacy_temporal_scope_not_past(tmp_path):
         ],
     )
     assert '比较确定的印象' in md
-    assert '以下为较久前的记忆' not in md  # legacy 不算 past
+    assert '以下为较久前的记忆' not in md  # Legacy does not count as past.
     assert 'legacy current 条目' in md
     assert 'legacy ongoing 条目' in md
-    # None 分支必须显式 assert——否则误把 None 当 past 时此用例仍会通过
+    # Explicitly assert the None branch, or this case would pass even if None were incorrectly treated as past.
     # (CodeRabbit review on PR #1316 catch)
     assert 'legacy None 条目' in md
 
 
 def test_render_past_block_localizes_to_active_language(tmp_path):
-    """Past block 内容 + 时间标签必须跟随 get_global_language()。
+    """Past block content + time labels must follow get_global_language().
 
-    Codex review on PR #1316 P2 regression guard：之前硬编码 zh，非 zh
-    locale 看到中文时间标签 + 中文 below/above 分隔符。
+    Codex review PR #1316 P2 regression guard: previously hardcoded zh, so non-zh
+    locales saw Chinese time labels + Chinese below/above delimiters.
     """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
@@ -549,21 +549,21 @@ def test_render_past_block_localizes_to_active_language(tmp_path):
                 _refl('an outdated state', 'state', event_end_at=old_iso),
             ],
         )
-    # English below/above pair, not 中文
+    # English below/above pair, not Chinese.
     assert '======Below is older memory======' in md
     assert '======Above is older memory======' in md
     assert '以下为较久前的记忆' not in md
-    # Time label localized to en (10 天前 → "1w ago" via 7-29d 周 bucket)
+    # Time label localized to en (10 days ago → '1w ago' via the 7-29d week bucket).
     assert '[1w ago]' in md
     assert '天前' not in md and '周前' not in md
 
 
 def test_render_past_block_no_temporal_scope_label(tmp_path):
-    """过时 block 内不出现 temporal_scope 字面值（用户原话："不需要进任何 block"）。
+    """Past blocks must not display temporal_scope literals (user's words: 'no need to put them in any block').
 
-    用户的要求是 render 时不要把 pattern/state/episode 这种类型标签也塞到
-    每条前缀里（仅时间标签 + 全局过时提醒就够）。我们检查 prefix 形式：
-    bullet 行只有 "- [时间标签] 内容"，不会出现 "- [state] xxx" 之类。
+    The user requires rendering without type labels such as pattern/state/episode in
+    each entry's prefix (time labels + a global outdated notice suffice). Check prefix form:
+    bullet lines contain only '- [time label] content', never '- [state] xxx', etc.
     """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
@@ -586,12 +586,12 @@ def test_render_past_block_no_temporal_scope_label(tmp_path):
         )
     start = md.find('======以下为较久前的记忆======')
     end = md.find('======以上为较久前的记忆======')
-    # 显式断言分隔符存在——否则 find 返回 -1 → block 为空字符串 →
-    # 正则循环零次执行 → 测试"空块假通过" (CodeRabbit nit on PR #1316)
+    # Explicitly assert delimiters exist; otherwise find returns -1 → empty block →
+    # regex loop runs zero times → false pass on an empty block (CodeRabbit nit on PR #1316).
     assert start >= 0, "past block opening delimiter missing"
     assert end > start, "past block closing delimiter missing or out of order"
     block = md[start:end]
-    # bullet 前缀只允许 [时间标签]，不允许任何形式的 [pattern/state/episode/...]
+    # Bullet prefixes allow only [time label], never [pattern/state/episode/...].
     import re as _re
     prefixes = _re.findall(r'^- \[([^\]]*)\]', block, _re.MULTILINE)
     assert prefixes, "past block has no bulleted entries to validate"
@@ -607,7 +607,7 @@ def test_render_past_block_no_temporal_scope_label(tmp_path):
 
 @pytest.mark.asyncio
 async def test_followup_weighted_disabled_uses_list_order(tmp_path):
-    """REFLECTION_FOLLOWUP_WEIGHTED=False 时回退旧行为（list 顺序）。"""
+    """REFLECTION_FOLLOWUP_WEIGHTED=False restores legacy list-order behavior."""
     from memory.event_log import EventLog
     from memory.facts import FactStore
     from memory.persona import PersonaManager
@@ -633,7 +633,7 @@ async def test_followup_weighted_disabled_uses_list_order(tmp_path):
     ]
     await re.asave_reflections('小天', candidates)
     with patch('config.REFLECTION_FOLLOWUP_WEIGHTED', False):
-        # 两次调用应该返回完全相同的前 K 条（list 顺序）
+        # Both calls should return exactly the same first K entries (list order).
         a = await re.aget_followup_topics('小天')
         b = await re.aget_followup_topics('小天')
     assert [r['id'] for r in a] == [r['id'] for r in b]
@@ -802,8 +802,8 @@ async def test_arecheck_one_legacy_reflection_skips_malformed_head(tmp_path):
     g = next(r for r in reflections if r.get('id') == 'r-good')
     assert g.get('schema_version') == 2
     assert g.get('temporal_scope') == 'pattern'
-    # 同时断言 malformed 条目保持原状（schema_version 未升 v2、未被改写
-    # temporal_scope）—— 防止未来回归把"洗白未验证条目"的反模式引回来
+    # Also assert malformed entries remain unchanged (schema_version not upgraded to v2, no rewritten
+    # temporal_scope), preventing a regression that launders unvalidated entries.
     # (CodeRabbit nit on PR #1316)
     b = next(r for r in reflections if r.get('text') == '破损 reflection')
     assert (b.get('schema_version') or 1) == 1
@@ -838,7 +838,7 @@ async def test_arecheck_invalid_scope_bumps_attempts_and_eventually_skips(tmp_pa
     bad = {
         "id": "r-bad", "text": "总是被误判的 reflection", "entity": "master",
         "status": "confirmed", "source_fact_ids": [],
-        "created_at": "2026-04-01T00:00:00",  # 更老 → FIFO 优先
+        "created_at": "2026-04-01T00:00:00",  # Older → FIFO priority.
         "feedback": None, "reinforcement": 1.0, "disputation": 0.0,
     }
     other = {
@@ -849,7 +849,7 @@ async def test_arecheck_invalid_scope_bumps_attempts_and_eventually_skips(tmp_pa
     }
     await re.asave_reflections("小天", [bad, other])
 
-    # 控制 LLM 响应：r-bad 永远返回非法 scope 'banana'；r-other 返回 valid 'pattern'
+    # Control LLM response: r-bad always returns invalid scope 'banana'; r-other returns valid 'pattern'.
     call_count = {"n": 0}
     bad_resp = MagicMock()
     bad_resp.content = json.dumps({"temporal_scope": "banana", "event_when": None})
@@ -858,7 +858,7 @@ async def test_arecheck_invalid_scope_bumps_attempts_and_eventually_skips(tmp_pa
 
     async def _ainvoke(prompt, *_a, **_k):
         call_count["n"] += 1
-        # prompt 中包含 reflection text，借此区分
+        # Distinguish using reflection text included in the prompt.
         return bad_resp if "总是被误判" in prompt else good_resp
 
     async def _aclose():
@@ -868,7 +868,7 @@ async def test_arecheck_invalid_scope_bumps_attempts_and_eventually_skips(tmp_pa
     fake_llm.ainvoke = _ainvoke
     fake_llm.aclose = _aclose
 
-    # MAX=2：bad 经过 2 次 invalid scope 后被排除，第 3 次调用应命中 other
+    # MAX=2: exclude bad after 2 invalid scopes; the third call should select other.
     with patch("memory.reflection.create_chat_llm", return_value=fake_llm, create=True), \
          patch("utils.llm_client.create_chat_llm", return_value=fake_llm), \
          patch("config.MEMORY_RECHECK_MAX_ATTEMPTS", 2):
@@ -883,15 +883,15 @@ async def test_arecheck_invalid_scope_bumps_attempts_and_eventually_skips(tmp_pa
     bad_after = next(r for r in reflections if r.get('id') == 'r-bad')
     other_after = next(r for r in reflections if r.get('id') == 'r-other')
     assert bad_after.get('recheck_attempts') == 2
-    assert (bad_after.get('schema_version') or 1) == 1  # 不洗白
+    assert (bad_after.get('schema_version') or 1) == 1  # Do not launder unvalidated data.
     assert other_after.get('schema_version') == 2
     assert other_after.get('temporal_scope') == 'pattern'
 
 
 @pytest.mark.asyncio
 async def test_followup_weighted_enabled_varies_picks(tmp_path):
-    """REFLECTION_FOLLOWUP_WEIGHTED=True + 候选 > TOP_K → 多轮采样应出现
-    不同组合（不再雷同）。"""
+    """REFLECTION_FOLLOWUP_WEIGHTED=True + candidates > TOP_K → repeated sampling should produce
+    different combinations rather than identical selections."""
     from memory.event_log import EventLog
     from memory.facts import FactStore
     from memory.persona import PersonaManager
@@ -908,7 +908,7 @@ async def test_followup_weighted_enabled_varies_picks(tmp_path):
 
     from datetime import datetime
     now_iso = datetime.now().isoformat()
-    # 8 候选 + TOP_K=3 → 加权采样至少应在 30 次中产生 ≥ 2 种 picks
+    # 8 candidates + TOP_K=3 → weighted sampling should yield at least 2 distinct selections over 30 runs.
     candidates = [
         {'id': f'r{i}', 'status': 'pending', 'text': f'topic {i}',
          'reinforcement': 0.5, 'disputation': 0.0,
@@ -917,9 +917,9 @@ async def test_followup_weighted_enabled_varies_picks(tmp_path):
         for i in range(8)
     ]
     await re.asave_reflections('小天', candidates)
-    # 显式 patch REFLECTION_FOLLOWUP_WEIGHTED=True，不依赖全局默认——如果
-    # 未来 config 默认值翻成 False，这个用例就会"沉默通过"成 list-order
-    # 行为而不报错 (CodeRabbit nit on PR #1316)。
+    # Explicitly patch REFLECTION_FOLLOWUP_WEIGHTED=True rather than relying on the global default; if
+    # a future config defaults to False, this test would silently pass with list-order
+    # behavior instead of raising (CodeRabbit nit on PR #1316).
     with patch('config.REFLECTION_FOLLOWUP_WEIGHTED', True):
         seen = set()
         for _ in range(30):
@@ -1020,8 +1020,8 @@ async def test_recheck_mirror_records_the_failure_timestamp(tmp_path):
 
     entry = fs._recheck_attempts_mem["小天"]["f-legacy"]
     assert entry["n"] == 1
-    # 只补计数不补时刻等于白修：cooldown_elapsed(None, …) 恒为 True，
-    # 刚冻结的条目会被 5h 自愈分支立刻放回队列。
+    # Updating counts without timestamps fixes nothing: cooldown_elapsed(None, …) is always True,
+    # so the 5h recovery branch would immediately requeue newly frozen entries.
     stamped = datetime.fromisoformat(entry["at"])
     assert abs((datetime.now() - stamped).total_seconds()) < 60
 
@@ -1093,14 +1093,14 @@ async def test_persisted_bump_is_not_double_counted(tmp_path):
     await fs.asave_facts("小天")
 
     calls: list = []
-    llm = _counting_llm(calls, content=None)  # LLM 失败，但磁盘可写
+    llm = _counting_llm(calls, content=None)  # LLM fails, but disk remains writable.
     rounds = MEMORY_RECHECK_MAX_ATTEMPTS + 2
     with patch("utils.llm_client.create_chat_llm", return_value=llm):
         for _ in range(rounds):
             await fs.arecheck_one_legacy_fact("小天")
 
-    # 磁盘写得进去时，两处计数必须是同一个数：读侧若把磁盘和镜像相加，熔断会
-    # 提前一倍触发，等于凭空砍掉一半重试预算。
+    # When disk writes succeed, both counters must match; summing disk and mirror on read would trigger the breaker
+    # twice as early, arbitrarily halving the retry budget.
     assert len(calls) == MEMORY_RECHECK_MAX_ATTEMPTS, len(calls)
     on_disk = (await fs.aload_facts("小天"))[0]
     assert on_disk["recheck_attempts"] == MEMORY_RECHECK_MAX_ATTEMPTS
@@ -1128,7 +1128,7 @@ async def test_successful_recheck_clears_the_mirror_entry(tmp_path):
                return_value=_counting_llm(ok_calls, content=_valid_when_json())):
         assert await fs.arecheck_one_legacy_fact("小天") is True
 
-    # 对齐 _aclear_synth_backoff：成功落地后镜像必须收回，否则只增不减。
+    # Match _aclear_synth_backoff: withdraw the mirror after successful persistence, or it only grows.
     assert "f-legacy" not in fs._recheck_attempts_mem.get("小天", {})
     assert (await fs.aload_facts("小天"))[0]["schema_version"] == 2
 
@@ -1145,7 +1145,7 @@ def test_recheck_mirror_survives_instances_built_without_init():
     n, stamp = fs._note_recheck_attempt("小天", "f-legacy", base=None)
     assert (n, bool(stamp)) == (1, True)
     assert fs._recheck_attempts_mem["小天"]["f-legacy"]["n"] == 1
-    # 实例级而不是模块级：别的实例不该看见这条计数。
+    # Instance-level rather than module-level: other instances must not see this count.
     other = FactStore.__new__(FactStore)
     assert (other._recheck_attempts_mem or {}) == {}
 
@@ -1201,7 +1201,7 @@ def test_recheck_counter_persist_failure_is_visible_in_logs(tmp_path):
 
     warnings = sink.at_least(logging.WARNING)
     assert any("f-legacy" in m and "落盘失败" in m for m in warnings), warnings
-    # 留痕的前提是熔断计数真的记在了镜像里。
+    # Audit traces require the breaker count to have actually been recorded in the mirror.
     assert fs._recheck_attempts_mem["小天"]["f-legacy"]["n"] == 1
 
 
@@ -1229,5 +1229,5 @@ def test_recheck_counter_persist_skipped_in_maintenance_is_not_warned(tmp_path):
 
     warnings = sink.at_least(logging.WARNING)
     assert warnings == [], f"maintenance skip is an expected path: {warnings}"
-    # 降级不许连带把熔断也降级掉：镜像照记，只读盘/维护态下才有熔断可言。
+    # Degradation must preserve the circuit breaker: keep mirroring counts so it works on read-only disk / in maintenance mode.
     assert fs._recheck_attempts_mem["小天"]["f-legacy"]["n"] == 1

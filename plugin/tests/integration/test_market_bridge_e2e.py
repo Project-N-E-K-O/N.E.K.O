@@ -9,7 +9,7 @@ app, polls the resulting task to completion, then verifies:
 2. ``GET /market/installed`` projects ``latest_install_source`` from
    that lock entry.
 
-This is the hard-evidence test for "下载链路真的通了". It exercises the
+This proves the download path actually works. It exercises the
 full chain — HTTP download → sha256 check → unpack → ISM record →
 lock atomic write → ``/market/installed`` projection — without any
 network mocks except a Market catalogue populated from the served packages.
@@ -1661,12 +1661,12 @@ async def test_download_package_retries_allowlisted_proxy_via_github_direct(
 
 
 @pytest.mark.asyncio
-async def test_download_package_retries_oversized_allowlisted_proxy_via_github_direct(
+async def test_download_package_does_not_retry_oversized_allowlisted_proxy(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A mirror-only content-length limit failure retries the GitHub asset."""
+    """A size-policy refusal must not download the same release from another source."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
     direct_url = (
@@ -1726,11 +1726,16 @@ async def test_download_package_retries_oversized_allowlisted_proxy_via_github_d
         classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
     )
 
-    result, effective_url = await market_bridge_module._download_package(proxied_url, {})
+    task = {}
+    with pytest.raises(market_bridge_module._DownloadAttemptError) as raised:
+        await market_bridge_module._download_package(proxied_url, task)
 
-    assert attempts == [proxied_url, direct_url]
-    assert effective_url == direct_url
-    assert result.read_bytes() == b"direct-package"
+    assert attempts == [proxied_url]
+    assert raised.value.code == "package_size_exceeded"
+    assert raised.value.retryable is False
+    assert task["downloaded_bytes"] == 0
+    assert task["total_bytes"] == market_bridge_module._DOWNLOAD_MAX_BYTES + 1
+    assert not list((tmp_path / ".downloads").glob("*.neko-plugin"))
 
 
 @pytest.mark.asyncio
@@ -5349,7 +5354,8 @@ async def test_upgrade_rollback_on_download_failure(
 
     assert final_status is not None
     assert final_status["status"] == "failed", final_status
-    assert final_status["error_code"] == "download_failed"
+    assert final_status["error_code"] == "download_http_error"
+    assert final_status["error_details"] == {"http_status": 404}
 
     # Lock entry must be unchanged (still v1.0.0 with original installed_at).
     snapshot = mgr.snapshot()

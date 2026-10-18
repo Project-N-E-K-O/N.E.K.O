@@ -1,4 +1,4 @@
-"""MCP 请求规范化器。"""
+"""MCP request normalizer."""
 
 from __future__ import annotations
 
@@ -14,28 +14,28 @@ from plugin.sdk.adapter.gateway_models import (
 
 class MCPRequestNormalizer:
     """
-    MCP 请求规范化器。
+    MCP request normalizer.
     
-    将 MCP JSON-RPC 请求转换为 GatewayRequest。
+    Convert MCP JSON-RPC requests to GatewayRequest.
     """
 
     async def normalize(self, env: ExternalRequest) -> Result[GatewayRequest, TransportError]:
         """
-        将 ExternalRequest 转换为 GatewayRequest。
+        Convert ExternalRequest to GatewayRequest.
         
-        MCP 请求格式：
+        MCP request format:
         - action: "tool_call" | "resource_read" | "prompt_get"
         - payload: {"name": "tool_name", "arguments": {...}}
         """
         try:
             action = self._parse_action(env.action)
 
-            # 提取 MCP 特定字段
+            # Extract MCP-specific fields.
             payload = env.payload
             tool_name = self._extract_string(payload, "name")
             arguments = self._extract_dict(payload, "arguments")
 
-            # tool_call 和 resource_read 必须有 name
+            # tool_call and resource_read require name.
             if action in (GatewayAction.TOOL_CALL, GatewayAction.RESOURCE_READ):
                 if tool_name is None:
                     raise GatewayErrorException(
@@ -47,7 +47,7 @@ class MCPRequestNormalizer:
                         )
                     )
 
-            # 提取可选字段
+            # Extract optional fields.
             trace_id = self._extract_string(payload, "id") or env.request_id
             if "timeout_s" in payload:
                 timeout_raw = payload.get("timeout_s")
@@ -105,7 +105,7 @@ class MCPRequestNormalizer:
             return Err(TransportError(str(error), op_name="mcp.normalizer.normalize"))
 
     def _parse_action(self, raw_action: str) -> GatewayAction:
-        """解析 MCP action 到 GatewayAction。"""
+        """Parse an MCP action into GatewayAction."""
         action_map: dict[str, GatewayAction] = {
             "tool_call": GatewayAction.TOOL_CALL,
             "tools/call": GatewayAction.TOOL_CALL,
@@ -129,7 +129,7 @@ class MCPRequestNormalizer:
         return action
 
     def _extract_string(self, payload: dict[str, object], key: str) -> str | None:
-        """从 payload 中提取字符串字段。"""
+        """Extract a string field from the payload."""
         value = payload.get(key)
         if value is None:
             return None
@@ -146,7 +146,7 @@ class MCPRequestNormalizer:
         )
 
     def _extract_dict(self, payload: dict[str, object], key: str) -> dict[str, object]:
-        """从 payload 中提取字典字段。"""
+        """Extract a dictionary field from the payload."""
         value = payload.get(key)
         if value is None:
             return {}

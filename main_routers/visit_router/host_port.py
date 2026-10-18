@@ -21,8 +21,13 @@ not have yet (``open_mirror_speech_stream`` and the ``visit_bind`` filter of
 the display socket). :class:`ManagerHost` is the production adapter.
 
 Display-socket frames (``visit_*`` / ``status``) go out through
-:meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`; PR-09b routes
-them to bound connections only (design §4.5 ``visit_bind``).
+:meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`. The visit
+downlink of design §4.5 -- ``visit_*`` frames (invite code, transcript,
+debrief state) and the debrief chips -- and the visit status codes (they carry the visit
+id) are written only on a display socket that passed ``visit_bind``
+(``display_socket.is_bound``), checked and written on the same connection
+object. The after-visit summary bubble is ordinary assistant output (it is
+also spoken aloud) and is not filtered.
 """
 
 from __future__ import annotations
@@ -35,10 +40,11 @@ from typing import Any, Optional, Protocol
 
 from main_routers.visit_router.line_speaker import SpeechStream
 from utils.logger_config import get_module_logger
+from utils.visit_route_state import VISIT_ROUTE_KIND
 
 logger = get_module_logger(__name__, "Main")
 
-TAKEOVER_OWNER = "neko_visit"
+TAKEOVER_OWNER = VISIT_ROUTE_KIND
 """Takeover owner of every visit (OD-24)."""
 
 _FRAME_TIMEOUT_S = 2.0
@@ -81,8 +87,11 @@ class VisitHost(Protocol):
         settle it mid-shutdown (a renewal, a swap) right before the exit.
         """
 
+    def display_bound(self) -> bool:
+        """Whether the character's current display socket passed ``visit_bind`` (§4.5)."""
+
     async def send_frame(self, payload: dict) -> bool:
-        """One display-socket frame (``visit_*``); False when it could not be written."""
+        """One display-socket frame (``visit_*``); False when it could not be written or the socket is unbound."""
 
     async def send_status(self, code: str, details: Optional[dict] = None) -> bool:
         """``{type:'status', message:{code, details}}`` (§4.5); never carries text or tickets."""
@@ -107,8 +116,13 @@ class VisitHost(Protocol):
 
     def open_speech_stream(
         self, *, metadata: dict, request_id: str, on_enqueued: Callable[[int], None],
+        on_failed: Optional[Callable[[], None]] = None,
     ) -> Optional[SpeechStream]:
-        """One streaming mirror speech (``SessionManager.open_mirror_speech_stream``, PR-09b)."""
+        """One streaming mirror speech (``SessionManager.open_mirror_speech_stream``, PR-09b).
+
+        ``on_failed()`` is called once if the stream stops without its end
+        marker (TTS start / enqueue error, no worker, turn taken over).
+        """
 
     async def mirror_user_input(self, text: str, *, metadata: dict, request_id: Optional[str]) -> None:
         """Record the family's visit line in the sync stream (never in private chat history)."""
@@ -160,7 +174,7 @@ class ManagerHost:
 
         try:
             return get_session_manager().get(self.lanlan_name) is self._mgr
-        except Exception:  # noqa: BLE001 - 读不到当作已被替换：fail closed
+        except Exception:  # noqa: BLE001 - Treat unreadable state as replaced: fail closed.
             return False
 
     def precondition_failure(self) -> Optional[str]:
@@ -177,16 +191,16 @@ class ManagerHost:
         return None
 
     async def interrupt_main_turn(self, timeout: float) -> bool:
-        # 无条件按住：此前一轮已欠下、会话还没空闲的那笔，准入期间同样不该结清（teardown / 关机放开）
+        # Hold unconditionally: debt from a prior round while the session remains busy must not settle during admission either; teardown/shutdown releases it.
         self._hold_turn_wrap_up()
         session = getattr(self._mgr, "session", None)
         if session is None or not getattr(session, "_is_responding", False):
             return True
-        # 打断与等 turn end 共用一个期限。不用 wait_for：它到点后还会等被取消的协程真正结束，
-        # 不肯停的打断会把发凭证（以及占着的串门路由）一直挂住
+        # Interruption and turn-end waiting share one deadline. Avoid wait_for, which waits for cancellation to truly finish
+        # after expiry; an uncooperative interruption could indefinitely block credential issuance and the held visit route.
         deadline = time.monotonic() + timeout
-        # 离线会话：打断会接管这条回复的收尾（它自己的完成回调不再跑），必须走管理器的
-        # _interrupt_offline_reply 把这一轮关掉，否则下一条普通回复会并进这一轮
+        # Offline sessions: interruption takes over reply finalization, suppressing its completion callback. Close the turn through the manager's
+        # _interrupt_offline_reply, or the next ordinary reply merges into it.
         interrupt_reply = getattr(self._mgr, "_interrupt_offline_reply", None)
         if callable(interrupt_reply):
             interrupting = asyncio.ensure_future(interrupt_reply(session))
@@ -196,21 +210,21 @@ class ManagerHost:
         try:
             await asyncio.wait([interrupting], timeout=timeout)
         except asyncio.CancelledError:
-            interrupting.cancel()  # 串门已作废：不再去打断亲人正在进行的对话
+            interrupting.cancel()  # Visit invalidated: stop interrupting the family member's current conversation.
             if not interrupting.done():
-                # 取消之后它可能还在收尾（例如先把「本轮作废」发给页面）：同样留登记，关机时收得到
+                # Cancellation may still be finalizing, e.g. notifying the page of turn invalidation; retain registration for shutdown collection.
                 _abandoned_interrupts.add(interrupting)
                 interrupting.add_done_callback(_abandoned_interrupts.discard)
             raise
         if not interrupting.done():
             interrupting.cancel()
             logger.warning("visit: main turn interruption did not finish in time")
-            # 不理取消、还在跑：留个登记，关机时 stop_all 一并取消并限时等，不留给事件循环销毁
+            # If it ignores cancellation and continues, retain registration so shutdown stop_all cancels and awaits it within a bound, rather than leaving it to loop destruction.
             _abandoned_interrupts.add(interrupting)
             interrupting.add_done_callback(_abandoned_interrupts.discard)
             return False
         if interrupting.cancelled() or interrupting.exception() is not None:
-            # 打断失败按 busy 拒绝
+            # Reject as busy if interruption fails.
             logger.warning("visit: main turn interruption failed: %s",
                            "cancelled" if interrupting.cancelled() else type(interrupting.exception()).__name__)
             return False
@@ -245,31 +259,44 @@ class ManagerHost:
                 fire(settle_owed())
             else:
                 asyncio.ensure_future(settle_owed())
-        except Exception as exc:  # noqa: BLE001 - 结不清就留给下一次普通输入 / 会话空闲
+        except Exception as exc:  # noqa: BLE001 - If settlement fails, leave it for the next ordinary input/session idle period.
             logger.warning("visit: owed turn wrap-up not settled: %s", type(exc).__name__)
+
+    def display_bound(self) -> bool:
+        """Whether the character's current display socket passed ``visit_bind``."""
+        # Visit downlink goes only to visit_bind connections (section 4.5); when a new window takes over display socket before binding,
+        # withhold invitation codes, transcripts, and chips until post-bind replay.
+        from main_routers.visit_router.display_socket import is_bound
+
+        return is_bound(getattr(self._mgr, "websocket", None))
 
     async def send_frame(self, payload: dict) -> bool:
         ws = getattr(self._mgr, "websocket", None)
         if ws is None or not hasattr(ws, "send_json"):
+            return False
+        from main_routers.visit_router.display_socket import is_bound
+
+        # Validate and write the same connection object, so replacement of mgr.websocket cannot redirect writes after validation.
+        if not is_bound(ws):
             return False
         state = getattr(ws, "client_state", None)
         if state is not None and state != state.CONNECTED:
             return False
         try:
             await asyncio.wait_for(ws.send_json(payload), _FRAME_TIMEOUT_S)
+            from main_routers.visit_router.display_socket import record_sent
+
+            record_sent(ws, payload)
             return True
-        except Exception as exc:  # noqa: BLE001 - 页面不在 / 卡住：串门照常进行
+        except Exception as exc:  # noqa: BLE001 - Missing/stuck pages do not stop the visit.
             logger.debug("visit: display frame %s not written: %s", payload.get("type"), type(exc).__name__)
             return False
 
     async def send_status(self, code: str, details: Optional[dict] = None) -> bool:
+        # Visit status codes contain visit_id and sometimes request_id/failure details; use the same locked-connection outlet as visit_* frames,
+        # only for visit_bind connections. Unauthorized responses for unbound connections go directly through display_socket to their origin.
         message = json.dumps({"code": code, "details": dict(details or {})}, ensure_ascii=False)
-        try:
-            # 与 send_frame 一样有界：页面卡住不能把收尾流程（封存、注销）一起卡住
-            return bool(await asyncio.wait_for(self._mgr.send_status(message), _FRAME_TIMEOUT_S))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("visit: status %s not written: %s", code, type(exc).__name__)
-            return False
+        return await self.send_frame({"type": "status", "message": message})
 
     def acquire_takeover(self, dispatcher: Callable[..., Awaitable[bool]], sink: Callable[[dict], bool]) -> Any:
         return self._mgr.acquire_takeover(TAKEOVER_OWNER, dispatcher, callback_sink=sink)
@@ -302,18 +329,20 @@ class ManagerHost:
 
     def open_speech_stream(
         self, *, metadata: dict, request_id: str, on_enqueued: Callable[[int], None],
+        on_failed: Optional[Callable[[], None]] = None,
     ) -> Optional[SpeechStream]:
         opener = getattr(self._mgr, "open_mirror_speech_stream", None)
         if not callable(opener):
-            # PR-09b 才提供：没有时本场按估时放字幕（与 TTS 未就绪同一条路径）
+            # Without a manager streaming entry point, pace this visit's subtitles by estimates, matching the TTS-not-ready path.
             return None
-        return opener(metadata=metadata, request_id=request_id, on_enqueued=on_enqueued)
+        return opener(metadata=metadata, request_id=request_id, on_enqueued=on_enqueued, on_failed=on_failed)
 
     async def mirror_user_input(self, text: str, *, metadata: dict, request_id: Optional[str]) -> None:
         await self._mgr.mirror_user_input(text, metadata=metadata, request_id=request_id, send_to_frontend=False)
 
     async def mirror_assistant_output(self, text: str, *, metadata: dict, request_id: str) -> None:
-        # 有界：收尾流程在它之后才封存文件、注销，页面卡住不能把这些一起卡住
+        # Do not filter by visit_bind (section 4.5 covers only visit_* frames/chips): the homecoming summary is ordinary catgirl speech, spoken aloud and entering sync normally.
+        # Bound this wait: finalization archives files and unregisters afterward, so a stuck page must not block them too.
         try:
             await asyncio.wait_for(
                 self._mgr.mirror_assistant_output(text, metadata=metadata, request_id=request_id), _FRAME_TIMEOUT_S,
@@ -322,13 +351,14 @@ class ManagerHost:
             logger.warning("visit: assistant mirror timed out")
 
     async def render_chat_blocks(self, blocks: list[dict], *, request_id: str, source_name: str) -> bool:
-        try:
-            return bool(await asyncio.wait_for(self._mgr.render_chat_blocks(
-                blocks, request_id=request_id, source="system", source_name=source_name,
-            ), _FRAME_TIMEOUT_S))
-        except asyncio.TimeoutError:
-            logger.warning("visit: chat blocks timed out")
+        # Match SessionManager.render_chat_blocks frame shape, but write directly to the validated connection object:
+        # the manager rereads mgr.websocket when sending, potentially targeting a new unbound connection after validation.
+        from main_routers.visit_router.display_socket import chat_blocks_frame
+
+        frame = chat_blocks_frame(blocks, request_id=request_id, source_name=source_name)
+        if not frame["blocks"]:
             return False
+        return await self.send_frame(frame)
 
     def park_proactive(self) -> None:
         park = getattr(self._mgr, "_park_proactive_for_goodbye", None)
@@ -336,7 +366,7 @@ class ManagerHost:
             park()
 
     def last_user_input(self) -> float:
-        # 只认真实用户输入（非空、过了回声抑制）；last_user_activity_time 会被回声 / 空转写 / start_session 刷新
+        # Count only real user input, nonempty and echo-filtered; echoes, empty transcripts, and start_session refresh last_user_activity_time.
         value = getattr(self._mgr, "last_user_message_time", None)
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
@@ -354,7 +384,7 @@ class ManagerHost:
             await asyncio.sleep(_TURN_IDLE_POLL_S)
 
     async def ack_text_session(self, request_id: Optional[str]) -> None:
-        # 与其它页面写入一样有界：外部路由分派在等它，页面不收也不能把这条请求卡死
+        # Bound like other page writes: external route dispatch awaits this, and an unresponsive page must not hang the request.
         try:
             await asyncio.wait_for(self._mgr.send_session_started("text", request_id=request_id), _FRAME_TIMEOUT_S)
         except asyncio.TimeoutError:

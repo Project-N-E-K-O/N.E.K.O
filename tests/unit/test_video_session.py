@@ -415,8 +415,8 @@ async def test_non_native_failed_vision_clears_cached_frame(monkeypatch):
 
 @pytest.mark.unit
 def test_livestream_free_supports_native_vision():
-    """Livestream 主播自建 server_prefix 上游同为 Gemini 系，free 路应被判定为原生视觉，
-    哪怕 base_url 既不含 lanlan.app 也不含 lanlan.tech（已被派生为自建地址）。"""
+    """Livestream streamers' self-hosted server_prefix upstreams also use Gemini; classify the free route as native vision,
+    even when base_url contains neither lanlan.app nor lanlan.tech (having been derived into a self-hosted address)."""
     client = OmniRealtimeClient(
         base_url="ws://streamer.example:8080/tok/core",
         api_key="test-key",
@@ -428,14 +428,14 @@ def test_livestream_free_supports_native_vision():
     assert client._is_free_provider is True
     assert client._is_free_proxy is True
     assert client._supports_native_image is True
-    # livestream 自建上游是 Gemini 系，不应被当成有 server VAD 的 StepFun proxy
+    # Livestream self-hosted upstreams use Gemini and must not be treated as StepFun proxies with server VAD
     assert client._has_server_vad is False
 
 
 @pytest.mark.unit
 async def test_livestream_free_image_streaming():
-    """Livestream free 发图应走 input_image_buffer.append（Gemini 代理协议），
-    不落入 VISION_MODEL 分析通道。"""
+    """Livestream free image uploads must use input_image_buffer.append (Gemini proxy protocol),
+    rather than the VISION_MODEL analysis path."""
     client = OmniRealtimeClient(
         base_url="ws://streamer.example:8080/tok/core",
         api_key="test-key",

@@ -1,17 +1,17 @@
 """
-插件系统异常定义
+Plugin-system exception definitions.
 
-提供明确的异常类型，替代通用的 Exception 捕获。
+Provide explicit exception types instead of generic Exception handling.
 """
 
 
 class PluginError(Exception):
-    """插件系统基础异常"""
+    """Base plugin-system exception."""
     pass
 
 
 class PluginNotFoundError(PluginError):
-    """插件未找到"""
+    """Plugin not found."""
     
     def __init__(self, plugin_id: str):
         self.plugin_id = plugin_id
@@ -19,7 +19,7 @@ class PluginNotFoundError(PluginError):
 
 
 class PluginNotRunningError(PluginError):
-    """插件未运行"""
+    """Plugin not running."""
     
     def __init__(self, plugin_id: str, status: str = "unknown"):
         self.plugin_id = plugin_id
@@ -28,7 +28,7 @@ class PluginNotRunningError(PluginError):
 
 
 class PluginTimeoutError(PluginError):
-    """插件执行超时"""
+    """Plugin execution timed out."""
     
     def __init__(self, plugin_id: str, entry_id: str, timeout: float):
         self.plugin_id = plugin_id
@@ -38,7 +38,7 @@ class PluginTimeoutError(PluginError):
 
 
 class PluginExecutionError(PluginError):
-    """插件执行错误"""
+    """Plugin execution error."""
     
     def __init__(self, plugin_id: str, entry_id: str, error: str):
         self.plugin_id = plugin_id
@@ -48,7 +48,7 @@ class PluginExecutionError(PluginError):
 
 
 class PluginCommunicationError(PluginError):
-    """插件进程间通信错误"""
+    """Plugin interprocess communication error."""
     
     def __init__(self, plugin_id: str, message: str):
         self.plugin_id = plugin_id
@@ -56,7 +56,7 @@ class PluginCommunicationError(PluginError):
 
 
 class PluginLoadError(PluginError):
-    """插件加载错误"""
+    """Plugin loading error."""
     
     def __init__(self, plugin_id: str, reason: str):
         self.plugin_id = plugin_id
@@ -65,7 +65,7 @@ class PluginLoadError(PluginError):
 
 
 class PluginImportError(PluginError):
-    """插件导入错误"""
+    """Plugin import error."""
     
     def __init__(self, entry_point: str, reason: str):
         self.entry_point = entry_point
@@ -74,7 +74,7 @@ class PluginImportError(PluginError):
 
 
 class PluginLifecycleError(PluginError):
-    """插件生命周期事件错误"""
+    """Plugin lifecycle event error."""
     
     def __init__(self, plugin_id: str, event_type: str, reason: str):
         self.plugin_id = plugin_id
@@ -84,7 +84,7 @@ class PluginLifecycleError(PluginError):
 
 
 class PluginTimerError(PluginError):
-    """插件定时任务错误"""
+    """Plugin scheduled-task error."""
     
     def __init__(self, plugin_id: str, timer_id: str, reason: str):
         self.plugin_id = plugin_id
@@ -94,7 +94,7 @@ class PluginTimerError(PluginError):
 
 
 class PluginEntryNotFoundError(PluginError):
-    """插件入口未找到"""
+    """Plugin entry point not found."""
     
     def __init__(self, plugin_id: str, entry_id: str):
         self.plugin_id = plugin_id
@@ -103,7 +103,7 @@ class PluginEntryNotFoundError(PluginError):
 
 
 class PluginMetadataError(PluginError):
-    """插件元数据错误"""
+    """Plugin metadata error."""
     
     def __init__(self, plugin_id: str, reason: str):
         self.plugin_id = plugin_id
@@ -112,7 +112,7 @@ class PluginMetadataError(PluginError):
 
 
 class PluginQueueError(PluginError):
-    """插件队列操作错误"""
+    """Plugin queue-operation error."""
     
     def __init__(self, operation: str, reason: str):
         self.operation = operation

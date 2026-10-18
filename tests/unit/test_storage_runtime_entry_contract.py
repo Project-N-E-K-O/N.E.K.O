@@ -113,6 +113,10 @@ def _unwrap_same_path(node: ast.AST) -> ast.AST | None:
 
 def _is_runtime_root(node: ast.AST, aliases: set[str]) -> bool:
     """Whether ``node`` evaluates to the runtime root itself (not a child or parent)."""
+    if isinstance(node, ast.IfExp):
+        # Only the selected value can alias the root. A reference in the
+        # condition or inside a child path does not make that value the root.
+        return _is_runtime_root(node.body, aliases) or _is_runtime_root(node.orelse, aliases)
     wrapped = _unwrap_same_path(node)
     if wrapped is not None:
         return _is_runtime_root(wrapped, aliases)
@@ -409,3 +413,40 @@ def test_a_wrapped_path_that_is_not_the_runtime_root_is_not_scanned(expression):
 
     assert _scan_state_children(tree) == set()
     assert _scan_module(tree) == set()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        ("other if ready else Path(cm.app_docs_dir) / 'chat_sync'", {"chat_sync"}),
+        ("Path(cm.app_docs_dir) / 'chat_sync' if ready else other", {"chat_sync"}),
+        ("other if cm.app_docs_dir.exists() else fallback", set()),
+    ],
+)
+def test_conditional_subdirectory_is_not_a_runtime_root_alias(expression, expected):
+    tree = ast.parse(chr(10).join([
+        "def f(cm):",
+        f"    directory = {expression}",
+        "    target = directory / 'state.sqlite3'",
+    ]))
+
+    assert _scan_module(tree) == expected
+    assert _scan_state_children(tree) == set()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "expression",
+    ["cm.app_docs_dir if ready else other", "other if ready else cm.app_docs_dir"],
+)
+def test_conditional_runtime_root_alias_is_still_scanned(expression):
+    tree = ast.parse(chr(10).join([
+        "def f(cm):",
+        f"    directory = {expression}",
+        "    target = directory / 'new_top_level'",
+        "    child = directory / 'state' / 'new_child'",
+    ]))
+
+    assert _scan_module(tree) == {"new_top_level", "state"}
+    assert _scan_state_children(tree) == {"new_child"}

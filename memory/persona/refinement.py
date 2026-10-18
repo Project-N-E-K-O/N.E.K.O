@@ -80,8 +80,8 @@ class RefinementMixin:
         from memory.refine import VALID_REFINE_ACTIONS
 
         async with self._get_alock(name):
-            # asyncio.Lock 不可重入：在锁内必须用 _aensure_persona_locked
-            # 而不是 aensure_persona（后者自己 acquire 同把锁 → 死锁）
+            # asyncio.Lock is non-reentrant; under lock use _aensure_persona_locked,
+            # not aensure_persona, which reacquires the same lock and deadlocks.
             persona = await self._aensure_persona_locked(name)
             section = self._get_section_facts(persona, entity)
             section_by_id = {
@@ -93,7 +93,7 @@ class RefinementMixin:
                 if isinstance(e, dict) and e.get('id')
             }
 
-            consumed: set[str] = set()  # split / merge / discard 的源 id
+            consumed: set[str] = set()  # Source IDs for split / merge / discard.
             produced: list[dict] = []
             applied = 0
             now_iso = datetime.now().isoformat()
@@ -116,7 +116,7 @@ class RefinementMixin:
                     produce = act_obj.get('produce')
                     if not isinstance(produce, list) or len(produce) < 2:
                         continue
-                    # 先过滤 valid，再按实际 split_count 分摊 evidence
+                    # Filter valid outputs first, then distribute evidence by actual split_count.
                     valid_produce = [
                         p for p in produce
                         if isinstance(p, dict) and str(p.get('text', '')).strip()
@@ -124,9 +124,9 @@ class RefinementMixin:
                     if len(valid_produce) < 2:
                         continue
                     split_n = len(valid_produce)
-                    # 继承 evidence（Codex P1 #1392）：可分配的 counters 按
-                    # 1/N 等分（保留累积 evidence，不让 split 静默清零评分/
-                    # 衰减信号）；天数 / 时间戳 / 溯源直接继承 src。
+                    # Inherit evidence (Codex P1 #1392): divide distributable counters
+                    # equally 1/N, retaining cumulative evidence rather than silently zeroing scores/
+                    # decay signals on split; inherit days / timestamps / provenance directly from source.
                     src_rein = float(src.get('reinforcement', 0) or 0)
                     src_disp = float(src.get('disputation', 0) or 0)
                     src_user_cnt = int(src.get('user_fact_reinforce_count', 0) or 0)
@@ -169,13 +169,13 @@ class RefinementMixin:
                     if not text:
                         continue
                     merged = self._normalize_entry(text)
-                    # 唯一 id（同 split），否则 section_by_id 会折叠
+                    # Unique ID (as split), or section_by_id collapses entries.
                     merged['id'] = self._refine_persona_id(text)
                     history = []
-                    # 继承所有 evidence 状态 —— 不能只复制 reinforcement
-                    # 和 user_fact_reinforce_count，否则 disputation /
+                    # Inherit all evidence state, not only reinforcement
+                    # and user_fact_reinforce_count; otherwise disputation /
                     # rein_last_signal_at / disp_last_signal_at /
-                    # sub_zero_days 会被默认值清零，掩盖反证和归档倒计时
+                    # sub_zero_days reset to defaults, hiding counterevidence and archive countdowns.
                     # （CodeRabbit Major #1392）。
                     max_rein = 0.0
                     max_disp = 0.0
@@ -204,7 +204,7 @@ class RefinementMixin:
                             max_sub_zero_days,
                             int(src.get('sub_zero_days', 0) or 0),
                         )
-                        # ISO timestamp 字符串比较即时间序；取最新
+                        # ISO timestamps compare chronologically; take latest.
                         for key, current in (
                             ('rein_last_signal_at', latest_rein_signal_at),
                             ('disp_last_signal_at', latest_disp_signal_at),
@@ -276,14 +276,14 @@ class RefinementMixin:
                     consumed.add(src_id)
                     applied += 1
 
-            # Stamp 决策（Codex P1 + P2 #1392 合并语义）：
-            # - applied > 0：有变化，必 stamp + save
-            # - applied == 0 + actions 为空：LLM 明确判定 no-op，stamp
-            #   防 cluster_hash skip 失效（Codex P1）
-            # - applied == 0 + actions 非空：所有 action 都被 reject =
-            #   LLM 输出语义垃圾（unknown action / missing field 等），
-            #   不 stamp，等下轮重试（Codex P2，防垃圾输出导致 30 天
-            #   静默推迟需要的 refine）
+            # Stamp decisions (combined Codex P1 + P2 #1392 semantics):
+            # - applied > 0: changed, always stamp + save.
+            # - applied == 0, empty actions: model explicitly chose no-op; stamp
+            #   to preserve cluster_hash skipping (Codex P1).
+            # - applied == 0, nonempty actions: every action rejected =
+            #   semantically invalid LLM output (unknown action / missing field, etc.);
+            #   do not stamp; retry next round (Codex P2, preventing garbage from silently
+            #   delaying needed refinement by 30 days).
             if applied == 0 and actions:
                 return 0
 
@@ -301,16 +301,16 @@ class RefinementMixin:
                 if eid in cluster_ids and eid not in consumed:
                     e['last_refine_cluster_hash'] = cluster_hash
                     e['last_refine_at'] = now_iso
-                    # 成功 stamp → 清 Site 4 liveness 计数器：之前因毒 cluster
-                    # 邻居拖累的累计 attempts 一笔勾销，让本 entry 后续可以
-                    # 重新进新 cluster 接受 LLM 判断。
+                    # Successful stamp clears Site 4 liveness counters: discard attempts accumulated
+                    # due to toxic cluster neighbors, allowing this entry to reenter
+                    # new clusters for LLM judgment later.
                     if e.get('refine_attempts'):
                         e['refine_attempts'] = 0
                     stamped += 1
 
             if applied == 0 and stamped == 0:
-                # cluster 成员都已不在（被并发删除等罕见情况），无可 stamp，
-                # 也无须落盘，直接返回。
+                # Cluster members all gone (rare concurrent deletion, etc.): nothing to stamp
+                # or persist; return directly.
                 return 0
 
             section[:] = new_section
@@ -343,8 +343,8 @@ class RefinementMixin:
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from memory.refine import REFINE_ENTITY_KEY, REFINE_TYPE_KEY
 
-        # 按 entity 收集需要 bump 的 entry id（fact 不算——fact 是 readonly
-        # 信息源，refine 永远不会改它，自然也不应记 refine_attempts）。
+        # Collect entry IDs needing bumps by entity (exclude facts: read-only information
+        # sources never modified by refine, so never accrue refine_attempts).
         member_ids_by_entity: dict[str, set[str]] = {}
         for e in cluster:
             if not isinstance(e, dict):
@@ -369,9 +369,9 @@ class RefinementMixin:
                         continue
                     new_attempts = safe_int_field(e, 'refine_attempts') + 1
                     e['refine_attempts'] = new_attempts
-                    # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）：
-                    # 一次性 correction 模型宕机把 entry 顶到 MAX 后，过 5h 冷却
-                    # 重新进候选 probe，避免宕机恢复后仍永久冻结。
+                    # Stamp failure time for dead-letter cooldown_elapsed self-healing:
+                    # transient correction-model outage reaching MAX can probe candidates again
+                    # after five-hour cooldown, avoiding permanent freeze after recovery.
                     e['last_refine_attempt_at'] = datetime.now().isoformat()
                     modified = True
                     if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:

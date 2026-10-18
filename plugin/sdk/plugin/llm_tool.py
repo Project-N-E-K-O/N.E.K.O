@@ -90,6 +90,7 @@ class LlmToolMeta:
     parameters: dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
     timeout_seconds: float = 30.0
     role: str | None = None
+    reply_tail: bool = False
 
     def to_ipc_payload(self, *, plugin_id: str) -> dict[str, Any]:
         """Build the LLM_TOOL_REGISTER IPC message payload.
@@ -105,6 +106,7 @@ class LlmToolMeta:
             "parameters": dict(self.parameters),
             "timeout_seconds": float(self.timeout_seconds),
             "role": self.role,
+            **({"reply_tail": True} if self.reply_tail else {}),
         }
 
 
@@ -115,6 +117,7 @@ def llm_tool(
     parameters: dict[str, Any] | None = None,
     timeout: float = 30.0,
     role: str | None = None,
+    reply_tail: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator marking a plugin method as a model-callable LLM tool.
 
@@ -165,6 +168,10 @@ def llm_tool(
         registers globally (visible to every character/role's
         ``LLMSessionManager``). Pass a string like ``"Lanlan"`` to
         scope to a single role.
+    reply_tail:
+        Opt in to v1 original-reply image context under ``_ctx.host_reply``.
+        The handler must accept ``_ctx`` or ``**kwargs``. False preserves the
+        existing arguments. Realtime and old frontends receive no capability.
 
     Notes
     -----
@@ -243,6 +250,7 @@ def llm_tool(
             parameters=params,
             timeout_seconds=timeout_seconds,
             role=role,
+            reply_tail=reply_tail,
         )
         setattr(func, LLM_TOOL_META_ATTR, meta)
         return func

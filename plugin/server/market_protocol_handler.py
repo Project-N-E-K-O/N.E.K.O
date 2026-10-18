@@ -1,16 +1,16 @@
-"""neko:// URI Scheme 协议处理器。
+"""neko:// URI scheme protocol handler.
 
-当系统通过 neko:// URI 唤起 N.E.K.O 时，此模块解析 URI 并执行对应动作。
+When the system launches N.E.K.O through a neko:// URI, parse it and perform the corresponding action.
 
-支持的 URI：
+Supported URIs:
   neko://install?url={package_url}&sha256={hash}&id={plugin_id}&version={ver}
   neko://pair?code={one_time_code}
   neko://open?plugin={plugin_id}&panel={panel}&intent={intent}
 
-使用方式：
-  python -m plugin.server.market_protocol_handler "neko://install?url=..."
+Usage:
+  python -m plugin.server.market_protocol_handler \"neko://install?url=...\"
 
-或在 launcher.py 中检测 sys.argv 是否包含 neko:// URI 并调用 handle_uri()。
+Alternatively detect neko:// URIs in sys.argv in launcher.py and call handle_uri().
 """
 
 from __future__ import annotations
@@ -26,16 +26,16 @@ from plugin.logging_config import get_logger
 
 logger = get_logger("server.market_protocol_handler")
 
-# Plugin Server 启动时通过 ``write_bridge_token_file`` 把 bridge token 和监听
-# 端口落到这个文件，供独立运行的 URI handler 进程读取。两边共享文件，避免
-# handler 重新 import market_bridge 时生成另一份内存 token。
+# On startup, Plugin Server writes the bridge token and listening port here through ``write_bridge_token_file``
+# for the independent URI-handler process to read. Sharing this file prevents
+# reimporting market_bridge in the handler from generating a different in-memory token.
 _BRIDGE_FILE = Path.home() / ".neko" / "bridge.json"
 _INSTALL_POLL_INTERVAL_SECONDS = 1.0
 _INSTALL_POLL_TIMEOUT_SECONDS = 180.0
 
 
 def _load_bridge_info() -> dict[str, Any] | None:
-    """读取 bridge.json，返回 ``{"token": ..., "port": ...}`` 或 None。"""
+    """Read bridge.json, returning ``{\"token\": ..., \"port\": ...}`` or None."""
 
     try:
         raw = _BRIDGE_FILE.read_text(encoding="utf-8")
@@ -78,7 +78,7 @@ def _load_bridge_info() -> dict[str, Any] | None:
 
 
 def handle_uri(uri: str) -> int:
-    """解析并处理 neko:// URI。返回退出码。"""
+    """Parse and handle a neko:// URI, returning an exit code."""
     parsed = urlparse(uri)
     safe_uri = _safe_uri_for_log(parsed)
     logger.info("Handling protocol URI: {}", safe_uri)
@@ -87,8 +87,8 @@ def handle_uri(uri: str) -> int:
         logger.error("Not a neko:// URI: {}", safe_uri)
         return 1
 
-    # netloc 是 action（如 install, pair, open）
-    # 对于 neko://install?... → netloc="install", path=""
+    # netloc is the action (such as install, pair, open)
+    # For neko://install?... → netloc="install", path=""
     action = parsed.netloc
     sub_path = parsed.path.lstrip("/")
     params = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(parsed.query).items()}
@@ -116,7 +116,7 @@ def _safe_uri_for_log(parsed) -> str:
 
 
 def _handle_install(params: dict) -> int:
-    """处理 neko://install — 下载并安装插件包。"""
+    """Handle neko://install: download and install a plugin package."""
     url = params.get("url")
     sha256 = params.get("sha256")
     plugin_id = params.get("id")
@@ -138,7 +138,7 @@ def _handle_install(params: dict) -> int:
 
     logger.info("Protocol install: plugin={} version={} url={}", plugin_id, version, url)
 
-    # 调用本地 Market Bridge API
+    # Call the local Market Bridge API
     return asyncio.run(_call_local_install(
         package_url=url,
         package_sha256=sha256,
@@ -165,7 +165,7 @@ async def _call_local_install(
     mode: str,
     on_conflict: str,
 ) -> int:
-    """调用本地 Plugin Server 的 /market/install 端点。"""
+    """Call the local Plugin Server's /market/install endpoint."""
     import httpx
 
     bridge = _load_bridge_info()
@@ -178,7 +178,7 @@ async def _call_local_install(
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
-            # 触发安装
+            # Trigger installation
             res = await client.post(
                 f"{base_url}/market/install",
                 params={"token": token},
@@ -213,7 +213,7 @@ async def _call_local_install(
                 return 1
             logger.info("Install task created: {}", task_id)
 
-            # 轮询等待完成。Bridge download timeout is 120s before unpack
+            # Poll until completion. Bridge download timeout is 120s before unpack
             # work starts, so the protocol handler must wait longer than that.
             deadline = asyncio.get_running_loop().time() + _INSTALL_POLL_TIMEOUT_SECONDS
             while asyncio.get_running_loop().time() < deadline:
@@ -271,33 +271,33 @@ async def _call_local_install(
 
 
 def _handle_pair(params: dict) -> int:
-    """处理 neko://pair — Market 配对。"""
+    """Handle neko://pair: Market pairing."""
     code = params.get("code")
     if not code:
         logger.error("pair requires 'code' param")
         return 1
 
     logger.info("Pair request received")
-    # 配对码验证由 /market/token-exchange 处理
-    # 这里只是确认客户端在线
+    # /market/token-exchange handles pairing-code validation
+    # This only confirms the client is online
     _show_notification(f"收到配对请求，配对码: {code[:4]}...", "N.E.K.O")
     return 0
 
 
 def _handle_open(params: dict) -> int:
-    """处理 neko://open — 打开本地面板。"""
+    """Handle neko://open: open a local panel."""
     plugin_id = params.get("plugin")
     panel = params.get("panel")
     intent = params.get("intent")
     logger.info("Open request: plugin={} panel={} intent={}", plugin_id, panel, intent)
     if intent == "login" or panel == "account":
         _show_notification("请回到 N.E.K.O 完成账号登录同步", "N.E.K.O")
-    # 可以通过 WebSocket 通知前端打开对应面板
+    # A WebSocket notification can ask the frontend to open the corresponding panel
     return 0
 
 
 def _show_notification(message: str, title: str) -> None:
-    """显示系统通知（跨平台）。"""
+    """Show a cross-platform system notification."""
     try:
         import platform
         system = platform.system()
@@ -324,7 +324,7 @@ def _show_notification(message: str, title: str) -> None:
         logger.debug("Failed to show notification: {}", exc)
 
 
-# ─── 入口 ──────────────────────────────────────────────────────────
+# ─── Entry point ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

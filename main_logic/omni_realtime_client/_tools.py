@@ -40,6 +40,9 @@ class _ToolTaskOwner:
     host_turn_id: str | None
     provider_turn_host_id: str | None
     provider_session: Any
+    # Source evidence only: this does not change cancellation or current-owner
+    # checks. A new proactive injection must not inherit an older tool token.
+    proactive_outcome_owner: tuple | None = None
 
 
 @dataclass
@@ -136,6 +139,10 @@ class _ToolingMixin:
             # time: see ``_tool_task_owner_is_current``.
             provider_turn_host_id=getattr(self, "_current_turn_host_id", None),
             provider_session=provider_session,
+            proactive_outcome_owner=(
+                getattr(self, "_gemini_proactive_outcome_owner", None)
+                if self._is_gemini else None
+            ),
         )
 
     def _tool_task_owner_is_current(self, owner: _ToolTaskOwner) -> bool:
@@ -357,6 +364,9 @@ class _ToolingMixin:
         """Retire every tool owned by the preceding user/connection scope."""
 
         self._tool_scope_generation = getattr(self, "_tool_scope_generation", 0) + 1
+        # Source ownership is narrower than the cancellation scope: a fresh
+        # user/connection can never inherit a preceding Gemini tool response.
+        self._gemini_tool_response_source = None
         getattr(self, "_cancelled_tool_call_ids", set()).clear()
         # Batches are keyed by the scope they were opened in, so the entries
         # below could never be matched again anyway; dropping them keeps the
@@ -645,6 +655,15 @@ class _ToolingMixin:
             registry[key] = batch
         return batch
 
+    def _note_tool_call_accepted(self, call: ToolCall, owner: _ToolTaskOwner) -> None:
+        """Publish frozen source proof before a terminal can flush the reply."""
+        if not self._tool_task_owner_is_current(owner):
+            return
+        call.source_owner = owner
+        observer = getattr(self, "on_tool_call_accepted", None)
+        if observer is not None:
+            observer(call)
+
     def _start_raw_tool_call(
         self,
         call: ToolCall,
@@ -667,6 +686,8 @@ class _ToolingMixin:
         the provider saw a continuation with a required parallel-call output
         missing, and answered without it.
         """
+
+        self._note_tool_call_accepted(call, owner)
 
         async def _run() -> ToolResult | None:
             if not self._tool_task_owner_is_current(owner):
@@ -697,6 +718,13 @@ class _ToolingMixin:
         calls: List[ToolCall],
         owner: _ToolTaskOwner,
     ) -> asyncio.Task:
+        # Gemini has no response IDs. The actual tool dispatch establishes
+        # source evidence for this response; a terminal retires this token,
+        # and the corresponding tool-result send establishes its continuation.
+        self._gemini_tool_response_source = (owner, object())
+        for call in calls:
+            self._note_tool_call_accepted(call, owner)
+
         async def _execute(call: ToolCall) -> ToolResult | None:
             if not self._tool_task_owner_is_current(owner):
                 return None
@@ -754,8 +782,8 @@ class _ToolingMixin:
             return
         api = canonical_realtime_dialect(self._api_type)
         if api == 'step' or api == 'free':
-            # stepaudio-2.5-realtime 不再支持内置 web_search，与
-            # update_session 初始化路径保持一致：只发 caller 注册的
+            # stepaudio-2.5-realtime no longer supports built-in web_search; match
+            # update_session initialization by sending only caller-registered tools.
             # function tools。
             tools_payload: List[Dict[str, Any]] = self._tools_for_step()
             await self.update_session({"tools": tools_payload})
@@ -765,24 +793,24 @@ class _ToolingMixin:
                 payload["tool_choice"] = "auto"
             await self.update_session(payload)
         elif api == 'grok':
-            # xAI Grok 走 OpenAI Realtime 协议，schema 与 GPT 同构。
+            # xAI Grok uses the OpenAI Realtime protocol with GPT-compatible schema.
             payload: Dict[str, Any] = {"tools": self._tools_for_openai_realtime()}
             if self.has_tools():
                 payload["tool_choice"] = "auto"
             await self.update_session(payload)
         elif api == 'glm':
-            # GLM 文档要求："ServerVAD 时更新 tools 需同时传入 turn_detection"。
-            # 此方法的调用前提是已 connect()，连接时已把 turn_detection 设成
-            # server_vad —— 这里复发同样的值即可，免得服务端 reset 成默认。
-            # beta_fields 不在这里重复：update_session 对 GLM 的局部更新会
-            # 自动补上，漏掉它会让下游重连超限并关掉连接。
+            # GLM documentation requires turn_detection whenever tools change under ServerVAD.
+            # This method requires connect() first, which already configured turn_detection as
+            # server_vad. Resend the same value to prevent server reset to its default.
+            # Do not repeat beta_fields here: GLM partial updates automatically add them
+            # in update_session. Omitting them would exceed downstream reconnect limits and close the connection.
             await self.update_session({
                 "tools": self._tools_for_openai_realtime(),
                 "turn_detection": {"type": "server_vad"},
             })
         elif api == 'qwen':
-            # Qwen-Omni-Realtime: tools 与 enable_search 互斥；当我们
-            # 注册了自定义工具，强制关掉 enable_search 防止 server 拒绝。
+            # Qwen-Omni-Realtime: tools and enable_search are mutually exclusive; registering
+            # custom tools forces enable_search off to prevent server rejection.
             qwen_payload: Dict[str, Any] = {"tools": self._tools_for_qwen()}
             if self.has_tools():
                 qwen_payload["enable_search"] = False
@@ -893,7 +921,7 @@ class _ToolingMixin:
                 "output": result.output_as_json_string(),
             }
             if api == 'glm':
-                # GLM 协议不接受 call_id。哪怕我们内部合成了，也不外传。
+                # GLM protocol rejects call_id. Even internally synthesized IDs must not be transmitted.
                 pass
             elif result.call_id:
                 item["call_id"] = result.call_id

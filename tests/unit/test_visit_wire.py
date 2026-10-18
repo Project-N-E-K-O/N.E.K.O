@@ -885,7 +885,7 @@ def test_late_pieces_of_a_retired_line_still_land():
     assert asm.feed(_delta_msg("旧二", i=1, ln="g:1", lp=3))
     assert asm.render("g:1") == "旧一旧二"
     assert asm.anomalies == 0
-    # 打开位仍是新行（lp=5）：lp 介于两者之间的第三行依然算交叠
+    # The open position is still a new line (lp=5): a third line whose lp falls between the two still counts as an overlap
     assert not asm.feed(_delta_msg("插", ln="g:3", lp=4))
     assert asm.anomalies == 1
     assert asm.feed(_delta_msg("新二", i=1, ln="g:2", lp=5))
@@ -940,8 +940,8 @@ def test_mismatched_protocol_hello_still_requires_a_positive_seq():
 
 
 def test_wire_budget_stops_where_a_capping_sanitizer_starts_cutting():
-    # sanitize_relay_text 按 token 截断：只量截断后的文本会一直放行，TTS 念的比
-    # 最终 text 里带的多，两边历史分叉
+    # sanitize_relay_text truncates by token: checking only the truncated text would keep allowing it, while the TTS speaks more than
+    # the final text contains, causing the two histories to diverge
     from main_logic.visit.sanitize import clean_relay_text, sanitize_relay_text
 
     budget = vw.WireBudget(visit_id=VID, header=_HEADER, sanitize=sanitize_relay_text,
@@ -955,8 +955,8 @@ def test_wire_budget_stops_where_a_capping_sanitizer_starts_cutting():
 
 
 def test_stats_accepts_whole_valued_measurements():
-    # 浏览器 JSON.stringify 把整值写成 30 / 0：干净网络下的 stats 不能被当成畸形
-    # （pydantic 严格模式的 float 本就收整数、拒 bool 与溢出的大整数；这里钉住这个行为）
+    # Browser JSON.stringify writes the whole number as 30 / 0: stats from a clean network must not be treated as malformed
+    # (Pydantic strict-mode float accepts integers and rejects bools and oversized integers; pin this behavior here)
     msg = {"t": "stats", "rx_fps": 30, "rx_kbps": 540, "rtt_ms": 80, "loss_pct": 0,
            "rx_w": 640, "rx_h": 480}
     out = vw.decode_msg(json.dumps(msg), cmd=3)
@@ -967,8 +967,8 @@ def test_stats_accepts_whole_valued_measurements():
 
 
 def test_fit_text_keeps_a_silencing_truncation_reason():
-    # 被人类打断的句子超过 8 片：改成 wire_size 会让对端去接这句
-    qb = '"' + chr(92)                       # 两次转义后膨胀，4096 B 内就能超 8 片
+    # A sentence interrupted by a human exceeds 8 chunks: switching to wire_size would make the peer receive this sentence
+    qb = '"' + chr(92)                       # after two rounds of escaping it expands beyond 8 chunks within 4096 B
     big = _text_msg(qb * 2048, truncated=True, trunc_reason="human_interrupt")
     assert vw._text_pieces(big, VID) > VISIT_PIECES_MAX
     out = vw.fit_text_to_wire(big, visit_id=VID)
@@ -979,8 +979,8 @@ def test_fit_text_keeps_a_silencing_truncation_reason():
 
 
 def test_fit_text_keeps_the_whole_line_when_only_the_reason_changed():
-    # 11 字符的 goodbye_cap（不属于静默原因）换成 9 字符的 wire_size 后全文就放得下：
-    # 二分必须先试全长，不能再砍掉字符
+    # Replacing the 11-character goodbye_cap (not a silence reason) with the 9-character wire_size makes the full text fit:
+    # binary search must try the full length first and must not drop characters
     qb = '"' + chr(92)
     msg = _text_msg(qb * 918, truncated=True, trunc_reason="goodbye_cap")
     assert vw._text_pieces(msg, VID) > VISIT_PIECES_MAX
@@ -990,8 +990,8 @@ def test_fit_text_keeps_the_whole_line_when_only_the_reason_changed():
 
 
 # ── Incremental WireBudget / ClauseSplitter vs the whole-buffer original ──
-# 下面是增量化之前的整句实现，原样留作参照（只改了名字、模块内名字加 vw. 前缀）：
-# 优化后的接受前缀、exhausted、出站文本、分句切点与 raw 都必须与它逐字节一致
+# The full-sentence implementation from before incrementalization is kept below as a reference (only names changed; module-level names gain a vw. prefix):
+# The optimized accepted prefix, exhausted state, outbound text, sentence split points, and raw value must match it byte for byte
 
 class _RefOffsetMap:
     def __init__(self, raw, red, spans):
@@ -1326,16 +1326,16 @@ def test_wire_budget_matches_whole_buffer_measurement_on_random_streams():
             got = _budget_log(vw.WireBudget(visit_id=VID, header=_HEADER, **kw), deltas)
             assert got == ref, name
             exhausted += any(len(e) == 2 and e[1] is True for e in ref[:-1])
-    assert exhausted >= 10          # 大部分流真的走到了上限与二分
+    assert exhausted >= 10          # Most streams actually reached the cap and binary search
 
-    # 孤立代理项：两边在同一次 take 抛同一种异常
+    # Lone surrogate: both sides raise the same exception on the same take call
     for kw in ({}, {"redact": red_str, "redact_boundary": boundary}):
         deltas = ["你好", "abc", "x" + chr(0xD800), "more"]
         ref_kw = {k: v for k, v in kw.items() if k != "redact_boundary"}
         ref = _budget_log(_RefWireBudget(visit_id=VID, header=_HEADER, **ref_kw), deltas)
         assert ref[-1] == ("raised", "UnicodeEncodeError")
         assert _budget_log(vw.WireBudget(visit_id=VID, header=_HEADER, **kw), deltas) == ref
-    # 非法 header：第一次 take 就抛，与原实现同一时机
+    # Invalid header: the first take raises, at the same point as the original implementation
     bad_header = dict(_HEADER, ln="bad")
     ref = _budget_log(_RefWireBudget(visit_id=VID, header=bad_header), ["a"])
     assert ref == [("raised", "ValueError")]
@@ -1375,13 +1375,13 @@ def test_clause_splitter_matches_whole_buffer_redaction_on_random_streams():
             assert got == ref, name
             clauses += sum(len(x) for x in ref if isinstance(x, list))
     assert clauses > 500
-    # 以空白开头、只有一个可见字符就遇到边界：短句合并判据（strip 后长度）要逐字符续算
+    # Starting with whitespace and reaching the boundary with only one visible character: continue counting one character at a time for the short-sentence merge criterion (length after strip)
     edge_lines = [" 。好的。", "  !x. y", "\n。好", " \t。。x", "  a。 b。", "\t\n 嗯。！好", " . 3.14. ok"]
     for line in edge_lines:
         for deltas in ([line], list(line)):
             ref = _splitter_log(_RefClauseSplitter(), deltas)
             assert _splitter_log(vw.ClauseSplitter(), deltas) == ref, line
-    # 长段无标点：只靠字节硬上限下刀，扫描状态要跨很多次 feed 续用
+    # Long text with no punctuation: split only at the hard byte limit; scanning state must carry across many feed calls
     for unit in ("啊", "ab ", '"', "小明"):
         line = unit * 700
         deltas = _chunk(rng, line, 3)
@@ -1392,7 +1392,7 @@ def test_clause_splitter_matches_whole_buffer_redaction_on_random_streams():
 
 
 def test_clause_splitter_boundary_mode_requires_reported_spans():
-    # 分段模式下 difflib 推出的区间与整句不同，改动文本却不报区间的 redact 直接报错
+    # In segmented mode, difflib infers a different span than in whole-sentence mode; redact must raise when text changes without reporting a span
     splitter = vw.ClauseSplitter(redact=lambda s: s.replace("小明", _DIFF_LABEL),
                                  redact_boundary=lambda ch: True)
     assert splitter.feed("你好。") == []
@@ -1402,7 +1402,7 @@ def test_clause_splitter_boundary_mode_requires_reported_spans():
 
 _LINEAR_ASCII = ("hello world, this is a test. Alice says hi. " * 100)[:VISIT_TEXT_MAX_BYTES]
 _LINEAR_MIXED = ("hello world, this is a test. Alice says hi to 小明 again. " * 80)[:4096]
-_LINEAR_CJK = ("今天的天气很好我们一起去公园散步吧" * 300)[:2000]   # 无标点：整段靠硬上限下刀
+_LINEAR_CJK = ("今天的天气很好我们一起去公园散步吧" * 300)[:2000]   # No punctuation: split the whole segment using only the hard limit
 
 
 def _feed_one_char_at_a_time(redact, boundary) -> None:
@@ -1410,7 +1410,7 @@ def _feed_one_char_at_a_time(redact, boundary) -> None:
     for ch in _LINEAR_ASCII:
         assert budget.take(ch) == ch
     assert budget.accepted_text == _LINEAR_ASCII and not budget.exhausted
-    assert budget.take("!") == "" and budget.exhausted      # 第 4097 字节
+    assert budget.take("!") == "" and budget.exhausted      # The 4097th byte
     for text in (_LINEAR_MIXED, _LINEAR_CJK):
         splitter = vw.ClauseSplitter(redact=redact, redact_boundary=boundary, holdback_chars=6)
         clauses = []
@@ -1439,7 +1439,7 @@ def test_one_char_deltas_do_work_proportional_to_the_line(monkeypatch):
         return red_spans(s)
 
     def counting_esc2(ch):
-        seen["scan"] += 1                 # 分句扫描每看一个字符调用一次
+        seen["scan"] += 1                 # The sentence scanner is called once per character
         return real_esc2(ch)
 
     monkeypatch.setattr(vw, "fragment", counting_fragment)
@@ -1471,7 +1471,7 @@ def test_one_char_deltas_wall_clock():
 @pytest.mark.parametrize("step", [1, 2, 100])
 @pytest.mark.parametrize("segmented", [False, True])
 def test_clause_text_is_sliced_on_redacted_offsets(repl, step, segmented):
-    # 替换词与原名长度不同：字幕首片要按脱敏文本的偏移切，句号不能丢、也不能带出后文
+    # Replacement and original name have different lengths: the first subtitle chunk must use the redacted text offset; do not lose the period or include following text
     from main_logic.visit.sanitize import redact_outbound_boundary, redact_outbound_with_spans
 
     names = ["小明"]
@@ -1492,7 +1492,7 @@ def test_clause_text_is_sliced_on_redacted_offsets(repl, step, segmented):
 
 
 def test_deeply_nested_payloads_are_dropped_not_raised():
-    # json.loads 对深层嵌套抛 RecursionError：一条坏消息只能计入丢弃，不能冲出接收处理
+    # json.loads raises RecursionError on deeply nested input: one bad message must count as dropped, not escape receive handling
     deep = "[" * 5000
     ra = vw.Reassembler(visit_id=VID)
     before = ra.dropped
@@ -1500,52 +1500,52 @@ def test_deeply_nested_payloads_are_dropped_not_raised():
     for piece in vw.fragment(deep, visit_id=VID, msg_id=1):
         out = ra.feed("g_peer", piece, 0.0)
     assert out is None and ra.dropped == before + 1
-    # 单片信封本身是深层嵌套
+    # The single-chunk envelope itself is deeply nested
     assert ra.feed("g_peer", ("[" * 900).encode("utf-8"), 0.0) is None
     with pytest.raises(ValueError):
         vw.decode_msg(deep, cmd=2)
 
 
 def test_capacity_evicted_lines_cannot_come_back():
-    # 只发首片不收口的对端把旧行挤出容量后，晚到 / 重放的旧分片不能当新行装回去
+    # After a peer that sends only the first chunk and never closes it evicts an old row to stay within capacity, late/replayed old chunks must not reinsert it as a new row
     asm = vw.LineDeltaAssembler()
     last = VISIT_REORDER_BUFFER_MAX + 3
     for n in range(1, last + 1):
         assert asm.feed(_delta_msg("x", ln=f"g:{n}", lp=n))
     assert asm.render("g:1") is None and asm.render("g:2") is None
     asm.close(_text_msg("最后。", ln=f"g:{last}", lp=last))
-    # 墓碑：被淘汰行自己的晚到分片静默忽略（与 drop 一致，不计异常）
+    # Tombstone: silently ignore late chunks for the evicted row itself (same as drop; do not count an error)
     quiet = asm.anomalies
     assert not asm.feed(_delta_msg("旧", i=1, ln="g:1", lp=1))
     assert asm.render("g:1") is None and asm.anomalies == quiet
-    # 水位：换个 ln、lp 不高于被淘汰行的「新」行按异常丢弃
+    # High-water mark: a "new" row with a different ln and lp no greater than the evicted row is dropped as an error
     before = asm.anomalies
     assert not asm.feed(_delta_msg("旧", ln="g:x", lp=2))
-    assert not asm.feed(_delta_msg("旧", ln="g:y", lp=None))      # 没有 lp 也越不过水位
+    assert not asm.feed(_delta_msg("旧", ln="g:y", lp=None))      # Missing lp cannot get past the high-water mark either
     assert asm.anomalies == before + 2
-    # 被淘汰行的可靠 text 仍能收口；更新的行照常
+    # Reliable text for an evicted row can still close it; newer rows proceed as usual
     assert asm.close(_text_msg("一。", ln="g:1", lp=1)) == "一。"
     assert asm.feed(_delta_msg("新", ln="g:new", lp=last + 1))
 
 
 @pytest.mark.parametrize("v", [2, 0, True], ids=["future", "zero", "bool"])
 def test_known_payloads_must_carry_payload_version_one(v):
-    # 已知 t 的 payload 只认 v=1：别的版本按 v1 解释会把语义套错；必达消息作 _invalid 空操作推进 seq
+    # For a known t, accept only payload v=1: interpreting other versions as v1 would misapply semantics; advance seq with a required-message _invalid no-op
     bad = vw.decode_msg(json.dumps(_text_msg("x", v=v)), cmd=2)
     assert bad["t"] == "_invalid" and bad["seq"] == 17
     assert vw.decode_msg(json.dumps(_text_msg("x", v=1)), cmd=2)["t"] == "text"
 
 
 def test_payload_version_is_bound_to_the_wire_protocol_version():
-    # 只升 payload v 不升 caps.proto：混合版本握手会静默挂起而不是 proto_mismatch。
-    # payload v 由协议主版本查表推出；已登记的项不能改，新版本只能加新的协议主版本
+    # Bumping payload v without bumping caps.proto makes a mixed-version handshake silently hang instead of reporting proto_mismatch.
+    # Derive payload v from the protocol major version via a lookup; registered entries are immutable, and new versions may only add a new protocol major version
     from config.visit_settings import VISIT_WIRE_PROTO
 
     table = vw._PAYLOAD_VERSION_BY_PROTO
     assert table[1] == 1
     assert vw._PAYLOAD_VERSION == table[VISIT_WIRE_PROTO]
     versions = [table[p] for p in sorted(table)]
-    assert versions == sorted(set(versions))      # 每个协议主版本一个不同的 payload v，只增不减
+    assert versions == sorted(set(versions))      # One distinct payload v per protocol major version; add new values without removing old ones
 
 
 def test_later_subtitle_pieces_must_keep_the_openers_lamport_value():

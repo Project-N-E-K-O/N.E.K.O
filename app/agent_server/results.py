@@ -60,17 +60,17 @@ async def _emit_task_result(
             status = "partial"
         else:
             status = "failed"
-    # tiktoken token-based limits（同 main_logic 的语义分组）：
-    # summary 是 LLM-facing 摘要（group B "longer reflective blurb"）
-    # detail 是前端 HUD 展示用的较长版本（group G "large tool result"）
-    # error_message 独立一档。
+    # tiktoken token-based limits (same semantic grouping as main_logic):
+    # summary is the LLM-facing summary (group B "longer reflective blurb").
+    # detail is the longer frontend HUD version (group G "large tool result").
+    # error_message has its own tier.
     from config import (
         TASK_SUMMARY_MAX_TOKENS as _SUMMARY_LIMIT,
         TASK_LARGE_DETAIL_MAX_TOKENS as _DETAIL_LIMIT,
         TASK_ERROR_MAX_TOKENS as _ERROR_LIMIT,
     )
-    # 一次性 truncate 后复用——避免同 summary 在 text/summary 字段被
-    # encode 两次，也让"最终 budget 由谁负责"的语义聚拢到这一处。
+    # Truncate once and reuse, avoiding double encoding of the same summary in text/summary fields
+    # and consolidating final-budget ownership here.
     _summary_t = _tt(summary, _SUMMARY_LIMIT)
     _detail_t = _tt(detail, _DETAIL_LIMIT) if detail else ""
     _error_t = _tt(error_message, _ERROR_LIMIT) if error_message else ""

@@ -38,6 +38,7 @@ import pytest
 
 from memory.scoped_client import (
     SCOPED_WRITE_RETRY_DELAYS_S,
+    ForgetTargetEpochsRequired,
     ScopedMemoryClient,
     ScopedMemoryError,
 )
@@ -61,7 +62,7 @@ def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-# 服务端每段都带 trust 块（_trust_response_block）；persisted=null 表示这段没有要落盘的
+# Every server chunk includes a trust block (_trust_response_block); persisted=null means this chunk has nothing to persist
 _TRUST_OK = {"persisted": None}
 
 
@@ -115,8 +116,8 @@ def _client(recorder: _Recorder, sleep: _SleepSpy | None = None):
 
 
 def _request_models() -> dict:
-    # 与 tests/unit 里既有先例一致（test_group_memory_scopes 等）：在用例内
-    # 惰性 import 路由模块，只取 pydantic 请求模型，不启动任何 runtime。
+    # Match existing tests/unit precedents (test_group_memory_scopes, etc.): lazily
+    # import the route module inside the test, taking only pydantic request models without starting runtime.
     from app.memory_server.routes import (
         ScopedContextRequest,
         ScopedForgetRequest,
@@ -270,7 +271,7 @@ async def test_write_retries_502_on_5_15_45_then_gives_up(method: str):
     client, http = _client(recorder, sleep)
     async with http:
         ok = await getattr(client, method)("Lanlan", **_WRITE_CALLS[method])
-    assert bool(ok) is False   # batch 返回 ScopedBatchResult，其余返回 bool
+    assert bool(ok) is False   # Batch returns ScopedBatchResult; others return bool
     assert len(recorder.requests) == 4
     assert sleep.delays == [5.0, 15.0, 45.0]
     bodies = {request.content for request in recorder.requests}
@@ -432,7 +433,7 @@ async def test_batch_is_false_unless_every_segment_is_ok():
             "Lanlan", segments=[segment, dict(segment, speaker_label="B")],
         )
     assert not result
-    # 已成功的段要报出来：服务端已提交它们，调用方只重试失败的位置
+    # Report successful chunks: the server already committed them, and callers retry only failed positions
     assert result.segments_ok == (True, False)
     assert result.failed_positions == (1,)
 
@@ -559,6 +560,73 @@ async def test_forget_requires_a_forgotten_confirmation(body):
         assert await client.post_forget("Lanlan", subject=_SUBJECT) is False
 
 
+_MISSING_TARGETS = {"detail": {"error": "missing_target_epochs", "missing_target_epochs": ["participant:neko_visit:p1"]}}
+
+
+@pytest.mark.asyncio
+async def test_opted_in_forget_refused_for_missing_targets_raises_with_the_keys():
+    def responder(request):
+        return httpx.Response(409, json=_MISSING_TARGETS)
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        with pytest.raises(ForgetTargetEpochsRequired) as excinfo:
+            await client.post_forget("Lanlan", subject=_SUBJECT, forget_epoch=3, target_epochs={})
+    # Forward missing fan-out targets unchanged so callers can increment those keys' generations and resend
+    assert excinfo.value.missing == ("participant:neko_visit:p1",)
+
+
+_SUBJECT_KEY = f"{_SUBJECT['subject_kind']}:{_SUBJECT['subject_id']}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forget_epoch, target_epochs", [
+    (None, {"participant:neko_visit:p1": 1}),
+    (3, {_SUBJECT_KEY: 4}),
+    (3, {f"participant:neko_visit:p{i}": 1 for i in range(65)}),
+    (3, {"": 1}),
+    (3, {"participant:neko_visit:p1": -1}),
+], ids=["no-forget-epoch", "disagrees", "too-many", "empty-key", "negative"])
+async def test_target_epochs_without_forget_epoch_is_a_caller_error(forget_epoch, target_epochs):
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    async with http:
+        with pytest.raises(ValueError):
+            await client.post_forget(
+                "Lanlan", subject=_SUBJECT, forget_epoch=forget_epoch, target_epochs=target_epochs,
+            )
+    # Do not send requests guaranteed to receive 422; otherwise revocation treats them as ordinary failures and retries forever
+    assert recorder.requests == []
+
+
+@pytest.mark.asyncio
+async def test_disagreeing_epoch_is_caught_for_a_subject_id_with_padding():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    padded = {**_SUBJECT, "subject_id": f"  {_SUBJECT['subject_id']} "}
+    async with http:
+        with pytest.raises(ValueError):
+            # The server strips whitespace before constructing keys; the client must detect generation mismatch using those same keys
+            await client.post_forget("Lanlan", subject=padded, forget_epoch=3, target_epochs={_SUBJECT_KEY: 4})
+    assert recorder.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opt_in, payload", [
+    (False, _MISSING_TARGETS),
+    (True, {"detail": "some other conflict"}),
+    (True, {"detail": {"error": "missing_target_epochs", "missing_target_epochs": []}}),
+], ids=["not-opted-in", "other-409", "empty-list"])
+async def test_other_409_answers_stay_a_plain_failed_forget(opt_in, payload):
+    def responder(request):
+        return httpx.Response(409, json=payload)
+
+    client, http = _client(_Recorder(responder))
+    extra = {"forget_epoch": 3, "target_epochs": {}} if opt_in else {}
+    async with http:
+        assert await client.post_forget("Lanlan", subject=_SUBJECT, **extra) is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body", [b"null", b"{}", b"<html/>", b'{"status": "error"}', b'{"stat'])
 async def test_mentions_require_a_recorded_confirmation(body):
@@ -588,7 +656,7 @@ async def test_batch_requires_the_top_level_processed_status(top):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("trust", ["missing", "not-an-object", {}, {"persisted": "yes"}])
 async def test_history_requires_a_valid_trust_block(trust):
-    # 截断 / 畸形的 trust 块不能当成「已落盘」：调用方会丢掉一段未确认的信任修正
+    # Truncated/malformed trust blocks cannot count as persisted, or callers would discard an unconfirmed trust correction
     def body_with(extra):
         return {"status": "processed"} if trust == "missing" else dict(
             {"status": "processed"}, trust=("x" if trust == "not-an-object" else trust))
@@ -626,7 +694,7 @@ async def test_empty_batch_is_rejected_without_a_request():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persisted", [1, 1.0, 0])
 async def test_numeric_trust_persisted_is_not_a_confirmation(persisted):
-    # 1 / 1.0 == True：只有 JSON 的 true / null 才算确认
+    # 1 / 1.0 == True: only JSON true / null count as confirmation
     def single(request):
         return httpx.Response(200, json={"status": "processed", "trust": {"persisted": persisted}})
 
@@ -647,7 +715,7 @@ async def test_numeric_trust_persisted_is_not_a_confirmation(persisted):
 
 @pytest.mark.asyncio
 async def test_deeply_nested_response_bodies_are_treated_as_malformed():
-    # json 解析深层嵌套抛 RecursionError：各响应边界都要按畸形处理（抛 ScopedMemoryError / 返回失败）
+    # JSON parsing raises RecursionError on deep nesting; treat it as malformed at every response boundary (raise ScopedMemoryError / return failure)
     def deep(request):
         return httpx.Response(200, content=b"[" * 5000, headers={"content-type": "application/json"})
 
@@ -738,9 +806,9 @@ async def test_keyed_batch_with_an_unsettled_trust_write_fails_as_a_whole():
     async with http:
         keyed = await client.post_history_batch("Lanlan", segments=segments, idempotency_key="k")
         plain = await client.post_history_batch("Lanlan", segments=segments)
-    # 带键批次服务端整键保留 pending：只能同键整批重试，所以每一位都算失败
+    # For keyed batches, the server keeps the entire key pending: only whole-batch same-key retries work, so every position counts as failed
     assert keyed.failed_positions == (0, 1)
-    # 不带键时仍按位置报：只有信赖池没落盘的那一位失败
+    # Without a key, still report by position: only the position whose trust pool failed to persist is unsuccessful
     assert plain.failed_positions == (1,)
 
 
@@ -762,7 +830,7 @@ async def test_forget_epochs_are_read_per_subject_and_fail_loudly():
 
     client, http = _client(_Recorder(broken))
     async with http:
-        # 认不出的代数不能当成「没有墓碑」
+        # An unrecognized generation cannot mean 'no tombstone'
         with pytest.raises(ScopedMemoryError):
             await client.get_forget_epochs("Lanlan", ["participant:qq:1"])
 
@@ -771,7 +839,7 @@ async def test_forget_epochs_are_read_per_subject_and_fail_loudly():
 async def test_forget_epoch_lookups_are_chunked_at_the_server_limit():
     from memory import scoped_client
 
-    # 服务端一次最多认 64 个 key（app/memory_server/routes.py 的 _FORGET_EPOCHS_MAX_SUBJECTS）
+    # The server accepts at most 64 keys at once (app/memory_server/routes.py _FORGET_EPOCHS_MAX_SUBJECTS)
     assert scoped_client._FORGET_EPOCHS_BATCH <= 64
     seen = []
 
@@ -784,5 +852,5 @@ async def test_forget_epoch_lookups_are_chunked_at_the_server_limit():
     keys = [f"participant:qq:{i}" for i in range(130)]
     async with http:
         result = await client.get_forget_epochs("Lanlan", keys)
-    # 超过服务端一次的上限时分批查、合并结果
+    # Query in batches and merge results when exceeding the server's per-request limit
     assert seen == [64, 64, 2] and result == {key: 1 for key in keys}

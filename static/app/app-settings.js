@@ -550,12 +550,15 @@
         'mergeMessagesEnabled',
         'focusModeEnabled',
         'focusCognitionEnabled',
+        'autoMemoryRecallEnabled',
         'noiseReductionEnabled',
         'independentAsrEnabled',
         'independentAsrProviderPreference',
         'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
+        'visitEnabled',
+        'visitVoiceEnabled',
         'proactiveChatInterval',
         'proactiveVisionInterval',
         'subtitleEnabled',
@@ -590,12 +593,15 @@
             mergeMessagesEnabled: false,
             focusModeEnabled: false,
             focusCognitionEnabled: true,
+            autoMemoryRecallEnabled: true,
             noiseReductionEnabled: true,
             independentAsrEnabled: false,
             independentAsrProviderPreference: 'auto',
             voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,
+            visitEnabled: false,
+            visitVoiceEnabled: true,
             proactiveChatInterval: Number.isFinite(C.DEFAULT_PROACTIVE_CHAT_INTERVAL)
                 ? C.DEFAULT_PROACTIVE_CHAT_INTERVAL
                 : 15,
@@ -651,6 +657,7 @@
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
+            autoMemoryRecallEnabled: S.autoMemoryRecallEnabled,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
             independentAsrProviderPreference: _normalizeIndependentAsrProviderPreference(
@@ -659,6 +666,8 @@
             voiceInputResourceOptimizationEnabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
+            visitEnabled: S.visitEnabled,
+            visitVoiceEnabled: S.visitVoiceEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
             subtitleEnabled: S.subtitleEnabled,
@@ -1178,6 +1187,16 @@
     }
 
     function stopVisionAfterPrivacyEnabled() {
+        // Screenshots taken before a revocation must not ride a later request,
+        // even if consent is re-enabled before that request is sent.
+        if (window.appProactive && typeof window.appProactive.noteProactiveVisionConsent === 'function') {
+            window.appProactive.noteProactiveVisionConsent(S.proactiveVisionEnabled);
+        }
+        // Notify live work before the queued settings POST reaches disk. Reconnect
+        // repeats this snapshot; enabling still needs persisted backend consent.
+        if (window.appWebSocket && typeof window.appWebSocket.syncProactiveVisionConsent === 'function') {
+            window.appWebSocket.syncProactiveVisionConsent(S.proactiveVisionEnabled);
+        }
         if (S.proactiveVisionEnabled !== false) return;
 
         try {
@@ -1628,6 +1647,9 @@
         const currentFocusCognition = typeof window.focusCognitionEnabled !== 'undefined'
             ? window.focusCognitionEnabled
             : S.focusCognitionEnabled;
+        const currentAutoMemoryRecall = typeof window.autoMemoryRecallEnabled !== 'undefined'
+            ? window.autoMemoryRecallEnabled
+            : S.autoMemoryRecallEnabled;
         const currentIndependentAsr = S.independentAsrEnabled === true;
         const currentVoiceResourceOptimization =
             S.voiceInputResourceOptimizationEnabled !== false;
@@ -1659,15 +1681,27 @@
         const currentSlopFilter = typeof window.slopFilterEnabled !== 'undefined'
             ? window.slopFilterEnabled
             : S.slopFilterEnabled;
+        const currentVisitEnabled = typeof window.visitEnabled !== 'undefined'
+            ? window.visitEnabled
+            : S.visitEnabled;
+        const currentVisitVoiceEnabled = typeof window.visitVoiceEnabled !== 'undefined'
+            ? window.visitVoiceEnabled
+            : S.visitVoiceEnabled;
         const currentTextGuardMaxLength = typeof window.textGuardMaxLength !== 'undefined'
             ? window.textGuardMaxLength
             : S.textGuardMaxLength;
         const currentRenderQuality = typeof window.renderQuality !== 'undefined'
             ? window.renderQuality
             : S.renderQuality;
-        const currentTargetFrameRate = typeof window.targetFrameRate !== 'undefined'
-            ? window.targetFrameRate
-            : S.targetFrameRate;
+        // 串门取帧期间 window.targetFrameRate 被临时拉高（static/visit/parent-bridge.js），
+        // 保存的是用户自己的值，不能把临时值写进设置；当前值已不是临时值（用户刚改过）就照常保存
+        const targetFrameRateHold = window.nekoTargetFrameRateHold;
+        const currentTargetFrameRate = targetFrameRateHold && typeof targetFrameRateHold.userFps === 'number'
+            && window.targetFrameRate === targetFrameRateHold.heldFps
+            ? targetFrameRateHold.userFps
+            : (typeof window.targetFrameRate !== 'undefined'
+                ? window.targetFrameRate
+                : S.targetFrameRate);
         const currentMouseTracking = typeof window.mouseTrackingEnabled !== 'undefined'
             ? window.mouseTrackingEnabled
             : true;
@@ -1710,12 +1744,15 @@
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
+            autoMemoryRecallEnabled: currentAutoMemoryRecall,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: currentIndependentAsr,
             independentAsrProviderPreference: currentIndependentAsrProviderPreference,
             voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
+            visitEnabled: currentVisitEnabled,
+            visitVoiceEnabled: currentVisitVoiceEnabled,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
             textGuardMaxLength: currentTextGuardMaxLength,
@@ -1756,11 +1793,14 @@
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
+        S.autoMemoryRecallEnabled = currentAutoMemoryRecall;
         S.independentAsrEnabled = currentIndependentAsr;
         S.independentAsrProviderPreference = currentIndependentAsrProviderPreference;
         S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
+        S.visitEnabled = currentVisitEnabled;
+        S.visitVoiceEnabled = currentVisitVoiceEnabled;
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
         S.textGuardMaxLength = currentTextGuardMaxLength;
@@ -1939,6 +1979,7 @@
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
+                S.autoMemoryRecallEnabled = settings.autoMemoryRecallEnabled ?? true;
                 S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
                 S.voiceInputResourceOptimizationEnabled =
                     settings.voiceInputResourceOptimizationEnabled ?? true;
@@ -1948,6 +1989,8 @@
                     );
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
+                S.visitEnabled = settings.visitEnabled ?? false;
+                S.visitVoiceEnabled = settings.visitVoiceEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
                 // 回复 token 上限（默认 300 tiktoken tokens；0 = 无限制）
@@ -2081,8 +2124,11 @@
         // 关、reload 时若没触发 merge，window 会是 undefined 让弹窗误显示为开。这里在
         // 每次 loadSettings 末尾从 S 权威镜像一次兜住该时序漏洞。
         window.focusCognitionEnabled = S.focusCognitionEnabled;
+        window.autoMemoryRecallEnabled = S.autoMemoryRecallEnabled;
         // 同理：自然表达开关也镜像到 window，避免设置弹窗在 reload 后误显示为开。
         window.slopFilterEnabled = S.slopFilterEnabled;
+        window.visitEnabled = S.visitEnabled;
+        window.visitVoiceEnabled = S.visitVoiceEnabled;
 
         // 加载字幕设置（统一从 subtitle-shared store 读取）
         const subtitleStore = window.nekoSubtitleShared;
@@ -2294,8 +2340,11 @@
                     window.mergeMessagesEnabled = S.mergeMessagesEnabled;
                     window.focusModeEnabled = S.focusModeEnabled;
                     window.focusCognitionEnabled = S.focusCognitionEnabled;
+                    window.autoMemoryRecallEnabled = S.autoMemoryRecallEnabled;
                     window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                     window.slopFilterEnabled = S.slopFilterEnabled;
+                    window.visitEnabled = S.visitEnabled;
+                    window.visitVoiceEnabled = S.visitVoiceEnabled;
                     window.proactiveChatInterval = S.proactiveChatInterval;
                     window.proactiveVisionInterval = S.proactiveVisionInterval;
                     window.textGuardMaxLength = S.textGuardMaxLength;

@@ -126,9 +126,9 @@ async def test_avatar_tool_static_files_recognizes_exact_sha256_versions(
     }
 
     if expected_cache_control is None:
-        # 生成的 URL 只会带一个精确的小写 64 位摘要。其余形式（大写、多带参数、
-        # 非摘要串）都不是本应用发出的请求，直接拒绝，而不是放它走未经核验、
-        # 也不受管理大小上限约束的通道。
+        # Generated URLs contain exactly one lowercase 64-character digest. Reject other forms (uppercase, extra parameters,
+        # nondigest strings) as requests this app never generates, rather than allowing an unverified path
+        # outside managed size limits.
         with pytest.raises(StarletteHTTPException) as raised:
             await static_files.get_response(f"{tool_id}/default.png", scope)
         assert raised.value.status_code == 404
@@ -296,12 +296,12 @@ async def test_avatar_tool_rejects_an_unversioned_request_outright(tmp_path):
         "headers": [(b"range", f"bytes={ranges}".encode("ascii"))],
     }
 
-    # 拒绝发生在任何 range 解析之前，所以这条路进不了 StaticFiles.get_response()
-    # ——这个 handler 从不调用 super().get_response()，未版本化请求要么 404，要么
-    # 什么都不是。直接拒绝无版本参数的请求，避免回落到原生响应而绕过
-    # 本模块的 16 段范围限制、受管理的大小上限和内容核验。
-    # 已核验的那条路径由 test_avatar_tool_verified_response_rejects_excessive_range_specs
-    # 用同样的 17 条 range 钉住 416。
+    # Rejection precedes any range parsing, so this path cannot reach StaticFiles.get_response().
+    # This handler never calls super().get_response(); unversioned requests either return 404 or
+    # nothing. Reject requests without version parameters directly instead of falling back to native responses and bypassing
+    # this module's 16-range limit, managed size limit, and content verification.
+    # test_avatar_tool_verified_response_rejects_excessive_range_specs pins the verified path's 416 response
+    # using the same 17 ranges.
     with pytest.raises(StarletteHTTPException) as raised:
         await static_files.get_response(f"{tool_id}/normal.mp3", scope)
     assert raised.value.status_code == 404
@@ -391,7 +391,7 @@ async def test_static_layer_never_quarantines_even_when_bytes_diverge(tmp_path, 
     store = avatar_tool_store.AvatarToolStore(config_manager)
     root_key = store._root_key()
 
-    # 客户端拿的是权威 record 里的摘要，也就是「正确」的 URL。
+    # The client uses the authoritative record's digest, namely the correct URL.
     scope = {
         "type": "http",
         "method": "GET",
@@ -404,8 +404,8 @@ async def test_static_layer_never_quarantines_even_when_bytes_diverge(tmp_path, 
         with pytest.raises(StarletteHTTPException) as raised:
             await static_files.get_response(f"{tool_id}/default.png", scope)
         assert raised.value.status_code == 404
-        # 这一层的字节和 record 来自两次独立读取，中间可能夹着一次原子 PUT，
-        # 所以它不做判定；隔离交给锁内一次性核验的消费点。
+        # Bytes and record here come from two independent reads, with a possible atomic PUT between them,
+        # so do not judge here; isolate verification at the consumption point with one locked check.
         assert tool_id not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
 
         with pytest.raises(avatar_tool_store.AvatarToolStoreError) as store_error:
@@ -452,7 +452,7 @@ async def test_stale_asset_url_does_not_rehash_the_whole_tool(tmp_path, monkeypa
     try:
         with pytest.raises(StarletteHTTPException):
             await static_files.get_response(f"{tool_id}/default.png", scope)
-        # 这一层不判定完整性，所以既不重算道具里的其它资源，也不读 record。
+        # This layer does not judge integrity, so neither recompute other tool resources nor read the record.
         assert digests == [], f"stale URL rehashed the tool: {digests}"
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
@@ -470,7 +470,7 @@ async def test_public_path_check_runs_off_the_event_loop(tmp_path, monkeypatch):
     loop_thread = __import__("threading").get_ident()
     seen = {}
 
-    # get_response 是函数级 import，所以要 patch 源模块。
+    # get_response imports at function scope, so patch the source module.
     real_check = avatar_tool_store.is_public_avatar_tool_resource_path
 
     def recording_check(root, path):

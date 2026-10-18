@@ -19,7 +19,7 @@ class _FakePsProcess:
 
     def cpu_percent(self, interval: object = "unset") -> float:
         self.cpu_calls.append(interval)
-        # 模拟 psutil：首次调用建立基线返回 0.0
+        # Mock psutil: the first call establishes a baseline and returns 0.0.
         return 0.0 if len(self.cpu_calls) == 1 else 12.5
 
     def memory_info(self) -> SimpleNamespace:
@@ -140,7 +140,7 @@ def test_prune_drops_plugins_no_longer_in_hosts(fake_psutil: type[_FakePsProcess
 async def test_late_sampling_thread_from_stopped_round_does_not_touch_new_cache(
     fake_psutil: type[_FakePsProcess], monkeypatch: pytest.MonkeyPatch, late_action: str
 ) -> None:
-    """stop() 后立即 start()：旧轮次仍在运行的采样线程晚到时只能影响旧缓存。"""
+    """Immediate start() after stop(): late samples from the previous running thread may affect only the old cache."""
     old_entered = threading.Event()
     release_old = threading.Event()
     sampled: dict[int, threading.Event] = {1001: threading.Event(), 2002: threading.Event()}
@@ -177,7 +177,7 @@ async def test_late_sampling_thread_from_stopped_round_does_not_touch_new_cache(
 
     old_host = _host(1001)
     new_host = _host(2002)
-    # 任一断言失败都要放行旧线程并停掉收集任务，避免遗留后台线程/任务拖慢清理。
+    # On any assertion failure, release the old thread and stop collection to prevent background work delaying cleanup.
     try:
         await collector.start(lambda: {"demo": old_host})
         assert await asyncio.to_thread(old_entered.wait, 5)

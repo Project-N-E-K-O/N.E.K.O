@@ -38,7 +38,7 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Memory")
 
 
-# cursor 键名常量，避免字符串魔法值散落
+# Cursor-key constants keep string magic values from being scattered throughout the code
 CURSOR_REBUTTAL_CHECKED_UNTIL = "rebuttal_checked_until"
 
 
@@ -62,7 +62,7 @@ class CursorStore:
     # ── path / lock ─────────────────────────────────────────────
 
     def _cursor_path(self, name: str) -> str:
-        # 延迟 import 避开 memory/__init__.py ↔ memory/cursors.py 循环依赖
+        # Defer imports to avoid the memory/__init__.py ↔ memory/cursors.py circular dependency
         from memory import ensure_character_dir
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
@@ -76,7 +76,7 @@ class CursorStore:
                     self._locks[name] = threading.Lock()
         return self._locks[name]
 
-    # ── load / save (锁由调用方持有) ────────────────────────────
+    # ── load / save (caller holds the lock) ────────────────────────────
 
     def _load_unlocked(self, name: str) -> dict[str, datetime]:
         """Load a single character's cursors and cache them in memory. Returns an empty

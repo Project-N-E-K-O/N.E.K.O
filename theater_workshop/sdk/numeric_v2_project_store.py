@@ -300,7 +300,7 @@ def _normalize_authoring(value: Any, story: Any) -> dict[str, Any]:
     pacing_diagnostics = None
     raw_pacing = source.get("pacing_diagnostics")
     if isinstance(raw_pacing, Mapping):
-        # 节奏检查是作者侧派生信息；只保留结构化结果，不让它进入 Story Package。
+        # Pacing checks are derived author-side information; retain only structured results and keep them out of the Story Package.
         pacing_diagnostics = deepcopy(dict(raw_pacing))
     return {
         "mainline_node_ids": ordered,
@@ -566,7 +566,7 @@ class NumericV2ProjectStore:
                 ):
                     metric_schema, initial_metrics = metrics_to_package(setup["metrics"])
                     project["story"]["metric_schema"] = metric_schema
-                    # 数值编辑不能清空姓名披露等既有初始状态。
+                    # Numeric edits must preserve existing initial state, such as name disclosure.
                     project["story"].setdefault("initial_state", {})["metrics"] = initial_metrics
                     package_changed = True
             if "story" in changes:

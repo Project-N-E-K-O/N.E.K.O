@@ -41,7 +41,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
     from utils.glm_tts import GLM_TTS_SPEECH_MODEL, glm_speech_url
 
     tts_url = glm_speech_url(base_url)
-    # telemetry 按 provider 归类：GLM 克隆音色记 glm_tts，原生 CogTTS 记 cogtts。
+    # Classify telemetry by provider: GLM cloned voices use glm_tts, native CogTTS uses cogtts.
     telemetry_provider = "glm_tts" if model == GLM_TTS_SPEECH_MODEL else "cogtts"
 
     async def setup(response_queue):
@@ -58,16 +58,16 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
         async def synthesize(text: str, speech_id: str) -> None:
             payload = {
                 "model": model,
-                "input": text[:1024],  # CogTTS最大支持1024字符
+                "input": text[:1024],  # CogTTS supports at most 1024 characters.
                 "voice": voice_id,
                 "response_format": "pcm",
                 "encode_format": "base64",
                 "speed": 1.0,
                 "volume": 1.0,
                 "stream": True,
-                # 官方 watermark_enabled=false 仅对已在智谱控制台完成「去水印管理」
-                # 的账号生效；未完成的账号服务端忽略该参数照常加水印，本地首包
-                # beep 检测裁剪仍是兜底，两侧叠加不影响普通用户。
+                # Official watermark_enabled=false works only for accounts completing watermark-removal management
+                # in the Zhipu console; otherwise the server ignores it and adds watermarks. Local first-chunk
+                # beep detection/cropping remains the fallback; both layers can coexist without affecting ordinary users.
                 "watermark_enabled": False,
             }
             async with client.stream(
@@ -84,9 +84,9 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                     )
                     return
 
-                # CogTTS payload 实际只发了 text[:1024]（行 2407 的硬截断，上游
-                # API 限制 1024 字符）。telemetry 记 min 而不是 len(text)，否则超
-                # 长输入会高估实际计费/上行的字符数。
+                # The CogTTS payload actually sends only text[:1024] (hard truncation at line 2407; upstream
+                # API limit 1024 characters). Record min rather than len(text) in telemetry, or excessively
+                # long inputs overestimate actual billable/uploaded character counts.
                 _record_tts_telemetry(telemetry_provider, min(len(text), 1024))
                 buffer = ""
                 first_audio_received = False
@@ -101,9 +101,9 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                     if scan_len < int(sr * 0.05):
                         return 0
 
-                    frame_size = int(sr * 0.01)   # 10ms 帧
+                    frame_size = int(sr * 0.01)   # 10 ms frames.
                     hop = frame_size
-                    hf_threshold = 0.55            # 高频能量占比阈值
+                    hf_threshold = 0.55            # High-frequency energy ratio threshold.
                     energy_floor = 1e-6
                     beep_frames: list[int] = []
 
@@ -125,7 +125,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                     if len(beep_frames) < 2:
                         return 0
 
-                    # 裁剪到最后一个 beep 帧之后 + 5ms 安全余量
+                    # Crop through the last beep frame plus a 5 ms safety margin.
                     trim_end = beep_frames[-1] + int(sr * 0.005)
                     return min(trim_end, scan_len)
 
@@ -155,7 +155,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                             audio_bytes, dtype=np.int16,
                         ).astype(np.float32) / 32768.0
 
-                        # 首个音频块：检测并裁剪水印滴滴声
+                        # First audio chunk: detect and crop watermark beeps.
                         if not first_audio_received:
                             first_audio_received = True
                             trim_samples = _detect_beep_watermark(
@@ -167,7 +167,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                                     trim_samples / sample_rate * 1000,
                                 )
                                 audio_array = audio_array[trim_samples:]
-                                # 通知前端检测到水印
+                                # Notify the frontend that a watermark was detected.
                                 response_queue.put((
                                     "__warning__",
                                     json.dumps({
@@ -175,7 +175,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                                         "level": "info",
                                     }),
                                 ))
-                                # 裁剪后淡入 10ms 避免爆音
+                                # Fade in for 10 ms after cropping to avoid clicks.
                                 fade_samples = min(
                                     int(sample_rate * 0.01),
                                     len(audio_array),
@@ -208,7 +208,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                         line, buffer = buffer.split('\n', 1)
                         _handle_sse_line(line)
 
-                # 处理尾部残留（服务端最后一条消息可能不带换行）
+                # Process trailing residue; the final server message may lack a newline.
                 if buffer.strip():
                     _handle_sse_line(buffer)
 
@@ -247,9 +247,9 @@ def _glm_clone_resolve(ctx):
     if not api_key:
         logger.warning("GLM 克隆音色已选中但 API Key 缺失，改用 dummy TTS worker")
         return dummy_tts_worker, None, None
-    # cogtts worker 的 voice 参数官方明确支持复刻音色：直接以克隆音色 ID 合成，
-    # 走同一条 SSE 流式 + 水印检测路径。voice_meta 里存了注册时的 glm_base_url，
-    # 传给 worker 让历史条目继续用注册端点合成（缺失时回退官方默认地址）。
+    # The cogtts worker's voice parameter officially supports cloned voices; synthesize directly with the cloned ID,
+    # using the same SSE streaming and watermark-detection path. voice_meta retains the registration glm_base_url;
+    # pass it to the worker so historical entries keep their registration endpoint, falling back to the official default if absent.
     base_url = str(vm.get("glm_base_url") or "").strip() or GLM_TTS_DEFAULT_BASE_URL
     worker = partial(cogtts_tts_worker, base_url=base_url, model=GLM_TTS_SPEECH_MODEL)
     return worker, api_key, "glm_tts"

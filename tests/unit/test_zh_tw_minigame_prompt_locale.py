@@ -129,7 +129,7 @@ def test_soccer_prompts_differ_by_script():
     assert traditional != simplified
 
 
-# ── 端到端：soccer 被动守卫端点 ────────────────────────────────────────────
+# -- End to end: soccer passive-guard endpoint --------------------------------
 
 
 class _FakeResult:

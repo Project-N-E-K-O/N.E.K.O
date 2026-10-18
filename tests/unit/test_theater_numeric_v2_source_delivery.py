@@ -13,7 +13,7 @@ from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
 
-# 三种依赖分别是物品领取、信息获知、操作结果；不使用森林中的专有名词。
+# The three dependencies are item receipt, knowledge acquisition, and operation outcome; avoid forest-specific proper nouns.
 DELIVERY_TOPICS = {
     'parcel': ('邮局柜台', '门外的长椅', '包裹仍在柜台，猫娘尚未领取。',
                '猫娘可自行从柜台领取自己的包裹。', '（从柜台领起自己的包裹）拿好了。',
@@ -49,7 +49,7 @@ def delivery_case(topic, variant):
         reason=f'{result}两人可前往{destination}。',
         must_deliver=[], must_preserve=[], bridge_scene_narration=f'两人来到{destination}。',
     )
-    # 公开邀请是已提交开场；是否已有来源结果是唯一历史变量，不能让目标模板代替它。
+    # The public invitation is the submitted opening; prior source outcomes are the only history variable, and the target template cannot replace them.
     opening = _opening()
     opening.update(scene_narration=f'双方在{place}。' + (result if variant == 'history' else pending),
                    performance=f'我们去{destination}休息，好吗？')
@@ -57,13 +57,13 @@ def delivery_case(topic, variant):
         catgirl_binding=_binding(), opening_performance=opening), transition_offered=True)
     message = f'好，我们去{destination}。'
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, message), (), transition_intent='accept')
-    # 省略尚未成立的模板结果也是正常改写；不应强迫模型倒叙补造来满足模板。
+    # Omitting an unestablished template outcome is a valid rewrite; do not force retrospective fabrication to satisfy the template.
     text = dict(source_performance=delivery if variant == 'deliver_now' else '（点头）走吧。',
                 bridge_scene_narration=f'两人离开{place}，来到{destination}。',
                 target_scene_narration=f'{destination}吹来微风。' + ('' if variant == 'omit' else result),
                 target_performance='（望着远处）这里安静些。', suggested_inputs=[])
     if variant == 'extra_player_action':
-        # 只改变动作主体：接受休息不授权玩家另行领取、询问或操作。
+        # Change only the actor: agreeing to rest does not authorize the player to collect, inquire, or operate separately.
         text['source_performance'] = '（看着你）你刚才已经替我完成了这件事。'
         text['bridge_scene_narration'] = f'玩家在{place}替猫娘完成了前述操作，两人随后来到{destination}。'
     candidate = engine.finalize_transition_performance(outcome, text, target_opening=target['story_beat']['opening_scene'])
@@ -100,7 +100,7 @@ def test_review_history_coverage_never_claims_missing_or_packed_records_are_comp
     if missing:
         session = replace(session, node_turn_count=1)
     elif truncated:
-        # 追加一个真实形状的当前幕回合，再收紧输入预算，强制移走开场记录。
+        # Append a realistically shaped current-act turn, then tighten the input budget to force the opening record out.
         session = replace(session, revision=1, node_turn_count=1, performance_history=({
             'revision': 1, 'from_node_id': 'start', 'to_node_id': 'start',
             'input_text': '稍等。', 'performance': '（等在柜台旁）好。',

@@ -1,7 +1,7 @@
-"""Numeric v2 的玩家动作结果投影。
+"""Numeric v2 player-action outcome projection.
 
-这里只保留可以从玩家原话或 Runtime 已提交结果直接证明的短状态。它不是
-自然语言理解器，也不尝试推断目的地、成功结果、情绪或隐含意图。
+Retain only short states directly provable from the player's words or Runtime's committed outcomes. This is not
+a natural-language interpreter and does not infer destinations, successful outcomes, emotions, or implicit intent.
 """  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ PLAYER_ACTION_PROJECTION_SCHEMA = "neko.script.player_action_projection.numeric.
 _MAX_EVIDENCE_CHARS = 180
 _MAX_ROWS = 8
 
-# 这些是跨题材的动作词，不代表任何具体剧本对象。只有同时满足明确完成/实施
-# 结构且没有未来或疑问标记时，才生成玩家动作行。
+# These action words span genres and denote no particular script object. Generate a player-action line only
+# when an explicit completion/execution structure is present without future or question markers.
 _ACTION_TERMS = (
     "签", "拿", "交", "放", "打开", "关上", "关闭", "填写", "报名", "参加",
     "接受", "拒绝", "选择", "开始", "继续", "离开", "回去", "回家", "前往",
@@ -23,9 +23,10 @@ _ACTION_TERMS = (
     "整理", "收拾", "确认", "按下", "接过", "还给", "递给", "读", "看",
 )
 _DEPARTURE_TERMS = (
-    "先回去", "先回家", "先走", "走了", "离开这里", "离开", "回家", "走向门口",
-    "走向巷口", "走出门", "走出去", "推门离开", "转身离开", "起身离开", "那我走", "我们走",
+    "先回去", "先回家", "先走", "走了", "离开这里", "离开", "回家",
+    "走出门", "走出去", "推门离开", "转身离开", "起身离开", "那我走", "我们走",
 )
+_EXIT_APPROACH_TERMS = ("走向门口", "走向巷口")
 _QUESTION_MARKERS = ("？", "?", "吗", "能不能", "可以吗", "要不要", "是否", "有没有")
 _UNCOMMITTED_MARKERS = (
     "想", "希望", "准备", "打算", "考虑", "计划", "可能", "也许", "如果", "尝试", "试试",
@@ -50,8 +51,8 @@ _SINGLE_ACTION_SUFFIXES = {
 }
 
 
-# 动作词/离场词前紧邻否定（可带一两个情态字，如“不会”“没有再”“绝不”）时，
-# 该处不是已完成的动作；“不得不”是双重否定，仍按实施处理。
+# An immediately preceding negation, optionally with one or two modal characters (e.g. will not, has not again, never),
+# means the action/departure is not completed; "不得不" (have to) is a double negative and still counts as execution.
 _NEGATION_BEFORE_TERM = re.compile(
     r"(?<!不得)[不没别未勿莫甭][有会要再能想用肯敢得准许必可]{0,2}$"
 )
@@ -83,8 +84,8 @@ def _has_future_or_uncommitted_marker(text: str) -> bool:
 
 
 def _explicit_subject(text: str) -> bool:
-    # “先回去复习”“我们走吧”是日常省略主语的直接表达；“带我去”是对
-    # 猫娘的请求，不把它当作玩家已经移动。
+    # Expressions such as going back to study or let's go directly omit the subject; "带我去" (take me there) asks
+    # the catgirl to act and must not count as the player having moved.
     return bool(re.search(r"(?:^|[，,。；;：:\s])(?:我|我们|咱们|先|那我|这就)", text))
 
 
@@ -105,7 +106,7 @@ def _action_term(text: str) -> str:
 
 
 def _clauses(text: str) -> list[str]:
-    """按玩家输入里的自然分句保留动作证据，不把后续约定当成前句否定。"""  # noqa: DOCSTRING_CJK
+    """Retain action evidence by natural clauses in player input, without treating later agreements as negating an earlier clause."""  # noqa: DOCSTRING_CJK
 
     parenthetical = re.findall(r"（[^）]*）|\([^)]*\)", text)
     remainder = re.sub(r"（[^）]*）|\([^)]*\)", "", text)
@@ -131,6 +132,12 @@ def _explicit_action_clause(text: str, *, departure: bool = False) -> str:
         if departure:
             has_term = any(
                 not _negated_at(clause, start)
+                and not any(
+                    start < approach_start + len(approach)
+                    and start + len(term) > approach_start
+                    for approach in _EXIT_APPROACH_TERMS
+                    for approach_start in _term_starts(clause, approach)
+                )
                 for term in terms
                 for start in _term_starts(clause, term)
             )
@@ -149,12 +156,23 @@ def _departure_is_explicit(text: str) -> bool:
     return bool(_explicit_action_clause(text, departure=True))
 
 
+def _exit_approach_clause(text: str) -> str:
+    # When departure is explicitly canceled, prior approach actions must not suppress a new invitation; do not infer a return destination.
+    if any(_negated_at(text, start) for term in _DEPARTURE_TERMS
+           for start in _term_starts(text, term)):
+        return ""
+    for clause in _clauses(text):
+        if any(term in clause for term in _EXIT_APPROACH_TERMS) and _explicit_action_clause(clause):
+            return clause
+    return ""
+
+
 def _action_is_explicit(text: str) -> bool:
     clause = _explicit_action_clause(text)
     if not clause:
         return False
-    # “我签”/“好，我签”属于直接执行表达；其它动作必须有完成态或
-    # 明确的当下执行前缀，避免把“我想签”投影成已完成。
+    # "我签" / "好，我签" (I sign / okay, I sign) directly execute; other actions require a completed form or
+    # an explicit current-execution prefix, avoiding projection of wanting to sign as completed signing.
     return any(marker in clause for marker in _COMPLETION_MARKERS) or _is_parenthetical_action(clause)
 
 
@@ -174,10 +192,10 @@ def project_player_action_result(
     route_changed: bool = False,
     fact_operations: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """生成有界的玩家动作结果投影。
+    """Generate a bounded player-action outcome projection.
 
-    `player_input` 只提供证据原文；只有满足保守的直接执行结构时才进入
-    `confirmed_actions`。Runtime 的转场和事实操作属于独立的确定性来源。
+    `player_input` supplies only source evidence; add it to `confirmed_actions` only when it satisfies
+    a conservative direct-execution structure. Runtime transitions and fact operations are separate deterministic sources.
     """  # noqa: DOCSTRING_CJK
 
     text = _evidence(message)
@@ -190,8 +208,16 @@ def project_player_action_result(
             "source": "player_input",
             "evidence_quote": text,
         })
+    approach_clause = _exit_approach_clause(text) if not confirmed else ""
     action_clause = _explicit_action_clause(text)
-    if text and not confirmed and _action_is_explicit(action_clause):
+    if approach_clause:
+        confirmed.append({
+            "kind": "approach_scene_exit",
+            "status": "performed",
+            "source": "player_input",
+            "evidence_quote": approach_clause,
+        })
+    elif text and not confirmed and _action_is_explicit(action_clause):
         confirmed.append({
             "kind": "player_action",
             "status": "performed",
@@ -240,11 +266,14 @@ def project_player_action_result(
         "player_left_current_scene": any(
             row.get("kind") == "leave_current_scene" for row in confirmed
         ),
+        "player_departure_pending": any(
+            row.get("kind") == "approach_scene_exit" for row in confirmed
+        ),
     }
 
 
 def normalize_player_action_projection(value: Any) -> dict[str, Any]:
-    """校验并复制投影，供 Ledger/Prompt 读取，拒绝外部注入的自由字段。"""  # noqa: DOCSTRING_CJK
+    """Validate and copy the projection for Ledger/Prompt consumption, rejecting externally injected free-form fields."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(value, Mapping) or value.get("schema") != PLAYER_ACTION_PROJECTION_SCHEMA:
         return project_player_action_result("")
@@ -295,6 +324,9 @@ def normalize_player_action_projection(value: Any) -> dict[str, Any]:
         ),
         "player_left_current_scene": any(
             row.get("kind") == "leave_current_scene" for row in normalized_confirmed
+        ),
+        "player_departure_pending": any(
+            row.get("kind") == "approach_scene_exit" for row in normalized_confirmed
         ),
     }
 

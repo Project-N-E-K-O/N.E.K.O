@@ -111,6 +111,35 @@ afterEach(() => {
 })
 
 describe('market install progress', () => {
+  it.each(['content_length', 'received_bytes'])('explains the size limit for %s in both surfaces', (source) => {
+    for (const compact of [false, true]) {
+      makeStore({
+        task: { task_id: 't', status: 'failed', stage: 'download', downloaded_bytes: 0,
+          error_code: 'package_size_exceeded', retryable: false,
+          error_details: { actual_bytes: 629145600, maximum_bytes: 524288000, size_source: source } },
+        errorKey: 'market.packageSizeExceeded', done: true, running: false, detailsExpanded: true,
+      })
+      const root = mount({ compact })
+      expect(text(root)).toContain('market.packageSizeExceeded')
+      expect(text(root)).toContain(source === 'content_length' ? 'market.packageSizeDeclared' : 'market.packageSizeReceived')
+      expect(text(root)).toContain('"actual":"600 MiB"')
+      expect(text(root)).toContain('"limit":"500 MiB"')
+      expect(text(root)).toContain('market.packageSizeHint')
+      expect(text(root)).toContain('"actualBytes":629145600')
+      expect(text(root)).not.toContain(source === 'content_length' ? 'market.packageSizeReceived' : 'market.packageSizeDeclared')
+      cleanup()
+    }
+  })
+
+  it('keeps size guidance usable when an older server provides no structured details', () => {
+    makeStore({ task: { task_id: 't', status: 'failed', stage: 'download', error_code: 'package_size_exceeded' },
+      errorKey: 'market.packageSizeExceeded', done: true, running: false })
+    const root = mount()
+    expect(text(root)).toContain('market.packageSizeHint')
+    expect(text(root)).not.toContain('market.packageSizeDeclared')
+    expect(text(root)).not.toContain('market.packageSizeDiagnostics')
+  })
+
   it('renders nothing without a task', () => {
     makeStore({ task: null })
     const root = mount()

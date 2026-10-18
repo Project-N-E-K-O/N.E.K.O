@@ -134,7 +134,7 @@ async def test_frame_captured_before_the_endpoint_survives_late_validation() -> 
     record = runtime._core_multimodal_turns[turn_id]
     captured_while_speaking = record.started_at
 
-    # 端点先到，这帧的校验任务才跑完 —— 拍摄时它还在说话，必须留下。
+    # The endpoint arrives before this frame's validation finishes; it was captured during speech and must be retained.
     _seal_utterance(runtime)
     runtime._mark_independent_asr_endpoint_if_sealed()
     assert runtime._stage_independent_visual_frame(
@@ -167,12 +167,12 @@ async def test_endpoint_cutoff_uses_the_recorded_seal_instant() -> None:
         captured_at=record.started_at,
     )
 
-    # ASR 在这一刻封口，但 Core 要到下一帧 staging 才会去看。
+    # ASR closes speech now, but Core will not observe it until the next staging frame.
     sealed_at = record.started_at + 1.0
     runtime._asr_turn_endpointed_at = sealed_at
     _seal_utterance(runtime)
 
-    # 这帧拍摄于封口之后、Core 观察之前——按观察时刻当截止值它会被放行。
+    # This frame was captured after closure but before Core observed it; using observation time as the cutoff would admit it.
     runtime._stage_independent_visual_frame(
         "gap-frame",
         source="screen",
@@ -203,7 +203,7 @@ async def test_live_seal_between_onset_and_registration_still_binds() -> None:
     """
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
-    # 把语音起点回拨，制造 started_at < registered_at 的真实窗口。
+    # Move speech onset backward to create the real started_at < registered_at window.
     onset = time.monotonic() - 0.5
     runtime._asr_turn_onset_at = onset
     token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=99)
@@ -212,7 +212,7 @@ async def test_live_seal_between_onset_and_registration_still_binds() -> None:
     record = runtime._core_multimodal_turns[turn_id]
     assert record.started_at < record.registered_at, "夹具没造出那段窗口"
 
-    # 在飞字段：封口发生在开口之后、record 建立之前。
+    # In-flight fields: closure occurs after onset but before record creation.
     sealed_at = record.started_at + 0.1
     assert sealed_at < record.registered_at
     runtime._asr_turn_endpointed_at = sealed_at
@@ -331,7 +331,7 @@ async def test_a_late_registration_still_adopts_its_real_onset() -> None:
     runtime._asr_route_mode = "independent"
 
     now = time.monotonic()
-    real_onset = now - 30.0  # 排在一个 provider final 后面，远超帧的 5s TTL
+    real_onset = now - 30.0  # Queued behind a provider final, well beyond the frame's 5-second TTL.
     runtime._asr_runtime._asr_turn_onset_at = real_onset
 
     frame_at = real_onset + 1.0
@@ -347,9 +347,9 @@ async def test_a_late_registration_still_adopts_its_real_onset() -> None:
     runtime._begin_core_multimodal_turn(turn_id, token)
     record = runtime._core_multimodal_turns[turn_id]
 
-    # 起点是真实开口时刻，不是注册时刻。
+    # The start is actual speech onset, not registration time.
     assert record.started_at == pytest.approx(real_onset, abs=0.01)
-    # 那一刻以来的帧被采纳了，而不是整轮退化成纯文本。
+    # Frames since that moment are accepted rather than degrading the entire turn to text only.
     assert [f.image_b64 for f in record.sampled_frames()] == [
         "frame-from-the-real-onset"
     ]

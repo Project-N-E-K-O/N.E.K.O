@@ -1,4 +1,4 @@
-"""Unit tests for TTS 首 N 字语言检测 helper 以及在 TTS worker 中的接线。"""
+"""Unit tests for initial-N-character TTS language detection and its TTS-worker wiring."""
 
 from utils.language_utils import (
     TTS_LANG_DETECT_MIN_CHARS,
@@ -28,12 +28,12 @@ class TestDetectTtsLanguageHint:
         assert detect_tts_language_hint("カタカナ") == "ja"
 
     def test_mixed_with_single_kana_returns_ja(self):
-        # 很多日语夹杂汉字/标点，哪怕只有一个假名也应当判定为日语
+        # Japanese often mixes kanji/punctuation; even one kana character should classify it as Japanese.
         assert detect_tts_language_hint("今日はいい天気") == "ja"
 
     def test_half_width_katakana_returns_none(self):
-        # 半角片假名在 FF65-FF9F 范围，不在当前正则覆盖的 30A0-30FF，返回 None
-        # （该范围在中文/韩文场景中会误伤，故特意不纳入）
+        # Halfwidth katakana lies in FF65-FF9F, outside the regex's 30A0-30FF coverage; return None.
+        # Deliberately exclude that range to avoid false positives in Chinese/Korean contexts.
         assert detect_tts_language_hint("ｶﾀｶﾅ") is None
 
     def test_min_chars_constant_is_positive(self):
@@ -42,15 +42,15 @@ class TestDetectTtsLanguageHint:
 
 
 class TestQwenConfigMessageBuilder:
-    """通过模拟进入 qwen_realtime_tts_worker 的命名空间，验证 build_config_message 的分支。
+    """Enter qwen_realtime_tts_worker's namespace to verify build_config_message branches.
 
-    这里不跑 worker 本身（会连接真实 websocket），而是直接 import 模块内部常量并
-    复刻其 config-message 分支逻辑；如果将来 worker 代码漂移，此测试需同步更新。
+    Do not run the worker itself, which opens a real websocket. Import internal constants directly and
+    reproduce config-message branches; update this test if worker behavior later drifts.
     """
 
     def _build(self, voice_id: str, lang_hint):
-        # 复刻 main_logic.tts_client.qwen_realtime_tts_worker.async_worker.build_config_message
-        # 逻辑，校验分支行为。
+        # Reproduce main_logic.tts_client.qwen_realtime_tts_worker.async_worker.build_config_message
+        # logic to verify branch behavior.
         session = {
             "mode": "server_commit",
             "voice": voice_id,
@@ -73,7 +73,7 @@ class TestQwenConfigMessageBuilder:
 
 
 class TestStepTtsCreateBuilder:
-    """类似地，覆盖 step_realtime_tts_worker 的 _build_tts_create_data 分支逻辑。"""
+    """Likewise cover step_realtime_tts_worker._build_tts_create_data branch behavior."""
 
     def _build(self, *, voice_id: str, session_id: str, lang_hint, is_lanlan_app: bool):
         return _build_step_tts_create_data(session_id, voice_id, lang_hint, is_lanlan_app)
@@ -87,8 +87,8 @@ class TestStepTtsCreateBuilder:
         assert _get_tts_language_code() == "cmn-tw"
 
     def test_tts_language_code_maps_portuguese(self, monkeypatch):
-        # pt 是受支持 locale，需有自己的 language_code，否则海外 TTS/realtime 会
-        # 兜底成 cmn-CN，葡语用户拿到普通话合成。
+        # pt is supported and needs its own language_code; otherwise overseas TTS/realtime falls back
+        # to cmn-CN, giving Portuguese users Mandarin synthesis.
         monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "pt-BR")
         assert _get_tts_language_code() == "pt-BR"
 
@@ -103,7 +103,7 @@ class TestStepTtsCreateBuilder:
         assert "voice_label" not in data
 
     def test_paid_stepfun_ja_also_uses_voice_label(self):
-        # 付费 StepFun 与 lanlan.tech 协议对称，同样应该带 voice_label
+        # Paid StepFun uses the same protocol as lanlan.tech and should include voice_label too.
         data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=False)
         assert data["voice_label"] == {"language": "日语"}
 
@@ -111,7 +111,7 @@ class TestStepTtsCreateBuilder:
         monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "en-US")
         data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=True)
         assert data["language_code"] == "ja-JP"
-        # lanlan.app 现在透传真实 voice_id（不再客户端硬覆盖 Leda），由服务端映射
+        # lanlan.app now forwards actual voice_id for server mapping instead of forcing Leda on the client.
         assert data["voice_id"] == "v1"
         assert "voice_label" not in data
 

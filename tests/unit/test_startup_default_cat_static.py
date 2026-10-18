@@ -51,7 +51,7 @@ def test_startup_default_cat_request_survives_tutorial_and_runs_after_unlock():
     if not node:
         raise AssertionError("node is required to run startup default cat harness")
 
-    # 复现 PC 冷启动直进教程：默认猫咪信号先到，但教程临时 YUI 按钮已经存在。
+    # Reproduce a PC cold start directly into the tutorial: the default-cat signal arrives first, but the temporary tutorial YUI button already exists.
     script = textwrap.dedent(
         f"""
         const fs = require('node:fs');

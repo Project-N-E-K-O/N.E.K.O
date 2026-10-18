@@ -23,6 +23,7 @@ import time
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _strip_nonverbal_directives
 from main_logic.session_state import SessionEvent, session_reply_in_progress
+from services.chat_sync.source import mark_turn_origin
 from main_logic.startup_greeting_policy import (
     _STARTUP_GREETING_BURST_SECONDS,
     _STARTUP_GREETING_EARLIER_SAMPLES,
@@ -238,10 +239,10 @@ class GreetingMixin:
         # verification and cooldown commit. A failed verification releases the
         # gate without consuming the next valid interaction's cooldown slot.
         #
-        # 冷却命中是连击时的高频分支，它的 ack 走 WebSocket。早先把这次 await
-        # 留在闸门里，一旦下行有背压，后面每一次互动都要排队等它发完 —— 包括
-        # 冷却窗口结束后第一个本该被接受的互动。判定与去重登记留在锁内保持原子，
-        # ack 挪到锁外发。
+        # Cooldown hits are frequent during repeated clicks, and acknowledgments use WebSocket. Previously awaiting them
+        # inside the gate let downstream backpressure queue every subsequent interaction, including
+        # the first eligible interaction after cooldown. Keep decision/dedup registration atomic inside the lock,
+        # but send acknowledgments outside it.
         cooldown_hit = False
         gate_rejection: tuple[str, str] | None = None
         async with self._avatar_interaction_gate_lock:
@@ -285,8 +286,8 @@ class GreetingMixin:
                 self._remember_avatar_interaction_id(interaction_id)
                 self._last_avatar_interaction_at = now_ms
 
-        # 闸门里不留任何 await：拒绝的 ack 走 WebSocket，下行一有背压就会把后面
-        # 每一次互动堵在锁上。判定与去重登记在锁内保持原子，回执一律出锁再发。
+        # No awaits inside the gate: rejected acknowledgments use WebSocket, so downstream backpressure would block
+        # every later interaction on this lock. Keep decisions/dedup atomic inside, sending all receipts afterward.
         if gate_rejection is not None:
             rejected_id, reason = gate_rejection
             await self.send_avatar_interaction_ack(rejected_id, False, reason)
@@ -370,10 +371,10 @@ class GreetingMixin:
             if hasattr(self.session, 'update_max_response_length'):
                 self.session.update_max_response_length(self._get_text_guard_max_length())
 
-            # 后端打标：把 avatar interaction 元数据挂在 session manager 上，
-            # 等 prompt_ephemeral 触发 handle_response_complete 时随 turn end
-            # 原子地下发。不再走独立的 sync_message_queue 控制消息，避免
-            # meta 与 turn end 两条消息时序错乱导致本轮被误判成 proactive。
+            # Backend tagging: attach avatar-interaction metadata to the session manager,
+            # delivering atomically with turn end when prompt_ephemeral triggers handle_response_complete.
+            # Avoid separate sync_message_queue control messages, whose ordering relative to turn end
+            # could misclassify this turn as proactive.
             turn_meta = self._pending_turn_meta = {
                 "kind": "avatar_interaction",
                 "interaction_id": interaction_id,
@@ -383,8 +384,10 @@ class GreetingMixin:
             }
 
             current_turn_id = self.current_speech_id
-            # 本回复的快照（见 _shared._ReplyTurn）：完成回调用它自己的 meta
-            # 收尾，不去读届时可能已属于新一轮的共享字段。
+            # Avatar/tool text must stay excluded even if a reset precedes its turn end.
+            mark_turn_origin(self, current_turn_id, 'avatar')
+            # This reply's snapshot (see _shared._ReplyTurn): completion uses its own metadata,
+            # never shared fields that may belong to another turn by then.
             reply_turn = self._begin_reply_turn(
                 speech_id=current_turn_id,
                 meta=self._pending_turn_meta,
@@ -393,10 +396,10 @@ class GreetingMixin:
             async def response_done_callback() -> None:
                 await self.handle_response_complete(reply_turn=reply_turn)
 
-            # 主动搭话 race guard：prompt_ephemeral 运行期间若用户发起新输入
-            # 会换 current_speech_id + 清 TTS queue，本路径产生的 text delta
-            # 必须靠 _proactive_expected_sid 在 handle_text_data/handle_output_transcript
-            # 里判同，不一致就丢。和 trigger_agent_callbacks 走同一套保护。
+            # Proactive race guard: new user input during prompt_ephemeral changes
+            # current_speech_id and clears TTS queues; text deltas from this path
+            # must match _proactive_expected_sid in handle_text_data/handle_output_transcript,
+            # discarding mismatches with the same protection as trigger_agent_callbacks.
             _sid_token = _proactive_expected_sid.set(current_turn_id)
             try:
                 try:
@@ -415,8 +418,8 @@ class GreetingMixin:
                         interaction_id,
                         e,
                     )
-                    # prompt_ephemeral 抛错时 handle_response_complete 不会被触发，
-                    # 必须主动清掉 meta，避免泄漏到下一轮。
+                    # prompt_ephemeral exceptions do not trigger handle_response_complete,
+                    # so explicitly clear metadata to avoid leaking into the next turn.
                     self._pending_turn_meta = None
                     await self.send_avatar_interaction_ack(interaction_id, False, "error")
                     return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
@@ -424,9 +427,9 @@ class GreetingMixin:
                 _proactive_expected_sid.reset(_sid_token)
                 self._end_reply_turn(reply_turn)
 
-            # Prompt 跑完后若 current_speech_id 已换（用户中途接管），
-            # 本轮 avatar 响应算未送达：meta 不该挂到用户的新 turn end 上，
-            # ack 也要汇报 interrupted 而非 delivered。
+            # If current_speech_id changed while the prompt ran because the user took over,
+            # this avatar response is undelivered: never attach its metadata to the user's new turn end,
+            # and acknowledge interrupted rather than delivered.
             interrupted = self.current_speech_id != current_turn_id
             accepted = bool(delivered) and not interrupted
             if interrupted:
@@ -447,10 +450,10 @@ class GreetingMixin:
                 turn_id=current_turn_id if accepted else "",
             )
 
-        # 未 accepted 时 handle_response_complete 不一定被触发（或者触发在用户
-        # 的新 turn 上已被 interrupted 分支清空），留下的 meta 可能被下一轮
-        # turn end 误消费；在这里兜底清掉。accepted=True 时 meta 已被
-        # handle_response_complete 消费，这里是幂等 no-op。
+        # Without acceptance, handle_response_complete may not run, or interruption may already clear it on the user's
+        # new turn; residual metadata could then be consumed by the next
+        # turn end. Clear defensively here. With accepted=True, handle_response_complete
+        # already consumed metadata, making this an idempotent no-op.
         if not accepted:
             self._pending_turn_meta = None
 
@@ -491,20 +494,20 @@ class GreetingMixin:
         if self.is_goodbye_silent():
             logger.info("[%s] trigger_greeting: goodbye silent, skipping", self.lanlan_name)
             return
-        # ── 守卫：语音 session 正在启动 / 已活跃时，跳过 greeting ──
+        # ── Guard: skip greeting while a voice session starts or remains active ──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
-        # ── 守卫：takeover 期间跳过 greeting ──
-        # 与 trigger_voice_proactive_nudge / trigger_agent_callbacks 对偶。
-        # takeover 时 ordinary chat 输出在 handler 层会被静音，跑 greeting
-        # 只会白消耗节日 budget + 写一份永远到不了用户的 LLM 回复。
+        # ── Guard: skip greeting during takeover ──
+        # Symmetric with trigger_voice_proactive_nudge / trigger_agent_callbacks.
+        # Ordinary-chat output is muted by handlers during takeover, so greetings would only
+        # waste holiday budgets and save LLM replies that can never reach the user.
         if self._takeover_active:
             logger.info("[%s] trigger_greeting: session takeover active, skipping", self.lanlan_name)
             return
 
-        # 复用 internal_http_client 单例：session 启动路径，避开 AsyncClient 构造开销
-        # （Windows idle 157ms，事件循环压力下可达 1.1s，详见 utils/internal_http_client.py）
+        # Reuse internal_http_client on session startup, avoiding AsyncClient construction overhead
+        # of 157ms on idle Windows or up to 1.1s under event-loop load; see utils/internal_http_client.py
         try:
             from utils.internal_http_client import get_internal_http_client
             _mem_client = get_internal_http_client()
@@ -520,14 +523,14 @@ class GreetingMixin:
             logger.warning("[%s] trigger_greeting: failed to query gap: %s", self.lanlan_name, e)
             return
 
-        if gap_seconds < _STARTUP_GREETING_MIN_GAP_SECONDS:  # < 15分钟，不触发
+        if gap_seconds < _STARTUP_GREETING_MIN_GAP_SECONDS:  # Below 15 minutes: do not trigger
             logger.debug("[%s] trigger_greeting: gap %.0fs < 15min, skipping", self.lanlan_name, gap_seconds)
             return
 
-        # 普通 anti-repeat 的前景 TTL 是 10 分钟，而 greeting 的硬门槛是 15 分钟，
-        # 所以它天然无法承担同日开屏轮换。这里预热专用的已提交历史；只有真正送达
-        # 的文本才会在下方 callback 中写入。一次读满 3 天召回窗，随后就地切成
-        # 1 天强约束层 + 1~3 天弱约束层，避免为两级窗口读两次盘。
+        # Normal anti-repeat foreground TTL is 10 minutes, shorter than greeting's 15-minute threshold,
+        # so it cannot rotate same-day startup greetings. Preload dedicated committed history here; only delivered
+        # text is recorded by callbacks below. Read the entire 3-day recall window once, splitting in memory into
+        # a strong 1-day layer and weaker 1–3-day layer, avoiding two disk reads.
         greeting_history = get_startup_greeting_history()
         anti_repeat_corpus = get_anti_repeat_corpus()
         observed_at = time.time()
@@ -553,9 +556,9 @@ class GreetingMixin:
             observed_at=observed_at,
         )
 
-        # 同一个逻辑启动 burst 最多说一次。15 分钟内原 gap gate 已覆盖，这里保守
-        # 补齐 15~30 分钟的反复启动/多窗口重连。投递前的原子 reservation 会再
-        # 校验一次已提交历史，避免两个错峰启动任务都拿到同一份空快照。
+        # Speak at most once per logical startup burst. The gap gate already covers 15 minutes; conservatively
+        # cover repeated startup/multiwindow reconnects over 15–30 minutes here. Atomic reservation before delivery
+        # rechecks committed history, preventing staggered startup tasks sharing the same empty snapshot.
         burst_age = _startup_greeting_burst_age(
             recall_greetings,
             observed_at=observed_at,
@@ -571,7 +574,7 @@ class GreetingMixin:
             )
             return
 
-        # ── await 归来后再检查一次：memory 查询期间用户可能已点了麦克风 ──
+        # ── Recheck after awaiting: users may activate the microphone during memory lookup ──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_greeting: voice session appeared during gap query, skipping", self.lanlan_name)
             return
@@ -591,14 +594,14 @@ class GreetingMixin:
         if not template:
             return
 
-        # 先确认投递通道可用，再消费节日预算（避免 session 拉起失败白扣次数）
+        # Confirm delivery availability before consuming holiday budgets, avoiding wasted counts on failed startup
         # An existing text session is reused even while a reply is in progress
         # on it (live, guard-paused or awaiting its completion): the claim
         # below (try_start_proactive) refuses then, while start_session would
         # end that session and cut its reply.
         if not isinstance(self.session, OmniOfflineClient):
-            # 没有 session 或不是 text session → 主动拉起
-            # ── 拉起前再次检查：避免与即将到来的语音 session 竞争 ──
+            # No session or nontext session → start one proactively
+            # ── Recheck before startup to avoid competing with imminent voice sessions ──
             if self._is_voice_session_active_or_starting():
                 logger.info("[%s] trigger_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
                 return
@@ -670,7 +673,7 @@ class GreetingMixin:
         surfaced_topic_key = startup_followup[0] if startup_followup else None
         startup_memory_cue = startup_followup[1] if startup_followup else ""
 
-        # 投递通道已就绪，构建 instruction（节日预算仅 preview，不消费）
+        # Delivery ready: build instructions, previewing holiday budgets without consumption
         elapsed = _format_elapsed(_lang, gap_seconds)
         time_hint = get_time_of_day_hint(_prompt_lang).format(master=self.master_name)
 
@@ -820,13 +823,13 @@ class GreetingMixin:
         )
         logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", greeting_name, gap_seconds, elapsed)
 
-        # ── 投递前最终检查：构建 instruction 期间（holiday hint 等 await）语音可能已接管 ──
+        # ── Final pre-delivery check: voice may take over during instruction construction and holiday-hint awaits ──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_greeting: voice session took over before delivery, skipping", self.lanlan_name)
             return
 
-        # 原子 SM claim：与 trigger_agent_callbacks / /api/proactive_chat 互斥
-        # 并拦截回复进行中（session_reply_in_progress）的场景
+        # Atomic SM claim, mutually exclusive with trigger_agent_callbacks / /api/proactive_chat
+        # and rejecting replies already in progress (session_reply_in_progress)
         if not await self.state.try_start_proactive(session=self.session):
             logger.info(
                 "[%s] trigger_greeting: SM denied claim (phase=%s), skipping",
@@ -836,14 +839,14 @@ class GreetingMixin:
 
         try:
             async with self._proactive_write_lock:
-                # 持锁后仍需检查：_proactive_write_lock 等待期间语音可能已启动
+                # Recheck after locking: voice may start while awaiting _proactive_write_lock
                 if self._is_voice_session_active_or_starting():
                     logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
                     return
                 async with self.lock:
-                    # sticky preempt 复查：USER_INPUT 路径在本锁段内翻 flag 和写
-                    # user sid 是原子的；若 preempt==True 说明用户已抢到本轮 turn，
-                    # 不能再覆盖 current_speech_id 成 proactive sid。
+                    # Sticky-preemption recheck: USER_INPUT atomically changes the flag and user sid within
+                    # this lock. preempt=True means the user already claimed the turn,
+                    # so current_speech_id must not be overwritten with a proactive sid.
                     if self.state.is_proactive_preempted():
                         logger.info("[%s] trigger_greeting: preempted before sid claim, skipping", self.lanlan_name)
                         return
@@ -867,17 +870,17 @@ class GreetingMixin:
                     greeting_published_text_chunks
                 )
                 try:
-                    # 防御 stale session: 4429 start_session 之后到这里又过了
-                    # 多次 await（holiday hint / try_start_proactive /
+                    # Guard stale sessions: after start_session at 4429, several awaits occurred
+                    # (holiday hint / try_start_proactive /
                     # _proactive_write_lock / self.lock / state.fire ×2），
-                    # 期间 cleanup / disconnected_by_server / 切音色重建路径
-                    # 都可能把 self.session 置 None 或换为 OmniRealtimeClient。
-                    # 直接 self.session.prompt_ephemeral 会触发 AttributeError
-                    # 把 trigger_greeting task 整个挂掉（参考切音色后并发
-                    # session 重建期间 trigger_greeting 撞 self.session=None
-                    # 的崩溃 trace）。先快照本地引用 + 类型校验，stale 时
-                    # 静默 skip，外层 finally 会 fire PROACTIVE_DONE 让 SM
-                    # 不卡在 PHASE2 / CLAIM。
+                    # while cleanup / disconnected_by_server / voice-switch reconstruction
+                    # may set self.session=None or replace it with OmniRealtimeClient.
+                    # Direct self.session.prompt_ephemeral can raise AttributeError,
+                    # killing the whole trigger_greeting task (see the crash trace during concurrent
+                    # session reconstruction after voice switching, where trigger_greeting encountered self.session=None).
+                    # Capture a local reference and type-check first; stale sessions
+                    # silently skip, while outer finally emits PROACTIVE_DONE so the SM
+                    # cannot remain stuck in PHASE2 / CLAIM.
                     session_ref = self.session
                     if not isinstance(session_ref, OmniOfflineClient):
                         logger.info(
@@ -942,7 +945,7 @@ class GreetingMixin:
         if self.is_goodbye_silent():
             logger.info("[%s] trigger_cat_greeting: goodbye silent, skipping", self.lanlan_name)
             return
-        # ── 守卫：语音 session 正在启动 / 已活跃时，跳过（与 trigger_greeting 对偶）──
+        # ── Guard: skip while voice sessions start/are active, symmetric with trigger_greeting ──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_cat_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
@@ -950,7 +953,7 @@ class GreetingMixin:
             logger.info("[%s] trigger_cat_greeting: session takeover active, skipping", self.lanlan_name)
             return
 
-        # tier → 行为：cat1=清醒 / cat2=打盹 / cat3=熟睡。
+        # Tier → behavior: cat1=awake / cat2=dozing / cat3=asleep.
         behavior = {"cat1": "awake", "cat2": "nap", "cat3": "sleep"}.get(str(tier or "").strip().lower(), "awake")
 
         from config.prompts.prompts_proactive import (
@@ -960,8 +963,8 @@ class GreetingMixin:
             get_cat_greeting_reason_hint,
             normalize_proactive_prompt_locale,
         )
-        # 猫咪问候的四张表都在 prompts_proactive（有 zh-TW 行）；短码会把 zh-TW
-        # 折成 zh，那些行永远取不到（issue #2500）。
+        # All four cat-greeting tables are in prompts_proactive with zh-TW entries; short codes collapse zh-TW
+        # to zh, making those entries unreachable (issue #2500).
         _lang = normalize_proactive_prompt_locale(
             self.user_language or render_language or get_global_language_full()
         )
@@ -986,7 +989,7 @@ class GreetingMixin:
             logger.debug("[%s] trigger_cat_greeting: duration %.0fs below threshold, skipping", self.lanlan_name, duration_seconds)
             return
 
-        # 投递通道：已有 text session 则直接用，否则主动拉起（与 trigger_greeting 对偶）。
+        # Delivery: reuse existing text sessions, otherwise start one, symmetric with trigger_greeting.
         # Reused even while a reply is in progress on it, as in trigger_greeting:
         # the claim below refuses then; start_session would cut that reply.
         if not isinstance(self.session, OmniOfflineClient):
@@ -1012,7 +1015,7 @@ class GreetingMixin:
             logger.warning("[%s] trigger_cat_greeting: session is not text mode after start, aborting", self.lanlan_name)
             return
 
-        # reason_hint 先 format 好 {master} 再注入猫形态 return 模板。
+        # Format reason_hint's {master} before inserting it into the cat-return template.
         reason_hint = get_cat_greeting_reason_hint(was_auto, _lang).format(master=self.master_name)
         elapsed = _format_elapsed(_lang, duration_seconds)
         # Cat return is a closed experience prompt. Do not import the general
@@ -1047,12 +1050,12 @@ class GreetingMixin:
             episode_marker,
         )
 
-        # ── 投递前最终检查：构建 instruction 期间语音可能已接管 ──
+        # ── Final pre-delivery check: voice may take over during instruction construction ──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_cat_greeting: voice session took over before delivery, skipping", self.lanlan_name)
             return
 
-        # 原子 SM claim：与 trigger_greeting / trigger_agent_callbacks / proactive_chat 互斥
+        # Atomic SM claim, mutually exclusive with trigger_greeting / trigger_agent_callbacks / proactive_chat
         if not await self.state.try_start_proactive(session=self.session):
             logger.info(
                 "[%s] trigger_cat_greeting: SM denied claim (phase=%s), skipping",
@@ -1077,7 +1080,7 @@ class GreetingMixin:
                 await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
                 _sid_token = _proactive_expected_sid.set(proactive_sid)
                 try:
-                    # stale session 防御：与 trigger_greeting 同款快照 + 类型校验。
+                    # Stale-session defense: same captured reference/type check as trigger_greeting.
                     session_ref = self.session
                     if not isinstance(session_ref, OmniOfflineClient):
                         logger.info(
@@ -1117,8 +1120,8 @@ class GreetingMixin:
             logger.info("[%s] trigger_new_character_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
 
-        # 同 trigger_cat_greeting：破冰问候模板也在 prompts_proactive，要 prompt
-        # key 才留得住 zh-TW。空 user_language 才回落全局语言（issue #2500）。
+        # Like trigger_cat_greeting, icebreaker greeting templates live in prompts_proactive and require a prompt
+        # key preserving zh-TW. Fall back to global language only for empty user_language (issue #2500).
         _lang = normalize_proactive_prompt_locale(
             getattr(self, 'user_language', '')
             or render_language

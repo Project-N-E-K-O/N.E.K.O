@@ -490,3 +490,221 @@ test('committed real returns preserve one summary for every supported avatar', (
   assert.equal(png.win.nekoCatMind.getState().active, false);
   assert.ok(png.win.nekoCatMind.getReturnSummaryDraft());
 });
+
+test('short action burst guard prevents an immediate autonomous repeat', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceNeed(15);
+  assert.equal(runtime.requests.length, 1);
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'burst-guard-run');
+  reportResult(runtime, request, 'burst-guard-run', 'done', 'runner_done');
+  const startedAt = runtime.win.nekoCatMind.getDebugSnapshot().clock.lastConfirmedActionStartedAt;
+  assert.ok(startedAt > 0, 'debug snapshot exposes the time the guard compares against');
+
+  runtime.advanceTime(30000);
+  runtime.observe('cat_elapsed', { elapsedMs: 30000 }, 'cat1', 'cat-mind-clock');
+  assert.equal(runtime.requests.length, 1, 'autonomous tick inside the short guard must not start another action');
+});
+
+test('entering idle alone does not arm the short action burst guard', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceTime(10000);
+  runtime.observe('cat_elapsed', { elapsedMs: 10000 }, 'cat1', 'cat-mind-clock');
+  const decision = runtime.win.nekoCatMind.getDebugSnapshot().lastDecision;
+  assert.ok(decision, 'expected an autonomous evaluation');
+  assert.notEqual(decision.reason, 'action_start_burst_guard');
+});
+
+test('repeated hovers inside the short window wake only one decision but are all observed', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const lastEvaluatedAt = () => runtime.win.nekoCatMind.getDebugSnapshot().scheduler.lastEvaluatedAt;
+  runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
+  const firstEvaluatedAt = lastEvaluatedAt();
+  assert.equal(firstEvaluatedAt, runtime.now());
+  runtime.observe('cat_hover_reaction', { reason: 'subaction-interactive' });
+  assert.equal(lastEvaluatedAt(), firstEvaluatedAt, 'a hover inside the window must not wake another decision');
+  const hovers = runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'cat_hover_reaction');
+  assert.equal(hovers.length, 2, 'need, intent and episode bookkeeping still see every hover');
+  assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().clock.lastUserInteractionAt, runtime.now());
+
+  runtime.advanceTime(1500);
+  runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
+  assert.equal(lastEvaluatedAt(), runtime.now(), 'a hover after the window wakes a decision again');
+});
+
+test('a deferred user trigger is not held back by the short action burst guard', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceNeed(15);
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'deferred-hover-run');
+  reportResult(runtime, request, 'deferred-hover-run', 'done', 'runner_done');
+
+  runtime.gates.dragging = true;
+  runtime.advanceTime(10000);
+  runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
+  assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'dragging');
+  runtime.gates.dragging = false;
+  runtime.advanceTime(20000);
+  runtime.observe('cat_elapsed', { elapsedMs: 30000 }, 'cat1', 'cat-mind-clock');
+  assert.notEqual(runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'action_start_burst_guard');
+});
+
+test('the short action burst guard does not hide a hard gate reason', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceNeed(15);
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'hard-gate-run');
+  reportResult(runtime, request, 'hard-gate-run', 'done', 'runner_done');
+
+  runtime.gates.yarnDragActive = true;
+  runtime.advanceTime(30000);
+  runtime.observe('cat_elapsed', { elapsedMs: 30000 }, 'cat1', 'cat-mind-clock');
+  assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'chat_yarn_dragging');
+});
+
+test('identical compact surface facts do not create repeated opportunities', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const detail = {
+    source: 'compact-surface',
+    available: true,
+    visible: true,
+    screenRect: { left: 10, top: 20, width: 80, height: 80 },
+    timestamp: runtime.now() + 1,
+  };
+  runtime.win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', { detail }));
+  runtime.win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {
+    detail: { ...detail, timestamp: detail.timestamp + 1 },
+  }));
+  runtime.flush();
+  const compactFacts = runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'chat_compact_surface_visible');
+  assert.equal(compactFacts.length, 1);
+});
+
+test('compact surface dedupe ignores the per-notification lifecycle sequence', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const detail = {
+    source: 'compact-surface',
+    available: true,
+    visible: true,
+    screenRect: { left: 10, top: 20, width: 80, height: 80 },
+  };
+  for (let sequence = 1; sequence <= 3; sequence += 1) {
+    runtime.advanceTime(1);
+    runtime.win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {
+      detail: { ...detail, timestamp: runtime.now(), lifecycleSequence: sequence },
+    }));
+    runtime.flush();
+  }
+  const compactFacts = runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'chat_compact_surface_visible');
+  assert.equal(compactFacts.length, 1);
+});
+
+test('position presentation busy is a shared Cat Mind hard gate', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.gates.cat1PositionPresentationBusy = true;
+  runtime.enter();
+  runtime.advanceNeed(15);
+  assert.equal(runtime.requests.length, 0);
+  assert.equal(
+    runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.reason,
+    'cat1_position_presentation_busy',
+  );
+});
+
+test('compact visibility can recover at the same rect after a geometry-free terminal', () => {
+  for (const terminal of [{ visible: false }, { available: false }]) {
+    const runtime = createRuntime('cat1_social_ping');
+    runtime.enter();
+    const visible = {
+      source: 'compact-surface', available: true, visible: true,
+      screenRect: { left: 10, top: 20, width: 80, height: 80 },
+    };
+    const send = (detail) => {
+      runtime.advanceTime(1);
+      runtime.win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {
+        detail: { timestamp: runtime.now(), ...detail },
+      }));
+      runtime.flush();
+    };
+    const count = () => runtime.win.nekoCatMind.getRecentEvents()
+      .filter((event) => event.type === 'chat_compact_surface_visible').length;
+    send(visible);
+    send(terminal);
+    assert.equal(count(), 1, 'terminal without geometry must not invent a visible observation');
+    send(visible);
+    assert.equal(count(), 2, 'reopening at the same position must be observable');
+    send({ ...terminal, timestamp: runtime.now() - 2 });
+    send(visible);
+    assert.equal(count(), 2, 'a stale terminal must not clear the newer visible signature');
+  }
+});
+
+test('compact surface dedupe also reads flat web-host layout geometry', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const send = (rect) => {
+    runtime.advanceTime(1);
+    runtime.win.dispatchEvent(new CustomEventLike('neko:compact-surface-layout-change', {
+      detail: { ...rect, dragging: false },
+    }));
+    runtime.flush();
+  };
+  const count = () => runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'chat_compact_surface_visible').length;
+  send({ left: 10, top: 20, width: 80, height: 80 });
+  send({ left: 10, top: 20, width: 80, height: 80 });
+  assert.equal(count(), 1, 'an unchanged flat rect is a duplicate');
+  send({ left: 200, top: 20, width: 80, height: 80 });
+  assert.equal(count(), 2, 'a moved flat rect is a new observation');
+});
+
+test('clearing the web compact surface lets a same-place reopen be observed again', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const send = (detail) => {
+    runtime.advanceTime(1);
+    // CustomEventLike turns a null detail into {}; the browser keeps it null.
+    runtime.win.dispatchEvent({ type: 'neko:compact-surface-layout-change', detail });
+    runtime.flush();
+  };
+  const count = () => runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'chat_compact_surface_visible').length;
+  const rect = { left: 10, top: 20, width: 80, height: 80, dragging: false };
+  send(rect);
+  assert.equal(count(), 1);
+  send(null);
+  send(rect);
+  assert.equal(count(), 2, 'reopening at the same rect after a null clear must be observed');
+});
+
+test('releasing a compact drag or resize on the last rect is still observed', () => {
+  for (const flag of ['dragging', 'resizeActive']) {
+    const runtime = createRuntime('cat1_social_ping');
+    runtime.enter();
+    const screenRect = { left: 10, top: 20, width: 80, height: 80 };
+    const send = (active) => {
+      runtime.advanceTime(1);
+      runtime.win.dispatchEvent(new CustomEventLike('neko:compact-surface-layout-change', {
+        detail: { screenRect, [flag]: active },
+      }));
+      runtime.flush();
+    };
+    const count = () => runtime.win.nekoCatMind.getRecentEvents()
+      .filter((event) => event.type === 'chat_compact_surface_visible').length;
+    send(true);
+    send(true);
+    assert.equal(count(), 1, `${flag}: repeated frames at the same rect are duplicates`);
+    send(false);
+    assert.equal(count(), 2, `${flag}: the release must wake a new observation`);
+  }
+});

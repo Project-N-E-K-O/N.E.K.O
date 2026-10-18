@@ -486,6 +486,10 @@ function createMovementHarness({ transferredAnchor = 'left' } = {}) {
         _isNekoIdleCompactSurfaceDragging() {
             return false;
         },
+        // Resources are present so the movement entries reach the anchor checks under test.
+        _isNekoCatActionResourceAvailable() {
+            return true;
+        },
         _reclampNekoIdleCat1EdgePeekToViewport() {
             reclampCount += 1;
         }
@@ -496,6 +500,7 @@ function createMovementHarness({ transferredAnchor = 'left' } = {}) {
         readFunction(dragSourcePath, '_isNekoIdleCat1EdgePeekActive'),
         readFunction(dragSourcePath, '_isNekoIdleCat1TransferredPeekAnchorActive'),
         readFunction(dragSourcePath, '_isNekoIdleCat1MovementAnchored'),
+        readFunction(journeySourcePath, '_pauseNekoIdleCat1JourneyForGravity'),
         readFunction(journeySourcePath, '_startNekoIdleCat1Walk'),
         readFunction(journeySourcePath, '_scheduleNekoIdleCat1WalkStart'),
         readFunction(journeySourcePath, '_prepareNekoIdleCat1PairMoveStart'),

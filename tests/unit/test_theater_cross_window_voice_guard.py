@@ -215,8 +215,8 @@ def test_ordinary_voice_blocked_by_theater_in_other_window(_name, scenario):
 
 
 def test_floating_mic_click_uses_cross_window_guard_and_explains_it():
-    # 悬浮麦克风的点击入口挂在整页 DOM 初始化里，无法单独装入 vm；这里固定它与
-    # startMicCapture 共用同一个跨窗口判定，并在拦截时给出可见提示。
+    # The floating microphone's click handler is bound during page-wide DOM initialization and cannot be loaded into a vm alone; verify it shares
+    # the same cross-window check with startMicCapture and displays a visible notice when blocked.
     source = (ROOT / "static/app/app-buttons.js").read_text(encoding="utf-8")
     start = source.index("micButton.addEventListener('click', async function () {")
     guard = source[start:source.index("micButton.classList.add('active');", start)]

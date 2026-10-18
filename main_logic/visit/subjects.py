@@ -59,7 +59,7 @@ import json
 import math
 import threading
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +81,7 @@ class RosterCorruptError(RuntimeError):
     """
 
 
-# ── 纯函数派生 ──────────────────────────────────────────────────────────
+# ── Pure derivation ──────────────────────────────────────────────────────────
 
 
 def _sha256_hex(text: str) -> str:
@@ -200,9 +200,9 @@ def resolve_visit_recall_subjects(state: Any) -> list[dict[str, str]]:
     try:
         if isinstance(char_tag, str) and char_tag:
             derived = derive_peer_char_id(peer_uid, char_tag)
-            # 两者都给时必须一致：坏掉的头行带着别的 id，会把召回 / digest 写进另一只猫的
-            # 主体，名册按 tag 推出的条目里又找不到它，清除时成了孤儿
-            # 空串等于没给；数字 / 布尔之类的畸形值不能被静默跳过，与不一致一样按坏输入返回 []
+            # Both supplied values must agree: a broken header containing another id writes recall/digest into another cat's
+            # subject, missing from tag-derived roster entries and orphaned on clearing.
+            # Empty string means absent; malformed numeric / boolean values must not be silently skipped, returning [] as inconsistent input does.
             if peer_char_id is not None and peer_char_id != "" and peer_char_id != derived:
                 return []
             peer_char_id = derived
@@ -219,7 +219,7 @@ def resolve_visit_recall_subjects(state: Any) -> list[dict[str, str]]:
         return []
 
 
-# ── 名册 visit_peers.json ───────────────────────────────────────────────
+# ── visit_peers.json roster ───────────────────────────────────────────────
 
 class PathLock:
     """A weakly referenceable wrapper around one ``threading.Lock``."""
@@ -246,8 +246,8 @@ class PathLock:
         self._lock.release()
 
 
-# 弱引用登记：持有或等待这把锁的调用方都引用着同一个实例，所以仍互斥；
-# 没人引用后条目自动消失，进程不会为每一场串门永久留下两把锁
+# Weak-reference registration: holders/waiters reference one lock instance, preserving mutual exclusion;
+# unreferenced entries disappear automatically, avoiding two permanent locks per visit.
 _PATH_LOCKS: "weakref.WeakValueDictionary[str, PathLock]" = weakref.WeakValueDictionary()
 _PATH_LOCKS_GUARD = threading.Lock()
 
@@ -303,36 +303,36 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
     pairs = entry.get("pairs", [])
     if not isinstance(pairs, list) or not all(isinstance(p, str) and p for p in pairs):
         raise RosterCorruptError(f"{where}: pairs is not a list of ids")
-    # 别的 peer 的 pair 混进来：展开出的清除计划会被撤销日志的身份绑定拒掉，这个人就清不掉
+    # Foreign peer pairs make expanded clear plans fail revocation-log identity binding, preventing this person's clearing.
     if pair is not None and (any(p != pair for p in pairs) or len(set(pairs)) != len(pairs)):
         raise RosterCorruptError(f"{where}: pairs do not belong to this account and peer")
     chars = entry.get("chars", {})
     if not isinstance(chars, dict) or not all(
         isinstance(c, str) and c and isinstance(info, dict) for c, info in chars.items()
     ):
-        # 值也要是 object：改名合并遇到同一 id 时会静默丢掉坏的一边
+        # Values must also be objects: rename merges on equal ids would silently discard a corrupted side.
         raise RosterCorruptError(f"{where}: chars is not an object of id -> object")
-    # 键必须由这个 peer 与记录里的 char_tag 推出：键被改坏时，按它展开的清除计划会抹掉
-    # 无关的主体、删掉名册条目并关日志，真正的 group_participant 记忆从此再也找不到
+    # Derive keys from this peer and recorded char_tag: corrupted keys produce clear plans erasing unrelated
+    # subjects, removing roster entries and closing logs, leaving true group_participant memories unreachable forever.
     if peer is not None and any(
         not isinstance(info.get("char_tag"), str) or not info["char_tag"]
         or cid != derive_peer_char_id(peer, info["char_tag"])
         for cid, info in chars.items()
     ):
         raise RosterCorruptError(f"{where}: chars ids do not derive from this peer and char_tag")
-    # 改名合并按 last_seen / ended_at 取较新的一边：字符串时间戳会按字典序比较，
-    # 把较新的记录覆盖掉
+    # Rename merges choose newer last_seen / ended_at; string timestamps compare lexicographically,
+    # overwriting newer records.
     if any("last_seen" in info and not is_finite_number(info["last_seen"])
            for info in chars.values()):
         raise RosterCorruptError(f"{where}: chars last_seen is not a number")
-    # upsert 总是同时写 pair 与对方猫娘：只剩其一说明条目坏了一半，按它展开的清除计划
-    # 会漏掉 group_chat / group_participant 主体（或撤销日志校验不过）
+    # Upsert always writes both pair and peer catgirl; only one remaining indicates half-corruption, producing plans
+    # missing group_chat / group_participant subjects (or failing revocation-log validation).
     if bool(pairs) != bool(chars):
         raise RosterCorruptError(f"{where}: pairs and chars must both be present")
     summary = entry.get("last_summary")
     if summary is not None and not isinstance(summary, dict):
         raise RosterCorruptError(f"{where}: last_summary is not an object")
-    # 缺 ended_at 也算坏：写者总会写上它，没有它就无从判断新旧，迟到的回调会无序覆盖
+    # Missing ended_at is corruption too: writers always add it; without freshness comparisons, delayed callbacks overwrite out of order.
     if summary is not None and not is_finite_number(summary.get("ended_at")):
         raise RosterCorruptError(f"{where}: last_summary ended_at is missing or not a number")
     return entry
@@ -345,8 +345,8 @@ def is_finite_number(value: Any) -> bool:
     try:
         return math.isfinite(value)
     except OverflowError:
-        # 超出浮点范围的超大整数：isfinite 会抛错，按「不是数」处理（名册判为损坏），
-        # 不能让清除 / 重放带着未捕获的异常中断
+        # Huge integers outside float range make isfinite raise; treat as nonnumeric (corrupt roster),
+        # not uncaught exceptions interrupting clearing/replay.
         return False
 
 
@@ -389,7 +389,7 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
         ):
             chars[char_id] = copy.deepcopy(info)
     merged["chars"] = chars
-    # 场次计数随条目合并：同一场（last_visit_id 相同）在两边各计过一次，只算一次
+    # Merge visit counts with entries: the same visit (same last_visit_id) counted on both sides counts once.
     src_visits, dst_visits = _visit_count(source), _visit_count(merged)
     if src_visits or dst_visits:
         same_last = (
@@ -397,7 +397,7 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
             and source.get("last_visit_id") == merged.get("last_visit_id")
         )
         merged["visits"] = src_visits + dst_visits - (1 if same_last else 0)
-        # last_visit_id 取较新的一边：保留旧的那个会让较新那场再次 upsert 时被当成新场次
+        # Take newer last_visit_id; retaining the old one miscounts a repeated upsert of the newer visit as new.
         if isinstance(source.get("last_visit_id"), str) and (
             not isinstance(merged.get("last_visit_id"), str)
             or _latest_seen(source) > _latest_seen(target)
@@ -413,18 +413,22 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
     return merged
 
 
-def _read_top_level_sync(path: Path) -> dict:
-    with path_lock(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return {}
-        except (OSError, ValueError, RecursionError) as exc:
-            raise RosterCorruptError(f"cannot read {path.name}: {exc!r}") from exc
+def _read_top_level_sync_unlocked(path: Path) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError) as exc:
+        raise RosterCorruptError(f"cannot read {path.name}: {exc!r}") from exc
     if not isinstance(data, dict):
         raise RosterCorruptError(f"{path.name} is not a JSON object")
     return data
+
+
+def _read_top_level_sync(path: Path) -> dict:
+    with path_lock(path):
+        return _read_top_level_sync_unlocked(path)
 
 
 async def read_roster_marker(config_dir: str | Path, key: str) -> Any:
@@ -434,9 +438,59 @@ async def read_roster_marker(config_dir: str | Path, key: str) -> Any:
     ``pending_retire``) that live outside every account partition. Reads
     strictly: an unreadable roster raises :class:`RosterCorruptError`.
     """
-    path = Path(config_dir) / VISIT_PEERS_FILENAME
-    data = await asyncio.to_thread(_read_top_level_sync, path)
+    return await asyncio.to_thread(read_roster_marker_sync, config_dir, key)
+
+
+def read_roster_marker_sync(config_dir: str | Path, key: str) -> Any:
+    """Blocking :func:`read_roster_marker`, for callers already off the event loop (a startup import thread)."""
+    data = _read_top_level_sync(Path(config_dir) / VISIT_PEERS_FILENAME)
     return copy.deepcopy(data.get(key))
+
+
+def read_roster_markers_sync(config_dir: str | Path, *keys: str) -> tuple[Any, ...]:
+    """Deep copies of several top-level markers from one locked read (``None`` for an absent key)."""
+    data = _read_top_level_sync(Path(config_dir) / VISIT_PEERS_FILENAME)
+    return tuple(copy.deepcopy(data.get(key)) for key in keys)
+
+
+async def read_roster_markers(config_dir: str | Path, *keys: str) -> tuple[Any, ...]:
+    """:func:`read_roster_marker` for several keys at once, all from the same state of the file.
+
+    Separate reads could pair a slot read before a recovery promoted the
+    next queued marker with a queue read after it, a state that never
+    existed. An unreadable roster raises :class:`RosterCorruptError`.
+    """
+    return await asyncio.to_thread(read_roster_markers_sync, config_dir, *keys)
+
+
+def rename_marker_names(marker: Any) -> tuple[str, ...] | None:
+    """Every name a pending rename marker holds: ``old``, ``new`` and the ``chained`` ones.
+
+    ``chained``: names a cloudsave import moved the same character on to
+    while the marker was pending. ``None`` for a malformed marker.
+    """
+    if not isinstance(marker, dict):
+        return None
+    old, new = marker.get("old"), marker.get("new")
+    if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
+        return None
+    chained = marker.get("chained")
+    extra = [name for name in chained if isinstance(name, str) and name] if isinstance(chained, list) else []
+    return tuple(dict.fromkeys([old, new, *extra]))
+
+
+def pending_rename_names(slot: Any, queued: Any) -> frozenset[str] | None:
+    """The names held by the ``pending_rename`` slot and every queued rename; ``None`` if one is malformed."""
+    markers = ([] if slot is None else [slot]) + (queued if isinstance(queued, list) else [])
+    if queued is not None and not isinstance(queued, list):
+        return None
+    names: set[str] = set()
+    for marker in markers:
+        held = rename_marker_names(marker)
+        if held is None:
+            return None
+        names.update(held)
+    return frozenset(names)
 
 
 def _clear_marker_sync(path: Path, key: str, expected: Any) -> bool:
@@ -464,6 +518,193 @@ async def clear_roster_marker(config_dir: str | Path, key: str, expected: Any) -
     return await asyncio.to_thread(_clear_marker_sync, path, key, expected)
 
 
+def _set_marker_sync(path: Path, key: str, value: Any) -> tuple[bool, Any]:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        # Null-valued markers contain no reconcilable information; treat as empty slots or they occupy slots forever.
+        if data.get(key) is not None:
+            return False, copy.deepcopy(data[key])
+        data[key] = copy.deepcopy(value)
+        atomic_write_json(path, data)
+        return True, None
+
+
+def set_roster_marker_sync(config_dir: str | Path, key: str, value: Any) -> tuple[bool, Any]:
+    """Blocking :func:`set_roster_marker`, for callers already off the event loop (a startup import thread)."""
+    return _set_marker_sync(Path(config_dir) / VISIT_PEERS_FILENAME, key, value)
+
+
+async def set_roster_marker(config_dir: str | Path, key: str, value: Any) -> tuple[bool, Any]:
+    """Atomically store the top-level ``key`` unless it already holds a non-null value.
+
+    Returns ``(True, None)`` once ``value`` is written, else ``(False,
+    existing)`` with a copy of the value already there (left untouched: a
+    pending transaction must be reconciled before another one can take its
+    marker). Account partitions and other keys are preserved; an unreadable
+    roster raises :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_set_marker_sync, path, key, value)
+
+
+def _edit_marker_list_sync(path: Path, key: str, item: Any, add: bool) -> bool:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        if not data and not add:
+            return False
+        items = data.get(key, [])
+        if not isinstance(items, list):
+            raise RosterCorruptError(f"{path.name}: {key!r} is not a list")
+        if add:
+            if item in items:
+                return False
+            data[key] = [*items, copy.deepcopy(item)]
+        else:
+            if item not in items:
+                return False
+            kept = [entry for entry in items if entry != item]
+            if kept:
+                data[key] = kept
+            else:
+                del data[key]
+        atomic_write_json(path, data)
+        return True
+
+
+async def add_roster_marker_item(config_dir: str | Path, key: str, item: Any) -> bool:
+    """Append ``item`` to the top-level list ``key`` (created when absent); False if already there.
+
+    For ``pending_retire``: several deletes may be pending at once, each one
+    is added and removed on its own. A ``key`` that is not a list, or an
+    unreadable roster, raises :class:`RosterCorruptError`.
+    """
+    return await asyncio.to_thread(add_roster_marker_item_sync, config_dir, key, item)
+
+
+def add_roster_marker_item_sync(config_dir: str | Path, key: str, item: Any) -> bool:
+    """Blocking :func:`add_roster_marker_item`, for callers already off the event loop (a startup import thread)."""
+    return _edit_marker_list_sync(Path(config_dir) / VISIT_PEERS_FILENAME, key, item, True)
+
+
+async def remove_roster_marker_item(config_dir: str | Path, key: str, item: Any) -> bool:
+    """Remove ``item`` from the top-level list ``key`` (the key goes once empty); False if absent."""
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_edit_marker_list_sync, path, key, item, False)
+
+
+def _replace_marker_sync(path: Path, key: str, expected: Any, value: Any) -> bool:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        current = data.get(key)
+        if isinstance(current, list):
+            if expected not in current:
+                return False
+            data[key] = [copy.deepcopy(value) if entry == expected else entry for entry in current]
+        elif current == expected and current is not None:
+            data[key] = copy.deepcopy(value)
+        else:
+            return False
+        atomic_write_json(path, data)
+        return True
+
+
+def replace_roster_marker_sync(config_dir: str | Path, key: str, expected: Any, value: Any) -> bool:
+    """Replace the marker ``key`` (or, for a list, its item equal to ``expected``) with ``value``.
+
+    False, writing nothing, when the marker no longer is ``expected``. Blocking,
+    for a startup import thread; an unreadable roster raises
+    :class:`RosterCorruptError`.
+    """
+    return _replace_marker_sync(Path(config_dir) / VISIT_PEERS_FILENAME, key, expected, value)
+
+
+async def replace_roster_marker(config_dir: str | Path, key: str, expected: Any, value: Any) -> bool:
+    """:func:`replace_roster_marker_sync` off the event loop."""
+    return await asyncio.to_thread(replace_roster_marker_sync, config_dir, key, expected, value)
+
+
+def _promote_marker_sync(path: Path, slot_key: str, queue_key: str) -> Any:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        queue = data.get(queue_key)
+        if data.get(slot_key) is not None or not queue:
+            return None
+        if not isinstance(queue, list):
+            raise RosterCorruptError(f"{path.name}: {queue_key!r} is not a list")
+        item, *rest = queue
+        data[slot_key] = copy.deepcopy(item)
+        if rest:
+            data[queue_key] = rest
+        else:
+            del data[queue_key]
+        atomic_write_json(path, data)
+        return copy.deepcopy(item)
+
+
+async def promote_roster_marker(config_dir: str | Path, slot_key: str, queue_key: str) -> Any:
+    """Move the first item of the list ``queue_key`` into the empty slot ``slot_key``; return it.
+
+    ``None`` when the slot is still taken or the queue is empty (nothing is
+    written). One write, so a crash never loses or duplicates the item. A
+    queue that is not a list, or an unreadable roster, raises
+    :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_promote_marker_sync, path, slot_key, queue_key)
+
+
+def _rotate_marker_sync(path: Path, slot_key: str, queue_key: str, expected: Any) -> Any:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        queue = data.get(queue_key)
+        if data.get(slot_key) != expected or not isinstance(queue, list) or not queue:
+            return None
+        item, *rest = queue
+        data[slot_key] = copy.deepcopy(item)
+        data[queue_key] = [*rest, copy.deepcopy(expected)]
+        atomic_write_json(path, data)
+        return copy.deepcopy(item)
+
+
+async def rotate_roster_marker(config_dir: str | Path, slot_key: str, queue_key: str, expected: Any) -> Any:
+    """Swap the slot ``slot_key`` (while it equals ``expected``) to the end of ``queue_key``; return the new slot.
+
+    The first queued item takes the slot, in one write. ``None`` when the
+    slot changed or the queue is empty (nothing is written). An unreadable
+    roster raises :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_rotate_marker_sync, path, slot_key, queue_key, expected)
+
+
+def _prune_marker_items_sync(path: Path, key: str, keep: Callable[[Any], bool]) -> list[Any]:
+    with path_lock(path):
+        data = _read_top_level_sync_unlocked(path)
+        value = data.get(key)
+        if value is None:
+            return []
+        kept = [item for item in value if keep(item)] if isinstance(value, list) else []
+        dropped = [item for item in value if not keep(item)] if isinstance(value, list) else [value]
+        if not dropped:
+            return []
+        if kept:
+            data[key] = kept
+        else:
+            del data[key]
+        atomic_write_json(path, data)
+        return dropped
+
+
+async def prune_roster_marker_items(config_dir: str | Path, key: str, keep: Callable[[Any], bool]) -> list[Any]:
+    """Drop the items of the list marker ``key`` that ``keep`` rejects (the whole value if not a list).
+
+    Returns the dropped items. An unreadable roster raises
+    :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_prune_marker_items_sync, path, key, keep)
+
+
 class PeerRoster:
     """The local peer roster of one community account (``accounts[own_uid]``).
 
@@ -485,7 +726,7 @@ class PeerRoster:
         self.own_uid = _require_str(own_uid, "own_uid")
         self.path = self.config_dir / VISIT_PEERS_FILENAME
 
-    # ── 底层读写（工作线程内）──
+    # ── Low-level I/O (worker thread) ──
 
     def _load(self, *, strict: bool) -> dict:
         try:
@@ -494,7 +735,7 @@ class PeerRoster:
         except FileNotFoundError:
             return {}
         except (OSError, ValueError, RecursionError) as exc:
-            # RecursionError：深层嵌套的 JSON，与其他坏 JSON 走同一条边界
+            # RecursionError from deeply nested JSON follows the same boundary as other malformed JSON.
             if strict:
                 raise RosterCorruptError(f"cannot read {self.path.name}: {exc!r}") from exc
             logger.warning("visit roster unreadable, treating as empty: %s", exc)
@@ -562,7 +803,7 @@ class PeerRoster:
             data = self._load(strict=strict)
         return fn(data)
 
-    # ── 公开 API ──
+    # ── Public API ──
 
     async def upsert(
         self,
@@ -593,26 +834,26 @@ class PeerRoster:
         replay an older one, so only the latest id needs remembering.
         """
         if not is_finite_number(now):
-            # 写进 last_seen 的 bool / NaN 会让之后的严格读把整个条目判坏，名册自己把自己写坏
+            # Writing bool / NaN into last_seen corrupts the entire entry on later strict reads: the roster corrupts itself.
             raise ValueError("now must be a finite number")
         _require_str(peer_uid, "peer_uid")
         _require_str(own_char, "own_char")
         _require_str(pair_id, "pair_id")
         _require_str(peer_char_id, "peer_char_id")
         if pair_id != derive_pair_id(self.own_uid, peer_uid):
-            # 名册里的 pair 必须是这一对推出来的：写进去的异值之后展开成撤销计划，
-            # 会被撤销日志的身份绑定校验拒绝，这个人就再也清除不了
+            # Roster pairs must derive from this pair: mismatches expand to revocation plans later rejected
+            # by identity binding, permanently preventing clearing this person.
             raise ValueError("pair_id does not match own_uid / peer_uid")
         _require_str(char_tag, "char_tag")
         if peer_char_id != derive_peer_char_id(peer_uid, char_tag):
-            # 写进去的键推不出来，下一次严格读就把整个条目判坏
+            # Underivable written keys corrupt the whole entry on the next strict read.
             raise ValueError("peer_char_id does not match peer_uid / char_tag")
 
         def fn(data: dict):
             peers = self._peers_mut(data)
             peer = peers.get(peer_uid)
             if peer_uid in peers and not isinstance(peer, dict):
-                # 已存在但类型坏了的行不能当新 peer 覆盖：by_char / 摘要 / pair 史都会丢
+                # Never overwrite existing mistyped rows as new peers; by_char / digests / pair history would be lost.
                 raise RosterCorruptError(f"{self.path.name}: peer entry is not an object")
             if peer is None:
                 peer = {
@@ -630,8 +871,8 @@ class PeerRoster:
             peer["last_seen"] = max(now, peer.get("last_seen") or 0)
             by_char = _dict_at(peer, "by_char")
             entry = _dict_at(by_char, own_char)
-            # 已有条目按严格读同一套规则校验：坏掉的 pairs 重建成 []、坏掉的 chars
-            # 记录被直接覆盖，都会在下一次原子写里永久丢掉可恢复的数据
+            # Validate existing entries by strict-read rules: rebuilding bad pairs as [] or overwriting bad chars
+            # permanently loses recoverable data on the next atomic write.
             _check_char_entry(entry, self.path.name, pair=pair_id, peer=peer_uid)
             pairs = entry.setdefault("pairs", [])
             if pair_id not in pairs:
@@ -676,7 +917,7 @@ class PeerRoster:
             peer = peers[peer_uid]
             if not isinstance(peer, dict):
                 raise RosterCorruptError(f"{self.path.name}: peer entry is not an object")
-            # upsert 建 peer 时总带 by_char：已存在的 peer 缺它只能是损坏，不能当「已删除」
+            # New peers always have by_char; its absence in an existing peer means corruption, not deletion.
             if "by_char" not in peer:
                 raise RosterCorruptError(f"{self.path.name}: peer entry has no by_char")
             by_char = peer["by_char"]
@@ -729,7 +970,7 @@ class PeerRoster:
             for key in ("accounts", self.own_uid, "peers"):
                 if key not in node:
                     if key == "peers":
-                        # upsert 建账户时总会带上 peers：账户在而 peers 缺，只能是损坏
+                        # New accounts always have peers; an existing account without it is corrupt.
                         raise RosterCorruptError(f"{self.path.name}: account entry has no peers")
                     return []
                 node = node[key]
@@ -851,8 +1092,8 @@ class PeerRoster:
             return 0
 
         def fn(data: dict):
-            # 改名是事务的一步：任何分区结构坏了都不能跳过（pending_rename 会被清掉、
-            # 那个分区里的条目永远停在旧名下），一律报损坏让事务保留标记
+            # Rename is transactional: do not skip any corrupted partition (pending_rename would clear,
+            # leaving its entries permanently under old names). Report corruption and retain the transaction marker.
             moved = 0
             if "accounts" not in data:
                 return 0, False
@@ -874,8 +1115,8 @@ class PeerRoster:
                     if old not in by_char:
                         continue
                     pair = _pair_of(account_uid, peer_uid)
-                    # 源或目标条目（含嵌套的 pairs / chars）坏了：覆盖或合并都会丢掉
-                    # 可恢复的数据（字符串 pairs 会被拆成单个字符），改名事务保留标记
+                    # Corrupt source/target entries (including nested pairs/chars) lose recoverable data on overwrite or merge
+                    # (string pairs split into characters); retain the rename transaction marker.
                     entry = _check_char_entry(by_char[old], self.path.name, pair=pair,
                                               peer=peer_uid)
                     target = by_char.get(new)
@@ -885,6 +1126,48 @@ class PeerRoster:
                     by_char[new] = _merge_char_entries(target, entry) if new in by_char else entry
                     moved += 1
             return moved, moved > 0
+
+        return await asyncio.to_thread(self._mutate, fn)
+
+    async def retire_char(self, own_char: str) -> int:
+        """Delete ``by_char[own_char]`` of every peer in every account partition (one atomic write).
+
+        For a deleted local character (``pending_retire``): like
+        :meth:`rename_char` it walks every account, local character names
+        being machine-wide. A peer left with no ``by_char`` entry is dropped;
+        ``last_summary`` goes with its entry. Idempotent; returns the number
+        of removed entries. A damaged partition raises
+        :class:`RosterCorruptError` so the retirement stays pending.
+        """
+        _require_str(own_char, "own_char")
+
+        def fn(data: dict):
+            # Retirement is part of deletion: never skip bad partitions, which would clear markers and leave their entries forever.
+            removed = 0
+            if "accounts" not in data:
+                return 0, False
+            accounts = data["accounts"]
+            if not isinstance(accounts, dict):
+                raise RosterCorruptError(f"{self.path.name}: accounts is not an object")
+            for account in accounts.values():
+                if not isinstance(account, dict):
+                    raise RosterCorruptError(f"{self.path.name}: account entry is not an object")
+                if "peers" not in account:
+                    continue
+                peers = account["peers"]
+                if not isinstance(peers, dict):
+                    raise RosterCorruptError(f"{self.path.name}: peers is not an object")
+                for peer_uid, peer in list(peers.items()):
+                    if not isinstance(peer, dict) or not isinstance(peer.get("by_char"), dict):
+                        raise RosterCorruptError(f"{self.path.name}: peer entry is malformed")
+                    by_char = peer["by_char"]
+                    if own_char not in by_char:
+                        continue
+                    del by_char[own_char]
+                    removed += 1
+                    if not by_char:
+                        del peers[peer_uid]
+            return removed, removed > 0
 
         return await asyncio.to_thread(self._mutate, fn)
 
@@ -910,11 +1193,11 @@ class PeerRoster:
         (``ValueError`` otherwise), the same rule strict reads apply.
         """
         if not is_finite_number(ended_at):
-            # 写进去的 bool / NaN 会让之后的严格读把整个条目判坏，连清除都删不掉它
+            # Persisted bool / NaN makes later strict reads reject the whole entry, even preventing clearing it.
             raise ValueError("ended_at must be a finite number")
 
         def fn(data: dict):
-            # 严格读：已有摘要的 ended_at 坏了时无从判断新旧，覆盖会把可恢复的记录冲掉
+            # Strict reads: invalid ended_at on an existing digest prevents freshness comparison; overwrite would destroy recoverable records.
             entry = self._char_view_strict(data, peer_uid, own_char)
             if entry is None:
                 return False, False

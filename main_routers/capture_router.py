@@ -29,9 +29,9 @@ Endpoints:
 
 URL convention: routes declared WITHOUT trailing slash. See
 ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for rationale;
+``.agent/rules/neko-guide.md`` (section "API URL 末尾不带斜杠", no trailing API URL slash) for rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
-"""
+"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 

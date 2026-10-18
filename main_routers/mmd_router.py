@@ -24,7 +24,7 @@ Handles MMD model-related endpoints including:
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (§\"No trailing slash in API URLs\") for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -49,17 +49,17 @@ from utils.logger_config import get_module_logger
 router = APIRouter(prefix="/api/model/mmd", tags=["mmd"])
 logger = get_module_logger(__name__, "Main")
 
-# MMD 模型路径常量
+# MMD model path constants.
 MMD_USER_PATH = "/user_mmd"
 MMD_STATIC_PATH = "/static/mmd"
 
-# 文件上传常量
-MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB (MMD 模型含纹理可能较大)
-MAX_ZIP_UNCOMPRESSED = 2 * 1024 * 1024 * 1024  # 2GB 解压上限，防止 zip bomb
-MAX_ZIP_ENTRIES = 10000  # ZIP 内最大文件数
+# File-upload constants.
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB (MMD models with textures can be large).
+MAX_ZIP_UNCOMPRESSED = 2 * 1024 * 1024 * 1024  # 2GB extraction cap prevents ZIP bombs.
+MAX_ZIP_ENTRIES = 10000  # Maximum files inside ZIP.
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 
-# 允许的文件扩展名
+# Allowed file extensions.
 ALLOWED_MODEL_EXTENSIONS = {'.pmx', '.pmd'}
 ALLOWED_ANIMATION_EXTENSIONS = {'.vmd'}
 RESERVED_DIRS = {'animation', 'emotion_config'}
@@ -106,16 +106,16 @@ def _ensure_mmd_directory(config_mgr) -> Path | None:
         return None
 
 
-# ═══════════════════ ZIP 编码兼容处理 ═══════════════════
+# ═══════════════════ ZIP encoding compatibility ═══════════════════
 #
-# MMD 模型多源自日本，ZIP 文件名常使用 Shift-JIS (CP932) 编码。
-# Python 的 zipfile 模块对未设置 UTF-8 标志位的条目默认用 CP437 解码，
-# 导致日文/中文文件名变为乱码。
+# MMD models often originate in Japan, with ZIP filenames encoded Shift-JIS (CP932).
+# Python zipfile defaults to CP437 when UTF-8 flag is unset,
+# garbling Japanese/Chinese filenames.
 #
-# 处理策略：
-#   1. 尝试拼接文件名字节流，使用 charset_normalizer 全局推测编码
-#   2. 如果推测成功，优先使用全局编码；若失败，降级进行单文件推断
-#   3. 对解码后的文件名进行清理（保留中文/日文），避免操作系统非法字符
+# Strategy:
+#   1. Concatenate filename bytes and infer global encoding via charset_normalizer.
+#   2. Prefer successful global detection; otherwise infer per file.
+#   3. Sanitize decoded names, retaining Chinese/Japanese but removing OS-invalid characters.
 
 def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
     """Detect the actual filename encoding of non-UTF-8 entries in a ZIP archive (strictly limited to CJK encodings)."""
@@ -123,7 +123,7 @@ def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
     if not non_utf8_infos:
         return None
 
-    # 1. 尝试拼接前 100 个非 ASCII 文件名进行全局探测
+    # 1. Concatenate first 100 non-ASCII filenames for global detection.
     raw_bytes_blob = b""
     count = 0
     for info in non_utf8_infos:
@@ -141,14 +141,14 @@ def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
     if not raw_bytes_blob:
         return None
 
-    # 2. 优先防线：强推 UTF-8
+    # 2. First defense: prefer UTF-8.
     try:
         raw_bytes_blob.decode('utf-8')
         return 'utf-8'
     except UnicodeDecodeError:
         pass
 
-    # 3. 核心修改：给探测器戴上“紧箍咒”，只允许中日韩常见编码
+    # 3. Core change: constrain detector to common CJK encodings only.
     ALLOWED_ENCODINGS = {'cp932', 'shift_jis', 'gbk', 'gb18030', 'gb2312', 'big5', 'euc-kr'}
     
     results = charset_normalizer.from_bytes(raw_bytes_blob)
@@ -156,11 +156,11 @@ def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
         if result.encoding and result.encoding.lower() in ALLOWED_ENCODINGS:
             return result.encoding.lower()
 
-    # 4. 降级安全网：调整顺序为日文优先，并加入严格的“往返校验”
+    # 4. Safety fallback: Japanese-first ordering with strict round-trip validation.
     for fallback_enc in ('cp932', 'gbk', 'big5', 'euc-kr'):
         try:
             test_decoded = raw_bytes_blob.decode(fallback_enc)
-            # 往返校验：解码后再编码回去，看是否与原始字节一致，防止强行解码成乱码
+            # Round trip: decode/reencode and compare original bytes, preventing forced garbling.
             if test_decoded.encode(fallback_enc) == raw_bytes_blob:
                 return fallback_enc
         except (UnicodeDecodeError, UnicodeEncodeError):
@@ -171,9 +171,9 @@ def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
 
 def _sanitize_filename(filename: str) -> str:
     """Sanitize a filename: convert backslashes to forward slashes to preserve directory structure, and strip illegal characters."""
-    # 接受 CodeRabbit 建议：先将 Windows 风格的反斜杠统一转为 Web/Linux 标准的正斜杠
+    # CodeRabbit suggestion: normalize Windows backslashes to Web/Linux forward slashes first.
     normalized = filename.replace('\\', '/')
-    # 按目录层级拆分，清理每一层，再拼装回去
+    # Split directory levels, sanitize each, then reassemble.
     return '/'.join(
         re.sub(r'[<>:"|?*]', '_', part)
         for part in normalized.split('/')
@@ -185,16 +185,16 @@ def _build_zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
     global_encoding = _detect_zip_encoding(zf)
     name_map = {}
 
-    # MMD 常用的兜底编码列表，日文优先
+    # Common MMD fallback encodings, Japanese first.
     FALLBACK_ENCODINGS = ['cp932', 'gbk', 'big5', 'euc-kr']
 
     for info in zf.infolist():
-        if not (info.flag_bits & 0x800):  # 非标记为 UTF-8 的条目
+        if not (info.flag_bits & 0x800):  # Entries not marked UTF-8.
             try:
                 raw_bytes = info.filename.encode('cp437')
                 decoded = None
                 
-                # 尝试应用全局编码
+                # Try global encoding.
                 if global_encoding:
                     try:
                         test_decoded = raw_bytes.decode(global_encoding)
@@ -203,7 +203,7 @@ def _build_zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
                     except (UnicodeDecodeError, UnicodeEncodeError):
                         pass
                 
-                # 如果全局编码在这个具体文件上失败，暴力尝试备选列表，加入往返校验
+                # If global encoding fails for this file, brute-force fallbacks with round-trip checks.
                 if not decoded:
                     for enc in FALLBACK_ENCODINGS:
                         try:
@@ -214,7 +214,7 @@ def _build_zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
                         except (UnicodeDecodeError, UnicodeEncodeError):
                             continue
                             
-                # 终极兜底：强行 utf-8 替换错误字符，至少保证程序不崩溃
+                # Last resort: UTF-8 with replacement characters, ensuring no program crash.
                 if not decoded:
                     decoded = raw_bytes.decode('utf-8', errors='replace')
                 
@@ -223,7 +223,7 @@ def _build_zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
             except (UnicodeEncodeError, UnicodeDecodeError):
                 name_map[info.filename] = _sanitize_filename(info.filename)
         else:
-            # 已明确标记为 UTF-8 的条目，仅做清理
+            # UTF-8-marked entries need sanitization only.
             name_map[info.filename] = _sanitize_filename(info.filename)
 
     if global_encoding:
@@ -253,7 +253,7 @@ def _extract_zip_with_encoding(
         decoded_name = name_map.get(info.filename, info.filename)
         target_path = (target_dir / decoded_name).resolve()
 
-        # 安全：确保路径不会逃逸到目标目录之外
+        # Safety: ensure paths cannot escape target directory.
         if not target_path.is_relative_to(resolved_target):
             logger.warning(f"跳过路径越界的 ZIP 条目: {decoded_name!r}")
             continue
@@ -297,7 +297,7 @@ async def _handle_mmd_file_upload(
             logger.warning(f"路径穿越尝试被阻止: {filename!r} - {path_error}")
             return JSONResponse(status_code=400, content={"success": False, "error": path_error})
 
-        # 确保父目录存在
+        # Ensure parent directory exists.
         target_file_path.parent.mkdir(parents=True, exist_ok=True)
 
         total_size = 0
@@ -364,7 +364,7 @@ async def _handle_mmd_file_upload(
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
-# ═══════════════════ 路由端点 ═══════════════════
+# ═══════════════════ Route endpoints ═══════════════════
 
 
 @router.post('/upload')
@@ -403,7 +403,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
     if not file.filename.lower().endswith('.zip'):
         return JSONResponse(status_code=400, content={"success": False, "error": "请上传 .zip 文件"})
 
-    # 先将上传内容写到临时文件，再解压（避免内存爆炸）
+    # Write upload to temporary file before extraction, avoiding memory explosion.
     tmp_path = None
     target_dir = None
     try:
@@ -422,16 +422,16 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                     })
                 tmp.write(chunk)
 
-        # 验证 ZIP 完整性并查找 PMX/PMD
+        # Validate ZIP integrity and find PMX/PMD.
         if not zipfile.is_zipfile(str(tmp_path)):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的 ZIP 文件"})
 
         with zipfile.ZipFile(str(tmp_path), 'r') as zf:
-            # 构建编码修正映射（处理日文 Shift-JIS / 中文 GBK 等非 UTF-8 编码）
+            # Build corrected-encoding map for non-UTF-8 names, e.g. Japanese Shift-JIS / Chinese GBK.
             name_map = _build_zip_name_map(zf)
             decoded_names = list(name_map.values())
 
-            # 安全检查：zip bomb 防护
+            # Security: ZIP-bomb protection.
             info_list = zf.infolist()
             if len(info_list) > MAX_ZIP_ENTRIES:
                 return JSONResponse(status_code=400, content={
@@ -445,14 +445,14 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                     "error": f"ZIP 解压后大小 {total_uncompressed // (1024 * 1024)}MB 超过上限 {MAX_ZIP_UNCOMPRESSED // (1024 * 1024)}MB"
                 })
 
-            # 安全检查：不能有绝对路径或 ..
+            # Security: forbid absolute paths or ..
             for name in decoded_names:
                 if name.startswith('/') or '..' in name:
                     return JSONResponse(status_code=400, content={
                         "success": False, "error": "ZIP 包含不安全的路径"
                     })
 
-            # 查找 PMX/PMD（使用解码后的文件名）
+            # Find PMX/PMD using decoded names.
             model_entries = [
                 n for n in decoded_names
                 if Path(n).suffix.lower() in ALLOWED_MODEL_EXTENSIONS and not n.endswith('/')
@@ -462,29 +462,29 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                     "success": False, "error": "ZIP 中未找到 .pmx 或 .pmd 模型文件"
                 })
 
-            # 选第一个模型文件，用其文件名做子目录名
+            # Pick first model, using its filename as subdirectory name.
             model_entry = model_entries[0]
             model_stem = Path(model_entry).stem
 
-            # 检测 ZIP 最外层是否已有统一目录（使用解码后的名称）
+            # Detect common ZIP outer directory using decoded names.
             all_decoded_files = [n for n in decoded_names if not n.endswith('/')]
             top_level_items = {n.split('/')[0] for n in all_decoded_files}
             if len(top_level_items) == 1:
                 zip_root_dir = top_level_items.pop()
-                # 确认它确实是目录而非单个文件：
-                # 存在目录条目（以 '/' 结尾）或存在以它为前缀的子路径
+                # Confirm directory rather than single file:
+                # directory entry ends '/' or child paths share its prefix.
                 is_dir = any(
                     n == f"{zip_root_dir}/" or n.startswith(f"{zip_root_dir}/")
                     for n in decoded_names
                 )
                 if is_dir:
-                    # ZIP 本身已经是 "model_name/..." 结构
+                    # ZIP already has "model_name/..." layout.
                     extract_dir_name = zip_root_dir
                 else:
-                    # 单文件 ZIP，用模型名创建子目录
+                    # Single-file ZIP: create model-named subdirectory.
                     extract_dir_name = model_stem
             else:
-                # ZIP 是扁平结构，用模型名创建子目录
+                # Flat ZIP: create model-named subdirectory.
                 extract_dir_name = model_stem
 
             target_dir = (mmd_dir / extract_dir_name).resolve()
@@ -499,7 +499,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                 })
 
             if target_dir.exists():
-                # 检查是否包含有效模型文件，若无则为残留空目录，自动清理
+                # Check valid model files; absent means leftover empty directory, automatically clean up.
                 has_valid_model = any(
                     any(target_dir.rglob(f'*{ext}'))
                     for ext in ALLOWED_MODEL_EXTENSIONS
@@ -513,19 +513,19 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                     logger.info(f"清理残留的无效模型目录: {target_dir}")
                     await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
 
-            # 使用编码修正后的文件名解压
+            # Extract using corrected filenames.
             if all(
                 n.startswith(extract_dir_name + '/') or n == extract_dir_name
                 for n in decoded_names
             ):
-                # ZIP 已含同名目录结构，直接解压到 mmd_dir
+                # ZIP already contains matching directory: extract directly into mmd_dir.
                 await asyncio.to_thread(_extract_zip_with_encoding, zf, mmd_dir, name_map)
             else:
-                # 解压到 target_dir
+                # Extract into target_dir.
                 target_dir.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(_extract_zip_with_encoding, zf, target_dir, name_map)
 
-        # 找到解压后的 PMX 路径
+        # Find extracted PMX path.
         pmx_candidates = []
         for ext in ALLOWED_MODEL_EXTENSIONS:
             pmx_candidates.extend(target_dir.rglob(f'*{ext}'))
@@ -580,7 +580,7 @@ async def get_mmd_models():
         models = []
         seen_urls = set()
 
-        # 1. 项目目录下的 static/mmd/（递归搜索）
+        # 1. Project static/mmd/, recursively.
         project_root = config_mgr.project_root
         static_mmd_dir = project_root / "static" / "mmd"
         if static_mmd_dir.exists():
@@ -601,10 +601,10 @@ async def get_mmd_models():
                         "location": "project"
                     })
 
-        # 2. 用户目录下的 mmd/（递归搜索，跳过保留目录）
+        # 2. User mmd/, recursively, skipping reserved directories.
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if mmd_dir and mmd_dir.exists():
-            found_top_dirs = set()  # 记录包含有效模型的顶层子目录
+            found_top_dirs = set()  # Record top-level subdirectories containing valid models.
             for ext in ALLOWED_MODEL_EXTENSIONS:
                 for model_file in mmd_dir.rglob(f'*{ext}'):
                     try:
@@ -617,7 +617,7 @@ async def get_mmd_models():
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
-                    # 记录包含模型的顶层子目录
+                    # Record top-level subdirectories containing models.
                     if rel_path.parts:
                         found_top_dirs.add(rel_path.parts[0])
                     models.append({
@@ -630,8 +630,8 @@ async def get_mmd_models():
                         "location": "user"
                     })
 
-            # 查找残缺模型目录（有目录但无 PMX/PMD 的顶层子目录）
-            # 这些通常是导入失败后留下的残留，需要显示在列表中以便用户删除
+            # Find incomplete top-level model directories lacking PMX/PMD.
+            # Usually failed-import residue; list so users can delete.
             for item in mmd_dir.iterdir():
                 if item.is_dir() and item.name not in RESERVED_DIRS and item.name not in found_top_dirs:
                     models.append({
@@ -645,7 +645,7 @@ async def get_mmd_models():
                         "broken": True
                     })
 
-        # 3. 搜索Steam创意工坊中的MMD文件
+        # 3. Search Steam Workshop MMD files.
         try:
             workshop_items_result = await get_subscribed_workshop_items()
             if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
@@ -654,7 +654,7 @@ async def get_mmd_models():
                     installed_folder = item.get('installedFolder')
                     item_id = item.get('publishedFileId')
                     if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
-                        # 递归搜索安装目录下的PMX/PMD文件
+                        # Recursively search installation directory for PMX/PMD.
                         installed_path = Path(installed_folder)
                         for ext in ALLOWED_MODEL_EXTENSIONS:
                             for model_file in installed_path.rglob(f'*{ext}'):
@@ -694,7 +694,7 @@ def get_mmd_animations():
         animations = []
         seen_urls = set()
 
-        # 1. 项目目录下的 static/mmd/animation/
+        # 1. Project static/mmd/animation/.
         project_root = config_mgr.project_root
         static_anim_dir = project_root / "static" / "mmd" / "animation"
         if static_anim_dir.exists():
@@ -711,7 +711,7 @@ def get_mmd_animations():
                     "size": anim_file.stat().st_size
                 })
 
-        # 2. 用户目录下的 mmd/animation/
+        # 2. User mmd/animation/.
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if mmd_dir:
             user_anim_dir = mmd_dir / "animation"
@@ -760,13 +760,13 @@ def get_emotion_mapping(model: str = ""):
         config_path.mkdir(parents=True, exist_ok=True)
 
         if model:
-            # 路径安全检查：拒绝含路径分隔符的输入以防止目录穿越
+            # Path safety: reject separators to prevent traversal.
             if '/' in model or '\\' in model:
                 return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型名称"})
             safe_name = model.replace('..', '_')
             config_file = config_path / f"{safe_name}.json"
 
-            # 验证路径不会穿越
+            # Verify path cannot traverse.
             if not config_file.resolve().is_relative_to(config_path.resolve()):
                 return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型名称"})
 
@@ -802,7 +802,7 @@ async def update_emotion_mapping(request: Request):
         config_path = mmd_dir / "emotion_config"
         config_path.mkdir(parents=True, exist_ok=True)
 
-        # 路径安全检查：拒绝含路径分隔符的输入以防止目录穿越
+        # Path safety: reject separators to prevent traversal.
         if '/' in model_name or '\\' in model_name:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型名称"})
         safe_name = model_name.replace('..', '_')
@@ -841,7 +841,7 @@ async def delete_mmd_model(request: Request):
         if not mmd_dir:
             return JSONResponse(status_code=500, content={"success": False, "error": "MMD 目录不可用"})
 
-        # 从 URL 提取相对路径
+        # Extract relative path from URL.
         if model_url.startswith(MMD_USER_PATH + '/'):
             rel_path = model_url[len(MMD_USER_PATH) + 1:]
         elif model_url.startswith(MMD_STATIC_PATH + '/'):
@@ -849,11 +849,11 @@ async def delete_mmd_model(request: Request):
         else:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
 
-        # 安全路径验证
+        # Validate safe path.
         safe_path, error = safe_mmd_path(mmd_dir, rel_path)
         if not safe_path:
-            # safe_mmd_path 拒绝目录路径，但对于残缺模型目录需要允许删除
-            # 检查是否是 mmd_dir 的直接子目录且包含模型文件
+            # safe_mmd_path rejects directories, but incomplete model directories must be deletable.
+            # Check direct child of mmd_dir and presence of model files.
             candidate = (mmd_dir / rel_path).resolve()
             if candidate.is_dir() and candidate.parent.resolve() == mmd_dir.resolve() and candidate.is_relative_to(mmd_dir.resolve()) and candidate.name.lower() not in RESERVED_DIRS:
                 has_model = any(
@@ -861,11 +861,11 @@ async def delete_mmd_model(request: Request):
                     for ext in ALLOWED_MODEL_EXTENSIONS
                 )
                 if has_model:
-                    # 目录含有效模型文件，应通过模型 URL 而非目录路径删除
+                    # Valid models present: delete by model URL, never directory path.
                     return JSONResponse(status_code=400, content={
                         "success": False, "error": "该目录包含模型文件，请通过模型 URL 删除"
                     })
-                # 残缺目录（无模型文件）：允许删除
+                # Incomplete directory without model files: permit deletion.
                 deleted_files = await asyncio.to_thread(_count_and_rmtree, candidate)
                 logger.info(f"删除残缺 MMD 模型目录: {candidate}")
                 return JSONResponse(content={
@@ -883,11 +883,11 @@ async def delete_mmd_model(request: Request):
         deleted_files = 0
 
         if model_parent.resolve() != mmd_dir.resolve():
-            # 模型在子目录中：删除整个子目录（包含纹理等关联资源）
-            # 先验证请求的路径确实指向模型文件
+            # Model in subdirectory: delete entire directory, including textures/associated resources.
+            # First verify requested path actually identifies model file.
             if safe_path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "只能删除模型文件"})
-            # 找到 mmd_dir 的直接子目录
+            # Find immediate child directory of mmd_dir.
             rel_to_mmd = model_parent.resolve().relative_to(mmd_dir.resolve())
             top_subdir = mmd_dir / rel_to_mmd.parts[0]
             if not top_subdir.resolve().is_relative_to(mmd_dir.resolve()):
@@ -897,14 +897,14 @@ async def delete_mmd_model(request: Request):
             deleted_files = await asyncio.to_thread(_count_and_rmtree, top_subdir)
             logger.info(f"删除 MMD 模型目录: {top_subdir} ({deleted_files} 个文件)")
         else:
-            # 模型在顶层：只删除模型文件本身
+            # Top-level model: delete model file only.
             if safe_path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "只能删除模型文件"})
             safe_path.unlink()
             deleted_files = 1
             logger.info(f"删除 MMD 模型文件: {safe_path}")
 
-        # 同时删除对应的情感映射配置（与 GET/POST 保持一致的规范化）
+        # Delete corresponding emotion map too, using same normalization as GET/POST.
         safe_model_name = model_name.replace('..', '_')
         emotion_config = mmd_dir / "emotion_config" / f"{safe_model_name}.json"
         if emotion_config.exists() and emotion_config.resolve().is_relative_to((mmd_dir / "emotion_config").resolve()):
@@ -965,22 +965,22 @@ async def delete_mmd_animation(request: Request):
         if not mmd_dir:
             return JSONResponse(status_code=500, content={"success": False, "error": "MMD 目录不可用"})
 
-        # 从 URL 提取相对路径
+        # Extract relative path from URL.
         if anim_url.startswith(MMD_USER_PATH + '/'):
             rel_path = anim_url[len(MMD_USER_PATH) + 1:]
         else:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的动画 URL"})
 
-        # 安全路径验证
+        # Validate safe path.
         safe_path, error = safe_mmd_path(mmd_dir, rel_path)
         if not safe_path:
             return JSONResponse(status_code=400, content={"success": False, "error": error})
 
-        # 验证是 VMD 文件
+        # Verify VMD file.
         if safe_path.suffix.lower() != '.vmd':
             return JSONResponse(status_code=400, content={"success": False, "error": "只能删除 VMD 动画文件"})
 
-        # 验证文件在 animation 目录下
+        # Verify inside animation directory.
         animation_dir = mmd_dir / "animation"
         if not safe_path.resolve().is_relative_to(animation_dir.resolve()):
             return JSONResponse(status_code=400, content={"success": False, "error": "动画文件不在有效目录中"})
@@ -988,7 +988,7 @@ async def delete_mmd_animation(request: Request):
         if not safe_path.exists():
             return JSONResponse(status_code=404, content={"success": False, "error": "动画文件不存在"})
 
-        # 删除文件
+        # Delete file.
         safe_path.unlink()
         logger.info(f"删除 VMD 动画文件: {safe_path}")
 

@@ -46,7 +46,7 @@ def test_scoped_clock_is_invisible_to_other_threads(monkeypatch):
     stamps = iter([10.0, 20.0, 30.0])
     patch_module_clock(monkeypatch, module, monotonic=lambda: next(stamps))
 
-    # 全局时钟必须原样：别的线程读到的仍是真实时间。
+    # The global clock must remain unchanged: other threads still see real time.
     assert time.monotonic is not module.time.monotonic
     observed: list[float] = []
     thief = threading.Thread(target=lambda: observed.extend(time.monotonic() for _ in range(50)))
@@ -55,9 +55,9 @@ def test_scoped_clock_is_invisible_to_other_threads(monkeypatch):
     assert not thief.is_alive()
     assert len(observed) == 50
 
-    # 迭代器一个值都没被偷走。
+    # No iterator values were consumed.
     assert module.time.monotonic() == 10.0
     assert module.time.monotonic() == 20.0
-    # 没被覆盖的属性照旧走真实 time。
+    # Attributes not overridden still use real time.
     assert module.time.perf_counter is time.perf_counter
     assert isinstance(module.time.time(), float)

@@ -59,28 +59,28 @@ logger = get_module_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# 配置常量
+# Configuration constants
 # ---------------------------------------------------------------------------
 
-# Histogram 桶边界（毫秒/数值通用）。覆盖 1ms~10s 主要分布范围；超出最右边
-# 界的样本进溢出桶。固定桶让服务端 schema 稳定，跨版本对比直接做。
+# Histogram bucket boundaries, shared by milliseconds and numeric values. Cover the main 1ms–10s range; samples beyond the rightmost
+# boundary enter an overflow bucket. Fixed buckets stabilize server schema and support direct cross-version comparisons.
 #
-# 选这组边界的理由：
-# - 1/2/5/10/... 的"1-2-5 序列"是 logarithmic 但保留整数可读
-# - 覆盖 TTFT (~100-2000ms)、FPS 倒数 (~16ms)、startup time (~1-30s) 主要范围
-# - 9 个边界 = 10 个桶，序列化后 ~40B/histogram，便宜
+# Reasons for these boundaries:
+# - The 1/2/5/10/... '1-2-5 sequence' is logarithmic while retaining readable integers
+# - Covers typical TTFT (~100–2000ms), inverse FPS (~16ms), and startup time (~1–30s) ranges
+# - 9 boundaries = 10 buckets, about 40B/histogram serialized, keeping overhead low
 _HIST_BOUNDS: tuple = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
-_HIST_NUM_BUCKETS = len(_HIST_BOUNDS) + 1  # 最右边界右侧多一个溢出桶
+_HIST_NUM_BUCKETS = len(_HIST_BOUNDS) + 1  # One extra overflow bucket beyond the rightmost boundary
 
-# Counter / histogram 内存上限。理论上 key 是 (name, dims tuple)，不该爆，
-# 但万一业务把高基数维度（如 user_id / 消息内容）塞进 dims，要兜底防内存
-# 泄漏。超过此值丢弃新 key（保留已有的累积值），并打一次 warning。
+# Counter/histogram memory cap. Keys are theoretically (name, dims tuple) and should remain bounded,
+# but accidental high-cardinality dimensions (such as user_id/message content) need a memory-leak
+# safeguard. Drop new keys above the cap (retain existing accumulations), and warn once.
 _MAX_COUNTER_KEYS = 5000
 _MAX_HISTOGRAM_KEYS = 1000
 
 
 # ---------------------------------------------------------------------------
-# Instrument 单例
+# Instrument singleton
 # ---------------------------------------------------------------------------
 
 
@@ -105,19 +105,19 @@ class Instrument:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        # key 是 string："name|k1=v1,k2=v2"（dims 已经按 key 字典序拼好）。
-        # value 是数字。flat dict 比嵌套 dict-of-dict 序列化更友好，服务端
-        # 也更容易索引。
+        # Keys are strings: "name|k1=v1,k2=v2", with dims joined in lexicographic key order.
+        # Values are numbers. Flat dictionaries serialize more easily than nested dictionaries and are easier
+        # for the server to index.
         self._counters: dict = {}
-        # 同样的 key 结构，value 是 [count, sum, [bucket_counts...]]
+        # Same key structure; values are [count, sum, [bucket_counts...]]
         self._histograms: dict = {}
-        # snapshot 窗口起点（每次 snapshot 重置）
+        # Snapshot-window start, reset on each snapshot
         self._window_start: float = time.time()
-        # 高基数告警节流
+        # High-cardinality warning throttling
         self._cap_warned_counter: bool = False
         self._cap_warned_histogram: bool = False
 
-    # ---- 公开 API ----
+    # ---- Public API ----
 
     def counter(self, name: str, value: int = 1, **dims) -> None:
         """Increment a counter.
@@ -141,7 +141,7 @@ class Instrument:
             elif len(self._counters) < _MAX_COUNTER_KEYS:
                 self._counters[key] = value
             else:
-                # 容量保护：满了就静默丢，避免业务方误用高基数维度炸内存
+                # Capacity guard: silently drop when full to prevent memory exhaustion from high-cardinality dimension misuse
                 if not self._cap_warned_counter:
                     logger.warning(
                         f"instrument: counter map full ({_MAX_COUNTER_KEYS} keys), "
@@ -163,7 +163,7 @@ class Instrument:
         """
         if not name or not isinstance(value, (int, float)):
             return
-        # bisect_left：value <= bound 落到该桶；超过最右边界进溢出桶
+        # bisect_left: value <= bound enters that bucket; values above the rightmost boundary overflow
         bucket_idx = bisect.bisect_left(_HIST_BOUNDS, value)
         key = _make_key(name, dims)
         with self._lock:
@@ -228,12 +228,12 @@ class Instrument:
         not worth maintaining another unsent queue. Only daily_stats (LLM tokens) must
         not be lost.
         """
-        from datetime import date as _date  # 局部 import 防进程启动时早调用环
+        from datetime import date as _date  # Local import avoids an early-call cycle during process startup
         with self._lock:
             if not self._counters and not self._histograms:
-                # 即使空也更新 window_start，避免下次 snapshot 把空窗口
-                # 一直挂着 —— 否则前 30 min 没埋点活动、第 31 min 有一条，
-                # 上报的 window 会显示 31min 而不是 1min。
+                # Update window_start even when empty so subsequent snapshots do not retain an empty window indefinitely:
+                # otherwise, after 30 min without instrumentation and one event in minute 31,
+                # the reported window would be 31min rather than 1min.
                 self._window_start = time.time()
                 return {}
             counters = self._counters
@@ -242,16 +242,16 @@ class Instrument:
             self._counters = {}
             self._histograms = {}
             self._window_start = time.time()
-            # warning 标志保留 —— 反复打日志比反复 warn 更烦
-        # 序列化在锁外，让 emit() 不被阻塞
+            # Retain the warning flag; repeated logging is more annoying than repeated warnings
+        # Serialize outside the lock to avoid blocking emit()
         hist_out = {}
         for k, v in histograms.items():
             hist_out[k] = {"count": v[0], "sum": v[1], "buckets": list(v[2])}
         return {
             "window_start": window_start,
             "window_end": self._window_start,
-            # 客户端本地日历天 —— 服务端必须按这个落 stat_date，否则跨时区
-            # 设备午夜前后上报会把同一天的 usage 和 instrument 拆到两天。
+            # Client-local calendar day: the server must use this as stat_date, or reports around midnight from devices
+            # across time zones split the same day's usage and instrumentation into two days.
             "stat_date": _date.today().isoformat(),
             "bounds": list(_HIST_BOUNDS),
             "counters": counters,
@@ -260,7 +260,7 @@ class Instrument:
 
 
 # ---------------------------------------------------------------------------
-# 辅助：key 序列化
+# Helper: key serialization
 # ---------------------------------------------------------------------------
 
 
@@ -305,7 +305,7 @@ def _make_key(name: str, dims: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 模块级便捷函数（业务侧首选入口）
+# Module-level convenience functions, preferred business-code entry points
 # ---------------------------------------------------------------------------
 
 

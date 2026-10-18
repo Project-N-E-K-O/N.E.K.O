@@ -76,11 +76,11 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-# §4.1：字节桶容量 16 KB（速率 VISIT_PEER_RECV_BPS=10 KB/s）；visit_settings 没有这个常量。
+# §4.1: byte-bucket capacity 16 KB (rate VISIT_PEER_RECV_BPS=10 KB/s); visit_settings has no corresponding constant.
 _RECV_BYTES_BURST = 16 * 1024
-# §4.1：持续超限 30 s → peer_protocol_violation；visit_settings 没有这个常量。
+# §4.1: sustained excess for 30 s → peer_protocol_violation; visit_settings has no corresponding constant.
 _SUSTAINED_OVERFLOW_S = 30.0
-# 两次丢弃间隔超过它就算一段超限结束（桶已恢复过）。
+# A gap exceeding this duration between drops ends an excess period because the bucket recovered.
 _OVERFLOW_RUN_GAP_S = 1.0
 _DISPLAY_NAME_MAX = 64
 _REASON_MAX = 64
@@ -94,7 +94,7 @@ class RateChannel(str, Enum):
     LOSSY = "lossy"
 
 
-# cmd 1 = ctl（text 以外）；cmd 2 中只有 text 走 TEXT 桶，line_delta / line_abort 只受帧级桶约束；cmd 3 = lossy。
+# cmd 1 = ctl (non-text); only text in cmd 2 uses the TEXT bucket, while line_delta/line_abort use frame buckets only; cmd 3 = lossy.
 _CTL_TYPES = frozenset({"hello", "ready", "ack", "hb", "state", "wrap_up", "leave"})
 _LOSSY_TYPES = frozenset({"typing", "stats"})
 _FRAME_ONLY_TYPES = frozenset({"line_delta", "line_abort"})
@@ -242,7 +242,7 @@ class PeerRateLimiter:
         self._sustained_s = float(sustained_overflow_s)
         self._senders: dict[str, _SenderState] = {}
 
-    # ── 内部 ──
+    # ── Internals ──
 
     def _now(self, now: float | None) -> float:
         return self._clock() if now is None else float(now)
@@ -264,7 +264,7 @@ class PeerRateLimiter:
         st.dropped[reason] = st.dropped.get(reason, 0) + 1
         sustained = False
         if not streak:
-            # 只有诊断类超限（帧 / ctl / lossy）参与「持续 30 s」判据；text 走连续异常计数。
+            # Only diagnostic excesses (frames / ctl / lossy) use the sustained-30s criterion; text uses consecutive-anomaly counts.
             if st.last_overflow_at is None or now - st.last_overflow_at > _OVERFLOW_RUN_GAP_S:
                 st.overflow_since = now
             st.last_overflow_at = now
@@ -273,14 +273,14 @@ class PeerRateLimiter:
             allowed=False, reason=reason, counts_toward_streak=streak, sustained_overflow=sustained,
         )
 
-    # ── 公开接口 ──
+    # ── Public interface ──
 
     def admit_frame(self, sender: str, nbytes: int, *, now: float | None = None) -> RateDecision:
         """Charge one received data-channel frame of ``nbytes`` (before reassembly)."""
         t = self._now(now)
         st = self._state(sender, t)
         cost = max(0, int(nbytes))
-        # 两个桶都先看余量再一起扣，免得一个桶拒了另一个桶白扣。
+        # Check both bucket balances before debiting them together, avoiding a wasted debit if the other bucket rejects.
         if not st.recv_bytes.peek(cost, t):
             return self._drop(st, "recv_bytes", t, streak=False)
         if not st.recv_msgs.peek(1, t):
@@ -329,7 +329,7 @@ class PeerRateLimiter:
         self._senders.pop(sender, None)
 
 
-# ── 黑名单 ─────────────────────────────────────────────────────────────
+# ── Blocklist ─────────────────────────────────────────────────────────────
 
 
 def _norm_uid(visit_uid: Any) -> str:
@@ -364,7 +364,7 @@ def _parse_entries(payload: Any) -> list[BlockEntry]:
         raise ValueError("blocklist must be {blocked: [...]}")
     by_uid: dict[str, BlockEntry] = {}
     for row in payload["blocked"]:
-        # 任一行坏了就整体不可用：丢掉那一行恰好会放进被拉黑的那个人
+        # Any invalid row makes the whole list unavailable; dropping that row would admit the blocked person
         if not isinstance(row, dict):
             raise ValueError("blocklist row is not an object")
         uid = _norm_uid(row.get("visit_uid"))
@@ -395,12 +395,12 @@ class _Snapshot:
 
     def __init__(self) -> None:
         self.entries: dict[str, BlockEntry] = {}
-        # 可用性也是共享的：任一实例发现文件读不出 / 坏了，所有实例一起 fail closed
+        # Availability is shared too: if any instance detects unreadable/corrupt files, all instances fail closed
         self.available = True
 
 
-# 同一文件的所有实例共用一份快照（弱引用登记，没有实例引用后自动释放）：某个实例
-# 拉黑后，身份核验手里那个实例立刻看得到，不会继续按旧表放人
+# Every instance for one file shares a snapshot (weak-reference registry, released automatically when no instances remain): after one instance
+# blocks a user, the identity verifier's instance sees it immediately instead of admitting based on an old table
 _SNAPSHOTS: "weakref.WeakValueDictionary[str, _Snapshot]" = weakref.WeakValueDictionary()
 _SNAPSHOTS_GUARD = threading.Lock()
 
@@ -446,8 +446,8 @@ class Blocklist:
         self._path = Path(config_dir) / VISIT_BLOCKLIST_FILENAME
         self._snap = _snapshot_for(self._path)
         if entries is not None:
-            # 只有真的读过盘（或调用方显式给出）才刷新共享快照；不带 entries 构造的实例
-            # 不能把别的实例看到的拉黑记录清空，也不能把共享的「不可用」翻回可用
+            # Refresh the shared snapshot only after an actual disk read or explicit caller-supplied entries; instances constructed without entries
+            # must not clear other instances' blocked records or reset shared unavailability to available
             self._snap.entries = {e.visit_uid: e for e in entries}
             self._snap.available = available
         elif not available:
@@ -471,7 +471,7 @@ class Blocklist:
         """Location of the JSON file."""
         return self._path
 
-    # ── 加载 ──
+    # ── Loading ──
 
     @classmethod
     def _from_payload(cls, config_dir: str | os.PathLike[str], payload: Any) -> "Blocklist":
@@ -486,11 +486,11 @@ class Blocklist:
         a concurrent block cannot replace the shared list with stale rows.
         """
         path = Path(config_dir) / VISIT_BLOCKLIST_FILENAME
-        # 读盘与刷新共享快照在同一把逐路径锁里：读到旧文件后、刷新快照前若有别的实例
-        # 完成拉黑，旧内容会覆盖所有实例共用的名单，身份核验随之放行刚拉黑的人
+        # Disk reads and snapshot refreshes share the same per-path lock: if another instance finishes a block after the old file is read but before the snapshot is refreshed,
+        # the old contents would overwrite the list shared by all instances, allowing someone who was just blocked to pass identity verification
         with path_lock(path):
-            # 不先 exists()：权限错误会从 exists() 直接抛出、符号链接环会被当成「不存在」，
-            # 都绕过 fail closed。只有确认文件不存在才是空表
+            # Do not call exists() first: permission errors are raised directly by exists(), and symlink loops are treated as "not found";
+            # both bypass fail-closed behavior. Only a confirmed missing file means an empty table
             try:
                 return cls._from_payload(config_dir, read_json(path))
             except FileNotFoundError:
@@ -512,7 +512,7 @@ class Blocklist:
         if not self.available:
             raise BlocklistUnavailable("visit blocklist could not be read")
 
-    # ── 查询（同步，内存）──
+    # ── Queries (synchronous, in memory) ──
 
     def is_blocked(self, visit_uid: str) -> bool:
         """Return True when ``visit_uid`` is blocked (in-memory, synchronous).
@@ -537,7 +537,7 @@ class Blocklist:
     def __contains__(self, visit_uid: object) -> bool:
         return isinstance(visit_uid, str) and self.is_blocked(visit_uid)
 
-    # ── 变更 ──
+    # ── Mutations ──
 
     def _payload(self, entries: dict[str, BlockEntry]) -> dict[str, Any]:
         return {"blocked": [e.to_json() for e in sorted(entries.values(), key=lambda e: e.blocked_at)]}
@@ -587,23 +587,23 @@ class Blocklist:
             lambda: self._with_block(visit_uid, display_name_at_block, reason, now)))
 
     async def _locked_txn(self, build) -> bool:
-        # 写盘与切内存是一个事务，整段在工作线程里、在按路径登记的线程锁下跑：
-        # asyncio.Lock 绑定事件循环，跨循环 / 跨线程的实例共用不了；线程锁不受这个限制，
-        # 登记本身也有保护（同一路径永远拿到同一把）。调用方被取消时事务照常做完（shield）
+        # Writing to disk and swapping in-memory state form one transaction. Run the whole operation in a worker thread, under the per-path registered thread lock:
+        # asyncio.Lock is bound to an event loop and cannot be shared by instances across loops or threads; a thread lock has no such restriction,
+        # and registration is protected too (the same path always gets the same lock). If the caller is cancelled, let the transaction finish (shield)
         return await asyncio.to_thread(self._txn_sync, build)
 
     def _txn_sync(self, build) -> bool:
         with path_lock(self._path):
-            # 不先查 available：之前的读盘失败可能只是临时的（被占用 / 杀毒锁定），
-            # 锁内这次重读成功就说明文件已恢复，所有实例随之恢复可用
-            # 锁内先读盘上最新的整表：别的实例可能刚写过，用自己手里的旧视图重建会冲掉它
+            # Do not check available first: the earlier read failure may have been temporary (file busy / locked by antivirus),
+            # and a successful reread under the lock means the file has recovered, so all instances become available again
+            # First read the latest complete table from disk under the lock: another instance may have just written, and rebuilding from our stale view would overwrite it
             try:
                 payload = read_json(self._path)
             except FileNotFoundError:
                 self._entries = {}
                 self._snap.available = True
             except (OSError, ValueError, RecursionError) as exc:
-                # 共享快照一起标成不可用：身份核验手里的长期实例不能继续按旧表放人
+                # Mark the shared snapshot unavailable too: long-lived instances used for identity verification must not keep admitting people based on the old table
                 self._snap.available = False
                 raise BlocklistUnavailable("visit blocklist could not be re-read") from exc
             else:

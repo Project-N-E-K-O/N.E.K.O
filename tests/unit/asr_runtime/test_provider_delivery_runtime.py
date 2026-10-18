@@ -41,8 +41,8 @@ async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:
     runtime._asr_detector = _ReadyDetector()
 
     await _start_and_seal_turn(runtime)
-    # 10ms 超时跟 Windows 的 15.6ms 定时器分辨率同量级，固定 sleep 到底睡多久
-    # 完全看运气；守护任务跑完才是「已开火」的权威信号，直接等它。
+    # A 10ms timeout is comparable to Windows' 15.6ms timer resolution, making fixed sleeps unpredictable;
+    # completion of the watchdog is the authoritative fired signal. Await it directly.
     watchdog = runtime._asr_final_watchdog_task
     assert watchdog is not None
     await asyncio.wait_for(watchdog, 5)
@@ -63,8 +63,8 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     # default; scale both down so the watchdog must track the policy value.
     policy = replace(
         resolve_provider_policy("glm", "manual"),
-        # 500ms 而不是 80ms：下面「还没到点」那半只能靠时间证明，被测窗口必须
-        # 远大于 Windows 的 15.6ms 定时器分辨率，否则余量不到一个 tick。
+        # Use 500ms rather than 80ms: proving the not-yet-due half requires time; the window must
+        # greatly exceed Windows' 15.6ms resolution rather than leaving less than one tick of margin.
         provider_final_timeout_ms=500,
     )
     assert resolve_provider_policy("glm", "manual").provider_final_timeout_ms == 40_000
@@ -80,11 +80,11 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     watchdog = runtime._asr_final_watchdog_task
     assert watchdog is not None
 
-    # 单个 sleep 睡了多久在 Windows 上不可信（15.6ms 分辨率，既会提前弹出也会
-    # 超发），所以只信真实时钟：轮询到确实过了 150ms —— 远超一个 tick，也远小于
-    # 上面的 500ms 窗口。醒来后必须先复查挂钟再断言：这一觉可能被别的任务拖长而
-    # 睡过了观察窗口（甚至睡过 500ms 守护窗口），那时守护任务改成 blocked 是合法的，
-    # 先断言就会把「事后才发生」误报成「窗口内提前开火」。
+    # Individual Windows sleeps are unreliable (15.6ms resolution, early or overshooting),
+    # so poll the real clock until 150ms elapsed, well beyond one tick and well below
+    # the 500ms window. Recheck wall time before asserting: scheduling delays may make sleep
+    # exceed the observation or even watchdog window, when blocked becomes valid;
+    # asserting first would misreport an event after the window as premature firing within it.
     # A watchdog stuck on the shared default (10 ms in the scaled test above)
     # would have fired by now; the per-provider override keeps it armed.
     deadline = armed_at + 0.15
@@ -94,14 +94,14 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
             break
         assert runtime._asr_route_mode == "independent"
 
-    # 正向那半不猜时间：守护任务自己跑完（内部 await 完错误处理才结束）即同步点。
+    # The positive half needs no timing guesses: watchdog completion, including awaited error handling, is the synchronization point.
     await asyncio.wait_for(watchdog, 5)
     elapsed = time.monotonic() - armed_at
 
     assert runtime._asr_route_mode == "blocked"
-    # 上界也必须钉住，否则这条用例只主张「五秒内会开火」：把 per-provider 超时写成
-    # 常量 2s、或者把 ms 当成 s 换算错的回归，在 150ms 观察窗口里同样还是
-    # independent，然后在 5s 内跑完，照样通过。配置是 500ms，给 3 倍余量。
+    # Assert an upper bound too; otherwise this test merely requires firing within five seconds. Regressions
+    # hardcoding a 2s provider timeout or confusing milliseconds with seconds would still remain
+    # independent during 150ms and finish within 5s. Configuration is 500ms; allow threefold headroom.
     assert elapsed < 1.5, (
         f"守护任务没有按 per-provider 的 500ms 超时开火，实际 {elapsed:.3f}s"
     )

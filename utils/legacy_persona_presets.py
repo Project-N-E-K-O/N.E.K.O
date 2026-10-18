@@ -71,7 +71,7 @@ _LEGACY_PRESETS = (
 
 
 # ============================================================================
-# 历史人格 Prompt 模板（保留 PR #2560 前的关系与角色语义）
+# Historical persona prompt templates (preserve relationship and character semantics from before PR #2560).
 # ============================================================================
 
 _PERSONA_PROMPT_TEMPLATE = '''
@@ -103,7 +103,7 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 '''
 
 
-# 各 preset 的英文位段（与基础模板英文骨架对齐，所有语言共用）
+# English preset segments, matching the base template's English structure and shared by all languages.
 _PERSONA_SHARED_EN = {
     "classic_genki": {
         "extra_label_en": "No Coldness",
@@ -132,8 +132,8 @@ _PERSONA_SHARED_EN = {
 }
 
 
-# 各 preset 的本地化位段（preset_id × lang）
-# lang key 与 prompts_chara._L10N 完全一致：zh / zh-TW / en / ja / ko / ru / es / pt
+# Localized preset segments (preset_id x lang).
+# lang keys exactly match prompts_chara._L10N: zh / zh-TW / en / ja / ko / ru / es / pt.
 _PERSONA_L10N = {
     "classic_genki": {
         "zh": {

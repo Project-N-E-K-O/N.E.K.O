@@ -49,8 +49,8 @@ else:
     logger = get_logger("server.lifecycle")
 
 
-# 等 ProactiveBridge 的 SUB 连上的上限。bridge 现在一起来就连接并订阅，正常
-# 情况下微秒级就绪；这个上限只是兜底，短到起不来时不会让人以为应用卡死了。
+# Maximum wait for the ProactiveBridge SUB to connect. The bridge now connects and subscribes immediately on startup; normally
+# it is ready within microseconds. This timeout is only a safety net, short enough not to make the app appear frozen if startup fails.
 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
@@ -390,10 +390,10 @@ class ServerLifecycleService:
                 len(refresh_result.get("removed", [])),
                 len(refresh_result.get("failed", [])),
             )
-            # 分成「可并发」与「需按序」两组。依赖检查（core/dependency.py 的
-            # _find_plugins_by_entry）读的是 state.event_handlers —— 被依赖方必须
-            # 已经启动并注册完 handler，所以声明了依赖的插件不能与它的提供者同时起。
-            # 两组各自保持既有拓扑序，详见
+            # Split into two groups: "safe to start concurrently" and "must start in order." Dependency checks (core/dependency.py's
+            # _find_plugins_by_entry) read state.event_handlers — the dependency must already have started and registered its handler,
+            # so a plugin declaring a dependency cannot start at the same time as its provider.
+            # Each group preserves its existing topological order; see
             # registry_service._get_autostart_plugin_groups_sync。
             independent_ids, ordered_ids = (
                 await self._plugin_registry_service.list_autostart_plugin_groups()
@@ -482,8 +482,8 @@ class ServerLifecycleService:
         # would make every delivery-path start a no-op for the new run.
         async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = False
-        # 同样重置插件操作门闩：关停时置位的门闩会让 start_plugin 拒绝启动，
-        # 重启后必须放开，否则所有插件启动都会吃 409。
+        # Reset the plugin-operation gate too: the gate set during shutdown makes start_plugin reject launches,
+        # so it must be released after restart or every plugin startup returns 409.
         from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
         _lifecycle_module._operations_shutting_down = False
 
@@ -529,7 +529,7 @@ class ServerLifecycleService:
         await metrics_collector.start(plugin_hosts_getter=_get_hosts)
         logger.debug("metrics collector started")
 
-        # 关闭时是 no-op：PLUGIN_HOT_RELOAD 默认 false，必须显式开启。
+        # No-op on shutdown: PLUGIN_HOT_RELOAD defaults to false and must be explicitly enabled.
         self._hot_reload_started = self._hot_reload_service.start()
         try:
             emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
@@ -678,28 +678,28 @@ class ServerLifecycleService:
             # plane actually holds.
             return failed
 
-        # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
-        # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
-        # 连上并订阅——PUB/SUB 对缺席的订阅方是丢弃，所以订阅就绪之前推的
-        # 消息角色永远不会说出口，而 push_message() 已经回了 submitted=True。
+        # Start both bridges before any plugins. An autostart plugin may call push_message() in its startup
+        # hook, while ProactiveBridge's SUB connects and subscribes on its own thread —
+        # PUB/SUB drops messages for absent subscribers, so messages pushed before subscription readiness
+        # will never be spoken even though push_message() already returned submitted=True.
         #
-        # 顺序只是第一步：SUBSCRIBE 传播到 PUB 侧本身还有一小段延迟，所以下
-        # 面在放插件进来之前会等 wait_for_proactive_subscriber。
+        # Ordering is only the first step: SUBSCRIBE takes a short time to propagate to PUB, so
+        # wait for wait_for_proactive_subscriber before starting plugins below.
         #
-        # ⚠️ 即便如此也不是数学上的关闭：ZMQ 的 SUBSCRIBE 返回不代表 PUB 端
-        # 已经处理完这条订阅（slow joiner），极窄的一段仍在。要关死得让 bridge
-        # 起来后补读一次 store 并按 message_id 去重，代价是重复投递的风险。
+        # ⚠️ Even this is not mathematically airtight: a successful ZMQ SUBSCRIBE does not mean the PUB side
+        # has processed it yet (slow joiner), so a very small gap remains. To close it, the bridge would need to
+        # read the store once after startup and deduplicate by message_id, at the cost of potential duplicate delivery.
         #
-        # 另外更正一处此前写错的机制：plane bridge **不会**因为没 start 就拒
-        # 收。`_Bridge._enabled` 读的是 MESSAGE_PLANE_BRIDGE_ENABLED 这个配置
-        # 开关（构造时读一次），不是「start() 跑没跑」——start() 之前
-        # enqueue_delta 照常入队，线程起来后排空。实测 publish_record 在
-        # start_bridge() 之前返回 True。
-        # 必须在 runner 起完之后、bridge 起之前：配置端口被占时 runner 会挑
-        # 一个备用端口并写回环境变量，而 _bridge 是 import 期就建好的、那时
-        # 冻结的还是原来那个地址。不刷新的话，端口一冲突，push_message /
-        # frames / conversations 全都发向那个被占的端点，而调用方已经拿到
-        # submitted=True——正是这条路要消灭的那种静默不投递。
+        # Also correct an earlier explanation of the mechanism: the plane bridge does **not** reject messages just because it has not started.
+        # `_Bridge._enabled` reads the MESSAGE_PLANE_BRIDGE_ENABLED config
+        # switch (once during construction), not whether start() has run — before start(),
+        # enqueue_delta still queues messages and the thread drains them once started. In practice, publish_record returned
+        # True before start_bridge().
+        # Must happen after the runner starts and before the bridge starts: if the configured port is occupied, the runner chooses
+        # a fallback port and writes it back to the environment, while _bridge was created at import time and
+        # still has the original address frozen. Without refreshing it, a port conflict sends push_message /
+        # frames / conversations to the occupied endpoint, even though the caller already received
+        # submitted=True — exactly the silent non-delivery path this change is meant to eliminate.
         try:
             refresh_ingest_endpoint()
         except Exception as exc:
@@ -746,9 +746,9 @@ class ServerLifecycleService:
             )
             failed.append("proactive_bridge")
 
-        # 等订阅方真正连上再放插件进来。只把 start 挪到插件前面并不能关掉窗
-        # 口——SUBSCRIBE 传播到 PUB 侧仍有一小段延迟。有界等待：bridge 被禁
-        # 用或已经死了就立刻返回，起不来也不能把整个启动挂在这儿。
+        # Wait until subscribers actually connect before starting plugins. Moving start before plugins alone does not close the
+        # gap — SUBSCRIBE still takes time to propagate to PUB. Use a bounded wait: return immediately if the bridge is disabled
+        # or already dead, and never hang the whole startup if it cannot start.
         #
         # A timeout here is NOT a failure by itself -- the SUB may still connect
         # after this bounded wait and the components are up, so retrying would
@@ -838,9 +838,9 @@ class ServerLifecycleService:
         return had_errors
 
     async def _shutdown_internal(self) -> _ShutdownResult:
-        # 关停门闩：在动任何插件宿主之前置位，让 start_plugin 拒绝启动新插件。
-        # 被 asyncio.shield 保护的 in-flight reload 若在 host 快照之后才注册新
-        # host，那个子进程就是没人停止的孤儿。startup() 开头会重置。
+        # Shutdown gate: set it before touching any plugin host so start_plugin rejects new launches.
+        # An in-flight reload protected by asyncio.shield may register a new host after the host
+        # snapshot, leaving its child process orphaned. startup() resets the gate at the beginning.
         from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
         _lifecycle_module._operations_shutting_down = True
 
@@ -851,9 +851,9 @@ class ServerLifecycleService:
 
         had_errors = False
 
-        # 先停热重载 watcher 再动任何插件宿主：它触发的 reload 是完整的
-        # stop+start 事务，和关停流程并发会把插件留在半启动状态。in-flight
-        # 的 reload 被 operation lock 屏蔽取消，会自己跑完当前一步后退出。
+        # Stop the hot-reload watcher before touching plugin hosts: its reload is a full
+        # stop+start transaction, and concurrent shutdown could leave a plugin half-started. An in-flight
+        # reload shielded from cancellation by the operation lock will finish its current step and exit.
         if self._hot_reload_started or self._hot_reload_service.is_running:
             try:
                 await self._hot_reload_service.stop(timeout=0.05)

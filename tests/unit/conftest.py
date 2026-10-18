@@ -362,10 +362,29 @@ def _enable_theater_review_modules(request, monkeypatch):
     from services.theater.numeric_v2_options import default_options
 
     async def _all_on() -> dict[str, bool]:
-        # 交付校验是本轮新增的纯程序检查，既有回归不覆盖它，避免悄悄改变既有断言。
+        # Delivery validation is a new purely programmatic check; exclude it from existing regressions to avoid silently changing their assertions.
         return {key: True for key in default_options() if key != 'review_delivery'}
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", _all_on, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _stub_theater_narrative_proposals(request, monkeypatch):
+    """Isolate the new model component in existing orchestration unit tests.
+
+    Proposer tests exercise its real request adapter. Narrative workflow tests
+    override this empty proposal with their explicit event fixtures.
+    """
+
+    if (not _is_theater_test_module(request)
+            or request.node.path.name == "test_theater_numeric_v2_narrative_proposer.py"):
+        return
+    from services.theater import numeric_v2_workflow as workflow
+
+    async def _empty_proposal(self, **kwargs):
+        return []
+
+    monkeypatch.setattr(workflow.NumericV2NarrativeProposer, "propose", _empty_proposal)
 
 
 @pytest.fixture

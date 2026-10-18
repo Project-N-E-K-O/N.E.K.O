@@ -1,4 +1,4 @@
-"""Numeric v2 对猫娘角色卡的稳定身份投影。"""  # noqa: DOCSTRING_CJK
+"""Stable identity projection of catgirl character cards for Numeric v2."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .llm_context import _load_player_address
 
 
 def numeric_v2_character_ids(config_manager: Any) -> dict[str, str]:
-    """返回当前已安装猫娘角色卡的稳定身份索引。"""  # noqa: DOCSTRING_CJK
+    """Return a stable identity index of currently installed catgirl character cards."""  # noqa: DOCSTRING_CJK
 
     # This index authorizes destructive storage audit. Chat's fallback profiles
     # and IDs that failed to persist cannot prove that a saved character is gone.
@@ -64,8 +64,8 @@ def numeric_v2_catgirl_binding(
     if not character_id:
         raise ValueError("current_catgirl_identity_unavailable")
 
-    # character_id 是存储身份，不属于人格内容；排除它可让既有角色补 ID 时
-    # 继续匹配迁移前的 profile_hash。
+    # character_id identifies storage, not personality content; excluding it lets existing characters with newly assigned IDs
+    # continue matching their pre-migration profile_hash.
     profile_for_hash = deepcopy(profile)
     delete_reserved(profile_for_hash, "character_id")
     delete_reserved(profile_for_hash, "character_uid")

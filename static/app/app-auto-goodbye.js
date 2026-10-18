@@ -609,12 +609,12 @@
         }
     }
 
-    function demoteVisualTierAfterReturnBallDrag(targetTier) {
+    function restartVisualTierCountdown(targetTier, source, reason) {
         state.dragDemotionTier = targetTier;
         state.dragDemotionStartedAt = nowMs();
         setVisualTier(targetTier, {
-            source: 'return-ball-drag-demotion',
-            reason: 'return-ball-drag-end',
+            source,
+            reason,
         });
     }
 
@@ -629,14 +629,14 @@
             state.cat3DragReleaseCount += 1;
             if (state.cat3DragReleaseCount >= CAT3_DRAG_RELEASES_BEFORE_CAT2) {
                 state.cat3DragReleaseCount = 0;
-                demoteVisualTierAfterReturnBallDrag(TIER_CAT2);
+                restartVisualTierCountdown(TIER_CAT2, 'return-ball-drag-demotion', 'return-ball-drag-end');
             }
             return;
         }
 
         state.cat3DragReleaseCount = 0;
         if (currentTier === TIER_CAT2) {
-            demoteVisualTierAfterReturnBallDrag(TIER_CAT1);
+            restartVisualTierCountdown(TIER_CAT1, 'return-ball-drag-demotion', 'return-ball-drag-end');
         }
     }
 
@@ -845,7 +845,6 @@
         }
 
         ensureInfrastructurePrimed();
-
         const goodbyeActive = isGoodbyeActive();
         const idleSuppressed = syncIdleSuppressionState('tick');
 

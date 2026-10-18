@@ -166,6 +166,11 @@ MIXIN_SUPPORT_CLASSES = {
         "HoldToken",
         "TakeoverOwned",
     },
+    "turn": {
+        # The handle returned by open_mirror_speech_stream (push / finish /
+        # abort); public API of the turn mixin, like the takeover tokens.
+        "MirrorSpeechStream",
+    },
     "tts_runtime": {
         # Private control-flow signal for the game-speech preload batch. It has
         # to be a distinct type from asyncio.CancelledError so that absorbing a
@@ -2660,6 +2665,7 @@ def run(root: Path) -> list[Violation]:
         allowed_dependency_prefixes = (
             "main_logic.voice_input",
             "main_logic.voice_turn.contracts",
+            "main_logic.voice_turn.interception_events",
             "utils.game_route_state",
             "utils.external_route_registry",
         )
@@ -2707,7 +2713,7 @@ def run(root: Path) -> list[Violation]:
                         node.col_offset,
                         "VOICE_INPUT_LAYERING",
                         "voice_input may depend only on its own package, "
-                        "voice_turn.contracts, utils.game_route_state and "
+                        "voice_turn.contracts/interception_events, utils.game_route_state and "
                         "utils.external_route_registry "
                         f"(found {module})",
                     ))
@@ -3318,12 +3324,17 @@ def run(root: Path) -> list[Violation]:
             public_methods = {
                 "__init__",
                 "display_name",
+                "supports_interception_delivery",
                 "close",
                 "capture_ingress_token",
                 "suspend",
                 "resume",
                 "abort",
                 "wait_transcript_idle",
+                # Neutral audio boundaries and delivery draining stay inside
+                # the provider runtime; Core retains capture/route authority.
+                "discontinue_input",
+                "wait_input_settled",
                 "has_pending_transcript_delivery",
                 "pending_transcript_turn_tokens",
                 "set_speaker_verifier_factory",

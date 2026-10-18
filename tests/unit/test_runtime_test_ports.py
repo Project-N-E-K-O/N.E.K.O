@@ -104,16 +104,16 @@ def test_initialize_runtime_test_ports_raises_when_unique_port_cannot_be_found(
     }
 
 
-# ── xdist worker 端口隔离（对偶：worker 忽略继承值 / 单进程仍尊重显式 pin） ──
+# ── xdist worker port isolation (symmetric cases: workers ignore inherited values / single processes respect explicit pins) ──
 #
-# unit-tests.yml 用 `-n auto` 跑这套用例，而 xdist controller 在收集阶段就会
-# import tests/conftest.py，分配结果落进 controller 自己的 os.environ，execnet
-# 再把整份环境复制给每个 worker——于是所有 worker 解析出同一个端口，而本目录里
-# 十二个用到 mock_memory_server 的文件都会在这个端口上起 uvicorn。Windows 下
-# SO_REUSEADDR 让第二次 bind 成功而不是失败，所以冲突完全不报错：readiness 探针
-# 被先起来的那个服务应答，套件照绿，只是某个 worker 在跟别人的服务说话。
+# unit-tests.yml runs this suite with `-n auto`; the xdist controller imports
+# tests/conftest.py during collection, storing its allocation in its own os.environ. execnet then
+# copies that environment to every worker, so all resolve the same port, while twelve files here
+# start uvicorn for mock_memory_server on it. On Windows,
+# SO_REUSEADDR lets a second bind succeed silently: readiness probes
+# hit whichever service starts first; the suite stays green while workers talk to someone else's service.
 #
-# 两条一起才说明规则是什么，缺一条都能被"永远忽略 env"或"永远尊重 env"蒙混过去。
+# Both cases define the rule; either alone can be fooled by always ignoring env or always respecting env.
 
 
 @pytest.mark.unit

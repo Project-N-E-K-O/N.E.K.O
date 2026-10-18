@@ -329,19 +329,19 @@ async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
         gate=gate,
         coordinator=coordinator,
         on_commit=_noop_commit,
-        # TTL 必须远大于「一帧音频被消费完」所需的时间：取 0.01s 时卸载往往在
-        # 音频进入消费路径之前就已触发，断言就证明不了「静音音频没有续期」。
+        # TTL must greatly exceed the time to consume one audio frame: at 0.01s, unload often fires
+        # before audio enters consumption, so assertions cannot prove that silent audio did not renew TTL.
         smart_turn_warm_seconds=0.2,
     )
     await adapter.start()
 
     await adapter.reset(generation=1, buffer_epoch=1, utterance_id=2)
-    # TTL 现在是 0.2s，默认 1.0s 的 deadline 只有 5 倍余量，CI 比本机慢一到两个
-    # 数量级，显式给到 2.0s。
+    # TTL is now 0.2s; the default 1.0s deadline has only 5× margin, while CI is one or two orders
+    # of magnitude slower than local runs, so explicitly allow 2.0s.
     await _eventually(lambda: coordinator.unload_calls == 1, timeout=2.0)
 
     await adapter.reset(generation=1, buffer_epoch=1, utterance_id=3)
-    armed = adapter._smart_turn_unload_task  # reset() 排下的这一轮 TTL 卸载
+    armed = adapter._smart_turn_unload_task  # This TTL unload was scheduled by reset()
     assert armed is not None
     await adapter.push_audio(
         generation=1,
@@ -350,16 +350,16 @@ async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
         pcm16=b"\x01\x00",
     )
     await _eventually(lambda: len(gate.feed_calls) == 1)
-    # wait_idle 排空队列，保证这帧静音音频已被完整消费——若消费路径错误地
-    # 取消了 TTL 卸载，此刻取消就已经发生了，下面的断言不会变成空过判定。
+    # wait_idle drains the queue, ensuring the silent audio frame is fully consumed; if consumption incorrectly
+    # cancelled TTL unloading, that cancellation has happened already and the assertion below cannot pass vacuously.
     await adapter.wait_idle()
-    # 本用例的主张是「静音音频不给 TTL 续期」，光数 unload_calls 到 2 证明不了它：
-    # 续期就是 _cancel_smart_turn_unload + _schedule_smart_turn_unload，计数照样会
-    # 到 2、只是晚一轮 TTL。所以要断言 reset() 排下的**同一个**任务还挂着、没被取消。
+    # This test claims silent audio does not renew TTL; merely reaching 2 unload_calls cannot prove that:
+    # renewal calls _cancel_smart_turn_unload + _schedule_smart_turn_unload and still reaches a count of
+    # 2, just one TTL later. Assert that the **same** task scheduled by reset() remains pending and uncancelled.
     assert adapter._smart_turn_unload_task is armed, "静音音频重排了 TTL 卸载任务"
     assert not armed.cancelled()
-    # 不能用固定 sleep 等 TTL 到点：Windows 事件循环 15.625ms 的时钟粒度下
-    # sleep(0.03) 可能只等零毫秒（断言提前落地）。
+    # Do not wait for TTL using a fixed sleep: with Windows event-loop clock granularity of 15.625ms,
+    # sleep(0.03) may wait zero milliseconds, running the assertion early.
     await _eventually(lambda: coordinator.unload_calls == 2, timeout=2.0)
 
     assert coordinator.unload_calls == 2
@@ -1376,8 +1376,8 @@ async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
         gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
         coordinator=coordinator,
         on_commit=commit,
-        # 复查窗口取 0.5s（原为 0.02s）：Windows 时钟粒度 15.625ms，窗口太窄时
-        # 「还没复查」的断言点和复查定时器会落在同一格 ready，靠回调顺序决定输赢。
+        # Use a 0.5s recheck window (previously 0.02s): Windows clock granularity is 15.625ms, and too narrow a window
+        # puts the 'not rechecked yet' assertion and recheck timer in the same ready tick, making callback order determine success.
         continuation_timeout_seconds=0.5,
         smart_turn_required=True,
         max_endpoint_wait_seconds=5.0,
@@ -1388,8 +1388,8 @@ async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
         generation=21, buffer_epoch=22, utterance_id=23, pcm16=b"\x01\x00"
     )
     await _eventually(lambda: coordinator.evaluate_calls == 1)
-    # wait_idle 是确定性同步点：队列排空 + 评估任务与 commit 回调都已跑完，
-    # 所以 incomplete 若被错误地 commit，此刻 commits 一定非空——断言不会空过。
+    # wait_idle is a deterministic synchronization point: the queue is drained, evaluation and commit callbacks have completed,
+    # so an incorrectly committed incomplete result guarantees nonempty commits here; the assertion cannot pass vacuously.
     await adapter.wait_idle()
     assert commits == []
     await _eventually(lambda: coordinator.evaluate_calls == 2, timeout=3.0)

@@ -74,8 +74,8 @@ _MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
 # Not imported from there at runtime: agent_event_bus pulls in pyzmq, and this
 # module sits on the tool path.
 #
-# 值就是对外文档承诺的 500 KiB：信封加在**事件上限**那一侧，不从这里扣——
-# 「图片 500 KiB vs plane 记录 512 KiB」那 12 KB 差额本来就是留给信封的。
+# Keep the publicly documented 500 KiB value: add the envelope on the event-limit side rather than subtracting here;
+# the 12 KB gap between the 500 KiB image and 512 KiB plane record is reserved for the envelope.
 _TOOL_IMAGE_DELIVER_MAX_B64_BYTES = 500 * 1024
 _MAX_TOOL_IMAGES = 2
 _MAX_TOOL_IMAGE_PIXELS = 3840 * 2160
@@ -162,6 +162,12 @@ class ToolCall:
     raw_arguments: str = ""
     # Used internally by some providers for state tracking; opaque to callers.
     provider_meta: Dict[str, Any] = field(default_factory=dict)
+    # Host-only ownership, never encoded into model arguments/history.
+    reply_owner: Any = field(default=None, repr=False)
+    host_reply: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    # Realtime has no offline ReplyTurn. Preserve its existing frozen transport/scope owner for provenance;
+    # this host-only value is never accepted from model arguments or encoded into tool results/history.
+    source_owner: Any = field(default=None, repr=False)
 
 
 @dataclass
@@ -287,9 +293,9 @@ def _decode_tool_image_b64(data_b64: str) -> Tuple[bytes, str] | None:
     return raw, detected_mime
 
 
-# 压到投递上限以内的阶梯。第一档就是送模型的常规档位（1280x720 / q80）；后面
-# 几档只在它仍然放不下时才走，逐级让分辨率和质量。这些数字不是随手挑的：
-# 720p/q80 是本仓所有送模型画面的既有档位，其余各档只是在它之下继续降。
+# Compression ladder below the delivery limit. Start with the normal model profile (1280x720 / q80);
+# only if it still does not fit, progressively lower resolution and quality. These values are deliberate:
+# 720p/q80 is this repository's existing model-image profile, and subsequent tiers only decrease from there.
 _TOOL_IMAGE_FIT_LADDER: Tuple[Tuple[int, int], ...] = (
     (720, 80),
     (720, 60),
@@ -337,9 +343,9 @@ def _fit_tool_image_for_delivery(data_b64: str) -> Tuple[str, str] | None:
         )
 
         image = Image.open(_BytesIO(_base64.b64decode(data_b64)))
-        # 摆正再缩放，和 normalize_image_for_model 同一个理由：JPEG 存盘不带
-        # EXIF，先缩放会把 orientation 标记连同信息一起丢掉，模型拿到一张躺倒
-        # 的照片且无从察觉。
+        # Correct orientation before resizing, for the same reason as normalize_image_for_model: saved JPEGs omit
+        # EXIF, so resizing first discards the orientation tag and its information, leaving the model with a sideways
+        # photo and no way to detect it.
         image = ImageOps.exif_transpose(image) or image
         if image.mode not in ("RGB", "L"):
             image = image.convert("RGB")
@@ -359,9 +365,9 @@ def _fit_tool_image_for_delivery(data_b64: str) -> Tuple[str, str] | None:
         except Exception:
             return None
         if len(encoded) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES:
-            # 重编码一律出 JPEG，所以声明的 mime 必须跟着字节走——一张被重编码
-            # 却仍自称 PNG 的图过不了 provider 的嗅探，也会在总线记录上留下错误
-            # 的 mime。
+            # Re-encoding always produces JPEG, so declared mime must follow the bytes; a re-encoded image
+            # still claiming PNG fails provider sniffing and leaves incorrect mime
+            # on the bus record.
             return encoded, "image/jpeg"
     return None
 

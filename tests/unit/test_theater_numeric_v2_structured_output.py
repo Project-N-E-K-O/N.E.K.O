@@ -9,8 +9,9 @@ from jsonschema import Draft202012Validator
 
 from services.theater import numeric_v2_actor as actor
 from services.theater import numeric_v2_evaluator as evaluator
+from services.theater.numeric_v2_narrative import parse_narrative_events
 from services.theater.numeric_v2_structured_output import (
-    actor_output_schema, contract_output_schema, review_output_schema, response_format_for,
+    actor_output_schema, contract_output_schema, narrative_output_schema, review_output_schema, response_format_for,
 )
 from services.theater.numeric_v2_trace import text_trace_scope
 from services.theater.numeric_v2_usage import numeric_v2_usage_scope
@@ -84,6 +85,7 @@ async def test_actor_schema_reaches_single_call_and_preserves_usage(monkeypatch,
         result = await instance._invoke(messages, **flags)
     assert result is not None and instance.provider_call_count == len(seen) == len(factories) == 1
     assert seen[0][0] is messages
+    assert 'narrative_events' not in seen[0][1]['response_format']['json_schema']['schema']['properties']
     assert factories[0]['max_retries'] == 0
     assert usage[0]['input_tokens'] == 12 and usage[0]['output_tokens'] == 7
     if trace_enabled:
@@ -101,11 +103,100 @@ def test_schema_rejects_wrong_fields_types_and_keeps_existing_optional_contract(
     assert not validator.is_valid({**valid, 'transition_offered': 'false'})
     assert not validator.is_valid({**valid, 'scene_update': None})
     assert not validator.is_valid({**valid, 'segments': []})
+    assert not validator.is_valid({**valid, 'narrative_events': []})
     assert not validator.is_valid({key: value for key, value in valid.items() if key != 'performance'})
     facts = actor_output_schema(fact_candidates_expected=True)
     for value in (True, 3, 'on'):
         assert Draft202012Validator(facts).is_valid({**valid, 'fact_candidates': [{'key': 'state', 'value': value, 'evidence_quote': '原文'}]})
     assert not Draft202012Validator(facts).is_valid({**valid, 'fact_candidates': [{'key': 'state', 'value': {}, 'evidence_quote': '原文'}]})
+
+
+def _narrative_event(phase='turn'):
+    return {'phase': phase, 'subject': 'character', 'kind': 'action',
+            'changes': [{'entity': 'environment:现场', 'attribute': 'condition', 'value': '可见'}],
+            'source': 'performance', 'quote': '现场可见。', 'known_to': ['player', 'character']}
+
+
+@pytest.mark.parametrize('field', ['subject', 'entity'])
+@pytest.mark.parametrize('reference,valid', [
+    ('player', True), ('character', True),
+    ('item:木匣', True), ('person:同伴', True), ('activity:收尾', True),
+    ('arrangement:见面', True), ('environment:门口', True),
+    ('item: 木匣 ', True), ('environment:甲:乙', True), ('environment::', True),
+    ('environment:门\n口', True), ('environment:门口\n', True),
+    ('item:' + '名' * 75, True), ('item:' + '名' * 76, False),
+    ('environment', False), ('environment:', False), ('environment: \t\n', False),
+    ('environment:　', False), ('unknown:名字', False),
+    ('player\n', False), ('character\n', False), (' player', False), ('player ', False),
+    ('', False),
+])
+def test_narrative_entity_references_match_parser_boundaries(field, reference, valid):
+    event = _narrative_event()
+    if field == 'subject':
+        event['subject'] = reference
+    else:
+        event['changes'][0]['entity'] = reference
+    payload = {'narrative_events': [event]}
+    schema_valid = Draft202012Validator(narrative_output_schema()).is_valid(payload)
+    parsed = parse_narrative_events([event])
+    assert (schema_valid, parsed is not None) == (valid, valid)
+    if valid:
+        assert parsed == [event]
+
+
+@pytest.mark.parametrize('flags,phase', [({}, 'turn'), ({'opening': True}, 'opening'),
+                                        ({'transition': True}, 'target_opening')])
+@pytest.mark.parametrize('reference,valid', [('environment:现场', True), ('environment', False)])
+def test_narrative_modes_enforce_existing_entity_contract(flags, phase, reference, valid):
+    event = _narrative_event(phase)
+    event['changes'][0]['entity'] = reference
+    candidate = {'narrative_events': [event]}
+    assert Draft202012Validator(narrative_output_schema(**flags)).is_valid(candidate) is valid
+    assert (parse_narrative_events([event]) is not None) is valid
+
+
+@pytest.mark.parametrize('flags,phase', [({}, 'turn'), ({'opening': True}, 'opening'),
+                                        ({'transition': True}, 'target_opening')])
+@pytest.mark.parametrize('entity,holder,valid', [
+    ('item:木匣', 'player', True), ('item:木匣', 'character', True),
+    ('item:木匣', 'none', True), ('item:木匣', 'person:受托人', True),
+    ('item: 木匣\n', 'person: 受托人\n', True),
+    ('item:' + '名' * 75, 'person:' + '名' * 73, True),
+    ('item:' + '名' * 76, 'player', False),
+    ('item:木匣', 'person:' + '名' * 74, False),
+    ('person:两匹马', 'character', False), ('character', 'player', False),
+    ('environment:门口', 'player', False), ('item: \t\n', 'player', False),
+    ('item:木匣', '你手中的剑匣', False), ('item:木匣', 'player\n', False),
+    ('item:木匣', 'person:　', False), ('item:木匣', 'activity:任务', False),
+])
+def test_narrative_holder_schema_matches_parser_contract(flags, phase, entity, holder, valid):
+    event = _narrative_event(phase)
+    event['changes'] = [{'entity': entity, 'attribute': 'holder', 'value': holder}]
+    assert Draft202012Validator(narrative_output_schema(**flags)).is_valid({'narrative_events': [event]}) is valid
+    assert (parse_narrative_events([event]) is not None) is valid
+
+
+@pytest.mark.parametrize('subject,holder', [('player', 'character'), ('character', 'player'),
+                                           ('character', 'person:受托人')])
+def test_narrative_holder_keeps_subject_object_and_recipient_separate(subject, holder):
+    event = _narrative_event()
+    event['subject'] = subject
+    event['changes'] = [{'entity': 'item:木匣', 'attribute': 'holder', 'value': holder}]
+    Draft202012Validator(narrative_output_schema()).validate({'narrative_events': [event]})
+    assert parse_narrative_events([event]) == [event]
+
+
+@pytest.mark.parametrize('attribute', ['position', 'location', 'condition', 'stage_result', 'unresolved',
+                                       'choice', 'commitment', 'arrangement', 'time', 'environment'])
+def test_narrative_non_holder_keeps_existing_entity_and_value_limits(attribute):
+    event = _narrative_event()
+    event['changes'] = [{'entity': 'character', 'attribute': attribute, 'value': '文' * 120}]
+    validator = Draft202012Validator(narrative_output_schema())
+    assert validator.is_valid({'narrative_events': [event]})
+    assert parse_narrative_events([event]) == [event]
+    event['changes'][0]['value'] += '文'
+    assert not validator.is_valid({'narrative_events': [event]})
+    assert parse_narrative_events([event]) is None
 
 
 @pytest.mark.parametrize('formal,confirmed', [(False, False), (True, False), (True, True)])

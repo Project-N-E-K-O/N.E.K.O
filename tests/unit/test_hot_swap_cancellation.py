@@ -480,7 +480,7 @@ def test_swap_prime_render_stops_at_a_budget_deferred_callback():
 
     assert ready == []
     assert "排在它后面的纯文本" not in rendered
-    # 两条都留在队列里等下一轮，claim 也都要还回去。
+    # Keep both queued for next round and return both claims.
     assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in deferred_media
     assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in deferred_text
 
@@ -513,9 +513,9 @@ def test_swap_prime_render_stops_at_a_transient_media_failure():
     assert "排在它后面的纯文本" not in rendered
     assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in stuck_media
     assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in later_text
-    # 重试记账归 drain，这里不能碰（两处都加会让额度按两倍速烧完）。
+    # Drain owns retry accounting; never modify here, or two increments burn quota twice as fast.
     assert PASSIVE_MEDIA_RETRY_KEY not in stuck_media
-    # 判据不是这个标记：终局失败同样 STOP（见下面那条对偶）。
+    # This flag is not the criterion: terminal failure also STOPs (see counterpart below).
 
 
 def test_swap_prime_render_stops_at_a_terminal_media_failure_too():
@@ -1115,7 +1115,7 @@ async def test_final_swap_post_promote_ws_invalid_restores_injected_extras():
     mgr.session = old_session
     mgr.pending_session = new_session
     mgr.is_hot_swap_imminent = True
-    mgr.is_active = True  # fail-close 必须真的把它翻回 False，默认 False 会假绿
+    mgr.is_active = True  # Fail-close must actually reset False; default False would falsely pass.
     mgr.message_handler_task = None
 
     async def _kill_new_session_ws(*args, **kwargs):
@@ -1240,7 +1240,7 @@ async def test_final_swap_abort_leaves_retracted_extras_purgeable():
     swap_task = await _run_swap_as_final_swap_task(mgr)
 
     assert not swap_task.cancelled()
-    # 中止后条目仍在队列（原地保留），常规 purge 照常清掉窗口期内 retract 的那条
+    # Entries remain queued in place after abort; normal purge removes retracted entries from the window.
     mgr._purge_undeliverable_callbacks()
     assert mgr.pending_extra_replies == [extra_kept], \
         "a retraction inside the swap window must remain purgeable after the abort"
@@ -1262,7 +1262,7 @@ async def test_final_swap_abort_does_not_resurrect_concurrently_delivered_extra(
     class _VoiceDeliverThenTakeoverOnClose(_FakeSession):
         async def close(self):
             await super().close()
-            # 模拟 trigger_agent_callbacks 语音投递成功清除（按 delivery_id）
+            # Simulate successful trigger_agent_callbacks voice delivery clearing by delivery_id.
             mgr.pending_extra_replies = [
                 e for e in mgr.pending_extra_replies
                 if e.get("_callback_delivery_id") != "id-spoken"
@@ -1402,7 +1402,7 @@ async def test_final_swap_cancel_after_old_close_fail_closes_text_session_too():
     new_session = _FakeSession("pending")
 
     old_session = object.__new__(OmniOfflineClient)
-    old_session.llm = object()  # 活跃文本会话的标志；close 后被清空
+    old_session.llm = object()  # Active text-session marker, cleared on close.
 
     async def _close_then_swallowed_cancel():
         old_session.llm = None  # mirror OmniOfflineClient.close()
@@ -1461,8 +1461,8 @@ async def test_final_swap_post_promote_cancel_restores_removed_extras():
         "the handler leaves the promoted session for the canceller to close"
     assert mgr.pending_extra_replies == [extra], \
         "post-promote cancel must restore the promote-removed extras"
-    # 双投守卫：restore 之后不得给将死的 promoted 会话重启 listener——
-    # 没有 listener，服务器响应不会被消费播出，塞回的条目才是唯一投递路径。
+    # Duplicate-delivery guard: after restore, never restart listener on dying promoted session;
+    # without listener, server responses cannot play, leaving restored entries as sole delivery path.
     assert mgr.message_handler_task is None, \
         "no listener may be restarted on the about-to-close promoted session"
 
@@ -1492,8 +1492,8 @@ async def test_final_swap_restore_excludes_extra_delivered_after_promote():
     ]
 
     async def _voice_delivery_then_external_cancel(*args, **kwargs):
-        # 窗口期内语音投递成功消费 id-spoken：cb 侧被 prune；extras 侧因条目
-        # 已在 promote 时摘走而 no-op（正是被复活的那半边）。随后外部取消命中。
+        # During window, voice success consumes id-spoken: callback side pruned; extras side no-ops because promotion
+        # already removed it (the half later resurrected). External cancellation then hits.
         mgr.pending_agent_callbacks = [
             cb for cb in mgr.pending_agent_callbacks
             if cb.get("_callback_delivery_id") != "id-spoken"
@@ -1908,7 +1908,7 @@ async def test_settled_media_barrier_releases_image_rejection_handlers():
     def _expect_session_update_ack(_instructions):
         fut = asyncio.get_running_loop().create_future()
         _ack_waiters.append(fut)
-        # provider 立刻确认：屏障落地，晚到的图片拒绝就无关了。
+        # Provider confirms immediately: barrier satisfied, so later image rejection is irrelevant.
         fut.set_result(True)
         return fut
 
@@ -1924,7 +1924,7 @@ async def test_settled_media_barrier_releases_image_rejection_handlers():
         new_session._inject_rejection_handlers[staged] = (
             lambda _msg, _held=big_payload: None
         )
-    # 一个不属于本次媒体投递的 handler，必须原样留着。
+    # Handler unrelated to this media delivery must remain unchanged.
     new_session._inject_rejection_handlers["evt-unrelated"] = lambda _msg: None
 
     callback = _passive_callback("camera frame delivered")

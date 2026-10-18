@@ -45,8 +45,8 @@ from tests.repo_ast_cache import parse_source_file
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# 这几个是 storage 状态的"写原语"。它们两两之间没有 await 是当前实现的硬前提：
-# 中间插一个 await 就能被取消停在"检查点已删、root mode 未改"上。
+# These are storage-state write primitives. No intervening await is a hard implementation premise:
+# an inserted await permits cancellation between deleting checkpoints and updating root mode.
 _STORAGE_WRITE_PRIMITIVES = frozenset(
     {
         "delete_storage_migration",
@@ -128,9 +128,9 @@ def _is_root_state_read(call: ast.Call) -> bool:
     name = _called_name(call)
     if name in {"load_root_state", "get_root_state"}:
         return True
-    # 间接读，例如 self._load_json_file(self.root_state_path, default_value={})。
-    # 只认名字里带 load/read 的，免得把 _save_local_state_json_file(self.root_state_path…)
-    # 也算成读。
+    # Indirect reads, such as self._load_json_file(self.root_state_path, default_value={}).
+    # Recognize only names containing load/read, avoiding classifying _save_local_state_json_file(self.root_state_path...)
+    # as a read too.
     lowered = name.lower()
     if "load" not in lowered and "read" not in lowered:
         return False
@@ -146,8 +146,8 @@ _SKIP_DIRS = {
     ".claude", ".codex-tmp", "frontend", "deps", "docs",
 }
 
-# 这三条 AST 护栏靠 _iter_project_python_files 供料，扫不到文件就等于全绿。
-# 主仓库当前有 1000+ 个在扫描范围内的 .py，取一个远低于它、又远高于 0 的下界。
+# These three AST guards rely on _iter_project_python_files; finding no files falsely passes everything.
+# The main repo currently has 1000+ Python files in scope; use a bound far below that but well above zero.
 _MIN_SCANNED_FILES = 200
 
 
@@ -181,7 +181,7 @@ def _project_python_files() -> tuple[Path, ...]:
     return tuple(paths)
 
 
-# ── 1. 写者拿锁 / 读者不拿锁（对偶） ──────────────────────────────────
+# ── 1. Writers lock / readers do not (symmetric cases) ──────────────────────────────────
 
 
 @pytest.mark.unit
@@ -240,7 +240,7 @@ def test_read_is_not_blocked_while_a_worker_holds_the_writer_lock(tmp_path):
         release.set()
         worker.join(timeout=5)
 
-    # join 超时只是返回，不会让用例红——显式断言线程真的收了
+    # join timeout merely returns without failing; explicitly assert thread completion.
     assert not worker.is_alive()
     assert isinstance(state, dict)
     assert elapsed < hold_seconds / 2, (
@@ -307,7 +307,7 @@ async def test_lifecycle_transaction_keeps_loop_live_for_unrelated_worker():
     assert unrelated_entered.is_set()
 
 
-# ── 2. 读路径不写 root_state（对偶 + 调用点） ─────────────────────────
+# ── 2. Read paths do not write root_state (symmetric cases + call sites) ─────────────────────────
 
 
 @pytest.mark.unit
@@ -372,8 +372,8 @@ def test_storage_location_read_routes_leave_root_state_untouched(tmp_path, monke
         else:
             response = client.get(path)
 
-        # 500 = 未处理异常，说明路由根本没跑通；其余状态码（含 /exit 在没有
-        # shutdown 回调时的 503）都算真的跑到了业务分支。
+        # 500 means an unhandled exception and no working route; all other statuses (including /exit's
+        # 503 without a shutdown callback) indicate the business branch was reached.
         assert response.status_code != 500, f"{path} -> {response.status_code}"
         assert config_manager.load_root_state().get("legacy_cleanup_pending") is False, (
             f"{path} 在读路径上写了 root_state"
@@ -434,10 +434,10 @@ def test_stale_mode_recovery_keeps_a_concurrent_writers_fields(tmp_path, monkeyp
     initial["last_known_good_root"] = "OLD"
     config_manager.save_root_state(initial)
 
-    # 调用方（bootstrap）在拿锁之前读到的那一份
+    # State the caller (bootstrap) read before acquiring the lock.
     stale_pre_image = config_manager.load_root_state()
 
-    # 另一个写者在"调用方读完"和"自愈写入"之间提交了一轮
+    # Another writer commits between the caller's read and self-healing write.
     committed = dict(config_manager.load_root_state())
     committed["last_known_good_root"] = "NEW"
     config_manager.save_root_state(committed)
@@ -477,7 +477,7 @@ def test_cloudsave_bootstrap_keeps_a_write_that_lands_mid_flight(tmp_path, monke
     config_manager.save_root_state(base)
 
     def _commit_midway(cm):
-        # 强制交错：bootstrap 已经读过 root_state、还没写回去，此刻另一个写者提交一轮
+        # Force interleaving: bootstrap has read root_state but not written it; another writer commits now.
         state = dict(cm.load_root_state())
         state["last_migration_source"] = "NEW"
         cm.save_root_state(state)
@@ -535,8 +535,8 @@ def test_every_locked_write_reloads_root_state_inside_the_block():
             if not opens_transaction:
                 continue
 
-            # 用同一对 shape 谓词，别退回按名字比对：storage_roots 那处的读是
-            # self._load_json_file(self.root_state_path, ...)，名字对不上但确实是读。
+            # Use the same pair of structural predicates, not name matching: storage_roots reads via
+            # self._load_json_file(self.root_state_path, ...), differently named but genuinely a read.
             calls = [child for child in ast.walk(node) if isinstance(child, ast.Call)]
             if any(_is_root_state_write(c) for c in calls) and not any(
                 _is_root_state_read(c) for c in calls
@@ -706,8 +706,8 @@ def test_rollback_on_exception_also_rolls_back_on_cancellation():
         for scope in ast.walk(tree):
             if not isinstance(scope, ast.AsyncFunctionDef):
                 continue
-            # 回滚 handler 内部那些 best-effort 的 try/except 不算：它们已经在异常
-            # 处理里了，再要求它们处理取消既没有意义也无处可退。
+            # Exclude best-effort try/except blocks inside rollback handlers: they already handle exceptions,
+            # so requiring cancellation handling there is meaningless with nowhere further to roll back.
             inside_handler = {
                 nested
                 for node in ast.walk(scope)
@@ -726,7 +726,7 @@ def test_rollback_on_exception_also_rolls_back_on_cancellation():
                 )
                 if not rolls_back:
                     continue
-                # CancelledError 显式接，或者干脆接 BaseException——两者都能兜住取消。
+                # Explicit CancelledError or BaseException catches both handle cancellation.
                 handles_cancel = any(
                     "CancelledError" in ast.dump(handler.type)
                     or "BaseException" in ast.dump(handler.type)
@@ -745,7 +745,7 @@ def test_rollback_on_exception_also_rolls_back_on_cancellation():
     )
 
 
-# ── 3. offload 不许把 _storage_mutation_lock 提前让出去 ───────────────
+# ── 3. Offloading must not release _storage_mutation_lock early ───────────────
 
 
 @pytest.mark.unit
@@ -803,7 +803,7 @@ async def test_repeatedly_cancelled_storage_job_still_waits_for_the_worker():
     assert await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
 
     task.cancel()
-    # 让 handler 真的跑到"等 worker"那一步，第二次取消才打得中
+    # Let the handler actually reach waiting-for-worker before the second cancellation can hit.
     await asyncio.sleep(0.05)
     task.cancel()
 
@@ -922,7 +922,7 @@ def test_empty_snapshot_never_deletes_storage_state(tmp_path):
     assert migration_path.exists(), "空快照回滚把迁移检查点删了"
 
 
-# ── 4. 写序列保持原子（不许被 await 切开） ────────────────────────────
+# ── 4. Write sequences remain atomic (no intervening awaits) ────────────────────────────
 
 
 @pytest.mark.unit
@@ -944,7 +944,7 @@ def test_storage_write_primitives_never_sit_directly_in_an_async_body():
                 _walk(child, async_owner=node.name, in_except=False)
             return
         if isinstance(node, ast.FunctionDef):
-            # 同步函数体就是我们想要的形状：里面插不进 await
+            # A synchronous function body has the desired shape: await cannot intervene.
             for child in ast.iter_child_nodes(node):
                 _walk(child, async_owner=None, in_except=False)
             return

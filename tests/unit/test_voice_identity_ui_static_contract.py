@@ -215,11 +215,15 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
             css_color(theme, "voice-focus"),
             css_color(theme, "voice-panel-soft"),
         ) >= 3
-    # Primary-button text sits on a gradient between these two stops.
-    for stop in ("#74d6fa", css_color(light_theme, "voice-blue-strong")):
-        assert _contrast_ratio("#07354d", stop) >= 4.5
+    # Primary actions and current-segment markers share solid fill/text tokens.
+    # Both themes must retain readable text when either token changes.
+    for theme in (light_theme, dark_theme):
+        assert _contrast_ratio(
+            css_color(theme, "voice-progress-current-text"),
+            css_color(theme, "voice-blue-strong"),
+        ) >= 4.5
     assert re.search(
-        r"\.primary-button\s*\{[^}]*color:\s*#07354d[^}]*background:\s*linear-gradient\(100deg,\s*#74d6fa,\s*var\(--voice-blue-strong\)\)",
+        r"\.primary-button\s*\{[^}]*color:\s*var\(--voice-progress-current-text\)[^}]*background:\s*var\(--voice-blue-strong\)",
         stylesheet,
         re.DOTALL,
     )
@@ -236,14 +240,6 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
         css_color(light_theme, "voice-success-text"),
         css_color(light_theme, "voice-panel-soft"),
     ) >= 4.5
-    # The current-segment marker keeps the same blue fill in both themes, so
-    # its text token must pass on that fill and must not be themed away.
-    assert _contrast_ratio(
-        css_color(light_theme, "voice-progress-current-text"),
-        css_color(light_theme, "voice-blue-strong"),
-    ) >= 4.5
-    assert "--voice-progress-current-text" not in dark_theme.group("body")
-    assert "--voice-blue-strong" not in dark_theme.group("body")
     for selector in (r"\.segment-progress\s+span\.active", r"\.segment-progress\s+span\.current"):
         assert re.search(
             selector + r"\s*\{[^}]*color:\s*var\(--voice-progress-current-text\)[^}]*background:\s*var\(--voice-blue-strong\)",
@@ -267,7 +263,11 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     )
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
-    assert "padding: 18px 24px" in stylesheet
+    assert re.search(
+        r"\.voice-identity-header\s*\{[^}]*padding:\s*14px 24px",
+        stylesheet,
+        re.DOTALL,
+    )
     assert "/static/js/voice_identity.js" in template
     assert "/static/css/voice_identity.css" in template
 
@@ -542,11 +542,11 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
 
 
 def test_locale_bootstrap_declares_a_non_empty_locale_cache_key() -> None:
-    # 这条只保“声纹文案落地时缓存键已经翻过 2026-08-07-credentials-console-guide”，
-    # 是个不会腐烂的负向断言，所以留着不动。别把它改成钉死当前取值 —— 那样每次无关的
-    # 递增都要顺手来改这一行（static/yui-guide-day1-systray-intro.test.cjs 就那么烂过）。
-    # 版本串本身的通用约束（形状、不得复用旧值、两个装载点都带 ?v=、key 结构变了必须
-    # 递增）统一放在 tests/unit/test_locale_cache_bust_contract.py。
+    # This checks only that voiceprint copy shipped after cache key 2026-08-07-credentials-console-guide,
+    # a stable negative assertion. Keep it; never pin current value, forcing edits after unrelated
+    # increments (as static/yui-guide-day1-systray-intro.test.cjs once did).
+    # Generic version constraints (shape, no old-value reuse, ?v= at both load sites, increments on key-structure
+    # changes) live in tests/unit/test_locale_cache_bust_contract.py.
     bootstrap = (ROOT / "static/i18n-i18next.js").read_text(encoding="utf-8")
     locale_version = re.search(r"const\s+LOCALE_VERSION\s*=\s*'([^']+)'", bootstrap)
     assert locale_version and locale_version.group(1).strip()

@@ -613,17 +613,24 @@ class BrowserUseAdapter:
         provider_type = str(api_cfg.get("provider_type") or "openai_compatible").strip().lower()
 
         if _is_anthropic_endpoint(base_url, provider_type):
-            from browser_use.llm import ChatAnthropic as BUChatAnthropic
+            from brain.browser_use_anthropic import (
+                NekoChatAnthropic,
+                anthropic_rejects_forced_tool_choice,
+            )
 
             default_headers: Dict[str, str] = {}
             if _is_kimi_code_anthropic_base_url(base_url):
                 default_headers["User-Agent"] = "claude-code/0.1.0"
-            return BUChatAnthropic(
+            # No temperature: current Claude models 400 on non-default sampling
+            # params, so the model default decides (see scripts/check_no_temperature.py).
+            # "text" mode mirrors the OpenAI branch's dont_force_structured_output.
+            force_tool = mode != "text" and not anthropic_rejects_forced_tool_choice(model)
+            return NekoChatAnthropic(
                 model=model,
                 api_key=api_cfg.get("api_key"),
                 base_url=_normalize_anthropic_sdk_base_url(base_url),
-                temperature=0.0,
                 default_headers=default_headers or None,
+                structured_output="forced_tool" if force_tool else "auto_tool",
             )
 
         from browser_use.llm import ChatOpenAI as BUChatOpenAI
@@ -652,6 +659,20 @@ class BrowserUseAdapter:
         # agent drives its own multi-step LLM lifecycle, so token budget / timeout
         # are owned by that library and forcing ours here would break its loop.
         return BUChatOpenAI(**kwargs)  # noqa: LLM_OUTPUT_BUDGET
+
+    @staticmethod
+    def _agent_use_thinking(llm: Any) -> bool:
+        """Whether the browser-use agent output should carry a ``thinking`` field.
+
+        Claude models that reject forced tool use also run a reasoning-extraction
+        classifier that declines (stop_reason=refusal) requests asking for the
+        model's reasoning in an output field. They reason natively anyway.
+        """
+        if getattr(llm, "provider", None) != "anthropic":
+            return True
+        from brain.browser_use_anthropic import anthropic_rejects_forced_tool_choice
+
+        return not anthropic_rejects_forced_tool_choice(getattr(llm, "model", ""))
 
     async def _cdp_eval_on_page(self, session: Any, js: str) -> None:
         """Evaluate JS on the currently focused page via CDP Runtime.evaluate.
@@ -728,8 +749,8 @@ class BrowserUseAdapter:
         """
         self._cancelled = False
 
-        # 后台异步获取 IP 信息（与 Chrome 启动并行），不阻塞
-        # 推迟到所有 pre-checks 通过后再创建，避免 pre-check 失败时浪费网络请求
+        # Fetch IP information asynchronously in the background (alongside Chrome startup), without blocking
+        # Defer creation until all pre-checks pass to avoid wasting network requests when pre-checks fail
         ip_info_future: Optional[asyncio.Task] = None
 
         status = self.is_available()
@@ -769,7 +790,7 @@ class BrowserUseAdapter:
                 "error": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get('used', 0), "limit": info.get('limit', 300)}}),
             }
 
-        # 所有 pre-checks 通过后才启动 IP 信息查询任务
+        # Start the IP-information query only after all pre-checks pass
         if not BrowserUseAdapter._ip_address_cache and not BrowserUseAdapter._ip_country_cache:
             ip_info_future = asyncio.create_task(
                 self._get_ip_info()
@@ -789,7 +810,7 @@ class BrowserUseAdapter:
                     try:
                         print(f"[BrowserUse] trying mode={mode}", flush=True)
                         llm = self._build_llm(mode=mode)
-                        # [优化] 等待 IP 信息查询结果（如正在进行）并注入到指令中
+                        # [Optimization] Await any ongoing IP-information query and inject its result into the instruction
                         if ip_info_future is not None:
                             try:
                                 ip_addr, country = await asyncio.wait_for(
@@ -822,6 +843,7 @@ class BrowserUseAdapter:
                             llm=llm,
                             browser_session=browser_session,
                             max_failures=1 if mode == "schema" else 3,
+                            use_thinking=self._agent_use_thinking(llm),
                             initial_actions=[
                                 {"evaluate": {"code": _OVERLAY_JS}},
                             ],
@@ -1023,7 +1045,7 @@ class BrowserUseAdapter:
                 logger.error("[BrowserUse] Task failed: %s", e)
                 return {"success": False, "error": str(e)}
             finally:
-                # [收口] 取消并等待未完成的 IP 信息查询任务，避免残留后台请求
+                # [Cleanup] Cancel and await unfinished IP-information queries to avoid lingering background requests
                 if ip_info_future is not None:
                     if not ip_info_future.done():
                         ip_info_future.cancel()

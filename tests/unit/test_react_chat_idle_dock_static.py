@@ -240,7 +240,9 @@ def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
     )
 
     side_index = target_block.index("const minimizedSideTarget = _getNekoIdleCat1SideTarget(container, chatRect);")
-    return_side_index = target_block.index("return minimizedSideTarget;")
+    return_side_index = target_block.index(
+        "return window.NekoDesktopWindowGravity?.constrainTarget(container, minimizedSideTarget) || minimizedSideTarget;"
+    )
     compact_index = target_block.index("const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();")
     assert side_index < return_side_index < compact_index
     assert "return null;" in target_block
@@ -332,12 +334,12 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     assert "const heartbeat = !!(detail && detail.heartbeat);" in compact_listener
     assert "if (!heartbeat) {" in compact_listener
     assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in compact_listener
-    # heartbeat 分支必须保留原 sourceUpdatedAt，避免心跳新鲜时间戳扰乱跨状态排序
+    # Heartbeat must retain original sourceUpdatedAt, avoiding fresh timestamps disrupting cross-state ordering.
     assert "prevCompactSourceUpdatedAt" in compact_listener
-    # 还原后来心跳 catch-up：minimized 确认 false 但 compact 缓存尚未恢复时，
-    # heartbeat 应能恢复 compact 可见性（Electron setMinimized 早退不发布 compact 事件）
+    # Reproduce later heartbeat catch-up: minimized confirmed false but compact cache not yet restored;
+    # heartbeat restores compact visibility (Electron setMinimized returns early without compact event).
     assert "!_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
-    # minimized state 重赋值仅在 !heartbeat 分支内
+    # Reassign minimized state only inside !heartbeat branch.
     minimized_reassign_line = compact_listener[compact_listener.index("_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState("):]
     assert minimized_reassign_line.index("false") < minimized_reassign_line.index("null")
     assert minimized_reassign_line.index("null") < minimized_reassign_line.index("receivedAt")

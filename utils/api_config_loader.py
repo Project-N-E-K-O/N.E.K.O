@@ -32,7 +32,7 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
 
-# 配置缓存
+# Configuration cache.
 _config_cache: Optional[Dict[str, Any]] = None
 
 
@@ -107,7 +107,7 @@ def _convert_core_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     """
     result = {}
     
-    # 转换字段名：snake_case -> UPPER_SNAKE_CASE
+    # Convert field names: snake_case -> UPPER_SNAKE_CASE.
     field_mapping = {
         'core_url': 'CORE_URL',
         'core_urls': 'CORE_URLS',
@@ -134,7 +134,7 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     """
     result = {}
     
-    # 转换字段名：snake_case -> UPPER_SNAKE_CASE
+    # Convert field names: snake_case -> UPPER_SNAKE_CASE.
     field_mapping = {
         'openrouter_url': 'OPENROUTER_URL',
         'openrouter_urls': 'OPENROUTER_URLS',
@@ -195,7 +195,7 @@ def get_core_api_profiles(force_reload: bool = False) -> Dict[str, Dict[str, Any
     
     result = {}
     for key, profile in core_providers.items():
-        # 转换为Python代码使用的格式
+        # Convert to the format used by Python code.
         result[key] = _convert_core_api_profile(profile)
     
     if not result:
@@ -214,7 +214,7 @@ def get_assist_api_profiles(force_reload: bool = False) -> Dict[str, Dict[str, A
     Returns:
         Dict: assist API config dict, same format as ASSIST_API_PROFILES
     """
-    # 首先获取默认配置作为基础
+    # Obtain default configuration as the base first.
     defaults = _get_default_assist_api_profiles()
     
     config = get_config(force_reload=force_reload)
@@ -225,18 +225,18 @@ def get_assist_api_profiles(force_reload: bool = False) -> Dict[str, Dict[str, A
     
     result = {}
     for key, profile in assist_providers.items():
-        # 转换为Python代码使用的格式
+        # Convert to the format used by Python code.
         converted = _convert_assist_api_profile(profile)
         
-        # 与默认配置合并：默认配置作为基础，JSON配置覆盖
+        # Merge with defaults: JSON configuration overrides the default base.
         if key in defaults:
-            merged = dict(defaults[key])  # 复制默认配置
-            merged.update(converted)  # JSON 配置覆盖
+            merged = dict(defaults[key])  # Copy default configuration.
+            merged.update(converted)  # JSON configuration overrides.
             result[key] = merged
         else:
             result[key] = converted
     
-    # 添加默认配置中有但 JSON 中没有的 provider
+    # Add providers present in defaults but absent from JSON.
     for key in defaults:
         if key not in result:
             result[key] = defaults[key]
@@ -376,10 +376,10 @@ def _resolve_native_tts_voice_provider_config(
             resolving,
         )
 
-    # voices / aliases 走 dict 深合并：继承父目录后只需在子配置里增量声明
-    # 新增/覆盖的条目（如 free_intl 在 gemini 全量目录上只加一个 yui），
-    # 不必把父目录整张重抄一遍。其余标量字段（catalog_prefix / default_voice
-    # 等）仍是子覆盖父的整体替换语义。
+    # Deep-merge voices / aliases dictionaries, allowing child configurations to declare only additions/overrides
+    # after inheriting a parent catalog (e.g. free_intl adds just yui to Gemini's complete catalog),
+    # without copying the entire parent table. Other scalar fields such as catalog_prefix / default_voice
+    # still use whole-value child-over-parent replacement.
     _MERGE_DICT_FIELDS = ('voices', 'aliases')
     merged = deepcopy(inherited)
     for field, value in raw.items():
@@ -557,9 +557,9 @@ def get_meme_moderation_config() -> Dict[str, Any]:
             with open(standalone_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
-                # 兼容两种 shape：flat（顶层就是 api_key）
-                # 与 wrapped（顶层 'meme_moderation_config' 包一层，跟 api_providers.json
-                # 同构）。私有打包复用 api_providers.json 结构是常见操作，不强求扁平。
+                # Accept both flat shape (api_key at top level)
+                # and wrapped shape (top-level meme_moderation_config), matching api_providers.json.
+                # Private packages commonly reuse that structure; flat shape is not mandatory.
                 inner = loaded.get('meme_moderation_config')
                 raw = inner if isinstance(inner, dict) else loaded
         except Exception as e:
@@ -599,9 +599,9 @@ def get_livestream_config() -> Dict[str, Any]:
             with open(standalone_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
-                # 兼容两种 shape：flat（顶层就是 enabled/server_prefix/voice_id）
-                # 与 wrapped（顶层 'livestream_config' 包一层，跟 api_providers.json
-                # 同构）。主播复用 api_providers.json 结构是常见操作，不强求扁平。
+                # Accept both flat shape (enabled/server_prefix/voice_id at top level)
+                # and wrapped shape (top-level livestream_config), matching api_providers.json.
+                # Streamers commonly reuse that structure; flat shape is not mandatory.
                 inner = loaded.get('livestream_config')
                 raw = inner if isinstance(inner, dict) else loaded
         except Exception as e:
@@ -626,7 +626,7 @@ def is_livestream_active() -> bool:
     return cfg['enabled'] and bool(cfg['server_prefix'])
 
 
-# 导出主要函数
+# Export main functions.
 __all__ = [
     'get_core_api_profiles',
     'get_assist_api_profiles',

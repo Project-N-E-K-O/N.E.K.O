@@ -28,6 +28,46 @@ pytestmark = pytest.mark.plugin_unit
 DEMO_MANIFEST_V2 = '[plugin]\nid = "demo"\nversion = "2.0.0"\n'
 
 
+@pytest.mark.parametrize("mode", ["install", "upgrade", "reinstall", "override_builtin"])
+@pytest.mark.parametrize("phase", ["download", "verify"])
+async def test_download_size_failure_survives_task_execution_and_status_api(
+    tmp_path, monkeypatch, mode, phase,
+):
+    _configure_paths(monkeypatch, plugins_root=tmp_path / "plugins", profiles_root=tmp_path / "profiles")
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="demo", version="2.0.0", mode=mode,
+        package_url="https://example.com/demo.neko-plugin", package_sha256="a" * 64,
+    )
+    package = tmp_path / "demo.neko-plugin"
+    package.write_bytes(b"package")
+    details = {"actual_bytes": 629145600, "maximum_bytes": 524288000, "size_source": "content_length"}
+
+    async def bind(request):
+        return request, None
+
+    async def fail(*_args):
+        raise market_bridge._DownloadAttemptError(
+            "包文件过大", code="package_size_exceeded", details=details, retryable=False,
+        )
+
+    async def downloaded(*_args):
+        return package
+
+    monkeypatch.setattr(market_bridge, "_bind_market_package_hash", bind)
+    monkeypatch.setattr(market_bridge, "_download_package", fail if phase == "download" else downloaded)
+    monkeypatch.setattr(market_bridge, "_verify_downloaded_package_with_fallback", fail)
+    monkeypatch.setitem(market_bridge._tasks, "size-test", {"task_id": "size-test"})
+    await market_bridge._execute_install("size-test", payload)
+    status = await market_bridge.market_task_status("size-test", token=market_bridge.get_bridge_token())
+    body = status.model_dump()
+    assert body["status"] == "failed"
+    assert body["stage"] == phase
+    assert body["error_code"] == "package_size_exceeded"
+    assert body["error_details"] == details
+    assert body["retryable"] is False
+    assert body["error"] == "包文件过大"  # compatibility with older frontends
+
+
 def _payload(plugin_id: str = "demo") -> SimpleNamespace:
     return SimpleNamespace(
         plugin_id=plugin_id,
@@ -776,7 +816,7 @@ async def test_market_upgrade_holds_operation_lock_for_entire_replacement(
         acquire_attempts += 1
         if acquire_attempts == 2:
             second_waiting_for_lock.set()
-        # 截止期照原样转发。吞掉它的替身会让被测的等锁预算在这条路径上静默失效。
+        # Forward the deadline unchanged. Swallowing it in the test double silently disables the lock-wait budget under test on this path.
         await original_acquire(deadline)
 
     monkeypatch.setattr(operation_lock._PROCESS_LOCK, "acquire", observed_acquire)

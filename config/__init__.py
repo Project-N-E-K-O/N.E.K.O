@@ -36,11 +36,11 @@ from .character_fields import (  # noqa: F401
     LEGACY_FLAT_TO_RESERVED,
 )
 
-# `config` 是老单体模块的兼容门面，历史上 `from config import platform` 是能用的，
-# 而外部插件不在本仓能 grep 的范围内（codex）。所以名字留着——但直接在这里 import，
-# 不再从 config.network 转出：那边已经改用 sys.platform，转出会让它多一个纯为兼容
-# 而存在的未使用导入。
-import platform  # noqa: F401 - 兼容门面：外部可能 `from config import platform`
+# config is the legacy monolith's compatibility facade; `from config import platform` historically worked,
+# and external plugins cannot be searched from this repository (Codex). Keep the name, importing directly here
+# rather than re-exporting from config.network: that module now uses sys.platform, and re-exporting would
+# leave an unused import solely for compatibility.
+import platform  # noqa: F401 - Compatibility facade: external code may use `from config import platform`.
 
 from .network import (  # noqa: F401
     json,
@@ -222,6 +222,7 @@ from .memory_settings import (  # noqa: F401
     SPEAKER_TRUST_LEGACY_BARRIERS,
     SPEAKER_TRUST_CHANNEL_MAX_LEN,
     IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM,
+    IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM,
     EXTERNAL_IMPORT_PERSONA_NEKO_MAX_TOKENS,
     EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS,
     EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS,
@@ -238,6 +239,7 @@ from .memory_settings import (  # noqa: F401
     HYBRID_RECALL_RRF_K,
     HYBRID_RECALL_POOL_CACHE_MAX_FILES,
     HYBRID_RECALL_VEC_CACHE_MAX_BYTES,
+    HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES,
     RECENT_HISTORY_MAX_ITEMS,
     RECENT_COMPRESS_THRESHOLD_ITEMS,
     RECENT_SUMMARY_MAX_TOKENS,
@@ -452,6 +454,7 @@ from .visit_settings import (  # noqa: F401
     VISIT_PAGE_REJOIN_SAFETY_S,
     VISIT_CAPS_PREFLIGHT_TIMEOUT_S,
     VISIT_CAPS_SDK_TIMEOUT_S,
+    VISIT_CAPS_CACHE_TTL_S,
     VISIT_INBOX_HANDOFF_MAX_S,
     VISIT_INBOX_HANDOFF_ABS_MAX_S,
     VISIT_WIRE_PROTO,
@@ -513,6 +516,7 @@ from .visit_settings import (  # noqa: F401
     VISIT_VENDOR_GRANT_TTL_S,
     VISIT_VENDOR_REFRESH_MARGIN_S,
     VISIT_BANNED_CACHE_S,
+    VISIT_INVITE_PREVIEW_REUSE_S,
     VISIT_SHORT_ID_LEN,
     VISIT_LIVEKIT_HOSTS,
     VISIT_FREE_MINUTES_PER_DAY,
@@ -571,6 +575,7 @@ from .visit_settings import (  # noqa: F401
     VISIT_PEERS_FILENAME,
     VISIT_BLOCKLIST_FILENAME,
     VISIT_REVOCATIONS_DIRNAME,
+    VISIT_REVOCATIONS_QUARANTINE_DIRNAME,
     VISIT_FORGET_EPOCHS_FILENAME,
     VISIT_REPORTS_DIRNAME,
     VISIT_PERSONA_DIRNAME,
@@ -706,7 +711,7 @@ __all__ = [
     'NATIVE_IMAGE_MIN_INTERVAL',
     'IMAGE_IDLE_RATE_MULTIPLIER',
     'MAX_MULTIMODAL_TURN_IMAGES',
-    # API 和模型配置的默认值
+    # Default API and model configuration values.
     'DEFAULT_CORE_API_KEY',
     'DEFAULT_AUDIO_API_KEY',
     'DEFAULT_OPENROUTER_API_KEY',
@@ -715,9 +720,9 @@ __all__ = [
     'DEFAULT_CORE_MODEL',
     'DEFAULT_OPENROUTER_URL',
     # ROUTER_MODEL / SEMANTIC_MODEL / RERANKER_MODEL / SETTING_PROPOSER_MODEL /
-    # SETTING_VERIFIER_MODEL 于 2026-04 全部退环境（无 Python 调用方），见
-    # memory/settings.py 顶部说明 + 上方常量块的注释。新增需求走 tier 化路径。
-    # 其他模型配置（仅导出 DEFAULT_ 版本）
+    # SETTING_VERIFIER_MODEL was fully retired in 2026-04 (no Python callers); see
+    # memory/settings.py's introduction and the constant-block comments above. New needs use tier-based paths.
+    # Other model configuration (export DEFAULT_ variants only).
     'DEFAULT_CONVERSATION_MODEL',
     'DEFAULT_SUMMARY_MODEL',
     'DEFAULT_CORRECTION_MODEL',
@@ -727,7 +732,7 @@ __all__ = [
     'DEFAULT_REALTIME_MODEL',
     'DEFAULT_TTS_MODEL',
     'HIDE_DIRTY_VOICE_TRANSCRIPTS',
-    # 用户自定义模型配置的 URL/API_KEY
+    # URL/API_KEY for user-defined models.
     'DEFAULT_CONVERSATION_MODEL_URL',
     'DEFAULT_CONVERSATION_MODEL_API_KEY',
     'DEFAULT_SUMMARY_MODEL_URL',
@@ -810,6 +815,7 @@ __all__ = [
     'SPEAKER_TRUST_LEGACY_BARRIERS',
     'SPEAKER_TRUST_CHANNEL_MAX_LEN',
     'IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM',
+    'IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM',
     'EXTERNAL_IMPORT_PERSONA_NEKO_MAX_TOKENS',
     'EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS',
     'EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS',
@@ -994,6 +1000,7 @@ __all__ = [
     'VISIT_PAGE_REJOIN_SAFETY_S',
     'VISIT_CAPS_PREFLIGHT_TIMEOUT_S',
     'VISIT_CAPS_SDK_TIMEOUT_S',
+    'VISIT_CAPS_CACHE_TTL_S',
     'VISIT_INBOX_HANDOFF_MAX_S',
     'VISIT_INBOX_HANDOFF_ABS_MAX_S',
     'VISIT_WIRE_PROTO',
@@ -1055,6 +1062,7 @@ __all__ = [
     'VISIT_VENDOR_GRANT_TTL_S',
     'VISIT_VENDOR_REFRESH_MARGIN_S',
     'VISIT_BANNED_CACHE_S',
+    'VISIT_INVITE_PREVIEW_REUSE_S',
     'VISIT_SHORT_ID_LEN',
     'VISIT_LIVEKIT_HOSTS',
     'VISIT_FREE_MINUTES_PER_DAY',
@@ -1113,6 +1121,7 @@ __all__ = [
     'VISIT_PEERS_FILENAME',
     'VISIT_BLOCKLIST_FILENAME',
     'VISIT_REVOCATIONS_DIRNAME',
+    'VISIT_REVOCATIONS_QUARANTINE_DIRNAME',
     'VISIT_FORGET_EPOCHS_FILENAME',
     'VISIT_REPORTS_DIRNAME',
     'VISIT_PERSONA_DIRNAME',

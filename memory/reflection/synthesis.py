@@ -126,11 +126,11 @@ class SynthesisMixin:
         ]
         if not ready:
             return []
-        # 轮转游标（进程内即可，重启从头轮）：从上次服务过的 subject 之后
-        # 继续，无论本次成功与否都推进。oldest-first 的问题是一个 dead-letter
-        # / 反复失败的 bucket 会每 tick 占住唯一名额，把其他 subject 饿死；
-        # 失败退避（synthesize_reflections 内部 backoff）只省 LLM 调用，
-        # 不让出名额。
+        # Round-robin cursor, process-local and reset on restart: begin after the last served subject,
+        # advancing regardless of success. Oldest-first lets one dead-letter or failing
+        # bucket monopolize the sole slot each tick, starving other subjects;
+        # synthesize_reflections backoff saves LLM calls but does not
+        # release the slot.
         ready.sort(key=lambda bucket: (
             bucket['subject'].key, bucket['subject'].scope,
         ))
@@ -218,18 +218,18 @@ class SynthesisMixin:
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
 
-        # 失败退避 key 必须覆盖**全部** unabsorbed facts，所以在 cap 之前先取。
-        # 不能用 rid（下面那个 capped top-N 子集的 hash）当退避 key：否则一个
-        # poison 的 top-N 批次 dead-letter 后，新到的低 importance facts 进不了
-        # top-N → rid 不变 → 合成被永久跳过，把整个 unabsorbed 池饿死（Codex P2）。
-        # 用全集 key 时任何新 fact 都会改 key → 预算复位 → 重试一次。
+        # Backoff keys cover **all** unabsorbed facts, computed before capping.
+        # Never use rid, the capped top-N subset hash: poisoned
+        # dead-letter top-N batches exclude new low-importance facts,
+        # leaving rid unchanged and synthesis permanently skipped, starving the entire pool (Codex P2).
+        # Full-set keys change for any new fact, resetting budgets for another attempt.
         all_unabsorbed_ids = sorted(f['id'] for f in unabsorbed)
         backoff_key = _reflection_id_from_facts(all_unabsorbed_ids)
 
-        # Cap unabsorbed facts entering this synthesis call. 上游
-        # aget_unabsorbed_facts 没有 limit 参数，长期不上线时可能堆几百
-        # 条；按 importance(desc) → 创建时间(asc) 排序后取前 N 条，避免
-        # 一次性塞超长 prompt。
+        # Cap unabsorbed facts entering synthesis. Upstream
+        # aget_unabsorbed_facts lacks limits and may accumulate hundreds
+        # after long absences. Sort importance descending, creation ascending, take top N,
+        # preventing huge prompts.
         from config import REFLECTION_SYNTHESIS_FACTS_MAX
         from memory.facts import safe_importance
         if len(unabsorbed) > REFLECTION_SYNTHESIS_FACTS_MAX:
@@ -241,15 +241,15 @@ class SynthesisMixin:
                 ),
             )[:REFLECTION_SYNTHESIS_FACTS_MAX]
 
-        # 排序一次：on-disk 字段与 _reflection_id_from_facts 内部 sorted 对齐，
-        # 消除 "hash 用 sorted，存盘不 sorted" 的隐式非对称
+        # Sort once, aligning disk fields with _reflection_id_from_facts' sorted input,
+        # eliminating sorted-hash/unsorted-storage asymmetry.
         source_fact_ids = sorted(f['id'] for f in unabsorbed)
         rid = _reflection_id_from_facts(source_fact_ids)
 
-        # 幂等 short-circuit：同一批 facts 的 reflection 已持久化 →
-        # 不重复调 LLM，仅补跑 mark_absorbed（致命点 3 的重启补救路径）
-        # 注：这里是 lock-外的 advisory check，提早避免无谓 LLM；最终
-        # dedup 在 lock-内重做（防 LLM 期间并发写入）。
+        # Idempotent short circuit: reflection already persisted for these facts;
+        # skip LLM, complete mark_absorbed only, restart recovery for fatal point 3.
+        # Unlocked advisory checks avoid unnecessary inference; final
+        # locked dedup repeats against concurrent writes during LLM calls.
         existing_reflections = await self.aload_reflections(lanlan_name)
         existing = next((r for r in existing_reflections if r.get('id') == rid), None)
         if existing is not None:
@@ -260,11 +260,11 @@ class SynthesisMixin:
             )
             return []
 
-        # 失败退避（dead-letter）：同一批 unabsorbed facts(backoff_key) 合成已连续
-        # 失败 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 次 → 不再每 180s 原样重抽空跑 LLM。
-        # 任一 unabsorbed fact 增减 → backoff_key 变、计数天然复位（用户审计 #2）。
-        # 时间自愈：池子不变（挂机）时，每过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
-        # 放行一次 probe，让一次性模型宕机恢复后自愈，poison 批仍被压到每 5h 一次。
+        # Dead-letter backoff: same unabsorbed set/backoff_key failed synthesis at least
+        # MEMORY_LIVENESS_MAX_ATTEMPTS times, so stop identical empty LLM work every 180s.
+        # Any fact addition/removal changes keys and naturally resets counts (user audit #2).
+        # Time healing: unchanged idle pools allow a probe every MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        # recovering transient outages while limiting poisoned batches to once per five hours.
         from config import (
             MEMORY_LIVENESS_MAX_ATTEMPTS,
             MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
@@ -284,11 +284,11 @@ class SynthesisMixin:
 
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         if memory_subject is not None:
-            # scoped 合成绝不能把私聊主人名注入 prompt：legacy 反思模板的
-            # {MASTER_NAME} 框架会指示模型"产出关于主人的洞察"，把已正确
-            # 归属的成员事实改写成关于私聊主人的反思（对偶提取侧的
-            # speaker_label 修复）。用 subject.key 作机械描述符——fact 文本
-            # 本身已带成员可读标签，模型锚定不受影响。
+            # Scoped synthesis never injects private-chat master names: legacy reflection templates'
+            # {MASTER_NAME} asks for insights about the master, rewriting correctly
+            # owned member facts as private-owner reflections, mirroring extraction's
+            # speaker_label fix. Use subject.key as a mechanical descriptor; fact text
+            # already contains readable member labels, preserving model anchoring.
             master_name = memory_subject.key
         else:
             master_name = name_mapping.get('human', '主人')
@@ -312,13 +312,13 @@ class SynthesisMixin:
         try:
             set_call_type("memory_reflection")
             api_config = await self._config_manager.aget_model_api_config('summary')
-            # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS 注释（上游转发
-            # 120s hard cap，client 必须 ≤110s）。开 thinking 后输出多字段
-            # JSON ontology 比简单分类长，吃满 110 也算合理。LLM 在锁外
-            # 不阻塞同角色其他 reflection 写。
-            # 无业务 retry，单次即终态，外层 try/except 兜底返回 []。
-            # 显式开 thinking——synth 是创意+结构化合成，思考能改善 ontology
-            # 字段的一致性和 reflection text 的质量；额度与回退见 memory.thinking_llm。
+            # Timeout: see MEMORY_LLM_HARD_TIMEOUT_SECONDS. Upstream forwarding
+            # caps at 120s, clients at ≤110s. Thinking-enabled multi-field
+            # JSON ontology is longer than classification, justifying 110s. LLM runs unlocked,
+            # not blocking same-character reflection writes.
+            # No business retries: one call terminal; outer try/except returns [].
+            # Explicit thinking benefits creative/structured synthesis, ontology-field
+            # consistency, and reflection quality. Budget/fallback: memory.thinking_llm.
             from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
             from memory.thinking_llm import ainvoke_thinking
             resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
@@ -361,9 +361,9 @@ class SynthesisMixin:
             subject = result.get('subject')
             if subject is not None and not isinstance(subject, str):
                 subject = None
-            # Schema v2: event_when_raw 由 LLM 输出（相对时间，offset+unit），
-            # 系统按 created_at 解算。LLM 可能省略整段或单边 (start/end)，
-            # normalize_event_when 把破损值兜底成 None。
+            # Schema v2: LLM outputs relative event_when_raw (offset+unit),
+            # resolved against created_at. Missing whole/start/end sections are possible;
+            # normalize_event_when converts malformed values to None.
             from memory.temporal import normalize_event_when as _norm_when
             event_when_raw = _norm_when(result.get('event_when'))
 
@@ -391,25 +391,25 @@ class SynthesisMixin:
             await self._abump_synth_backoff(lanlan_name, backoff_key, "empty reflection text")
             return []
 
-        # Create pending reflection — id 已在函数开头由 source_fact_ids 决定
+        # Create pending reflection, ID determined from source_fact_ids at function entry.
         now = datetime.now()
         now_iso = now.isoformat()
 
-        # Importance-based initial rein seed：让"关键节点"型 reflection 起步
-        # 就带一点正分，不必等多轮 user confirms 才穿越 CONFIRMED 阈值。
-        # 不走 aapply_signal（synthesis 本身不经 event log），直接写进初始
-        # 字典——synth 不是 event-sourced，这些初始值就是 ground truth。
+        # Importance-based reinforcement seeds give key-event reflections positive
+        # starting scores without many user confirmations before CONFIRMED thresholds.
+        # Bypass aapply_signal: synthesis has no event log. Initialize dictionaries
+        # directly; synthesis is not event-sourced and initial values are ground truth.
         max_importance = max(
             (safe_importance(f) for f in unabsorbed),
             default=5,
         )
         initial_rein = initial_reinforcement_from_importance(max_importance)
 
-        # Schema v2：event_start/end 是 fact 和 reflection 共用的 ISO 锚点。
-        # fallback 策略按 temporal_scope 分流：
-        #   - state / episode 需要 end（TTL 判定锚点），end 缺失时和 start 同值
-        #   - pattern 允许 end=None（持续模式没有"何时结束"）
-        #   - 兜底（temporal=None/legacy）按 pattern 处理（保守不淡出）
+        # Schema v2: event_start/end are ISO anchors shared by facts/reflections.
+        # Fallbacks depend on temporal_scope:
+        #   - state / episode need end for TTL, defaulting missing end to start
+        #   - pattern permits end=None for ongoing patterns without endings
+        #   - temporal=None/legacy follows pattern, conservatively avoiding fade-out
         from memory.temporal import (
             compute_event_timestamps as _compute_ts,
         )
@@ -449,26 +449,26 @@ class SynthesisMixin:
         reflection.update(provenance_of_entries(unabsorbed))
         if memory_subject is not None:
             reflection.update(memory_subject.as_entry_fields())
-            # 简化群记忆管线：scoped reflection 不走 evidence 确认。群/成员
-            # subject 没有 user-confirm（surfacing 默认 legacy-only）也没有
-            # Stage-2 信号（scoped facts 写盘即 signal_processed=True），
-            # pending 态对它们是永久死路。合成本身（≥MIN_FACTS_FOR_REFLECTION
-            # 条事实聚合）就是质量闸，直接落 confirmed；后续生命周期走零 LLM
-            # 成本的 time-driven 尾程（aauto_promote_time_driven 的 scoped
-            # pass：按年龄 confirmed→promoted 合入 scoped persona）。
+            # Simplified group memory: scoped reflections bypass evidence confirmation. Group/member
+            # subjects lack user confirmations (surfacing defaults legacy-only) and
+            # stage-2 signals (scoped facts persist with signal_processed=True),
+            # making pending permanent dead ends. Synthesis aggregates ≥MIN_FACTS_FOR_REFLECTION
+            # facts as the quality gate, persisting confirmed directly. Lifecycle uses zero-LLM
+            # time-driven aauto_promote_time_driven scoped
+            # passes, promoting aged confirmed entries into scoped personas.
             reflection['status'] = 'confirmed'
             reflection['confirmed_at'] = now_iso
             reflection['auto_confirmed'] = True
-            # confirmed 渲染门（_filter_active_confirmed）要求 evidence_score
-            # 严格 > 0，而 scoped 永远没有 evidence 信号来抬分：importance≤6
-            # 的批次 importance 种子为 0.0，会让这条反思在 time-driven 晋升
-            # 进 persona 之前对群上下文（/scoped_context）完全隐身。给最小
-            # 正种子保证 confirmed 即可见（指数衰减不会归零）。
+            # Confirmed rendering (_filter_active_confirmed) requires evidence_score
+            # strictly >0, but scoped reflections never receive evidence. Importance≤6
+            # batches seed 0.0, hiding reflections from group /scoped_context until
+            # time-driven persona promotion. Give minimal positive
+            # seeds for immediate visibility; exponential decay never reaches zero.
             if float(reflection.get('reinforcement') or 0.0) <= 0.0:
                 reflection['reinforcement'] = 0.1
                 reflection['rein_last_signal_at'] = now_iso
 
-        # ── LOCK 仅护住 re-load + dedup append + save ──
+        # ── Lock only reload + deduplicated append + save ──
         async with self._get_alock(lanlan_name):
             if (
                 memory_subject is not None
@@ -490,7 +490,7 @@ class SynthesisMixin:
                     f"{memory_subject.scope}; dropping late result"
                 )
                 return []
-            # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
+            # Reload against concurrent synthesis during inference, deduplicating IDs/appending current lists.
             reflections = await self.aload_reflections(lanlan_name)
             created = False
             if any(r.get('id') == rid for r in reflections):
@@ -502,23 +502,23 @@ class SynthesisMixin:
                 await self.asave_reflections(lanlan_name, reflections)
                 created = True
 
-        # reflection 已落盘（本次 append 或并发对方先写），清掉本次 unabsorbed
-        # 全集的失败退避记录——锁外调用（_aclear_synth_backoff 自取锁，避免
-        # reentrant 死锁）。
+        # Reflection persisted by us or another writer: clear the full-set synthesis
+        # backoff outside locks; _aclear_synth_backoff acquires its own, avoiding
+        # reentrant deadlock.
         await self._aclear_synth_backoff(lanlan_name, backoff_key)
 
-        # 无条件 mark_absorbed：幂等，且覆盖 save 成功后但在此崩溃的补跑情况
-        # （fact_store 自己有锁，不需要在 reflection 锁内）
+        # Always mark_absorbed idempotently, covering crashes after save before this step.
+        # fact_store owns locks; reflection locking unnecessary.
         await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
 
         if not created:
-            # 并发分支已落盘对方的对象；返回内存副本会让调用方拿到一个
-            # 未持久化、可能与磁盘版文本不同的"幽灵反思"，违反"返回值
-            # = 本调用真正新建的反思"语义。
+            # Concurrent branches persisted another object's version. Returning our memory copy creates
+            # unpersisted ghost reflections potentially differing from disk, violating
+            # returns-are-reflections-created-by-this-call semantics.
             return []
-        # reflection 原文不写 logger（隐私）；本地 print 兜底——但 scoped
-        # 反思（群/成员）原文一个字符都不出 stdout：部署环境 stdout 常被
-        # 采集为应用日志，等于把成员隐私带出 scoped 存储。
+        # Never logger-log reflection text (privacy); local print fallback only. Scoped
+        # group/member text never even enters stdout, often collected as application
+        # logs and thus exporting scoped private data.
         logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid} (len={len(reflection_text)} chars)")
         if memory_subject is None:
             print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
@@ -543,10 +543,10 @@ class SynthesisMixin:
                 get_embedding_service,
                 is_cached_embedding_valid,
             )
-            # 同时检查 is_disabled (sticky 关闭) 和 is_available (READY) ——
-            # INIT/LOADING 状态下 is_disabled=False 但 is_available=False，
-            # 若只看前者，reranker 会降级到 evidence-only 排序，把无关历史
-            # fact 当 "相关背景" 塞进 prompt（Codex P2 #1392）。
+            # Check both sticky is_disabled and READY is_available:
+            # INIT/LOADING has is_disabled=False but is_available=False.
+            # Disabled-only checks let rerankers degrade to evidence-only ordering, injecting unrelated historical
+            # facts as relevant context (Codex P2 #1392).
             service = get_embedding_service()
             if service.is_disabled() or not service.is_available():
                 return ""
@@ -561,7 +561,7 @@ class SynthesisMixin:
 
         unabsorbed_ids = {f['id'] for f in unabsorbed if 'id' in f}
         try:
-            # Phase C-2: 用 full 池含归档 fact，让远期 absorbed 也能被召回
+            # Phase C-2: full pools include archives, recalling old absorbed facts too.
             all_facts = await self._fact_store.aload_facts_full(lanlan_name)
         except Exception as e:
             logger.warning(f"[Reflection] related context load_facts 失败: {e}")
@@ -573,20 +573,20 @@ class SynthesisMixin:
             [subject] if subject is not None else None,
         )
 
-        # Codex P2 #1392：必须 pre-filter 出有 valid embedding 的 fact 才能
-        # 进 reranker。fact 没 evidence `score` 字段，若放进 rerank=False 的
-        # coarse_rank 而 embedding 又是 stale/missing（model-id 切换后 / backfill
-        # 前），fallback 路径会按 evidence_score=0 排序 → 顺序近似随机 →
-        # 把任意 fact 当 "相关背景" 注入 prompt。这里先 filter，pool 为空就
-        # early return，宁可没 RELATED_CONTEXT 也不要塞无关历史。
+        # Codex P2 #1392: prefilter valid embeddings before reranking.
+        # Facts lack evidence score; rerank=False coarse_rank with stale/missing
+        # embeddings after model changes/before backfill falls back to
+        # evidence_score=0, near-random ordering,
+        # injecting arbitrary background facts. Filter first; empty pools return early,
+        # preferring absent RELATED_CONTEXT to irrelevant history.
         absorbed_pool = [
             f for f in all_facts
             if f.get('absorbed')
             and f.get('id') not in unabsorbed_ids
-            # subject 时间归档的行（subject_archived_at 标记）不进合成
-            # 背景：它们已退出召回与渲染，复活后的新一轮合成若把归档内
-            # 容当 RELATED_CONTEXT 会把它重新洗进活跃 reflection——归档
-            # 语义就被这条侧路悄悄绕开了。
+            # Exclude subject_archived_at time-archived rows from synthesis
+            # background. Already excluded from recall/rendering, they could otherwise enter revived
+            # synthesis as RELATED_CONTEXT and be laundered into active reflections,
+            # silently bypassing archival.
             and not f.get('subject_archived_at')
             and not f.get('arbitration_archived_at')
             and is_cached_embedding_valid(f, f.get('text', ''), model_id)
@@ -605,11 +605,11 @@ class SynthesisMixin:
                 REFLECTION_RELATED_TOTAL_CAP,
             )
             reranker = MemoryRecallReranker()
-            # Per-query top-K（每条 unabsorbed fact 单独享 ``PER_QUERY_K`` 配额，
-            # union dedup 后截到 ``TOTAL_CAP``），不走 max-pool 全局预算。详见
-            # ``aretrieve_per_query_topk`` docstring 和 PR #1401 thread：max-pool
-            # 在 unabsorbed 主题分散时会让冷门主题挤不进 anchor，per-query 配
-            # 额保证每条 unabsorbed 至少能拿自己的近邻。
+            # Per-query top-K: every unabsorbed fact gets PER_QUERY_K, then union dedup
+            # and TOTAL_CAP, never global max-pool budgets. See
+            # aretrieve_per_query_topk docs and PR #1401: dispersed topics let max-pool
+            # exclude rare themes from anchors; per-query quotas
+            # give each fact its own nearest neighbors.
             related = await reranker.aretrieve_per_query_topk(
                 absorbed_pool, query_texts,
                 per_query_k=REFLECTION_RELATED_PER_QUERY_K,

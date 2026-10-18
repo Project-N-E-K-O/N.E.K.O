@@ -37,11 +37,12 @@ APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
-CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
-CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
-CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-eat.mp3"
+CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat1.gif"
+CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "action" / "cat-idle-cat-play-1.gif"
+CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "action" / "cat1-voice-eat.mp3"
 CAT1_CHAT_HISS_STICKER_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cat1-chat-angry.gif"
-CAT1_CHAT_HISS_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-chat-angry.mp3"
+CAT1_CHAT_HISS_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "interaction" / "cat1-voice-chat-angry.mp3"
+CAT_RESOURCE_ROOT = PROJECT_ROOT / "static" / "assets" / "cat-resources"
 
 
 def test_cat1_return_button_visual_contract_is_present():
@@ -49,7 +50,7 @@ def test_cat1_return_button_visual_contract_is_present():
 
     assert "neko:auto-goodbye:state-change" in source
     assert "data-neko-idle-tier" in source
-    assert "/static/assets/neko-idle/cat-idle-cat1.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif" in source
 
     create_return_block = source.split("ManagerPrototype.createReturnButton = function()", 1)[1].split(
         "ManagerPrototype._setupReturnButtonDrag",
@@ -62,6 +63,12 @@ def test_cat1_return_button_visual_contract_is_present():
 
 def test_cat1_return_button_assets_are_version_tracked():
     assert set(AVATAR_UI_BUTTONS_DIR.glob("*.js")) <= set(pages_router._YUI_GUIDE_ASSET_VERSION_PATHS)
+    assert tuple(sorted(CAT_RESOURCE_ROOT.rglob("*")))
+    assert all(
+        path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+        for path in CAT_RESOURCE_ROOT.rglob("*")
+        if path.is_file()
+    )
     assert INDEX_CSS_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_PLAY_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
@@ -83,8 +90,8 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     chat_source = read_js_parts(APP_REACT_CHAT_WINDOW_PATH)
     interpage_source = read_js_parts(APP_INTERPAGE_PATH)
 
-    assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif'" in source
-    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3'" in source
+    assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_yarn', { random: false })" in source
+    assert "_getNekoCatVoiceUrl('cat1.play_yarn')" in source
     assert "function _playNekoIdleCat1PlayAction(button)" in source
 
     play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(
@@ -93,12 +100,13 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     )[0]
     assert "_cancelNekoIdleCat1EatAction(button, { restoreArt: false });" in play_block
     assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL" in play_block
-    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL" in play_block
+    assert "_getNekoCatVoiceUrl('cat1.play_yarn')" in play_block
     assert "'cat1-play-action'" in play_block
     assert "let audioDone" not in play_block
     assert "markAudioDone" not in play_block
     assert "if (!gifDone) return;" in play_block
-    assert "_playNekoIdleSound(state, _NEKO_IDLE_CAT1_PLAY_SOUND_URL, _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME);" in play_block
+    assert "_playNekoIdleSound(" in play_block
+    assert "_getNekoCatVoiceUrl('cat1.play_yarn')" in play_block
     finish_play_block = source.split("function _finishNekoIdleCat1PlayAction(button, token)", 1)[1].split(
         "function _playNekoIdleCat1PlayAction(button)",
         1,
@@ -161,7 +169,10 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" not in thought_bubble_hidden_block
 
     assert 'data-neko-cat1-wide-art' in chat_source
-    assert '/static/assets/neko-idle/cat-idle-cat-play-1.gif' in chat_source
+    assert "getAppearance('action.cat1.play_yarn', { random: false })" in chat_source
+    assert "resource.metadata.wideArt !== true" in chat_source
+    assert "isIdleCat1CompactMirrorWideArt(src)" in chat_source
+    assert "src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif')" not in chat_source
     assert '.neko-idle-cat1-compact-mirror[data-neko-cat1-wide-art="true"] .neko-idle-cat1-compact-mirror-art' in css
     assert "body[data-neko-ball-drag] .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art" in app_ui_source
     assert "width:175%!important" in app_ui_source
@@ -225,7 +236,7 @@ def test_cat1_stretch_action_has_an_independent_runner():
     assert "function _settleNekoIdleReturnSubactionToIdle" not in source
     assert "function _scheduleNekoIdleReturnSubactionSettle" not in source
     assert "function _requestNekoIdleCat1HissStretchPresentation()" in play_block
-    assert "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL" in play_block
+    assert "_getNekoCatVoiceUrl('cat1.hiss')" in play_block
     assert "requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation" in play_block
 
 
@@ -257,7 +268,7 @@ def test_cat1_pair_move_is_adapter_only_small_move_runner():
 def test_cat1_minimized_side_target_separates_look_and_move_direction():
     source = _read_avatar_ui_buttons_source()
 
-    # #1749 的“朝毛球前进、避免倒退”的取侧逻辑只用于本次走路首次决策，已抽到 forward picker。
+    # #1749's 'move toward the furball without backing up' side selection applies only to the walk's first decision and now lives in the forward picker.
     forward_pick_block = source.split("function _pickNekoIdleCat1ForwardSideTarget", 1)[1].split(
         "function _clearNekoIdleCat1WalkApproachSide",
         1,
@@ -317,7 +328,7 @@ def test_cat1_native_wayland_yarn_corrections_are_direction_and_state_specific()
     assert "? _NEKO_IDLE_CAT1_NATIVE_YARN_LEFT_SIDE_CONTACT_CORRECTION_PX" in visual_target_block
     assert ": 0;" in visual_target_block
 
-    # 右侧待机终点不动；待机素材与已正常的走路/伸懒腰素材使用同一 33px 视觉校准。
+    # Keep the right idle endpoint fixed; calibrate idle assets visually by the same 33px used for working walk/stretch assets.
     assert 'data-neko-cat1-native-yarn-visual-anchor="true"' in css
     assert 'data-neko-cat1-native-yarn-side="right"' in css
     assert 'data-neko-cat1-substate="idle"' in css
@@ -353,15 +364,15 @@ def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_stra
         1,
     )[0]
     assert "_NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP" in side_target_block
-    # 仍在毛球水平跨度内 -> 保持提交侧，不在球心附近翻面
+    # Still within the furball's horizontal span -> retain the committed side without flipping near the center
     assert "catCenterX >= chatRect.left && catCenterX <= chatRect.right" in side_target_block
-    # 只在猫已整体越到毛球另一侧时才重选接近侧
+    # Reselect the approach side only after the entire cat has crossed to the furball's opposite side
     assert "committed === true && catCenterX > chatRect.right" in side_target_block
     assert "committed === false && catCenterX < chatRect.left" in side_target_block
-    # 提交侧持有期间，禁止再出现旧的“每帧重判 lookFacingRight”
+    # While holding the committed side, forbid the old 'reevaluate lookFacingRight every frame' behavior
     assert "const lookFacingRight = chatCenterX > catCenterX;" not in side_target_block
 
-    # 走完/取消时必须清掉提交侧，便于下次重新决策
+    # Clear the committed side when the walk finishes or is cancelled so the next walk can decide anew
     assert "function _clearNekoIdleCat1WalkApproachSide" in source
     finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
         "function _finishNekoIdleCat1CompactTopEdgeWalk",
@@ -509,7 +520,11 @@ def test_cat1_settled_minimized_side_uses_center_distance_for_regular_walk_delay
     )[0]
     assert "const followingMovedMinimizedSideTarget =" not in journey_sync_block
     assert "const centerDistancePx = _getNekoIdleRectCenterDistancePx(containerRect, chatRect);" in journey_sync_block
-    assert "const walkStartDistancePx = Number.isFinite(centerDistancePx)" in journey_sync_block
+    assert (
+        "const walkStartDistancePx = !window.NekoDesktopWindowGravity?.isActive(button) && Number.isFinite(centerDistancePx)"
+        "\n        ? centerDistancePx"
+        "\n        : target.distance;"
+    ) in journey_sync_block
     assert ": target.distance;" in journey_sync_block
     assert "walkStartDistancePx < profile.target.enterDistancePx" in journey_sync_block
     assert "walkStartDistancePx >= profile.target.enterDistancePx" in journey_sync_block

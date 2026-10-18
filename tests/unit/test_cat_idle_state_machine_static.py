@@ -33,10 +33,10 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     if not node_path:
         raise AssertionError("node is required to run cat mind harness tests")
 
-    # 走临时文件而不是 `node -e <script>`：这些仿真脚本会随被测行为一起变长，
-    # 最长的一条已经 34067 字符，超过 Windows CreateProcess 命令行 32767 上限，
-    # 于是 subprocess 在 node 起来之前就抛 WinError 206——断言一条都跑不到，
-    # 表现成一个与状态机无关的红。脚本内的路径都是绝对路径，cwd 仍保留。
+    # Use temporary files instead of `node -e <script>`: these simulations grow with the behavior under test,
+    # and the longest already has 34067 characters, exceeding the Windows CreateProcess command-line limit of 32767.
+    # subprocess therefore raises WinError 206 before node starts, so no assertion runs,
+    # producing a failure unrelated to the state machine. Script paths are absolute; retain cwd.
     return run_node_script(
         node_path,
         script,
@@ -1114,7 +1114,21 @@ def test_cat_mind_phase2_social_ping_runner_ignores_stale_audio_callbacks():
         `, context);
         const walkingPlayDecision = win.NekoCatMindActionProviders.dryRun('cat1_play_yarn', { button });
         assert.equal(walkingPlayDecision.allowed, false);
-        assert.equal(walkingPlayDecision.reason, 'near_chat_unavailable');
+        assert.equal(walkingPlayDecision.reason, 'cat1_position_presentation_busy');
+        // A cat settled on the compact top edge is parked, not moving: Cat Mind
+        // may still ping there, while desktop-window interactions keep treating
+        // the perch as occupied.
+        vm.runInContext(`
+          document.querySelector('#live2d-btn-return').__nekoIdleReturnSubactionState = {
+            targetKind: _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE,
+            substate: _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW.idleSubstate,
+            actionSettled: true,
+            profile: _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW
+          };
+        `, context);
+        assert.equal(win.NekoCatMindActionProviders.getRuntimeGateSnapshot().cat1PositionPresentationBusy, false);
+        assert.equal(win.NekoCatMindActionProviders.dryRun('cat1_social_ping', { button }).allowed, true);
+        assert.equal(vm.runInContext(`_isNekoIdleCat1PositionPresentationBusy(document.querySelector('#live2d-btn-return'))`, context), true);
         vm.runInContext(`document.querySelector('#live2d-btn-return').__nekoIdleReturnSubactionState = null;`, context);
 
         vm.runInContext(`
@@ -1590,7 +1604,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           activeHardGate = gate;
           win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
             detail: {{ type: gate === 'edgePeekActive' ? 'edge_peek_after_drag' : 'cat_hover_reaction',
-              source: 'unit-test', tier: 'cat1', timestamp: ++now, detail: {{ reason: gate }} }}
+              source: 'unit-test', tier: 'cat1', timestamp: now += 1500, detail: {{ reason: gate }} }}
           }}));
           assert.equal(timers.length, 1);
           timers.shift()();
@@ -4124,7 +4138,11 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
           finishAction(actionId, lifecycle, 'done');
         }}
         function primeInteraction(count) {{
-          for (let index = 0; index < count; index += 1) observe('cat_hover_reaction');
+          // Cat Mind drops hover observations closer than 1.5s apart.
+          for (let index = 0; index < count; index += 1) {{
+            now += 1500;
+            observe('cat_hover_reaction');
+          }}
         }}
         function returnSummary() {{
           now += 10;

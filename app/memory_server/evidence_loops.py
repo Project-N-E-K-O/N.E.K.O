@@ -52,13 +52,13 @@ from .gates import (
 from .rows import _coerce_db_ts, _extract_user_messages_with_ts_from_rows
 
 
-REBUTTAL_CHECK_INTERVAL = 180  # 3 分钟
-REBUTTAL_FIRST_RUN_LOOKBACK_HOURS = 1  # 首次启动 / 时钟回拨兜底回扫窗口
-# Drain pattern: 一次最多处理 N 条 user 消息，避免高频用户场景下 prompt 爆炸。
-# 多余的留到下一轮（cursor 推进到第 N 条的 timestamp，不丢消息）。
+REBUTTAL_CHECK_INTERVAL = 180  # Three minutes.
+REBUTTAL_FIRST_RUN_LOOKBACK_HOURS = 1  # Fallback lookback window for first startup / clock rollback.
+# Drain pattern: handle at most N user messages at once to bound prompts for frequent users.
+# Leave the rest for the next round (advance cursor to the Nth timestamp without losing messages).
 REBUTTAL_DRAIN_BATCH_LIMIT = 20
-# 读 SQL 时的硬上限——bound memory，防止 1h fallback 把整张表拉进来。
-# 200 行通常包含 50-100 条 user 消息，足以喂多次 drain。
+# Hard SQL read limit bounds memory so the 1h fallback cannot fetch the entire table.
+# 200 rows usually contain 50-100 user messages, enough for several drains.
 REBUTTAL_SQL_ROW_LIMIT = 200
 
 
@@ -163,9 +163,9 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
     cursor = await runtime.cursor_store.aget_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL)
     fallback = now - timedelta(hours=REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
     if cursor is None:
-        # 首次启动：把 fallback 落盘锚定。否则 LLM 连续失败时，下轮
-        # cursor 仍为 None，新的 fallback 会基于新的 now 重新计算并前移
-        # （滑动 1h 窗口），首轮窗口最早段消息会被永久跳过。
+        # First startup: persist the fallback anchor. Otherwise repeated LLM failures leave next round's
+        # cursor as None, causing fallback to be recalculated from the new now and move forward
+        # (a sliding 1h window), permanently skipping the earliest messages in the original window.
         try:
             await runtime.cursor_store.aset_cursor(
                 name, CURSOR_REBUTTAL_CHECKED_UNTIL, fallback,
@@ -178,8 +178,8 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
             f"[Rebuttal] {name}: 游标 {cursor.isoformat()} 晚于当前时间 "
             f"{now.isoformat()}（时钟回拨?），回退到 {fallback.isoformat()} 并覆写"
         )
-        # 自愈：把游标拉回 fallback（而非 now），使后续 tick 不再命中 rollback
-        # 分支，同时保留本轮窗口 [fallback, now] 的重试能力（若 LLM 失败）
+        # Self-heal by resetting the cursor to fallback (not now), avoiding rollback on later ticks
+        # while preserving retries for this [fallback, now] window if the LLM fails.
         try:
             await runtime.cursor_store.aset_cursor(
                 name, CURSOR_REBUTTAL_CHECKED_UNTIL, fallback,
@@ -191,16 +191,16 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
 
 
 _rebuttal_failures: dict[str, dict[str, int]] = {}
-"""Per-character rebuttal LLM 失败计数：``{name: {cursor_iso: count}}``。
+"""Per-character rebuttal LLM failure counts: ``{name: {cursor_iso: count}}``.
 
-In-memory only（cursor 本身落盘到 cursors.json，但 counter 重启清零）。
-Why in-memory: 重启后再试 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 次再 dead-letter，
-避免内存 counter 错把短暂 transient 失败永久放弃；user-visible 代价 = 重启
-后多卡 N × REBUTTAL_CHECK_INTERVAL 一段时间，可接受。
+In-memory only (the cursor persists in cursors.json, but counters reset on restart).
+Why in-memory: after restarting, retry ``MEMORY_LIVENESS_MAX_ATTEMPTS`` times before dead-lettering,
+preventing memory counters from permanently abandoning transient failures; the visible cost is an extra
+N × REBUTTAL_CHECK_INTERVAL delay after restart, which is acceptable.
 
-Liveness 兜底原因：``check_feedback_for_confirmed`` 返 None 时原代码直接
-``return`` 不动 cursor → 下轮重读相同 [cursor, now] 窗口含同样的毒 user
-msg → 仍失败 → 永久卡死 rebuttal 链路（毒窗口让 user 反驳信号永远进不来
+Liveness fallback rationale: when ``check_feedback_for_confirmed`` returned None, the old code simply
+returned without moving the cursor -> reread the same [cursor, now] window containing the same poisonous user
+message next cycle -> fail again -> permanently stall rebuttals (the poisoned window keeps user rebuttal signals out of the
 evidence loop）。"""
 
 
@@ -232,14 +232,14 @@ async def _periodic_rebuttal_loop():
     """
     await asyncio.sleep(_INITIAL_DELAY_REBUTTAL)
     while True:
-        # 强力记忆关 → rebuttal LLM 整段停（这是 evidence-RFC 引入的最贵
-        # 周期 LLM 之一，每 180s 一次开 thinking 跑 drain）。关闭后用户的
-        # 反驳信号经由 per-turn check_feedback (主动搭话回应) 仍能进 evidence。
+        # Strong memory disabled: stop the entire rebuttal LLM path (one of the most expensive periodic
+        # LLM calls introduced by evidence-RFC, draining with thinking every 180s). User rebuttals
+        # can still enter evidence through per-turn check_feedback (proactive-chat responses).
         #
-        # 关态推进 cursor 到 now：否则重新开启时 _resolve_rebuttal_start_time
-        # 拿到的是关闭前的旧 cursor，下一轮会把关闭期间积攒的所有 user msg
-        # 整段补处理（极大 prompt + 大量 LLM 调用）。"关时不跑" 应等价于
-        # "关时已 noop 处理完"——重开后从 now 重新累积，不回补。
+        # While disabled, advance cursor to now: otherwise _resolve_rebuttal_start_time gets the old
+        # cursor on re-enable, and the next round processes every user message accumulated
+        # while disabled (huge prompts + many LLM calls). Disabled should mean
+        # processed as a noop: accumulate anew from now on re-enable, without backfilling.
         if not await gates._ais_powerful_memory_enabled():
             try:
                 character_data = await runtime._config_manager.aload_characters()
@@ -251,8 +251,8 @@ async def _periodic_rebuttal_loop():
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, cursor_now,
                         )
                     except Exception as cursor_e:
-                        # 单角色 cursor 推进失败不致命——下一轮再试，最坏
-                        # 是该角色重开时多扫一段窗口，不影响其他角色。
+                        # A single character's cursor update failure is nonfatal: retry next round; at worst,
+                        # that character rescans a longer window after re-enable. Other characters are unaffected.
                         logger.debug(
                             f"[Rebuttal] {name}: 关态 cursor 推进失败: {cursor_e}"
                         )
@@ -284,9 +284,9 @@ async def _periodic_rebuttal_loop():
             try:
                 confirmed = await runtime.reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
-                    # 无 confirmed 时仍需推进游标：否则等到有新 confirmed reflection
-                    # 出现后，首轮会把 cursor-now 之间积攒的全部用户消息喂给
-                    # check_feedback_for_confirmed，容易把无关历史回复误判为反驳。
+                    # Advance the cursor even without confirmed reflections: otherwise the first new confirmed
+                    # reflection causes all user messages accumulated between cursor and now to reach
+                    # check_feedback_for_confirmed, risking unrelated historical replies being classified as rebuttals.
                     await runtime.cursor_store.aset_cursor(
                         name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                     )
@@ -305,33 +305,33 @@ async def _periodic_rebuttal_loop():
                     _rebuttal_clear_failures(name)
                     return
 
-                # 提取 (msg, ts) 元组（ASC by ts；ts 已归一化为 datetime）
+                # Extract (msg, ts) tuples (ascending ts; timestamps already normalized to datetime).
                 user_msgs_with_ts = _extract_user_messages_with_ts_from_rows(rows)
                 if not user_msgs_with_ts:
-                    # 窗口里只有 AI 消息或无 user 内容 → 推进 cursor 到 SQL 截
-                    # 取的最后一行 ts（如果命中 LIMIT 还有更多行）或 now（清空了）
+                    # Only AI messages or no user content in the window: advance cursor to the final SQL
+                    # row's timestamp (if LIMIT was reached and more rows remain) or now (fully drained).
                     last_row_ts = _coerce_db_ts(rows[-1][0])
                     if len(rows) >= REBUTTAL_SQL_ROW_LIMIT and last_row_ts is not None:
                         await runtime.cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, last_row_ts,
                         )
                     else:
-                        # 既然没命中 LIMIT，窗口已经全部扫过；直接推到 now。
-                        # last_row_ts 解析失败也走这条（保守 fallback）。
+                        # LIMIT was not reached, so the entire window was scanned; advance directly to now.
+                        # Also take this conservative fallback if last_row_ts parsing fails.
                         await runtime.cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                         )
                     _rebuttal_clear_failures(name)
                     return
 
-                # Drain 取前 N 条 user msg。然后扩展 batch 把和 batch 末位
-                # 共享同 ts 的后续 user msg 也吸收进来——因为 SQL 用
-                # ``timestamp BETWEEN`` (inclusive)，cursor 推进到 batch[-1].ts
-                # 后下一轮会把同 ts 的行原样重读。如果不扩展，多条同 ts 的
-                # user msg 在 batch 边界被切，会出现"只处理一部分，剩下的下
-                # 轮当 batch 边界又被切"的死循环（``store_conversation`` 一
-                # 批 message 共享 timestamp，所以同 ts 多条很常见）。
-                # 扩展受 SQL 行 LIMIT 兜底，不会无界增长。
+                # Drain the first N user messages, then extend the batch to include subsequent user
+                # messages sharing the final timestamp. SQL uses
+                # ``timestamp BETWEEN`` (inclusive), so after advancing cursor to batch[-1].ts,
+                # the next round rereads rows with that timestamp. Without extension, multiple messages
+                # sharing a timestamp can be split at the boundary, causing an endless loop where
+                # only part is processed and the rest is split again at the next batch boundary
+                # (``store_conversation`` assigns one timestamp per message batch, so ties are common).
+                # The SQL row LIMIT bounds extension, preventing unbounded growth.
                 batch = user_msgs_with_ts[:REBUTTAL_DRAIN_BATCH_LIMIT]
                 if len(user_msgs_with_ts) > len(batch):
                     boundary_ts = batch[-1][1]
@@ -345,17 +345,17 @@ async def _periodic_rebuttal_loop():
                         batch = user_msgs_with_ts[:extend_idx]
                 user_msgs = [m for m, _ in batch]
 
-                # 复用 check_feedback 判断反驳
+                # Reuse check_feedback to detect rebuttals.
                 feedbacks = await _check_feedback_for_confirmed(
                     name, confirmed, user_msgs,
                 )
                 if feedbacks is None:
-                    # LLM 调用失败 → 不推进游标，下次重试这批消息。
-                    # Liveness 兜底：同一 cursor 反复失败 ≥
-                    # MEMORY_LIVENESS_MAX_ATTEMPTS 时强推 cursor 到 now 放弃这段
-                    # 窗口（dead-letter），避免毒 user msg 让 rebuttal 链路永久
-                    # 卡死。cursor 落盘到 cursors.json，stuck cursor 重启都不
-                    # 复活，比 in-memory 的 signal extraction cursor 更顽固。
+                    # LLM call failed: keep the cursor and retry these messages next time.
+                    # Liveness fallback: after repeated failures at the same cursor reach
+                    # MEMORY_LIVENESS_MAX_ATTEMPTS, force cursor to now and abandon this
+                    # window (dead letter) so a toxic user message cannot permanently stall the rebuttal
+                    # path. The cursor is persisted to cursors.json, so restarting cannot revive a stuck cursor;
+                    # it is more persistent than the in-memory signal-extraction cursor.
                     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
                     cursor_key = (
                         start_time.isoformat(timespec='microseconds')
@@ -380,14 +380,14 @@ async def _periodic_rebuttal_loop():
                         )
                     return
 
-                # 成功才推进游标并持久化。Drain 推进规则：
-                # - 还有 user msgs 在本次 read 内未处理（batch 已扩展含所有
-                #   同 ts，所以剩余的 ts 一定 > batch[-1].ts）
-                #   → cursor 推到第一个未处理 user msg 的 ts（next read 的
-                #     BETWEEN 起点，包含该行不会重处理因为它本来就 unprocessed）
-                # - SQL 命中 LIMIT 但 user msgs 全处理 → cursor 推到最后一行 ts
-                #   (next read 会重读 same-ts cluster 但 LLM 调用幂等无害)
-                # - 全干净 → cursor 推到 now
+                # Advance and persist the cursor only on success. Drain advancement rules:
+                # - Unprocessed user messages remain in this read (the batch includes all timestamp ties,
+                #   so every remaining timestamp is greater than batch[-1].ts):
+                #   advance to the first unprocessed user message's timestamp, the next read's
+                #   inclusive BETWEEN start; this row has not been processed, so no duplicate processing occurs.
+                # - SQL reached LIMIT but all user messages were processed: advance to the final row timestamp.
+                #   The next read repeats the tied cluster, but LLM calls are idempotent and harmless.
+                # - Fully drained: advance cursor to now.
                 more_user_msgs = len(user_msgs_with_ts) > len(batch)
                 hit_sql_limit = len(rows) >= REBUTTAL_SQL_ROW_LIMIT
                 if more_user_msgs:
@@ -408,8 +408,8 @@ async def _periodic_rebuttal_loop():
                 await runtime.cursor_store.aset_cursor(
                     name, CURSOR_REBUTTAL_CHECKED_UNTIL, new_cursor,
                 )
-                # Cursor 推进 → 旧 cursor key 永远不会再被命中，清空 counter
-                # 避免内存 dict 随 cursor 历史无限增长（对偶 Site 0a/0b）。
+                # Cursor advanced: its old key will never be used again; clear the counter
+                # to prevent unbounded dictionary growth with cursor history (symmetric with Sites 0a/0b).
                 _rebuttal_clear_failures(name)
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
@@ -429,7 +429,7 @@ async def _periodic_rebuttal_loop():
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
 
 
-AUTO_PROMOTE_CHECK_INTERVAL = 180  # 3 分钟（与 rebuttal 同步，覆盖同样级别的状态变化）
+AUTO_PROMOTE_CHECK_INTERVAL = 180  # Three minutes, matching rebuttal checks to cover the same degree of state change.
 
 async def _periodic_auto_promote_loop():
     """Periodically run auto_promote_stale: pending→confirmed→promoted state migration.
@@ -508,44 +508,44 @@ async def _periodic_idle_maintenance_loop():
                 logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
                 continue
 
-            # 强力记忆开关 → 控制 1b (fact_dedup) 和 2 (persona corrections)
-            # 是否跑。子任务 1 (history 压缩) 和 3 (recent.review) 是 RFC 之
-            # 前的基础设施，永远跑。本轮快照一次，跨角色复用。
+            # Strong memory controls whether tasks 1b (fact_dedup) and 2 (persona corrections)
+            # run. Tasks 1 (history compression) and 3 (recent.review) predate the RFC
+            # and always run. Snapshot the flag once per round and reuse across characters.
             powerful_enabled = await gates._ais_powerful_memory_enabled()
 
             for name in catgirl_names:
-                # 每处理一个角色前重新检查空闲，一旦变忙立即退出
+                # Recheck idleness before each character; exit immediately when busy.
                 if not gates._is_idle():
                     logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
                     break
 
                 try:
                     history = await runtime.recent_history_manager.aget_recent_history(name)
-                    # 剧场胶囊压缩时原样保留，不计入 update_history 的压缩门槛。
+                    # Preserve theater capsules unchanged during compression; exclude them from update_history's threshold.
                     ordinary_history_len = sum(
                         1
                         for message in history
                         if not is_theater_memory_message(message)
                     )
 
-                    # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
-                    # 门槛对齐 update_history 内部的真实触发条件 `普通消息数 > compress_threshold`
-                    # （默认 20）。用 max_history_length（默认 10，压缩后保留条数）会让
-                    # 11~20 区间持续触发 IdleMaint 但 update_history 实际不压缩，形成
-                    # 每 IDLE_CHECK_INTERVAL 一次的空转日志。
+                    # -- Task 1: Compress history when needed, independent of the global switch. --
+                    # Match update_history's actual trigger: `ordinary_message_count > compress_threshold`
+                    # (default 20). max_history_length (default 10, retained after compression) would
+                    # keep triggering IdleMaint at 11-20 messages while update_history does no compression,
+                    # producing idle-work logs every IDLE_CHECK_INTERVAL.
                     if ordinary_history_len > runtime.recent_history_manager.compress_threshold:
                         logger.info(
                             f"[IdleMaint] {name}: 历史记录过长 ({ordinary_history_len} > "
                             f"{runtime.recent_history_manager.compress_threshold})，触发压缩"
                         )
                         try:
-                            # 传空消息列表仅触发压缩逻辑
+                            # Pass an empty message list to trigger compression only.
                             await _compress_recent_history(name)
                             logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
 
-                    # ── 子任务1b: Fact 向量去重（P2 step 2） ──
+                    # -- Task 1b: Vector-based fact deduplication (P2 step 2). --
                     # Runs *before* the review-gate so a character with
                     # short history still gets paraphrase consolidation
                     # (Codex PR-957 P2). The embedding worker enqueued
@@ -554,7 +554,7 @@ async def _periodic_idle_maintenance_loop():
                     # fact_dedup_resolver is None when vectors are disabled
                     # or bootstrap failed — legacy hash + FTS5 dedup
                     # remains the entire dedup pipeline in that case.
-                    # 强力记忆关 → 整段跳过（向量去重是 evidence-RFC 后期引入的）
+                    # Strong memory disabled: skip entirely (vector deduplication was added late in evidence-RFC).
                     if powerful_enabled and runtime.fact_dedup_resolver is not None:
                         if not gates._is_idle():
                             break
@@ -572,12 +572,12 @@ async def _periodic_idle_maintenance_loop():
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
 
-                    # ── 子任务2: Persona 矛盾审视（强力记忆关时跳过） ──
-                    # resolve_corrections 由 evidence-RFC 引入；矛盾队列的产生路
-                    # 径（aadd_fact 的 keyword overlap heuristic 触发 _aqueue_correction）
-                    # 在强力记忆关时仍可能产生（time-driven aadd_fact 也走启发式检查），
-                    # 但消化路径 LLM 整批审视成本高，关时不跑。queue 会累积，
-                    # 等用户重开强力记忆时一次性消化。
+                    # -- Task 2: Review persona contradictions (skip when strong memory is disabled). --
+                    # resolve_corrections came from evidence-RFC. Contradictions may still be queued
+                    # by the keyword-overlap heuristic in aadd_fact triggering _aqueue_correction
+                    # while strong memory is disabled (time-driven aadd_fact also runs this check),
+                    # but batch LLM review is expensive, so do not consume the queue while disabled.
+                    # The queue accumulates until the user re-enables strong memory.
                     if powerful_enabled:
                         if not gates._is_idle():
                             break
@@ -593,10 +593,10 @@ async def _periodic_idle_maintenance_loop():
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
 
-                    # ── 子任务3: 记忆整理 review ──
-                    # Phase C: gate 逻辑全部集中到 maybe_spawn_review，IdleMaint
-                    # 不再做单点门禁。spawn 函数内部自查 review_enabled / 历史长度
-                    # / min_interval / 新消息门 / in-flight，不过门就 skip。
+                    # -- Task 3: Memory consolidation review. --
+                    # Phase C: centralize all gates in maybe_spawn_review; IdleMaint
+                    # no longer gates individually. The spawn function checks review_enabled / history length /
+                    # min_interval / new messages / in-flight state itself, skipping when gates fail.
                     if not gates._is_idle():
                         break
                     try:
@@ -660,7 +660,7 @@ async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
         reflections = []
 
     seeded_reflection = 0
-    seed_failures = 0  # 只要有一条失败就不写 marker，保证下轮可补
+    seed_failures = 0  # Do not write the marker if anything fails, allowing completion next round.
     for r in reflections:
         if not isinstance(r, dict):
             continue
@@ -704,8 +704,8 @@ async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
             entry_id = entry.get('id')
             if not entry_id:
                 continue
-            # 零 delta 等效 "no-op + 字段 normalize"；不推进 last_signal_at，
-            # 但走完一次 record_and_save 保证 view 里 schema 完整。
+            # A zero delta means noop plus field normalization; do not advance last_signal_at,
+            # but run record_and_save once to ensure the view has the complete schema.
             try:
                 ok = await runtime.persona_manager.aapply_signal(
                     lanlan_name, entity_key, entry_id,
@@ -720,9 +720,9 @@ async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
                     f"[Migration] {lanlan_name}: seed persona {entity_key}/{entry_id} 失败: {e}"
                 )
 
-    # CodeRabbit PR #929 fix: 如果本轮有任何 seed 失败，marker 不写入——
-    # 下次启动继续从断点补（已 seed 过的字段检查会跳过）。避免瞬时 IO
-    # 抖动导致某些 entry 永远漏种。
+    # CodeRabbit PR #929 fix: do not write the marker if any seed failed this round;
+    # resume on next startup (already seeded fields are skipped), preventing transient I/O
+    # failures from leaving entries permanently unseeded.
     if seed_failures > 0:
         logger.warning(
             f"[Migration] {lanlan_name}: 本轮 {seed_failures} 条 seed 失败 "
@@ -748,7 +748,7 @@ async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
                 'text': '',
                 'source': EVIDENCE_SOURCE_MIGRATION_SEED,
                 'source_id': None,
-                'protected': True,  # 豁免 render/archive 任意扫描
+                'protected': True,  # Exempt arbitrary render/archive scans.
                 'migrated_at': datetime.now().isoformat(),
             })
             await runtime.persona_manager.asave_persona(lanlan_name, persona)
@@ -782,9 +782,9 @@ async def _aone_shot_archive_migration_if_needed(lanlan_name: str) -> None:
 # ── memory-evidence-rfc §3.5: periodic archive sweep ────────────────
 
 
-# Round-robin 起点游标：每轮 +1。避免每次都从 catgirl_names[0] 开始扫描
-# + 命中即 break 造成首角色独占（CodeRabbit review on PR #1316 catch）。
-# 模块级状态可接受：循环单实例、单事件循环、无并发。
+# Round-robin starting cursor: increment each round. Always starting at catgirl_names[0]
+# and breaking on the first hit would let the first character monopolize work (PR #1316 CodeRabbit review).
+# Module state is safe: one loop instance, one event loop, no concurrency.
 _RECHECK_RR_CURSOR: int = 0
 
 
@@ -832,7 +832,7 @@ async def _periodic_slow_memory_recheck_loop():
             await asyncio.sleep(MEMORY_RECHECK_INTERVAL_SECONDS)
             continue
 
-        # Round-robin: 每轮起点比上轮 +1，保证 N 角色在 N 轮内都被尝试到
+        # Round-robin: increment the starting point each round so all N characters are tried within N rounds.
         n = len(catgirl_names)
         if n == 0:
             await asyncio.sleep(MEMORY_RECHECK_INTERVAL_SECONDS)
@@ -841,9 +841,9 @@ async def _periodic_slow_memory_recheck_loop():
         ordered = catgirl_names[start:] + catgirl_names[:start]
         _RECHECK_RR_CURSOR = (start + 1) % n
 
-        # 阶段 1：reflection 优先（数据少、影响 prompt 直接、价值高）
-        # 阶段 2：所有 reflection 跑完后才轮到 fact（数据多、影响间接）
-        # 每次外循环只动 1 条，避免单角色 reflection 长时间独占
+        # Stage 1: prioritize reflections (less data, direct prompt impact, high value).
+        # Stage 2: process facts only after all reflections (more data, indirect impact).
+        # Touch only one entry per outer loop to prevent one character's reflections monopolizing work.
         did_one = False
         for name in ordered:
             try:
@@ -864,8 +864,8 @@ async def _periodic_slow_memory_recheck_loop():
         await asyncio.sleep(MEMORY_RECHECK_INTERVAL_SECONDS)
 
 
-# scoped subject 时间归档的进程内节流（判据粒度是天，无须持久化：重启后
-# 首轮 sweep 多跑一次也是幂等的）。
+# In-process throttling for time-based scoped-subject archival (day-level criteria need no persistence:
+# an extra first sweep after restart is idempotent).
 _subject_archive_last_run: dict[str, datetime] = {}
 
 
@@ -878,8 +878,8 @@ async def _amaybe_sweep_subject_archive(name: str, now: datetime) -> None:
     path reaches them). Throttled per character because the staleness
     criterion has day granularity while the sweep loop runs hourly.
     """
-    # 函数级 import：每次调用时从 config 模块现读属性，测试 patch
-    # config.SCOPED_* 即可生效（模块级 from-import 会在导入时冻结值）。
+    # Function-local import reads config attributes on every call, allowing tests to patch
+    # config.SCOPED_*; a module-level from-import would freeze values at import time.
     from config import (
         SCOPED_SUBJECT_ARCHIVE_ENABLED,
         SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS,
@@ -890,7 +890,7 @@ async def _amaybe_sweep_subject_archive(name: str, now: datetime) -> None:
     last = _subject_archive_last_run.get(name)
     if last is not None and (now - last).total_seconds() < min_interval:
         return
-    # 先占窗口再跑：持续性失败也按节流间隔重试，不放大为每小时重打。
+    # Reserve the window before running: persistent failures retry at the throttle interval, not hourly.
     _subject_archive_last_run[name] = now
     from memory.subject_archive import asweep_scoped_subject_archive
     try:
@@ -1039,7 +1039,7 @@ async def _periodic_archive_sweep_loop():
                                 f"[ArchiveSweep] {name}: persona {entity_key}/{eid} 归档失败: {e}"
                             )
 
-                # ── scoped subjects（时间驱动，群记忆系列 5/7） ──
+                # -- Scoped subjects (time-driven, group-memory series 5/7). --
                 await _amaybe_sweep_subject_archive(name, now)
             except Exception as e:
                 logger.debug(f"[ArchiveSweep] {name}: 扫描失败，跳过: {e}")

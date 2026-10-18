@@ -57,6 +57,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_BUSY,
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_DUPLICATE,
+    PROACTIVE_REASON_PASS_PRIVACY,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -94,11 +95,13 @@ from main_logic.proactive_chat.generation import (
     Phase2PromptContext,
     ProactiveModelConfig,
     _append_directives_section,
+    _check_proactive_vision_consent,
     _decide_phase1_channels,
     _fetch_phase1_followups,
     _is_neko_community_phase1_source,
     _lookup_link_by_phase1_selection,
     _proactive_llm_retry_error_types,
+    _proactive_vision_consent_checker,
     _run_phase2_generation,
     _run_unified_phase1,
 )
@@ -184,15 +187,17 @@ def _consume_repeat_suppressed_break_reminder(
 
 
 _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
+# Sources that read the screen or the active window share the vision consent gate.
+_PROACTIVE_VISION_SOURCE_MODES = frozenset({"vision", "window"})
 
 
 _PHASE1_FETCH_PER_SOURCE = (
-    PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
+    PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Fixed Phase1 fetch count per source.
 )
 
 
 _PHASE1_TOTAL_TOPIC_TARGET = (
-    PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
+    PROACTIVE_PHASE1_TOTAL_TOPICS  # Target total candidates passed to Phase1 filtering model.
 )
 
 
@@ -374,10 +379,10 @@ def _resolve_proactive_locale(
         (value for value in _command_language_candidates(data) if value),
         None,
     )
-    # 与 ``main_routers/game_router._absorb_request_language`` 同形：第三方客户端 /
-    # corrupted localStorage 可能传 ``'undefined'`` / ``'estonian'`` 等 garbage，
-    # ``normalize_language_code`` 对未识别值默认回退 ``'en'``——必须先用公共白名单
-    # 挡掉，否则 proactive 邀请文案会被静默短路成英文，错过本应命中的 session 真值。
+    # Like ``main_routers/game_router._absorb_request_language``: third-party clients /
+    # corrupted localStorage may send garbage such as ``'undefined'`` / ``'estonian'``;
+    # ``normalize_language_code`` defaults unrecognized values to ``'en'``, so first reject with shared allowlist,
+    # or proactive invitation text silently becomes English, bypassing session's actual language.
     if request_lang and is_supported_language_code(request_lang):
         normalized = _normalize(request_lang)
         if normalized:
@@ -492,6 +497,67 @@ def _resolve_phase2_avatar_position(fresh, request_avatar_position):
     return getattr(fresh, "avatar_position", None)
 
 
+async def _vision_consent_declined(vision_consent_check: Any) -> bool:
+    """Strict vision-consent read; an unreadable consent counts as declined."""
+    try:
+        await _check_proactive_vision_consent(vision_consent_check)
+    except Exception:
+        return True
+    return False
+
+
+async def _withhold_revoked_vision_sources(
+    sources: dict[str, dict], vision_consent_check: Any, *, lanlan_name: str, stage: str,
+) -> bool:
+    """Drop screen/window sources in place if consent is gone; return whether it did."""
+    if not _PROACTIVE_VISION_SOURCE_MODES.intersection(sources):
+        return False
+    if not await _vision_consent_declined(vision_consent_check):
+        return False
+    logger.info("[%s] 视觉授权已撤回（%s），丢弃屏幕/窗口来源", lanlan_name, stage)
+    for mode in _PROACTIVE_VISION_SOURCE_MODES:
+        sources.pop(mode, None)
+    return True
+
+
+async def _collect_sources_under_vision_consent(
+    *,
+    command: ProactiveChatCommand,
+    enabled_modes: list[str],
+    lanlan_name: str,
+    vision_consent_check: Any,
+) -> tuple[list[str], dict[str, dict], bool]:
+    """Collect enabled sources; screen and window sources only under vision consent.
+
+    The frontend withdraws these modes at send time. A revocation that arrives
+    while the request is in flight is enforced here: before collection the
+    modes are dropped, so the screen and the active window are not read; after
+    collection their results are discarded, because a read already started
+    cannot be recalled. The flag reports whether consent withheld any source.
+    """
+    withheld = False
+    if (
+        _PROACTIVE_VISION_SOURCE_MODES.intersection(enabled_modes)
+        and await _vision_consent_declined(vision_consent_check)
+    ):
+        logger.info("[%s] 视觉授权已撤回，本轮不读取屏幕/窗口来源", lanlan_name)
+        enabled_modes = [
+            mode for mode in enabled_modes if mode not in _PROACTIVE_VISION_SOURCE_MODES
+        ]
+        withheld = True
+    sources = await collect_proactive_sources(
+        command=command,
+        enabled_modes=enabled_modes,
+        lanlan_name=lanlan_name,
+        log=logger,
+    )
+    if await _withhold_revoked_vision_sources(
+        sources, vision_consent_check, lanlan_name=lanlan_name, stage="采集期间",
+    ):
+        withheld = True
+    return enabled_modes, sources, withheld
+
+
 async def handle_proactive_chat(
     command: ProactiveChatCommand,
     *,
@@ -522,8 +588,9 @@ async def handle_proactive_chat(
         current_track = command.current_track
         music_cooldown = command.music_cooldown
 
-        # 获取session manager
+        # Get session manager.
         mgr = session_manager.get(lanlan_name)
+        vision_consent_epoch = getattr(mgr, "_proactive_vision_revocation_epoch", 0)
         manager_exists = bool(mgr)
         entry_result = _decide_manager_entry_guard(
             lanlan_name,
@@ -567,14 +634,14 @@ async def handle_proactive_chat(
             else {}
         )
 
-        # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
-        # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。
-        # mgr.is_active 仅用于判断 session 是否已实例化，故仍需保留。
+        # Check whether a new proactive turn may start: state machine combines AI responding (_is_responding)
+        # and another active proactive turn (phase != IDLE) into an O(1) decision.
+        # Retain mgr.is_active only to check session instantiation.
         probe_session = mgr.session if mgr.is_active else None
 
         # ========== Voice mode fast path ==========
-        # 语音模式下不走 Phase1/Phase2，不占 SM 的 proactive phase；先用只读
-        # can_start_proactive 做 409 判定即可。
+        # Voice mode bypasses Phase1/2 without claiming proactive phase; read-only
+        # can_start_proactive suffices for 409 checks first.
         # Preserve the original short-circuit evaluation order: a text request
         # must not re-read manager/session properties solely to decide the voice
         # path, and an inactive manager must not read ``mgr.session`` here.
@@ -592,25 +659,25 @@ async def handle_proactive_chat(
             realtime_session=realtime_session,
         )
         if use_voice_fast_path:
-            # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
-            # 直接用 session 自己跟踪的「用户最后一次真实消息时间」喂给
-            # advance_response。否则纯 voice 用户收到 mini-game 邀请回应后，
-            # pending 永远翻不掉，邀请会被永久抑制；CodeRabbit Major review 指出。
+            # Advance mini-game invite state: voice fast path bypasses activity tracker,
+            # so feed session-tracked last genuine user-message time directly to
+            # advance_response. Otherwise voice-only users replying after mini-game invitation
+            # leave pending forever and permanently suppress invitations (CodeRabbit Major review).
             #
-            # ⚠️ 用 last_user_message_time（仅真实非空非 echo 用户输入）而非
-            # last_user_activity_time（顶部无条件刷新，含 VAD 空噪声 + 麦克风录回
-            # AI 自己 TTS 的回声）。后者会被 AI 念邀请台词的回声污染：邀请投递后
-            # 回声立刻把 activity 刷到 > delivered_at，下一个 tick 的隐式 dismiss
-            # 误判「用户已回应」→ 把 pending 邀请清成 'later'（5min）+ 撤掉按钮，
-            # 用户随后点「现在不想玩」落到 expired、真正的 5h decline 起不来、邀请
-            # 5min 后反复重来。改用真消息时间戳后，纯点按钮（不说话）的用户活动
-            # 时间不会越过 delivered_at，pending 一直留到用户显式点按钮 / 说话。
+            # Warning: use last_user_message_time (genuine nonempty nonecho user input), not
+            # last_user_activity_time (unconditional top-level refresh including VAD noise and microphone
+            # echoes of AI TTS). Reading invitation aloud contaminates the latter: after delivery,
+            # echo immediately refreshes activity beyond delivered_at; next tick's implicit dismissal
+            # wrongly sees user response, clears pending to later (5min), and removes buttons.
+            # User then clicks 'do not want to play now', gets expired, never starts real5h decline cooldown, and invitation
+            # repeats after5min. With genuine-message time, button-only activity never advances
+            # past delivered_at, leaving pending until explicit button click / speech.
             _voice_entry_advance = _advance_mini_game_invite_entry(
                 lanlan_name,
                 getattr(mgr, "last_user_message_time", None),
             )
-            # advance 触发了隐式 dismiss → 推 WS 让前端清掉 prompt UI（cross-window
-            # 一致性）。codex P2 指出非按钮路径漏推 WS 让 UI 挂着。
+            # advance implicitly dismissed → push WS to clear prompt UI consistently across windows.
+            # Codex P2: nonbutton paths omitted WS, leaving UI stuck.
             if _voice_entry_advance is not None:
                 await push_mini_game_invite_resolved(
                     mgr,
@@ -636,10 +703,10 @@ async def handle_proactive_chat(
                 language=voice_language,
             )
             if delivered:
-                # 1h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
-                # 与 text path 在 _record_proactive_chat 之后调 count 对称。
+                # Chat counter for1h+10 chats cooldown: voice nudge counts as proactive delivery,
+                # symmetric with text path count after _record_proactive_chat.
                 _mini_game_invite_count_post_response_chat(lanlan_name)
-                # 持久化"累计成功投递的主动搭话总数"，给 force-first 用。
+                # Persist cumulative successful proactive deliveries for force-first.
                 await _increment_proactive_chat_total(
                     lanlan_name, **state_storage_kwargs
                 )
@@ -665,10 +732,10 @@ async def handle_proactive_chat(
                 )
             )
 
-        # ========== Text-mode proactive：原子 "检查 + 占坑" ==========
-        # try_start_proactive 在 _write_lock 内完成 can_start_proactive 判定 + 翻
-        # IDLE→PHASE1 + 订阅派发，避免并发请求双双通过 can_start_proactive 后
-        # 各自 fire(PROACTIVE_START) 导致两路 proactive 同时进入 PHASE1。
+        # ========== Text-mode proactive: atomic check + claim ==========
+        # try_start_proactive holds _write_lock across can_start_proactive check,
+        # IDLE→PHASE1, and subscription dispatch, preventing concurrent requests from both passing
+        # then firing PROACTIVE_START into PHASE1 simultaneously.
         from main_logic.session_state import SessionEvent as _SE
 
         lifecycle = ProactiveLifecycle(
@@ -676,8 +743,11 @@ async def handle_proactive_chat(
             state_event=_SE.PROACTIVE_DONE,
             lanlan_name=lanlan_name,
             log=logger,
+            screenshot_request_id=uuid4().hex,
         )
-        proactive_started = await mgr.state.try_start_proactive(session=probe_session)
+        proactive_started = await mgr.state.try_start_proactive(
+            session=probe_session, round_id=lifecycle.screenshot_request_id,
+        )
         entry_result = _decide_busy_entry_guard(
             proactive_started,
             state_snapshot=(None if proactive_started else mgr.state.snapshot()),
@@ -691,16 +761,21 @@ async def handle_proactive_chat(
                 status_code=entry_result.status_code,
             )
 
+        mgr._proactive_screenshot_request_id = lifecycle.screenshot_request_id
+
         async def _end_proactive(
             result: ProactiveChatResult,
         ) -> ProactiveChatResult:
             """Finalize every normal/short-circuit service exit."""
             return await lifecycle.finalize(result)
 
+        def _round_preempted() -> bool:
+            return not lifecycle.owns_round() or mgr.state.is_proactive_preempted()
+
         def _proactive_preempted_json(where: str) -> dict:
-            # 细粒度的 state 快照留 debug；面向排查的"本轮未发起 + 原因"由统一
-            # 出口 _end_proactive 按 message 打 info（这些 dict 全部经它返回），
-            # 避免同一轮 skip 打出两条重复 info。
+            # Fine-grained state snapshots stay DEBUG; unified _end_proactive emits troubleshooting
+            # info with skipped-round reason from message (all these dicts return through it),
+            # avoiding duplicate skip info in one round.
             logger.debug(
                 "[%s] proactive %s preempted by user takeover (state=%s)",
                 lanlan_name,
@@ -716,26 +791,26 @@ async def handle_proactive_chat(
 
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
 
-        # ========== 拉用户活动快照 ==========
-        # 在 enabled_modes 解析之前拉一次，因为 propensity 可能需要把
-        # enabled_modes 收紧到只剩 vision（restricted_screen_only 状态）。
-        # 详见 docs/design/user-activity-tracker.md。
+        # ========== Fetch user-activity snapshot ==========
+        # Fetch before enabled_modes parsing because propensity may narrow
+        # enabled_modes to vision only (restricted_screen_only).
+        # See docs/design/user-activity-tracker.md.
         #
-        # 隐私模式：用户开了"隐私模式"开关 → 临时禁用整个 user-activity-tracker，
-        # 回退到 PR #1015 之前的无限制策略。snapshot 留 None，下游所有 gating
-        # 都已在 PR #1015 设计时按 "snapshot is not None" 写过 fallback：
-        #   - propensity 收紧（restricted_screen_only）→ 不触发
-        #   - 反思/回忆 _allow_reminiscence → 默认放开
-        #   - state_section 渲染 → 输出空串
-        #   - mark_unfinished_thread_used → 不计数
-        # 所以这里把 snapshot 直接设 None 就够，等价于"tracker 不存在"。
+        # Privacy mode temporarily disables all user-activity-tracker and
+        # restores pre-PR#1015 unrestricted policy. Leave snapshot None; downstream gating
+        # already designed fallbacks on snapshot is not None:
+        #   - restricted_screen_only propensity narrowing → disabled.
+        #   - reflection/reminiscence _allow_reminiscence → allowed by default.
+        #   - state_section rendering → empty string.
+        #   - mark_unfinished_thread_used → no counting.
+        # Thus setting snapshot None suffices, equivalent to no tracker.
         from utils.preferences import ais_privacy_mode_enabled
 
         try:
             privacy_mode = await ais_privacy_mode_enabled()
         except Exception as _pm_err:
-            # fail-closed：读不出来按隐私开启处理。正常"用户没开隐私"是
-            # ais_privacy_mode_enabled 返回 False，不进这个 except。
+            # Fail closed: unreadable means privacy enabled. Ordinary disabled privacy makes
+            # ais_privacy_mode_enabled return False without entering this except.
             logger.warning(
                 f"[{lanlan_name}] privacy mode check failed, defaulting to enabled: {_pm_err}",
             )
@@ -759,11 +834,11 @@ async def handle_proactive_chat(
                 )
                 activity_snapshot = None
 
-        # 进 proactive_chat 后第一时间推进 mini-game invite 的"已回应"判定：
-        # 即便本轮不发邀请，pending 的上一次邀请也得在用户已说话时翻成已回应，
-        # 否则 cooldown 永远卡在 pending。Text path 从 activity_snapshot 反推
-        # last_user_msg_at；voice fast path 在上面的 voice block 内独立调一次
-        # （用 mgr.last_user_activity_time），两边对称。
+        # Immediately advance mini-game invite response state on proactive_chat entry:
+        # even without a new invitation, prior pending invitation must mark responded after user speech,
+        # or cooldown stays pending forever. Text derives last_user_msg_at from activity_snapshot;
+        # voice fast path independently calls above in voice block
+        # using mgr.last_user_activity_time, keeping symmetry.
         _text_last_user_msg_at = _last_user_message_at_from_activity(
             activity_snapshot,
         )
@@ -771,7 +846,7 @@ async def handle_proactive_chat(
             lanlan_name,
             _text_last_user_msg_at,
         )
-        # 隐式 dismiss 推 WS（同 voice fast path 对称，codex P2）
+        # Push WS on implicit dismiss (symmetric voice fast path, codex P2).
         if _text_entry_advance is not None:
             await push_mini_game_invite_resolved(
                 mgr,
@@ -779,25 +854,25 @@ async def handle_proactive_chat(
                 action=_text_entry_advance.action,
             )
 
-        # 用户级 toggle：前端 CHAT_MODE_CONFIG 里的 ``proactiveMiniGameInviteEnabled``
-        # 通过 request body 的 ``mini_game_invite_enabled`` 字段透传。缺省 True 兼容
-        # 旧客户端。提到 _debug_force_invite 计算之前——把 user toggle 关同时
-        # 服务端开了调试旗标的场景下，下游早退 gate（closed / skip_probability）
-        # 也维持原有抑制语义；不能因为旗标开了就把 gate 一并 bypass 掉。
-        # CodeRabbit Major review 指出原版只在 _maybe_deliver_mini_game_invite
-        # 入口拦 user toggle，旗标已经把上游 gate 绕过 → 进 _maybe_deliver
-        # 又被 toggle 拦 None → caller 走普通 source picking，封禁场景仍然漏过。
+        # User toggle: frontend CHAT_MODE_CONFIG's ``proactiveMiniGameInviteEnabled``
+        # passes through request body ``mini_game_invite_enabled``, default True for
+        # legacy clients. Evaluate before _debug_force_invite so disabled user toggle with
+        # enabled server debug flag retains upstream early-return gates (closed / skip_probability),
+        # rather than flag bypassing suppression too.
+        # CodeRabbit Major: original checked toggle only in _maybe_deliver_mini_game_invite,
+        # after flag already bypassed upstream gates; toggle returned None there and caller
+        # continued ordinary source picking, leaking through blocked contexts.
         _user_invite_toggle = command.mini_game_invite_enabled
 
-        # 调试旗标 ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` 非 None 时绕开本函数所有
-        # 上游早退 gate（closed / skip_probability / restricted_screen_only），
-        # 让 ``_maybe_deliver_mini_game_invite`` 能稳定接到本轮调用——契约是
-        # "开启后主动搭话必定触发特定小游戏"。仅本地手测使用；生产
-        # ``MINI_GAME_INVITE_ENABLED`` 总开关 + 旗标默认 None 双保险。
-        # 用户 toggle 关时旗标无效（与 _maybe_deliver_mini_game_invite 入口
-        # 的 toggle 检查同语义，单一事实源在前端 toggle）。
-        # CodeRabbit Major 指出：这条不在 ``_maybe_deliver_mini_game_invite``
-        # 内部加是因为那时已经过了上游 gate，旗标做不到"必定"。
+        # Non-None ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` bypasses all upstream
+        # early-return gates (closed / skip_probability / restricted_screen_only),
+        # ensuring ``_maybe_deliver_mini_game_invite`` receives the call each round:
+        # enabling forces this specific mini-game. Local manual testing only; production
+        # has ``MINI_GAME_INVITE_ENABLED`` master switch plus default-None flag as safeguards.
+        # User toggle off disables flag, matching toggle check at _maybe_deliver_mini_game_invite
+        # entry; frontend toggle is sole authority.
+        # CodeRabbit Major: checking outside ``_maybe_deliver_mini_game_invite`` is necessary,
+        # since upstream gates already passed inside, too late to guarantee forced delivery.
         _debug_force_invite = (
             MINI_GAME_INVITE_FORCE_GAME_TYPE is not None and _user_invite_toggle
         )
@@ -825,23 +900,23 @@ async def handle_proactive_chat(
                 )
             )
 
-        # ========== Screen-only：固定间隔 + 后端抖动 ==========
-        # 用户处于 gaming / focused_work（propensity=restricted_screen_only）
-        # 时，常规的前端 3-tier 退避会让搭话间隔指数级增长，跟陪伴产品
-        # 命题冲突（用户最长会话段反而最安静）。改用：
-        #   1. 前端 reset backoffLevel=0 并按 baseInterval 等间隔触发
-        #      （由响应里的 next_schedule_fixed_mode=True 通知前端切换）
-        #   2. 后端在 LLM 调用前 sleep uniform(0, 0.5 * baseInterval)，把每轮
-        #      实际间隔从 base 抹成 [base, 1.5*base] 的均匀分布
-        # 总效果：屏幕态平均间隔 ≈ 1.25*base，且有自然的随机抖动。
-        # skip_probability（仅 immersive_horror=0.3）作为正交机制保留。
+        # ========== Screen-only: fixed interval + backend jitter ==========
+        # During gaming / focused_work (restricted_screen_only), ordinary frontend
+        # three-tier backoff exponentially increases intervals, conflicting with companionship:
+        # longest user sessions become quietest. Instead:
+        #   1. Frontend resets backoffLevel=0 and triggers evenly at baseInterval,
+        #      notified by next_schedule_fixed_mode=True in response.
+        #   2. Backend sleeps uniform(0,0.5*baseInterval) before LLM call,
+        #      distributing actual intervals uniformly over [base,1.5*base].
+        # Overall screen-state mean ≈1.25*base with natural random jitter.
+        # Retain skip_probability independently (immersive_horror only,0.3).
         #
-        # ⚠️ 标志位 vs sleep 拆开：anti_slack_pending / work_break_pending
-        # 是 focused_work 下的 must-fire 提醒（紧跟在下一段 4425+），本身
-        # 时间敏感，不能被这里的随机抖动延后。但前端 fixed_mode 标志位
-        # 仍然要设——否则 must-fire 走 _end_proactive 时响应里会带回
-        # next_schedule_fixed_mode=False，前端误切回 tier backoff，让用户
-        # 离开 must-fire 状态后又被退避机制吞掉一段时间。
+        # Warning: separate flag from sleep; anti_slack_pending / work_break_pending
+        # are time-sensitive must-fire focused_work reminders (next section4425+),
+        # so never delay with random jitter. Still set frontend fixed_mode,
+        # or must-fire _end_proactive returns
+        # next_schedule_fixed_mode=False, wrongly restoring tier backoff and
+        # suppressing messages again after must-fire state ends.
         # Codex P2 + CodeRabbit Major review。
         activity_schedule = _decide_activity_schedule(
             activity_snapshot,
@@ -879,12 +954,12 @@ async def handle_proactive_chat(
             )
         ):
             try:
-                # break reminder 的消费点全是 prompt dict（休息提醒模板、
-                # WORK_BREAK_* 兜底 label、_loc 出来的分隔符），一律要 prompt
-                # key 而不是短码，否则 zh-TW 行取不到（issue #2500）。
+                # Break-reminder consumers are prompt dicts (reminder templates,
+                # WORK_BREAK_* fallback labels, _loc separators), requiring prompt
+                # keys instead of short codes or zh-TW rows are unreachable (issue#2500).
                 _break_lang = _resolve_proactive_locale(command, mgr, fmt="prompt")
-                # 邀请按钮 label 经 normalize_mini_game_invite_locale 二次归一，
-                # full locale 在那边同样收敛到 zh-TW，故保持 full 不动。
+                # Invitation labels normalize again via normalize_mini_game_invite_locale;
+                # full locale also resolves to zh-TW there, so retain full value.
                 _break_invite_lang = _resolve_proactive_locale(
                     command, mgr, fmt="full"
                 )
@@ -922,6 +997,7 @@ async def handle_proactive_chat(
                     ),
                     channel="anti_slack",
                     lang=_break_lang,
+                    round_id=lifecycle.screenshot_request_id,
                 )
                 delivered_text = reminder_delivery.delivered_text
                 if reminder_delivery.repeat_suppressed:
@@ -1031,6 +1107,7 @@ async def handle_proactive_chat(
                     ),
                     channel="work_break_game_invite",
                     lang=_break_lang,
+                    round_id=lifecycle.screenshot_request_id,
                 )
                 delivered_text = reminder_delivery.delivered_text
                 if reminder_delivery.repeat_suppressed:
@@ -1076,8 +1153,8 @@ async def handle_proactive_chat(
                     try:
                         from utils.instrument import counter as _instr_counter
 
-                        # 与 proactive 通道共用 mini_game_invited，channel 维度区分；
-                        # 不计 persist 成败——邀请 UI 已投递给用户即算一次邀请。
+                        # Share mini_game_invited with proactive channel, differentiated by channel;
+                        # persistence success does not matter: delivered invitation UI counts.
                         _instr_counter(
                             "mini_game_invited",
                             game_type=str(chosen_game_type)[:24],
@@ -1085,7 +1162,7 @@ async def handle_proactive_chat(
                             force_first=False,
                         )
                     except Exception:
-                        # 埋点 best-effort，失败不影响邀请投递
+                        # Telemetry is best effort; failure does not affect invitation delivery.
                         pass
                     options_payload = _build_mini_game_invite_options_payload(
                         invite_lang=_break_invite_lang,
@@ -1158,6 +1235,7 @@ async def handle_proactive_chat(
                 ),
                 channel="work_break",
                 lang=_break_lang,
+                round_id=lifecycle.screenshot_request_id,
             )
             delivered_text = reminder_delivery.delivered_text
             if reminder_delivery.repeat_suppressed:
@@ -1242,11 +1320,11 @@ async def handle_proactive_chat(
                 )
             )
 
-        # ========== 解析 enabled_modes ==========
-        # 兼容旧版前端：``enabled_modes`` 字段缺席 → 根据其它字段推断；显式传 ``[]``
-        # 表示新版客户端"用户把所有 source toggle 都关了"，不能再走 BC fallback
-        # 退化到 home/trending（否则 mini-game 邀请 toggle 单独开启的场景下 dice
-        # miss 会让 home 兜底打破 toggle 契约——codex P1）。
+        # ========== Parse enabled_modes ==========
+        # Legacy frontend: absent ``enabled_modes`` inferred from other fields; explicit ``[]``
+        # from newer clients means all source toggles off, never invoking compatibility fallback
+        # to home/trending (with mini-game toggle alone, a missed die roll would otherwise
+        # activate home fallback against user toggle contract; codex P1).
         source_mode_selection = _select_source_modes(
             command,
             activity_snapshot,
@@ -1255,11 +1333,11 @@ async def handle_proactive_chat(
         enabled_modes = source_mode_selection.enabled_modes
         _has_unfinished_thread = source_mode_selection.has_unfinished_thread
 
-        # restricted_screen_only：用户处于 gaming / focused_work，仅允许屏幕通道。
-        # 把 enabled_modes 收紧到只剩 vision。如果前端这一轮根本没启用 vision，
-        # 直接 pass —— 没东西可看，又不让聊外部，没必要继续。
-        # 例外：有未收尾话题（5min 内 AI 提的问题用户还没回）→ 即使没 vision
-        # 也允许跑下去，跟进上一个问题不需要外部素材。
+        # restricted_screen_only: gaming/focused_work permits screen channel only.
+        # Narrow enabled_modes to vision; if frontend did not enable vision this round,
+        # pass directly: no visuals and external topics forbidden, so nothing to do.
+        # Exception: unfinished thread (AI question unanswered within5min) may proceed
+        # without vision, as following up needs no external material.
         if source_mode_selection.restricted_to_vision:
             print(
                 f"[{lanlan_name}] propensity=restricted_screen_only, 收紧 enabled_modes 到仅 vision"
@@ -1278,20 +1356,20 @@ async def handle_proactive_chat(
 
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
 
-        # ========== Mini-game 邀请短路 ==========
-        # 过完 propensity / skip_probability / restricted_screen_only 这几道门后，
-        # 独立掷一次 10% 骰子；命中即用静态 i18n 模板直投递邀请，跳过 Phase 1/2
-        # LLM 与 source fetching。一次邀请被回应后 24h+10 chats cooldown，期间
-        # 不再掷骰。activity_snapshot is None（隐私模式 / tracker 不可用）保守
-        # 不发——无法判断是否在工作状态。
+        # ========== Mini-game invitation short circuit ==========
+        # After propensity / skip_probability / restricted_screen_only gates,
+        # independently roll10%; on hit deliver static i18n invitation, skipping Phase1/2
+        # LLM and source fetching. Response starts24h+10 chats cooldown,
+        # during which no dice. activity_snapshot None (privacy / unavailable tracker)
+        # conservatively sends nothing, unable to identify work state.
         try:
-            # fmt="full"：邀请文案与三个按钮 label 都走带 zh-TW 行的 prompt dict，
-            # 短码会把 zh-TW 折成 zh，那些行就永远取不到（issue #2500）。
+            # fmt="full": invitation and all three labels use prompt dicts with zh-TW rows;
+            # short codes fold zh-TW into zh, losing those rows (issue#2500).
             invite_lang = _resolve_proactive_locale(command, mgr, fmt="full")
         except Exception:
             invite_lang = "zh"
-        # _user_invite_toggle 已经在上面 _debug_force_invite 计算前算过——把
-        # toggle 关时旗标也连带禁用，保证早退 gate 不被绕过。
+        # _user_invite_toggle already computed before _debug_force_invite above:
+        # disabled toggle also disables flag, preserving early-return gates.
         invite_short_circuit = await run_mini_game_invite_short_circuit(
             lanlan_name=lanlan_name,
             mgr=mgr,
@@ -1299,6 +1377,7 @@ async def handle_proactive_chat(
             invite_lang=invite_lang,
             master_name=master_name_current,
             user_toggle_enabled=_user_invite_toggle,
+            round_id=lifecycle.screenshot_request_id,
             **state_storage_kwargs,
         )
         if invite_short_circuit is not None:
@@ -1321,12 +1400,12 @@ async def handle_proactive_chat(
                 )
             )
 
-        # 用户把所有 source toggle 都关了（仅留 mini-game 邀请独立 toggle 触发本轮
-        # 请求），mini-game 短路又没命中：没什么可聊。直接 pass 而不是落到下面源
-        # picking 走空 list / 撞 "所有信息源获取失败" 500 分支。例外：仍然有未收尾
-        # 话题 → 让 Phase 2 走 text-only 跟进路径（与 sources={} 但 thread 在的兜
-        # 底语义对齐）。codex P1 指出：BC fallback 已经按 "字段缺席 vs 显式 []" 分
-        # 流，这里对显式空清晰退出。
+        # All source toggles off (mini-game's independent toggle alone triggered request),
+        # but invitation short circuit missed: nothing to discuss. Pass directly rather than
+        # source-picking an empty list / 'all sources failed'500. Exception: unfinished
+        # thread lets Phase2 use text-only follow-up, matching fallback with
+        # sources={} and an existing thread. Codex P1: compatibility fallback already distinguishes
+        # missing field from explicit[], so exit clearly for explicit empty.
         source_result = _decide_empty_source_gate(
             enabled_modes,
             has_unfinished_thread=_has_unfinished_thread,
@@ -1342,23 +1421,36 @@ async def handle_proactive_chat(
                 )
             )
 
-        # 全局 source 衰减历史：进入 picking 前确保已惰性加载到内存（首次为线程池
-        # IO，后续是 O(1) flag 检查）。同步 picking loop 后续直接读 dict。
+        # Global source-decay history: ensure lazy memory load before picking (initial thread-pool
+        # IO, later O(1) flag checks). Synchronous picker reads dict directly.
         await _ensure_source_history_loaded(**state_storage_kwargs)
 
-        # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
-        sources = await collect_proactive_sources(
-            command=command,
-            enabled_modes=enabled_modes,
-            lanlan_name=lanlan_name,
-            log=logger,
+        # ========== 0. Fetch all sources concurrently (no LLM) ==========
+        vision_consent_check = _proactive_vision_consent_checker(mgr, vision_consent_epoch)
+        enabled_modes, sources, vision_sources_withheld = (
+            await _collect_sources_under_vision_consent(
+                command=command,
+                enabled_modes=enabled_modes,
+                lanlan_name=lanlan_name,
+                vision_consent_check=vision_consent_check,
+            )
         )
         avatar_position = command.avatar_position
 
         if not sources:
-            # 例外：未收尾话题模式下 enabled_modes 可能本就被清空（restricted_screen_only
-            # + 无 vision），sources 必定为空但不应当 pass —— 让 Phase 2 拿对话
-            # 历史 + state_section 跑 text-only [CHAT] 跟进。
+            # Exception: unfinished-thread mode may already clear enabled_modes (restricted_screen_only
+            # without vision), making sources empty; do not pass, let Phase2 use dialogue
+            # history + state_section for text-only [CHAT] follow-up.
+            if not _has_unfinished_thread and vision_sources_withheld:
+                # Consent revocation removed every source: skip for privacy, not because of a technical failure.
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body=_proactive_pass_body(
+                            PROACTIVE_REASON_PASS_PRIVACY,
+                            message="vision consent revoked; no other source",
+                        ),
+                    )
+                )
             if not _has_unfinished_thread:
                 return await _end_proactive(
                     ProactiveChatResult(
@@ -1374,8 +1466,8 @@ async def handle_proactive_chat(
                 f"[{lanlan_name}] sources 为空但有未收尾话题，进入 text-only 跟进路径"
             )
 
-        # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
-        if mgr.state.is_proactive_preempted():
+        # Phase1 preemption check after concurrent source fetch, before LLM.
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(body=_proactive_preempted_json("phase1_post_fetch"))
             )
@@ -1384,18 +1476,18 @@ async def handle_proactive_chat(
             f"[{lanlan_name}] 成功获取 {len(sources)} 个信息源: {list(sources.keys())}"
         )
 
-        # ========== 1. 获取记忆上下文 (New Dialog) ==========
-        # new_dialog 返回格式：
+        # ========== 1. Fetch memory context (New Dialog) ==========
+        # new_dialog response format:
         # ========以下是{name}的内心活动========
-        # {内心活动/Settings}...
-        # 现在时间...整理了近期发生的事情。
+        # {Inner thoughts/Settings}...
+        # Current time...recent events summarized.
         # Name | Content
         # ...
 
         raw_memory_context = ""
         try:
-            # fmt="prompt"：proactive_lang 一路喂到 Phase 1/2 模板、屏幕/外部/
-            # 音乐/表情包分节、近期搭话记录、action note——全是 prompt dict。
+            # fmt="prompt": proactive_lang feeds Phase1/2 templates, screen/external/
+            # music/meme sections, recent proactive records, action notes: all prompt dicts.
             proactive_lang = _resolve_proactive_locale(command, mgr, fmt="prompt")
         except Exception:
             proactive_lang = "zh"
@@ -1423,10 +1515,10 @@ async def handle_proactive_chat(
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
 
-        # 解析 new_dialog 响应：把"内心活动"与"对话历史"切开。
-        # 切分逻辑（locale 无关）集中在 prompts_memory.split_inner_thoughts_and_history，
-        # 以 INNER_THOUGHTS_DYNAMIC 的多语言模板为准；任一 locale 都匹配不到时返回
-        # None，这里兜底为"全部当历史、内心活动留空"并打 warning（不再静默错位）。
+        # Parse new_dialog by separating inner thoughts from dialogue history.
+        # Locale-independent split logic lives in prompts_memory.split_inner_thoughts_and_history,
+        # based on multilingual INNER_THOUGHTS_DYNAMIC templates; no locale match returns
+        # None, falling back here to all-history/empty-thoughts with warning instead of silent misalignment.
         def _parse_new_dialog(text: str) -> tuple[str, str]:
             if not text:
                 return "", ""
@@ -1445,27 +1537,27 @@ async def handle_proactive_chat(
 
         memory_context, inner_thoughts = _parse_new_dialog(raw_memory_context)
 
-        # Phase 1 preempt check：memory_server new_dialog 是 phase1 里首次大 await
-        # （httpx timeout 5s）。用户在这期间打断只能等超时才有下一次 check，
-        # 这里补一刀。
-        if mgr.state.is_proactive_preempted():
+        # Phase1 preemption check: memory_server new_dialog is first large await in Phase1
+        # (httpx5s timeout). User interruption during it waits until timeout for next check,
+        # so add check here.
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(
                     body=_proactive_preempted_json("phase1_post_memory")
                 )
             )
 
-        # ========== 2. 选择语言 ==========
-        # 与 mini-game 邀请短路同源：request body → mgr.user_language → 全局缓存。
-        # 见 _resolve_proactive_locale 的 docstring。
-        # ========== 3. 注入近期搭话记录 ==========
+        # ========== 2. Choose language ==========
+        # Same authority as mini-game short circuit: request body → mgr.user_language → global cache.
+        # See _resolve_proactive_locale docstring.
+        # ========== 3. Inject recent proactive records ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(
             lanlan_name, proactive_lang
         )
 
-        # 趁机把 open_threads 计算起来——和下面 Phase 1 unified LLM 调用并行。
-        # 缓存按用户消息序号失效；没新用户发言就 no-op 直接返回。Phase 2 读
-        # snapshot 时会拿到这次的结果（如果赶上了）；赶不上就用上一次的缓存。
+        # Compute open_threads concurrently with Phase1 unified LLM below.
+        # Cache invalidates by user-message sequence; without new user speech return immediately. Phase2's
+        # snapshot uses these results if ready, otherwise prior cache.
         try:
             mgr._activity_tracker.kickoff_open_threads_compute(lang=topic_hook_lang)
         except Exception as _ot_err:
@@ -1473,14 +1565,14 @@ async def handle_proactive_chat(
                 f"[{lanlan_name}] kickoff_open_threads_compute failed: {_ot_err}"
             )
 
-        # ========== 3.5 反思 + 回调话题（通过 memory_server API） ==========
-        # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
+        # ========== 3.5 Reflection + callback topics (memory_server API) ==========
+        # Cognitive framework: Facts → Reflection(pending) → natural proactive mention → feedback → Persona.
         #
-        # 用户在 gaming / focused_work 状态下不应自然回忆——会很尬。直接跳过整段
-        # （也省 reflect POST 的 15s timeout 风险）。stale_returning 反而欢迎回忆。
+        # Avoid awkward reminiscence during gaming/focused_work; skip whole section,
+        # also saving reflect POST's15s timeout risk. stale_returning welcomes reminiscence.
         followup_topics_prompt = ""
         _followup_topics = []
-        _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
+        _surfaced_reflection_ids = []  # Track pending reflections mentioned this turn.
         _allow_reminiscence = (
             activity_snapshot is None
             or activity_snapshot.propensity != "restricted_screen_only"
@@ -1489,13 +1581,13 @@ async def handle_proactive_chat(
             print(
                 f"[{lanlan_name}] propensity=restricted_screen_only, 跳过反思/回忆话题获取"
             )
-        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径。
-        # 仅 read：取 followup_topics 候选用于本轮 prompt 注入。
-        # 历史上这一段还前置调过 POST /reflect/{name}（"自动状态迁移 + 反思合成"），
-        # 已删除——合成迁到 ``_periodic_reflection_synthesis_loop`` 后端循环、
-        # auto_promote 早就由 ``_periodic_auto_promote_loop`` 每 180s 跑。把
-        # mutation 留在 proactive 关键路径上既拖延 ~15s response、又让整个
-        # reflection 生命周期跟前端 setTimeout 强耦合（前端不开 → 永不合成）。
+        # Reuse internal_http_client singleton; every proactive turn uses this path.
+        # Read-only: fetch followup_topics candidates for current prompt injection.
+        # Previously called POST /reflect/{name} first for automatic state transitions/synthesis;
+        # removed after synthesis moved to ``_periodic_reflection_synthesis_loop``,
+        # while ``_periodic_auto_promote_loop`` already runs auto_promote every180s. Keeping
+        # mutation on proactive critical path delayed response~15s and coupled entire
+        # reflection lifecycle to frontend setTimeout (no frontend means no synthesis).
         if _allow_reminiscence:
             try:
                 from utils.internal_http_client import get_internal_http_client
@@ -1527,24 +1619,24 @@ async def handle_proactive_chat(
             except Exception as e:
                 logger.debug(f"[{lanlan_name}] 回调话题获取失败（不影响主流程）: {e}")
 
-        # Phase 1 preempt check：followup GET(5s) 是一段可能拖久的 await，
-        # 整段裸跑会让用户打断后继续跑完 LLM 配置和后续步骤，再到 pre-LLM
-        # check 才识破。这里补一刀。
-        if mgr.state.is_proactive_preempted():
+        # Phase1 preemption: followup GET(5s) may await long enough that interruption otherwise
+        # still runs LLM configuration and later work until pre-LLM
+        # check. Recheck here.
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(
                     body=_proactive_preempted_json("phase1_post_reflect")
                 )
             )
 
-        # ========== 4. 获取 LLM 配置 ==========
-        # 主动搭话全链路（Phase1 筛选 / Phase2 生成 / regen）用 conversation tier
-        # 而非 correction tier：correction（纠错）模型在不开思考时较难稳定遵循
-        # "第一行写来源标签" 的格式，容易把人设约束块当正文吐出来；conversation
-        # 是主对话主力模型，格式遵循更稳。仍保持 disable_thinking（vision+思考必超时）。
+        # ========== 4. Fetch LLM configuration ==========
+        # Entire proactive pipeline (Phase1 selection /Phase2 generation /regen) uses conversation tier,
+        # not correction: without thinking, correction models struggle to consistently
+        # put source tag on first line and may output persona-constraint blocks. Conversation
+        # main model follows format more reliably. Retain disable_thinking (vision+thinking times out).
         try:
-            # 一份新鲜快照供 conversation / vision 共用：两次独立的读会让 /core_api
-            # 的保存恰好落在中间时拿到撕裂的一对（旧 conversation + 新 vision）。
+            # One fresh snapshot shared by conversation/vision; separate reads let /core_api
+            # saving between reads produce a torn pair (old conversation + new vision).
             _fresh_core_config = await _config_manager.aget_core_config()
             conversation_config = await _config_manager.aget_model_api_config(
                 "conversation", core_config=_fresh_core_config
@@ -1597,14 +1689,20 @@ async def handle_proactive_chat(
             )
 
         # ================================================================
-        # Phase 1: 合并 LLM 调用（web 筛选 + music 关键词 + meme 关键词）
-        # ⚠️ 一阶段一定不要分析屏幕！截图会在二阶段由 vision_model 直接 feed in。
-        # - 所有文本源合并 → 1 次 LLM 同时完成 web 筛选、music/meme 关键词生成
-        # - 来源动态权重系统在 LLM 调用前剔除低权重通道
-        # 总计最多 1 次 LLM 调用
+        # Phase1: combined LLM call (web selection + music keywords + meme keywords).
+        # Warning: never analyze screen in Phase1; Phase2 feeds screenshots directly to vision_model.
+        # - Combine all text sources into one web-selection/music/meme-keyword LLM call.
+        # - Dynamic source weights exclude low-weight channels before LLM.
+        # At most one LLM call total.
         # ================================================================
 
-        vision_content = sources.get("vision")  # 仅保留给 Phase 2 使用，Phase 1 不处理
+        # Consent may be revoked while waiting for memory or follow-ups after collection; screen/window content must not enter any model call.
+        await _withhold_revoked_vision_sources(
+            sources, vision_consent_check, lanlan_name=lanlan_name, stage="Phase 1 前",
+        )
+        # This round uses screen/window content: recheck consent before every subsequent model call and the final commit.
+        round_uses_vision_material = bool(_PROACTIVE_VISION_SOURCE_MODES.intersection(sources))
+        vision_content = sources.get("vision")  # Retain only for Phase2; Phase1 does not process it.
         music_content = sources.get("music")
         meme_content = sources.get("meme")
         logger.debug(
@@ -1616,15 +1714,15 @@ async def handle_proactive_chat(
 
         all_web_links: list[dict] = []
 
-        # 收集音乐链接（在 Phase 1 Web 筛选完成后）
-        # meme 也不经过 Phase 1 LLM 筛选，直接添加话题
+        # Collect music links after Phase1 web selection.
+        # Memes likewise bypass Phase1 LLM selection and add topics directly.
         web_modes = [m for m in sources if m not in ("vision", "music", "meme")]
         # Personal-feed context wins when the same URL also appears elsewhere.
         web_modes.sort(key=lambda mode: 0 if mode == "personal" else 1)
 
         merged_web_content = ""
 
-        # Phase 1 结果收集
+        # Collect Phase1 results.
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
         source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
         selected_web_link = None
@@ -1634,7 +1732,7 @@ async def handle_proactive_chat(
         selected_meme_link = None
         selected_meme_topic_key = None
 
-        # 【加固】如果正在放歌或处于冷却期，强制清空 music 通道，彻底跳过搜歌逻辑
+        # Hardening: while music plays or cooldown active, clear music channel completely, skipping song search.
         if is_music_occupied or is_playing_music or music_cooldown:
             if music_content:
                 reason = (
@@ -1649,13 +1747,13 @@ async def handle_proactive_chat(
             sources.pop("music", None)
 
         # ============================================================
-        # 来源动态权重过滤（vision / 已屏蔽的 music 不参与权重计算）
+        # Dynamic source-weight filtering (vision / blocked music excluded from weighting).
         #
-        # ``reminiscence`` 作为虚拟 channel：当本轮已经从 memory_server 取到
-        # pending followup topics 时，把它放进权重计算池。和 web/news/music
-        # 一样按使用频率衰减——AI 连续多次"回忆"会让 reminiscence 进入
-        # suppressed 集合，本轮就跳过 followup_topics_prompt（per-reflection
-        # cooldown 在 reflection.py 那侧另算，这里是 channel 级别的兜底）。
+        # ``reminiscence`` is a virtual channel: if memory_server returned pending
+        # follow-up topics, add it to weighted pool. Like web/news/music,
+        # decay by usage frequency; repeated reminiscence enters suppressed
+        # and skips followup_topics_prompt this turn (reflection.py separately handles
+        # per-reflection cooldown; this is channel-level fallback).
         # ============================================================
         source_weight_selection = _select_weighted_sources(
             lanlan_name,
@@ -1678,8 +1776,8 @@ async def handle_proactive_chat(
             if "meme" in suppressed:
                 meme_content = None
             if "reminiscence" in suppressed:
-                # 回忆 channel 被 throttle：只清空旧 reflection。
-                # 后台深话题池走独立 one-shot 触发，不在 proactive prompt 里消费。
+                # Reminiscence throttled: clear old reflections only.
+                # Background deep-topic pool uses independent one-shot trigger, not proactive prompt consumption.
                 if followup_topics_prompt:
                     print(
                         f"[{lanlan_name}] reminiscence channel suppressed by weight, dropping followup section"
@@ -1769,8 +1867,8 @@ async def handle_proactive_chat(
             )
 
         # ============================================================
-        # 合并 Phase 1 LLM 调用：web 筛选 + music 关键词 + meme 关键词
-        # 一次 LLM 调用完成所有任务，降低 RPM
+        # Combine Phase1 LLM: web selection + music/meme keywords.
+        # One call does all tasks, reducing RPM.
         # ============================================================
         has_music_task = bool(music_content and music_content.get("placeholder"))
         has_meme_task = bool(meme_content and meme_content.get("placeholder"))
@@ -1781,9 +1879,9 @@ async def handle_proactive_chat(
             enriched_memory_context = memory_context + "\n" + followup_topics_prompt
 
         if has_web_task or has_music_task or has_meme_task:
-            # Phase 1 preempt check：拨号前最后一次检查。大头 LLM 调用即将开始，
-            # 此后等待期间用户抢占只能靠流结束后的兜底识别。
-            if mgr.state.is_proactive_preempted():
+            # Phase1 preemption: final check before dialing. Expensive LLM call starts next;
+            # later interruption can be detected only by fallback after stream ends.
+            if _round_preempted():
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_preempted_json("phase1_pre_llm")
@@ -1800,10 +1898,13 @@ async def handle_proactive_chat(
             has_music_task=has_music_task,
             has_meme_task=has_meme_task,
             log=logger,
+            live_consent_check=vision_consent_check,
+            # Only window content enters the combined Phase 1 text; screenshots go only to Phase 2.
+            vision_consent_required="window" in sources,
         )
 
         # ============================================================
-        # 解析 web 结果 → 链接匹配 → 去重
+        # Parse web output → match links → deduplicate.
         # ============================================================
         web_parsed = unified_parsed.get("web")
         if web_parsed and web_parsed.get("title"):
@@ -1822,9 +1923,9 @@ async def handle_proactive_chat(
                     else "",
                     web_parsed.get("title", ""),
                 )
-                # matched 的链接已经在 picking 阶段过了一次 _should_skip_source，
-                # 这里再 roll 等于让等效 p_skip = 1-(1-p)^2，违背单次半衰期模型。
-                # 仅对未匹配（LLM 幻觉的 title-only 候选）兜底再判一次。
+                # Matched links already passed _should_skip_source during picking;
+                # rolling again yields p_skip=1-(1-p)^2, violating single half-life model.
+                # Recheck only unmatched hallucinated title-only candidates.
                 needs_recheck = bool(topic_key) and matched is None
                 if needs_recheck and _should_skip_source(topic_key):
                     print(
@@ -1860,17 +1961,17 @@ async def handle_proactive_chat(
                         print(
                             f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {web_parsed.get('title', '')[:60]}"
                         )
-                    # 不论 matched 与否，都把 topic_key 留下来供 Phase 2 后落盘 ——
-                    # 哪怕只有 title 也参与衰减历史，避免同样的标题被反复 surface
+                    # Retain topic_key for persistence after Phase2 regardless of matching;
+                    # even title-only topics decay, preventing repeatedly surfacing identical titles.
                     selected_web_topic_key = topic_key
-                    # 用 web_parsed 的 summary 或原始文本作为 topic
+                    # Use web_parsed summary or original text as topic.
                     web_topic_text = web_parsed.get(
                         "summary", web_parsed.get("title", "")
                     )
                     phase1_topics.append(("web", web_topic_text.strip()))
 
         # ============================================================
-        # 并行后置 fetch：music + meme（使用 LLM 生成的关键词）
+        # Parallel post-fetch: music + memes using LLM-generated keywords.
         # ============================================================
         if has_music_task and unified_parsed.get("music_pass"):
             print(f"[{lanlan_name}] Phase 1 音乐通道明确 PASS，跳过后置 fetch")
@@ -1880,8 +1981,8 @@ async def handle_proactive_chat(
             has_music_task and not unified_parsed.get("music_pass")
         ) or (has_meme_task and not unified_parsed.get("meme_pass"))
         if needs_phase1_followups:
-            # Phase 1 preempt check：unified LLM 刚回，music/meme 后置 fetch 前再瞄
-            if mgr.state.is_proactive_preempted():
+            # Phase1 preemption check after unified LLM, before music/meme post-fetch.
+            if _round_preempted():
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_preempted_json("phase1_post_llm")
@@ -1899,9 +2000,9 @@ async def handle_proactive_chat(
         )
 
         # ============================================================
-        # 音乐话题组装（遍历候选 → 衰减 skip → 暂存链接）
-        # 与 web/meme 对偶：超取 N 条后逐条概率 skip，遇命中瞬移到下一条。
-        # 全部命中则清空 music_content 让通道整体降级。
+        # Assemble music topics (iterate candidates → decay skip → stage link).
+        # Symmetric web/meme: overfetch N, probabilistically skip each and proceed to next on hit.
+        # If all skipped, clear music_content to degrade entire channel.
         # ============================================================
         music_selection = _select_music_recommendation(
             music_content,
@@ -1923,7 +2024,7 @@ async def handle_proactive_chat(
             phase1_topics.append(("music", music_topic))
 
         # ============================================================
-        # 表情包话题组装（遍历候选 → 去重 → 限1张）
+        # Assemble meme topics (iterate → deduplicate → one-image limit).
         # ============================================================
         if meme_content and meme_content.get("success") and meme_content.get("data"):
             meme_data = meme_content.get("data", [])
@@ -1933,7 +2034,7 @@ async def handle_proactive_chat(
                     meme_title = candidate_meme.get("title", "")
                     meme_url = candidate_meme.get("url", "")
                     if not meme_url:
-                        continue  # 跳过无 URL 的候选
+                        continue  # Skip candidates lacking URL.
                     meme_source = candidate_meme.get("source", "表情包")
                     meme_topic_key = _source_hash(meme_url, meme_title)
                     if meme_topic_key and _should_skip_source(meme_topic_key):
@@ -1941,7 +2042,7 @@ async def handle_proactive_chat(
                             f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}"
                         )
                         continue
-                    if mgr.state.is_proactive_preempted():
+                    if _round_preempted():
                         return await _end_proactive(
                             ProactiveChatResult(
                                 body=_proactive_preempted_json(
@@ -1952,7 +2053,7 @@ async def handle_proactive_chat(
                     moderation = await moderate_meme_image_url(
                         meme_url, fail_closed=False
                     )
-                    if mgr.state.is_proactive_preempted():
+                    if _round_preempted():
                         return await _end_proactive(
                             ProactiveChatResult(
                                 body=_proactive_preempted_json(
@@ -1993,7 +2094,7 @@ async def handle_proactive_chat(
                                 _MEME_PROXY_CANDIDATE_CHECK_LIMIT,
                             )
                             break
-                        if mgr.state.is_proactive_preempted():
+                        if _round_preempted():
                             return await _end_proactive(
                                 ProactiveChatResult(
                                     body=_proactive_preempted_json(
@@ -2005,7 +2106,7 @@ async def handle_proactive_chat(
                         proxy_ok, proxy_reason = (
                             await meme_proxy_candidate_fetchable(meme_url)
                         )
-                        if mgr.state.is_proactive_preempted():
+                        if _round_preempted():
                             return await _end_proactive(
                                 ProactiveChatResult(
                                     body=_proactive_preempted_json(
@@ -2066,13 +2167,13 @@ async def handle_proactive_chat(
                 f"[{lanlan_name}] Phase 1 无话题但有未收尾话题，进入 text-only 跟进 Phase 2"
             )
 
-        # Phase 1 preempt check：topic assembly 完，进入 Phase 2 前最后一次瞄
-        if mgr.state.is_proactive_preempted():
+        # Phase1 preemption check after topic assembly, before Phase2.
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(body=_proactive_preempted_json("phase1_pre_phase2"))
             )
 
-        # 收集各通道结果
+        # Collect channel results.
         active_channels = phase1_decision.active_channels
         print(
             f"[{lanlan_name}] Phase 1 结果: phase1_topics={phase1_topics}, vision_content={'有' if vision_content else '无'}"
@@ -2081,7 +2182,7 @@ async def handle_proactive_chat(
         music_topic = phase1_decision.music_topic
         primary_channel = phase1_decision.primary_channel
         if selected_web_link:
-            if mgr.state.is_proactive_preempted():
+            if _round_preempted():
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_preempted_json(
@@ -2094,7 +2195,7 @@ async def handle_proactive_chat(
                     selected_web_link,
                     fallback_topic=web_topic,
                     language=proactive_lang,
-                    is_preempted=mgr.state.is_proactive_preempted,
+                    is_preempted=_round_preempted,
                 )
             except SelectedWebCandidatePreempted:
                 return await _end_proactive(
@@ -2104,7 +2205,7 @@ async def handle_proactive_chat(
                         )
                     )
                 )
-            if mgr.state.is_proactive_preempted():
+            if _round_preempted():
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_preempted_json(
@@ -2117,16 +2218,16 @@ async def handle_proactive_chat(
         )
 
         # ================================================================
-        # Phase 2: 结合人设 + 双通道信息 → 流式生成搭话
-        # ⚠️ 二阶段一定要用 vision_model，在调用前使用最新截图。
-        #    只有这样才能减少 vision_model 读屏幕的延迟。
-        # ⚠️ 二阶段一定不要打开思考 (disable_thinking 必须为 True)，
-        #    否则 vision_model + thinking 一定会超时。
-        # ⚠️ 不重试、不改写。流式拦截到异常直接 abort，失败即 pass 等下一次。
-        # 流程：tokens → TTS 即时生成 → 全文完成后一次性投递文本 → abort 时中断两端
+        # Phase2: persona + two-channel information → stream proactive dialogue.
+        # Warning: use vision_model and freshest screenshot before call,
+        # minimizing screen-reading latency.
+        # Warning: never enable thinking (disable_thinking must True),
+        # or vision_model + thinking times out.
+        # Warning: no retry/rewrite. Streaming anomalies abort directly; failures pass until next attempt.
+        # Flow: tokens → immediate TTS → deliver full text once complete → abort interrupts both ends.
         # ================================================================
 
-        # 获取角色完整人设，替换模板变量
+        # Fetch complete persona and replace template variables.
         character_prompt = lanlan_prompt_map.get(lanlan_name, "")
         if not character_prompt:
             logger.warning(f"[{lanlan_name}] 未找到角色人设，使用空字符串")
@@ -2134,17 +2235,25 @@ async def handle_proactive_chat(
             "{LANLAN_NAME}", lanlan_name
         ).replace("{MASTER_NAME}", master_name_current)
 
-        # --- 向前端请求最新截图，替换 Phase 1 时拿到的旧截图 ---
+        # --- Request fresh frontend screenshot, replacing Phase1's old image ---
         screenshot_b64_for_phase2 = ""
         if vision_content and model_config.has_vision_model:
-            fresh = await mgr.request_fresh_screenshot(timeout=3.0)
+            fresh = await mgr.request_fresh_screenshot(
+                timeout=3.0,
+                allow_backend_fallback=command.screenshot_allow_desktop_fallback,
+                request_id=lifecycle.screenshot_request_id,
+            )
+            if _round_preempted():
+                return await _end_proactive(ProactiveChatResult(
+                    body=_proactive_preempted_json("phase1_post_screenshot"),
+                ))
             if fresh.b64:
                 fresh_b64 = fresh.b64
-                # 判据见 _resolve_phase2_avatar_position：WS 路径不给坐标 = 前端明确
-                # 说「别叠」，绝不回退请求里的旧坐标；pyautogui 兜底才用 Phase 1 坐标。
-                # ⚠️ request_fresh_screenshot 两条路径都不叠加，overlay 只在这里做。
-                # ⚠️ 已知上限：Phase1→Phase2 之间隔了一整轮 LLM（数秒），兜底路径复用
-                #    的坐标可能已经陈旧。
+                # See _resolve_phase2_avatar_position: absent WS coordinates explicitly means
+                # no overlay, never reuse old request coordinates; only pyautogui fallback uses Phase1 coordinates.
+                # Warning: neither request_fresh_screenshot path overlays; overlay only here.
+                # Warning: known limitation: a full LLM call separates Phase1→Phase2 (seconds), so fallback's
+                # reused coordinates may already be stale.
                 av_pos = _resolve_phase2_avatar_position(fresh, avatar_position)
                 if av_pos and isinstance(av_pos, dict):
                     try:
@@ -2165,14 +2274,15 @@ async def handle_proactive_chat(
                 print(
                     f"[{lanlan_name}] Phase 2 获取到最新截图 ({len(fresh_b64) // 1024}KB)"
                 )
-            else:
+            # Technical failures may reuse an old image; explicit refusals must not restore this round's visual input through an old image.
+            elif not fresh.declined:
                 screenshot_b64_for_phase2 = vision_content.get("screenshot_b64", "")
                 if screenshot_b64_for_phase2:
                     print(
                         f"[{lanlan_name}] Phase 2 刷新截图失败，退回使用 Phase 1 旧截图"
                     )
 
-        # 构建屏幕内容段（vision 通道）
+        # Build screen-content section (vision).
         screen_section = ""
         if screenshot_b64_for_phase2:
             sl = get_screen_section_header(master_name_current, proactive_lang)
@@ -2191,7 +2301,7 @@ async def handle_proactive_chat(
         else:
             print(f"[{lanlan_name}] Phase 2 无截图或无 vision 模型，跳过屏幕分析")
 
-        # 构建网络话题段（web 通道）
+        # Build web-topic section.
         external_section = ""
         if web_topic:
             el = _loc(EXTERNAL_TOPIC_HEADER, proactive_lang)
@@ -2199,18 +2309,18 @@ async def handle_proactive_chat(
             external_section = f"{el}\n{web_topic}\n{ef}"
 
         music_section = ""
-        # gate 钉在 selected_music_link（本轮真选中、可播的曲目）而非 music_topic：
-        # 保证 Phase 2 prompt 一旦出现音乐素材 / output-format 列出 [MUSIC]，下游必有
-        # 歌可投递，不会"发了 [MUSIC] 却转译不出"。selected_music_link 非空时
-        # music_topic 必非空（同生于 Phase 1 选曲）。正在放歌 / 冷却期时
-        # music_content / selected_music_link 已在上游清空，此分支自然不命中。
+        # Gate selected_music_link (actually selected playable track), not music_topic:
+        # whenever Phase2 prompt contains music / output format lists [MUSIC], downstream has
+        # a deliverable song, avoiding untranslatable [MUSIC]. Nonempty selected_music_link
+        # implies music_topic, both created during Phase1 selection. While playing/cooling down,
+        # upstream already cleared music_content / selected_music_link, naturally skipping branch.
         if (
             selected_music_link
             and not is_music_occupied
             and not is_playing_music
             and not music_cooldown
         ):
-            # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
+            # Optimization: separate identifiers stop model confusing music material with ordinary external web topics.
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
             music_section = f"{msh}\n{music_topic}\n{msf}"
@@ -2220,7 +2330,7 @@ async def handle_proactive_chat(
             )
             music_section = ""
 
-        # 构建表情包段（meme 通道）
+        # Build meme section.
         meme_section = ""
         meme_topic = None
         for channel, topic in phase1_topics:
@@ -2239,11 +2349,11 @@ async def handle_proactive_chat(
             has_meme=bool(meme_section),
             lang=proactive_lang,
         )
-        # 本轮是否启用"来源标签系统"：有 web/music/meme 副作用通道时，
-        # get_proactive_format_sections 用 _of_header（要求第一行写 [TAG]）；三者全无
-        # 时用 _of_none（明确要求纯文本、无 tag，下游靠 source_tag='CHAT' 兜底投递）。
-        # 无 tag gate 只在前者生效，否则会把 _of_none 模式的合法纯文本搭话误判为
-        # 格式泄漏 drop（Codex P1）。
+        # Whether source tags are enabled: with side-effect web/music/meme channels,
+        # get_proactive_format_sections uses _of_header requiring first-line [TAG]; with none,
+        # _of_none explicitly requests untagged plain text, delivered using fallback source_tag='CHAT'.
+        # Missing-tag gate applies only to former, or legitimate _of_none text would be
+        # dropped as format leakage (Codex P1).
         _expects_source_tag = (
             bool(external_section) or bool(music_section) or bool(meme_section)
         )
@@ -2254,17 +2364,17 @@ async def handle_proactive_chat(
             lang=proactive_lang,
         )
 
-        # 把活动快照渲染成 prompt 段。snapshot 缺失时退化为空串——decision frame
-        # 里的 A) 看「用户当前状态」分支会自动走到"其它状态：所有切入点都可用"。
+        # Render activity snapshot as prompt; absent snapshot yields empty string, making decision-frame
+        # A) current-state branch default to other states with all entry points available.
         #
-        # 重要：渲染前重拉一次 tracker enrichment 缓存（activity_scores /
-        # activity_guess / open_threads）。kickoff_open_threads_compute 是在
-        # Phase 1 起点 fire-and-forget 跑的，结果会在 Phase 1 进行中陆续落到
-        # 缓存里——早期捕获的 activity_snapshot 看不到这些更新。专门并行起来
-        # 就是为了本轮就用。决策性字段（state / propensity / propensity_reasons /
-        # unfinished_thread）仍取自早期 snapshot，避免 Phase 1 中途 state 变化
-        # 导致 gating 决策（restricted_screen_only 收紧 enabled_modes 等）和最终
-        # prompt 不一致。
+        # Refresh tracker enrichment cache before rendering (activity_scores /
+        # activity_guess / open_threads). kickoff_open_threads_compute launched fire-and-forget at
+        # Phase1 start; results arrive gradually while Phase1 runs,
+        # invisible to earlier activity_snapshot. Parallel computation is intended for
+        # use this turn. Keep decision fields (state / propensity / propensity_reasons /
+        # unfinished_thread) from early snapshot, preventing mid-Phase1 state changes from
+        # making gates (e.g. restricted_screen_only narrowing enabled_modes) inconsistent with final
+        # prompt.
         # Freshest enrichment for the proactive prompt — Phase 1 (source fetch +
         # memory + LLM) just elapsed, so activity scores / open threads moved on.
         # Falls back to the entry snapshot if the refresh fails / is unavailable.
@@ -2300,21 +2410,21 @@ async def handle_proactive_chat(
             display_snap = None
             state_section = ""
 
-        # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
-        # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
-        # 使用 enriched_memory_context（含回忆线索）而非原始 memory_context。
-        # open_threads 保持在上方 activity state section，不混进 memory_context。
+        # Separate static/dynamic content: generate_prompt is cacheable static SystemMessage,
+        # added music/meme instructions dynamic HumanMessage context.
+        # Use enriched_memory_context with reminiscence cues, not raw memory_context.
+        # Keep open_threads in activity state section above, outside memory_context.
         phase2_memory_context = memory_context
         if followup_topics_prompt:
             phase2_memory_context = memory_context + "\n" + followup_topics_prompt
 
-        # ── 用户显式 ban-topic 注入 ─────────────────────────────────
-        # Phase 2 的 system prompt 自己拼，从不经过 _build_initial_prompt，
-        # 所以在此之前用户说过的"别再提 X"对**主动搭话**完全不可见：常规回复
-        # 受禁令约束，主动搭话照提不误——而主动搭话恰恰是"哪壶不开提哪壶"
-        # 最伤人的那条路径（用户没问，是 AI 自己挑起的）。
-        # 这里只做软约束（prompt 提醒）；出口还有一道 drop 硬闸，见
-        # generation.py 的 _proactive_directive_hits。两级都不额外烧 LLM。
+        # ── Explicit user topic bans ─────────────────────────────────
+        # Phase2 builds its own system prompt, never _build_initial_prompt,
+        # so previous 'do not mention X' instructions were entirely invisible to proactive chat:
+        # ordinary replies obeyed while proactive speech still raised banned topics, the most
+        # hurtful unsolicited path because AI chose the topic without user request.
+        # Soft prompt constraint here; hard drop at output, see
+        # generation.py _proactive_directive_hits. Neither level adds LLM calls.
         phase2_memory_context = _append_directives_section(
             phase2_memory_context, lanlan_name, proactive_lang,
         )
@@ -2344,27 +2454,29 @@ async def handle_proactive_chat(
             proactive_lang=proactive_lang,
             master_name=master_name_current,
         )
-        # music_cooldown 时不再注入 strict_constraint —— 此时 music 通道已被前端/后端
-        # 完全剔除，不应向模型暴露任何音乐相关指令，以免干扰其他 source 的选择。
+        # Do not inject strict_constraint during music_cooldown; frontend/backend already removed
+        # music entirely, so expose no music instructions that could distort other-source selection.
         print(
             f"[{lanlan_name}] Phase 2 prompt 长度: {len(phase2_system_prompt)}, "
             f"动态上下文: {len(dynamic_context_for_phase2)} 字符"
         )
-        # Phase 1 preempt check (final)：request_fresh_screenshot 最多 await 3s，
-        # 是 prepare_proactive_delivery 之前唯一剩下的可打断窗口。若此处用户已
-        # 接管，继续走 prepare 会让其内部的 `current_speech_id = uuid4()` 覆盖
-        # 用户轮次的 sid —— 即使 SM 的 PROACTIVE_CLAIM 在 _preempted=True 时不
-        # 回写 proactive_sid，mgr.current_speech_id 已经被物理换掉，用户的
-        # 回复 TTS 会被错贴上一个陌生 sid。
-        if mgr.state.is_proactive_preempted():
+        # Phase1 final preemption check: request_fresh_screenshot awaits up to 3s,
+        # the last interruptible window before prepare_proactive_delivery. If user took over,
+        # continuing prepare would overwrite user-turn sid with internal `current_speech_id = uuid4()`,
+        # even though SM PROACTIVE_CLAIM avoids writing proactive_sid under _preempted=True;
+        # mgr.current_speech_id already physically changed, mislabeling user reply
+        # TTS with an unrelated sid.
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(
                     body=_proactive_preempted_json("phase1_pre_prepare")
                 )
             )
 
-        # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
-        if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
+        # --- Preflight: user idle, WebSocket online, session available ---
+        if not await mgr.prepare_proactive_delivery(
+            min_idle_secs=10.0, round_id=lifecycle.screenshot_request_id,
+        ):
             return await _end_proactive(
                 ProactiveChatResult(
                     body={
@@ -2376,15 +2488,16 @@ async def handle_proactive_chat(
                 )
             )
 
-        # 记录本轮主动搭话起始的 speech_id；abort 时若该 id 已变，说明用户已打断并接管，
-        # 此时再调 handle_new_message() 会把用户正常回复的 TTS 也一起清掉。
-        # prepare_proactive_delivery 已经 fire(PROACTIVE_CLAIM, sid=...)；这里把
-        # 状态机翻到 PHASE2，后续 astream 循环的抢占检查基于此阶段。
+        # Capture proactive starting speech_id; changed id at abort means user interrupted/took over,
+        # so handle_new_message() would wrongly clear the user's legitimate reply TTS too.
+        # prepare_proactive_delivery fired PROACTIVE_CLAIM with sid; advance state machine
+        # to PHASE2, used by subsequent astream preemption checks.
         proactive_sid = mgr.current_speech_id
         if not await _enter_proactive_phase2(
             mgr,
             proactive_sid,
             log=logger,
+            round_id=lifecycle.screenshot_request_id,
         ):
             return await _end_proactive(
                 ProactiveChatResult(
@@ -2395,7 +2508,7 @@ async def handle_proactive_chat(
                 )
             )
 
-        # Path B (idle) Focus 凝神：this round is now committed to speaking
+        # Path B (idle) focus mode: this round is now committed to speaking
         # (PHASE2 fired). Read-only: does this proactive reply run thinking-on?
         # (= the session is already in Focus, inline-driven). A proactive turn
         # never raises the charge; the charge cooldown happens after the turn in
@@ -2411,6 +2524,9 @@ async def handle_proactive_chat(
 
         guarded_output = await _run_phase2_generation(
             mgr=mgr,
+            vision_consent_epoch=vision_consent_epoch,
+            round_is_current=lifecycle.owns_round,
+            vision_consent_required=round_uses_vision_material,
             proactive_sid=proactive_sid,
             model_config=model_config,
             lanlan_name=lanlan_name,
@@ -2430,6 +2546,19 @@ async def handle_proactive_chat(
             music_cooldown=music_cooldown,
             log=logger,
         )
+        if _round_preempted():
+            return await _end_proactive(ProactiveChatResult(
+                body=_proactive_preempted_json("phase2_post_generation"),
+            ))
+        # Consent was revoked during generation: the response uses screen/window content, and the screenshot would persist into the next round; do not commit it.
+        if round_uses_vision_material and await _vision_consent_declined(vision_consent_check):
+            logger.info("[%s] 视觉授权在生成期间撤回，放弃本轮投递", lanlan_name)
+            return await _end_proactive(ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_PRIVACY,
+                    message="vision consent revoked before delivery",
+                ),
+            ))
         if guarded_output.result is not None:
             return await _end_proactive(
                 ProactiveChatResult(body=guarded_output.result.body)
@@ -2462,6 +2591,7 @@ async def handle_proactive_chat(
             proactive_lang=proactive_lang,
             master_name=master_name_current,
             log=logger,
+            round_id=lifecycle.screenshot_request_id,
         )
         if delivery_commit.result is not None:
             return await _end_proactive(
@@ -2510,6 +2640,10 @@ async def handle_proactive_chat(
             )
         )
 
+    except asyncio.CancelledError:
+        if lifecycle is not None:
+            await lifecycle.safe_done()
+        raise
     except asyncio.TimeoutError:
         logger.error("主动搭话超时")
         if lifecycle is not None:
@@ -2533,3 +2667,8 @@ async def handle_proactive_chat(
             ),
             status_code=500,
         )
+    finally:
+        # Also retire the ID on cancellation; a delayed cleanup cannot clear
+        # the ID of a newer round admitted after PROACTIVE_DONE.
+        if lifecycle is not None:
+            lifecycle.clear_screenshot_request()

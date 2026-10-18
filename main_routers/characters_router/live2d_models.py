@@ -291,7 +291,7 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
     resolved_source = "steam_workshop" if normalized_item_id else (_derive_live2d_asset_source(normalized_model) or "local_imported")
     resolved_source_id = normalized_item_id
 
-    # 外部链接保持原始绑定，不回绑到本地目录/创意工坊目录。
+    # Keep external links bound to their original locations; do not rebind them to local or Workshop directories.
     if resolved_source == "manual_external":
         return normalized_model or resolved_model_path, resolved_source_id, resolved_source
 
@@ -327,37 +327,37 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
 
-        # 如果没有指定角色名称，使用当前猫娘
+        # If no character name is specified, use the current catgirl.
         if not catgirl_name:
             catgirl_name = characters.get('当前猫娘', '')
 
-        # 查找指定角色的Live2D模型
+        # Find the Live2D model for the specified character.
         live2d_model_name = None
         model_info = None
         saved_model_path = ""
         saved_asset_source = ""
         saved_item_id = ""
 
-        # 首先尝试通过item_id查找模型
+        # First try to find the model by item_id.
         if item_id:
             try:
                 logger.debug(f"尝试通过item_id {item_id} 查找模型")
-                # 获取所有模型
+                # Get all models.
                 all_models = find_models()
-                # 查找匹配item_id的模型
+                # Find the model matching item_id.
                 matching_model = next((m for m in all_models if m.get('item_id') == item_id), None)
 
                 if matching_model:
                     logger.debug(f"通过item_id找到模型: {matching_model['name']}")
-                    # 复制模型信息
+                    # Copy the model information.
                     model_info = matching_model.copy()
                     live2d_model_name = model_info['name']
             except Exception as e:
                 logger.warning(f"通过item_id查找模型失败: {e}")
 
-        # 如果没有通过item_id找到模型，再通过角色名称查找
+        # If no model was found by item_id, search by character name.
         if not model_info and catgirl_name:
-            # 在猫娘列表中查找
+            # Search the catgirl list.
             if '猫娘' in characters and catgirl_name in characters['猫娘']:
                 catgirl_data = characters['猫娘'][catgirl_name]
                 saved_model_path = get_reserved(
@@ -376,7 +376,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     default='',
                 )
 
-                # 检查是否有保存的item_id
+                # Check whether an item_id has been saved.
                 saved_item_id = get_reserved(
                     catgirl_data,
                     'avatar',
@@ -387,7 +387,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 if saved_item_id:
                     logger.debug(f"发现角色 {catgirl_name} 保存的item_id: {saved_item_id}")
                     try:
-                        # 尝试通过保存的item_id查找模型
+                        # Try to find the model using the saved item_id.
                         all_models = find_models()
                         matching_model = _find_live2d_model_catalog_entry(
                             all_models,
@@ -403,13 +403,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     except Exception as e:
                         logger.warning(f"通过保存的item_id查找模型失败: {e}")
 
-        # 如果找到了模型名称，获取模型信息
+        # If the model name was found, get the model information.
         if live2d_model_name:
             try:
-                # 先从完整的模型列表中查找，这样可以获取到item_id等完整信息
+                # Search the full model list first to get complete information, including item_id.
                 all_models = find_models()
 
-                # 同时获取工坊模型列表，确保能找到工坊模型
+                # Also get the Workshop model list to make sure Workshop models can be found.
                 try:
                     from ..workshop_router import get_subscribed_workshop_items
                     workshop_result = await get_subscribed_workshop_items()
@@ -418,7 +418,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             installed_folder = item.get('installedFolder')
                             workshop_item_id = item.get('publishedFileId')
                             if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and workshop_item_id:
-                                # 检查安装目录下是否有.model3.json文件
+                                # Check whether a .model3.json file exists in the installation directory.
                                 for filename in os.listdir(installed_folder):
                                     if filename.endswith('.model3.json'):
                                         model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
@@ -429,7 +429,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                                 'source': 'steam_workshop',
                                                 'item_id': workshop_item_id
                                             })
-                                # 检查子目录
+                                # Check subdirectories.
                                 for subdir in os.listdir(installed_folder):
                                     subdir_path = os.path.join(installed_folder, subdir)
                                     if os.path.isdir(subdir_path):
@@ -449,7 +449,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 
                 matching_model = model_info.copy() if model_info else None
                 if matching_model is None:
-                    # 保留前面已命中的 item_id 结果；仅在没有现成匹配时再做目录级回退查找。
+                    # Keep the item_id result found earlier; search at the directory level only if there is no existing match.
                     matching_model = _find_live2d_model_catalog_entry(
                         all_models,
                         model_name=live2d_model_name,
@@ -469,19 +469,19 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         matching_model = fallback_model
 
                 if matching_model:
-                    # 使用完整的模型信息，包含item_id
+                    # Use the full model information, including item_id.
                     model_info = matching_model.copy()
                     logger.debug(f"从完整模型列表获取模型信息: {model_info}")
                 else:
-                    # 如果在完整列表中找不到，回退到原来的逻辑
+                    # If the model is not found in the full list, fall back to the original logic.
                     model_dir, url_prefix = find_model_directory(live2d_model_name)
                     if model_dir and os.path.exists(model_dir):
-                        # 查找模型配置文件
+                        # Find the model configuration file.
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
 
-                            # 使用保存的item_id构建model_path，从之前的逻辑中获取saved_item_id
+                            # Build model_path using the saved item_id; get saved_item_id from the earlier logic.
                             saved_item_id = (
                                 get_reserved(
                                     catgirl_data,
@@ -492,7 +492,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                 ) if 'catgirl_data' in locals() else ''
                             )
 
-                            # 如果有保存的item_id，使用它构建路径
+                            # If an item_id was saved, use it to build the path.
                             if saved_item_id:
                                 if url_prefix == '/workshop':
                                     model_subdir = os.path.basename(model_dir.rstrip('/\\'))
@@ -501,7 +501,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                     model_path = encode_url_path(f'{url_prefix}/{saved_item_id}/{model_file}')
                                 logger.debug(f"使用保存的item_id构建模型路径: {model_path}")
                             else:
-                                # 原始路径构建逻辑
+                                # Original path construction logic.
                                 model_path = encode_url_path(f'{url_prefix}/{live2d_model_name}/{model_file}')
                                 logger.debug(f"使用模型名称构建路径: {model_path}")
 
@@ -513,7 +513,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             except Exception as e:
                 logger.warning(f"获取模型信息失败: {e}")
 
-        # 回退机制：如果没有找到模型，使用默认模型 (DEFAULT_LIVE2D_MODEL_NAME)
+        # Fallback: if no model is found, use the default model (DEFAULT_LIVE2D_MODEL_NAME).
         if not live2d_model_name or not model_info:
             logger.info(
                 f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 "
@@ -521,7 +521,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             )
             live2d_model_name = DEFAULT_LIVE2D_MODEL_NAME
             try:
-                # 先从完整的模型列表中查找内置/static 默认模型，避免误匹配用户/工坊同名模型
+                # Search the full list for a built-in/static default model first to avoid accidentally matching a user or Workshop model with the same name.
                 all_models = find_models()
                 matching_model = next(
                     (
@@ -541,7 +541,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     model_info = matching_model.copy()
                     model_info['is_fallback'] = True
                 else:
-                    # 如果找不到，回退到原来的逻辑
+                    # If it is not found, fall back to the original logic.
                     model_dir, url_prefix = find_model_directory(DEFAULT_LIVE2D_MODEL_NAME)
                     if model_dir and os.path.exists(model_dir):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
@@ -551,7 +551,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             model_info = {
                                 'name': DEFAULT_LIVE2D_MODEL_NAME,
                                 'path': model_path,
-                                'is_fallback': True  # 标记这是回退模型
+                                'is_fallback': True  # Mark this as a fallback model.
                             }
             except Exception as e:
                 logger.error(
@@ -656,17 +656,17 @@ async def update_catgirl_l2d(name: str, request: Request):
         live2d_model = data.get('live2d')
         vrm_model = data.get('vrm')
         mmd_model = data.get('mmd')
-        model_type = data.get('model_type', 'live2d')  # 默认为live2d以保持兼容性
-        item_id = data.get('item_id')  # 获取可选的item_id
-        vrm_animation = data.get('vrm_animation')  # 获取可选的VRM动作
-        idle_animation = data.get('idle_animation')  # 获取可选的VRM待机动作
-        mmd_animation = data.get('mmd_animation')  # 获取可选的MMD动作
-        mmd_idle_animation = data.get('mmd_idle_animation')  # 获取可选的MMD待机动作
+        model_type = data.get('model_type', 'live2d')  # Default to live2d for backward compatibility.
+        item_id = data.get('item_id')  # Get the optional item_id.
+        vrm_animation = data.get('vrm_animation')  # Get the optional VRM motion.
+        idle_animation = data.get('idle_animation')  # Get the optional VRM idle motion.
+        mmd_animation = data.get('mmd_animation')  # Get the optional MMD motion.
+        mmd_idle_animation = data.get('mmd_idle_animation')  # Get the optional MMD idle motion.
 
-        # 根据model_type检查相应的模型字段
+        # Check the corresponding model fields based on model_type.
         model_type_str = str(model_type).lower() if model_type else 'live2d'
 
-        # 【修复】model_type 只允许 {live2d, vrm, live3d, pngtuber}，否则 400
+        # [Fix] model_type allows only {live2d, vrm, live3d, pngtuber}; otherwise return 400.
         if model_type_str not in ['live2d', 'vrm', 'live3d', 'pngtuber']:
             return JSONResponse(
                 content={
@@ -676,7 +676,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 status_code=400
             )
 
-        # 归一化：旧客户端发送的 'vrm' 统一为 'live3d'（走 Live3D VRM 子分支处理）
+        # Normalize: map legacy client value 'vrm' to 'live3d' (handled by the Live3D VRM sub-branch).
         if model_type_str == 'vrm':
             model_type_str = 'live3d'
 
@@ -794,11 +794,11 @@ async def update_catgirl_l2d(name: str, request: Request):
             pngtuber_payload['mirror'] = _config_value_is_enabled(pngtuber_payload.get('mirror'))
 
         if model_type_str == 'live3d':
-            # Live3D 模式：接受 VRM 或 MMD 模型
+            # Live3D mode: accept VRM or MMD models.
             if vrm_model and mmd_model:
                 return JSONResponse(content={'success': False, 'error': '不能同时提供VRM和MMD模型，请选择其中一个'}, status_code=400)
             if vrm_model:
-                # 验证 VRM 路径
+                # Validate the VRM path.
                 vrm_model_str = str(vrm_model).strip()
                 if '://' in vrm_model_str or vrm_model_str.startswith('data:'):
                     return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含URL方案'}, status_code=400)
@@ -809,7 +809,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': 'VRM模型路径必须以 /user_vrm/、/static/vrm/ 或 /workshop/ 开头'}, status_code=400)
                 vrm_model = vrm_model_str
             elif mmd_model:
-                # 验证 MMD 路径
+                # Validate the MMD path.
                 mmd_model_str = str(mmd_model).strip()
                 if '://' in mmd_model_str or mmd_model_str.startswith('data:'):
                     return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含URL方案'}, status_code=400)
@@ -831,33 +831,33 @@ async def update_catgirl_l2d(name: str, request: Request):
                     status_code=400
                 )
 
-        # 加载当前角色配置
+        # Load the current character configuration.
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
 
-        # 确保猫娘配置存在
+        # Ensure the catgirl configuration exists.
         if '猫娘' not in characters:
             characters['猫娘'] = {}
 
-        # 确保指定猫娘的配置存在
+        # Ensure the specified catgirl's configuration exists.
         if name not in characters['猫娘']:
             return JSONResponse(
                 {'success': False, 'error': '猫娘不存在'},
                 status_code=404
             )
 
-        # 切换模型类型时保留非当前模型配置，避免来回切换后丢失待机动作/光照等设置
+        # When switching model types, preserve the inactive model configurations to avoid losing idle motions / lighting settings after switching back and forth.
         if model_type_str == 'live3d':
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
             active_model_binding_path = ""
 
             if vrm_model:
-                # Live3D + VRM：更新当前激活的 VRM 配置，保留 MMD 配置便于切回
+                # Live3D + VRM: update the currently active VRM configuration while preserving the MMD configuration for switching back.
                 set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
                 active_model_binding_path = vrm_model
 
-                # 处理 VRM 动画（复用同样的验证逻辑）
+                # Handle VRM animation (reuse the same validation logic).
                 if 'vrm_animation' in data:
                     if vrm_animation is None or vrm_animation == '':
                         set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
@@ -895,12 +895,12 @@ async def update_catgirl_l2d(name: str, request: Request):
 
                 logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
             elif mmd_model:
-                # Live3D + MMD：更新当前激活的 MMD 配置，保留 VRM 配置便于切回
+                # Live3D + MMD: update the currently active MMD configuration while preserving the VRM configuration for switching back.
                 set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'mmd')
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
                 active_model_binding_path = mmd_model
 
-                # 处理 MMD 动画
+                # Handle MMD animation.
                 if 'mmd_animation' in data:
                     if mmd_animation is None or mmd_animation == '':
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
@@ -969,7 +969,7 @@ async def update_catgirl_l2d(name: str, request: Request):
             set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', current_asset_source or 'local_imported')
             logger.debug(f"已保存角色 {name} 的PNGTuber配置")
         else:
-            # 更新Live2D模型设置，同时保存item_id（如果有）
+            # Update Live2D model settings and save item_id as well, if provided.
             live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
                 live2d_model,
                 item_id=str(item_id or ""),
@@ -1011,9 +1011,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', resolved_asset_source or 'local_imported')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
 
-        # 保存配置
+        # Save the configuration.
         await _config_manager.asave_characters(characters)
-        # Fast path：只刷新被编辑角色的 session_manager（avatar 配置），不遍历其它 N-1 个。
+        # Fast path: refresh only the edited character's session_manager (avatar configuration), without iterating over the other N-1 entries.
         init_one_catgirl = get_init_one_catgirl()
         if apply_runtime:
             await init_one_catgirl(name, is_new=False)
@@ -1101,7 +1101,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
         set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
         await _config_manager.asave_characters(characters)
 
-        # Fast path：只刷新被编辑角色的 session_manager（touch_set），不遍历其它 N-1 个。
+        # Fast path: refresh only the edited character's session_manager (touch_set), without iterating over the other N-1 entries.
         init_one_catgirl = get_init_one_catgirl()
         if init_one_catgirl:
             await init_one_catgirl(name, is_new=False)
@@ -1156,7 +1156,7 @@ async def update_catgirl_lighting(name: str, request: Request):
             default='live2d',
             legacy_keys=('model_type',),
         )
-        # 统一做 .lower() 处理，避免大小写/空值导致误判
+        # Normalize with .lower() so case differences / empty values do not cause a false mismatch.
         model_type_normalized = str(model_type).lower() if model_type else 'live2d'
         if model_type_normalized not in ('vrm', 'live3d'):
             logger.warning(f"角色 {name} 不是VRM/Live3D模型，但仍保存打光配置")
@@ -1220,7 +1220,7 @@ async def update_catgirl_lighting(name: str, request: Request):
         await _config_manager.asave_characters(characters)
 
         if apply_runtime:
-            # Fast path：只刷新被编辑角色的 session_manager（lighting），不遍历其它 N-1 个。
+            # Fast path: refresh only the edited character's session_manager (lighting), without iterating over the other N-1 entries.
             init_one_catgirl = get_init_one_catgirl()
             if init_one_catgirl:
                 await init_one_catgirl(name, is_new=False)
@@ -1280,7 +1280,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
 
         defaults = get_default_mmd_settings()
 
-        # --- 光照 ---
+        # --- Lighting ---
         if 'lighting' in data and isinstance(data['lighting'], dict):
             lighting = {**defaults['lighting'], **data['lighting']}
             for key, (min_val, max_val) in MMD_LIGHTING_RANGES.items():
@@ -1290,7 +1290,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
                         lighting[key] = max(min_val, min(max_val, float(val)))
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'lighting', lighting)
 
-        # --- 渲染 ---
+        # --- Rendering ---
         if 'rendering' in data and isinstance(data['rendering'], dict):
             rendering = {**defaults['rendering'], **data['rendering']}
             for key, (min_val, max_val) in MMD_RENDERING_RANGES.items():
@@ -1302,7 +1302,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
                 rendering['outline'] = _to_bool(rendering['outline'])
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'rendering', rendering)
 
-        # --- 物理 ---
+        # --- Physics ---
         if 'physics' in data and isinstance(data['physics'], dict):
             physics = {**defaults['physics'], **data['physics']}
             if 'enabled' in physics:
@@ -1314,8 +1314,8 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
                         physics[key] = max(min_val, min(max_val, float(val)))
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'physics', physics)
 
-        # --- 鼠标跟踪 ---
-        # 前端发送 camelCase（cursorFollow），兼容 snake_case（cursor_follow）
+        # --- Mouse tracking ---
+        # The frontend sends camelCase (cursorFollow); also support snake_case (cursor_follow).
         cursor_follow_data = data.get('cursorFollow') or data.get('cursor_follow')
         if cursor_follow_data and isinstance(cursor_follow_data, dict):
             cursor_follow = {**defaults['cursor_follow'], **cursor_follow_data}
@@ -1371,7 +1371,7 @@ async def get_catgirl_mmd_settings(name: str):
                 'lighting': lighting if isinstance(lighting, dict) else defaults['lighting'],
                 'rendering': rendering if isinstance(rendering, dict) else defaults['rendering'],
                 'physics': physics if isinstance(physics, dict) else defaults['physics'],
-                # 使用 camelCase 与前端保持一致
+                # Use camelCase to match the frontend.
                 'cursorFollow': cursor_follow if isinstance(cursor_follow, dict) else defaults['cursor_follow'],
             }
         })

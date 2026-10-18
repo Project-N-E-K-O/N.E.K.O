@@ -379,8 +379,8 @@ class PromotionMergeMixin:
         pool_lines = [line for line, _raw_text, _text_offset in pool_rows]
         pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
         # Cap the impression pool at PERSONA_MERGE_POOL_MAX_TOKENS — same
-        # entity 长期累积下来 persona+reflection 池可能超 8k tokens；
-        # 这里整段截尾（按 score DESC 已排序，超出的是低分项，可丢）。
+        # Accumulated entities can grow the persona+reflection pool beyond 8k tokens;
+        # truncate the tail, already sorted by score DESC, discarding lower-scored entries.
         from config import PERSONA_MERGE_POOL_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
         pool_text = truncate_to_tokens(pool_text, PERSONA_MERGE_POOL_MAX_TOKENS)
@@ -401,13 +401,13 @@ class PromotionMergeMixin:
         api_config = await self._config_manager.aget_model_api_config(
             EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
         )
-        # timeout=90: 开 thinking 后 promote merge 决策（merge_into / promote_fresh /
-        # reject + target_id 选择 + 重写 merged_text）值得思考——后果不可逆
-        # （persona pollution），已有 throttle/backoff/dead-letter 兜底，开
-        # thinking 完全在收益侧。LLM 调用本身在锁外（pre/post 短临界区分别拿
-        # reflection 锁做 stamp 和 CAS），所以 90s 不阻塞同角色其他 reflection 写。
-        # 不做 SDK 自动重试，由 throttle/dead-letter 兜底；显式开 thinking，
-        # 额度与回退见 memory.thinking_llm。
+        # timeout=90: with thinking enabled, promote-merge decisions (merge_into / promote_fresh /
+        # reject, target_id selection, and merged_text rewriting) deserve reasoning because persona pollution
+        # is irreversible. Existing throttle/backoff/dead-letter protection makes thinking beneficial.
+        # The LLM call runs outside locks; short pre/post critical sections acquire the reflection
+        # lock for stamping and CAS, so 90 s does not block other reflection writes for the character.
+        # Disable SDK automatic retries and rely on throttle/dead-letter; enable thinking explicitly,
+        # with budgets and fallback in memory.thinking_llm.
         from memory.thinking_llm import ainvoke_thinking
         resp, _ = await ainvoke_thinking(
             api_config, prompt, timeout=90,
@@ -546,10 +546,10 @@ class PromotionMergeMixin:
                         and not e.get('protected')
                         and entry_matches_subject(e, memory_subject)
                     ):
-                        # 同 section 可能混不同 scope 的条目（section key 不含
-                        # scope）：候选只取本 subject 域，跨域条目不得进
-                        # merge prompt。legacy（memory_subject=None）只匹配
-                        # 无戳的 legacy 条目，双向 fail-closed。
+                        # A section can contain entries from multiple scopes (section keys omit
+                        # scope); select candidates only within this subject's domain, excluding cross-domain entries
+                        # from the merge prompt. Legacy memory_subject=None matches only
+                        # unstamped legacy entries, failing closed in both directions.
                         same_entity_persona.append((target_section, e))
         all_reflections = await self._aload_reflections_full(lanlan_name)
         same_entity_reflections = [
@@ -748,8 +748,8 @@ class PromotionMergeMixin:
                 )
                 return 'invalid_target'
             if not entry_matches_subject(target_entry, memory_subject):
-                # LLM 可能幻觉出他域 entry id（全局 id 查找不设界）：合并
-                # 会用本域文本覆写他域条目，跨隔离边界——复验后拒绝。
+                # The LLM may hallucinate an entry ID in another domain because global lookup is unbounded; merging
+                # would overwrite that entry with this domain's text across isolation boundaries, so revalidate and reject it.
                 logger.warning(
                     f"[Promote] {lanlan_name}/{R['id']}: merge target "
                     f"{target_entry_id} belongs to a different isolation "

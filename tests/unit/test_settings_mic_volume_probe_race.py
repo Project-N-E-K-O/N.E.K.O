@@ -698,7 +698,7 @@ def test_settings_mic_probe_never_leaks_or_steals_a_stream_harness():
 
 @pytest.mark.unit
 def test_floating_volume_bar_samples_live_only():
-    # 悬浮按钮弹窗里的音量条只看正式录音；无参调用会读到 / 重建设置页的 probe。
+    # The floating-button popup meter only reads active recording; calling without arguments reads or recreates the settings-page probe.
     source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
     body = source[source.index("function updateVolumeDisplay"):]
     body = body[: body.index("\n    }\n")]

@@ -23,6 +23,7 @@ from ._shared import (
     OMNI_RECENT_RESPONSES_MAX,
     OnToolCallCallback,
     Optional,
+    ToolCall,
     ToolDefinition,
     TurnDetectionMode,
     VisualDeliveryMode,
@@ -179,7 +180,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.get_host_turn_id = get_host_turn_id
         self.lanlan_name = lanlan_name
         self.extra_event_handlers = extra_event_handlers or {}
-        self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
+        self._bg_tasks: set = set()  # Retain fire-and-forget tasks against garbage collection
         # Tool handlers have narrower ownership than generic background work:
         # their results belong to one connection and one user-turn scope.
         self._tool_scope_generation = 0
@@ -371,18 +372,18 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._turn_admission_lock = turn_admission_lock or asyncio.Lock()
 
         # Silence detection for auto-closing inactive sessions
-        # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
+        # Enable the 90-second silence timeout only for GLM/free APIs; exempt Qwen and Step
         self._last_speech_time = None
         self._api_type = api_type or ""
         self._livestream_mode = bool(livestream_mode)
-        # 判据用推断后的 api_type：api_type 为空、靠 free 模型名 + lanlan 路由
-        # 推断出来的那条也是 free，和本类其余 free 判断保持一致。
-        # livestream 模式（主播长会话）整路跳过。
+        # Use inferred api_type: an empty type inferred as free from a free-model name + lanlan routing
+        # also counts as free, matching other free checks in this class.
+        # Livestream mode with long streamer sessions bypasses this entire path.
         self._enable_silence_timeout = (
             _effective_api_type.lower() in ['glm', 'free']
             and not self._livestream_mode
         )
-        self._silence_timeout_seconds = 90  # 90秒无语音输入则自动关闭
+        self._silence_timeout_seconds = 90  # Automatically close after 90 seconds without voice input
         self._silence_check_task = None
         self._silence_timeout_triggered = False
 
@@ -394,91 +395,91 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._audio_processor = self._create_audio_processor()
 
         # ── Uplink (client→provider) sample rate ──────────────────────
-        # 内部管线一律 16kHz（RNNoise 降采样到 16k、移动端原生 16k）。
-        # 绝大多数 Realtime API（Gemini/Qwen/GLM/Step/
-        # Grok/free）都吃 16kHz PCM —— 唯独 OpenAI Realtime 的 PCM 输入
-        # *只* 接受 24kHz（GA 文档：audio/pcm 的 rate 固定 24000，不能声明
-        # 16000）。否则服务端会把我们的 16k 字节当 24k 解，等于喂模型 1.5×
-        # 变速变调的音频，拖累 ASR 与 server VAD。
-        # 因此只为 GPT 在「发送前的最后一刻」把 16k 上采到 24k；其余各家
-        # _uplink_sample_rate 保持 16000，_uplink_resampler 为 None → 整条
-        # 重采样彻底短路，行为与改动前完全一致。
+        # Internal pipelines consistently use 16kHz: RNNoise downsamples to 16k, and mobile audio is natively 16k.
+        # Most Realtime APIs (Gemini/Qwen/GLM/Step/
+        # Grok/free) accept 16kHz PCM, but OpenAI Realtime PCM input
+        # accepts *only* 24kHz: GA documentation fixes audio/pcm rate at 24000, disallowing
+        # 16000. Otherwise the server decodes our 16k bytes as 24k, feeding the model audio sped/pitched up by 1.5×,
+        # degrading ASR and server VAD.
+        # Therefore upsample 16k→24k only for GPT at the final moment before sending; other providers retain
+        # _uplink_sample_rate=16000 and _uplink_resampler=None, bypassing
+        # resampling completely and preserving prior behavior.
         self._uplink_sample_rate = 24000 if 'gpt' in self._model_lower else 16000
-        # 持续型流式重采样器：连续麦克风流必须维持 FIR 状态，否则每个 chunk
-        # 边界都会引入伪影（与 AudioProcessor 的 downsample stream 同理）。
+        # Stateful streaming resampler: continuous microphone streams must retain FIR state, or every chunk
+        # boundary introduces artifacts, just like AudioProcessor's downsample stream.
         self._uplink_resampler = (
             soxr.ResampleStream(16000, self._uplink_sample_rate, 1, dtype='float32', quality='HQ')
             if self._uplink_sample_rate != 16000
             else None
         )
 
-        # 静音重置事件异步队列（RNNoise 4秒静音回调用）
+        # Async silence-reset event queue, used by RNNoise's 4-second-silence callback
         self._silence_reset_pending = False
-        # 按“上次语音时间”做静音清 buffer：无 RNNoise 时也生效，与 RESET_TIMEOUT 一致
+        # Clear buffers by last-speech time even without RNNoise, matching RESET_TIMEOUT
         self._silence_buffer_clear_seconds = 4.0
         self._last_silence_clear_speech_time = 0.0
-        # 叠加本地音量：必须连续 2 秒本地静音才允许 clear，避免 VAD 延迟导致误清
+        # Also require 2 continuous seconds of local silence before clear, preventing erroneous clearing from delayed VAD
         self._local_quiet_seconds = 2.0
         self._last_local_loud_time = 0.0
 
-        # 重复度检测
-        self._recent_responses = []  # 存储最近3轮助手回复
-        self._repetition_threshold = 0.8  # 相似度阈值
-        self._max_recent_responses = OMNI_RECENT_RESPONSES_MAX  # 最多存储的回复数
-        self._current_response_transcript = ""  # 当前回复的转录文本
+        # Repetition detection
+        self._recent_responses = []  # Store the last 3 assistant replies
+        self._repetition_threshold = 0.8  # Similarity threshold
+        self._max_recent_responses = OMNI_RECENT_RESPONSES_MAX  # Maximum stored replies
+        self._current_response_transcript = ""  # Current response transcript
 
-        # Backpressure control - 防止503过载错误
-        self._send_semaphore = asyncio.Semaphore(25)  # 最多25个并发发送
-        self._is_throttled = False  # 503检测后节流状态
-        self._throttle_until = 0.0  # 节流结束时间戳
-        self._throttle_duration = 2.0  # 节流持续时间（秒）
-        self._server_busy_count: int = 0  # 503 过载计数，第3次起通知前端
+        # Backpressure control prevents 503 overload errors
+        self._send_semaphore = asyncio.Semaphore(25)  # At most 25 concurrent sends
+        self._is_throttled = False  # Throttle state after detecting 503
+        self._throttle_until = 0.0  # Throttle-end timestamp
+        self._throttle_duration = 2.0  # Throttle duration in seconds
+        self._server_busy_count: int = 0  # 503 overload count; notify frontend from the third occurrence onward
 
-        # Fatal error detection - 检测到致命错误后立即中断
-        self._fatal_error_occurred = False  # 致命错误标志
+        # Fatal error detection immediately interrupts on fatal errors
+        self._fatal_error_occurred = False  # Fatal-error flag
 
         # Interruption state - suppress output after user interruption until next response
-        self._interrupted = False  # 打断状态标志，防止重复消息块
-        self._suppressed_delta_logged_resp_id = None  # 限流：每个 response 只记录一次 text.delta 被拦截的日志
+        self._interrupted = False  # Interruption flag prevents duplicate message chunks
+        self._suppressed_delta_logged_resp_id = None  # Rate limiting: log intercepted text.delta only once per response
 
         # Native image input rate limiting
-        self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
+        self._last_native_image_time = 0.0  # Timestamp of the last native image input
 
         # Unified VAD for image throttling (priority: server VAD > RNNoise > RMS)
         # All native-image paths use _client_vad_active to adjust send rate
-        self._client_vad_active = False  # 语音活动检测（统一标志）
-        self._client_vad_last_speech_time = 0.0  # 上次检测到语音的时间戳
-        # Grace 从 2.0 提到 6.0：覆盖用户说话时的自然停顿（换气/思考），
-        # 避免 prompt_ephemeral 在用户两句话中间的静默缝隙误触发。
-        self._client_vad_grace_period = 6.0  # 语音结束后保持活跃的宽限期（秒）
-        self._client_vad_threshold = 500  # RMS 能量阈值（int16 范围，fallback用）
-        self._speech_detect_start = 0.0  # RNNoise 连续检测到语音的起始时间
-        self._speech_sustain_threshold = 0.5  # 需持续 500ms 才算真正说话（防噪音误触）
-        self._rnnoise_vad_active = False  # RNNoise VAD 是否正在运行（48kHz + denoiser ok）
-        # 主动搭话保护信号：与 _client_vad_active 解耦，记录"最近任何一帧 RNNoise
-        # 判定为语音（>0.4，无需 sustain 500ms）或 server-VAD speech_started"的时刻。
-        # 解决两个 _client_vad_active 覆盖不到的窗口：
-        #   1. 用户说话首 500ms 还未达 sustain 阈值时
-        #   2. 句子间停顿 >grace_period 时 _client_vad_active flip False 的瞬间
-        # prompt_ephemeral 在此窗口内直接放弃注入。
+        self._client_vad_active = False  # Voice activity detection, unified flag
+        self._client_vad_last_speech_time = 0.0  # Last detected-speech timestamp
+        # Increase grace from 2.0 to 6.0 to cover natural pauses for breathing/thinking,
+        # preventing prompt_ephemeral from falsely triggering between the user's sentences.
+        self._client_vad_grace_period = 6.0  # Post-speech activity grace period in seconds
+        self._client_vad_threshold = 500  # RMS energy threshold in int16 range, used for fallback
+        self._speech_detect_start = 0.0  # Start of sustained RNNoise speech detection
+        self._speech_sustain_threshold = 0.5  # Require 500ms of speech to avoid noise-triggered false positives
+        self._rnnoise_vad_active = False  # Whether RNNoise VAD is running (48kHz + working denoiser)
+        # Proactive-chat protection separate from _client_vad_active: timestamp the most recent RNNoise frame
+        # classed as speech (>0.4 without 500ms sustain) or server-VAD speech_started.
+        # Covers two windows missed by _client_vad_active:
+        #   1. The first 500ms before user speech reaches the sustain threshold
+        #   2. The instant _client_vad_active becomes False after a between-sentence pause >grace_period
+        # prompt_ephemeral abandons injection during this window.
         self._user_recent_activity_time = 0.0
         self._user_recent_activity_window = 8.0
-        # 对称于 _user_recent_activity_time 的 AI 侧信号。任何一帧 AI 内容下发都打点。
-        # 与 _is_responding 正交 —— _is_responding 是 response 生命周期（server 侧
-        # response.created/done / Gemini turn_complete 驱动），但下列场景下 content
-        # 流与之不同步：
-        #   1. OpenAI response.created 到首 content chunk 之间的几百毫秒空窗
-        #   2. Gemini turn_complete 早于最后几帧音频送达 → late audio
-        #   3. Gemini 长回复被拆多 sub-turn，两个 sub-turn 之间 False 的瞬间
-        # prompt_ephemeral 和 Gemini turn 分配分别用此信号兜底 "主动文本打断 AI 自己"
-        # 和 "late audio 被当新 turn" 两个 race。不改 _is_responding 语义（它还有
-        # 8 个消费者：handle_interruption / QQ 插件 / system_router 409 等），只做正交增量。
+        # AI-side counterpart to _user_recent_activity_time; timestamp every delivered AI-content frame.
+        # Independent of _is_responding, which tracks response lifecycle from server
+        # response.created/done or Gemini turn_complete; content streams
+        # can be out of sync in these cases:
+        #   1. Hundreds of milliseconds between OpenAI response.created and the first content chunk
+        #   2. Gemini turn_complete preceding the final audio frames, producing late audio
+        #   3. Long Gemini replies split into sub-turns, briefly False between sub-turns
+        # prompt_ephemeral and Gemini turn allocation use this signal to guard proactive text interrupting the AI itself
+        # and late audio mistaken for a new turn. Preserve _is_responding semantics because it still has
+        # eight consumers (handle_interruption / QQ plugin / system_router 409, etc.); add only an independent signal.
         self._ai_recent_activity_time = 0.0
         self._ai_recent_activity_window = 3.0
 
-        # 防止log刷屏机制（当websocket关闭后）
-        self._last_ws_none_warning_time = 0.0  # 上次websocket为None警告的时间戳
-        self._ws_none_warning_interval = 5.0  # websocket为None警告的最小间隔（秒）
+        # Prevent log spam after WebSocket closure
+        self._last_ws_none_warning_time = 0.0  # Timestamp of the last websocket-is-None warning
+        self._ws_none_warning_interval = 5.0  # Minimum interval between websocket-is-None warnings, in seconds
 
         # Image processing lock
         self._image_lock = asyncio.Lock()
@@ -504,10 +505,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         )
 
         # Whether this API returns server-side VAD events (speech_started/speech_stopped)
-        # Gemini (direct), lanlan.app+free (Gemini proxy), 以及 livestream 模式
-        # （主播自建 server_prefix 上游同样是 Gemini 系，不发 OpenAI 协议的 VAD 帧）
-        # 一律按"无 server VAD"处理。否则 handle_messages 走不到 speech_stopped
-        # 那条 on_new_message 路径，多轮对话 sid 不轮换，TTS 在 turn 2 起静音。
+        # Gemini direct, lanlan.app+free Gemini proxy, and livestream mode
+        # (streamers' self-hosted server_prefix upstreams also use Gemini and send no OpenAI VAD frames)
+        # all count as lacking server VAD. Otherwise handle_messages never reaches speech_stopped's
+        # on_new_message path, sid never rotates across turns, and TTS goes silent from turn 2.
         self._has_server_vad = (
             not self._is_gemini
             and not self._is_free_proxy
@@ -535,6 +536,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # the wire-format snapshots are rebuilt from it on each connect/
         # update_session so callers can mutate the list at any time.
         self.on_tool_call: Optional[OnToolCallCallback] = on_tool_call
+        # Internal, synchronous provenance observer. Acceptance is recorded
+        # before execution is scheduled, even when the provider terminal wins
+        # the event loop race against the actual tool task.
+        self.on_tool_call_accepted: Optional[Callable[[ToolCall], None]] = None
         self._tool_definitions: List[ToolDefinition] = list(tool_definitions or [])
         # Provider behaviour matrix:
         #   gpt   → flat schema, response.done has output[].type=function_call
@@ -548,9 +553,9 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         #   qwen  → no custom tool calling per Aliyun docs (only enable_search)
         #   gemini → genai SDK config.tools, response.tool_call.function_calls
         # The provider-side flags below let event handlers cheaply route.
-        # 与 apply_tools_to_session 共用同一套方言词表：这里原来直接比 api_type，
-        # 而 'gpt' 从来不是 api_type 的合法取值（真实值是 'openai'），'qwen_intl'
-        # 也进不了 'qwen'。该字段当前没有读者，但错的判据留着迟早被人接上。
+        # Share apply_tools_to_session's dialect vocabulary: this previously compared api_type directly,
+        # but 'gpt' was never valid (the real value is 'openai'), and 'qwen_intl'
+        # never matched 'qwen'. The field has no readers currently, but retaining a wrong criterion invites future misuse.
         self._supports_tools_wire = canonical_realtime_dialect(self._api_type) in (
             'gpt', 'glm', 'qwen', 'step', 'free', 'gemini', 'grok'
         )
@@ -591,9 +596,9 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # closing the post-activity-check race where the stale inject could land
         # while user speech was already being captured.
         self._gemini_proactive_submit_task: Optional[asyncio.Task] = None
-        # 那条在飞的 send 属于哪个 SDK session。守卫按它收窄——不能只看"有没有
-        # 在飞的 send"：替换连接attach 之后，卡在**退休** session 上的旧 send
-        # 跟新 session 上的 inject 根本不争同一条链路。
+        # Identify the SDK session owning the in-flight send and narrow guards accordingly, rather than asking only whether
+        # any send exists: after replacement attach, old sends stuck on **retired** sessions
+        # do not compete with injection on the new session's transport.
         self._gemini_proactive_submit_session: object | None = None
         self._gemini_proactive_quarantine_task: Optional[asyncio.Task] = None
         # External-ASR Gemini sends have the same accepted-before-cancellation

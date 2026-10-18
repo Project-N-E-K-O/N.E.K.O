@@ -24,6 +24,25 @@ if (!window.VRM_DEFAULT_LIGHTING) {
 }
 
 class VRMCore {
+    static preferencePathFromUrl(modelUrl) {
+        let path = modelUrl;
+        if (/^https?:\/\//.test(modelUrl)) {
+            try {
+                const url = new URL(modelUrl);
+                if (url.origin !== window.location?.origin) return modelUrl;
+                path = url.pathname;
+            } catch (_) {
+                return modelUrl;
+            }
+        }
+        if (!/^\/(?:user_vrm|static\/vrm|workshop)\//.test(path)) return modelUrl;
+        try {
+            return decodeURIComponent(path);
+        } catch (_) {
+            return path;
+        }
+    }
+
     constructor(manager) {
         this.manager = manager;
         this.vrmVersion = null;
@@ -959,14 +978,15 @@ class VRMCore {
                         return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
                     });
                     
-                    const normalizedModelUrl = normalizePath(modelUrl);
-                    const modelFilename = getFilename(modelUrl);
+                    const modelPreferencePath = VRMCore.preferencePathFromUrl(modelUrl);
+                    const normalizedModelUrl = normalizePath(modelPreferencePath);
+                    const modelFilename = getFilename(modelPreferencePath);
                     
                     preferences = modelsArray.find(pref => {
                         if (!pref || !pref.model_path) return false;
                         const prefPath = pref.model_path;
                         
-                        if (prefPath === modelUrl) return true;
+                        if (prefPath === modelPreferencePath) return true;
                         
                         const normalizedPrefPath = normalizePath(prefPath);
                         if (normalizedPrefPath && normalizedPrefPath === normalizedModelUrl) return true;
@@ -1313,7 +1333,8 @@ class VRMCore {
     async disposeVRM() {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
         
-        const vrm = this.manager.currentModel.vrm;
+        const currentModel = this.manager.currentModel;
+        const vrm = currentModel.vrm;
         
         if (vrm.scene && vrm.scene.parent) {
             vrm.scene.parent.remove(vrm.scene);
@@ -1415,8 +1436,10 @@ class VRMCore {
             }
         }
         
-        // 清理 currentModel 引用（在清理完成后才设置为 null）
-        this.manager.currentModel = null;
+        // 异步资源清理期间可能已装入新模型，只清空本次捕获的引用。
+        if (this.manager.currentModel === currentModel) {
+            this.manager.currentModel = null;
+        }
     }
 
     /**
@@ -1462,7 +1485,7 @@ class VRMCore {
             }
 
             const preferences = {
-                model_path: modelPath,
+                model_path: VRMCore.preferencePathFromUrl(modelPath),
                 position: { x: position.x, y: position.y, z: position.z },
                 scale: { x: scale.x, y: scale.y, z: scale.z }
             };

@@ -1,4 +1,4 @@
-"""附近搜索 router — POI 搜索 + 天气结合建议。"""
+"""Nearby-search router — POI search with weather-aware recommendations."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ LOCATION_PROVIDER_UNAVAILABLE = "LOCATION_PROVIDER_UNAVAILABLE"
 
 
 class NearbyRouter(PluginRouter):
-    """search_nearby entry：附近 POI 搜索。"""
+    """search_nearby entry: nearby POI search."""
 
     def __init__(self):
         super().__init__(name="nearby")
@@ -88,7 +88,7 @@ class NearbyRouter(PluginRouter):
             return Err(SdkError(i18n.t("nearby.no_query")))
         radius = clamp_int(radius, 3000, 500, 50000)
 
-        # 解析搜索中心
+        # Resolve the search center
         loc, loc_err = await plugin._resolve_location(
             plan.location or None,
             purpose=LocationPurpose.NEARBY,
@@ -173,7 +173,7 @@ class NearbyRouter(PluginRouter):
                 "count": 0,
             }, loc, i18n))
 
-        # 获取天气（用于建议）
+        # Fetch weather for recommendations
         weather_data = None
         if weather_task.done() and not weather_task.cancelled():
             weather_data, _ = weather_task.result()
@@ -186,12 +186,12 @@ class NearbyRouter(PluginRouter):
             if code in RAIN_CODES:
                 weather_tip = i18n.t("nearby.rain_tip")
 
-        # 构建结果
+        # Build the results
         results: List[Dict[str, Any]] = []
         for item in poi_result.items:
             results.append(_poi_item_payload(item))
 
-        # 摘要
+        # Summary
         top3 = ", ".join(r["name"] for r in results[:3])
         summary = i18n.t("nearby.summary", query=query_label, location=loc["city"], count=len(results), top=top3)
         if weather_tip:

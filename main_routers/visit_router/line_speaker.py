@@ -284,14 +284,14 @@ class LineSpeaker:
         names = [n for n in family_names if isinstance(n, str) and n.strip()]
 
         def redact(text: str):
-            # 行被提前截断（告别硬顶 / wire 预算）时收尾那次 flush 连末尾的半个亲人名一起替换：
-            # 截点可能正好落在名字中间，留下的前缀不能出门
+            # When a line truncates early (goodbye hard cap / wire budget), final flush must replace even a trailing partial user name:
+            # truncation may land inside the name, and that remaining prefix must not leave the system
             return redact_outbound_with_spans(text, family_names=names, replacement=neutral_term,
                                               partial_tail=self._closing_cut)
 
         def budget_redact(text: str) -> str:
-            # 预算永远按「截在这里」量：末尾半个亲人名照收尾时那样换成中性称呼再量，
-            # 截点落在名字中间时最终文本也不会比核准的更长（中性称呼可能比名字前缀长）
+            # Always measure the budget as if truncating here: replace a trailing partial name with neutral wording just as finalization does,
+            # ensuring final text cannot exceed its approved length even when neutral wording is longer than the name prefix
             return redact_outbound_with_spans(text, family_names=names, replacement=neutral_term,
                                               partial_tail=True)[0]
 
@@ -310,9 +310,9 @@ class LineSpeaker:
             clean=clean_relay_text, redact_boundary=boundary,
         )
         self._tags = EmotionTagFilter()
-        # 估时按 TTS 真正合成的文本：与主聊天朗读路径同一套 markdown / 括号 / 静音符号剥离（跨分句保持状态）
+        # Estimate from actual TTS synthesis text, using main chat's markdown/parentheses/mute-symbol stripping with state across clauses
         self._est_bracket = TtsBracketStripper()
-        # 推入侧的可念判定：与 TTS 同一条剥离链、跨推入保持状态
+        # Determine speakability on push through the same stripping chain as TTS, maintaining state across pushes
         self._push_markdown = TtsMarkdownStripper()
         self._push_bracket = TtsBracketStripper()
         self._splitter = ClauseSplitter(
@@ -320,15 +320,15 @@ class LineSpeaker:
             redact_boundary=boundary,
         )
         self._goodbye_left: Optional[int] = int(goodbye_max_chars) if header.wu else None
-        # 告别行接近额度时，每段末尾的字形簇可能在下一段继续变长（国旗的第二个区域指示符、ZWJ 序列、
-        # 组合符）：先扣着它，见到下一段（或收尾）再按额度定，截点才能退回到簇的开头。离额度还远时
-        # 不扣，免得逐段播放被拖慢一个字
+        # Near the goodbye budget, a segment's final grapheme may continue in the next segment (a flag's second regional indicator, ZWJ sequence,
+        # combining mark); withhold it until the next segment/finalization so truncation can retreat to the cluster start. Far below budget,
+        # do not withhold it, avoiding one-character delays in incremental playback
         self._goodbye_hold = ""
-        # 已放行的告别文本：截点按「已放行 + 本段」整体切分，跨段的字形簇也按完整的簇判断
+        # Released goodbye text: segment the combined released text + current segment, evaluating cross-segment graphemes as whole clusters
         self._goodbye_taken = ""
-        # 文本末尾可能是亲人名开头的那段先不进分句器：标点切句不扣尾巴（"J. Smith"），硬切只按
-        # 原文码点扣尾巴、被零宽字符撑开的名字（"小" + 零宽 + "明"）扣不住，名字没到齐前切出去的
-        # 前缀认不出来、会原样出门。扣留按折叠后的文本判断
+        # Withhold trailing text that might start the user's name before sentence splitting: punctuation splitting retains no tail ("J. Smith"), and hard splits reserve only
+        # original code-point tails, missing names expanded by zero-width characters ("小" + zero-width + "明"); prefixes split before the full name arrives
+        # cannot be recognized and would leak unchanged. Determine withholding using folded text
         self._held_names = sorted({k for k in (fold_text(n.strip()) for n in names) if k})
         self._held_max = max((len(k) for k in self._held_names), default=0)
         self._name_hold = ""
@@ -349,12 +349,12 @@ class LineSpeaker:
         self._last_progress_at: Optional[float] = None
         self._played_ms = 0
         self._drained = False
-        # 估时
+        # Time estimates
         self._mode = PACED_AUDIO if voice.tts_on and open_stream is not None else PACED_ESTIMATE
         self._est_base_ms = 0
         self._est_origin: Optional[float] = None
 
-    # ── 查询 ─────────────────────────────────────────────────────────
+    # ── Queries ─────────────────────────────────────────────────────────
 
     @property
     def done(self) -> bool:
@@ -388,14 +388,14 @@ class LineSpeaker:
     def _now(self, now: Optional[float]) -> float:
         return float(self._clock() if now is None else now)
 
-    # ── 入口 ─────────────────────────────────────────────────────────
+    # ── Entry points ─────────────────────────────────────────────────────────
 
     def feed(self, delta: str, *, now: Optional[float] = None) -> str:
         """One LLM delta; returns the part accepted for TTS and subtitles."""
         if self._done or self._llm_done or not delta:
             return ""
         now = self._now(now)
-        # 先剥标签再进告别硬顶与线缆预算：预算量的就是真正出门的文本（标签拆开的名字也认得出）
+        # Strip tags before goodbye caps and wire budgets so measurements match outgoing text and recognize names split by tags
         accepted = self._admit(self._tags.feed(delta))
         if accepted:
             self._take_text(accepted, now)
@@ -420,7 +420,7 @@ class LineSpeaker:
         if self._goodbye_left is not None:
             left = self._goodbye_left
             if len(text) > left:
-                # 截点按「已放行 + 本段」整体退到字形簇边界（已放行的部分收不回，最多退到它的末尾）
+                # Retreat truncation to a grapheme boundary in released text + current segment; released text is irreversible, so retreat no farther than its end
                 taken = len(self._goodbye_taken)
                 cut = max(grapheme_safe_cut(self._goodbye_taken + text, taken + left), taken)
                 capped = text[: cut - taken]
@@ -451,18 +451,18 @@ class LineSpeaker:
         played = max(0, int(played_ms)) if isinstance(played_ms, int) else self._played_ms
         if self._play_start_at is None:
             self._play_start_at = now - played / 1000.0
-        # 看门狗只认真正往前走的进度：播放冻住时页面照样定时上报同一个 played_ms，
-        # 每次都刷新就永远判不了停滞（终结的 ended 另行处理）
+        # The watchdog recognizes only advancing progress: frozen playback still periodically reports unchanged played_ms,
+        # so refreshing each report would prevent stall detection forever; terminal ended is handled separately
         if self._last_progress_at is None or played > self._played_ms:
             self._last_progress_at = now
         self._played_ms = max(self._played_ms, played)
         if ended and final and self._finished:
-            # 前端已收到本行结束标记、排程终点已播过：剩余分片一次放出，没有尾巴要等
+            # Frontend received the line's end marker and passed the scheduled endpoint: release remaining chunks together, with no tail left to await
             self._release_through(len(self._pieces), PACED_AUDIO)
             self._complete(tail_ms=0, spoken=True)
         elif ended:
-            # 已入队的音频播空、LLM 还在写：不凭它放字幕（已切出的分片可能还在合成），
-            # 仍按 played_ms 放；只是新音频入队之前不算停滞
+            # Queued audio drained while the LLM still writes: do not release subtitles on that alone, because split chunks may still be synthesizing;
+            # continue following played_ms, but suspend stall timing until new audio queues
             self._drained = True
             self._advance(now)
         else:
@@ -474,7 +474,7 @@ class LineSpeaker:
         """Stop now (human interrupt, wrap-up cut, visit end); returns the result (None if already done)."""
         if self._done:
             return None
-        # 先登记终止（之后的进度 / 清管线回报的 ended 一律忽略），再清 TTS 管线
+        # Register termination first, ignoring later progress/ended from pipeline clearing, then clear TTS
         self._router.unregister(self.speech_id)
         self._stop_stream()
         if not self._llm_done:
@@ -485,7 +485,7 @@ class LineSpeaker:
         self._finish_line(result)
         return result
 
-    # ── 计时 ─────────────────────────────────────────────────────────
+    # ── Timing ─────────────────────────────────────────────────────────
 
     def next_deadline(self) -> Optional[float]:
         """When :meth:`tick` must run next (clock units), or None while only events can move it."""
@@ -501,7 +501,7 @@ class LineSpeaker:
         if self._last_progress_at is None:
             if self._first_push_at is not None:
                 return self._first_push_at + self._start_timeout
-            # 一个字都还没进合成队列：收尾标记之后再给它同样长的时间（末尾 flush 的文本可能还在路上）
+            # No character has entered synthesis yet: allow the same duration after the final marker, since final-flush text may still be in flight
             return self._finish_at + self._start_timeout if self._finished else None
         if self._finished:
             return max(self._finish_at or 0.0, self._last_progress_at) + self._stall
@@ -518,7 +518,7 @@ class LineSpeaker:
             deadline = self.next_deadline()
             if deadline is not None and now >= deadline:
                 if self._last_progress_at is None and self._first_push_at is None:
-                    # 整行都被剥成了不出声的内容：不是 TTS 故障，只本行按估时收口
+                    # The whole line stripped to silent content is not a TTS failure; finalize only this line using estimates
                     self._to_estimate(now)
                 elif self._last_progress_at is None:
                     self._fallback(now, start_timeout=True)
@@ -528,7 +528,7 @@ class LineSpeaker:
         self._advance(now)
         self._cb.on_wake()
 
-    # ── 内部 ─────────────────────────────────────────────────────────
+    # ── Internals ─────────────────────────────────────────────────────────
 
     def _take_text(self, text: str, now: float) -> None:
         """Tag-free accepted text: to TTS and to the splitter, the same string."""
@@ -548,7 +548,7 @@ class LineSpeaker:
 
     def _name_prefix_start(self, text: str) -> int:
         """Start of the longest suffix of ``text`` that is a proper prefix of a (folded) family name."""
-        # 往前退到折叠后的长度超过最长名字为止：零宽字符等折叠成空的字符不占名额，退多少都算
+        # Retreat until folded length exceeds the longest name; zero-width/other empty-folding characters consume no slots regardless of how far back they extend
         lo, folded_len = len(text), 0
         while lo > 0 and folded_len <= self._held_max:
             lo -= 1
@@ -563,8 +563,8 @@ class LineSpeaker:
         if not text:
             return
         if self._voice.fallen_back and self._first_push_at is None:
-            # 另一行已让本场回退估时，而本行还没推过能念的字（没开流，或流开着但只收过舞台说明）：
-            # 不再开流 / 往流里推，直接估时
+            # Another line switched this session to estimation before this line pushed speakable text (no stream, or only stage directions received):
+            # stop opening/pushing streams and estimate directly
             self._to_estimate(now)
             return
         if self._stream is None:
@@ -573,8 +573,8 @@ class LineSpeaker:
         if self._stream_dead or self._stream is None:
             return
         if not self._stream.push(text):
-            # 流被外部关掉了（worker 退出等）：音频不会再来，立刻按估时放字幕，不等停滞兜底。
-            # 还没收到过任何进度就被拒（开流后立刻关掉）等同起播超时：本场不再用 TTS
+            # The stream closed externally (worker exit, etc.), so no audio can arrive; release subtitles using estimates immediately, without waiting for stall fallback.
+            # Rejection before any progress, including immediate stream closure, equals playback-start timeout; disable TTS for this session
             logger.warning("visit line %s: speech stream closed on push, pacing by estimate", self.header.ln)
             if self._last_progress_at is None:
                 self._fallback(now, start_timeout=True)
@@ -582,13 +582,13 @@ class LineSpeaker:
                 self._to_estimate(now)
             return
         if not self._speakable(text):
-            # 会被 TTS 剥成空（舞台说明、半截 markdown）：不出声，不启动 / 不重启任何计时
+            # TTS strips this to empty (stage directions, partial markdown): silent content starts/restarts no timers
             return
         if self._first_push_at is None:
-            # 起播计时从第一段能念出声的文本推入起算（TTS 未就绪、文字在待发队列里也算）
+            # Start playback timing when the first speakable text is pushed, including text pending while TTS is unready
             self._first_push_at = now
         if self._drained:
-            # 播空之后又有能出声的文本入队：停滞计时从这一刻重新起算
+            # New speakable text queues after drain: restart stall timing now
             self._drained = False
             self._last_progress_at = now
 
@@ -606,7 +606,7 @@ class LineSpeaker:
     def _open(self, now: float) -> bool:
         try:
             stream = self._open_stream(self._usage_chars)
-        except Exception as exc:  # noqa: BLE001 - TTS 未就绪：本场改走估时
+        except Exception as exc:  # noqa: BLE001 - TTS unready: switch this session to estimates
             logger.warning("visit line %s: speech stream unavailable: %s", self.header.ln, type(exc).__name__)
             stream = None
         if stream is None:
@@ -620,7 +620,7 @@ class LineSpeaker:
     def _usage_chars(self, n: int) -> None:
         if isinstance(n, int) and n > 0:
             if self._first_push_at is None:
-                # 推入时没认出可念内容（半截 markdown 等到收尾才 flush）而 TTS 实际入队了：从此刻起算
+                # Push did not recognize speakable content (partial markdown flushed only at finalization), but TTS actually queued it: start timing now
                 self._first_push_at = self._now(None)
                 self._cb.on_wake()
             self._cb.on_usage({"tts_chars": n})
@@ -684,7 +684,7 @@ class LineSpeaker:
         if self._llm_done:
             return
         self._llm_done = True
-        # 收尾时还扣着的半个「<...」不是标签：照常过预算、念出、上字幕（已被截断的行直接丢）
+        # A retained partial '<...' is not a tag at finalization: budget, speak, and subtitle it normally; discard directly for already-truncated lines
         self._take_text(self._admit(self._tags.flush(), final=True), now)
         self._closing_cut = self._cut_reason is not None
         if self._name_hold:
@@ -693,22 +693,22 @@ class LineSpeaker:
         self._add_clauses(self._splitter.flush())
         if self._mode == PACED_AUDIO and self._stream is not None and not self._stream_dead:
             if self._first_push_at is None and self._speakable_tail():
-                # 推入时被扣着的未闭合 markdown 收尾后能念出声：起播计时从这一刻起算
+                # Unclosed markdown withheld on push becomes speakable after finalization; begin playback timing now
                 self._first_push_at = now
             outcome = self._stream.finish()
             self._finished = True
             self._finish_at = now
             if outcome == FINISH_NO_WORKER or outcome is False:
-                # worker 退出 / 流已被关掉：结束标记送不进去，播放终点的 ended 不会来
+                # Worker exited/stream closed: cannot send the end marker, so endpoint ended will never arrive
                 logger.warning("visit line %s: TTS stream did not take the end marker, pacing by estimate",
                                self.header.ln)
                 if self._last_progress_at is None and self._first_push_at is not None:
-                    # 推过能念的文本却一点没播出来就失败了：同起播失败，本场不再用 TTS
+                    # Failure after speakable text was pushed but before any playback equals playback-start failure; disable TTS for this session
                     self._fallback(now, start_timeout=True)
                 else:
                     self._to_estimate(now)
         elif self._mode == PACED_AUDIO and self._stream is None:
-            # 一个字都没接纳（空回复 / 首段就被截掉）：没开过流，按估时收口
+            # No text accepted (empty reply / first segment truncated): no stream ever opened, so finalize with estimates
             self._to_estimate(now)
         self._advance(now)
 
@@ -736,7 +736,7 @@ class LineSpeaker:
         self._stream_dead = True
         try:
             stream.abort()
-        except Exception as exc:  # noqa: BLE001 - 中止失败不能挡住估时收口
+        except Exception as exc:  # noqa: BLE001 - abort failures must not block estimated finalization
             logger.warning("visit line %s: speech abort failed: %s", self.header.ln, type(exc).__name__)
 
     def _complete(self, *, tail_ms: int, spoken: bool) -> None:
@@ -750,8 +750,8 @@ class LineSpeaker:
         self._result = result
         self._router.unregister(self.speech_id)
         self._cb.on_done(result)
-        # 叫醒 drive：打断可能发生在没有任何计时的时候（LLM 还在想、语音关已放完、播空），
-        # 不叫醒它就一直等下去
+        # Wake drive: interruptions can occur without timers (LLM thinking, voice disabled and fully released, or drained audio),
+        # otherwise it would wait forever
         self._cb.on_wake()
 
 
@@ -774,7 +774,7 @@ async def drive(speaker: LineSpeaker, *, clock: Callable[[], float]) -> Optional
                 try:
                     await asyncio.wait_for(wake.wait(), delay)
                 except asyncio.TimeoutError:
-                    pass        # 到点了：下面的 tick 处理
+                    pass        # Deadline reached: handle in tick below
         speaker.tick()
     return speaker.result
 

@@ -294,10 +294,10 @@ def _swap_args(content_folder, audio_name: str, audio: bytes, prefix: str) -> tu
     )
 
 
-# 宽到只有真的挂住了才会到点。放行永远由 `_worker_parked_at` 的 finally 保证，
-# 所以短超时买不到任何安全性，只会在负载高的 runner 上把交错悄悄拆掉：假 worker
-# 提前离开它该卡住的位置、提前放开占用，于是竞争方合法地拿到了 claim，用例把这
-# 报成一次「互斥失效」——一个纯粹由超时造出来的假回归。
+# Long enough to expire only on a real hang. `_worker_parked_at`'s finally always releases,
+# so short timeouts add no safety and silently destroy interleaving on loaded runners: the fake worker
+# leaves its intended blocked position and releases early, letting the competitor legitimately claim it; the test
+# reports a mutual-exclusion failure, a false regression created solely by timeout.
 _SYNC_TIMEOUT = 30.0
 _DRAIN_TIMEOUT = 5.0
 
@@ -419,10 +419,10 @@ async def test_a_reference_swap_cannot_slip_into_the_steam_upload(tmp_path, monk
     seen: list = []
 
     def _fake_steam_upload(steamworks, title, description, content_folder, *rest):
-        seen.append(_snapshot_pair(content_folder))    # SetItemContent 开始读目录
+        seen.append(_snapshot_pair(content_folder))    # SetItemContent starts reading the directory.
         uploading.set()
         assert finish.wait(timeout=_SYNC_TIMEOUT), '放行信号没来——worker 提前离开了它该卡住的位置'
-        seen.append(_snapshot_pair(content_folder))    # 读完
+        seen.append(_snapshot_pair(content_folder))    # Read complete.
         return 4242
 
     monkeypatch.setattr(publish, '_publish_workshop_item', _fake_steam_upload)
@@ -4107,7 +4107,7 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
                 if isinstance(current, ast.ClassDef):
                     class_name = current.name
                     break
-            # 嵌套的 async def 会被这层 walk 单独取到，各查各的作用域。
+            # This walk visits nested async defs separately, checking each scope independently.
             for call in _claim_calls_in_own_scope(node):
                 offenders.append(f'{short}.{node.name}:{call.lineno}')
             for helper, line in _claiming_helpers_called_on_loop(
@@ -4128,15 +4128,15 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
     assert not offenders, f'这些占用是在协程里拿的，取消会把它们提前放开：{offenders}'
 
 
-# 会消费或摧毁整个内容目录、或者改动那对参考语音文件的操作。引用到它们的函数必须把
-# 这次引用放在 claim 的 with **里面** —— 不是「同一个函数里也有个 claim」，否则把工作
-# 挪到 with 外面一行就能绕过去。
+# Operations consuming/destroying the whole content directory or modifying the reference-voice pair. Functions referencing them
+# must place the reference **inside** claim's with block, not merely have a claim somewhere in the same function;
+# otherwise moving work one line outside with bypasses the guard.
 _MUST_BE_CLAIMED = {
-    '_publish_workshop_item',             # Steam 把整个目录读走
-    '_cleanup_workshop_voice_reference',  # 删掉这对文件
-    'atomic_write_json',                  # 提交新 manifest，swap 的唯一提交点
-    'rmtree',                             # 删掉整个目录
-    # 预览图也是「Steam 会一起读走的字节」，跟那对参考语音没有区别。
+    '_publish_workshop_item',             # Steam reads the entire directory.
+    '_cleanup_workshop_voice_reference',  # Delete the file pair.
+    'atomic_write_json',                  # Commit the new manifest, swap's sole commit point.
+    'rmtree',                             # Delete the whole directory.
+    # Preview images are bytes Steam reads too, no different from the reference-voice pair.
     'copy', 'copy2', 'copyfile', 'copytree', 'move',
 }
 
@@ -4274,9 +4274,9 @@ _PACKAGE_OPERATION_FOLDER_KEYWORDS = {
     **{name: 'dir' for name in _TEMPFILE_CONTENT_PATH_MUTATION_ARGS},
 }
 
-# 这些名字过于通用，不能全模块扫描；但在指定 worker 单元里，它们正是内容目录的
-# 完整读写边界。把它们列出来，移动 tmp 创建、音频 replace/remove 或 preflight 到
-# claim 外面都会被抓住，而不会把别处无关的 ``write`` 当成目录竞态。
+# These names are too generic for module-wide scanning, but within the specified worker they define the complete
+# content-directory I/O boundary. Listing them catches tmp creation, audio replace/remove, or preflight moved outside
+# claim without misclassifying unrelated write calls elsewhere as directory races.
 _UNIT_OPERATIONS = {
     ('publish', '_preflight_and_publish'): {
         'resolve_voice_reference_serialized': 1,
@@ -4306,17 +4306,17 @@ _UNIT_CLAIMS = {
     ('preview_cards', '_write_claimed_preview_image'): 'claim_partial_writer',
 }
 
-# 把工作推迟到别处去跑的原语。哨兵名出现在它们的**实参**里时，「写在 with 里面」
-# 什么都不证明 —— `with claim: executor.submit(_publish_workshop_item, ...)` 的
-# 上传会在占用放开之后才真正发生，正是这条守卫要防的那个竞态，而按词法包含判定
-# 它是绿的。所以这种形状一律算越界，不看它嵌在哪儿。
+# Deferred-execution primitives. Sentinel names in their **arguments** mean lexical placement inside with
+# proves nothing: upload from `with claim: executor.submit(_publish_workshop_item, ...)`
+# actually runs after releasing the claim, precisely the race this guard prevents, despite passing lexical containment.
+# Treat this shape as out of bounds regardless of nesting.
 _DEFERRAL_CALLS = {
     'to_thread', 'run_in_executor', 'submit', 'map', 'Thread',
     'create_task', 'ensure_future', 'partial',
 }
 
-# 结构性豁免：prepare 创建的目录还没返回给任何人；publish/cleanup 本身则是
-# package-wide sentinel，所有调用点都必须持有 claim，因此内部 I/O 继承调用方占用。
+# Structural exemptions: prepare's directory has not been returned to anyone; publish/cleanup are themselves
+# package-wide sentinels whose callers must hold claims, so internal I/O inherits caller ownership.
 _ALLOWED_UNCLAIMED = {
     ('publish', 'prepare_workshop_upload'),
     ('publish', '_publish_workshop_item'),
@@ -4330,12 +4330,12 @@ def _is_allowed_unclaimed(
 ) -> bool:
     return top_level and (module, function) in _ALLOWED_UNCLAIMED
 
-# ⚠️ 已知缺口，不是豁免。放在这里是为了让它**可见**、而且会随代码漂移被重新审视：
-# publish_to_workshop 把预览图 copy2 进内容目录发生在 claim **之前**，同一目录被
-# 重复发布时仍能撕裂预览图。独立的 /upload-preview-image 路径已由 #2627 改成
-# worker 内的 partial claim + atomic write，因此不再列为欠账。
+# ⚠ Known gap, not exemption. Keep it **visible** and subject to review as code drifts:
+# publish_to_workshop copy2 writes previews into the content directory **before** claim, so repeated
+# publication of one directory can still tear the preview. The independent /upload-preview-image path now uses
+# worker-local partial claim + atomic write after #2627 and is no longer debt.
 _KNOWN_GAPS = {
-    # 绑定到具体源码位置，而不是同函数同名操作的数量；旧点被修、新点冒出来不能互换。
+    # Bind to exact source locations, not same-name operation counts within a function; fixing old sites and adding new ones are not interchangeable.
     ('publish', 'publish_to_workshop', 652, 'copy2'),
     ('publish', 'publish_to_workshop', 676, 'copy2'),
 }

@@ -288,10 +288,16 @@
         // 凝神（cognition focus）per-user 总开关，默认开；关掉后端进不了 focus 态。
         // 注意与上面的 focusModeEnabled（=麦克风静音/允许打断）是两回事。
         focusCognitionEnabled: true,
+        // 文字对话回复前自动想起相关记忆（被动注入）per-user 开关，默认开。
+        autoMemoryRecallEnabled: true,
         avatarReactionBubbleEnabled: true,
         // 自然表达（slop reduction）总开关，默认开。promptOnly：仅改喂回模型的
         // 历史副本，用户看到的原文与持久化历史都不动（后端 utils/slop_filter.py）。
         slopFilterEnabled: true,
+        // 串门（docs/design/visit-infrastructure.md §3.7.6 / OD-15 v3）：visitEnabled 默认关；
+        // visitVoiceEnabled 默认开（她在邻居家说话、你在自家听见）
+        visitEnabled: false,
+        visitVoiceEnabled: true,
         renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
         screenshotCounter: 0,
@@ -604,9 +610,9 @@
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveCommunityChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
-        'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
+        'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled', 'autoMemoryRecallEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
-        'slopFilterEnabled',
+        'slopFilterEnabled', 'visitEnabled', 'visitVoiceEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];
 

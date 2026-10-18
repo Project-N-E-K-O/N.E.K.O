@@ -55,8 +55,8 @@ async def test_plugins_refresh_routes_delegate_to_registry_service(
         all_response = await client.post("/plugins/refresh")
         assert all_response.status_code == 200
         assert all_response.json()["added"] == ["demo"]
-        # force 参数没有了：刷新不再有缓存可绕过，每次都重读盘面。签名里留一个
-        # 恒为真的开关只会让人以为还存在一条"不重读"的路。
+        # The force parameter is gone: refresh always rereads disk, with no cache to bypass. Keeping
+        # an always-true flag in the signature would falsely suggest a path that skips rereading.
         assert refresh_calls == ["all"], f"刷新路由没有调到注册表：{refresh_calls}"
 
         one_response = await client.post("/plugin/demo/refresh")

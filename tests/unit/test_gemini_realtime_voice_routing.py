@@ -130,9 +130,9 @@ def test_validate_gemini_voice_uses_active_realtime_provider():
 
 
 def test_validate_keeps_free_native_voice_on_lanlan_app_route():
-    """回归：lanlan.app/free 路由下 validate_voice_id 仍认 Step/free 原生音色合法，
-    避免 cleanup_invalid_voice_ids 在用户切线路时把 characters.json 里保存的
-    qingchunshaonv 等 voice_id 静默清空（PR #1290 Codex P1）。"""
+    """Regression: validate_voice_id must still accept native Step/free voices under the lanlan.app/free route,
+    preventing cleanup_invalid_voice_ids from silently clearing saved voice_ids such as qingchunshaonv from characters.json
+    when the user switches routes (PR #1290 Codex P1)."""
     mgr = object.__new__(ConfigManager)
     mgr.get_voices_for_current_api = lambda for_listing=False: {}
     mgr.get_model_api_config = lambda model_type: {
@@ -213,8 +213,8 @@ async def test_voice_catalog_uses_active_realtime_provider(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_free_voice_catalog_on_lanlan_app_shows_free_intl(monkeypatch):
-    """海外免费（lanlan.app）展示 free_intl（Gemini 全量）+ yui/default 置顶 pin；
-    国内免费（lanlan.tech）展示 free（阶跃）原生，无 pin。"""
+    """Overseas free (lanlan.app) shows free_intl (full Gemini catalog) + yui/default pinned;
+    mainland China free (lanlan.tech) shows native free (StepFun) with no pins."""
     monkeypatch.setattr(
         characters_router,
         "get_config_manager",
@@ -237,7 +237,7 @@ async def test_free_voice_catalog_on_lanlan_app_shows_free_intl(monkeypatch):
 
     domestic_free_result = await characters_router.get_voices()
 
-    # 海外：Gemini 全量原生 + yui/default 置顶；yui 已从长列表挪进 pin，Leda 保留
+    # Overseas: full native Gemini catalog + yui/default pinned; yui was moved from the long list to pins, while Leda remains
     assert "native_voices" in overseas_free_result
     assert "yui" not in overseas_free_result["native_voices"]
     assert "Leda" in overseas_free_result["native_voices"]
@@ -246,15 +246,15 @@ async def test_free_voice_catalog_on_lanlan_app_shows_free_intl(monkeypatch):
     assert pins[0]["i18n_key"] == "voice.freeVoice.yui"
     assert pins[1]["i18n_key"] == "voice.freeVoice.default"
 
-    # 国内：阶跃原生，无置顶 pin
+    # Mainland China: native StepFun catalog, no pinned items
     assert "native_voices" in domestic_free_result
     assert "pinned_voices" not in domestic_free_result
 
 
 @pytest.mark.asyncio
 async def test_free_intl_pin_hidden_when_voice_id_collides_with_clone(monkeypatch):
-    """用户克隆/自建音色撞名 yui → 该置顶 pin 隐藏（runtime 会按撞名走克隆，
-    pin 点了到不了 Gemini）；未撞名的 default(Leda) pin 保留。"""
+    """If a user-created or cloned voice collides with yui, hide the pinned item (runtime treats the name as a clone,
+    so clicking the pin cannot reach Gemini); keep the default (Leda) pin if it does not collide."""
     monkeypatch.setattr(
         characters_router,
         "get_config_manager",
@@ -272,8 +272,8 @@ async def test_free_intl_pin_hidden_when_voice_id_collides_with_clone(monkeypatc
 
 @pytest.mark.asyncio
 async def test_free_intl_native_entry_hidden_when_voice_id_collides(monkeypatch):
-    """撞名（跨桶克隆同名）的 Gemini 音色也要从长列表去掉：runtime 按 any-storage
-    撞名判定拒绝当 native，展示了点选也到不了 Gemini（与 pin 撞名隐藏对偶）。"""
+    """Also remove a colliding Gemini voice (clone with the same name across buckets) from the long list: runtime rejects it as native
+    when any stored voice collides, so showing it would still not reach Gemini (mirrors hiding the colliding pin)."""
     monkeypatch.setattr(
         characters_router,
         "get_config_manager",
@@ -285,36 +285,36 @@ async def test_free_intl_native_entry_hidden_when_voice_id_collides(monkeypatch)
     )
 
     result = await characters_router.get_voices()
-    # default pin（Leda）撞名隐藏
+    # Hide the default pin (Leda) when its name collides
     assert [p["voice_id"] for p in result.get("pinned_voices")] == ["yui"]
-    # 长列表里的 Leda 也撞名隐藏；其它 Gemini 音色不受影响
+    # Also hide a colliding Leda from the long list; other Gemini voices are unaffected
     assert "Leda" not in result["native_voices"]
     assert "Puck" in result["native_voices"]
 
 
 def test_free_intl_remaps_gemini_and_yui_native_on_lanlan_app_route():
-    """海外免费路由（free + *.lanlan.app）下，Gemini 音色与 yui 经 free_intl 认成
-    native；阶跃预设音色不在 free_intl 目录里，按非 native fall through。"""
+    """On the overseas free route (free + *.lanlan.app), free_intl recognizes Gemini voices and yui as
+    native; StepFun preset voices are absent from free_intl and therefore fall through as non-native."""
     voice_id_exists = _FakeConfigManager().voice_id_exists_in_any_storage
 
-    # Gemini 音色 / yui → 海外 free 路由认 native
+    # Gemini voice / yui → overseas free route recognizes it as native
     assert resolve_native_voice_for_routing(
         "free", "Puck", voice_id_exists, realtime_base_url="wss://www.lanlan.app/realtime",
     ) == ("Puck", True)
     assert resolve_native_voice_for_routing(
         "free", "  yui  ", voice_id_exists, realtime_base_url="wss://edge.lanlan.app/realtime",
     ) == ("yui", True)
-    # default 别名 → Leda
+    # Default alias → Leda
     assert resolve_native_voice_for_routing(
         "free", "default", voice_id_exists, realtime_base_url="wss://www.lanlan.app/realtime",
     ) == ("Leda", True)
 
-    # 国内 free（lanlan.tech）：阶跃目录不识别 Gemini 音色
+    # Mainland China free route (lanlan.tech): StepFun catalog does not recognize Gemini voices
     assert resolve_native_voice_for_routing(
         "free", "Puck", voice_id_exists, realtime_base_url="wss://www.lanlan.tech/realtime",
     ) == ("Puck", False)
 
-    # 海外 free：阶跃预设不在 free_intl 目录 → 非 native
+    # Overseas free route: StepFun preset is absent from free_intl catalog → not native
     assert resolve_native_voice_for_routing(
         "free", "qingchunshaonv", voice_id_exists, realtime_base_url="wss://www.lanlan.app/realtime",
     ) == ("qingchunshaonv", False)
@@ -335,9 +335,9 @@ def test_voice_mode_gemini_native_uses_realtime_audio_not_external_tts():
 
 
 def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
-    """Livestream 上游是 free 路 Gemini 系，无论角色卡 voice_id 是不是 free preset，
-    都应跳过外部 TTS 走服务端原生语音。PR #1369 的 free-preset gate 漏掉了
-    "livestream + 非 preset 音色"（克隆 / 空 voice_id）这条路径——本测试守门。"""
+    """The upstream livestream route uses free-route Gemini; regardless of whether the character card's voice_id is a free preset,
+    it should skip external TTS and use native server speech. PR #1369's free-preset gate missed
+    \"livestream + non-preset voice\" (clone / empty voice_id) path — this test guards it."""
     monkeypatch.setattr(
         "main_logic.core.is_livestream_active",
         lambda: True,
@@ -349,7 +349,7 @@ def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
         "GPTSOVITS_ENABLED": True,
     }
 
-    # 角色卡是克隆音色（非 free preset）
+    # Character card uses a cloned voice (not a free preset)
     mgr_clone = _make_mgr("voice-clone-abc")
     mgr_clone.core_api_type = "free"
     mgr_clone._is_free_preset_voice = False
@@ -360,7 +360,7 @@ def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
         is False
     )
 
-    # 角色卡 voice_id 为空
+    # Character card voice_id is empty
     mgr_empty = _make_mgr("")
     mgr_empty.core_api_type = "free"
     mgr_empty._is_free_preset_voice = False
@@ -371,7 +371,7 @@ def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
         is False
     )
 
-    # 文本模式仍然启用 TTS（没有 realtime audio 通道兜底）
+    # Text mode still enables TTS (there is no realtime-audio fallback)
     mgr_text = _make_mgr("voice-clone-abc")
     mgr_text.core_api_type = "free"
     mgr_text._is_free_preset_voice = False
@@ -384,8 +384,8 @@ def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
 
 
 def test_non_livestream_free_preset_still_skips_tts_only_on_lanlan_tech(monkeypatch):
-    """回归 PR #1369 原 gate 的窄路径：非 livestream 时，free preset 仅在
-    base_url 指向 lanlan.tech 域时跳 TTS，其他域照旧 fallback 外部 TTS。"""
+    """Regression for the narrow path in PR #1369's original gate: outside livestream, a free preset skips TTS only when
+    base_url points to a lanlan.tech domain; on other domains, keep the external-TTS fallback."""
     monkeypatch.setattr(
         "main_logic.core.is_livestream_active",
         lambda: False,
@@ -680,8 +680,8 @@ async def test_hot_swap_to_external_tts_starts_pipeline(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# PR #1764 review #3403710558 边界场景：_is_vllm_omni_tts_enabled 对 snapshot
-# 中 ttsModelProvider 字段缺失/空串/大小写/livestream 优先级的容错性
+# PR #1764 review #3403710558 edge cases: tolerance in _is_vllm_omni_tts_enabled for missing/empty/case variation and livestream priority of ttsModelProvider in a snapshot
+#
 # ---------------------------------------------------------------------------
 
 
@@ -690,7 +690,7 @@ def test_is_vllm_omni_tts_enabled_returns_false_when_ttsModelProvider_missing():
     snapshot = {
         "ENABLE_CUSTOM_API": True,
         "GPTSOVITS_ENABLED": False,
-        # 故意不写 ttsModelProvider
+        # Intentionally omit ttsModelProvider
     }
     assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False
 
@@ -770,7 +770,7 @@ def test_livestream_overrides_vllm_omni_tts_routing(monkeypatch):
         "ttsVoiceId": "Puck",
         "GPTSOVITS_ENABLED": False,
     }
-    # livestream 早退分支优先（core.py:3786 先于 vllm_omni 检测）
+    # livestream early-return takes precedence (core.py:3786 runs it before vllm_omni detection)
     assert (
         LLMSessionManager._resolve_session_use_tts(
             mgr, "audio", realtime_config, snapshot,

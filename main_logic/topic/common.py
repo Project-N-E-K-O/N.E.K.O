@@ -5,21 +5,21 @@ import re
 from typing import Any
 
 
-# ⚠️ 简繁都要列。这两张表是从话题文本里剔虚词、再切单字 + bigram 算相似度用的。
-# 缺繁体不会 crash、也不是 0 命中，而是**安静的偏移**：所有繁中话题都会共享
-# 「這 / 個 / 還 / 嗎 / 與」这几个高频单元，两两之间的相似度被系统性抬高，
-# 反复读检测因此过度激进。实测 topic_units('這個遊戲還在更新嗎') 会多出
-# 這 / 個 / 嗎 / 還 / 這個 / 新嗎 / 還更 等纯虚词单元（9 → 15 个）。
+# ⚠️ Include both Simplified and Traditional. These tables remove function words before splitting topics into characters/bigrams for similarity.
+# Missing Traditional forms does not crash or yield zero matches; it silently biases scores: all Traditional topics share
+# frequent units such as 這 / 個 / 還 / 嗎 / 與, systematically raising pairwise similarity
+# and making repetition detection overly aggressive. Observed topic_units('這個遊戲還在更新嗎') gains
+# function-word units 這 / 個 / 嗎 / 還 / 這個 / 新嗎 / 還更 (9 → 15 units).
 #
-# ⚠️⚠️ **「著」故意不收**，尽管它是简体体标记「着」的繁体对应。原因是两种字形
-# 里的分工不同：简体用「着」当体标记、「著」当词汇字（著名 / 著作），所以基线
-# 只收了「着」；繁体的「著」身兼两职，字符级分不开。收了它会把「著名 / 著作」
-# 的真实内容一起削掉——实测「著名景點推薦」vs「著名景點清單」的 jaccard 从
-# 0.47 掉到 0.38，跨过 0.6 去重阈值的判断随之变化，而且**简体侧同样受损**
-# （「著名景点推荐」也含「著」），等于把改动溢出到 zh-TW 范围之外（Codex P2）。
-# 取舍：宁可漏掉一个虚词（繁体的体标记「著」留在单元里），也不要削掉真实内容。
+# ⚠️⚠️ Deliberately exclude 著 despite being the Traditional counterpart of Simplified aspect marker 着. Their
+# roles differ: Simplified uses 着 for aspect and 著 lexically (著名 / 著作), so the baseline includes
+# only 着. Traditional 著 serves both roles, inseparable at character level. Including it removes genuine
+# lexical content from 著名 / 著作: observed Jaccard for 著名景點推薦 vs 著名景點清單 falls
+# from 0.47 to 0.38, affecting decisions around the 0.6 deduplication threshold, and also damages Simplified
+# (著名景点推荐 also contains 著), spilling beyond zh-TW scope (Codex P2).
+# Tradeoff: tolerate one function word (Traditional aspect marker 著 remains) rather than remove real content.
 #
-# ZH_LINK_STOP_CHARS 按设计不含指示代词（這/那/我/你/他/她/它），只补虚词侧。
+# ZH_LINK_STOP_CHARS intentionally excludes demonstrative/personal pronouns (這/那/我/你/他/她/它); add only function-word forms.
 ZH_TOPIC_STOP_CHARS = set("的一是在不了和就都而及与與着或吗嗎呢啊吧呀也很还還再又这這那我你他她它")
 ZH_LINK_STOP_CHARS = set("的一是在不了和就都而及与與着或吗嗎呢啊吧呀也很还還再又")
 

@@ -47,7 +47,7 @@ Environment isolation: mirrors p25_external_events_smoke.py.
 Usage::
 
     .venv\\Scripts\\python.exe tests/testbench/smoke/p25_prompt_preview_truth_smoke.py
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import io

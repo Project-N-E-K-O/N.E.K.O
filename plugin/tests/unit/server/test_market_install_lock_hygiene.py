@@ -1,30 +1,30 @@
-"""市场安装提交路径：全局锁内、事件循环上，不得有同步阻塞调用。
+"""Market installation commit path: no synchronous blocking calls on the event loop under the global lock.
 
-``upload_and_install`` 带 ``@serialized_plugin_operation``，也就是**整段都持有那把
-全局跨进程插件操作锁**（``operation_lock.py:205`` 的单个 ``_PROCESS_LOCK`` + 一个
-``.plugin-operation.lock`` 文件锁）。锁内任何睡在事件循环上的时间，都是插件服务器
-所有路由（``/plugins``、``/plugin_cli``、``/runs``、``/websocket``、插件 UI 流）
-一起停摆的时间。
+``upload_and_install`` carries ``@serialized_plugin_operation``, holding the global cross-process
+plugin-operation lock throughout (the single ``_PROCESS_LOCK`` in ``operation_lock.py:205`` plus
+a ``.plugin-operation.lock`` file lock). Any time spent sleeping on the event loop under this lock halts
+all plugin-server routes (``/plugins``, ``/plugin_cli``, ``/runs``, ``/websocket``, plugin UI streams)
+together.
 
-具体被钉住的是这几个同步调用：
+Specifically guard these synchronous calls:
 
-* ``mgr.record_market_install`` / ``record_market_upgrade`` —— 最终走到
-  ``install_source/manager.py`` 的 ``_atomic_write``，那里在 Windows 上撞到
-  ``PermissionError``（AV / Explorer 短暂持有句柄，源码注释说明这是**预期会发生**的）
-  会执行 ``for attempt_ms in (0, 50, 100, 200): time.sleep(attempt_ms / 1000)``，
-  累计最多 **350ms 的 time.sleep**。
-* ``classify_plugin_path`` —— 3 次 ``Path.resolve()`` + NFC 归一化。
-* ``_read_installed_plugin_toml_id`` —— 一次 tomllib 读+解析。
+* ``mgr.record_market_install`` / ``record_market_upgrade`` ultimately reach
+  ``install_source/manager.py``'s ``_atomic_write``, where Windows
+  ``PermissionError`` (brief AV/Explorer handle contention, explicitly **expected** in source comments)
+  triggers ``for attempt_ms in (0, 50, 100, 200): time.sleep(attempt_ms / 1000)``,
+  totaling up to **350ms of time.sleep**.
+* ``classify_plugin_path`` performs 3 ``Path.resolve()`` calls + NFC normalization.
+* ``_read_installed_plugin_toml_id`` reads/parses tomllib once.
 
-同一个 ``record_market_install`` 在本文件 ``install_builtin_override`` 的
-``commit_lock`` 里早就是 ``asyncio.to_thread`` 的（:893），所以这不是新约定，是补齐
-一致性。
+The same ``record_market_install`` already uses ``asyncio.to_thread`` inside
+``install_builtin_override``'s ``commit_lock`` in this file (:893), so this completes
+consistency rather than introducing a convention.
 
-注意作用域**只限 ``upload_and_install``**：``_install_via_staging_sync`` 与
-``_stage_builtin_override_sync`` 里的同名直接调用是正确的——它们本身就是 ``_sync``
-函数，由调用方丢进线程执行。
+Scope applies **only to ``upload_and_install``**: direct same-named calls in
+``_install_via_staging_sync`` / ``_stage_builtin_override_sync`` are correct because these are themselves ``_sync``
+functions dispatched to threads by callers.
 
-变异：把 ``upload_and_install`` 里任一处 ``asyncio.to_thread(...)`` 摘掉、改回直接调用。
+Mutation: remove any ``asyncio.to_thread(...)`` in ``upload_and_install`` and call directly instead.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def _target_function() -> ast.AsyncFunctionDef:
 
 
 def _scan(fn: ast.AST) -> tuple[list[tuple[str, int]], set[str]]:
-    """返回 (直接调用列表, 经 to_thread 传递的名字集合)。"""
+    """Return (direct-call list, set of names passed through to_thread)."""
     direct: list[tuple[str, int]] = []
     threaded: set[str] = set()
     for node in ast.walk(fn):
@@ -98,17 +98,17 @@ def test_no_guarded_helper_is_called_directly_inside_upload_and_install() -> Non
         "那里最多 time.sleep 350ms —— 这段时间插件服务器的所有路由都停摆。"
         "改成 await asyncio.to_thread(...)，和 install_builtin_override 的 :893 一致。"
     )
-    # 别靠"把调用删掉"来让上面那条通过：这些活必须还在做。
+    # Do not make the preceding test pass by deleting calls; this work must still happen.
     assert _GUARDED <= threaded, (
         f"这些调用不见了，不是被挪进线程了：缺失 {sorted(_GUARDED - threaded)}"
     )
 
 
 def test_upload_and_install_still_holds_the_global_lock() -> None:
-    """另一侧的守卫：把阻塞挪进线程不能顺手把锁也挪走。
+    """The opposite guard: moving blocking work to threads must not move the lock away too.
 
-    这几步必须仍在锁内——它们改的是安装来源台账，与并发的安装/卸载/启停互斥是
-    这把锁存在的理由。变异：摘掉 @serialized_plugin_operation。
+    These steps must remain under lock because they modify the installation-source ledger; mutual exclusion against
+    concurrent install/uninstall/start/stop is the lock's purpose. Mutation: remove @serialized_plugin_operation.
     """
     fn = getattr(service_module.PluginCliService, _TARGET_FUNCTION, None) or getattr(
         service_module, _TARGET_FUNCTION, None
@@ -121,11 +121,11 @@ def test_upload_and_install_still_holds_the_global_lock() -> None:
 
 
 def test_the_sync_helpers_are_allowed_to_call_it_directly() -> None:
-    """反向守卫：别把这条规则过度推广到 *_sync 函数上。
+    """Reverse guard: do not overgeneralize this rule to *_sync functions.
 
-    ``_install_via_staging_sync`` / ``_stage_builtin_override_sync`` 本身就是同步函数、
-    由调用方丢进线程执行；在它们里面再套 to_thread 不但没用，还会把一次调用拆成两次
-    线程往返。有人"顺手统一"时这条会红。
+    ``_install_via_staging_sync`` / ``_stage_builtin_override_sync`` are already synchronous functions
+    dispatched to threads by their callers. Wrapping their calls in to_thread adds no value and splits one call into two
+    thread round trips. This fails if someone attempts casual uniformity.
     """
     source = Path(inspect.getfile(service_module)).read_text(encoding="utf-8")
     tree = ast.parse(source)

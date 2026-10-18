@@ -976,7 +976,7 @@ def test_expired_native_delegate_does_not_fall_back_to_cloud_auth(
     token = _issue_delegate_from_local_ui(client, monkeypatch, snapshot)
     entry = C._native_delegate_entry(token)
     assert entry is not None
-    # _native_delegate_entry 返回副本（防止调用方改写共享注册表），直接过期注册表条目。
+    # _native_delegate_entry returns a copy to protect the shared registry; expire the registry entry directly.
     C._native_delegates[C._sync_ticket_digest(token)]["expires_at"] = 0
 
     async def unexpected_cloud_auth(_base, _token):
@@ -1640,6 +1640,51 @@ def test_social_session_init_allows_a_loopback_http_base(client, monkeypatch):
     assert response.json()["access_token"] == "desktop-token-a"
 
 
+def test_native_delegate_is_not_issued_for_a_plaintext_non_loopback_base(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://community.example")
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "base_url": "http://community.example"},
+    )
+    local_ui = {"Sec-Fetch-Site": "same-origin"}
+
+    issued = client.get("/api/card-drop/native-delegate", headers=local_ui)
+    handoff = client.get(
+        "/api/card-drop/native-delegate/handoff",
+        params={"return_to": "http://community.example/cards"},
+        headers=local_ui,
+        follow_redirects=False,
+    )
+
+    assert issued.status_code == 403
+    assert issued.json() == {"detail": "insecure_transport"}
+    assert "native_delegate" not in issued.text
+    assert handoff.status_code == 403
+    assert handoff.json() == {"detail": "insecure_transport"}
+    assert "location" not in handoff.headers
+
+
+def test_native_delegate_is_issued_for_a_loopback_http_base(client, monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:3000")
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "base_url": "http://localhost:3000"},
+    )
+
+    issued = client.get(
+        "/api/card-drop/native-delegate",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
+
+    assert issued.status_code == 200
+    assert issued.json()["native_delegate"]
+
+
 def test_social_session_init_keeps_the_ticket_when_identity_is_unavailable(
     client,
     monkeypatch,
@@ -1933,14 +1978,14 @@ def test_clear_auth_waits_for_the_social_session_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "_social_session_path", lambda: social)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
 
-    # 一个 repaired-bind 写者在持有 social-session 锁：clear 必须在锁上等到
-    # 超时并报告失败，而不是绕过锁把镜像删掉（约 2 秒锁超时）。
+    # A repaired-bind writer holds the social-session lock: clear must wait for that lock,
+    # time out, and report failure, rather than bypassing it to delete the mirror (about a 2-second lock timeout).
     with C._social_session_lock(social):
         assert C._clear_auth() is False
     assert auth.exists()
     assert social.exists()
 
-    # 锁释放后重试即可正常清理。
+    # Retrying after lock release should clear normally.
     assert C._clear_auth() is True
     assert not auth.exists()
     assert not social.exists()
@@ -3426,8 +3471,8 @@ async def test_archive_pick_excludes_rows_still_present_in_active_facts(
         for i in range(6)
     ]
     facts_path.write_text(json.dumps(active), encoding="utf-8")
-    # 归档里是全部 6 条的副本 = 最坏情况的半提交：无论这次抽中哪 5 条，
-    # 剩下那条都会从归档侧漏回来。
+    # The archive contains copies of all 6 entries, the worst partial-commit case: whichever 5 are selected,
+    # the remaining entry would leak back from the archive.
     archive_path.write_text(json.dumps(active), encoding="utf-8")
 
     async def fake_context(*_args, **_kwargs):

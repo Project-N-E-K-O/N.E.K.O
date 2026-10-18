@@ -268,6 +268,17 @@
                 <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chat.avatarPreviewRefresh">刷新头像</button>
             </div>
         </div>
+        <div class="chat-avatar-custom-controls">
+            <div class="chat-avatar-custom-actions">
+                <button id="chat-avatar-upload" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chatAvatar.custom.upload">上传图片</button>
+                <input id="chat-avatar-file-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                <button id="chat-avatar-restore" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chatAvatar.custom.restore" hidden>恢复模型头像</button>
+                <button id="chat-avatar-save" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chatAvatar.custom.save" hidden>确认保存</button>
+                <button id="chat-avatar-cancel-edit" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chatAvatar.custom.cancel" hidden>取消编辑</button>
+            </div>
+            <div class="chat-avatar-custom-help" data-i18n="chatAvatar.custom.help">PNG、JPEG 或 WebP，最大 10 MiB</div>
+            <div id="chat-avatar-custom-status" class="chat-avatar-custom-status" role="status" aria-live="polite" aria-atomic="true"></div>
+        </div>
         <div class="chat-avatar-preview-crop-body">
             <div class="avatar-cropper-area">
                 <div id="avatar-cropper-wrap" class="avatar-cropper-canvas-wrap">
@@ -344,6 +355,7 @@
     <script src="/static/app/desktop-capture-provider.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-popup.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/cat-resource-registry.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/core.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-assets-and-question.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-playground.js?v={{ static_asset_version }}"></script>
@@ -411,6 +423,8 @@
     <script src="/static/app/app-cat-mind.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-cat-mind-debug.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-desktop-window-sensing.js?v={{ static_asset_version }}"></script>
+    <!-- Apply shared physics before evaluating optional edge presentations. -->
+    <script src="/static/avatar/avatar-ui-buttons/idle-desktop-window-gravity.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-desktop-window-interactions.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-desktop-window-top-edge.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-desktop-window-edge-peek.js?v={{ static_asset_version }}"></script>
@@ -422,8 +436,12 @@
     <script src="/static/app/app-ui/wrapup-final-guards.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-avatar-image.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-avatar-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-avatar-editor.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-avatar.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-reply-tail.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-audio-playback.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-widget-interaction.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-spatial-audio.js?v={{ static_asset_version }}"></script>
@@ -458,6 +476,12 @@
     <script src="/static/app/app-agent.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-character.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-websocket.js?v={{ static_asset_version }}"></script>
+    <!-- 串门（docs/design/visit-infrastructure.md §5 PR-13）：已播进度回报、估时口型、设置分组；chat.html 不加载 -->
+    <script src="/static/visit/visit-pacer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/visit/text-mouth-driver.js?v={{ static_asset_version }}"></script>
+    <script src="/static/visit/visit-settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/visit/crop-geometry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/visit/parent-bridge.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/motion/bridge.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/motion/core.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/motion/player.js?v={{ static_asset_version }}"></script>
@@ -484,11 +508,17 @@
     <script src="/static/app/app-react-chat-window/minimize-and-idle-dock.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/cat-local-chat-lexicon.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/cat-local-chat.js?v={{ react_chat_asset_version }}"></script>
+    <!-- 串门聊天面（必须在 resize-drag-and-api.js 之前：它最后会删掉 __appReactChatWindowParts）与串门人设面板 -->
+    <script src="/static/app/app-react-chat-window/visit-chat.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/visit-persona-panel.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/resize-drag-and-api.js?v={{ react_chat_asset_version }}"></script>
     <!-- 小剧场本体与选择页共用同一份消息和请求协议。 -->
     <script src="/static/js/theater_transport.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-theater-runtime.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-sync.js?v={{ static_asset_version }}"></script>
+    <!-- Static profile consent shares the local sync API, never browser credentials. -->
+    <script src="/static/app/app-character-profile-sync.js?v={{ static_asset_version }}"></script>
 
     <script src="/static/subtitle/subtitle.js?v={{ static_asset_version }}"></script>
 

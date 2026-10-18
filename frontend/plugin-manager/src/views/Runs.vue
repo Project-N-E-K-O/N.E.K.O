@@ -15,7 +15,7 @@
           <div v-if="!connected" class="hint" data-yui-guide-id="runs-ws-disconnected">
             <el-alert type="warning" :closable="false">
               <template #title>
-                <span>{{ $t('runs.wsDisconnected') }}</span>
+                <span>{{ $t(runsStore.connecting ? 'runs.wsConnecting' : 'runs.wsDisconnected') }}</span>
               </template>
             </el-alert>
           </div>
@@ -27,7 +27,8 @@
             data-yui-guide-id="runs-table"
             highlight-current-row
             @current-change="handleSelect"
-            :row-key="(row: any) => row.run_id"
+            @row-click="handleSelect"
+            :row-key="(row: RunRecord) => row.run_id"
           >
             <el-table-column prop="status" :label="$t('runs.status')" width="110">
               <template #default="scope">
@@ -107,7 +108,7 @@
               <div class="export-header">
                 <span>{{ $t('runs.export') }}</span>
               </div>
-              <el-table :data="selectedExports" size="small" style="width: 100%" data-yui-guide-id="runs-export-table" :row-key="(row: any) => row.export_item_id">
+              <el-table :data="selectedExports" size="small" style="width: 100%" data-yui-guide-id="runs-export-table" :row-key="(row: ExportItem) => row.export_item_id">
                 <el-table-column prop="type" :label="$t('runs.exportType')" width="120" />
                 <el-table-column :label="$t('runs.exportContent')">
                   <template #default="scope">
@@ -146,8 +147,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
-import { useRunsStore } from '@/stores/runs'
+import { useRunsStore, type RunRecord, type ExportItem } from '@/stores/runs'
 import { openExternalUrl } from '@/utils/openExternal'
+import { isRunsRequestCancelled, runsRequestErrorKey } from '@/utils/runsError'
+
+defineOptions({ name: 'RunHistory' })
 
 const runsStore = useRunsStore()
 const { t } = useI18n()
@@ -155,6 +159,12 @@ const { t } = useI18n()
 const loading = ref(false)
 const loadingSelected = ref(false)
 const lastSelectedRunId = ref<string | null>(null)
+let pendingSelectedRunId: string | null = null
+let disposed = false
+
+function showRequestError(error: unknown) {
+  if (!disposed && !isRunsRequestCancelled(error)) ElMessage.error(t(runsRequestErrorKey(error)))
+}
 
 const connected = computed(() => runsStore.connected)
 const runs = computed(() => runsStore.runs)
@@ -162,30 +172,30 @@ const selectedRun = computed(() => runsStore.selectedRun)
 const selectedExports = computed(() => runsStore.selectedExports)
 
 const canCancelSelected = computed(() => {
-  const r: any = selectedRun.value
+  const r = selectedRun.value
   if (!r) return false
   const st = String(r.status || '')
   return st === 'queued' || st === 'running' || st === 'cancel_requested'
 })
 
-function formatTs(ts: any): string {
+function formatTs(ts: unknown): string {
   const n = Number(ts)
   if (!Number.isFinite(n) || n <= 0) return '-'
   return dayjs(n * 1000).format('YYYY-MM-DD HH:mm:ss')
 }
 
-function formatError(err: any): string {
+function formatError(err: unknown): string {
   if (!err) return '-'
   try {
     if (typeof err === 'string') return err
     if (typeof err === 'object') return JSON.stringify(err, null, 2)
     return String(err)
-  } catch (_) {
+  } catch {
     return String(err)
   }
 }
 
-function formatJson(json: any): string {
+function formatJson(json: unknown): string {
   return JSON.stringify(json, null, 2)
 }
 
@@ -200,58 +210,75 @@ async function handleRefresh() {
   loading.value = true
   try {
     await runsStore.refreshRuns()
-  } catch (e: any) {
-    ElMessage.error(String(e?.message || e || 'Failed to refresh runs'))
+  } catch (error) {
+    showRequestError(error)
   } finally {
     loading.value = false
   }
 }
 
 async function handleRefreshSelected() {
-  if (!selectedRun.value) return
+  if (!selectedRun.value || disposed || loadingSelected.value) return
+  const runId = selectedRun.value.run_id
+  lastSelectedRunId.value = null
   loadingSelected.value = true
   try {
-    await Promise.all([
-      runsStore.loadRun(selectedRun.value.run_id),
-      runsStore.loadExports(selectedRun.value.run_id)
+    const results = await Promise.allSettled([
+      runsStore.loadRun(runId),
+      runsStore.loadExports(runId)
     ])
-  } catch (e: any) {
-    ElMessage.error(String(e?.message || e || 'Failed to refresh run'))
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason
+    }
+    if (!disposed) lastSelectedRunId.value = runId
+  } catch (error) {
+    showRequestError(error)
   } finally {
     loadingSelected.value = false
+    const nextRunId = pendingSelectedRunId
+    pendingSelectedRunId = null
+    if (!disposed && nextRunId) {
+      runsStore.selectRun(nextRunId)
+      await handleRefreshSelected()
+    }
   }
 }
 
 async function handleCancel() {
   if (!selectedRun.value) return
+  const runId = selectedRun.value.run_id
   try {
     await ElMessageBox.confirm(
-      String(t('runs.cancelConfirmMessage', { runId: selectedRun.value.run_id })),
+      String(t('runs.cancelConfirmMessage', { runId })),
       String(t('runs.cancelConfirmTitle')),
       {
         type: 'warning'
       }
     )
-  } catch (_) {
+  } catch {
     return
   }
 
+  if (disposed) return
   try {
-    await runsStore.cancelRun(selectedRun.value.run_id)
+    await runsStore.cancelRun(runId)
+    if (disposed) return
     await handleRefreshSelected()
-    ElMessage.success(String(t('runs.cancelSuccess')))
-  } catch (e: any) {
-    ElMessage.error(String(e?.message || e || 'Failed to cancel run'))
+    if (!disposed) ElMessage.success(String(t('runs.cancelSuccess')))
+  } catch (error) {
+    showRequestError(error)
   }
 }
 
-async function handleSelect(row: any) {
-  if (!row || !row.run_id) return
+async function handleSelect(row: RunRecord | null) {
+  if (!row || !row.run_id || disposed) return
   const rid = String(row.run_id)
   if (!rid) return
-  if (loadingSelected.value) return
+  if (loadingSelected.value) {
+    pendingSelectedRunId = rid === selectedRun.value?.run_id ? null : rid
+    return
+  }
   if (lastSelectedRunId.value === rid) return
-  lastSelectedRunId.value = rid
   runsStore.selectRun(rid)
   await handleRefreshSelected()
 }
@@ -261,6 +288,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  pendingSelectedRunId = null
   runsStore.disconnect()
 })
 </script>

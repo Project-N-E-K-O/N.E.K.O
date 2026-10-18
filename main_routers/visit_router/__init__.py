@@ -17,36 +17,58 @@
 Sub-modules declare ``APIRouter()`` without a prefix and decorate RELATIVE
 paths; :data:`router` (``prefix='/api/visit'``) includes them. Two groups:
 
-* start / join a visit -- the transport WS and the visit persona (and, with
-  the runtime, rooms / join / accept / invite preview): behind the
-  ``NEKO_VISIT_ENABLED`` release switch (404; the WS handshake is refused
-  before ``accept``);
-* data management -- memory, history, details, reports (and, with the
-  runtime, state / transcript / debrief): always available, so users can
-  still export, clear or report after the switch was turned off.
+* start / join a visit -- the transport WS, the visit persona, rooms / join /
+  accept / invite preview: behind the ``NEKO_VISIT_ENABLED`` release switch
+  (404; the WS handshake is refused before ``accept``);
+* data management -- memory, history, details, reports, route end, state,
+  transcript, debrief choice: always available, so users can still
+  end, export, clear or report after the switch was turned off.
 
 Importing the package registers the ``neko_visit`` external route kind
-(:func:`runtime.register_visit_route_kind`); it only matters once something
-imports it. Nothing here is mounted on the app until PR-09b includes
-:data:`router` in ``web_app.py``.
+(:func:`runtime.register_visit_route_kind`) and wires the runtime hooks of
+the memory endpoints (:func:`_wire_memory_routes`, including the per-character
+admission lock rooms / join share with the forget endpoints). ``web_app.py``
+includes :data:`router`; the display-socket side lives in :mod:`.display_socket`.
 """
 
 from fastapi import APIRouter, Depends
 
-from main_routers.visit_router import cloud_routes, memory_routes, persona, runtime, transport_ws
+from main_routers.visit_router import cloud_routes, debrief, http, memory_routes, persona, runtime, transport_ws
 from main_routers.visit_router.local_guard import require_visit_enabled
 
 router = APIRouter(prefix="/api/visit")
 
-# 发起 / 进行串门的入口：总闸关着时不存在
+# Entry points for starting / conducting visits exist only while the master gate is enabled.
 _gated = [Depends(require_visit_enabled)]
 router.include_router(transport_ws.router, dependencies=_gated)
 router.include_router(persona.router, dependencies=_gated)
+router.include_router(http.router, dependencies=_gated)
 
-# 数据管理：不受总闸影响
+# Data management (including ending, status, transcript export) is independent of the master gate.
+router.include_router(http.data_router)
 router.include_router(memory_routes.router)
 router.include_router(cloud_routes.router)
+router.include_router(debrief.router)
 
 runtime.register_visit_route_kind()
+
+
+def _wire_memory_routes() -> None:
+    # Runtime hooks for memory-management endpoints: the logged-in local account's visit_uid (#3312 mapping), whether the character is visiting
+    # (from reservation through exit completion), blocking renames/deletion during clearing, ending in-flight visits with a blocked person;
+    # clearing sentinel writes share the per-character admission lock with clear checks for room creation/joining (§3.2.1 step 0).
+    from main_routers.visit_router.accounts import own_visit_uid
+    from main_routers.visit_router.display_socket import end_visits_with_peer
+
+    memory_routes.configure_memory_routes(
+        own_visit_uid=own_visit_uid,
+        is_visit_active=runtime.is_visit_route_locked,
+        lifecycle_guard=runtime.hold_character_lifecycle,
+        on_blocked=end_visits_with_peer,
+        admission_lock=http.char_admission_lock,
+    )
+
+
+_wire_memory_routes()
 
 __all__ = ["router"]

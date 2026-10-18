@@ -496,21 +496,21 @@ def _build_ordered_plugin_ids_sync(
     return ordered
 
 
-# 注册表刷新的互斥锁。
+# Registry-refresh mutex.
 #
-# 这里原本是一套"票号排序"：每次刷新开工前领号、发布前认号、号旧的整轮作废，外加
-# 按插件的号表、两张缓存盲区表和一个事务屏障，一共七个全局量。它存在的唯一理由是
-# 两次刷新可能重叠而完成顺序不定；而重叠之所以从偶然变成常态，是因为一次命中缓存
-# 的刷新 0.14s、一次冷扫描 3.3s，后开始的经常先结束。
+# Previously a ticket-order scheme issued IDs before work and checked them before publication, discarding old rounds, plus
+# per-plugin tickets, two cache-blind-spot tables, and a transaction barrier: seven globals. Its sole purpose
+# was overlapping refreshes completing unpredictably, made common by asymmetric cached
+# refreshes at 0.14 s versus cold scans at 3.3 s, letting later starts finish earlier.
 #
-# 刷新不再导入任何插件（只读盘上的 plugin.meta.json）之后，整轮刷新是毫秒级的纯
-# 读，那个不对称消失了。于是换回最朴素的做法：整段刷新互斥。从票号排序里长出来的
-# 那些缺陷——空手而归的 force 仍享最高优先级、carry-forward 拿的是开工前的快照、
-# force 不让位于真扫完的普通刷新、单插件刷新的目标分不到扫描预算——全部随之消失，
-# 因为它们都是"两次刷新重叠"的衍生物，不是各自独立的 bug。
+# Refreshes now import no plugins, reading only plugin.meta.json files in milliseconds,
+# removing that asymmetry. Return to a simple whole-refresh mutex. Ticket-derived defects,
+# including empty force refreshes retaining priority, carry-forward using prework snapshots,
+# force refusing completed normal refreshes, and single-plugin targets receiving no scan budget, all disappear
+# because they arose from overlapping refreshes rather than independent bugs.
 #
-# 可重入：refresh_plugin 和 refresh_registry 都在这把锁里跑，而安装类事务会先后
-# 调到它们两个。
+# Reentrant: refresh_plugin and refresh_registry both run under this lock, and install transactions
+# call both in sequence.
 _REGISTRY_REFRESH_LOCK = threading.RLock()
 
 
@@ -611,9 +611,9 @@ def _discover_registry_snapshot_sync(
 
             pending.append((config_path, ctx))
 
-    # 曾经这里是一个线程池，因为每个插件都要起一个子进程 import 它。现在每一项
-    # 都只是读一份 JSON，串行走完就行——并行化一堆文件读没有意义，而线程池连带
-    # 需要总预算、单项超时、以及"预算耗尽算不算插件坏了"那一整套判据。
+    # Previously a thread pool launched an import subprocess per plugin. Each item now merely reads
+    # JSON, so process serially; parallel file reads add no value while thread pools require
+    # overall budgets, per-item timeouts, and rules distinguishing exhausted budgets from broken plugins.
     for config_path, ctx in pending:
         record, failure = _build_discovery_record_safely(config_path, ctx)
         if record is not None:
@@ -751,9 +751,9 @@ def _packaged_entries_preview(
             _normalize_entry_input_schema(entry)
             for entry in _overlay_entry_declaration(packaged.entries, ctx.conf, ctx.pdata)
         ]
-    # 没有打包期元数据时，manifest 里静态声明的 entries 仍是一条完整通路——它只是
-    # 拿不到从处理函数签名推出来的那部分 input_schema。这条通路一直都在：禁用的
-    # 插件走的就是它。
+    # Without build-time metadata, statically declared manifest entries remain a complete path,
+    # merely lacking signature-inferred input_schema details. This path has always existed,
+    # including for disabled plugins.
     declared = _extract_entries_preview(
         plugin_id,
         cls=type("UnscannedPluginStub", (), {}),
@@ -853,10 +853,10 @@ def _build_discovery_payload(
         if isinstance(adapter_conf, dict):
             payload["adapter_mode"] = str(adapter_conf.get("mode", "hybrid") or "hybrid")
 
-    # 这里原本还有一条"瞬时扫描失败"的分支：扫描超时或预算耗尽时不进 failed 状态、
-    # 并把上一次扫出来的条目接回去（runtime_scan_deferred）。刷新不再扫描之后这两
-    # 件事都没有了——读一份 JSON 不会超时，也没有预算可耗尽，剩下的失败（依赖不满足、
-    # 入口目录不匹配、Python 依赖缺失）全都是关于这个插件本身的，本来就该进 failed。
+    # Previously transient scan failures avoided failed state after timeouts/budget exhaustion and carried
+    # prior entries forward as runtime_scan_deferred. Refresh no longer scans, removing both
+    # conditions: JSON reads neither time out nor exhaust scan budgets. Remaining failures concern dependencies,
+    # entry directories, or missing Python packages and genuinely belong to the plugin's failed state.
     if error_type and error_message and error_phase:
         payload["runtime_load_state"] = "failed"
         payload["runtime_load_error_type"] = error_type
@@ -1203,10 +1203,10 @@ def _move_autostart_gate_to_runtime_id(
     if is_autostart_approved(declared_plugin_id):
         return
     if not mark_autostart_pending(runtime_plugin_id):
-        # 记不上就不能把这条改名记录发布出去。留在声明 id 上等于没拦住：注册用的
-        # 和自启动筛选看的都是运行时 id，那边没有记录就是"已批准"，这份尚未获自启动批准
-        # 的新代码会在下次开机自己跑起来（coderabbit）。抛出去，让这一个插件这轮
-        # 注册失败——刷新循环按记录逐个兜底，其它插件不受影响。
+        # If recording fails, do not publish this renamed entry. Retaining only the declared ID fails to block:
+        # registration/autostart selection use runtime IDs, where missing records imply approval. Newly installed,
+        # unapproved code would autostart next launch (coderabbit). Raise and fail registration for this plugin
+        # this round; per-record refresh recovery leaves other plugins unaffected.
         logger.error(
             "could not move the pending approval from {} to its runtime id {}; "
             "refusing to register the renamed plugin",
@@ -1226,9 +1226,9 @@ def _move_autostart_gate_to_runtime_id(
             },
         )
     if declared_id_is_taken:
-        # 声明 id 已经是另一个插件的运行时 id，那条记录可能是**它**的——它自己也
-        # 可能是装上了还没获自启动批准的（codex）。搬走等于顺手批准了它。这种情况下
-        # 只复制：两个插件各有一条记录，都拦着，谁的独立自启动开关获批准，才清谁的那条。
+        # The declared ID may already be another plugin's runtime ID, and its record may belong to that
+        # plugin, also potentially unapproved (codex). Moving it would approve that plugin. Copy instead:
+        # retain blocking records for both, clearing only the one whose independent autostart switch is approved.
         return
     if not clear_autostart_pending(declared_plugin_id):
         logger.error(
@@ -1256,28 +1256,28 @@ def _get_autostart_plugin_ids_sync() -> list[str]:
             if raw_meta.get("runtime_source_missing") is True:
                 continue
             if not is_autostart_approved(plugin_id):
-                # 装上和跑起来是两件事，只有后一件是用户做的。manifest 里的
-                # auto_start 默认为真，所以刚装上的插件会在下一次开机自己跑起来，
-                # 而用户从没启动过它。只有装上之后还没被用户启动过的插件会被拦，
-                # 存量插件没有记录、照常自启。
+                # Installation and execution differ; only execution represents user action. manifest
+                # auto_start defaults true, letting newly installed plugins run next launch
+                # without ever being started by users. Block only newly installed, never-user-started plugins;
+                # existing plugins have no records and autostart normally.
                 continue
             candidates.add(plugin_id)
     return _build_ordered_plugin_ids_sync(candidates)
 
 
 def _dependency_declaring_runtime_plugin_ids() -> set[str]:
-    """声明了依赖的插件（映射到运行时 id）。
+    """Plugins declaring dependencies, mapped to runtime IDs.
 
-    为什么并发自启动必须先问这个：依赖检查（``core/dependency.py`` 的
-    ``_check_plugin_dependency`` / ``_find_plugins_by_entry``）读的是
-    ``state.event_handlers``，也就是**被依赖的插件必须已经启动并注册完 handler**，
-    而不是只在注册表里存在。``_get_autostart_plugin_ids_sync`` 返回的序列已经是
-    拓扑序（末尾就是 ``_build_ordered_plugin_ids_sync``），串行跑的时候"提供者在前"
-    天然成立；一旦并发，同一批里的提供者可能还没注册完 handler，依赖方就会以
-    ``PLUGIN_DEPENDENCY_CHECK_FAILED`` 失败——那是并发化引入的新失败，不是既有的。
+    Concurrent autostart must ask this first: dependency checks in ``core/dependency.py``
+    (``_check_plugin_dependency`` / ``_find_plugins_by_entry``) read
+    state.event_handlers, requiring dependency providers to have started and registered handlers,
+    not merely exist in the registry. ``_get_autostart_plugin_ids_sync`` already returns
+    topological order through ``_build_ordered_plugin_ids_sync``, naturally putting providers first serially.
+    Concurrent startup can check dependents before same-batch providers register, producing
+    new PLUGIN_DEPENDENCY_CHECK_FAILED failures absent from serial execution.
 
-    所以只把**不声明依赖**的插件放进并发组：它们没有任何需要等待的提供者。
-    声明了依赖的插件留在第二批，按既有拓扑序串行启动，语义与并发化之前一致。
+    Thus only plugins without declared dependencies enter the concurrent group.
+    Keep dependent plugins in a second group, starting serially in existing topological order to preserve semantics.
     """
     # Discovery retains every registered source under its runtime ID, including
     # renamed copies of a duplicate manifest ID. The ordering contexts instead
@@ -1292,15 +1292,15 @@ def _dependency_declaring_runtime_plugin_ids() -> set[str]:
 
 
 def _get_autostart_plugin_groups_sync() -> tuple[list[str], list[str]]:
-    """把自启动集合切成 ``(可并发组, 需按序组)``，两组各自保持既有拓扑序。
+    """Split autostart into concurrent and ordered groups, each preserving existing topological order.
 
-    两组合起来就是 ``_get_autostart_plugin_ids_sync()`` 的同一个集合，且"需按序组"
-    内部相对顺序不变、并整体排在"可并发组"之后。没有任何插件声明依赖时（内置 12 个
-    插件都是这种），第二组为空，全部进并发组。
+    Their union equals ``_get_autostart_plugin_ids_sync()``. The ordered group's relative
+    order is unchanged, and it follows the entire concurrent group. If no plugin declares dependencies
+    (as with all 12 built-ins), the second group is empty and all start concurrently.
     """
     ordered = _get_autostart_plugin_ids_sync()
     if len(ordered) < 2:
-        # 0 或 1 个：并发没有意义，也不需要多跑一次 context 收集。
+        # With 0 or 1 item, concurrency is pointless and extra context collection unnecessary.
         return list(ordered), []
     declaring = _dependency_declaring_runtime_plugin_ids()
     if not declaring:
@@ -1341,10 +1341,10 @@ class PluginRegistryService:
         return await asyncio.to_thread(_get_autostart_plugin_ids_sync)
 
     async def list_autostart_plugin_groups(self) -> tuple[list[str], list[str]]:
-        """``(可并发组, 需按序组)``，见 ``_get_autostart_plugin_groups_sync``。
+        """Concurrent and ordered groups; see ``_get_autostart_plugin_groups_sync``.
 
-        给自启动批次用：第一组可以同时拉起（它们的子进程是独立进程，不受 GIL 约束），
-        第二组必须等第一组全部注册完 handler 之后按序串行。
+        For autostart batches: the first group's independent subprocesses can start together without GIL constraints;
+        the second starts serially only after all first-group handlers register.
         """
         return await asyncio.to_thread(_get_autostart_plugin_groups_sync)
 
@@ -1360,10 +1360,10 @@ class PluginRegistryService:
         updated: list[str] = []
         unchanged: list[str] = []
         refreshed_ids: set[str] = set()
-        # 读盘、读现有快照、发布，全都在锁里。只把发布圈进来是不够的：两次重叠的
-        # 刷新可以各自在锁外读到同一份旧快照，然后先后进锁，后进的那次拿着过时的
-        # existing_snapshot 做增删对账，把前一次刚写进去的记录当成"多出来的"删掉
-        # （codex）。读盘现在只有毫秒级，圈进锁里不需要付什么代价。
+        # Lock disk reads, existing snapshots, and publication together. Locking only publication lets overlapping
+        # refreshes read the same old snapshot outside the lock, then reconcile serially using
+        # stale existing_snapshot and delete the previous refresh's new records as extras
+        # (codex). Disk reads now take milliseconds, so locking them costs little.
         with development_registry_lock, _REGISTRY_REFRESH_LOCK:
             existing_snapshot = _get_registered_plugin_snapshot_sync()
             running_ids = _list_running_plugin_ids_sync()
@@ -1470,12 +1470,12 @@ class PluginRegistryService:
                 details={"plugin_id": plugin_id},
             )
 
-        # 读盘、读现有快照、发布，全都在一次持锁里完成。单插件刷新原本只把发布
-        # 圈进锁里，existing_snapshot 在锁外就读走了——它决定 previous_runtime_
-        # plugin_id、previous_managed，以及要不要走 source_replacement。中间只要
-        # 有一次全量刷新发布完成，这份快照就已经过时（coderabbit / codex）。而
-        # start_plugin 调 refresh_plugin、reload_all_plugins 调 refresh_registry，
-        # 两条路同时发生并不罕见。
+        # Hold one lock across disk reads, existing snapshot reads, and publication. Single-plugin refresh previously
+        # locked only publication, reading existing_snapshot outside to determine previous_runtime_
+        # plugin_id, previous_managed, and source_replacement. Any intervening full refresh
+        # invalidated that snapshot (coderabbit / codex), and concurrent
+        # start_plugin -> refresh_plugin versus reload_all_plugins -> refresh_registry
+        # is not unusual.
         with development_registry_lock, _REGISTRY_REFRESH_LOCK:
             roots = tuple(PLUGIN_CONFIG_ROOTS)
             existing_snapshot = _get_registered_plugin_snapshot_sync()

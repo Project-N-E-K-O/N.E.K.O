@@ -134,9 +134,9 @@ def _make_audio_sse_events(pcm_bytes: bytes, num_chunks: int = 1):
 def test_get_minimax_tts_http_url():
     assert tts_client._get_minimax_tts_http_url("https://api.minimaxi.com/v1") == "https://api.minimaxi.com/v1/t2a_v2"
     assert tts_client._get_minimax_tts_http_url("https://api.minimax.io") == "https://api.minimax.io/v1/t2a_v2"
-    # ws/wss 转换
+    # ws/wss conversion.
     assert tts_client._get_minimax_tts_http_url("wss://api.minimaxi.com") == "https://api.minimaxi.com/v1/t2a_v2"
-    # 默认值
+    # Defaults.
     assert tts_client._get_minimax_tts_http_url(None) == "https://api.minimaxi.com/v1/t2a_v2"
 
 
@@ -375,9 +375,9 @@ def test_minimax_worker_server_error_in_sse(monkeypatch):
 
 @pytest.mark.unit
 def test_minimax_worker_residual_buffer_without_trailing_newline(monkeypatch):
-    """服务端关闭流时未发尾部换行，残留在 buffer 中的最后一个事件仍应被解析。"""
+    """Parse the final buffered event even if server closes stream without trailing newline."""
     pcm_bytes = (np.arange(2000, dtype=np.int16)).tobytes()
-    # 只有一个事件，且不带尾部换行
+    # One event only, without trailing newline.
     sse_events = _make_audio_sse_events(pcm_bytes, num_chunks=1)
     transport = FakeSSETransport(sse_events=sse_events, trailing_newline=False)
 
@@ -398,7 +398,7 @@ def test_minimax_worker_residual_buffer_without_trailing_newline(monkeypatch):
     request_queue.put(("speech-1", "hello"))
     request_queue.put((None, None))
 
-    # 即使没有尾部换行，音频仍应被解析并输出
+    # Parse and emit audio even without trailing newline.
     audio_item, _ = _wait_for_queue_item(
         response_queue,
         lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
@@ -413,7 +413,7 @@ def test_minimax_worker_residual_buffer_without_trailing_newline(monkeypatch):
 
 @pytest.mark.unit
 def test_minimax_worker_probe_rejects_5xx(monkeypatch):
-    """探测阶段收到 500 等非 200/400 状态码时应报告 not ready。"""
+    """Probe reports not ready on 500 or any status outside 200/400."""
     transport = FakeSSETransport(probe_status=500)
 
     original_async_client = httpx.AsyncClient
@@ -442,7 +442,7 @@ def test_minimax_worker_probe_rejects_5xx(monkeypatch):
 
 @pytest.mark.unit
 def test_minimax_worker_probe_rejects_404(monkeypatch):
-    """探测阶段收到 404 时应报告 not ready。"""
+    """Probe reports not ready on 404."""
     transport = FakeSSETransport(probe_status=404)
 
     original_async_client = httpx.AsyncClient
@@ -470,7 +470,7 @@ def test_minimax_worker_probe_rejects_404(monkeypatch):
 
 @pytest.mark.unit
 def test_minimax_worker_incremental_synthesis_on_punctuation(monkeypatch):
-    """句末标点到达时应立即发起合成，不等待 flush 信号。"""
+    """Sentence-ending punctuation starts synthesis immediately, without waiting for flush."""
     pcm_bytes = (np.arange(2000, dtype=np.int16)).tobytes()
     sse_events = _make_audio_sse_events(pcm_bytes, num_chunks=1)
     transport = FakeSSETransport(sse_events=sse_events)
@@ -489,27 +489,27 @@ def test_minimax_worker_incremental_synthesis_on_punctuation(monkeypatch):
 
     _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
 
-    # 第一句带句号，第二句不带（会在 flush 时合成）
+    # First sentence has period; second does not (synthesized on flush).
     request_queue.put(("speech-1", "你好世界。"))
     request_queue.put(("speech-1", "今天天气"))
     request_queue.put((None, None))
 
-    # 应该收到音频
+    # Audio should arrive.
     audio_item, _ = _wait_for_queue_item(
         response_queue,
         lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
     )
     assert audio_item[1] == "speech-1"
 
-    # 第二次合成由 worker 线程在收到 (None, None) 后发起，跨线程边界，睡固定时长
-    # 在 Windows 上等于抛硬币（时钟精度 15.6ms，忙循环里 sleep 可能等于零等待）。
-    # close() 的停止哨兵是 put 到 FIFO 队尾的，先前的 (None, None) 必然先被处理完，
-    # 所以 join 返回即代表两次合成都已发出——这是确定性的收尾点。
+    # Second synthesis starts on worker thread after (None, None), crossing threads. Fixed sleeps
+    # are a coin flip on Windows (15.6ms clock precision; busy-loop sleep can provide zero wait).
+    # close() puts stop sentinel at FIFO tail, so preceding (None, None) must finish first;
+    # join returning proves both syntheses dispatched, a deterministic completion point.
     request_queue.close()
     thread.join(timeout=3.0)
     assert not thread.is_alive()
 
-    # 应该有两个合成请求：一个是句号切分的，一个是 flush 的
+    # Expect two syntheses: sentence-period split and flush.
     synth_requests = [r for r in transport.requests if r.get("stream")]
     assert len(synth_requests) == 2
     assert synth_requests[0]["text"] == "你好世界。"
@@ -519,16 +519,16 @@ def test_minimax_worker_incremental_synthesis_on_punctuation(monkeypatch):
 # ---------------------------------------------------------------------------
 # Shutdown sentinel regression tests
 #
-# 历史：多进程时代关 worker 靠 process.terminate()，(None, None) 只是附送的
-# 提示。2025-12 改多线程后 .terminate() 被拿掉，但关闭路径没跟着换哨兵，导致
-# worker 把 (None, None) 当 end-of-utterance 处理，thread.join(2.0) 必然超时，
-# 线程泄漏。把 (None, None) 和 ("__shutdown__", None) 的语义钉死在测试里。
+# History: multiprocessing workers closed via process.terminate(); (None, None) was only an extra
+# hint. After December 2025 threading migration removed .terminate(), shutdown sentinel remained unchanged,
+# making worker treat (None, None) as utterance end; thread.join(2.0) always timed out,
+# leaking threads. Lock in distinct (None, None) and ("__shutdown__", None) semantics.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 def test_shutdown_sentinel_exits_minimax_worker(monkeypatch):
-    """minimax (走 _non_bistream_tts_main_loop) 收到 __shutdown__ 应在 2 秒内退出。"""
+    """minimax (_non_bistream_tts_main_loop) exits within two seconds on __shutdown__."""
     transport = FakeSSETransport(sse_events=[])
 
     original_async_client = httpx.AsyncClient
@@ -557,7 +557,7 @@ def test_shutdown_sentinel_exits_minimax_worker(monkeypatch):
 
 @pytest.mark.unit
 def test_none_none_does_not_exit_minimax_worker(monkeypatch):
-    """(None, None) 是 end-of-utterance flush，不能让 worker 退出。"""
+    """(None, None) flushes utterance end, never exits the worker."""
     transport = FakeSSETransport(sse_events=[])
 
     original_async_client = httpx.AsyncClient
@@ -590,7 +590,7 @@ def test_none_none_does_not_exit_minimax_worker(monkeypatch):
 
 @pytest.mark.unit
 def test_shutdown_sentinel_exits_dummy_worker():
-    """dummy worker：(None, None) continue；__shutdown__ 才退出。"""
+    """Dummy worker continues on (None, None), exits only on __shutdown__."""
     request_queue = queue.Queue()
     response_queue = queue.Queue()
     thread = threading.Thread(

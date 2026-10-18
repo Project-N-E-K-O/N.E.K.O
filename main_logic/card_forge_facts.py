@@ -202,6 +202,17 @@ def _importance_weight(item: dict[str, Any]) -> float:
     return 1.0 + max(0, _safe_importance(item.get("importance")))
 
 
+_UNSHAREABLE_ORIGINS = frozenset({"neko_visit"})
+"""Fact origins never sampled into a community card: a visit's facts are about the neighbour's home."""
+
+
+def _shareable_facts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``items`` without facts whose ``origin`` must not leave this machine (same list when none)."""
+    if not any(isinstance(item, dict) and item.get("origin") in _UNSHAREABLE_ORIGINS for item in items):
+        return items
+    return [item for item in items if not (isinstance(item, dict) and item.get("origin") in _UNSHAREABLE_ORIGINS)]
+
+
 def _weighted_pick(items: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
     pool = [
         item
@@ -756,12 +767,18 @@ async def build_forge_facts_payload(
     total_memory_count, active_ids, active_hashes = await asyncio.to_thread(
         _memory_identity_stats, raw, raw_archive,
     )
+    shareable_raw = _shareable_facts(raw)
+    if shareable_raw is not raw:
+        # Only shareable active rows shadow archived facts: excluded visit facts must not hide identical ordinary archived facts (totals still use the full pool)
+        _, active_ids, active_hashes = await asyncio.to_thread(
+            _memory_identity_stats, shareable_raw, [],
+        )
     legacy_excluded_keys = await asyncio.to_thread(
         _legacy_excluded_fact_keys, raw, raw_archive, excluded_ids,
     )
     facts, stats = await asyncio.to_thread(
         _select_forge_facts_with_stats,
-        raw,
+        shareable_raw,
         min_importance=min_importance,
         include_absorbed=include_absorbed,
         limit=limit,
@@ -775,13 +792,13 @@ async def build_forge_facts_payload(
         "archiveFilteredCount": 0,
     }
     if limit >= 5 and raw_archive:
-        # 排除集取自**全部**活跃 facts，而不是这次抽中的那几条：归档的两文件
-        # 提交（先 facts_archive.json 再 facts.json）被打断时同一行会同时留在
-        # 两个文件里，最长到下一次成功归档才收敛。只按抽中的几条排除的话，
-        # 那种行只要这轮没被抽中，就会作为"久远记忆"发出去，而它其实还活着。
+        # Build exclusions from **all** active facts, not just this sample: if the archive's two-file
+        # commit (facts_archive.json before facts.json) is interrupted, the same row can remain in
+        # both files until the next successful archive. Excluding only sampled rows would
+        # deliver any unsampled such row as an 'old memory', even though it remains active.
         archive_facts, archive_stats = await asyncio.to_thread(
             _select_archive_facts,
-            raw_archive,
+            _shareable_facts(raw_archive),
             min_importance=min_importance,
             include_absorbed=include_absorbed,
             exclude_ids=excluded_ids,

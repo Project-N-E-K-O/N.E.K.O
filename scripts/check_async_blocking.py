@@ -132,10 +132,10 @@ SOCKET_SUFFIX = ("_sock", "_socket")
 # collapses to ``y.save``, which disambiguates ``fernet.encrypt`` vs.
 # ``self.encrypt``. Overly generic pairs are deliberately omitted.
 RISKY_ATTR_PAIRS: dict[tuple[str, str], str] = {
-    # utils/file_utils 的原子落盘，模块限定写法。`from utils import file_utils`
-    # 之后 `file_utils.atomic_write_json(...)` 是 attribute 调用，走不到下面
-    # RISKY_BARE_CALLS 那条（那条只看 ast.Name），不补这些就等于给一种完全
-    # 正常的 import 风格开了后门。
+    # Module-qualified utils/file_utils atomic persistence: after `from utils import file_utils`,
+    # `file_utils.atomic_write_json(...)` is an attribute call, missed by
+    # RISKY_BARE_CALLS (ast.Name only). Omitting these creates a backdoor for a perfectly
+    # normal import style.
     ("file_utils", "atomic_write_text"): "utils.file_utils.atomic_write_text",
     ("file_utils", "atomic_write_bytes"): "utils.file_utils.atomic_write_bytes",
     ("file_utils", "atomic_write_json"): "utils.file_utils.atomic_write_json",
@@ -210,12 +210,12 @@ RISKY_BARE_CALLS: dict[str, str] = {
     # is an attribute call (``asyncio.sleep``) so it won't be confused with
     # this bare ``sleep`` form.
     "sleep": "time.sleep",
-    # utils/file_utils 的原子落盘。名字够独特，不会跟别的东西撞。一次
-    # atomic_write 在调用线程上串着 mkdir、崩后残留 tmp 的整目录 scandir、
-    # mkstemp、write，以及**没有上界**的 os.fsync —— 放在事件循环上就是拿一次
-    # 物理刷盘的时间去堵住所有别的协程。异步孪生 atomic_write_json_async /
-    # atomic_write_text_async 早就存在（asyncio.to_thread 包一层），非测试代码里
-    # 已有 77 处在用；缺的从来不是异步安全层，是调用点纪律。
+    # Atomic utils/file_utils persistence has distinctive names, avoiding collisions. One
+    # atomic_write serializes mkdir, directory-wide scandir for crash-left temp files,
+    # mkstemp, write, and unbounded os.fsync on caller thread: event-loop use blocks
+    # all other coroutines for physical disk flush duration. Async counterparts atomic_write_json_async /
+    # atomic_write_text_async already wrap asyncio.to_thread, with 77 production uses;
+    # missing piece is caller discipline, never async-safe primitives.
     "atomic_write_text": "utils.file_utils.atomic_write_text",
     "atomic_write_bytes": "utils.file_utils.atomic_write_bytes",
     "atomic_write_json": "utils.file_utils.atomic_write_json",
@@ -258,17 +258,17 @@ def _collect_atomic_write_aliases(
                     modules.add(alias.asname)
     return direct, modules
 
-# 太通用、不足以靠名字认人的 helper 名，不进 depth-1 风险索引。
+# Exclude overly generic helper names from depth-1 risk index.
 #
-# 索引是按**名字**匹配的：pass 1 记下「某个同步 def 的体内有阻塞调用」，pass 2 在
-# async def 里看到同名调用就报。名字够独特时这招很准（save_storage_policy 只可能是
-# 那一个），名字是个通用动词时就全是噪声 —— 实测把 atomic_write_* 加进来之后，一个
-# 叫 `save` 的 helper 让 `img.save(png_path)`（PIL）和
-# `TokenTracker.get_instance().save()` 全部中招，而它们跟那个 helper 毫无关系。
+# Index matches names: pass 1 records synchronous defs containing blocking calls; pass 2 reports
+# matching calls in async defs. Accurate with distinctive names (save_storage_policy is unique),
+# noisy with generic verbs. Adding atomic_write_* showed a helper named
+# `save` matching unrelated PIL `img.save(png_path)` and
+# `TokenTracker.get_instance().save()` calls.
 #
-# 这跟本文件对 queue/thread/socket 接收者尾名的既有取舍是同一条原则：名字太泛的
-# 一律不猜，宁可漏报也不制造假阳性。代价是漏掉真的叫 `save` 的阻塞 helper —— 那类
-# 只能靠 review 或者以后引入类型推断。
+# Same tradeoff as queue/thread/socket receiver suffixes in this file: never guess for generic
+# names; prefer misses to false positives. Truly blocking `save` helpers are missed,
+# requiring review or future type inference.
 GENERIC_HELPER_NAMES = frozenset({
     "save", "load", "read", "write", "flush", "close", "open", "dump",
     "update", "apply", "run", "start", "stop", "reset", "clear", "sync",
@@ -391,7 +391,7 @@ class RiskySyncDefIndexer(ast.NodeVisitor):
         atomic_aliases: tuple[dict[str, str], set[str]],
     ) -> None:
         if node.name in GENERIC_HELPER_NAMES:
-            # 名字太泛，认不出人——见 GENERIC_HELPER_NAMES 的注释。
+            # Name too generic to identify; see GENERIC_HELPER_NAMES comments.
             return
         reason = _sync_body_has_blocking_call(node, atomic_aliases)
         if reason is None:
@@ -514,10 +514,10 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         col = getattr(node, "col_offset", 0) + 1
         if self._line_has_noqa(lineno):
             return
-        # 同一个调用点只报一次。直接规则和 depth-1 传递规则会在同一处双双命中
-        # （`atomic_write_json(...)` 既是已知阻塞调用，本身又是一个体内含
-        # atomic_write_text 的同步 def），报两条只是噪声——留下先命中的那条，
-        # 也就是更精确的直接规则。
+        # Report each call site once. Direct and depth-1 transitive rules may both match
+        # (`atomic_write_json(...)` is known blocking and a synchronous def containing
+        # atomic_write_text). Duplicate reports are noise; retain first match,
+        # the more precise direct rule.
         if any(pos == (lineno, col) for pos in ((v[0], v[1]) for v in self.violations)):
             return
         self.violations.append((lineno, col, message))

@@ -415,13 +415,13 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
 
 
 def test_full_inset_layout_gated_by_electron_runtime_marker():
-    """full 30px inset 布局是「仅 Electron 独立窗口」样式。chat.html 同时服务 Electron 独立窗口
-    和 web /chat_full（两者共用本模板，body.electron-chat-window 是静态写入，浏览器访问 web
-    /chat_full 时也会带它），故 inset 门禁必须用 preload 注入的运行时标记 neko-electron-runtime，
-    否则 web /chat_full 会被误改成 30px inset。"""
+    """The full 30px inset layout applies only to standalone Electron windows. chat.html serves both those windows
+    and web /chat_full, sharing a template with static body.electron-chat-window even in browsers,
+    so inset rules must gate on preload's runtime neko-electron-runtime marker,
+    or web /chat_full incorrectly receives 30px insets."""
     source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    # inset 规则用运行时标记门禁，不再用静态 electron-chat-window（web /chat_full 也会命中它）。
+    # Gate inset rules by runtime markers, not static electron-chat-window, which also matches web /chat_full.
     assert (
         'body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]'
         in source
@@ -431,8 +431,8 @@ def test_full_inset_layout_gated_by_electron_runtime_marker():
         not in source
     )
 
-    # 运行时标记由 body 内联脚本基于 preload 信号（window.nekoChatWindow）/ Electron UA 注入；
-    # web 浏览器无这些信号 → 不打标记 → full 退回 base 居中。
+    # An inline body script injects the marker from preload window.nekoChatWindow / Electron UA;
+    # web browsers lack both, receive no marker, and retain base-centered full layout.
     assert "document.body.classList.add('neko-electron-runtime')" in source
     assert "w.nekoChatWindow" in source
 
@@ -1206,25 +1206,25 @@ def test_compact_tool_fan_tooltips_stay_noninteractive_and_anchored():
     dark_tooltip_block = css_block(
         styles,
         '[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {',
-        # 终止标记必须是紧邻的下一条规则：原来那个 .avatar-tool-quickbar 隔了
-        # 很远，切片会把 .neko-chat-tooltip::after 一起吞进来，对它做的断言其实
-        # 在断别的规则。
+        # End markers must be the immediately following rule: distant .avatar-tool-quickbar previously
+        # caused slicing to include .neko-chat-tooltip::after, so assertions
+        # actually tested another rule.
         '[data-theme="dark"] .neko-chat-tooltip::after {',
     )
 
-    # 只钉行为性质，不钉观感取值：#2447 把这个 tooltip 从「白底方角平面标签」
-    # 重设计成了带圆角/渐变/backdrop-filter 的玻璃质感，原来那几条
-    # border-radius: 0 / background: #ffffff / box-shadow: none / 暗色具体色值
-    # 全是被有意改掉的外观，留着只会在每次视觉迭代时假报警。
+    # Assert behavior, not appearance values. #2447 redesigned the tooltip from a white square flat label
+    # into rounded/gradient/backdrop-filter glass; earlier assertions for
+    # border-radius:0 / background:#ffffff / box-shadow:none / specific dark colors
+    # were intentionally obsolete and produced false alarms on visual iterations.
     assert "pointer-events: none;" in tooltip_block, "tooltip 不能吃掉指针事件"
     assert "user-select: none;" in tooltip_block
     assert "left: calc(100% + 5px);" in tooltip_block, "tooltip 锚点定在按钮右侧"
     assert "top: calc(100% - 6px);" in tooltip_block
     assert "transform-origin: 0 0;" in tooltip_block
-    # 显示态必须落在静止几何上（不残留位移/缩放），否则标签会停在偏移位置。
+    # Visible state must use resting geometry, without residual translation/scale that offsets labels.
     assert "transform: translate(0, 0);" in visible_block
     assert "scale(" not in visible_block
-    # 暗色必须自带一套，不能继承亮色的底与字色（不钉具体色值）。
+    # Dark mode needs its own background/text colors rather than light-mode inheritance; do not pin exact colors.
     assert "background:" in dark_tooltip_block
     assert "color:" in dark_tooltip_block
 
@@ -1237,10 +1237,10 @@ def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle()
     assert "compactToolWheelRotateRequest = null" in app_source
     assert "rotateCompactInputToolWheelSteps(request.direction, request.stepCount" in app_source
 
-    # 产物断言放在源码断言之后，并且产物缺席时跳过而不是红：
-    # static/react/neko-chat/ 是 .gitignore 的 vite 输出，只有本地构建过或
-    # 打包流水线里才有。它还会「假绿」——一份陈旧产物同样能匹配到这个符号。
-    # 真正每次重建并校验产物的是 build-desktop 流水线，那才是该盯它的地方。
+    # Check artifacts after source and skip when absent instead of failing:
+    # static/react/neko-chat/ is gitignored Vite output, present only after local builds
+    # or packaging. Stale artifacts can also falsely pass by containing the symbol.
+    # build-desktop rebuilds and validates artifacts every time; enforce artifact checks there.
     if not REACT_CHAT_IIFE_PATH.is_file():
         pytest.skip("react chat bundle not built (static/react/ is a gitignored vite output)")
     bundle_source = REACT_CHAT_IIFE_PATH.read_text(encoding="utf-8")
@@ -1494,7 +1494,7 @@ def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body(
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in broadcast_block
     assert "applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);" in broadcast_block
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in scoped_block
-    # prepare 会建立本轮教程的胶囊恢复快照，也必须拒绝旧 run 的迟到消息。
+    # prepare captures this tutorial's capsule restoration snapshot and must reject late old-run messages too.
     assert "case 'yui_guide_prepare_compact_chat':" in scoped_block
     assert "applyYuiGuideCompactChatFixedLayout(false);" in cleanup_block
 
@@ -1553,20 +1553,20 @@ def test_new_user_icebreaker_prompt_is_exposed_by_react_host():
     assert "function setChoicePrompt(payload)" in react_host
     assert "setChoicePrompt: setChoicePrompt" in react_host
     assert "setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt" in react_host
-    # 揭示延迟「只扣视觉」：prompt 立刻入 state（绑定输入路由），按 revealDelayMs
-    # 记下 revealAt 并交给计时器延后露出按钮。
+    # Reveal delay hides visuals only: put prompt in state immediately to bind input routing;
+    # record revealAt from revealDelayMs and let a timer reveal buttons later.
     assert "var revealDelayMs = Number(payload.revealDelayMs) || 0;" in prompt_block
     assert "revealAt: revealDelayMs > 0 ? Date.now() + revealDelayMs : 0" in prompt_block
     assert "scheduleChoicePromptReveal();" in prompt_block
 
 
 def test_icebreaker_choice_prompt_reveal_delay_hides_buttons_not_state():
-    # 揭示延迟必须只藏按钮、不扣 state.choicePrompt——否则间隙内的自由文本会绕过
-    # icebreaker free-text 路由落到普通聊天。
+    # Hide only buttons during reveal delay, never state.choicePrompt, or free text in the gap bypasses
+    # icebreaker free-text routing and reaches ordinary chat.
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    # 渲染层走 getRevealedChoicePrompt（揭示未到点返回 null 藏按钮）；输入路由仍直接
-    # 读 state.choicePrompt，所以间隙内打字会被判为 icebreaker free-text。
+    # Rendering uses getRevealedChoicePrompt, returning null before reveal to hide buttons; input routing still
+    # reads state.choicePrompt directly, classifying gap-time typing as icebreaker free text.
     assert "function getRevealedChoicePrompt()" in react_host
     assert "choicePrompt: getRevealedChoicePrompt()," in react_host
     reveal_block = react_host.split("function getRevealedChoicePrompt()", 1)[1].split(
@@ -1581,15 +1581,15 @@ def test_icebreaker_choice_prompt_reveal_delay_hides_buttons_not_state():
     )[0]
     assert "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker')" in submit_block
 
-    # 计时器只在同一个 prompt 仍在台上时才揭示，避免延迟期间被覆盖/清空后揭示过期选项。
+    # Reveal only if the same prompt remains active, avoiding expired choices after replacement/clearing during the delay.
     schedule_block = react_host.split("function scheduleChoicePromptReveal()", 1)[1].split(
         "function getRevealedChoicePrompt",
         1,
     )[0]
     assert "if (state.choicePrompt === prompt)" in schedule_block
 
-    # galgame 选项拉取必须在 icebreaker prompt 激活（含揭示延迟内已就位但未露出）时让位，
-    # 否则 turn-end 会把 galgame A/B/C 挤进尚未露出 icebreaker 选项的同一槽位（Codex P2）。
+    # Galgame choice fetching yields while icebreaker prompts are active, including staged but unrevealed ones,
+    # or turn-end injects galgame A/B/C into the slot before icebreaker choices reveal (Codex P2).
     galgame_fetch_block = react_host.split("function fetchGalgameOptionsForLatestTurn()", 1)[1].split(
         "function ",
         1,
@@ -2030,9 +2030,9 @@ def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
 
 
 def test_moved_drag_suppresses_trailing_release_click():
-    # 移动过的拖拽（含 compact surface 本体拖拽）松开后，浏览器会在 mouseup 落点
-    # 补发一次 click；落点若是胶囊按钮会被误判为点击而展开输入框。守卫在 moved
-    # 时 arm，并在 document capture 阶段吞掉紧随的那一次 click。
+    # After moved drags, including compact-surface dragging, browsers synthesize a click at the mouseup
+    # position. Landing on capsule buttons wrongly expands input; arm the guard when moved
+    # and consume the immediately following click during document capture.
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
     assert "suppressDragReleaseClick = false;" in script
@@ -2049,7 +2049,7 @@ def test_moved_drag_suppresses_trailing_release_click():
         1,
     )[0]
     assert "suppressDragReleaseClick = true;" in arm_block
-    # setTimeout(…, 0) 兜底清旗：click 同任务先消费，无 click 时也不残留误吞后续点击。
+    # setTimeout(...,0) clears flags as fallback: same-task clicks consume first, while no-click cases cannot swallow later clicks.
     assert "window.setTimeout(function () {" in arm_block
     assert "suppressDragReleaseClick = false;" in arm_block
 
@@ -2062,7 +2062,7 @@ def test_moved_drag_suppresses_trailing_release_click():
     assert "event.preventDefault();" in consume_block
     assert "event.stopPropagation();" in consume_block
 
-    # capture 阶段挂载，且排在 mobile 展开守卫之后（保留既有行为优先级）。
+    # Install in capture phase after the mobile expansion guard, preserving existing priority.
     assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in script
     listeners_block = script.split(
         "document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);",
@@ -2366,18 +2366,18 @@ def test_electron_compact_chat_retires_full_surface_chrome():
     # [data-chat-surface-mode="compact"]` rule set, which chat.html's
     # subtitle-web-host body opts into) instead of a bespoke full-window glass
     # panel. The retired full form used to paint an empty glass panel for one
-    # frame before React mounted and collapsed it to compact ("先 full 再
-    # compact" 的那一帧). chat.html must NOT re-introduce that full surface.
+    # frame before React mounted and collapsed it to compact (the full-before-
+    # compact frame). chat.html must NOT re-introduce that full surface.
     #
     # Retired *un-gated* full-surface artifacts that must stay gone — these are the
-    # ones that painted before React mounted on the SHARED /chat route ("先 full 再
-    # compact" 闪帧). 玻璃流光特效后来在独立 Electron full 窗口上带门槛复活（见
-    # test_full_chat_glass_flow_revived_and_gated），但**无门槛**的旧形态必须保持移除，
-    # 共享 /chat 这条路径才永远不会画出它。
-    assert "@keyframes lightSweep" not in template            # 死代码关键帧，未恢复
-    # 四边渐隐 mask 已带 full gate 复活（见 test_full_chat_glass_flow_revived_and_gated）。这里只守
-    # 「无门槛」旧形态：每处 -webkit-mask-image 前必须紧邻 full gate —— 裸 #react-chat-window-root
-    # 直接带 mask 才是 #1594 在共享 /chat 上挂载前先画的闪帧根因，必须保持不存在。
+    # ones that painted before React mounted on the SHARED /chat route (the full-before-
+    # compact flash). Glass-flow effects later returned with a gate on standalone Electron full windows (see
+    # test_full_chat_glass_flow_revived_and_gated), but the old ungated form must remain removed,
+    # ensuring shared /chat never paints it.
+    assert "@keyframes lightSweep" not in template            # Dead keyframes, not restored.
+    # Four-edge fade masks returned under a full gate (see test_full_chat_glass_flow_revived_and_gated). Guard only the old
+    # ungated form here: every -webkit-mask-image must immediately follow a full gate. Bare #react-chat-window-root
+    # masks caused #1594's premount flash on shared /chat and must remain absent.
     _mask_token = "-webkit-mask-image"
     _gate_token = 'data-chat-surface-mode="full"'
     _scan = 0
@@ -2389,7 +2389,7 @@ def test_electron_compact_chat_retires_full_surface_chrome():
         _scan += len(_mask_token)
     assert "#react-chat-window-shell:not(.is-minimized)::before" not in template
     assert "#react-chat-window-shell:not(.is-minimized)::after" not in template
-    assert "inset: 40px 25px 25px 20px" not in template       # 全窗口 shell 几何
+    assert "inset: 40px 25px 25px 20px" not in template       # Full-window shell geometry.
 
     # The shell font tweak survives (compact still uses #react-chat-window-root).
     assert "#react-chat-window-root {" in template
@@ -2400,39 +2400,39 @@ def test_electron_compact_chat_retires_full_surface_chrome():
 
 
 def test_full_chat_glass_flow_revived_and_gated():
-    """独立 Electron full 窗口（part B）的玻璃流光特效复活，且严格带门槛。
+    """Restore glass-flow effects in standalone Electron full windows (part B), strictly gated.
 
-    原 full 玻璃面板在 #1594 退「共享 /chat 的 full 玻璃壳」时随整套 full 形态删除，
-    根因是规则不带门槛、在共享 /chat 上先画空玻璃再塌成 compact（闪帧）。现在 full 是
-    独立窗口（/chat_full + data-chat-surface-mode="full" + 运行时标记 neko-electron-
-    runtime），用与 inset 几何**完全相同的门槛**把玻璃视觉挂回——只命中 Electron full
-    shell，compact 与 web /chat_full 都不命中，故不再有闪帧。
+    #1594 removed the original full glass panel with the shared /chat full shell because ungated
+    rules painted empty glass before collapsing to compact, causing a flash. Full now uses
+    a standalone /chat_full window with data-chat-surface-mode=\"full\" and neko-electron-
+    runtime. Reattach glass effects under exactly the inset geometry gate, matching only Electron full
+    shells, never compact or web /chat_full, and eliminating the flash.
     """
     template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    # 三色流光关键帧已复活（被下方 ::after 引用）。
+    # Three-color flow keyframes restored, referenced by ::after below.
     assert "@keyframes liquidFlow" in template
-    # liquidFlow 只被那一个带门槛的 ::after 消费，别处不得再引用。
+    # Only that gated ::after may reference liquidFlow.
     assert template.count("animation: liquidFlow") == 1
 
-    # ::before 静态高光 + ::after 三色流光都只挂在 Electron full shell 门槛上。
+    # Static ::before highlights and three-color ::after flow apply only under the Electron full-shell gate.
     glass_gate = (
         'body.neko-electron-runtime '
         '#react-chat-window-shell[data-chat-surface-mode="full"]'
         ':not(.is-minimized):not(.neko-e-collapsed)'
     )
-    assert glass_gate + "::before" in template      # 静态边缘/顶部高光
-    assert glass_gate + "::after" in template        # 三色流光层
+    assert glass_gate + "::before" in template      # Static edge/top highlights.
+    assert glass_gate + "::after" in template        # Three-color flowing-light layer.
 
-    # 玻璃边缘渐隐 mask 复活，且必须挂在与 ::before/::after 完全相同的 full gate 下：把不透明聊天
-    # 内容（.chat-body rgba 0.91）四边淡出、露出 ::before 高光层 —— 这才是「玻璃」本体。#1695 只复活
-    # 了浮在最上层的 ::after 流光，高光层被不透明内容盖住，故当时只有流光没有玻璃。裸 mask 会在共享
-    # /chat 挂载前画→闪帧（#1594 删它的根因），所以这里断言 mask 只出现在 gated root 选择器上。
+    # Restore glass edge-fade masks under exactly the same full gate as ::before/::after: fading opaque chat
+    # content (.chat-body rgba 0.91) at all edges exposes ::before highlights, creating the actual glass. #1695 restored
+    # only topmost ::after flow while opaque content covered highlights, producing flow without glass. Bare masks paint on shared
+    # /chat before mounting and flash, why #1594 removed them; assert masks occur only on gated-root selectors.
     assert glass_gate + " #react-chat-window-root {" in template
     assert "-webkit-mask-image" in template
 
-    # 尊重系统「减少动态」：流光在 prefers-reduced-motion 下停掉。按花括号配平取整段 media
-    # 块（而非定长切片），块体增长也不会让断言失真。
+    # Honor reduced-motion settings by stopping flow under prefers-reduced-motion. Extract balanced-brace media
+    # blocks rather than fixed slices so growth cannot distort assertions.
     reduced_idx = template.find("@media (prefers-reduced-motion: reduce)")
     assert reduced_idx != -1
     brace_start = template.index("{", reduced_idx)
@@ -2455,7 +2455,7 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
 
-    # 顶部 resize bar 的样式：可纵向拖、可接收 pointer、平时透明、不触发原生窗口拖动。
+    # Top resize-bar styles: vertical drag, pointer reception, normally transparent visuals, no native-window dragging.
     bar_block = css_block(
         styles,
         ".compact-export-history-resize-bar {",
@@ -2464,9 +2464,9 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     assert "cursor: ns-resize;" in bar_block
     assert "pointer-events: auto;" in bar_block
     assert "-webkit-app-region: no-drag;" in bar_block
-    # bar 本体不能透明：宿主几何收集器按 opacity<=0.01 丢弃 hit-region，透明会让 Electron 下鼠标穿透、点不到。
+    # The bar itself must not be transparent: host geometry discards hit-regions at opacity<=0.01, causing Electron click-through.
     assert "opacity: 0;" not in bar_block
-    # 只让视觉抓手（伪元素）平时透明、hover/拖动显现。
+    # Hide only its visual pseudo-element grip normally, revealing on hover/drag.
     after_block = css_block(
         styles,
         ".compact-export-history-resize-bar::after {",
@@ -2474,24 +2474,24 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     )
     assert "opacity: 0;" in after_block
     assert ".compact-export-history-resize-bar.is-active::after {" in styles
-    # hover 整个历史区即浮现顶部高度 bar（回滚 fd138cd 的「调尺寸热区联动浮现」收窄，
-    # 让整个历史记录气泡区域都能唤出 resize bar）。
+    # Hovering anywhere in history reveals the top height bar, reverting fd138cd's narrower linked resize-hotspot behavior
+    # so the entire history-bubble area can reveal it.
     assert ".compact-export-history-anchor:hover .compact-export-history-resize-bar::after" in styles
 
-    # bar 的 DOM：带可命中且不穿透的 hit-region，拖拽不触发面板 / 整窗拖动。
+    # Bar DOM: hittable, non-click-through region; dragging must not start panel / full-window dragging.
     assert "className={clsx('compact-export-history-resize-bar'" in panel_source
-    # hit-region 受 historyInteractive && !choiceLayerAbove 双重 gate：choice prompt 压在历史上方时，
-    # bar 不再上报命中区（与 scroll/controls 一起惰性，Electron 下不留可拖 / 不穿透的活条）。
+    # Gate hit-regions by historyInteractive && !choiceLayerAbove: when choices overlay history,
+    # report no bar region, disabling it with scroll/controls so Electron retains no active draggable/nontransparent strip.
     assert "data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:resize' : undefined}" in panel_source
     assert "data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'resize' : undefined}" in panel_source
     resize_bar_jsx = panel_source.split("compact-export-history-resize-bar", 1)[1].split("/>", 1)[0]
     assert 'data-compact-no-drag="true"' in resize_bar_jsx
-    # under-choice 态把 bar 一并纳入 pointer-events:none / 淡化规则。
+    # Include the bar in under-choice pointer-events:none / dimming rules.
     assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar," in styles
-    # 纯点击不落库：finish 仅在 moved 时 persist。
+    # Plain clicks never persist; finish saves only when moved.
     assert "if (phase !== 'cancel' && resizeState.heightChanged && resizeState.lastHeight !== resizeState.initialHeight) {" in app_source
 
-    # 高度上限写预留覆盖变量 + 独立 localStorage key；变更后触发宿主几何重算（Electron 窗口联动）。
+    # Height limits use the reserved override variable and a separate localStorage key; changes trigger host geometry recalculation for Electron windows.
     assert "COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight'" in app_source
     assert "'--compact-history-slot-height'" in app_source
     assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in app_source
@@ -2737,11 +2737,11 @@ def test_compact_history_closing_bubbles_disable_pointer_events():
 
 
 def test_compact_history_bubbles_are_text_selectable_and_drag_free():
-    """拖到 avatar 子系统已删除：气泡不再捕获指针，文本可被鼠标选中复制。
+    """Avatar drag-and-drop subsystem removed: bubbles no longer capture pointers, allowing mouse text selection/copy.
 
-    断言气泡 CSS 显式声明 user-select:text / cursor:text（覆盖 [role=\"button\"]
-    的 user-select:none），且气泡 JSX 不再挂任何指针拖拽 handler（只留 onClick /
-    onKeyDown 驱动导出勾选）。"""
+    Assert explicit user-select:text / cursor:text overrides [role=\"button\"]
+    user-select:none, with no JSX pointer-drag handlers; only onClick /
+    onKeyDown remain for export selection."""
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
 
@@ -2755,11 +2755,11 @@ def test_compact_history_bubbles_are_text_selectable_and_drag_free():
     assert "cursor: text;" in bubble_block
     assert "cursor: pointer;" not in bubble_block
 
-    # 拖拽 CSS 全部移除。
+    # Remove all drag CSS.
     assert "compact-history-drag-layer" not in styles
     assert "data-compact-history-drag" not in styles
 
-    # 气泡 JSX 只保留 onClick / onKeyDown，不再有拖拽指针 handler。
+    # Bubble JSX retains onClick / onKeyDown only, with no pointer-drag handlers.
     bubble_jsx = panel_source.split('className="compact-export-history-bubble"', 1)[1].split(
         "compact-export-history-check",
         1,
@@ -2904,8 +2904,8 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "+ var(--compact-music-player-reserved-block-size, 88px)" in styles
     assert "+ var(--compact-music-player-history-gap, 14px)" in styles
     assert ".app-shell:has(> .compact-music-player-mount:not(:empty)) .compact-export-history-anchor" in styles
-    # 音量弹层展开时滑块向上伸进 history 区域，播放器整体提到 history(100001) 之上，
-    # 但仍低于工具轮盘态 surface-shell(100003)，避免抢点击又不破坏工具轮盘对表情按钮的让位。
+    # Expanded volume sliders extend upward into history, so raise the player above history(100001),
+    # but below tool-wheel surface-shell(100003), preserving clicks and the wheel's priority over meme buttons.
     assert "z-index: 100002;" in css_block(
         styles,
         "#music-player-mount.compact-music-player-mount:has(.music-bar-volume-container.expanded) {",

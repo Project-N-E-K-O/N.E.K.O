@@ -170,8 +170,8 @@ async def test_initial_ready_transport_also_expires_from_local_listen() -> None:
         runtime._asr_session_epoch,
         expected_state=VoiceLifecycleState.LOCAL_LISTEN,
     )
-    # default_warm_transport_ms=0 会立刻到期，固定 sleep 赌不起；
-    # 到期任务本身就是「已过期并关闭」的同步点。
+    # default_warm_transport_ms=0 expires immediately, so a fixed sleep is unreliable;
+    # the expiration task itself synchronizes on expiration and closure.
     expiry = runtime._asr_warm_expiry_task
     assert expiry is not None
     await asyncio.wait_for(expiry, 5)

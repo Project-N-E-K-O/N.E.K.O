@@ -92,7 +92,7 @@ async def test_failed_connect_closes_the_client():
 async def test_same_lp_openings_sort_host_first_on_both_sides():
     host_line, guest_line = HumanMessage(content="host opens"), HumanMessage(content="guest opens")
     a = await _session("host")
-    sp.append_visit_message(a, guest_line, sp.sort_key(1, "guest"))     # 先到的是对方
+    sp.append_visit_message(a, guest_line, sp.sort_key(1, "guest"))     # The other party arrived first.
     b = await _session("guest")
     sp.append_visit_message(b, HumanMessage(content="host opens"), sp.sort_key(1, "host"))
     sp.append_visit_message(a, host_line, sp.sort_key(1, "host"))
@@ -103,7 +103,7 @@ async def test_same_lp_openings_sort_host_first_on_both_sides():
 async def test_late_lines_land_by_lp_and_unkeyed_replies_move_with_their_prompt():
     s = await _session()
     sp.append_visit_message(s, HumanMessage(content="lp1"), (1, 0))
-    s.history.append(AIMessage(content="reply to lp1"))         # stream_text 追加的回复，尚未登记
+    s.history.append(AIMessage(content="reply to lp1"))         # Reply appended by stream_text, not yet registered.
     s.history.append(HumanMessage(content="lp3"))
     sp.tag_last_turn(s, prompt_key=(3, 1), reply_key=None)
     s.history.append(HumanMessage(content="lp2"))
@@ -124,7 +124,7 @@ async def test_tag_last_turn_leaves_an_already_keyed_reply_alone():
     s = await _session()
     s.history.extend([HumanMessage(content="q"), AIMessage(content="a")])
     sp.tag_last_turn(s, prompt_key=(5, 1), reply_key=(6, 0))
-    sp.tag_last_turn(s, prompt_key=(7, 1), reply_key=(8, 0))      # 空 prompt：stream_text 什么都没追加
+    sp.tag_last_turn(s, prompt_key=(7, 1), reply_key=(8, 0))      # Empty prompt: stream_text appended nothing.
     assert s.key_of(s.history[1]) == (5, 1) and s.key_of(s.history[2]) == (6, 0)
 
 
@@ -163,7 +163,7 @@ async def test_usage_estimate_does_not_count_the_reply_as_input():
     s.history.append(HumanMessage(content="今天去哪儿玩"))
     before = sp.estimate_turn_usage(s, "")["llm_input_tokens"]
     reply = "我们去公园晒太阳吧，那里有好多鸽子和长椅可以坐。" * 4
-    s.history.append(AIMessage(content=reply))     # stream_text 把本轮回复追加在末尾
+    s.history.append(AIMessage(content=reply))     # stream_text appends this turn's reply at the end.
     usage = sp.estimate_turn_usage(s, reply)
     assert usage["llm_input_tokens"] == before and usage["llm_output_tokens"] > 0
 
@@ -194,7 +194,7 @@ async def test_repeated_replies_never_wipe_an_ordered_history():
     assert client._conversation_history == history
     client.repetition_reset_enabled = True
     fired = [await client._check_repetition("喵喵喵") for _ in range(3)]
-    assert fired[-1] is True and client._conversation_history == history[:1]   # 默认行为不变
+    assert fired[-1] is True and client._conversation_history == history[:1]   # Default behavior is unchanged.
 
 
 

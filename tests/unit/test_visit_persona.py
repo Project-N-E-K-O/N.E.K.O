@@ -139,7 +139,7 @@ def _shares_ngram(text: str, source: str, n: int = 8) -> bool:
     return any(tuple(a[i:i + n]) in grams for i in range(len(a) - n + 1))
 
 
-# ── 生成与隐私检查 ─────────────────────────────────────────────────────
+# ── Generation and privacy checks ───────────────────────────────────────
 
 
 def test_instructions_carry_only_the_public_persona(env):
@@ -173,7 +173,7 @@ def test_overlap_then_clean_regeneration_is_saved(env):
 def test_rule_sections_catch_a_private_sentence_the_scan_missed(env):
     client, _tmp, _state, llm, scan = env
     scan.sections = []
-    # 「小明」会被脱敏、句子里也没有规则敏感词：只有规则段落的 8-gram 对照能挡住
+    # "小明" is anonymized and sentence lacks sensitive keywords; only rule-paragraph 8-gram comparison blocks it.
     leaking = GOOD_PERSONA + "小明每周三都要加班到很晚，你会在门口等他。"
     llm.replies = [leaking, leaking]
     view = _generate(client)
@@ -202,7 +202,7 @@ def test_private_sections_persist_and_get_never_rescans(env):
     assert scan.calls == 1
     sections = view["private_sections"]
     assert set(PRIVATE[:2]) <= set(sections) and view["scan_complete"] is True
-    # 「重启」：清掉进程内状态后再读
+    # Restart: clear in-process state before rereading.
     persona._reset_for_tests()
     again = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
     assert again["private_sections"] == sections and scan.calls == 1
@@ -219,7 +219,7 @@ def test_failed_scan_is_persisted_as_incomplete(env):
     scan.fail = True
     view = _generate(client)
     assert view["scan_complete"] is False and _file(tmp_path)["scan_complete"] is False
-    # 规则段落仍在清单里（亲人名 / 账号 / 地址所在的句子）
+    # Rule paragraphs remain listed (sentences with relative names / accounts / addresses).
     assert set(PRIVATE) <= set(view["private_sections"])
     persona._reset_for_tests()
     assert client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()["scan_complete"] is False
@@ -240,10 +240,10 @@ def test_card_is_cut_to_its_input_budget(env, monkeypatch):
     state["cards"]["A"] = CARD + "\n" + "很长的设定" * 2000
     _generate(client)
     assert all(len(p) < 4000 for p in llm.prompts)
-    assert _file(_tmp)["scan_complete"] is False          # 截掉的尾巴没被扫描过
+    assert _file(_tmp)["scan_complete"] is False          # Truncated tail was never scanned.
 
 
-# ── 闸门 ───────────────────────────────────────────────────────────────
+# ── Gates ──────────────────────────────────────────────────────────────
 
 
 def _gate(client, name="A"):
@@ -299,7 +299,7 @@ def test_persona_is_keyed_by_character_uid(env):
     client, tmp_path, state, *_ = env
     _generate(client)
     _confirm(client)
-    # 改名：同一个 character_uid 换了名字，读到的还是同一份文件
+    # Rename: same character_uid under new name still reads same file.
     state["cards"]["A2"] = state["cards"].pop("A")
     state["uids"]["A2"] = state["uids"].pop("A")
     view = client.get("/api/visit/persona?catgirl=A2", headers=GOOD).json()
@@ -309,7 +309,7 @@ def test_persona_is_keyed_by_character_uid(env):
         assert mode == 0o600
 
 
-# ── PUT / 端点 ─────────────────────────────────────────────────────────
+# ── PUT / endpoints ────────────────────────────────────────────────────
 
 
 def test_put_redacts_family_names(env):
@@ -383,7 +383,7 @@ def test_persona_endpoints_are_behind_the_release_switch(env, monkeypatch):
     assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 404
 
 
-# ── 纯函数 ─────────────────────────────────────────────────────────────
+# ── Pure functions ─────────────────────────────────────────────────────
 
 
 def test_sensitive_tokens_cover_contacts_addresses_and_family():
@@ -412,7 +412,7 @@ def test_lowercase_street_names_after_a_house_number_are_caught():
     assert persona.sensitive_token_hits(pets, "She loves cats and dogs.", ()) == []
     playing = "She lives in a flat with 2 cats playing outside."
     assert persona.sensitive_token_hits(playing, "Her cats playing outside is a sight.", ()) == []
-    grove = "address: 12 maple grove, near the river"           # 没有街道类词尾，靠开头的门牌号
+    grove = "address: 12 maple grove, near the river"           # No street suffix; rely on leading house number.
     assert persona.sensitive_token_hits(grove, "She loves walking in maple grove.", ()) == ["maple grove"]
     mid = "address: the house is at 42 main street"
     assert persona.sensitive_token_hits(mid, "She grew up near main street.", ()) == ["main street"]
@@ -435,8 +435,8 @@ def test_phone_numbers_match_whatever_the_separators():
 
 
 @pytest.mark.parametrize("card,text", [
-    ("联系电话 138 0013 8000 2024年登记", "她的号码是138-0013-8000。"),     # 相邻年份被并进匹配
-    ("phone: +1 (555) 010-0199", "Call her at 555-010-0199."),          # 一边省略国家码
+    ("联系电话 138 0013 8000 2024年登记", "她的号码是138-0013-8000。"),     # Adjacent year merged into match.
+    ("phone: +1 (555) 010-0199", "Call her at 555-010-0199."),          # Country code omitted on one side.
     ("电话 5550100199", "号码 +1 555 010 0199"),
 ])
 def test_phone_numbers_match_across_country_codes_and_adjacent_digits(card, text):
@@ -481,7 +481,7 @@ def test_a_regeneration_never_overwrites_an_edit_made_meanwhile(env):
     persona.configure_persona(llm=slow)
     assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
     edited = {**_file(tmp_path), "text": "你是{LANLAN_NAME}，手写的人设。", "edited": True, "reviewed": True}
-    client.portal.call(persona.store().save, UID_A, edited)     # 另一个窗口抢在生成结束前确认了手写
+    client.portal.call(persona.store().save, UID_A, edited)     # Another window confirmed handwritten persona before generation finished.
     persona._note_write(UID_A)
     client.portal.call(gate.set)
     _settle(client)
@@ -506,8 +506,8 @@ def test_a_regeneration_started_while_an_edit_holds_the_lock_does_not_overwrite_
     clicked = []
 
     async def save_with_a_click(self, uid, doc):
-        if not clicked:                                    # PUT 已拿着锁、正在写盘
-            clicked.append(persona.start_regeneration("A", uid))   # 另一个窗口此刻点了重新生成
+        if not clicked:                                    # PUT holds lock, writing disk.
+            clicked.append(persona.start_regeneration("A", uid))   # Another window requests regeneration now.
         await real_save(self, uid, doc)
 
     monkeypatch.setattr(persona.VisitPersonaStore, "save", save_with_a_click)
@@ -529,7 +529,7 @@ def test_gate_refuses_when_regeneration_starts_while_it_reads(env, monkeypatch):
 
     async def read_then_click():
         ctx = await real()
-        persona.start_regeneration("A", UID_A)          # 另一个窗口此刻点了重新生成
+        persona.start_regeneration("A", UID_A)          # Another window requests regeneration now.
         return ctx
 
     monkeypatch.setattr(persona._hooks, "load_context", read_then_click)
@@ -547,7 +547,7 @@ def test_gate_rereads_a_persona_written_while_it_reads(env, monkeypatch):
 
     async def read_then_write():
         ctx = await real()
-        if not written:                                  # 重生成刚落了一份未审核的
+        if not written:                                  # Regeneration just persisted an unreviewed version.
             written.append(True)
             await persona.store().save(UID_A, {**_file(tmp_path), "reviewed": False})
             persona._note_write(UID_A)
@@ -562,7 +562,7 @@ def test_gate_rereads_a_persona_written_while_it_reads(env, monkeypatch):
 def test_the_token_cap_holds_after_redaction():
     from utils.tokenize import count_tokens
 
-    raw = "Al " * (visit_settings.VISIT_PERSONA_MAX_TOKENS * 2)           # 短名字反复出现，替换成更长的中性称呼
+    raw = "Al " * (visit_settings.VISIT_PERSONA_MAX_TOKENS * 2)           # Repeated short names replaced with longer neutral address terms.
     text = persona._clean_persona_text(raw, ["Al"], "en")
     assert "Al " not in text and count_tokens(text) <= visit_settings.VISIT_PERSONA_MAX_TOKENS
 
@@ -577,7 +577,7 @@ def test_latin_keywords_need_a_word_boundary_and_a_separator():
     tokens = persona.extract_sensitive_tokens("She enjoys smartphone games.\nHer phone games are fun.", [])
     assert not any("games" in t.lower() for t in tokens)
     tokens = persona.extract_sensitive_tokens("Favorite microphone: Shure SM7B", [])
-    assert not any("shure" in t.lower() for t in tokens)          # microphone 里的 phone 不算关键词
+    assert not any("shure" in t.lower() for t in tokens)          # phone inside microphone is not a keyword.
     tokens = [t.lower() for t in persona.extract_sensitive_tokens(
         "phone: 138 0013 8000\nwechat: mimi_cat\naddress is 12 Main Street", [])]
     assert "mimi_cat" in tokens and "main street" in tokens
@@ -657,14 +657,14 @@ def test_gate_does_not_regenerate_over_an_edit_saved_while_it_reads_the_card(env
     client, tmp_path, state, *_ = env
     _generate(client)
     _confirm(client)
-    state["cards"]["A"] = CARD + "\n新加了一句：喜欢看雨。"            # 卡片变了，人设没手改过
+    state["cards"]["A"] = CARD + "\n新加了一句：喜欢看雨。"            # Card changed; persona never manually edited.
     real = persona._hooks.load_context
     hand = "你是{LANLAN_NAME}，读卡时刚确认的手写人设。"
     landed = []
 
     async def read_while_an_edit_lands():
         ctx = await real()
-        if not landed:                                   # 另一个窗口的手写确认正好在读卡时落盘
+        if not landed:                                   # Another window's manual confirmation persists exactly during card read.
             landed.append(True)
             await persona.store().save(UID_A, {**_file(tmp_path), "text": hand, "edited": True, "reviewed": True})
             persona._note_write(UID_A)
@@ -686,7 +686,7 @@ def test_unnumbered_street_names_after_an_address_comma():
         "address: Apt 4, Main Street\naddress: Apt 4, near the station, enjoys Star Wars", [])]
     assert "main street" in tokens and not any("star wars" in t or "the station" in t for t in tokens)
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, near the High Street", [])]
-    assert "high street" in tokens and "the high street" not in tokens       # 街名截到虚词为止
+    assert "high street" in tokens and "the high street" not in tokens       # Street names stop at function words.
 
 
 
@@ -720,7 +720,7 @@ def test_a_one_word_street_after_a_house_number():
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Broadway", [])]
     assert "broadway" in tokens
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 main street", [])]
-    assert "main street" in tokens and "main" not in tokens        # 多词街名不拆出单个词
+    assert "main street" in tokens and "main" not in tokens        # Do not split multiword street names into individual words.
 
 
 
@@ -810,7 +810,7 @@ def test_a_regeneration_does_not_save_for_a_character_deleted_meanwhile(env):
 
     persona.configure_persona(llm=slow)
     assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
-    del state["uids"]["A"]                                           # 生成期间角色被删除
+    del state["uids"]["A"]                                           # Character deleted during generation.
     client.portal.call(persona.store().retire, UID_A)
     client.portal.call(gate.set)
     _settle(client)
@@ -839,7 +839,7 @@ def test_confirming_needs_the_version_the_panel_showed(env):
     shown = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
     assert client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"reviewed": True}).json()["code"] == "persona_version_required"
-    # 面板打开后另一个窗口重新生成了一份
+    # Another window regenerated after panel opened.
     client.portal.call(persona.store().save, UID_A, {**_file(tmp_path), "text": "你是{LANLAN_NAME}，换过的一份。"})
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"reviewed": True, "persona_version": shown["persona_version"]})
@@ -852,7 +852,7 @@ def test_a_same_text_with_a_new_private_section_list_needs_a_new_confirmation(en
     client, tmp_path, *_ = env
     _generate(client)
     shown = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
-    # 卡片变更触发的重生成恰好写出同样的正文，但私人段落清单换了
+    # Card-change regeneration yields identical text but different private-paragraph list.
     client.portal.call(persona.store().save, UID_A,
                        {**_file(tmp_path), "private_sections": ["新扫出来的一段私人内容。"]})
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
@@ -863,7 +863,7 @@ def test_a_same_text_with_a_new_private_section_list_needs_a_new_confirmation(en
 def test_a_manual_edit_is_not_saved_for_a_character_deleted_meanwhile(env, monkeypatch):
     client, tmp_path, state, *_ = env
     async def deleted(_uid):
-        return None                                          # 请求进来之后角色被删除
+        return None                                          # Character deleted after request arrived.
 
     monkeypatch.setattr(persona._hooks, "resolve_char_name", deleted)
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
@@ -881,7 +881,7 @@ def test_a_long_scanned_passage_is_kept_whole_in_overlapping_pieces():
     pieces, _complete = persona._parse_scan(json.dumps([passage], ensure_ascii=False))
     assert all(len(p) <= persona._SECTION_MAX_CHARS for p in pieces)
     assert pieces[-1].endswith(passage[-50:])
-    # 任意 300 字的片段都完整落在某一块里（重叠 200 字以上的 8-gram 不会被块边界切开）
+    # Every 300-character fragment fits fully inside one chunk (8-grams overlapping >200 characters never split at boundaries).
     for start in range(0, len(passage) - 150, 97):
         assert any(passage[start:start + 150] in p for p in pieces)
 
@@ -897,7 +897,7 @@ def test_a_regeneration_is_kept_for_a_character_renamed_meanwhile(env):
 
     persona.configure_persona(llm=slow)
     assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
-    state["uids"]["A2"] = state["uids"].pop("A")                     # 生成期间只是改了名
+    state["uids"]["A2"] = state["uids"].pop("A")                     # Only renamed during generation.
     state["cards"]["A2"] = state["cards"].pop("A")
     client.portal.call(gate.set)
     _settle(client)
@@ -908,9 +908,9 @@ def test_a_hand_edit_after_a_card_change_still_checks_scanned_passages_left_in_t
     client, tmp_path, state, _llm, scan = env
     secret = "她偷偷收藏了一整抽屉的旧电影票根，谁也没告诉。"
     state["cards"]["A"] = CARD + "\n" + secret
-    scan.sections = [secret]                                         # 只有独立扫描认出它是私人内容
+    scan.sections = [secret]                                         # Independent scan alone identifies private content.
     _generate(client)
-    state["cards"]["A"] += "\n又改了卡。"                              # 扫描清单基于旧卡了
+    state["cards"]["A"] += "\n又改了卡。"                              # Scan list belongs to old card now.
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"text": "你是{LANLAN_NAME}。" + secret, "reviewed": True})
     assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
@@ -918,10 +918,10 @@ def test_a_hand_edit_after_a_card_change_still_checks_scanned_passages_left_in_t
 
 @pytest.mark.parametrize("length", [2000, 2001, 3800, 4000, 5600, 5601, 9200])
 def test_section_chunks_always_reach_the_end_with_the_full_overlap(length):
-    passage = "".join(chr(0x4E00 + i) for i in range(length))         # 不重复：漏掉中间一段也看得出来
+    passage = "".join(chr(0x4E00 + i) for i in range(length))         # Nonrepeating content exposes omitted middle segments.
     pieces = persona._section_chunks(passage)
     step = persona._SECTION_MAX_CHARS - persona._SECTION_CHUNK_OVERLAP
-    # 每块就是预期的那一段切片：从 0 起每次前进 step，最后一块到结尾
+    # Each chunk matches expected slice: start zero, advance by step, final chunk reaches end.
     assert pieces == [passage[i:i + persona._SECTION_MAX_CHARS] for i in range(0, len(pieces) * step, step)]
     assert pieces[-1].endswith(passage[-50:])
     covered = set()
@@ -943,10 +943,10 @@ def test_privacy_checks_run_off_the_event_loop(env, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(persona, "persona_privacy_check", recording)
-    _generate(client)                                                   # 生成路径
-    client.put("/api/visit/persona?catgirl=A", headers=GOOD,           # 手写路径
+    _generate(client)                                                   # Generated path.
+    client.put("/api/visit/persona?catgirl=A", headers=GOOD,           # Handwritten path.
                json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
-    # 整张卡跑几十个正则：都在工作线程里算，不占事件循环
+    # Dozens of regexes over full card run in workers, never on event loop.
     assert len(seen) >= 2 and loop_thread not in seen
 
 
@@ -964,19 +964,19 @@ def test_a_gate_that_keeps_meeting_writes_does_not_report_generating(env, monkey
 
     async def load_while_written(self, uid):
         doc = await real_load(self, uid)
-        persona._note_write(uid)                                        # 每次读盘都碰上另一个窗口的写入
+        persona._note_write(uid)                                        # Every disk read races another window's write.
         return doc
 
     monkeypatch.setattr(persona.VisitPersonaStore, "load", load_while_written)
     gate = _gate(client)
-    # 并没有在生成：按待确认拒，前端引导去面板，而不是一直等「生成中」
+    # Not generating: reject as pending confirmation, guiding to panel rather than endless generating wait.
     assert gate.ok is False and gate.state == "unreviewed" and not persona.is_generating(UID_A)
 
 
 
 def test_a_scan_reply_with_non_string_entries_is_incomplete_but_keeps_its_passages():
     sections, complete = persona._parse_scan('["她偷偷收藏了一整抽屉的旧电影票根。", {"section": "另一段"}]')
-    # 认不出的条目让检查如实标成不完整；认得出的段落照样留着参与比对
+    # Unrecognized entries mark scan incomplete honestly; recognized paragraphs still participate in comparison.
     assert complete is False and sections == ["她偷偷收藏了一整抽屉的旧电影票根。"]
     assert persona._parse_scan('["一段"]') == (["一段"], True)
 
@@ -997,7 +997,7 @@ def test_a_hand_edit_is_checked_against_the_card_as_it_is_when_saved(env, monkey
     real_load = persona.VisitPersonaStore.load
 
     async def card_edited_while_waiting(self, uid):
-        state["cards"]["A"] = CARD + "\n" + secret                 # 等锁 / 读盘期间卡片改了
+        state["cards"]["A"] = CARD + "\n" + secret                 # Card changed during lock wait/disk read.
         return await real_load(self, uid)
 
     monkeypatch.setattr(persona.VisitPersonaStore, "load", card_edited_while_waiting)
@@ -1020,14 +1020,14 @@ def test_a_space_separated_profile_name_is_not_split_into_common_words():
 
     names = family_names_of({"档案名": "Will Smith"})
     assert names == ("Will Smith",)
-    # 拆成 Will 会把人设里的普通词 will 一起换掉
+    # Splitting to Will would also replace ordinary will in persona.
     assert redact_outbound("I will tell you.", family_names=names, replacement="[F]") == "I will tell you."
 
 
 
 def test_a_copular_address_label_registers_the_place():
     assert "Broadway" in persona.extract_sensitive_tokens("address is Broadway", [])
-    assert "broadway" in persona.extract_sensitive_tokens("address is broadway", [])   # 「is」本身就是分隔
+    assert "broadway" in persona.extract_sensitive_tokens("address is broadway", [])   # "is" itself delimits.
     assert "Broadway" in persona.extract_sensitive_tokens("address at Broadway", [])
 
 
@@ -1037,15 +1037,15 @@ def test_retiring_a_persona_waits_for_a_write_in_progress(env):
     path = tmp_path / "visit_persona" / f"{UID_A}.json"
 
     async def retire_during_a_write():
-        async with persona.persona_lock(UID_A):                     # 手写保存正拿着锁
+        async with persona.persona_lock(UID_A):                     # Manual save holds lock.
             task = asyncio.create_task(persona.retire_persona(UID_A))
             await asyncio.sleep(0.05)
-            assert not task.done()                                  # 删角色的清理等它写完
+            assert not task.done()                                  # Character-deletion cleanup waits for write completion.
             await persona.store().save(UID_A, _file(tmp_path))
         return await task
 
     assert client.portal.call(retire_during_a_write) is True
-    assert not path.exists()                                        # 写完之后才删：不会留下孤儿文件
+    assert not path.exists()                                        # Delete only after write finishes, leaving no orphan file.
 
 
 
@@ -1060,7 +1060,7 @@ def test_retiring_waits_for_a_regeneration_write_already_in_its_thread(env, monk
 
     def slow_save(self, uid, doc):
         started.set()
-        release.wait(5)                                              # 写盘线程卡在这里
+        release.wait(5)                                              # Disk-writing thread blocks here.
         real_save(self, uid, doc)
         written.set()
 
@@ -1069,17 +1069,17 @@ def test_retiring_waits_for_a_regeneration_write_already_in_its_thread(env, monk
     async def scenario():
         job = persona.start_regeneration("A", UID_A)
         while not started.is_set():
-            await asyncio.sleep(0.01)                               # 重生成已进入写盘
-        del state["uids"]["A"]                                       # 此时角色被删除
+            await asyncio.sleep(0.01)                               # Regeneration entered persistence.
+        del state["uids"]["A"]                                       # Character deleted now.
         retire = asyncio.create_task(persona.retire_persona(UID_A))
         await asyncio.sleep(0.05)
         release.set()
-        assert await retire is True                                  # 删到了在途写盘落下的那份
+        assert await retire is True                                  # Deletion catches file produced by in-flight write.
         await asyncio.gather(job, return_exceptions=True)
-        assert written.is_set()                                     # 写盘确实发生过，退役等它写完
+        assert written.is_set()                                     # Write actually occurred; retirement waits for completion.
 
     client.portal.call(scenario)
-    # 退役等在途写盘写完才删：不会被写回来
+    # Retirement deletes after in-flight write completes, preventing recreation.
     assert not path.exists()
 
 
@@ -1093,7 +1093,7 @@ def test_a_scan_passage_not_copied_from_the_card_makes_the_scan_incomplete():
     card = "她偷偷收藏了一整抽屉的旧电影票根。\n喜欢晒太阳。"
     assert persona._parse_scan('["她偷偷收藏了一整抽屉的旧电影票根。"]', card) == (
         ["她偷偷收藏了一整抽屉的旧电影票根。"], True)
-    sections, complete = persona._parse_scan('["她收藏了很多电影票。"]', card)        # 改写过的
+    sections, complete = persona._parse_scan('["她收藏了很多电影票。"]', card)        # Rewritten version.
     assert complete is False and sections == ["她收藏了很多电影票。"]
 
 
@@ -1142,7 +1142,7 @@ def test_a_hand_edit_is_refused_when_the_card_changes_during_its_check(env, monk
     real = persona.persona_privacy_check
 
     def check_while_the_card_changes(*args, **kwargs):
-        state["cards"]["A"] = CARD + "\n新加的私人内容：她把钥匙藏在门口第三块砖下面。"   # 检查期间改了卡
+        state["cards"]["A"] = CARD + "\n新加的私人内容：她把钥匙藏在门口第三块砖下面。"   # Card changed during checks.
         return real(*args, **kwargs)
 
     monkeypatch.setattr(persona, "persona_privacy_check", check_while_the_card_changes)
@@ -1161,7 +1161,7 @@ def test_the_gate_redacts_with_the_family_names_of_now(env, monkeypatch):
     async def renamed_family():
         return CharacterContext(family_names=FAMILY + ("橘色",), cards=dict(state["cards"]))
 
-    monkeypatch.setattr(persona._hooks, "load_context", renamed_family)   # 确认之后亲人改了昵称
+    monkeypatch.setattr(persona._hooks, "load_context", renamed_family)   # Relative changed nickname after confirmation.
     gate = _gate(client)
     assert gate.ok is True and "橘色" not in gate.text
 
@@ -1173,7 +1173,7 @@ def test_the_gate_keeps_the_token_cap_after_redacting_new_names(env, monkeypatch
     client, tmp_path, state, *_ = env
     _generate(client)
     _confirm(client)
-    long_text = "你是{LANLAN_NAME}。" + "阿喵喜欢晒太阳。" * 400               # 接近上限、到处是「阿喵」
+    long_text = "你是{LANLAN_NAME}。" + "阿喵喜欢晒太阳。" * 400               # Near cap, with "阿喵" throughout.
     long_text = persona.truncate_to_tokens(long_text, persona.VISIT_PERSONA_MAX_TOKENS)
     client.portal.call(persona.store().save, UID_A, {**_file(tmp_path), "text": long_text})
 
@@ -1188,7 +1188,7 @@ def test_the_gate_keeps_the_token_cap_after_redacting_new_names(env, monkeypatch
 
 
 def test_a_copula_after_a_contact_keyword_is_not_a_separator():
-    # 「is」后的普通词（ok / great）收成敏感词会按子串误挡人设（book、okay）；纯字母账号交给独立扫描
+    # Ordinary words after "is" (ok/great) as sensitive terms falsely block substrings (book/okay); independent scan handles alphabetic accounts.
     assert persona.extract_sensitive_tokens("WeChat is ok", []) == []
     assert persona.extract_sensitive_tokens("my phone is broken", []) == []
 
@@ -1205,12 +1205,12 @@ def test_a_hand_edit_saved_while_the_card_changes_is_rolled_back(env, monkeypatc
         saves.append(doc["text"])
         await real_save(self, uid, doc)
         if len(saves) == 1:
-            state["cards"]["A"] = CARD + "\naddress: Broadway"                # 写盘期间卡片加了地址
+            state["cards"]["A"] = CARD + "\naddress: Broadway"                # Card gained address during persistence.
 
     monkeypatch.setattr(persona.VisitPersonaStore, "save", save_while_the_card_changes)
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "reviewed": True})
-    # 只按旧卡查过的手写不能留下：撤回成原来那份
+    # Manual content checked only against old card cannot remain; restore prior version.
     assert resp.status_code == 409 and resp.json()["code"] == "persona_card_changed"
     assert _file(tmp_path) == before
 
@@ -1232,9 +1232,9 @@ def test_a_regeneration_reads_the_card_of_its_own_character_after_a_rename(env, 
     async def rename_then_load():
         if not renamed:
             renamed.append(True)
-            state["uids"]["A2"] = state["uids"].pop("A")                    # A 改名为 A2
+            state["uids"]["A2"] = state["uids"].pop("A")                    # A renamed A2.
             state["cards"]["A2"] = state["cards"].pop("A")
-            state["uids"]["A"] = "c" * 32                                    # 又新建了一个叫 A 的角色
+            state["uids"]["A"] = "c" * 32                                    # Another character named A created.
             state["cards"]["A"] = "你是{LANLAN_NAME}，另一只完全不同的猫，喜欢下雨天。"
         return await real_load()
 
@@ -1250,7 +1250,7 @@ def test_a_regeneration_reads_the_card_of_its_own_character_after_a_rename(env, 
         assert await job is None
 
     client.portal.call(scenario)
-    # 生成用的是 UID_A 这只猫（改名后的 A2）的卡，不是新建的同名角色
+    # Generation uses UID_A's card (renamed A2), not new same-name character.
     assert "完全不同的猫" not in prompts[0] and "橘色猫娘" in prompts[0]
 
 
@@ -1265,13 +1265,13 @@ def test_a_hand_edit_is_never_ready_before_its_card_recheck(env, monkeypatch):
     async def save_and_peek(self, uid, doc):
         await real_save(self, uid, doc)
         if "Broadway" in doc["text"] and not seen:
-            seen.append(await persona.persona_gate("A"))                 # 写盘之后、核对卡片之前，另一个建房请求
+            seen.append(await persona.persona_gate("A"))                 # After persistence, before card verification, another room-creation request arrives.
             state["cards"]["A"] = "\n".join([CARD, "address: Broadway"])
 
     monkeypatch.setattr(persona.VisitPersonaStore, "save", save_and_peek)
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "reviewed": True})
-    # 空档里门槛只看到待确认，不放行；随后发现卡片变了，撤回
+    # Gate sees pending confirmation during gap, denying entry; later card change detected, rollback.
     assert seen and seen[0].ok is False and seen[0].state == "unreviewed"
     assert resp.status_code == 409 and "Broadway" not in _file(tmp_path)["text"]
 
@@ -1285,14 +1285,14 @@ def test_a_failed_card_recheck_leaves_the_hand_edit_unreviewed_at_most(env, monk
 
     async def fails_on_recheck():
         calls.append(1)
-        if len(calls) >= 4:                                             # _resolve、锁内重读、存前核对之后：写盘后的核对
+        if len(calls) >= 4:                                             # After _resolve, locked reread, presave check: postwrite verification.
             raise OSError("config unreadable")
         return await real_load()
 
     monkeypatch.setattr(persona._hooks, "load_context", fails_on_recheck)
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
-    # 核对不了就当卡片变了：不留下一份已确认、却没核对过卡片的手写
+    # Unverifiable means changed card: retain no confirmed manual version without verified card.
     assert resp.status_code == 409
     assert not (_file(tmp_path)["text"] == "你是{LANLAN_NAME}，一只爱睡觉的猫。" and _file(tmp_path)["reviewed"])
 
@@ -1301,10 +1301,10 @@ def test_a_failed_card_recheck_leaves_the_hand_edit_unreviewed_at_most(env, monk
 def test_confirming_a_hand_edit_checks_it_against_the_current_card(env):
     client, tmp_path, state, *_ = env
     _generate(client)
-    # 写盘中途被打断留下的待确认手写：只按旧卡查过
+    # Pending manual version left by interrupted persistence, checked only against old card.
     client.portal.call(persona.store().save, UID_A, {
         **_file(tmp_path), "text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "edited": True, "reviewed": False})
-    state["cards"]["A"] = "\n".join([CARD, "address: Broadway"])           # 随后卡片加了地址
+    state["cards"]["A"] = "\n".join([CARD, "address: Broadway"])           # Card gains address afterward.
     resp = _confirm(client)
     assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
     assert _file(tmp_path)["reviewed"] is False
@@ -1314,7 +1314,7 @@ def test_confirming_a_hand_edit_checks_it_against_the_current_card(env):
 def test_old_scan_sections_still_in_the_card_survive_case_and_spacing_changes():
     secret = "She Keeps Old Ticket Stubs In A Drawer"
     doc = {"scan_card_hash": "0" * 64, "private_sections": [secret, "a passage that is gone"]}
-    card = "she keeps old ticket stubs\nin a drawer"                       # 只改了大小写与换行
+    card = "she keeps old ticket stubs\nin a drawer"                       # Case and newlines changed only.
     assert list(persona._scanned_sections(doc, card)) == [secret]
 
 
@@ -1327,7 +1327,7 @@ def test_a_hand_edit_is_refused_when_the_name_now_belongs_to_another_character(e
 
     async def renamed_meanwhile(name):
         calls.append(name)
-        return await real(name) if len(calls) == 1 else "d" * 32          # 之后「A」成了新建的另一个角色
+        return await real(name) if len(calls) == 1 else "d" * 32          # Later A names a different newly created character.
 
     monkeypatch.setattr(persona._hooks, "resolve_char_uid", renamed_meanwhile)
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
@@ -1346,11 +1346,11 @@ def test_the_gate_does_not_open_with_a_persona_whose_name_moved_to_another_chara
 
     async def renamed_while_reading(name):
         calls.append(name)
-        return await real(name) if len(calls) == 1 else None             # 读的过程中原角色改名、名字空出来
+        return await real(name) if len(calls) == 1 else None             # Original character renames during read, freeing the name.
 
     monkeypatch.setattr(persona._hooks, "resolve_char_uid", renamed_while_reading)
     gate = _gate(client)
-    # 不能拿原角色的人设放行：名字已不对应它
+    # Cannot allow using original character's persona; name no longer identifies it.
     assert gate.ok is False and gate.state == "missing"
 
 
@@ -1364,7 +1364,7 @@ def test_a_hand_edit_is_rolled_back_when_the_name_moves_during_its_checks(env, m
 
     async def replaced_with_an_identical_card(name):
         calls.append(name)
-        return await real(name) if len(calls) <= 2 else "d" * 32       # 写盘后：名字已是另一个（卡片相同的）角色
+        return await real(name) if len(calls) <= 2 else "d" * 32       # After write, name belongs to another character with identical card.
 
     monkeypatch.setattr(persona._hooks, "resolve_char_uid", replaced_with_an_identical_card)
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
@@ -1401,7 +1401,7 @@ def test_a_persona_file_with_a_non_finite_timestamp_counts_as_malformed(tmp_path
     path.parent.mkdir(parents=True)
     doc = {"text": "x", "source_card_hash": "0" * 64, "generated_at": value, "edited": False, "reviewed": False,
            "private_sections": [], "scan_card_hash": "0" * 64, "scan_complete": False}
-    path.write_text(json.dumps(doc), encoding="utf-8")                  # JSON 里的 NaN / Infinity
+    path.write_text(json.dumps(doc), encoding="utf-8")                  # JSON NaN / Infinity.
     assert store._load_sync(UID_A) is None
 
 
@@ -1416,7 +1416,7 @@ def test_a_persona_file_with_a_lone_surrogate_counts_as_malformed(tmp_path, fiel
     raw = ('{"text": %s, "source_card_hash": "%s", "generated_at": null, "edited": false, "reviewed": false, '
            '"private_sections": %s, "scan_card_hash": "%s", "scan_complete": false}') % (
         value if field == "text" else other_text, "0" * 64, value if field == "private_sections" else "[]", "0" * 64)
-    path.write_text(raw, encoding="utf-8")                                # 文件里是转义的孤立代理字符
+    path.write_text(raw, encoding="utf-8")                                # Escaped lone surrogate in file.
     assert store._load_sync(UID_A) is None
 
 

@@ -1554,7 +1554,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert avatar_interaction_restore_block.index("const isActiveAvatarContainer = elementId === `${activePrefix}-container`;") < avatar_interaction_restore_block.index("if (hasSnapshotPointerEvents && snapshotPointerEvents) {")
     assert "this.restoreAvatarFloatingModelInteractionState('teardown-early');" in tutorial_source
     assert ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))" in tutorial_source
-    # 最终恢复统一按业务形态分流：普通模型回放交互快照，猫咪态重走 goodbye 链路。
+    # Final recovery follows business modes: ordinary models replay interaction snapshots; cat mode reruns goodbye chains.
     assert ".then(() => this.restoreAvatarFloatingModelStateAfterTutorial())" in tutorial_source
     assert tutorial_source.index(".then(() => this.restoreTutorialAvatarOverride())") < tutorial_source.index(
         ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))"
@@ -2001,16 +2001,16 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "await this.waitForFloatingButtons()" in start_round_block
     assert "this.claimDirectAvatarFloatingTutorialBoot(round, source);" in start_round_block
     claim_index = start_round_block.index("this.claimDirectAvatarFloatingTutorialBoot(round, source);")
-    # round 预留会改变预测结果；direct-boot claim 必须覆盖状态同步和胶囊 prepare 的异步等待窗口。
+    # Round reservations affect predictions; direct-boot claims must cover asynchronous state-sync/capsule-prepare windows.
     assert claim_index < start_round_block.index("await stateApi.flush();")
     assert claim_index < start_round_block.index(
         "await this.prepareYuiGuideCompactChatForTutorial()"
     )
-    # prepare 期间取消时释放提前 claim，但保留已跳过用户模型的恢复标记。
+    # Cancellation during prepare releases early claims while retaining skipped-user-model recovery markers.
     cancellation_release_index = start_round_block.index(
         "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-cancelled', {"
     )
-    # 只检查取消分支的当前 release 调用，避免误命中后续正常 teardown 的同名参数。
+    # Check only release calls in cancellation branches, avoiding same-named parameters in later normal teardown.
     cancellation_release_block = start_round_block[cancellation_release_index:].split("});", 1)[0]
     assert "keepUserModelBootSkipped: true" in cancellation_release_block
     assert "suppressPrediction: true" in cancellation_release_block
@@ -2037,7 +2037,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     )[0]
     assert "this.dispatchAvatarFloatingTutorialInputRestored(" in tutorial_source
     assert "neko:yui-guide:tutorial-input-restored" in tutorial_source
-    # 输入区域刷新必须发生在模型身份和猫咪/普通业务形态都恢复完成之后。
+    # Refresh input regions only after restoring model identity and cat/ordinary modes completely.
     assert teardown_block.index("this.restoreAvatarFloatingModelStateAfterTutorial()") < teardown_block.index(
         "this.dispatchAvatarFloatingTutorialInputRestored("
     )
@@ -2507,7 +2507,7 @@ def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
     key = DirectTaskExecutor._desc_key
     executor = object.__new__(DirectTaskExecutor)
     executor._short_desc_cache = {}
-    # 缓存键是完整 description 的 hash（截断只用于喂 LLM，不当失效 key）
+    # Cache keys hash complete descriptions; truncation feeds LLMs only, never invalidation keys.
     executor._short_desc_cache["from_cache"] = (key("full B"), "cached B")
     executor._short_desc_cache["stale_cache"] = (key("old D"), "cached D")
 
@@ -2522,16 +2522,16 @@ def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
 
     missing = executor._apply_cached_short_descriptions(plugins)
 
-    # (a) manifest 自带 → 直接用，并把它写进缓存供后续 refresh 复用
+    # Manifest-provided value: use directly and cache for later refresh.
     assert plugins[0]["short_description"] == "short A"
     assert executor._short_desc_cache["has_manifest"] == (key("full A"), "short A")
-    # 缓存命中（desc 未变）→ 应用缓存值
+    # Unchanged description cache hit: apply cached values.
     assert plugins[1]["short_description"] == "cached B"
-    # 缓存陈旧（desc 变了）→ 不应用，进 missing 候选
+    # Changed description/stale cache: skip cache and add to missing candidates.
     assert "short_description" not in plugins[2]
-    # 缺失且无缓存 → 不现生成，留空，进 missing 候选
+    # Missing without cache: leave empty without synchronous generation, adding missing candidates.
     assert "short_description" not in plugins[3]
-    # 无 description → 无可摘要内容，不进 missing 也不留空
+    # No description means nothing to summarize; neither mark missing nor leave empty.
     assert "short_description" not in plugins[4]
 
     assert sorted(p["id"] for p in missing) == ["missing", "stale_cache"]
@@ -2563,14 +2563,14 @@ async def test_plugin_list_provider_never_generates_short_description_on_hot_pat
          ) as mock_prewarm:
         result = await executor.plugin_list_provider(force_refresh=True)
 
-    # 返回的插件仍缺 short_description（未现生成）→ 分析侧回退到完整 description
+    # Plugins still lacking short_description fall back to full descriptions during analysis.
     assert not result[0].get("short_description")
-    # 热路径上 _get_llm 没被同步调用
+    # Hot paths never call _get_llm synchronously.
     llm_factory.assert_not_called()
-    # 缺失插件被调度进后台预热
+    # Schedule missing plugins for background warmup.
     mock_prewarm.assert_called_once()
     assert "no_short" in executor._short_desc_prewarm_inflight
-    await asyncio.sleep(0)  # 让后台任务跑掉，避免 "coroutine never awaited" 警告
+    await asyncio.sleep(0)  # Let background tasks finish, avoiding coroutine-never-awaited warnings.
 
 
 def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
@@ -2584,26 +2584,26 @@ def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
     cfg = SimpleNamespace(config_dir=str(tmp_path), ensure_config_directory=lambda: None)
     key = DirectTaskExecutor._desc_key
 
-    # 实例一：把一条生成的缓存落盘（key = 完整 description 的 hash）
+    # First instance persists generated cache keyed by full-description hash.
     exec1 = object.__new__(DirectTaskExecutor)
     exec1._config_manager = cfg
     exec1._short_desc_cache_filename = "plugin_short_desc_cache.json"
     exec1._persist_generated_short_descriptions({"genplug": (key("full desc"), "generated short")})
     assert (tmp_path / "plugin_short_desc_cache.json").exists()
 
-    # 实例二：从盘上加载（模拟重启）
+    # Second instance reads disk, simulating restart.
     exec2 = object.__new__(DirectTaskExecutor)
     exec2._config_manager = cfg
     exec2._short_desc_cache_filename = "plugin_short_desc_cache.json"
     exec2._short_desc_cache = exec2._load_short_desc_cache()
     assert exec2._short_desc_cache == {"genplug": (key("full desc"), "generated short")}
 
-    # desc 未变 → 命中持久化缓存，零 LLM，不进 missing
+    # Unchanged description hits persistent cache with zero LLM calls and no missing candidates.
     plugins = [{"id": "genplug", "description": "full desc"}]
     assert exec2._apply_cached_short_descriptions(plugins) == []
     assert plugins[0]["short_description"] == "generated short"
 
-    # desc 变了 → hash key 失效，重新作为生成候选
+    # Changed description invalidates hash keys and becomes a generation candidate again.
     changed = [{"id": "genplug", "description": "CHANGED desc"}]
     missing = exec2._apply_cached_short_descriptions(changed)
     assert "short_description" not in changed[0]
@@ -2619,7 +2619,7 @@ def test_short_desc_cache_key_uses_full_description_not_truncated_prompt():
     from brain.task_executor import DirectTaskExecutor
 
     key = DirectTaskExecutor._desc_key
-    long_desc = ("word " * (PLUGIN_INPUT_DESC_MAX_TOKENS * 4)).strip()  # 远超输入截断阈值
+    long_desc = ("word " * (PLUGIN_INPUT_DESC_MAX_TOKENS * 4)).strip()  # Far beyond input truncation limits.
 
     executor = object.__new__(DirectTaskExecutor)
     executor._short_desc_cache = {"big": (key(long_desc), "cached short")}
@@ -2639,10 +2639,10 @@ def test_short_desc_cache_load_tolerates_missing_and_corrupt_file(tmp_path):
     executor._config_manager = cfg
     executor._short_desc_cache_filename = "plugin_short_desc_cache.json"
 
-    # 文件不存在
+    # Missing file.
     assert executor._load_short_desc_cache() == {}
 
-    # 损坏的 JSON
+    # Corrupt JSON.
     (tmp_path / "plugin_short_desc_cache.json").write_text("{not json", encoding="utf-8")
     assert executor._load_short_desc_cache() == {}
 
@@ -2808,13 +2808,13 @@ def test_task_executor_plugin_desc_includes_enum_values():
 
 
 def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
-    """超过 12 个 enum 值时，截断标记必须在 [] 内并带 '+N more' 数量提示，
-    而不是孤零零的 '...'，以避免 LLM 把可见的 12 个误当成完整合法值清单。
+    """For enums exceeding 12 values, keep '+N more' truncation markers inside [],
+    never bare ellipses that imply the visible 12 exhaust all legal values.
     """
     from brain.task_executor import DirectTaskExecutor
 
     executor = object.__new__(DirectTaskExecutor)
-    long_enum = [f"v{i:02d}" for i in range(15)]  # 15 > 12，触发截断
+    long_enum = [f"v{i:02d}" for i in range(15)]  # 15 > 12 triggers truncation.
     lines = executor._build_plugin_desc_lines([
         {
             "id": "demo_plugin",
@@ -2837,9 +2837,9 @@ def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
 
     expected_inner = "|".join(long_enum[:12])
     assert f"kind:string enum=[{expected_inner}|... +3 more]" in rendered
-    # 旧的 "]..." 形态必须消失，避免 LLM 误读为"列表完整、后面是注释省略号"
+    # Remove old "]..." shapes so LLMs do not mistake them for complete lists followed by comment ellipses.
     assert "]..." not in rendered
-    # 被截断的值不应该出现在 prompt 里
+    # Truncated values must not appear in prompts.
     for v in long_enum[12:]:
         assert v not in rendered
 
@@ -2899,7 +2899,7 @@ def test_openclaw_magic_analyze_fingerprint_uses_turn_marker():
 def test_user_message_signature_ignores_metadata_and_role():
     from app.agent_server import _user_message_signature, _last_user_message_signature
 
-    # 非 user 消息 / 无 text → None
+    # Non-user messages or missing text -> None.
     assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
     assert _user_message_signature({"role": "user"}) is None
     assert _user_message_signature("not a dict") is None
@@ -2910,7 +2910,7 @@ def test_user_message_signature_ignores_metadata_and_role():
     assert _user_message_signature(a) == _user_message_signature(b)
     assert _user_message_signature(a) != _user_message_signature(c)
 
-    # attachments 进入 signature
+    # Attachments enter signatures.
     d = {
         "role": "user",
         "text": "看下这个",
@@ -2923,7 +2923,7 @@ def test_user_message_signature_ignores_metadata_and_role():
     }
     assert _user_message_signature(d) != _user_message_signature(e)
 
-    # _last_user_message_signature 取最后一条 user
+    # _last_user_message_signature selects the last user message.
     messages = [
         {"role": "user", "text": "你好"},
         {"role": "assistant", "text": "嗨"},
@@ -2947,10 +2947,10 @@ def test_redact_passthrough_when_no_cancelled_records(reset_tracker_records):
 
 
 def test_redact_bypasses_first_time_user_msg_with_single_trailing_assistant(reset_tracker_records):
-    """核心 bypass 规则：user msg 后面有且仅有 1 条 role='assistant' 的消息时，
-    它是"首次被 analyze"——即使 sig 命中 cancelled_sigs 也 bypass。这一次
-    bypass 后下次 analyze 时它的 trailing-assistant 计数会涨过 1，自动失去
-    豁免。"""
+    """Core bypass rule: a user message followed by exactly one role='assistant' message
+    is being analyzed for the first time, bypassing even matched cancelled_sigs.
+    Later analysis increases its trailing-assistant count above 1, automatically
+    ending that exemption."""
     from app.agent_server import (
         _user_message_signature,
         _redact_cancelled_user_turns,
@@ -2968,15 +2968,15 @@ def test_redact_bypasses_first_time_user_msg_with_single_trailing_assistant(rese
         trigger_user_fingerprint=sig,
     )
 
-    # 用户 cancel 之后又发了同文本，messages 末尾就是这条新 user + 它的 reply
+    # User repeats canceled text; messages ends with that new user turn and its reply.
     messages = [
-        {"role": "user", "text": text},                  # 0: 旧的被取消那条，后面 2 条 assistant
+        {"role": "user", "text": text},                  # 0: old canceled message, followed by 2 assistants.
         {"role": "assistant", "text": "正在打开"},        # 1
-        {"role": "user", "text": text},                  # 2: 新发的复述，后面 1 条 assistant
+        {"role": "user", "text": text},                  # 2: new repetition, followed by 1 assistant.
         {"role": "assistant", "text": "再次打开中"},      # 3
     ]
     out = _redact_cancelled_user_turns(messages, lanlan)
-    # 旧 user (trailing=2) 被 redact，新 user (trailing=1) bypass 保留
+    # Redact old user with trailing=2; bypass/retain new user with trailing=1.
     from app.agent_server import REDACTED_USER_TURN_MARKER
     assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
     assert out[1] is messages[2]
@@ -2985,9 +2985,9 @@ def test_redact_bypasses_first_time_user_msg_with_single_trailing_assistant(rese
 
 
 def test_redact_three_repeats_all_redacted_after_user_continues(reset_tracker_records):
-    """t/t+1/t+2 连发同文本，单次 cancel → 用户继续聊别的（新 user+assistant）
-    → 三条同文本全部 redact（trailing assistant 都 >1），新 user msg
-    bypass。这是用户拍板的核心诉求："cancel 抵消之前所有相关请求"。"""
+    """Identical inputs at t/t+1/t+2, one cancellation, then unrelated new user/assistant
+    chat redact all three old inputs with trailing counts >1 while bypassing
+    the new user turn, fulfilling cancellation of all earlier related requests."""
     from app.agent_server import (
         _user_message_signature,
         _redact_cancelled_user_turns,
@@ -3010,27 +3010,27 @@ def test_redact_three_repeats_all_redacted_after_user_continues(reset_tracker_re
         {"role": "user", "text": text},                  # 0: trailing assistants = 2
         {"role": "user", "text": text},                  # 1: trailing assistants = 2
         {"role": "user", "text": text},                  # 2: trailing assistants = 2
-        {"role": "assistant", "text": "尝试打开"},        # 3: 第 1 条 assistant
+        {"role": "assistant", "text": "尝试打开"},        # 3: first assistant.
         {"role": "user", "text": "再聊别的"},             # 4: trailing assistants = 1 → bypass
-        {"role": "assistant", "text": "嗯"},              # 5: 第 2 条 assistant
+        {"role": "assistant", "text": "嗯"},              # 5: second assistant.
     ]
     out = _redact_cancelled_user_turns(messages, lanlan)
-    # 三条 X 都被 redact，"再聊别的" 保留
+    # Redact all three X entries; retain "再聊别的" (talk about something else).
     assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
     assert out[1] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
     assert out[2] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    # "尝试打开" 紧跟最后一条 X 被吞
-    assert out[3] is messages[4]                          # "再聊别的"
-    assert out[4] is messages[5]                          # "嗯"
+    # Swallow "尝试打开" (try opening) immediately after the final X.
+    assert out[3] is messages[4]                          # "再聊别的" (talk about something else).
+    assert out[4] is messages[5]                          # "嗯" (mm-hmm).
     assert len(out) == 5
 
 
 def test_redact_drops_earlier_successful_segment_when_same_text_cancelled(reset_tracker_records):
-    """by-design 副作用：用户先后用同文本各发一次请求，第一次成功完成、
-    第二次被取消。redact 不区分历史里同 sig 的成功段和取消段——所有
-    trailing-assistant > 1 的同 sig user msg 都被屏蔽。早先成功段的
-    assistant 响应文本因此丢失，但 inject() 仍输出 [COMPLETED] 行让
-    analyzer 知道"那个任务做过且成功"，所以语义层面不算严重损失。"""
+    """Intentional side effect: identical requests first succeed, then cancel later. Redaction
+    cannot distinguish same-signature successful/canceled history, so it suppresses all
+    matching user turns with trailing assistants >1. Earlier successful assistant text
+    disappears, but inject() still reports COMPLETED so analyzers know the task
+    succeeded, limiting semantic loss."""
     from app.agent_server import (
         _user_message_signature,
         _redact_cancelled_user_turns,
@@ -3050,29 +3050,29 @@ def test_redact_drops_earlier_successful_segment_when_same_text_cancelled(reset_
     )
 
     messages = [
-        {"role": "user", "text": text},                  # 0: 早先成功的同文本
-        {"role": "assistant", "text": "好的，截图已发"},   # 1: 早先成功响应
+        {"role": "user", "text": text},                  # 0: earlier successful identical input.
+        {"role": "assistant", "text": "好的，截图已发"},   # 1: earlier successful response.
         {"role": "user", "text": "再聊别的"},             # 2
         {"role": "assistant", "text": "嗯"},              # 3
-        {"role": "user", "text": text},                  # 4: 最近被取消那次
-        {"role": "assistant", "text": "正在打开"},        # 5: 取消任务的进行中痕迹
-        {"role": "user", "text": "继续"},                 # 6: 用户继续聊
+        {"role": "user", "text": text},                  # 4: most recent canceled attempt.
+        {"role": "assistant", "text": "正在打开"},        # 5: in-progress trace of the canceled task.
+        {"role": "user", "text": "继续"},                 # 6: user continues chatting.
         {"role": "assistant", "text": "嗯"},              # 7
     ]
     out = _redact_cancelled_user_turns(messages, lanlan)
-    # 两条同 sig user msg 都 redact，各自之后的 assistant 段也吞掉
+    # Redact both same-signature user messages and swallow their following assistant segments.
     assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[1] is messages[2]                          # "再聊别的" 保留
-    assert out[2] is messages[3]                          # 它的 assistant
+    assert out[1] is messages[2]                          # Retain "再聊别的" (talk about something else).
+    assert out[2] is messages[3]                          # Its assistant response.
     assert out[3] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[4] is messages[6]                          # "继续"
+    assert out[4] is messages[6]                          # "继续" (continue).
     assert out[5] is messages[7]
     assert len(out) == 6
 
 
 def test_redact_preserves_system_messages_inside_dropped_span(reset_tracker_records):
-    """drop_until_next_user 期间只吞 assistant/tool；夹在中间的 system
-    消息（session callback / context 注入）跟被取消请求无关，必须保留。"""
+    """During drop_until_next_user, swallow assistant/tool only; unrelated intervening
+    system callbacks/context injections must survive."""
     from app.agent_server import (
         _user_message_signature,
         _redact_cancelled_user_turns,
@@ -3090,7 +3090,7 @@ def test_redact_preserves_system_messages_inside_dropped_span(reset_tracker_reco
         trigger_user_fingerprint=_user_message_signature({"role": "user", "text": text}),
     )
 
-    # cancelled user msg 后面有 2 条 assistant，所以 trailing=2 → redact
+    # Canceled user message has 2 following assistants, so trailing=2 -> redact.
     messages = [
         {"role": "user", "text": text},
         {"role": "assistant", "text": "正在打开..."},
@@ -3102,32 +3102,32 @@ def test_redact_preserves_system_messages_inside_dropped_span(reset_tracker_reco
     out = _redact_cancelled_user_turns(messages, lanlan)
     assert out == [
         {"role": "system", "content": REDACTED_USER_TURN_MARKER},
-        # 中间无关的 system 消息保留
+        # Retain unrelated intervening system messages.
         {"role": "system", "content": "[session callback] something unrelated"},
-        # assistant + tool 被吞
+        # Swallow assistant and tool.
         {"role": "user", "text": "再聊别的"},
         {"role": "assistant", "text": "嗯"},
     ]
 
 
 def test_trim_protects_live_cancelled_records_against_cap_pressure():
-    """繁忙 session 在 TTL 内积累大量 assigned/completed 时，still-live
-    cancelled record 不能被 tail-window 裁剪挤掉——否则它代表的 redact 信号
-    会丢失，被取消的 user turn 重新暴露给 analyzer。"""
+    """Busy sessions accumulating assigned/completed records within TTL must retain live
+    cancellations despite tail-window limits, or lost redaction signals expose canceled
+    user turns to analyzers again."""
     from app.agent_server import AgentTaskTracker
     from config import AGENT_TASK_TRACKER_MAX_RECORDS as CAP
 
     tracker = AgentTaskTracker()
     lanlan = "test-lanlan-trim-protect"
 
-    # 先记一条 cancel，它必须被保住。
+    # Record a cancellation first; it must survive.
     tracker.record_completed(
         lanlan, task_id="cancel-me", method="browser_use",
         desc="x", success=False, cancelled=True,
         trigger_user_fingerprint="protected-sig",
     )
 
-    # 然后填满超过 cap 数量的 assigned/completed 噪声。
+    # Then exceed the cap with assigned/completed noise.
     for i in range(CAP * 3):
         tracker.record_assigned(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}")
         tracker.record_completed(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}", success=True)
@@ -3140,8 +3140,8 @@ def test_trim_protects_live_cancelled_records_against_cap_pressure():
 
 
 def test_user_message_signature_distinguishes_senders():
-    """多用户场景：两个不同 user 发同样的文字，sig 必须不同——否则取消 A
-    的请求会让 redact 误吞 B 的同文本请求。"""
+    """Different users sending identical text need distinct signatures, or canceling A
+    wrongly suppresses B's matching request."""
     from app.agent_server import _user_message_signature
 
     a_top = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
@@ -3153,17 +3153,17 @@ def test_user_message_signature_distinguishes_senders():
     sig_a = _user_message_signature(a_top)
     sig_b = _user_message_signature(b_top)
     assert sig_a and sig_b and sig_a != sig_b
-    # 三种来源同一 sender_id 都归一到同一签名
+    # All three sender_id sources normalize to the same signature.
     assert _user_message_signature(a_meta) == sig_a
     assert _user_message_signature(a_ctx) == sig_a
-    # 无 sender 与有 sender 不同
+    # Missing sender differs from present sender.
     no_sig = _user_message_signature(no_sender)
     assert no_sig and no_sig not in (sig_a, sig_b)
 
 
 def test_redact_does_not_eat_another_users_same_text_turn(reset_tracker_records):
-    """A 取消了 "打开天气"，B 在同一 messages 列表后续发同文本请求——
-    redact 应只动 A 的请求（sig 不同），不应误吞 B 的。"""
+    """A cancels "打开天气" (open weather); B later sends the same text in one messages list.
+    Redact only A through distinct signatures, leaving B untouched."""  # noqa: DOCSTRING_CJK
     from app.agent_server import (
         _user_message_signature,
         _redact_cancelled_user_turns,
@@ -3183,7 +3183,7 @@ def test_redact_does_not_eat_another_users_same_text_turn(reset_tracker_records)
         trigger_user_fingerprint=_user_message_signature(a_msg),
     )
 
-    # A 的 user msg trailing=2（被 redact），B 的 trailing=1（首次 bypass）
+    # A has trailing=2 and is redacted; B has trailing=1 and bypasses initially.
     messages = [
         a_msg,
         {"role": "assistant", "text": "正在打开"},
@@ -3192,15 +3192,15 @@ def test_redact_does_not_eat_another_users_same_text_turn(reset_tracker_records)
     ]
     out = _redact_cancelled_user_turns(messages, lanlan)
     assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[1] is b_msg                    # B 的请求保留
-    assert out[2] == messages[3]              # B 的 assistant 响应保留
-    assert len(out) == 3                      # 只吞 A 的 user + 它后面的 assistant
+    assert out[1] is b_msg                    # Retain B's request.
+    assert out[2] == messages[3]              # Retain B's assistant response.
+    assert len(out) == 3                      # Swallow only A's user message and following assistant.
 
 
 def test_user_message_payload_text_is_shared_between_signature_and_turn_fingerprint():
-    """_user_message_signature 与 _build_user_turn_fingerprint 现在共用同一个
-    normalization helper（_user_message_payload_text），避免归一化规则漂移。
-    验证：单条 user 消息的 fingerprint = sha256(payload) = signature。
+    """_user_message_signature and _build_user_turn_fingerprint share
+    _user_message_payload_text normalization, preventing drift.
+    Verify single-message fingerprint = sha256(payload) = signature.
     """
     import hashlib
     from app.agent_server import (
@@ -3217,17 +3217,17 @@ def test_user_message_payload_text_is_shared_between_signature_and_turn_fingerpr
     payload = _user_message_payload_text(msg)
     expected_sig = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
     assert _user_message_signature(msg) == expected_sig
-    # 单条 user 消息时，turn fingerprint 也是同一个 payload 的 sha256
+    # One-user turn fingerprints equal sha256 of the same payload.
     assert _build_user_turn_fingerprint([msg]) == expected_sig
 
-    # 非 user 消息：两个函数都不参与
+    # Neither function considers non-user messages.
     assert _user_message_payload_text({"role": "assistant", "text": "hi"}) is None
     assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
 
 
 def test_inject_skips_records_belonging_to_cancelled_tasks(reset_tracker_records):
-    """被取消任务对应的 [ASSIGNED] 与 [CANCELLED] 记录都不应再注入到 analyzer
-    视野——其触发的 user turn 已被 redact，重新注入只会把它拉回视野。"""
+    """Do not inject canceled tasks' ASSIGNED/CANCELLED records into analyzer context;
+    their triggering user turns are already redacted, and reinjection revives them."""
     from app.agent_server import _task_tracker
 
     lanlan = "test-lanlan-inject"
@@ -3254,15 +3254,15 @@ def test_inject_skips_records_belonging_to_cancelled_tasks(reset_tracker_records
     summary = next((m for m in out if isinstance(m, dict) and m.get("role") == "system"), None)
     assert summary is not None
     content = summary["content"]
-    # 取消任务的 desc 完全不出现
+    # Canceled task descriptions never appear.
     assert "打开天气并截图" not in content
     assert "[CANCELLED]" not in content
-    # 没被取消的任务正常出现
+    # Uncanceled tasks appear normally.
     assert "另一个任务" in content
 
 
 def test_inject_returns_messages_unchanged_when_all_tasks_cancelled(reset_tracker_records):
-    """全部 records 都属于已取消任务 → inject 不应再插入空 summary 消息。"""
+    """If all records belong to canceled tasks, inject must not insert empty summary messages."""
     from app.agent_server import _task_tracker
 
     lanlan = "test-lanlan-inject-empty"
@@ -3283,9 +3283,9 @@ def test_inject_returns_messages_unchanged_when_all_tasks_cancelled(reset_tracke
 
 
 def test_cancel_task_records_trigger_signature_for_redact():
-    """cancel_task / _cancel_openclaw_tasks_for_stop 都应把 task info 里的
-    _trigger_user_fingerprint 透传到 record_completed，使 redact 能定位回
-    触发的 user turn。"""
+    """cancel_task / _cancel_openclaw_tasks_for_stop pass task-info
+    _trigger_user_fingerprint through record_completed so redaction locates
+    the originating user turn."""
     targets = {
         "cancel_task": ast.AsyncFunctionDef,
         "_cancel_openclaw_tasks_for_stop": ast.AsyncFunctionDef,
@@ -3299,7 +3299,7 @@ def test_cancel_task_records_trigger_signature_for_redact():
         assert 'trigger_user_fingerprint=info.get("_trigger_user_fingerprint")' in segment, (
             f"{name} should forward _trigger_user_fingerprint to record_completed"
         )
-        # 旧的 trigger_user_ts 字段已彻底拆除
+        # Legacy trigger_user_ts is fully removed.
         assert "trigger_user_ts" not in segment, (
             f"{name} still references the removed trigger_user_ts field"
         )
@@ -3316,12 +3316,12 @@ async def test_task_executor_routes_openclaw_as_independent_execution_method():
     executor.plugin_list = []
     executor._external_plugin_provider = None
 
-    # openclaw adapter 可用
+    # OpenClaw adapter available.
     mock_openclaw = MagicMock()
     mock_openclaw.is_available.return_value = {"ready": True}
     executor.openclaw = mock_openclaw
 
-    # mock 统一渠道评估，让 LLM 选择 qwenpaw
+    # Mock shared-channel evaluation so the LLM selects qwenpaw.
     mock_decision = UnifiedChannelDecision()
     mock_decision.qwenpaw = {"can_execute": True, "task_description": "搜索天气并截图", "reason": "需要浏览器操作"}
 
@@ -3622,8 +3622,8 @@ def test_is_agent_api_ready_reports_missing_fields(agent_api, expected_reason):
 
 
 def test_is_agent_api_ready_passes_free_access_key_when_agent_not_free():
-    """free-access 是非空占位 token：readiness 只看三件套填没填，不再因占位 key + 非免费
-    语境而拦截（免费判定已收口到 is_agent_free，脏配置由下游 401 兜底）。"""
+    """free-access is a nonempty placeholder token; readiness checks only the configured triple, no longer rejecting placeholder keys
+    in nonfree contexts. Free classification is centralized in is_agent_free; downstream 401 handles corrupt config."""
     manager = object.__new__(ConfigManager)
     manager.get_model_api_config = lambda _model_type: {
         "model": "m", "base_url": "https://u", "api_key": "free-access",
@@ -3634,8 +3634,8 @@ def test_is_agent_api_ready_passes_free_access_key_when_agent_not_free():
 
 
 def test_is_agent_free_tracks_agent_model_not_version():
-    """is_agent_free() 只认 agent model 名(free-agent-model)，与 core/assist 的版本免费解耦：
-    用免费语音(core=free)但 agent 换自费/自定义 model 时应为 False。"""
+    """is_agent_free checks only agent model free-agent-model, independent of core/assist free tiers:
+    free voice core=free with paid/custom agent models returns False."""
     manager = object.__new__(ConfigManager)
     manager.get_model_api_config = lambda _model_type: {"model": "free-agent-model"}
     assert manager.is_agent_free() is True
@@ -3646,16 +3646,16 @@ def test_is_agent_free_tracks_agent_model_not_version():
 
 
 def test_default_free_profile_agent_model_matches_metered_name():
-    """回退 DEFAULT_ASSIST_API_PROFILES['free'] 的 agent model 必须等于配额计量名
-    (_free_agent_model_name)，否则 api_providers.json 缺失/不可读时免费 agent 不计
-    配额、is_agent_free 误判（codex #1593）。锁住 defaults 与计量名一致。"""
+    """DEFAULT_ASSIST_API_PROFILES['free'] fallback agent model must match quota-accounting
+    _free_agent_model_name, or absent/unreadable api_providers.json skips free-agent
+    quota and misclassifies is_agent_free (codex #1593). Pin defaults/accounting alignment."""
     from config import DEFAULT_ASSIST_API_PROFILES
     assert DEFAULT_ASSIST_API_PROFILES['free']['AGENT_MODEL'] == ConfigManager._free_agent_model_name
 
 
 def test_is_free_voice_tracks_core_not_assist():
-    """is_free_voice() 只认 core(CORE_API_TYPE=='free')，与 assist 无关：
-    core=qwen+assist=free（自费语音+免费文本）应为 False。"""
+    """is_free_voice checks only core CORE_API_TYPE=='free', independent of assist:
+    core=qwen plus assist=free, paid voice/free text, returns False."""
     manager = object.__new__(ConfigManager)
     manager.get_core_config = lambda: {"CORE_API_TYPE": "free"}
     assert manager.is_free_voice() is True
@@ -3666,8 +3666,8 @@ def test_is_free_voice_tracks_core_not_assist():
 
 
 def test_agent_gate_is_free_version_field_sources_agent_free():
-    """gate / agent 命令回包的 is_free_version 字段值取 is_agent_free()（agent model 维度），
-    而非 is_free_voice()（语音/core 维度）——锁住三处同源，防回退。"""
+    """Gate/agent response is_free_version uses agent-model is_agent_free,
+    never voice/core is_free_voice. Pin all three sources against regression."""
     server = _agent_server_package_source_concat()
     assert '"is_free_version": cm.is_agent_free()' in server
     router = Path("main_routers/agent_router.py").read_text(encoding="utf-8")
@@ -3793,7 +3793,7 @@ def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():
     }
 
     cfg = manager.get_model_api_config("agent")
-    # agent 走专用字段但 is_custom 仅反映全局 ENABLE_CUSTOM_API 开关
+    # Agent uses dedicated fields, but is_custom reflects only global ENABLE_CUSTOM_API.
     assert cfg["is_custom"] is False
     assert cfg["model"] == "agent-model"
     assert cfg["base_url"] == "https://agent.example/v1"

@@ -1,4 +1,4 @@
-"""完成事实固定评测脚本的冻结样本与计分测试。"""  # noqa: DOCSTRING_CJK
+"""Frozen samples and scoring tests for the completion-fact evaluator."""  # noqa: DOCSTRING_CJK
 
 from scripts.evaluate_numeric_v2_completion_facts import (
     CIVILIANS_SHELTERED,
@@ -12,7 +12,7 @@ from services.theater.numeric_v2_runtime import NumericV2Engine
 
 
 def test_completion_fact_eval_fixture_is_frozen_and_compiles():
-    """固定集必须同时覆盖阳性、阴性、计数和证据来源边界。"""  # noqa: DOCSTRING_CJK
+    """The fixed set must cover positive, negative, counting, and evidence-source boundaries."""  # noqa: DOCSTRING_CJK
 
     assert FIXTURE_VERSION == "completion_fact_review_zh_cn_v3"
     assert len(FIXED_CASES) == 10
@@ -27,7 +27,7 @@ def test_completion_fact_eval_fixture_is_frozen_and_compiles():
 
 
 def test_completion_fact_eval_reports_false_positive_and_false_negative():
-    """模型提议与 Runtime 接纳必须分别计算误记和漏记。"""  # noqa: DOCSTRING_CJK
+    """Calculate false memories and omissions separately for model proposals and Runtime acceptance."""  # noqa: DOCSTRING_CJK
 
     rows = [
         {

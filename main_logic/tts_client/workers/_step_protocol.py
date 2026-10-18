@@ -119,11 +119,11 @@ def _build_step_tts_create_data(sid_: str, voice_id: str, lang_hint, is_lanlan_a
         "sample_rate": 24000,
     }
     if is_lanlan_app:
-        # 发真实 voice_id（data 里已带传入值），由 www.lanlan.app 服务端透传给
-        # Gemini 并做映射；不再客户端硬覆盖成 Leda。
+        # Send actual voice_id already present in data; www.lanlan.app forwards it to
+        # Gemini and maps it, without forcing Leda on the client.
         data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
     else:
-        # lanlan.tech free 与标准 StepFun 当前都接受 voice_label。
+        # lanlan.tech free and standard StepFun currently both accept voice_label.
         if lang_hint == "ja":
             data["voice_label"] = {"language": "日语"}
     return data
@@ -150,9 +150,9 @@ def run_step_protocol_tts_worker(
     is_free = provider_key == "free"
     provider_label = "Lanlan free" if is_free else "StepFun"
 
-    # free + livestream 子模式：voice_id 优先取 api_providers.json 的
-    # livestream_config.voice_id（绕过 caller 的 free_voices preset 路径）。
-    # 多进程 worker 这里独立 import，与主进程对偶。
+    # Free + livestream mode prefers api_providers.json's livestream_config.voice_id,
+    # bypassing the caller's free_voices preset path.
+    # Import independently in the multiprocessing worker, symmetric with the main process.
     default_voice_id = get_stepfun_tts_default_voice(provider_key)
 
     if is_free:
@@ -163,8 +163,8 @@ def run_step_protocol_tts_worker(
                 if ls_voice:
                     voice_id = ls_voice
                 else:
-                    # 半配置状态（启用了但没填 voice_id）：明确告警，避免误以为
-                    # 直播音色已生效却实际还在用 caller 传入或默认 preset
+                    # Partially configured (enabled without voice_id): warn explicitly so users do not assume
+                    # livestream voices work while the caller-provided/default preset is still used.
                     logger.warning(
                         "livestream_config.enabled=true 但 voice_id 为空，"
                         f"继续使用 caller 传入或默认音色: {voice_id or default_voice_id}"
@@ -174,7 +174,7 @@ def run_step_protocol_tts_worker(
 
     voice_id = (voice_id or '').strip()
 
-    # 使用当前 provider 自己注册的默认音色。
+    # Use the current provider's own registered default voice.
     if not voice_id:
         voice_id = default_voice_id or STEPFUN_TTS_DEFAULT_VOICE
     else:
@@ -199,32 +199,32 @@ def run_step_protocol_tts_worker(
         receive_task = None
         session_id = None
         session_ready = asyncio.Event()
-        response_done = asyncio.Event()  # 用于标记当前响应是否完成
-        text_done_sent = False  # 防止同一轮次重复发送 tts.text.done
-        # 延迟 tts.create：等收到 TTS_LANG_DETECT_MIN_CHARS 个字符、检测完
-        # 语言后再发送 tts.create（lanlan.tech 的 voice_label.language /
-        # lanlan.app 的 language_code 都只能在建 session 时指定一次，
-        # 所以必须在首批文本到达后才能发），和 CosyVoice worker 对偶。
+        response_done = asyncio.Event()  # Mark whether the current response has completed.
+        text_done_sent = False  # Prevent duplicate tts.text.done for one round.
+        # Defer tts.create until TTS_LANG_DETECT_MIN_CHARS arrive and language detection completes.
+        # lanlan.tech voice_label.language and lanlan.app language_code can be set
+        # only once at session creation, so wait for the first text batch before
+        # sending, symmetric with the CosyVoice worker.
         session_created = False
         pending_text_buffer = ""
         pending_finish_retry_speech_id = None
-        # 服务端明确拒绝建连（配额 / 限流 / 黑白名单）的那一轮：剩余 chunk 与
-        # 收尾都丢弃，不再逐 chunk 重连或按 1s 重试收尾；下一轮回复照常再试。
+        # On explicit server connection refusal (quota / rate limit / allow/block lists), discard this round's remaining chunks
+        # and finalization; no per-chunk reconnect or 1s finalize retries. Retry normally next response.
         rejected_speech_id = None
-        # 黑白名单 / 路径错误这类永久拒绝：worker 报未就绪后退出，交给主进程的
-        # NO_RETRY 闸门，不再每轮回复都去撞一次。
+        # Permanent refusal such as allow/block lists or wrong paths: report not-ready and exit, using the main process
+        # NO_RETRY gate instead of repeating failure every response.
         permanent_rejection = False
         warmup_close_task = None
         deferred_requests = deque()
-        # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
+        # Streaming 24kHz->48kHz resampler, maintaining state across chunk boundaries.
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
-        # StepFun/免费上游首包后第一个 inter-chunk gap 偏大，会让开头几个字 jitter。
-        # 用与 qwen 对偶的共享 jitter buffer 攒出首包领先量盖过去。
+        # StepFun/free upstream's first inter-chunk gap is large, causing jitter over the opening words.
+        # Use the same shared jitter buffer as qwen to accumulate initial packet lead.
         audio_jitter = make_audio_jitter_buffer(response_queue)
-        # 上游 done 事件 = 本轮音频流关闭。两个 receive loop 共用同一个 emitter，
-        # 保证同一 speech_id 只发一次；重连 / 新 sid / 打断走 reset。
-        # 额外压一道 text_done_sent 闸：只有本轮已经发过 tts.text.done，done 事件
-        # 才可能是整轮收尾。上游若按句发 done，没这道闸就是早发。
+        # Upstream done closes this round's audio stream. Both receive loops share one emitter
+        # so each speech_id emits once; reset on reconnect / new sid / interruption.
+        # Also gate on text_done_sent: done can finalize the whole round only after this round
+        # sent tts.text.done. Without this gate, per-sentence upstream done events finalize too early.
         audio_done = AudioDoneEmitter(response_queue)
 
         def _emit_audio_done(bound_speech_id) -> None:
@@ -250,8 +250,8 @@ def run_step_protocol_tts_worker(
             if speech_id is not None and speech_id == rejected_speech_id:
                 return True
             if speech_id is not None:
-                # 把错误钉到被拒的那一轮：主进程按约定把紧随其后的 __error__
-                # 记到这个 speech_id，而不是此刻可能已切到下一轮的 current_speech_id。
+                # Bind errors to the rejected round: the main process attributes the immediately following __error__
+                # to this speech_id, never current_speech_id which may already identify the next round.
                 response_queue.put(("__tts_sentence_failed__", speech_id, ""))
             _enqueue_error(response_queue, classified)
             if classified["code"] in _PERMANENT_REJECTION_CODES:
@@ -330,8 +330,8 @@ def run_step_protocol_tts_worker(
             )
 
         async def _close_finished_round_socket(bound_ws) -> None:
-            # 每个新 speech_id 都会重新建连，收完一轮的 socket 不会被复用；
-            # 免费服务按连接时长计配额，留着它只会空挂计时。
+            # Each new speech_id reconnects; completed-round sockets are not reused.
+            # Free services charge connection duration, so keeping them open wastes quota.
             try:
                 await bound_ws.close()
             except Exception as close_exc:
@@ -389,9 +389,9 @@ def run_step_protocol_tts_worker(
                 _text_done_error_suppressed = False
                 session_created = False
 
-                # bound_speech_id 在建任务时钉死本轮 sid：sid 切换路径会先推进
-                # current_speech_id 再 await 关旧连接，此刻旧 receive 任务若读到
-                # 迟到的 done 事件，会把上一轮的收尾错标到新一轮。
+                # Pin bound_speech_id when creating the task: sid switching advances
+                # current_speech_id before awaiting old connection closure; a late done event read by
+                # the old receive task would otherwise misattribute the previous round's end to the new round.
                 async def receive_messages_after_reconnect(bound_ws, bound_speech_id):
                     nonlocal _text_done_error_suppressed, rejected_speech_id
                     cancelled = False
@@ -424,7 +424,7 @@ def run_step_protocol_tts_worker(
                             elif event_type in ["tts.response.done", "tts.response.audio.done"]:
                                 logger.debug(f"收到响应完成事件: {event_type}")
                                 audio_jitter.flush()
-                                # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
+                                # flush already enqueued the tail audio; only now is this round's audio stream truly closed.
                                 _emit_audio_done(bound_speech_id)
                                 response_done.set()
                                 if _round_finished(event_type):
@@ -453,7 +453,7 @@ def run_step_protocol_tts_worker(
             except Exception as reconnect_exc:
                 logger.warning("缓冲文本发送失败后的 TTS 重连失败: %s", reconnect_exc)
                 if _report_server_close(reconnect_exc, current_speech_id):
-                    # 与新语音建连被拒同一处理：本轮上报一次后整体放弃。
+                    # Handle like new-speech connection refusal: report once and abandon the whole round.
                     rejected_speech_id = current_speech_id
                     pending_text_buffer = ""
                 if ws:
@@ -572,9 +572,9 @@ def run_step_protocol_tts_worker(
                     }))
                     _record_tts_telemetry(provider_key, len(pending_text_buffer))
                 except Exception as e:
-                    # delta 发失败时连接多半已断，调用方不能继续发 tts.text.done；
-                    # 回滚 create 状态但保留 pending_text_buffer，让下一次调用
-                    # 重试完整的 create + 首段文本，而不是静默丢掉句首。
+                    # Failed delta sends usually mean disconnection, so callers must not send tts.text.done afterward.
+                    # Roll back create state but preserve pending_text_buffer, letting the next call
+                    # retry create plus initial text instead of silently losing the sentence's beginning.
                     logger.error(f"刷出缓冲文本失败: {e}")
                     session_created = False
                     if _reject_on_server_close(e):
@@ -602,7 +602,7 @@ def run_step_protocol_tts_worker(
             nonlocal text_done_sent
             if not ws or not session_id or current_speech_id is None or text_done_sent:
                 return False
-            # 若缓冲中还有不足 MIN_CHARS 的文本，强制刷出以保证短句也能合成。
+            # Force-flush buffered text below MIN_CHARS too so short sentences can synthesize.
             if not session_created and not await _flush_deferred_create(force=True):
                 return False
             try:
@@ -620,17 +620,17 @@ def run_step_protocol_tts_worker(
             return True
 
         try:
-            # 连接WebSocket
+            # Connect the websocket.
             headers = {"Authorization": f"Bearer {audio_api_key}"}
 
-            # close_timeout 限制预热连接关闭时最多残留多久（它在后台关，见下）。
+            # close_timeout bounds warmup-connection residue during background closure, described below.
             ws = await websockets.connect(
                 tts_url,
                 additional_headers=headers,
                 close_timeout=2.0,
             )
 
-            # 等待连接成功事件
+            # Wait for the successful-connection event.
             async def wait_for_connection():
                 """Wait for the connection to succeed"""
                 nonlocal session_id
@@ -650,30 +650,30 @@ def run_step_protocol_tts_worker(
                     if not _report_server_close(e):
                         _enqueue_error(response_queue, e)
 
-            # 等待连接成功
+            # Wait for successful connection.
             try:
                 await asyncio.wait_for(wait_for_connection(), timeout=5.0)
             except asyncio.TimeoutError:
                 logger.error("等待连接超时")
-                # 发送失败信号
+                # Send the failure signal.
                 response_queue.put(("__ready__", False))
                 return
 
             if not session_ready.is_set() or not session_id:
                 logger.error("连接未能正确建立")
-                # 发送失败信号
+                # Send the failure signal.
                 response_queue.put(("__ready__", False))
                 return
 
-            # 启动预热 session：这段只作为 WS 连通性验证，首个真实 speech_id
-            # 到达时会关闭重连。仍走一次 tts.create 保证旧逻辑的 ready 信号
-            # 时序不变（服务端确认 tts.response.created 后再 __ready__）。
+            # Start a warmup session solely to verify WebSocket connectivity; close and reconnect
+            # on the first real speech_id. Still send tts.create to preserve existing ready timing:
+            # emit __ready__ only after server confirmation via tts.response.created.
             create_data = _build_tts_create_data(session_id, None)
             create_event = {"type": "tts.create", "data": create_data}
             await ws.send(json.dumps(create_event))
             session_created = True
 
-            # 等待会话创建成功
+            # Wait for successful session creation.
             async def wait_for_session_ready():
                 try:
                     async for message in ws:
@@ -693,14 +693,14 @@ def run_step_protocol_tts_worker(
             except asyncio.TimeoutError:
                 logger.warning("会话创建超时")
 
-            # 发送就绪信号，通知主进程 TTS 已经可以使用
+            # Send ready to tell the main process TTS is usable.
             logger.info("%s TTS 已就绪，发送就绪信号", provider_label)
             response_queue.put(("__ready__", True))
 
-            # 预热连接只用来验证连通性：首个真实 speech_id 一定会重新建连，
-            # 它从不被复用。免费服务按连接时长计配额，留着它会一直空挂到
-            # 角色第一次开口（会话开着不说话时可达半小时）。
-            # 放到后台关：服务端迟迟不回关闭握手时不能挡住首轮语音。
+            # Warmup connections verify connectivity only and are never reused; the first real speech_id
+            # always reconnects. Free services charge connection duration, and retaining warmup would
+            # idle until the character first speaks, potentially half an hour in a silent session.
+            # Close in the background: delayed server close handshakes must not block the first spoken response.
             warmup_close_task = asyncio.create_task(
                 _close_finished_round_socket(ws)
             )
@@ -709,7 +709,7 @@ def run_step_protocol_tts_worker(
             session_ready.clear()
             session_created = False
 
-            # 主循环：处理请求队列
+            # Main loop: process the request queue.
             loop = asyncio.get_running_loop()
             while True:
                 if permanent_rejection:
@@ -752,8 +752,8 @@ def run_step_protocol_tts_worker(
                     break
 
                 if permanent_rejection:
-                    # 阻塞在取队列期间，接收任务可能已上报了永久拒绝；刚取出的
-                    # 这一轮也要收尾，不能静默丢掉。
+                    # While blocked on queue retrieval, the receiver may report permanent refusal; finalize
+                    # the just-dequeued round too rather than silently discarding it.
                     _signal_permanent_rejection_exit(sid)
                     break
 
@@ -770,9 +770,9 @@ def run_step_protocol_tts_worker(
                     sid = finish_speech_id
 
                 if sid == "__interrupt__":
-                    # 打断：立即关闭连接，不发 tts.text.done、不等服务器确认
+                    # Interruption: close immediately without tts.text.done or waiting for server confirmation.
                     audio_jitter.begin_interrupt()
-                    audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
+                    audio_done.begin_interrupt()  # Interrupted rounds send no audio_done; they use the independent cancellation channel.
                     try:
                         if receive_task and not receive_task.done():
                             receive_task.cancel()
@@ -799,7 +799,7 @@ def run_step_protocol_tts_worker(
                         pending_text_buffer = ""
                         rejected_speech_id = None
                         deferred_requests.clear()
-                        audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                        audio_jitter.reset()  # Interruption: discard buffered audio not yet released.
                         audio_jitter.end_interrupt()
                         audio_done.reset()
                         audio_done.end_interrupt()
@@ -809,19 +809,19 @@ def run_step_protocol_tts_worker(
                     sid == rejected_speech_id
                     or (sid is None and current_speech_id == rejected_speech_id)
                 ):
-                    # 这一轮已被服务端拒绝并上报过：剩余 chunk 与收尾都丢弃，
-                    # 不再逐个重连，也不往已被关掉的 socket 上发。
+                    # This round's server refusal was already reported: discard remaining chunks and finalization,
+                    # without reconnecting per chunk or sending on the closed socket.
                     if sid is None:
-                        # 收尾照样发 audio_done：主进程已把这一轮记为投递失败，
-                        # 等音频完成的调用方据此立刻以失败收场，而不是干等超时。
+                        # Still emit audio_done on finalization: main already marks delivery failed, letting audio-completion
+                        # waiters finish immediately with failure rather than waiting for timeout.
                         audio_done.emit(rejected_speech_id)
                     continue
 
                 if sid is None:
-                    # 正常结束（非阻塞）：发送完成信号，但不等待服务器确认、不关闭连接
-                    # 音频继续通过 receive_task 流入 response_queue。lanlan.app 由
-                    # receive_task 在 tts.response.done 后关连接；其余上游的连接由
-                    # 下次 speech_id 切换 / __interrupt__ 关闭
+                    # Normal nonblocking end: send completion without awaiting server confirmation or closing the connection.
+                    # Audio continues through receive_task into response_queue. lanlan.app's receive_task closes
+                    # after tts.response.done; other upstream connections close on
+                    # the next speech_id change / __interrupt__.
                     if ws and session_id and current_speech_id is not None and not text_done_sent:
                         if not await _finish_current_speech() and pending_text_buffer.strip():
                             await _queue_finish_retry(current_speech_id)
@@ -839,8 +839,8 @@ def run_step_protocol_tts_worker(
                     finish_requested = True
                     sid = current_speech_id
 
-                # 新语音，或当前语音的 socket 已失效：重新建立连接。
-                # 同一语音的恢复重连必须保留尚未发送成功的文本前缀。
+                # New speech or invalid current socket: reconnect.
+                # Recovery reconnections for the same speech must preserve unsent text prefixes.
                 is_new_speech = current_speech_id != sid
                 if is_new_speech or not ws or not session_id:
                     current_speech_id = sid
@@ -883,14 +883,14 @@ def run_step_protocol_tts_worker(
                         except asyncio.CancelledError:
                             # Expected after the explicit cancel directly above.
                             pass
-                    # 旧接收任务已完全停止后再重置流式状态：await ws.close() 会让出，
-                    # 期间旧 receive_task 可能写入晚到的 audio.delta，若提前重置会被残留污染下一轮
-                    resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
-                    audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
+                    # Reset streaming state only after the old receiver fully stops: await ws.close() yields,
+                    # allowing late audio.delta writes that would otherwise contaminate the next round after premature reset.
+                    resampler.clear()  # Reset resampler state; new-round audio must not continue the previous round.
+                    audio_jitter.reset()  # Reset jitter-buffer lead for the new round.
                     if is_new_speech:
-                        audio_done.reset()  # 新轮次重置 audio_done 去重标记
+                        audio_done.reset()  # Reset audio_done deduplication for the new round.
 
-                    # 建立新连接
+                    # Establish a new connection.
                     candidate_ws = None
                     try:
                         candidate_ws = await websockets.connect(
@@ -898,7 +898,7 @@ def run_step_protocol_tts_worker(
                             additional_headers=headers,
                         )
 
-                        # 等待连接成功
+                        # Wait for successful connection.
                         candidate_session_id = None
                         candidate_rejected = False
 
@@ -981,9 +981,9 @@ def run_step_protocol_tts_worker(
                         session_id = candidate_session_id
                         session_ready.set()
 
-                        # 延迟 tts.create 到首批文本到达后，由 _flush_deferred_create
-                        # 发送（带语言提示）。此处仅启动接收任务消费服务端事件。
-                        _text_done_error_suppressed = False  # 重连后重置错误抑制标记
+                        # Defer tts.create until the first text arrives, then send through _flush_deferred_create
+                        # with language hints. Start only the receiver task here to consume server events.
+                        _text_done_error_suppressed = False  # Reset error-suppression flags after reconnecting.
 
                         async def receive_messages(bound_ws, bound_speech_id):
                             nonlocal _text_done_error_suppressed, rejected_speech_id
@@ -1006,23 +1006,23 @@ def run_step_protocol_tts_worker(
                                             audio_b64 = event.get("data", {}).get("audio", "")
                                             if audio_b64:
                                                 audio_bytes = base64.b64decode(audio_b64)
-                                                # 使用 wave 模块读取 WAV 数据
+                                                # Read WAV data with wave.
                                                 with io.BytesIO(audio_bytes) as wav_io:
                                                     with wave.open(wav_io, 'rb') as wav_file:
-                                                        # 读取音频数据
+                                                        # Read audio data.
                                                         pcm_data = wav_file.readframes(wav_file.getnframes())
 
-                                                # 转换为 numpy 数组
+                                                # Convert to a NumPy array.
                                                 audio_array = np.frombuffer(pcm_data, dtype=np.int16)
-                                                # 使用流式重采样器 24000Hz -> 48000Hz
+                                                # Use a streaming 24000Hz -> 48000Hz resampler.
                                                 audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                                         except Exception as e:
                                             logger.error(f"处理音频数据时出错: {e}")
                                     elif event_type in ["tts.response.done", "tts.response.audio.done"]:
-                                        # 服务器明确表示音频生成完成，设置完成标志
+                                        # Server explicitly completed audio generation: set the completion flag.
                                         logger.debug(f"收到响应完成事件: {event_type}")
-                                        audio_jitter.flush()  # 放掉缓冲区里不足 steady 阈值的尾音
-                                        # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
+                                        audio_jitter.flush()  # Release buffered tail audio below the steady threshold.
+                                        # flush already enqueued the tail audio; only now is this round's audio stream truly closed.
                                         _emit_audio_done(bound_speech_id)
                                         response_done.set()
                                         if _round_finished(event_type):
@@ -1077,11 +1077,11 @@ def run_step_protocol_tts_worker(
                         await _queue_finish_retry(current_speech_id)
                     continue
 
-                # 检查文本有效性
+                # Validate text.
                 if not tts_text or not tts_text.strip():
                     continue
 
-                # 已发送 tts.text.done 后，丢弃同一轮次的残余文本（防止服务端报错）
+                # After tts.text.done, discard residual text from the same round to prevent server errors.
                 if text_done_sent:
                     logger.debug("TTS: 丢弃 text_done 之后的残余文本 chunk")
                     continue
@@ -1089,18 +1089,18 @@ def run_step_protocol_tts_worker(
                 if not ws or not session_id:
                     continue
 
-                # 尚未发送 tts.create 时，先缓冲 MIN_CHARS 个字符用于语言检测
+                # Before tts.create, buffer MIN_CHARS characters for language detection.
                 if not session_created:
                     if not text_staged_for_reconnect:
                         pending_text_buffer += tts_text
                     ready = await _flush_deferred_create(force=False)
                     if not ready:
                         continue
-                    # 已在 _flush_deferred_create 内把 pending_text_buffer 随 tts.create
-                    # 一起发出，无需再次发送当前 tts_text
+                    # _flush_deferred_create already sent pending_text_buffer with tts.create;
+                    # do not send the current tts_text again.
                     continue
 
-                # 发送文本
+                # Send text.
                 try:
                     text_event = {
                         "type": "tts.text.delta",
@@ -1114,11 +1114,11 @@ def run_step_protocol_tts_worker(
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     rejected_now = _reject_on_server_close(e)
-                    # 连接已关闭，标记为无效以便下次重连
+                    # Connection closed: mark invalid for reconnection next time.
                     ws = None
                     session_id = None
                     if not rejected_now:
-                        # 清空ID以强制下次重连；被拒的轮次保留 ID，让收尾能匹配上
+                        # Clear ID to force reconnection; retain rejected-round IDs so finalization can match them.
                         current_speech_id = None
                     session_created = False
                     pending_text_buffer = ""
@@ -1137,9 +1137,9 @@ def run_step_protocol_tts_worker(
                 _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
         finally:
-            # 清理资源
+            # Clean up resources.
             if warmup_close_task is not None and not warmup_close_task.done():
-                # close_timeout 兜底的后台关闭；worker 退出前给它一次收尾机会
+                # Background closure bounded by close_timeout; give it one final chance before worker exit.
                 try:
                     await asyncio.wait_for(asyncio.shield(warmup_close_task), timeout=2.5)
                 except Exception as e:
@@ -1159,7 +1159,7 @@ def run_step_protocol_tts_worker(
                     # Best-effort final cleanup; the worker is already exiting.
                     logger.debug("关闭 TTS WebSocket 资源失败: %s", e)
 
-    # 运行异步worker
+    # Run the async worker.
     try:
         asyncio.run(async_worker())
     except Exception as e:

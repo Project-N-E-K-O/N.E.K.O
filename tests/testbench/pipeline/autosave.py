@@ -1,79 +1,79 @@
 """Debounced autosave + boot-time recovery for the active session.
 
-PLAN §14 约定: 每次 session 状态变更触发 debounced autosave (默认 5s 防抖,
-60s 强制); 启动时扫 ``_autosave/`` 最近 24h 条目给 UI 恢复. 本模块是**纯
-工具层** — 不持有 FastAPI router, 不直接被前端调; router 层
-(``session_router``) 负责调度, UI 层 (``session_restore_modal.js``) 负责展示.
+PLAN §14: every session state change triggers debounced autosave (default 5s debounce,
+60s forced flush); scan ``_autosave/`` entries from the last 24h at startup for UI recovery. This is a **pure
+helper layer**, with no FastAPI router or direct frontend calls; the router
+(``session_router``) schedules work, while UI (``session_restore_modal.js``) presents it.
 
-设计三件套
+Three design components
 ==========
 
-1. :class:`AutosaveConfig` — 进程级单例配置 (enabled / debounce_seconds /
-   force_seconds / rolling_count / keep_window_hours), 默认值来自
-   ``config.AUTOSAVE_*``, runtime 可通过
-   ``POST /api/session/autosave/config`` 改.
+1. :class:`AutosaveConfig`: process-wide singleton config (enabled / debounce_seconds /
+   force_seconds / rolling_count / keep_window_hours), defaults from
+   ``config.AUTOSAVE_*``, adjustable at runtime through
+   ``POST /api/session/autosave/config``.
 
-2. :class:`AutosaveScheduler` — **每个 session 一个实例**, 挂在
-   ``Session.autosave_scheduler``.  跑一个后台 ``asyncio.Task`` 做 debounce
-   循环: 收到 :meth:`notify` 后, 等 ``debounce_seconds`` 没有新 notify 或
-   自首次 notify 起已过 ``force_seconds`` 就 flush. flush 失败不抛异常,
-   只记 ``_last_error`` + diagnostics, 下一轮 dirty 再重试.
+2. :class:`AutosaveScheduler`: **one instance per session**, attached to
+   ``Session.autosave_scheduler``. One background ``asyncio.Task`` runs the debounce
+   loop: after :meth:`notify`, flush once ``debounce_seconds`` passes without another notify or
+   ``force_seconds`` passes since the first. Flush failures do not raise,
+   only recording ``_last_error`` + diagnostics; retry on the next dirty cycle.
 
-3. 模块级 I/O 辅助函数 — :func:`write_autosave_slot` (rolling 3 份) /
-   :func:`list_autosaves` (供前端列表 + boot banner) /
-   :func:`read_autosave_archive_and_tarball` (单条加载用于 restore) /
-   :func:`delete_autosave_entry` (删单条) / :func:`cleanup_old_autosaves`
-   (启动清理 > 24h).
+3. Module-level I/O helpers: :func:`write_autosave_slot` (three rolling copies) /
+   :func:`list_autosaves` (frontend list + boot banner) /
+   :func:`read_autosave_archive_and_tarball` (load one for restore) /
+   :func:`delete_autosave_entry` (delete one) / :func:`cleanup_old_autosaves`
+   (startup cleanup beyond 24h).
 
-磁盘布局
+Disk layout
 ========
 
-``DATA_DIR/saved_sessions/_autosave/`` 下:
+Under ``DATA_DIR/saved_sessions/_autosave/``:
 
 .. code-block:: text
 
-    <session_id>.autosave.json              (slot 0, 最新)
+    <session_id>.autosave.json              (slot 0, newest)
     <session_id>.autosave.memory.tar.gz
     <session_id>.autosave.prev.json         (slot 1)
     <session_id>.autosave.prev.memory.tar.gz
-    <session_id>.autosave.prev2.json        (slot 2, 最旧)
+    <session_id>.autosave.prev2.json        (slot 2, oldest)
     <session_id>.autosave.prev2.memory.tar.gz
-    pre_load_<session_id>_<ts>.json         (P21 已实装, 无伴生 tar)
+    pre_load_<session_id>_<ts>.json         (P21 implemented, no companion tar)
 
-滚动写入 (每次 flush):
+Rolling writes (each flush):
 
-1. 删 slot 2 (tar 先, JSON 后; 符合 §3A F6).
+1. Delete slot 2 (tar first, JSON second; per §3A F6).
 2. rename slot 1 → slot 2.
 3. rename slot 0 → slot 1.
-4. 写新 slot 0 (tar 先, JSON 后; 都用 fsync 版的原子写).
+4. Write new slot 0 (tar first, JSON second; both fsync-backed atomic writes).
 
-slot 0 的 JSON 半写崩溃时, list 扫描标为 ``InvalidArchive``, 用户可从
-slot 1 / slot 2 恢复; 这是为什么要 3 份而不是 1 份.
+If slot 0 JSON is interrupted mid-write, list scanning marks ``InvalidArchive``; users can recover from
+slot 1 / slot 2, which is why there are three copies rather than one.
 
-为什么 autosave 强制 api_key 脱敏
+Why autosave mandates api_key redaction
 ----------------------------------
 
-和手动 Save 不同, autosave 是**自动**动作, 用户没有机会看"包含 API keys"
-的警告勾选框. 留 plaintext 的 autosave 文件在磁盘上易被意外分享 (备份
-到云 / 截图给别人看 / 压缩整个 ``testbench_data/`` 发邮件). PLAN §12
-明确 "autosave 永远脱敏"; 本模块强制 ``redact_api_keys=True``.
+Unlike manual Save, autosave is **automatic**, without an opportunity to inspect an include-API-keys
+warning checkbox. Plaintext autosaves on disk can be shared accidentally (cloud backup /
+screenshots / emailing compressed ``testbench_data/``). PLAN §12
+explicitly requires always-redacted autosaves; this module enforces ``redact_api_keys=True``.
 
-锁策略 (与 ``session.lock`` 的交互)
+Lock strategy (interaction with ``session.lock``)
 ------------------------------------
 
-``session_store.session_operation`` 若发现 ``session.lock.locked()`` 就立
-刻 409 (**不等**), 所以 scheduler 在 flush 时不能长时间占住 session.lock,
-否则用户所有动作都会频繁 409.  我们把 flush 拆成两段:
+``session_store.session_operation`` returns 409 immediately when ``session.lock.locked()``
+(**without waiting**), so flush must not hold session.lock long,
+or all user actions frequently get 409. Split flushing in two:
 
-* **快**段 (~几十 ms, 持 session.lock): ``serialize_session`` 做内存
-  deepcopy, 捕获 session 的字典状态到 :class:`persistence.SessionArchive`.
-* **慢**段 (百 ms 级, **不持** session.lock): ``pack_memory_tarball``
-  遍历 sandbox 文件 + ``os.replace`` 落盘. 期间用户若修改 memory 文件,
-  得到的 tar 可能"某些文件早, 某些文件晚"——这对 crash-recovery 类
-  autosave 是可接受的折衷; 比用"用户点击 → 409"更友好.
+* **Fast** (~tens of ms, holding session.lock): ``serialize_session`` deep-copies
+  in-memory session dictionaries into :class:`persistence.SessionArchive`.
+* **Slow** (hundreds of ms, **without** session.lock): ``pack_memory_tarball``
+  traverses sandbox files + ``os.replace`` persists them. Concurrent user edits to memory files
+  may yield a tar with some earlier and some later files, an acceptable tradeoff
+  for crash-recovery autosaves, friendlier than user clicks returning 409.
 
-单机内并发 flush (例如 flush_now 和 debounce 到期同时触发) 由模块内部
-``_flush_lock`` 串行化, 避免两份 flush 互相踩到 rolling rename.
+Serialize concurrent local flushes (e.g. flush_now coinciding with debounce expiry) via internal
+``_flush_lock``, preventing conflicting rolling renames.
 """
 from __future__ import annotations
 

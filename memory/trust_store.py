@@ -110,6 +110,7 @@ from utils.config_manager import get_config_manager
 # Module-level import on purpose (mirrors gates.py): this runs inside the
 # critical section, and a function-local import would lock the import
 # machinery along with the pool.
+from utils.asyncio_executor import to_thread_through_cancellation
 from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
 from memory.identity import (
@@ -223,8 +224,12 @@ _load_failed: bool = False
 # Cancellation safety: the whole critical section runs inside ONE
 # ``asyncio.to_thread``. Once handed off it cannot be cancelled — the awaiting
 # coroutine may be cancelled but the thread still finishes and still releases
-# the lock. Hence no shield / no second cancellation loop / no before-after
-# rollback: there is no "hold a lock across await" anywhere in this module.
+# the lock. Hence no before-after rollback: there is no "hold a lock across
+# await" anywhere in this module. The one exception to "a cancelled await
+# returns at once" is ``aapply_trust_mutations``: its CALLER may hold another
+# lock around the write (keyed scoped_history holds the fact persistence lock
+# so a forget cannot bump the generation in between), so on cancellation it
+# waits for its own worker to finish before re-raising.
 _pool_lock = threading.Lock()
 
 # Mutators are SYNCHRONOUS on purpose: "await inside the lock" and "take another
@@ -1160,9 +1165,10 @@ async def aapply_trust_mutations(
     """The single write entry point for trust evolution.
 
     LOCK ORDER: the pool lock is a LEAF. While holding it, never take another
-    lock, never await, and never call into ``FactStore``. This runs as the last
-    durable write of its handler, after every FactStore call, so the two lock
-    orders cannot overlap.
+    lock, never await, and never call into ``FactStore``. Callers may hold
+    other locks around this call (keyed scoped_history holds the fact
+    persistence lock: key_lock -> persist_alock -> pool lock); that is safe
+    exactly because nothing is acquired while the pool lock is held.
     """
     materialized = tuple(muts)
     if not materialized:
@@ -1175,7 +1181,8 @@ async def aapply_trust_mutations(
         captured["result"] = result
         return dirty, result
 
-    persisted, _ = await asyncio.to_thread(_with_pool_write, _mutator)
+    # On cancellation, wait for the writer thread before re-raising: callers may hold other locks while awaiting this write (see module cancellation-safety notes)
+    persisted, _ = await to_thread_through_cancellation(_with_pool_write, _mutator)
     base = captured.get("result") or TrustApplyResult(
         persisted=False,
         per_mutation=tuple(MutationOutcome() for _ in materialized),
@@ -1473,7 +1480,10 @@ async def areconcile_from_facts(fact_store, character_names) -> dict:
 def _account_limit_guard(
     entity: dict[str, Any], platform: str, incoming: Iterable[str],
 ) -> None:
-    from config import IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM
+    from config import (
+        IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM,
+        IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM,
+    )
 
     existing = {
         account_id for account_id in (entity.get("accounts") or {})
@@ -1483,13 +1493,22 @@ def _account_limit_guard(
         account_id for account_id in incoming
         if account_platform(account_id) == platform
     )
-    if len(existing) > IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM:
+    limit, reason = IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM, None
+    override = IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM.get(platform)
+    if override is not None and override[0] < limit:
+        limit, reason = override
+    if len(existing) <= limit:
+        return
+    if reason:
+        # Platform-specific tightened limits have different reasons; explain the reason rather than reporting only a number
         raise TrustIdentityError(
-            f"该实体在 {platform} 已有 "
-            f"{IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM} 个 account，"
-            f"无法再绑定；请先解绑一个",
+            f"{platform} 平台每个实体最多 {limit} 个 account，无法再关联：{reason}",
             status_code=409,
         )
+    raise TrustIdentityError(
+        f"该实体在 {platform} 已有 {limit} 个 account，无法再绑定；请先解绑一个",
+        status_code=409,
+    )
 
 
 def _merge_entities_locked(

@@ -5,20 +5,20 @@ import os
 import sys
 from unittest.mock import patch, MagicMock
 
-# 添加项目根目录到 sys.path
+# Add project root to sys.path.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-# 模拟 FastAPI app 或直接测试路由逻辑
-# 由于 system_router 依赖较多，我们直接测试其中的逻辑函数如果可行，
-# 或者使用 httpx 模拟对本地正在运行的服务器发起请求（如果环境允许）。
-# 这里我们选择模拟 httpx 对后端逻辑的调用。
+# Mock FastAPI app or test route logic directly.
+# system_router has many dependencies; test its logic functions directly where possible,
+# or use httpx against a running local server if environment allows.
+# Here mock httpx calls to backend logic.
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_meme_proxy_host_validation():
-    """验证 Meme Proxy 的域名校验逻辑（修复后的精确匹配/后缀匹配）"""
+    """Verify Meme Proxy domain validation (fixed exact/suffix matching)."""
     from main_routers.system_router import proxy_meme_image
-    # 为 client.stream 构建异步上下文管理器 Mock
+    # Build asynchronous context-manager mock for client.stream.
     from typing import AsyncIterator
     from contextlib import asynccontextmanager
     
@@ -39,24 +39,24 @@ async def test_meme_proxy_host_validation():
             
         return mock_stream
 
-    # 测试 case 1: 允许的域名 (精确匹配)
+    # Case 1: allowed exact domain.
     url_ok = "https://i.imgflip.com/test.jpg"
     with patch("httpx.AsyncClient.stream", side_effect=create_mock_stream(200, {"Content-Type": "image/jpeg"}, b"fake-image")):
         response = await proxy_meme_image(url_ok)
         assert response.status_code == 200
         
-    # 测试 case 2: 允许的子域名 (后缀匹配)
+    # Case 2: allowed subdomain via suffix matching.
     url_sub_ok = "https://sub.fabiaoqing.com/test.jpg"
     with patch("httpx.AsyncClient.stream", side_effect=create_mock_stream(200, {"Content-Type": "image/png"}, b"fake-image")):
         response = await proxy_meme_image(url_sub_ok)
         assert response.status_code == 200
 
-    # 测试 case 3: 恶意域名 (包含但不匹配)
+    # Case 3: malicious domain containing but not matching allowed name.
     url_evil = "https://i.imgflip.com.evil.com/test.jpg"
     response = await proxy_meme_image(url_evil)
     assert response.status_code == 403
     
-    # 测试 case 4: 无协议/非法 URL
+    # Case 4: absent scheme / invalid URL.
     url_invalid = "not-a-url"
     response = await proxy_meme_image(url_invalid)
     assert response.status_code == 400
@@ -64,12 +64,12 @@ async def test_meme_proxy_host_validation():
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_meme_proxy_redirect_safety():
-    """验证 Meme Proxy 在跟随重试时是否重新校验域名"""
+    """Verify Meme Proxy revalidates domains when following retries."""
     from main_routers.system_router import proxy_meme_image
     from contextlib import asynccontextmanager
     url_trigger = "https://i.imgflip.com/redirect"
     
-    # 模拟第一次返回 302 重定向到恶意域名
+    # Mock initial 302 redirect to malicious domain.
     mock_resp_302 = MagicMock()
     mock_resp_302.status_code = 302
     mock_resp_302.headers = {"Location": "http://malicious.com/ssrf"}
@@ -78,7 +78,7 @@ async def test_meme_proxy_redirect_safety():
     async def mock_stream_302(*args, **kwargs):
         yield mock_resp_302
 
-    # 模拟第二次返回（如果不校验就会访问这个）
+    # Mock second response (accessed if validation omitted).
     mock_resp_evil = MagicMock()
     mock_resp_evil.status_code = 200
     mock_resp_evil.headers = {"Content-Type": "image/jpeg"}
@@ -91,14 +91,14 @@ async def test_meme_proxy_redirect_safety():
         
     with patch("httpx.AsyncClient.stream", side_effect=[mock_stream_302(), mock_stream_evil()]) as mock_stream:
         response = await proxy_meme_image(url_trigger)
-        # 应该在第二次请求前拦截并返回 403
+        # Block before second request, returning 403.
         assert response.status_code == 403
         assert mock_stream.call_count == 1
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_meme_proxy_content_type_filtering():
-    """验证 Meme Proxy 是否只允许图片类型"""
+    """Verify Meme Proxy permits image types only."""
     from main_routers.system_router import proxy_meme_image
     url = "https://i.imgflip.com/not-an-image"
     
@@ -113,7 +113,7 @@ async def test_meme_proxy_content_type_filtering():
         
     with patch("httpx.AsyncClient.stream", side_effect=mock_stream_html):
         response = await proxy_meme_image(url)
-        # 应该因为内容类型不符返回 403
+        # Return 403 for disallowed content type.
         assert response.status_code == 403
 
 if __name__ == "__main__":

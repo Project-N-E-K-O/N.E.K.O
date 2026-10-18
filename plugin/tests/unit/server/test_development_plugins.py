@@ -367,10 +367,10 @@ async def test_corrupt_store_preserves_ordinary_startup_discovery(tmp_path, monk
         started.append(plugin_id)
 
     async def start_batch(independent, ordered=(), **kwargs):
-        # 自启动走分波并发入口，波次之间释放锁给排队的管理操作。
-        # 这个桩复刻它对外可观测的效果：并发组在前、按序组在后，每个插件各启动一次。
-        # 本测试关心的是"哪些插件被启动、顺序如何"，不关心并发本身
-        # （并发行为由 test_autostart_concurrency.py 专门钉住）。
+        # Autostart uses concurrent waves, releasing the lock between waves for queued management operations.
+        # This stub reproduces observable behavior: concurrent group first, sequential group second, starting each plugin once.
+        # This test checks which plugins start and in which order, not concurrency itself
+        # (which test_autostart_concurrency.py covers explicitly).
         for plugin_id in list(independent) + list(ordered):
             await start(plugin_id)
         return {"started": list(independent) + list(ordered), "failed": []}

@@ -23,7 +23,7 @@ from memory.facts import FactStore
 from utils.language_utils import get_global_language_full
 
 
-# ── routes 层 harness ────────────────────────────────────────────────
+# -- Routes-layer harness --
 
 
 def _persona_cand(entity: str, text: str) -> dict:
@@ -133,8 +133,8 @@ def _body(response) -> dict:
 
 @pytest.mark.asyncio
 async def test_persona_entities_fuse_concurrently(wire):
-    # 交叉握手：master 的融合要等 neko 已启动（反之亦然）才返回。串行实现里
-    # 第一个 entity 永远等不到第二个启动 → 超时；gather 并发则双双通过。
+    # Cross-handshake: master merging waits for neko to start, and vice versa. Serial execution leaves
+    # the first entity waiting forever for the second and times out; concurrent gather lets both pass.
     started = {"master": asyncio.Event(), "neko": asyncio.Event()}
 
     async def fuse(entity):
@@ -325,9 +325,9 @@ async def test_persona_all_too_large_returns_413(wire):
 
 @pytest.mark.asyncio
 async def test_persona_success_plus_too_large_returns_413_with_partial_counts(wire):
-    # 一个 entity 成功、另一个确定性太大：剩余的唯一问题就是 too_large（重试
-    # 无用，成功侧已有指纹幂等）→ 413「拆分」是正确引导；partial_import 里带上
-    # 已落盘计数，前端 too_large 分支据此广播 memory_edited。
+    # One entity succeeds while another is deterministically too large: only too_large remains, with retries
+    # useless and fingerprint idempotence protecting the successful side. Return 413 with splitting guidance and include
+    # persisted counts in partial_import so the frontend's too_large branch broadcasts memory_edited.
     wire(_FakePersonaManager({
         "master": {"added": 3, "skipped": 0, "fused": True},
         "neko": ExternalMemoryImportTooLargeError("neko too large"),
@@ -343,8 +343,8 @@ async def test_persona_success_plus_too_large_returns_413_with_partial_counts(wi
 
 @pytest.mark.asyncio
 async def test_persona_too_large_mixed_with_retryable_failure_returns_partial(wire):
-    # too_large 与「可重试失败」并存：先返回 partial（500）让可重试侧收敛，
-    # 收敛后只剩 too_large 自然浮出 413。
+    # When too_large coexists with retryable failure, return partial (500) first so the retryable side converges;
+    # once resolved, only too_large remains and naturally surfaces as 413.
     wire(_FakePersonaManager({
         "master": ExternalMemoryFusionError("transient fusion failure"),
         "neko": ExternalMemoryImportTooLargeError("neko too large"),
@@ -375,8 +375,8 @@ async def test_persona_one_retryable_failure_still_counts_successful_entity(wire
 
 @pytest.mark.asyncio
 async def test_daily_failed_days_returns_retryable_partial(wire):
-    # daily 有失败天时不能回 success（用户无重试信号，Greptile P1）：返回
-    # partial，且 added_facts 带上 MEMORY.md + 成功 daily 已落盘的数量。
+    # Failed daily days must not return success, depriving users of retry signals (Greptile P1); return
+    # partial with added_facts counting persisted MEMORY.md and successful daily entries.
     wire(
         _FakePersonaManager({
             "master": {"added": 1, "skipped": 0, "fused": True},
@@ -400,7 +400,7 @@ async def test_daily_failed_days_returns_retryable_partial(wire):
 
 @pytest.mark.asyncio
 async def test_daily_over_cap_returns_413_too_large(wire):
-    # aimport_external_daily 抛「天数超 cap」→ 413 too_large（前端引导拆分）。
+    # aimport_external_daily raising a day-count-cap error -> 413 too_large, prompting frontend splitting guidance.
     wire(
         _FakePersonaManager({
             "master": {"added": 1, "skipped": 0, "fused": True},
@@ -421,7 +421,7 @@ async def test_daily_over_cap_returns_413_too_large(wire):
     assert body["partial_import"]["added_persona"] == 2
 
 
-# ── daily 有界并发 ───────────────────────────────────────────────────
+# -- Bounded daily concurrency --
 
 
 class _DailyConcurrencyHarness(FactStore):
@@ -436,10 +436,10 @@ class _DailyConcurrencyHarness(FactStore):
         return []
 
     async def aload_facts_full(self, lanlan_name):
-        # 隔离真实盘：读路径（_acollect_day_fp_sources）现取 active+archive。
+        # Isolate real disk state: _acollect_day_fp_sources now reads active and archive sources.
         return []
 
-    # 隔离 sidecar 文件 IO：否则无 fact 载体天会读写真实 memory_dir。
+    # Isolate sidecar file IO, or days without fact carriers access real memory_dir.
     def _load_external_import_state(self, name):
         return {}
 
@@ -447,9 +447,9 @@ class _DailyConcurrencyHarness(FactStore):
         return None
 
     async def _aclear_day_fps(self, lanlan_name, fingerprints):
-        # 成功/persist 失败天的清理同样要隔离：真实 _clear_day_fps_locked 在
-        # exists 早退**之前**就 ensure_character_dir，会在真实 memory_dir 里
-        # mkdir 幽灵角色目录。
+        # Isolate cleanup for successful/persist-failed days too: real _clear_day_fps_locked calls
+        # ensure_character_dir before its exists early return, creating phantom
+        # character directories in real memory_dir.
         return None
 
     async def _allm_extract_facts(self, lanlan_name, messages, **_kwargs):
@@ -470,8 +470,8 @@ def _daily(source_file, event_date, text):
 
 @pytest.mark.asyncio
 async def test_daily_days_extract_concurrently():
-    # 与 persona 同款交叉握手：两天互相等待对方的 LLM 调用已启动。串行实现
-    # 会在第一天上超时；有界并发（上限≥2）双双通过。
+    # Cross-handshake as with persona: each day waits for the other's LLM call to start. Serial execution
+    # times out on day one; bounded concurrency with a limit >=2 lets both pass.
     started = {"a": asyncio.Event(), "b": asyncio.Event()}
 
     async def extract(text):
@@ -497,9 +497,9 @@ async def test_daily_days_extract_concurrently():
 
 @pytest.mark.asyncio
 async def test_daily_concurrency_is_bounded_by_semaphore():
-    # 交叉握手只证明「能并行」；无界 gather 同样能过。这里用活跃计数器证明
-    # 峰值并发被 Semaphore 钉在 EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY 以内
-    # （误删限流时本测试变红），同时峰值 ≥2 佐证确实在并发（CodeRabbit）。
+    # Cross-handshaking proves only parallelism; unbounded gather also passes. An active counter proves
+    # Semaphore caps peak concurrency at EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY
+    # (removing throttling fails this test), while a peak >=2 confirms actual concurrency (CodeRabbit).
     from config import EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY
 
     active = 0
@@ -509,7 +509,7 @@ async def test_daily_concurrency_is_bounded_by_semaphore():
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
-        await asyncio.sleep(0.05)  # 让所有并发槽真正重叠
+        await asyncio.sleep(0.05)  # Make all concurrent slots genuinely overlap.
         active -= 1
         return [{"text": f"fact for {text[:12]}", "importance": 5}]
 
@@ -529,8 +529,8 @@ async def test_daily_concurrency_is_bounded_by_semaphore():
 
 @pytest.mark.asyncio
 async def test_daily_crashing_day_is_counted_failed_and_others_survive():
-    # 单日抽取崩溃（异常而非 None）也必须 best-effort：计入 failed_days，
-    # 不拖垮其他天（gather return_exceptions 语义）。
+    # A day's extraction exception, rather than None, must also remain best-effort: count failed_days
+    # without breaking other days, following gather return_exceptions semantics.
     async def extract(text):
         if "bad" in text:
             raise RuntimeError("provider exploded")

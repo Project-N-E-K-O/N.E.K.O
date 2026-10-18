@@ -1,13 +1,13 @@
-"""主动搭话 action_note 元数据回写测试。
+"""Tests for proactive-chat action_note metadata history updates.
 
-覆盖两层契约：
-1. ``build_proactive_action_note``：根据 primary_channel + source_links 构造的
-   一行 [...] 注解，必须包含本轮实际投递的素材信息（歌名/艺人/来源），且在
-   素材缺失时返回空串而不是凭空编出"未知 - 未知"骚扰 LLM 上下文。模板里对人
-   的称呼一律用 master_name 实名展开，不写"主人"这类物化称呼。
-2. ``finish_proactive_delivery(action_note=...)``：注解只进
-   ``_conversation_history``（→ memory_context），不进 send_lanlan_response、
-   不进 TTS。
+Cover two contract layers:
+1. build_proactive_action_note constructs a single [...] annotation from primary_channel + source_links,
+   containing actual delivered material information (song/artist/source) and returning
+   empty when material is missing, rather than fabricating unknown-unknown context noise. References to people
+   always expand master_name, never objectifying owner labels.
+2. finish_proactive_delivery(action_note=...) adds annotations only to
+   _conversation_history (and thus memory_context), never send_lanlan_response
+   or TTS.
 """
 import asyncio
 import os
@@ -30,17 +30,17 @@ from main_logic.proactive_chat.delivery import (
 from main_logic.session_state import SessionStateMachine
 from main_routers.system_router.proactive_parsing import _extract_links_from_raw
 
-# 测试公用 master_name —— 任何字符串都行，关键是验证它会被原样展开进 note，
-# 而不是被替换成"主人/master/ご主人さま"等物化称呼。
+# Shared test master_name can be any string; verify literal expansion into notes,
+# without replacement by objectifying labels like 主人/master/ご主人さま.
 MASTER = "小明"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# build_proactive_action_note —— 纯函数行为
+# build_proactive_action_note: pure-function behavior.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_action_note_empty_when_no_source_links():
-    """source_links 为空（chat / vision / 没找到素材）→ 空串，不污染历史。"""
+    """Empty source_links (chat / vision / missing material) return empty without polluting history."""
     assert build_proactive_action_note('music', [], 'zh', master_name=MASTER) == ''
     assert build_proactive_action_note('music', None, 'zh', master_name=MASTER) == ''
 
@@ -64,31 +64,31 @@ def test_action_note_escapes_community_title_prompt_boundaries():
 
 
 def test_action_note_vision_channel_always_empty():
-    """vision 通道：屏幕本身是用户那侧已有的画面，不是 AI 分享出去的素材，
-    哪怕 source_links 不空也不写 note。"""
+    """Vision: screens already belong to the user's side rather than externally shared AI material;
+    write no note even with nonempty source_links."""
     links = [{'title': '某曲', 'artist': 'X', 'source': '音乐推荐', 'type': 'music'}]
     assert build_proactive_action_note('vision', links, 'zh', master_name=MASTER) == ''
 
 
 def test_action_note_chat_unknown_empty_when_no_source_links():
-    """chat / unknown / 空通道 + source_links 空 → 空串。
-    （AI 自己说的话已经在 full_text 里，无外部素材时不需要追加元数据。）"""
+    """Chat / unknown / empty channel plus empty source_links returns empty.
+    AI speech is already in full_text, so no external material means no extra metadata."""
     assert build_proactive_action_note('chat', [], 'zh', master_name=MASTER) == ''
     assert build_proactive_action_note('unknown', [], 'zh', master_name=MASTER) == ''
     assert build_proactive_action_note('', [], 'zh', master_name=MASTER) == ''
 
 
 def test_action_note_chat_channel_with_music_fallback_uses_music_note():
-    """关键回归（Codex review #1041 找出的 case）：
+    """Key regression found by Codex review #1041:
 
-    主路径里 ``should_try_music_fallback`` 允许 LLM Phase 2 输出 [CHAT]
-    （→ primary_channel='chat'）时仍然把 music tracks 追加进 source_links
-    并设 is_music_used=True，用户那侧**实际听到了歌**。此时 action_note
-    必须按 music 模板出，否则 AI 下一轮反问"刚才放的什么"还是答不上来——
-    PR 要解决的核心痛点丢失。
+    should_try_music_fallback allows Phase 2 [CHAT] output
+    (primary_channel='chat') while still adding music tracks to source_links
+    and setting is_music_used=True; the user actually hears music. action_note
+    must then use the music template or the AI still cannot answer which song just played,
+    losing the PR's core fix.
 
-    旧实现按 primary_channel 严格分支返回空串；新实现在 chat/unknown 通道
-    回退探测 source_links 实际素材。
+    The old implementation branched strictly on primary_channel and returned empty; now chat/unknown
+    inspect actual source_links material as fallback.
     """
     links = [{
         'title': '稻香',
@@ -174,7 +174,7 @@ async def test_music_delivery_reports_effective_source_mode(
 
 
 def test_action_note_unknown_channel_falls_back_to_source_links():
-    """unknown / 空通道也走探测路径，按 music > meme > web 优先级匹配。"""
+    """Unknown / empty channels also inspect material with music > meme > web priority."""
     music_link = {'title': 'T', 'artist': 'A', 'source': '音乐推荐', 'type': 'music'}
     meme_link = {'title': 'M', 'source': '微博', 'type': 'meme'}
 
@@ -184,7 +184,7 @@ def test_action_note_unknown_channel_falls_back_to_source_links():
     note_meme = build_proactive_action_note('', [meme_link], 'zh', master_name=MASTER)
     assert 'M' in note_meme and '微博' in note_meme
 
-    # music + meme 共存 → 优先 music
+    # Music and memes together: prioritize music.
     note_both = build_proactive_action_note(
         'unknown', [meme_link, music_link], 'zh', master_name=MASTER,
     )
@@ -208,8 +208,8 @@ def test_action_note_music_includes_title_and_artist():
 
 
 def test_action_note_does_not_use_dehumanizing_terms():
-    """禁止字面量"主人 / master / ご主人さま / 주인 / хозяин"出现在注解里——这是
-    物化称呼，所有语言都必须用 master_name 实名展开。"""
+    """Forbid literal objectifying labels 主人 / master / ご主人さま / 주인 / хозяин in annotations;
+    every language must expand the actual master_name instead."""  # noqa: DOCSTRING_CJK
     links = [{'title': 'T', 'artist': 'A', 'source': '音乐推荐', 'type': 'music'}]
     forbidden = ['主人', 'master', 'Master', 'ご主人', '주인', 'хозяин', 'Хозяин']
     for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
@@ -219,7 +219,7 @@ def test_action_note_does_not_use_dehumanizing_terms():
 
 
 def test_action_note_master_name_is_expanded_literally():
-    """master_name 应该原样展开进 note，不被替换或加前缀。"""
+    """Expand master_name unchanged, without replacement or prefixes."""
     links = [{'title': 'T', 'artist': 'A', 'source': '音乐推荐', 'type': 'music'}]
     for name in ('小明', 'Alice', 'mochi', '猫猫'):
         note = build_proactive_action_note(
@@ -229,8 +229,8 @@ def test_action_note_master_name_is_expanded_literally():
 
 
 def test_action_note_music_skips_unrelated_links():
-    """primary_channel=music 但 source_links 里只有 web 链接（异常路径）→ 空串。
-    避免拿一个 web 标题当歌名编出"《某条新闻》— 未知艺术家"。"""
+    """Music channel with only web links in source_links, an abnormal path, returns empty.
+    Never invent a song from a news title with an unknown artist."""
     links = [{
         'title': '某条新闻',
         'url': 'https://news.example.com/x',
@@ -240,8 +240,8 @@ def test_action_note_music_skips_unrelated_links():
 
 
 def test_action_note_music_picks_music_link_among_others():
-    """source_links 里 web link 在前、music link 在后（fallback 路径常见），
-    music 通道仍要挑出 music 那条。"""
+    """When source_links lists web before music, common in fallback paths,
+    the music channel still selects the music entry."""
     links = [
         {'title': '一条新闻', 'source': '微博', 'type': 'web'},
         {'title': '夜曲', 'artist': '周杰伦', 'source': '音乐推荐', 'type': 'music'},
@@ -266,7 +266,7 @@ def test_action_note_meme_uses_title_and_source():
 
 
 def test_action_note_meme_falls_back_when_type_missing():
-    """meme 通道但素材没填 type=meme（早期 fallback 链路），按非音乐链接兜底。"""
+    """Meme channel with material lacking type=meme, from early fallback paths, uses nonmusic links as fallback."""
     links = [{
         'title': '一只柴犬',
         'url': 'https://example.com/d.png',
@@ -278,9 +278,9 @@ def test_action_note_meme_falls_back_when_type_missing():
 
 
 def test_action_note_web_skips_music_recommendations_appended_at_tail():
-    """real-world：primary_channel=web 时，build_proactive_response 先放 web link，
-    随后 _append_music_recommendations 可能把音乐 rec 追加到 source_links 末尾
-    （music fallback 路径）。web 注解不能错挑成那条音乐项。"""
+    """Real-world web channel: build_proactive_response adds a web link first,
+    then _append_music_recommendations can append music recs through fallback.
+    Web annotations must not mistakenly select that music entry."""
     links = [
         {'title': 'AI 大新闻', 'source': '36kr', 'mode': 'news'},
         {'title': '《起风了》', 'artist': '吴青峰', 'source': '音乐推荐', 'type': 'music'},
@@ -292,13 +292,13 @@ def test_action_note_web_skips_music_recommendations_appended_at_tail():
 
 
 def test_action_note_web_subchannels_all_route_to_web_template():
-    """web/news/video/home/personal/window 这几个细粒度子通道共享 web 模板。
+    """Web/news/video/home/personal/window subchannels share the web template.
 
-    集合必须与 ``main_routers/system_router.py:build_proactive_response`` 里
-    ``web_link.get('mode', 'web')`` 产出的 mode 同步（参见
-    PROACTIVE_SOURCE_LABELS keys）。漏 'window' 是 CodeRabbit review #1041
-    找出的回归 bug：window 通道会落到 chat fallback、被 music-first 优先级
-    误识别成"放歌"。
+    Keep this set synchronized with modes produced by
+    main_routers/system_router.py:build_proactive_response's web_link.get('mode', 'web')
+    (see PROACTIVE_SOURCE_LABELS keys). Missing window caused CodeRabbit review #1041's
+    regression: window fell back to chat, where music-first priority
+    misclassified it as playing music.
     """
     link = {'title': 'foo', 'source': 'bar'}
     for ch in ('web', 'news', 'community', 'video', 'home', 'personal', 'window'):
@@ -366,10 +366,10 @@ def test_extract_links_from_news_raw_data_includes_tieba_material():
 
 
 def test_action_note_window_channel_with_music_recs_does_not_pick_music():
-    """关键回归（CodeRabbit review #1041 #2）：window 通道下，即便 source_links
-    里同时混进 music recs（_append_music_recommendations 仍可能把音乐 track
-    追加进 web/window 路径的 source_links），window note 也必须按 web 模板
-    出，不能被 music-first 优先级误识别成"放歌"。"""
+    """Key regression from CodeRabbit review #1041 #2: even when source_links
+    mixes music recommendations into window (as _append_music_recommendations may append
+    tracks to web/window source_links), window notes must use the web template
+    rather than music-first misclassification."""
     links = [
         {'title': '搜索结果', 'source': 'B站', 'mode': 'window'},
         {'title': '稻香', 'artist': '周杰伦', 'source': '音乐推荐', 'type': 'music'},
@@ -377,15 +377,15 @@ def test_action_note_window_channel_with_music_recs_does_not_pick_music():
     note = build_proactive_action_note('window', links, 'zh', master_name=MASTER)
     assert '搜索结果' in note
     assert 'B站' in note
-    assert '稻香' not in note  # music 不能抢走 window note
+    assert '稻香' not in note  # Music must not displace window notes.
     assert '周杰伦' not in note
 
 
 def test_action_note_uses_placeholder_for_missing_fields():
-    """title/artist/source 缺失时按本地化占位符兜底，不出现 'None'。"""
+    """Missing title/artist/source use localized placeholders, never None."""
     note = build_proactive_action_note(
         'music',
-        [{'type': 'music', 'source': '音乐推荐'}],  # 缺 title + artist
+        [{'type': 'music', 'source': '音乐推荐'}],  # Missing title and artist.
         'zh',
         master_name=MASTER,
     )
@@ -395,8 +395,8 @@ def test_action_note_uses_placeholder_for_missing_fields():
 
 
 def test_action_note_empty_master_falls_back_to_neutral_placeholder():
-    """master_name 传空时按本地化中性占位符兜底（"对方/them/相手/상대/собеседника"），
-    保证不出现"主人"等物化称呼。"""
+    """Empty master_name uses localized neutral placeholders (对方/them/相手/상대/собеседника),
+    never objectifying labels such as 主人."""  # noqa: DOCSTRING_CJK
     links = [{'title': 'T', 'artist': 'A', 'source': '音乐推荐', 'type': 'music'}]
     note_zh = build_proactive_action_note('music', links, 'zh', master_name='')
     note_en = build_proactive_action_note('music', links, 'en', master_name='')
@@ -407,26 +407,26 @@ def test_action_note_empty_master_falls_back_to_neutral_placeholder():
 
 
 def test_action_note_localizes_template_per_language():
-    """同一组数据按 language 走不同模板。"""
+    """Identical data uses different templates by language."""
     links = [{'title': 'Hello', 'artist': 'Adele', 'source': '音乐推荐', 'type': 'music'}]
     zh = build_proactive_action_note('music', links, 'zh', master_name=MASTER)
     en = build_proactive_action_note('music', links, 'en', master_name=MASTER)
     ja = build_proactive_action_note('music', links, 'ja', master_name=MASTER)
-    # 各语言都包含 master_name + 标题 + 艺人
+    # Every language includes master_name, title, and artist.
     for note in (zh, en, ja):
         assert MASTER in note
         assert 'Hello' in note
         assert 'Adele' in note
-    # 各语言模板应当不同（最起码不会三种语言输出相同字符串）
+    # Language templates differ; at minimum three languages must not produce identical strings.
     assert len({zh, en, ja}) == 3
 
 
 def test_action_note_unknown_language_falls_back_to_english():
-    """_loc 静默回退：未翻译语言走英文模板。
+    """_loc silently falls back to English for untranslated languages.
 
-    断言与 'en' 输出**完全等价**（不只是 master_name/title/artist 包含），
-    否则误回退到别的本地化也能 pass。用 'fr' 这种真正未翻译的码触发回退；
-    'es' / 'pt' 现在已经有完整翻译，不再适合做回退测试样本。"""
+    Assert exact equality with en, not merely master_name/title/artist inclusion,
+    which could also pass with the wrong localization. Use genuinely untranslated fr;
+    es/pt now have full translations and are unsuitable fallback cases."""
     links = [{'title': 'X', 'artist': 'Y', 'source': '音乐推荐', 'type': 'music'}]
     note_fr = build_proactive_action_note('music', links, 'fr', master_name=MASTER)
     note_en = build_proactive_action_note('music', links, 'en', master_name=MASTER)
@@ -434,25 +434,25 @@ def test_action_note_unknown_language_falls_back_to_english():
 
 
 def test_action_note_normalizes_region_language_codes():
-    """回归（CodeRabbit review #1041）：caller 传区域标签（zh-CN / ja-JP / en-US 等）
-    时，placeholders 和 _loc 都要走对应短码模板，不能双双落到英文兜底导致丢失
-    本地化。生产 caller 通常已经传短码，但这是防御性护栏。"""
+    """CodeRabbit #1041 regression: regional tags such as zh-CN / ja-JP / en-US
+    must map both placeholders and _loc to their short-code templates, preserving localization
+    rather than falling back twice to English. Production usually supplies short codes; this is defensive."""
     links = [{'title': 'X', 'artist': 'Y', 'source': '音乐推荐', 'type': 'music'}]
     note_full = build_proactive_action_note('music', links, 'zh-CN', master_name=MASTER)
     note_short = build_proactive_action_note('music', links, 'zh', master_name=MASTER)
-    # 区域标签和短码应得到等价的中文模板输出
+    # Regional tags and short codes yield equivalent Chinese templates.
     assert note_full == note_short
-    # 兜底：归一化失败也不应回落英文 placeholder（"Unknown Artist"）
+    # Fallback: failed normalization must not revert to English placeholders like Unknown Artist.
     note_ja_full = build_proactive_action_note('music', links, 'ja-JP', master_name=MASTER)
     assert 'Unknown Artist' not in note_ja_full
 
 
 def test_action_note_russian_master_fallback_stays_grammatically_consistent():
-    """回归（CodeRabbit review #1041 #1）：ru placeholders.master 是 'собеседника'
-    （genitive 形式），三条 ru 模板都用 'для + genitive' 介词结构（避免之前
-    'с {master}' instrumental 与 fallback genitive 冲突的 case mismatch）。
-    空名兜底必须给出语法自洽的句子，不能出现 'с собеседника' 这种 instrumental
-    介词配 genitive 名词的拼接错误。
+    """CodeRabbit #1041 #1 regression: ru placeholders.master is genitive собеседника;
+    all three Russian templates use для + genitive, avoiding the previous mismatch between
+    instrumental с {master} and genitive fallback.
+    Empty-name fallbacks must remain grammatical, without с собеседника mixing
+    an instrumental preposition and a genitive noun.
     """
     music_links = [{'title': 'X', 'artist': 'Y', 'source': '音乐推荐', 'type': 'music'}]
     meme_links = [{'title': 'M', 'source': 'src', 'type': 'meme'}]
@@ -460,17 +460,17 @@ def test_action_note_russian_master_fallback_stays_grammatically_consistent():
 
     for primary, links in (('music', music_links), ('meme', meme_links), ('web', web_links)):
         note = build_proactive_action_note(primary, links, 'ru', master_name='')
-        # fallback 'собеседника' 出现在 для 之后是合法 genitive
+        # Fallback собеседника correctly uses genitive after для.
         assert 'собеседника' in note
-        # 不能出现 'с собеседника'（instrumental 介词 + genitive 名词的混搭）
+        # Forbid с собеседника, mixing an instrumental preposition with a genitive noun.
         assert ' с собеседника' not in note
-        assert ' с собеседника' not in note  # 防御 NBSP
+        assert ' с собеседника' not in note  # Guard NBSP.
 
 
 def test_action_note_collapses_multiline_title_into_single_line():
-    """回归（CodeRabbit review #1041）：action_note 是单行元数据，title/artist/source/
-    master_name 任一含 \\n / \\r / \\t 时必须强制压成一行；否则 AIMessage.content
-    被破坏成多行，下游 LLM context 渲染会把 note 误当对话内容。"""
+    """CodeRabbit #1041 regression: action_note is single-line metadata; title/artist/source/
+    master_name containing \\n / \\r / \\t must collapse to one line, or AIMessage.content
+    becomes multiline and downstream context rendering mistakes metadata for dialogue."""
     links = [{
         'title': '稻香\n副标题',
         'artist': '周杰伦\t',
@@ -481,19 +481,19 @@ def test_action_note_collapses_multiline_title_into_single_line():
     assert '\n' not in note
     assert '\r' not in note
     assert '\t' not in note
-    # 关键内容仍保留（空白被折叠成单空格）
+    # Preserve key content while collapsing whitespace to single spaces.
     assert '稻香' in note and '副标题' in note
     assert '周杰伦' in note
     assert '小明' in note
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# finish_proactive_delivery(action_note=...) —— action_note 只进历史
+# finish_proactive_delivery(action_note=...): action_note enters history only.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def _make_mgr() -> LLMSessionManager:
-    """复用 test_proactive_sid_guard.py 的最小 manager 装配。"""
+    """Reuse the minimal manager setup from test_proactive_sid_guard.py."""
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.use_tts = True
     mgr.tts_cache_lock = asyncio.Lock()
@@ -528,8 +528,8 @@ def _make_mgr() -> LLMSessionManager:
 
 @pytest.mark.asyncio
 async def test_finish_proactive_delivery_appends_action_note_to_history():
-    """action_note 非空 → AIMessage 内容尾部追加 \\n + note；send_lanlan_response
-    收到的仍是裸 full_text（前端不会展示这条元数据）。"""
+    """Nonempty action_note appends \\n + note to AIMessage content; send_lanlan_response
+    still receives bare full_text, so frontend never displays metadata."""
     mgr = _make_mgr()
     mgr.current_speech_id = "s"
     mgr.session = MagicMock()
@@ -545,7 +545,7 @@ async def test_finish_proactive_delivery_appends_action_note_to_history():
     history_text = mgr.session._conversation_history[0].content
     assert "给你放首歌～" in history_text
     assert note in history_text
-    # 前端不能看到 note：send_lanlan_response 只收 full_text
+    # Frontend never sees notes: send_lanlan_response receives full_text only.
     sent_text = mgr.send_lanlan_response.call_args.args[0]
     assert sent_text == "给你放首歌～"
     assert note not in sent_text
@@ -553,7 +553,7 @@ async def test_finish_proactive_delivery_appends_action_note_to_history():
 
 @pytest.mark.asyncio
 async def test_finish_proactive_delivery_empty_action_note_unchanged():
-    """action_note 为空串/None → 历史与原行为完全一致（不引入多余换行）。"""
+    """Empty/None action_note preserves previous history behavior exactly, without extra newlines."""
     mgr = _make_mgr()
     mgr.current_speech_id = "s"
     mgr.session = MagicMock()
@@ -573,9 +573,9 @@ async def test_finish_proactive_delivery_empty_action_note_unchanged():
     )
     assert mgr2.session._conversation_history[0].content == "纯聊天内容"
 
-    # 纯空白（含换行/Tab）也应等同空：finish 内 action_note.strip() == '' 走
-    # no-op。钉死这个契约——避免未来漏 strip() 让"几个空白字符"作为 note 行
-    # 污染 _conversation_history。
+    # Whitespace-only notes, including newlines/tabs, count as empty: finish's action_note.strip()=='' is a
+    # noop. Preserve this contract so a future missing strip() cannot pollute
+    # _conversation_history with whitespace note lines.
     mgr3 = _make_mgr()
     mgr3.current_speech_id = "s"
     mgr3.session = MagicMock()
@@ -588,7 +588,7 @@ async def test_finish_proactive_delivery_empty_action_note_unchanged():
 
 @pytest.mark.asyncio
 async def test_finish_proactive_delivery_action_note_skipped_on_sid_mismatch():
-    """sid 不匹配（用户已接管）时整轮 finish 短路，action_note 也不能漏写进历史。"""
+    """A mismatched sid after user takeover short-circuits finish entirely; action_note must not leak into history either."""
     mgr = _make_mgr()
     mgr.current_speech_id = "s_user"
     mgr.session = MagicMock()

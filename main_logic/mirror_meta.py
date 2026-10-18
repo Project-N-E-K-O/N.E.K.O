@@ -91,9 +91,9 @@ def is_mirror_event_memory_disabled(event: dict) -> bool:
     below unchanged, so an event payload from an external controller cannot
     opt a line into ordinary memory against the host's own policy.
     """
-    # 显式键只能「关」：串门的所有 mirror event 都带 {'memory_enabled': False}，
-    # 不再依赖「无用户输入 → 过滤」的默认分支。True 不能当「开」用——小游戏等
-    # 外部控制器的 event 会原样保留调用方给的键，借它就能绕过宿主自己的记忆策略
+    # Explicit keys may only disable: every visit mirror event carries {'memory_enabled': False},
+    # independent of the default no-user-input filter. True cannot enable memory: external controllers
+    # such as mini-games retain caller-supplied keys and could otherwise bypass the host's memory policy.
     if event.get("memory_enabled") is False:
         return True
     has_user_input = event.get("hasUserSpeech") is True or event.get("hasUserText") is True

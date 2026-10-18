@@ -90,8 +90,9 @@ import json
 import math
 import os
 import sys
+import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Any
 
@@ -103,6 +104,7 @@ from config import (
     HYBRID_RECALL_POOL_CACHE_MAX_FILES,
     HYBRID_RECALL_RRF_K,
     HYBRID_RECALL_TIME_BUDGET,
+    HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES,
     HYBRID_RECALL_VEC_CACHE_MAX_BYTES,
 )
 from memory.evidence import evidence_score
@@ -129,10 +131,10 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
     multiplicity* (a list with duplicates, no dedup).
 
     Why not reuse ``_extract_keywords``: that one returns ``set[str]`` —
-    duplicate terms within a doc get deduped → BM25's TF signal dies ("博士"
+    duplicate terms within a doc get deduped → BM25's TF signal dies (\"博士\"
     appearing 5 times scores the same as once; BM25 degrades into BM1). The set
     semantics of ``_extract_keywords`` serve the ``_is_mentioned`` /
-    ``anti_repeat`` use cases ("did it appear", not caring how many times),
+    ``anti_repeat`` use cases (\"did it appear\", not caring how many times),
     which differs from retrieval BM25's goal. So this module implements a local
     list-semantics tokenize whose splitting rules strictly mirror persona's
     (shared _SPLIT_RE + same CJK threshold + 2/3-grams + whole-Latin-run split);
@@ -147,14 +149,14 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
 
     Traditional Chinese is folded onto Simplified first (#2584). Both the
     query and the documents come through here, so the fold is symmetric and
-    never has to guess which script the user "meant" — it only has to make
+    never has to guess which script the user \"meant\" — it only has to make
     the two agree. It runs *before* stop-name stripping, and the stop names
     are folded with it, so a name configured in one script still strips out
     of text written in the other.
     """  # noqa: DOCSTRING_CJK
-    # Lazy import: 跟着 _extract_keywords 一起借 _SPLIT_RE 和 strip_stop_names，
-    # 不要硬依赖 import-time —— persona 在某些 entrypoint（memory-only test）
-    # 可能没加载。
+    # Lazy import: borrow _SPLIT_RE and strip_stop_names with _extract_keywords,
+    # avoiding hard import-time dependency; persona may not load in certain entrypoints
+    # such as memory-only tests.
     try:
         from memory.persona import _SPLIT_RE, strip_stop_names
     except Exception as exc:
@@ -162,18 +164,18 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
             "[hybrid_recall] tokenize fallback to whitespace split: %s",
             exc,
         )
-        # str() coerce 防 malformed entry 里 text 是 int / list 等 truthy
-        # non-string（codex review #1 之前那条）。fold 也要跟上——降级路径
-        # 同样服务繁简两侧的 query/doc，漏了就是降级时静默退回 #2584。
+        # str() coercion handles truthy nonstrings (int/list) in malformed text,
+        # as noted before codex review #1. Fold in fallback too:
+        # it serves Traditional/Simplified query/doc pairs, or degradation silently regresses to #2584.
         return [t for t in fold_script(str(text or "")).split() if len(t) >= 2]
 
-    # str() coerce 同 fallback 路径——malformed memory entry 里 text 可能
-    # 是 list / int 等 truthy non-string，传给 _SPLIT_RE.split 会 TypeError
-    # 把整条 hybrid_recall abort（应该只 skip 这一行，不该带挂全 query）。
-    # codex review (3rd round): normal path 之前漏 coerce，只在 fallback 做。
-    # 折叠放在 strip 之前，且 stop_names 一起折：两边都落到简体空间，繁体
-    # fact 里的简体配置名（或反之）才strip得掉。fold 是 1:1 定长映射，不动
-    # 标点，所以下面 _SPLIT_RE 的切分位置不受影响。
+    # str() coercion matches fallback: malformed entries may have list/int
+    # text, causing _SPLIT_RE.split TypeError
+    # and aborting whole hybrid_recall rather than skipping one row.
+    # Codex third review: normal path previously omitted coercion present only in fallback.
+    # Fold before stripping, including stop_names: both enter Simplified space, allowing Traditional
+    # facts' Simplified configured names (or reverse) to strip. Fold maps fixed 1:1 characters without
+    # punctuation changes, preserving _SPLIT_RE split positions below.
     raw_text = fold_script(str(text or ""))
     if stop_names:
         try:
@@ -181,8 +183,8 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
                 raw_text, [fold_script(str(n)) for n in stop_names],
             )
         except Exception:
-            # strip_stop_names 内部就是字符串替换，理论上不会挂；保险起见
-            # 不挂 BM25 主流程。
+            # strip_stop_names only replaces strings and should not fail; defensively
+            # keep failures from breaking BM25 flow.
             pass
 
     out: list[str] = []
@@ -190,10 +192,10 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
         seg = seg.strip()
         if not seg:
             continue
-        # 纯 ASCII 段不可能含 CJK，直接按 Latin 段处理（等价于下面 else 分支）。
-        # 这条快速路径和 CJK 占比阈值都必须与 persona._extract_keywords 完全
-        # 一致（汉字 + 假名 + 谚文 = U+4E00-9FFF + U+3040-30FF + U+AC00-D7AF），
-        # 改一边要同步另一边，否则 hybrid recall 和 persona 的切词会分叉。
+        # Pure ASCII cannot contain CJK; handle directly as Latin (same as else below).
+        # Fast path and CJK-ratio threshold must exactly match persona._extract_keywords
+        # (Han + kana + Hangul = U+4E00-9FFF + U+3040-30FF + U+AC00-D7AF);
+        # change both together, preventing hybrid/persona tokenization divergence.
         if seg.isascii():
             if len(seg) >= 2:
                 out.append(seg)
@@ -205,18 +207,84 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
             or '가' <= ch <= '힯'
         )
         if cjk_count > len(seg) // 2:
-            # CJK 段：2-gram + 3-gram 滑窗，**append 不去重**，留 TF。
+            # CJK: sliding 2-gram + 3-gram, **append without deduplication** to retain TF.
             for n in (2, 3):
                 for i in range(len(seg) - n + 1):
                     out.append(seg[i:i + n])
         else:
-            # Latin 段：整段做一个 token（len >= 2 才要），同样 append。
+            # Latin: whole segment is one token if len >=2; append too.
             if len(seg) >= 2:
                 out.append(seg)
     return out
 
 
 # ── BM25 retrieval ────────────────────────────────────────────────────
+
+
+# Token cache
+# ===========
+# Passive turn context runs BM25 over the whole recall pool on every text
+# turn, and tokenizing the pool (CJK 2/3-gram windows) was most of that cost.
+# Tokens are a pure function of (stop names, text), so they are kept per text,
+# stored as one ``\x00``-joined string: about a tenth of the memory of a
+# token tuple, and ``split`` brings the list back at C speed.
+#
+# Same scan-aware admission as ``_VEC_CACHE`` (a scan never evicts what it
+# touched itself), bounded by ``HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES``.
+# Unlike ``_VEC_CACHE`` this one takes a lock: the passive path scores in a
+# worker thread while ``recall_memory`` scores on the event loop. The lock
+# covers only the dict operations, never the tokenizing.
+_TOKEN_SEP = "\x00"
+_TOKEN_CACHE: OrderedDict[tuple[tuple[str, ...], str], tuple[str, int]] = OrderedDict()
+_TOKEN_CACHE_BYTES = 0
+_TOKEN_CACHE_LOCK = threading.Lock()
+# Key tuple, OrderedDict node and value tuple, rounded up.
+_TOKEN_ENTRY_OVERHEAD_BYTES = 256
+
+
+def _doc_tokens(text, stop_names: list[str] | None, stop_key: tuple[str, ...], state: '_ScanState') -> list[str]:
+    """``_tokenize(text, stop_names)``, served from ``_TOKEN_CACHE`` when it can be."""
+    global _TOKEN_CACHE_BYTES
+
+    if not isinstance(text, str) or _TOKEN_SEP in text:
+        return _tokenize(text, stop_names)
+    key = (stop_key, text)
+    with _TOKEN_CACHE_LOCK:
+        cached = _TOKEN_CACHE.get(key)
+        if cached is not None:
+            _TOKEN_CACHE.move_to_end(key)
+            state.touched += 1
+    if cached is not None:
+        # _tokenize never yields an empty token, so "" can only mean no tokens.
+        return cached[0].split(_TOKEN_SEP) if cached[0] else []
+    tokens = _tokenize(text, stop_names)
+    joined = _TOKEN_SEP.join(tokens)
+    nbytes = sys.getsizeof(joined) + sys.getsizeof(text) + _TOKEN_ENTRY_OVERHEAD_BYTES
+    with _TOKEN_CACHE_LOCK:
+        previous = _TOKEN_CACHE.pop(key, None)
+        if previous is not None:
+            _TOKEN_CACHE_BYTES -= previous[1]
+        while (
+            _TOKEN_CACHE
+            and _TOKEN_CACHE_BYTES + nbytes > HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES
+            and state.touched < len(_TOKEN_CACHE)
+        ):
+            _, evicted = _TOKEN_CACHE.popitem(last=False)
+            _TOKEN_CACHE_BYTES -= evicted[1]
+        if _TOKEN_CACHE_BYTES + nbytes <= HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES:
+            _TOKEN_CACHE[key] = (joined, nbytes)
+            _TOKEN_CACHE_BYTES += nbytes
+            state.touched += 1
+    return tokens
+
+
+def _invalidate_token_cache() -> None:
+    """Drop every cached tokenization. Tests and ``_invalidate_pool_cache`` only."""
+    global _TOKEN_CACHE_BYTES
+
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE.clear()
+        _TOKEN_CACHE_BYTES = 0
 
 
 def _bm25_rank(
@@ -232,15 +300,36 @@ def _bm25_rank(
     Returns ``[(doc, score)]`` sorted DESC. Zero-score docs are dropped
     (no term overlap). Empty query / empty pool / all-zero docs → ``[]``.
     """
+    return [
+        (doc, score)
+        for doc, score, _tf in _bm25_scores(query, pool, stop_names=stop_names, k1=k1, b=b)
+    ]
+
+
+def _bm25_scores(
+    query: str,
+    pool: list[dict],
+    *,
+    stop_names: list[str] | None,
+    k1: float = _BM25_K1,
+    b: float = _BM25_B,
+) -> list[tuple[dict, float, dict[str, int]]]:
+    """``_bm25_rank`` plus each scored doc's term counts, restricted to the
+    query's terms: ``set(tf)`` is ``set(_tokenize(doc)) & set(_tokenize(query))``,
+    so callers that need the shared terms do not tokenize the pool again.
+    """
     if not query or not pool:
         return []
     query_terms = _tokenize(query, stop_names)
     if not query_terms:
         return []
 
-    # Tokenize all docs once; reuse the same call for DF and TF.
+    # Tokenize all docs once (served from _TOKEN_CACHE on later calls);
+    # reuse the same lists for DF and TF.
+    stop_key = tuple(str(name) for name in stop_names or ())
+    state = _ScanState()
     doc_terms_list: list[list[str]] = [
-        _tokenize(d.get('text', '') or '', stop_names) for d in pool
+        _doc_tokens(d.get('text', '') or '', stop_names, stop_key, state) for d in pool
     ]
 
     n_docs = len(pool)
@@ -253,48 +342,63 @@ def _bm25_rank(
 
     # DF + per-doc TF, **restricted to query terms** (#2550).
     #
-    # 这里以前是「先建全语料 df 表（每 doc 一个 set(terms)）+ 每 doc 一个
-    # Counter(terms)」。两张表都是全词表规模，但打分只会去查 query 里那几十个
-    # 词——5000 条语料下 df 表有 ~10.9 万项、查得到的不到 0.03%，Counter 同理。
-    # 实测这两步合计 80ms / 160ms，比分词本身（46ms）还贵。
+    # Previously built full-corpus df (set(terms) per doc) plus one
+    # Counter(terms) per doc, both vocabulary-sized, while scoring queries only dozens of
+    # terms. For 5000 documents df has ~109k entries, <0.03% queried; same for Counter.
+    # Observed combined 80ms /160ms, costlier than tokenization itself (46ms).
     #
-    # 改成单趟扫描、只累计落在 query_unique 里的词：df 由 tf 直接派生（doc 里
-    # 出现过 ⇔ tf 有键），语义与 set(terms) 去重计数完全一致。5000 条实测
-    # 160ms → 61ms。得分逐位不变——下面的打分循环仍按 ``query_unique`` 迭代，
-    # 浮点累加顺序没动（换成迭代 tf 会改累加顺序，末位 ULP 可能漂，并列时理论
-    # 上能翻排序，所以别顺手"优化"成那样）。
+    # Scan once and accumulate only query_unique terms; derive df from tf (term appears
+    # iff tf has key), exactly matching set(terms) deduplicated counts. For 5000 documents,
+    # observed 160ms →61ms. Scores bitwise unchanged: scoring still iterates ``query_unique``,
+    # retaining floating-point accumulation order (iterating tf changes order and may drift final ULP,
+    # theoretically breaking ties; do not incidentally optimize that).
+    #
+    # Most docs share no term with the query: a C-level set intersection
+    # finds those and skips them before any counting. The rest are counted
+    # in one C-level pass (``Counter``) and cut to the shared terms, so a
+    # long query never rescans a doc once per shared term. Same counts as
+    # the scan.
     df: dict[str, int] = dict.fromkeys(query_unique, 0)
     doc_tf_list: list[dict[str, int]] = []
     for terms in doc_terms_list:
-        tf_map: dict[str, int] = {}
-        for t in terms:
-            if t in query_unique:
-                tf_map[t] = tf_map.get(t, 0) + 1
+        shared = query_unique.intersection(terms)
+        if shared:
+            counts = Counter(terms)
+            tf_map: dict[str, int] = {t: counts[t] for t in shared}
+        else:
+            tf_map = {}
         doc_tf_list.append(tf_map)
         for t in tf_map:
             df[t] += 1
 
-    scored: list[tuple[dict, float]] = []
+    # Robertson-Sparck-Jones IDF with +0.5 smoothing, once per query term
+    # (it depends on the term alone), kept in ``query_unique`` order so the
+    # per-doc sum below adds the same terms in the same order as before.
+    idf_terms: list[tuple[str, float]] = []
+    for q_term in query_unique:
+        n = df.get(q_term, 0)
+        if n <= 0:
+            continue
+        idf = math.log((n_docs - n + 0.5) / (n + 0.5) + 1.0)
+        if idf <= 0:
+            continue
+        idf_terms.append((q_term, idf))
+
+    scored: list[tuple[dict, float, dict[str, int]]] = []
     for doc, doc_terms, doc_tf in zip(pool, doc_terms_list, doc_tf_list):
-        if not doc_terms:
+        # No shared term scores 0, and 0 is dropped below anyway.
+        if not doc_tf:
             continue
         dl = len(doc_terms)
         norm = 1.0 - b + b * dl / avgdl
         score = 0.0
-        for q_term in query_unique:
-            n = df.get(q_term, 0)
-            if n <= 0:
-                continue
-            # Robertson-Sparck-Jones IDF with +0.5 smoothing.
-            idf = math.log((n_docs - n + 0.5) / (n + 0.5) + 1.0)
-            if idf <= 0:
-                continue
+        for q_term, idf in idf_terms:
             tf = doc_tf.get(q_term, 0)
             if tf == 0:
                 continue
             score += idf * (tf * (k1 + 1)) / (tf + k1 * norm)
         if score > 0:
-            scored.append((doc, score))
+            scored.append((doc, score, doc_tf))
 
     scored.sort(key=lambda p: p[1], reverse=True)
     return scored
@@ -427,8 +531,8 @@ def _cached_doc_vector(doc: dict, text, model_id: str, state: '_ScanState'):
         if (
             cached is not None
             and cached[0] == model_id
-            # 身份比较，不是相等比较：同一个 str 对象 ⇒ 同样的 sha256，
-            # 不用真去算（见上方 delta 论证第 2 点）。
+            # Identity comparison, not equality: same str object implies same sha256,
+            # avoiding actual computation (delta argument point2 above).
             and cached[1] is text
             and doc.get('embedding_text_sha256') == cached[2]
             and doc.get('embedding_model_id') == model_id
@@ -438,9 +542,9 @@ def _cached_doc_vector(doc: dict, text, model_id: str, state: '_ScanState'):
             state.touched += 1
             return cached[4], cached[5]
 
-    # 一次解码拿到向量，而不是「is_cached_embedding_valid 里解一遍判维度
-    # → 丢掉 → decode_embedding 再解一遍」。两次 base64 解码 + 两次
-    # np.isfinite 全扫在 5000 条池子上实测约 26ms 纯白费（#2550）。
+    # Decode once to obtain vector instead of decoding in is_cached_embedding_valid for dimension check,
+    # discarding it, then decoding again via decode_embedding. Two base64 decodes + two
+    # np.isfinite scans cost ~26ms of wasted work for 5000 documents (#2550).
     cvec = decode_valid_cached_embedding(doc, text, model_id)
     if cvec is None:
         return None, 0.0
@@ -465,9 +569,9 @@ def _cached_doc_vector(doc: dict, text, model_id: str, state: '_ScanState'):
     while (
         _VEC_CACHE
         and _VEC_CACHE_BYTES + nbytes > HYBRID_RECALL_VEC_CACHE_MAX_BYTES
-        # 本轮扫描不许淘汰本轮自己碰过的条目——那正是朴素 LRU 自毁的机制。
-        # 命中和接纳都 move_to_end，所以本轮碰过的都在队尾；只要还没碰满
-        # 整个缓存，队首就一定是上一轮或更早的条目，可以安全淘汰。
+        # Never evict entries touched by this scan itself, the mechanism of naive LRU self-destruction.
+        # Hits/admissions both move_to_end; all touched entries are at tail. Until the entire cache
+        # has been touched, head must be from a previous scan and is safely evictable.
         and state.touched < len(_VEC_CACHE)
     ):
         _, evicted = _VEC_CACHE.popitem(last=False)
@@ -516,9 +620,9 @@ async def _cosine_rank(
         return []
 
     # Wrap the entire embed + score loop in try/except so a cosine-path
-    # failure（embed_batch 抛 / numpy 缺 / 单条 doc 解码崩）不把已经算出
-    # 的 BM25 结果一起埋了。上游 ``hybrid_recall`` await 这条 task 时
-    # 如果异常就丢 BM25 → 退化为空召回，违背 hybrid 的初衷。
+    # Failures (embed_batch exception / missing numpy / bad document decode) must not discard already computed
+    # BM25 results. If awaiting this task caused upstream ``hybrid_recall`` to drop BM25 on errors,
+    # recall would become empty, defeating hybrid design.
     try:
         query_vectors = await service.embed_batch([query])
         if not query_vectors or query_vectors[0] is None:
@@ -534,16 +638,16 @@ async def _cosine_rank(
 
         target_dim = parse_dim_from_model_id(model_id) or int(qarr.size)
 
-        # ── batch scoring：解码循环只收集向量，dot 交给一次矩阵运算 ──
+        # ── Batch scoring: decode loop collects vectors; one matrix operation computes dot products ──
         #
-        # 逐条 ``np.linalg.norm`` + ``np.dot`` 在 5000 条池子上是 ~3 万次
-        # Python↔numpy 派发（每次 ~10µs 的固定开销，BLAS 本体反而微不足道）。
-        # 改成 decode 循环只攒 (doc, vec, norm)，最后 vstack 成 (n, dim) 矩阵、
-        # 一次 matmul，同样的语义（cnorm<=0 跳过、维度不匹配跳过）。
+        # Per-row ``np.linalg.norm`` + ``np.dot`` on 5000 documents cause ~30k
+        # Python↔numpy dispatches (~10µs fixed overhead each, dwarfing BLAS work).
+        # Collect (doc, vec, norm) during decode, vstack into (n, dim), then
+        # one matmul preserves semantics (skip cnorm<=0 and dimension mismatches).
         #
-        # 模长跟着向量一起来自 ``_cached_doc_vector``：向量没变，它的模长必然
-        # 也没变，全池重算 ``norm(axis=1)`` 在 5000 条上是白付的 ~3ms。miss
-        # 的条目在解码处顺手算一次——那条路本来就要付解码，多一次 norm 不显。
+        # Norm comes with vector from ``_cached_doc_vector``; unchanged vectors necessarily have unchanged
+        # norms. Recomputing whole-pool ``norm(axis=1)`` wastes ~3ms at 5000 rows. Cache misses
+        # compute once during already-required decoding, where extra norm cost is negligible.
         vecs: list = []
         rows: list[dict] = []
         row_norms: list[float] = []
@@ -562,8 +666,8 @@ async def _cosine_rank(
 
         mat = np.vstack(vecs).astype(np.float32, copy=False)
         norms = np.asarray(row_norms, dtype=np.float32)
-        # cnorm<=0 原来是逐条 continue（不进结果）；矩阵化后同样用 mask 滤掉，
-        # 除零处先垫 1.0 保证 0 向量行算出 0 而不是 NaN，再由 keep 剔除。
+        # Previous cnorm<=0 skipped rows; matrix version masks them too,
+        # substituting divisor1.0 so zero vectors produce0 rather than NaN before keep removes them.
         keep = norms > 0
         safe_norms = np.where(keep, norms, 1.0)
         sims = (mat @ qarr) / (qnorm * safe_norms)
@@ -743,9 +847,11 @@ def _invalidate_pool_cache(path: str | None = None) -> None:
     Also drops the decoded-vector cache (``_VEC_CACHE``): its entries are
     content-validated per probe, so clearing is never *required* for
     correctness, but tests reuse doc ids across cases and a shared cache would
-    turn test isolation into an accident of content addressing.
+    turn test isolation into an accident of content addressing. The token
+    cache (``_TOKEN_CACHE``) goes with it for the same reason.
     """
     _invalidate_vec_cache()
+    _invalidate_token_cache()
     if path is None:
         _POOL_CACHE.clear()
     else:
@@ -818,11 +924,11 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
             data = json.load(f)
         if not isinstance(data, list):
             return []
-        # subject 时间归档（subject_archived_at 标记）的行不进召回：
-        # absorbed 归档行留在池里是设计（BM25 长尾），但 subject 归档
-        # 的语义就是「这个群/成员的记忆整体退出候选」——这里是两条召
-        # 回路径（hybrid_recall / recall_by_time）唯一的 archive 池装
-        # 配点，单点过滤即可覆盖。恢复路径会剥掉标记，行自然回池。
+        # Rows archived by subject time (subject_archived_at) stay outside recall:
+        # absorbed archives intentionally remain for BM25 long tail, but subject archives mean
+        # this group/member's entire memory leaves candidates. This is both recall paths'
+        # (hybrid_recall / recall_by_time) sole archive-pool assembly point,
+        # so one filter covers both. Restoration strips marker and naturally returns rows.
         rows = [
             row for row in data
             if not (
@@ -833,11 +939,11 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
                 )
             )
         ]
-        # 投影到召回真正读的字段（见 _ARCHIVE_RECALL_KEYS）。这一步同时把向量
-        # 剥掉了——归档明确不进向量池（见模块顶部 Pool composition），那列占了
-        # 文件 ~12/13 的体积，解析出来只为被无视，还要一直挂在上面那份缓存里。
-        # 落盘那份保持原样：恢复路径把行搬回 active 时仍要拿到缓存向量、以及
-        # 其余所有写侧字段，所以剥离只发生在"进内存"这一刻。
+        # Project to fields recall actually reads (_ARCHIVE_RECALL_KEYS), also dropping vectors:
+        # archives explicitly bypass vector pool (module-top Pool composition); vector column occupies
+        # ~12/13 of file, otherwise parsed only to be ignored and retained in cache above.
+        # Disk remains unchanged: restoring rows to active needs cached vectors and
+        # all write-side fields, so strip only upon entering memory.
         return [
             _project_archive_row(row) if isinstance(row, dict) else row
             for row in rows
@@ -849,9 +955,9 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
     try:
         return await _aload_pool_cached(path, _aread)
     except FileNotFoundError:
-        # "还没有归档文件" 是常态而非故障（新角色 / 从未触发过归档），以前由
-        # 一次显式 os.path.exists 提前拦掉；现在 _file_identity 的 stat 已经是
-        # 同一个答案，不必再多探一次盘，但也不该升级成 WARNING。
+        # Missing archive is normal for new characters / no prior archival, previously handled
+        # by explicit os.path.exists. _file_identity's stat now provides
+        # same answer without extra disk probe, and must not become WARNING.
         return []
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning(
@@ -885,6 +991,27 @@ async def _aload_reflections_for_recall(
     return await _aload_pool_cached(path, _aload)
 
 
+def _render_reflection_split(reflections: list[dict]) -> tuple[list[dict], list[dict]]:
+    """The pending and the active confirmed reflections among ``reflections``,
+    as ``aget_pending_reflections`` / ``aget_confirmed_reflections`` return
+    them for the private scope.
+
+    Recall already holds the parsed reflections (``_aload_reflections_for_recall``,
+    served from the parse cache); asking the engine instead would read and
+    parse ``reflections.json`` twice more. Nothing here mutates the rows.
+    """
+    from memory._reflection.selection import filter_active_confirmed
+    from memory.scopes import filter_entries_for_subjects
+
+    rows = [row for row in reflections or () if isinstance(row, dict)]
+    pending = [row for row in rows if row.get('status') == 'pending']
+    confirmed = filter_active_confirmed(rows, now=datetime.now(), score=evidence_score)
+    return (
+        filter_entries_for_subjects(pending, None, include_legacy_private=None),
+        filter_entries_for_subjects(confirmed, None, include_legacy_private=None),
+    )
+
+
 def _drop_archive_overlap(
     archive_rows: list[dict], active_rows: list[dict], lanlan_name: str,
 ) -> list[dict]:
@@ -910,9 +1037,9 @@ def _drop_archive_overlap(
     """
     if not archive_rows:
         return []
-    # 复用 facts.py 的「可用 id」判定：手改 / 老库里的 id 可能缺失、为空串或是
-    # list/dict，两边判得不一样就会各自留下对方以为已收敛的行。惰性导入沿用本
-    # 文件对 memory.* 的一贯写法（避免启动期循环导入）。
+    # Reuse facts.py's usable-id check: manual/legacy ids may be missing, empty, or
+    # list/dict; inconsistent checks leave rows the other path assumes deduplicated. Lazy import follows
+    # this file's memory.* convention to avoid startup import cycles.
     from memory.facts import _readable_fact_id
 
     active_ids = set()
@@ -955,33 +1082,33 @@ def _tag_tier(
     hybrid_recall aborts, violating the "skip the single bad row, return the
     rest" design. Codex review on PR #1385.
     """
-    # ⚠️ ``score`` 必须在这里**现算**，不能指望行里带。``_hard_filter`` 声称
-    # "drop score<0"，但它读的是 ``o.get('score')`` —— 而 reflections.json 的
-    # 落盘 schema（memory/_reflection/schema.py）根本没有 ``score`` 键：evidence
-    # 是 ``reinforcement`` / ``disputation`` 两个累加器，score 一律是读时用
-    # ``evidence_score()`` 折算出来的。于是真实数据上 ``score is None``，那条
-    # 过滤整条空转 —— 用户反驳到 disputation 压到负分的反思，照样被 recall_memory
-    # 召回、原文注入 context，跟 system prompt 里的 ban 指令正面打架。
+    # Warning: compute ``score`` **now**, never assume row stores it. ``_hard_filter`` claims
+    # drop score<0 but reads ``o.get('score')``, while reflections.json's persisted
+    # schema (memory/_reflection/schema.py) has no ``score``: evidence comprises
+    # ``reinforcement`` / ``disputation`` accumulators, with score derived on read via
+    # ``evidence_score()``. Real data thus has ``score is None``, bypassing
+    # filtering entirely, so user-disputed negatively scored reflections still reach recall_memory
+    # and inject original text into context against system-prompt bans.
     #
-    # Stage-2 的信号池（memory/facts.py:_aload_signal_targets）本来就是这么做的
-    # （建池时 ``'score': evidence_score(r, now)``），那条路径上过滤一直是真的
-    # 生效的。这里补齐同一份语义，两条召回面才对得上。
+    # Stage-2 signal pool (memory/facts.py:_aload_signal_targets) already does this
+    # (``'score': evidence_score(r, now)`` at assembly); filtering there always
+    # worked. Align semantics here so both recall surfaces agree.
     #
-    # ⚠️ **只给 reflection 算**。fact / fact_archive 行不参与 evidence 体系
-    # （facts.json 里没有 reinforcement / disputation 字段，也没有任何写入方给
-    # 它们派信号），盖一个恒 0 的 score 纯属噪音；更要紧的是 ``evidence_score``
-    # 对 ``protected`` 行返回 +inf，将来 fact 侧真加了字段时，语义该由那次改动
-    # 显式决定，而不是从这里的顺手泛化里继承过去。
+    # Warning: compute **only for reflections**. fact / fact_archive do not participate in evidence
+    # (facts.json lacks reinforcement/disputation, and no writer sends them
+    # signals); constant-zero score is noise. More importantly, ``evidence_score`` returns
+    # +inf for ``protected``; if facts gain these fields later, define semantics explicitly in that change,
+    # rather than inherit an incidental generalization here.
     #
-    # 单调性：只会**多**丢行，不会多留行 —— ``score=None`` 时过滤本就放行，现
-    # 在算出来 ≥0 的照旧放行，只有真负分的被拦。
+    # Monotonicity: only **more** rows dropped, never more retained. ``score=None`` previously passed;
+    # derived ≥0 still passes; only true negatives are blocked.
     if now is None:
         now = datetime.now()
     out: list[dict] = []
     for it in items:
         if not isinstance(it, dict):
-            # 不打 WARNING 防止 malformed 连续命中刷屏；交给后端排查时
-            # 看 DEBUG 即可。``id`` 字段都没法读出来，只能 log 类型。
+            # Avoid WARNING spam on repeated malformed hits; backend diagnosis
+            # can inspect DEBUG. Even ``id`` unreadable, so log type only.
             logger.debug(
                 "[hybrid_recall] _tag_tier: skipping non-dict %s entry (type=%s)",
                 tier, type(it).__name__,
@@ -994,42 +1121,42 @@ def _tag_tier(
         # sees uniform shape.
         if tier == 'reflection':
             d.setdefault('target_type', 'reflection')
-            # ⚠️⚠️ **只给真的被反驳过的行盖 score**（``disputation > 0``）。
+            # Warning: assign score **only to actually disputed rows** (``disputation > 0``).
             #
-            # ``_hard_filter`` 那条过滤的原话是 "user has been disputing this
-            # more than confirming it"，但 ``evidence_score`` 转负不止一条路：
-            # 用户对 surfaced 反思**沉默**时，post_turn 按 'ignored' 记
-            # ``reinforcement += -0.2``（IGNORED_REINFORCEMENT_DELTA）。一次
-            # AI 抛 7 条、用户当轮没接话，这 7 条就全成了 rein=-0.2 / disp=0
-            # 的负分行 —— 按净分过滤会把它们当场从召回里抹掉（对抗审查实测存量
-            # 里 17.8% 的活跃 reflection 属于这一类）。
+            # ``_hard_filter`` says 'user has been disputing this
+            # more than confirming it', but ``evidence_score`` can become negative several ways:
+            # when user stays **silent** about surfaced reflections, post_turn records ignored as
+            # ``reinforcement += -0.2`` (IGNORED_REINFORCEMENT_DELTA). If AI
+            # surfaces7 reflections and user does not engage this turn, all7 have rein=-0.2 /disp=0,
+            # negative rows erased immediately by net-score filtering (adversarial audit found
+            # 17.8% of active reflections in this category).
             #
-            # 但"没接话"不是"反对"。产品命题里沉默只意味着这条不够格升级，
-            # 不意味着用户否认它；两周后用户主动问"我上个月在忙什么"，那批
-            # 条目正是该被召回的东西。加上 ``disputation > 0`` 这一维，过滤
-            # 的语义才真正等于那句 docstring：**有人反驳过，且反驳压过了确认**。
+            # Not engaging is not disagreement. Product semantics: silence prevents promotion,
+            # not denies validity. Two weeks later a user asking what they were busy with last month should recall
+            # exactly these entries. Require ``disputation > 0`` to match filtering
+            # docstring: **disputed at least once, with disputes outweighing confirmations**.
             #
-            # 没有 disputation 的行**原样不动**：真实数据里 reflections.json 就
-            # 没有 score 键，不动 = 没有键 = 回落到"不按分过滤"，正是想要的。
+            # Leave rows without disputation **untouched**: real reflections.json
+            # lacks score, so untouched means no key and unscored filtering fallback, as intended.
             #
-            # ⚠️ 这里曾经写的是 ``d.pop('score', None)``，方向恰好反了。改动前
-            # ``_tag_tier`` 根本不碰这个键，所以"与改动之前一致"要求的是**不碰**
-            # 而不是删：盘上真带着 ``score: -5.0`` 的陈旧行（下面那条注释自己
-            # 承认这种行存在），原样走 ``_hard_filter`` 会被丢掉，pop 之后反而
-            # **活了下来** —— 与"只会多丢行、不会多留行"的单调性主张正相反。
-            # 实测 ``{"id":"stale_neg","status":"confirmed","score":-5.0}``：
-            # 直接过 _hard_filter 得 []，先过 _tag_tier 再过则得 ['stale_neg']。
+            # Warning: previously ``d.pop('score', None)`` reversed this. Before change,
+            # ``_tag_tier`` never touched this key, so consistent previous behavior requires **leaving it**,
+            # not deletion: stale persisted ``score: -5.0`` rows (acknowledged by comment below)
+            # would be dropped by ``_hard_filter`` but pop would
+            # **resurrect** them, contradicting only-more-drops monotonicity.
+            # Observed ``{"id":"stale_neg","status":"confirmed","score":-5.0}``:
+            # direct _hard_filter gives [], but _tag_tier then filter gives ['stale_neg'].
             try:
                 if float(d.get('disputation', 0.0) or 0.0) > 0.0:
-                    # ⚠️ 覆盖式赋值，不是 setdefault：行里若真带了 ``score``，
-                    # 那是历史遗留 / 手工编辑的陈旧快照，衰减早已算不准。
-                    # 唯一权威是现算值。
+                    # Warning: overwrite, not setdefault; persisted ``score`` means
+                    # legacy/manual stale snapshot with incorrect decay.
+                    # Only fresh computation is authoritative.
                     d['score'] = evidence_score(d, now)
             except Exception as exc:
-                # 单行字段类型坏掉（``reinforcement: "abc"``）不该让整池挂掉；
-                # 与本函数的 non-dict 跳过、``_hard_filter`` 的 per-entry
-                # try/except 同一策略。这里同样**不删** score 键：算不出现值时
-                # 保留盘上原值，是最接近"本函数没跑过"的状态。
+                # Invalid fields in one row (``reinforcement: "abc"``) must not break entire pool;
+                # same policy as non-dict skipping here and ``_hard_filter``'s per-entry
+                # try/except. Again **do not remove** score if current calculation fails;
+                # retaining persisted value most closely matches this function never running.
                 logger.debug(
                     "[hybrid_recall] _tag_tier: score unavailable for "
                     "reflection id=%r: %s: %s",
@@ -1058,8 +1185,8 @@ def _entry_event_window(entry: dict):
     time-filter/sort semantics. Archived facts go through this too.
     """
     from memory.temporal import _parse_iso_safe, to_naive_local
-    # aware（import/迁移的 +00:00 / Z）统一先转本地再剥 tz，避免 day 级窗口
-    # 在日界处归错天（Codex）。to_naive_local 对 naive / None 是 no-op。
+    # Convert aware imports/migrations (+00:00 / Z) to local before stripping tz, keeping day-level windows
+    # assigned to correct dates at boundaries (Codex). to_naive_local leaves naive /None unchanged.
     start = to_naive_local(_parse_iso_safe(entry.get('event_start_at')))
     end = to_naive_local(_parse_iso_safe(entry.get('event_end_at')))
     created = to_naive_local(_parse_iso_safe(entry.get('created_at')))
@@ -1068,7 +1195,7 @@ def _entry_event_window(entry: dict):
         return None
     s = start or anchor
     e = end or anchor
-    if e < s:  # 防 manual edit / 迁移把 start/end 写反
+    if e < s:  # Guard reversed start/end from manual edits / migrations.
         s, e = e, s
     return (s, e)
 
@@ -1098,6 +1225,8 @@ async def hybrid_recall(
     time_window: tuple | None = None,
     subjects=None,
     include_legacy_private: bool | None = None,
+    persona_manager=None,
+    budget_ms: int | None = None,
 ) -> dict[str, Any]:
     """End-to-end hybrid recall — the function the ``/query_memory``
     HTTP endpoint should call.
@@ -1163,10 +1292,24 @@ async def hybrid_recall(
     archive_facts = _drop_archive_overlap(
         archive_facts or [], active_facts, lanlan_name,
     )
+    # Persona entries the private render leaves out of the system prompt
+    # (over its budget) are recallable like any other memory; the ones it
+    # keeps are already in front of the model.
+    persona_left_out: list[dict] = []
+    if persona_manager is not None and not subjects:
+        try:
+            pending, confirmed = _render_reflection_split(active_reflections)
+            persona_left_out, _resident = await persona_manager.arecall_residency(
+                lanlan_name, pending, confirmed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hybrid_recall] persona residency skipped: %s", exc)
+            persona_left_out = []
 
     facts_tagged = _tag_tier(active_facts, 'fact')
     refl_tagged = _tag_tier(active_reflections, 'reflection')
     arch_tagged = _tag_tier(archive_facts, 'fact_archive')
+    persona_tagged = _tag_tier(persona_left_out, 'persona')
 
     # Security boundary: scope filtering happens before any BM25/cosine/RRF
     # scoring. A group caller never searches the private/global corpus and then
@@ -1182,17 +1325,21 @@ async def hybrid_recall(
     arch_tagged = filter_entries_for_subjects(
         arch_tagged, subjects, include_legacy_private=include_legacy_private,
     )
+    persona_tagged = filter_entries_for_subjects(
+        persona_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
 
-    # "语义 + 时间"联合检索：给了 time_window 就先把候选池按事件时间窗口
-    # 硬过滤，只让落在该区间的条目进入后续 BM25 / cosine 打分。
+    # Joint semantic + time retrieval: given time_window, hard-filter candidate pool by event time
+    # before subsequent BM25/cosine scoring.
     if time_window is not None:
         ws, we = time_window
         facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
         refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
         arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
+        persona_tagged = [d for d in persona_tagged if _overlaps_window(d, ws, we)]
 
-    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged
-    embedding_pool_raw = facts_tagged + refl_tagged
+    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged + persona_tagged
+    embedding_pool_raw = facts_tagged + refl_tagged + persona_tagged
 
     # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
     # Imported lazily so a circular-import-safe boot path stays viable.
@@ -1200,7 +1347,7 @@ async def hybrid_recall(
     bm25_pool = MemoryRecallReranker._hard_filter(bm25_pool_raw)
     embedding_pool = MemoryRecallReranker._hard_filter(embedding_pool_raw)
 
-    # stop_names: strip 主人/猫娘 nicknames so high-DF entity names don't
+    # stop_names: strip master/catgirl nicknames so high-DF entity names do not
     # dominate BM25 IDF.
     try:
         from memory.stop_names import collect_stop_names
@@ -1214,7 +1361,19 @@ async def hybrid_recall(
     # can proceed while embedding model warms (if first call).
     cosine_scored_task = asyncio.create_task(_cosine_rank(query, embedding_pool))
     bm25_scored = _bm25_rank(query, bm25_pool, stop_names=stop_names)
-    cosine_scored = await cosine_scored_task
+    if budget_ms is None:
+        cosine_scored = await cosine_scored_task
+    else:
+        # Past the caller's budget the vector half is dropped and the
+        # keyword half still answers, instead of the whole call timing out.
+        remaining = max(int(budget_ms), 0) / 1000 - (time.time() - start)
+        done, _pending = await asyncio.wait({cosine_scored_task}, timeout=max(remaining, 0))
+        if cosine_scored_task in done:
+            cosine_scored = cosine_scored_task.result()
+        else:
+            cosine_scored_task.cancel()
+            cosine_scored = []
+            logger.info("[hybrid_recall] %s: vector half over budget, keywords only", lanlan_name)
 
     # Threshold + per-side cap.
     bm25_top = [
@@ -1240,10 +1399,10 @@ async def hybrid_recall(
             "subject_id": d.get('subject_id'),
             "scope": d.get('scope') or 'legacy_private',
             "score": round(d.get('_rrf_score', 0.0), 6),
-            # created_at = 记忆写盘时间；event_start/end_at = 事件真正发生
-            # 的时间锚点（schema v2，由 event_when_raw 解算）。两者可能差很
-            # 远（"上周通宵"今天才被写进记忆），所以都带上，渲染侧优先用
-            # event 锚点回答"事件什么时候发生"。
+            # created_at is memory persistence time; event_start/end_at are actual event
+            # anchors (schema v2, derived from event_when_raw). They can differ greatly
+            # (last week's all-nighter recorded today), so include both, preferring event
+            # anchors when rendering when events happened.
             "created_at": d.get('created_at'),
             "event_start_at": d.get('event_start_at'),
             "event_end_at": d.get('event_end_at'),
@@ -1252,11 +1411,11 @@ async def hybrid_recall(
     ]
 
     elapsed_ms = (time.time() - start) * 1000.0
-    # 嵌入服务状态：把 emb 路径"为啥是 0"直接写进这条 log。否则
-    # ``emb=0`` 在"服务没起来(disabled)"和"服务起来了但池子里一条向量都没
-    # 缓存"两种情况下长得一模一样，排障时必须翻 embeddings.py 的日志才能区分
-    # —— 而那条历史上还进不了 Memory 日志文件。读 service 状态不触发加载、
-    # 不抛异常（纯属性读），失败也只是降级成 "unknown"，不影响召回结果。
+    # Embedding-service state: log why embedding path gives zero directly. Otherwise
+    # ``emb=0`` looks identical for disabled service versus running service with no cached
+    # vectors, requiring embeddings.py logs to distinguish,
+    # historically absent from Memory log file. Reading service state does not load or
+    # throw (pure properties); failures degrade to unknown without affecting recall.
     try:
         from memory.embeddings import get_embedding_service
         _svc = get_embedding_service()
@@ -1267,8 +1426,8 @@ async def hybrid_recall(
         emb_state = "unknown(%s)" % type(exc).__name__
     # union pool size for observability — bm25 pool is the superset.
     # `passed` = items surviving the per-side threshold; `thresh` is the
-    # cutoff constant. 历史上这条 log 把 `passed` 数挂在 `(>thresh %d)`
-    # 字段里，被读成"阈值=N"误导调参，所以拆成 passed + thresh 两段。
+    # Cutoff constant. Previously log put `passed` count into `(>thresh %d)`,
+    # misleading readers into threshold=N and wrong tuning; separate passed and thresh.
     logger.info(
         "[hybrid_recall] %s: pool bm25=%d emb=%d | "
         "scored bm25=%d (passed %d, thresh=%.2f) "
@@ -1355,29 +1514,29 @@ async def recall_by_time(
     from memory.recall import MemoryRecallReranker
     pool = MemoryRecallReranker._hard_filter(pool_raw)
 
-    # (是否窗口外 0/1, 距离秒数, 事件起点 s, doc)。
+    # (outside-window flag0/1, distance seconds, event start s, doc).
     scored: list[tuple[int, float, datetime, dict]] = []
     for d in pool:
         win = _entry_event_window(d)
         if win is None:
             continue
         s, e = win
-        # 半开窗口 [win_start, win_end)：事件闭区间 [s, e] 与之有交即在窗口内。
+        # Half-open [win_start, win_end): event closed interval [s,e] is in-window if intersecting.
         in_window = s < win_end and e >= win_start
         if in_window:
             dist = 0.0
-        elif e < win_start:          # 整体早于窗口
+        elif e < win_start:          # Entire event before window.
             dist = (win_start - e).total_seconds()
-        else:                        # 整体在右界 win_end 当点或之后
+        else:                        # Entire event at/after right edge win_end.
             dist = (s - win_end).total_seconds()
-        # 主键 in_window 摆第一位：右界事件（s == win_end，半开窗口判为窗口
-        # 外）的 dist 也是 0，若只按 dist 排会和真窗口内条目并列、再被次键
-        # 顶到前面——给个 0/1 主键保证"窗口内永远排在窗口外前面"（Codex）。
+        # Primary in_window key first: right-edge event (s==win_end, outside half-open window)
+        # also has dist0; distance alone ties actual in-window entries and secondary keys can
+        # rank it first. Primary0/1 guarantees in-window before outside (Codex).
         scored.append((0 if in_window else 1, dist, s, d))
 
-    # 次键 dist 升序；三键用 (win_start - s) timedelta 升序 = s 降序（近发生
-    # 的在前），不用 datetime.timestamp()（naive 走本地时区、DST 含糊、
-    # pre-1970 Windows 会 OSError）。doc 不进 key 避免比较 dict。
+    # Secondary distance ascending; tertiary (win_start - s) timedelta ascending = s descending,
+    # putting recent events first without datetime.timestamp() (naive local time, ambiguous DST,
+    # pre-1970 Windows OSError). Exclude doc from key to avoid dict comparison.
     scored.sort(key=lambda t: (t[0], t[1], win_start - t[2]))
     top = scored[:HYBRID_RECALL_TIME_BUDGET]
     results = [
@@ -1389,7 +1548,7 @@ async def recall_by_time(
             "subject_kind": d.get('subject_kind'),
             "subject_id": d.get('subject_id'),
             "scope": d.get('scope') or 'legacy_private',
-            "score": None,  # 时间路径无语义打分
+            "score": None,  # Temporal path has no semantic scoring.
             "created_at": d.get('created_at'),
             "event_start_at": d.get('event_start_at'),
             "event_end_at": d.get('event_end_at'),

@@ -86,11 +86,11 @@ logger = get_module_logger(__name__, "Main")
 
 _IMAGE_ANALYSIS_PENDING_DESCRIPTION = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
 
-# OpenAI Realtime GA 拒收超过 32 字符的 item.id（invalid_request_error /
-# string_above_max_length），条目建不成、整轮没有回复（#3350）。客户端自己生成的
-# item id 一律走 new_client_item_id，不要在调用点手拼「前缀 + 完整 uuid hex」。
+# OpenAI Realtime GA rejects item.id longer than 32 characters (invalid_request_error /
+# string_above_max_length), preventing item creation and leaving the whole turn unanswered (#3350). All client-generated
+# item IDs must use new_client_item_id; do not hand-build prefix + full UUID hex at call sites.
 CLIENT_ITEM_ID_MAX_LENGTH = 32
-# 截断后至少留这么多位随机 hex（80 bit），同一连接里撞 id 的概率可以忽略。
+# Retain at least this many random hex digits after truncation (80 bits), making same-connection collisions negligible.
 _CLIENT_ITEM_ID_MIN_RANDOM_HEX = 20
 
 
@@ -129,10 +129,10 @@ class ImageStageResult:
     generation: int | None = None
     description: str | None = None
     rejection_reason: str | None = None
-    # 成功送出后仍然注册着的拒绝回调的 event_id。拒绝可能晚于 send 返回才到，所以
-    # stream_image 不能自己摘掉它；但一旦调用方拿到「provider 已处理」的更强证据
-    # （例如 session.updated 屏障），这个 handler 就无关了，而它的闭包扣着整条
-    # callback（可能有数张 ~13MB 的 base64）。把 id 交出去，让那个证据点去摘。
+    # event_id of the rejection callback still registered after successful sending. Rejection may arrive after send returns, so
+    # stream_image cannot remove it itself. Once the caller has stronger evidence of provider processing
+    # (such as a session.updated barrier), the handler is irrelevant, but its closure retains the whole
+    # callback, potentially including several ~13MB base64 images. Expose the ID for removal at that evidence point.
     rejection_event_id: str | None = None
 
 
@@ -190,12 +190,12 @@ _REALTIME_DIALECT_ALIASES = {
 }
 
 
-# 取消欠账的存活上限。被取消的那一轮欠一条终结事件，而 Gemini 没有
-# response.cancel —— 它是被**后继内容送达**叫停的，所以计时从那一刻起算
-# （_gemini_send_user_turn），不是从 handle_interruption 决定取消那一刻。
-# 取值方向不对称：取小了最多多一次早结算，会话读作空闲，下一轮自愈；取大了会让
-# 陈旧欠账吃掉一条**合法**终结，那一轮的 external token 没人结算，
-# is_active_response() 恒真、主动搭话彻底哑。所以宁可短。
+# Maximum lifetime of outstanding cancellation obligations. The cancelled round owes a terminal event, but Gemini has no
+# response.cancel: **delivery of subsequent content** stops it, so start timing at that point
+# (_gemini_send_user_turn), not when handle_interruption decides to cancel.
+# The tradeoff is asymmetric: too short merely settles early once, leaving the session idle and self-healing next turn; too long lets
+# stale obligations consume a **valid** terminal event, leaving that turn's external token unsettled,
+# is_active_response() permanently true, and proactive chat completely silent. Prefer a short lifetime.
 GEMINI_CANCELLED_TERMINAL_TTL_SECONDS = 3.0
 
 # The mime a Gemini user turn's frames are sent under. One definition, because
@@ -204,19 +204,19 @@ GEMINI_CANCELLED_TERMINAL_TTL_SECONDS = 3.0
 # every record on the bus without anything going red.
 GEMINI_TURN_IMAGE_MIME = "image/jpeg"
 
-# GLM 的 session.update 是整包重置，不是补丁。漏掉 beta_fields 时服务端会把
-# chat_mode 从 video_passive 打回默认 audio，视频下游跟着拆掉，网关重连 3 次
-# 后回 downstream_reconnect_exceeded 并关掉 WebSocket。connect() 和之后每一次
-# 局部更新（工具同步、instructions）都必须带上同一份。
+# GLM session.update resets the entire payload rather than patching it. Omitting beta_fields causes the server to reset
+# chat_mode from video_passive to default audio and tear down video downstream; after 3 gateway reconnects,
+# downstream_reconnect_exceeded closes the WebSocket. Both connect() and every later
+# partial update (tool synchronization, instructions) must include the same fields.
 GLM_REALTIME_BETA_FIELDS = {
     "chat_mode": "video_passive",
     "auto_search": True,
 }
 
-# 公开 WebSocket 的 ?model= 只放行这些名字。glm-realtime-plus 写在查询参数里
-# 会在握手后被 code 1234 / close 1003 拒绝。查询参数用已放行的型号进门，
-# 真正的型号放进 session.update。只对智谱官方网关这样改写：自定义地址（代理、
-# 自建）可能按查询参数路由，照旧用用户填的型号。
+# Public WebSocket ?model= accepts only these names. Using glm-realtime-plus in query parameters
+# is rejected after handshake with code 1234 / close 1003. Enter with an accepted query model,
+# then put the actual model in session.update. Rewrite only for Zhipu's official gateway: custom URLs (proxies,
+# self-hosted servers) may route by query parameters, so preserve the user-configured model.
 _GLM_REALTIME_PUBLIC_HOST = "open.bigmodel.cn"
 _GLM_REALTIME_GATEWAY_MODELS = frozenset({
     "glm-realtime",

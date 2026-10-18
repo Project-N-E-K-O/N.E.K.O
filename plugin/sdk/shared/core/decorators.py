@@ -597,19 +597,19 @@ def quick_action(
     icon: str | None = None,
     priority: int = 0,
 ) -> Callable[[F], F]:
-    """标记一个 entry 为快捷操作，在命令面板中优先展示。
+    """Mark an entry as a quick action, prioritized in the command palette.
 
-    必须放在 @plugin_entry 下面（先执行），由 @plugin_entry 读取配置。
+    Place below @plugin_entry (executed first); @plugin_entry reads the configuration.
 
-    用法::
+    Usage::
 
         @plugin_entry(id="get_weather", name="获取天气")
         @quick_action(icon="🌤️", priority=10)
         async def get_weather(self, ...): ...
 
     Args:
-        icon: 面板中显示的图标（emoji），覆盖默认 ⚡ 图标
-        priority: 排序权重（越大越靠前），默认 0
+        icon: Icon displayed in the palette (emoji), overriding the default ⚡.
+        priority: Sort weight (higher comes first), default 0.
     """
     cfg = QuickActionConfig(icon=icon, priority=priority)
 

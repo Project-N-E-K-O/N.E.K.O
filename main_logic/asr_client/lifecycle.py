@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass
 from enum import Enum
+from typing import Callable
 
 from main_logic.voice_turn.contracts import (
     VoiceIngressToken,
@@ -73,7 +74,7 @@ class VoiceLifecycleEvent(Enum):
     RETRY = "retry"
     RETRIES_EXHAUSTED = "retries_exhausted"
     TURN_SEALED = "turn_sealed"
-    # 兼容旧调用方；新代码应使用 TURN_SEALED，明确区分语义端点和 provider final。
+    # Support old callers; new code should use TURN_SEALED to distinguish semantic endpoints from provider finals.
     TURN_ENDPOINTED = "turn_endpointed"
     PROVIDER_FINAL = "provider_final"
     PREWARM_EXPIRED = "prewarm_expired"
@@ -346,6 +347,7 @@ class VoiceInputLifecycleController:
         )
         self._active_start_audio = b""
         self._active_start_spans: tuple[AudioSampleSpan, ...] = ()
+        self._audio_discard_observer: Callable[[AudioSampleSpan], None] | None = None
         self.last_drained_spans: tuple[AudioSampleSpan, ...] = ()
         self.admission_failure_reason: str | None = None
         self.admission_range_diagnostics: dict[str, int | None] = {}
@@ -399,6 +401,18 @@ class VoiceInputLifecycleController:
         if route_mode is VoiceRouteMode.BLOCKED:
             self._state = VoiceLifecycleState.BLOCKED
 
+    def set_audio_discard_observer(self, observer: Callable[[AudioSampleSpan], None]) -> None:
+        self._audio_discard_observer = observer
+        for buffer in (self._pre_roll, self._pending_turn, self._pending_connect):
+            buffer.on_discard = observer
+
+    def _discard_active_start(self) -> None:
+        if self._audio_discard_observer is not None:
+            for span in self._active_start_spans:
+                self._audio_discard_observer(span)
+        self._active_start_audio = b""
+        self._active_start_spans = ()
+
     def transition(self, event: VoiceLifecycleEvent) -> VoiceLifecycleState:
         self._state = next_lifecycle_state(self._state, event)
         if event is VoiceLifecycleEvent.SOFT_WAKE:
@@ -424,8 +438,7 @@ class VoiceInputLifecycleController:
             self._pre_roll_sent_for_turn = False
             self._pre_roll.clear()
             self._pending_connect.clear()
-            self._active_start_audio = b""
-            self._active_start_spans = ()
+            self._discard_active_start()
         elif event is VoiceLifecycleEvent.GAME_TAKEOVER:
             self._prefix_protected = False
             self._turn_id = self._allocate_turn_id()
@@ -436,8 +449,7 @@ class VoiceInputLifecycleController:
             self._pending_turn_speech = False
             self._pending_turn_id = None
             self._pending_connect.clear()
-            self._active_start_audio = b""
-            self._active_start_spans = ()
+            self._discard_active_start()
         self.notify_prefix_capacity()
         return self._state
 
@@ -462,8 +474,8 @@ class VoiceInputLifecycleController:
         ):
             return AudioDecision(AudioDisposition.BLOCK)
 
-        # 已 seal 的旧轮次绝不能再接收麦克风音频。DRAINING 期间到达的
-        # PCM 只进入下一轮的有界内存缓冲，等待旧 final 后再启动新 turn。
+        # A sealed old turn must never receive more microphone audio. PCM arriving during DRAINING
+        # enters only the next turn's bounded memory buffer; start the new turn after the old final arrives.
         if self._state is VoiceLifecycleState.DRAINING:
             dropped = self._pending_turn.append(
                 pcm16,
@@ -580,6 +592,7 @@ class VoiceInputLifecycleController:
                 VoiceLifecycleState.PREWARMING, VoiceLifecycleState.BACKOFF,
             } else self._pre_roll
             combined = RangedAudioBuffer(capacity_ms=self.config.pending_audio_ms)
+            combined.on_discard = self._audio_discard_observer
             self._pending_connect.move_to(combined)
             self._pre_roll.move_to(combined)
             combined.trim_to_bytes(capacity)
@@ -613,17 +626,20 @@ class VoiceInputLifecycleController:
                 offset += size
         if not self._validate_candidate_range(combined, start_sample, end_sample):
             return False
-        combined.trim_to_bytes(count)
         target = self._pending_connect if self._state in {
             VoiceLifecycleState.PREWARMING, VoiceLifecycleState.BACKOFF,
         } else self._pre_roll
         capacity = (self.config.pending_audio_ms if target is self._pending_connect
                     else self.config.pre_roll_ms) * 32
-        if combined.byte_count > capacity:
+        if min(combined.byte_count, max(0, count)) > capacity:
             self.admission_failure_reason = "candidate_audio_capacity_exceeded"
             return False
-        self._pending_connect.clear()
-        self._pre_roll.clear()
+        # Ownership moves to the validated copy. Only its rejected prefix is
+        # discarded; clearing the sources would falsely reject retained PCM.
+        self._pending_connect.drain()
+        self._pre_roll.drain()
+        combined.on_discard = self._audio_discard_observer
+        combined.trim_to_bytes(count)
         combined.move_to(target)
         return True
 
@@ -730,6 +746,24 @@ class VoiceInputLifecycleController:
             return
         self._pending_turn.clear()
 
+    def begin_delivery_mapping(self) -> bool:
+        """Fence old local PCM without revoking an active or sealed owner.
+
+        Before the first delivery tag, retained audio has no delivery owner,
+        even when detector admission already assigned numeric sample ranges.
+        It cannot be prefixed to tagged audio. Promised unsent prefixes must
+        finish their handoff first; refusing the switch leaves them intact.
+        """
+        if (self._active_start_audio or self._pending_turn_speech
+                or (self._prefix_protected
+                    and (self.pre_roll_bytes or self.pending_connect_bytes))):
+            return False
+        self._pre_roll.clear()
+        self._pending_connect.clear()
+        self._pending_turn.clear()
+        self.notify_prefix_capacity()
+        return True
+
     def preserve_unconfirmed_pending_audio(self) -> bool:
         """Move an unconfirmed successor into pre-roll after the old final."""
 
@@ -759,8 +793,7 @@ class VoiceInputLifecycleController:
         self._pending_turn_speech = False
         self._pending_turn_id = None
         self._pending_connect.clear()
-        self._active_start_audio = b""
-        self._active_start_spans = ()
+        self._discard_active_start()
         self.last_drained_spans = ()
         self.notify_prefix_capacity()
 
@@ -787,8 +820,7 @@ class VoiceInputLifecycleController:
         self._pending_turn.clear()
         self._pending_turn_speech = False
         self._pending_turn_id = None
-        self._active_start_audio = b""
-        self._active_start_spans = ()
+        self._discard_active_start()
         self.last_drained_spans = ()
         if self._state not in {
             VoiceLifecycleState.OFF,
