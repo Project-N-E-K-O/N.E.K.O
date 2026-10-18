@@ -412,6 +412,64 @@ def test_a_task_owner_binding_does_not_leak_into_a_sibling_function():
     assert [lineno for lineno, _, _ in out] == [9]
 
 
+@pytest.mark.parametrize("body", [
+    # Rebinding to something else, in either order, revokes trust.
+    "runner = asyncio.get_running_loop()\n        runner = scheduler\n        runner.create_task(socket.recv())",
+    "runner = scheduler\n        runner = asyncio.get_running_loop()\n        runner.create_task(socket.recv())",
+    "for group in groups:\n            group.create_task(socket.recv())",
+])
+def test_a_rebound_task_owner_name_is_not_trusted(body):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, scheduler, groups):
+        {body}
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+@pytest.mark.parametrize("inner", [
+    "async def inner(runner):\n            runner.create_task(socket.recv())",
+    "async def inner():\n            runner = make_scheduler()\n            runner.create_task(socket.recv())",
+])
+def test_an_inner_scope_shadowing_a_task_owner_is_not_trusted(inner):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket):
+        runner = asyncio.get_running_loop()
+        runner.create_task(socket.recv())
+
+        {inner}
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+    assert out[0][0] > 6
+
+
+def test_a_slot_does_not_skip_the_ambiguous_name_depth1_check():
+    # An awaited ambiguous name is skipped (it may bind the async twin); a
+    # slot argument keeps the pre-slot behaviour and is still reported.
+    out = _violations('''
+    import asyncio
+    import time
+
+    def load_cookies_from_file(path):
+        time.sleep(1)
+
+    class Store:
+        async def load_cookies_from_file(self, path):
+            return path
+
+    async def handler(path):
+        await load_cookies_from_file(path)
+        await asyncio.gather(load_cookies_from_file(path))
+    ''')
+    assert [lineno for lineno, _, _ in out] == [14]
+    assert "load_cookies_from_file" in out[0][2]
+
+
 def test_a_direct_blocking_call_in_a_slot_is_still_flagged():
     # The slot only lifts the name-based type guess; requests.get still runs
     # synchronously before gather ever sees its result.
