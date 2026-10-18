@@ -181,6 +181,22 @@ else
     fail "路由表条数与模板不一致：渲染 $route_count / 模板 $template_count"
 fi
 
+# 条数一致还不够：删掉 /static/ 时渲染与模板会同时减一，上面的断言照样通过，
+# 而 /static/ 会掉进 location / 走主服务代理。必需路由逐条点名。
+REQUIRED_ROUTES='location = /security/csrf-token
+location /memory/
+location /agent/
+location /static/
+location = /health'
+missing_route=0
+for want in $REQUIRED_ROUTES; do
+    if ! grep -qF -- "$want" "$WORK/snap-http/etc/nginx/neko/locations.conf"; then
+        fail "必需路由缺失：$want"
+        missing_route=1
+    fi
+done
+[ "$missing_route" = "0" ] && pass "必需路由全部在位（静态别名 / 健康检查 / 记忆 / Agent / CSRF 引导）"
+
 echo
 echo "== T6 路由表契约：每个 location 要么反代，要么在直出白名单 =="
 # 实例访问门禁做在应用层，所以 nginx 直出的路径天然在门禁之外。中枢会不断新增

@@ -41,8 +41,13 @@ EXEMPT = {
 SCAN_ROOTS = ("app", "plugin")
 
 
-def _module_facts(path: Path) -> tuple[set[str], set[str]]:
-    """Return (fastapi_app_vars, gated_app_vars) parsed from one module's AST.
+def _module_facts(path: Path) -> tuple[dict[str, int], dict[str, int]]:
+    """Return (fastapi_app_bindings, gated_bindings) parsed from one module's AST.
+
+    Both dicts map a variable name to a count. Counting (rather than using sets)
+    is what makes a rebinding visible: 'app = FastAPI(); app.add_middleware(...);
+    app = FastAPI()' binds twice but gates once, so the second application would
+    be unprotected while a set-based check still matches on the name 'app'.
 
     Everything is AST-driven, not text-driven, for three reasons:
 
@@ -81,7 +86,7 @@ def _module_facts(path: Path) -> tuple[set[str], set[str]]:
             and func.value.id in fastapi_modules
         )
 
-    app_vars: set[str] = set()
+    bindings: dict[str, int] = {}
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Assign)
@@ -90,14 +95,14 @@ def _module_facts(path: Path) -> tuple[set[str], set[str]]:
         ):
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    app_vars.add(target.id)
+                    bindings[target.id] = bindings.get(target.id, 0) + 1
 
     def is_middleware_ref(expr: ast.expr) -> bool:
         if isinstance(expr, ast.Name):
             return expr.id == MIDDLEWARE
         return isinstance(expr, ast.Attribute) and expr.attr == MIDDLEWARE
 
-    gated_vars: set[str] = set()
+    gated: dict[str, int] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -107,25 +112,26 @@ def _module_facts(path: Path) -> tuple[set[str], set[str]]:
         if not isinstance(func.value, ast.Name):
             continue
         if node.args and is_middleware_ref(node.args[0]):
-            gated_vars.add(func.value.id)
+            name = func.value.id
+            gated[name] = gated.get(name, 0) + 1
 
-    return app_vars, gated_vars
+    return bindings, gated
 
 
-def _scan() -> dict[str, tuple[set[str], set[str]]]:
-    """Return {relative path: (app vars, gated vars)} for every FastAPI module."""
-    facts: dict[str, tuple[set[str], set[str]]] = {}
+def _scan() -> dict[str, tuple[dict[str, int], dict[str, int]]]:
+    """Return {relative path: (bindings, gated)} for every FastAPI module."""
+    facts: dict[str, tuple[dict[str, int], dict[str, int]]] = {}
     for root in SCAN_ROOTS:
         for path in sorted((ROOT / root).rglob("*.py")):
             posix = path.as_posix()
             if "/tests/" in posix or path.name.startswith("test_"):
                 continue
             try:
-                app_vars, gated_vars = _module_facts(path)
+                bindings, gated = _module_facts(path)
             except (OSError, SyntaxError):
                 continue
-            if app_vars:
-                facts[path.relative_to(ROOT).as_posix()] = (app_vars, gated_vars)
+            if bindings:
+                facts[path.relative_to(ROOT).as_posix()] = (bindings, gated)
     return facts
 
 
@@ -156,12 +162,18 @@ def test_gated_services_mount_the_instance_access_middleware():
     facts = _scan()
     for rel, label in GATED.items():
         assert rel in facts, f"{rel}（{label}）没有被识别出 FastAPI 应用"
-        app_vars, gated_vars = facts[rel]
-        # 必须是"这个文件自己创建的**每一个** app 上都调用了 add_middleware(InstanceAccessMiddleware)"。
-        # 用子集而不是交集：一个文件里出现第二个 FastAPI() 却没挂门禁时，
-        # 交集判定仍会通过，那个 app 就裸奔了。
+        bindings, gated = facts[rel]
+        # 必须是"这个文件自己创建的**每一个** app 实例上都调用了
+        # add_middleware(InstanceAccessMiddleware)"。
+        # 比的是次数而不是集合：app 被重新赋值成新的 FastAPI() 时，集合判定仍会
+        # 因为名字相同而通过，但最后那个实例其实没挂门禁。
         # 注释掉的代码不在 AST 里，给别的对象挂中间件也不算。
-        assert app_vars <= gated_vars, (
+        ungated = {
+            name: count
+            for name, count in bindings.items()
+            if gated.get(name, 0) < count
+        }
+        assert not ungated, (
             f"{rel}（{label}）没有在它自己创建的 FastAPI 应用上挂 InstanceAccessMiddleware —— "
             "该服务的 HTTP/WS 不受实例门禁保护"
         )
