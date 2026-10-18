@@ -777,13 +777,14 @@ setup_dependencies() {
     # 只需要补齐/校验环境，不该重新解析依赖（那会联网、且可能改掉锁）。缺锁时才
     # 退回普通 uv sync。
     if [ -f "uv.lock" ]; then
-        # --frozen：镜像里的 uv.lock 与 pyproject.toml 来自同一个 commit，运行时
-        # 只需补齐/校验环境，不该重新解析依赖（会联网，也可能改掉锁）。
+        # --locked：先断言 uv.lock 与 pyproject.toml 一致，再按锁安装。
+        # 注意不能用 --frozen —— 它的语义是"同步但不更新锁"，锁过期时**不会报错**，
+        # 而是照旧装旧依赖集合；那会让"源码挂进容器"的开发场景静默缺依赖。
         #
-        # 但把源码挂进容器做开发时，pyproject.toml 会比 uv.lock 新，--frozen 会
-        # 直接失败。那不是配置错误，是"源码比锁新"——退回普通 sync 并明确告警，
-        # 让容器起得来，而不是把开发挡在门外。生产镜像里两者一致，这条永不触发。
-        if ! uv sync --frozen; then
+        # 锁过期时 --locked 会失败，那不是配置错误，是"源码比锁新"：退回普通
+        # sync 重新解析并告警，让容器起得来，而不是把开发挡在门外。
+        # 生产镜像里两者一致，这条永不触发。
+        if ! uv sync --locked; then
             echo "⚠️ uv sync --frozen 失败：容器里的 pyproject.toml 与 uv.lock 不一致"
             echo "   常见于把源码挂进容器做开发（源码比锁新）。退回普通 uv sync 重新解析依赖。"
             echo "   生产镜像里两者应当一致；若未挂载源码也出现本提示，请检查镜像版本。"

@@ -97,6 +97,12 @@ services:
 
       # 容器内服务端口。这些值同时决定「服务绑哪里」和「nginx 转发到哪」：
       # entrypoint 会把它们渲染进 nginx 路由表，因此两边永远一致。
+      #
+      # 主服务端口必须显式声明：健康检查是独立的 exec 上下文，**继承不到 PID 1
+      # 在 entrypoint 里 export 的变量**。没建 .env 时（required: false 明确支持的
+      # 部署），探针会拿到空端口，URL 变成 http://127.0.0.1:/health，于是一个完全
+      # 正常的默认部署在 start_period 之后被判成 unhealthy。
+      - NEKO_MAIN_SERVER_PORT=${NEKO_MAIN_SERVER_PORT:-48911}
       - NEKO_MEMORY_SERVER_PORT=${NEKO_MEMORY_SERVER_PORT:-48912}
       - NEKO_TOOL_SERVER_PORT=${NEKO_TOOL_SERVER_PORT:-48915}
       - NEKO_USER_PLUGIN_SERVER_PORT=${NEKO_USER_PLUGIN_SERVER_PORT:-48916}
