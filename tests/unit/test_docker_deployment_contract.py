@@ -16,6 +16,7 @@ See docker/README_Docker.md for the deployment contract itself.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -110,6 +111,37 @@ def test_ci_passes_build_identity_to_both_images():
     workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
     assert workflow.count("NEKO_BUILD_VERSION=") == 2, "两个 build 步骤都要传版本"
     assert workflow.count("NEKO_BUILD_REVISION=") == 2, "两个 build 步骤都要传 revision"
+
+
+def test_backup_inventory_covers_every_persistent_storage_root():
+    """The backup inventory must cover every persistent dir storage_roots declares.
+
+    Missing one entry means the script reports success while a whole class of
+    user assets disappears on restore (character cards, Live2D / VRM / MMD
+    models, workshop packs, card faces, ...).
+
+    The first version of the inventory spelled character_cards as "characters",
+    dropped the leading dot from .cloudsave_staging, and missed live2d, workshop,
+    vrm and three more -- and the regression test of the time encoded the same
+    wrong assumptions, so everything was green. Comparing the two files
+    statically turns that drift into a CI failure.
+    """
+    roots = (ROOT / "utils" / "config_manager" / "storage_roots.py").read_text(
+        encoding="utf-8"
+    )
+    declared = set(re.findall(r'self\.\w+_dir = self\.app_docs_dir / "([^"]+)"', roots))
+    declared |= set(re.findall(r'return self\.anchor_root / "([^"]+)"', roots))
+    assert declared, "没能从 storage_roots.py 解析出持久化目录，解析规则已失效"
+
+    script = (ROOT / "docker" / "backup.sh").read_text(encoding="utf-8")
+    block = script.split('MUST_LIST="', 1)[1].split('"', 1)[0]
+    listed = {line.strip() for line in block.splitlines() if line.strip()}
+
+    missing = sorted(declared - listed)
+    assert not missing, (
+        f"backup.sh 的 MUST_LIST 漏了这些持久化目录：{missing}。"
+        "漏掉的目录不会进备份，恢复后对应用户资产直接消失，而脚本仍然报成功。"
+    )
 
 
 def test_dockerignore_does_not_hide_the_docs_the_runtime_reads():

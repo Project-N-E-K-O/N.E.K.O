@@ -86,20 +86,30 @@ state=$home_dir/.local/share/N.E.K.O
 
 # ── 主副本清单：丢了不可重建 ────────────────────────────────────────────────
 # 每一项都对应一个明确的数据类别；缺失的项跳过并提示（全新安装本来就不全）。
+# 名单必须与 utils/config_manager/storage_roots.py 里的持久化目录一致 ——
+# 那里少一项，这里就少备份一类用户资产，而脚本照样报成功。
+# 契约测试 test_docker_deployment_contract.py 会静态比对这两处。
 MUST_LIST="
 config
-characters
 memory
+knowledge
 plugins
+live2d
+vrm
+mmd
+pngtuber
+avatar_tools
+workshop
+character_cards
+card_faces
+state
+cloudsave
+.cloudsave_staging
+cloudsave_backups
 .neko-plugin-installations
 .neko-plugin-packages
 .neko-package-profiles
-state
-cloudsave
-cloudsave_staging
-cloudsave_backups
 instance_access.key
-root_state.json
 "
 
 found=''

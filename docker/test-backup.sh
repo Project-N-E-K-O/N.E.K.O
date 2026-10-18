@@ -28,11 +28,18 @@ fail() { printf '  ❌ %s\n' "$1" >&2; FAILED=1; }
 make_home() {
     home="$1"
     state="$home/.local/share/N.E.K.O"
-    mkdir -p "$state/config" "$state/characters" "$state/memory" \
-             "$state/plugins" "$state/state" "$state/cloudsave" \
+    # 目录名必须与 storage_roots.py 一致（character_cards 不是 characters，
+    # .cloudsave_staging 带点），否则测试会"验证"一个不存在的布局。
+    mkdir -p "$state/config" "$state/memory" "$state/knowledge" "$state/plugins" \
+             "$state/live2d" "$state/vrm" "$state/mmd" "$state/pngtuber" \
+             "$state/avatar_tools" "$state/workshop" "$state/character_cards" \
+             "$state/card_faces" "$state/state" "$state/cloudsave" \
+             "$state/.cloudsave_staging" "$state/cloudsave_backups" \
              "$state/.neko-plugin-installations/demo/vendor" "$home/ssl"
     printf 'core\n'   > "$state/config/core_config.json"
-    printf 'cat\n'    > "$state/characters/cat.json"
+    printf 'cat\n'    > "$state/character_cards/cat.json"
+    printf 'model\n'  > "$state/live2d/model.moc3"
+    printf 'pack\n'   > "$state/workshop/pack.json"
     printf 'recent\n' > "$state/memory/recent.json"
     printf 'facts\n'  > "$state/memory/facts.json"
     printf 'secret\n' > "$state/instance_access.key"
@@ -68,9 +75,13 @@ if sh "$BACKUP" --home "$WORK/t2home" --out "$WORK/t2out" --no-stop >"$WORK/t2.l
         fail "没有生成归档"
     else
         entries=$(tar -tzf "$archive")
+        # 覆盖每一类用户资产：配置、角色卡、记忆、模型、工坊、密钥、证书。
+        # 少一类就是"恢复了但东西没了"，而这正是评审抓到的原始问题。
         for want in .local/share/N.E.K.O/config/core_config.json \
-                    .local/share/N.E.K.O/characters/cat.json \
+                    .local/share/N.E.K.O/character_cards/cat.json \
                     .local/share/N.E.K.O/memory/facts.json \
+                    .local/share/N.E.K.O/live2d/model.moc3 \
+                    .local/share/N.E.K.O/workshop/pack.json \
                     .local/share/N.E.K.O/instance_access.key \
                     ssl/N.E.K.O.crt; do
             printf '%s\n' "$entries" | grep -qF "$want" || fail "主副本缺失: $want"
