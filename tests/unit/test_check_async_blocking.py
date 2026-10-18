@@ -504,6 +504,39 @@ def test_slot_and_scope_edge_cases_that_stay_trusted(body):
     assert out == []
 
 
+@pytest.mark.parametrize("source", [
+    '''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = asyncio.get_running_loop()
+
+        def swap():
+            nonlocal runner
+            runner = scheduler
+
+        swap()
+        runner.create_task(socket.recv())
+    ''',
+    '''
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    def swap(scheduler):
+        global loop
+        loop = scheduler
+
+    async def handler(socket):
+        loop.create_task(socket.recv())
+    ''',
+])
+def test_a_nested_nonlocal_or_global_rebinding_revokes_trust(source):
+    out = _violations(source)
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
 def test_a_class_body_has_its_own_namespace_hidden_from_its_methods():
     out = _violations('''
     import asyncio

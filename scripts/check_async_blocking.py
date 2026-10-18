@@ -541,8 +541,10 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
     ``global`` / ``nonlocal``, match captures and nested def/class names
     make it untrusted. Bodies of nested functions and classes, and
     comprehension targets, belong to their own scopes and are skipped (a
-    walrus inside a comprehension still binds here). ``scope`` may also be
-    a ``ClassDef``, whose body is analysed as its own namespace.
+    walrus inside a comprehension still binds here), except that any name
+    a nested body declares ``nonlocal`` / ``global`` may be rebound from
+    there and is untrusted here too. ``scope`` may also be a ``ClassDef``,
+    whose body is analysed as its own namespace.
     """
     verdicts: dict[str, bool] = {}
     owner_targets: set[int] = set()
@@ -562,6 +564,10 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
         node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bind(node.name, False)
+            for inner in ast.walk(node):
+                if isinstance(inner, (ast.Global, ast.Nonlocal)):
+                    for name in inner.names:
+                        bind(name, False)
             continue
         if isinstance(node, ast.Lambda):
             continue
