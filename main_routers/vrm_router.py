@@ -583,8 +583,8 @@ def _is_valid_vrm_model_name(model_name: str) -> bool:
     return model_name not in {'', '.', '..'} and re.search(r'[<>:"/\\|?*\x00-\x1f]', model_name) is None
 
 
-def _get_emotion_config_path(model_name: str) -> Path | None:
-    """Get the emotion config file path for a model."""
+def _get_vrm_config_path(model_name: str, suffix: str, *, create_dir: bool) -> Path | None:
+    """Get a per-model config path under static/vrm/configs, rejecting unsafe names."""
     if not _is_valid_vrm_model_name(model_name):
         logger.warning(f"无效的模型名称: {model_name!r}")
         return None
@@ -593,9 +593,10 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
 
     # 配置文件存储在 static/vrm/configs/ 目录下
     config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
-    config_dir.mkdir(parents=True, exist_ok=True)
+    if create_dir:
+        config_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = config_dir / f"{model_name}_emotion.json"
+    config_path = config_dir / f"{model_name}{suffix}"
 
     # 验证解析后的路径仍在 config_dir 内
     try:
@@ -607,26 +608,14 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
     return config_path
 
 
+def _get_emotion_config_path(model_name: str) -> Path | None:
+    """Get the emotion config file path for a model."""
+    return _get_vrm_config_path(model_name, "_emotion.json", create_dir=True)
+
+
 def _get_physics_config_path(model_name: str) -> Path | None:
-    """Get the physics profile config file path for a model."""
-    if not _is_valid_vrm_model_name(model_name):
-        logger.warning(f"无效的模型名称: {model_name!r}")
-        return None
-
-    config_mgr = get_config_manager()
-
-    config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
-    config_dir.mkdir(parents=True, exist_ok=True)
-
-    config_path = config_dir / f"{model_name}_physics.json"
-
-    try:
-        config_path.resolve().relative_to(config_dir.resolve())
-    except ValueError:
-        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
-        return None
-
-    return config_path
+    """Get the physics profile path for a model; read-only, never creates the directory."""
+    return _get_vrm_config_path(model_name, "_physics.json", create_dir=False)
 
 
 def _get_model_path(model_name: str) -> tuple[Path | None, str]:
@@ -805,10 +794,14 @@ async def get_physics_profile(model_name: str):
                 content={"success": False, "error": error_msg}
             )
 
-        if not config_path.exists():
+        if not config_path.is_file():
             return {"success": True, "config": None, "source": "absent"}
 
-        config = await read_json_async(config_path)
+        # utf-8-sig: Unity/C# writers commonly emit a UTF-8 BOM.
+        config = await read_json_async(config_path, encoding="utf-8-sig")
+        if not isinstance(config, dict):
+            logger.warning(f"物理配置文件不是 JSON 对象，回退到默认行为: {config_path.name}")
+            return {"success": True, "config": None, "source": "corrupt"}
         return {"success": True, "config": config, "source": "file"}
 
     except json.JSONDecodeError as e:

@@ -199,3 +199,32 @@ def test_cleanup_keeps_configs_while_a_same_stem_model_remains(tmp_path, monkeyp
     asyncio.run(vrm_router._cleanup_vrm_model_configs("sister1.0"))
 
     assert physics.exists()
+
+def test_physics_profile_accepts_a_utf8_bom(client, config_dir):
+    stored = {"colliders": [], "chains": [{"bones": ["Hair"], "stiffness": 0.5}]}
+    (config_dir / "sister1.0_physics.json").write_bytes(
+        b"\xef\xbb\xbf" + json.dumps(stored).encode("utf-8")
+    )
+    payload = client.get("/api/model/vrm/physics_profile/sister1.0").json()
+    assert payload["source"] == "file"
+    assert payload["config"] == stored
+
+
+def test_physics_profile_non_object_json_falls_back(client, config_dir):
+    (config_dir / "sister1.0_physics.json").write_text("[1, 2]", encoding="utf-8")
+    payload = client.get("/api/model/vrm/physics_profile/sister1.0").json()
+    assert payload["success"] is True
+    assert payload["config"] is None
+    assert payload["source"] == "corrupt"
+
+
+def test_physics_profile_read_does_not_create_the_config_dir(tmp_path, monkeypatch):
+    class _Mgr:
+        project_root = tmp_path
+
+    monkeypatch.setattr(vrm_router, "get_config_manager", lambda: _Mgr())
+    app = FastAPI()
+    app.include_router(vrm_router.router)
+    payload = TestClient(app).get("/api/model/vrm/physics_profile/sister1.0").json()
+    assert payload["source"] == "absent"
+    assert not (tmp_path / "static" / "vrm" / "configs").exists()

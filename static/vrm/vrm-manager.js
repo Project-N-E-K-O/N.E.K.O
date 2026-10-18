@@ -1837,12 +1837,10 @@ class VRMManager {
             const joints = springBoneManager.joints
                 ? Array.from(springBoneManager.joints)
                 : [];
+            // 只缩放物理配置写过基准值的关节；没有配置的模型保持原有行为（hitRadius 不随缩放变化）
             joints.forEach(joint => {
                 const settings = joint && joint.settings;
-                if (!settings || typeof settings.hitRadius !== 'number') return;
-                if (joint._originalHitRadius === undefined) {
-                    joint._originalHitRadius = settings.hitRadius;
-                }
+                if (!settings || typeof joint._originalHitRadius !== 'number') return;
                 settings.hitRadius = joint._originalHitRadius * scaleFactor;
             });
 

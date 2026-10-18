@@ -489,3 +489,234 @@ test('two chains on one bone each keep their own settings', () => {
     assert.equal(first.settings.stiffness, 0.2);
     assert.equal(second.settings.stiffness, 0.9);
 });
+
+// ---- Real-model layout and manager integration ----
+
+function readVrmJson(relPath) {
+    const fd = fs.openSync(path.join(projectRoot, relPath), 'r');
+    try {
+        const header = Buffer.alloc(20);
+        fs.readSync(fd, header, 0, 20, 0);
+        const jsonLength = header.readUInt32LE(12);
+        const chunk = Buffer.alloc(jsonLength);
+        fs.readSync(fd, chunk, 0, jsonLength, 20);
+        return JSON.parse(chunk.toString('utf8'));
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
+// Builds the runtime collider/joint layout three-vrm creates for a VRM1 model:
+// one sphere/capsule collider per entry (child of its node), one joint per spring segment.
+function runtimeFromVrm1(gltf) {
+    const nodes = gltf.nodes;
+    const spring = gltf.extensions.VRMC_springBone;
+    const colliders = spring.colliders.map((entry) => {
+        const type = entry.shape.sphere ? 'sphere' : 'capsule';
+        const data = entry.shape[type];
+        const bone = { name: nodes[entry.node].name };
+        const offset = data.offset || [0, 0, 0];
+        return {
+            parent: bone,
+            shape: { type, radius: data.radius, offset: { x: offset[0], y: offset[1], z: offset[2] } }
+        };
+    });
+    const joints = [];
+    for (const s of spring.springs) {
+        for (let i = 0; i < s.joints.length - 1; i++) {
+            const j = s.joints[i];
+            joints.push({
+                bone: { name: nodes[j.node].name },
+                settings: {
+                    hitRadius: j.hitRadius || 0,
+                    stiffness: j.stiffness,
+                    dragForce: j.dragForce,
+                    gravityPower: j.gravityPower || 0
+                }
+            });
+        }
+    }
+    return { colliders, joints };
+}
+
+const sisterGltf = readVrmJson('static/vrm/sister1.0.vrm');
+
+// The six colliders vrm-physics-tuner's PhysicsConfigBuilder writes for sister1.0: one per
+// humanoid candidate bone, capsule when the bone has a child, offset always [0,0,0].
+const TUNER_COLLIDERS_SISTER = [
+    { bone: 'J_Bip_C_Head', shape: 'capsule', radius: 0.141539, offset: [0, 0, 0] },
+    { bone: 'J_Bip_C_Chest', shape: 'capsule', radius: 0.046839, offset: [0, 0, 0] },
+    { bone: 'J_Bip_C_Spine', shape: 'capsule', radius: 0.046219, offset: [0, 0, 0] },
+    { bone: 'J_Bip_C_Hips', shape: 'capsule', radius: 0.037673, offset: [0, 0, 0] },
+    { bone: 'J_Bip_L_UpperArm', shape: 'capsule', radius: 0.095722, offset: [0, 0, 0] },
+    { bone: 'J_Bip_R_UpperArm', shape: 'capsule', radius: 0.095722, offset: [0, 0, 0] }
+];
+
+test('sister1.0: tuner capsules never land on the model sphere colliders', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = { colliders: TUNER_COLLIDERS_SISTER, chains: [] };
+    const { colliders } = runtimeFromVrm1(sisterGltf);
+    assert.equal(colliders.length, 28);
+    const raw = colliders.map((c) => c.shape.radius);
+    const applied = profile.applyColliders(makeManager(colliders), 0.5);
+    assert.equal(applied, 0, 'a capsule radius must not be written onto a sphere');
+    colliders.forEach((c, i) => {
+        assert.equal(c.shape.radius, raw[i] * 0.5, 'unmatched colliders keep the no-profile radius');
+    });
+});
+
+test('sister1.0: a profile copying the model colliders matches every one of them', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    const nodes = sisterGltf.nodes;
+    profile.profile = {
+        colliders: sisterGltf.extensions.VRMC_springBone.colliders.map((c, i) => ({
+            bone: nodes[c.node].name,
+            shape: 'sphere',
+            radius: 0.001 * (i + 1),
+            offset: c.shape.sphere.offset
+        })).reverse(),
+        chains: []
+    };
+    const { colliders } = runtimeFromVrm1(sisterGltf);
+    const applied = profile.applyColliders(makeManager(colliders));
+    assert.equal(applied, 28);
+    colliders.forEach((c, i) => {
+        assert.ok(Math.abs(c.shape.radius - 0.001 * (i + 1)) < 1e-12, `collider ${i} got its own radius`);
+    });
+});
+
+test('sister1.0: zero-offset sphere entries pair with the bone spheres in order', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [
+            { bone: 'J_Bip_C_UpperChest', shape: 'sphere', radius: 0.03, offset: [0, 0, 0] },
+            { bone: 'J_Bip_C_UpperChest', shape: 'sphere', radius: 0.02, offset: [0, 0, 0] },
+            { bone: 'J_Bip_C_UpperChest', shape: 'sphere', radius: 0.021, offset: [0, 0, 0] }
+        ],
+        chains: []
+    };
+    const { colliders } = runtimeFromVrm1(sisterGltf);
+    const chest = colliders.filter((c) => c.parent.name === 'J_Bip_C_UpperChest');
+    assert.equal(chest.length, 3);
+    assert.equal(profile.applyColliders(makeManager(colliders)), 3);
+    assert.deepEqual(chest.map((c) => c.shape.radius), [0.03, 0.02, 0.021]);
+});
+
+test('a shape-only entry does not land on a collider of another shape', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = { colliders: [{ bone: 'Head', shape: 'sphere', radius: 0.07 }], chains: [] };
+    const capsule = makeCollider('Head', 0.4);
+    capsule.shape.type = 'capsule';
+    assert.equal(profile.applyColliders(makeManager([capsule])), 0);
+    assert.equal(capsule.shape.radius, 0.2);
+});
+
+test('sister1.0: tuner chains reach every runtime spring joint', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    const nodes = sisterGltf.nodes;
+    // The tuner walks each spring root down its children; model springs list the same bones.
+    profile.profile = {
+        colliders: [],
+        chains: sisterGltf.extensions.VRMC_springBone.springs.map((s) => ({
+            bones: s.joints.map((j) => nodes[j.node].name),
+            stiffness: 0.7,
+            drag_force: 0.5,
+            gravity_power: 0.15,
+            hit_radius: 0.0175
+        }))
+    };
+    const { joints } = runtimeFromVrm1(sisterGltf);
+    assert.equal(joints.length, 71);
+    assert.equal(profile.applyJoints(makeManager([], joints), 1), 71);
+    joints.forEach((j) => {
+        assert.equal(j.settings.stiffness, 0.7);
+        assert.equal(j._originalHitRadius, 0.0175);
+    });
+});
+
+// Runs VRMManager.prototype.setModelScale from the real source against a fake model.
+function loadSetModelScale() {
+    const source = fs.readFileSync(path.join(projectRoot, 'static/vrm/vrm-manager.js'), 'utf8');
+    const start = source.indexOf('    setModelScale(x, y, z) {');
+    assert.ok(start > 0, 'setModelScale must exist');
+    const bodyStart = source.indexOf('{', start);
+    let depth = 0;
+    let end = bodyStart;
+    for (; end < source.length; end++) {
+        if (source[end] === '{') depth++;
+        else if (source[end] === '}') {
+            depth--;
+            if (depth === 0) break;
+        }
+    }
+    const body = source.slice(bodyStart + 1, end);
+    return new Function('x', 'y', 'z', body);
+}
+
+function fakeModel(colliders, joints) {
+    return {
+        currentModel: {
+            vrm: {
+                scene: { scale: { x: 1, set(x) { this.x = x; } } },
+                springBoneManager: makeManager(colliders, joints)
+            }
+        }
+    };
+}
+
+test('profile hit radius is scaled once after the user rescales the model', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = { colliders: [], chains: [{ bones: ['Hair'], hit_radius: 0.02 }] };
+    const joint = { bone: { name: 'Hair' }, settings: { hitRadius: 0.004 } };
+    profile.applyJoints(makeManager([], [joint]), 0.6);
+    assert.ok(Math.abs(joint.settings.hitRadius - 0.012) < 1e-12);
+
+    const setModelScale = loadSetModelScale();
+    const host = fakeModel([], [joint]);
+    const log = console.log;
+    console.log = () => {};
+    try {
+        setModelScale.call(host, 0.7, 0.7, 0.7);
+    } finally {
+        console.log = log;
+    }
+    assert.ok(Math.abs(joint.settings.hitRadius - 0.014) < 1e-12, `got ${joint.settings.hitRadius}`);
+});
+
+test('without a profile, rescaling leaves joint hit radius untouched', () => {
+    const joint = { bone: { name: 'Hair' }, settings: { hitRadius: 0.004 } };
+    const collider = makeCollider('Head', 0.1);
+    const setModelScale = loadSetModelScale();
+    const host = fakeModel([collider], [joint]);
+    const log = console.log;
+    console.log = () => {};
+    try {
+        setModelScale.call(host, 0.5, 0.5, 0.5);
+        setModelScale.call(host, 0.8, 0.8, 0.8);
+    } finally {
+        console.log = log;
+    }
+    assert.equal(joint.settings.hitRadius, 0.004);
+    assert.equal(joint._originalHitRadius, undefined);
+    assert.ok(Math.abs(collider.shape.radius - 0.08) < 1e-12, 'colliders still follow the scale');
+});
+
+test('an empty or array config is not treated as a profile', async () => {
+    for (const config of [{}, [], { colliders: 'x' }]) {
+        const { VrmPhysicsProfile } = loadProfileClass({
+            fetch: async () => ({ ok: true, json: async () => ({ success: true, config }) }),
+            AbortController,
+            setTimeout,
+            clearTimeout
+        });
+        const profile = new VrmPhysicsProfile();
+        assert.equal(await profile.load('m'), null);
+        assert.equal(profile.hasProfile, false);
+    }
+});

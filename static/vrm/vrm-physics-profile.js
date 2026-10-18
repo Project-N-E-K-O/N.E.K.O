@@ -64,12 +64,17 @@
             }
 
             if (seq !== this._requestSeq) return null;
-            if (!payload || payload.success !== true || !payload.config) return null;
+            if (!payload || payload.success !== true || !this._isUsableConfig(payload.config)) return null;
 
             this.profile = payload.config;
             this.source = 'file';
             this.lastModel = modelName;
             return this.profile;
+        }
+
+        _isUsableConfig(config) {
+            if (!config || typeof config !== 'object' || Array.isArray(config)) return false;
+            return Array.isArray(config.colliders) || Array.isArray(config.chains);
         }
 
         _boneNameOfCollider(collider) {
@@ -112,14 +117,20 @@
             return round(x) + ',' + round(y) + ',' + round(z);
         }
 
-        _geometryKey(shapeName, offset) {
-            const vec = this._vecKey(offset);
-            return (shapeName || '') + '|' + (vec || '0,0,0');
+        _offsetKey(offset) {
+            return this._vecKey(offset) || '0,0,0';
         }
 
-        _hasGeometryInfo(entry) {
-            if (!entry) return false;
-            return this._vecKey(entry.offset) !== '';
+        // The tuner always writes offset [0,0,0] (a placeholder, not a position), so a zero or
+        // missing offset carries no positional information and must not block pairing.
+        _hasPositionInfo(entry) {
+            const key = this._vecKey(entry && entry.offset);
+            return key !== '' && key !== '0,0,0';
+        }
+
+        _shapeCompatible(entry, runtimeType) {
+            const shape = entry && typeof entry.shape === 'string' ? entry.shape : '';
+            return !shape || !runtimeType || shape === runtimeType;
         }
 
         _colliderIndex() {
@@ -166,64 +177,67 @@
             const index = this._colliderIndex();
             const matched = new Array(colliders.length).fill(null);
             const claimed = new Set();
-            let applied = 0;
-
-            for (let i = 0; i < colliders.length; i++) {
-                const collider = colliders[i];
-                if (!collider || !collider.shape || collider.shape.radius === undefined) continue;
-
+            const runtime = colliders.map((collider) => {
+                if (!collider || !collider.shape || collider.shape.radius === undefined) return null;
                 const boneName = this._sanitizeNodeName(this._boneNameOfCollider(collider));
-                const entries = boneName ? index.get(boneName) : null;
-                if (!entries) continue;
+                return {
+                    entries: boneName ? index.get(boneName) : null,
+                    type: typeof collider.shape.type === 'string' ? collider.shape.type : '',
+                    offsetKey: this._offsetKey(collider.shape.offset)
+                };
+            });
 
-                const runtimeKey = this._geometryKey(
-                    collider.shape.type || '',
-                    collider.shape.offset
-                );
-                for (let k = 0; k < entries.length; k++) {
-                    if (claimed.has(entries[k])) continue;
-                    if (this._geometryKey(entries[k].shape, entries[k].offset) === runtimeKey) {
-                        matched[i] = entries[k];
-                        claimed.add(entries[k]);
-                        break;
-                    }
+            // Pass 1: exact bone + shape + offset (profiles that copy the model's own colliders).
+            for (let i = 0; i < colliders.length; i++) {
+                const info = runtime[i];
+                if (!info || !info.entries) continue;
+                for (let k = 0; k < info.entries.length; k++) {
+                    const entry = info.entries[k];
+                    if (claimed.has(entry)) continue;
+                    if (!this._shapeCompatible(entry, info.type)) continue;
+                    if (this._offsetKey(entry.offset) !== info.offsetKey) continue;
+                    matched[i] = entry;
+                    claimed.add(entry);
+                    break;
                 }
             }
 
+            // Pass 2: same bone + same shape, in order, only for entries without a real position.
+            // A shape mismatch or a known offset mismatch stays unmatched.
+            for (let i = 0; i < colliders.length; i++) {
+                const info = runtime[i];
+                if (!info || !info.entries || matched[i]) continue;
+                for (let k = 0; k < info.entries.length; k++) {
+                    const entry = info.entries[k];
+                    if (claimed.has(entry)) continue;
+                    if (!this._shapeCompatible(entry, info.type)) continue;
+                    if (this._hasPositionInfo(entry)) continue;
+                    matched[i] = entry;
+                    claimed.add(entry);
+                    break;
+                }
+            }
+
+            let applied = 0;
             for (let i = 0; i < colliders.length; i++) {
                 const collider = colliders[i];
-                if (!collider || !collider.shape || collider.shape.radius === undefined) continue;
+                if (!runtime[i]) continue;
 
                 if (collider._rawOriginalRadius === undefined) {
                     collider._rawOriginalRadius = collider.shape.radius;
                 }
 
-                if (!matched[i]) {
-                    const boneName = this._sanitizeNodeName(this._boneNameOfCollider(collider));
-                    const entries = boneName ? index.get(boneName) : null;
-                    if (entries) {
-                        for (let k = 0; k < entries.length; k++) {
-                            const candidate = entries[k];
-                            if (claimed.has(candidate)) continue;
-                            if (this._hasGeometryInfo(candidate)) continue;
-                            matched[i] = candidate;
-                            claimed.add(candidate);
-                            break;
-                        }
-                    }
-                }
-
                 const entry = matched[i];
-                let base;
                 if (entry && typeof entry.radius === 'number' && Number.isFinite(entry.radius) && entry.radius >= 0) {
-                    base = entry.radius;
+                    collider._originalRadius = entry.radius;
+                    collider.shape.radius = entry.radius * scale;
                     applied++;
                 } else {
-                    base = collider._rawOriginalRadius * DEFAULT_REDUCTION;
+                    // Same as the no-profile path, so a profile only changes what it matched.
+                    const reduced = collider._rawOriginalRadius * DEFAULT_REDUCTION;
+                    collider._originalRadius = reduced;
+                    collider.shape.radius = reduced;
                 }
-
-                collider._originalRadius = base;
-                collider.shape.radius = base * scale;
             }
 
             this.appliedColliders = applied;
@@ -260,6 +274,8 @@
                     const map = JOINT_SETTING_KEYS[k];
                     if (typeof chain[map.profile] !== 'number') continue;
                     if (map.settings === 'hitRadius') {
+                        // Unscaled base for setModelScale, like collider._originalRadius.
+                        joint._originalHitRadius = chain[map.profile];
                         settings[map.settings] = chain[map.profile] * scale;
                     } else {
                         settings[map.settings] = chain[map.profile];
