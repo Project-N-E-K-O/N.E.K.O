@@ -183,8 +183,8 @@ class _DisableReason(enum.Enum):
     # Treat this as a load failure (Codex / CodeRabbit jointly identified P2 in PR #1585):
     # ``model_id`` now includes max_length in the cache ID; if this still reports ready, long text
     # will be encoded without truncation but stamped ``-mlen1024``. It would then coexist under the same ID as vectors genuinely truncated at 1024,
-    # and is_cached_embedding_valid would treat them as the "same space" for cosine similarity, silently drifting retrieval quality. Disabling is safer than a cache mismatch.
-    # "same space" for cosine similarity, silently drifting retrieval quality. Disabling is safer than a cache mismatch.
+    # and is_cached_embedding_valid would treat them as the "same space" for cosine similarity,
+    # silently drifting retrieval quality. Disabling is safer than a cache mismatch.
     TRUNCATION_SETUP_FAILED = "tokenizer_truncation_setup_failed"
     # Default bundle is INT8. ``auto`` picks INT8 when *any* usable SIMD int8
     # path exists: AVX-VNNI (fast) OR plain AVX2 (slower but fine for our nano
