@@ -462,7 +462,7 @@ _ASYNCIO_AWAITABLE_ARG = {
 # ``asyncio.TaskGroup``. Two ways in: a plain name whose every binding in
 # its resolving scope comes from one of the asyncio constructors below
 # (``async with asyncio.TaskGroup() as group`` /
-# ``loop = asyncio.get_running_loop()``, see ``_task_owner_verdicts``), or,
+# ``loop = asyncio.get_running_loop()``, see ``_scope_info``), or,
 # for attribute / call receivers such as ``self._loop`` that scope analysis
 # cannot see, the same tail-name matching as the queue/thread/socket
 # heuristics. A plain name is never trusted by its spelling alone. An unrelated
@@ -566,55 +566,76 @@ def _definition_time_exprs(node: ast.AST, *, annotations: bool = True) -> list[a
     return exprs
 
 
-def _task_owner_verdicts(scope: ast.AST, *, annotations: bool = True) -> dict[str, bool]:
-    """Map every name bound in ``scope`` to whether it is a trusted task owner.
+_DECLARED_GLOBAL = "global"
+_DECLARED_NONLOCAL = "nonlocal"
+# name -> trusted, or one of the markers above for a ``global`` / ``nonlocal``
+# declaration (lookup continues at the module / in enclosing functions).
+ScopeVerdicts = dict[str, bool | str]
+
+
+def _scope_info(
+    scope: ast.AST,
+    *,
+    annotations: bool = True,
+    cache: dict[int, tuple[ScopeVerdicts, dict[str, bool], dict[str, bool]]] | None = None,
+) -> tuple[ScopeVerdicts, dict[str, bool], dict[str, bool]]:
+    """Task-owner verdicts of one scope, plus the writes that escape it.
 
     Mirrors Python scoping: a name bound anywhere in a function is local to
-    the whole function, so the verdict is flow-insensitive. A name is
+    the whole function, so the verdict is flow-insensitive. A local name is
     trusted only when every one of its bindings in this scope is
-    ``name = asyncio.<constructor>()`` or
-    ``async with asyncio.<constructor>() as name`` (an annotated assignment
-    counts the same way; a bare annotation binds nothing). Parameters, any
-    other assignment / loop / walrus target, imports, ``except ... as``,
-    ``global`` / ``nonlocal``, match captures and nested def/class names
-    make it untrusted. Bodies of nested functions and classes, and
-    comprehension targets, belong to their own scopes and are skipped (a
-    walrus inside a comprehension still binds here), except that a name
-    bound here which a nested body declares ``nonlocal`` (function scopes)
-    or ``global`` (the module) may be rebound from there and is untrusted.
-    ``scope`` may also be a ``ClassDef``, whose body is analysed as its own
-    namespace.
-    """
-    verdicts: dict[str, bool] = {}
-    owner_targets: set[int] = set()
-    # Names a nested body declares ``global`` / ``nonlocal``.
-    rebound_globals: set[str] = set()
-    rebound_nonlocals: set[str] = set()
+    ``name = asyncio.<constructor>()``, ``name: T = asyncio.<constructor>()``,
+    ``(name := asyncio.<constructor>())`` or
+    ``async with asyncio.<constructor>() as name`` (a bare annotation binds
+    nothing). Parameters, any other assignment / loop / walrus target,
+    ``del``, imports, ``except ... as``, match captures and nested def/class
+    names make it untrusted. Every binding in a class body is untrusted:
+    the namespace fills in execution order and a single verdict cannot say
+    which reads happen before a trusted assignment.
 
-    def bind(name: str, trusted: bool) -> None:
-        verdicts[name] = verdicts.get(name, True) and trusted
+    A name declared ``global`` / ``nonlocal`` here gets a marker instead of
+    a verdict, and writes through the declaration -- from this scope or a
+    nested one -- escape: ``global`` writes land on the module, ``nonlocal``
+    writes on the nearest enclosing function that binds the name. The two
+    returned dicts map escaping names to whether every such write was a
+    constructor binding; the scope that owns the name folds them into its
+    own verdict.
+
+    Bodies of nested functions and classes, and comprehension targets, are
+    their own scopes; definition-time expressions (decorators, defaults,
+    annotations unless postponed, bases) and walrus targets inside a
+    comprehension belong to this one.
+    """
+    if cache is not None and id(scope) in cache:
+        return cache[id(scope)]
+    is_module = isinstance(scope, ast.Module)
+    is_class = isinstance(scope, ast.ClassDef)
+    bindings: list[tuple[str, bool]] = []
+    declared_global: set[str] = set()
+    declared_nonlocal: set[str] = set()
+    child_globals: list[tuple[str, bool]] = []
+    child_nonlocals: list[tuple[str, bool]] = []
+    owner_targets: set[int] = set()
 
     if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
         args = scope.args
         for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg):
             if arg is not None:
-                bind(arg.arg, False)
+                bindings.append((arg.arg, False))
         stack: list[ast.AST] = [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
     else:
         stack = list(getattr(scope, "body", []))
     while stack:
         node = stack.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bind(node.name, False)
-            for inner in ast.walk(node):
-                if isinstance(inner, ast.Global):
-                    rebound_globals.update(inner.names)
-                elif isinstance(inner, ast.Nonlocal):
-                    rebound_nonlocals.update(inner.names)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            if not isinstance(node, ast.Lambda):
+                bindings.append((node.name, False))
+            _child, escaping_globals, escaping_nonlocals = _scope_info(
+                node, annotations=annotations, cache=cache,
+            )
+            child_globals.extend(escaping_globals.items())
+            child_nonlocals.extend(escaping_nonlocals.items())
             stack.extend(_definition_time_exprs(node, annotations=annotations))
-            continue
-        if isinstance(node, ast.Lambda):
-            stack.extend(_definition_time_exprs(node))
             continue
         if isinstance(node, ast.comprehension):
             stack.append(node.iter)
@@ -627,33 +648,63 @@ def _task_owner_verdicts(scope: ast.AST, *, annotations: bool = True) -> dict[st
                 owner_targets.add(id(node.target))
         elif isinstance(node, ast.Assign) and _is_task_owner_constructor(node.value):
             owner_targets.update(id(t) for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.NamedExpr) and _is_task_owner_constructor(node.value):
+            owner_targets.add(id(node.target))
         elif isinstance(node, ast.AsyncWith):
             for item in node.items:
                 if isinstance(item.optional_vars, ast.Name) and _is_task_owner_constructor(item.context_expr):
                     owner_targets.add(id(item.optional_vars))
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            bind(node.id, id(node) in owner_targets)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bindings.append((node.id, id(node) in owner_targets))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
-                bind((alias.asname or alias.name).split(".")[0], False)
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            for name in node.names:
-                bind(name, False)
+                if alias.name != "*":
+                    bindings.append(((alias.asname or alias.name).split(".")[0], False))
+        elif isinstance(node, ast.Global):
+            if not is_module:
+                declared_global.update(node.names)
+        elif isinstance(node, ast.Nonlocal):
+            declared_nonlocal.update(node.names)
         elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
-            bind(node.name, False)
+            bindings.append((node.name, False))
         elif isinstance(node, ast.MatchMapping) and node.rest:
-            bind(node.rest, False)
+            bindings.append((node.rest, False))
         stack.extend(ast.iter_child_nodes(node))
-    # A nested ``global`` can only reach the module; a nested ``nonlocal``
-    # only a function scope that binds the name itself (an intermediate
-    # function binding the same name is not resolved, which errs towards
-    # reporting).
-    rebound = rebound_globals if isinstance(scope, ast.Module) else (
-        set() if isinstance(scope, ast.ClassDef) else rebound_nonlocals
-    )
-    for name in rebound & verdicts.keys():
-        verdicts[name] = False
-    return verdicts
+
+    def merge(into: dict, name: str, trusted: bool) -> None:
+        into[name] = into.get(name, True) and trusted
+
+    verdicts: dict = {}
+    escaping_globals: dict[str, bool] = {}
+    escaping_nonlocals: dict[str, bool] = {}
+    for name, trusted in bindings:
+        if name in declared_global:
+            merge(escaping_globals, name, trusted)
+        elif name in declared_nonlocal:
+            merge(escaping_nonlocals, name, trusted)
+        else:
+            merge(verdicts, name, trusted and not is_class)
+    for name, trusted in child_globals:
+        if is_module:
+            if name in verdicts:
+                merge(verdicts, name, trusted)
+        else:
+            merge(escaping_globals, name, trusted)
+    for name, trusted in child_nonlocals:
+        if is_module:
+            continue
+        if not is_class and name in verdicts:
+            merge(verdicts, name, trusted)
+        else:
+            merge(escaping_nonlocals, name, trusted)
+    for name in declared_global:
+        verdicts[name] = _DECLARED_GLOBAL
+    for name in declared_nonlocal:
+        verdicts[name] = _DECLARED_NONLOCAL
+    result = (verdicts, escaping_globals, escaping_nonlocals)
+    if cache is not None:
+        cache[id(scope)] = result
+    return result
 
 
 def _slot_calls(expr: ast.expr) -> list[ast.Call]:
@@ -703,7 +754,9 @@ def _awaitable_argument_slots(
     Recognised forms: ``asyncio.wait_for`` / ``shield`` / ``ensure_future`` /
     ``create_task`` (first argument), ``asyncio.gather`` (every positional
     argument, including the elements of a literal or comprehension
-    expanded with ``*``), and ``<loop or TaskGroup>.create_task`` (see
+    expanded with ``*``), ``asyncio.as_completed`` (the elements of a
+    literal or comprehension first argument), and
+    ``<loop or TaskGroup>.create_task`` (see
     ``TASK_OWNER_CONSTRUCTORS`` / ``TASK_OWNER_EXACT``;
     ``is_task_owner_name`` resolves a plain-name receiver). Bare names such
     as an imported ``wait_for`` are not resolved, so a same-named repo
@@ -719,6 +772,11 @@ def _awaitable_argument_slots(
         and isinstance(func.value, ast.Name)
         and func.value.id == "asyncio"
     )
+    if on_asyncio and func.attr == "as_completed":
+        # The first argument is an iterable of awaitables.
+        if call.args and not isinstance(call.args[0], ast.Starred):
+            return _expanded_elements(call.args[0])
+        return [e for kw in call.keywords if kw.arg == "fs" for e in _expanded_elements(kw.value)]
     if on_asyncio and func.attr == "gather":
         slots: list[ast.expr] = []
         for a in call.args:
@@ -743,8 +801,10 @@ def _awaitable_argument_slots(
                 _tail_name(receiver), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX
             )
     if task_owner or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
-        if call.args and not isinstance(call.args[0], ast.Starred):
-            return [call.args[0]]
+        if call.args:
+            first = call.args[0]
+            # ``wait_for(*[ws.recv(), 10])``: the first expanded value fills the slot.
+            return _expanded_elements(first)[:1] if isinstance(first, ast.Starred) else [first]
         keyword = _ASYNCIO_AWAITABLE_ARG[func.attr]
         return [kw.value for kw in call.keywords if kw.arg == keyword]
     return []
@@ -794,12 +854,13 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         # depth-1 pass does not apply, so ``gather(foo())`` still reports a
         # risky sync ``foo`` exactly as it did before slots existed.
         self._slot_call_ids: set[int] = set()
-        # ``(_task_owner_verdicts, is_class_body)`` of the module and each
+        # ``(_scope_info verdicts, is_class_body)`` of the module and each
         # enclosing function / class body / comprehension, innermost last;
         # a plain-name receiver resolves in the innermost scope that binds
         # it. A class body is visible only to code directly inside it, not
         # to its methods or comprehensions (Python's own rule).
-        self._task_owner_scopes: list[tuple[dict[str, bool], bool]] = []
+        self._task_owner_scopes: list[tuple[ScopeVerdicts, bool]] = []
+        self._scope_cache: dict[int, tuple[ScopeVerdicts, dict[str, bool], dict[str, bool]]] = {}
         # Set per module in visit_Module; see ``_asyncio_is_module``.
         self._asyncio_is_module = True
         # Set per module in visit_Module; see ``_annotations_are_postponed``.
@@ -813,8 +874,8 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         self.generic_visit(node)
         self._task_owner_scopes.pop()
 
-    def _verdicts(self, scope: ast.AST) -> dict[str, bool]:
-        verdicts = _task_owner_verdicts(scope, annotations=self._annotations_run)
+    def _verdicts(self, scope: ast.AST) -> ScopeVerdicts:
+        verdicts = _scope_info(scope, annotations=self._annotations_run, cache=self._scope_cache)[0]
         if not self._asyncio_is_module:
             # Constructor bindings are only meaningful on the real module.
             verdicts = dict.fromkeys(verdicts, False)
@@ -884,8 +945,12 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         for depth, (verdicts, is_class_body) in enumerate(reversed(self._task_owner_scopes)):
             if is_class_body and depth:
                 continue
-            if name in verdicts:
-                return verdicts[name]
+            verdict = verdicts.get(name)
+            if verdict is None or verdict == _DECLARED_NONLOCAL:
+                continue
+            if verdict == _DECLARED_GLOBAL:
+                return self._task_owner_scopes[0][0].get(name) is True
+            return bool(verdict)
         return False
 
     # ── helpers ─────────────────────────────────────────────────────────

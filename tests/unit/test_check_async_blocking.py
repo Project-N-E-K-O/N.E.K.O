@@ -599,6 +599,82 @@ def test_nested_annotations_are_checked_only_when_they_run(future, expected):
     assert len(out) == expected
 
 
+@pytest.mark.parametrize("source", [
+    # Starred arguments of a single-slot API.
+    '''
+    import asyncio
+
+    async def handler(socket):
+        await asyncio.wait_for(*[socket.recv(), 10])
+        asyncio.create_task(*(socket.recv(),))
+    ''',
+    # as_completed takes an iterable of awaitables.
+    '''
+    import asyncio
+
+    async def handler(socket, request_queue):
+        for finished in asyncio.as_completed([socket.recv(), request_queue.get()]):
+            await finished
+        for finished in asyncio.as_completed(fs=(socket.recv() for _ in range(2))):
+            await finished
+    ''',
+    # A walrus constructor binding is a task owner.
+    '''
+    import asyncio
+
+    async def handler(socket):
+        if (runner := asyncio.get_running_loop()):
+            runner.create_task(socket.recv())
+    ''',
+    # Read-only global / nonlocal declarations resolve outward.
+    '''
+    import asyncio
+
+    runner = asyncio.get_event_loop()
+
+    async def handler(socket):
+        global runner
+        runner.create_task(socket.recv())
+
+    async def outer(socket):
+        group = asyncio.get_running_loop()
+
+        async def inner():
+            nonlocal group
+            group.create_task(socket.recv())
+    ''',
+    # A constructor write through a declaration keeps the target trusted.
+    '''
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    def reset():
+        global loop
+        loop = asyncio.new_event_loop()
+
+    async def handler(socket):
+        loop.create_task(socket.recv())
+    ''',
+])
+def test_more_awaitable_forms_and_declarations_stay_trusted(source):
+    assert _violations(source) == []
+
+
+def test_a_class_body_read_before_its_assignment_is_not_trusted():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = scheduler
+
+        class Local:
+            runner.create_task(socket.recv())
+            runner = asyncio.get_running_loop()
+    ''')
+    assert [lineno for lineno, _, _ in out] == [8]
+
+
 def test_the_last_boolean_operand_fills_the_slot():
     out = _violations('''
     import asyncio
