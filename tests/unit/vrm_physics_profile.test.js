@@ -540,6 +540,25 @@ test('two chains on one bone each keep their own settings', () => {
     assert.equal(second.settings.stiffness, 0.9);
 });
 
+test('out-of-range joint values skip only that field', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [],
+        chains: [
+            { bones: ['A'], stiffness: -1, drag_force: 1.5, gravity_power: -0.2, hit_radius: -0.1 },
+            { bones: ['B'], stiffness: 0, drag_force: 1, gravity_power: 0, hit_radius: 0.02 }
+        ]
+    };
+    const original = () => ({ stiffness: 1, dragForce: 0.4, gravityPower: 0.1, hitRadius: 0.05 });
+    const bad = { bone: { name: 'A' }, settings: original() };
+    const good = { bone: { name: 'B' }, settings: original() };
+    profile.applyJoints(makeManager([], [bad, good]));
+    assert.deepEqual({ ...bad.settings }, original());
+    assert.equal(bad._originalHitRadius, undefined);
+    assert.deepEqual({ ...good.settings }, { stiffness: 0, dragForce: 1, gravityPower: 0, hitRadius: 0.02 });
+});
+
 test('joints beyond the profile chains of a bone keep their own settings', () => {
     const { VrmPhysicsProfile } = loadProfileClass();
     const profile = new VrmPhysicsProfile();

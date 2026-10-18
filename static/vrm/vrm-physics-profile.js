@@ -5,9 +5,10 @@
 
     const DEFAULT_REDUCTION = 0.5;
     const DEFAULT_TIMEOUT_MS = 4000;
+    // max: the solver multiplies the previous displacement by (1 - dragForce), so drag must stay in [0, 1].
     const JOINT_SETTING_KEYS = [
         { settings: 'stiffness', profile: 'stiffness' },
-        { settings: 'dragForce', profile: 'drag_force' },
+        { settings: 'dragForce', profile: 'drag_force', max: 1 },
         { settings: 'gravityPower', profile: 'gravity_power' },
         { settings: 'hitRadius', profile: 'hit_radius' }
     ];
@@ -289,13 +290,16 @@
                 const settings = joint.settings;
                 for (let k = 0; k < JOINT_SETTING_KEYS.length; k++) {
                     const map = JOINT_SETTING_KEYS[k];
-                    if (!Number.isFinite(chain[map.profile])) continue;
+                    const value = chain[map.profile];
+                    // Out-of-range values skip only that field, like a negative collider radius.
+                    if (!Number.isFinite(value) || value < 0) continue;
+                    if (map.max !== undefined && value > map.max) continue;
                     if (map.settings === 'hitRadius') {
                         // Unscaled base for setModelScale, like collider._originalRadius.
-                        joint._originalHitRadius = chain[map.profile];
-                        settings[map.settings] = chain[map.profile] * scale;
+                        joint._originalHitRadius = value;
+                        settings[map.settings] = value * scale;
                     } else {
-                        settings[map.settings] = chain[map.profile];
+                        settings[map.settings] = value;
                     }
                 }
 
