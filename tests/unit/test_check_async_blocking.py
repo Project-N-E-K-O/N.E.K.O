@@ -661,6 +661,41 @@ def test_more_awaitable_forms_and_declarations_stay_trusted(source):
     assert _violations(source) == []
 
 
+def test_a_starred_comprehension_also_fills_later_arguments():
+    # Its element runs for every yielded argument, so the `timeout` here is a
+    # blocking queue read; nothing in it may be exempted.
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, timeout_queue):
+        await asyncio.wait_for(*(socket.recv() if i == 0 else timeout_queue.get() for i in range(2)))
+    ''')
+    assert any("queue.Queue.get" in msg for _, _, msg in out)
+
+
+@pytest.mark.parametrize("source", [
+    '''
+    import asyncio
+
+    async def handler(socket, other_loop):
+        asyncio.run_coroutine_threadsafe(socket.recv(), other_loop)
+    ''',
+    # A module name bound only through a nested `global` constructor write.
+    '''
+    import asyncio
+
+    def init():
+        global loop
+        loop = asyncio.new_event_loop()
+
+    async def handler(socket):
+        loop.create_task(socket.recv())
+    ''',
+])
+def test_threadsafe_slot_and_global_only_owner_stay_trusted(source):
+    assert _violations(source) == []
+
+
 def test_a_class_body_read_before_its_assignment_is_not_trusted():
     out = _violations('''
     import asyncio

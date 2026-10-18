@@ -455,6 +455,7 @@ _ASYNCIO_AWAITABLE_ARG = {
     "shield": "arg",
     "ensure_future": "coro_or_future",
     "create_task": "coro",
+    "run_coroutine_threadsafe": "coro",
 }
 
 
@@ -686,8 +687,9 @@ def _scope_info(
             merge(verdicts, name, trusted and not is_class)
     for name, trusted in child_globals:
         if is_module:
-            if name in verdicts:
-                merge(verdicts, name, trusted)
+            # A nested ``global`` write binds the module name even when the
+            # module itself never assigns it.
+            merge(verdicts, name, trusted)
         else:
             merge(escaping_globals, name, trusted)
     for name, trusted in child_nonlocals:
@@ -752,7 +754,8 @@ def _awaitable_argument_slots(
     """Return the arguments of ``call`` that asyncio requires to be awaitable.
 
     Recognised forms: ``asyncio.wait_for`` / ``shield`` / ``ensure_future`` /
-    ``create_task`` (first argument), ``asyncio.gather`` (every positional
+    ``create_task`` / ``run_coroutine_threadsafe`` (first argument, or the
+    first element of a ``*`` literal), ``asyncio.gather`` (every positional
     argument, including the elements of a literal or comprehension
     expanded with ``*``), ``asyncio.as_completed`` (the elements of a
     literal or comprehension first argument), and
@@ -803,8 +806,13 @@ def _awaitable_argument_slots(
     if task_owner or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
         if call.args:
             first = call.args[0]
-            # ``wait_for(*[ws.recv(), 10])``: the first expanded value fills the slot.
-            return _expanded_elements(first)[:1] if isinstance(first, ast.Starred) else [first]
+            if not isinstance(first, ast.Starred):
+                return [first]
+            # ``wait_for(*[ws.recv(), 10])``: the first element of a literal
+            # fills the slot. A comprehension's element also fills the later
+            # arguments (``timeout``, ``loop``), so it gets no suppression.
+            value = first.value
+            return list(value.elts[:1]) if isinstance(value, (ast.List, ast.Tuple)) else []
         keyword = _ASYNCIO_AWAITABLE_ARG[func.attr]
         return [kw.value for kw in call.keywords if kw.arg == keyword]
     return []
