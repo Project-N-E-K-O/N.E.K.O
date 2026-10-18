@@ -18,7 +18,6 @@ import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
 
 export type InstallPackagePathOptions = {
   pluginsRoot?: string
-  profilesRoot?: string
   installSource?: 'imported'
   discardOnFailure?: boolean
 }
@@ -71,7 +70,6 @@ export function usePluginPackageInstaller() {
     }
 
     const pluginsRoot = options.pluginsRoot?.trim() || undefined
-    const profilesRoot = options.profilesRoot?.trim() || undefined
     let installRequested = false
     let installFailureConfirmed = false
     installing.value = true
@@ -80,7 +78,6 @@ export function usePluginPackageInstaller() {
       const plan = await planPluginInstall({
         package: packagePath,
         plugins_root: pluginsRoot,
-        profiles_root: profilesRoot,
       })
       installPlan.value = plan
 
@@ -113,7 +110,6 @@ export function usePluginPackageInstaller() {
       const request: PluginCliInstallRequest = {
         package: packagePath,
         plugins_root: pluginsRoot,
-        profiles_root: profilesRoot,
         on_conflict: 'fail',
         install_source: options.installSource,
       }

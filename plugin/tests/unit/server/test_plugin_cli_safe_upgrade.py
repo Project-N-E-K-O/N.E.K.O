@@ -912,7 +912,7 @@ async def test_local_manual_takeover_reloads_ownership_inside_operation_lock(
 
 
 @pytest.mark.asyncio
-async def test_local_manual_takeover_rejects_unowned_existing_profile(
+async def test_local_manual_takeover_leaves_unowned_package_profile_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -942,10 +942,20 @@ async def test_local_manual_takeover_rejects_unowned_existing_profile(
     )
     monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
 
-    plan = await PluginCliService().plan_install(package=str(package_path))
+    monkeypatch.setattr(
+        replacement_transaction, "_plugin_is_running", lambda _plugin_id: _async_false(),
+    )
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
 
-    assert plan["action"] == "blocked"
-    assert plan["reason"] == "manual_takeover_profile_target_exists"
+    assert plan["action"] == "upgrade"
+    assert plan["reason"] == "manual_takeover"
+    result = await service.install(
+        package=str(package_path), confirm_upgrade=True,
+        confirmation_token=str(plan["confirmation_token"]),
+    )
+    assert result["profile_dir"] is None
+    assert manager.entry.channel == "imported"
     assert sentinel.read_text(encoding="utf-8") == "belongs_to_user = true\n"
     assert manual_dir.is_dir()
 

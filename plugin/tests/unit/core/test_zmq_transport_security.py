@@ -1134,33 +1134,31 @@ def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
 
     Mutation: drop the ``max(1, ...)`` in plugin/settings.py.
     """
-    import importlib
+    import runpy
 
     import plugin.settings as settings_mod
 
     monkeypatch.setenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", configured)
-    reloaded = importlib.reload(settings_mod)
-    try:
-        assert reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE == expected
+    # Reloading the shared module replaces exception classes used by migration.
+    # Evaluate the real settings source without changing that module's identity.
+    configured_values = runpy.run_path(settings_mod.__file__)
+    assert configured_values["PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE"] == expected
 
-        # Read the real batch processor's computed value instead of copying max(1, ...) into the test:
-        # otherwise changes to the implementation's clamp also change the test expectation,
-        # making the assertion always true (CodeRabbit).
-        batcher = zmq_transport._AuthenticatedMessageBatcher(
-            object(),  # type: ignore[arg-type]
-            batch_size=int(configured),
-            flush_interval_ms=5,
-            max_queue=8,
-            reject_ratio=0.9,
-            enqueue_timeout_s=0,
-        )
-        assert batcher._batch_size <= reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, (
-            f"子进程会发出宿主必然拒收的批量大小："
-            f"{batcher._batch_size} > {reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE}"
-        )
-    finally:
-        monkeypatch.delenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", raising=False)
-        importlib.reload(settings_mod)
+    # Read the real batch processor's computed value instead of copying max(1, ...) into the test:
+    # otherwise changes to the implementation's clamp also change the test expectation,
+    # making the assertion always true (CodeRabbit).
+    batcher = zmq_transport._AuthenticatedMessageBatcher(
+        object(),  # type: ignore[arg-type]
+        batch_size=int(configured),
+        flush_interval_ms=5,
+        max_queue=8,
+        reject_ratio=0.9,
+        enqueue_timeout_s=0,
+    )
+    assert batcher._batch_size <= configured_values["PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE"], (
+        f"子进程会发出宿主必然拒收的批量大小："
+        f"{batcher._batch_size} > {configured_values['PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE']}"
+    )
 
 
 @pytest.mark.plugin_unit
@@ -1177,24 +1175,21 @@ def test_the_batcher_queue_limit_is_clamped_where_it_is_loaded(
 
     Mutation: drop the ``max(1, ...)`` in plugin/settings.py.
     """
-    import importlib
+    import runpy
 
     import plugin.settings as settings_mod
 
     monkeypatch.setenv("NEKO_MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE", configured)
-    reloaded = importlib.reload(settings_mod)
-    try:
-        assert reloaded.MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE == expected
+    # Keep the shared settings module and its exception classes unchanged.
+    configured_values = runpy.run_path(settings_mod.__file__)
+    assert configured_values["MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE"] == expected
 
-        batcher = zmq_transport._AuthenticatedMessageBatcher(
-            object(),  # type: ignore[arg-type]
-            batch_size=8,
-            flush_interval_ms=5,
-            max_queue=reloaded.MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE,
-            reject_ratio=0.9,
-            enqueue_timeout_s=0,
-        )
-        assert batcher._queue.maxsize > 0, "队列是无界的——两道闸同时失效"
-    finally:
-        monkeypatch.delenv("NEKO_MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE", raising=False)
-        importlib.reload(settings_mod)
+    batcher = zmq_transport._AuthenticatedMessageBatcher(
+        object(),  # type: ignore[arg-type]
+        batch_size=8,
+        flush_interval_ms=5,
+        max_queue=configured_values["MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE"],
+        reject_ratio=0.9,
+        enqueue_timeout_s=0,
+    )
+    assert batcher._queue.maxsize > 0, "队列是无界的——两道闸同时失效"

@@ -1259,10 +1259,11 @@ def _parse_single_plugin_config(
     # Parse runtime settings.
     runtime_cfg = conf.get("plugin_runtime")
     enabled_val = True
-    auto_start_val = True
+    # 没写 plugin_runtime.auto_start 时默认关闭，和 PluginRuntimeSchema 一致。
+    auto_start_val = False
     if isinstance(runtime_cfg, dict):
         enabled_val = parse_bool_config(runtime_cfg.get("enabled"), default=True)
-        auto_start_val = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
+        auto_start_val = parse_bool_config(runtime_cfg.get("auto_start"), default=False)
 
     # Apply plugin_runtime_overrides.json user enablement written by plugin-manager
     # disable/enable buttons, with precedence manifest -> profile overlay ->

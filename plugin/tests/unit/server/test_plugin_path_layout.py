@@ -187,7 +187,7 @@ def test_path_policy_rejects_state_collision(tmp_path: Path) -> None:
     assert exc_info.value.code == settings.PLUGIN_EXEC_STATE_ROOT_COLLISION
 
 
-def test_path_policy_rejects_profile_root_nested_in_state(tmp_path: Path) -> None:
+def test_path_policy_ignores_unused_profile_root_nested_in_state(tmp_path: Path) -> None:
     state_root = tmp_path / "plugins"
     policy = PluginCliPathPolicy(
         builtin_plugins_root=tmp_path / "builtin",
@@ -197,12 +197,13 @@ def test_path_policy_rejects_profile_root_nested_in_state(tmp_path: Path) -> Non
         plugin_state_root=state_root,
     )
 
-    with pytest.raises(settings.PluginExecStateRootCollisionError):
-        policy.ensure_writable_layout()
+    policy.ensure_writable_layout()
+    assert not state_root.exists()
+    assert not policy.user_plugins_root.exists()
 
 
 @pytest.mark.parametrize("relation", ["equal", "profile_child", "exec_child"])
-def test_path_policy_rejects_exec_and_profile_root_collisions(
+def test_path_policy_ignores_unused_package_profile_root_overlap(
     tmp_path: Path,
     relation: str,
 ) -> None:
@@ -221,15 +222,13 @@ def test_path_policy_rejects_exec_and_profile_root_collisions(
         plugin_state_root=tmp_path / "state",
     )
 
-    with pytest.raises(settings.PluginExecStateRootCollisionError) as exc_info:
-        policy.ensure_writable_layout()
-
-    assert exc_info.value.code == settings.PLUGIN_EXEC_STATE_ROOT_COLLISION
+    policy.ensure_writable_layout()
+    assert not shared.exists()
 
 
 @pytest.mark.parametrize("writable_kind", ["exec", "profiles"])
 @pytest.mark.parametrize("relation", ["equal", "writable_child", "builtin_child"])
-def test_path_policy_rejects_writable_roots_colliding_with_builtin(
+def test_path_policy_protects_builtin_code_and_ignores_unused_profiles(
     tmp_path: Path,
     writable_kind: str,
     relation: str,
@@ -251,10 +250,13 @@ def test_path_policy_rejects_writable_roots_colliding_with_builtin(
         plugin_state_root=tmp_path / "state",
     )
 
-    with pytest.raises(settings.PluginExecStateRootCollisionError) as exc_info:
+    if writable_kind == "profiles":
         policy.ensure_writable_layout()
-
-    assert exc_info.value.code == settings.PLUGIN_EXEC_STATE_ROOT_COLLISION
+    else:
+        with pytest.raises(settings.PluginExecStateRootCollisionError) as exc_info:
+            policy.ensure_writable_layout()
+        assert exc_info.value.code == settings.PLUGIN_EXEC_STATE_ROOT_COLLISION
+    assert not shared.exists()
 
 
 def test_path_policy_does_not_treat_archive_root_as_plugin_tree(tmp_path: Path) -> None:

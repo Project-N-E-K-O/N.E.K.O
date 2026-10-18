@@ -81,7 +81,7 @@ class PackageUnpacker:
             package_id=package_id,
             plugins_root=plugins_root_path,
             profiles_root=profiles_root_path,
-            unpacked_plugins=[
+            installed_plugins=[
                 UnpackedPlugin(
                     source_folder=source_folder,
                     target_plugin_id=target_dir.name,

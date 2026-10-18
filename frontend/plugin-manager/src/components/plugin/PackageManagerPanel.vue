@@ -161,13 +161,6 @@
                   <el-input v-model="installForm.plugins_root" placeholder="默认写入我的文档下的用户插件目录" />
                 </el-form-item>
 
-                <el-form-item label="Profiles 目录">
-                  <el-input
-                    v-model="installForm.profiles_root"
-                    placeholder="默认写入我的文档下的 .neko-package-profiles 目录"
-                  />
-                </el-form-item>
-
                 <el-alert
                   class="install-safety-note"
                   :title="t('package.install.safeUpgradeHint')"

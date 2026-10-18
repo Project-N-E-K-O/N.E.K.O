@@ -87,10 +87,10 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
         return !ctx.selectedIds.includes(plugin.id)
       case 'manual':
       case 'manual_start':
-        return plugin.autoStart === false
+        return plugin.autoStart !== true
       case 'auto':
       case 'auto_start':
-        return plugin.autoStart !== false
+        return plugin.autoStart === true
       case 'plugin':
       case 'adapter':
         return plugin.type === value
