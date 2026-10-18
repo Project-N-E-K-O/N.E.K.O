@@ -410,10 +410,11 @@ def test_semantic_candidates_match_the_per_chunk_scan():
     for trial in range(200):
         count = int(rng.integers(1, 200))
         # Coarse values make many equal scores, so tie order is checked too.
-        matrix = rng.integers(-2, 3, (count, 8)).astype(np.float32)
-        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1
-        matrix /= norms
+        # Quarters, not unit rows: every score is then a multiple of 1/16 that
+        # float32 holds exactly in any summation order. Normalised rows put
+        # scores on the thresholds up to an ulp, and which side they land on
+        # depends on the BLAS kernel the CPU picks and on the product's shape.
+        matrix = rng.integers(-2, 3, (count, 8)).astype(np.float32) / 4
         snapshot = SimpleNamespace(
             matrix=matrix,
             pack_ids=["a", "b", "c"],
@@ -424,7 +425,9 @@ def test_semantic_candidates_match_the_per_chunk_scan():
         query = matrix[int(rng.integers(0, count))]
         allowed = list(rng.choice(["a", "b", "c"], size=int(rng.integers(1, 4)), replace=False))
         excluded = set(rng.integers(0, max(count // 2, 1), int(rng.integers(0, 5))).tolist())
-        for threshold in (-1.0, 0.0, 0.3, 0.5):
+        # -2.0 is the lowest score (keeps every chunk); 0.0 and 0.5 are scores
+        # many chunks hit exactly, so ">=" is checked at the boundary.
+        for threshold in (-2.0, 0.0, 0.3, 0.5):
             for limit in (1, 3, 24):
                 got = semantic_candidates(
                     snapshot, query, allowed_pack_ids=allowed,
@@ -434,7 +437,7 @@ def test_semantic_candidates_match_the_per_chunk_scan():
                 assert [(m.entry_id, m.chunk_index) for m in got] == [
                     (m.entry_id, m.chunk_index) for m in want
                 ]
-                assert [m.score for m in got] == pytest.approx([m.score for m in want], abs=1e-6)
+                assert [m.score for m in got] == [m.score for m in want]
                 assert all(type(m.entry_id) is int and type(m.score) is float for m in got)
 
 
