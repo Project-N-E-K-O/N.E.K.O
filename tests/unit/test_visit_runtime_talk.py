@@ -132,6 +132,16 @@ async def test_family_line_order_reserve_room_persist_enqueue_mirror(tmp_path, m
         assert order.index("send:text:c:human_interrupt") < order.index("send:text:h:")
         assert host.host.events[-1] == "mirror_user_input" and host.host.user_inputs == ["你们好呀"]
         assert rt.outbox.pending_bytes >= 0
+        # 本页显示帧带上发起提交的 request_id（页面按它认领本地气泡）；/state 重放同样带；上线的消息不带
+        def own_line():
+            return [f for f in host.host.frames if f.get("type") == "visit_line"
+                    and f["speaker"]["self"] is True and f["speaker"]["kind"] == "human"]
+        await wait_for(own_line)
+        assert own_line()[0]["request_id"] == "r1"
+        await wait_for(lambda: any(r.get("speaker", {}).get("kind") == "human" for r in rt.snapshot()["transcript"]))
+        replayed = [r for r in rt.snapshot()["transcript"] if r["speaker"]["kind"] == "human" and r["speaker"]["self"]]
+        assert replayed[0]["request_id"] == "r1"
+        assert all("request_id" not in p for p in wire.sent["host"])
     finally:
         hgate.set()
         ggate.set()
@@ -227,6 +237,46 @@ async def test_refusals_by_phase_and_side(tmp_path, monkeypatch):
         host.rt.apply_effects(host.rt.room.on_local_recall(host.rt.clock()))
         await rtm.route_stream_message("Host", {"input_type": "text", "data": "再见", "request_id": "w1"})
         assert host.host.statuses[-1][0] == "VISIT_INPUT_REFUSED_WRAPUP"
+        assert host.host.user_inputs == []
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_visit_line_for_another_visit_is_refused(tmp_path, monkeypatch):
+    # 页面以为还在另一场（重连漏了换场）：带着别的 visit_id 的串门句不能发给这一场的客人
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        assert await rtm.route_stream_message("Host", {"input_type": "text", "data": "给上一场的", "source": "neko_visit:guest_cat",
+                                                        "visit_id": "z" * 22, "request_id": "o1"}) is True
+        assert host.host.statuses[-1] == ("VISIT_INPUT_REFUSED_WRAPUP", {"visit_id": rt.visit_id, "request_id": "o1"})
+        assert [p for p in _texts(wire, "host") if p.get("sp") == "h"] == []
+        assert host.host.user_inputs == []
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_only_visit_composer_lines_reach_the_peer(tmp_path, monkeypatch):
+    # 拖到头像的文件、历史拖放、页面没恢复串门态时的普通提交：拒掉，不发给对端、不镜像
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        for source in ("avatar-drop", "react-chat-window", None):
+            message = {"input_type": "text", "data": "<<<TEXT_FILE_1_START>>>私人文件", "request_id": "d1"}
+            if source:
+                message["source"] = source
+            assert await rtm.route_stream_message("Host", message) is True
+            assert host.host.statuses[-1] == ("VISIT_INPUT_REFUSED_SOURCE", {"visit_id": rt.visit_id, "request_id": "d1"})
+        # 普通提交带的图片同样回带 request_id 的拒绝（不再静默吞掉）
+        for kind in ("user_image", "avatar_drop_image"):
+            assert await rtm.route_stream_message("Host", {"input_type": kind, "data": "data:image/png;base64,AA",
+                                                           "request_id": "i1"}) is True
+            assert host.host.statuses[-1] == ("VISIT_INPUT_REFUSED_SOURCE", {"visit_id": rt.visit_id, "request_id": "i1"})
+        assert [p for p in _texts(wire, "host") if p.get("sp") == "h"] == []
         assert host.host.user_inputs == []
     finally:
         hgate.set()

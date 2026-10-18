@@ -172,6 +172,44 @@ async def test_normal_delivery_commits_text_when_local_tts_enqueue_fails():
 
 
 @pytest.mark.asyncio
+async def test_normal_delivery_passes_its_round_to_the_tts_and_commit_guards():
+    """The core TTS/commit critical sections need the round to see a restart."""
+    mgr = SimpleNamespace(
+        current_speech_id="proactive-sid",
+        last_user_engagement_time=100.0,
+        state=_NeverPreemptedState(),
+        feed_tts_chunk=AsyncMock(return_value=True),
+        finish_proactive_delivery=AsyncMock(return_value=True),
+        handle_new_message=AsyncMock(),
+    )
+
+    await _commit_proactive_delivery(
+        mgr=mgr,
+        proactive_sid="proactive-sid",
+        lanlan_name="Neko",
+        response_text="本轮的话。",
+        source_tag="CHAT",
+        active_channels=[],
+        selected_web_link=None,
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        is_music_used=False,
+        is_playing_music=False,
+        music_cooldown=False,
+        vision_content=None,
+        phase2_use_vision=False,
+        screenshot_b64=None,
+        proactive_lang="zh",
+        master_name="博士",
+        round_id="round-1",
+    )
+
+    assert mgr.feed_tts_chunk.await_args.kwargs["expected_round_id"] == "round-1"
+    assert mgr.finish_proactive_delivery.await_args.kwargs["expected_round_id"] == "round-1"
+
+
+@pytest.mark.asyncio
 async def test_materialless_music_delivery_is_committed_as_chat_evidence():
     """A bare MUSIC tag cannot exclude ordinary text from the proactive corpus."""
     mgr = SimpleNamespace(

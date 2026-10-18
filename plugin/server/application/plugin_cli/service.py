@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
 from plugin.core.plugin_layout import resolve_plugin_layout
+from plugin.core.package_limits import MAX_PLUGIN_PACKAGE_BYTES
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.install import PackageInstaller
 from plugin.neko_plugin_cli.core.models import InstalledPlugin, InstallResult
@@ -79,7 +80,7 @@ _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 # Allowed extensions for uploaded plugin packages
 _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 # Maximum upload size (500 MiB)
-_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
+_UPLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
 _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 logger = get_logger("server.application.plugin_cli")

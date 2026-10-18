@@ -514,9 +514,16 @@ class _GeminiMixin:
             if r.call_id:
                 kw["id"] = r.call_id
             function_responses.append(types.FunctionResponse(**kw))
+        source = (owner, object()) if owner is not None else None
+        if source is not None:
+            # Install before the SDK await: model output can arrive before the
+            # send returns. A new user/connection still invalidates this owner.
+            self._gemini_tool_response_source = source
         try:
             await session.send_tool_response(function_responses=function_responses)
         except Exception as e:
+            # A failed SDK await does not prove that no bytes reached Gemini.
+            # Any resulting reply remains local until its provider terminal.
             logger.error("Gemini send_tool_response failed: %s", e)
 
     async def _close_gemini(self) -> None:
@@ -861,6 +868,12 @@ class _GeminiMixin:
             "_gemini_external_outcome_token",
             None,
         )
+        tool_response_source = getattr(self, "_gemini_tool_response_source", None)
+        server_content = getattr(response, "server_content", None)
+        source_terminal = bool(server_content and (
+            getattr(server_content, "turn_complete", False)
+            or getattr(server_content, "interrupted", False)
+        ))
         try:
             # 处理工具调用 —— 将 function_calls 中每一个调用都派给
             # ``on_tool_call``，结果通过 ``send_tool_response`` 一次性回写
@@ -933,6 +946,9 @@ class _GeminiMixin:
                         connection_generation=connection_generation,
                     )
                     self._start_gemini_tool_batch(calls, owner)
+                    # Also own this frame's dispatch token if a compatible
+                    # transport combines the call and terminal in one frame.
+                    tool_response_source = self._gemini_tool_response_source
 
             cancellation = getattr(response, 'tool_call_cancellation', None)
             if cancellation:
@@ -1222,3 +1238,10 @@ class _GeminiMixin:
 
         except Exception as e:
             logger.error(f"Error processing Gemini response: {e}")
+        finally:
+            # A terminal only closes the tool response it observed. A result
+            # sent during an awaited callback may already own a new token.
+            # Do not use the tool scope here: SERVER_VAD can keep that scope
+            # unchanged across many independent ordinary voice responses.
+            if source_terminal and getattr(self, "_gemini_tool_response_source", None) is tool_response_source:
+                self._gemini_tool_response_source = None

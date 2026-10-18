@@ -57,6 +57,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_BUSY,
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_DUPLICATE,
+    PROACTIVE_REASON_PASS_PRIVACY,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -94,11 +95,13 @@ from main_logic.proactive_chat.generation import (
     Phase2PromptContext,
     ProactiveModelConfig,
     _append_directives_section,
+    _check_proactive_vision_consent,
     _decide_phase1_channels,
     _fetch_phase1_followups,
     _is_neko_community_phase1_source,
     _lookup_link_by_phase1_selection,
     _proactive_llm_retry_error_types,
+    _proactive_vision_consent_checker,
     _run_phase2_generation,
     _run_unified_phase1,
 )
@@ -184,6 +187,8 @@ def _consume_repeat_suppressed_break_reminder(
 
 
 _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
+# Sources that read the screen or the active window share the vision consent gate.
+_PROACTIVE_VISION_SOURCE_MODES = frozenset({"vision", "window"})
 
 
 _PHASE1_FETCH_PER_SOURCE = (
@@ -492,6 +497,67 @@ def _resolve_phase2_avatar_position(fresh, request_avatar_position):
     return getattr(fresh, "avatar_position", None)
 
 
+async def _vision_consent_declined(vision_consent_check: Any) -> bool:
+    """Strict vision-consent read; an unreadable consent counts as declined."""
+    try:
+        await _check_proactive_vision_consent(vision_consent_check)
+    except Exception:
+        return True
+    return False
+
+
+async def _withhold_revoked_vision_sources(
+    sources: dict[str, dict], vision_consent_check: Any, *, lanlan_name: str, stage: str,
+) -> bool:
+    """Drop screen/window sources in place if consent is gone; return whether it did."""
+    if not _PROACTIVE_VISION_SOURCE_MODES.intersection(sources):
+        return False
+    if not await _vision_consent_declined(vision_consent_check):
+        return False
+    logger.info("[%s] 视觉授权已撤回（%s），丢弃屏幕/窗口来源", lanlan_name, stage)
+    for mode in _PROACTIVE_VISION_SOURCE_MODES:
+        sources.pop(mode, None)
+    return True
+
+
+async def _collect_sources_under_vision_consent(
+    *,
+    command: ProactiveChatCommand,
+    enabled_modes: list[str],
+    lanlan_name: str,
+    vision_consent_check: Any,
+) -> tuple[list[str], dict[str, dict], bool]:
+    """Collect enabled sources; screen and window sources only under vision consent.
+
+    The frontend withdraws these modes at send time. A revocation that arrives
+    while the request is in flight is enforced here: before collection the
+    modes are dropped, so the screen and the active window are not read; after
+    collection their results are discarded, because a read already started
+    cannot be recalled. The flag reports whether consent withheld any source.
+    """
+    withheld = False
+    if (
+        _PROACTIVE_VISION_SOURCE_MODES.intersection(enabled_modes)
+        and await _vision_consent_declined(vision_consent_check)
+    ):
+        logger.info("[%s] 视觉授权已撤回，本轮不读取屏幕/窗口来源", lanlan_name)
+        enabled_modes = [
+            mode for mode in enabled_modes if mode not in _PROACTIVE_VISION_SOURCE_MODES
+        ]
+        withheld = True
+    sources = await collect_proactive_sources(
+        command=command,
+        enabled_modes=enabled_modes,
+        lanlan_name=lanlan_name,
+        log=logger,
+    )
+    if await _withhold_revoked_vision_sources(
+        sources, vision_consent_check, lanlan_name=lanlan_name, stage="采集期间",
+    ):
+        withheld = True
+    return enabled_modes, sources, withheld
+
+
 async def handle_proactive_chat(
     command: ProactiveChatCommand,
     *,
@@ -524,6 +590,7 @@ async def handle_proactive_chat(
 
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
+        vision_consent_epoch = getattr(mgr, "_proactive_vision_revocation_epoch", 0)
         manager_exists = bool(mgr)
         entry_result = _decide_manager_entry_guard(
             lanlan_name,
@@ -676,8 +743,11 @@ async def handle_proactive_chat(
             state_event=_SE.PROACTIVE_DONE,
             lanlan_name=lanlan_name,
             log=logger,
+            screenshot_request_id=uuid4().hex,
         )
-        proactive_started = await mgr.state.try_start_proactive(session=probe_session)
+        proactive_started = await mgr.state.try_start_proactive(
+            session=probe_session, round_id=lifecycle.screenshot_request_id,
+        )
         entry_result = _decide_busy_entry_guard(
             proactive_started,
             state_snapshot=(None if proactive_started else mgr.state.snapshot()),
@@ -691,11 +761,16 @@ async def handle_proactive_chat(
                 status_code=entry_result.status_code,
             )
 
+        mgr._proactive_screenshot_request_id = lifecycle.screenshot_request_id
+
         async def _end_proactive(
             result: ProactiveChatResult,
         ) -> ProactiveChatResult:
             """Finalize every normal/short-circuit service exit."""
             return await lifecycle.finalize(result)
+
+        def _round_preempted() -> bool:
+            return not lifecycle.owns_round() or mgr.state.is_proactive_preempted()
 
         def _proactive_preempted_json(where: str) -> dict:
             # 细粒度的 state 快照留 debug；面向排查的"本轮未发起 + 原因"由统一
@@ -922,6 +997,7 @@ async def handle_proactive_chat(
                     ),
                     channel="anti_slack",
                     lang=_break_lang,
+                    round_id=lifecycle.screenshot_request_id,
                 )
                 delivered_text = reminder_delivery.delivered_text
                 if reminder_delivery.repeat_suppressed:
@@ -1031,6 +1107,7 @@ async def handle_proactive_chat(
                     ),
                     channel="work_break_game_invite",
                     lang=_break_lang,
+                    round_id=lifecycle.screenshot_request_id,
                 )
                 delivered_text = reminder_delivery.delivered_text
                 if reminder_delivery.repeat_suppressed:
@@ -1158,6 +1235,7 @@ async def handle_proactive_chat(
                 ),
                 channel="work_break",
                 lang=_break_lang,
+                round_id=lifecycle.screenshot_request_id,
             )
             delivered_text = reminder_delivery.delivered_text
             if reminder_delivery.repeat_suppressed:
@@ -1299,6 +1377,7 @@ async def handle_proactive_chat(
             invite_lang=invite_lang,
             master_name=master_name_current,
             user_toggle_enabled=_user_invite_toggle,
+            round_id=lifecycle.screenshot_request_id,
             **state_storage_kwargs,
         )
         if invite_short_circuit is not None:
@@ -1347,11 +1426,14 @@ async def handle_proactive_chat(
         await _ensure_source_history_loaded(**state_storage_kwargs)
 
         # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
-        sources = await collect_proactive_sources(
-            command=command,
-            enabled_modes=enabled_modes,
-            lanlan_name=lanlan_name,
-            log=logger,
+        vision_consent_check = _proactive_vision_consent_checker(mgr, vision_consent_epoch)
+        enabled_modes, sources, vision_sources_withheld = (
+            await _collect_sources_under_vision_consent(
+                command=command,
+                enabled_modes=enabled_modes,
+                lanlan_name=lanlan_name,
+                vision_consent_check=vision_consent_check,
+            )
         )
         avatar_position = command.avatar_position
 
@@ -1359,6 +1441,16 @@ async def handle_proactive_chat(
             # 例外：未收尾话题模式下 enabled_modes 可能本就被清空（restricted_screen_only
             # + 无 vision），sources 必定为空但不应当 pass —— 让 Phase 2 拿对话
             # 历史 + state_section 跑 text-only [CHAT] 跟进。
+            if not _has_unfinished_thread and vision_sources_withheld:
+                # 撤权拿走了全部来源：这是隐私跳过，不是技术失败。
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body=_proactive_pass_body(
+                            PROACTIVE_REASON_PASS_PRIVACY,
+                            message="vision consent revoked; no other source",
+                        ),
+                    )
+                )
             if not _has_unfinished_thread:
                 return await _end_proactive(
                     ProactiveChatResult(
@@ -1375,7 +1467,7 @@ async def handle_proactive_chat(
             )
 
         # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
-        if mgr.state.is_proactive_preempted():
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(body=_proactive_preempted_json("phase1_post_fetch"))
             )
@@ -1448,7 +1540,7 @@ async def handle_proactive_chat(
         # Phase 1 preempt check：memory_server new_dialog 是 phase1 里首次大 await
         # （httpx timeout 5s）。用户在这期间打断只能等超时才有下一次 check，
         # 这里补一刀。
-        if mgr.state.is_proactive_preempted():
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(
                     body=_proactive_preempted_json("phase1_post_memory")
@@ -1530,7 +1622,7 @@ async def handle_proactive_chat(
         # Phase 1 preempt check：followup GET(5s) 是一段可能拖久的 await，
         # 整段裸跑会让用户打断后继续跑完 LLM 配置和后续步骤，再到 pre-LLM
         # check 才识破。这里补一刀。
-        if mgr.state.is_proactive_preempted():
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(
                     body=_proactive_preempted_json("phase1_post_reflect")
@@ -1604,6 +1696,12 @@ async def handle_proactive_chat(
         # 总计最多 1 次 LLM 调用
         # ================================================================
 
+        # 收集之后等待记忆/跟进期间也可能撤权：屏幕/窗口内容不能再进入任何模型调用。
+        await _withhold_revoked_vision_sources(
+            sources, vision_consent_check, lanlan_name=lanlan_name, stage="Phase 1 前",
+        )
+        # 本轮带着屏幕/窗口内容：之后每次模型调用和最终提交前都要复查授权。
+        round_uses_vision_material = bool(_PROACTIVE_VISION_SOURCE_MODES.intersection(sources))
         vision_content = sources.get("vision")  # 仅保留给 Phase 2 使用，Phase 1 不处理
         music_content = sources.get("music")
         meme_content = sources.get("meme")
@@ -1783,7 +1881,7 @@ async def handle_proactive_chat(
         if has_web_task or has_music_task or has_meme_task:
             # Phase 1 preempt check：拨号前最后一次检查。大头 LLM 调用即将开始，
             # 此后等待期间用户抢占只能靠流结束后的兜底识别。
-            if mgr.state.is_proactive_preempted():
+            if _round_preempted():
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_preempted_json("phase1_pre_llm")
@@ -1800,6 +1898,9 @@ async def handle_proactive_chat(
             has_music_task=has_music_task,
             has_meme_task=has_meme_task,
             log=logger,
+            live_consent_check=vision_consent_check,
+            # 只有窗口内容会拼进 Phase 1 合并文本；截图只给 Phase 2。
+            vision_consent_required="window" in sources,
         )
 
         # ============================================================
@@ -1881,7 +1982,7 @@ async def handle_proactive_chat(
         ) or (has_meme_task and not unified_parsed.get("meme_pass"))
         if needs_phase1_followups:
             # Phase 1 preempt check：unified LLM 刚回，music/meme 后置 fetch 前再瞄
-            if mgr.state.is_proactive_preempted():
+            if _round_preempted():
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_preempted_json("phase1_post_llm")
@@ -1941,7 +2042,7 @@ async def handle_proactive_chat(
                             f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}"
                         )
                         continue
-                    if mgr.state.is_proactive_preempted():
+                    if _round_preempted():
                         return await _end_proactive(
                             ProactiveChatResult(
                                 body=_proactive_preempted_json(
@@ -1952,7 +2053,7 @@ async def handle_proactive_chat(
                     moderation = await moderate_meme_image_url(
                         meme_url, fail_closed=False
                     )
-                    if mgr.state.is_proactive_preempted():
+                    if _round_preempted():
                         return await _end_proactive(
                             ProactiveChatResult(
                                 body=_proactive_preempted_json(
@@ -1993,7 +2094,7 @@ async def handle_proactive_chat(
                                 _MEME_PROXY_CANDIDATE_CHECK_LIMIT,
                             )
                             break
-                        if mgr.state.is_proactive_preempted():
+                        if _round_preempted():
                             return await _end_proactive(
                                 ProactiveChatResult(
                                     body=_proactive_preempted_json(
@@ -2005,7 +2106,7 @@ async def handle_proactive_chat(
                         proxy_ok, proxy_reason = (
                             await meme_proxy_candidate_fetchable(meme_url)
                         )
-                        if mgr.state.is_proactive_preempted():
+                        if _round_preempted():
                             return await _end_proactive(
                                 ProactiveChatResult(
                                     body=_proactive_preempted_json(
@@ -2067,7 +2168,7 @@ async def handle_proactive_chat(
             )
 
         # Phase 1 preempt check：topic assembly 完，进入 Phase 2 前最后一次瞄
-        if mgr.state.is_proactive_preempted():
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(body=_proactive_preempted_json("phase1_pre_phase2"))
             )
@@ -2081,7 +2182,7 @@ async def handle_proactive_chat(
         music_topic = phase1_decision.music_topic
         primary_channel = phase1_decision.primary_channel
         if selected_web_link:
-            if mgr.state.is_proactive_preempted():
+            if _round_preempted():
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_preempted_json(
@@ -2094,7 +2195,7 @@ async def handle_proactive_chat(
                     selected_web_link,
                     fallback_topic=web_topic,
                     language=proactive_lang,
-                    is_preempted=mgr.state.is_proactive_preempted,
+                    is_preempted=_round_preempted,
                 )
             except SelectedWebCandidatePreempted:
                 return await _end_proactive(
@@ -2104,7 +2205,7 @@ async def handle_proactive_chat(
                         )
                     )
                 )
-            if mgr.state.is_proactive_preempted():
+            if _round_preempted():
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_preempted_json(
@@ -2137,7 +2238,15 @@ async def handle_proactive_chat(
         # --- 向前端请求最新截图，替换 Phase 1 时拿到的旧截图 ---
         screenshot_b64_for_phase2 = ""
         if vision_content and model_config.has_vision_model:
-            fresh = await mgr.request_fresh_screenshot(timeout=3.0)
+            fresh = await mgr.request_fresh_screenshot(
+                timeout=3.0,
+                allow_backend_fallback=command.screenshot_allow_desktop_fallback,
+                request_id=lifecycle.screenshot_request_id,
+            )
+            if _round_preempted():
+                return await _end_proactive(ProactiveChatResult(
+                    body=_proactive_preempted_json("phase1_post_screenshot"),
+                ))
             if fresh.b64:
                 fresh_b64 = fresh.b64
                 # 判据见 _resolve_phase2_avatar_position：WS 路径不给坐标 = 前端明确
@@ -2165,7 +2274,8 @@ async def handle_proactive_chat(
                 print(
                     f"[{lanlan_name}] Phase 2 获取到最新截图 ({len(fresh_b64) // 1024}KB)"
                 )
-            else:
+            # 技术失败可用旧图；明确拒绝不能通过旧图恢复本轮视觉输入。
+            elif not fresh.declined:
                 screenshot_b64_for_phase2 = vision_content.get("screenshot_b64", "")
                 if screenshot_b64_for_phase2:
                     print(
@@ -2356,7 +2466,7 @@ async def handle_proactive_chat(
         # 用户轮次的 sid —— 即使 SM 的 PROACTIVE_CLAIM 在 _preempted=True 时不
         # 回写 proactive_sid，mgr.current_speech_id 已经被物理换掉，用户的
         # 回复 TTS 会被错贴上一个陌生 sid。
-        if mgr.state.is_proactive_preempted():
+        if _round_preempted():
             return await _end_proactive(
                 ProactiveChatResult(
                     body=_proactive_preempted_json("phase1_pre_prepare")
@@ -2364,7 +2474,9 @@ async def handle_proactive_chat(
             )
 
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
-        if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
+        if not await mgr.prepare_proactive_delivery(
+            min_idle_secs=10.0, round_id=lifecycle.screenshot_request_id,
+        ):
             return await _end_proactive(
                 ProactiveChatResult(
                     body={
@@ -2385,6 +2497,7 @@ async def handle_proactive_chat(
             mgr,
             proactive_sid,
             log=logger,
+            round_id=lifecycle.screenshot_request_id,
         ):
             return await _end_proactive(
                 ProactiveChatResult(
@@ -2411,6 +2524,9 @@ async def handle_proactive_chat(
 
         guarded_output = await _run_phase2_generation(
             mgr=mgr,
+            vision_consent_epoch=vision_consent_epoch,
+            round_is_current=lifecycle.owns_round,
+            vision_consent_required=round_uses_vision_material,
             proactive_sid=proactive_sid,
             model_config=model_config,
             lanlan_name=lanlan_name,
@@ -2430,6 +2546,19 @@ async def handle_proactive_chat(
             music_cooldown=music_cooldown,
             log=logger,
         )
+        if _round_preempted():
+            return await _end_proactive(ProactiveChatResult(
+                body=_proactive_preempted_json("phase2_post_generation"),
+            ))
+        # 生成期间撤权：回复源自屏幕/窗口内容，截图还会暂存到下一轮，不能再提交。
+        if round_uses_vision_material and await _vision_consent_declined(vision_consent_check):
+            logger.info("[%s] 视觉授权在生成期间撤回，放弃本轮投递", lanlan_name)
+            return await _end_proactive(ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_PRIVACY,
+                    message="vision consent revoked before delivery",
+                ),
+            ))
         if guarded_output.result is not None:
             return await _end_proactive(
                 ProactiveChatResult(body=guarded_output.result.body)
@@ -2462,6 +2591,7 @@ async def handle_proactive_chat(
             proactive_lang=proactive_lang,
             master_name=master_name_current,
             log=logger,
+            round_id=lifecycle.screenshot_request_id,
         )
         if delivery_commit.result is not None:
             return await _end_proactive(
@@ -2510,6 +2640,10 @@ async def handle_proactive_chat(
             )
         )
 
+    except asyncio.CancelledError:
+        if lifecycle is not None:
+            await lifecycle.safe_done()
+        raise
     except asyncio.TimeoutError:
         logger.error("主动搭话超时")
         if lifecycle is not None:
@@ -2533,3 +2667,8 @@ async def handle_proactive_chat(
             ),
             status_code=500,
         )
+    finally:
+        # Also retire the ID on cancellation; a delayed cleanup cannot clear
+        # the ID of a newer round admitted after PROACTIVE_DONE.
+        if lifecycle is not None:
+            lifecycle.clear_screenshot_request()

@@ -103,6 +103,126 @@ def _decide(
     )
 
 
+def _enqueue_keep(ledger, segment, start, *, stream=None):
+    interval = _spec(segment, start, start + 100, stream=stream)
+    ledger.add(interval)
+    _score(ledger, interval)
+    _decide(ledger, interval, PrewireDecisionState.KEEP)
+    ledger.claim_enqueued(ledger.plan_contiguous(interval.identity.stream))
+    return interval
+
+
+def _write_and_transfer(ledger, interval):
+    ledger.advance_commit(
+        interval.identity, expected=PrewireCommitStage.ENQUEUED,
+        next_stage=PrewireCommitStage.WRITTEN,
+    )
+    return ledger.advance_commit(
+        interval.identity, expected=PrewireCommitStage.WRITTEN,
+        next_stage=PrewireCommitStage.TRANSPORT_OWNED,
+    )
+
+
+def test_written_and_explicit_transport_transfer_support_bounded_continuous_no_ack():
+    ledger = PrewireIntervalLedger(capacity=128)
+    stream = _stream()
+    ledger.open_stream(stream, original_cursor=0)
+    first = None
+    for segment in range(1, 401):
+        interval = _enqueue_keep(ledger, segment, (segment - 1) * 100)
+        first = first or interval
+        record = _write_and_transfer(ledger, interval)
+        assert record.commit_stage is PrewireCommitStage.TRANSPORT_OWNED
+        assert record.commit_stage is not PrewireCommitStage.REMOTE_CONFIRMED
+    assert ledger.release_cursor(stream) == 40_000
+    assert ledger.asr_cursor(stream) == 40_000
+    assert ledger.get(first.identity) is None
+    with pytest.raises(PrewireIdentityError):
+        ledger.add(first)
+    with pytest.raises(PrewireIdentityError):
+        ledger.advance_commit(
+            first.identity, expected=PrewireCommitStage.TRANSPORT_OWNED,
+            next_stage=PrewireCommitStage.REMOTE_CONFIRMED,
+        )
+    assert ledger.release_cursor(stream) == ledger.asr_cursor(stream) == 40_000
+
+
+@pytest.mark.parametrize("stage", [PrewireCommitStage.WRITTEN, PrewireCommitStage.UNKNOWN])
+def test_untransferred_written_or_unknown_still_exhaust_capacity(stage):
+    ledger = PrewireIntervalLedger(capacity=128)
+    ledger.open_stream(_stream(), original_cursor=0)
+    for segment in range(1, 129):
+        interval = _enqueue_keep(ledger, segment, (segment - 1) * 100)
+        ledger.advance_commit(
+            interval.identity, expected=PrewireCommitStage.ENQUEUED,
+            next_stage=stage,
+        )
+    with pytest.raises(PrewireCapacityError):
+        _enqueue_keep(ledger, 129, 12_800)
+    assert ledger.release_cursor(_stream()) == ledger.asr_cursor(_stream()) == 12_800
+
+
+@pytest.mark.parametrize("stage", [PrewireCommitStage.ENQUEUED, PrewireCommitStage.UNKNOWN])
+def test_transport_transfer_requires_written_evidence(stage):
+    ledger = PrewireIntervalLedger()
+    ledger.open_stream(_stream(), original_cursor=0)
+    interval = _enqueue_keep(ledger, 1, 0)
+    if stage is PrewireCommitStage.UNKNOWN:
+        ledger.advance_commit(interval.identity, expected=PrewireCommitStage.ENQUEUED, next_stage=stage)
+    with pytest.raises(PrewireTransitionError):
+        ledger.advance_commit(interval.identity, expected=stage, next_stage=PrewireCommitStage.TRANSPORT_OWNED)
+    assert ledger.get(interval.identity).commit_stage is stage
+
+
+@pytest.mark.parametrize("next_stage", [
+    PrewireCommitStage.ENQUEUED, PrewireCommitStage.LOCAL_CANCELLED,
+    PrewireCommitStage.WRITTEN, PrewireCommitStage.UNKNOWN,
+])
+def test_transport_owner_never_returns_local_replay_or_cancellation_right(next_stage):
+    ledger = PrewireIntervalLedger()
+    ledger.open_stream(_stream(), original_cursor=0)
+    interval = _enqueue_keep(ledger, 1, 0)
+    _write_and_transfer(ledger, interval)
+    with pytest.raises(PrewireTransitionError):
+        ledger.advance_commit(
+            interval.identity, expected=PrewireCommitStage.TRANSPORT_OWNED,
+            next_stage=next_stage,
+        )
+    assert ledger.get(interval.identity).commit_stage is PrewireCommitStage.TRANSPORT_OWNED
+
+
+def test_retained_transport_owned_record_can_receive_real_confirmation():
+    ledger = PrewireIntervalLedger()
+    ledger.open_stream(_stream(), original_cursor=0)
+    interval = _enqueue_keep(ledger, 1, 0)
+    _write_and_transfer(ledger, interval)
+    record = ledger.advance_commit(
+        interval.identity, expected=PrewireCommitStage.TRANSPORT_OWNED,
+        next_stage=PrewireCommitStage.REMOTE_CONFIRMED,
+    )
+    assert record.commit_stage is PrewireCommitStage.REMOTE_CONFIRMED
+
+
+def test_late_evicted_transport_confirmation_cannot_touch_successor():
+    ledger = PrewireIntervalLedger(capacity=2)
+    ledger.open_stream(_stream(), original_cursor=0)
+    old = _enqueue_keep(ledger, 1, 0)
+    _write_and_transfer(ledger, old)
+    second = _enqueue_keep(ledger, 2, 100)
+    _write_and_transfer(ledger, second)
+    successor = _stream(2)
+    ledger.open_stream(successor, original_cursor=0)
+    current = _enqueue_keep(ledger, 1, 0, stream=successor)
+    assert ledger.get(old.identity) is None
+    with pytest.raises(PrewireIdentityError):
+        ledger.advance_commit(
+            old.identity, expected=PrewireCommitStage.TRANSPORT_OWNED,
+            next_stage=PrewireCommitStage.REMOTE_CONFIRMED,
+        )
+    assert ledger.get(current.identity).commit_stage is PrewireCommitStage.ENQUEUED
+    assert ledger.release_cursor(successor) == ledger.asr_cursor(successor) == 100
+
+
 def test_contract_binds_local_generations_and_keeps_ranges_distinct() -> None:
     spec = _spec(
         7,

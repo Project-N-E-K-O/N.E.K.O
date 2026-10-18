@@ -33,6 +33,7 @@ from PIL import Image
 from config import USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.reply_tail import bind_image_validation
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     CALLBACK_IMAGE_MAX_COUNT,
@@ -496,6 +497,10 @@ def _build_plugin_chat_blocks(
 def _build_plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
     """Synchronously validate plugin image parts and build frontend blocks."""
     return _build_plugin_chat_blocks(media_parts, include_text=False)
+
+
+# Reply-tail images go through the same display validator as plugin pushes.
+bind_image_validation(_build_plugin_image_chat_blocks, _image_part_payloads_conflict)
 
 
 def _build_ordered_plugin_chat_blocks(parts: list[Any]) -> list[dict[str, str]]:
@@ -1459,8 +1464,13 @@ async def _handle_agent_event(event: dict):
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:
+                            from services.chat_sync.source import mark_turn_origin
+                            await mgr.rotate_speech_id_for_response_done()
+                            direct_reply_sid = mgr.current_speech_id
+                            mark_turn_origin(mgr, direct_reply_sid, 'agent')
                             delivered = bool(
-                                await mgr.send_lanlan_response(detail_text, True)
+                                await mgr.send_lanlan_response(detail_text, True, turn_id=direct_reply_sid,
+                                                              expected_speech_id=direct_reply_sid)
                             )
                         except Exception as e:
                             logger.warning(

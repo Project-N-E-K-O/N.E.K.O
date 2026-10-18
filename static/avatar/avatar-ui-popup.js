@@ -759,8 +759,10 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
         { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
+        { id: 'auto-memory-recall', label: window.t ? window.t('settings.toggles.autoMemoryRecall') : '自动想起记忆', labelKey: 'settings.toggles.autoMemoryRecall', tooltipKey: 'settings.toggles.autoMemoryRecallTooltip', storageKey: 'autoMemoryRecallEnabled', alwaysTinted: true },
         { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '自然表达', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
+        { id: 'gravity-cat', label: window.t ? window.t('settings.toggles.gravityCat') : '重力猫猫', labelKey: 'settings.toggles.gravityCat', tooltipKey: 'settings.toggles.gravityCatTooltip', alwaysTinted: true },
         { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true },
     ];
 
@@ -1371,8 +1373,9 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     fpsSlider.addEventListener('change', () => {
         const idx = parseInt(fpsSlider.value, 10);
         window.targetFrameRate = fpsValues[idx];
-        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 先派发再保存：串门取帧期间的临时帧率（nekoTargetFrameRateHold）由这个事件撤掉，保存时才存用户新选的值
         window.dispatchEvent(new CustomEvent('neko-frame-rate-changed', { detail: { fps: fpsValues[idx] } }));
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
     });
     fpsSlider.addEventListener('click', (e) => e.stopPropagation());
     fpsSlider.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -2592,6 +2595,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.avatarReactionBubbleEnabled;
     } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
         checkbox.checked = window.focusCognitionEnabled;
+    } else if (toggle.id === 'auto-memory-recall' && typeof window.autoMemoryRecallEnabled !== 'undefined') {
+        checkbox.checked = window.autoMemoryRecallEnabled;
     } else if (toggle.id === 'slop-filter' && typeof window.slopFilterEnabled !== 'undefined') {
         checkbox.checked = window.slopFilterEnabled;
     } else if (toggle.id === 'visit-enabled' && typeof window.visitEnabled !== 'undefined') {
@@ -2606,6 +2611,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
     } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
         checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
+    } else if (toggle.id === 'gravity-cat' && window.nekoIdleCat1Playground
+        && typeof window.nekoIdleCat1Playground.isGravityCatEnabled === 'function') {
+        checkbox.checked = window.nekoIdleCat1Playground.isGravityCatEnabled();
     } else if (toggle.id === 'cat-audio' && window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.isEnabled === 'function') {
         checkbox.checked = window.nekoIdleCatAudio.isEnabled();
     }
@@ -2750,6 +2758,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
+        } else if (toggle.id === 'auto-memory-recall') {
+            // 文字对话回复前自动想起相关记忆（被动注入）。关掉后后端不再发记忆
+            // 检索（main_logic/turn_context.py 读 autoMemoryRecallEnabled），
+            // recall_memory 工具不受影响。
+            window.autoMemoryRecallEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
         } else if (toggle.id === 'slop-filter') {
             // 自然表达（slop reduction）总开关。关掉后端 _params 不再改写历史
             // （utils/slop_filter.py 读 slopFilterEnabled gate）。promptOnly，
@@ -2825,6 +2841,11 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // 不走 saveNEKOSettings 的 server-sync 对话设置管线。
             if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.setAutoCatEnabled === 'function') {
                 window.nekoAutoGoodbye.setAutoCatEnabled(isChecked);
+            }
+        } else if (toggle.id === 'gravity-cat') {
+            if (window.nekoIdleCat1Playground
+                && typeof window.nekoIdleCat1Playground.setGravityCatEnabled === 'function') {
+                window.nekoIdleCat1Playground.setGravityCatEnabled(isChecked);
             }
         } else if (toggle.id === 'cat-audio') {
             if (window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.setEnabled === 'function') {

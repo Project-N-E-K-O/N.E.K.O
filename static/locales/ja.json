@@ -24,6 +24,7 @@
             "storageChanged": "サーバーのデータ保存先が変更されました。アバター編集画面を開き直してから保存してください。"
         }
     },
+    "chatSync": {"oversizedLocalOnly":"同期の上限を超えたため、この端末にのみ保存：{{count}}件。","setupNeedsSave":"{{name}} の同期設定を確認してください。編集して再保存するか、詳細設定を開いてください。","title":"チャット同期","serviceUrl":"同期サービスの HTTPS アドレス","saveService":"アドレスを保存","enable":"同期を開始（履歴を含む）","pause":"この端末で一時停止","syncNow":"今すぐ同期","clearKnown":"既知のチャットを消去","close":"閉じる","notConfigured":"同期サービスのアドレスを設定してください。","notBound":"このキャラクターは未連携です。","enabled":"この端末で有効です。","paused":"この端末で停止中。クラウドのチャットは保持されます。","pending":"登録済みの送信待ち：{{originals}}件、削除待ち：{{deletions}}件。","working":"処理中…","more":"未取得の履歴があります。再度同期してください。","passFinished":"今回の処理が完了しました。他の端末には未同期のチャットがある場合があります。","loginRequired":"コミュニティアカウントにログインして再試行してください。","failed":"同期は未完了です。ローカルのチャットと待機中の処理は保持されています。","deleteOriginal":"両端末から削除","deleteConfirm":"このチャット原文を両端末から削除しますか？","clearConfirm":"このキャラクターの現在把握している全チャット原文を両端末から消去しますか？他の端末で後から追加されたチャットは対象外です。 この端末だけに保存された返信も、この端末で消去されます。","unknownTime":"元の時刻は不明","userLabel":"あなた","unfinishedChat":"現在の返信が終わってからチャットを削除してください。","profileConflict":"使用する人物設定を選択","profileRenamePending":"キャラクター名の変更を確認","profileLocal":"この端末の設定","profileRemote":"クラウドの設定","profileUseLocal":"端末の設定をアップロード","profileUseRemote":"クラウドの設定を使用","profileRenameConfirm":"{{oldName}}を{{newName}}に改名し、クラウドの設定全体を使用しますか？","profileChanged":"設定が変更されたか、同期を利用できません。両方を保持したまま再確認してください。","profileInitialUpload":"{{name}}の現在の設定をアップロードしますか？","profileUploadConfirm":"{{name}}の保存した設定をアップロードしますか？","profileUnsupported":"同期未対応の項目があります。端末の保存内容は保持されます。","profileSaveFailed":"設定の同期を完了できませんでした。保存内容と両方の設定は保持されます。","profileReview":"人物設定を確認","profileName":"名前","profileNickname":"ニックネーム","profileSetting":"元の設定","profileStyle":"話し方","cloudImport":"クラウドからキャラクターを作成","cloudEmpty":"クラウドにキャラクターがありません。","cloudProfileEmpty":"このキャラクターの設定は未公開です。","cloudCreate":"この端末に作成","cloudExisting":"{{name}}はこの端末に存在します。同期設定を保持します。","cloudCreated":"{{name}}を作成し、連携しました。","cloudNameConflict":"同名のキャラクターがあります。先に端末側を改名するか、取り込みをキャンセルしてください。","profileNeedsBinding":"キャラクター編集画面の「詳細設定」から連携してください。","previewHistory":"以前のチャットを確認","historyPreview":"以前のチャットのプレビュー","historyLocalRole":"ローカルキャラクター：{{name}}","historyCloudRole":"クラウドキャラクター：{{name}}","historyCount":"このプレビューの確認済みメッセージ：{{count}}件","historyUnverifiedCount":"出所を確認できない古い記録{{count}}件は、この端末に残ります。","historyHint":"この固定プレビュー内の確認済みメッセージのみが対象です。承認後にバックグラウンドで登録・送信します。新しいチャットは別のキューを使います。","historyEmpty":"このプレビューには確認済みの以前のチャットがありません。未確認の記録はこの端末に残ります。","historyApprove":"このチャットを承認","historyCancel":"キャンセル","historyQueued":"バックグラウンド登録・送信を承認しました。まだ待機中のメッセージがあります。","historyChanged":"キャラクター、アカウント、または同期状態が変わりました。再度プレビューしてから承認してください。","historyAwaitingRegistration":"承認済みの以前のメッセージ{{count}}件が、ローカル登録を待っています。","historyUnverifiedUnknown":"古い記録はスキャンしていません。出所を確認できない内容はこの端末に残ります。","writerRecoveryRequired":"このインストールの確認が必要なため同期を一時停止しています。ローカルチャットは引き続き利用できます。","recoverWriter":"確認して同期を復旧","recoveryChecked":"確認が完了しました。キャラクターカードで履歴を含む同期を有効にするか、今回のチャットのアップロードを承認できます。両端末への未送信の削除は、引き続き別途承認が必要です。","recoveryDeleteConfirm":"保留中の {{count}} 件を両方の端末で削除しますか？ローカル：{{localName}}。クラウド：{{cloudName}}。キャンセルするとローカルでは非表示のままです。","includeHistory":"既存のチャットも同期する","initialHistoryFailed":"既存チャットの同期は未完了です。連携は保持されています。キャラクター編集画面の「詳細設定」で確認や再試行ができます。","moreOptions":"詳細設定","enableHint":"「{{name}}」とチャットを同期します（履歴を含む）。","newRoleSync":"キャラクターとチャットを同期（履歴を含む）","newSyncPending":"キャラクターを端末に保存しました。ログインして接続すると同期を開始します。","newSyncFailed":"キャラクターは端末に保存しました。同期設定はまだ完了していません。後でもう一度お試しください。","syncChoiceSaved":"キャラクターを保存し、同期設定を更新しました。"},
     "instanceAccess": {"title":"NEKO に接続","description":"サーバー管理者から受け取ったアクセスキーを入力してください。この端末で30日間接続を記憶します。","key":"インスタンスアクセスキー","connect":"接続","failed":"接続が拒否されました。キーを確認して再試行してください。","httpsRequired":"HTTPS または信頼できる HTTPS トンネルで接続してください。","insecureWarning":"この接続は暗号化されていません（HTTP）。同じネットワーク経路上の第三者がキーとセッションを見られる可能性があります。可能であれば HTTPS を使用してください。"},
     "common": {
         "load": "読み込み",
@@ -719,6 +720,7 @@
         "occupied": "カメラが他のアプリに占有されています？QRコード/写真アプリを閉じて再試行してください"
     },
     "chat": {
+        "visitBarAriaLabel": "おでかけ",
         "messageReaction": "{{author}} が {{emoji}} でリアクションしました",
         "cardActionFailed": "プラグインの操作に失敗しました",
         "cardActionRunning": "実行中…",
@@ -2177,7 +2179,7 @@
             "confirmTrimmed": "トリミング済み音声を使用"
         }
     },
-    "memory": {
+    "memory": {"chatDeleteConfirm":"同期中のすべての端末からチャット原文 {{count}} 件を完全に削除しますか？","chatSyncUnavailable":"チャット同期を利用できません。ローカルの記憶は編集できます。",
         "recent": "最近のメモリ",
         "title": "メモリブラウザ",
         "summary": "概要",
@@ -2294,7 +2296,12 @@
         "save": "保存",
         "clear": "クリア",
         "tip1": "最近終了した会話は読み込みに時間がかかります。neko の名前をもう一度クリックして更新できます。",
-        "tip2": "表示されるのは最近の記憶のみです。長期記憶は猫娘のコアに統合されているため、閲覧できません。",
+        "tip2": "チャット原文と最近の記憶を表示します。長期記憶は猫娘のコアに統合されているため閲覧できません。",
+        "chatDeletionHint": "削除・クリア後に保存すると、チャット原文は端末間で削除されます。最近の記憶とツールの応答はこの端末だけで削除されます。",
+        "chatOriginalsSection": "端末間のチャット原文",
+        "recentMemorySection": "この端末の最近の記憶",
+        "localRepliesSection": "この端末のみのツール応答",
+        "chatDeletionPartial": "チャットの削除は登録されましたが、ローカル記憶の保存に失敗しました。変更を保持して保存を再試行してください。",
         "noFiles": "ファイルなし",
         "loadFailed": "読み込み失敗",
         "noChatContent": "チャットコンテンツなし",
@@ -3096,6 +3103,8 @@
             "selected": "{{source}}を選択しました",
             "current": "選択中：{{source}}",
             "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました",
+            "sourceClosed": "選択したソースはもう存在しません（ウィンドウが閉じられた可能性があります）。もう一度選択してください",
+            "sourceRenamed": "このウィンドウのタイトルが「{{source}}」に変わりました。確認のうえ、もう一度クリックしてください",
             "captureFailed": "画面キャプチャを停止しました。システム権限を確認するか、ソースを選択し直してください",
             "clickToChoose": "クリックして画面ソースを選択",
             "chooseAgain": "別の画面ソースを選択"
@@ -3672,6 +3681,9 @@
         "resource_wake_model": "ウェイクワードモデル",
         "resource_wake_runtime": "Sherpa ONNX",
         "activation_preparing": "準備中",
+        "activationHint_speech_too_short": "音声が短すぎます。少し長めの文を最後まで話してください。",
+        "activationHint_owner_not_confirmed": "声紋が一致しませんでした。自然に話し続けてください。照合を続けます。",
+        "activationHint_verification_insufficient": "今回の音声では確認できませんでした。自然に話し続けて再試行してください。",
         "activation_waiting": "あなたの声で音声会話が有効になるのを待っています",
         "activation_verifying": "準備中",
         "activation_replaying": "準備中",
@@ -3777,9 +3789,13 @@
             "avatarReactionBubble": "表情バブル",
             "focusCognition": "集中モード",
             "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
+            "autoMemoryRecall": "記憶を自動で思い出す",
+            "autoMemoryRecallTooltip": "オンにすると、テキストチャット（音声の文字起こしを含む）で返事をする前に、あなたの言葉に関係する思い出を自動で思い出します。オフにすると、必要なときだけ思い出します。",
             "slopFilter": "自然な表現",
             "slopFilterTooltip": "過去の返答にある繰り返しや型にはまった言い回しを減らし、より自然に話せるようにします。",
             "autoCat": "自動ねこ化",
+            "gravityCat": "重力ねこ",
+            "gravityCatTooltip": "猫モードに入るときPlaygroundの重力モードを使います",
             "catAudio": "猫の効果音",
             "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
             "catAudioTooltip": "猫モード中に猫の鳴き声などの効果音を再生します",
@@ -4252,6 +4268,21 @@
             "desc": "キャラクターカードの作成・編集・インポート・エクスポート~"
         },
         "systray": {
+            "macos": {
+                "location": {
+                    "title": "📍 メニューバーのアイコンの位置",
+                    "desc": "N.E.K.O のアイコンは画面上部の macOS メニューバーに表示されます。",
+                    "note": "上部のメニューバーで、画像の N.E.K.O アイコンを探してください。",
+                    "alt": "macOS メニューバーの N.E.K.O アイコンとメニュー"
+                },
+                "menu": {
+                    "title": "📋 メニューバーのメニュー",
+                    "desc": "メニューバーの N.E.K.O アイコンをクリックするとメニューが開きます。主な機能はこちら："
+                },
+                "exitDesc": "N.E.K.O を終了するには、メニューバーのメニューから終了を選択してください。"
+            },
+            "settings": "設定",
+            "settingsDesc": "設定を開いて N.E.K.O の使い方を調整できます。",
             "location": {
                 "title": "📍 トレイアイコンの場所",
                 "desc": "N.E.K.O のアイコンは画面右下のシステムトレイに表示されます。クリックすると見つけられます。",
@@ -4838,6 +4869,17 @@
         }
     },
     "vrmEmotionManager": {
+        "waitingForModel": "選択したモデルを読み込み中です。お待ちください…",
+        "retryLoad": "読み込みを再試行",
+        "loadTimeout": "読み込みがタイムアウトしました。再試行してください。保存済みの設定は変更されていません。",
+        "saveTimeout": "保存がタイムアウトし、結果を確認できません。設定を確認してから再試行してください。",
+        "recoveryBlocked": "2件のモデル読み込みがまだ完了していません。完了を待つか、モデル管理ウィンドウを開き直してから再試行してください。",
+        "sourceUnavailable": "モデル管理からこのページを開き、そのウィンドウを開いたままにしてください。",
+        "invalidModel": "このモデルは利用できなくなりました。もう一度選択してください。",
+        "modelLoadFailed": "選択したモデルを読み込めませんでした。再試行してください。",
+        "sourceChanged": "プレビューモデルが変更されたか利用できません。選択したモデルの読み込みを再試行してください。",
+        "noConfigurableExpressions": "モデルの読み込みは完了しましたが、設定可能な表情がありません。",
+        "retainedBindings": "次の保存済みの割り当てはこのモデルで利用できません。プレビューせずに保持します：",
         "title": "VRM 感情マッピング管理 - Project N.E.K.O.",
         "pageTitle": "VRM 感情マッピング管理",
         "subtitle": "各感情に対応する表情マッピングを設定",
@@ -6629,6 +6671,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "今回の訪問を日記に残しますか？",
+            "choiceDiary": "日記に残す",
+            "choiceForget": "残さない",
+            "savedDiary": "日記に残しました",
+            "forgot": "わかりました。今回は残しません",
+            "askLaterHint": "選択肢は 7 日間残ります。いつでも選べます",
+            "previewTitle": "これを残しますか？",
+            "previewFactsLabel": "覚えておくこと：",
+            "previewConfirm": "書き込む",
+            "previewVoided": "この記録は破棄されました。書き込まれていません",
+            "generating": "まとめています…",
+            "committing": "書き込み中…まだ書き込めていない場合は自動で再試行します",
+            "commitFailed": "記憶に書き込めませんでした：記憶サービスがこの書き込みを拒否したため、自動再試行を停止しました。",
+            "commitFailedPartial": "事実は書き込まれましたが、日記はまだ書き込まれていません。",
+            "commitRetry": "再試行",
+            "commitAbandon": "あきらめる",
+            "abandonPartialConfirm": "事実はすでに書き込まれていて取り消せません。日記は書き込まれていません。あきらめるとこの日記は書き込まれません。あきらめますか？",
+            "abandoned": "あきらめました。何も書き込まれていません",
+            "abandonedPartial": "あきらめました：事実は書き込まれ、日記は書き込まれていません",
+            "commitFailedUnknown": "一部がすでに記憶に書き込まれた可能性がありますが、確認できませんでした。",
+            "abandonUnknownConfirm": "一部がすでに記憶に書き込まれ、確認できていない可能性があります。あきらめても取り消されません。あきらめますか？",
+            "abandonedUnknown": "あきらめました：一部が書き込まれた可能性がありますが、確認できませんでした"
+        },
         "settings": {
             "groupTitle": "訪問",
             "enabled": "訪問を許可",
@@ -6642,7 +6708,219 @@
             "persona": "訪問用の自己紹介"
         },
         "stream": {
-            "ttsFallback": "いまは音声が使えないため、この訪問ではテキストで話します"
+            "ttsFallback": "いまは音声が使えないため、この訪問ではテキストで話します",
+            "truncated": "（途中で中断）"
+        },
+        "bar": {
+            "entry": "おでかけ",
+            "invite": "お客さんを招く",
+            "goVisit": "よその家へ行く",
+            "close": "閉じる",
+            "preparingInvite": "招待を準備中…",
+            "joining": "おでかけ準備中…",
+            "waitingGuest": "お客さんを待っています",
+            "guestArriving": "お客さんが向かっています",
+            "atTheDoor": "{{name}} が玄関に来ました",
+            "waitingDoor": "相手が開けてくれるのを待っています",
+            "hosting": "{{name}} が遊びに来ています",
+            "away": "{{name}} の家にいます",
+            "peerHidden": "少し席を外しています",
+            "reconnecting": "接続が不安定です。再接続中",
+            "endingSoon": "そろそろ時間です",
+            "ending": "おひらき中",
+            "inviteCode": "招待コード {{code}}",
+            "copy": "コピー",
+            "copied": "招待コードをコピーしました",
+            "copyFailed": "コピーできませんでした。コードを書き写してください",
+            "seeOff": "お見送りする",
+            "recall": "呼び戻す",
+            "endNow": "今すぐ終わる",
+            "toGuest": "{{name}} へ",
+            "toOwn": "{{name}} へ",
+            "typing": "{{name}} が入力中…"
+        },
+        "common": {
+            "cancel": "キャンセル",
+            "close": "閉じる",
+            "confirmTitle": "確認",
+            "ok": "OK"
+        },
+        "choice": {
+            "expired": "このおでかけの記録は期限切れです",
+            "retryLater": "今はまとめられませんでした。少ししてからもう一度どうぞ"
+        },
+        "details": {
+            "open": "詳細を見る",
+            "title": "このおでかけの詳細",
+            "loading": "読み込み中…",
+            "duration": "時間：{{m}} 分 {{s}} 秒",
+            "freeMinutes": "使った無料分数：{{n}}",
+            "usage": "使用量：入力 {{in}} トークン、出力 {{out}} トークン／音声 {{req}} 回・{{chars}} 文字",
+            "usageNone": "使用量：まだ記録がありません",
+            "uploadedPartial": "今のところ片方の記録しか届いていません",
+            "transcript": "全文記録",
+            "status": {
+                "agree": "両方一致",
+                "onlyHost": "招いた側だけの記録",
+                "onlyGuest": "訪ねた側だけの記録",
+                "differ": "記録が食い違っています"
+            },
+            "hostCopy": "招いた側の記録",
+            "guestCopy": "訪ねた側の記録",
+            "nextPage": "次のページ",
+            "forbidden": "このおでかけの参加者ではないため見られません",
+            "notFound": "このおでかけの記録が見つかりません",
+            "unavailable": "おでかけサービスに接続できません。しばらくしてからお試しください"
+        },
+        "ended": {
+            "body": "おでかけが終わりました",
+            "bodyWith": "{{name}} とのおでかけが終わりました",
+            "more": "その他…"
+        },
+        "error": {
+            "disabled": "「おでかけを許可」がオフです。先に設定でオンにしてください",
+            "generic": "うまくいきませんでした。しばらくしてからお試しください",
+            "unreachable": "ローカルサービスに接続できません",
+            "voiceSession": "音声通話を終えてからおでかけしてください",
+            "alreadyVisiting": "すでにおでかけ中です",
+            "insecure_context": "カスタムのバックエンドアドレスでは https か localhost が必要です"
+        },
+        "export": {
+            "button": "記録を書き出す",
+            "fileTitle": "おでかけの記録",
+            "gone": "端末内のコピーは削除済みです。ログインしてオンラインならクラウドから書き出せます",
+            "incomplete": "クラウドの記録が不完全なため、今は書き出せません",
+            "failed": "書き出しに失敗しました。しばらくしてからお試しください",
+            "ownCat": "うちの子",
+            "peerCat": "相手の子",
+            "ownHuman": "わたし",
+            "peerHuman": "相手の家族",
+            "hostCat": "招いた側の子",
+            "hostHuman": "招いた側の家族",
+            "guestCat": "訪ねた側の子",
+            "guestHuman": "訪ねた側の家族"
+        },
+        "input": {
+            "notDelivered": "届きませんでした",
+            "placeholderAway": "おでかけ中です。呼び戻すこともできます",
+            "placeholderWaiting": "お客さんが着いてから話せます",
+            "placeholderReconnecting": "再接続中です。少々お待ちください",
+            "placeholderToGuest": "{{name}} に話しかける…",
+            "placeholderToOwn": "{{name}} に話しかける…"
+        },
+        "invite": {
+            "title": "お客さんが来ました",
+            "body": "{{name}}（{{code}}）が遊びに来ました。迎え入れますか？",
+            "countdown": "{{s}} 秒後に自動でお断りします",
+            "accept": "迎え入れる",
+            "decline": "お断りする",
+            "expired": "応答できる時間が過ぎました"
+        },
+        "join": {
+            "title": "よその家へおでかけ",
+            "codeLabel": "相手からもらった 10 文字の招待コードを入力してください",
+            "codeFormat": "招待コードは英字と数字 2〜7 の 10 文字です",
+            "next": "次へ",
+            "confirmTitle": "おでかけさせますか？",
+            "confirmBody": "{{cat}} を {{host}}（{{code}}）の家へおでかけさせますか？",
+            "crossRegion": "相手は別の地域にいるため、接続が不安定になるかもしれません",
+            "blocked": "この人をブロックしています",
+            "confirm": "おでかけする"
+        },
+        "persona": {
+            "title": "おでかけ用の自己紹介",
+            "intro": "よその家へ行くときに持っていく自己紹介です。あなたの情報は含みません。相手の子はこれを読めて、内容を話すこともあります。",
+            "editHint": "性格や趣味、話し方など、数行で紹介してください",
+            "loading": "読み込み中…",
+            "generating": "おでかけ用の自己紹介を作成中…",
+            "saveConfirm": "保存して確認",
+            "confirm": "確認",
+            "regenerate": "作り直す",
+            "reviewed": "確認済みです。おでかけできます",
+            "cardChanged": "キャラクターカードが変更されています。新しいカードで作り直しますか？",
+            "privateOverlap": "自動生成した自己紹介に私的な内容が混ざりました。ご自身で書いてください",
+            "privateHits": "次の内容は私的な情報のようです。削除してから保存してください：{{hits}}",
+            "privateSections": "元のカードのこの部分はおでかけに持っていきません：",
+            "scanIncomplete": "自動チェックが完全ではありません。私的な情報がないかご自身でも確認してください",
+            "llmUnavailable": "今は自動生成できませんでした。自分で書くか、あとで作り直してください",
+            "tooLong": "長すぎます。短くしてください",
+            "changed": "内容が更新されたため読み直しました。もう一度確認してください",
+            "saveFailed": "保存できませんでした。しばらくしてからお試しください",
+            "unavailable": "おでかけ用の自己紹介を読み込めません。しばらくしてからお試しください",
+            "unknownCatgirl": "このキャラクターが見つかりません",
+            "unreviewed": "おでかけ前に自己紹介を確認してください。確認後におでかけできます",
+            "sectionsOutdated": "この私的な段落の一覧は変更前のカードに基づいています。追加された内容は含まれないので、ご自身でも確認してください"
+        },
+        "preview": {
+            "invalid": "招待コードが無効です",
+            "expired": "招待コードの期限が切れています",
+            "banned": "現在、あなたのおでかけ機能は制限されています",
+            "rateLimited": "試行回数が多すぎます。少し待ってからお試しください",
+            "unreachable": "おでかけサービスに接続できません。しばらくしてからお試しください"
+        },
+        "report": {
+            "button": "通報",
+            "title": "このおでかけを通報",
+            "reason": {
+                "harassment": "嫌がらせ",
+                "sexual": "性的な内容",
+                "privacy": "プライバシーの侵害",
+                "spam": "スパム",
+                "other": "その他"
+            },
+            "notePlaceholder": "補足（任意、500 文字まで）",
+            "includeTranscript": "このおでかけの会話記録を添付する",
+            "submit": "通報する",
+            "done": "通報しました",
+            "doneButton": "通報済み",
+            "queued": "通報を記録しました。ネットワークが戻ると自動で送信します",
+            "queuedButton": "送信待ち",
+            "already": "このおでかけはすでに通報済みです",
+            "persistFailed": "通報を保存できませんでした。もう一度お試しください",
+            "queuedLogin": "通報を記録しました。元のアカウントに再ログインすると自動で送信します"
+        },
+        "speaker": {
+            "ownCat": "うちの子",
+            "peerCat": "相手の子",
+            "peerHuman": "相手の家族",
+            "you": "あなた",
+            "toArrow": "{{from}} → {{to}}"
+        },
+        "status": {
+            "VISIT_E_UNAUTHORIZED": "このページではおでかけを使えません（この端末からの直接アクセスのみ対応）",
+            "VISIT_VOICE_UNAVAILABLE": "おでかけ中は音声入力が使えません。文字で入力してください",
+            "VISIT_INPUT_REFUSED_AWAY": "よその家にいるので、ここからの言葉は届きません。呼び戻すことはできます",
+            "VISIT_INPUT_REFUSED_NOT_READY": "お客さんがまだ来ていません。おでかけが始まってから話しましょう",
+            "VISIT_INPUT_REFUSED_RATE": "送信が早すぎます。少し待ってから送ってください",
+            "VISIT_INPUT_REFUSED_SOURCE": "訪問中は、入力欄から話しかけた言葉だけが届きます。これは送信されませんでした",
+            "VISIT_E_BUSY": "今は送れませんでした。文字は入力欄に残っています。少ししてからどうぞ",
+            "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "この端末では今のところおでかけできません",
+            "VISIT_LOGIN_REQUIRED": "おでかけにはコミュニティアカウントへのログインが必要です",
+            "VISIT_BANNED": "現在、あなたのおでかけ機能は制限されています",
+            "VISIT_QUOTA_EXCEEDED": "今日のおでかけ時間を使い切りました",
+            "VISIT_TIER_NOT_ENTITLED": "この画質は利用できません",
+            "VISIT_FORGET_IN_PROGRESS": "おでかけの記憶を消去中です。少ししてからどうぞ",
+            "VISIT_UPLOAD_BACKLOG": "未送信のおでかけ記録があります。オンラインにしてからお試しください",
+            "VISIT_CROSS_REGION_UNSUPPORTED": "地域をまたぐおでかけにはまだ対応していません",
+            "VISIT_INVITE_INVALID": "招待コードが無効か、期限切れです",
+            "VISIT_SERVERS_UNREACHABLE": "おでかけサービスに接続できません。しばらくしてからお試しください",
+            "VISIT_PROTO_MISMATCH": "相手とバージョンが合いません。お互いに更新してください",
+            "VISIT_PEER_IDENTITY_REJECTED": "相手の身元を確認できなかったため、おでかけを取りやめました",
+            "VISIT_PEER_LOST": "相手との接続が切れました",
+            "VISIT_RELAY_LOST": "おでかけの接続が切れました",
+            "VISIT_KICKED": "おでかけはサーバー側で終了されました",
+            "VISIT_INTERRUPTED_LAST_TIME": "前回のおでかけが途中で中断されました",
+            "VISIT_MEMORY_RETRY_LATER": "記憶サービスが混み合っています。あとで自動で再試行します"
+        },
+        "wrapUp": {
+            "badge": "お別れ中",
+            "toastRefused": "お別れの挨拶中なので、このメッセージは送られませんでした",
+            "recallAlready": "もうお別れの挨拶をしています",
+            "composerPlaceholder": "お別れの挨拶中…"
         }
+    },
+    "visitFrame": {
+        "peerAway": "ちょっと席を外しています",
+        "visitingAway": "おでかけ中"
     }
 }

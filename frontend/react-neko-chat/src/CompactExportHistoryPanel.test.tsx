@@ -526,6 +526,8 @@ describe('CompactExportHistoryPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('Failed to build the preview.')).toBeInTheDocument();
     });
+    // 降级预览的时间须带类名，styles.css 靠它锁住 nowrap，否则继承 anywhere 后会被拆行。
+    expect(document.querySelector('.compact-export-preview-meta .compact-export-preview-time')).toHaveTextContent('10:00');
   });
 
   it('handles rejected export actions without leaving the action pending', async () => {

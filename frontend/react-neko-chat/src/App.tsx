@@ -12,6 +12,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useReplyTailPresentation } from './useReplyTailPresentation';
 import AvatarToolItemManager, {
   type AvatarToolEditorResultMessage,
   type AvatarToolManagerAnchorRect,
@@ -101,6 +102,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   // ChoicePrompt remains part of ChatWindowSchemaProps. Keep the legacy galgame
   // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
+  onVisitBarAction?: (actionId: string) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
   onCompactMinimizeRequest?: () => void;
   // 注：compactMinimizeCancelSeq 在 message-schema.ts 的 chatWindowPropsSchema 里声明
@@ -883,6 +885,10 @@ function getCompactHistoryScrollUnderCompactToolWheel(
  * same shared runtime.
  */
 export default function ChatWindowRoot(props: ChatWindowProps) {
+  useReplyTailPresentation(
+    props.messages || [], false, undefined, false, '', '', true,
+    props.chatSurfaceMode === 'full',
+  );
   return (
     <>
       {props.chatSurfaceMode === 'full'
@@ -954,6 +960,8 @@ function CompactChatApp({
   onTheaterEnd,
   choicePrompt = null,
   onChoiceSelect,
+  visitBar = null,
+  onVisitBarAction,
   avatarToolMenuOpenRequest = null,
   compactToolFanOpenRequest = null,
   compactToolWheelRotateRequest = null,
@@ -1438,7 +1446,13 @@ function CompactChatApp({
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)
     : null;
-  const compactChoiceLayerOpen = isCompactSurface && compactSurfaceChoicesVisible;
+  // 串门工具条与选项共用这一层的定位与命中区，但不把聊天面切到 options 态（不挡最小化以外的任何状态）
+  const visitBarVisible = isCompactSurface
+    && !catLocalTextOnly
+    && !theaterActive
+    && !!visitBar
+    && (!!visitBar.badge || visitBar.actions.length > 0);
+  const compactChoiceLayerOpen = isCompactSurface && (compactSurfaceChoicesVisible || visitBarVisible);
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
     () => messages.filter(isCompactExportMessageSelectable),
@@ -1916,6 +1930,18 @@ function CompactChatApp({
   useEffect(() => {
     draftRef.current = visibleDraft;
   }, [visibleDraft]);
+
+  useReplyTailPresentation(
+    messages,
+    chatSurfaceMode === 'compact',
+    compactMessagePreview?.turnId,
+    compactCaptionState?.isEnded === true
+      || (compactAssistantStreamingGap?.turnId === compactMessagePreview?.turnId
+        && compactAssistantStreamingGap?.turnEnded === true),
+    compactPreviewText,
+    compactPreviewDisplayText,
+    compactExportHistoryMounted && compactExportHistoryOpen,
+  );
 
   useEffect(() => {
     compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
@@ -5722,6 +5748,29 @@ function CompactChatApp({
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
     >
+      {visitBarVisible && visitBar ? (
+        <div
+          className={`composer-visit-bar is-${visitBar.tone ?? 'idle'}`}
+          role="toolbar"
+          aria-label={i18n('chat.visitBarAriaLabel', 'Visit')}
+        >
+          {visitBar.badge ? <span className="composer-visit-bar-badge">{visitBar.badge}</span> : null}
+          {visitBar.detail ? <span className="composer-visit-bar-detail">{visitBar.detail}</span> : null}
+          {visitBar.actions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className={`composer-visit-bar-action is-${action.variant ?? 'secondary'}`}
+              disabled={action.disabled}
+              aria-pressed={typeof action.pressed === 'boolean' ? action.pressed : undefined}
+              data-visit-bar-action={action.id}
+              onClick={() => onVisitBarAction?.(action.id)}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {galgameStyleOptionsVisible ? (
         <div
           className={`composer-galgame-slot${compactChoiceLayerOpen && galgameStyleOptionsVisible ? ' is-open' : ''}`}
@@ -6322,6 +6371,7 @@ function CompactChatApp({
                           <span
                             ref={compactPreviewTextRef}
                             className="compact-chat-capsule-text"
+                            data-reply-tail-caption-turn-id={compactMessagePreview?.turnId}
                             data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
                             data-compact-preview-scrollable={compactPreviewAllowsScroll ? 'true' : 'false'}
                             onWheel={handleCompactPreviewWheel}

@@ -202,6 +202,11 @@ def _mgr_for_main_server(send_lanlan_return=True):
     fake_mgr.master_name = "小明"
     fake_mgr.send_lanlan_response = AsyncMock(return_value=send_lanlan_return)
     fake_mgr.handle_proactive_complete = AsyncMock()
+    fake_mgr.current_speech_id = "previous-turn"
+    fake_mgr._chat_original_turns = {}
+    async def rotate():
+        fake_mgr.current_speech_id = "plugin-reply-turn"
+    fake_mgr.rotate_speech_id_for_response_done = AsyncMock(side_effect=rotate)
     fake_mgr.passthrough_to_chat_bubble = AsyncMock(return_value=True)
     fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
@@ -242,6 +247,9 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, cap
     )
 
     fake_mgr.send_lanlan_response.assert_awaited_once()
+    assert fake_mgr._chat_original_turns["plugin-reply-turn"]["origin"] == "agent"
+    assert fake_mgr.send_lanlan_response.await_args.kwargs["turn_id"] == "plugin-reply-turn"
+    assert fake_mgr.send_lanlan_response.await_args.kwargs["expected_speech_id"] == "plugin-reply-turn"
     sent_text = fake_mgr.send_lanlan_response.await_args.args[0]
     assert "{MASTER_NAME}" not in sent_text
     assert "跟 小明 报告" in sent_text

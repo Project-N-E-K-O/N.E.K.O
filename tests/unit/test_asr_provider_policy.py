@@ -23,6 +23,7 @@ def test_streaming_manual_provider_requires_smart_turn() -> None:
         warm_transport_ms=25_000,
         replay_policy="preconnect_only",
         supports_result_preserving_finish=True,
+        supports_interception_delivery=True,
     )
 
 

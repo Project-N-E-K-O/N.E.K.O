@@ -171,3 +171,19 @@ def test_metric_advice_count_remains_strict_and_is_never_clamped(count, accepted
         with pytest.raises(QualityAssessmentError, match="invalid_quality_assessment") as error:
             assessor.assess(story=story, setup=_generation_setup(), authoring=authoring)
         assert error.value.phase == "literature"
+
+
+@pytest.mark.parametrize("destination", ["观测舱", "山间石桥"])
+def test_silent_choice_is_visible_to_assessment_without_expanding_repair(destination):
+    from theater_workshop.sdk.generation.repair import TRANSITION_CONTRACT_FIELDS
+    story, authoring = _quality_story_context()
+    contract = story["nodes"][0]["route_gates"][0]["transition_contract"]
+    contract.update({"silent_choice": {"destination": destination, "arrangement": "查看记录"},
+                     "accept_input": "按刚才的安排。", "fallback_offer": ""})
+    context = NumericV2QualityAssessor._assessment_context(story, _generation_setup(), authoring)
+    projected = context["mainline"][0]["outgoing_routes"][0]["transition_contract"]
+    for field in ("silent_choice", "accept_input", "fallback_offer"):
+        assert projected[field] == contract[field]
+        assert field not in TRANSITION_CONTRACT_FIELDS
+    projected["silent_choice"]["destination"] = "别处"
+    assert contract["silent_choice"]["destination"] == destination

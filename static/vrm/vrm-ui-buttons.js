@@ -896,7 +896,11 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
             detail: {
                 reason: 'return-ball-drag-start',
-                container: returnButtonContainer
+                container: returnButtonContainer,
+                dragSessionId: dragActivitySequence + 1,
+                screenX: clientX + (Number(window.screenX) || 0),
+                screenY: clientY + (Number(window.screenY) || 0),
+                timestamp: Date.now()
             }
         }));
         isDragging = true;
@@ -948,7 +952,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
                 window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                     detail: {
                         reason: 'return-ball-drag-active',
-                        container: returnButtonContainer
+                        container: returnButtonContainer,
+                        dragSessionId: dragActivitySequence
                     }
                 }));
             }
@@ -974,7 +979,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
                 window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                     detail: {
                         reason: 'return-ball-drag-active',
-                        container: returnButtonContainer
+                        container: returnButtonContainer,
+                        dragSessionId: dragActivitySequence
                     }
                 }));
             }
@@ -992,6 +998,22 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         if (!isDragging) return;
         pendingClientX = clientX;
         pendingClientY = clientY;
+        if (dragActiveDispatched || Math.abs(clientX - dragStartX) > 5 || Math.abs(clientY - dragStartY) > 5) {
+            window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                detail: {
+                    reason: 'return-ball-drag-motion',
+                    container: returnButtonContainer,
+                    dragSessionId: dragActivitySequence,
+                    clientX,
+                    clientY,
+                    screenX: clientX + (Number(window.screenX) || 0),
+                    screenY: clientY + (Number(window.screenY) || 0),
+                    deltaX: clientX - dragStartX,
+                    deltaY: clientY - dragStartY,
+                    timestamp: Date.now()
+                }
+            }));
+        }
         if (!dragRAFId) {
             dragRAFId = requestAnimationFrame(applyDragPosition);
         }
@@ -1009,7 +1031,13 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
             const dragActivityFacts = finishDragActivity();
 
-            setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
+            // Release physics immediately, while keeping the subsequent DOM
+            // click suppressed just like the shared avatar drag implementation.
+            returnButtonContainer.setAttribute('data-dragging', 'false');
+            if (moved) {
+                returnButtonContainer.setAttribute('data-neko-return-click-suppressed', 'true');
+                setTimeout(() => returnButtonContainer.removeAttribute('data-neko-return-click-suppressed'), 120);
+            }
             isDragging = false;
             dragActiveDispatched = false;
             returnButtonContainer.style.cursor = 'grab';
@@ -1018,6 +1046,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
                 dispatchDragTerminal(
                     dragCancelled ? 'return-ball-drag-cancel' : 'return-ball-drag-end',
                     Object.assign({
+                        dragSessionId: dragActivitySequence,
+                        releasedAt: Date.now(),
                         movedDistancePx: moved ? movedDistancePx : 0,
                         dragCancelled: dragCancelled
                     }, dragActivityFacts)

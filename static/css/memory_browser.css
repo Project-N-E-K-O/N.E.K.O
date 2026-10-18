@@ -4253,6 +4253,13 @@ body.is-memory-switch-confirming .editor::after {
     mask-image: none;
 }
 
+.memory-chat-section-label {
+    margin: var(--memory-space-3) 0 var(--memory-space-2);
+    color: var(--memory-text-secondary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
 /* 空态：没有对话记录时给一个居中的说明，而不是一行贴在左上角的灰字。 */
 .memory-empty-state {
     display: flex;

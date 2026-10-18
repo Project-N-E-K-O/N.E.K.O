@@ -45,3 +45,41 @@ def test_configure_default_executor_installs_named_thread_pool(monkeypatch):
         assert executor._thread_name_prefix == DEFAULT_EXECUTOR_THREAD_PREFIX
     finally:
         executor.shutdown(wait=False)
+
+
+async def test_thread_wait_interrupted_by_a_foreign_exception_still_raises_the_cancellation(monkeypatch):
+    import asyncio
+    import threading
+
+    import pytest
+
+    from utils import asyncio_executor
+
+    entered, release = threading.Event(), threading.Event()
+    real_shield = asyncio.shield
+    calls = []
+
+    class _Interrupt(BaseException):
+        pass
+
+    def shield(awaitable):
+        calls.append(awaitable)
+        if len(calls) == 2:
+            # 等线程期间被外部异常打断（比如关停时的 GeneratorExit）：线程此刻还没写完
+            raise _Interrupt()
+        return real_shield(awaitable)
+
+    def work():
+        entered.set()
+        release.wait(5)
+
+    monkeypatch.setattr(asyncio_executor.asyncio, "shield", shield)
+    task = asyncio.ensure_future(asyncio_executor.to_thread_through_cancellation(work))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        # 原来的取消照样往外抛，不被「线程还没结束」时取结果的 InvalidStateError 盖掉
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()

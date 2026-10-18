@@ -265,6 +265,31 @@ async def test_rooms_answers_202_with_only_the_visit_id(env):
     assert env.host.creds_calls == []   # 能力门之前不去 Servers
 
 
+async def test_user_switch_off_refuses_rooms_and_join_without_going_online(env):
+    # 用户的「串门」开关（visitEnabled）关着：建房、入房都拒，不占位、不领凭证、入房也不代转预览
+    env.host.settings["visitEnabled"] = False
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["code"] == "VISIT_DISABLED"
+    assert _no_slot() and env.host.creds_calls == []
+    env.guest.settings.pop("visitEnabled")   # 缺省即关
+    join = await _join(env)
+    assert join.status_code == 409 and join.json()["code"] == "VISIT_DISABLED"
+    assert env.preview_calls == [] and _no_slot("Guest") and env.guest.creds_calls == []
+    # 打开之后照常放行
+    env.host.settings["visitEnabled"] = True
+    env.use(env.host)
+    assert (await _rooms(env)).status_code == 202
+
+
+async def test_user_switch_is_checked_by_the_runtime_too(env):
+    # start_visit 自己也查（不只 HTTP 层）：别的调用方绕不过去
+    env.host.settings["visitEnabled"] = False
+    with pytest.raises(rtm.VisitRefused) as refused:
+        await rtm.start_visit("Host", "host")   # 夹具包了一层，注入的是 host 侧的 deps
+    assert refused.value.status == 409 and refused.value.body["code"] == "VISIT_DISABLED"
+    assert _no_slot() and env.host.creds_calls == []
+
+
 async def test_rooms_rejects_bad_fields_before_reserving(env):
     assert (await _rooms(env, catgirl="")).status_code == 400
     assert (await _rooms(env, crop="giant")).json()["code"] == "crop_format"
@@ -505,6 +530,152 @@ async def test_character_changed_during_admission_is_refused(env):
     assert rt is not None and rt.finalize_reason == "busy"
 
 
+# ── 云快照交给新角色的名字：原角色的改名迁完之前不串门 ─────────────────
+
+
+def _handed_over(env_side, name, *, owner_uid="e" * 32, new="Moved"):
+    """A cloudsave rename of another character that handed ``name`` over to this one, not yet migrated."""
+    marker = {"old": name, "new": new, "uid": owner_uid, "source": "cloudsave", "handed_over": [name]}
+    (env_side.config_dir / "visit_peers.json").write_text(
+        json.dumps({"pending_rename": marker}), encoding="utf-8")
+    return marker
+
+
+class _TmpConfig:
+    """Config-manager stand-in: never the real runtime directory."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def get_config_path(self, name):
+        return self.root / name
+
+    def get_runtime_config_path(self, name):
+        return self.root / name
+
+
+def _configured(monkeypatch, uid_of, root=None):
+    async def readable(*_a, **_kw):
+        return None
+
+    if root is not None:
+        monkeypatch.setattr(local_chars, "get_config_manager", lambda: _TmpConfig(root))
+
+    async def load():
+        return dict(uid_of)
+
+    monkeypatch.setattr(local_chars, "ensure_characters_file_readable", readable)
+    monkeypatch.setattr(local_chars, "load_local_characters", load)
+
+
+async def test_a_handed_over_name_refuses_rooms_and_join_while_its_rename_cannot_settle(env, monkeypatch):
+    async def busy(*_a, **_k):
+        raise OSError("spool locked")
+
+    monkeypatch.setattr(VisitSpool, "rename_own_char", busy)
+    _configured(monkeypatch, {"Host": HOST_CHAR_UID, "Guest": GUEST_CHAR_UID, "Moved": "e" * 32}, env.host.config_dir)
+    host_marker = _handed_over(env.host, "Host")
+    # 原角色的条目还在 Host 名下没迁走：现在串门写下的条目与场次会随迁移归到原角色（变异：不查必红）
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending"
+    assert _no_slot() and env.host.creds_calls == []
+    peers = json.loads((env.host.config_dir / "visit_peers.json").read_text(encoding="utf-8"))
+    assert peers["pending_rename"] == {**host_marker, "migrated": True}
+    _handed_over(env.guest, "Guest")
+    join = await _join(env)
+    assert join.status_code == 409 and join.json()["reason"] == "handover_pending"
+    assert _no_slot("Guest") and env.guest.creds_calls == []
+
+
+async def test_a_handed_over_name_is_admitted_once_its_rename_settles(env, monkeypatch):
+    _configured(monkeypatch, {"Host": HOST_CHAR_UID, "Moved": "e" * 32}, env.host.config_dir)
+    _handed_over(env.host, "Host")
+    # 准入时先对一次账：迁完就照常建房（变异：不先对账、一律拒绝必红）
+    assert (await _rooms(env)).status_code == 202
+    peers = json.loads((env.host.config_dir / "visit_peers.json").read_text(encoding="utf-8"))
+    assert "pending_rename" not in peers
+
+
+async def test_a_handed_over_name_waits_for_the_startup_recovery_without_reconciling(env, monkeypatch):
+    from main_routers.visit_router import background
+
+    running = {"v": True}
+    monkeypatch.setattr(background, "startup_recovery_running", lambda: running["v"])
+    _configured(monkeypatch, {"Host": HOST_CHAR_UID, "Moved": "e" * 32}, env.host.config_dir)
+    marker = _handed_over(env.host, "Host")
+    # 启动对账在被改名角色的守卫里迁这笔改名、不拿配置锁：准入不另对账（会与它并发改同一份标记，
+    # 它清标记失败就把这次启动的清除重放与补录推到下次启动），直接拒绝（变异：照样对账必红）
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending" and _no_slot()
+    peers = json.loads((env.host.config_dir / "visit_peers.json").read_text(encoding="utf-8"))
+    assert peers["pending_rename"] == marker
+    # 启动对账结束后（它没迁完的话）准入照常先对账、迁完放行
+    running["v"] = False
+    assert (await _rooms(env)).status_code == 202
+
+
+async def test_a_name_handed_over_to_another_character_does_not_block(env, monkeypatch):
+    async def unread():
+        raise AssertionError("the character config is not read when nothing is handed over to this character")
+
+    monkeypatch.setattr(local_chars, "load_local_characters", unread)
+    _handed_over(env.host, "Other")
+    # 交出的是别的名字：照常建房，也不读角色配置、不拿配置锁
+    assert (await _rooms(env)).status_code == 202
+
+
+async def test_a_handed_over_name_with_a_missing_character_config_refuses(env, monkeypatch, tmp_path):
+    seed = tmp_path / "seed" / "characters.json"
+    seed.parent.mkdir()
+    seed.write_text(json.dumps({"猫娘": {"Host": {"_reserved": {"character_uid": HOST_CHAR_UID}}}}), encoding="utf-8")
+
+    class Config:
+        def get_config_path(self, name):
+            # 运行时文件不在时退回项目自带的种子文件（真实 ConfigManager 的行为）
+            return seed
+
+        def get_runtime_config_path(self, name):
+            return tmp_path / "missing" / name
+
+        async def aload_characters(self):
+            # 文件不在时常规读取退回的种子角色：只有 Host，原角色（uid e…）不在里面
+            return {"猫娘": {"Host": {"_reserved": {"character_uid": HOST_CHAR_UID}}}}
+
+    monkeypatch.setattr(local_chars, "get_config_manager", lambda: Config())
+    _handed_over(env.host, "Host")
+    # 有交接标记说明这台机器有过角色：文件不在不能当成全新安装、拿默认角色去对账（会把原角色当成
+    # 已删除、撤掉标记不迁移），按对不完账拒绝（变异：允许缺文件 / 查种子文件必红）
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending" and _no_slot()
+    peers = json.loads((env.host.config_dir / "visit_peers.json").read_text(encoding="utf-8"))
+    assert "pending_rename" in peers
+
+
+async def test_a_handed_over_name_with_an_unreadable_character_config_refuses(env, monkeypatch):
+    async def broken(*_a, **_kw):
+        raise OSError("characters.json unreadable")
+
+    monkeypatch.setattr(local_chars, "ensure_characters_file_readable", broken)
+    monkeypatch.setattr(local_chars, "get_config_manager", lambda: _TmpConfig(env.host.config_dir))
+    _handed_over(env.host, "Host")
+    # 对账要读角色配置，读不出就对不完账：先不接（下一次再试），不能当成没有交接
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending" and _no_slot()
+
+
+async def test_a_failed_handover_check_refuses(env, monkeypatch):
+    from main_logic.visit import char_lifecycle
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(char_lifecycle, "handover_blocks_visit", broken)
+    _handed_over(env.host, "Host")
+    # 检查本身出错：判不出就先不接，不能当成没有交接（变异：出错放行必红）
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending" and _no_slot()
+
+
 # ── 邀请预览与入房 ─────────────────────────────────────────────────────
 
 
@@ -673,6 +844,31 @@ async def test_accept_forwards_to_the_matching_host_runtime(env):
     assert ok.status_code == 200 and calls == [False]
     assert other.status_code == 404 and other.json()["error"] == "no_pending_invite"
     assert bad.status_code == 400
+
+
+async def test_accept_true_is_refused_once_the_user_switch_is_off(env):
+    # 「允许串门」已关、关闭钩子还没结束这一场：不接待；婉拒照常放行
+    calls = []
+
+    class Stub:
+        visit_id, creds, admitted_account = VISIT_ID, None, "acct"
+
+        async def accept(self, accept):
+            calls.append(accept)
+            return 200, {"ok": True}
+
+    env.host.settings["visitEnabled"] = False
+    rtm._runtimes["Host"] = Stub()
+    try:
+        async with env.client() as c:
+            refused = await c.post(f"/api/visit/rooms/{VISIT_ID}/accept", headers=GOOD,
+                                   json={"catgirl": "Host", "accept": True})
+            declined = await c.post(f"/api/visit/rooms/{VISIT_ID}/accept", headers=GOOD,
+                                    json={"catgirl": "Host", "accept": False})
+    finally:
+        del rtm._runtimes["Host"]
+    assert refused.status_code == 409 and refused.json()["code"] == "VISIT_DISABLED"
+    assert declined.status_code == 200 and calls == [False]
 
 
 async def test_accept_before_the_guest_arrived_is_404(env):

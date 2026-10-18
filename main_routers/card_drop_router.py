@@ -1575,6 +1575,14 @@ async def native_delegate_endpoint(request: Request):
             status_code=403,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
+    if not client_registration.proof_transport_allowed(_social_base_url()):
+        # The delegate rides in the community URL fragment; never hand it to a
+        # plaintext page off loopback, same rule as /social-session-init.
+        return JSONResponse(
+            {"detail": "insecure_transport"},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     snapshot, failure = await _native_delegate_session_snapshot()
     local_user_id = (snapshot or {}).get("local_user_id") or ""
     session_fingerprint = _desktop_session_fingerprint(snapshot)
@@ -1629,6 +1637,12 @@ async def native_delegate_handoff_endpoint(
         return JSONResponse(
             {"detail": "return_to_not_allowed"},
             status_code=400,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    if not client_registration.proof_transport_allowed(audience):
+        return JSONResponse(
+            {"detail": "insecure_transport"},
+            status_code=403,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
     # A top-level navigation cannot retry a busy 503 by itself: validate a

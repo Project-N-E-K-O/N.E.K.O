@@ -26,7 +26,12 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from services.chat_sync.source import mark_tool_turn
 from config.prompts.prompts_sys import _loc
+from config.turn_context_settings import (
+    RECALL_MEMORY_TOOL_BUDGET_MS,
+    RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
+)
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
@@ -118,10 +123,38 @@ class ToolCallingMixin:
         return n
 
     def _make_tool_call_handler(self, session):
+        if isinstance(session, OmniRealtimeClient):
+            # Accepting a provider call and executing it are different phases.
+            # The source marker must reach the queue before any terminal, even
+            # if the asynchronous handler has not received CPU yet.
+            session.on_tool_call_accepted = lambda call: self._note_realtime_tool_source(
+                call, invoking_session=session,
+            )
         async def _handle(call: ToolCall) -> ToolResult:
             return await self._on_tool_call(call, invoking_session=session)
 
         return _handle
+
+    def _note_realtime_tool_source(self, call: ToolCall, *, invoking_session) -> None:
+        owner = call.source_owner
+        if (owner is None or invoking_session is not getattr(self, "session", None)
+            or not invoking_session._tool_task_owner_is_current(owner)):
+            return
+        # Never borrow current_speech_id: the provider owner was frozen before
+        # scheduling and a terminal may already have rotated the live host ID.
+        speech_id = owner.host_turn_id
+        if call.provider_meta.get("chat_original_source") is not None:
+            return
+        mark_tool_turn(self, speech_id)
+        proof = getattr(self, "_chat_original_turns", {}).get(str(speech_id or ""))
+        if proof is not None:
+            # Reuse the fixed proof in existing per-call host metadata. The
+            # legacy async fallback must not requeue a completed reply's marker.
+            call.provider_meta["chat_original_source"] = dict(proof)
+        if not getattr(invoking_session, "_is_gemini", False):
+            # Raw continuations use the existing user scope. Gemini instead
+            # carries its explicit dispatch/tool-response source tokens.
+            self._chat_original_tool_owner = (invoking_session, owner, speech_id)
 
     async def _on_tool_call(
         self,
@@ -133,6 +166,25 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        # Tool evidence belongs to the invoking reply, before execution can
+        # yield to another turn. A visible preface must stay in the same local
+        # record as the later result; never relabel a newer reply on completion.
+        owner = call.reply_owner
+        if owner is not None:
+            if not getattr(owner, "turn_ended", False):
+                mark_tool_turn(self, getattr(owner, "speech_id", None))
+        elif call.source_owner is not None:
+            # Retain provenance for direct/legacy handler calls as well as the
+            # synchronous acceptance observer; both enforce the frozen owner.
+            self._note_realtime_tool_source(call, invoking_session=invoking_session)
+        if call.reply_owner is not None:
+            from main_logic.reply_tail import reply_tail_registry
+
+            tool = self.tool_registry.get(call.name)
+            if tool is not None and tool.handler is None and tool.metadata.get("reply_tail") is True:
+                call.host_reply = reply_tail_registry.tool_context(
+                    self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
+                )
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
@@ -359,7 +411,12 @@ class ToolCallingMixin:
         # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
         # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
         # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
-        post_body = {"query": query, "language": self.user_language}
+        post_body = {
+            "query": query,
+            "language": self.user_language,
+            # 服务端过了这个预算就只用关键词结果，不会整个超时成"没找到"。
+            "budget_ms": RECALL_MEMORY_TOOL_BUDGET_MS,
+        }
         if time_arg:
             post_body["time"] = time_arg
         result_payload: dict = {}
@@ -370,7 +427,7 @@ class ToolCallingMixin:
             resp = await client.post(
                 f"http://127.0.0.1:{self.memory_server_port}/query_memory/{self.lanlan_name}",
                 json=post_body,
-                timeout=5.0,
+                timeout=RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
             )
             if not resp.is_success:
                 # WARNING 只带 status + body 长度（非敏感元数据）；body 原文

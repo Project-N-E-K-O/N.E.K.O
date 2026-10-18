@@ -46,6 +46,7 @@ from .greeting import GreetingMixin
 from .asr_runtime import AsrRuntimeMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
+from .turn_context import TurnContextMixin
 from .takeover import TakeoverMixin, TakeoverToken, HoldToken
 
 
@@ -65,6 +66,7 @@ class LLMSessionManager(
     StreamingMixin,
     NotifyMixin,
     TakeoverMixin,
+    TurnContextMixin,
 ):
     # Ceiling for a missing voice_play_end before the playback gate self-heals:
     # above a normal single reply, but recovers a dropped end-signal reasonably
@@ -116,6 +118,10 @@ class LLMSessionManager(
         self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
         self._screenshot_future: asyncio.Future | None = None
+        self._proactive_screenshot_request_id: str | None = None
+        # Live browser consent can arrive before the settings POST is persisted.
+        self._proactive_vision_enabled: bool | None = None
+        self._proactive_vision_revocation_epoch: int = 0
         self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
         # request_fresh_screenshot 与 resolve_screenshot_request 之间的一次性交接槽。
         # 与 _avatar_position 分开是刻意的：后者被每一条 stream_data 覆写（屏幕分享帧、
@@ -201,6 +207,10 @@ class LLMSessionManager(
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
         self.session_start_time = None
+        # When the conversation began: set by a real session start, kept by a
+        # hot swap (which only renews the provider session). Passive memory
+        # recall leaves out facts written since (their turns are in context).
+        self._turn_context_conversation_started_at = None
         self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
         self.pending_connector = None
         self.pending_session = None

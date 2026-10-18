@@ -547,22 +547,37 @@ def test_report_waiting_for_a_transcript_with_an_expired_login_asks_to_sign_in(e
 
 
 def test_an_accepted_report_stays_accepted_when_its_file_cannot_be_deleted(env, monkeypatch):
+    import asyncio
+
     client, fake, tmp_path, _ = env
     real_delete = tu.delete_report
     calls = []
+    release_retry = client.portal.call(asyncio.Event)
 
     async def locked(config_dir, visit_id):
         calls.append(visit_id)
         if len(calls) == 1:
             raise PermissionError("file in use")
+        await release_retry.wait()
         return await real_delete(config_dir, visit_id)
 
     monkeypatch.setattr(tu, "delete_report", locked)
-    resp = _report(client)
-    assert resp.status_code == 200 and resp.json()["ok"] is True
-    assert _queued(tmp_path) is not None and V1 in tu._workers        # 留着，后台稍后补删
-    client.portal.call(tu.retry_visit_once, V1)                       # 重提得到 duplicate 回执后删掉
-    assert _queued(tmp_path) is None
+    try:
+        resp = _report(client)
+        assert resp.status_code == 200 and resp.json()["ok"] is True
+        # Keep background deletion parked until the queued state is observed.
+        assert _queued(tmp_path) is not None and V1 in tu._workers
+
+        async def finish_retry():
+            worker = tu._workers[V1]
+            release_retry.set()
+            await asyncio.wait_for(asyncio.shield(worker), 5)
+
+        client.portal.call(finish_retry)
+        assert _queued(tmp_path) is None
+        assert calls == [V1, V1]
+    finally:
+        client.portal.call(release_retry.set)
 
 
 

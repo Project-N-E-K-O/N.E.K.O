@@ -945,6 +945,51 @@ def _authored_offer_is_canonical_content(performance: Mapping[str, Any], offer: 
     return bool(authored) and visible == authored
 
 
+def _silent_choice_input(engine, session, contract: Mapping[str, Any]) -> str:
+    """Render only explicit structured route choices; never infer missing author intent."""
+    choice = contract.get("silent_choice")
+    if not isinstance(choice, Mapping) or set(choice) != {"destination", "arrangement"}:
+        return ""
+    if any(not isinstance(choice[key], str) or not choice[key].strip()
+           or "\n" in choice[key] or "\r" in choice[key] for key in choice):
+        return ""
+    text = f"我同意前往{choice['destination'].strip()}，安排是：{choice['arrangement'].strip()}。"
+    acceptance = _project_authored_transition_text(engine, session, text).strip()
+    # Validate after cast projection: short author names can expand at runtime.
+    try:
+        TurnRequestV2.from_mapping({"client_turn_id": "silent_validation", "base_revision": 0,
+                                   "message": acceptance, "input_source": "suggestion"})
+    except NumericV2RuntimeError as exc:
+        if str(exc) == "numeric_turn_input_too_long":
+            raise NumericV2RuntimeError("numeric_silent_choice_input_too_long") from exc
+        raise
+    return acceptance
+
+
+def _silent_exit_allowed(node: Mapping[str, Any]) -> bool:
+    """Match the compiler's author-only exemption without changing live policy."""
+    if not isinstance(node.get("completion_contract"), Mapping):
+        return False
+    beat = node.get("story_beat") or {}
+    policy = (beat.get("acting_contract") or {}).get("dialogue_policy")
+    for goal in beat.get("goals") or []:
+        effects = (goal.get("delivery") or {}).get("state_effects") or {}
+        policy = effects.get("dialogue_policy", policy)
+    return policy == "forbidden"
+
+
+def _pending_silent_receipt(current: NumericV2StoredSession, *, include_withdrawn: bool = False):
+    """Locate a program receipt, never an Actor-authored invitation flag."""
+    origin = pending_transition_record(current.session, ledger_events=current.ledger_events,
+                                       include_withdrawn=include_withdrawn)
+    if not isinstance(origin, Mapping):
+        return None
+    event = next((row for row in current.ledger_events
+                  if row.get("result_revision") == origin.get("revision")), None)
+    receipt = event.get("program_invitation") if isinstance(event, Mapping) else None
+    return receipt if isinstance(receipt, Mapping) and receipt.get("silent") is True else None
+
+
 def _confirmed_authored_acceptance(
     engine: NumericV2Engine, current: NumericV2StoredSession, turn: TurnRequestV2,
     *, require_program_invitation: bool = False,
@@ -962,8 +1007,15 @@ def _confirmed_authored_acceptance(
     if not isinstance(contract, Mapping):
         return ""
     offer = _project_authored_transition_text(engine, session, str(contract.get("fallback_offer") or "")).strip()
-    accept = _project_authored_transition_text(engine, session, str(contract.get("accept_input") or "")).strip()
-    if require_program_invitation:
+    silent_receipt = _pending_silent_receipt(current)
+    # A signed button keeps its original text across display-name changes.
+    if not offer:
+        accept = str(silent_receipt.get("accept_input") or "") if silent_receipt is not None else ""
+    else:
+        accept = _project_authored_transition_text(
+            engine, session, str(contract.get("accept_input") or ""),
+        ).strip()
+    if require_program_invitation or silent_receipt is not None:
         # A literal quote is not proof of a live invitation. Only the latest
         # committed, program-issued pair can authorize an unreviewed acceptance.
         event = next((row for row in current.ledger_events
@@ -976,10 +1028,15 @@ def _confirmed_authored_acceptance(
                 or receipt.get("performance") != origin.get("performance")
                 or receipt.get("visible_blocks") != performance_content_blocks(origin)):
             return ""
-    if (not offer or not accept or turn.message.strip() != accept
+    if silent_receipt is not None:
+        if (offer or silent_receipt.get("offer") != ""
+                or silent_receipt.get("revision") != session.revision
+                or not _silent_exit_allowed(engine.nodes[session.current_node_id])):
+            return ""
+    if ((not offer and silent_receipt is None) or not accept or turn.message.strip() != accept
             or _pending_offer_acceptance_path(session, ledger_events=current.ledger_events) != accept
             or accept not in origin.get("suggested_inputs", [])
-            or not _authored_offer_visible(origin, offer)):
+            or (silent_receipt is None and not _authored_offer_visible(origin, offer))):
         return ""
     # 原邀请和当前数值仍须选中同一出口；不能让本轮计分或旧邀请暗中替换路线。
     event = next((row for row in current.ledger_events if row.get("result_revision") == origin.get("revision")), None)
@@ -1188,7 +1245,7 @@ async def _generate_actor_turn_with_output_retry(
     raise AssertionError("unreachable")
 
 
-def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2StoredSession, *, condition_narrations_enabled: bool = True) -> dict[str, str] | None:
+def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2StoredSession, *, condition_narrations_enabled: bool = True) -> dict[str, Any] | None:
     """Project a new invitation only when the current state can authorize it."""
     session = current.session
     if session.status != "active" or session.transition_offered or runtime.engine.completion_contract_satisfied(session) is not True:
@@ -1204,17 +1261,20 @@ def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2St
     if not isinstance(target, Mapping) or target.get("type") == "ending" or target.get("terminal") is True or not isinstance(contract, Mapping):
         return None
     offer = _project_authored_transition_text(runtime.engine, session, str(contract.get("fallback_offer") or "")).strip()
-    acceptance = _project_authored_transition_text(runtime.engine, session, str(contract.get("accept_input") or "")).strip()
-    if (not offer or not acceptance
-            or not _authored_offer_visible({"performance": offer}, offer)
-            or not valid_mixed_performance_policy({"performance": offer}, session.dialogue_policy)):
+    acceptance = (_silent_choice_input(runtime.engine, session, contract) if not offer else
+                  _project_authored_transition_text(runtime.engine, session, str(contract.get("accept_input") or "")).strip())
+    silent = not offer and _silent_exit_allowed(runtime.engine.nodes[session.current_node_id])
+    if (not acceptance or (not silent and (
+            not offer or not _authored_offer_visible({"performance": offer}, offer)
+            or not valid_mixed_performance_policy({"performance": offer}, session.dialogue_policy)))):
         return None
     try:
         TurnRequestV2.from_mapping({"client_turn_id": "reinvitation_validation",
             "base_revision": session.revision, "message": acceptance, "input_source": "suggestion"})
     except NumericV2RuntimeError:
         return None
-    return {"route_id": str(route["id"]), "offer": offer, "accept_input": acceptance}
+    return {"route_id": str(route["id"]), "offer": offer, "accept_input": acceptance,
+            **({"silent": True} if silent else {})}
 
 
 async def _execute_reinvitation(*, runtime, current, turn, ensure_current_binding, before_commit):
@@ -1227,8 +1287,12 @@ async def _execute_reinvitation(*, runtime, current, turn, ensure_current_bindin
     performance = {"performance": contract["offer"], "suggested_inputs": [contract["accept_input"]]}
     outcome, performance = runtime.engine.finalize_transition_offer_state(
         outcome, performance, new_offer=True, invalidate_previous_offer=True)
+    if contract.get("silent") is True:
+        performance["transition_offer_source"] = "program_silent"
+        outcome = replace(outcome, ledger_event={**outcome.ledger_event, "transition_offer_source": "program_silent"})
     outcome = replace(outcome, ledger_event={**outcome.ledger_event, "program_invitation": {
-        **contract, "performance": contract["offer"], "visible_blocks": performance_content_blocks(performance)}})
+        **contract, "performance": contract["offer"], "visible_blocks": performance_content_blocks(performance),
+        **({"revision": outcome.session.revision} if contract.get("silent") else {})}})
     async with character_config_mutation_lock:
         binding = ensure_current_binding(current.session)
         refreshed_binding = {**binding, "player_address": current.session.catgirl_binding.get("player_address", "")}
@@ -1685,6 +1749,9 @@ async def _execute_numeric_v2_turn(
             )
             if confirmed_acceptance:
                 review_kwargs["confirmed_acceptance"] = True
+                silent_receipt = _pending_silent_receipt(current)
+                if silent_receipt is not None:
+                    review_kwargs["confirmed_silent_acceptance"] = silent_receipt["accept_input"]
             if evaluator_fact_claims:
                 review_kwargs["evaluator_fact_claims"] = evaluator_fact_claims
             if history_lookup_result is not None:
@@ -2026,7 +2093,38 @@ async def _execute_numeric_v2_turn(
     if diagnostics["evaluator_degraded"]:
         confirmed_acceptance_route_id = _confirmed_authored_acceptance(
             runtime.engine, current, turn, require_program_invitation=True)
-    if (not module_options.get("review") or diagnostics["evaluator_degraded"]):
+    acceptance_route = runtime.engine.preview_route(current.session.current_node_id, current.session.metrics)
+    acceptance_contract = acceptance_route.get("transition_contract") if isinstance(acceptance_route, Mapping) else None
+    acceptance_target = runtime.engine.nodes.get(str(acceptance_route.get("target_node_id") or "")) if acceptance_route else None
+    acceptance_origin = pending_transition_record(
+        current.session, ledger_events=current.ledger_events, include_withdrawn=True,
+    )
+    reviewed_offer_evidence = isinstance(acceptance_origin, Mapping) and any(
+        block.get("type") == "dialogue" and str(block.get("text") or "").strip()
+        for block in performance_content_blocks(acceptance_origin)
+    )
+    if isinstance(acceptance_origin, Mapping):
+        offer_source = acceptance_origin.get("transition_offer_source")
+        if offer_source is not None:
+            reviewed_offer_evidence = offer_source == "reviewed"
+        else:
+            # Legacy records have no provenance marker; a deterministic button is not speech evidence.
+            reviewed_offer_evidence = reviewed_offer_evidence and not any(
+                isinstance(item, str) and "我同意前往" in item and "，安排是：" in item
+                for item in acceptance_origin.get("suggested_inputs") or []
+            )
+    silent_acceptance_required = (
+        _silent_exit_allowed(runtime.engine.nodes[current.session.current_node_id])
+        and isinstance(acceptance_contract, Mapping)
+        and not str(acceptance_contract.get("fallback_offer") or "").strip()
+        and isinstance(acceptance_target, Mapping)
+        and acceptance_target.get("type") != "ending" and acceptance_target.get("terminal") is not True
+        # Reviewed dialogue, narration and action offers retain ordinary acceptance.
+        and not reviewed_offer_evidence
+    )
+    if (not module_options.get("review") or diagnostics["evaluator_degraded"]
+            or silent_acceptance_required
+            or _pending_silent_receipt(current, include_withdrawn=True) is not None):
         if evaluation.transition_intent == "accept" and not confirmed_acceptance_route_id:
             evaluation = replace(evaluation, transition_intent="unclear")
     if confirmed_acceptance_route_id:
@@ -2646,6 +2744,7 @@ async def _execute_numeric_v2_turn(
     conservative_invitation = (
         not module_options.get("review") or not module_options.get("evaluator")
         or diagnostics["evaluator_degraded"] or diagnostics["semantic_review_fallback"]
+        or _pending_silent_receipt(current, include_withdrawn=True) is not None
     )
     completion_ready_before_turn = (
         runtime.engine.completion_contract_satisfied(current.session) is True
@@ -3036,6 +3135,58 @@ async def _execute_numeric_v2_turn(
                     "visible_blocks": visible_blocks,
                 },
             })
+    # Persist the reviewed origin before a program button can change the offer flags.
+    performance.pop("transition_offer_source", None)
+    if (performance.get("transition_offer_presented") is True and final_fixed_review is not None
+            and final_fixed_review.offer_present and final_fixed_review.valid
+            and not final_fixed_review.body_violations):
+        performance["transition_offer_source"] = "reviewed"
+        outcome = replace(outcome, ledger_event={**outcome.ledger_event, "transition_offer_source": "reviewed"})
+    # The button is a program choice, not new character prose or a model verdict.
+    # Run after facts, narration and recommendation filtering are final.
+    silent_route = runtime.engine.preview_route(current.session.current_node_id, outcome.session.metrics)
+    silent_contract = silent_route.get("transition_contract") if silent_route else None
+    silent_target = runtime.engine.nodes.get(str(silent_route.get("target_node_id") or "")) if silent_route else None
+    silent_completion_session = replace(outcome.session, performance_history=(
+        *current.session.performance_history, performance))
+    if (not route_changed and not outcome.session.transition_offered
+            and runtime.engine.completion_contract_satisfied(silent_completion_session) is True
+            and _silent_exit_allowed(runtime.engine.nodes[current.session.current_node_id])
+            and isinstance(silent_contract, Mapping) and not silent_contract.get("fallback_offer")
+            and isinstance(silent_target, Mapping) and silent_target.get("type") != "ending"
+            and silent_target.get("terminal") is not True
+            and not current.session.transition_offered and not program_offer_already_issued
+            and pending_transition_record(current.session, ledger_events=current.ledger_events,
+                                          include_withdrawn=True) is None
+            and not departure_projection.get("player_left_current_scene")
+            and not departure_projection.get("player_departure_pending")
+            and evaluation.transition_intent != "reject"
+            and not diagnostics["recovered_ordinary_drafts_reused"]
+            and not diagnostics["invalid_offer_local_crops"]
+            and not diagnostics["invalid_scene_update_local_crops"]
+            and not required_pending(runtime.engine.nodes[current.session.current_node_id],
+                                     silent_completion_session,
+                                     condition_triggers_enabled=bool(module_options.get("review")))
+            and (not module_options.get("review") or (final_fixed_review is not None
+                 and not final_fixed_review.body_violations and not final_fixed_review.offer_present))):
+        accept = _silent_choice_input(runtime.engine, outcome.session, silent_contract)
+        if turn.message.strip() == accept:
+            accept = ""
+        if accept:
+            # Actor alternatives must not look like equivalent route consent.
+            performance = {**performance, "suggested_inputs": [accept]}
+            outcome, performance = runtime.engine.finalize_transition_offer_state(
+                outcome, performance, new_offer=True)
+            performance["transition_offer_source"] = "program_silent"
+            outcome = replace(outcome, ledger_event={**outcome.ledger_event,
+                "transition_offer_source": "program_silent", "program_invitation": {
+                "route_id": silent_route["id"], "offer": "", "accept_input": accept,
+                "silent": True, "revision": outcome.session.revision,
+                "performance": str(performance.get("performance") or ""),
+                "visible_blocks": performance_content_blocks(performance),
+            }})
+            trace_event("completion.silent_offer_issued", route_id=silent_route["id"])
+
     # 模型调用不占生命周期锁；仅将身份复验、展示刷新和原子提交与角色改名串行。
     trace_event("turn.finalized", state=trace_state(outcome.session), performance=performance,
                 semantic_review_fallback=diagnostics["semantic_review_fallback"],

@@ -115,6 +115,7 @@ from .staging import (
     _sha256_file,
     _stage_file_copy,
     _stage_json_file,
+    retire_recent_keys_before_replace,
     _stage_memory_file,
 )
 
@@ -847,6 +848,7 @@ def import_cloudsave_character_unit(
 
                 for target_path in sorted(delete_file_targets):
                     if target_path.exists():
+                        retire_recent_keys_before_replace(target_path, None)
                         target_path.unlink()
                         _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
                 detail = build_cloudsave_character_detail(config_manager, character_name)
@@ -2124,6 +2126,7 @@ def import_local_cloudsave_snapshot(
 
                 for target_path in sorted(delete_file_targets):
                     if target_path.exists():
+                        retire_recent_keys_before_replace(target_path, None)
                         target_path.unlink()
                         _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
 

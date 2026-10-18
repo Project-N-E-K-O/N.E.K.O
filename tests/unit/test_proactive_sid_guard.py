@@ -15,6 +15,8 @@ from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import (
@@ -699,6 +701,128 @@ async def test_finish_proactive_delivery_rechecks_after_committing_wait():
     assert mgr.sync_message_queue.empty()
 
 
+async def _owned_round(mgr, round_id="round-1"):
+    """Start a proactive round the way the service does: SM claim + manager ID."""
+    assert await mgr.state.try_start_proactive(round_id=round_id) is True
+    await mgr.state.fire(SessionEvent.PROACTIVE_CLAIM, sid="s_proactive", round_id=round_id)
+    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2, round_id=round_id)
+    mgr._proactive_screenshot_request_id = round_id
+    mgr.current_speech_id = "s_proactive"
+    return round_id
+
+
+async def _retire_round(mgr):
+    """Session teardown: retires the round but leaves current_speech_id alone."""
+    mgr._proactive_screenshot_request_id = None
+    await mgr.state.reset(force=True)
+
+
+class _SignalingLock(asyncio.Lock):
+    """Signals when a caller starts waiting, i.e. after its pre-lock checks."""
+
+    def __init__(self):
+        super().__init__()
+        self.waiting = asyncio.Event()
+
+    async def acquire(self):
+        self.waiting.set()
+        return await super().acquire()
+
+
+async def test_feed_tts_chunk_drops_when_round_retires_while_waiting():
+    mgr = _make_mgr()
+    round_id = await _owned_round(mgr)
+    mgr.tts_cache_lock = _SignalingLock()
+
+    await mgr.tts_cache_lock.acquire()
+    mgr.tts_cache_lock.waiting.clear()
+    feed_task = asyncio.create_task(
+        LLMSessionManager.feed_tts_chunk(
+            mgr, "stale proactive", expected_speech_id="s_proactive",
+            expected_round_id=round_id,
+        )
+    )
+    # Retire only once the task has passed the pre-lock check and is waiting,
+    # so this case exercises the in-lock recheck.
+    await mgr.tts_cache_lock.waiting.wait()
+    await _retire_round(mgr)
+    mgr.tts_cache_lock.release()
+
+    assert await feed_task is False
+    assert mgr.current_speech_id == "s_proactive", "the SID guard alone cannot see this"
+    mgr._enqueue_tts_text_chunk.assert_not_called()
+    assert mgr.tts_pending_chunks == []
+
+
+async def test_feed_tts_chunk_enqueues_for_the_owned_round():
+    mgr = _make_mgr()
+    round_id = await _owned_round(mgr)
+    assert await LLMSessionManager.feed_tts_chunk(
+        mgr, "hi", expected_speech_id="s_proactive", expected_round_id=round_id,
+    ) is True
+    mgr._enqueue_tts_text_chunk.assert_called_once_with("s_proactive", "hi")
+
+
+async def test_finish_proactive_delivery_skips_a_retired_round():
+    mgr = _make_mgr()
+    round_id = await _owned_round(mgr)
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    await _retire_round(mgr)
+
+    result = await LLMSessionManager.finish_proactive_delivery(
+        mgr, "stale proactive", expected_speech_id="s_proactive",
+        expected_round_id=round_id,
+    )
+
+    assert result is False
+    mgr.send_lanlan_response.assert_not_called()
+    assert mgr.session._conversation_history == []
+
+
+async def test_finish_proactive_delivery_rechecks_round_at_publish_boundary():
+    """Teardown during state.fire(COMMITTING) must lose at the publish guard."""
+    mgr = _make_mgr()
+    round_id = await _owned_round(mgr)
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+
+    committing_started = asyncio.Event()
+    release_committing = asyncio.Event()
+    original_fire = mgr.state.fire
+    committing_payloads = []
+
+    async def blocked_fire(event, **payload):
+        if event is SessionEvent.PROACTIVE_COMMITTING:
+            committing_payloads.append(payload)
+            committing_started.set()
+            await release_committing.wait()
+        await original_fire(event, **payload)
+
+    async def guarded_send(*_args, **kwargs):
+        publish_if = kwargs.get("publish_if")
+        if publish_if is not None and not publish_if():
+            return None
+        return True
+
+    mgr.state.fire = blocked_fire
+    mgr.send_lanlan_response = AsyncMock(side_effect=guarded_send)
+    finish_task = asyncio.create_task(
+        LLMSessionManager.finish_proactive_delivery(
+            mgr, "stale proactive", expected_speech_id="s_proactive",
+            expected_round_id=round_id,
+        )
+    )
+    await committing_started.wait()
+    await _retire_round(mgr)
+    release_committing.set()
+
+    assert await finish_task is False
+    assert committing_payloads == [{"round_id": round_id}]
+    assert mgr.session._conversation_history == []
+    assert mgr.sync_message_queue.empty()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # contextvar per-task 隔离 —— 本次修复的核心正确性前提
 # ─────────────────────────────────────────────────────────────────────────────
@@ -794,3 +918,23 @@ async def test_end_to_end_proactive_interrupted_by_user():
     enqueued_sids = {c.args[1]: c.args[0] for c in mgr._enqueue_tts_text_chunk.call_args_list}
     assert enqueued_sids["p_early"] == "s_proactive"
     assert enqueued_sids["u_reply"] == "s_user"
+
+
+@pytest.mark.parametrize("live_consent", [None, True, False])
+async def test_finish_proactive_delivery_stages_screenshot_only_under_live_consent(live_consent):
+    """A revoked round must not leave its screen for the next user turn."""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr._proactive_vision_enabled = live_consent
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+
+    committed = await LLMSessionManager.finish_proactive_delivery(
+        mgr, "看到你在写代码", expected_speech_id="s_proactive",
+        vision_screenshot_b64="SHOT_B64",
+    )
+
+    assert committed is True
+    mgr.session.set_proactive_screenshot.assert_called_once_with(
+        None if live_consent is False else "SHOT_B64"
+    )

@@ -1645,7 +1645,7 @@
         && S.gameVoiceSttGateActive !== true) {
         console.log('[App] independent ASR blocked; stopping the microphone');
         if (typeof window.stopMicCapture === 'function') {
-            Promise.resolve(window.stopMicCapture()).catch(function (micTeardownErr) {
+            Promise.resolve(window.stopMicCapture({ normalEnd: false })).catch(function (micTeardownErr) {
                 console.warn('[App] blocked-ASR microphone teardown failed:', micTeardownErr);
             });
         } else if (typeof window.stopRecording === 'function') {
@@ -2125,6 +2125,119 @@
         return S.socket && S.socket.readyState === WebSocket.OPEN;
     };
 
+    // ========================  串门：visit_bind 与状态码  ========================
+
+    // §4.5 status.code 全集：每个码一条 8 语提示（static/locales 的 visit.status.<code>）。
+    // 键必须是线上原样的大写常量（tests/unit/test_visit_chat_static.py 钉住与设计稿集合相等）。
+    var VISIT_STATUS_TOAST_KEYS = {
+        VISIT_E_UNAUTHORIZED: 'visit.status.VISIT_E_UNAUTHORIZED',
+        VISIT_VOICE_UNAVAILABLE: 'visit.status.VISIT_VOICE_UNAVAILABLE',
+        VISIT_INPUT_REFUSED_AWAY: 'visit.status.VISIT_INPUT_REFUSED_AWAY',
+        VISIT_INPUT_REFUSED_WRAPUP: 'visit.wrapUp.toastRefused',
+        VISIT_INPUT_REFUSED_NOT_READY: 'visit.status.VISIT_INPUT_REFUSED_NOT_READY',
+        VISIT_INPUT_REFUSED_RATE: 'visit.status.VISIT_INPUT_REFUSED_RATE',
+        VISIT_INPUT_REFUSED_SOURCE: 'visit.status.VISIT_INPUT_REFUSED_SOURCE',
+        VISIT_E_BUSY: 'visit.status.VISIT_E_BUSY',
+        VISIT_RECALL_ALREADY: 'visit.wrapUp.recallAlready',
+        VISIT_TTS_FALLBACK: 'visit.stream.ttsFallback',
+        VISIT_UNSUPPORTED_ON_THIS_MACHINE: 'visit.status.VISIT_UNSUPPORTED_ON_THIS_MACHINE',
+        VISIT_LOGIN_REQUIRED: 'visit.status.VISIT_LOGIN_REQUIRED',
+        VISIT_BANNED: 'visit.status.VISIT_BANNED',
+        VISIT_QUOTA_EXCEEDED: 'visit.status.VISIT_QUOTA_EXCEEDED',
+        VISIT_TIER_NOT_ENTITLED: 'visit.status.VISIT_TIER_NOT_ENTITLED',
+        VISIT_FORGET_IN_PROGRESS: 'visit.status.VISIT_FORGET_IN_PROGRESS',
+        VISIT_UPLOAD_BACKLOG: 'visit.status.VISIT_UPLOAD_BACKLOG',
+        VISIT_CROSS_REGION_UNSUPPORTED: 'visit.status.VISIT_CROSS_REGION_UNSUPPORTED',
+        VISIT_INVITE_INVALID: 'visit.status.VISIT_INVITE_INVALID',
+        VISIT_SERVERS_UNREACHABLE: 'visit.status.VISIT_SERVERS_UNREACHABLE',
+        VISIT_PROTO_MISMATCH: 'visit.status.VISIT_PROTO_MISMATCH',
+        VISIT_PEER_IDENTITY_REJECTED: 'visit.status.VISIT_PEER_IDENTITY_REJECTED',
+        VISIT_PEER_LOST: 'visit.status.VISIT_PEER_LOST',
+        VISIT_RELAY_LOST: 'visit.status.VISIT_RELAY_LOST',
+        VISIT_KICKED: 'visit.status.VISIT_KICKED',
+        VISIT_INTERRUPTED_LAST_TIME: 'visit.status.VISIT_INTERRUPTED_LAST_TIME',
+        VISIT_MEMORY_RETRY_LATER: 'visit.status.VISIT_MEMORY_RETRY_LATER'
+    };
+
+    function _dispatchVisitBound(detail) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko-visit-bound', { detail: detail }));
+        } catch (_) { /* noop */ }
+    }
+
+    // CSRF token 与本机 HTTP 变更端点同一个：nekoLocalMutationSecurity 只对外给 getMutationHeaders / refreshToken
+    async function _visitCsrfToken(refresh) {
+        var security = window.nekoLocalMutationSecurity;
+        if (!security) return '';
+        try {
+            if (refresh && typeof security.refreshToken === 'function') await security.refreshToken();
+            if (typeof security.getMutationHeaders !== 'function') return '';
+            var headers = await security.getMutationHeaders();
+            var token = headers && headers['X-CSRF-Token'];
+            return typeof token === 'string' ? token : '';
+        } catch (_) {
+            return '';
+        }
+    }
+
+    /**
+     * display socket 每次连上后第一件事：{action:'visit_bind', csrf_token}（token 与本机 HTTP 变更端点
+     * 同一个，§4.5；index.html 与 chat.html 都发）。发出之后交给 visit-chat.js 读一次 state，
+     * 再派发 neko-visit-bound（pacer 据此决定回报给哪条连接、这一场是否在进行）。
+     */
+    async function _sendVisitBind(socket, forceRefresh) {
+        var token = '';
+        // 首次取不到（page_config 一时没回来）：刷新后再试，最多 3 次、间隔递增；连接已换就作罢
+        for (var attempt = 0; attempt < 3 && !token; attempt++) {
+            if (attempt > 0) await new Promise(function (resolve) { setTimeout(resolve, 1000 * attempt); });
+            if (S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+            token = await _visitCsrfToken(forceRefresh === true || attempt > 0);
+        }
+        if (!token || S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        try {
+            socket.send(JSON.stringify({ action: 'visit_bind', csrf_token: token }));
+        } catch (_) {
+            return;
+        }
+        if (window.nekoVisitChat && typeof window.nekoVisitChat.afterBind === 'function') {
+            window.nekoVisitChat.afterBind(socket, getWebSocketLanlanName());
+        } else {
+            _dispatchVisitBound({ socket: socket });
+        }
+    }
+
+    // bind 被拒（不带 request_id 的未授权）：后端重启换了 CSRF token 而页面还开着时，缓存的旧 token 会被拒。
+    // 每条连接刷新一次 token 再重发一次 bind；仍被拒（非本机访问等）就不再试
+    var _visitBindRefreshed = typeof WeakSet === 'function' ? new WeakSet() : null;
+
+    function _retryVisitBindAfterRefusal(socket) {
+        if (!socket || !_visitBindRefreshed || _visitBindRefreshed.has(socket)) return;
+        _visitBindRefreshed.add(socket);
+        void _sendVisitBind(socket, true);
+    }
+
+    function _showVisitStatus(code, details, socket) {
+        if (code === 'VISIT_E_UNAUTHORIZED' && details && details.reason === 'bind_refused') {
+            // 只认 bind 自己被拒：未 bind 连接上的屏幕帧 / 播放进度被拒不占这条连接唯一一次重试
+            _retryVisitBindAfterRefusal(socket || S.socket);
+        }
+        var verdict = true;
+        if (window.nekoVisitChat && typeof window.nekoVisitChat.handleStatus === 'function') {
+            try { verdict = window.nekoVisitChat.handleStatus(code, details); } catch (_) { verdict = true; }
+        }
+        if (verdict === false || typeof window.showStatusToast !== 'function') return;
+        var key = VISIT_STATUS_TOAST_KEYS[code];
+        var text = typeof verdict === 'string' && verdict ? verdict : (window.t ? window.t(key) : '');
+        if (!text || text === key) text = code;
+        window.showStatusToast(text, 5000);
+    }
+
+    // 多窗口的 chat 跟随窗只渲染台词与芯片，不建访客 iframe（Pet 窗也带多窗口标记，必须看路径）
+    function _isVisitChatFollowerWindow() {
+        return window.__NEKO_MULTI_WINDOW__ === true
+            && /^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
+    }
+
     // ========================  ensureWebSocketOpen  ========================
 
     // 区分"字段未注入"和"字段注入为空串"：未注入返回 null（继续等待 page config 注入），
@@ -2488,6 +2601,22 @@
     // refresh so a window that missed that reload cannot keep a stale view.
     refreshCoreApiCapability();
 
+    function syncProactiveVisionConsent(enabled) {
+        if (typeof enabled !== 'boolean') {
+            enabled = window.appProactive
+                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
+                ? window.appProactive.isProactiveVisionEnabledNow()
+                : S.proactiveVisionEnabled;
+        }
+        if (typeof enabled !== 'boolean' || !S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({ action: 'proactive_vision_consent', enabled: enabled }));
+        } catch (error) {
+            console.warn('[App] proactive vision consent sync failed:', error);
+        }
+    }
+    mod.syncProactiveVisionConsent = syncProactiveVisionConsent;
+
     /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
@@ -2834,6 +2963,9 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            if (window.nekoReplyTail) window.nekoReplyTail.reset();
+            announceReplyTailCapability();
+            if (window.appSettings) syncProactiveVisionConsent();
             console.log(window.t('console.websocketConnected'));
             // The state module publishes read errors; reconnect must remain usable.
             window.appChatAvatarState?.refresh('reconnect')?.catch?.(() => {});
@@ -2853,6 +2985,9 @@
             window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
                 detail: { socket: _thisSocket }
             }));
+
+            // 串门：先 visit_bind（index.html 与 chat.html 都发；未绑定的连接收不到任何串门消息）
+            void _sendVisitBind(_thisSocket);
 
             // Recover a VMC enable that happened while this page was away.
             // vmc_state_changed is a one-shot broadcast, so a plugin enabling
@@ -3162,13 +3297,49 @@
                     // notifications that never depended on a session, and they
                     // were gone for good if the user never started another
                     // one (Codex).
+                    // 串门芯片 / 预览块 / 失败块：按 request_id 去重，渲染后回 visit_debrief_chip_ack
+                    if (window.nekoVisitChat && typeof window.nekoVisitChat.handleChatBlocks === 'function'
+                            && window.nekoVisitChat.handleChatBlocks(response)) {
+                        return;
+                    }
                     if (typeof window.appendReactChatBlocks === 'function') {
                         window.appendReactChatBlocks(response);
                     }
                     return;
                 }
 
+                // 串门帧（§4.5 全部 visit_* 下行）：交给聊天面；visit_state_change 另交父页取帧桥
+                if (response.type === 'visit_state_change'
+                        || response.type === 'visit_invite'
+                        || response.type === 'visit_line'
+                        || response.type === 'visit_line_delta'
+                        || response.type === 'visit_line_abort'
+                        || response.type === 'visit_typing'
+                        || response.type === 'visit_debrief') {
+                    if (response.type === 'visit_state_change') {
+                        if (!_isVisitChatFollowerWindow() && window.nekoVisitParentBridge
+                                && typeof window.nekoVisitParentBridge.onStateChange === 'function') {
+                            try { window.nekoVisitParentBridge.onStateChange(response); } catch (_) { /* noop */ }
+                        }
+                    }
+                    if (window.nekoVisitChat && typeof window.nekoVisitChat.handleFrame === 'function') {
+                        window.nekoVisitChat.handleFrame(response);
+                    }
+                    return;
+                }
+
                 // -------- gemini_response --------
+                if (response.type === 'chat_sync_history_changed') {
+                    // Only a local committed-page hint reaches this current socket.
+                    // The sync UI reads its own cursor/history before passive merge.
+                    if (window.nekoChatSync) window.nekoChatSync.notifyHistoryCommitted(response).catch(function () {});
+                    return;
+                }
+                if (response.type === 'chat_original_identity') {
+                    // Backend identities only join optimistic UI; they never submit new chat.
+                    if (window.nekoChatSync && response.role === 'user') window.nekoChatSync.markAcceptedUser(response);
+                    return;
+                }
                 if (response.type === 'gemini_response') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant chunk after session ended by server');
@@ -3257,6 +3428,9 @@
                             assistantResponseMeta,
                             response.request_id
                         );
+                    }
+                    if (window.nekoChatSync && response.chat_original_id) {
+                        window.nekoChatSync.markAssistantOriginal(response.chat_original_id, window._nekoAssistantTurnId);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -3487,6 +3661,10 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    // Snapshot exact display IDs before this accepted voice frame is rendered.
+                    var syncVoiceHost = window.reactChatWindowHost;
+                    var syncVoiceBefore = syncVoiceHost && typeof syncVoiceHost.getState === 'function'
+                        ? new Set(syncVoiceHost.getState().messages.map(function (item) { return item.id; })) : null;
                     // user_transcript 不带轮次身份（由 main_logic/core/turn.py 发出），
                     // 这里无法配对，只能保持无条件移除；迟到 final 误删新一轮气泡的情况
                     // 由后端在 user_transcript 之后补发该轮 preview 复原
@@ -3526,6 +3704,9 @@
                     }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
+                        // A canonical transcript owns one exact display identity.
+                        // Keep separate accepted frames separate on the React host.
+                        !(response.chat_original_id && syncVoiceBefore) &&
                         S.lastVoiceUserMessage &&
                         S.lastVoiceUserMessage.isConnected &&
                         (now - S.lastVoiceUserMessageTime) < C.VOICE_TRANSCRIPT_MERGE_WINDOW;
@@ -3547,6 +3728,14 @@
                                 }
                             }
                         }
+                    }
+
+                    if (response.chat_original_id && window.nekoChatSync && syncVoiceBefore) {
+                        syncVoiceHost.getState().messages.forEach(function (item) {
+                            if (item.role === 'user' && !syncVoiceBefore.has(item.id)) {
+                                window.nekoChatSync.markLiveOriginal(response.chat_original_id, item.id);
+                            }
+                        });
                     }
 
                 // -------- user_activity --------
@@ -3804,6 +3993,11 @@
                             statusDetails = statusPayload.details;
                         }
                     } catch (_) { }
+
+                    if (statusCode && Object.prototype.hasOwnProperty.call(VISIT_STATUS_TOAST_KEYS, statusCode)) {
+                        _showVisitStatus(statusCode, statusDetails || {}, _thisSocket);
+                        return;
+                    }
 
                     if (['ASR_RECOVERY_STARTED', 'ASR_RECOVERY_READY', 'ASR_RECOVERY_FAILED',
                         'ASR_TURN_INCOMPLETE'].includes(statusCode)) {
@@ -5172,7 +5366,28 @@
                 // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
+                        function sendScreenshotReply(reply) {
+                            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                            // Echo the ID for every reply, including privacy/tutorial
+                            // declines and the legacy capture-function path.
+                            if (typeof response.request_id === 'string' && response.request_id) {
+                                reply.request_id = response.request_id;
+                            }
+                            S.socket.send(JSON.stringify(reply));
+                        }
+                        function replySuppressedScreenshot() {
+                            var tutorialBlocked = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                                && window.isNekoHomeTutorialProactiveSuppressed();
+                            var privacyBlocked = window.appProactive
+                                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
+                                ? !window.appProactive.isProactiveVisionEnabledNow()
+                                : S.proactiveVisionEnabled === false;
+                            if (!tutorialBlocked && !privacyBlocked) return false;
+                            sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
+                            return true;
+                        }
                         try {
+                            if (replySuppressedScreenshot()) return;
                             var dataUrl = null;
                             // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
                             // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
@@ -5181,12 +5396,17 @@
                             if (window.appProactive
                                 && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
                                 var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
+                                if (shot && shot.declined === true) {
+                                    sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
+                                    return;
+                                }
                                 dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
                                 shotCaptureType = shot ? (shot.captureType || null) : null;
                                 hasPairedCaptureType = true;
                             } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
+                            if (replySuppressedScreenshot()) return;
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
                                 // null = 窗口截图或无法确定 → 不叠加
@@ -5214,9 +5434,11 @@
                                 if (avatarPos) {
                                     respMsg.avatar_position = avatarPos;
                                 }
-                                S.socket.send(JSON.stringify(respMsg));
+                                sendScreenshotReply(respMsg);
                             }
                         } catch (e2) {
+                            // 抛错也可能发生在权限撤回之后，不能静默超时再由后端补截。
+                            if (replySuppressedScreenshot()) return;
                             console.warn('[App] request_screenshot capture failed:', e2);
                         }
                     })();
@@ -6181,6 +6403,17 @@
     window.refreshCoreApiCapability = refreshCoreApiCapability;
     window.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
     window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
+
+    // ========================  Reply-tail capability  ========================
+    // Kept out of the handshake section that static harnesses evaluate alone.
+    function announceReplyTailCapability() {
+        var socket = S.socket;
+        if (!window.nekoReplyTail || window.__nekoReplyTailPresentationVersion !== 1
+                || !socket || socket.readyState !== WebSocket.OPEN || socket._replyTailVersion === 1) return;
+        socket.send(JSON.stringify({ action: 'reply_tail_capabilities', version: 1 }));
+        socket._replyTailVersion = 1;
+    }
+    window.addEventListener('neko-reply-tail-presentation', announceReplyTailCapability);
 
     // ========================  Greeting check (after model loaded)  ========================
     // 需要 WS 已连接 AND 模型已加载 两个条件同时满足才发送，

@@ -625,6 +625,7 @@ def _proactive_turn_still_owned(mgr: Any, proactive_sid: Any) -> bool:
     """Whether cleanup may still target the rejected proactive turn safely."""
     return (
         mgr.current_speech_id == proactive_sid
+        and getattr(mgr.state, "proactive_sid", proactive_sid) == proactive_sid
         and not mgr.state.is_proactive_preempted(proactive_sid)
     )
 
@@ -634,6 +635,7 @@ async def _enter_proactive_phase2(
     proactive_sid: Any,
     *,
     log: Any = None,
+    round_id: str | None = None,
 ) -> bool:
     """Enter Phase 2 only if user engagement stays unchanged across the await."""
     from main_logic.session_state import SessionEvent
@@ -644,9 +646,11 @@ async def _enter_proactive_phase2(
         "last_user_engagement_time",
         None,
     )
-    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2)
+    round_payload = {"round_id": round_id} if round_id is not None else {}
+    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2, **round_payload)
     if (
-        mgr.state.is_proactive_preempted(proactive_sid)
+        (round_id is not None and mgr.state.proactive_round_id != round_id)
+        or mgr.state.is_proactive_preempted(proactive_sid)
         or getattr(mgr, "last_user_engagement_time", None)
         != expected_user_engagement_time
     ):

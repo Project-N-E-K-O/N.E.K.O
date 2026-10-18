@@ -200,6 +200,15 @@ def _load_locale_messages(locale_code: str) -> dict:
 
 
 def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
+    return get_locale_text(language, 'chat.' + key, fallback)
+
+
+def get_locale_text(language: str | None, dotted_key: str, fallback: str) -> str:
+    """Look up ``dotted_key`` (e.g. ``visit.debrief.question``) in ``static/locales``; ``fallback`` when absent.
+
+    Language chain: explicit ``language`` (else the global full code), its
+    short code, ``en``, ``zh-CN`` (``zh-TW`` is kept, issue #2500).
+    """
     # ⚠️ 兜底必须取 full。下面的 format='full' 只能保住已有的字形，救不回
     # 已经丢掉的：get_global_language() 返回短码，繁中在进这个函数之前就成了
     # zh，format='full' 再把它扩成 zh-CN，static/locales/zh-TW.json 永远读不到
@@ -221,7 +230,7 @@ def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
 
     for locale_code in candidates:
         cursor = _load_locale_messages(locale_code)
-        for part in ('chat', key):
+        for part in dotted_key.split('.'):
             if not isinstance(cursor, dict):
                 cursor = None
                 break
@@ -267,11 +276,15 @@ class FreshScreenshot:
       the screen itself. The frontend had no opinion about this image, so the
       caller MAY fall back to the position that came with the original request.
     - ``''``: nothing was captured.
+
+    ``declined`` distinguishes a revoked/limited capture from a technical failure;
+    callers must not revive a Phase-1 image after a decline.
     """
 
     b64: str = ""
     source: str = ""
     avatar_position: dict | None = None
+    declined: bool = False
 
 
 @dataclass(eq=False)
@@ -314,6 +327,7 @@ class _ReplyTurn:
     session: Any = None
     turn_ended: bool = False
     taken_over: bool = False
+    reply_tail: Any = None
 
 
 def _taken_over_reply_turn(kind) -> _ReplyTurn | None:

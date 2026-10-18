@@ -1838,14 +1838,19 @@ async def test_strict_route_does_not_accept_content_in_place_of_announcement():
     assert not arbiter.notify_response_content(
         {"type": "response.audio.delta", "response_id": "resp-unannounced"}
     )
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(ticket.done, 0.5)
-    assert aborted.is_set()
-    assert [event["type"] for event in sent] == [
-        "response.create",
-        "response.cancel",
-    ]
-    await arbiter.shutdown()
+    try:
+        # Observe teardown itself: an outer wait timeout is not evidence that
+        # the arbiter reached its own response-start timeout and aborted.
+        await asyncio.wait_for(aborted.wait(), 5)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(ticket.done), 5)
+        assert ticket.done.done() and not ticket.done.cancelled()
+        assert [event["type"] for event in sent] == [
+            "response.create",
+            "response.cancel",
+        ]
+    finally:
+        await arbiter.shutdown()
 
 
 @pytest.mark.asyncio

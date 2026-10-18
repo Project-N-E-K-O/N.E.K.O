@@ -1314,6 +1314,7 @@ def test_numeric_v2_generated_mainline_compiles_without_route_metric_conditions(
     ("required", ["unchanged"], False),
 ])
 def test_mainline_empty_fallback_requires_final_typed_forbidden_policy(initial, changes, allowed):
+    from utils.tokenize import count_tokens
     candidate = _idea_outline()
     chapter = candidate["mainline_chapters"][0]
     candidate["character_state_arc"]["stages"][0]["acting_contract"]["dialogue_policy"] = initial
@@ -1322,8 +1323,9 @@ def test_mainline_empty_fallback_requires_final_typed_forbidden_policy(initial, 
         for policy in changes
     ]
     chapter["exit_plan"]["fallback_offer"] = ""
+    chapter["exit_plan"]["silent_choice"] = {"destination": "观测舱", "arrangement": "查看封存记录"}
 
-    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6, token_counter=count_tokens)
 
     assert ("transition_fallback_offer_required" not in {issue["code"] for issue in issues}) is allowed
     if allowed:
@@ -1348,17 +1350,21 @@ def test_mainline_forbidden_exit_keeps_acceptance_and_present_value_validation(f
 
 
 def test_mainline_projects_silent_exit_without_fallback_and_keeps_accept_input():
+    from utils.tokenize import count_tokens
     candidate = _idea_outline()
     candidate["character_state_arc"]["stages"][0]["acting_contract"]["dialogue_policy"] = "optional"
     candidate["mainline_chapters"][0]["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
     candidate["mainline_chapters"][0]["exit_plan"]["fallback_offer"] = ""
-    generator = NumericV2Generator()
+    candidate["mainline_chapters"][0]["exit_plan"]["silent_choice"] = {
+        "destination": "观测舱", "arrangement": "查看封存记录"}
+    generator = NumericV2Generator(token_counter=count_tokens)
     generator.call_llm = lambda *_args, **_kwargs: json.dumps(candidate, ensure_ascii=False)
 
     story = generator.generate(title="禁言出口", setup=_generation_setup())["story"]
     contract = story["nodes"][0]["route_gates"][0]["transition_contract"]
 
     assert "fallback_offer" not in contract
+    assert contract["silent_choice"] == candidate["mainline_chapters"][0]["exit_plan"]["silent_choice"]
     assert contract["accept_input"] == candidate["mainline_chapters"][0]["exit_plan"]["accept_input"]
     NumericV2Compiler(InProcessPackageGateway()).compile(story)
 
@@ -2558,3 +2564,58 @@ def test_mainline_continuation_unexpected_exception_uses_technical_failure_code(
 
     assert caught.value.code == "generation_technical_failed"
     assert caught.value.checkpoint["candidate"] == candidate
+
+
+@pytest.mark.parametrize("choice", [None, {}, {"destination": "观测舱"},
+    {"destination": "", "arrangement": "查看记录"},
+    {"destination": "观测舱", "arrangement": "查看\n记录"},
+    {"destination": "观测舱", "arrangement": "查看记录", "extra": True}])
+def test_generated_silent_mainline_rejects_missing_or_malformed_choice(choice):
+    from utils.tokenize import count_tokens
+    candidate = _idea_outline()
+    chapter = candidate["mainline_chapters"][0]
+    chapter["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
+    chapter["exit_plan"]["fallback_offer"] = ""
+    if choice is not None:
+        chapter["exit_plan"]["silent_choice"] = choice
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6, token_counter=count_tokens)
+    assert any(issue["code"] == "transition_silent_choice_required" for issue in issues)
+
+
+def test_silent_mainline_without_counter_returns_validation_issue():
+    candidate = _idea_outline()
+    chapter = candidate["mainline_chapters"][0]
+    chapter["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
+    chapter["exit_plan"]["fallback_offer"] = ""
+    chapter["exit_plan"]["silent_choice"] = {"destination": "observatory", "arrangement": "read records"}
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+    assert any(issue["code"] == "transition_silent_choice_required" for issue in issues)
+
+
+@pytest.mark.parametrize("field", ["destination", "arrangement"])
+@pytest.mark.parametrize("tokens", [30, 31])
+def test_mainline_silent_choice_enforces_compiler_token_limit(field, tokens):
+    from utils.tokenize import count_tokens
+    candidate = _idea_outline()
+    chapter = candidate["mainline_chapters"][0]
+    chapter["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
+    chapter["exit_plan"]["fallback_offer"] = ""
+    choice = {"destination": "观测舱", "arrangement": "查看记录"}
+    choice[field] = " a" * tokens
+    assert count_tokens(choice[field]) == tokens
+    chapter["exit_plan"]["silent_choice"] = choice
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6, token_counter=count_tokens)
+    assert any(issue["code"] == "transition_silent_choice_required" for issue in issues) is (tokens > 30)
+
+
+def test_mainline_drops_unused_silent_choices_on_spoken_and_ending_routes():
+    candidate = _idea_outline()
+    for chapter in candidate["mainline_chapters"]:
+        chapter["exit_plan"]["silent_choice"] = {"destination": "unused"}
+    generator = NumericV2Generator()
+    generator.call_llm = lambda *_args, **_kwargs: json.dumps(candidate, ensure_ascii=False)
+    story = generator.generate(title="普通出口", setup=_generation_setup())["story"]
+    for node in story["nodes"]:
+        for route in node.get("route_gates", []):
+            assert "silent_choice" not in route["transition_contract"]
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)

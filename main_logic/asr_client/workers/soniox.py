@@ -26,7 +26,7 @@ from typing import Any, Literal
 
 import websockets
 
-from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
+from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence, retire_interval_deliveries
 from .._infra import (
     AsrSessionConfig,
     _AsrRequestQueue,
@@ -635,11 +635,12 @@ async def soniox_asr_worker(
                                 replay_carryover_bytes = 0
                         provider_wire_audio_bytes += len(request.audio)
                         connection_audio_bytes += len(request.audio)
-                        delivery = begin_transport_write(request_queue)
+                        delivery = begin_transport_write(request_queue, delivery_spans=request.delivery_spans)
                         await connection.send(request.audio)
                         complete_transport_write(
                             delivery, len(request.audio), generation=request.generation,
                             buffer_epoch=request.buffer_epoch, provider="soniox",
+                            delivery_spans=request.delivery_spans, takes_ownership=True,
                         )
                         audio_frame_count += 1
                         audio_bytes_sent += len(request.audio)
@@ -686,6 +687,8 @@ async def soniox_asr_worker(
                 return "failed"
             finally:
                 if not request_deferred:
+                    if request.kind == "audio":
+                        retire_interval_deliveries(request_queue, only_spans=request.delivery_spans)
                     if deferred_item is not None:
                         deferred_item.release()
                     request_queue.task_done()

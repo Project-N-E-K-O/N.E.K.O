@@ -1129,6 +1129,7 @@ def _build_transition_judge_messages(
     actor_fact_candidates: tuple[dict[str, Any], ...] | None = None,
     narrative_events: tuple[dict[str, Any], ...] | None = None,
     confirmed_acceptance: bool = False,
+    confirmed_silent_acceptance: str = "",
 ) -> tuple[list[Any], tuple[str, ...]]:
     """构造保守语义复核消息，并返回同次消息实际发送的公开去向编号表。
 
@@ -1743,6 +1744,17 @@ def _build_transition_judge_messages(
             "然后检查候选是否兑现该出口、正文与按钮是否合法。"
             "错误场景用delivery_matches_route=false及scene_boundary报告，不能当作玩家没有接受。"
         ) + system
+        if confirmed_silent_acceptance:
+            data["transition_authorization"]["pending_invitation"] = {
+                "kind": "silent_exit", "accept_input": confirmed_silent_acceptance,
+                "revision": session.revision,
+            }
+            system = (
+                "本次邀请是程序展示的静默出口接受按钮，公开安排以pending_invitation.accept_input为准，"
+                "不是角色台词或已经完成的玩家行动。程序已核对当前回执及玩家原样点击；"
+                "不能因角色未说邀请而认定邀请无效。仍须比较按钮明确的去向与实际路线，"
+                "并完整复核转场正文，不豁免到场后的额外动作或承诺。"
+            ) + system
     elif transition_outcome is not None and transition_outcome.ledger_event.get("transition_intent") == "accept":
         # 与主动请求一样，Runtime 只暂选路线；错误旧邀请不能授权另一个实际出口。
         system = system.replace("已获 Runtime 授权的正式转场复核器", "Runtime 暂选路线的正式转场复核器", 1)
@@ -2862,6 +2874,7 @@ class NumericV2MetricEvaluator:
         player_action_projection: Mapping[str, Any] | None = None,
         evaluator_fact_claims: tuple[dict[str, Any], ...] = (),
         confirmed_acceptance: bool = False,
+        confirmed_silent_acceptance: str = "",
     ) -> NumericV2TransitionOfferReview:
         """复核 Actor 可见输出是否真的形成离幕提议，失败时保守返回不通过。
 
@@ -2946,6 +2959,7 @@ class NumericV2MetricEvaluator:
                 actor_fact_candidates=actor_fact_candidates,
                 narrative_events=narrative_events if narrative_review else None,
                 confirmed_acceptance=confirmed_acceptance,
+                confirmed_silent_acceptance=confirmed_silent_acceptance,
             )
             return packed, evidence, sum(count_tokens(item.content) for item in packed)
 

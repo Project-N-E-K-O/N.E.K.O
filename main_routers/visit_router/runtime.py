@@ -61,6 +61,7 @@ from config.visit_settings import (
     VISIT_CAPS_PREFLIGHT_TIMEOUT_S,
     VISIT_CAPS_SDK_TIMEOUT_S,
     VISIT_CROP_DEFAULT,
+    VISIT_ENABLED_DEFAULT,
     VISIT_ENDING_SOON_S,
     VISIT_IDLE_TIMEOUT_S,
     VISIT_INBOX_HANDOFF_ABS_MAX_S,
@@ -146,6 +147,8 @@ _RENEW_RETRY_BASE_S = 5.0
 _RENEW_RETRY_MAX_S = 60.0
 _VOICE_STATUS_THROTTLE_S = 5.0
 _ACCOUNT_CHANGE_SEAL_WAIT_S = 30.0  # 登出 / 切换社区账号前等在飞串门封存上传文件的上限
+# 按住账号的一次复盘推送（核账号 + 写出）最长多久：必须短于切号的等待，切号放行时它一定已结束或被截断
+_ACCOUNT_BOUND_PUSH_MAX_S = 10.0
 
 # ═════════════════════════════════════════════════════════════════════
 # 依赖注入
@@ -558,6 +561,7 @@ def _reset_for_tests() -> None:
     _disabled_gen = 0
     _account_change_lock = None
     _credential_requests.clear()
+    _account_bound_pushes.clear()
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -1854,13 +1858,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         _detach(self._hand_back_callbacks())
 
     async def _exit_steps(self, reason: str) -> None:
-        await self.push(PHASE_ENDING, reason=reason)
         # ① 先收口本侧进行中的行：这一行的 text{final} 排在 leave 之前、进得了本场转录
         await self.close_current_line("visit_end")
         # ② 后台关闭数据通道（排空 → leave → 补传窗口），不阻塞下面任何一步
         closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
         # ③ 回调暂扣 → 立即释放接管（此后亲人就能普通聊天）
         input_stamp = self.host.last_user_input()
+        input_released = True
         if self.takeover_token is not None:
             try:
                 self.hold_token = self.host.hold_callbacks(self.inbox.accept)
@@ -1870,8 +1874,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 self.host.release_takeover(self.takeover_token)
             except Exception as exc:  # noqa: BLE001 - token 留着：teardown 再试一次
                 logger.warning("visit %s: takeover release failed: %s", self.visit_id[:6], type(exc).__name__)
+                input_released = False
             else:
+                # 返回 False = 令牌已不是当前持有者（输入早已不归串门）：同样算交还
                 self.takeover_token = None
+        # 「结束中」在接管释放之后才推：页面一看到它就把输入框交还普通聊天，此时普通输入已不会再被串门拦下；
+        # 释放之前页面仍按串门处理，这期间提交的句子由 finalizing 拒掉（带 request_id，页面标未送达、放回原文）
+        if input_released:
+            await self.push(PHASE_ENDING, reason=reason)
+        # 释放失败：不推 ending，页面留在串门态（这期间的提交由 finalizing 拒掉并收尾），等 teardown 重试释放后的 ended
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
         # ④ 回家仪式句（亲人先开口则放弃）；可选步骤：失败不挡后面的封存与交还
@@ -1902,6 +1913,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not flushed:
             # 页面卡着送不完：停掉显示队列（转录由 GET /state 重放），「已结束」不和它并发写、不排在它后面
             await self._retire_display(_DISPLAY_FLUSH_S)
+        if self.takeover_token is not None:
+            # 收尾开头那次释放抛错过：「已结束」推出去之前再试一次。页面一看到它就交还输入框，输入不能还归串门、
+            # 一直拒到 teardown
+            try:
+                self.host.release_takeover(self.takeover_token)
+            except Exception as exc:  # noqa: BLE001 - 令牌留着：teardown 还会再试（管理器仍持有接管时不能丢掉唯一的令牌）
+                logger.warning("visit %s: takeover release failed again before ended: %s",
+                               self.visit_id[:6], type(exc).__name__)
+            else:
+                self.takeover_token = None
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
         if self.status_code is not None:
             await self.status(self.status_code, reason=self.status_details.get("reason"),
@@ -2592,9 +2613,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         transcript = [self.visit_line_payload_from_record(r) for r in self._replay_lines()[-50:]]
         reconnecting = self.phase != PHASE_ENDED and (
             self.liveness.self_disconnected_at is not None or self.liveness.page_departed_at is not None)
+        # 收尾已开始、接管还没释放（释放前或释放抛错等 teardown 重试）：页面看到 ending 就会交还输入框，
+        # 而此时输入仍归串门——快照照旧报收尾前的阶段，与「接管释放后才推 ending 帧」一致
+        phase = self.phase
+        if phase == PHASE_ENDING and self.takeover_token is not None:
+            phase = self._was_phase
         return {
             "active": self.phase not in (PHASE_ENDED,),
-            "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": self.phase,
+            "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": phase,
             "transport": creds.transport if creds else None,
             "tier": creds.tier if creds else None,
             "crop": self.crop,
@@ -2692,6 +2718,22 @@ class VisitRefused(Exception):
         self.body = body
 
 
+VISIT_SWITCH_OFF = "VISIT_DISABLED"
+"""409 code of a room / join while the user's ``visitEnabled`` setting is off (design §3.7.6)."""
+
+
+async def visit_switch_refusal(deps: Optional[RuntimeDeps] = None) -> Optional[VisitRefused]:
+    """The refusal of a room / join while ``visitEnabled`` is off, else None.
+
+    Read once per request from the conversation settings; settings that cannot
+    be read fall back to the default (off), so an unreadable file refuses.
+    """
+    settings = await (deps or runtime_deps()).settings()
+    if settings.get("visitEnabled", VISIT_ENABLED_DEFAULT) is True:
+        return None
+    return VisitRefused(409, {"code": VISIT_SWITCH_OFF, "reason": "visit_disabled"})
+
+
 async def start_visit(
     lanlan_name: str,
     side: str,
@@ -2723,6 +2765,10 @@ async def start_visit(
     disabled_gen = _disabled_gen
     if _account_changes:
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
+    # 用户的串门开关（visitEnabled）关着：拒绝一切邀请、也不能出门（§3.7.6）；在人设闸之前，不触发人设重生成
+    switch_off = await visit_switch_refusal(deps)
+    if switch_off is not None:
+        raise switch_off
     gate = await persona_gate(name)
     if not gate.ok:
         raise VisitRefused(409, {"code": "VISIT_PERSONA_UNREVIEWED", "state": gate.state})
@@ -2920,7 +2966,11 @@ async def account_change(
                 except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
                     logger.warning("visit: ending live visits before the account change failed: %r", exc)
             # 还在途的领凭证请求（场次可能已注销、请求仍在后台）读会话时必须仍是旧账号：先等它们结束再改会话
-            await _settle_credential_requests(timeout)
+            await _settle_in_flight(_credential_requests, timeout, "credential requests")
+            # 已核过账号、正往页面推复盘块的也先推完：核完账号到写出去之间不会换成另一个账号。
+            # 至少等满推送的时限（调用方传了更短的 timeout 也一样）：放行时它们一定已结束或被截断
+            await _settle_in_flight(_account_bound_pushes, max(timeout, _ACCOUNT_BOUND_PUSH_MAX_S + 1.0),
+                                    "debrief pushes")
             yield
     finally:
         _account_changes -= 1
@@ -2929,12 +2979,47 @@ async def account_change(
 _credential_requests: set[asyncio.Future] = set()
 """Servers credential requests in flight: an account change waits for them before the session changes."""
 
+_account_bound_pushes: set[asyncio.Future] = set()
+"""Debrief pushes in flight (:func:`hold_account_for_push`): an account change waits for them before the session changes."""
 
-async def _settle_credential_requests(timeout: float) -> None:
-    pending = [t for t in _credential_requests if not t.done()]
-    if pending:
-        # 只等不取消：请求已发出时取消也撤不回 Servers 那边的签发（与兑掉的邀请码）
-        await asyncio.wait(pending, timeout=max(0.0, timeout))
+
+@asynccontextmanager
+async def hold_account_for_push():
+    """Yield whether a push bound to the signed-in account may go out; keep the account from changing until it ends.
+
+    Yields False while a logout / account switch is in progress (the caller
+    skips the push; bind replays it to the account that owns the visit).
+    Otherwise the push checks the account and writes inside the block, and
+    :func:`account_change` waits for it before the session changes, so no
+    switch lands between the check and the write. The block is cut off
+    (``TimeoutError``) after ``_ACCOUNT_BOUND_PUSH_MAX_S``, shorter than
+    that wait: a push never writes after the credentials changed.
+    """
+    if _account_changes:
+        yield False
+        return
+    held = asyncio.get_running_loop().create_future()
+    _account_bound_pushes.add(held)
+    try:
+        async with asyncio.timeout(_ACCOUNT_BOUND_PUSH_MAX_S):
+            yield True
+    finally:
+        if not held.done():
+            held.set_result(None)
+        _account_bound_pushes.discard(held)
+
+
+async def _settle_in_flight(futures: set[asyncio.Future], timeout: float, what: str) -> None:
+    """Wait (bounded) for the in-flight ``futures`` an account change must not overtake; never cancels them."""
+    pending = [f for f in futures if not f.done()]
+    if not pending:
+        return
+    # 只等不取消：领凭证请求已发出时取消也撤不回 Servers 那边的签发（与兑掉的邀请码）；
+    # 复盘推送由它自己的时限截断（hold_account_for_push），这里也不取消
+    _done, still = await asyncio.wait(pending, timeout=max(0.0, timeout))
+    if still:
+        logger.warning("visit: account change proceeds with %d %s still in flight after %.0fs",
+                       len(still), what, timeout)
 
 
 def _seals_in_background() -> list["VisitRuntime"]:
@@ -3088,5 +3173,6 @@ __all__ = [
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
     "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
-    "hold_character_lifecycle", "end_visits_for_account_change", "account_change", "cancel_background_writes",
+    "hold_character_lifecycle", "hold_account_for_push", "end_visits_for_account_change", "account_change",
+    "cancel_background_writes",
 ]

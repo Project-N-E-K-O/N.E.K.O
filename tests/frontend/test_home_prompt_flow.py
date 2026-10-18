@@ -361,6 +361,145 @@ def test_context_prompt_is_skipped_while_internal_game_route_is_active(
 
 
 @pytest.mark.frontend
+def test_context_prompt_defers_while_home_tutorial_suppresses_and_replays_after(
+    mock_page: Page,
+):
+    # 教程抑制期间不弹情境弹窗（modal 会压在导览上、且此时的功能开关状态
+    # 属于教程接管面）：信号暂存不标已弹，收口（active:false 事件）后重放。
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = {
+                gameRouteActive: false,
+                proactiveChatEnabled: false,
+                proactiveVisionChatEnabled: false,
+            };
+            window.nekoTelemetryBranch = 'main';
+            window.__tutorialActive = true;
+            window.NekoHomeTutorialFeatureController = {
+                isActive: () => window.__tutorialActive === true,
+            };
+            window.__contextPromptCalls = 0;
+            window.showDecisionPrompt = async function() {
+                window.__contextPromptCalls += 1;
+                return 'decline';
+            };
+        """,
+        script_names=("app/app-context-prompt.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            await window.appContextPrompt.handle('play');
+            const during = window.__contextPromptCalls;
+            window.__tutorialActive = false;
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                detail: { active: false },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            return { during, after: window.__contextPromptCalls };
+        }
+        """
+    )
+
+    assert result["during"] == 0
+    assert result["after"] == 1
+
+
+@pytest.mark.frontend
+def test_context_prompt_defers_on_suppression_event_without_feature_controller(
+    mock_page: Page,
+):
+    # director fallback 环境（feature controller 缺失、头像层无 hold）：
+    # 仅凭抑制事件的跟踪标志也必须拦住弹窗，释放事件后重放。
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = {
+                gameRouteActive: false,
+                proactiveChatEnabled: false,
+                proactiveVisionChatEnabled: false,
+            };
+            window.nekoTelemetryBranch = 'main';
+            window.__contextPromptCalls = 0;
+            window.showDecisionPrompt = async function() {
+                window.__contextPromptCalls += 1;
+                return 'decline';
+            };
+        """,
+        script_names=("app/app-context-prompt.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                detail: { active: true, source: 'yui-guide-director' },
+            }));
+            await window.appContextPrompt.handle('play');
+            const during = window.__contextPromptCalls;
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                detail: { active: false, source: 'yui-guide-director' },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            return { during, after: window.__contextPromptCalls };
+        }
+        """
+    )
+
+    assert result["during"] == 0
+    assert result["after"] == 1
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("already_declined", [False, True])
+def test_context_prompt_requeues_only_unresolved_decisions_during_tutorial(
+    mock_page: Page, already_declined: bool,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { proactiveChatEnabled: false, proactiveVisionChatEnabled: false };
+            window.nekoTelemetryBranch = 'main';
+        """,
+        script_names=("common_dialogs.js", "app/app-context-prompt.js"),
+    )
+    mock_page.evaluate(
+        """() => {
+            const show = window.showDecisionPrompt;
+            window.__promptCalls = 0;
+            window.showDecisionPrompt = (config) => {
+                window.__promptCalls += 1;
+                return show(config);
+            };
+            window.__promptDone = window.appContextPrompt.handle('play');
+        }"""
+    )
+    mock_page.wait_for_selector(".modal-overlay")
+    mock_page.evaluate(
+        """async (alreadyDeclined) => {
+            // Resolve and suppress in the same task, inside the real 200ms fade-out.
+            if (alreadyDeclined) document.querySelector('.modal-overlay').click();
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                detail: { active: true, source: 'test' },
+            }));
+            await window.__promptDone;
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                detail: { active: false, source: 'test' },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        }""",
+        already_declined,
+    )
+    assert mock_page.evaluate("window.__promptCalls") == (1 if already_declined else 2)
+    assert mock_page.locator(".modal-overlay").count() == (0 if already_declined else 1)
+    if not already_declined:
+        mock_page.evaluate("document.querySelector('.modal-overlay').click()")
+        mock_page.wait_for_selector(".modal-overlay", state="detached")
+
+
+@pytest.mark.frontend
 def test_open_context_prompt_is_dismissed_when_internal_game_opens(mock_page: Page):
     _bootstrap_page(
         mock_page,
@@ -1311,7 +1450,7 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state(
 
 
 @pytest.mark.frontend
-def test_home_tutorial_feature_controller_enforce_reapplies_suppression_after_chat_host_ready(
+def test_home_tutorial_feature_controller_enforce_stops_runtime_without_rewriting_settings(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -1387,10 +1526,14 @@ def test_home_tutorial_feature_controller_enforce_reapplies_suppression_after_ch
 
     assert result["active"] is True
     assert result["galgame"] is False
-    assert result["proactiveChatEnabled"] is False
-    assert result["proactiveVisionEnabled"] is False
-    assert result["appStateProactiveChatEnabled"] is False
-    assert result["appStateProactiveVisionEnabled"] is False
+    # 纯运行时抑制（与小剧场约定一致）：设置内存镜像从不被改写——它们由
+    # saveSettings 持久化并跨窗口同步，临时改写会在抑制期的任意一次保存里
+    # 被固化成用户设置。抑制只体现为 stop 调用与 isHomeTutorialFeatureSuppressed
+    # 触发闸门；即便有外部代码把内存翻回 true，enforce 也只重复 stop、不回写。
+    assert result["proactiveChatEnabled"] is True
+    assert result["proactiveVisionEnabled"] is True
+    assert result["appStateProactiveChatEnabled"] is True
+    assert result["appStateProactiveVisionEnabled"] is True
     assert result["stoppedChat"] >= 2
     assert result["stoppedVision"] >= 2
     assert result["releasedVision"] >= 2
@@ -3710,7 +3853,7 @@ def test_avatar_floating_tutorial_marks_global_tutorial_mode_while_active(mock_p
 
 
 @pytest.mark.frontend
-def test_avatar_floating_director_fallback_enforcement_disables_proactive_and_galgame(
+def test_avatar_floating_director_fallback_enforcement_stops_runtime_without_rewriting_settings(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -3725,6 +3868,10 @@ def test_avatar_floating_director_fallback_enforcement_disables_proactive_and_ga
             window.proactiveVisionEnabled = true;
             window.__fallbackGalgameRequests = [];
             window.__fallbackProactiveStops = [];
+            window.__fallbackSuppressed = false;
+            window.addEventListener('neko:home-tutorial-features-suppressed', (event) => {
+                window.__fallbackSuppressed = event.detail.active === true;
+            });
             window.reactChatWindowHost = {
                 setGalgameModeEnabled: (enabled, options) => {
                     window.__fallbackGalgameRequests.push({ enabled, options });
@@ -3732,7 +3879,9 @@ def test_avatar_floating_director_fallback_enforcement_disables_proactive_and_ga
             };
             window.stopProactiveChatSchedule = () => { window.__fallbackProactiveStops.push('chat'); };
             window.stopProactiveVisionDuringSpeech = () => { window.__fallbackProactiveStops.push('vision'); };
-            window.releaseProactiveVisionStream = () => { window.__fallbackProactiveStops.push('stream'); };
+            window.releaseProactiveVisionStream = () => {
+                window.__fallbackProactiveStops.push(window.__fallbackSuppressed ? 'stream' : 'ungated-stream');
+            };
         """,
         script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
@@ -3765,10 +3914,12 @@ def test_avatar_floating_director_fallback_enforcement_disables_proactive_and_ga
         }
     ]
     assert result["proactiveStops"] == ["chat", "vision", "stream"]
-    assert result["proactiveChatEnabled"] is False
-    assert result["proactiveVisionEnabled"] is False
-    assert result["appStateProactiveChatEnabled"] is False
-    assert result["appStateProactiveVisionEnabled"] is False
+    # fallback 同样只做运行时抑制：停调度/视觉 + 派发事件，不改写设置内存
+    # （旧实现此处还漏写了 proactiveCommunityChatEnabled——键列表已整体移除）。
+    assert result["proactiveChatEnabled"] is True
+    assert result["proactiveVisionEnabled"] is True
+    assert result["appStateProactiveChatEnabled"] is True
+    assert result["appStateProactiveVisionEnabled"] is True
 
 
 @pytest.mark.frontend

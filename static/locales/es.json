@@ -24,6 +24,7 @@
             "storageChanged": "El directorio de datos del servidor cambió. Vuelve a abrir el editor de avatar antes de guardar."
         }
     },
+    "chatSync": {"oversizedLocalOnly":"Demasiado grandes para sincronizar, guardados solo en este dispositivo: {{count}}.","setupNeedsSave":"Revisa la sincronización de {{name}}. Guarda el personaje otra vez o abre Más ajustes.","title":"Sincronizar chats","serviceUrl":"Dirección HTTPS del servicio","saveService":"Guardar dirección","enable":"Activar sincronización (con historial)","pause":"Pausar en este dispositivo","syncNow":"Sincronizar ahora","clearKnown":"Vaciar chats conocidos","close":"Cerrar","notConfigured":"Configura primero la dirección del servicio.","notBound":"Este personaje aún no está vinculado.","enabled":"Activado en este dispositivo.","paused":"Pausado en este dispositivo. Los chats en la nube se conservan.","pending":"Envíos registrados pendientes: {{originals}}; eliminaciones: {{deletions}}.","working":"Procesando…","more":"Queda historial por descargar; sincroniza de nuevo.","passFinished":"Esta pasada ha terminado. Otros dispositivos aún pueden tener chats pendientes.","loginRequired":"Inicia sesión en tu cuenta de la comunidad e inténtalo de nuevo.","failed":"La sincronización no ha terminado. Se conservan los chats locales y las tareas pendientes.","deleteOriginal":"Borrar en ambos dispositivos","deleteConfirm":"¿Borrar este chat original en ambos dispositivos?","clearConfirm":"¿Vaciar todos los chats originales conocidos de este personaje en ambos dispositivos? Se excluyen los mensajes añadidos después desde otro dispositivo. Las respuestas guardadas solo en este dispositivo también se borrarán localmente.","unknownTime":"Hora original desconocida","userLabel":"Tú","unfinishedChat":"Espera a que termine la respuesta actual antes de borrar el chat.","profileConflict":"Elige la versión del personaje","profileRenamePending":"Confirmar cambio de nombre","profileLocal":"Versión local","profileRemote":"Versión en la nube","profileUseLocal":"Subir esta versión local","profileUseRemote":"Usar esta versión de la nube","profileRenameConfirm":"¿Cambiar {{oldName}} a {{newName}} y usar el perfil completo de la nube?","profileChanged":"El perfil cambió o la sincronización no está disponible. Se conservan ambas versiones; vuelve a revisarlas.","profileInitialUpload":"¿Subir el perfil actual de {{name}}?","profileUploadConfirm":"¿Subir el perfil guardado de {{name}}?","profileUnsupported":"Este perfil contiene campos aún no compatibles. Se conserva el guardado local.","profileSaveFailed":"No se pudo sincronizar el perfil. Se conservan el guardado local y ambas versiones.","profileReview":"Revisar perfil del personaje","profileName":"Nombre","profileNickname":"Apodo","profileSetting":"Descripción original","profileStyle":"Estilo de habla","cloudImport":"Crear personaje desde la nube","cloudEmpty":"No hay personajes en la nube.","cloudProfileEmpty":"Este personaje aún no tiene un perfil publicado.","cloudCreate":"Crear este personaje en este dispositivo","cloudExisting":"{{name}} ya existe aquí. Se conserva su configuración de sincronización.","cloudCreated":"Se creó y vinculó {{name}}.","cloudNameConflict":"Ya existe un personaje con este nombre. Renómbralo primero o cancela la importación.","profileNeedsBinding":"Vincula este personaje en Más ajustes del editor de personajes.","previewHistory":"Ver chats anteriores","historyPreview":"Vista previa de chats anteriores","historyLocalRole":"Personaje local: {{name}}","historyCloudRole":"Personaje en la nube: {{name}}","historyCount":"Mensajes verificados en esta vista: {{count}}","historyUnverifiedCount":"{{count}} registros antiguos tienen un origen no verificable y permanecen en este dispositivo.","historyHint":"Solo se incluyen los mensajes verificados de esta vista fija. La aprobación inicia el registro y envío en segundo plano; los chats nuevos usan su propia cola.","historyEmpty":"No hay chats anteriores verificados en esta vista. Los registros no verificados permanecen en este dispositivo.","historyApprove":"Aprobar estos chats","historyCancel":"Cancelar","historyQueued":"Aprobados para registrarse y enviarse en segundo plano. Puede haber mensajes pendientes.","historyChanged":"El personaje, la cuenta o el estado de sincronización cambió. Revisa otra vista previa antes de aprobar.","historyAwaitingRegistration":"{{count}} mensajes anteriores aprobados aún esperan su registro local.","historyUnverifiedUnknown":"No se examinaron los registros antiguos. El contenido de origen no verificable permanece en este dispositivo.","writerRecoveryRequired":"La sincronización está pausada mientras se verifica esta instalación. El chat local sigue disponible.","recoverWriter":"Verificar y recuperar sincronización","recoveryChecked":"Verificación completada. Activa la sincronización con historial en la ficha del personaje o confirma esta subida de chats. Los borrados pendientes en ambos dispositivos requieren una confirmación aparte.","recoveryDeleteConfirm":"¿Eliminar estos {{count}} mensajes pendientes en ambos dispositivos? Personaje local: {{localName}}. Personaje en la nube: {{cloudName}}. Si cancelas, seguirán ocultos localmente.","includeHistory":"Incluir chats existentes","initialHistoryFailed":"La sincronización de chats anteriores no terminó. El personaje sigue vinculado; consulta el progreso o reintenta en Más ajustes del editor de personajes.","moreOptions":"Más ajustes","enableHint":"Sincronizar «{{name}}» y sus chats (incluido el historial).","newRoleSync":"Sincronizar personaje y chats (incluido el historial)","newSyncPending":"Personaje guardado localmente. Se sincronizará cuando inicies sesión y tengas conexión.","newSyncFailed":"Personaje guardado localmente. La sincronización aún no está lista. Inténtalo más tarde.","syncChoiceSaved":"Personaje guardado. Sincronización actualizada."},
     "instanceAccess": {"title":"Conectar a NEKO","description":"Introduce la clave de acceso proporcionada por el propietario del servidor. Este dispositivo recordará la conexión durante 30 días.","key":"Clave de acceso a la instancia","connect":"Conectar","failed":"Acceso denegado. Revisa la clave e inténtalo de nuevo.","httpsRequired":"Usa HTTPS o un túnel HTTPS de confianza para conectar de forma segura.","insecureWarning":"Esta conexión no está cifrada (HTTP). Cualquiera en la misma ruta de red podría ver la clave y la sesión. Usa HTTPS cuando puedas."},
     "common": {
         "load": "Cargar",
@@ -719,6 +720,7 @@
         "occupied": "¿La cámara está ocupada por otra aplicación? Cierra las aplicaciones de códigos QR/fotos e inténtalo de nuevo."
     },
     "chat": {
+        "visitBarAriaLabel": "Visita",
         "messageReaction": "{{author}} reaccionó con {{emoji}}",
         "cardActionFailed": "Error en la acción del plugin",
         "cardActionRunning": "Ejecutando…",
@@ -2177,7 +2179,7 @@
             "confirmTrimmed": "Utilice audio recortado inteligente"
         }
     },
-    "memory": {
+    "memory": {"chatDeleteConfirm":"¿Eliminar permanentemente {{count}} chats originales de todos los dispositivos sincronizados?","chatSyncUnavailable":"La sincronización no está disponible. Puedes editar la memoria local.",
         "recent": "Recuerdos recientes",
         "title": "Explorador de memoria",
         "summary": "Resumen",
@@ -2294,7 +2296,12 @@
         "save": "Guardar",
         "clear": "Claro",
         "tip1": "Las conversaciones finalizadas recientemente tardarán un momento en cargarse. Puedes hacer clic en el nombre del neko nuevamente para actualizar.",
-        "tip2": "Solo se muestran recuerdos recientes; los recuerdos a largo plazo están integrados en el núcleo de la neko y no se pueden consultar.",
+        "tip2": "Muestra mensajes originales y recuerdos recientes; los recuerdos a largo plazo están integrados en el núcleo de la neko y no se pueden consultar.",
+        "chatDeletionHint": "Pulsa Guardar tras eliminar o vaciar: los mensajes originales se eliminan en todos los dispositivos; los recuerdos recientes y las respuestas de herramientas solo en este dispositivo.",
+        "chatOriginalsSection": "Mensajes originales entre dispositivos",
+        "recentMemorySection": "Recuerdos recientes de este dispositivo",
+        "localRepliesSection": "Respuestas de herramientas solo locales",
+        "chatDeletionPartial": "Se registró la eliminación de mensajes, pero falló el guardado de recuerdos locales. Conserva los cambios y vuelve a guardar.",
         "noFiles": "Sin archivos",
         "loadFailed": "Error de carga",
         "noChatContent": "Sin contenido de chat",
@@ -3096,6 +3103,8 @@
             "selected": "Seleccionado {{source}}",
             "current": "Actual: {{source}}",
             "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa",
+            "sourceClosed": "La fuente seleccionada ya no está disponible (es posible que la ventana se haya cerrado). Vuelva a seleccionarla",
+            "sourceRenamed": "El título de esta ventana cambió a «{{source}}». Haga clic de nuevo para confirmar",
             "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente",
             "clickToChoose": "Haz clic para elegir una fuente de pantalla",
             "chooseAgain": "Elegir otra fuente de pantalla"
@@ -3672,6 +3681,9 @@
         "resource_wake_model": "Modelo de palabra de activación",
         "resource_wake_runtime": "Sherpa ONNX",
         "activation_preparing": "Preparando",
+        "activationHint_speech_too_short": "No hay suficiente voz. Di una frase completa un poco más larga.",
+        "activationHint_owner_not_confirmed": "La voz no coincide. Sigue hablando con naturalidad; la verificación continuará.",
+        "activationHint_verification_insufficient": "No se pudo verificar este audio. Sigue hablando con naturalidad para volver a intentarlo.",
         "activation_waiting": "Esperando a que hables para activar el chat de voz",
         "activation_verifying": "Preparando",
         "activation_replaying": "Preparando",
@@ -3777,9 +3789,13 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
+            "autoMemoryRecall": "Recordar automáticamente",
+            "autoMemoryRecallTooltip": "Si está activado, antes de responder en el chat de texto (incluida la voz transcrita) se recuerdan automáticamente momentos pasados relacionados; si está desactivado, solo se recuerda cuando hace falta.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
             "autoCat": "Modo gato automático",
+            "gravityCat": "Gato gravitatorio",
+            "gravityCatTooltip": "Usa el modo de gravedad de Playground al entrar en el modo gatito",
             "catAudio": "Sonidos de gato",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudioTooltip": "Reproduce efectos de sonido de gato en el modo gatito",
@@ -4252,6 +4268,21 @@
             "desc": "Gestiona las tarjetas de personaje, importación/exportación y personalización~"
         },
         "systray": {
+            "macos": {
+                "location": {
+                    "title": "📍 Ubicación del icono en la barra de menús",
+                    "desc": "El icono de N.E.K.O aparece en la barra de menús de macOS, en la parte superior de la pantalla.",
+                    "note": "Busca en la barra de menús el icono de N.E.K.O que aparece en la imagen.",
+                    "alt": "Icono y menú de N.E.K.O en la barra de menús de macOS"
+                },
+                "menu": {
+                    "title": "📋 Menú de la barra de menús",
+                    "desc": "Haz clic en el icono de N.E.K.O en la barra de menús para abrir el menú. Estas son algunas funciones útiles:"
+                },
+                "exitDesc": "Para cerrar N.E.K.O, selecciona Salir en el menú de la barra de menús."
+            },
+            "settings": "Ajustes",
+            "settingsDesc": "Abre los ajustes para cambiar tus preferencias de N.E.K.O.",
             "location": {
                 "title": "Ubicación del icono de bandeja",
                 "desc": "El ícono N.E.K.O aparece en la bandeja del sistema en la parte inferior derecha de la pantalla. Haz clic en él para encontrar N.E.K.O.",
@@ -4838,6 +4869,17 @@
         }
     },
     "vrmEmotionManager": {
+        "waitingForModel": "Cargando el modelo seleccionado. Espera…",
+        "retryLoad": "Reintentar carga",
+        "loadTimeout": "La carga agotó el tiempo de espera. Reinténtalo; la configuración guardada no ha cambiado.",
+        "saveTimeout": "El guardado agotó el tiempo de espera; el resultado no está confirmado. Comprueba la configuración antes de reintentarlo.",
+        "recoveryBlocked": "Dos cargas de modelos siguen pendientes. Espera a que terminen o vuelve a abrir la ventana del gestor de modelos antes de reintentarlo.",
+        "sourceUnavailable": "Abre esta página desde el Administrador de Modelos y mantén esa ventana abierta.",
+        "invalidModel": "Este modelo ya no está disponible. Vuelve a seleccionarlo.",
+        "modelLoadFailed": "No se pudo cargar el modelo seleccionado. Reinténtalo.",
+        "sourceChanged": "El modelo de vista previa cambió o no está disponible. Reintenta cargar el modelo seleccionado.",
+        "noConfigurableExpressions": "El modelo se ha cargado, pero no tiene expresiones configurables.",
+        "retainedBindings": "Estas asignaciones guardadas no están disponibles en este modelo y se conservarán sin vista previa:",
         "title": "Gerente de Mapeo de Emociones VRM - Proyecto N.E.K.O.",
         "pageTitle": "Administrador de mapeo de emociones VRM",
         "subtitle": "Configurar asignaciones de expresiones para diferentes emociones.",
@@ -6629,6 +6671,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "¿Guardar esta visita en su diario?",
+            "choiceDiary": "Guardar en el diario",
+            "choiceForget": "No guardar",
+            "savedDiary": "Guardado en su diario",
+            "forgot": "De acuerdo, esta vez no se guarda",
+            "askLaterHint": "Estas opciones se quedan 7 días; puedes elegir cuando quieras",
+            "previewTitle": "¿Guardar esto?",
+            "previewFactsLabel": "Recordará esto:",
+            "previewConfirm": "Guardar",
+            "previewVoided": "Este registro se descartó; no se guardó nada",
+            "generating": "Redactando…",
+            "committing": "Guardando… si todavía no se guarda, se volverá a intentar automáticamente",
+            "commitFailed": "No se pudo guardar en la memoria: el servicio de memoria rechazó esta escritura y se detuvieron los reintentos automáticos.",
+            "commitFailedPartial": "Los hechos se guardaron, pero la entrada del diario todavía no.",
+            "commitRetry": "Reintentar",
+            "commitAbandon": "Abandonar",
+            "abandonPartialConfirm": "Los hechos ya se guardaron y no se pueden deshacer; la entrada del diario no se guardó. Si abandonas, esta entrada no se guardará. ¿Abandonar?",
+            "abandoned": "Abandonado; no se guardó nada",
+            "abandonedPartial": "Abandonado: los hechos se guardaron, la entrada del diario no",
+            "commitFailedUnknown": "Puede que una parte ya esté en la memoria, pero no se pudo confirmar.",
+            "abandonUnknownConfirm": "Puede que una parte ya esté en la memoria sin confirmar; abandonar no lo deshace. ¿Abandonar?",
+            "abandonedUnknown": "Abandonado: puede que una parte se haya guardado, pero no se pudo confirmar"
+        },
         "settings": {
             "groupTitle": "Visitas",
             "enabled": "Permitir visitas",
@@ -6642,7 +6708,219 @@
             "persona": "Presentación para visitas"
         },
         "stream": {
-            "ttsFallback": "La voz no está disponible ahora; en esta visita hablará por texto"
+            "ttsFallback": "La voz no está disponible ahora; en esta visita hablará por texto",
+            "truncated": "(interrumpido)"
+        },
+        "bar": {
+            "entry": "Visitas",
+            "invite": "Invitar a alguien",
+            "goVisit": "Ir de visita",
+            "close": "Cerrar",
+            "preparingInvite": "Preparando la invitación…",
+            "joining": "Saliendo…",
+            "waitingGuest": "Esperando visita",
+            "guestArriving": "La visita está en camino",
+            "atTheDoor": "{{name}} está en la puerta",
+            "waitingDoor": "Esperando a que abran",
+            "hosting": "{{name}} está de visita",
+            "away": "Está en casa de {{name}}",
+            "peerHidden": "Se ausentó un momento",
+            "reconnecting": "Conexión inestable, reconectando",
+            "endingSoon": "Ya casi es hora",
+            "ending": "Terminando",
+            "inviteCode": "Código de invitación {{code}}",
+            "copy": "Copiar",
+            "copied": "Código copiado",
+            "copyFailed": "No se pudo copiar. Anota el código a mano",
+            "seeOff": "Despedir a la visita",
+            "recall": "Llamarla a casa",
+            "endNow": "Terminar ya",
+            "toGuest": "Para {{name}}",
+            "toOwn": "Para {{name}}",
+            "typing": "{{name}} está escribiendo…"
+        },
+        "common": {
+            "cancel": "Cancelar",
+            "close": "Cerrar",
+            "confirmTitle": "Confirmar",
+            "ok": "Aceptar"
+        },
+        "choice": {
+            "expired": "El registro de esta visita ha caducado",
+            "retryLater": "No se pudo preparar ahora. Inténtalo de nuevo en un momento"
+        },
+        "details": {
+            "open": "Ver detalles",
+            "title": "Detalles de la visita",
+            "loading": "Cargando…",
+            "duration": "Duración: {{m}} min {{s}} s",
+            "freeMinutes": "Minutos gratuitos usados: {{n}}",
+            "usage": "Uso: {{in}} tokens de entrada, {{out}} de salida; voz {{req}} solicitudes, {{chars}} caracteres",
+            "usageNone": "Uso: aún sin registro",
+            "uploadedPartial": "Por ahora solo se ha subido el registro de una parte",
+            "transcript": "Transcripción completa",
+            "status": {
+                "agree": "Coinciden",
+                "onlyHost": "Solo lo registró quien invitó",
+                "onlyGuest": "Solo lo registró quien visitó",
+                "differ": "Los registros difieren"
+            },
+            "hostCopy": "Registro de quien invitó",
+            "guestCopy": "Registro de quien visitó",
+            "nextPage": "Página siguiente",
+            "forbidden": "No participaste en esta visita, así que no puedes verla",
+            "notFound": "No se encontró el registro de esta visita",
+            "unavailable": "No se puede conectar con el servicio de visitas. Inténtalo más tarde"
+        },
+        "ended": {
+            "body": "La visita ha terminado",
+            "bodyWith": "La visita con {{name}} ha terminado",
+            "more": "Más…"
+        },
+        "error": {
+            "disabled": "\"Permitir visitas\" está desactivado. Actívalo primero en Ajustes",
+            "generic": "No se pudo completar. Inténtalo más tarde",
+            "unreachable": "No se puede conectar con el servicio local",
+            "voiceSession": "Termina la llamada de voz antes de la visita",
+            "alreadyVisiting": "Ya está de visita",
+            "insecure_context": "Con una dirección de backend personalizada, las visitas requieren https o localhost"
+        },
+        "export": {
+            "button": "Exportar transcripción",
+            "fileTitle": "Transcripción de la visita",
+            "gone": "La copia local ya se borró. Inicia sesión y conéctate para exportarla desde la nube",
+            "incomplete": "El registro en la nube está incompleto y no se puede exportar ahora",
+            "failed": "No se pudo exportar. Inténtalo más tarde",
+            "ownCat": "Mi chica gato",
+            "peerCat": "Su chica gato",
+            "ownHuman": "Yo",
+            "peerHuman": "Su familia",
+            "hostCat": "Chica gato de quien invitó",
+            "hostHuman": "Familia de quien invitó",
+            "guestCat": "Chica gato de quien visitó",
+            "guestHuman": "Familia de quien visitó"
+        },
+        "input": {
+            "notDelivered": "No entregado",
+            "placeholderAway": "Está de visita. Puedes llamarla a casa",
+            "placeholderWaiting": "Podrás hablar cuando llegue la visita",
+            "placeholderReconnecting": "Reconectando, un momento",
+            "placeholderToGuest": "Dile algo a {{name}}…",
+            "placeholderToOwn": "Dile algo a {{name}}…"
+        },
+        "invite": {
+            "title": "Ha llegado una visita",
+            "body": "{{name}} ({{code}}) vino de visita. ¿La recibes?",
+            "countdown": "Se rechazará automáticamente en {{s}} s",
+            "accept": "Recibir",
+            "decline": "Rechazar",
+            "expired": "Ya pasó el tiempo para responder"
+        },
+        "join": {
+            "title": "Ir de visita",
+            "codeLabel": "Escribe el código de invitación de 10 caracteres",
+            "codeFormat": "El código tiene 10 caracteres: letras y los dígitos 2–7",
+            "next": "Siguiente",
+            "confirmTitle": "¿La dejas ir?",
+            "confirmBody": "¿Dejas que {{cat}} visite a {{host}} ({{code}})?",
+            "crossRegion": "Está en otra región; la conexión puede ser menos estable",
+            "blocked": "Has bloqueado a esta persona",
+            "confirm": "Ir"
+        },
+        "persona": {
+            "title": "Presentación para visitas",
+            "intro": "Es la presentación que lleva cuando va de visita. No incluye nada sobre ti. La otra chica gato puede verla y repetir su contenido.",
+            "editHint": "Unas líneas sobre ella: personalidad, aficiones, forma de hablar",
+            "loading": "Cargando…",
+            "generating": "Escribiendo su presentación para visitas…",
+            "saveConfirm": "Guardar y confirmar",
+            "confirm": "Confirmar",
+            "regenerate": "Regenerar",
+            "reviewed": "Confirmado. Ya puede ir de visita",
+            "cardChanged": "La ficha del personaje cambió. ¿Regenerar con la nueva?",
+            "privateOverlap": "La presentación generada incluyó datos privados. Escribe una tú",
+            "privateHits": "Esto parece información privada. Quítalo y vuelve a guardar: {{hits}}",
+            "privateSections": "Estas partes de la ficha original se quedan en casa:",
+            "scanIncomplete": "La revisión automática no fue completa. Revisa tú si hay datos privados",
+            "llmUnavailable": "No se pudo generar ahora. Escríbela tú o regenérala más tarde",
+            "tooLong": "Es demasiado largo. Acórtalo un poco",
+            "changed": "Se acaba de actualizar y se volvió a cargar. Confirma otra vez",
+            "saveFailed": "No se pudo guardar. Inténtalo más tarde",
+            "unavailable": "No se pudo cargar la presentación. Inténtalo más tarde",
+            "unknownCatgirl": "No se encontró este personaje",
+            "unreviewed": "Revisa primero su presentación; podrá ir de visita cuando la confirmes",
+            "sectionsOutdated": "Esta lista de partes privadas es de la ficha anterior al cambio; lo añadido después no aparece. Revísala tú"
+        },
+        "preview": {
+            "invalid": "El código de invitación no es válido",
+            "expired": "El código de invitación caducó",
+            "banned": "Las visitas están restringidas en tu cuenta por ahora",
+            "rateLimited": "Demasiados intentos. Espera un poco",
+            "unreachable": "No se puede conectar con el servicio de visitas. Inténtalo más tarde"
+        },
+        "report": {
+            "button": "Denunciar",
+            "title": "Denunciar esta visita",
+            "reason": {
+                "harassment": "Acoso",
+                "sexual": "Contenido sexual",
+                "privacy": "Violación de la privacidad",
+                "spam": "Spam",
+                "other": "Otro"
+            },
+            "notePlaceholder": "Detalles (opcional, hasta 500 caracteres)",
+            "includeTranscript": "Adjuntar la transcripción de esta visita",
+            "submit": "Enviar denuncia",
+            "done": "Denuncia enviada",
+            "doneButton": "Denunciado",
+            "queued": "Denuncia guardada. Se enviará automáticamente cuando vuelva la conexión",
+            "queuedButton": "En cola",
+            "already": "Esta visita ya fue denunciada",
+            "persistFailed": "No se pudo guardar la denuncia. Inténtalo de nuevo",
+            "queuedLogin": "Denuncia guardada. Se enviará cuando vuelvas a iniciar sesión con la cuenta original"
+        },
+        "speaker": {
+            "ownCat": "Ella",
+            "peerCat": "Su chica gato",
+            "peerHuman": "Su familia",
+            "you": "Tú",
+            "toArrow": "{{from}} → {{to}}"
+        },
+        "status": {
+            "VISIT_E_UNAUTHORIZED": "Esta página no puede usar las visitas (solo acceso local)",
+            "VISIT_VOICE_UNAVAILABLE": "Durante las visitas no hay entrada de voz. Escribe",
+            "VISIT_INPUT_REFUSED_AWAY": "Está de visita y lo que digas aquí no le llega. Puedes llamarla a casa",
+            "VISIT_INPUT_REFUSED_NOT_READY": "La visita aún no llegó. Espera a que empiece",
+            "VISIT_INPUT_REFUSED_RATE": "Demasiados mensajes seguidos. Espera un momento",
+            "VISIT_INPUT_REFUSED_SOURCE": "Hay una visita en curso: solo llegan los mensajes escritos en el cuadro de texto. Este no se envió",
+            "VISIT_E_BUSY": "No se pudo enviar ahora. Tu texto sigue en el cuadro; inténtalo luego",
+            "VISIT_UNSUPPORTED_ON_THIS_MACHINE": "Este dispositivo no admite visitas por ahora",
+            "VISIT_LOGIN_REQUIRED": "Inicia sesión en tu cuenta de la comunidad para visitar",
+            "VISIT_BANNED": "Las visitas están restringidas en tu cuenta por ahora",
+            "VISIT_QUOTA_EXCEEDED": "Ya usaste el tiempo de visitas de hoy",
+            "VISIT_TIER_NOT_ENTITLED": "Este nivel de calidad no está disponible",
+            "VISIT_FORGET_IN_PROGRESS": "Se están borrando los recuerdos de visitas. Inténtalo en un rato",
+            "VISIT_UPLOAD_BACKLOG": "Hay registros de visitas sin subir. Conéctate y vuelve a intentarlo",
+            "VISIT_CROSS_REGION_UNSUPPORTED": "Aún no se admiten visitas entre regiones",
+            "VISIT_INVITE_INVALID": "El código de invitación no es válido o caducó",
+            "VISIT_SERVERS_UNREACHABLE": "No se puede conectar con el servicio de visitas. Inténtalo más tarde",
+            "VISIT_PROTO_MISMATCH": "Las versiones no son compatibles. Actualicen los dos",
+            "VISIT_PEER_IDENTITY_REJECTED": "No se pudo verificar la identidad de la otra parte; la visita se canceló",
+            "VISIT_PEER_LOST": "Se perdió la conexión con la otra parte",
+            "VISIT_RELAY_LOST": "Se perdió la conexión de la visita",
+            "VISIT_KICKED": "El servidor terminó la visita",
+            "VISIT_INTERRUPTED_LAST_TIME": "La última visita se interrumpió inesperadamente",
+            "VISIT_MEMORY_RETRY_LATER": "El servicio de memoria está ocupado; se reintentará solo"
+        },
+        "wrapUp": {
+            "badge": "Despidiéndose",
+            "toastRefused": "Se están despidiendo; este mensaje no se envió",
+            "recallAlready": "Ya se están despidiendo",
+            "composerPlaceholder": "Despidiéndose…"
         }
+    },
+    "visitFrame": {
+        "peerAway": "Se ausentó un momento",
+        "visitingAway": "De visita"
     }
 }

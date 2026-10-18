@@ -327,6 +327,19 @@ SPEAKER_TRUST_CHANNEL_MAX_LEN = 16
 # 是人工稀有操作，409 是可接受的失败模式；读时截断不是。
 IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM = 8
 
+# 按 platform 收紧上面的上限：{platform: (上限, 原因)}。只在比通用上限更紧时生效，
+# 超限 409 的报错带上这里的原因，所以每条都要写清自己为什么收紧。
+# neko_visit（串门，即 VISIT_MEMORY_PLATFORM）= 1：同一个 entity 下有两个串门
+# account，串门清除就会扇出到另一个 account；串门客户端还没接上 target_epochs，
+# 扇出目标没有持久墓碑，迟到的旧写入会把已清除的记忆写回。接上之前不许关联。
+IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM = {
+    "neko_visit": (
+        1,
+        "串门清除还没接上 target_epochs，关联后的扇出目标没有持久墓碑，"
+        "见 issue #3405",
+    ),
+}
+
 
 def _assert_activity_bonus_reachable() -> None:
     """Startup assertion: the activity count cap must be able to reach MAX_BONUS.
@@ -436,6 +449,14 @@ HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 # reflections（归档行入池前就被投影掉 embedding 列），正常远低于这个闸；
 # 它防的是"多角色 × 大语料"叠出来的极端常驻，和上面的文件数闸一个思路。
 HYBRID_RECALL_VEC_CACHE_MAX_BYTES = 32 * 1024 * 1024
+
+# BM25 分词缓存（memory.hybrid_recall._TOKEN_CACHE）的常驻字节上限。
+# 被动注入让 BM25 在每个文字回合都对整个召回池跑一遍，以前每次都从头分词
+# （CJK 2/3-gram 滑窗，5000 条约占 BM25 总耗时的四分之三）。缓存按「停用名 +
+# 原文」记住分词结果，存成一条 \x00 连接的字符串（比存 token 元组省约 10 倍
+# 内存，5000 条约 3MB），命中时 split 一下即可。记账同样按最坏情况：原文本
+# 身也记进去，虽然常见情况下它一直由池子行持有。32MB 约够 5 万条短记忆。
+HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES = 32 * 1024 * 1024
 
 # ========================================================================
 # §3.7 LLM Context & Output Budget

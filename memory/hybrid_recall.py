@@ -90,8 +90,9 @@ import json
 import math
 import os
 import sys
+import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Any
 
@@ -103,6 +104,7 @@ from config import (
     HYBRID_RECALL_POOL_CACHE_MAX_FILES,
     HYBRID_RECALL_RRF_K,
     HYBRID_RECALL_TIME_BUDGET,
+    HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES,
     HYBRID_RECALL_VEC_CACHE_MAX_BYTES,
 )
 from memory.evidence import evidence_score
@@ -219,6 +221,72 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
 # ── BM25 retrieval ────────────────────────────────────────────────────
 
 
+# Token cache
+# ===========
+# Passive turn context runs BM25 over the whole recall pool on every text
+# turn, and tokenizing the pool (CJK 2/3-gram windows) was most of that cost.
+# Tokens are a pure function of (stop names, text), so they are kept per text,
+# stored as one ``\x00``-joined string: about a tenth of the memory of a
+# token tuple, and ``split`` brings the list back at C speed.
+#
+# Same scan-aware admission as ``_VEC_CACHE`` (a scan never evicts what it
+# touched itself), bounded by ``HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES``.
+# Unlike ``_VEC_CACHE`` this one takes a lock: the passive path scores in a
+# worker thread while ``recall_memory`` scores on the event loop. The lock
+# covers only the dict operations, never the tokenizing.
+_TOKEN_SEP = "\x00"
+_TOKEN_CACHE: OrderedDict[tuple[tuple[str, ...], str], tuple[str, int]] = OrderedDict()
+_TOKEN_CACHE_BYTES = 0
+_TOKEN_CACHE_LOCK = threading.Lock()
+# Key tuple, OrderedDict node and value tuple, rounded up.
+_TOKEN_ENTRY_OVERHEAD_BYTES = 256
+
+
+def _doc_tokens(text, stop_names: list[str] | None, stop_key: tuple[str, ...], state: '_ScanState') -> list[str]:
+    """``_tokenize(text, stop_names)``, served from ``_TOKEN_CACHE`` when it can be."""
+    global _TOKEN_CACHE_BYTES
+
+    if not isinstance(text, str) or _TOKEN_SEP in text:
+        return _tokenize(text, stop_names)
+    key = (stop_key, text)
+    with _TOKEN_CACHE_LOCK:
+        cached = _TOKEN_CACHE.get(key)
+        if cached is not None:
+            _TOKEN_CACHE.move_to_end(key)
+            state.touched += 1
+    if cached is not None:
+        # _tokenize never yields an empty token, so "" can only mean no tokens.
+        return cached[0].split(_TOKEN_SEP) if cached[0] else []
+    tokens = _tokenize(text, stop_names)
+    joined = _TOKEN_SEP.join(tokens)
+    nbytes = sys.getsizeof(joined) + sys.getsizeof(text) + _TOKEN_ENTRY_OVERHEAD_BYTES
+    with _TOKEN_CACHE_LOCK:
+        previous = _TOKEN_CACHE.pop(key, None)
+        if previous is not None:
+            _TOKEN_CACHE_BYTES -= previous[1]
+        while (
+            _TOKEN_CACHE
+            and _TOKEN_CACHE_BYTES + nbytes > HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES
+            and state.touched < len(_TOKEN_CACHE)
+        ):
+            _, evicted = _TOKEN_CACHE.popitem(last=False)
+            _TOKEN_CACHE_BYTES -= evicted[1]
+        if _TOKEN_CACHE_BYTES + nbytes <= HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES:
+            _TOKEN_CACHE[key] = (joined, nbytes)
+            _TOKEN_CACHE_BYTES += nbytes
+            state.touched += 1
+    return tokens
+
+
+def _invalidate_token_cache() -> None:
+    """Drop every cached tokenization. Tests and ``_invalidate_pool_cache`` only."""
+    global _TOKEN_CACHE_BYTES
+
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE.clear()
+        _TOKEN_CACHE_BYTES = 0
+
+
 def _bm25_rank(
     query: str,
     pool: list[dict],
@@ -232,15 +300,36 @@ def _bm25_rank(
     Returns ``[(doc, score)]`` sorted DESC. Zero-score docs are dropped
     (no term overlap). Empty query / empty pool / all-zero docs → ``[]``.
     """
+    return [
+        (doc, score)
+        for doc, score, _tf in _bm25_scores(query, pool, stop_names=stop_names, k1=k1, b=b)
+    ]
+
+
+def _bm25_scores(
+    query: str,
+    pool: list[dict],
+    *,
+    stop_names: list[str] | None,
+    k1: float = _BM25_K1,
+    b: float = _BM25_B,
+) -> list[tuple[dict, float, dict[str, int]]]:
+    """``_bm25_rank`` plus each scored doc's term counts, restricted to the
+    query's terms: ``set(tf)`` is ``set(_tokenize(doc)) & set(_tokenize(query))``,
+    so callers that need the shared terms do not tokenize the pool again.
+    """
     if not query or not pool:
         return []
     query_terms = _tokenize(query, stop_names)
     if not query_terms:
         return []
 
-    # Tokenize all docs once; reuse the same call for DF and TF.
+    # Tokenize all docs once (served from _TOKEN_CACHE on later calls);
+    # reuse the same lists for DF and TF.
+    stop_key = tuple(str(name) for name in stop_names or ())
+    state = _ScanState()
     doc_terms_list: list[list[str]] = [
-        _tokenize(d.get('text', '') or '', stop_names) for d in pool
+        _doc_tokens(d.get('text', '') or '', stop_names, stop_key, state) for d in pool
     ]
 
     n_docs = len(pool)
@@ -263,38 +352,53 @@ def _bm25_rank(
     # 160ms → 61ms。得分逐位不变——下面的打分循环仍按 ``query_unique`` 迭代，
     # 浮点累加顺序没动（换成迭代 tf 会改累加顺序，末位 ULP 可能漂，并列时理论
     # 上能翻排序，所以别顺手"优化"成那样）。
+    #
+    # Most docs share no term with the query: a C-level set intersection
+    # finds those and skips them before any counting. The rest are counted
+    # in one C-level pass (``Counter``) and cut to the shared terms, so a
+    # long query never rescans a doc once per shared term. Same counts as
+    # the scan.
     df: dict[str, int] = dict.fromkeys(query_unique, 0)
     doc_tf_list: list[dict[str, int]] = []
     for terms in doc_terms_list:
-        tf_map: dict[str, int] = {}
-        for t in terms:
-            if t in query_unique:
-                tf_map[t] = tf_map.get(t, 0) + 1
+        shared = query_unique.intersection(terms)
+        if shared:
+            counts = Counter(terms)
+            tf_map: dict[str, int] = {t: counts[t] for t in shared}
+        else:
+            tf_map = {}
         doc_tf_list.append(tf_map)
         for t in tf_map:
             df[t] += 1
 
-    scored: list[tuple[dict, float]] = []
+    # Robertson-Sparck-Jones IDF with +0.5 smoothing, once per query term
+    # (it depends on the term alone), kept in ``query_unique`` order so the
+    # per-doc sum below adds the same terms in the same order as before.
+    idf_terms: list[tuple[str, float]] = []
+    for q_term in query_unique:
+        n = df.get(q_term, 0)
+        if n <= 0:
+            continue
+        idf = math.log((n_docs - n + 0.5) / (n + 0.5) + 1.0)
+        if idf <= 0:
+            continue
+        idf_terms.append((q_term, idf))
+
+    scored: list[tuple[dict, float, dict[str, int]]] = []
     for doc, doc_terms, doc_tf in zip(pool, doc_terms_list, doc_tf_list):
-        if not doc_terms:
+        # No shared term scores 0, and 0 is dropped below anyway.
+        if not doc_tf:
             continue
         dl = len(doc_terms)
         norm = 1.0 - b + b * dl / avgdl
         score = 0.0
-        for q_term in query_unique:
-            n = df.get(q_term, 0)
-            if n <= 0:
-                continue
-            # Robertson-Sparck-Jones IDF with +0.5 smoothing.
-            idf = math.log((n_docs - n + 0.5) / (n + 0.5) + 1.0)
-            if idf <= 0:
-                continue
+        for q_term, idf in idf_terms:
             tf = doc_tf.get(q_term, 0)
             if tf == 0:
                 continue
             score += idf * (tf * (k1 + 1)) / (tf + k1 * norm)
         if score > 0:
-            scored.append((doc, score))
+            scored.append((doc, score, doc_tf))
 
     scored.sort(key=lambda p: p[1], reverse=True)
     return scored
@@ -743,9 +847,11 @@ def _invalidate_pool_cache(path: str | None = None) -> None:
     Also drops the decoded-vector cache (``_VEC_CACHE``): its entries are
     content-validated per probe, so clearing is never *required* for
     correctness, but tests reuse doc ids across cases and a shared cache would
-    turn test isolation into an accident of content addressing.
+    turn test isolation into an accident of content addressing. The token
+    cache (``_TOKEN_CACHE``) goes with it for the same reason.
     """
     _invalidate_vec_cache()
+    _invalidate_token_cache()
     if path is None:
         _POOL_CACHE.clear()
     else:
@@ -883,6 +989,27 @@ async def _aload_reflections_for_recall(
         return await _aload()
 
     return await _aload_pool_cached(path, _aload)
+
+
+def _render_reflection_split(reflections: list[dict]) -> tuple[list[dict], list[dict]]:
+    """The pending and the active confirmed reflections among ``reflections``,
+    as ``aget_pending_reflections`` / ``aget_confirmed_reflections`` return
+    them for the private scope.
+
+    Recall already holds the parsed reflections (``_aload_reflections_for_recall``,
+    served from the parse cache); asking the engine instead would read and
+    parse ``reflections.json`` twice more. Nothing here mutates the rows.
+    """
+    from memory._reflection.selection import filter_active_confirmed
+    from memory.scopes import filter_entries_for_subjects
+
+    rows = [row for row in reflections or () if isinstance(row, dict)]
+    pending = [row for row in rows if row.get('status') == 'pending']
+    confirmed = filter_active_confirmed(rows, now=datetime.now(), score=evidence_score)
+    return (
+        filter_entries_for_subjects(pending, None, include_legacy_private=None),
+        filter_entries_for_subjects(confirmed, None, include_legacy_private=None),
+    )
 
 
 def _drop_archive_overlap(
@@ -1098,6 +1225,8 @@ async def hybrid_recall(
     time_window: tuple | None = None,
     subjects=None,
     include_legacy_private: bool | None = None,
+    persona_manager=None,
+    budget_ms: int | None = None,
 ) -> dict[str, Any]:
     """End-to-end hybrid recall — the function the ``/query_memory``
     HTTP endpoint should call.
@@ -1163,10 +1292,24 @@ async def hybrid_recall(
     archive_facts = _drop_archive_overlap(
         archive_facts or [], active_facts, lanlan_name,
     )
+    # Persona entries the private render leaves out of the system prompt
+    # (over its budget) are recallable like any other memory; the ones it
+    # keeps are already in front of the model.
+    persona_left_out: list[dict] = []
+    if persona_manager is not None and not subjects:
+        try:
+            pending, confirmed = _render_reflection_split(active_reflections)
+            persona_left_out, _resident = await persona_manager.arecall_residency(
+                lanlan_name, pending, confirmed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hybrid_recall] persona residency skipped: %s", exc)
+            persona_left_out = []
 
     facts_tagged = _tag_tier(active_facts, 'fact')
     refl_tagged = _tag_tier(active_reflections, 'reflection')
     arch_tagged = _tag_tier(archive_facts, 'fact_archive')
+    persona_tagged = _tag_tier(persona_left_out, 'persona')
 
     # Security boundary: scope filtering happens before any BM25/cosine/RRF
     # scoring. A group caller never searches the private/global corpus and then
@@ -1182,6 +1325,9 @@ async def hybrid_recall(
     arch_tagged = filter_entries_for_subjects(
         arch_tagged, subjects, include_legacy_private=include_legacy_private,
     )
+    persona_tagged = filter_entries_for_subjects(
+        persona_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
 
     # "语义 + 时间"联合检索：给了 time_window 就先把候选池按事件时间窗口
     # 硬过滤，只让落在该区间的条目进入后续 BM25 / cosine 打分。
@@ -1190,9 +1336,10 @@ async def hybrid_recall(
         facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
         refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
         arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
+        persona_tagged = [d for d in persona_tagged if _overlaps_window(d, ws, we)]
 
-    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged
-    embedding_pool_raw = facts_tagged + refl_tagged
+    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged + persona_tagged
+    embedding_pool_raw = facts_tagged + refl_tagged + persona_tagged
 
     # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
     # Imported lazily so a circular-import-safe boot path stays viable.
@@ -1214,7 +1361,19 @@ async def hybrid_recall(
     # can proceed while embedding model warms (if first call).
     cosine_scored_task = asyncio.create_task(_cosine_rank(query, embedding_pool))
     bm25_scored = _bm25_rank(query, bm25_pool, stop_names=stop_names)
-    cosine_scored = await cosine_scored_task
+    if budget_ms is None:
+        cosine_scored = await cosine_scored_task
+    else:
+        # Past the caller's budget the vector half is dropped and the
+        # keyword half still answers, instead of the whole call timing out.
+        remaining = max(int(budget_ms), 0) / 1000 - (time.time() - start)
+        done, _pending = await asyncio.wait({cosine_scored_task}, timeout=max(remaining, 0))
+        if cosine_scored_task in done:
+            cosine_scored = cosine_scored_task.result()
+        else:
+            cosine_scored_task.cancel()
+            cosine_scored = []
+            logger.info("[hybrid_recall] %s: vector half over budget, keywords only", lanlan_name)
 
     # Threshold + per-side cap.
     bm25_top = [

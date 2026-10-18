@@ -13,6 +13,7 @@ import asyncio
 import base64
 from collections.abc import Awaitable, Callable
 import dataclasses
+import errno
 import hashlib
 import hmac
 import json
@@ -34,9 +35,11 @@ from utils.deployment import has_forwarding_metadata
 from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
+from plugin.core.package_limits import MAX_PLUGIN_PACKAGE_BYTES
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 from plugin.server.infrastructure.package_download import (
     PackageDownloadDeadline,
+    PackageDownloadWriteError,
     PackageSizeExceeded,
     cleanup_download_file as _cleanup_download_file,
     download_package_file,
@@ -111,12 +114,12 @@ _ACCOUNT_SUMMARY_LOCK = asyncio.Lock()
 _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
 # 下载限制
-_DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
+_DOWNLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
 # httpx 的超时是**每阶段**的（连接/读/写各自计时），所以一个"每次读都及时返回一点点
 # 字节"的服务器永远不会触发它——总时长必须有独立兜底。本文件里 _fetch_market_release
 # 已经为同一个理由用了 asyncio.timeout，注释就写着 "HTTPX phase timeouts alone do not
-# bound total response time"。1800s 对应 200MB 上限下约 114KB/s 的最低持续吞吐：低于
+# bound total response time"。1800s 对应 500MiB 上限下约 284KiB/s 的最低持续吞吐：低于
 # 这个速度的下载实际上已经停滞，而调用方本来就有 GitHub 直连的回退路径可以重试。
 _DOWNLOAD_TOTAL_TIMEOUT = 1800.0
 # Keep at most one 4 MiB batch of chunks. Progress and cancellation are still
@@ -183,9 +186,10 @@ def _is_loopback_host(host: str) -> bool:
     return normalized in {"localhost", "127.0.0.1", "::1"}
 
 
-def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
+def _is_local_bridge_origin(origin: str, expected_ports: set[int]) -> bool:
     try:
         parsed = urlparse(origin)
+        port = parsed.port or 80
     except ValueError:
         return False
     if parsed.scheme != "http" or not parsed.hostname or not _is_loopback_host(parsed.hostname):
@@ -194,7 +198,7 @@ def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
         return False
     if parsed.params or parsed.query or parsed.fragment:
         return False
-    return (parsed.port or 80) == expected_port
+    return port in expected_ports
 
 
 def _require_local_bridge_token_access(request: Request) -> None:
@@ -202,6 +206,12 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     Remote Market origins are intentionally excluded here even when CORS trusts
     them; remote pages must pair through /token-exchange instead.
+
+    The manager page is served by Main (packaged) or by this server
+    directly; a POST carries its Origin, so the origin may be Main's port or
+    the port this request reached. The Vite dev server (5173) is not trusted:
+    its proxy rewrites the Origin of the requests it forwards to the backend's
+    own, so any other page on that port is still refused.
     """
 
     if request.scope.get("neko.market_remote_authorized") or has_forwarding_metadata(request.headers):
@@ -209,15 +219,19 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     host_header = request.headers.get("host", "")
     try:
-        host = urlparse(f"//{host_header}").hostname or ""
+        parsed_host = urlparse(f"//{host_header}")
+        host = parsed_host.hostname or ""
+        request_port = parsed_host.port or 80
     except ValueError:
         host = ""
+        request_port = 0
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host) or not _is_loopback_host(host):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     origin = request.headers.get("origin")
-    if origin and not _is_local_bridge_origin(origin, _main_server_port()):
+    expected_ports = {request_port, _main_server_port()}
+    if origin and not _is_local_bridge_origin(origin, expected_ports):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
 
@@ -263,8 +277,14 @@ def _cleanup_one_time_codes(now: float | None = None) -> None:
 def _consume_one_time_code(code: str) -> bool:
     now = time.time()
     _cleanup_one_time_codes(now)
+    # compare_digest rejects non-ASCII str; compare bytes so a crafted code
+    # gets a 403 instead of a 500. A lone surrogate cannot be encoded.
+    try:
+        supplied = code.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
     for stored_code, expires_at in list(_ONE_TIME_CODES.items()):
-        if expires_at > now and secrets.compare_digest(stored_code, code):
+        if expires_at > now and secrets.compare_digest(stored_code.encode("utf-8"), supplied):
             _ONE_TIME_CODES.pop(stored_code, None)
             return True
     return False
@@ -455,6 +475,8 @@ class MarketTaskStatus(BaseModel):
     # 让前端识别稳定错误码（upgrade_rollback_completed / package_id_change / ...）。
     error: str | None = None
     error_code: str | None = None
+    error_details: dict[str, Any] | None = None
+    retryable: bool | None = None
     created_at: float = 0.0
     completed_at: float | None = None
     install_source_warning: str | None = None
@@ -483,7 +505,7 @@ class MarketInstalledResponse(BaseModel):
 
 class MarketTokenExchangeRequest(BaseModel):
     """用于 neko:// 回调后交换 token 的请求。"""
-    one_time_code: str
+    one_time_code: str = Field(min_length=1, max_length=128)
 
 
 class MarketTokenExchangeResponse(BaseModel):
@@ -495,6 +517,15 @@ class MarketBridgeTokenResponse(BaseModel):
     """供同源前端（plugin-manager UI）直接获取 bridge token。"""
     bridge_token: str
     port: int = 48911
+
+
+class MarketPairCodeResponse(BaseModel):
+    """A one-time code the local manager hands to a remote Market page."""
+    one_time_code: str
+    # Main's port, like bridge.json: the Market page reaches this server
+    # through Main's /market proxy, which passes CORS headers back unchanged.
+    port: int = 48911
+    expires_in: int = _ONE_TIME_CODE_TTL_SECONDS
 
 
 class MarketOAuthStartResponse(BaseModel):
@@ -1652,6 +1683,17 @@ async def market_bridge_token(request: Request):
     _require_local_bridge_token_access(request)
 
     return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=_main_server_port())
+
+
+@router.post("/pair-code", response_model=MarketPairCodeResponse)
+async def market_pair_code(request: Request):
+    """Issue a short-lived code the local manager passes to a remote Market page.
+
+    The page exchanges it at ``/token-exchange``. Same local-only gate as
+    ``/bridge-token``; the returned port is Main's (see the response model).
+    """
+    _require_local_bridge_token_access(request)
+    return MarketPairCodeResponse(one_time_code=_issue_one_time_code(), port=_main_server_port())
 
 
 @router.post("/oauth/start", response_model=MarketOAuthStartResponse)
@@ -3218,6 +3260,105 @@ async def _probe_market_user(access_token: Any) -> _MarketUserProbe:
     )
 
 
+_download_count_tasks: set[asyncio.Task[None]] = set()
+
+
+def _market_numeric_plugin_id(plugin_id: str | None) -> str | None:
+    text = str(plugin_id or "").strip()
+    # str.isdigit() accepts superscripts and other non-ASCII digits.
+    if not text.isascii() or not text.isdigit():
+        return None
+    return text
+
+
+def _client_download_params(
+    *,
+    version: str | None,
+    channel: str | None,
+    package_sha256: str | None,
+) -> dict[str, str]:
+    params = {"source": "client"}
+    if version and version.strip():
+        params["version"] = version.strip()[:50]
+    if channel and channel.strip():
+        params["channel"] = channel.strip()[:16]
+    digest = str(package_sha256 or "").strip().lower()
+    if len(digest) == 64 and all(character in "0123456789abcdef" for character in digest):
+        params["package_sha256"] = digest
+    return params
+
+
+async def _post_market_download_count(
+    market_id: str,
+    *,
+    version: str | None,
+    channel: str | None,
+    package_sha256: str | None,
+) -> None:
+    base_url = _normalized_base_url(MARKET_API_URL)
+    if not base_url:
+        return
+    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
+    started_at = time.monotonic()
+    try:
+        # Phase timeouts do not bound a response that keeps trickling in.
+        async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
+            async with _market_catalog_client() as client:
+                response = await client.post(
+                    url,
+                    params=_client_download_params(
+                        version=version,
+                        channel=channel,
+                        package_sha256=package_sha256,
+                    ),
+                )
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        if response.status_code >= 400:
+            logger.info(
+                "[market-download-count] rejected status={} plugin_id={} elapsed_ms={}",
+                response.status_code,
+                market_id,
+                elapsed_ms,
+            )
+    except Exception as exc:
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        logger.info(
+            "[market-download-count] request failed plugin_id={} error={} elapsed_ms={}",
+            market_id,
+            type(exc).__name__,
+            elapsed_ms,
+        )
+
+
+def _record_market_download_best_effort(
+    payload: MarketInstallRequest,
+) -> None:
+    """Count a finished first install without a Market login.
+
+    Only ``mode="install"`` counts. Upgrades, reinstalls and replacing a
+    built-in copy keep a plugin the user already had, so they do not add to
+    the public download count. The HTTP call runs in the background so a slow
+    or failed Market does not delay the local install result.
+    """
+
+    if payload.mode != "install":
+        return
+    market_id = _market_numeric_plugin_id(payload.plugin_id)
+    if market_id is None:
+        return
+    task = asyncio.create_task(
+        _post_market_download_count(
+            market_id,
+            version=payload.version,
+            channel=payload.channel,
+            package_sha256=payload.package_sha256,
+        ),
+        name="market-download-count",
+    )
+    _download_count_tasks.add(task)
+    task.add_done_callback(_download_count_tasks.discard)
+
+
 async def _report_market_install_best_effort(
     payload: MarketInstallRequest,
     task: dict[str, Any],
@@ -3226,14 +3367,14 @@ async def _report_market_install_best_effort(
     if not token_data or not token_data.get("access_token"):
         return
 
-    try:
-        market_plugin_id = int(str(payload.plugin_id or ""))
-    except ValueError:
+    market_plugin_id_text = _market_numeric_plugin_id(payload.plugin_id)
+    if market_plugin_id_text is None:
         logger.debug(
             "Skip Market install report: plugin_id is not a Market numeric id: {}",
             payload.plugin_id,
         )
         return
+    market_plugin_id = int(market_plugin_id_text)
 
     result = task.get("result") if isinstance(task.get("result"), dict) else {}
     install = result.get("install") if isinstance(result, dict) else {}
@@ -3397,6 +3538,7 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
                 code="invalid_mode",
                 message=f"unknown mode: {payload.mode}",
             )
+        _record_market_download_best_effort(payload)
         await _report_market_install_best_effort(payload, task)
         _finalize_task_success(task, started_at, log_ctx)
     except _TaskCancelled as exc:
@@ -3434,6 +3576,8 @@ class _TaskError(Exception):
     code: str
     message: str
     http_status: int | None = None
+    details: dict[str, Any] | None = None
+    retryable: bool | None = None
 
     def __post_init__(self) -> None:
         super().__init__(self.code, self.message)
@@ -3483,6 +3627,8 @@ def _finalize_task_failure(
     task["progress"] = task.get("progress", 0.0)
     task["error"] = err.message
     task["error_code"] = err.code
+    task["error_details"] = err.details
+    task["retryable"] = err.retryable
     task["completed_at"] = time.time()
     task["message"] = _human_message_for(err.code) or err.message
     logger.error(
@@ -3533,6 +3679,12 @@ _HUMAN_MESSAGES: dict[str, str] = {
     "lock_write_failed": "安装记录写入失败",
     "market_list_fetch_failed": "无法连接到 Market",
     "download_failed": "下载失败",
+    "package_size_exceeded": "插件包超过大小限制",
+    "download_timeout": "插件包下载超时",
+    "download_network_error": "下载插件包时网络连接失败",
+    "download_http_error": "插件下载服务器返回错误",
+    "insufficient_disk_space": "磁盘空间不足，无法保存插件包",
+    "download_write_failed": "无法将插件包保存到磁盘",
     "package_hash_mismatch": "插件包校验失败",
     "install_failed": "安装失败，已清理临时文件",
     "override_rollback_completed": "内置插件升级失败，已恢复内置版本",
@@ -3635,7 +3787,7 @@ async def _do_install(
         raise
     except Exception as exc:
         _raise_if_task_cancel_requested(task)
-        raise _TaskError(code="download_failed", message=str(exc)) from exc
+        raise _download_task_error(exc) from exc
 
     try:
         _raise_if_task_cancel_requested(task)
@@ -3655,7 +3807,7 @@ async def _do_install(
             )
         except _DownloadAttemptError as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
         except ValueError as exc:
             _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
@@ -3941,7 +4093,7 @@ async def _do_upgrade(
             raise
         except Exception as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
 
         _raise_if_task_cancel_requested(task)
         try:
@@ -3960,7 +4112,7 @@ async def _do_upgrade(
             )
         except _DownloadAttemptError as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
         except ValueError as exc:
             _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
@@ -4311,7 +4463,25 @@ def _utc_iso_now() -> str:
 
 
 class _DownloadAttemptError(ValueError):
-    """A failed HTTP download that may safely use the GitHub direct fallback."""
+    """Download failure with a stable category and explicit retry policy."""
+
+    def __init__(
+        self, message: str, *, code: str = "download_failed",
+        details: dict[str, Any] | None = None, retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+        self.retryable = retryable
+
+
+def _download_task_error(exc: Exception) -> _TaskError:
+    if isinstance(exc, _DownloadAttemptError):
+        return _TaskError(
+            code=exc.code, message=str(exc), details=exc.details,
+            retryable=exc.retryable,
+        )
+    return _TaskError(code="download_failed", message=str(exc))
 
 
 def _direct_github_download_fallback(url: str) -> str | None:
@@ -4444,7 +4614,9 @@ async def _download_package(url: str, task: dict[str, Any]) -> tuple[Path, str]:
 
     try:
         return await _download_package_once(url, task), url
-    except _DownloadAttemptError:
+    except _DownloadAttemptError as exc:
+        if not exc.retryable:
+            raise
         fallback_url = _direct_github_download_fallback(url)
         if not fallback_url:
             raise
@@ -4505,7 +4677,10 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError(f"下载失败: HTTP {exc.response.status_code}") from exc
+        raise _DownloadAttemptError(
+            f"下载失败: HTTP {exc.response.status_code}", code="download_http_error",
+            details={"http_status": exc.response.status_code},
+        ) from exc
     except httpx.TimeoutException as exc:
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
@@ -4515,7 +4690,7 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载超时") from exc
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
     except httpx.RequestError as exc:
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
@@ -4526,7 +4701,7 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载网络错误") from exc
+        raise _DownloadAttemptError("下载网络错误", code="download_network_error") from exc
     except PackageDownloadDeadline as exc:
         # asyncio.timeout 的**总时长**兜底到期。与上面的 httpx.TimeoutException 是两回事：
         # 那个是某一阶段超时，这个是"每阶段都没超时、但整通下载拖得太久"（滴流式响应）。
@@ -4540,21 +4715,38 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载超时") from exc
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
     except PackageSizeExceeded as exc:
         raise _DownloadAttemptError(
-            f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)"
+            f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)",
+            code="package_size_exceeded",
+            details={
+                "actual_bytes": exc.actual, "maximum_bytes": exc.maximum,
+                "size_source": exc.source,
+            },
+            retryable=False,
         ) from exc
+    except PackageDownloadWriteError as exc:
+        no_space = exc.error.errno == errno.ENOSPC or getattr(exc.error, "winerror", None) == 112
+        raise _DownloadAttemptError(
+            "磁盘空间不足，无法保存插件包" if no_space else "无法将插件包保存到磁盘",
+            code="insufficient_disk_space" if no_space else "download_write_failed",
+            retryable=False,
+        ) from exc
+    except TimeoutError as exc:
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
+    except OSError as exc:
+        raise _DownloadAttemptError("下载网络错误", code="download_network_error") from exc
     except ValueError as exc:
         raise _DownloadAttemptError(str(exc)) from exc
 
 
 def _format_bytes(value: int) -> str:
     if value >= 1024 * 1024:
-        return f"{value / (1024 * 1024):.1f}MB"
+        return f"{value / (1024 * 1024):.1f} MiB"
     if value >= 1024:
-        return f"{value / 1024:.1f}KB"
-    return f"{value}B"
+        return f"{value / 1024:.1f} KiB"
+    return f"{value} B"
 
 
 def _extract_filename(url: str) -> str:

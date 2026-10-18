@@ -1082,7 +1082,7 @@ async def rename_catgirl(old_name: str, request: Request):
             end_character_mutation(old_name, new_name)
 
 
-async def _rename_catgirl_serialized(old_name: str, new_name: str):
+async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commit=None):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
@@ -1134,6 +1134,7 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
     try:
         result = await _rename_catgirl_transaction(
             _config_manager, session_manager, characters, old_name, new_name, is_current_catgirl,
+            sync_commit=sync_commit,
         )
     finally:
         if visit_marker is not None:
@@ -1162,6 +1163,7 @@ async def _visit_name_refusal(config_manager, name: str, label: str):
 
 async def _rename_catgirl_transaction(
     _config_manager, session_manager, characters, old_name: str, new_name: str, is_current_catgirl: bool,
+    *, sync_commit=None,
 ):
     rename_notification_ws = None
     rename_notification_message = None
@@ -1304,14 +1306,22 @@ async def _rename_catgirl_transaction(
 
             # to_thread：改名路径里的 recent.json 读写要拿文件锁，不能在事件
             # 循环线程上取（对偶见 main_routers/memory_router.py 的同一调用）。
-            memory_rename_result, rename_cancelled = await _await_thread_call_to_completion(
-                rename_character_memory_storage,
-                _config_manager,
-                old_name,
-                new_name,
-                keep_recent_locks=True,
-                recent_transaction=recent_transaction,
-            )
+            if sync_commit is None:
+                memory_rename_result, rename_cancelled = await _await_thread_call_to_completion(
+                    rename_character_memory_storage,
+                    _config_manager,
+                    old_name,
+                    new_name,
+                    keep_recent_locks=True,
+                    recent_transaction=recent_transaction,
+                )
+            else:
+                # A sync rename retains the existing rollback transaction but
+                # fences each durable mutation by its captured login/consent.
+                memory_rename_result, rename_cancelled = await _await_coroutine_to_completion(
+                    sync_commit(rename_character_memory_storage, _config_manager, old_name, new_name,
+                                keep_recent_locks=True, recent_transaction=recent_transaction)
+                )
             if rename_cancelled:
                 raise asyncio.CancelledError
             retired_names = (old_name,)
@@ -1329,9 +1339,14 @@ async def _rename_catgirl_transaction(
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
-            await _await_thread_mutation(
-                _config_manager.save_characters, characters,
-            )
+            if sync_commit is None:
+                await _await_thread_mutation(_config_manager.save_characters, characters)
+            else:
+                _, save_cancelled = await _await_coroutine_to_completion(
+                    sync_commit(_config_manager.save_characters, characters)
+                )
+                if save_cancelled:
+                    raise asyncio.CancelledError
 
             await update_numeric_v2_character_bindings(
                 numeric_theater_root,
@@ -1411,6 +1426,12 @@ async def _rename_catgirl_transaction(
                     status_code=500,
                 )
 
+            if sync_commit is not None:
+                # A pause/logout during awaited reload or asset migration must
+                # roll back before this existing transaction becomes committed.
+                _, guard_cancelled = await _await_coroutine_to_completion(sync_commit(lambda: None))
+                if guard_cancelled:
+                    raise asyncio.CancelledError
             rename_committed = True
             _, finalize_cancelled = await _await_thread_call_to_completion(
                 finalize_character_recent_rename, memory_rename_result,

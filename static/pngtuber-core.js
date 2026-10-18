@@ -3289,6 +3289,47 @@
             });
         }
 
+        // 托盘“重置角色位置”入口。与 Live2D/VRM/MMD 的同名方法对齐：
+        // 位置和缩放一起回默认值；position_anchor 是摆放偏好（居中/右下），
+        // 不属于被拖走的位置，复位时不改动。
+        // 转场守卫的共享谓词：复位入口与保存出请求前用同一套判定。已知的
+        // 转场（角色切换 / 同角色重载 / 模型管理页持有 UI）都有同步可读的
+        // 状态信号；已完成的重载由世代号兜底（load 永久推进不回落）
+        isTransitionBlockingPlacementSave() {
+            if (window.appState && window.appState.isSwitchingCatgirl) return true;
+            if (window._modelReloadInFlight) return true;
+            if (typeof window.isMainUIHiddenByModelManager === 'function'
+                && window.isMainUIHiddenByModelManager()) return true;
+            return false;
+        }
+
+        async resetModelPosition() {
+            // 转场进行中不复位：窗口内复位会带着旧配置通过类型/名字/世代
+            // 三道检查，整对象 PUT 覆盖新角色记录或刚保存的新包。拖拽/缩放
+            // 不可达（模型已 hide），托盘是唯一入口
+            if (this.isTransitionBlockingPlacementSave()) return;
+            // 拖拽/双指缩放进行中不复位：活写入者会用复位前状态继续覆盖，
+            // 且世代号作废会让该次交互跳过保存，可见摆放与已存摆放分叉
+            // （与 handleWheelZoom 的入口守卫同模式）。
+            if (this._dragState || this._touchZoomState) return;
+            this._dragSequence += 1;
+            this.cancelEdgeSnapAnimation();
+            this.setActiveOffsets(0, 0);
+            this.setActiveScale(1);
+            this.applyTransform();
+            if (this.isLayeredActive()) this.drawLayeredState();
+            this.syncGlobalConfig();
+            if (typeof this.updateFloatingButtonsPosition === 'function') {
+                this.updateFloatingButtonsPosition();
+            }
+            this.updateLockIconPosition();
+            // 复位是显式动作，强制持久化：默认摆放若恰好等于上次已完成的保存键，
+            // 去重早退会让在途的拖拽 PUT 成为最终持久值——UI 看似已复位，
+            // 重载后弹回拖拽位置
+            this._lastSavedPositionKey = '';
+            await this.saveOrStageCurrentConfig();
+        }
+
         async checkAndSwitchDisplayAfterDrag(state) {
             const bridge = window.electronScreen;
             if (isModelManagerPage() || !bridge
@@ -3855,13 +3896,18 @@
             lockIcon.style.pointerEvents = isOverlapped ? 'none' : 'auto';
         }
 
-        async resolveCurrentLanlanName() {
+        resolveDirectLanlanName() {
             const direct = window.lanlan_config?.lanlan_name
                 || window.lanlan_config?.name
                 || window.current_lanlan_name
                 || window.currentLanlanName
                 || window.lanlanName;
-            if (direct) return String(direct);
+            return direct ? String(direct) : '';
+        }
+
+        async resolveCurrentLanlanName() {
+            const direct = this.resolveDirectLanlanName();
+            if (direct) return direct;
             try {
                 const response = await fetch('/api/config');
                 if (!response.ok) return '';
@@ -3899,28 +3945,59 @@
                 this.config.mirror
             ].join(':');
             if (saveKey === this._lastSavedPositionKey) return true;
+            // 保存绑定加载世代：在途保存横跨 load()（_saveInFlight 链不清）。
+            // runSave 开头先拒过期世代——同角色重载后旧快照整对象替换会还原
+            // 刚选的新配置；成功后的键写回也校验世代，防止旧保存恢复已被
+            // load() 清空的键（否则新模型摆放相同的保存会被去重跳过）
+            const saveGeneration = this._loadGeneration;
+            // 身份与载荷入队时同步捕获、执行时复审：保存排队期间可能已热切走
+            // （切换只 hide()，不清链也不推进世代号），惰性读名会把隐藏中
+            // 管理器的旧配置 PUT 到当前角色的记录上，后端照写 model_type
+            // 保留字段，目标角色整个被换掉。直读名不可用（需 /api/config
+            // 兜底）的配置里客户端无法在入队时刻绑定角色身份——解析窗口内
+            // 的角色变更会让旧快照写到新角色记录，因此直接不入队：无法安全
+            // 绑定就不发送。链槽位同步预留（append 先于任何 await），runSave
+            // 从检查到出请求全程无 await，不存在重排与检查后漂移窗口
+            const queuedPayload = {
+                model_type: 'pngtuber',
+                pngtuber: Object.assign({}, this.config),
+                apply_runtime: false
+            };
+            const queuedName = this.resolveDirectLanlanName();
+            if (!queuedName) {
+                console.warn('[PNGTuber] 无法从直读字段解析当前角色名，跳过位置保存');
+                return false;
+            }
             const runSave = async () => {
-                const name = await this.resolveCurrentLanlanName();
-                if (!name) {
-                    console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
+                if (this._loadGeneration !== saveGeneration) {
                     return false;
                 }
-                const payload = {
-                    model_type: 'pngtuber',
-                    pngtuber: Object.assign({}, this.config),
-                    apply_runtime: false
-                };
-                const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(name)}`, {
+                if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
+                    return false;
+                }
+                if (this.resolveDirectLanlanName() !== queuedName) {
+                    return false;
+                }
+                // 入队到执行之间也可能进入转场（切换 / 同角色重载未完成 /
+                // 模型管理页取得界面——卡面弹窗期间 _modelReloadInFlight 未
+                // 置位）：出请求前复核，入队时捕获的旧快照不得越过刚保存的
+                // 新配置
+                if (this.isTransitionBlockingPlacementSave()) {
+                    return false;
+                }
+                const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(queuedName)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(queuedPayload)
                 });
                 const result = await response.json().catch(() => ({}));
                 if (!response.ok || !result.success) {
                     console.warn('[PNGTuber] 保存位置失败:', result.error || response.statusText);
                     return false;
                 }
-                this._lastSavedPositionKey = saveKey;
+                if (this._loadGeneration === saveGeneration) {
+                    this._lastSavedPositionKey = saveKey;
+                }
                 return true;
             };
             this._saveInFlight = (this._saveInFlight || Promise.resolve()).then(runSave, runSave);
@@ -3969,6 +4046,9 @@
             this.detachDragListeners();
             this.clearEmotion({ render: false });
             this._modelManagerUseCurrentPlacement = false;
+            // 去重键只记摆放字段不记角色，管理器单例跨角色复用：不清会让上个
+            // 角色的末次保存键挡掉新角色摆放相同的保存（复位恰是规范化摆放）
+            this._lastSavedPositionKey = '';
             const normalizedConfig = normalizeConfig(config || {});
             this.config = normalizedConfig;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {

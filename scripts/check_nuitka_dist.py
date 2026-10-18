@@ -69,6 +69,11 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/libs", "THIRD_PARTY_NOTICES.md"),
     ("static/libs/licenses", "THREE-MMD-LICENSE.txt"),
     ("static/libs/licenses", "BABYLON-MMD-LICENSE.txt"),
+    # 串门传输页按 transport 懒加载的 vendor SDK（固定版本、随包分发、不从 CDN 拉）及其许可证。
+    ("static/libs", "trtc.js"),
+    ("static/libs", "livekit-client.umd.js"),
+    ("static/libs/licenses", "TRTC.LICENSE"),
+    ("static/libs/licenses", "LIVEKIT.LICENSE"),
     # 内置 Live2D 模型：源码打包在 assets/<name>.tar.gz，build_frontend 解到 static/<name>/。
     # 默认角色用 yui-lolita，加载失败的兜底与教程也指向它；yui-origin 仍随包发。
     # 只查 model3.json 挡不住半截解包——moc3 与纹理是加载硬依赖，一并断言。

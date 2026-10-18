@@ -1760,8 +1760,14 @@ class UniversalTutorialManager {
 
         this.closeDay1SystrayIntroModal({ notify: false });
 
+        const platformApi = window.homeTutorialPlatformCapabilities;
+        const isMac = !!(platformApi && platformApi.detectPlatform() === 'macos');
         const t = (key, fallback) => this.t(key, fallback);
         const escape = (text) => this.safeEscapeHtml(t(text.key, text.fallback));
+        const platformEscape = (text) => escape({
+            key: isMac ? text.key.replace('tutorial.systray.', 'tutorial.systray.macos.') : text.key,
+            fallback: isMac ? text.macFallback : text.fallback
+        });
         const overlay = document.createElement('div');
         overlay.id = 'neko-day1-systray-intro-modal';
         overlay.className = 'neko-day1-systray-intro-modal';
@@ -1776,19 +1782,19 @@ class UniversalTutorialManager {
                 <div class="neko-day1-systray-layout">
                     <div class="neko-day1-systray-media">
                         <div class="neko-day1-systray-location-copy">
-                            <h2 id="neko-day1-systray-intro-title">${escape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置' })}</h2>
-                            <p>${escape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。' })}</p>
-                            <p class="neko-day1-systray-note">${escape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。' })}</p>
+                            <h2 id="neko-day1-systray-intro-title">${platformEscape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置', macFallback: '📍 菜单栏图标位置' })}</h2>
+                            <p>${platformEscape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。', macFallback: 'N.E.K.O 的图标位于屏幕顶部的 macOS 菜单栏。' })}</p>
+                            <p class="neko-day1-systray-note">${platformEscape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。', macFallback: '在顶部菜单栏找到图中的 N.E.K.O 图标。' })}</p>
                         </div>
                         <img
-                            src="/static/assets/tutorial/systray/stray_intro.png"
-                            alt="${escape({ key: 'tutorial.systray.location.alt', fallback: '系统托盘位置示意图' })}"
+                            src="${isMac ? '/static/assets/tutorial/systray/macos_intro.png' : '/static/assets/tutorial/systray/stray_intro.png'}"
+                            alt="${platformEscape({ key: 'tutorial.systray.location.alt', fallback: '系统托盘位置示意图', macFallback: 'macOS 菜单栏图标和菜单示意图' })}"
                         >
                     </div>
                     <div class="neko-day1-systray-content">
                         <section class="neko-day1-systray-menu" aria-labelledby="neko-day1-systray-menu-title">
-                            <h3 id="neko-day1-systray-menu-title">${escape({ key: 'tutorial.systray.menu.title', fallback: '📋 托盘菜单' })}</h3>
-                            <p>${escape({ key: 'tutorial.systray.menu.desc', fallback: '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：' })}</p>
+                            <h3 id="neko-day1-systray-menu-title">${platformEscape({ key: 'tutorial.systray.menu.title', fallback: '📋 托盘菜单', macFallback: '📋 菜单栏菜单' })}</h3>
+                            <p>${platformEscape({ key: 'tutorial.systray.menu.desc', fallback: '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：', macFallback: '点击菜单栏中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：' })}</p>
                             <div class="neko-day1-systray-menu-panel">
                                 <div class="neko-day1-systray-menu-item">
                                     <strong>${escape({ key: 'tutorial.systray.resetPosition', fallback: '重置角色位置' })}</strong>
@@ -1799,12 +1805,12 @@ class UniversalTutorialManager {
                                     <span>${escape({ key: 'tutorial.systray.openChatDesc', fallback: '打开独立的对话框进行文字对话~' })}</span>
                                 </div>
                                 <div class="neko-day1-systray-menu-item">
-                                    <strong>${escape({ key: 'tutorial.systray.hotkey', fallback: '快捷键设置' })}</strong>
-                                    <span>${escape({ key: 'tutorial.systray.hotkeyDesc', fallback: '设置全局快捷键，更高效地控制 N.E.K.O~' })}</span>
+                                    <strong>${escape({ key: 'tutorial.systray.settings', fallback: '设置' })}</strong>
+                                    <span>${escape({ key: 'tutorial.systray.settingsDesc', fallback: '打开设置，调整 N.E.K.O 的使用偏好~' })}</span>
                                 </div>
                                 <div class="neko-day1-systray-menu-item neko-day1-systray-menu-item--danger">
                                     <strong>${escape({ key: 'tutorial.systray.exit', fallback: '退出' })}</strong>
-                                    <span>${escape({ key: 'tutorial.systray.exitDesc', fallback: '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~' })}</span>
+                                    <span>${platformEscape({ key: 'tutorial.systray.exitDesc', fallback: '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~', macFallback: '关闭 N.E.K.O，可从菜单栏菜单中选择退出。' })}</span>
                                 </div>
                             </div>
                         </section>
@@ -4239,6 +4245,18 @@ class UniversalTutorialManager {
 
         // 清除全局引导标记
         window.isInTutorial = false;
+
+        // teardown 直接清全局标志、不经过任何抑制层的 begin/end：必须刷新
+        // 交互锁并广播转变。调度重排/视觉补挂挂在 lock-changed(locked:false)
+        // 这个最终释放边上——各来源的 features-suppressed false 事件都可能
+        // 早于最终解锁到达（scheduleProactiveChat 在闸门仍关时直接返回、
+        // 不留定时器），漏掉这次广播会让聊天/视觉定时器死到下一次无关操作。
+        try {
+            const interactionRuntime = window.NekoHomeTutorialRuntime;
+            if (interactionRuntime && typeof interactionRuntime.refreshInteractionLock === 'function') {
+                interactionRuntime.refreshInteractionLock('tutorial-teardown');
+            }
+        } catch (_) { }
 
         // 恢复页面滚动
         this.unlockBodyScroll();

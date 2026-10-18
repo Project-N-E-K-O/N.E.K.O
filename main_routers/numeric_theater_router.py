@@ -526,6 +526,15 @@ async def _numeric_payload(
         ),
         catgirl_name=str(binding.get("catgirl_name") or "当前猫娘"),
     )
+    try:
+        recovery_available = invitation_recovery_contract(
+            runtime, stored, condition_narrations_enabled=bool(modules.get("review")),
+        ) is not None
+    except NumericV2RuntimeError as exc:
+        # An unusable invitation must not prevent reading the session itself.
+        if str(exc) != "numeric_silent_choice_input_too_long":
+            raise
+        recovery_available = False
     payload = {
         "session": _public_session(stored.session),
         "story_title": str(runtime.engine.story["meta"]["title"]),
@@ -537,7 +546,7 @@ async def _numeric_payload(
         "story_intro": cast.intro(runtime.engine.story),
         "scene": _scene_projection(runtime, stored, binding),
         "suggested_inputs": list(latest.get("suggested_inputs") or []),
-        "invitation_recovery_available": invitation_recovery_contract(runtime, stored, condition_narrations_enabled=bool(modules.get("review"))) is not None,
+        "invitation_recovery_available": recovery_available,
     }
     if end_receipt:
         payload["end_receipt_id"] = str(end_receipt.get("receipt_id") or "")

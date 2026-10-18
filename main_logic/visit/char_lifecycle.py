@@ -777,6 +777,42 @@ async def _settle_handed_over(
     raise RenamePendingElsewhere("another character's rename still owns this name's visit data")
 
 
+async def handover_pending(config_dir: str | Path, name: str, character_uid: str | None) -> bool:
+    """Whether another character's pending rename still owns the entries under ``name`` (unreadable: False).
+
+    A cloudsave import handed ``name`` over to this character
+    (``handed_over``) before startup recovery migrated them. Cheap: one read
+    of the roster markers.
+    """
+    try:
+        return await _handed_over_pending(Path(config_dir), name, character_uid)
+    except RosterCorruptError:
+        return False
+
+
+async def handover_blocks_visit(
+    config_dir: str | Path, name: str, character_uid: str | None, load_names: LoadNames,
+) -> bool:
+    """Whether this character must not start a visit yet: the entries under ``name`` are not its own yet.
+
+    The rename that handed ``name`` over is reconciled first (under the
+    caller's character-config lock). False once it settled; True while its
+    marker still owns ``name``, ambiguous included: that ambiguity lifts when
+    the character occupying one of its names is deleted, and reconciliation
+    then carries every entry under ``name`` off to the renamed character,
+    visits this character made meanwhile among them. An unreadable roster
+    blocks nothing, like every other name check.
+    """
+    try:
+        # 返回 True 是歧义：同样拦。占着另一个名字的角色被删后歧义就解开，对账会把这个名字下的条目
+        # （包括这期间接手的角色串门写下的）全部迁给原角色
+        return await _settle_handed_over(Path(config_dir), name, character_uid, load_names)
+    except RenamePendingElsewhere:
+        return True
+    except RosterCorruptError:
+        return False
+
+
 async def _own_rename_pending(config_dir: Path, name: str, character_uid: str | None, *, queued_only: bool) -> bool:
     """Whether a rename of this character is queued (or, unless ``queued_only``, in the slot either)."""
     slot, queued = await read_roster_markers(config_dir, PENDING_RENAME, PENDING_RENAME_QUEUE)

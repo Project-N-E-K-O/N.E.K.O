@@ -274,6 +274,9 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self.on_idle: Optional[Callable[[], None]] = None
         self._conversation_history = []
         self._instructions = ""
+        # Knowledge blocks the session's requests carry beside the history
+        # (``_turn_context``); never saved in it.
+        self._resident_turn_context = []
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
         # 插件 read 图片的独立暂存位。刻意不与 _pending_images 共用：两者共用时

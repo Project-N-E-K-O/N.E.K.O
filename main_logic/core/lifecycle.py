@@ -669,6 +669,8 @@ class LifecycleMixin:
             logger.error(f"💥 清理pending_session时出错: {e}")
 
     async def _init_renew_status(self):
+        # Retire pending proactive HTTP work before teardown's first await.
+        self._proactive_screenshot_request_id = None
         # A reply this end cut short whose completion is the session-level
         # callback (an independent-ASR voice reply, a proactive one) never
         # runs it: the retired connection's output callbacks are dropped
@@ -1728,6 +1730,7 @@ class LifecycleMixin:
         operation_is_current,
         cached_turns_before_final: list[dict],
         visual_still_owned=None,
+        turn_context=None,
     ) -> bool:
         """Two-phase Realtime -> Offline VLM promotion for one raw-image turn.
 
@@ -1761,6 +1764,10 @@ class LifecycleMixin:
             try:
                 current = getattr(self, 'session', None)
                 if isinstance(current, OmniOfflineClient):
+                    # 没有本轮附加上下文时不传这个参数，调用与原来一致。
+                    context_kwargs = (
+                        {'turn_context': turn_context} if turn_context is not None else {}
+                    )
                     if not operation_is_current():
                         return False
                     # The session captured at ASR prepare already owns the turn:
@@ -1768,6 +1775,8 @@ class LifecycleMixin:
                     # speech id twice. Only a hot-swap replacement needs the
                     # preparation that could not run at the original boundary.
                     if current is not prepared_session:
+                        # 热切换换来的会话：检索排除的是旧会话常驻的知识，不适用。
+                        context_kwargs = {}
                         prepare = getattr(
                             current,
                             'prepare_external_voice_turn',
@@ -1844,6 +1853,7 @@ class LifecycleMixin:
                         delivered = await submit_text(
                             turn.transcript,
                             turn_id=turn.turn_id,
+                            **context_kwargs,
                         )
                         return delivered is not False
                     delivered = await submit(
@@ -1853,6 +1863,9 @@ class LifecycleMixin:
                         # 与这批帧一起冻结的采集通道。不传的话离线侧会把屏幕
                         # 和摄像头帧一律标成 "user"。
                         source=turn.source,
+                        # 本轮附加上下文：快速路径上接这一轮的本来就是离线
+                        # 会话，检索时排除的也是它常驻的知识。
+                        **context_kwargs,
                     )
                     return delivered is not False
                 if current is None or not operation_is_current():
@@ -2478,6 +2491,8 @@ class LifecycleMixin:
 
         self.session_start_time = datetime.now()
         self._session_turn_count = 0
+        # 真正开始一段对话（热切换不走这里）：被动记忆召回以此排除本段对话里写入的事实。
+        self._turn_context_conversation_started_at = self.session_start_time
 
         # 启动消息处理任务
         self.message_handler_task = asyncio.create_task(self.session.handle_messages())

@@ -245,6 +245,11 @@ class SessionOwnershipMixin:
 
     def _close_connection_record(self, record, *, initiating_task=None):
         record.retired = True
+        tool_owner = getattr(self, "_chat_original_tool_owner", None)
+        if tool_owner is not None and tool_owner[0] is record.session:
+            # Provenance must not keep a retired client and its provider socket
+            # alive after the manager's normal connection registry is pruned.
+            self._chat_original_tool_owner = None
         # A failed close leaves the physical state unknown and therefore keeps
         # capacity reserved. A later retirement attempt may retry the provider
         # close and release that slot only after a confirmed success.

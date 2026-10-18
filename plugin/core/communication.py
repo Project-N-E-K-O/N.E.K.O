@@ -1064,6 +1064,7 @@ class PluginCommunicationResourceManager:
                 parameters=parameters,
                 timeout_seconds=float(timeout_seconds),
                 role=role,
+                **({"reply_tail": True} if msg.get("reply_tail") is True else {}),
             )
             self.logger.info(
                 "LLM tool registered with main_server: plugin={} name={}",

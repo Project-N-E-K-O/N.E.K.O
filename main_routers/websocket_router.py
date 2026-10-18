@@ -1030,6 +1030,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 continue
             action = message.get("action")
 
+            if action == "reply_tail_capabilities":
+                websocket.state.reply_tail_version = 1 if message.get("version") == 1 else 0
+                continue
+
             if action == "voice_identity_control":
                 task = _fire_task(_dispatch_voice_identity_control(session_manager[lanlan_name],
                     websocket, message, connection_id=str(this_session_id),
@@ -1053,6 +1057,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # 早返回避免污染下面的业务 dispatch；不需要 session_manager 状态。
             if action == "telemetry":
                 _handle_ws_telemetry(message, lanlan_name=lanlan_name)
+                continue
+
+            if action == "proactive_vision_consent":
+                session_manager[lanlan_name].update_proactive_vision_consent(
+                    message.get("enabled")
+                )
                 continue
 
             if action == "goodbye_state":
@@ -1336,6 +1346,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     if await route_external_microphone_audio(lanlan_name):
                         continue
                 else:
+                    if (
+                        input_type in _TEXT_SESSION_INPUT_TYPES
+                        and str(message.get("source") or "").startswith(VISIT_ROUTE_KIND + ":")
+                        and not _visit_owns_input(lanlan_name)
+                    ):
+                        # 写给串门的句子、当前输入却不归串门（页面漏了结束、别的路由如游戏已接管）：
+                        # 先于通用路由分派拒掉，不让别的路由认领、也不漏进普通聊天
+                        from main_routers.visit_router import display_socket as _visit_display
+
+                        await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
+                        continue
                     # 分派途中路由可能换主（别的路由放手、串门刚好起来）：把发起这条输入的连接带进分派，
                     # 串门据此拒绝未绑定连接的输入、把未授权提示发回这条连接
                     connection_token = DISPLAY_SOCKET_CONNECTION.set(websocket)
@@ -1354,6 +1375,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             await stream_mgr._emit_agent_callback_turn_end(message.get("request_id"))
                         continue
                     if claim is RouteClaim.CLAIMED:
+                        continue
+                    if (
+                        input_type in _TEXT_SESSION_INPUT_TYPES
+                        and str(message.get("source") or "").startswith(VISIT_ROUTE_KIND + ":")
+                    ):
+                        # 分派途中串门放手（路由在 ending 释放）、这句没人接：同样不漏进普通聊天，
+                        # 按「正在道别」拒掉，页面据 request_id 标未送达、放回原文
+                        from main_routers.visit_router import display_socket as _visit_display
+
+                        await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
                         continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")
@@ -1500,16 +1531,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 resolve_capture_response(lanlan_name, message)
 
             elif action == "screenshot_response":
-                raw = message.get("data", "")
+                declined = message.get("declined") is True
+                raw = "" if declined else message.get("data", "")
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
                 # Extract and store avatar position metadata (paired with fresh screenshot)
                 av_pos = message.get("avatar_position")
                 if not (av_pos and isinstance(av_pos, dict)):
                     # 前端明确说这张图不该叠（窗口截图 / 相机 / Avatar 已折叠 / 多屏）。
                     av_pos = None
-                session_manager[lanlan_name]._avatar_position = av_pos
                 # 坐标随图一起交给等待方，不让它去读会被别的帧改写的 _avatar_position。
-                session_manager[lanlan_name].resolve_screenshot_request(b64, av_pos)
+                session_manager[lanlan_name].resolve_screenshot_request(
+                    b64, av_pos, declined=declined,
+                    request_id=message.get("request_id"),
+                )
 
             elif action == "greeting_check":
                 # 首次连接或切换角色时，前端请求检查是否需要主动搭话

@@ -1640,6 +1640,51 @@ def test_social_session_init_allows_a_loopback_http_base(client, monkeypatch):
     assert response.json()["access_token"] == "desktop-token-a"
 
 
+def test_native_delegate_is_not_issued_for_a_plaintext_non_loopback_base(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://community.example")
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "base_url": "http://community.example"},
+    )
+    local_ui = {"Sec-Fetch-Site": "same-origin"}
+
+    issued = client.get("/api/card-drop/native-delegate", headers=local_ui)
+    handoff = client.get(
+        "/api/card-drop/native-delegate/handoff",
+        params={"return_to": "http://community.example/cards"},
+        headers=local_ui,
+        follow_redirects=False,
+    )
+
+    assert issued.status_code == 403
+    assert issued.json() == {"detail": "insecure_transport"}
+    assert "native_delegate" not in issued.text
+    assert handoff.status_code == 403
+    assert handoff.json() == {"detail": "insecure_transport"}
+    assert "location" not in handoff.headers
+
+
+def test_native_delegate_is_issued_for_a_loopback_http_base(client, monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:3000")
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "base_url": "http://localhost:3000"},
+    )
+
+    issued = client.get(
+        "/api/card-drop/native-delegate",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
+
+    assert issued.status_code == 200
+    assert issued.json()["native_delegate"]
+
+
 def test_social_session_init_keeps_the_ticket_when_identity_is_unavailable(
     client,
     monkeypatch,

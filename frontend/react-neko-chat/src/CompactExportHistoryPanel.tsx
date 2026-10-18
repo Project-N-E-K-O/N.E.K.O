@@ -760,8 +760,8 @@ export default function CompactExportHistoryPanel({
             >
               <div className="compact-export-preview-bubble">
                 <div className="compact-export-preview-meta">
-                  <span>{message.author}</span>
-                  <span>{message.time}</span>
+                  <span className="compact-export-preview-author">{message.author}</span>
+                  <span className="compact-export-preview-time">{message.time}</span>
                 </div>
                 <div className="compact-export-preview-content">
                   {message.blocks.map((block, index) => (

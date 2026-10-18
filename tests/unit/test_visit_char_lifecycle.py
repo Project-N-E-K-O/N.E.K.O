@@ -1284,3 +1284,57 @@ async def test_chained_names_appended_after_the_current_one_by_a_rolled_back_imp
     assert await lc.reconcile_rename(tmp_path, set(uid_of), uid_of) == frozenset()
     assert await roster.get_char_entry(PEER_X, "D") is not None
     assert "pending_rename" not in _peers(tmp_path)
+
+
+
+# ── 准入：交出名字的改名迁完之前不串门 ─────────────────────────────
+
+
+async def test_handover_blocks_visit_only_while_the_handing_rename_can_still_settle(tmp_path, monkeypatch):
+    roster = await seed_roster(tmp_path, own_char="A")
+    handed = {"old": "A", "new": "B", "uid": CHAR_UID_A, "source": lc.CLOUDSAVE_SOURCE, "handed_over": ["A"]}
+    await set_roster_marker(tmp_path, "pending_rename", handed)
+    uid_of = {"A": CHAR_UID_B, "B": CHAR_UID_A}
+    load = _loader(set(uid_of), uid_of)
+    # 没有交给这个角色的名字：不拦（变异：不看 uid / 名字必红）
+    assert await lc.handover_blocks_visit(tmp_path, "B", CHAR_UID_A, load) is False
+    original = VisitSpool.rename_own_char
+
+    async def busy(*_a, **_k):
+        raise OSError("spool locked")
+
+    monkeypatch.setattr(VisitSpool, "rename_own_char", busy)
+    # 对不完账：拦住（变异：一律放行必红）
+    assert await lc.handover_blocks_visit(tmp_path, "A", CHAR_UID_B, load) is True
+    monkeypatch.setattr(VisitSpool, "rename_own_char", original)
+    # 对得完：先迁完再放行，A 下原角色的条目归到 B（变异：不先对账必红）
+    assert await lc.handover_blocks_visit(tmp_path, "A", CHAR_UID_B, load) is False
+    assert await roster.get_char_entry(PEER_X, "B") is not None
+    assert "pending_rename" not in _peers(tmp_path)
+
+
+async def test_handover_keeps_blocking_visits_while_the_handing_rename_is_ambiguous(tmp_path):
+    roster = await seed_roster(tmp_path, own_char="A")
+    handed = {"old": "A", "new": "B", "uid": CHAR_UID_A, "source": lc.CLOUDSAVE_SOURCE,
+              "handed_over": ["A"], "chained": ["C"]}
+    await set_roster_marker(tmp_path, "pending_rename", handed)
+    uid_of = {"A": CHAR_UID_B, "B": "e" * 32, "C": CHAR_UID_A}
+    # 交出 A 的那笔改名歧义（B 被 uid e 占着）：照拦。歧义并不永久——uid e 被删后对账会把
+    # A 下的条目全迁给 uid A，这期间 uid B 串门写下的也会被带走（变异：歧义时放行必红）
+    assert await lc.handover_blocks_visit(tmp_path, "A", CHAR_UID_B, _loader(set(uid_of), uid_of)) is True
+    assert _peers(tmp_path)["pending_rename"] == handed
+    # uid e 删掉后歧义解开：先把 uid A 的条目迁到 C，再放行
+    del uid_of["B"]
+    assert await lc.handover_blocks_visit(tmp_path, "A", CHAR_UID_B, _loader(set(uid_of), uid_of)) is False
+    assert await roster.get_char_entry(PEER_X, "C") is not None and await roster.get_char_entry(PEER_X, "A") is None
+    assert "pending_rename" not in _peers(tmp_path)
+
+
+async def test_handover_check_lets_an_unreadable_roster_through(tmp_path):
+    (tmp_path / "visit_peers.json").write_text("{broken", encoding="utf-8")
+
+    async def unread():
+        raise AssertionError("not read")
+
+    # 名册读不出：与名字占用一样放行，不读角色配置
+    assert await lc.handover_blocks_visit(tmp_path, "A", CHAR_UID_B, unread) is False

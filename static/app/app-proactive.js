@@ -103,7 +103,7 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
-    let _homeTutorialFeatureSuppressedByEvent = false;
+    const _homeTutorialSuppressionSources = new Set();
 
     function isProactiveVisionEnabledNow() {
         // 跨窗口时 leader 可能还没收到 storage 事件；以 localStorage 的最新保存值兜底。
@@ -123,14 +123,58 @@
         return !!S.proactiveVisionEnabled;
     }
 
+    mod.isProactiveVisionEnabledNow = isProactiveVisionEnabledNow;
+
+    // 每次撤回授权递增。截图之后递增过，这张图就属于撤权前：即使随后又重新
+    // 开启，也不能随请求发出——后端只能察觉它收到请求之后的撤权。
+    var proactiveVisionRevocationSeq = 0;
+
+    function noteProactiveVisionConsent(enabled) {
+        if (enabled === false) proactiveVisionRevocationSeq += 1;
+    }
+
+    function currentProactiveVisionRevocationSeq() {
+        return proactiveVisionRevocationSeq;
+    }
+
+    // vision 与 window 同属视觉授权（见 latestModes），撤权时两者一起去掉。
+    function discardVisionRevokedSince(requestBody, seqAtCapture) {
+        var modes = requestBody.enabled_modes || [];
+        if (!requestBody.screenshot_data && !requestBody.window_title
+            && modes.indexOf('vision') === -1 && modes.indexOf('window') === -1) return false;
+        // 另一窗口的撤权先落 localStorage，本窗口的同步事件可能还没到，序号未变。
+        if (seqAtCapture === proactiveVisionRevocationSeq && isProactiveVisionEnabledNow()) return false;
+        delete requestBody.screenshot_data;
+        delete requestBody.screenshot_allow_desktop_fallback;
+        delete requestBody.avatar_position;
+        delete requestBody.window_title;
+        requestBody.enabled_modes = modes.filter(function (m) { return m !== 'vision' && m !== 'window'; });
+        return true;
+    }
+
+    mod.noteProactiveVisionConsent = noteProactiveVisionConsent;
+    mod.currentProactiveVisionRevocationSeq = currentProactiveVisionRevocationSeq;
+    mod.discardVisionRevokedSince = discardVisionRevokedSince;
+
     function isHomeTutorialFeatureSuppressed() {
         if (window.isNekoClickGuideActive === true) return true;
         try {
-            if (_homeTutorialFeatureSuppressedByEvent) {
+            if (_homeTutorialSuppressionSources.size > 0) {
                 return true;
             }
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                return true;
+            }
+            // 头像重载层的运行时抑制：覆盖它单独抑制的窗口（feature controller
+            // begin 之前）以及 teardown 时持久化护栏已提前放行、但模型恢复
+            // 尚未完成的窗口——期间经其他入口重排的定时器触发时也要被拦下，
+            // 不能对着仍在展示的临时教程模型开口。仅本窗口的触发闸门，
+            // 不进 leader 心跳广播、不影响剧场语音守卫。
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            if (reloadController && typeof reloadController.isProactiveRuntimeHeld === 'function'
+                && reloadController.isProactiveRuntimeHeld()) {
                 return true;
             }
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -1306,6 +1350,9 @@
                 }
             }
 
+            // 截图开始前记下撤权序号，发送前比对（见 discardVisionRevokedSince）。
+            var visionRevocationSeqAtCapture = proactiveVisionRevocationSeq;
+
             // 如果包含 vision 模式，需要在前端获取截图和窗口标题
             if (availableModes.includes('vision') || availableModes.includes('window')) {
                 var fetchTasks = [];
@@ -1377,6 +1424,9 @@
                     var screenshotDataUrl = screenshotResult.dataUrl;
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
+                        // 先传窗口约束，Phase 2 前端失联时后端也不能扩大到整屏。
+                        requestBody.screenshot_allow_desktop_fallback =
+                            screenshotResult.allowDesktopFallback !== false;
                         // captureType 由截图函数在抓帧那一刻定好（见 resolveCaptureTypeFor）。
                         // 这里不再二次推断：抓帧是异步的，等到这一步 S 里的流 / 源
                         // 可能已经换人，拿它解释这张旧图会叠错或漏叠。
@@ -1460,6 +1510,11 @@
                 var hdrs = { 'Content-Type': 'application/json' };
                 if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
+                }
+                // 截图、取 header、CSRF 重试期间都可能撤权后又重新开启。
+                if (discardVisionRevokedSince(requestBody, visionRevocationSeqAtCapture)) {
+                    console.log('截图后视觉授权被撤回过，本次请求不带截图和窗口信息');
+                    proactiveBody = JSON.stringify(requestBody);
                 }
                 return fetch('/api/proactive_chat', {
                     method: 'POST',
@@ -2196,8 +2251,16 @@
                 }
             }
 
-            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+            // 教程可能在本次异步采集途中开始：stop 停得掉 interval、停不掉
+            // 已在飞的调用，而新方案下设置内存保持真值（开），发送前
+            // 必须显式复查抑制闸门，否则这一帧会落在教程期间。命中时还要
+            // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
+            // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
+            var suppressedByTutorial = isHomeTutorialFeatureSuppressed();
+            var visionDisabled = !isProactiveVisionEnabledNow();
+            if (visionDisabled || !S.isRecording || suppressedByTutorial) {
                 stopProactiveVisionDuringSpeech();
+                if (suppressedByTutorial || visionDisabled) releaseProactiveVisionStream();
                 return;
             }
             if (rememberedWindowCapture && rememberedWindowCapture.required
@@ -2242,6 +2305,13 @@
             return;
         }
 
+        // 首页教程/头像重载运行时抑制期间禁止启动（含 teardown 的模型恢复
+        // 窗口：该窗口持久化护栏已放行、内存标志已恢复，但临时教程模型仍在
+        // 展示，此时开始的语音会话不应触发屏幕帧推送）。
+        if (isHomeTutorialFeatureSuppressed()) {
+            return;
+        }
+
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
         if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
@@ -2249,7 +2319,8 @@
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()) {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()
+                || isHomeTutorialFeatureSuppressed()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -2361,16 +2432,28 @@
         return (!stream && !sourceId) ? 'screen' : null;
     }
 
-    async function captureProactiveChatScreenshotWithSource() {
+    function isProactiveScreenshotBlocked() {
+        return isHomeTutorialFeatureSuppressed() || !isProactiveVisionEnabledNow();
+    }
+
+    function declinedProactiveScreenshot() {
+        // “不允许”必须保留到后端；普通空图仍表示技术失败、允许原有兜底。
+        return { dataUrl: null, via: null, captureType: null, declined: true, allowDesktopFallback: false };
+    }
+
+    async function captureProactiveChatScreenshotWithSourceInternal() {
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+            if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
             if (rememberedWindowCapture && rememberedWindowCapture.required
                 && !rememberedWindowCapture.allowed) {
                 console.warn('[主动搭话截图] 记忆窗口无法唯一确认，停止本次截图');
-                return { dataUrl: null, via: null, captureType: null };
+                return declinedProactiveScreenshot();
             }
         }
+
+        var allowDesktopFallback = !(rememberedWindowCapture && rememberedWindowCapture.required);
 
         function rememberedCaptureStillCurrent() {
             return !rememberedWindowCapture
@@ -2395,7 +2478,7 @@
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
                         if (discardSupersededRememberedFrame('缓存流截图')) {
-                            return { dataUrl: null, via: null, captureType: null };
+                            return declinedProactiveScreenshot();
                         }
                         S.screenCaptureStreamLastUsed = Date.now();
                         if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
@@ -2403,6 +2486,7 @@
                         return {
                             dataUrl: cachedFrame.dataUrl,
                             via: 'stream',
+                            allowDesktopFallback: allowDesktopFallback,
                             captureType: resolveCaptureTypeFor('stream', cachedStream, cachedSourceId)
                         };
                     }
@@ -2411,6 +2495,7 @@
         }
 
         // 策略 0b: 桌面壳直接捕获选中源（Electron / Tauri）
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var desktopProvider = getDesktopProvider();
         if (S.selectedScreenSourceId && desktopProvider
             && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
@@ -2424,12 +2509,13 @@
                 );
                 if (direct && direct.success && direct.dataUrl) {
                     if (discardSupersededRememberedFrame('主进程直接捕获')) {
-                        return { dataUrl: null, via: null, captureType: null };
+                        return declinedProactiveScreenshot();
                     }
                     console.log('[主动搭话截图] 主进程直接捕获成功:', nativeSourceId);
                     return {
                         dataUrl: direct.dataUrl,
                         via: 'native',
+                        allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('native', null, nativeSourceId)
                     };
                 } else if (direct && direct.error) {
@@ -2442,19 +2528,25 @@
         }
 
         // 策略1: 缓存流 / Electron窗口ID / getDisplayMedia（非user gesture不弹窗）
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
+        if (isProactiveScreenshotBlocked()) {
+            releaseProactiveVisionStream();
+            return declinedProactiveScreenshot();
+        }
         if (stream) {
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
             var streamSourceId = S.selectedScreenSourceId;
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 if (discardSupersededRememberedFrame('前端流截图')) {
-                    return { dataUrl: null, via: null, captureType: null };
+                    return declinedProactiveScreenshot();
                 }
                 console.log('[主动搭话截图] 前端截图成功');
                 return {
                     dataUrl: frame.dataUrl,
                     via: 'stream',
+                    allowDesktopFallback: allowDesktopFallback,
                     captureType: resolveCaptureTypeFor('stream', stream, streamSourceId)
                 };
             }
@@ -2465,18 +2557,24 @@
                 S.screenCaptureStream = null;
                 S.screenCaptureStreamLastUsed = null;
             }
+            if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
             // 重试：会走 Electron sourceId 路径
             stream = await acquireOrReuseCachedStream({ allowPrompt: false });
+            if (isProactiveScreenshotBlocked()) {
+                releaseProactiveVisionStream();
+                return declinedProactiveScreenshot();
+            }
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
                     if (discardSupersededRememberedFrame('前端流重试截图')) {
-                        return { dataUrl: null, via: null, captureType: null };
+                        return declinedProactiveScreenshot();
                     }
                     return {
                         dataUrl: frame.dataUrl,
                         via: 'stream',
+                        allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('stream', stream, retrySourceId)
                     };
                 }
@@ -2493,11 +2591,18 @@
         // Remember-window is a fail-closed boundary. A validated window whose
         // direct/stream capture failed must not widen to a desktop screenshot.
         if (rememberedWindowCapture && rememberedWindowCapture.required) {
+            // 截图期间记忆窗口已换：旧图属于未确认的窗口，必须明确拒绝。
+            if (discardSupersededRememberedFrame('记忆窗口捕获失败')) {
+                return declinedProactiveScreenshot();
+            }
             console.warn('[主动搭话截图] 记忆窗口捕获失败，停止整桌面兜底');
-            return { dataUrl: null, via: null, captureType: null };
+            // 窗口仍是同一个、只是这次没截到：属于技术失败，不是拒绝。后端仍可回用
+            // 本轮同窗口旧图，allowDesktopFallback=false 保证不扩大到整桌面。
+            return { dataUrl: null, via: null, captureType: null, allowDesktopFallback: false };
         }
 
         // 策略2: 后端 pyautogui 兜底
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
@@ -2510,6 +2615,19 @@
 
         console.warn('[主动搭话截图] 所有截图方式均失败');
         return { dataUrl: null, via: null, captureType: null };
+    }
+    async function captureProactiveChatScreenshotWithSource() {
+        if (isProactiveScreenshotBlocked()) {
+            return declinedProactiveScreenshot();
+        }
+        var shot = await captureProactiveChatScreenshotWithSourceInternal();
+        // 统一结果闸门：缓存帧、原生捕获、前端流和后端截图的所有异步
+        // 成功路径都经过这里，避免教程/隐私在抓帧期间开启后返回屏幕内容。
+        if (isProactiveScreenshotBlocked()) {
+            releaseProactiveVisionStream();
+            return declinedProactiveScreenshot();
+        }
+        return shot;
     }
     mod.captureProactiveChatScreenshotWithSource = captureProactiveChatScreenshotWithSource;
 
@@ -2527,6 +2645,7 @@
      * 开启时：优先测试后端 pyautogui（静默无弹窗），不可用则通过前端流获取（用户手势上下文可弹 getDisplayMedia）
      */
     async function acquireProactiveVisionStream() {
+        if (isHomeTutorialFeatureSuppressed()) return false;
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
@@ -2536,10 +2655,12 @@
                 return false;
             }
         }
+        if (isHomeTutorialFeatureSuppressed()) return false;
 
         // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
         if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
             var backendResult = await fetchBackendScreenshot();
+            if (isHomeTutorialFeatureSuppressed()) return false;
             if (backendResult.dataUrl) {
                 console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
                 return true;
@@ -2548,6 +2669,12 @@
 
         // 策略2: 后端不可用，尝试前端流（用户手势上下文，可弹 getDisplayMedia）
         var stream = await acquireOrReuseCachedStream({ allowPrompt: true });
+        // 采集授权/原生流创建期间教程可能开始，开始时的释放看不到晚到的流。
+        // 在统一入口复查并释放，覆盖开麦、换麦和视觉开关的所有调用方。
+        if (isHomeTutorialFeatureSuppressed()) {
+            releaseProactiveVisionStream();
+            return false;
+        }
         if (stream) {
             if (rememberedWindowCapture && rememberedWindowCapture.required
                 && typeof rememberedWindowCapture.isCurrent === 'function'
@@ -2575,15 +2702,21 @@
         }
 
         var privacyBlocksVision = !isProactiveVisionEnabledNow();
+        // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面：
+        // 不能因「设置仍开着」而保留屏幕流，抑制期的 stop 三件套必须真正释放。
+        // 浏览器 getDisplayMedia 流释放后需要新的用户手势才能重新申请。
+        // 若后端截图也不可用，教程结束后的静默重排无法恢复这条来源，需
+        // 用户重新开麦或启用视觉；这里仍释放自动采集以停止 OS 录屏指示。
+        var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();
 
         // 如果正在录音（语音模式），流可能正在被使用，不释放
-        if (S.isRecording && !privacyBlocksVision) {
+        if (S.isRecording && !privacyBlocksVision && !suppressionBlocksVision) {
             console.log('[主动视觉] 语音模式活跃中，不释放流');
             return;
         }
 
         // 如果主动搭话+主动视觉Chat仍活跃，保留流
-        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision) {
+        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision && !suppressionBlocksVision) {
             console.log('[主动视觉] 主动搭话视觉仍活跃，不释放流');
             return;
         }
@@ -2609,17 +2742,88 @@
     }
     mod.releaseProactiveVisionStream = releaseProactiveVisionStream;
 
+    function rearmProactiveVisionAfterSuppression() {
+        // 抑制期间开始的录音被视觉闸门拒建定时器，且此后没有周期性重试：
+        // 释放时若录音仍在进行必须补挂，否则该会话在用户重开麦克风之前
+        // 永远不推视觉帧。启动函数内部会自查 leader/视觉开关/goodbye/
+        // 手动共享等全部条件，这里只负责补一次机会。
+        // 可静默重建的桌面源/后端截图可以恢复；浏览器 getDisplayMedia
+        // 不能由教程解锁事件重新授权，后端不可用时需用户手势重新获取。
+        try {
+            if (S.isRecording) {
+                startProactiveVisionDuringSpeech();
+            }
+        } catch (e) {
+            console.warn('[Proactive] 教程抑制解除后补挂主动视觉失败:', e);
+        }
+    }
+
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
-            _homeTutorialFeatureSuppressedByEvent = true;
+            _homeTutorialSuppressionSources.add(detail.source || 'default');
             stopProactiveChatSchedule();
             stopProactiveVisionDuringSpeech();
-        } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
-            _homeTutorialFeatureSuppressedByEvent = false;
-            scheduleProactiveChat();
         } else if (detail.active === false) {
-            _homeTutorialFeatureSuppressedByEvent = false;
+            _homeTutorialSuppressionSources.delete(detail.source || 'default');
+            if (_homeTutorialSuppressionSources.size > 0) return;
+            if (S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+                scheduleProactiveChat();
+            }
+            rearmProactiveVisionAfterSuppression();
+        }
+    });
+
+    // click-guide 的抑制源是 isNekoClickGuideActive（不走 home-tutorial 事件面），
+    // 视觉 tick 闸门会在导览期间停表：它自己的释放事件必须同样补挂，
+    // 否则导览期间进行中的录音在其余下会话里永远不再推帧。
+    // 聊天定时器若在导览期间到点，触发和重排都会被闸门拦下、不留新表，
+    // 释放时也必须重排；调度器尚未初始化时由初始化器负责首次排程。
+    window.addEventListener('neko:click-guide-active', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        if (detail.active === true) {
+            stopProactiveVisionDuringSpeech();
+            releaseProactiveVisionStream();
+            return;
+        }
+        if (detail.active !== false) return;
+        if (S._proactiveSchedulerInitialized === true && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            scheduleProactiveChat();
+        }
+        rearmProactiveVisionAfterSuppression();
+    });
+
+    // 教程的最终释放边：teardown 直接清 isInTutorial/isTutorialRunning，
+    // 不经过任何抑制层的 end；而各来源的 features-suppressed false 事件
+    // 都可能早于这次最终解锁到达——scheduleProactiveChat 在闸门仍关时
+    // 直接返回、不留定时器，早到的重排等于白白停摆。交互锁的 locked:false
+    // 转变聚合了全部锁层（pending / isInTutorial / suppression / isTutorialRunning），
+    // 是唯一可靠的统一重排与补挂时机。
+    // 只认「先锁→后解」的转变：home-tutorial-runtime 模块加载时会同步派发
+    // locked:false（reason:'init'），那不是教程释放——彼时 app.js ready()
+    // 还没过存储/页面配置屏障，提前武装会吃掉启动宽限（_proactiveStartupDelayApplied），
+    // 甚至让定时器在 WebSocket 初始化前就挂着。
+    var _homeTutorialLockObserved = null;
+    window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        var locked = detail.locked === true;
+        var wasLocked = _homeTutorialLockObserved === true;
+        _homeTutorialLockObserved = locked;
+        if (locked || !wasLocked) return;
+        try {
+            // 首启的 pending-lock 超时转变可能早于 app.js ready() 调
+            // initProactiveChatScheduler()：调度器未初始化时跳过——初始化器
+            // 随后会按设计完成排程（含 _proactiveStartupDelayApplied 启动
+            // 宽限），此处强行 scheduleProactiveChat 会吃掉宽限、在
+            // WebSocket 就绪前挂上定时器。真正的教程抑制释放必然发生在
+            // ready() 之后，不受影响。
+            if (S._proactiveSchedulerInitialized !== true) return;
+            if (S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+                scheduleProactiveChat();
+            }
+            rearmProactiveVisionAfterSuppression();
+        } catch (e) {
+            console.warn('[Proactive] 教程锁释放后恢复调度/补挂视觉失败:', e);
         }
     });
 
@@ -2635,6 +2839,11 @@
     window.scheduleProactiveChat = scheduleProactiveChat;
     window.isProactiveLeader = isProactiveLeader;
     window.isProactiveChatSuppressed = isProactiveChatSuppressed;
+    // 教程抑制的统一运行时闸门，供 app-screen / app-buttons / app-audio-capture
+    // 等按设置值决定保留/申请屏幕流的路径复用（新方案下教程不再改写设置内存，
+    // 所有「因为开关是开的所以保留资源」的判断都要显式过这道闸）。
+    window.isNekoHomeTutorialProactiveSuppressed = isHomeTutorialFeatureSuppressed;
+    mod.isHomeTutorialFeatureSuppressed = isHomeTutorialFeatureSuppressed;
     window.captureCanvasFrame = captureCanvasFrame;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;

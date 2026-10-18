@@ -47,6 +47,7 @@ from utils.language_utils import is_supported_language_code
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
+from services.chat_sync.source import LATE_TEXT_GRACE_SECONDS, AssistantOriginalBuffer
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -943,6 +944,8 @@ async def run_sync_connector(
     user_input_sources: set[str] = set()
     text_output_cache = ''  # lanlan的当前消息
     text_output_request_id = None
+    # Raw originals use server-created identities and never normalized memory text.
+    original_output = AssistantOriginalBuffer(tail_grace=LATE_TEXT_GRACE_SECONDS)
     current_turn = 'user'
     had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
     current_turn_start_index = 0
@@ -976,6 +979,7 @@ async def run_sync_connector(
                                     (message["data"].get("metadata") or {}).get("source"),
                                 )
                                 continue
+                            original_output.append(message["data"])
                             if current_turn == 'user':  # assistant new message starts
                                 had_user_input_this_turn = bool(user_input_cache)
                                 if user_input_cache:
@@ -1060,7 +1064,13 @@ async def run_sync_connector(
 
                     elif message["type"] == "system":
                         try:
+                            if message["data"] == "chat original tool":
+                                # Provenance only: keep the whole reply local,
+                                # without changing memory or forwarding a UI event.
+                                original_output.mark_tool(message.get("chat_original_id"))
+                                continue
                             if message["data"] == "google disconnected":
+                                original_output.discard()
                                 if len(text_output_cache) > 0:
                                     chat_history.append({'role': 'system', 'content': [
                                         {'type': 'text', 'text': "网络错误，您已断开连接！"}]})
@@ -1068,6 +1078,7 @@ async def run_sync_connector(
                                 text_output_request_id = None
                             
                             elif message["data"] == "response_discarded_clear":
+                                original_output.discard()
                                 logger.debug(f"[{lanlan_name}] 收到 response_discarded_clear，清空当前输出缓存")
                                 text_output_cache = ''
                                 text_output_request_id = None
@@ -1077,6 +1088,8 @@ async def run_sync_connector(
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过renew session处理")
                                     break
+                                # The existing reset persists completed/partial output at this boundary.
+                                await original_output.finish(lanlan_name)
                                 
                                 # 先处理未完成的用户输入缓存（如果有）
                                 if user_input_cache:
@@ -1174,6 +1187,7 @@ async def run_sync_connector(
                                     # current ordinary turn was in flight, leave
                                     # user-side alone.
                                     if was_assistant_turn:
+                                        original_output.discard()
                                         text_output_cache = ''
                                         text_output_request_id = None
                                         current_turn = 'user'
@@ -1182,6 +1196,11 @@ async def run_sync_connector(
                                     await _try_send_json(sync_slot, {'type': 'turn end'})
                                     logger.debug("[%s] mirror turn end skipped for ordinary memory/analyzer", lanlan_name)
                                     continue
+                                # Terminal metadata excludes avatar/tool output before raw persistence.
+                                await original_output.finish(
+                                    lanlan_name, message.get('chat_original_id'),
+                                    excluded=bool(turn_end_meta and turn_end_meta.get('kind') == 'avatar_interaction'),
+                                )
                                 current_turn = 'user'
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
@@ -1392,6 +1411,7 @@ async def run_sync_connector(
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过session end处理")
                                     break
+                                await original_output.finish(lanlan_name)
                                 
                                 # 先处理未完成的用户输入缓存（如果有）
                                 if user_input_cache:
@@ -1553,6 +1573,11 @@ async def run_sync_connector(
     except asyncio.CancelledError:
         raise
     finally:
+        # Completed replies may still wait out their late-transcript grace.
+        try:
+            await original_output.flush_terminated()
+        except Exception:
+            print("[chat-sync] original_save_failed")
         # cleanup 顺序：先 cancel maintainer + reader（停止新建连接 / 读循环），
         # 再 close 现存的 ws + session。maintainer 自己持有 session 引用，cancel
         # 后我们从 slot 里读出来一并关。

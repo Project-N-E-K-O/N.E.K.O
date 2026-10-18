@@ -31,6 +31,7 @@ from main_logic.omni_realtime_client import (
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase, session_reply_in_progress
+from services.chat_sync.source import mark_tool_turn, mark_turn_origin
 from main_logic.proactive_delivery import (
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
@@ -49,6 +50,7 @@ from main_logic.proactive_delivery import (
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.desktop_capture import capture_desktop_screenshot
+import main_logic.core as _core_facade
 from uuid import uuid4
 from ._shared import (
     _VOICE_PROACTIVE_ACK_GRACE_S,
@@ -61,6 +63,39 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
+
+    def update_proactive_vision_consent(self, enabled: bool) -> None:
+        """Apply live browser consent without granting persisted permission."""
+        if not isinstance(enabled, bool):
+            return
+        if not enabled and getattr(self, "_proactive_vision_enabled", None) is not False:
+            self._proactive_vision_revocation_epoch = (
+                getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
+            )
+        self._proactive_vision_enabled = enabled
+
+    def _proactive_round_owned(self, round_id: str | None) -> bool:
+        """Whether ``round_id`` still owns the proactive round; ``None`` opts out.
+
+        Session teardown retires the round ID but keeps ``current_speech_id``,
+        so SID guards alone cannot see a retired round.
+        """
+        return round_id is None or (
+            getattr(self, "_proactive_screenshot_request_id", None) == round_id
+            and getattr(getattr(self, "state", None), "proactive_round_id", None) == round_id
+        )
+
+    async def _proactive_screenshot_declined(self) -> bool:
+        """Read current consent strictly: unreadable preferences must not grant capture."""
+        try:
+            settings = await _core_facade.aload_global_conversation_settings(strict=True)
+            return (
+                getattr(self, "_proactive_vision_enabled", None) is False
+                or settings.get("proactiveVisionEnabled", True) is not True
+            )
+        except Exception as exc:
+            logger.warning("Proactive screenshot privacy check failed; declining capture: %s", exc)
+            return True
 
     @staticmethod
     def _terminal_callback_image_rejections() -> frozenset[str]:
@@ -169,7 +204,10 @@ class ProactiveMixin:
     # Proactive streaming helpers (Phase 2 流式 TTS + 完整文本投递)
     # ------------------------------------------------------------------
 
-    async def request_fresh_screenshot(self, timeout: float = 3.0) -> FreshScreenshot:
+    async def request_fresh_screenshot(
+        self, timeout: float = 3.0, *, allow_backend_fallback: bool = True,
+        request_id: str | None = None,
+    ) -> FreshScreenshot:
         """Request the latest screenshot from the frontend over WebSocket, falling back to backend pyautogui on failure.
 
         Both paths normalize the screenshot down to 720p/JPEG-80 and return the
@@ -181,17 +219,46 @@ class ProactiveMixin:
         avatar position means "the frontend said don't annotate" or merely "the
         frontend was never asked".
 
+        Explicit declines and privacy changes stop capture. A window-bound request
+        also forbids desktop fallback if the frontend fails to answer.
         Neither path draws the avatar annotation; the caller owns that step.
         """
+        # Service callers pass their own round ID, never borrow the shared ID.
+        # Standalone callers get a fresh ID on each request.
+        scoped = request_id is not None
+        if not scoped:
+            request_id = uuid4().hex
+            self._proactive_screenshot_request_id = request_id
+
+        def still_owned() -> bool:
+            return (
+                getattr(self, "_proactive_screenshot_request_id", None) == request_id
+                and (not scoped or getattr(getattr(self, "state", None), "proactive_round_id", request_id) == request_id)
+            )
+
+        if not still_owned():
+            return FreshScreenshot(declined=True)
+        if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
+            return FreshScreenshot(declined=True)
+
         # 策略1: 前端 WebSocket 截图
         if self.websocket:
+            future = None
             try:
                 loop = asyncio.get_running_loop()
                 # 先清槽再 arm future：上一次请求的残留坐标绝不能被这次读到。
                 self._pending_screenshot_avatar_position = None
-                self._screenshot_future = loop.create_future()
-                await self.websocket.send_json({"type": "request_screenshot"})
-                b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
+                future = loop.create_future()
+                self._screenshot_future = future
+                await self.websocket.send_json({
+                    "type": "request_screenshot", "request_id": request_id,
+                })
+                reply = await asyncio.wait_for(future, timeout=timeout)
+                if not still_owned():
+                    return FreshScreenshot(declined=True)
+                if reply.declined:
+                    return reply
+                b64 = reply.b64
                 # 紧贴 await 取走，中间不再 await → 事件循环插不进别的帧来改写它。
                 # getattr 守卫与本文件其余部分一致：窄 manager double 不一定带这个字段。
                 ws_av_pos = getattr(self, "_pending_screenshot_avatar_position", None)
@@ -215,14 +282,30 @@ class ProactiveMixin:
                             "[%s] request_fresh_screenshot WS compress failed, using raw: %s",
                             self.lanlan_name, comp_err,
                         )
+                    # 用户可能在等待前端或压缩期间开启隐私；旧客户端也不能绕过它。
+                    if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
+                        return FreshScreenshot(declined=True)
                     return FreshScreenshot(
                         b64=b64, source="websocket", avatar_position=ws_av_pos,
                     )
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning("[%s] request_fresh_screenshot WS failed: %s", self.lanlan_name, e)
             finally:
-                self._screenshot_future = None
-                self._pending_screenshot_avatar_position = None
+                if future is not None and not future.done():
+                    future.cancel()
+                if future is not None and self._screenshot_future is future:
+                    self._screenshot_future = None
+                    self._pending_screenshot_avatar_position = None
+
+        # 窗口约束随初始请求传来，前端超时/断线时也不能扩大到整桌面。
+        if not still_owned():
+            return FreshScreenshot(declined=True)
+        if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
+            return FreshScreenshot(declined=True)
+        if not allow_backend_fallback:
+            # No new desktop capture; an ordinary timeout may still reuse the
+            # already validated Phase-1 window image. Only a decline forbids it.
+            return FreshScreenshot()
 
         # 策略2: 后端 pyautogui 兜底（仅限本机连接，远程服务器截图无意义）
         is_local = False
@@ -248,6 +331,8 @@ class ProactiveMixin:
                     )
 
                 jpg_bytes = await asyncio.to_thread(_capture_and_compress)
+                if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
+                    return FreshScreenshot(declined=True)
                 b64_str = b64mod.b64encode(jpg_bytes).decode('utf-8')
                 logger.info("[%s] request_fresh_screenshot: 后端 pyautogui 兜底成功 (%dKB)", self.lanlan_name, len(jpg_bytes) // 1024)
                 # 这里不叠水印：后端手里没有任何属于这张图的 Avatar 坐标。谁有资格
@@ -256,9 +341,15 @@ class ProactiveMixin:
             except Exception as e2:
                 logger.warning("[%s] request_fresh_screenshot backend fallback failed: %s", self.lanlan_name, e2)
 
-        return FreshScreenshot()
+        # 采集异常也要复查隐私，避免异常被当作“允许回用旧图”的普通失败。
+        return FreshScreenshot(declined=(
+            await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned()
+        ))
 
-    def resolve_screenshot_request(self, b64: str, avatar_position: dict | None = None):
+    def resolve_screenshot_request(
+        self, b64: str, avatar_position: dict | None = None, *, declined: bool = False,
+        request_id: str | None = None,
+    ):
         """Called by the WebSocket router to hand the frontend's returned screenshot -- and its avatar verdict -- to the waiting future.
 
         The position travels with the image instead of through ``_avatar_position``
@@ -266,14 +357,33 @@ class ProactiveMixin:
         share frame arriving between this call and the requester waking up would
         silently swap the coordinates.
         """
+        active_id = getattr(self, "_proactive_screenshot_request_id", None)
+        if active_id is None or (request_id is not None and request_id != active_id):
+            return
+        # Legacy browsers omit the ID. Keep their capture/fallback contract;
+        # they cannot provide cross-round correlation until the frontend updates.
+        if declined:
+            # A refusal arriving after the screenshot timeout still vetoes an
+            # image waiting on model creation; it does not disable future rounds.
+            self._proactive_vision_revocation_epoch = (
+                getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
+            )
         if self._screenshot_future and not self._screenshot_future.done():
+            self._avatar_position = avatar_position
             # 顺序要紧：先落坐标再 resolve，等待方被唤醒时槽里一定是配对好的值。
             self._pending_screenshot_avatar_position = (
                 avatar_position if isinstance(avatar_position, dict) and avatar_position else None
             )
-            self._screenshot_future.set_result(b64)
+            # 明确拒绝优先于图片内容，不能被解释成普通空图而再次补截。
+            self._screenshot_future.set_result(FreshScreenshot(
+                b64="" if declined else b64,
+                source="websocket",
+                declined=declined,
+            ))
 
-    async def prepare_proactive_delivery(self, min_idle_secs: float = 10.0) -> bool:
+    async def prepare_proactive_delivery(
+        self, min_idle_secs: float = 10.0, *, round_id: str | None = None,
+    ) -> bool:
         """Pre-checks before Phase 2 streaming + speech_id generation. Returns True if it's OK to proceed."""
         def _user_active_recently() -> bool:
             now = time.time()
@@ -287,6 +397,11 @@ class ProactiveMixin:
                 for timestamp in activity_times
             )
 
+        def _round_owned() -> bool:
+            return ProactiveMixin._proactive_round_owned(self, round_id)
+
+        if not _round_owned():
+            return False
         if self.is_goodbye_silent():
             logger.info("[%s] prepare_proactive_delivery: goodbye silent", self.lanlan_name)
             return False
@@ -341,7 +456,7 @@ class ProactiveMixin:
         async with self.lock:
             # lock 内二次复查：USER_INPUT 在 self.lock 内 rotate sid，sticky preempt
             # flag 先于 sid mutation 翻起；此处若已被抢占则不写 current_speech_id。
-            if self.state.is_proactive_preempted():
+            if not _round_owned() or self.state.is_proactive_preempted():
                 logger.info("[%s] prepare_proactive_delivery: preempted in claim lock", self.lanlan_name)
                 return False
             # UI-only engagement does not rotate the proactive SID, so repeat
@@ -359,7 +474,10 @@ class ProactiveMixin:
             claim_user_engagement_time = self.last_user_engagement_time
         # 状态机：正式 claim turn。订阅者（诊断、frontend sync 等）在此之后
         # 观察到 proactive_sid 已与 current_speech_id 一致。
-        await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid)
+        round_payload = {"round_id": round_id} if round_id is not None else {}
+        await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid, **round_payload)
+        if not _round_owned():
+            return False
         # ``fire`` may wait for the state-machine write lock. UI-only
         # engagement does not rotate ``current_speech_id``, so without this
         # post-await check a click arriving in that window would be treated as
@@ -373,7 +491,7 @@ class ProactiveMixin:
                 "[%s] prepare_proactive_delivery: user engaged while claiming",
                 self.lanlan_name,
             )
-            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+            await self.state.fire(SessionEvent.PROACTIVE_DONE, **round_payload)
             return False
         return True
 
@@ -382,6 +500,7 @@ class ProactiveMixin:
         text: str,
         expected_speech_id: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
+        expected_round_id: str | None = None,
     ) -> bool:
         """Feed text to the TTS pipeline only, without sending it to the frontend display.
 
@@ -395,13 +514,21 @@ class ProactiveMixin:
         expected_user_engagement_time: when supplied (including an expected
         ``None``), drop if genuine UI engagement advanced while this call waited
         for the TTS lock. Returns whether the chunk was accepted.
+
+        expected_round_id: when supplied, drop if the proactive round was retired
+        (e.g. by a session restart) while this call waited for the TTS lock.
         """
         if getattr(self, "_takeover_active", False):
+            return False
+        if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
             return False
         if not self.use_tts:
             return True
         async with self.tts_cache_lock:
             if getattr(self, "_takeover_active", False):
+                return False
+            if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
+                logger.debug("feed_tts_chunk drop: proactive round retired len=%d", len(text))
                 return False
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.debug(
@@ -444,6 +571,7 @@ class ProactiveMixin:
         source_tag: str | None = None,
         vision_screenshot_b64: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
+        expected_round_id: str | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -460,6 +588,10 @@ class ProactiveMixin:
         ``None``), skip the commit if genuine UI engagement advanced before the
         final commit boundary. The caller must clear any TTS chunk already queued
         before this check.
+
+        expected_round_id: when supplied, skip the commit if the proactive round
+        was retired (e.g. by a session restart). Rechecked at the publish
+        boundary, because teardown keeps ``current_speech_id`` unchanged.
 
         action_note: optional; when non-empty it is appended to the tail of that
         AIMessage's content in _conversation_history (history-only — never enters
@@ -496,6 +628,12 @@ class ProactiveMixin:
                     self.lanlan_name, expected_speech_id, self.current_speech_id,
                 )
                 return False
+            if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
+                logger.info(
+                    "[%s] finish_proactive_delivery skip: proactive round retired",
+                    self.lanlan_name,
+                )
+                return False
             if (
                 expected_user_engagement_time
                 is not Ellipsis
@@ -517,11 +655,16 @@ class ProactiveMixin:
             # turn 上、前端分组串掉。expected_speech_id 在 phase2 已经一路传到这里
             # 并且刚校验过，作为冻结快照最稳。
             commit_sid = expected_speech_id or self.current_speech_id
+            # Pin ordinary proactive output separately from Agent callback turns.
+            mark_turn_origin(self, commit_sid, 'proactive')
             # 状态机：进入 COMMITTING 阶段。send_lanlan_response 会在它自身
             # 最后一个 await 之后、同步队列写入之前再校验一次；这样 UI
             # engagement 即使发生在 state.fire 或 Focus bubble 清理期间，
             # 也不会漏出过期气泡。
-            await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
+            round_payload = (
+                {"round_id": expected_round_id} if expected_round_id is not None else {}
+            )
+            await self.state.fire(SessionEvent.PROACTIVE_COMMITTING, **round_payload)
             publication_times: list[float] = []
             published = await self.send_lanlan_response(
                 full_text,
@@ -530,6 +673,10 @@ class ProactiveMixin:
                 expected_speech_id=expected_speech_id,
                 expected_user_engagement_time=expected_user_engagement_time,
                 on_published=publication_times.append,
+                publish_if=(
+                    None if expected_round_id is None
+                    else lambda: ProactiveMixin._proactive_round_owned(self, expected_round_id)
+                ),
             )
             if published is None:
                 logger.info(
@@ -594,6 +741,10 @@ class ProactiveMixin:
                 # 后，用户接管（sid 变→早 return）时
                 # 绝不会为未投递的轮次暂存截图。
                 if hasattr(self.session, "set_proactive_screenshot"):
+                    # A live revocation must not leave this round's screen for the
+                    # next user turn; staging None also clears an older screenshot.
+                    if getattr(self, "_proactive_vision_enabled", None) is False:
+                        vision_screenshot_b64 = None
                     self.session.set_proactive_screenshot(vision_screenshot_b64)
 
             # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步、无 await，
@@ -1372,6 +1523,9 @@ class ProactiveMixin:
                     }
                     if events_before_text:
                         inject_kwargs["events_before_text"] = events_before_text
+                    # The explicit callback origin belongs only to this rotated speech ID.
+                    mark_turn_origin(self, self.current_speech_id, 'agent')
+                    mark_tool_turn(self, self.current_speech_id)
                     await voice_sess.inject_text_and_request_response(
                         instruction,
                         **inject_kwargs,
@@ -1844,6 +1998,8 @@ class ProactiveMixin:
                     callbacks_snapshot[:] = []
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
+            # Freeze origin before asynchronous callback delivery can interleave.
+            mark_turn_origin(self, proactive_sid, 'agent')
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
             # with text_start/text_end. text_end clears the manager's in-flight

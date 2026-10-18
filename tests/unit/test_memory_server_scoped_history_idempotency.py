@@ -699,7 +699,7 @@ async def test_startup_cleanup_drops_expired_staging_and_tombstones_only(env):
         await idem.update_key(NAME, key, idem.transition(state))
         # 让记录本身也「很旧」：键记录无论多旧都不清。
     report = await idem.cleanup_expired([NAME], ttl_s=ttl, now=now)
-    assert report == {"staging_removed": 1, "tombstones_removed": 1}
+    assert report == {"staging_removed": 1, "tombstones_removed": 1, "retired_removed": 0}
     assert not Path(idem.staging_path(NAME, "old-key")).exists()
     assert Path(idem.staging_path(NAME, "new-key")).exists()
     assert set(await idem.read_tombstones(NAME)) == {"a:new"}
@@ -709,7 +709,7 @@ async def test_startup_cleanup_drops_expired_staging_and_tombstones_only(env):
     }
     report = await idem.cleanup_expired([NAME], ttl_s=0, now=now + 10**9)
     # 再过很久：剩下的暂存与墓碑都过期被清，键记录仍一字不动
-    assert report == {"staging_removed": 1, "tombstones_removed": 1}
+    assert report == {"staging_removed": 1, "tombstones_removed": 1, "retired_removed": 0}
     records_after = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))
     assert records_after == records
 
@@ -1002,7 +1002,7 @@ async def test_startup_cleanup_skips_a_character_being_released(env):
     await idem.record_tombstones(NAME, ["a:old"], 1, now=now - 500)
     env.monkeypatch.setattr(env.runtime, "_begin_character_request", lambda name: None)
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
-    assert report == {"staging_removed": 0, "tombstones_removed": 0}
+    assert report == {"staging_removed": 0, "tombstones_removed": 0, "retired_removed": 0}
     assert set(await idem.read_tombstones(NAME)) == {"a:old"}
 
 
@@ -2830,11 +2830,12 @@ async def test_locale_only_segment_forgotten_after_staging_is_marked_on_disk(env
             # 暂存落盘之后、复核之前，一次清除推进了第一段的 generation
             env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))
 
-    async def _crash(lanlan_name, item, segment, generation):
+    async def _crash(*_args, **_kwargs):
+        # 复核之后、应用循环写任何东西之前进程被杀：盘上只有复核自己写的那份
         raise RuntimeError("injected crash before applying anything")
 
     env.monkeypatch.setattr(env.idem, "write_staging", write_then_forget)
-    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", _crash)
     with pytest.raises(HTTPException):
         await _post(env, body)
     staging = json.loads(_staging_file(env, KEY_SEGMENTS).read_text(encoding="utf-8"))
@@ -3787,3 +3788,791 @@ def test_target_epochs_reject_negative_values(env):
         env.routes.ScopedForgetRequest.model_validate(
             {"subject": GROUP, "forget_epoch": 1, "target_epochs": {PART_KEY: -1}},
         )
+
+
+# ── #3337 核对补测：#3292 合并前已修、但原测试守不住的几处 ─────────────────
+
+
+async def test_orphan_scrub_reads_the_key_records_under_the_character_lock(env):
+    idem = env.idem
+    path = Path(idem.staging_path(NAME, KEY_GROUP))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    await idem.update_key(NAME, "other-key", idem.transition("done"))          # 键文件在、但没人认领它
+    path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # 读不出
+    keys_file = os.path.normcase(os.path.abspath(idem.keys_path(NAME)))
+    lock = idem.idempotency_lock(NAME)
+    held_at_read = []
+    real_read = idem._read_json_object
+
+    def spy(target):
+        if os.path.normcase(os.path.abspath(target)) == keys_file:
+            held_at_read.append(lock.locked())
+        return real_read(target)
+
+    env.monkeypatch.setattr(idem, "_read_json_object", spy)
+    assert await idem.drop_unreadable_orphan_staging(NAME, str(path)) is True
+    # 归属判断用的键记录必须在角色锁里读：锁外的快照与改写之间，update_key 可能已把这条路径认领成 pending
+    assert held_at_read and all(held_at_read)
+    assert "猫薄荷" not in path.read_text(encoding="utf-8")
+
+
+async def test_legacy_integer_fact_ids_are_journaled_as_strings(env):
+    env.llm.responses = [SINGLE_FACTS]
+    real_persist = env.fs._apersist_new_facts
+
+    async def legacy_ids(lanlan_name, extracted, **kwargs):
+        created = await real_persist(lanlan_name, extracted, **kwargs)
+        # reconcile 命中、新建结果里都混着旧版整数 id 的事实（FactStore 仍认这种 id）
+        kwargs["reconciled_facts"].append({**created[0], "id": 12345})
+        return [{**created[0], "id": 67890}, *created[1:]]
+
+    env.monkeypatch.setattr(env.fs, "_apersist_new_facts", legacy_ids)
+    original = _fail_on_item(env, failing_seq=1)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
+    entry = next(e for e in staging["applied"] if e.get("facts_applied"))
+    # 与 _keyed_fact_identity 同口径一律记成字符串
+    assert "12345" in entry["reconciled"] and "67890" in entry["fact_ids"]
+    assert all(isinstance(v, str) for v in entry["reconciled"] + entry["fact_ids"])
+
+
+async def test_keyed_fact_reads_ride_out_a_concurrent_replace(env):
+    import builtins
+
+    fs = env.fs
+    active, archive = Path(fs._facts_path(NAME)), Path(fs._facts_archive_path(NAME))
+    active.parent.mkdir(parents=True, exist_ok=True)
+    active.write_text(json.dumps([{"id": "f1", "text": "家里阳台种着猫薄荷"}]), encoding="utf-8")
+    archive.write_text(json.dumps([{"id": "f0", "effect_key": "ek-0"}]), encoding="utf-8")
+    watched = {os.path.normcase(os.path.abspath(p)): 0 for p in (active, archive)}
+    real_open = builtins.open
+
+    def busy_twice(file, *args, **kwargs):
+        if isinstance(file, (str, os.PathLike)):
+            target = os.path.normcase(os.path.abspath(os.fspath(file)))
+            if target in watched and watched[target] < 2:
+                watched[target] += 1
+                # 归档 / 去重写入方正 os.replace 这个文件：Windows 上的共享冲突
+                exc = PermissionError(13, "Access is denied")
+                exc.winerror = 32
+                raise exc
+        return real_open(file, *args, **kwargs)
+
+    env.monkeypatch.setattr(builtins, "open", busy_twice)
+    # 带键 facts 项应用时在工作线程里读这两份文件：替换窗口里的共享冲突先退避重试，不能当成读不出
+    assert await asyncio.to_thread(fs._assert_active_facts_readable, NAME) == 1
+    assert await asyncio.to_thread(fs._read_archived_effect_keys, NAME) == {"ek-0"}
+    assert set(watched.values()) == {2}
+
+
+async def test_forget_after_the_recheck_fences_an_activity_only_segment_from_trust(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]                                     # 没抽出事实：这段只有 activity
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_before_apply(*args, **kwargs):
+        # 落盘后的复核之后、信赖步骤之前，一次不带代数的清除推进了 generation
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00003", "count": 1}],
+    )
+    await _post(env, body)
+    # 没有事实项去比 generation 的段也要按清除挡下：activity 不进信赖池
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_activity_only_segment_without_a_forget_still_moves_the_trust_pool(env):
+    env.llm.responses = [[]]
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00004", "count": 1}],
+    )
+    await _post(env, body)
+    # 对照：期间没有清除时这段的 activity 照常进信赖池
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is not None
+
+
+async def test_trust_step_fence_mark_is_on_disk_for_the_same_key_retry(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]
+    real_apply = env.routes._apply_keyed_staging
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def forget_before_apply(*args, **kwargs):
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    async def trust_crash(_states):
+        raise RuntimeError("killed at the trust step")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", trust_crash)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00005", "count": 1}],
+    )
+    with pytest.raises(Exception):
+        await _post(env, body)
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+    captured = []
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    await _post(env, body)
+    # 恢复的重试读不到生成前的 generation，只能靠盘上的段级标记认出这段被清除挡下
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_forget_cannot_slip_between_the_trust_recheck_and_the_trust_write(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]
+    subject = coerce_subject(GROUP)
+    captured_generation = env.fs._subject_forget_generation(NAME, subject)
+    real_fenced = env.routes._fenced_segments
+    real_trust = env.routes._apply_trust_for_segments
+    forgets = []
+
+    async def forget():
+        # 与 scoped_forget 同一入口推进 generation（持事实存储的持久化锁）
+        await env.fs.abegin_subject_forget(NAME, subject)
+        await env.fs.aend_subject_forget(NAME, subject)
+
+    async def forget_after_the_recheck(lanlan_name, staging):
+        forgets.append(asyncio.create_task(forget()))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return await real_fenced(lanlan_name, staging)
+
+    seen = []
+
+    async def capture(states):
+        moved = env.routes._trust_mutation_for(states[0]) is not None
+        seen.append((moved, env.fs._subject_forget_generation(NAME, subject) != captured_generation))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_fenced_segments", forget_after_the_recheck)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00006", "count": 1}],
+    )
+    await _post(env, body)
+    await asyncio.gather(*forgets)
+    # 复核与信赖写入之间插不进清除：activity 进了池，就说明写入时 generation 还是生成前那个
+    ((moved, generation_moved),) = seen
+    assert not (moved and generation_moved)
+    assert env.fs._subject_forget_generation(NAME, subject) != captured_generation    # 清除确实发生了
+
+
+async def test_cancelled_request_keeps_the_guard_until_the_trust_worker_finishes(env):
+    import threading
+
+    env.llm.responses = [[]]
+    entered, release = threading.Event(), threading.Event()
+    real_write = trust_store._with_pool_write
+
+    def slow_write(mutator):
+        entered.set()
+        release.wait(5)
+        return real_write(mutator)
+
+    env.monkeypatch.setattr(trust_store, "_with_pool_write", slow_write)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00007", "count": 1}],
+    )
+    request = asyncio.create_task(_post(env, body))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        request.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        # 线程里的池写入取消不掉：写完之前持久化锁不能放，否则清除能在写入落盘前推进 generation
+        assert env.fs._get_persist_alock(NAME).locked()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert not env.fs._get_persist_alock(NAME).locked()
+
+
+async def test_restored_retry_fences_an_activity_only_segment_forgotten_during_apply(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def trust_crash(_states):
+        raise RuntimeError("killed at the trust step")
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", trust_crash)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00008", "count": 1}],
+    )
+    with pytest.raises(Exception):
+        await _post(env, body)
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_during_apply(*args, **kwargs):
+        # 恢复的重试持键锁应用时，一次不带代数的清除推进了 generation（擦除前那遍扫描恰好跳过了这份暂存）
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    captured = []
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_during_apply)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    await _post(env, body)
+    # 恢复的重试也按应用前取的 generation 复核：这段的 activity 不进信赖池
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_cancelled_trust_write_returns_only_after_its_worker_finished(env):
+    import threading
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_write = trust_store._with_pool_write
+
+    def slow_write(mutator):
+        entered.set()
+        release.wait(5)
+        try:
+            return real_write(mutator)
+        finally:
+            finished.set()
+
+    env.monkeypatch.setattr(trust_store, "_with_pool_write", slow_write)
+    mutation = trust_store.TrustMutation(
+        speaker_account_id="neko_visit:5f2c1b7e",
+        activity_events=(trust_store.ActivityEvent(id="evt-00009", count=1),),
+        signal_events=(), channel=None,
+    )
+    # 取消扫描直接取消跑这次写入的任务（不只是外层请求）：线程停不下来，任务必须等它写完才结束
+    write = asyncio.create_task(trust_store.aapply_trust_mutations([mutation]))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        write.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not write.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await write
+    assert finished.is_set()
+
+
+async def test_restored_retry_drops_facts_forgotten_during_apply_on_the_same_baseline(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    body = _single_body(
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00010", "count": 1}],
+    )
+    with pytest.raises(HTTPException):
+        await _post(env, body)                                   # 暂存已落盘、事实一项没写
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    real_apply = env.routes._apply_keyed_staging
+    subject = coerce_subject(GROUP)
+
+    async def forget_during_apply(*args, **kwargs):
+        # 擦除前那遍扫描跳过了这份暂存：一次不带代数的清除在恢复的重试应用期间完整跑完
+        await env.fs.abegin_subject_forget(NAME, subject)
+        await env.fs.aend_subject_forget(NAME, subject)
+        return await real_apply(*args, **kwargs)
+
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_during_apply)
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    await _post(env, body)
+    # 事实层与信赖层按同一份基线：清除之前生成的事实不在清除之后写回，activity 也不进池
+    assert _facts_of(env, GROUP) == []
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+def _one_segment_staging(subject: dict) -> dict:
+    return {"segments": [{"subject": dict(subject), "wire_key": GROUP_KEY}], "items": [], "applied": []}
+
+
+async def test_restored_baseline_watches_the_journal_subject_not_todays_routing(env):
+    from memory.scopes import coerce_subject
+
+    routes = env.routes
+    staging = _one_segment_staging(GROUP)                        # 暂存记的是 GROUP
+    contexts = [{"subject": coerce_subject(GP)}]                 # 之后路由变了，当下解析成 GP
+    baseline = routes._capture_forget_generations(NAME, routes._staged_segment_subjects(staging, contexts))
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))
+    # 只是当下路由到的 subject 动了：这份暂存写的是 GROUP，不能误判成被清除
+    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == set()
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+    # 暂存记的 subject 被清除：要认出来
+    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {0}
+    assert staging["segments"][0].get("dropped_by_forget") is True
+
+
+async def test_baseline_captured_inside_a_running_forget_still_fences(env):
+    from memory.scopes import coerce_subject
+
+    routes = env.routes
+    subject = coerce_subject(GROUP)
+    staging = _one_segment_staging(GROUP)
+    contexts = [{"subject": subject}]
+    await env.fs.abegin_subject_forget(NAME, subject)
+    try:
+        # 基线取在 abegin 推进之后、aend 推进之前：generation 相等，但事实层此刻已拒收这段
+        baseline = routes._capture_forget_generations(NAME, [subject])
+        assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {0}
+    finally:
+        await env.fs.aend_subject_forget(NAME, subject)
+
+
+async def test_cancelled_staging_write_returns_only_after_the_file_is_written(env):
+    import threading
+
+    idem = env.idem
+    entered, release = threading.Event(), threading.Event()
+    real_write = idem._write_json_object
+
+    def slow_write(path, data):
+        entered.set()
+        release.wait(5)
+        return real_write(path, data)
+
+    env.monkeypatch.setattr(idem, "_write_json_object", slow_write)
+    write = asyncio.create_task(idem.write_staging(NAME, KEY_GROUP, {"segments": [], "items": []}))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        write.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        # 调用方持着键锁：写入还在线程里时不能先返回、先放锁
+        assert not write.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await write
+    assert _staging_file(env, KEY_GROUP).exists()
+
+
+@pytest.mark.parametrize("responses", [[], SINGLE_FACTS], ids=["activity_only", "facts"])
+async def test_request_arriving_inside_a_running_forget_is_fenced_from_trust(env, responses):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [responses]
+    subject = coerce_subject(GROUP)
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    body = _single_body(
+        display_name=None,
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00011", "count": 1}],
+    )
+    await env.fs.abegin_subject_forget(NAME, subject)            # 清除已推进 generation、还没收尾
+    try:
+        await _post(env, body)
+    finally:
+        await env.fs.aend_subject_forget(NAME, subject)
+    # 事实层在清除进行中拒收这段；信赖步骤用同一个依据挡下 activity
+    assert _facts_of(env, GROUP) == []
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_restored_retry_keeps_its_journal_subject_when_routing_changed(env):
+    from memory import subject_identity
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    body = _single_body(display_name=None)
+    with pytest.raises(HTTPException):
+        await _post(env, body)                                   # 暂存记下的写入目标是 GROUP
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    rerouted = coerce_subject(GP)
+    env.fs._bump_subject_forget_generation(NAME, rerouted)       # 两个 subject 的计数器不同
+    real_canonical = subject_identity.canonical_subject
+
+    def reroute(subject, snap=None):
+        if subject.key == GROUP_KEY:
+            return rerouted                                      # 之后路由变了：当下解析成 GP
+        return real_canonical(subject, snap)
+
+    env.monkeypatch.setattr(subject_identity, "canonical_subject", reroute)
+    result = await _post(env, body)
+    # 恢复的重试照暂存写 GROUP：基线也得取 GROUP 的，不能拿 GP 的计数器去比、把事实误丢
+    assert result["created"] == 2 and len(_facts_of(env, GROUP)) == 2
+
+
+@pytest.mark.parametrize("responses", [SINGLE_FACTS, []], ids=["facts", "display_name_only"])
+async def test_restored_retry_inside_a_running_forget_writes_no_display_name(env, responses):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [responses]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())                         # 暂存已落盘、第一项就中断
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    subject = coerce_subject(GROUP)
+    await env.fs.abegin_subject_forget(NAME, subject)            # 恢复的重试赶上清除正在进行
+    try:
+        await _post(env, _single_body())
+    finally:
+        await env.fs.aend_subject_forget(NAME, subject)
+    # 事实层此刻拒收这段：同段的显示名也不能写进被清 subject（persona 写入没有清除保护）
+    assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
+    assert _facts_of(env, GROUP) == []
+
+
+def _fail_fence_writes_once(env):
+    """Make the first journal write carrying a forget drop mark fail (a transient disk error)."""
+    real_write = env.idem.write_staging
+    state = {"failed": False}
+
+    async def flaky(name, key, document):
+        marked = any(
+            isinstance(segment, dict) and segment.get("dropped_by_forget") is True
+            for segment in document.get("segments") or []
+        )
+        if marked and not state["failed"]:
+            state["failed"] = True
+            raise OSError("disk hiccup while persisting the fence")
+        return await real_write(name, key, document)
+
+    env.monkeypatch.setattr(env.idem, "write_staging", flaky)
+    return state
+
+
+def _capture_trust(env):
+    captured = []
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real_trust(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    return captured
+
+
+_ACTIVITY_BODY = dict(
+    display_name=None,
+    speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+)
+
+
+async def test_failed_trust_step_fence_write_leaves_a_durable_fallback(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [[]]
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00012", "count": 1}])
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_before_apply(*args, **kwargs):
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+    state = _fail_fence_writes_once(env)
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, body)
+    assert excinfo.value.status_code == 503 and state["failed"]
+    # 暂存没打上标记：被挡的 subject 记在键记录上，恢复的重试据此丢弃这段
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert GROUP_KEY in record["forgotten_keys"]
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+    captured = _capture_trust(env)
+    await _post(env, body)                                       # 基线取在清除之后的同键重试
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+
+
+async def test_failed_restored_fence_write_leaves_a_durable_fallback(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    subject = coerce_subject(GROUP)
+    state = _fail_fence_writes_once(env)
+    await env.fs.abegin_subject_forget(NAME, subject)
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            await _post(env, _single_body())                     # 恢复的重试赶上清除进行中，标记写失败
+        assert excinfo.value.status_code == 503 and state["failed"]
+    finally:
+        await env.fs.aend_subject_forget(NAME, subject)
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert GROUP_KEY in record["forgotten_keys"]                 # 走的是键记录兜底
+    await _post(env, _single_body())                             # 清除之后再重试：基线已是新的
+    # 键记录上的兜底标记让这段照样丢弃：显示名、事实都不写进被清 subject
+    assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
+    assert _facts_of(env, GROUP) == []
+
+
+async def test_failed_post_write_recheck_fence_write_leaves_a_durable_fallback(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    real_write = env.idem.write_staging
+    writes = {"n": 0}
+
+    async def write_then_forget(name, key, document):
+        await real_write(name, key, document)
+        writes["n"] += 1
+        if writes["n"] == 1:
+            # 暂存首次落盘之后、复核之前，一次不带代数的清除推进了 generation
+            env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+
+    env.monkeypatch.setattr(env.idem, "write_staging", write_then_forget)
+    state = _fail_fence_writes_once(env)                         # 复核新打的标记那次写失败
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    assert excinfo.value.status_code == 503 and state["failed"]
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert GROUP_KEY in record["forgotten_keys"]
+    env.monkeypatch.setattr(env.idem, "write_staging", real_write)
+    await _post(env, _single_body())                             # 基线取在清除之后的同键重试
+    # 生成路径落暂存后那次复核也有兜底：清除之前抽出的事实不写回、显示名不写
+    assert _facts_of(env, GROUP) == []
+    assert [row for row in env.persona.display_names if row[0] == GROUP_KEY] == []
+
+
+def _bump_before_apply(env):
+    from memory.scopes import coerce_subject
+
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_before_apply(*args, **kwargs):
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))
+        return await real_apply(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+
+
+def _forgotten_keys_on_record(env) -> list:
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    return record.get("forgotten_keys") or []
+
+
+async def test_cancelled_fence_write_still_records_the_fallback(env):
+    env.llm.responses = [[]]
+    _bump_before_apply(env)
+    real_write = env.idem.write_staging
+
+    async def cancelled_on_fence(name, key, document):
+        if any(isinstance(seg, dict) and seg.get("dropped_by_forget") is True for seg in document.get("segments") or []):
+            # 写入在线程里失败、请求同时被取消：等待方只看得到取消
+            raise asyncio.CancelledError()
+        return await real_write(name, key, document)
+
+    env.monkeypatch.setattr(env.idem, "write_staging", cancelled_on_fence)
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00013", "count": 1}])
+    with pytest.raises(asyncio.CancelledError):
+        await _post(env, body)
+    # 写入成没成看不出：照样把被挡的 subject 记进键记录
+    assert GROUP_KEY in _forgotten_keys_on_record(env)
+
+
+async def test_fallback_fence_record_completes_before_the_key_lock_is_released(env):
+    env.llm.responses = [[]]
+    _bump_before_apply(env)
+    state = _fail_fence_writes_once(env)
+    real_update = env.idem.update_key
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    async def gated_update(name, key, fn):
+        if state["failed"]:                                      # 暂存写失败之后的那次就是兜底
+            entered.set()
+            await gate.wait()
+        return await real_update(name, key, fn)
+
+    env.monkeypatch.setattr(env.idem, "update_key", gated_update)
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00014", "count": 1}])
+    request = asyncio.create_task(_post(env, body))
+    await asyncio.wait_for(entered.wait(), 5)
+    request.cancel()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    # 兜底还没写完：请求不能先结束、先放键锁
+    assert not request.done() and env.idem.key_lock(NAME, KEY_GROUP).locked()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert GROUP_KEY in _forgotten_keys_on_record(env)
+
+
+async def test_fallback_fence_keys_are_the_newly_fenced_journal_subjects_only(env):
+    from memory.scopes import coerce_subject
+
+    staging = {
+        "segments": [
+            # 早先因别的原因丢弃的段：它的路由目标可能被一个有效段共用，不能借它去挡别人
+            {"subject": dict(PART), "wire_key": GP_KEY, "dropped_by_forget": True},
+            {"subject": dict(GROUP), "wire_key": PART_KEY, "dropped_by_forget": True},
+        ],
+        "items": [], "applied": [],
+    }
+    # 本次新挡的段：暂存记的写入目标 + 它稳定的 wire key；早先丢弃段的 key 一个都不带
+    assert env.routes._fenced_journal_keys(staging, {1}) == {GROUP_KEY, PART_KEY}
+
+
+async def test_fallback_task_cancelled_alone_still_answers_503(env):
+    env.llm.responses = [[]]
+    _bump_before_apply(env)
+    state = _fail_fence_writes_once(env)
+    real_update = env.idem.update_key
+
+    async def swept_update(name, key, fn):
+        if state["failed"]:
+            # 关停时的取消扫描只取消了兜底任务本身：调用方没被取消
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
+        return await real_update(name, key, fn)
+
+    env.monkeypatch.setattr(env.idem, "update_key", swept_update)
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00015", "count": 1}])
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, body)
+    # 没被取消的调用方不能收到 CancelledError：按兜底没写成照常回 503
+    assert excinfo.value.status_code == 503
+
+
+async def test_fallback_fence_survives_a_lost_journal_and_changed_routing(env):
+    from memory import subject_identity
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    real_canonical = subject_identity.canonical_subject
+    route = {"to": coerce_subject(GP)}
+
+    def reroute(subject, snap=None):
+        if subject.key == GROUP_KEY:
+            return route["to"]
+        return real_canonical(subject, snap)
+
+    env.monkeypatch.setattr(subject_identity, "canonical_subject", reroute)
+    real_apply = env.routes._apply_keyed_staging
+
+    async def forget_before_apply(*args, **kwargs):
+        env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))   # 清除了当时的路由目标
+        return await real_apply(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", forget_before_apply)
+    _fail_fence_writes_once(env)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())                         # 标记写失败，只剩键记录兜底
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+    _staging_file(env, KEY_GROUP).unlink()                       # 之后暂存丢了
+    route["to"] = coerce_subject(PART)                           # 路由也变了
+    await _post(env, _single_body())
+    # 兜底带着稳定的 wire key：重新生成时照样认出这段，清除前的输入不会写进新目标
+    assert _facts_of(env, PART) == [] and _facts_of(env, GP) == []
+
+
+async def test_fallback_written_while_the_caller_is_cancelled_is_reported_as_written(env):
+    env.llm.responses = [[]]
+    _bump_before_apply(env)
+    state = _fail_fence_writes_once(env)
+    real_update = env.idem.update_key
+    caller = {}
+
+    async def update_then_cancel_caller(name, key, fn):
+        result = await real_update(name, key, fn)
+        if state["failed"]:
+            caller["task"].cancel()                              # 兜底刚写完，调用方同一时刻被取消
+        return result
+
+    env.monkeypatch.setattr(env.idem, "update_key", update_then_cancel_caller)
+    logged = []
+    env.monkeypatch.setattr(env.routes.logger, "warning", lambda msg, *a, **k: logged.append(str(msg)))
+    body = _single_body(**_ACTIVITY_BODY, speaker_activity_events=[{"id": "evt-00016", "count": 1}])
+    caller["task"] = asyncio.ensure_future(_post(env, body))
+    with pytest.raises((asyncio.CancelledError, HTTPException)):
+        await caller["task"]
+    assert GROUP_KEY in _forgotten_keys_on_record(env)
+    # 写成了就按写成了记，不能被说成「没写成」
+    assert any("recorded in forgotten_keys" in line for line in logged)
+    assert not any("cancelled before it was written" in line for line in logged)
+
+
+async def test_recheck_reports_only_the_segments_it_newly_fenced(env):
+    from memory.scopes import coerce_subject
+
+    routes = env.routes
+    staging = {
+        "segments": [
+            {"subject": dict(GP), "wire_key": GP_KEY, "dropped_by_forget": True},     # 早先那次复核已挡下
+            {"subject": dict(PART), "wire_key": PART_KEY},
+        ],
+        "items": [
+            {"seq": 0, "segment": 0, "kind": "facts", "facts": []},
+            {"seq": 1, "segment": 1, "kind": "facts", "facts": [{"text": "Mika 的猫下午在窗台睡觉"}]},
+        ],
+        "applied": [{"seq": 0, "dropped_forget_during_generation": True}],
+    }
+    contexts = [{"subject": coerce_subject(GP)}, {"subject": coerce_subject(PART)}]
+    baseline = routes._capture_forget_generations(NAME, routes._staged_segment_subjects(staging, contexts))
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(GP))      # 第 0 段早已挡下，generation 仍不同
+    env.fs._bump_subject_forget_generation(NAME, coerce_subject(PART))    # 第 1 段这次才被清除
+    # 只报这次新挡的第 1 段：第 0 段不再并进兜底
+    assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {1}

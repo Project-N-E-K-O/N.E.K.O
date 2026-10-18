@@ -291,7 +291,12 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
     guidance = ""
     from_preset = False
     preset_id = str(override.get("preset_id") or "").strip()
-    if preset_id:
+    if override.get("source") == "chat_sync":
+        # Synced static guidance is the reviewed portable version. A same-named
+        # preset installed on this device may contain a different style/version.
+        guidance = str(override.get("prompt_guidance") or "").strip()
+        from_preset = bool(preset_id and guidance)
+    elif preset_id:
         # 运行时按当前全局语言重新解析，使 persona prompt 与基础 LANLAN prompt
         # 一样跟随语言切换；仅当 preset_id 已被代码移除时才退回到落盘字符串。
         try:

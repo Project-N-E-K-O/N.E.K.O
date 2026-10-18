@@ -138,6 +138,7 @@ class SessionStateMachine:
     owner: TurnOwner = TurnOwner.NONE
     phase: ProactivePhase = ProactivePhase.IDLE
     proactive_sid: Optional[str] = None
+    proactive_round_id: Optional[str] = None
     user_sid: Optional[str] = None
     last_user_activity: float = 0.0
     _preempted: bool = False
@@ -243,6 +244,7 @@ class SessionStateMachine:
             self.owner = TurnOwner.NONE
             self.phase = ProactivePhase.IDLE
             self.proactive_sid = None
+            self.proactive_round_id = None
             self.user_sid = None
             self._preempted = False
             # Focus is session-scoped: a new session always starts REGULAR
@@ -277,7 +279,7 @@ class SessionStateMachine:
             return False
         return True
 
-    async def try_start_proactive(self, session: Any = None) -> bool:
+    async def try_start_proactive(self, session: Any = None, *, round_id: str | None = None) -> bool:
         """Atomic "check + claim": only flips ``IDLE → PHASE1`` when ``can_start_proactive``
         returns True, avoiding the TOCTOU window between two lock-free checks that
         would let two concurrent proactive paths enter PHASE1 simultaneously.
@@ -294,7 +296,7 @@ class SessionStateMachine:
                 return False
             if session_reply_in_progress(session):
                 return False
-            self._apply(SessionEvent.PROACTIVE_START, {})
+            self._apply(SessionEvent.PROACTIVE_START, {"round_id": round_id})
             snap_subs = list(self._subscribers.get(SessionEvent.PROACTIVE_START, ())) + list(
                 self._subscribers.get(_WILDCARD, ())
             )
@@ -457,6 +459,17 @@ class SessionStateMachine:
         "post-event" state.
         """
         async with self._write_lock:
+            # Check ownership under the same lock as the transition. A retired
+            # HTTP task must not claim, advance or finish a replacement round.
+            if (
+                event in {
+                    SessionEvent.PROACTIVE_CLAIM, SessionEvent.PROACTIVE_PHASE2,
+                    SessionEvent.PROACTIVE_COMMITTING, SessionEvent.PROACTIVE_DONE,
+                }
+                and payload.get("round_id") is not None
+                and payload["round_id"] != self.proactive_round_id
+            ):
+                return
             self._apply(event, payload)
             snap_subs = list(self._subscribers.get(event, ())) + list(
                 self._subscribers.get(_WILDCARD, ())
@@ -484,6 +497,7 @@ class SessionStateMachine:
             self.owner = TurnOwner.PROACTIVE
             self.phase = ProactivePhase.PHASE1
             self.proactive_sid = None
+            self.proactive_round_id = payload.get("round_id")
 
         elif event is SessionEvent.PROACTIVE_CLAIM:
             # 只在 proactive 路径存活时 claim sid；否则丢弃（已被抢）
@@ -504,6 +518,7 @@ class SessionStateMachine:
             # 抢占，owner 已是 USER，本事件只清 phase，不覆盖 owner。
             self.phase = ProactivePhase.IDLE
             self.proactive_sid = None
+            self.proactive_round_id = None
             self._preempted = False
             if self.owner is TurnOwner.PROACTIVE:
                 self.owner = TurnOwner.NONE

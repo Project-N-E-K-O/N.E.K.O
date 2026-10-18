@@ -386,6 +386,7 @@ async def _attempt_mini_game_invite_delivery(
     user_toggle_enabled: bool = True,
     push_options_compat: bool,
     memory_dir: str | Path | None = None,
+    round_id: str | None = None,
 ) -> dict | None:
     """Deliver an eligible invite for either the legacy or staged caller.
 
@@ -508,7 +509,11 @@ async def _attempt_mini_game_invite_delivery(
     if not invite_text:
         return None
 
-    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
+    # Same round ownership as the main Phase 2 path: a retired HTTP task must
+    # not claim or advance a replacement round.
+    round_payload = {"round_id": round_id} if round_id is not None else {}
+    delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
+    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0, **round_payload):
         return _proactive_pass_body(
             PROACTIVE_REASON_PASS_DELIVERY_BUSY,
             message="mini-game invite skipped: prepare_proactive_delivery refused",
@@ -518,6 +523,7 @@ async def _attempt_mini_game_invite_delivery(
         mgr,
         proactive_sid,
         log=logger,
+        **round_payload,
     ):
         return _proactive_pass_body(
             PROACTIVE_REASON_DELIVERY_PREEMPTED,
@@ -536,6 +542,7 @@ async def _attempt_mini_game_invite_delivery(
                 invite_text,
                 expected_speech_id=proactive_sid,
                 expected_user_engagement_time=expected_user_engagement_time,
+                **delivery_round,
             )
     except Exception as exc:
         logger.warning(
@@ -561,6 +568,7 @@ async def _attempt_mini_game_invite_delivery(
         invite_text,
         expected_speech_id=proactive_sid,
         expected_user_engagement_time=expected_user_engagement_time,
+        **delivery_round,
     )
     if not committed:
         if _proactive_turn_still_owned(mgr, proactive_sid):
@@ -662,6 +670,7 @@ async def _run_mini_game_invite_short_circuit(
     master_name: str,
     user_toggle_enabled: bool = True,
     memory_dir: str | Path | None = None,
+    round_id: str | None = None,
 ) -> MiniGameInviteShortCircuit | None:
     """Run the invite attempt and expose framework-neutral short-circuit data."""
     state_storage_kwargs = (
@@ -675,6 +684,7 @@ async def _run_mini_game_invite_short_circuit(
         master_name=master_name,
         user_toggle_enabled=user_toggle_enabled,
         push_options_compat=False,
+        round_id=round_id,
         **state_storage_kwargs,
     )
     if body is None:

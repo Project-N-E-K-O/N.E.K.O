@@ -15,6 +15,7 @@
 
 from utils.screen_comment_guard import project_screen_history, strip_screen_labels
 
+from ._turn_context import _TurnContextMixin, is_turn_context_message
 from ._shared import (
     _answered_chunk,
     _generation_check,
@@ -70,7 +71,9 @@ _TOOLS_REFUSAL_REQUEST_QUALIFIERS = (
 )
 
 
-class _ToolingMixin:
+class _ToolingMixin(_TurnContextMixin):
+    # The request view below splices the session's resident turn context
+    # (``_turn_context``), so every client that builds one carries it.
     def _dialog_messages_for_provider(self, messages, *, instruction=None, own_rounds=None):
         """Build the request view of ``messages``; the saved history is untouched.
 
@@ -100,10 +103,19 @@ class _ToolingMixin:
 
         Last, a tool round left with no user turn before it gets a stand-in
         (``_seat_tool_rounds``).
+
+        Before all of this, the session's resident turn context (knowledge
+        kept beside the history, ``_turn_context``) goes back right after the
+        user messages it answered, so every request of the session carries it
+        at the same place.
         """
+        context_ids = self._turn_context_message_ids(instruction)
+        messages = self._with_resident_context(messages)
         if instruction is not None:
             messages = self._with_instruction(messages, instruction, own_rounds)
-        projected = self._projected_dialog_messages(messages)
+        # The synthetic context blocks are not the user's turn: the screen
+        # projection still cuts its head right after the real user message.
+        projected = self._projected_dialog_messages(messages, context_ids=context_ids)
         return self._seat_tool_rounds(projected)
 
     def _turn_request_view(self, overrides):
@@ -198,13 +210,17 @@ class _ToolingMixin:
             seated.append(message)
         return messages if stand_in is None else seated
 
-    def _projected_dialog_messages(self, messages):
+    def _projected_dialog_messages(self, messages, *, context_ids=frozenset()):
         """Pair tool rounds and project screen comments (see
-        ``_dialog_messages_for_provider``)."""
+        ``_dialog_messages_for_provider``). ``context_ids`` are synthetic
+        turn-context messages, which never count as the turn's user message.
+        """
         paired = self._paired_tool_rounds(messages)
         turn_start = next(
             (index + 1 for index in range(len(paired) - 1, -1, -1)
-             if getattr(paired[index], "type", None) == "human"),
+             if getattr(paired[index], "type", None) == "human"
+             and id(paired[index]) not in context_ids
+             and not is_turn_context_message(paired[index])),
             len(paired),
         )
         hits: dict = {}
@@ -631,6 +647,9 @@ class _ToolingMixin:
                     )
                 else:
                     try:
+                        # No await between the generation check and snapshot.
+                        # A slow handler must keep this owner after a new turn.
+                        tool_call.reply_owner = getattr(self, "_active_reply_owner", None)
                         with _suspend_dialog_slop():
                             result = await handler(tool_call)
                     except Exception as e:

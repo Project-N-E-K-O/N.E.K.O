@@ -20,6 +20,7 @@ from main_logic.proactive_delivery import (
     fit_images_to_turn_budget,
 )
 
+from ._turn_context import _mark as _mark_turn_context
 from ._shared import (
     _cancelled_turn_end,
     _find_by_identity,
@@ -373,6 +374,20 @@ class _StreamingMixin:
             self._conversation_history.append(AIMessage(content=text))
         return True
 
+    @staticmethod
+    def _mark_reply_tail_completed(reply_owner, live: bool, shown: str) -> None:
+        """Let the reply-tail images of ``reply_owner`` follow its reply.
+
+        Every exit that keeps this attempt's shown text as the reply (the
+        regular commit, the long-reply recovery, the summary gibberish
+        fallback) marks it. A retry or discard leaves it incomplete, and the
+        reroll exhausted ``RESPONSE_LENGTH_TRUNCATED`` recovery is marked by
+        the core once it has published the recovered body.
+        """
+        tail = getattr(reply_owner, "reply_tail", None)
+        if tail is not None and live and shown:
+            tail.completed = True
+
     def _trim_cancelled_round_text(self, shown: str, rounds) -> None:
         """Make a kept, cancelled tool round hold only the text that was shown.
 
@@ -712,6 +727,10 @@ class _StreamingMixin:
         ] = None,
         response_done_callback: Optional[Callable[[], Awaitable[None]]] = None,
         reply_owner: Any = None,
+        # 本轮附加上下文（``_turn_context.TurnContext``）：resident 块（知识）
+        # 锚在这一轮的用户消息后，provider 应答之后留在本会话之后的请求里；
+        # ephemeral 块（语料、记忆）只进这一轮的请求。两者都不进历史。
+        turn_context: Any = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -1161,7 +1180,15 @@ class _StreamingMixin:
         # The tool rounds this turn appended, across attempts, so a cancelled
         # turn trims only its own (``_last_tool_round_of``).
         _turn_tool_rounds: list = []
+        # 本轮的 resident 块：先只属于这一轮，provider 应答后才留给后续轮次；
+        # 绑定在 try 之前，finally 才读得到。
+        _resident_entry = None
+        _ephemeral_context = getattr(turn_context, "ephemeral", None)
+        if _ephemeral_context is not None:
+            # 打上内部标记（不发给 provider）：请求视图据此不把它当成用户这一轮。
+            _mark_turn_context(_ephemeral_context, "ephemeral")
         try:
+            _resident_entry = self._register_resident_context(user_message, turn_context)
             # A displaced reply's frontend notice goes out before this reply
             # sends anything (see _begin_response_generation).
             await self._run_displaced_followup()
@@ -1213,6 +1240,9 @@ class _StreamingMixin:
                         if not self._resume_response_generation(response_generation):
                             status_reported = True
                             break
+                        tail = getattr(reply_owner, "reply_tail", None)
+                        if tail is not None:
+                            tail.discard_attempt()
                         assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
                         assistant_message_total = ""     # 全轮累积，用于 _check_repetition / 长度 guard
                         is_first_chunk = True
@@ -1317,6 +1347,7 @@ class _StreamingMixin:
                             _tool_bus_frames=_turn_tool_bus_frames,
                             _tool_rounds=_turn_tool_rounds,
                             _response_generation=response_generation,
+                            _instruction=_ephemeral_context,
                             **_focus_overrides,
                         ):
                             # The empty chunk a cancelled tool loop hands up is
@@ -1334,6 +1365,10 @@ class _StreamingMixin:
                             # astream 是惰性的，请求要到第一次 __anext__ 才真正发出去，
                             # 在那之前任何位置发布都只是在赌。清标记在 await 之前：一轮
                             # 只发一次，attempt 重试和 reroll 都不会把同一批图再抄一遍。
+                            # 同一个时刻：provider 收下了这一轮，本轮的 resident
+                            # 块（知识）从此留在本会话之后的请求里。
+                            if _resident_entry is not None and not _resident_entry.delivered:
+                                self._settle_resident_context(_resident_entry, delivered=True)
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None
@@ -1864,10 +1899,14 @@ class _StreamingMixin:
                                 )
                                 # The recovery may first be emitted by the
                                 # end-of-stream flush above, a cancellation point.
-                                if self._commit_reply(
+                                _live_at_commit = self._commit_reply(
                                     user_message, history_recovery_text, response_generation,
                                     turn_history=turn_history,
-                                ):
+                                )
+                                self._mark_reply_tail_completed(
+                                    reply_owner, _live_at_commit, recovery_text,
+                                )
+                                if _live_at_commit:
                                     await self._check_repetition(recovery_text)
                                 assistant_message = history_recovery_text
                                 guard_exhausted = True
@@ -2010,13 +2049,14 @@ class _StreamingMixin:
                             # 用 assistant_message_total 会把判定为乱码、已丢弃的 tail
                             # 也塞进 _recent_responses，污染后续重复判定。
                             cut_keeps_shown = False
-                            if (
-                                self._commit_reply(
-                                    user_message, summary_prefix_for_history, response_generation,
-                                    turn_history=turn_history,
-                                )
-                                and summary_prefix_for_history
-                            ):
+                            _live_at_commit = self._commit_reply(
+                                user_message, summary_prefix_for_history, response_generation,
+                                turn_history=turn_history,
+                            )
+                            self._mark_reply_tail_completed(
+                                reply_owner, _live_at_commit, assistant_message_total,
+                            )
+                            if _live_at_commit and summary_prefix_for_history:
                                 await self._check_repetition(summary_prefix_for_history)
                             assistant_message = ""
                             guard_exhausted = True
@@ -2092,6 +2132,9 @@ class _StreamingMixin:
                         _live_at_commit = self._commit_reply(
                             user_message, assistant_message, response_generation,
                             turn_history=turn_history,
+                        )
+                        self._mark_reply_tail_completed(
+                            reply_owner, _live_at_commit, assistant_message_total,
                         )
                         # 重复检测看完整一轮文本（含 pre-tool），与人类用户感知
                         # 的"这一轮 AI 说了什么"一致。
@@ -2284,6 +2327,12 @@ class _StreamingMixin:
             interrupter_owned = self._take_interrupter_ownership(response_generation)
             self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
+            # 没等到 provider 应答的 resident 块不留：请求没发出去、出字前被
+            # 打断或被新消息顶替。跑过工具轮说明 provider 已经应答过。
+            if _resident_entry is not None and not _resident_entry.delivered:
+                self._settle_resident_context(
+                    _resident_entry, delivered=bool(_turn_tool_rounds),
+                )
 
             if history_replacement_text:
                 # The index is a hint: a concurrent turn's cancelled tool round
@@ -2295,6 +2344,8 @@ class _StreamingMixin:
                 )
                 if _replace_at >= 0:
                     _history[_replace_at] = HumanMessage(content=history_replacement_text)
+                    # 这一轮的 resident 块（知识）跟着替换后的消息走。
+                    self._rebind_resident_anchor(user_message, _history[_replace_at])
 
             # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:
