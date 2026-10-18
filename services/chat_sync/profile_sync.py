@@ -40,6 +40,15 @@ def _field_text(value):
     raise ValueError("character_profile_unsupported_value")
 
 
+def _profile_name_invalid(name):
+    """Refuse any name the desktop create/rename UI refuses, plus padded spellings."""
+    from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+
+    # Same rule as characters_router._shared._validate_profile_name, minus its
+    # UI messages; a parity test keeps the two from drifting.
+    return not validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS).ok or name != name.strip()
+
+
 def export_profile(name: str, raw: dict) -> dict:
     """Project only portable raw fields; never infer aliases or copy reserved state."""
     from utils.config_manager import get_reserved
@@ -350,8 +359,7 @@ class DesktopProfileAdapter:
             if target["name"] != current["name"]:
                 if not confirm_rename:
                     return False
-                from main_routers.characters_router._shared import _validate_profile_name
-                if _validate_profile_name(target["name"]) or target["name"] != target["name"].strip():
+                if _profile_name_invalid(target["name"]):
                     # The portable wire name does not relax desktop filename or
                     # reserved-route constraints used by the normal rename UI.
                     raise ValueError("character_profile_name_invalid")
@@ -401,8 +409,7 @@ class DesktopProfileAdapter:
     async def import_new(self, uid, profile, commit):
         """Explicit imports create once with the cloud UID and local avatar/voice defaults."""
         from config.character_defaults import DEFAULT_LANLAN_TEMPLATE
-        from main_routers.characters_router.crud import _get_new_catgirl_default_voice_id
-        from main_routers.characters_router._shared import _validate_profile_name
+        from utils import api_config_loader
         from utils.character_memory import character_config_mutation_lock
         from utils.config_manager import set_reserved
         from utils.config_manager.reserved_schema import ensure_catgirl_character_id
@@ -413,7 +420,7 @@ class DesktopProfileAdapter:
                 if isinstance(raw, dict) and get_character_uid(raw) == uid:
                     return name, True
             name = profile["name"]
-            if _validate_profile_name(name) or name != name.strip():
+            if _profile_name_invalid(name):
                 raise ValueError("character_profile_name_invalid")
             if name in characters.get("猫娘", {}):
                 raise ValueError("character_profile_name_conflict")
@@ -427,7 +434,7 @@ class DesktopProfileAdapter:
             raw["昵称"] = profile["nickname"]
             set_reserved(raw, "character_uid", uid)
             ensure_catgirl_character_id(raw)
-            set_reserved(raw, "voice_id", _get_new_catgirl_default_voice_id())
+            set_reserved(raw, "voice_id", api_config_loader.get_new_character_default_voice_id())
             set_reserved(raw, "system_prompt", profile["systemPrompt"])
             set_reserved(raw, "field_order", [field["key"] for field in profile["fields"]] + ["昵称"])
             if profile["persona"] is not None:

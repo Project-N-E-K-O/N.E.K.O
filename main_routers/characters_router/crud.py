@@ -84,6 +84,9 @@ from utils.config_manager import (
     get_reserved,
     set_reserved,
 )
+from utils.api_config_loader import (  # noqa: F401 - re-exported by the characters_router facade
+    DEFAULT_NEW_CHARACTER_FREE_VOICE_ID as DEFAULT_NEW_CATGIRL_FREE_VOICE_ID,
+)
 from utils.asyncio_retirement import await_retirement
 from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
 from utils.config_manager.storage_roots import chat_avatar_directory
@@ -126,19 +129,16 @@ from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.paths import theater_root
 
 
-DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
-
-
 def _get_new_catgirl_default_voice_id() -> str:
-    """Get the default voice for a newly created character, tolerating legacy/custom configs missing free_voices."""
-    from utils.api_config_loader import get_free_voices
+    """Late-bound alias of ``utils.api_config_loader.get_new_character_default_voice_id``.
 
-    free_voices = get_free_voices() or {}
-    return (
-        free_voices.get('cuteGirl')
-        or next((voice_id for voice_id in free_voices.values() if voice_id), '')
-        or DEFAULT_NEW_CATGIRL_FREE_VOICE_ID
-    )
+    add_catgirl looks this name up here, so patching it still reaches that
+    route; resolving the utils attribute at call time keeps patches of the
+    utils function effective too, and survives ``importlib.reload`` of crud.
+    """
+    from utils import api_config_loader
+
+    return api_config_loader.get_new_character_default_voice_id()
 
 
 EXTERNAL_ROUTE_ACTIVE = "EXTERNAL_ROUTE_ACTIVE"

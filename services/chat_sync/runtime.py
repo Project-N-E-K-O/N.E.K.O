@@ -34,6 +34,7 @@ from services.chat_sync.prototype import PrototypeChatSyncClient
 from services.chat_sync.scheduler import ChatSyncScheduler, body_eligible_at, now_ms
 from services.chat_sync.trace import get_trace, route_class
 from services.chat_sync.profile_sync import DesktopProfileAdapter, DesktopProfileSync
+from utils import community_session as _community_session
 
 
 SessionProvider = Callable[[], Awaitable[dict]]
@@ -797,10 +798,9 @@ class DesktopChatSyncRuntime:
         if not isinstance(token, str) or not token or origin != _COMMUNITY_ORIGIN:
             raise ValueError("chat_sync_login_required")
         if not status.get("logged_in"):
-            from main_routers.community_oauth import status_session_saved
             # The existing resolver retains saved credentials on temporary
             # verification failures; retry without claiming authenticated access.
-            if status_session_saved(status):
+            if _community_session.status_session_saved(status):
                 raise ValueError("chat_sync_session_unavailable")
             raise ValueError("chat_sync_login_required")
         return token, hashlib.sha256(_canonical({"token": token, "origin": origin})).hexdigest()

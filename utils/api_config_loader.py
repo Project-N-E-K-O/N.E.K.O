@@ -336,6 +336,21 @@ def get_free_voices() -> Dict[str, str]:
     return config.get('free_voices', {})
 
 
+DEFAULT_NEW_CHARACTER_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
+
+
+def get_new_character_default_voice_id() -> str:
+    """Get the default voice for a newly created character, tolerating legacy/custom configs missing free_voices."""
+    # get_free_voices is looked up as a module global at call time, so patches
+    # of utils.api_config_loader.get_free_voices reach every caller.
+    free_voices = get_free_voices() or {}
+    return (
+        free_voices.get('cuteGirl')
+        or next((voice_id for voice_id in free_voices.values() if voice_id), '')
+        or DEFAULT_NEW_CHARACTER_FREE_VOICE_ID
+    )
+
+
 def _normalize_str_dict(raw: Any) -> Dict[str, str]:
     """Normalize a dict from config to str -> str, filtering out empty keys."""
     if not isinstance(raw, dict):
@@ -637,6 +652,8 @@ __all__ = [
     'reload_config',
     'get_config',
     'get_free_voices',
+    'DEFAULT_NEW_CHARACTER_FREE_VOICE_ID',
+    'get_new_character_default_voice_id',
     'get_native_tts_voice_provider_config',
     'get_native_tts_voice_provider_configs',
     'get_cosyvoice_clone_model',
