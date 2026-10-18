@@ -228,3 +228,31 @@ def test_physics_profile_read_does_not_create_the_config_dir(tmp_path, monkeypat
     payload = TestClient(app).get("/api/model/vrm/physics_profile/sister1.0").json()
     assert payload["source"] == "absent"
     assert not (tmp_path / "static" / "vrm" / "configs").exists()
+
+
+def test_physics_profile_utf16_file_falls_back_instead_of_500(client, config_dir):
+    (config_dir / "sister1.0_physics.json").write_bytes("{}".encode("utf-16"))
+    response = client.get("/api/model/vrm/physics_profile/sister1.0")
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "config": None, "source": "corrupt"}
+
+
+def test_cleanup_skips_workshop_lookup_when_no_config_exists(tmp_path, monkeypatch):
+    class _Mgr:
+        project_root = tmp_path
+        vrm_dir = tmp_path / "user_vrm"
+
+    _Mgr.vrm_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(vrm_router, "get_config_manager", lambda: _Mgr())
+    calls = []
+
+    async def _workshop():
+        calls.append(1)
+        return {"success": True, "items": []}
+
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", _workshop)
+
+    import asyncio
+
+    asyncio.run(vrm_router._cleanup_vrm_model_configs("sister1.0"))
+    assert calls == []

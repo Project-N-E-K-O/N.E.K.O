@@ -681,7 +681,9 @@ async def _cleanup_vrm_model_configs(model_name: str):
         directories = [config_mgr.project_root / 'static' / 'vrm', config_mgr.vrm_dir]
         emotion_config = _get_emotion_config_path(model_name)
         physics_config = _get_physics_config_path(model_name)
-        if not emotion_config and not physics_config:
+        has_emotion = bool(emotion_config and emotion_config.is_file())
+        has_physics = bool(physics_config and physics_config.is_file())
+        if not has_emotion and not has_physics:
             return
         workshop = await get_subscribed_workshop_items()
         if not isinstance(workshop, dict) or not workshop.get('success'):
@@ -696,9 +698,9 @@ async def _cleanup_vrm_model_configs(model_name: str):
                 directories.extend(child for child in folder.iterdir() if child.is_dir())
 
         targets = []
-        if emotion_config and emotion_config.is_file():
+        if has_emotion:
             targets.append((emotion_config, '_emotion.json'))
-        if physics_config and physics_config.is_file():
+        if has_physics:
             targets.append((physics_config, '_physics.json'))
 
         for config_path, suffix in targets:
@@ -804,7 +806,7 @@ async def get_physics_profile(model_name: str):
             return {"success": True, "config": None, "source": "corrupt"}
         return {"success": True, "config": config, "source": "file"}
 
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         logger.warning(f"物理配置文件 JSON 损坏，回退到默认行为: {e}")
         return {"success": True, "config": None, "source": "corrupt"}
 
