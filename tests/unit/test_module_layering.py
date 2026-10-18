@@ -1,6 +1,6 @@
 """Unit tests for ``scripts/check_module_layering.py``.
 
-Two-pronged coverage:
+Three-pronged coverage:
 
 1. End-to-end: run the real script against the live repo. Exit must be 0.
    This is the gate that will fail CI the moment someone introduces a new
@@ -461,6 +461,23 @@ def test_unregistered_package_check_reads_git_index(
     assert script_module._tracked_python_files(tmp_path) is not None
     found = script_module.find_unregistered_packages(tmp_path, {"registered"})
     assert found == [("newpkg", "newpkg/sub/mod.py")]
+
+
+@pytest.mark.unit
+def test_tree_inside_another_checkout_falls_back_to_the_filesystem(
+    script_module, tmp_path, monkeypatch,
+) -> None:
+    """An exported tree unpacked inside some other git work tree must not be
+    judged by that outer repository's index, which tracks none of its files."""
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True, capture_output=True)
+    exported = tmp_path / "exported"
+    _write_tree(exported)
+
+    assert script_module._tracked_python_files(exported) is None
+    found = script_module.find_unregistered_packages(exported, {"registered"})
+    assert [directory for directory, _ in found] == ["newpkg"]
 
 
 @pytest.mark.unit

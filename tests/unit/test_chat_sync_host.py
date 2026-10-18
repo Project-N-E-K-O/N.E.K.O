@@ -13,6 +13,9 @@ import hashlib
 import importlib
 import itertools
 import json
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -28,6 +31,8 @@ from services.chat_sync.runtime import _saved_session_commit_guard, _saved_sessi
 
 UID = "a" * 32
 ORIGIN = "https://community.project-neko.cn"
+ROOT = Path(__file__).resolve().parents[2]
+
 OWNERS = {
     "_saved_session_snapshot": "main_routers.card_drop_router",
     "_saved_session_writer_fence": "main_routers.card_drop_router",
@@ -326,13 +331,40 @@ async def test_rename_capability_survives_reloading_crud(monkeypatch):
     rename.assert_awaited_once_with("Synthetic", "Renamed", sync_commit=marker)
 
 
-def test_importing_the_main_server_app_installs_every_capability_from_its_owner():
-    from app.main_server import web_app  # noqa: F401
+_WIRING_PROBE = '''
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
 
-    for slot, owner in OWNERS.items():
-        installed = getattr(host, slot)
-        assert installed is not None, slot
-        assert installed.__module__ == owner, (slot, installed.__module__)
+# Same isolation as tests/conftest.py, installed before any product import: the
+# app import would otherwise run storage migration against the real runtime root.
+os.environ.pop("NEKO_STORAGE_SELECTED_ROOT", None)
+from utils import logger_config
+logger_config.RobustLoggerConfig._get_documents_directory = lambda self: Path(tempfile.mkdtemp())
+from utils.config_manager import ConfigManager
+from tests import real_root_isolation
+real_root_isolation.install(ConfigManager)
+
+owners = json.loads(sys.argv[1])
+preloaded = sorted(module for module in set(owners.values()) if module in sys.modules)
+from app.main_server import web_app  # noqa: F401
+from services.chat_sync import host
+installed = {slot: getattr(getattr(host, slot), "__module__", None) for slot in owners}
+print(json.dumps({"preloaded": preloaded, "installed": installed}))
+'''
+
+
+def test_importing_the_main_server_app_installs_every_capability_from_its_owner():
+    # Host slots are process-global and other test modules import the owners at
+    # collection time, so only a fresh interpreter proves web_app's own wiring.
+    result = subprocess.run([sys.executable, "-c", _WIRING_PROBE, json.dumps(OWNERS)],
+                            cwd=ROOT, capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr[-4000:]
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["preloaded"] == []
+    assert report["installed"] == OWNERS
 
 
 # ---- the busy predicate moved verbatim -----------------------------------------

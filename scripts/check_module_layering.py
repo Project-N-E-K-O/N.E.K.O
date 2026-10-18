@@ -412,9 +412,26 @@ def _parse_file(path: Path) -> ast.Module | None:
 
 def _tracked_python_files(root: Path) -> Optional[List[str]]:
     """Return the ``root``-relative POSIX paths of the .py files git tracks
-    under ``root``, or ``None`` when git is missing or ``root`` is not inside
-    a work tree.
+    under ``root``, or ``None`` when git is missing or ``root`` is not the top
+    of its own work tree.
     """
+    # An exported tree unpacked inside some other checkout would otherwise get
+    # that outer repository's (empty) listing and silently skip the check.
+    try:
+        toplevel = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(root),
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if toplevel.returncode != 0:
+        return None
+    top = toplevel.stdout.decode("utf-8", errors="surrogateescape").strip()
+    if not top or Path(top).resolve() != root.resolve():
+        return None
     try:
         result = subprocess.run(
             ["git", "ls-files", "-z", "--", "*.py"],
