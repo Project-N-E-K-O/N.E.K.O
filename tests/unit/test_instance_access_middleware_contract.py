@@ -24,7 +24,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 MIDDLEWARE = "InstanceAccessMiddleware"
-IMPORT = "from utils.instance_access import"
 
 # 必须挂门禁的应用：文件 → 说明
 GATED = {
@@ -42,26 +41,97 @@ EXEMPT = {
 SCAN_ROOTS = ("app", "plugin")
 
 
-def _fastapi_sites() -> set[str]:
-    """Statically locate every FastAPI(...) site without importing app modules."""
-    sites: set[str] = set()
+def _module_facts(path: Path) -> tuple[set[str], set[str]]:
+    """Return (fastapi_app_vars, gated_app_vars) parsed from one module's AST.
+
+    Everything is AST-driven, not text-driven, for three reasons:
+
+    * FastAPI may be imported under an alias ('from fastapi import FastAPI as
+      API') or reached through the module object ('import fastapi' then
+      'fastapi.FastAPI()'), so the constructor name is resolved from the import
+      statements instead of being hard-coded.
+    * A middleware mount that only exists inside a comment is not in the AST, so
+      a commented-out mount cannot satisfy the contract.
+    * The mount must target a variable that this same module created from the
+      FastAPI constructor, not some unrelated object.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    ctor_names: set[str] = set()
+    fastapi_modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "fastapi":
+                for alias in node.names:
+                    if alias.name == "FastAPI":
+                        ctor_names.add(alias.asname or "FastAPI")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "fastapi":
+                    fastapi_modules.add(alias.asname or "fastapi")
+
+    def is_ctor(call: ast.Call) -> bool:
+        func = call.func
+        if isinstance(func, ast.Name):
+            return func.id in ctor_names
+        return (
+            isinstance(func, ast.Attribute)
+            and func.attr == "FastAPI"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in fastapi_modules
+        )
+
+    app_vars: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and is_ctor(node.value)
+        ):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    app_vars.add(target.id)
+
+    def is_middleware_ref(expr: ast.expr) -> bool:
+        if isinstance(expr, ast.Name):
+            return expr.id == MIDDLEWARE
+        return isinstance(expr, ast.Attribute) and expr.attr == MIDDLEWARE
+
+    gated_vars: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_middleware"):
+            continue
+        if not isinstance(func.value, ast.Name):
+            continue
+        if node.args and is_middleware_ref(node.args[0]):
+            gated_vars.add(func.value.id)
+
+    return app_vars, gated_vars
+
+
+def _scan() -> dict[str, tuple[set[str], set[str]]]:
+    """Return {relative path: (app vars, gated vars)} for every FastAPI module."""
+    facts: dict[str, tuple[set[str], set[str]]] = {}
     for root in SCAN_ROOTS:
         for path in sorted((ROOT / root).rglob("*.py")):
             posix = path.as_posix()
             if "/tests/" in posix or path.name.startswith("test_"):
                 continue
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
+                app_vars, gated_vars = _module_facts(path)
             except (OSError, SyntaxError):
                 continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-                if name == "FastAPI":
-                    sites.add(path.relative_to(ROOT).as_posix())
-    return sites
+            if app_vars:
+                facts[path.relative_to(ROOT).as_posix()] = (app_vars, gated_vars)
+    return facts
+
+
+def _fastapi_sites() -> set[str]:
+    """Files that create at least one FastAPI application."""
+    return set(_scan())
 
 
 def test_scan_actually_finds_the_known_services():
@@ -83,11 +153,14 @@ def test_every_asgi_app_is_accounted_for():
 
 
 def test_gated_services_mount_the_instance_access_middleware():
+    facts = _scan()
     for rel, label in GATED.items():
-        text = (ROOT / rel).read_text(encoding="utf-8")
-        assert IMPORT in text, f"{rel}（{label}）没有导入实例门禁中间件"
-        assert f"add_middleware({MIDDLEWARE}" in text, (
-            f"{rel}（{label}）导入了中间件却没有 add_middleware —— "
+        assert rel in facts, f"{rel}（{label}）没有被识别出 FastAPI 应用"
+        app_vars, gated_vars = facts[rel]
+        # 必须是"这个文件自己创建的 app 上调用了 add_middleware(InstanceAccessMiddleware)"。
+        # 注释掉的代码不在 AST 里，给别的对象挂中间件也不算。
+        assert gated_vars & app_vars, (
+            f"{rel}（{label}）没有在它自己创建的 FastAPI 应用上挂 InstanceAccessMiddleware —— "
             "该服务的 HTTP/WS 不受实例门禁保护"
         )
 
