@@ -291,7 +291,12 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
     guidance = ""
     from_preset = False
     preset_id = str(override.get("preset_id") or "").strip()
-    if preset_id:
+    if override.get("source") == "chat_sync":
+        # Synced static guidance is the reviewed portable version. A same-named
+        # preset installed on this device may contain a different style/version.
+        guidance = str(override.get("prompt_guidance") or "").strip()
+        from_preset = bool(preset_id and guidance)
+    elif preset_id:
         # Resolve using the current global language at runtime so the persona prompt follows language changes,
         # like the base LANLAN prompt. Fall back to the stored string only if code removed preset_id.
         try:

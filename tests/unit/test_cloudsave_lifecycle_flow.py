@@ -334,6 +334,8 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
             await bridge_start()
 
     with contextlib.ExitStack() as stack:
+        # This storage test does not own optional sync work on its temporary loop.
+        stack.enter_context(patch("services.chat_sync.runtime.schedule_desktop_chat_sync_start"))
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
@@ -829,7 +831,10 @@ async def test_release_storage_startup_barrier_starts_integration_workers_after_
         main_server,
         "_start_neko_servers_integration_workers",
         Mock(),
-    ) as mock_start_workers:
+    ) as mock_start_workers, patch(
+        # Sync startup and shutdown have their own lifecycle regression coverage.
+        "services.chat_sync.runtime.schedule_desktop_chat_sync_start",
+    ):
         result = await main_server.release_storage_startup_barrier(reason="unit_test")
 
     assert result == {"ok": True, "initialized": True}

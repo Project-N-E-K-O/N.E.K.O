@@ -3134,6 +3134,8 @@
                     text: displayText,
                     imageUrls: optimisticImageUrls
                 });
+                // Display identity only: the backend independently assigns the saved original ID.
+                if (window.nekoChatSync) window.nekoChatSync.markUserRequest(requestId, reactOptimisticMessageId);
             }
 
             // Enter 已通过空内容、教程锁和附件预处理校验，即视为发送请求已被聊天逻辑接受。

@@ -17,8 +17,9 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 
 from datetime import datetime
 
@@ -39,6 +40,35 @@ from memory.evidence import evidence_score
 from ._shared import logger
 
 from utils.tokenize import acount_tokens, count_tokens, tokenizer_identity
+
+
+# Token counts by (tokenizer identity, text), for entries that cannot carry
+# their own cache (``writeback=False``: reflections, re-read per load). Those
+# used to be re-counted, one worker-thread hop each, on every render; recall
+# now runs the render's selection on every text turn
+# (``arecall_residency``), so the counts are kept here instead. A count is a
+# pure function of the key, so a hit is always right.
+_TOKEN_COUNT_MEMO: OrderedDict[tuple[str, str], int] = OrderedDict()
+_TOKEN_COUNT_MEMO_MAX = 4096
+_TOKEN_COUNT_MEMO_LOCK = threading.Lock()
+
+
+def _memo_token_count(tid: str, text: str) -> int | None:
+    key = (tid, text)
+    with _TOKEN_COUNT_MEMO_LOCK:
+        count = _TOKEN_COUNT_MEMO.get(key)
+        if count is not None:
+            _TOKEN_COUNT_MEMO.move_to_end(key)
+        return count
+
+
+def _remember_token_count(tid: str, text: str, count: int) -> None:
+    with _TOKEN_COUNT_MEMO_LOCK:
+        _TOKEN_COUNT_MEMO[(tid, text)] = count
+        _TOKEN_COUNT_MEMO.move_to_end((tid, text))
+        while len(_TOKEN_COUNT_MEMO) > _TOKEN_COUNT_MEMO_MAX:
+            _TOKEN_COUNT_MEMO.popitem(last=False)
+
 
 class _RenderPrep(NamedTuple):
     """Everything the sync and async render paths derive identically.
@@ -219,7 +249,13 @@ class RenderingMixin:
             and entry.get('token_count_tokenizer') == tid
         ):
             return cached_count
-        n = count_tokens(text)
+        if writeback:
+            n = count_tokens(text)
+        else:
+            n = _memo_token_count(tid, text)
+            if n is None:
+                n = count_tokens(text)
+                _remember_token_count(tid, text, int(n))
         if writeback:
             entry['token_count'] = int(n)
             entry['token_count_text_sha256'] = fp
@@ -250,7 +286,13 @@ class RenderingMixin:
             and entry.get('token_count_tokenizer') == tid
         ):
             return cached_count
-        n = await acount_tokens(text)
+        if writeback:
+            n = await acount_tokens(text)
+        else:
+            n = _memo_token_count(tid, text)
+            if n is None:
+                n = await acount_tokens(text)
+                _remember_token_count(tid, text, int(n))
         if writeback:
             entry['token_count'] = int(n)
             entry['token_count_text_sha256'] = fp

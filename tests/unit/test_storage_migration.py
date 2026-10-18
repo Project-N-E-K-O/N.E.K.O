@@ -4730,3 +4730,65 @@ def test_a_locked_file_backup_keeps_the_transaction_and_completes(tmp_path, monk
     assert (target_root / "memory").read_bytes() == b"source memory"
     kept = list(target_root.glob(".smtx/*/backup/memory"))
     assert len(kept) == 1 and kept[0].read_bytes() == b"target's original"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize('from_anchor', [False, True])
+async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(tmp_path, from_anchor):
+    """Moving storage preserves queued originals/deletes without promoting the retained copy."""
+    from services.chat_sync.ledger import ChatDomain, ChatOriginal
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.writer import WriterQuarantined
+    from tests.unit.test_chat_sync_runtime import BINDING, OWNER, UID, capture
+
+    config_manager = (_make_anchor_root_config_manager if from_anchor else _make_config_manager)(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / 'sync-target' / 'N.E.K.O'
+    witness = config_manager.local_state_dir / 'chat_sync_writer.json'
+    async def no_session():
+        return {'logged_in': False}
+    runtime = DesktopChatSyncRuntime(source_root / 'chat_sync', no_session, witness_path=witness)
+    domain = ChatDomain(OWNER, UID)
+    source = ChatOriginalSource(source_root / 'chat_sync' / 'sources.sqlite3')
+    runtime.state.activate(runtime.state.prepare_binding(domain), BINDING)
+    source.commit(OWNER, UID, 'b' * 32, ChatOriginal('user', 'pending raw 中文🙂'))
+    source.commit_unbound(UID, 'c' * 32, ChatOriginal('user', 'local trusted history'))
+    source.commit_local_reply(UID, 'd' * 32, ChatOriginal('assistant', 'local tool reply'), 'tool')
+    capture(runtime)
+    batch = runtime.ledger.seal_batch(domain, byte_budget=10000)
+    deletion = runtime.ledger.queue_deletion(domain, ['e' * 32])
+    request = {'requestId': 'f' * 32, 'epoch': list(runtime.writer.epoch()), 'canonical': '{}'}
+    runtime.state.queue_new_role(UID, request)
+    runtime.state.save_choice(UID, True)
+    pending_sources = source.pending(200)
+    saved_request = runtime.state.new_role(UID)
+    await runtime.close()
+    originals = {path.name: path.read_bytes() for path in (source_root / 'chat_sync').iterdir() if path.is_file()}
+    witness_before = witness.read_bytes()
+
+    create_pending_storage_migration(config_manager, source_root=source_root, target_root=target_root,
+                                     selection_source='custom')
+    result = run_pending_storage_migration(config_manager)
+    assert result['completed'] is True, result
+    assert {path.name: path.read_bytes() for path in (target_root / 'chat_sync').iterdir() if path.is_file()} == originals
+    assert witness.read_bytes() == witness_before
+    assert not (target_root / 'state' / 'chat_sync_writer.json').exists()
+
+    reopened = DesktopChatSyncRuntime(target_root / 'chat_sync', no_session, witness_path=witness)
+    try:
+        reopened.writer.check()
+        assert reopened.state.binding(UID)['enabled']
+        assert reopened.state.choices()[UID] is True
+        assert reopened.state.new_role(UID) == saved_request
+        assert reopened.ledger.seal_batch(domain, byte_budget=10000) == batch
+        assert reopened.ledger.pending_deletions(domain) == [deletion]
+        moved_source = ChatOriginalSource(target_root / 'chat_sync' / 'sources.sqlite3')
+        assert moved_source.pending(200) == pending_sources
+        assert moved_source.read_local_replies(moved_source.path, UID)[0]['text'] == 'local tool reply'
+        # The retained source is an old snapshot, not another writable device.
+        with pytest.raises(WriterQuarantined):
+            runtime.writer.check()
+    finally:
+        await reopened.close()

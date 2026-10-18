@@ -165,6 +165,9 @@ class ToolCall:
     # Host-only ownership, never encoded into model arguments/history.
     reply_owner: Any = field(default=None, repr=False)
     host_reply: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    # Realtime has no offline ReplyTurn. Preserve its existing frozen transport/scope owner for provenance;
+    # this host-only value is never accepted from model arguments or encoded into tool results/history.
+    source_owner: Any = field(default=None, repr=False)
 
 
 @dataclass

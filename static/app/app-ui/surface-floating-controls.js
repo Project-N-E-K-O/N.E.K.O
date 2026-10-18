@@ -519,6 +519,41 @@
             return true;
         }
 
+        // NEKO-PC 主进程把新签的 native_delegate 写进已开社区窗口当前页的哈希并聚焦它。
+        // 返回 null 表示宿主没有这个桥（浏览器或旧版 NEKO-PC），调用方走原有流程；
+        // 否则返回 { handled }，handled=false 表示主进程那边没有社区窗口。
+        // 主进程只有找到社区窗口时才会去签凭证（先聚焦再签），所以迟迟不返回说明窗口在、
+        // 只是签发慢：超时按已处理算，凭证签好后主进程照样写进窗口。没有上限的话，
+        // 宿主卡住会让 social-open 锁永远不释放，按钮从此点不动。
+        const DESKTOP_COMMUNITY_HANDOFF_TIMEOUT_MS = 8000;
+        async function requestDesktopCommunityHandoff() {
+            const bridge = window.nekoSocial;
+            if (!bridge || typeof bridge.refreshCommunityHandoff !== 'function') {
+                return null;
+            }
+            let timeoutId;
+            try {
+                const result = await Promise.race([
+                    bridge.refreshCommunityHandoff(),
+                    new Promise(resolve => {
+                        timeoutId = setTimeout(
+                            () => resolve({ handled: true, timedOut: true }),
+                            DESKTOP_COMMUNITY_HANDOFF_TIMEOUT_MS
+                        );
+                    })
+                ]);
+                if (result && result.timedOut) {
+                    console.warn('[social] desktop community handoff is still pending; not waiting for it');
+                }
+                return { handled: !!(result && result.handled) };
+            } catch (error) {
+                console.warn('[social] desktop community handoff failed (non-fatal):', error);
+                return { handled: false };
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+
         function isSocialOpenRequestCurrent(generation) {
             return generation === null
                 || generation === undefined
@@ -640,6 +675,42 @@
             }
         }
 
+        // 社区页跨源，找回的窗口读不到 location；首开时记下社区源，渲染进程刷新后
+        // 找回窗口时据此重新登记主题目标。
+        const SOCIAL_COMMUNITY_ORIGIN_KEY = 'neko_social_community_origin';
+
+        function rememberSocialCommunityOrigin(targetUrl) {
+            try {
+                const parsed = new URL(String(targetUrl), window.location.href);
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+                getSocialThemeBridgeState().communityOrigin = parsed.origin;
+                try { sessionStorage.setItem(SOCIAL_COMMUNITY_ORIGIN_KEY, parsed.origin); } catch (_) { /* ignore */ }
+            } catch (_) { /* ignore */ }
+        }
+
+        function recallSocialCommunityOrigin() {
+            const state = getSocialThemeBridgeState();
+            if (state.communityOrigin) return state.communityOrigin;
+            try {
+                const stored = sessionStorage.getItem(SOCIAL_COMMUNITY_ORIGIN_KEY);
+                if (stored) {
+                    state.communityOrigin = stored;
+                    return stored;
+                }
+            } catch (_) { /* ignore */ }
+            return '';
+        }
+
+        // 找回已开的社区窗口后（浏览器 probe、Electron 主进程交接）重新登记主题目标并补发
+        // 当前主题，否则渲染进程刷新后 targets 为空，之后的主题切换到不了社区窗口。
+        function resyncRecoveredSocialTheme(socialWindow) {
+            const origin = recallSocialCommunityOrigin();
+            if (!socialWindow || !origin) return null;
+            const target = registerSocialThemeTarget(socialWindow, origin);
+            queueSocialThemeSync(target);
+            return target;
+        }
+
         function postSocialTheme(target, darkMode) {
             target.targetWindow.postMessage({
                 source: 'neko-desktop',
@@ -703,11 +774,47 @@
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
                 return;
             }
-            if (typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
-                return;
-            }
-            if (shouldIgnoreSocialOpenRequest()) {
-                return;
+            const isElectronHost = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
+            const requestDesktopHandoff = () => (typeof requestDesktopCommunityHandoff === 'function'
+                ? requestDesktopCommunityHandoff()
+                : Promise.resolve(null));
+            if (isElectronHost) {
+                // 社区窗口已开时不能只聚焦：铸造页等页面需要一张新的 native_delegate，
+                // 由主进程写进窗口当前页的哈希（#3450）。渲染进程刷新后 windowRef 丢失
+                // 也能靠主进程找回已开窗口。桥缺失（旧版 NEKO-PC）时退回仅聚焦。
+                if (shouldIgnoreSocialOpenRequest()) {
+                    return;
+                }
+                const handoffGeneration = typeof getSocialOpenState === 'function'
+                    ? (Number(getSocialOpenState().generation) || 0)
+                    : null;
+                const desktopHandoff = await requestDesktopHandoff();
+                if (desktopHandoff && desktopHandoff.handled) {
+                    // 渲染进程没刷新过时手里还有窗口引用：补登主题目标并同步当前主题。
+                    if (typeof resyncRecoveredSocialTheme === 'function' && typeof getOpenSocialWindow === 'function') {
+                        resyncRecoveredSocialTheme(getOpenSocialWindow());
+                    }
+                    if (typeof releaseSocialOpenRequest === 'function') releaseSocialOpenRequest(handoffGeneration);
+                    return;
+                }
+                if (!desktopHandoff && typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
+                    if (typeof releaseSocialOpenRequest === 'function') releaseSocialOpenRequest(handoffGeneration);
+                    return;
+                }
+                // 没有社区窗口：沿用本次已占用的 social-open 锁继续首开流程。
+                // focusOpenSocialWindow 发现 windowRef 已关闭时会顺手清掉锁；这里重新占锁，
+                // 否则下一次点击会并行跑第二条首开流程。
+                if (typeof getSocialOpenState === 'function' && !getSocialOpenState().inFlight
+                    && shouldIgnoreSocialOpenRequest()) {
+                    return;
+                }
+            } else {
+                if (typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
+                    return;
+                }
+                if (shouldIgnoreSocialOpenRequest()) {
+                    return;
+                }
             }
             const socialOpenGeneration = typeof getSocialOpenState === 'function'
                 ? (Number(getSocialOpenState().generation) || 0)
@@ -723,6 +830,9 @@
                 const probe = probeNamedSocialWindow();
                 if (probe && probe.existing) {
                     rememberSocialWindow(probe.socialWindow, socialOpenGeneration);
+                    if (typeof resyncRecoveredSocialTheme === 'function') {
+                        resyncRecoveredSocialTheme(probe.socialWindow);
+                    }
                     try { probe.socialWindow.focus && probe.socialWindow.focus(); } catch (_) { /* ignore */ }
                     const releaseExistingSocialWindowRequest = releaseSocialOpenRequestForFlow;
                     releaseExistingSocialWindowRequest();
@@ -779,6 +889,7 @@
                         attachResolvedTheme(parsedTarget);
                         navigationTarget = parsedTarget.toString();
                         themeTarget = registerSocialThemeTarget(currentPopup, parsedTarget);
+                        if (themeTarget) rememberSocialCommunityOrigin(parsedTarget);
                     }
                 } catch (_) { /* non-community navigation */ }
                 // The external page receives theme-only messages but never a reference
@@ -869,7 +980,9 @@
                 if (typeof rememberSocialWindow === 'function') {
                     rememberSocialWindow(socialWin, socialOpenGeneration);
                 }
-                registerSocialThemeTarget(socialWin, resolvedTargetUrl);
+                if (registerSocialThemeTarget(socialWin, resolvedTargetUrl)) {
+                    rememberSocialCommunityOrigin(resolvedTargetUrl);
+                }
                 try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 return true;
             };
@@ -973,10 +1086,17 @@
                 targetUrl,
                 await fetchNativeSyncTicket()
             );
+            const delegateTransportAllowed = (targetUrl) => {
+                // 明文 HTTP 只允许回环地址，与后端 proof_transport_allowed 同一规则。
+                if (targetUrl.protocol === 'https:') return true;
+                const host = targetUrl.hostname.toLowerCase();
+                return targetUrl.protocol === 'http:'
+                    && (host === 'localhost' || host === '127.0.0.1' || host === '[::1]');
+            };
             const attachNativeDelegate = (targetUrl, nativeDelegate) => {
                 const hashParams = new URLSearchParams(targetUrl.hash.replace(/^#/, ''));
                 // Scoped credits/facts proof — never the platform OAuth bearer.
-                if (nativeDelegate) {
+                if (nativeDelegate && delegateTransportAllowed(targetUrl)) {
                     hashParams.set('native_delegate', nativeDelegate);
                 }
                 const hash = hashParams.toString();
@@ -984,6 +1104,31 @@
                 return targetUrl;
             };
             const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '', pendingProofs = {}) => {
+                // Electron 首个 window.open 已带上 delegate：只差晚到的同步票据时才补送。
+                // delegate 只是授信证明，社区页登录靠 native_sync，票据不能丢（#3451 review）。
+                // initialUrlDelegate 是首个 URL 实际带上的 delegate 本身：它可能在 4 秒就绪期之后
+                // 才落定，此时 initialNativeDelegate 仍是超时占位的空串，回退时必须用它。
+                if (isElectron && pendingProofs.initialUrlDelegate) {
+                    // 票据和 delegate 都已在首个 URL 里，无需补送。
+                    if (!pendingProofs.syncTicket) return;
+                    let lateTicket = await pendingProofs.syncTicket;
+                    // 主进程会签一对新的票据和 delegate 写进窗口当前页，首次签发为空也不影响。
+                    const desktopHandoff = await requestDesktopHandoff();
+                    if (desktopHandoff && desktopHandoff.handled) return;
+                    if (desktopHandoff) {
+                        console.warn('[social] desktop community handoff found no community window');
+                    }
+                    // 旧版 NEKO-PC 没有桥、或桥没送达（没找到窗口/调用失败）：退回原行为。
+                    // 首次签发为空（瞬时错误）时照旧重签一次，再把票据随同一 delegate 再 window.open 一次。
+                    if (!lateTicket) lateTicket = await fetchNativeSyncTicket();
+                    if (!lateTicket) return;
+                    const ticketTargetUrl = applyNativeSyncTicket(new URL(targetUrl, window.location.href), lateTicket);
+                    attachNativeDelegate(ticketTargetUrl, pendingProofs.initialUrlDelegate);
+                    if (!openElectronSocialWindow(ticketTargetUrl.toString())) {
+                        console.warn('[social] failed to deliver late sync ticket to Electron community window');
+                    }
+                    return;
+                }
                 // 已登录快速路径直接复用并行取得的 delegate。仅在状态接口失败、
                 // 但 auth-status 兜底确认已登录时重试一次，避免重复解析 OAuth 会话。
                 let nativeDelegate = initialNativeDelegate;
@@ -1005,8 +1150,17 @@
                         : await attachNativeSyncTicket(new URL(targetUrl, window.location.href));
                     attachNativeDelegate(delegateTargetUrl, nativeDelegate);
                     if (isElectron) {
-                        if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
-                            console.warn('[social] failed to refresh Electron community window with native delegate');
+                        // 对已开的 neko-social 再 window.open 落不到内置窗口上（#3450）：
+                        // 交给主进程写进社区窗口当前页的哈希。旧版 NEKO-PC 没有桥、或桥没送达
+                        // （没找到窗口/调用失败）时保留原行为，随初始 URL 交付。
+                        const desktopHandoff = await requestDesktopHandoff();
+                        if (!desktopHandoff || !desktopHandoff.handled) {
+                            if (desktopHandoff) {
+                                console.warn('[social] desktop community handoff found no community window');
+                            }
+                            if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
+                                console.warn('[social] failed to refresh Electron community window with native delegate');
+                            }
                         }
                     } else if (popupRef) {
                         navigateBrowserPopup(delegateTargetUrl.toString());
@@ -1092,6 +1246,10 @@
                     initialNativeHandoffPromise,
                     { nativeDelegate: '', loginState: 'unknown' }
                 );
+                // Electron：delegate 若在票据之前已就绪，就直接放进首个 window.open（#3450），
+                // 免去一次补跳；没就绪也不额外等待，迟到的由主进程写进已开窗口。
+                let settledInitialHandoff = null;
+                initialNativeHandoffPromise.then(handoff => { settledInitialHandoff = handoff; }, () => {});
                 const [initialSyncTicket, clientId] = await Promise.all([
                     waitForInitialNativeProof(initialSyncTicketPromise),
                     initialClientIdPromise
@@ -1099,6 +1257,11 @@
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
                 applyNativeSyncTicket(targetUrl, initialSyncTicket);
+                const initialUrlDelegate = (isElectron && settledInitialHandoff
+                    && settledInitialHandoff.nativeDelegate) || '';
+                if (initialUrlDelegate) {
+                    attachNativeDelegate(targetUrl, initialUrlDelegate);
+                }
                 // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
                 if (clientId) {
                     targetUrl.searchParams.set('cid', clientId);
@@ -1250,7 +1413,8 @@
                                 {
                                     nativeHandoff: initialNativeHandoffPromise,
                                     syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
-                                    loggedOut: communityLoggedOut
+                                    loggedOut: communityLoggedOut,
+                                    initialUrlDelegate
                                 }
                             );
                         }
@@ -1274,7 +1438,8 @@
                         {
                             nativeHandoff: initialNativeHandoffPromise,
                             syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
-                            loggedOut: communityLoggedOut
+                            loggedOut: communityLoggedOut,
+                            initialUrlDelegate
                         }
                     );
                 }

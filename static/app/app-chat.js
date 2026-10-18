@@ -495,6 +495,9 @@
                     window._isProcessingRealisticQueue = false;
                     if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
                         processRealisticQueue(window._realisticGeminiVersion || 0);
+                    } else {
+                        // Announce actual owner release, never a superseded queue.
+                        window.dispatchEvent(new CustomEvent('neko-realistic-queue-idle'));
                     }
                 }
             }

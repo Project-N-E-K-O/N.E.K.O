@@ -450,6 +450,14 @@ HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 # it protects extreme multi-character × large-corpus residency, like the file-count gate above.
 HYBRID_RECALL_VEC_CACHE_MAX_BYTES = 32 * 1024 * 1024
 
+# Resident byte limit for the BM25 token cache (memory.hybrid_recall._TOKEN_CACHE).
+# Passive injection runs BM25 over the entire recall pool on every text turn; previously each call retokenized
+# from scratch (CJK 2/3-gram sliding windows account for about three quarters of BM25 time for 5000 entries). Cache by stop names +
+# original text, storing a single \x00-joined string (about 10 times less memory than token tuples;
+# roughly 3MB for 5000 entries), then split on a hit. Accounting remains conservative: include the original text
+# itself, even though pool rows usually retain it. 32MB holds about 50,000 short memories.
+HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES = 32 * 1024 * 1024
+
 # ========================================================================
 # §3.7 LLM Context & Output Budget
 # ------------------------------------------------------------------------

@@ -1870,12 +1870,10 @@ class KnowledgeService:
             self._query_embeddings.add(embed_task)
             embed_task.add_done_callback(self._query_embeddings.discard)
         # Cards the session still carries are left out before any cut, so
-        # they cannot take the slots of the next-best cards.
-        excluded_ids = await self._query_thread(self._excluded_entry_ids, excluded)
-        # Disabled cards stay out of the calibration background too.
-        disabled_ids = await self._query_thread(self._disabled_for_passive, vector_packs, registry)
-        exact_ids, lexical_ids, named_ids = await self._query_thread(
-            self._passive_lexical_search, text, allowed, registry, excluded_ids
+        # they cannot take the slots of the next-best cards. Disabled cards
+        # stay out of the vector cut and the calibration background too.
+        excluded_ids, disabled_ids, exact_ids, lexical_ids, named_ids = await self._query_thread(
+            self._passive_lexical_search, text, allowed, registry, excluded
         )
         query_vector: np.ndarray | None = None
         if embed_task is not None:
@@ -1891,12 +1889,15 @@ class KnowledgeService:
         # of one type never push the other type's leader out.
         semantic_by_type: dict[str, list[SemanticMatch]] = {}
         if query_vector is not None:
+            vector_excluded = excluded_ids | disabled_ids
+            # One hop per type: a query cancelled or timed out between them
+            # does not go on scanning the other type while holding its slot.
             for material_type, packs in type_packs.items():
                 type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in packs]
                 if type_vector_packs:
                     semantic_by_type[material_type] = await self._query_thread(
                         self._passive_semantic_search, snapshot, query_vector,
-                        type_vector_packs, registry, excluded_ids,
+                        type_vector_packs, vector_excluded,
                     )
         semantic = [match for matches in semantic_by_type.values() for match in matches]
         candidate_ids = list(dict.fromkeys(
@@ -1941,13 +1942,6 @@ class KnowledgeService:
             )
         return picked, ("hybrid" if query_vector is not None else "bm25")
 
-    def _disabled_for_passive(self, pack_ids: list[str], registry: Registry) -> set[int]:
-        if not pack_ids:
-            return set()
-        return self._store.disabled_entry_ids(pack_ids) | self._snapshot_only_disabled(
-            pack_ids, registry
-        )
-
     def _excluded_entry_ids(self, card_ids: set[str]) -> set[int]:
         """Entry ids of ``pack_id/title_key`` card ids."""
         titles: dict[str, list[str]] = {}
@@ -1958,33 +1952,39 @@ class KnowledgeService:
         return self._store.entry_ids_by_title(titles) if titles else set()
 
     def _passive_lexical_search(
-        self, text: str, pack_ids: list[str], registry: Registry, excluded_ids: set[int]
-    ) -> tuple[list[int], list[int], list[int]]:
-        excluded = excluded_ids | self._snapshot_only_disabled(pack_ids, registry)
+        self, text: str, pack_ids: list[str], registry: Registry, excluded_cards: set[str]
+    ) -> tuple[set[int], set[int], list[int], list[int], list[int]]:
+        """Exclusions and keyword candidates in one worker-thread hop.
+
+        Returns the entry ids of ``excluded_cards``, the disabled entry ids of
+        ``pack_ids`` (index and registry snapshot), then the exact, keyword
+        and named candidates.
+        """
+        excluded_ids = self._excluded_entry_ids(excluded_cards)
+        snapshot_disabled = self._snapshot_only_disabled(pack_ids, registry)
+        disabled_ids = self._store.disabled_entry_ids(pack_ids) | snapshot_disabled
+        # Disabled index rows are filtered in SQL already.
+        excluded = excluded_ids | snapshot_disabled
         exact_ids, lexical_ids = self._store.lexical_candidates(
             text, pack_ids=pack_ids, limit=LEXICAL_CANDIDATES, exclude_ids=excluded,
         )
         named_ids = self._store.named_candidates(text, pack_ids=pack_ids, exclude_ids=excluded)
-        return exact_ids, lexical_ids, named_ids
+        return excluded_ids, disabled_ids, exact_ids, lexical_ids, named_ids
 
     def _passive_semantic_search(
         self,
         snapshot: VectorSnapshot | None,
         query_vector: np.ndarray,
         pack_ids: list[str],
-        registry: Registry,
-        excluded_ids: set[int] = frozenset(),
+        excluded_ids: set[int],
     ) -> list[SemanticMatch]:
-        excluded = (
-            self._store.disabled_entry_ids(pack_ids)
-            | self._snapshot_only_disabled(pack_ids, registry)
-            | excluded_ids
-        )
+        """Vector candidates of one material type, with its own cut so many
+        close cards of one type never push the other type's leader out."""
         return semantic_candidates(
             snapshot,
             query_vector,
             allowed_pack_ids=pack_ids,
-            exclude_entry_ids=excluded,
+            exclude_entry_ids=excluded_ids,
             limit=PASSIVE_SEMANTIC_CANDIDATES,
             threshold=-1.0,
         )

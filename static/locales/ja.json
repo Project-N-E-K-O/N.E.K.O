@@ -24,6 +24,7 @@
             "storageChanged": "サーバーのデータ保存先が変更されました。アバター編集画面を開き直してから保存してください。"
         }
     },
+    "chatSync": {"oversizedLocalOnly":"同期の上限を超えたため、この端末にのみ保存：{{count}}件。","setupNeedsSave":"{{name}} の同期設定を確認してください。編集して再保存するか、詳細設定を開いてください。","title":"チャット同期","serviceUrl":"同期サービスの HTTPS アドレス","saveService":"アドレスを保存","enable":"同期を開始（履歴を含む）","pause":"この端末で一時停止","syncNow":"今すぐ同期","clearKnown":"既知のチャットを消去","close":"閉じる","notConfigured":"同期サービスのアドレスを設定してください。","notBound":"このキャラクターは未連携です。","enabled":"この端末で有効です。","paused":"この端末で停止中。クラウドのチャットは保持されます。","pending":"登録済みの送信待ち：{{originals}}件、削除待ち：{{deletions}}件。","working":"処理中…","more":"未取得の履歴があります。再度同期してください。","passFinished":"今回の処理が完了しました。他の端末には未同期のチャットがある場合があります。","loginRequired":"コミュニティアカウントにログインして再試行してください。","failed":"同期は未完了です。ローカルのチャットと待機中の処理は保持されています。","deleteOriginal":"両端末から削除","deleteConfirm":"このチャット原文を両端末から削除しますか？","clearConfirm":"このキャラクターの現在把握している全チャット原文を両端末から消去しますか？他の端末で後から追加されたチャットは対象外です。 この端末だけに保存された返信も、この端末で消去されます。","unknownTime":"元の時刻は不明","userLabel":"あなた","unfinishedChat":"現在の返信が終わってからチャットを削除してください。","profileConflict":"使用する人物設定を選択","profileRenamePending":"キャラクター名の変更を確認","profileLocal":"この端末の設定","profileRemote":"クラウドの設定","profileUseLocal":"端末の設定をアップロード","profileUseRemote":"クラウドの設定を使用","profileRenameConfirm":"{{oldName}}を{{newName}}に改名し、クラウドの設定全体を使用しますか？","profileChanged":"設定が変更されたか、同期を利用できません。両方を保持したまま再確認してください。","profileInitialUpload":"{{name}}の現在の設定をアップロードしますか？","profileUploadConfirm":"{{name}}の保存した設定をアップロードしますか？","profileUnsupported":"同期未対応の項目があります。端末の保存内容は保持されます。","profileSaveFailed":"設定の同期を完了できませんでした。保存内容と両方の設定は保持されます。","profileReview":"人物設定を確認","profileName":"名前","profileNickname":"ニックネーム","profileSetting":"元の設定","profileStyle":"話し方","cloudImport":"クラウドからキャラクターを作成","cloudEmpty":"クラウドにキャラクターがありません。","cloudProfileEmpty":"このキャラクターの設定は未公開です。","cloudCreate":"この端末に作成","cloudExisting":"{{name}}はこの端末に存在します。同期設定を保持します。","cloudCreated":"{{name}}を作成し、連携しました。","cloudNameConflict":"同名のキャラクターがあります。先に端末側を改名するか、取り込みをキャンセルしてください。","profileNeedsBinding":"キャラクター編集画面の「詳細設定」から連携してください。","previewHistory":"以前のチャットを確認","historyPreview":"以前のチャットのプレビュー","historyLocalRole":"ローカルキャラクター：{{name}}","historyCloudRole":"クラウドキャラクター：{{name}}","historyCount":"このプレビューの確認済みメッセージ：{{count}}件","historyUnverifiedCount":"出所を確認できない古い記録{{count}}件は、この端末に残ります。","historyHint":"この固定プレビュー内の確認済みメッセージのみが対象です。承認後にバックグラウンドで登録・送信します。新しいチャットは別のキューを使います。","historyEmpty":"このプレビューには確認済みの以前のチャットがありません。未確認の記録はこの端末に残ります。","historyApprove":"このチャットを承認","historyCancel":"キャンセル","historyQueued":"バックグラウンド登録・送信を承認しました。まだ待機中のメッセージがあります。","historyChanged":"キャラクター、アカウント、または同期状態が変わりました。再度プレビューしてから承認してください。","historyAwaitingRegistration":"承認済みの以前のメッセージ{{count}}件が、ローカル登録を待っています。","historyUnverifiedUnknown":"古い記録はスキャンしていません。出所を確認できない内容はこの端末に残ります。","writerRecoveryRequired":"このインストールの確認が必要なため同期を一時停止しています。ローカルチャットは引き続き利用できます。","recoverWriter":"確認して同期を復旧","recoveryChecked":"確認が完了しました。キャラクターカードで履歴を含む同期を有効にするか、今回のチャットのアップロードを承認できます。両端末への未送信の削除は、引き続き別途承認が必要です。","recoveryDeleteConfirm":"保留中の {{count}} 件を両方の端末で削除しますか？ローカル：{{localName}}。クラウド：{{cloudName}}。キャンセルするとローカルでは非表示のままです。","includeHistory":"既存のチャットも同期する","initialHistoryFailed":"既存チャットの同期は未完了です。連携は保持されています。キャラクター編集画面の「詳細設定」で確認や再試行ができます。","moreOptions":"詳細設定","enableHint":"「{{name}}」とチャットを同期します（履歴を含む）。","newRoleSync":"キャラクターとチャットを同期（履歴を含む）","newSyncPending":"キャラクターを端末に保存しました。ログインして接続すると同期を開始します。","newSyncFailed":"キャラクターは端末に保存しました。同期設定はまだ完了していません。後でもう一度お試しください。","syncChoiceSaved":"キャラクターを保存し、同期設定を更新しました。"},
     "instanceAccess": {"title":"NEKO に接続","description":"サーバー管理者から受け取ったアクセスキーを入力してください。この端末で30日間接続を記憶します。","key":"インスタンスアクセスキー","connect":"接続","failed":"接続が拒否されました。キーを確認して再試行してください。","httpsRequired":"HTTPS または信頼できる HTTPS トンネルで接続してください。","insecureWarning":"この接続は暗号化されていません（HTTP）。同じネットワーク経路上の第三者がキーとセッションを見られる可能性があります。可能であれば HTTPS を使用してください。"},
     "common": {
         "load": "読み込み",
@@ -2178,7 +2179,7 @@
             "confirmTrimmed": "トリミング済み音声を使用"
         }
     },
-    "memory": {
+    "memory": {"chatDeleteConfirm":"同期中のすべての端末からチャット原文 {{count}} 件を完全に削除しますか？","chatSyncUnavailable":"チャット同期を利用できません。ローカルの記憶は編集できます。",
         "recent": "最近のメモリ",
         "title": "メモリブラウザ",
         "summary": "概要",
@@ -2295,7 +2296,12 @@
         "save": "保存",
         "clear": "クリア",
         "tip1": "最近終了した会話は読み込みに時間がかかります。neko の名前をもう一度クリックして更新できます。",
-        "tip2": "表示されるのは最近の記憶のみです。長期記憶は猫娘のコアに統合されているため、閲覧できません。",
+        "tip2": "チャット原文と最近の記憶を表示します。長期記憶は猫娘のコアに統合されているため閲覧できません。",
+        "chatDeletionHint": "削除・クリア後に保存すると、チャット原文は端末間で削除されます。最近の記憶とツールの応答はこの端末だけで削除されます。",
+        "chatOriginalsSection": "端末間のチャット原文",
+        "recentMemorySection": "この端末の最近の記憶",
+        "localRepliesSection": "この端末のみのツール応答",
+        "chatDeletionPartial": "チャットの削除は登録されましたが、ローカル記憶の保存に失敗しました。変更を保持して保存を再試行してください。",
         "noFiles": "ファイルなし",
         "loadFailed": "読み込み失敗",
         "noChatContent": "チャットコンテンツなし",

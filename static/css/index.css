@@ -1861,6 +1861,83 @@ body.galgame-mode-enabled #react-chat-window-shell:not(.is-minimized):not(.is-co
     pointer-events: auto;
 }
 
+/* Keep opt-in sync reachable in both full and compact current-chat surfaces. */
+#chatSyncButton {
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 8px;
+    color: #5f6c82;
+    background: transparent;
+    cursor: pointer;
+    pointer-events: auto;
+    flex: 0 0 auto;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"] #chatSyncButton {
+    position: absolute;
+    top: -36px;
+    right: 40px;
+}
+
+/* Only sync modals opt in to clicks; the transparent chat/body remains pass-through. */
+#chat-sync-dialog,
+#character-profile-sync-dialog {
+    pointer-events: auto;
+}
+
+#chat-sync-dialog {
+    max-width: min(520px, calc(100vw - 48px));
+    border: 1px solid #aab5c8;
+    border-radius: 12px;
+    padding: 20px;
+}
+
+#chat-sync-dialog label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#chat-sync-dialog input {
+    padding: 8px;
+}
+
+#chat-sync-dialog input[type="url"] {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+#chat-sync-dialog [hidden] {
+    display: none !important;
+}
+
+#chat-sync-dialog #chat-sync-include-history-choice {
+    flex-direction: row;
+    align-items: flex-start;
+    min-height: 44px;
+    padding: 8px 0;
+}
+
+#chat-sync-dialog #chat-sync-include-history {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+}
+
+#chat-sync-dialog summary {
+    min-height: 44px;
+    padding: 12px 0;
+    cursor: pointer;
+}
+
+#chat-sync-dialog button {
+    margin: 6px 6px 0 0;
+    padding: 6px 10px;
+}
+
 #reactChatWindowMinimizeButton,
 #reactChatWindowCloseButton {
     width: 32px;

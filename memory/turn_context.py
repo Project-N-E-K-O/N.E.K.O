@@ -40,7 +40,9 @@ session is kept.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import time
+import weakref
 from datetime import datetime
 from typing import Any
 
@@ -87,6 +89,10 @@ FALLBACK_BM25_TOP = 2
 FALLBACK_MIN_QUERY_TERMS = 6
 # Time kept back from the budget for rendering once the vector is in.
 RENDER_RESERVE_SECONDS = 0.1
+# A request that waited out its predecessor starts retrieval only with at
+# least this much budget left besides the render reserve; with less, Main
+# would drop the result while the pass kept the slot from the next turn.
+MIN_RETRIEVAL_SECONDS = 0.05
 # Distinct rare terms a memory must share when no vector can confirm it.
 RARE_TERMS_WITHOUT_VECTOR = 2
 
@@ -95,6 +101,60 @@ _probes = ProbeVectors()
 # turns, and its probe-by-memory product is the costly part.
 _backgrounds: dict[tuple[Any, ...], Any] = {}
 MAX_BACKGROUNDS = 32
+
+# One request per character does the work at a time. Main drops a request at
+# its 1 s budget, but the server keeps computing (a worker thread cannot be
+# cancelled), so messages sent in quick succession used to stack full BM25
+# passes. Now a newer request marks the older one superseded and waits for
+# it to finish; the older one stops at its next checkpoint.
+_request_numbers = itertools.count(1)
+_latest_request: dict[str, int] = {}
+# The newest request's "finished" future per character, per event loop (a
+# future belongs to its loop). Waiting on a future instead of acquiring a
+# lock means a wait that times out never leaves anything held.
+_in_flight: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Future]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _claim(lanlan_name: str) -> tuple[asyncio.Future | None, asyncio.Future]:
+    """Register a new request: the previous one's future, and this one's."""
+    loop = asyncio.get_running_loop()
+    per_loop = _in_flight.get(loop)
+    if per_loop is None:
+        per_loop = _in_flight[loop] = {}
+    previous = per_loop.get(lanlan_name)
+    finished = loop.create_future()
+    per_loop[lanlan_name] = finished
+    return previous, finished
+
+
+def _release(lanlan_name: str, finished: asyncio.Future) -> None:
+    if not finished.done():
+        finished.set_result(None)
+    per_loop = _in_flight.get(finished.get_loop())
+    if per_loop is not None and per_loop.get(lanlan_name) is finished:
+        del per_loop[lanlan_name]
+
+
+def _release_after(
+    running: list[asyncio.Future], lanlan_name: str, finished: asyncio.Future
+) -> None:
+    """Release ``finished`` only once everything in ``running`` is done.
+
+    Work this request can no longer stop still holds the slot: the request
+    it gave up waiting for (``busy``), or its own worker-thread pass when the
+    request itself was cancelled (a thread runs to the end regardless). The
+    next request waits for that work too instead of starting alongside it.
+    """
+    pending = [future for future in running if not future.done()]
+    if not pending:
+        _release(lanlan_name, finished)
+        return
+    # return_exceptions: the outcome is only waited on, and this also
+    # consumes an error from a worker whose request is gone.
+    waiter = asyncio.gather(*pending, return_exceptions=True)
+    waiter.add_done_callback(lambda _done: _release(lanlan_name, finished))
 
 
 def _is_cjk(ch: str) -> bool:
@@ -147,25 +207,26 @@ async def _aload_pools(
         _aload_archive_facts,
         _aload_reflections_for_recall,
         _drop_archive_overlap,
+        _render_reflection_split,
         _tag_tier,
     )
     from memory.recall import MemoryRecallReranker
     from memory.scopes import filter_entries_for_subjects
 
-    facts, reflections, archive, pending, confirmed = await asyncio.gather(
+    facts, reflections, archive = await asyncio.gather(
         fact_store.aload_facts(lanlan_name),
         _aload_reflections_for_recall(reflection_engine, lanlan_name),
         _aload_archive_facts(fact_store, lanlan_name),
-        reflection_engine.aget_pending_reflections(lanlan_name),
-        reflection_engine.aget_confirmed_reflections(lanlan_name),
     )
+    # Pending/confirmed come from the same cached parse, not two more reads.
+    pending, confirmed = _render_reflection_split(reflections or [])
     facts = facts or []
     archive = _drop_archive_overlap(archive or [], facts, lanlan_name)
     persona_left_out: list[dict] = []
     resident_reflections: set[str] = set()
     if persona_manager is not None:
         persona_left_out, resident_reflections = await persona_manager.arecall_residency(
-            lanlan_name, pending or [], confirmed or [],
+            lanlan_name, pending, confirmed,
         )
     if session_started_at is not None:
         # Facts written during this session come from a conversation the
@@ -297,38 +358,118 @@ async def amemory_turn_context(
 
     if not query:
         return finish("miss")
+    number = next(_request_numbers)
+    _latest_request[lanlan_name] = number
+    previous, finished = _claim(lanlan_name)
+    workers: list[asyncio.Future] = []
+
+    async def in_worker(fn, /, *args, **kwargs):
+        """``asyncio.to_thread``, tracked: a cancelled request keeps its slot
+        until the thread it started has finished."""
+        work = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        workers.append(work)
+        return await asyncio.shield(work)
+
+    try:
+        if previous is not None and not previous.done():
+            # The request still running is superseded now and stops at its
+            # next checkpoint; wait for that within this request's budget.
+            remaining = deadline - time.monotonic() - RENDER_RESERVE_SECONDS
+            if remaining > 0:
+                await asyncio.wait({previous}, timeout=remaining)
+            if not previous.done():
+                return finish("busy")
+            if deadline - time.monotonic() - RENDER_RESERVE_SECONDS < MIN_RETRIEVAL_SECONDS:
+                return finish("busy")
+        if _latest_request.get(lanlan_name) != number:
+            return finish("superseded")
+        return await _arecall(
+            lanlan_name=lanlan_name,
+            query=query,
+            fact_store=fact_store,
+            reflection_engine=reflection_engine,
+            persona_manager=persona_manager,
+            config_manager=config_manager,
+            deadline=deadline,
+            language=language,
+            session_started_at=session_started_at,
+            superseded=lambda: _latest_request.get(lanlan_name) != number,
+            finish=finish,
+            in_worker=in_worker,
+            track=workers.append,
+        )
+    finally:
+        # Gave up waiting (busy), or cancelled mid-pass: the slot stays taken
+        # until the request still running, and this one's own threads and
+        # cancelled embedding, end.
+        running = [future for future in (previous, *workers) if future is not None]
+        _release_after(running, lanlan_name, finished)
+
+
+async def _arecall(
+    *,
+    lanlan_name: str,
+    query: str,
+    fact_store,
+    reflection_engine,
+    persona_manager,
+    config_manager,
+    deadline: float,
+    language: str,
+    session_started_at: datetime | None,
+    superseded,
+    finish,
+    in_worker,
+    track,
+) -> dict[str, Any]:
+    """The body of ``amemory_turn_context``, once the previous request is done.
+
+    ``superseded()`` turns true once a newer request for the same character
+    has arrived: Main has already dropped this one, so it stops at the next
+    checkpoint instead of finishing work nobody will read. Thread work goes
+    through ``in_worker``, and the query embedding is passed to ``track``, so
+    the slot outlives whatever native work a cancel cannot stop (the embedding
+    service keeps a cancelled inference task alive until its thread exits).
+    """
+    embed_task: asyncio.Task[Any] | None = None
     try:
         from memory.embeddings import get_embedding_service, parse_dim_from_model_id
-        from memory.hybrid_recall import _bm25_rank, _tokenize
+        from memory.hybrid_recall import _bm25_scores, _tokenize
 
         service = get_embedding_service()
         model_id = service.model_id() if service.is_available() else None
-        embed_task: asyncio.Task[Any] | None = None
         if model_id:
             _ensure_probe_vectors(service, model_id)
             embed_task = asyncio.create_task(service.embed_batch([query]))
-            # Every exit below may leave it running; its outcome is never needed then.
+            track(embed_task)
+            # An early exit cancels it (see the finally below); this only
+            # consumes the outcome nobody reads.
             embed_task.add_done_callback(lambda task: task.cancelled() or task.exception())
 
-        bm25_pool, embedding_pool = await _aload_pools(
+        # Tracked like the worker steps: a cold load parses files in threads
+        # that a cancel cannot stop, so the slot waits for it.
+        pools = asyncio.ensure_future(_aload_pools(
             lanlan_name, fact_store, reflection_engine, persona_manager, session_started_at,
-        )
+        ))
+        track(pools)
+        bm25_pool, embedding_pool = await asyncio.shield(pools)
         if not bm25_pool:
-            if embed_task is not None:
-                embed_task.cancel()
             return finish("miss")
+        if superseded():
+            return finish("superseded")
         try:
             from memory.stop_names import collect_stop_names
             stop_names = collect_stop_names(config_manager) or []
         except Exception:  # noqa: BLE001
             stop_names = []
 
-        bm25_scored = await asyncio.to_thread(_bm25_rank, query, bm25_pool, stop_names=stop_names)
+        bm25_ranked = await in_worker(_bm25_scores, query, bm25_pool, stop_names=stop_names)
+        if superseded():
+            return finish("superseded")
+        bm25_scored = [(doc, score) for doc, score, _tf in bm25_ranked]
         query_terms = set(_tokenize(query, stop_names))
-        doc_terms = {
-            id(doc): set(_tokenize(doc.get('text', '') or '', stop_names)) & query_terms
-            for doc, _score in bm25_scored
-        }
+        # The query terms each doc holds, as BM25 already counted them.
+        doc_terms = {id(doc): set(tf) for doc, _score, tf in bm25_ranked}
         document_frequency: dict[str, int] = {}
         for terms in doc_terms.values():
             for term in terms:
@@ -369,12 +510,16 @@ async def amemory_turn_context(
                         query_vector = arr / norm
             else:
                 embed_task.cancel()
+        if superseded():
+            return finish("superseded")
 
         thresholds = None
         cosine: list[tuple[dict, float]] = []
         if query_vector is not None and model_id:
             dim = parse_dim_from_model_id(model_id) or int(query_vector.size)
-            matrix, rows = await asyncio.to_thread(_pool_matrix, embedding_pool, model_id, dim)
+            matrix, rows = await in_worker(_pool_matrix, embedding_pool, model_id, dim)
+            if superseded():
+                return finish("superseded")
             if matrix is not None and matrix.shape[1] == query_vector.size:
                 probes = _probes.get(model_id)
                 # The same pool (ids and embedded texts) has the same background.
@@ -384,9 +529,11 @@ async def amemory_turn_context(
                         (doc.get('id'), doc.get('embedding_text_sha256')) for doc in rows
                     )),
                 )
-                sims, background = await asyncio.to_thread(
+                sims, background = await in_worker(
                     _score, matrix, query_vector, probes, cache_key,
                 )
+                if superseded():
+                    return finish("superseded")
                 cosine = sorted(zip(rows, sims.tolist()), key=lambda pair: -pair[1])
                 if background is not None:
                     thresholds = passive_thresholds(
@@ -439,7 +586,9 @@ async def amemory_turn_context(
         picked = [doc for _strength, _score, doc in ranked[:TURN_CONTEXT_MAX_ITEMS_PER_KIND]]
         if not picked:
             return finish("miss", mode=mode)
-        context, tokens = await asyncio.to_thread(_render, picked, language)
+        if superseded():
+            return finish("superseded")
+        context, tokens = await in_worker(_render, picked, language)
         if not context:
             return finish("miss", mode=mode)
         return finish("matched", picked=picked, context=context, tokens=tokens, mode=mode)
@@ -449,3 +598,7 @@ async def amemory_turn_context(
             exc_info=True,
         )
         return finish("error")
+    finally:
+        # Every early exit leaves the query embedding unread.
+        if embed_task is not None and not embed_task.done():
+            embed_task.cancel()

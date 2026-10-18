@@ -273,24 +273,44 @@ def semantic_candidates(
     if not allowed:
         return []
     mask = np.isin(snapshot.chunk_pack_index, np.asarray(allowed, dtype=np.int32))
-    if not mask.any():
+    rows = np.flatnonzero(mask)
+    if rows.size == 0:
         return []
-    scores = snapshot.matrix[mask] @ query_vector
-    entry_ids = snapshot.entry_ids[mask].tolist()
-    chunk_indexes = (
-        snapshot.chunk_indexes[mask].tolist()
-        if snapshot.chunk_indexes is not None
-        else [None] * len(entry_ids)
-    )
-    excluded = set(exclude_entry_ids)
-    best: dict[int, SemanticMatch] = {}
-    for entry_id, score, chunk_index in zip(entry_ids, scores.tolist(), chunk_indexes):
-        if entry_id in excluded:
-            continue
-        current = best.get(entry_id)
-        if score >= threshold and (current is None or score > current.score):
-            best[entry_id] = SemanticMatch(entry_id, score, chunk_index)
-    return sorted(best.values(), key=lambda match: -match.score)[:limit]
+    if rows.size * 4 >= mask.size:
+        # Most of the matrix: one product over all of it beats copying the rows.
+        scores = (snapshot.matrix @ query_vector)[rows]
+    else:
+        scores = snapshot.matrix[rows] @ query_vector
+    entry_ids = snapshot.entry_ids[rows]
+    # Compared in float64, as the Python floats of the per-chunk scan were.
+    keep = scores.astype(np.float64) >= threshold
+    if exclude_entry_ids:
+        excluded = np.fromiter((int(entry_id) for entry_id in exclude_entry_ids), dtype=np.int64)
+        keep &= ~np.isin(entry_ids, excluded)
+    kept = np.flatnonzero(keep)
+    if kept.size == 0:
+        return []
+    scores = scores[kept]
+    entry_ids = entry_ids[kept]
+    # Each entry's best chunk, the first of equal ones: chunks by score
+    # descending, then by position, and the first row of every entry.
+    by_score = np.lexsort((np.arange(kept.size), -scores))
+    distinct, first_in_order = np.unique(entry_ids[by_score], return_index=True)
+    best_rows = by_score[first_in_order]
+    # Entries by best score, ties in the order each entry first appears,
+    # as the per-chunk scan this replaces ranked them.
+    _same, first_seen = np.unique(entry_ids, return_index=True)
+    best_scores = scores[best_rows]
+    ranked = np.lexsort((first_seen, -best_scores))[:limit]
+    chunk_indexes = snapshot.chunk_indexes[rows[kept]] if snapshot.chunk_indexes is not None else None
+    return [
+        SemanticMatch(
+            int(distinct[position]),
+            float(best_scores[position]),
+            int(chunk_indexes[best_rows[position]]) if chunk_indexes is not None else None,
+        )
+        for position in ranked.tolist()
+    ]
 
 
 def best_excerpt_index(query: str, bodies: Sequence[str], semantic_chunk: int | None) -> int:

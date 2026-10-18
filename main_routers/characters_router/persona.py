@@ -241,6 +241,14 @@ async def get_character_persona_selection(name: str):
 
 @router.put('/character/{name}/persona-selection')
 async def update_character_persona_selection(name: str, request: Request):
+    # Serialize raw persona writes and their rollback with normal card saves and
+    # passive sync apply; an old whole-config snapshot must not erase a new edit.
+    from utils.character_memory import character_config_mutation_lock
+    async with character_config_mutation_lock:
+        return await _update_character_persona_selection_serialized(name, request)
+
+
+async def _update_character_persona_selection_serialized(name: str, request: Request):
     payload, error_response = await _read_json_object_or_400(request)
     if error_response is not None:
         return error_response
@@ -309,6 +317,13 @@ async def update_character_persona_selection(name: str, request: Request):
 
 @router.delete('/character/{name}/persona-selection')
 async def clear_character_persona_selection(name: str):
+    # Clearing a preset shares the same raw-settings transaction boundary.
+    from utils.character_memory import character_config_mutation_lock
+    async with character_config_mutation_lock:
+        return await _clear_character_persona_selection_serialized(name)
+
+
+async def _clear_character_persona_selection_serialized(name: str):
     config_manager = get_config_manager()
     characters = await config_manager.aload_characters()
     character_payload = (characters.get('猫娘') or {}).get(name)
