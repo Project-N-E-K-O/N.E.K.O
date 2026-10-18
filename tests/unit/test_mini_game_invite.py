@@ -63,6 +63,9 @@ def _make_mgr(
     mgr.state = MagicMock()
     mgr.state.fire = AsyncMock()
     mgr.state.is_proactive_preempted.return_value = False
+    # The real PROACTIVE_CLAIM records the claimed SID on the state machine;
+    # cleanup ownership checks compare against it.
+    mgr.state.proactive_sid = sid
     return mgr
 
 
@@ -1770,3 +1773,44 @@ def test_accept_drawing_guess_invite_returns_drawing_guess_url():
     assert result['game_type'] == 'drawing_guess'
     assert result['game_url'].startswith('/drawing_guess_demo?')
     assert 'session_id=dg-sess' in result['game_url']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retired", [False, True], ids=("owned-round", "retired-round"))
+async def test_short_circuit_invite_respects_round_ownership(monkeypatch, retired):
+    """A retired HTTP round's invite cannot advance the replacement round."""
+    from main_logic.session_state import ProactivePhase, SessionStateMachine
+
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    state_machine = SessionStateMachine(LANLAN)
+    assert await state_machine.try_start_proactive(session=None, round_id="current-round")
+    mgr = _make_mgr(sid="sid-round")
+    mgr.state = state_machine
+
+    out = await sr._run_mini_game_invite_short_circuit(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+        round_id="retired-round" if retired else "current-round",
+    )
+
+    assert mgr.prepare_proactive_delivery.await_args.kwargs["round_id"] == (
+        "retired-round" if retired else "current-round"
+    )
+    assert out is not None
+    if retired:
+        assert out.result.body["reason_code"] == sr.PROACTIVE_REASON_DELIVERY_PREEMPTED
+        assert state_machine.phase is ProactivePhase.PHASE1
+        mgr.feed_tts_chunk.assert_not_awaited()
+        mgr.finish_proactive_delivery.assert_not_awaited()
+    else:
+        assert out.result.body["reason_code"] == sr.PROACTIVE_REASON_CHAT_DELIVERED
+        assert state_machine.phase is ProactivePhase.PHASE2
+        assert mgr.feed_tts_chunk.await_args.kwargs["expected_round_id"] == "current-round"
+        assert (
+            mgr.finish_proactive_delivery.await_args.kwargs["expected_round_id"]
+            == "current-round"
+        )
+    assert state_machine.proactive_round_id == "current-round"

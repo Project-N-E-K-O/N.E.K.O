@@ -118,6 +118,10 @@ class LLMSessionManager(
         self.websocket_lock = None  # Shared WebSocket-operation lock, assigned by main_server.
         self._bg_tasks: set = set()  # Prevent garbage collection of fire-and-forget tasks.
         self._screenshot_future: asyncio.Future | None = None
+        self._proactive_screenshot_request_id: str | None = None
+        # Live browser consent can arrive before the settings POST is persisted.
+        self._proactive_vision_enabled: bool | None = None
+        self._proactive_vision_revocation_epoch: int = 0
         self._avatar_position: dict | None = None  # Frontend normalized Avatar coordinates {centerX, centerY, width, height}.
         # One-shot handoff slot between request_fresh_screenshot and resolve_screenshot_request.
         # Deliberately separate from _avatar_position, overwritten by every stream_data (screen-share frames,

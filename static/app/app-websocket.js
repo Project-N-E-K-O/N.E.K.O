@@ -2601,6 +2601,22 @@
     // refresh so a window that missed that reload cannot keep a stale view.
     refreshCoreApiCapability();
 
+    function syncProactiveVisionConsent(enabled) {
+        if (typeof enabled !== 'boolean') {
+            enabled = window.appProactive
+                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
+                ? window.appProactive.isProactiveVisionEnabledNow()
+                : S.proactiveVisionEnabled;
+        }
+        if (typeof enabled !== 'boolean' || !S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({ action: 'proactive_vision_consent', enabled: enabled }));
+        } catch (error) {
+            console.warn('[App] proactive vision consent sync failed:', error);
+        }
+    }
+    mod.syncProactiveVisionConsent = syncProactiveVisionConsent;
+
     /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
@@ -2949,6 +2965,7 @@
             if (S.socket !== _thisSocket) return;
             if (window.nekoReplyTail) window.nekoReplyTail.reset();
             announceReplyTailCapability();
+            if (window.appSettings) syncProactiveVisionConsent();
             console.log(window.t('console.websocketConnected'));
             // The state module publishes read errors; reconnect must remain usable.
             window.appChatAvatarState?.refresh('reconnect')?.catch?.(() => {});
@@ -5349,18 +5366,27 @@
                 // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
-                        try {
-                            function replySuppressedScreenshot() {
-                                if (typeof window.isNekoHomeTutorialProactiveSuppressed !== 'function'
-                                    || !window.isNekoHomeTutorialProactiveSuppressed()) return false;
-                                // 回空结果解除后端 future，避免额外等待 3 秒。现有协议
-                                // 没有“拒绝兜底”语义：本机连接仍可能由 pyautogui 截图，
-                                // 此闸门只保证前端不发送教程期间的屏幕内容。
-                                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                                    S.socket.send(JSON.stringify({ action: 'screenshot_response', data: '' }));
-                                }
-                                return true;
+                        function sendScreenshotReply(reply) {
+                            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                            // Echo the ID for every reply, including privacy/tutorial
+                            // declines and the legacy capture-function path.
+                            if (typeof response.request_id === 'string' && response.request_id) {
+                                reply.request_id = response.request_id;
                             }
+                            S.socket.send(JSON.stringify(reply));
+                        }
+                        function replySuppressedScreenshot() {
+                            var tutorialBlocked = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                                && window.isNekoHomeTutorialProactiveSuppressed();
+                            var privacyBlocked = window.appProactive
+                                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
+                                ? !window.appProactive.isProactiveVisionEnabledNow()
+                                : S.proactiveVisionEnabled === false;
+                            if (!tutorialBlocked && !privacyBlocked) return false;
+                            sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
+                            return true;
+                        }
+                        try {
                             if (replySuppressedScreenshot()) return;
                             var dataUrl = null;
                             // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
@@ -5370,6 +5396,10 @@
                             if (window.appProactive
                                 && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
                                 var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
+                                if (shot && shot.declined === true) {
+                                    sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
+                                    return;
+                                }
                                 dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
                                 shotCaptureType = shot ? (shot.captureType || null) : null;
                                 hasPairedCaptureType = true;
@@ -5404,9 +5434,11 @@
                                 if (avatarPos) {
                                     respMsg.avatar_position = avatarPos;
                                 }
-                                S.socket.send(JSON.stringify(respMsg));
+                                sendScreenshotReply(respMsg);
                             }
                         } catch (e2) {
+                            // 抛错也可能发生在权限撤回之后，不能静默超时再由后端补截。
+                            if (replySuppressedScreenshot()) return;
                             console.warn('[App] request_screenshot capture failed:', e2);
                         }
                     })();

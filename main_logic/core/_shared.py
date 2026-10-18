@@ -276,11 +276,15 @@ class FreshScreenshot:
       the screen itself. The frontend had no opinion about this image, so the
       caller MAY fall back to the position that came with the original request.
     - ``''``: nothing was captured.
+
+    ``declined`` distinguishes a revoked/limited capture from a technical failure;
+    callers must not revive a Phase-1 image after a decline.
     """
 
     b64: str = ""
     source: str = ""
     avatar_position: dict | None = None
+    declined: bool = False
 
 
 @dataclass(eq=False)

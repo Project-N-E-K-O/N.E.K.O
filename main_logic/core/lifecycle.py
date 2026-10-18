@@ -669,6 +669,8 @@ class LifecycleMixin:
             logger.error(f"💥 清理pending_session时出错: {e}")
 
     async def _init_renew_status(self):
+        # Retire pending proactive HTTP work before teardown's first await.
+        self._proactive_screenshot_request_id = None
         # A reply this end cut short whose completion is the session-level
         # callback (an independent-ASR voice reply, a proactive one) never
         # runs it: the retired connection's output callbacks are dropped
