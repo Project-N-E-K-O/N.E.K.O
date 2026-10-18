@@ -112,18 +112,27 @@ def test_ci_passes_build_identity_to_both_images():
     assert workflow.count("NEKO_BUILD_REVISION=") == 2, "两个 build 步骤都要传 revision"
 
 
-def test_dockerignore_keeps_the_docs_the_runtime_reads():
-    # main_routers/agent_router.py 运行时要读 docs/<lang>/guide/openclaw_guide.md；
-    # 被排除时不会报错，只会静默退回内置短桩文案。
-    lines = [
+def test_dockerignore_does_not_hide_the_docs_the_runtime_reads():
+    """docs/ must stay in the build context as a whole.
+
+    main_routers/agent_router.py reads docs/zh-CN/guide/openclaw_guide.md at
+    runtime and voice_identity_router.py reads docs/development/voice-readiness.md.
+    When they are missing there is no error -- the guide silently falls back to
+    its built-in stub text.
+
+    This asserts "docs is not excluded", not "excluded then re-included with !".
+    Re-inclusion depends on whether Docker's context walker descends into an
+    already-excluded directory, and the exception pattern must be a literal
+    prefix of that directory to work at all. docs/ is ~9 MB (about 0.6% of the
+    image), which is not worth trading for a failure mode with no symptoms.
+    """
+    patterns = [
         line.strip()
         for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    assert "docs/" in lines
-    exclude_at = lines.index("docs/")
-    negations = [line for line in lines if line.startswith("!docs/")]
-    assert negations, ".dockerignore 里没有任何 docs 的否定规则：指南在镜像里不存在"
-    # Docker 的规则是"最后命中的模式生效"，否定必须排在排除之后
-    for pattern in negations:
-        assert lines.index(pattern) > exclude_at, f"{pattern} 排在 docs/ 之前，不生效"
+    for pattern in patterns:
+        assert pattern not in {"docs", "docs/", "docs/**"}, (
+            f".dockerignore 排除了 {pattern}：运行时要读的指南与 readiness 文档"
+            "会静默变成内置短桩"
+        )
