@@ -639,11 +639,11 @@ test('sister1.0: tuner chains reach every runtime spring joint', () => {
     });
 });
 
-// Runs VRMManager.prototype.setModelScale from the real source against a fake model.
-function loadSetModelScale() {
+// Extracts a VRMManager method body from the real source.
+function extractManagerMethod(signature) {
     const source = fs.readFileSync(path.join(projectRoot, 'static/vrm/vrm-manager.js'), 'utf8');
-    const start = source.indexOf('    setModelScale(x, y, z) {');
-    assert.ok(start > 0, 'setModelScale must exist');
+    const start = source.indexOf('    ' + signature + ' {');
+    assert.ok(start > 0, signature + ' must exist');
     const bodyStart = source.indexOf('{', start);
     let depth = 0;
     let end = bodyStart;
@@ -654,8 +654,11 @@ function loadSetModelScale() {
             if (depth === 0) break;
         }
     }
-    const body = source.slice(bodyStart + 1, end);
-    return new Function('x', 'y', 'z', body);
+    return source.slice(bodyStart + 1, end);
+}
+
+function loadSetModelScale() {
+    return new Function('x', 'y', 'z', extractManagerMethod('setModelScale(x, y, z)'));
 }
 
 function fakeModel(colliders, joints) {
@@ -789,4 +792,43 @@ test('non-finite joint values in the profile leave those settings untouched', ()
     assert.equal(joint.settings.hitRadius, 0.01);
     assert.equal(joint._originalHitRadius, undefined);
     assert.deepEqual(calls, []);
+});
+
+test('reloading the same model fetches its profile again', async () => {
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+    const loadPhysicsProfile = new AsyncFunction('modelUrl', extractManagerMethod('async loadPhysicsProfile(modelUrl)'));
+    let served = { colliders: [], chains: [{ bones: ['Hair'], stiffness: 0.3 }] };
+    let fetches = 0;
+    const { VrmPhysicsProfile } = loadProfileClass({
+        fetch: async () => {
+            fetches++;
+            return { ok: true, json: async () => ({ success: true, config: served }) };
+        },
+        AbortController,
+        setTimeout,
+        clearTimeout
+    });
+    const host = {
+        _physicsProfile: null,
+        _physicsProfileModel: '',
+        _resolvePhysicsProfileModelName: () => 'sister1.0'
+    };
+    const previousWindow = globalThis.window;
+    globalThis.window = { VrmPhysicsProfile };
+    try {
+        assert.equal(await loadPhysicsProfile.call(host, '/static/vrm/sister1.0.vrm'), true);
+        assert.equal(host._physicsProfile.profile.chains[0].stiffness, 0.3);
+
+        served = { colliders: [], chains: [{ bones: ['Hair'], stiffness: 0.9 }] };
+        assert.equal(await loadPhysicsProfile.call(host, '/static/vrm/sister1.0.vrm'), true);
+        assert.equal(host._physicsProfile.profile.chains[0].stiffness, 0.9, 'edited profile is picked up');
+
+        served = null;
+        assert.equal(await loadPhysicsProfile.call(host, '/static/vrm/sister1.0.vrm'), false);
+        assert.equal(host._physicsProfile.hasProfile, false, 'deleted profile is dropped');
+        assert.equal(host._physicsProfileModel, '');
+        assert.equal(fetches, 3);
+    } finally {
+        globalThis.window = previousWindow;
+    }
 });

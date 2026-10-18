@@ -1915,9 +1915,8 @@ class VRMManager {
         if (!this._physicsProfile) {
             this._physicsProfile = new window.VrmPhysicsProfile();
         }
-        if (this._physicsProfileModel === modelName && this._physicsProfile.hasProfile) {
-            return true;
-        }
+        // 每次加载都重新请求（cache: no-store），调参时改了 _physics.json 重新加载即可生效
+        this._physicsProfileModel = '';
         const profile = this._physicsProfile;
         const loaded = await profile.load(modelName);
         if (this._physicsProfile !== profile) {
