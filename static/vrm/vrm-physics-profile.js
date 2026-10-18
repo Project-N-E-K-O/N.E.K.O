@@ -227,8 +227,9 @@
             claimFirst((entry, info) => sameOffset(entry, info)
                 && info.tailKey !== ''
                 && this._vecKey(entry.tail) === info.tailKey);
-            // Pass 1b: bone + shape + offset (profiles that copy the model's own colliders).
-            claimFirst(sameOffset);
+            // Pass 1b: bone + shape + offset (profiles that copy the model's own colliders). A
+            // placeholder [0,0,0] is not a position, so those entries wait for the ordered pass.
+            claimFirst((entry, info) => this._hasPositionInfo(entry) && sameOffset(entry, info));
 
             // Pass 2: same bone + same shape, in order, only for entries without a real position.
             // A shape mismatch or a known offset mismatch stays unmatched.
@@ -279,9 +280,10 @@
                 const chains = index.get(boneKey);
                 if (!chains || !chains.length) continue;
 
+                // Joints beyond the profile's chains for this bone keep the model's own settings.
                 const cursor = claimed.get(boneKey) || 0;
-                const chain = chains[cursor < chains.length ? cursor : chains.length - 1];
                 claimed.set(boneKey, cursor + 1);
+                const chain = chains[cursor];
                 if (!chain) continue;
 
                 const settings = joint.settings;

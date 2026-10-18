@@ -173,6 +173,43 @@ def test_cleanup_removes_both_configs_when_no_model_remains(tmp_path, monkeypatc
     assert not physics.exists()
 
 
+def test_cleanup_still_removes_physics_when_emotion_unlink_fails(tmp_path, monkeypatch):
+    class _Mgr:
+        project_root = tmp_path
+        vrm_dir = tmp_path / "user_vrm"
+
+    _Mgr.vrm_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(vrm_router, "get_config_manager", lambda: _Mgr())
+
+    async def _no_workshop():
+        return {"success": True, "items": []}
+
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", _no_workshop)
+
+    config_dir = tmp_path / "static" / "vrm" / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    emotion = config_dir / "sister1.0_emotion.json"
+    physics = config_dir / "sister1.0_physics.json"
+    emotion.write_text("{}", encoding="utf-8")
+    physics.write_text("{}", encoding="utf-8")
+
+    real_unlink = Path.unlink
+
+    def _locked_emotion(self, *args, **kwargs):
+        if self.name.endswith("_emotion.json"):
+            raise PermissionError("file in use")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _locked_emotion)
+
+    import asyncio
+
+    asyncio.run(vrm_router._cleanup_vrm_model_configs("sister1.0"))
+
+    assert emotion.exists()
+    assert not physics.exists()
+
+
 def test_cleanup_keeps_configs_while_a_same_stem_model_remains(tmp_path, monkeypatch):
     class _Mgr:
         project_root = tmp_path

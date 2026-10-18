@@ -720,18 +720,22 @@ async def _cleanup_vrm_model_configs(model_name: str):
         if has_physics:
             targets.append((physics_config, '_physics.json'))
 
+        # Each config is handled on its own, so a locked emotion file does not keep the physics one.
         for config_path, suffix in targets:
-            shared = False
-            for directory in directories:
-                for model in _iter_vrm_model_files(directory):
-                    other_config = config_path.parent / f"{model.stem}{suffix}"
-                    if model.stem == model_name or (other_config.is_file() and other_config.samefile(config_path)):
-                        shared = True
+            try:
+                shared = False
+                for directory in directories:
+                    for model in _iter_vrm_model_files(directory):
+                        other_config = config_path.parent / f"{model.stem}{suffix}"
+                        if model.stem == model_name or (other_config.is_file() and other_config.samefile(config_path)):
+                            shared = True
+                            break
+                    if shared:
                         break
-                if shared:
-                    break
-            if not shared:
-                config_path.unlink()
+                if not shared:
+                    config_path.unlink()
+            except Exception as e:
+                logger.warning(f"删除模型配置失败 ({config_path.name}): {e}")
     except Exception as e:
         logger.warning(f"删除模型配置失败: {e}")
 

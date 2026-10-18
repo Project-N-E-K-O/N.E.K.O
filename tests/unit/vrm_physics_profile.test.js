@@ -539,6 +539,40 @@ test('two chains on one bone each keep their own settings', () => {
     assert.equal(second.settings.stiffness, 0.9);
 });
 
+test('joints beyond the profile chains of a bone keep their own settings', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [],
+        chains: [{ bones: ['Tail'], stiffness: 0.2 }]
+    };
+    const first = { bone: { name: 'Tail' }, settings: { stiffness: 1 } };
+    const extra = { bone: { name: 'Tail' }, settings: { stiffness: 1 } };
+    assert.equal(profile.applyJoints(makeManager([], [first, extra])), 1);
+    assert.equal(first.settings.stiffness, 0.2);
+    assert.equal(extra.settings.stiffness, 1);
+});
+
+test('placeholder zero offsets pair in order even when a zero-offset collider is not first', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [
+            { bone: 'Spine', shape: 'sphere', radius: 0.01, offset: [0, 0, 0] },
+            { bone: 'Spine', shape: 'sphere', radius: 0.02, offset: [0, 0, 0] }
+        ],
+        chains: []
+    };
+    const raised = makeCollider('Spine', 0.5);
+    raised.shape.type = 'sphere';
+    raised.shape.offset = { x: 0, y: 0.1, z: 0 };
+    const centered = makeCollider('Spine', 0.5);
+    centered.shape.type = 'sphere';
+    assert.equal(profile.applyColliders(makeManager([raised, centered])), 2);
+    assert.equal(raised.shape.radius, 0.01);
+    assert.equal(centered.shape.radius, 0.02);
+});
+
 // ---- Real-model layout and manager integration ----
 
 function readVrmJson(relPath) {
