@@ -384,7 +384,11 @@ def _share_fact_store_write_state(old_component, new_component) -> None:
     """Keep full-file fact writers serialized and cache-coherent on reload."""
     if old_component is None:
         return
-    for attr in ("_locks", "_locks_guard", "_persist_alocks", "_facts"):
+    # _external_daily_call_gate: the courtesy call-start gate (last call time lives on the lock object),
+    # shared on hot replacement too; otherwise old and new imports cannot see each other's interval, breaking
+    # the global call-start pacing that spares free quotas / WAFs.
+    for attr in ("_locks", "_locks_guard", "_persist_alocks", "_facts",
+                 "_external_daily_call_gate"):
         if hasattr(old_component, attr) and hasattr(new_component, attr):
             setattr(new_component, attr, getattr(old_component, attr))
 

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
@@ -69,6 +70,11 @@ from memory.external_markdown_import import (
     batch_daily_fragments,
     build_import_candidates,
     collect_markdown_files,
+)
+from memory.external_molili_import import (
+    MAX_ZIP_BYTES,
+    build_molili_candidates,
+    detect_molili_archive,
 )
 
 
@@ -1920,7 +1926,7 @@ def _external_import_error(message: str, status_code: int = 400) -> JSONResponse
     return JSONResponse({"success": False, "error": message}, status_code=status_code)
 
 
-def _decode_external_archive(raw: object) -> bytes | None:
+def _decode_external_archive(raw: object, *, max_bytes: int = MAX_TOTAL_BYTES) -> bytes | None:
     if raw in (None, ""):
         return None
     if not isinstance(raw, str):
@@ -1928,7 +1934,7 @@ def _decode_external_archive(raw: object) -> bytes | None:
     value = raw.strip()
     if value.startswith("data:") and "," in value:
         value = value.split(",", 1)[1]
-    max_base64_chars = 4 * ((MAX_TOTAL_BYTES + 2) // 3)
+    max_base64_chars = 4 * ((max_bytes + 2) // 3)
     if len(value) > max_base64_chars:
         raise ExternalMemoryImportError("Archive upload is too large")
     try:
@@ -1946,18 +1952,38 @@ def _prepare_external_import(payload: object) -> tuple[str, dict]:
     )
     if not validation.ok:
         raise ExternalMemoryImportError("Invalid target character name")
-    archive_bytes = _decode_external_archive(payload.get("archive_b64"))
+    requested_format = str(payload.get("source_format") or "auto").strip().lower()
+    # Image attachments dominate Molili archives (~8.6 MB of a ~9 MB sample is attachments/), so the decode
+    # cap is widened per format; the 8 MiB text budget is still enforced by each parser on the text it actually parses.
+    # auto also decodes up to the Molili cap first: before sniffing we cannot know whether it is Molili; archives that
+    # fail the sniff get an extra 8 MiB check, so OpenClaw/Hermes caps are unchanged.
+    archive_cap = MAX_ZIP_BYTES if requested_format in {"molili", "auto"} else MAX_TOTAL_BYTES
+    archive_bytes = _decode_external_archive(payload.get("archive_b64"), max_bytes=archive_cap)
     direct_files = payload.get("files")
     if archive_bytes is not None and direct_files:
         raise ExternalMemoryImportError("Choose either a ZIP archive or Markdown files, not both")
-    sources = collect_markdown_files(
-        direct_files if isinstance(direct_files, list) else None,
-        archive_bytes=archive_bytes,
+    is_molili = requested_format == "molili" or (
+        requested_format == "auto"
+        and archive_bytes is not None
+        and detect_molili_archive(archive_bytes)
     )
-    analysis = build_import_candidates(
-        sources,
-        source_format=str(payload.get("source_format") or "auto"),
-    )
+    if not is_molili and archive_bytes is not None and len(archive_bytes) > MAX_TOTAL_BYTES:
+        raise ExternalMemoryImportError("Archive upload is too large")
+    if is_molili:
+        analysis = build_molili_candidates(
+            archive_bytes=archive_bytes,
+            files=direct_files if isinstance(direct_files, list) else None,
+            source_format=requested_format,
+        )
+    else:
+        sources = collect_markdown_files(
+            direct_files if isinstance(direct_files, list) else None,
+            archive_bytes=archive_bytes,
+        )
+        analysis = build_import_candidates(
+            sources,
+            source_format=str(payload.get("source_format") or "auto"),
+        )
     return validation.normalized, analysis
 
 
@@ -2002,7 +2028,7 @@ async def preview_external_memory_import(request: Request):
         persona_candidate_tokens, daily_candidate_tokens, daily_extraction_calls = (
             await asyncio.to_thread(_eta_inputs)
         )
-        return {
+        response = {
             "success": True,
             "character_name": character_name,
             "source_format": analysis["source_format"],
@@ -2018,6 +2044,13 @@ async def preview_external_memory_import(request: Request):
             "candidates": analysis["candidates"][:100],
             "truncated_preview": len(analysis["candidates"]) > 100,
         }
+        if "character_card" in analysis:
+            # Molili only: card prefill material and the skip report; the frontend creates the character first, then imports memories
+            response["character_card"] = analysis["character_card"]
+            response["master_profile"] = analysis.get("master_profile") or {}
+            response["skipped"] = analysis["skipped"]
+            response["snapshot_time"] = analysis.get("snapshot_time", "")
+        return response
     except ExternalMemoryImportError as exc:
         return _external_import_error(str(exc))
     except Exception as exc:
@@ -2065,10 +2098,13 @@ async def commit_external_memory_import(request: Request):
             # a durable preference. ``render_language`` is a validated, render-only
             # fallback; the memory server still resolves durable state at execution.
             json=memory_payload,
-            # Persona import now runs synchronous LLM fusion per entity, potentially tens of seconds each;
-            # 30s is insufficient. Allow 240s for master+neko; frontend commit timeout
-            # (memory_browser.js, 270s) stays slightly higher so backend responses arrive before frontend disconnect.
-            timeout=240.0,
+            # Persona import runs synchronous LLM fusion per entity (tens of seconds each), and full
+            # first imports such as Molili (30+ days × fragment-capped extraction batches) were
+            # measured past 240s: a brand-new character's first import hit ReadTimeout at exactly
+            # 240s (the server kept running, but the browser only saw a 500). Allow 480s for fusion
+            # plus full daily extraction; the frontend commit timeout (540s) stays slightly higher
+            # so backend responses arrive before frontend disconnect.
+            timeout=480.0,
         )
         if response.status_code != 200:
             try:
@@ -2117,9 +2153,57 @@ async def commit_external_memory_import(request: Request):
         raise
     except ExternalMemoryImportError as exc:
         return _external_import_error(str(exc))
+    except httpx.TimeoutException:
+        # The forwarding window running out is not an import failure: the memory server keeps running and daily fingerprints are
+        # idempotent, so a later re-import finishes it. Give the frontend a stable error code: httpx timeout exceptions may str() to
+        # an empty string, which the frontend's message regex cannot recognise and would show as a generic failure.
+        logger.warning("External memory import forward timed out; memory server keeps running")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "External memory import timed out; the memory server may still be finishing it",
+                "error_code": "external_import_timeout",
+            },
+            status_code=504,
+        )
     except Exception as exc:
         logger.exception("External memory import failed")
         return _external_import_error(f"External memory import failed: {exc}", 500)
+
+
+@router.get('/external_import/progress')
+async def get_external_import_progress(request: Request):
+    """Forward per-character external-import progress counters from memory_server.
+
+    Polled by the Molili import progress modal; same forwarding convention as
+    preview/commit."""
+    character_name = request.query_params.get('character_name') or ''
+    validation = validate_character_name(
+        character_name, allow_dots=True, max_length=50,
+    )
+    if not validation.ok:
+        return _external_import_error('Invalid target character name')
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_client import get_internal_http_client
+
+    client = get_internal_http_client()
+    try:
+        response = await client.get(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/import_progress/"
+            + quote(validation.normalized, safe=''),
+            timeout=10.0,
+        )
+    except Exception as exc:
+        logger.warning(f"External import progress forward failed: {exc}")
+        return JSONResponse(
+            {'success': False, 'error': f'progress forward failed: {exc}'},
+            status_code=502,
+        )
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {'success': False, 'error': f'HTTP {response.status_code}'}
+    return JSONResponse(payload, status_code=response.status_code)
 
 
 @router.get('/legacy/scan')

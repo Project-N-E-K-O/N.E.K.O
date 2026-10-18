@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -458,7 +458,7 @@ async def test_cloud_import_is_explicit_uid_stable_local_default_and_repeat_is_n
     config.data["猫娘"].pop("Synthetic")
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    monkeypatch.setattr("main_routers.characters_router.crud._get_new_catgirl_default_voice_id", lambda: "local-default-voice")
+    monkeypatch.setattr("utils.api_config_loader.get_new_character_default_voice_id", lambda: "local-default-voice")
     try:
         await runtime.configure("https://sync.test")
         service.head = head()
@@ -486,7 +486,7 @@ async def test_import_config_binding_gap_recovers_same_reviewed_snapshot_after_c
     config.data["猫娘"].pop("Synthetic")
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    monkeypatch.setattr("main_routers.characters_router.crud._get_new_catgirl_default_voice_id", lambda: "local")
+    monkeypatch.setattr("utils.api_config_loader.get_new_character_default_voice_id", lambda: "local")
     try:
         await runtime.configure("https://sync.test")
         service.head = head()
@@ -502,6 +502,8 @@ async def test_import_config_binding_gap_recovers_same_reviewed_snapshot_after_c
         result = await runtime.profiles.import_role(UID, 1, preview["profileHash"])
         assert result["enabled"] and len(config.saves) == 1
         assert config.data["猫娘"]["Synthetic"]["_reserved"]["system_prompt"] == PROFILE["systemPrompt"]
+        # The isolating patch above must reach import_new, not the user's real free_voices config.
+        assert config.data["猫娘"]["Synthetic"]["_reserved"]["voice_id"] == "local"
     finally:
         await runtime.close()
 
@@ -607,6 +609,31 @@ async def test_confirmed_remote_rename_reuses_local_name_validation_before_any_m
         await adapter.apply(UID, state, AsyncMock(), confirm_rename=True)
     rename.assert_not_awaited()
     assert not config.saves
+    # A valid name does reach the patched transaction, so the check above is
+    # not vacuous; a non-dict result never commits.
+    commit = AsyncMock()
+    state["head"]["name"] = "Renamed"
+    with pytest.raises(ValueError, match="character_profile_rename_failed"):
+        await adapter.apply(UID, state, commit, confirm_rename=True)
+    rename.assert_awaited_once_with("Synthetic", "Renamed", sync_commit=commit)
+    assert not config.saves
+
+
+@pytest.mark.parametrize("name", [
+    "", "   ", "\t", "Synthetic", "Synthetic Renamed", " Synthetic", "Synthetic ",
+    "a" * 60, "a" * 61, "猫" * 30, "猫" * 31, "猫" * 29 + "ab", "猫" * 29 + "abc",
+    "bad\x00name", "bad\nname", "bad\x7fname", "../unsafe", "a/b", "a\\b", "a.b", "trailing.", ".",
+    "CON", "com1", "api", "a:b", "名字·テスト", "O'Neil", "(括号)",
+])
+def test_profile_sync_name_rule_matches_the_desktop_profile_name_validation(name):
+    """Chat sync drops the router's UI messages but must refuse exactly the same names."""
+    from main_routers.characters_router._shared import _validate_profile_name
+    from services.chat_sync import profile_sync
+    from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+
+    desktop_ok = _validate_profile_name(name) is None
+    assert validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS).ok is desktop_ok
+    assert profile_sync._profile_name_invalid(name) is (not desktop_ok or name != name.strip())
 
 
 @pytest.mark.asyncio
@@ -632,7 +659,8 @@ async def test_unbound_profile_import_cannot_commit_after_writer_recovery_epoch(
     config.data['猫娘'].pop('Synthetic')
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    monkeypatch.setattr('main_routers.characters_router.crud._get_new_catgirl_default_voice_id', lambda: 'local')
+    default_voice = MagicMock(return_value='local')
+    monkeypatch.setattr('utils.api_config_loader.get_new_character_default_voice_id', default_voice)
     await runtime.configure('https://sync.test')
     service.head = head()
     entered, release = asyncio.Event(), asyncio.Event()
@@ -651,6 +679,8 @@ async def test_unbound_profile_import_cannot_commit_after_writer_recovery_epoch(
             await task
         assert not config.saves
         assert not runtime.state.binding(UID)['enabled']
+        # The refused commit came after import_new built the role through the patched default.
+        default_voice.assert_called_once_with()
     finally:
         await runtime.close()
 

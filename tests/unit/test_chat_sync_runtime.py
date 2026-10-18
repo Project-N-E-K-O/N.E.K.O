@@ -2311,7 +2311,7 @@ def test_manual_sync_and_detached_flush_share_only_the_deletion_flight(tmp_path)
 
 def test_saved_session_commit_guard_shares_the_actual_logout_file_lock(tmp_path, monkeypatch):
     """Use real credential locks and logout code only against disposable synthetic files."""
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, wait
     import threading
     from main_routers import card_drop_router as credentials
 
@@ -2334,8 +2334,13 @@ def test_saved_session_commit_guard_shares_the_actual_logout_file_lock(tmp_path,
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with _saved_session_commit_guard(fingerprint):
+            # The guard holds the very lock file the logout writer takes.
+            assert (tmp_path / "social.json.lock").exists()
             clearing = pool.submit(logout)
             assert entered.wait(2)
+            # Unfenced, this cleanup of two small files finishes well within the
+            # window; fenced, it waits for the guard (the lock timeout is 2 s).
+            assert not wait([clearing], timeout=0.3).done
             assert not clearing.done()
         assert clearing.result(timeout=2) is True
     with pytest.raises(ValueError, match="chat_sync_login_required"):

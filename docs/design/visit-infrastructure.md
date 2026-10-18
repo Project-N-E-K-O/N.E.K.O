@@ -2995,7 +2995,7 @@ PR 评审修订（2026-10-02，Greptile / Codex 9 条，全部采纳）：① `p
 - [设计 3] 串门客户端 OmniOfflineClient(..., max_tool_iterations=0) 关闭工具轮
   证据: main_logic/omni_offline_client/_client.py:240 self.max_tool_iterations = max(1, int(max_tool_iterations))，0 被钳成 1；真正关掉工具的是 tool_definitions=None，参数值 0 无效且误导。
 - [设计 3] 主进程 scoped 客户端必须放 main_routers/visit_router/memory_bridge.py（L3），因为「同时编排 main_logic 与 memory 的代码只能放 main_routers 或 app」
-  证据: scripts/check_module_layering.py:86-98 memory 与 main_logic 同为 L2 且允许同层无环互引；main_logic 已有 greeting.py:38-39、notify.py:199-264、proactive.py:331-642、tool_calling.py:381 十余处 import memory.*，memory/ 零处 import main_logic。桥只 import memory.scopes/memory.recall_render 不构成编排；放 L3 反而让 main_logic 侧的工具 handler 无法调用（设计 3 因此被迫放弃召回工具改成每轮硬注入）。
+  证据: scripts/check_module_layering.py:102-125 memory 与 main_logic 同为 L2 且允许同层无环互引；main_logic 已有 greeting.py:38-39、notify.py:199-264、proactive.py:331-642、tool_calling.py:381 十余处 import memory.*，memory/ 零处 import main_logic。桥只 import memory.scopes/memory.recall_render 不构成编排；放 L3 反而让 main_logic 侧的工具 handler 无法调用（设计 3 因此被迫放弃召回工具改成每轮硬注入）。
 - [设计 2] 复用 group_chat('neko_visit', id) 时 subject_identity 会把 `neko_visit:<id>` 送进身份池，未来「绑定账号」UI 能把串门域折进别人
   证据: memory/subject_identity.py:185-213 participant_key 对 group_chat（actor 为 None）根本不调 _account_of/身份池；:215-256 expand_subject 对 group_chat 恒返回 (subject,)。只有 group_participant 主体会查 entity_of，且 :232-239 跨平台账号被过滤——要折叠必须有人把两个 neko_visit:* 账号绑进同一 entity，而唯一的绑定 UI 是 QQ 插件（memory_bridge.py:412-480，platform='qq'）。「未来隐患」对群主体不成立，对成员主体也只在同平台内。
 - [设计 2] 测试守卫必须同步：test_group_prompt_localization.py:372 的 kind 元组加 'visit'

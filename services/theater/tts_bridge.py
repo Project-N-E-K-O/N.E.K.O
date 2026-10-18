@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from main_logic.mirror_meta import build_mirror_meta
 from utils.logger_config import get_module_logger
+from utils.mirror_meta import build_mirror_meta
 
 
 logger = get_module_logger("services.theater.tts_bridge")

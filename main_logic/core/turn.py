@@ -3017,7 +3017,7 @@ class TurnMixin:
     # ------------------------------------------------------------------
     # Mirror channel (chat-bubble passthrough that enters context as
     # AIMessage; user-side inputs intentionally do NOT enter chat history
-    # as UserMessage — see ``main_logic.mirror_meta``).
+    # as UserMessage — see ``utils.mirror_meta``).
     # ------------------------------------------------------------------
 
     async def mirror_user_input(

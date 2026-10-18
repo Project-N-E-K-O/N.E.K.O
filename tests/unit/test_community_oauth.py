@@ -1683,3 +1683,14 @@ def test_rejected_snapshot_cleanup_checks_both_session_paths(
     else:
         assert json.loads(auth.read_text(encoding="utf-8"))["access_token"] == current_token
         assert json.loads(social.read_text(encoding="utf-8"))["token"] == current_token
+
+
+@pytest.mark.unit
+def test_status_session_saved_is_the_utils_predicate_reexported():
+    """chat_sync reads utils.community_session; router attribute consumers must see the same rule."""
+    from utils import community_session
+
+    assert O.status_session_saved is community_session.status_session_saved
+    assert O.status_session_saved({"snapshot": {"access_token": "t"}}) is True
+    assert O.status_session_saved({"snapshot": {"access_token": "t"}, "rejected": True}) is False
+    assert O.status_session_saved({"snapshot": None}) is False

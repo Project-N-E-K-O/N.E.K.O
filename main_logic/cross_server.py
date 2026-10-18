@@ -170,7 +170,7 @@ def normalize_assistant_text(text, tool_names=None):
     return normalize_text(head + stripped)
 
 
-# Mirror schema + detection now lives in main_logic.mirror_meta;
+# Mirror schema + detection lives in utils.mirror_meta (re-exported by main_logic.mirror_meta);
 # cross_server only consumes those helpers — does not own the schema.
 from main_logic.mirror_meta import (
     MIRROR_USER_INPUT_TYPES,

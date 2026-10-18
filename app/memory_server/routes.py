@@ -581,6 +581,28 @@ class ExternalMemoryImportRequest(BaseModel):
     render_language: str | None = None
 
 
+# ── External import progress registry (polled by the Molili frontend progress bar) ──────────
+# character → {stage, persona_total/done, daily_total/done, finished, ...}.
+# Written by _import_external_markdown (register / fuse / finish) and by
+# aimport_external_daily's on_progress callback (once per batch). One small entry per character, no eviction;
+# read and written on the single-threaded event loop, so no lock is needed. Each import owns its own entry
+# object and only edits that one: an overlapping request for the same character (a retry after a frontend
+# timeout) re-registers over it, and the older request finishing first never marks the newer entry finished or writes counts into it.
+_IMPORT_PROGRESS: dict[str, dict] = {}
+
+
+@app.get("/internal/memory/import_progress/{character_name}")
+async def get_import_progress(character_name: str):
+    """External import progress for the Molili import progress bar.
+
+    Pure in-memory counter read: no IO."""
+    name = validate_lanlan_name(character_name)
+    entry = _IMPORT_PROGRESS.get(name)
+    if entry is None:
+        return {'success': True, 'active': False}
+    return {'success': True, 'active': not bool(entry.get('finished')), **entry}
+
+
 @app.post("/internal/memory/import_external_markdown")
 async def import_external_markdown(request: ExternalMemoryImportRequest):
     """Join the per-character admission ledger, then run the import.
@@ -598,13 +620,18 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             {"status": "cancelled", "message": "character release in progress"},
             status_code=409,
         )
+    progress: dict = {}
     try:
-        return await _import_external_markdown(request)
+        return await _import_external_markdown(request, progress)
     finally:
         runtime._end_character_request(name, context_token)
+        progress['finished'] = True
 
 
-async def _import_external_markdown(request: ExternalMemoryImportRequest):
+async def _import_external_markdown(
+    request: ExternalMemoryImportRequest,
+    progress: dict | None = None,
+):
     """Persist already-previewed OpenClaw/Hermes entries via live managers.
 
     The persona and facts persistence paths are **asymmetric**, because their
@@ -629,7 +656,7 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     batch / changed -> replace-then-fuse).
     """
     name = validate_lanlan_name(request.character_name)
-    if request.source_format not in {"openclaw", "hermes"}:
+    if request.source_format not in {"openclaw", "hermes", "molili"}:
         raise HTTPException(status_code=400, detail="Invalid source_format")
     if not request.candidates or len(request.candidates) > MAX_ENTRIES:
         raise HTTPException(status_code=400, detail="Invalid candidate count")
@@ -725,6 +752,20 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     # each entity rewrites only its own section (CAS also checks only that entity's fingerprint set).
     # Slow Phase 2 (LLM) is unlocked: only LLM round trips run concurrently; persistence is mutually exclusive.
     persona_entities = list(persona_candidates_by_entity.items())
+
+    # Progress registry: persona counts per entity; daily counts come from the on_progress callback
+    if progress is None:
+        progress = {}
+    _IMPORT_PROGRESS[name] = progress
+    progress.update({
+        'stage': 'persona',
+        'persona_total': len(persona_entities),
+        'persona_done': 0,
+        'daily_total': 0,
+        'daily_done': 0,
+        'finished': False,
+        'started_at': imported_at,
+    })
     # Browser imports deliberately omit ``language``. Resolve the durable
     # character preference at execution time so a preference changed while the
     # user was reading/confirming the preview cannot be overwritten by a stale
@@ -736,11 +777,16 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
         render_language=request.render_language,
     )
     with language_context(memory_language):
+        async def _fuse_and_mark(entity: str, entity_candidates: list[dict]):
+            outcome = await runtime.persona_manager.afuse_external_facts(
+                name, entity, entity_candidates, request.source_format,
+            )
+            progress['persona_done'] = progress.get('persona_done', 0) + 1
+            return outcome
+
         fusion_outcomes = await asyncio.gather(
             *(
-                runtime.persona_manager.afuse_external_facts(
-                    name, entity, entity_candidates, request.source_format,
-                )
+                _fuse_and_mark(entity, entity_candidates)
                 for entity, entity_candidates in persona_entities
             ),
             return_exceptions=True,
@@ -829,12 +875,18 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     if daily_candidates:
         try:
             with language_context(memory_language):
+                def _on_daily_progress(update: dict) -> None:
+                    progress.update(update)
+                    progress['stage'] = 'daily'
+
                 daily_result = await runtime.fact_store.aimport_external_daily(
                     name, daily_candidates, request.source_format, imported_at,
+                    on_progress=_on_daily_progress,
                 )
         except ExternalMemoryImportTooLargeError as exc:
-            # Deterministic excess (diary days actually requiring extraction exceed cap): identical retries must exceed again;
-            # return too_large to guide splitting. Daily fingerprints skip imported days, avoiding duplicate costs.
+            # Deterministic excess (a single day alone exceeds the per-import call cap): identical
+            # retries must exceed again, so return too_large to guide splitting. Many days that each
+            # fit do not land here; they resume in segments instead (see deferred_days below).
             logger.warning(
                 "External Markdown import: daily too large: character=%s detail=%s",
                 name, exc,
@@ -870,27 +922,63 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
                 },
             )
         daily_added = daily_result["added"]
-        if daily_result["failed_days"]:
-            # Any failed diary-day extraction forbids success (client would treat import complete, permanently
-            # losing failed days with no retry signal, Greptile P1); return retryable partial. Retries converge:
-            # persona skips idempotently by fingerprint; SHA/FTS5 deduplication blocks MEMORY.md and
-            # already extracted daily facts; only failed days actually re-extract.
+        failed_days = daily_result["failed_days"]
+        deferred_days = daily_result.get("deferred_days", 0)
+        oversized_days = daily_result.get("oversized_days", 0)
+        if failed_days or deferred_days:
+            # Failed or deferred (segmented resume) diary days forbid success (the client would treat
+            # the import as complete, permanently losing the remaining days with no retry signal,
+            # Greptile P1); return a retryable partial. Retries converge: persona skips idempotently by
+            # fingerprint; SHA/FTS5 deduplication blocks MEMORY.md and already extracted daily facts;
+            # finished days skip by daily fingerprint; only failed and deferred days actually extract.
             logger.warning(
-                "External Markdown import: %s daily journal(s) failed extraction: character=%s",
-                daily_result["failed_days"], name,
+                "External Markdown import: daily journals incomplete: character=%s "
+                "failed=%s deferred=%s",
+                name, failed_days, deferred_days,
             )
+            detail_parts = []
+            if failed_days:
+                detail_parts.append(f"{failed_days} daily journal(s) failed extraction")
+            if deferred_days:
+                detail_parts.append(
+                    f"{deferred_days} daily journal(s) deferred to the next import"
+                )
             return JSONResponse(
                 status_code=500,
                 content={
-                    "detail": (
-                        f"{daily_result['failed_days']} daily journal(s) failed "
-                        "extraction; retry to finish"
-                    ),
+                    "detail": "; ".join(detail_parts) + "; retry to finish",
                     "error_code": "external_import_partial",
                     "partial_import": {
                         "character_name": name,
                         "added_persona": added_persona,
                         "added_facts": memory_added + daily_added,
+                        "failed_days": failed_days,
+                        "remaining_days": deferred_days,
+                        "oversized_days": oversized_days,
+                    },
+                },
+            )
+        if oversized_days:
+            # Every other day is imported and only days that alone exceed the cap remain: retrying cannot progress -> too_large
+            # guides splitting, carrying the counts persisted by this import (the frontend broadcasts memory_edited from them).
+            logger.warning(
+                "External Markdown import: %s daily journal(s) alone exceed the call cap: "
+                "character=%s",
+                oversized_days, name,
+            )
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": (
+                        f"{oversized_days} daily journal(s) each need more extraction "
+                        "calls than one import allows; split those days"
+                    ),
+                    "error_code": "external_import_too_large",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added + daily_added,
+                        "oversized_days": oversized_days,
                     },
                 },
             )

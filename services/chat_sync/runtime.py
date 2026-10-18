@@ -28,12 +28,14 @@ from uuid import uuid4
 
 import httpx
 
+from services.chat_sync import host as _host
 from services.chat_sync.ledger import MAX_SYNC_ORIGINAL_BYTES, ChatDomain, ChatOriginal, ChatSyncLedger, SourceLocator
 from services.chat_sync.protocol import decode_chat_original, validate_sync_domain
 from services.chat_sync.prototype import PrototypeChatSyncClient
 from services.chat_sync.scheduler import ChatSyncScheduler, body_eligible_at, now_ms
 from services.chat_sync.trace import get_trace, route_class
 from services.chat_sync.profile_sync import DesktopProfileAdapter, DesktopProfileSync
+from utils import community_session as _community_session
 
 
 SessionProvider = Callable[[], Awaitable[dict]]
@@ -82,15 +84,15 @@ async def _saved_session_presence() -> str | None:
     """Observe local login only; short scheduler ticks never refresh or do HTTP."""
     def read():
         """Read the existing authoritative snapshot without persisting its bearer."""
-        from main_routers import card_drop_router as credentials
         try:
-            snapshot = credentials._desktop_session_snapshot()
+            snapshot = _host.saved_session_snapshot()
             if not snapshot or not snapshot.get("access_token") or snapshot.get("base_url") != _COMMUNITY_ORIGIN:
                 return None
             return hashlib.sha256(_canonical({
                 "token": snapshot["access_token"], "origin": snapshot["base_url"],
             })).hexdigest()
-        except (OSError, TimeoutError):
+        except (OSError, TimeoutError, _host.CapabilityNotInstalled):
+            # Without the credential store owner no login is observable.
             return None
     return await asyncio.to_thread(read)
 
@@ -144,10 +146,9 @@ def _load_local_ca_context(path: str) -> ssl.SSLContext:
 @contextmanager
 def _saved_session_commit_guard(expected: str):
     """Fence short local commits with the credential writers' existing file locks."""
-    from main_routers import card_drop_router as credentials
     try:
-        with credentials._social_session_locks(credentials._social_session_paths()):
-            snapshot = credentials._desktop_session_snapshot()
+        with _host.saved_session_writer_fence():
+            snapshot = _host.saved_session_snapshot()
             if not snapshot or not snapshot.get("access_token"):
                 raise ValueError("chat_sync_login_required")
             fingerprint = hashlib.sha256(_canonical({
@@ -158,7 +159,8 @@ def _saved_session_commit_guard(expected: str):
             # The existing logout/refresh/login writers hold these same locks.
             # No HTTP, refresh or model work occurs while they are held here.
             yield
-    except (OSError, TimeoutError):
+    except (OSError, TimeoutError, _host.CapabilityNotInstalled):
+        # A process without the credential store owner never commits blind.
         raise ValueError("chat_sync_session_unavailable") from None
 
 
@@ -797,10 +799,9 @@ class DesktopChatSyncRuntime:
         if not isinstance(token, str) or not token or origin != _COMMUNITY_ORIGIN:
             raise ValueError("chat_sync_login_required")
         if not status.get("logged_in"):
-            from main_routers.community_oauth import status_session_saved
             # The existing resolver retains saved credentials on temporary
             # verification failures; retry without claiming authenticated access.
-            if status_session_saved(status):
+            if _community_session.status_session_saved(status):
                 raise ValueError("chat_sync_session_unavailable")
             raise ValueError("chat_sync_login_required")
         return token, hashlib.sha256(_canonical({"token": token, "origin": origin})).hexdigest()
@@ -1880,18 +1881,21 @@ async def get_desktop_chat_sync_runtime(config_manager=None) -> DesktopChatSyncR
         if runtime is None:
             async def session_provider():
                 """Reuse OAuth refresh and its exact verified snapshot on demand."""
-                from main_routers.community_oauth import resolve_saved_oauth_status
-                return await resolve_saved_oauth_status()
+                try:
+                    status = _host.resolve_saved_oauth_status()
+                except _host.CapabilityNotInstalled:
+                    # Retry later; a missing resolver is not a logout.
+                    raise ValueError("chat_sync_session_unavailable") from None
+                return await status
 
             async def history_changed(character_uid):
                 """Hint only the current local socket for this exact persisted UID."""
-                from main_routers.shared_state import get_session_manager
                 from utils.config_manager.reserved_schema import get_character_uid
                 data = await config_manager.aload_characters()
                 entries = data.get("猫娘", {}) if isinstance(data, dict) else {}
                 for name, profile in entries.items():
                     if isinstance(profile, dict) and get_character_uid(profile) == character_uid:
-                        manager = get_session_manager().get(name)
+                        manager = _host.get_session_manager().get(name)
                         socket = getattr(manager, "websocket", None)
                         if socket is not None:
                             await socket.send_json({"type": "chat_sync_history_changed", "characterSyncId": character_uid})

@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Merge main into chat sync: refresh all eight locale caches for both sides' copy changes.
-    const LOCALE_VERSION = '2026-10-17-chat-sync-main-merge-2';
+    // Molili 归档导入（PR #3447）新增角色名超长提示文案，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-18-pr3447-partial-day-notes';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -100,6 +100,7 @@ import time  # noqa
 import signal  # noqa
 from datetime import datetime, timezone  # noqa
 from config import (
+    EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
     MAIN_SERVER_PORT,
     MONITOR_SERVER_PORT,
     USER_NOTIFICATION_ERROR_MAX_CHARS,
@@ -634,8 +635,15 @@ def _avatar_tool_multipart_preflight(scope):
 # Global nonmultipart requests retain 16 MiB Content-Length guards. Custom-prop
 # POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
 # multipart parsing; receive-byte counting covers missing/untrusted Content-Length.
+# External memory import preview/commit upload the archive as base64 inside JSON: those two
+# exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom; every
+# other route stays at 16 MiB.
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
+    json_path_limits={
+        "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+        "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+    },
     multipart_path_prefix="/api/avatar-tools",
     multipart_methods=("POST", "PUT"),
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,

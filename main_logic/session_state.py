@@ -123,6 +123,23 @@ def session_reply_in_progress(session: Any) -> bool:
     ) or isinstance(getattr(session, "_completion_pending_generation", None), int)
 
 
+def conversation_busy(manager: Any) -> bool:
+    """Whether ``manager``'s conversation must keep its current prompt for now.
+
+    Busy while the manager is starting, a reply is in progress, voice is
+    playing, or a proactive turn is past ``IDLE``. Chat sync defers applying a
+    remote character profile (and memory edits of synced chats) while this
+    holds. ``None`` is not busy.
+    """
+    state = getattr(manager, "state", None)
+    # The existing state machine owns streaming/playback; a connected idle
+    # session alone is not a reason to defer settings indefinitely.
+    return bool(manager and (getattr(manager, "is_starting", False)
+                             or session_reply_in_progress(getattr(manager, "session", None))
+                             or getattr(manager, "_is_voice_playing", lambda: False)()
+                             or getattr(state, "phase", ProactivePhase.IDLE) is not ProactivePhase.IDLE))
+
+
 @dataclass
 class SessionStateMachine:
     """Event-driven state machine for a single ``(lanlan_name, user)`` session.
@@ -742,4 +759,5 @@ __all__ = [
     "SessionEvent",
     "SessionStateMachine",
     "TurnOwner",
+    "conversation_busy",
 ]

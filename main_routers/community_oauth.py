@@ -30,6 +30,10 @@ from main_routers.local_access import is_local_oauth_status_request as _loopback
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
+from services.chat_sync import host as _chat_sync_host
+# Re-exported: card_drop_router / visit_router.credentials read it as
+# ``community_oauth.status_session_saved``, and tests patch it here.
+from utils.community_session import status_session_saved
 from utils.social_base import auth_public_url as _configured_auth_public_url
 from utils.instance_access import remote_instance_identity, request_public_origin, _same_origin
 
@@ -457,15 +461,6 @@ async def _resolve_saved_oauth_status(
     return status
 
 
-def status_session_saved(status: dict[str, Any]) -> bool:
-    """A saved session the cloud could not verify right now (offline, 5xx, refresh unavailable).
-
-    Not logged in, but also not a definite logout: a snapshot the cloud already
-    rejected and only local cleanup left behind does not count.
-    """
-    return bool(status.get("snapshot")) and not status.get("rejected")
-
-
 async def _run_oauth_status_resolution(
     records_key: str,
     records: tuple[dict | None, dict],
@@ -496,6 +491,13 @@ async def resolve_saved_oauth_status() -> dict[str, Any]:
             )
             _oauth_status_tasks[records_key] = task
     return await asyncio.shield(task)
+
+
+# Chat sync (services layer) joins this same resolver, so a rotating refresh
+# token is never refreshed twice. Late-bound: patches of this module reach it.
+_chat_sync_host.install_oauth_status_resolver(
+    resolve_saved_oauth_status=lambda: resolve_saved_oauth_status(),
+)
 
 
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
