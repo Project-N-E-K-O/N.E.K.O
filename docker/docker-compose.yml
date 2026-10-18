@@ -112,9 +112,12 @@ services:
     # 注意：healthcheck 只提供可见性，unhealthy **不会**触发重启（Docker 的
     # restart 策略只对进程退出生效）。要自愈请装 docker/watchdog/。
     healthcheck:
-      test: ['CMD-SHELL', 'for p in "$$NEKO_MAIN_SERVER_PORT" "$$NEKO_MEMORY_SERVER_PORT" "$$NEKO_TOOL_SERVER_PORT"; do curl --noproxy "*" -fsS --connect-timeout 3 --max-time 5 "http://127.0.0.1:$$p/health" >/dev/null || exit 1; done']
+      # 三个后端是串行探的：单个 --max-time 4s ⇒ 最坏 12s，加上 shell 开销仍小于
+      # 下面的 timeout。写成 3×5=15s 而 timeout 也 15s，会在三个后端都偏慢但都没超时
+      # 的情况下被 Docker 判成 unhealthy（超过 timeout 的检查直接被 kill）。
+      test: ['CMD-SHELL', 'for p in "$$NEKO_MAIN_SERVER_PORT" "$$NEKO_MEMORY_SERVER_PORT" "$$NEKO_TOOL_SERVER_PORT"; do curl --noproxy "*" -fsS --connect-timeout 3 --max-time 4 "http://127.0.0.1:$$p/health" >/dev/null || exit 1; done']
       interval: 30s
-      timeout: 15s
+      timeout: 20s
       retries: 3
       # 启动期实测：三个服务各 sleep 5s + 15s 健康检查 + nginx 3s ≈ 33s，还不含
       # uv sync 与 standard 镜像首次下载 Chromium（分钟级）。放宽到 5m。

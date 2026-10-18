@@ -14,6 +14,12 @@ BACKUP="$SCRIPT_DIR/backup.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf -- "$WORK"' EXIT
 
+# 实例锁目录固定在临时目录里：脚本默认会用 /run/neko-backup（root）或
+# $XDG_RUNTIME_DIR，测试不该往这些地方写东西。
+NEKO_BACKUP_LOCK_DIR="$WORK/locks"
+mkdir -p "$NEKO_BACKUP_LOCK_DIR"
+export NEKO_BACKUP_LOCK_DIR
+
 FAILED=0
 pass() { printf '  ✅ %s\n' "$1"; }
 fail() { printf '  ❌ %s\n' "$1" >&2; FAILED=1; }

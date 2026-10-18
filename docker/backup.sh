@@ -170,8 +170,27 @@ if command -v flock >/dev/null 2>&1; then
     # 输出目录锁只防"同一目录写冲突"，防不住"同一实例、不同 --out"的重叠：
     # 第二次冷备看到容器已停就开始拷，而第一次结束时会把容器拉起来，
     # 于是第二次正在读的 SQLite 又被写入。再按数据目录加一把实例锁。
+    #
+    # 锁目录不能放 /tmp：那是所有账号可写的公共目录，攻击者可以抢先在该路径上放一个
+    # 符号链接，root 的 sudo 备份用 shell 重定向打开它时会把链接目标截断。
+    # 用只有自己可写的目录，并校验属主。
+    if [ -n "${NEKO_BACKUP_LOCK_DIR:-}" ]; then
+        LOCK_DIR="$NEKO_BACKUP_LOCK_DIR"
+    elif [ "$(id -u)" = "0" ]; then
+        LOCK_DIR=/run/neko-backup
+    else
+        LOCK_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/neko-backup"
+    fi
+    if ! mkdir -p "$LOCK_DIR" 2>/dev/null || [ -L "$LOCK_DIR" ] \
+       || [ "$(stat -c '%u' "$LOCK_DIR" 2>/dev/null)" != "$(id -u)" ]; then
+        echo "backup: 锁目录不安全或不可用: $LOCK_DIR" >&2
+        echo "backup:    它必须是当前用户（root 时即 root）独占的普通目录；" >&2
+        echo "backup:    可用 NEKO_BACKUP_LOCK_DIR 指定别的路径。" >&2
+        exit 1
+    fi
+    chmod 700 "$LOCK_DIR" 2>/dev/null || true
     _instance_key=$(printf '%s' "$resolved_home" | cksum | cut -d' ' -f1)
-    INSTANCE_LOCK="${TMPDIR:-/tmp}/neko-backup-instance-$_instance_key.lock"
+    INSTANCE_LOCK="$LOCK_DIR/instance-$_instance_key.lock"
     if ! exec 7>"$INSTANCE_LOCK"; then
         echo "backup: 无法创建实例锁 $INSTANCE_LOCK" >&2
         exit 1
@@ -207,7 +226,12 @@ restart_container() {
         docker start "$CONTAINER" >/dev/null || echo "backup: ⚠️ 容器启动失败，请手动检查" >&2
     fi
 }
-trap restart_container EXIT INT TERM
+trap restart_container EXIT
+# INT/TERM 不能直接挂 restart_container：它只把容器拉起来、不退出脚本，
+# 后面的打包会继续 —— 而容器此时正在重新写 SQLite，冷备的一致性就没了。
+# 让信号先退出，再由 EXIT trap 负责恢复运行状态。
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ "$STOP_CONTAINER" = "1" ]; then
     case "$container_state" in
