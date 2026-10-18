@@ -484,7 +484,7 @@ def _asyncio_is_module(tree: ast.AST) -> bool:
     All asyncio-based trust in this module (awaitable slots, task-owner
     constructors) keys on the spelling ``asyncio``. If anything else ever
     binds that name -- a parameter, an assignment, ``import x as asyncio``,
-    ``from pkg import asyncio``, a def/class, ``except ... as asyncio`` --
+    ``from pkg import asyncio`` or ``*``, a def/class, ``except ... as asyncio`` --
     the whole file falls back to the plain checks rather than resolving
     which binding is live at each call.
     """
@@ -501,7 +501,8 @@ def _asyncio_is_module(tree: ast.AST) -> bool:
                 if alias.asname == "asyncio" and alias.name != "asyncio":
                     return False
         elif isinstance(node, ast.ImportFrom):
-            if any((alias.asname or alias.name) == "asyncio" for alias in node.names):
+            # ``from pkg import *`` may bind ``asyncio`` too.
+            if any((alias.asname or alias.name) in ("asyncio", "*") for alias in node.names):
                 return False
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name == "asyncio":
@@ -526,6 +527,30 @@ def _is_task_owner_constructor(expr: ast.expr | None) -> bool:
         and expr.func.value.id == "asyncio"
         and expr.func.attr in TASK_OWNER_CONSTRUCTORS
     )
+
+
+def _definition_time_exprs(node: ast.AST) -> list[ast.AST]:
+    """Parts of a def / lambda / class statement evaluated in the enclosing scope.
+
+    Decorators, argument defaults and annotations, the return annotation,
+    and class bases / keywords run when the statement executes; only the
+    body runs in the new scope.
+    """
+    if isinstance(node, ast.ClassDef):
+        return [*node.decorator_list, *node.bases, *node.keywords]
+    args = node.args  # type: ignore[attr-defined]
+    exprs: list[ast.AST] = [
+        *getattr(node, "decorator_list", ()),
+        *args.defaults,
+        *(d for d in args.kw_defaults if d is not None),
+    ]
+    for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg):
+        if arg is not None and arg.annotation is not None:
+            exprs.append(arg.annotation)
+    returns = getattr(node, "returns", None)
+    if returns is not None:
+        exprs.append(returns)
+    return exprs
 
 
 def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
@@ -573,8 +598,10 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
                     rebound_globals.update(inner.names)
                 elif isinstance(inner, ast.Nonlocal):
                     rebound_nonlocals.update(inner.names)
+            stack.extend(_definition_time_exprs(node))
             continue
         if isinstance(node, ast.Lambda):
+            stack.extend(_definition_time_exprs(node))
             continue
         if isinstance(node, ast.comprehension):
             stack.append(node.iter)
@@ -620,9 +647,10 @@ def _slot_calls(expr: ast.expr) -> list[ast.Call]:
     """Calls whose result becomes the value of an awaitable slot.
 
     A direct call, the value of an assignment expression
-    (``(coro := ws.recv())``), or either result branch of a conditional
-    expression (``a.recv() if c else q.get()``). The condition and any
-    nested argument calls are not results, so they keep the normal checks.
+    (``(coro := ws.recv())``), either result branch of a conditional
+    expression (``a.recv() if c else q.get()``), or the last operand of a
+    boolean expression (``existing or ws.recv()``). Conditions, earlier
+    boolean operands and nested argument calls keep the normal checks.
     """
     if isinstance(expr, ast.Call):
         return [expr]
@@ -630,6 +658,10 @@ def _slot_calls(expr: ast.expr) -> list[ast.Call]:
         return _slot_calls(expr.value)
     if isinstance(expr, ast.IfExp):
         return _slot_calls(expr.body) + _slot_calls(expr.orelse)
+    if isinstance(expr, ast.BoolOp):
+        # Only the last operand is the result whenever it is evaluated; an
+        # earlier one may be skipped past when it is falsy (``b""``).
+        return _slot_calls(expr.values[-1])
     return []
 
 
@@ -688,7 +720,15 @@ def _awaitable_argument_slots(
         if isinstance(receiver, ast.Name):
             task_owner = is_task_owner_name is not None and is_task_owner_name(receiver.id)
         else:
-            task_owner = _tail_matches(_tail_name(receiver), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX)
+            root = receiver
+            while isinstance(root, (ast.Attribute, ast.Call, ast.Subscript)):
+                root = root.func if isinstance(root, ast.Call) else root.value
+            rooted_at_shadowed_asyncio = (
+                not asyncio_is_module and isinstance(root, ast.Name) and root.id == "asyncio"
+            )
+            task_owner = not rooted_at_shadowed_asyncio and _tail_matches(
+                _tail_name(receiver), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX
+            )
     if task_owner or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
         if call.args and not isinstance(call.args[0], ast.Starred):
             return [call.args[0]]
@@ -765,16 +805,20 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         return verdicts
 
     def _visit_function(self, node: ast.AST, kind: str) -> None:
+        for expr in _definition_time_exprs(node):
+            self.visit(expr)
         self._func_stack.append(kind)
         self._task_owner_scopes.append((self._verdicts(node), False))
-        self.generic_visit(node)
+        body = node.body  # type: ignore[attr-defined]
+        for child in body if isinstance(body, list) else [body]:
+            self.visit(child)
         self._task_owner_scopes.pop()
         self._func_stack.pop()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         # Decorators, bases and keywords run in the enclosing scope; the
         # body runs in the class namespace.
-        for expr in (*node.decorator_list, *node.bases, *node.keywords):
+        for expr in _definition_time_exprs(node):
             self.visit(expr)
         self._task_owner_scopes.append((self._verdicts(node), True))
         for stmt in node.body:

@@ -537,6 +537,66 @@ def test_a_nested_nonlocal_or_global_rebinding_revokes_trust(source):
     assert "socket.recv" in out[0][2]
 
 
+@pytest.mark.parametrize("source", [
+    # A default is evaluated in the enclosing scope, where runner is a scheduler.
+    '''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = scheduler
+
+        async def child(x=runner.create_task(socket.recv())):
+            runner = asyncio.get_running_loop()
+    ''',
+    # A walrus in a default rebinds the enclosing name.
+    '''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = asyncio.get_running_loop()
+
+        def child(x=(runner := scheduler)):
+            return x
+
+        runner.create_task(socket.recv())
+    ''',
+    # A wildcard import may rebind asyncio.
+    '''
+    import asyncio
+    from fake_asyncio import *
+
+    async def handler(socket):
+        await asyncio.wait_for(socket.recv(), 10)
+    ''',
+    # A chained constructor on a shadowed asyncio is not trusted either.
+    '''
+    async def handler(socket, asyncio):
+        asyncio.get_running_loop().create_task(socket.recv())
+    ''',
+    # Only the last boolean operand is guaranteed to be the slot value.
+    '''
+    import asyncio
+
+    async def handler(socket, fallback):
+        await asyncio.wait_for(socket.recv() or fallback, 10)
+    ''',
+])
+def test_definition_time_wildcard_chain_and_boolop_cases_still_flag(source):
+    out = _violations(source)
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+def test_the_last_boolean_operand_fills_the_slot():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, existing):
+        await asyncio.wait_for(existing or socket.recv(), 10)
+    ''')
+    assert out == []
+
+
 def test_a_nested_global_does_not_touch_a_function_local_of_the_same_name():
     out = _violations('''
     import asyncio
