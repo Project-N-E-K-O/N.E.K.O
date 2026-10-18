@@ -184,15 +184,17 @@ if [ "$STOP_CONTAINER" = "1" ]; then
             echo "backup: 容器 $CONTAINER 未在运行，按冷备继续"
             ;;
         no-docker-cli)
-            echo "backup: ❌ 未找到 docker CLI，无法确认容器 $CONTAINER 是否已停止。" >&2
+            # 两条不可确认的分支共用同一句开场，既有助排障，也让回归测试
+            # 不必猜是哪条分支（CI 上有 docker、本地没有，正好各走一条）。
+            echo "backup: ❌ 无法确认容器 $CONTAINER 的状态：未找到 docker CLI。" >&2
             echo "backup:    这不是"容器没跑"的证据，可能正对着一个仍在写入的数据目录。" >&2
             echo "backup:    确认容器已停后重试，或显式接受风险：--no-stop" >&2
             exit 1
             ;;
         inspect-failed)
-            echo "backup: ❌ 无法检查容器 $CONTAINER（不存在、daemon 不可用或名字写错）。" >&2
-            echo "backup:    无法确认它没在写数据，因此不能按冷备继续。" >&2
-            echo "backup:    --container 的名字或 --no-stop 由你确认后重试。" >&2
+            echo "backup: ❌ 无法确认容器 $CONTAINER 的状态（不存在、daemon 不可用或名字写错）。" >&2
+            echo "backup:    因此不能按冷备继续 —— 它可能仍在写 SQLite。" >&2
+            echo "backup:    修正 --container，或显式接受风险：--no-stop" >&2
             exit 1
             ;;
     esac
