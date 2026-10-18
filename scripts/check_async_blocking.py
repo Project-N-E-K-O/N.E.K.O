@@ -459,14 +459,46 @@ _ASYNCIO_AWAITABLE_ARG = {
 
 
 # Receivers trusted for ``<receiver>.create_task(coro)``: event loops and
-# ``asyncio.TaskGroup``. Same tail-name matching as the queue/thread/socket
-# heuristics; an unrelated ``scheduler.create_task(...)`` may accept an
-# already-computed value, so it gets no suppression.
+# ``asyncio.TaskGroup``. Two ways in: a name bound in the enclosing function
+# scopes from one of the asyncio constructors below
+# (``async with asyncio.TaskGroup() as group`` /
+# ``loop = asyncio.get_running_loop()``), or the same tail-name matching as
+# the queue/thread/socket heuristics. An unrelated
+# ``scheduler.create_task(...)`` may accept an already-computed value, so it
+# gets no suppression.
+TASK_OWNER_CONSTRUCTORS = {
+    "TaskGroup", "get_running_loop", "get_event_loop", "new_event_loop",
+}
 TASK_OWNER_EXACT = {
     "loop", "event_loop", "get_running_loop", "get_event_loop",
     "tg", "task_group", "taskgroup",
 }
 TASK_OWNER_SUFFIX = ("_loop", "_tg", "_task_group")
+
+
+def _is_task_owner_constructor(expr: ast.expr | None) -> bool:
+    """``asyncio.TaskGroup()`` / ``asyncio.get_running_loop()`` and friends."""
+    return (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and isinstance(expr.func.value, ast.Name)
+        and expr.func.value.id == "asyncio"
+        and expr.func.attr in TASK_OWNER_CONSTRUCTORS
+    )
+
+
+def _slot_calls(expr: ast.expr) -> list[ast.Call]:
+    """Calls whose result becomes the value of an awaitable slot.
+
+    A direct call, or either result branch of a conditional expression
+    (``a.recv() if c else q.get()``). The condition and any nested argument
+    calls are not results, so they keep the normal checks.
+    """
+    if isinstance(expr, ast.Call):
+        return [expr]
+    if isinstance(expr, ast.IfExp):
+        return _slot_calls(expr.body) + _slot_calls(expr.orelse)
+    return []
 
 
 def _expanded_elements(arg: ast.expr) -> list[ast.expr]:
@@ -483,14 +515,17 @@ def _expanded_elements(arg: ast.expr) -> list[ast.expr]:
     return []
 
 
-def _awaitable_argument_slots(call: ast.Call) -> list[ast.expr]:
+def _awaitable_argument_slots(
+    call: ast.Call, task_owner_names: Iterable[str] = (),
+) -> list[ast.expr]:
     """Return the arguments of ``call`` that asyncio requires to be awaitable.
 
     Recognised forms: ``asyncio.wait_for`` / ``shield`` / ``ensure_future`` /
     ``create_task`` (first argument), ``asyncio.gather`` (every positional
     argument, including the elements of a literal or comprehension
     expanded with ``*``), and ``<loop or TaskGroup>.create_task`` (see
-    ``TASK_OWNER_EXACT``). Bare names such as an imported ``wait_for`` are
+    ``TASK_OWNER_CONSTRUCTORS`` / ``TASK_OWNER_EXACT``; ``task_owner_names``
+    are the constructor-bound names visible at the call). Bare names such as an imported ``wait_for`` are
     not resolved, so a same-named repo helper can never hide a real
     blocking call.
     """
@@ -506,8 +541,9 @@ def _awaitable_argument_slots(call: ast.Call) -> list[ast.expr]:
             else:
                 slots.append(a)
         return slots
-    task_owner = func.attr == "create_task" and _tail_matches(
-        _tail_name(func.value), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX
+    task_owner = func.attr == "create_task" and (
+        (isinstance(func.value, ast.Name) and func.value.id in task_owner_names)
+        or _tail_matches(_tail_name(func.value), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX)
     )
     if task_owner or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
         if call.args and not isinstance(call.args[0], ast.Starred):
@@ -555,22 +591,46 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         # its blocking body on the event-loop thread before the await.
         # Indexed by id() to avoid mutating the AST.
         self._awaited_call_ids: set[int] = set()
+        # One set per function scope (plus the module): names bound from an
+        # asyncio TaskGroup / event-loop constructor, trusted as
+        # ``<name>.create_task(...)`` receivers in that scope and the
+        # functions nested inside it.
+        self._task_owner_scopes: list[set[str]] = [set()]
 
     # ── function tracking ────────────────────────────────────────────────
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._func_stack.append("async")
+    def _visit_function(self, node: ast.AST, kind: str) -> None:
+        self._func_stack.append(kind)
+        self._task_owner_scopes.append(set())
         self.generic_visit(node)
+        self._task_owner_scopes.pop()
         self._func_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node, "async")
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._func_stack.append("sync")
-        self.generic_visit(node)
-        self._func_stack.pop()
+        self._visit_function(node, "sync")
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._func_stack.append("sync")
+        self._visit_function(node, "sync")
+
+    # ── TaskGroup / event-loop bindings ─────────────────────────────────
+    def _bind_task_owner(self, target: ast.expr | None, value: ast.expr | None) -> None:
+        if isinstance(target, ast.Name) and _is_task_owner_constructor(value):
+            self._task_owner_scopes[-1].add(target.id)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        for item in node.items:
+            self._bind_task_owner(item.optional_vars, item.context_expr)
         self.generic_visit(node)
-        self._func_stack.pop()
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            self._bind_task_owner(target, node.value)
+        self.generic_visit(node)
+
+    def _task_owner_names(self) -> set[str]:
+        return set().union(*self._task_owner_scopes)
 
     # ── helpers ─────────────────────────────────────────────────────────
     def _in_async_context(self) -> bool:
@@ -613,9 +673,9 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         # TypeError, so the argument must be a coroutine/future. Only
         # these positions are marked; other arguments (and the outer
         # call itself) keep the normal checks.
-        for arg in _awaitable_argument_slots(call):
-            if isinstance(arg, ast.Call):
-                self._awaited_call_ids.add(id(arg))
+        for arg in _awaitable_argument_slots(call, self._task_owner_names()):
+            for slot_call in _slot_calls(arg):
+                self._awaited_call_ids.add(id(slot_call))
 
     # ── the actual checks ────────────────────────────────────────────────
     def visit_Call(self, node: ast.Call) -> None:

@@ -357,6 +357,61 @@ def test_non_slot_arguments_are_still_flagged(call):
     assert "socket.recv" in out[0][2]
 
 
+@pytest.mark.parametrize("wrapped", [
+    "asyncio.wait_for(socket.recv() if use_socket else request_queue.get(), 10)",
+    "asyncio.gather(*(socket.recv() if use_socket else q.get() for q in queues))",
+])
+def test_both_branches_of_a_conditional_slot_are_not_flagged(wrapped):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, request_queue, queues, use_socket):
+        await {wrapped}
+    ''')
+    assert out == []
+
+
+def test_the_condition_of_a_conditional_slot_is_still_flagged():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, fut, other):
+        await asyncio.wait_for(fut if socket.recv() else other, 10)
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+def test_constructor_bound_task_owners_are_trusted_under_any_name():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket):
+        runner = asyncio.get_running_loop()
+        runner.create_task(socket.recv())
+        async with asyncio.TaskGroup() as group:
+            group.create_task(socket.recv())
+
+            async def nested():
+                group.create_task(socket.recv())
+    ''')
+    assert out == []
+
+
+def test_a_task_owner_binding_does_not_leak_into_a_sibling_function():
+    out = _violations('''
+    import asyncio
+
+    async def first(socket):
+        async with asyncio.TaskGroup() as group:
+            group.create_task(socket.recv())
+
+    async def second(socket, group):
+        group.create_task(socket.recv())
+    ''')
+    assert [lineno for lineno, _, _ in out] == [9]
+
+
 def test_a_direct_blocking_call_in_a_slot_is_still_flagged():
     # The slot only lifts the name-based type guess; requests.get still runs
     # synchronously before gather ever sees its result.
