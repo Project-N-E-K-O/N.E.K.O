@@ -183,18 +183,27 @@ fi
 
 # 条数一致还不够：删掉 /static/ 时渲染与模板会同时减一，上面的断言照样通过，
 # 而 /static/ 会掉进 location / 走主服务代理。必需路由逐条点名。
-REQUIRED_ROUTES='location = /security/csrf-token
-location /memory/
-location /agent/
-location /static/
-location = /health'
+#
+# 两个坑（第一版都踩了）：
+#   1. for want in $REQUIRED_ROUTES 会按空格切词，"location = /health" 被拆成
+#      三个词，其中 "location" 在任何一条路由里都能命中 —— 等于没检查。
+#   2. 不带 { 的子串匹配会被注释里的路径命中。
+# 所以：逐行读取 + 整行精确匹配（grep -qxF，含结尾的 {）。
 missing_route=0
-for want in $REQUIRED_ROUTES; do
-    if ! grep -qF -- "$want" "$WORK/snap-http/etc/nginx/neko/locations.conf"; then
+while IFS= read -r want; do
+    [ -n "$want" ] || continue
+    if ! grep -qxF -- "$want" "$WORK/snap-http/etc/nginx/neko/locations.conf"; then
         fail "必需路由缺失：$want"
         missing_route=1
     fi
-done
+done <<'REQUIRED'
+location = /security/csrf-token {
+location /memory/ {
+location /agent/ {
+location /static/ {
+location = /health {
+location ~ /\. {
+REQUIRED
 [ "$missing_route" = "0" ] && pass "必需路由全部在位（静态别名 / 健康检查 / 记忆 / Agent / CSRF 引导）"
 
 echo
