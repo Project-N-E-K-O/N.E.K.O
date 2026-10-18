@@ -319,13 +319,19 @@ def test_recv_inside_wait_for_is_not_flagged():
     "asyncio.ensure_future(request_queue.get())",
     "asyncio.create_task(coro=socket.recv())",
     "tg.create_task(socket.recv())",
+    "loop.create_task(socket.recv())",
+    "self._loop.create_task(socket.recv())",
+    "asyncio.get_running_loop().create_task(socket.recv())",
     "asyncio.gather(socket.recv(), request_queue.get())",
+    "asyncio.gather(*(socket.recv() for socket in sockets))",
+    "asyncio.gather(*[q.get() for q in queues])",
+    "asyncio.gather(*(socket.recv(), request_queue.get()))",
 ])
 def test_other_awaitable_slots_are_not_flagged(wrapped):
     out = _violations(f'''
     import asyncio
 
-    async def handler(socket, request_queue, tg):
+    async def handler(self, socket, sockets, request_queue, queues, tg, loop):
         await {wrapped}
     ''')
     assert out == []
@@ -335,6 +341,8 @@ def test_other_awaitable_slots_are_not_flagged(wrapped):
     # Only asyncio's own entry points are trusted; a bare or repo helper is not.
     "await wait_for(socket.recv(), 10)",
     "await relay(socket.recv())",
+    # create_task is trusted only on event loops / TaskGroups.
+    "scheduler.create_task(socket.recv())",
     # Positions other than the awaitable slot keep the normal checks.
     "await asyncio.wait_for(fut, timeout=socket.recv())",
 ])

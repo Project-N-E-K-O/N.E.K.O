@@ -458,23 +458,58 @@ _ASYNCIO_AWAITABLE_ARG = {
 }
 
 
+# Receivers trusted for ``<receiver>.create_task(coro)``: event loops and
+# ``asyncio.TaskGroup``. Same tail-name matching as the queue/thread/socket
+# heuristics; an unrelated ``scheduler.create_task(...)`` may accept an
+# already-computed value, so it gets no suppression.
+TASK_OWNER_EXACT = {
+    "loop", "event_loop", "get_running_loop", "get_event_loop",
+    "tg", "task_group", "taskgroup",
+}
+TASK_OWNER_SUFFIX = ("_loop", "_tg", "_task_group")
+
+
+def _expanded_elements(arg: ast.expr) -> list[ast.expr]:
+    """Element expressions of a statically visible ``*`` expansion.
+
+    ``*(f(x) for x in xs)`` / ``*[a(), b()]`` → the element calls; any other
+    starred value (``*coros``) yields nothing to inspect.
+    """
+    value = arg.value if isinstance(arg, ast.Starred) else arg
+    if isinstance(value, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+        return [value.elt]
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        return list(value.elts)
+    return []
+
+
 def _awaitable_argument_slots(call: ast.Call) -> list[ast.expr]:
     """Return the arguments of ``call`` that asyncio requires to be awaitable.
 
     Recognised forms: ``asyncio.wait_for`` / ``shield`` / ``ensure_future`` /
     ``create_task`` (first argument), ``asyncio.gather`` (every positional
-    argument), and ``<anything>.create_task`` (event loops and
-    ``asyncio.TaskGroup`` share that signature). Bare names such as an
-    imported ``wait_for`` are not resolved, so a same-named repo helper can
-    never hide a real blocking call.
+    argument, including the elements of a literal or comprehension
+    expanded with ``*``), and ``<loop or TaskGroup>.create_task`` (see
+    ``TASK_OWNER_EXACT``). Bare names such as an imported ``wait_for`` are
+    not resolved, so a same-named repo helper can never hide a real
+    blocking call.
     """
     func = call.func
     if not isinstance(func, ast.Attribute):
         return []
     on_asyncio = isinstance(func.value, ast.Name) and func.value.id == "asyncio"
     if on_asyncio and func.attr == "gather":
-        return [a for a in call.args if not isinstance(a, ast.Starred)]
-    if func.attr == "create_task" or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
+        slots: list[ast.expr] = []
+        for a in call.args:
+            if isinstance(a, ast.Starred):
+                slots.extend(_expanded_elements(a))
+            else:
+                slots.append(a)
+        return slots
+    task_owner = func.attr == "create_task" and _tail_matches(
+        _tail_name(func.value), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX
+    )
+    if task_owner or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
         if call.args and not isinstance(call.args[0], ast.Starred):
             return [call.args[0]]
         keyword = _ASYNCIO_AWAITABLE_ARG[func.attr]
