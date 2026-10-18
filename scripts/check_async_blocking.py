@@ -98,6 +98,8 @@ DEFAULT_PATHS = [
     # already in scope above)
     "app/agent_server",
     "brain",
+    # shared services (chat_sync / theater) running on the main server loop
+    "services",
 ]
 # NOTE: ``plugin/`` is intentionally NOT in the default scope. Plugin code uses
 # pyzmq sockets (``sock.connect`` / ``sock.recv`` via async zmq) and
@@ -446,6 +448,40 @@ def _sync_body_has_blocking_call(
     return None
 
 
+# asyncio entry points whose argument must be an awaitable, mapped to the
+# keyword name of that argument. ``gather`` takes every positional arg.
+_ASYNCIO_AWAITABLE_ARG = {
+    "wait_for": "fut",
+    "shield": "arg",
+    "ensure_future": "coro_or_future",
+    "create_task": "coro",
+}
+
+
+def _awaitable_argument_slots(call: ast.Call) -> list[ast.expr]:
+    """Return the arguments of ``call`` that asyncio requires to be awaitable.
+
+    Recognised forms: ``asyncio.wait_for`` / ``shield`` / ``ensure_future`` /
+    ``create_task`` (first argument), ``asyncio.gather`` (every positional
+    argument), and ``<anything>.create_task`` (event loops and
+    ``asyncio.TaskGroup`` share that signature). Bare names such as an
+    imported ``wait_for`` are not resolved, so a same-named repo helper can
+    never hide a real blocking call.
+    """
+    func = call.func
+    if not isinstance(func, ast.Attribute):
+        return []
+    on_asyncio = isinstance(func.value, ast.Name) and func.value.id == "asyncio"
+    if on_asyncio and func.attr == "gather":
+        return [a for a in call.args if not isinstance(a, ast.Starred)]
+    if func.attr == "create_task" or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
+        if call.args and not isinstance(call.args[0], ast.Starred):
+            return [call.args[0]]
+        keyword = _ASYNCIO_AWAITABLE_ARG[func.attr]
+        return [kw.value for kw in call.keywords if kw.arg == keyword]
+    return []
+
+
 class AsyncBlockingChecker(ast.NodeVisitor):
     def __init__(
         self,
@@ -471,8 +507,9 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         # runs-and-blocks when called unawaited.
         self._ambiguous_async_names = ambiguous_async_names or set()
         self._atomic_aliases = atomic_aliases or ({}, set())
-        # ids of Call nodes that are the direct target of an ``await`` —
-        # suppresses ONLY the queue/thread/socket tail-name heuristics in
+        # ids of Call nodes that are the direct target of an ``await``
+        # (or sit in an asyncio awaitable-argument slot, see
+        # ``_awaitable_argument_slots``) — suppresses ONLY the queue/thread/socket tail-name heuristics in
         # ``_check_attribute_call``. Those heuristics guess at the
         # receiver's type from its identifier, and an ``await`` in front
         # proves the receiver is an asyncio object (awaiting a blocking
@@ -525,15 +562,29 @@ class AsyncBlockingChecker(ast.NodeVisitor):
     def visit_Await(self, node: ast.Await) -> None:
         # Mark the directly-awaited call for targeted suppression in
         # visit_Call (see _awaited_call_ids docstring). Arguments inside
-        # X(...) are NOT marked — a blocking call passed as an argument
-        # (``await gather(requests.get(...))``) is still evaluated
-        # synchronously before the await.
+        # X(...) are NOT marked here — only the asyncio awaitable slots
+        # in _mark_awaitable_arguments are, and even there the direct
+        # blocking-stdlib check still runs: ``await gather(requests.get(...))``
+        # evaluates requests.get synchronously before the await.
         if isinstance(node.value, ast.Call):
             self._awaited_call_ids.add(id(node.value))
         self.generic_visit(node)
 
+    def _mark_awaitable_arguments(self, call: ast.Call) -> None:
+        # Calls passed where asyncio requires an awaitable get the same
+        # targeted suppression as a directly awaited call:
+        # ``asyncio.wait_for(ws.recv(), 10)`` with a blocking
+        # ``socket.recv()`` would hand bytes to wait_for and raise
+        # TypeError, so the argument must be a coroutine/future. Only
+        # these positions are marked; other arguments (and the outer
+        # call itself) keep the normal checks.
+        for arg in _awaitable_argument_slots(call):
+            if isinstance(arg, ast.Call):
+                self._awaited_call_ids.add(id(arg))
+
     # ── the actual checks ────────────────────────────────────────────────
     def visit_Call(self, node: ast.Call) -> None:
+        self._mark_awaitable_arguments(node)
         if self._in_async_context():
             awaited = id(node) in self._awaited_call_ids
             # queue/thread/socket heuristics are name-based type guesses;

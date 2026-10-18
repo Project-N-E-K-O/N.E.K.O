@@ -282,7 +282,91 @@ def test_noqa_suppresses_the_call_site():
     assert out == []
 
 
+# ── Awaitable-argument slots (queue/thread/socket name heuristics) ──────
+
+
+def test_an_unawaited_socket_recv_is_still_flagged():
+    out = _violations('''
+    async def handler(socket):
+        data = socket.recv(1024)
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+def test_a_directly_awaited_recv_is_not_flagged():
+    out = _violations('''
+    async def handler(socket):
+        raw = await socket.recv()
+    ''')
+    assert out == []
+
+
+def test_recv_inside_wait_for_is_not_flagged():
+    # services/chat_sync/runtime.py shape: a websockets connection named `socket`.
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket):
+        reply = await asyncio.wait_for(socket.recv(), timeout=10)
+        other = await asyncio.wait_for(fut=socket.recv(), timeout=10)
+    ''')
+    assert out == []
+
+
+@pytest.mark.parametrize("wrapped", [
+    "asyncio.shield(socket.recv())",
+    "asyncio.ensure_future(request_queue.get())",
+    "asyncio.create_task(coro=socket.recv())",
+    "tg.create_task(socket.recv())",
+    "asyncio.gather(socket.recv(), request_queue.get())",
+])
+def test_other_awaitable_slots_are_not_flagged(wrapped):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, request_queue, tg):
+        await {wrapped}
+    ''')
+    assert out == []
+
+
+@pytest.mark.parametrize("call", [
+    # Only asyncio's own entry points are trusted; a bare or repo helper is not.
+    "await wait_for(socket.recv(), 10)",
+    "await relay(socket.recv())",
+    # Positions other than the awaitable slot keep the normal checks.
+    "await asyncio.wait_for(fut, timeout=socket.recv())",
+])
+def test_non_slot_arguments_are_still_flagged(call):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, fut):
+        {call}
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+def test_a_direct_blocking_call_in_a_slot_is_still_flagged():
+    # The slot only lifts the name-based type guess; requests.get still runs
+    # synchronously before gather ever sees its result.
+    out = _violations('''
+    import asyncio
+
+    async def handler(url):
+        await asyncio.gather(requests.get(url))
+    ''')
+    assert len(out) == 1
+    assert "requests.get" in out[0][2]
+
+
 # ── Real repository: this rule must pass ─────────────────────────────────
+
+
+def test_services_is_in_the_default_scope():
+    assert "services" in MOD.DEFAULT_PATHS
 
 
 def test_the_repo_itself_has_no_on_loop_atomic_writes():
