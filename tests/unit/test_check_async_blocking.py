@@ -448,6 +448,41 @@ def test_an_inner_scope_shadowing_a_task_owner_is_not_trusted(inner):
     assert out[0][0] > 6
 
 
+@pytest.mark.parametrize("body", [
+    # A comprehension target is local to the comprehension.
+    "runner = asyncio.get_running_loop()\n        names = [runner for runner in runners]\n        runner.create_task(socket.recv())",
+    # A bare annotation binds nothing; an annotated constructor binding counts.
+    "runner: asyncio.AbstractEventLoop\n        runner = asyncio.get_running_loop()\n        runner.create_task(socket.recv())",
+    "runner: asyncio.AbstractEventLoop = asyncio.get_running_loop()\n        runner.create_task(socket.recv())",
+])
+def test_bindings_outside_this_scope_keep_a_task_owner_trusted(body):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, runners):
+        {body}
+    ''')
+    assert out == []
+
+
+@pytest.mark.parametrize("body", [
+    # The comprehension's own `group` shadows the outer TaskGroup.
+    "async with asyncio.TaskGroup() as group:\n            [group.create_task(socket.recv()) for group in groups]",
+    # A walrus inside a comprehension does rebind the enclosing name.
+    "runner = asyncio.get_running_loop()\n        [(runner := s) for s in groups]\n        runner.create_task(socket.recv())",
+    "runner: asyncio.AbstractEventLoop = scheduler\n        runner.create_task(socket.recv())",
+])
+def test_comprehension_and_annotation_rebinding_is_not_trusted(body):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, groups, scheduler):
+        {body}
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
 def test_a_slot_does_not_skip_the_ambiguous_name_depth1_check():
     # An awaited ambiguous name is skipped (it may bind the async twin); a
     # slot argument keeps the pre-slot behaviour and is still reported.

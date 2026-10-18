@@ -494,11 +494,13 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
     the whole function, so the verdict is flow-insensitive. A name is
     trusted only when every one of its bindings in this scope is
     ``name = asyncio.<constructor>()`` or
-    ``async with asyncio.<constructor>() as name``. Parameters, any other
-    assignment / loop / walrus / comprehension target, imports,
-    ``except ... as``, ``global`` / ``nonlocal``, match captures and nested
-    def/class names make it untrusted. Bodies of nested functions and
-    classes are their own scopes and are skipped.
+    ``async with asyncio.<constructor>() as name`` (an annotated assignment
+    counts the same way; a bare annotation binds nothing). Parameters, any
+    other assignment / loop / walrus target, imports, ``except ... as``,
+    ``global`` / ``nonlocal``, match captures and nested def/class names
+    make it untrusted. Bodies of nested functions and classes, and
+    comprehension targets, belong to their own scopes and are skipped (a
+    walrus inside a comprehension still binds here).
     """
     verdicts: dict[str, bool] = {}
     owner_targets: set[int] = set()
@@ -521,7 +523,16 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
             continue
         if isinstance(node, ast.Lambda):
             continue
-        if isinstance(node, ast.Assign) and _is_task_owner_constructor(node.value):
+        if isinstance(node, ast.comprehension):
+            stack.append(node.iter)
+            stack.extend(node.ifs)
+            continue
+        if isinstance(node, ast.AnnAssign):
+            if node.value is None:
+                continue
+            if isinstance(node.target, ast.Name) and _is_task_owner_constructor(node.value):
+                owner_targets.add(id(node.target))
+        elif isinstance(node, ast.Assign) and _is_task_owner_constructor(node.value):
             owner_targets.update(id(t) for t in node.targets if isinstance(t, ast.Name))
         elif isinstance(node, ast.AsyncWith):
             for item in node.items:
@@ -683,6 +694,24 @@ class AsyncBlockingChecker(ast.NodeVisitor):
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self._visit_function(node, "sync")
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        # Comprehension targets live in their own scope and shadow any
+        # enclosing task owner of the same name.
+        targets = {
+            n.id
+            for gen in node.generators  # type: ignore[attr-defined]
+            for n in ast.walk(gen.target)
+            if isinstance(n, ast.Name)
+        }
+        self._task_owner_scopes.append(dict.fromkeys(targets, False))
+        self.generic_visit(node)
+        self._task_owner_scopes.pop()
+
+    visit_ListComp = _visit_comprehension
+    visit_SetComp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
 
     def _is_task_owner_name(self, name: str) -> bool:
         for verdicts in reversed(self._task_owner_scopes):
