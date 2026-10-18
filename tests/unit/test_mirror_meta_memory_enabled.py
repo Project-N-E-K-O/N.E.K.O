@@ -117,8 +117,8 @@ def test_anything_but_false_falls_back_to_the_previous_rules(value):
 @pytest.mark.unit
 def test_main_logic_mirror_meta_is_a_pure_reexport_of_utils():
     """services imports utils.mirror_meta; main_logic must hand out the same objects, not a drifting copy."""
-    import main_logic.mirror_meta as shim
-    import utils.mirror_meta as schema
+    from main_logic import mirror_meta as shim
+    from utils import mirror_meta as schema
 
     assert shim.build_mirror_meta is schema.build_mirror_meta
     assert set(shim.__all__) <= set(vars(schema))

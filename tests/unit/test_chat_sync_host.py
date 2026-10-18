@@ -80,7 +80,7 @@ async def commit_now(operation, *args):
 
 async def production_runtime(tmp_path, monkeypatch, data=None):
     """Build the runtime through the production factory against disposable paths."""
-    import services.chat_sync.runtime as module
+    from services.chat_sync import runtime as module
 
     async def characters():
         return copy.deepcopy(data) if data is not None else {"猫娘": {}}
@@ -96,11 +96,11 @@ async def production_runtime(tmp_path, monkeypatch, data=None):
 
 
 @pytest.mark.parametrize("slot,use", [
-    ("_saved_session_snapshot", lambda: host.saved_session_snapshot()),
-    ("_saved_session_writer_fence", lambda: host.saved_session_writer_fence()),
-    ("_resolve_saved_oauth_status", lambda: host.resolve_saved_oauth_status()),
-    ("_get_session_manager", lambda: host.get_session_manager()),
-    ("_get_init_one_catgirl", lambda: host.get_init_one_catgirl()),
+    ("_saved_session_snapshot", host.saved_session_snapshot),
+    ("_saved_session_writer_fence", host.saved_session_writer_fence),
+    ("_resolve_saved_oauth_status", host.resolve_saved_oauth_status),
+    ("_get_session_manager", host.get_session_manager),
+    ("_get_init_one_catgirl", host.get_init_one_catgirl),
     ("_conversation_busy", lambda: host.conversation_busy(None)),
     ("_rename_character", lambda: host.rename_character("Old", "New", sync_commit=None)),
 ])
