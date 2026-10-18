@@ -721,9 +721,10 @@ class PluginCliService:
                 ),
             )
         except replacement_transaction.ReplacePluginError as exc:
-            if manifestless_gate_restore and not await asyncio.to_thread(
+            manifest_gone = plan.manifestless_state and not await asyncio.to_thread(
                 (target_dir / "plugin.toml").exists
-            ):
+            )
+            if manifestless_gate_restore and manifest_gone:
                 # Same criterion as elsewhere: inspect disk, not intent. If the manifest remains, code remains on disk,
                 # so keep blocking; restore approval only after rollback actually cleans it up.
                 if not await asyncio.to_thread(
@@ -735,16 +736,16 @@ class PluginCliService:
                         "auto-start approval",
                         plan.plugin_id,
                     )
-                if manifestless_autostart_pref is not None and not await asyncio.to_thread(
-                    _restore_first_install_autostart,
+            if manifest_gone and manifestless_autostart_pref is not None and not await asyncio.to_thread(
+                _restore_first_install_autostart,
+                plan.plugin_id,
+                *manifestless_autostart_pref,
+            ):
+                logger.error(
+                    "manifestless replacement rollback could not restore the "
+                    "auto-start preference for plugin_id={}",
                     plan.plugin_id,
-                    *manifestless_autostart_pref,
-                ):
-                    logger.error(
-                        "manifestless replacement rollback could not restore the "
-                        "auto-start preference for plugin_id={}",
-                        plan.plugin_id,
-                    )
+                )
             source_restored = True
             if manual_entry is not None and source_write_attempted:
                 try:
