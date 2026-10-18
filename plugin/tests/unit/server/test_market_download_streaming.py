@@ -282,9 +282,9 @@ async def test_file_close_failure_preserves_the_primary_exception(tmp_path, monk
 
 
 class _PackageHandler(http.server.BaseHTTPRequestHandler):
-    """按 ``self.server.chunk`` 大小、``self.server.delay`` 间隔吐 ``self.server.payload``。"""
+    """Emit ``self.server.payload`` in ``self.server.chunk`` chunks every ``self.server.delay``."""
 
-    def do_GET(self) -> None:  # noqa: N802 - stdlib 命名
+    def do_GET(self) -> None:  # noqa: N802 - stdlib naming.
         payload: bytes = self.server.payload  # type: ignore[attr-defined]
         chunk: int = self.server.chunk  # type: ignore[attr-defined]
         delay: float = self.server.delay  # type: ignore[attr-defined]
@@ -300,14 +300,14 @@ class _PackageHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
                 sent += len(piece)
                 if delay:
-                    # 滴流式：每一片都及时返回，所以 httpx 的每阶段读超时永不触发。
+                    # Trickle delivery: every chunk arrives promptly, so httpx per-phase read timeout never fires.
                     import time as _time
 
                     _time.sleep(delay)
-        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - 客户端提前断开
+        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - Client disconnected early.
             pass
 
-    def log_message(self, *args) -> None:  # 静音
+    def log_message(self, *args) -> None:  # Silence.
         pass
 
 
@@ -337,7 +337,7 @@ def http_server():
 
 @pytest.fixture
 def isolated_download_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """把 artifacts root 指到 tmp_path，别碰真实用户目录。"""
+    """Point artifacts root at tmp_path, leaving real user directories untouched."""
     monkeypatch.setattr(
         module,
         "PluginCliPathPolicy",
@@ -419,7 +419,7 @@ async def test_invalid_download_length_keeps_the_received_byte_limit(
 async def test_downloaded_bytes_are_exact_and_progress_is_reported(
     http_server, isolated_download_root
 ) -> None:
-    """攒批写不能改变落盘字节，也不能丢进度上报。"""
+    """Batch writes must preserve persisted bytes and progress reporting."""
     payload = bytes((i * 7 + 13) % 256 for i in range(3 * module._DOWNLOAD_FLUSH_BYTES))
     srv = http_server(payload, chunk=65536)
     task: dict = {"progress": 0.0, "message": ""}
@@ -434,7 +434,7 @@ async def test_downloaded_bytes_are_exact_and_progress_is_reported(
         )
         assert task["downloaded_bytes"] == len(payload)
         assert task["total_bytes"] == len(payload)
-        # 0.1 + 1.0*0.6 = 0.7 是下满时的进度
+        # 0.1 + 1.0*0.6 = 0.7 progress when download completes.
         assert task["progress"] == pytest.approx(0.7, abs=1e-9)
         assert "正在下载" in task["message"]
     finally:
@@ -445,9 +445,9 @@ async def test_downloaded_bytes_are_exact_and_progress_is_reported(
 async def test_every_write_happens_off_the_event_loop(
     http_server, isolated_download_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """变异：把 ``await _flush_pending()`` 换回 ``handle.write(chunk)``。
+    """Mutation: replace ``await _flush_pending()`` with ``handle.write(chunk)``.
 
-    钉的是"写盘在别的线程上"，不是"下载能成功"——后者换回同步写也照样过。
+    Assert writes run on another thread, not merely download success, which synchronous writes also satisfy.
     """
     payload = bytes(range(256)) * (3 * module._DOWNLOAD_FLUSH_BYTES // 256)
     srv = http_server(payload, chunk=65536)
@@ -557,11 +557,11 @@ async def test_cancelled_file_open_is_closed_before_download_cleanup(
 async def test_a_drip_feed_download_hits_the_total_budget(
     http_server, isolated_download_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """变异：去掉 ``async with asyncio.timeout(_DOWNLOAD_TOTAL_TIMEOUT)``。
+    """Mutation: remove ``async with asyncio.timeout(_DOWNLOAD_TOTAL_TIMEOUT)``.
 
-    每片 50ms 返回 1 字节：httpx 的每阶段读超时（120s）永远不触发，只有总时长兜底
-    能停下来。载荷故意只有 64 字节 —— 去掉兜底后它会在 3.2s 内**正常下完**（于是
-    ``pytest.raises`` 失败），而不是把测试挂住几百秒。
+    One byte every 50ms never trips httpx per-phase read timeout (120s); only total timeout
+    stops it. Deliberately 64 bytes: removing fallback completes normally in 3.2s, failing
+    ``pytest.raises`` rather than hanging for hundreds of seconds.
     """
     srv = http_server(b"x" * 64, chunk=1, delay=0.05)
     monkeypatch.setattr(module, "_DOWNLOAD_TOTAL_TIMEOUT", 0.6)
@@ -580,10 +580,10 @@ async def test_a_drip_feed_download_hits_the_total_budget(
 async def test_total_timeout_is_not_confused_with_the_httpx_one(
     http_server, isolated_download_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """两个超时必须是两条独立的路：内建 TimeoutError 不是 httpx.TimeoutException。
+    """Timeouts need independent branches: builtin TimeoutError is not httpx.TimeoutException.
 
-    变异：删掉 ``except TimeoutError`` 分支 —— 那它会落到最后的 ``except Exception``
-    裸抛，既拿不到 GitHub 直连回退，也不是 ``_DownloadAttemptError``。
+    Mutation: remove ``except TimeoutError``; it reaches final ``except Exception``
+    bare raise, losing GitHub direct fallback and failing to become ``_DownloadAttemptError``.
     """
     assert not issubclass(load_httpx().TimeoutException, TimeoutError), (
         "前提变了：httpx 的超时类成了内建 TimeoutError 的子类，两条 except 会互相遮蔽"
@@ -596,7 +596,7 @@ async def test_total_timeout_is_not_confused_with_the_httpx_one(
     raised: BaseException | None = None
     try:
         await module._download_package_once(_url(srv), {"progress": 0.0})
-    except BaseException as exc:  # noqa: BLE001 - 要看清究竟是哪个类型
+    except BaseException as exc:  # noqa: BLE001 - Inspect the actual exception type.
         raised = exc
     assert isinstance(raised, module._DownloadAttemptError), (
         f"总时长超时没有被转成 _DownloadAttemptError，实际是 {type(raised).__name__}: {raised}"
@@ -607,7 +607,7 @@ async def test_total_timeout_is_not_confused_with_the_httpx_one(
 async def test_the_size_cap_is_still_enforced(
     http_server, isolated_download_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """攒批写不能把大小上限的检查推后到超过上限之后。"""
+    """Batch writes must check size caps before exceeding them, never afterward."""
     payload = b"z" * 4096
     srv = http_server(payload, chunk=512)
     monkeypatch.setattr(module, "_DOWNLOAD_MAX_BYTES", 1024)

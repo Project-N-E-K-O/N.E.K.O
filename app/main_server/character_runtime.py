@@ -67,8 +67,8 @@ _PLUGIN_IMAGE_FETCH_BATCH_SIZE = 2
 # timeout). Budgets are in DECODED bytes, matching _PLUGIN_IMAGE_MAX_BYTES.
 #
 # The 8 images / 8 MiB figures are the contract PLUGIN_DEVELOPMENT_GUIDE.md
-# already advertises to plugin authors ("单条消息最多向模型注入 8 张、合计
-# 8 MiB 图片"). One push is one turn's worth, so share the constants with the
+# already advertises to plugin authors ("at most 8 images per message, totaling
+# 8 MiB, injected into the model"). One push is one turn's worth, so share the constants with the
 # per-turn budget in proactive_delivery rather than keeping a second spelling.
 _PLUGIN_IMAGE_MAX_COUNT = CALLBACK_IMAGE_MAX_COUNT
 _PLUGIN_IMAGE_TOTAL_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
@@ -325,13 +325,13 @@ async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
     if not isinstance(url, str) or not url:
         raise ValueError("plugin image part has no usable payload")
     fetched = await _fetch_plugin_image_base64(url)
-    # 两条分支都必须落在同一个档位上——这是本函数的契约，不是内联分支的特权。
-    # URL 图确实已经是 jpeg（SDK 上传时归一化过），所以在下游看来「已经处理过
-    # 了」，但 SDK 只把长边压到 MAX_IMAGE_EDGE=2048：实测一张插件图到这里是
-    # 2048x1536 / ~49 KiB，远在任何字节预算之下，于是一路原样送到模型，高度
-    # 1536。字节预算看不见分辨率，所以只有这里能兜住它。
+    # Both branches must use the same size tier: this function's contract applies to both.
+    # URL images are already JPEG (normalized by the SDK on upload), so downstream they appear
+    # processed, but the SDK only limits the long edge to MAX_IMAGE_EDGE=2048: a measured plugin image
+    # arrives here at 2048x1536 / ~49 KiB, well below any byte budget, and reaches the model unchanged,
+    # at height 1536. Byte budgets cannot detect resolution; only this check can catch it.
     #
-    # 归一化器对已经合规的图返回同一个字符串对象，因此这一步对小图是零成本。
+    # The normalizer returns the same string object for compliant images, making this free for small ones.
     return await asyncio.to_thread(normalize_image_for_model, fetched)
 
 
@@ -633,7 +633,7 @@ class _SyncMessageQueue(asyncio.Queue):
     """
 
     def put(self, item):  # type: ignore[override]
-        # 故意 sync override：原 asyncio.Queue.put 是 coroutine。
+        # Intentionally override synchronously: the original asyncio.Queue.put is a coroutine.
         self.put_nowait(item)
 
 
@@ -666,12 +666,12 @@ class RoleState:
     websocket_lock: asyncio.Lock
     session_id: Optional[str] = None
     sync_task: Optional[asyncio.Task] = None
-    # 用 Any 而非 core.LLMSessionManager：避免 dataclass 运行时求值 annotation
-    # 时踩到 forward-ref / 循环引用边界
+    # Use Any instead of core.LLMSessionManager so dataclass runtime annotation evaluation
+    # does not run into forward-reference / circular-reference boundaries.
     session_manager: Optional[Any] = None
 
 
-# 角色名 -> RoleState 的主存储；所有 per-k 同步资源都通过它访问
+# Primary character-name -> RoleState storage; access all per-k synchronization resources through it.
 role_state: dict[str, RoleState] = {}
 
 
@@ -716,7 +716,7 @@ async def join_sync_connector_tasks(timeout: float = 3.0) -> list[str]:
         except asyncio.TimeoutError:
             return name
         except asyncio.CancelledError:
-            # task 正常 cancel 走完 finally 后会 raise CancelledError
+            # Normal task cancellation raises CancelledError after finally completes.
             return None
         except Exception as e:
             logger.debug(f"同步连接器 task {name} 退出时抛异常: {e}", exc_info=True)
@@ -738,8 +738,8 @@ async def join_sync_connector_tasks(timeout: float = 3.0) -> list[str]:
     return pending
 
 
-# 兼容别名：旧名 join_sync_connector_threads 仍被 app/main_server/__init__.py 引用
-# （上帝文件拆包时调用点搬走了，别名留在定义侧），删名字前先改那边
+# Compatibility alias: app/main_server/__init__.py still references join_sync_connector_threads.
+# Call sites moved during the monolith split; this alias stayed at the definition. Update callers before removal.
 join_sync_connector_threads = join_sync_connector_tasks
 
 
@@ -756,11 +756,11 @@ def _reset_sync_connector_shutdown_events() -> None:
     return
 
 
-# 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
-# log=False：on_shutdown 已经打印过 "正在清理资源..."，atexit 补一刀时不重复 log
+# Register cleanup only in the main process to prevent cleanup on child-process exit.
+# log=False: on_shutdown already printed the cleanup message; avoid duplicate logging from atexit.
 if _IS_MAIN_PROCESS:
     atexit.register(cleanup, log=False)
-# 角色数据全局变量（会在重载时更新）
+# Global character data (updated on reload).
 master_name = None
 her_name = None
 master_basic_config = None
@@ -990,10 +990,10 @@ async def _handle_agent_event(event: dict):
                 )
             return
 
-        # 免费版 Agent 每日配额耗尽：全局提示（与角色无关），广播成 status toast
-        # 到所有已连接会话。上游 config_manager 已节流（≤每 10 秒一次），这里不会刷屏。
-        # 前端已就绪：AGENT_QUOTA_EXCEEDED 在 criticalErrorCodes 里，配 i18n 文案
-        # （{{used}}/{{limit}}）走 showStatusToast。
+        # Free Agent daily quota exhausted: broadcast a global, character-independent status toast
+        # to all connected sessions. config_manager already throttles this to at most once per 10 seconds.
+        # Frontend support exists: AGENT_QUOTA_EXCEEDED is in criticalErrorCodes and uses i18n text
+        # ({{used}}/{{limit}}) through showStatusToast.
         if event_type == "agent_quota_exceeded":
             import json as _json
 
@@ -1484,7 +1484,7 @@ async def _handle_agent_event(event: dict):
                                 "[EventBus] direct task_result turn_end failed: %s", e
                             )
                     if delivered:
-                        # detail_text 是面向用户的回复内容，不写 logger
+                        # detail_text is a user-facing response; do not write it to logger.
                         logger.info(
                             "[EventBus] direct task_result reply delivered (detail_len=%d)",
                             len(detail_text),
@@ -1530,7 +1530,7 @@ async def _handle_agent_event(event: dict):
                 # to result_kind="event" for receipts/read-only query results.
                 # No other channel or event type can use that field to forge a
                 # task result. _build_callback_instruction uses the resolved
-                # origin to pick task "汇报" vs neutral event "回应" wording.
+                # origin to pick task "report" vs neutral event "respond" wording.
                 origin = _resolve_callback_origin(event_type, event, _channel)
                 # Absolute wall-clock values cross processes badly. Stamp an
                 # internal deadline on the receiving host instead.
@@ -1669,7 +1669,7 @@ async def _handle_agent_event(event: dict):
                     try:
                         # HUD agent_notification renders verbatim to the user;
                         # expand role placeholders so plugin authors can write
-                        # ``"通知 {MASTER_NAME}..."`` without the literal token
+                        # ``"Notify {MASTER_NAME}..."`` without the literal token
                         # showing up in the toast.
                         notif_text = core.apply_role_placeholders(
                             text,
@@ -1688,7 +1688,7 @@ async def _handle_agent_event(event: dict):
                                 :USER_NOTIFICATION_ERROR_MAX_CHARS
                             ]
                         await ws.send_json(notif)
-                        # text 是面向前端的通知正文，不写 logger
+                        # text is the frontend notification body; do not write it to logger.
                         logger.info(
                             "[EventBus] agent_notification sent to frontend (text_len=%d)",
                             len(text),
@@ -1743,15 +1743,15 @@ async def _handle_agent_event(event: dict):
                     lanlan,
                 )
     except Exception as exc:
-        # 这个兜底 except 包住整个 agent event 分发，而 event payload 里带用户对话
-        # 文本——异常消息很可能把它捎进来。所以 logger 只写异常类型；完整 traceback
-        # 走 print（同 proactive 原文的处理方式），且只在 DEBUG 级下输出。
+        # This fallback except wraps all agent-event dispatch, and event payloads contain user conversation
+        # text that may appear in exception messages. Log only exception types; send the full traceback
+        # to print (as for raw proactive text), and only at DEBUG level.
         #
-        # 不能用 logger.debug(exc_info=True)：源码运行且 log_level<=DEBUG 时
-        # setup_logging 会挂一个只收 DEBUG 的 RotatingFileHandler 落到 logs/
-        # （utils/logger_config.py），那等于把隐私文本持久化了。仓库规则见
-        # .agent/rules/neko-guide.md 与 docs/contributing/code-style.md：
-        # 涉及用户隐私（原始对话）的 log 只能用 print，不得使用 logger。
+        # Do not use logger.debug(exc_info=True): when running from source with log_level<=DEBUG,
+        # setup_logging installs a DEBUG-only RotatingFileHandler writing to logs/
+        # (utils/logger_config.py), which would persist private text. Repository rules are in
+        # .agent/rules/neko-guide.md and docs/contributing/code-style.md:
+        # Logs involving user privacy (raw conversations) must use print, never logger.
         logger.warning(
             "[EventBus] handle_agent_event failed (error_type=%s)",
             type(exc).__name__,
@@ -1830,46 +1830,46 @@ async def _init_character_resources(k: str, is_new_character: bool):
     if rs is None:
         logger.info(f"{k} 的角色资源已被并发删除，跳过初始化")
         return
-    # 更新或创建session manager（使用最新的prompt）
-    # 使用锁保护websocket的preserve/restore操作，防止与cleanup()竞争
+    # Update or create the session manager using the latest prompt.
+    # Lock websocket preserve/restore operations to prevent races with cleanup().
     async with rs.websocket_lock:
         if role_state.get(k) is not rs:
             logger.info(f"{k} 的角色资源已被并发删除，跳过初始化")
             return
-        # 如果已存在且已有websocket连接，保留websocket引用
+        # Preserve the websocket reference if a connection already exists.
         old_websocket = None
         if rs.session_manager is not None and rs.session_manager.websocket:
             old_websocket = rs.session_manager.websocket
             logger.info(f"保留 {k} 的现有WebSocket连接")
 
-        # 注意：不在这里清理旧session，因为：
-        # 1. 切换当前角色音色时，已在API层面关闭了session
-        # 2. 切换其他角色音色时，已跳过重新加载
-        # 3. 其他场景不应该影响正在使用的session
-        # 如果旧session_manager有活跃session，保留它，只更新配置相关的字段
+        # Do not clean up the old session here, because:
+        # 1. Changing the current character's voice already closes the session at the API layer.
+        # 2. Changing another character's voice already skips reload.
+        # 3. Other scenarios must not affect the active session.
+        # Keep an old session_manager with an active session; update only configuration fields.
 
-        # 先检查会话状态（在锁内检查避免竞态条件）
-        # 同时覆盖 "正在启动" 窗口：_starting_session_count>0 但 is_active=False
-        # 的期间，start_session 协程仍持有对当前 manager 的引用；如果此时替换
-        # 实例，旧 manager 会在后台完成启动并挂起 OmniRealtimeClient / TTS 线程 /
-        # message_handler_task，永远没人调用 end_session — 造成资源泄漏。
+        # Check session state first, under the lock to avoid races.
+        # Also cover startup: while _starting_session_count>0 but is_active=False,
+        # the start_session coroutine still references the current manager. Replacing it then
+        # lets the old manager finish startup in the background and leave OmniRealtimeClient / TTS threads /
+        # message_handler_task running without anyone calling end_session, leaking resources.
         mgr = rs.session_manager
         has_active_session = mgr is not None and mgr.is_active
         has_starting_session = mgr is not None and mgr.is_starting and not mgr.is_active
 
         if has_active_session:
-            # 有活跃session，不重新创建session_manager，只更新配置
-            # 这是为了防止重新创建session_manager时破坏正在运行的session
+            # An active session exists: update configuration without recreating session_manager.
+            # Recreating session_manager would disrupt the running session.
             try:
                 old_mgr = rs.session_manager
-                # 更新prompt
+                # Update the prompt.
                 old_mgr.lanlan_prompt = (
                     lanlan_prompt[k]
                     .replace("{LANLAN_NAME}", k)
                     .replace("{MASTER_NAME}", master_name)
                 )
-                # 直接读 module global lanlan_basic_config，避免重复 load + deepcopy。
-                # 经 read_legacy_voice_id 容忍 voice 的扁平串 / 结构对象两形态（惰性迁移）。
+                # Read module-global lanlan_basic_config directly to avoid repeated load + deepcopy.
+                # read_legacy_voice_id accepts both flat strings and structured voice objects (lazy migration).
                 from utils.voice_config import read_legacy_voice_id
 
                 old_mgr.voice_id = read_legacy_voice_id(
@@ -1883,24 +1883,24 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
             except Exception as e:
                 logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
-                # 配置更新失败，但为了不影响正在运行的session，继续使用旧配置
-                # 如果确实需要更新配置，可以考虑在下次session重启时再应用
+                # Configuration update failed; keep the old configuration to protect the running session.
+                # Apply any required configuration update when the session next restarts.
         elif has_starting_session:
-            # start_session 正在执行中：只保留实例避免孤儿泄漏，但绝对不热改
-            # lanlan_prompt / voice_id — start_session 会在 core.py 内用
-            # self.lanlan_prompt 拼装首帧 session prompt，并基于当前 self.voice_id
-            # 计算音色/TTS 分支。本轮写入会让正在进行的启动拿到半旧半新配置
-            # （用户侧看到启动出来的会话 prompt / 音色与最新配置不一致）。
-            # 本轮的新 prompt / 音色由下一次 start_session 应用。
+            # start_session is running: keep the instance to avoid orphan leaks, but never hot-update
+            # lanlan_prompt / voice_id: start_session in core.py uses
+            # self.lanlan_prompt to construct the initial session prompt and current self.voice_id
+            # to select the voice/TTS branch. Updating now would mix old and new configuration during startup,
+            # leaving the session prompt / voice inconsistent with the latest settings.
+            # Apply this round's new prompt / voice on the next start_session.
             logger.info(
                 f"{k} session 正在启动中（is_starting），保留现有 session_manager，"
                 "本轮不热更新 prompt/voice_id 以免污染 in-flight 启动"
             )
         else:
-            # 没有活跃session，可以安全地重新创建session_manager
-            # 旧 manager 持有的后台任务（如 idle session reset loop）必须显式
-            # cancel，否则强引用 self 让旧 manager 永远不被 GC——多次 reload 后
-            # 积累 N 份的 idle loop 各自 60s 醒一次。
+            # No active session: session_manager can safely be recreated.
+            # Explicitly cancel background tasks held by the old manager (such as the idle session reset loop),
+            # or their strong self references prevent GC forever; repeated reloads would accumulate
+            # N idle loops, each waking every 60 seconds.
             old_user_language = None
             old_user_language_explicit = False
             if rs.session_manager is not None:
@@ -1925,14 +1925,14 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 .replace("{MASTER_NAME}", master_name),
             )
 
-            # 将websocket锁存储到session manager中，供cleanup()使用
+            # Store the websocket lock in the session manager for cleanup().
             new_mgr.websocket_lock = rs.websocket_lock
             if old_user_language_explicit:
                 new_mgr.user_language = old_user_language
                 new_mgr._user_language_explicit = True
 
-            # 新 manager 的 ToolRegistry 只有内置工具：把插件等远端注册重放进来，
-            # 否则保存配置 / 改音色之后插件工具会静默消失（见 tool_router 的台账注释）。
+            # A new manager's ToolRegistry has only built-ins: replay remote registrations such as plugins,
+            # or saving settings / changing voices silently loses plugin tools (see the tool_router ledger comment).
             try:
                 from main_routers.tool_router import replay_remote_tools
 
@@ -1940,7 +1940,7 @@ async def _init_character_resources(k: str, is_new_character: bool):
             except Exception as e:
                 logger.warning(f"重放 {k} 的远端工具注册失败: {e}")
 
-            # 恢复websocket引用（如果存在）
+            # Restore the websocket reference, if any.
             if old_websocket:
                 new_mgr.websocket = old_websocket
                 logger.info(f"已恢复 {k} 的WebSocket连接")
@@ -1952,8 +1952,8 @@ async def _init_character_resources(k: str, is_new_character: bool):
         if rs.session_manager is not None:
             await register_voice_identity_manager(rs.session_manager)
 
-    # 检查并启动同步连接器 task
-    # 如果是新角色，或者 task 不存在/已结束，需要启动
+    # Check and start the synchronization connector task.
+    # Start it for a new character or when the task is missing / finished.
     need_start_task = False
     if is_new_character:
         need_start_task = True
@@ -1979,15 +1979,15 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
                         data = _json.dumps({"type": "status", "message": msg})
 
-                        # cross_server 现在和我们在同一个主 loop 上，回调
-                        # 也是从主 loop 同步调用的——直接 create_task 即可，
-                        # 不再需要 run_coroutine_threadsafe。
-                        # done_callback 消化 task 的 exception，避免 ws 断开时
-                        # asyncio 输出 "Task exception was never retrieved" 噪音；
-                        # status 是 best-effort 降级路径，丢一条不影响主逻辑。
-                        # cancelled 态下 task.exception() 自身会 raise CancelledError，
-                        # 必须先用 task.cancelled() 早返回，否则 callback 自己又制造
-                        # 一条 "exception was never retrieved" 噪音。
+                        # cross_server now uses our main loop, and callbacks
+                        # are invoked synchronously from that loop: create_task is sufficient;
+                        # run_coroutine_threadsafe is no longer needed.
+                        # done_callback consumes task exceptions so websocket disconnects do not cause
+                        # asyncio's "Task exception was never retrieved" noise;
+                        # status is a best-effort fallback; dropping one does not affect the main logic.
+                        # For cancelled tasks, task.exception() itself raises CancelledError;
+                        # return early with task.cancelled() first, or the callback itself produces
+                        # another "exception was never retrieved" warning.
                         def _swallow_status_send_exc(_t):
                             if _t.cancelled():
                                 return
@@ -2001,9 +2001,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
                             _t = asyncio.create_task(ws.send_text(data))
                             _t.add_done_callback(_swallow_status_send_exc)
                         except RuntimeError:
-                            # 极端情况：当前没有 running loop（理论上不会发生
-                            # 在 cross_server 调用路径上，但兜底）。回退到旧
-                            # 跨 loop 路径。
+                            # Edge case: no running loop (theoretically impossible
+                            # on the cross_server path, but handled defensively). Fall back to the old
+                            # cross-loop path.
                             loop = runtime.server_loop
                             if loop is not None and not loop.is_closed():
                                 asyncio.run_coroutine_threadsafe(
@@ -2056,7 +2056,7 @@ async def _stop_character_thread(k: str):
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ 同步连接器 task {k} 未能在 3s 内退出，放任其自行结束")
         except asyncio.CancelledError:
-            # cancel 后 await 抛 CancelledError 是正常路径
+            # Await raising CancelledError after cancellation is normal.
             pass
         except Exception as e:
             logger.debug(f"同步连接器 task {k} 退出时异常: {e}", exc_info=True)
@@ -2071,18 +2071,18 @@ def _cleanup_character_dicts(k: str):
     rs = role_state.get(k)
     if rs is None:
         return
-    # 清理队列（asyncio.Queue 也没有 close/join_thread 方法，drain 即可）
+    # Drain queues (asyncio.Queue has no close/join_thread methods either).
     try:
         while not rs.sync_message_queue.empty():
             rs.sync_message_queue.get_nowait()
     except asyncio.QueueEmpty:
-        # while empty + get_nowait 本身是 racy idiom：另一线程可能先 drain 掉，
-        # 导致 get_nowait 抛 Empty。这里 role_state[k] 即将被 del 掉，忽略无害。
+        # while empty + get_nowait is inherently racy: another thread may drain first,
+        # making get_nowait raise Empty. role_state[k] is about to be deleted, so ignoring this is harmless.
         pass
-    # 一次 del 原子清掉所有 6 个字段 —— 替代旧代码里 6 张 dict 分别 del 的对称清理
+    # One del atomically removes all six fields, replacing symmetric cleanup across six separate dictionaries.
     del role_state[k]
-    # 与重建分支的 replay_remote_tools 对偶：槽位没了，该角色的 scoped 工具记录和
-    # 全局记录上的排除项也得清掉，否则之后同名的新角色（含改名成这个名字）会继承。
+    # Symmetric with replay_remote_tools on reconstruction: remove this character's scoped tool records
+    # and global exclusions when its slot disappears, or a later character with that name would inherit them.
     try:
         from main_routers.tool_router import forget_role
 
@@ -2129,23 +2129,23 @@ async def initialize_character_data():
     """
     logger.info("正在加载角色配置...")
 
-    # 清理无效的voice_id引用；如果发现旧版 CosyVoice 音色，推入通知缓冲池等前端连接后弹出
-    # cleanup_invalid_voice_ids 内部涉及同步 IO（load/save characters），offload 以免阻塞事件循环
+    # Clean up invalid voice_id references; buffer legacy CosyVoice voice notifications until frontend connection.
+    # cleanup_invalid_voice_ids performs synchronous character load/save I/O; offload it to protect the event loop.
     _cleaned, _legacy_names = await asyncio.to_thread(
         _config_manager.cleanup_invalid_voice_ids
     )
     if _legacy_names:
         core.enqueue_voice_migration_notice(_legacy_names)
 
-    # 加载最新的角色数据（offload，避免同步 IO + deepcopy 阻塞事件循环）
+    # Load the latest character data off-thread to avoid blocking the loop with synchronous I/O + deepcopy.
     await _refresh_character_globals()
 
-    # 为所有 catgirl 预备 per-k 同步资源槽位
+    # Prepare per-k synchronization resource slots for every catgirl.
     is_new_map: dict[str, bool] = {k: _ensure_character_slots(k) for k in catgirl_names}
 
-    # 每个角色的初始化相互独立（只读共享 prompt / master_name，写各自的 session_manager[k] 等 per-key 槽位）。
-    # 用 gather 并行，消除 O(N) × (thread roundtrip + 0.1s sleep) 的串行墙钟。
-    # return_exceptions=True：某个角色初始化失败不应导致其它角色被取消。
+    # Character initialization is independent: shared prompt / master_name are read-only; per-key slots are separate.
+    # Run with gather to remove O(N) x (thread roundtrip + 0.1s sleep) serial wall time.
+    # return_exceptions=True: failure to initialize one character must not cancel the others.
     _init_results = await asyncio.gather(
         *[_init_character_resources(k, is_new_map[k]) for k in catgirl_names],
         return_exceptions=True,
@@ -2154,14 +2154,14 @@ async def initialize_character_data():
         if isinstance(res, BaseException):
             logger.error(f"❌ 初始化角色 {k} 失败: {res}", exc_info=res)
 
-    # 清理已删除角色的资源
+    # Clean up resources for deleted characters.
     removed_names = [k for k in role_state.keys() if k not in catgirl_names]
 
     for k in removed_names:
         logger.info(f"清理已删除角色 {k} 的资源")
 
-    # 每个角色在同一 websocket_lock 事务内停止 connector、注销 manager 并删除 slot。
-    # N 个 stop(timeout=3) 并行执行，最坏墙钟仍约为 3 秒。
+    # Stop the connector, unregister the manager, and delete the slot within one websocket_lock transaction per character.
+    # Run N stop(timeout=3) calls concurrently; worst-case wall time remains about three seconds.
     if removed_names:
         cleanup_results = await asyncio.gather(
             *[_unregister_and_cleanup_character_slot(k) for k in removed_names],
@@ -2175,7 +2175,7 @@ async def initialize_character_data():
 
 
 # ─────────────────────────────────────────────────────────────
-# Fast-path helpers — 只处理受影响的单个 catgirl，避免全量遍历
+# Fast-path helpers: handle only the affected catgirl without scanning all characters.
 # ─────────────────────────────────────────────────────────────
 
 
@@ -2210,6 +2210,6 @@ async def init_one_catgirl(name: str, *, is_new: bool = False):
 async def remove_one_catgirl(name: str):
     """Fast path for deleting a single catgirl: stop the character's thread + clear dicts + refresh globals."""
     await _unregister_and_cleanup_character_slot(name)
-    # config 文件已由调用方写入，这里刷新 globals 让 catgirl_names 等反映删除
+    # The caller already wrote the config; refresh globals so catgirl_names etc. reflect the deletion.
     await _refresh_character_globals()
     logger.info(f"[fast-remove] 已移除角色 {name}")

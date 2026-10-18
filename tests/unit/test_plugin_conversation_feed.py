@@ -49,7 +49,7 @@ class _StubManager(turn_module.TurnMixin, ProactiveMixin):
     async def drain(self) -> None:
         if self._bg:
             await asyncio.gather(*self._bg, return_exceptions=True)
-            await asyncio.sleep(0)  # 让 add_done_callback 排到本帧执行
+            await asyncio.sleep(0)  # Schedule add_done_callback to run in this iteration
 
 
 @pytest.fixture
@@ -107,7 +107,7 @@ def test_failed_user_publish_does_not_create_pairing_state(monkeypatch):
 
     async def _fake_failed(lanlan_name, **kwargs):
         calls.append(kwargs)
-        return False  # 总线没收到
+        return False  # The bus received nothing
 
     monkeypatch.setattr(
         turn_module, "publish_conversation_turn_observed_best_effort", _fake_failed,
@@ -147,11 +147,11 @@ def test_ai_turn_publishes_whole_text_once(published):
     assert call["conversation_id"] == "turn-42"
     assert call["message_count"] == 1
     assert call["metadata"]["role"] == "cat"
-    # ts 取首块（开口）时刻，不是 flush 时刻；ts_end 才是收尾时刻
+    # ts uses the first chunk's time (speech onset), not flush time; ts_end marks the end
     assert call["ts"] == call["metadata"]["ts"]
     assert call["ts"] == pytest.approx(started_at)
     assert call["metadata"]["ts_end"] >= call["ts"]
-    # buffer 已清空，且 activity tracker 拿到同一份文本
+    # The buffer is empty and the activity tracker received the same text
     assert stub._current_ai_turn_text == ""
     assert stub._current_ai_turn_id == ""
     assert stub._current_ai_turn_started_at == 0.0
@@ -178,7 +178,7 @@ def test_offline_ephemeral_turn_is_not_published_twice(published):
 
     async def _scenario():
         stub = _StubManager()
-        stub.session = object.__new__(OmniOfflineClient)  # 只做 isinstance 判定
+        stub.session = object.__new__(OmniOfflineClient)  # Only an isinstance check is performed
         stub._current_ai_turn_text = "喵，这条由客户端自己发。"
         stub._current_ai_turn_client_owned = True
         token = turn_module._proactive_expected_sid.set("turn-ephemeral")
@@ -213,7 +213,7 @@ def test_identical_text_in_a_later_turn_is_still_published(published):
     async def _scenario():
         stub = _StubManager()
         stub._current_ai_turn_started_at = time.time()
-        stub._current_ai_turn_text = "喵，我在的。"  # 与上一轮完全相同的文本
+        stub._current_ai_turn_text = "喵，我在的。"  # Exactly the same text as the previous turn
         turn_module.TurnMixin._flush_ai_turn_text_to_tracker(stub)
         await stub.drain()
 

@@ -100,11 +100,11 @@ class ChatOpenAI:
         # the caller wants to suppress tools mid-conversation).
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
-        # 项目级硬性约定：不再下发 temperature。default=None → 不写进请求体，
-        # 由模型端自定。o1/o3/gpt-5-thinking/Claude extended-thinking 等拒绝该
-        # 参数的模型可以直通；普通模型也走它们自己的默认值，避免不同 task 之间
-        # 因为温度数值漂移引入难复现的回归。callers 不应再传 temperature=
-        # （CI 由 scripts/check_no_temperature.py 守门）。
+        # Project rule: never send temperature. default=None omits request field,
+        # leaving model defaults. o1/o3/gpt-5-thinking/Claude extended-thinking reject
+        # this parameter and can pass through; ordinary models use defaults too, avoiding hard-to-reproduce
+        # regressions from temperature drift between tasks. Callers must no longer pass temperature=
+        # (CI enforced by scripts/check_no_temperature.py).
         self.temperature = temperature
         self.extra_body: dict = extra_body or {}
         self.max_completion_tokens = max_completion_tokens
@@ -124,8 +124,8 @@ class ChatOpenAI:
         client_kw: dict[str, Any] = dict(base_url=base_url, api_key=_api_key, max_retries=max_retries)
         if _timeout is not None:
             client_kw["timeout"] = _timeout
-        # 注入 neko/<版本号> User-Agent 覆盖 SDK 自带 UA（AsyncOpenAI/Python x.y.z），
-        # 防止自定义 API 端点的 Cloudflare "Manage AI bots" 规则拦截。
+        # Inject neko/<version> User-Agent, overriding SDK UA (AsyncOpenAI/Python x.y.z),
+        # avoiding custom endpoints' Cloudflare "Manage AI bots" blocking.
         from utils.http_client import ensure_user_agent
         client_kw["default_headers"] = ensure_user_agent(default_headers)
         from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
@@ -169,9 +169,9 @@ class ChatOpenAI:
             "messages": _normalize_messages(messages),
             "stream": stream,
         }
-        # 项目级约定：default=None → 不写 temperature 进请求体。本分支保留是
-        # 为了向后兼容显式 `temperature=0` 这类 case（0.0 合法，所以判 None 而
-        # 不是 truthy），实际 callers 不应再传该参数。
+        # Project convention: default=None omits temperature. Retain branch only
+        # for backwards-compatible explicit `temperature=0` (0.0 valid, so test None
+        # rather than truthiness); actual callers must no longer pass this parameter.
         if self.temperature is not None:
             p["temperature"] = self.temperature
         # Provider-aware routing of token-limit field:
@@ -208,8 +208,8 @@ class ChatOpenAI:
         if extra_body:
             p["extra_body"] = extra_body
         # Tool calling: per-call overrides take priority over instance default
-        # so callers can disable tools (``tools=[]`` 或 ``tools=None``) for
-        # special turns（如 prompt_ephemeral 中明确不要工具）。
+        # so callers can disable tools (``tools=[]`` or ``tools=None``) for
+        # special turns (e.g. explicit no-tools prompt_ephemeral).
         tools = overrides.pop("tools", self.tools)
         if tools:
             p["tools"] = tools
@@ -305,8 +305,8 @@ class ChatOpenAI:
         ``_params()`` so concurrent callers on the same client don't
         clobber each other's budgets. See ``ainvoke_raw`` for details."""
         resp = await self._aclient.chat.completions.create(**self._params(messages, **overrides))
-        # 防御性读取：部分上游（如 free-agent-model）会返回 choices 非空但
-        # message=None 的合法响应，直接 .message.content 会 NoneType 崩溃。
+        # Defensive read: some upstreams (e.g. free-agent-model) return valid nonempty choices
+        # with message=None; direct .message.content would crash with NoneType.
         choice = resp.choices[0] if resp.choices else None
         msg = choice.message if choice else None
         content = strip_thinking_segments(getattr(msg, "content", None))
@@ -395,18 +395,18 @@ class ChatOpenAI:
                                 "arguments": getattr(fn, "arguments", "") if fn else "",
                             },
                         }
-                        # 非标准字段 ``extra_content``：Gemini 的 OpenAI-compat
-                        # 端点（含 lanlan.app 海外免费线路）把 thought_signature
-                        # 挂在这里，且要求下一轮把它原样带回该 tool call；丢了
-                        # 就稳定报 400 INVALID_ARGUMENT。这里只做透传，不解析
-                        # 内容——别的 provider 往里塞什么都照样带回去。
+                        # Nonstandard ``extra_content``: Gemini OpenAI-compatible
+                        # endpoints (including lanlan.app overseas free routes) put thought_signature
+                        # here and require verbatim return with the tool call next turn; dropping it
+                        # consistently yields 400 INVALID_ARGUMENT. Pass through only, without parsing:
+                        # preserve whatever other providers put here too.
                         extra_content = _plain_dict(getattr(tc, "extra_content", None))
                         if extra_content:
                             frag["extra_content"] = extra_content
                         tool_call_deltas.append(frag)
-            # Thinking 模型把推理链放在非标准的 ``delta.reasoning_content``
-            # 字段（openai-python 的 BaseModel extra=allow，未知字段照样可
-            # getattr）。普通端点没有这个字段，getattr 返回 None。
+            # Thinking models place reasoning in nonstandard ``delta.reasoning_content``
+            # (openai-python BaseModel extra=allow permits unknown fields via
+            # getattr). Ordinary endpoints lack it; getattr returns None.
             reasoning_content = (
                 getattr(delta, "reasoning_content", None) if delta else None
             )

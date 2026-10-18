@@ -420,7 +420,7 @@ def test_16_propose_and_begin_cross_one_goodbye_each():
 
 
 def test_17_overlapping_lines_from_one_sender_are_a_counted_anomaly():
-    # 真交叠：新开的行 lp 不比仍未收口的行大
+    # True overlap: newly opened line lp is no greater than a still-open line's.
     room = make_room("host")
     peer = Peer(room)
     a = peer.new_ref()
@@ -433,7 +433,7 @@ def test_17_overlapping_lines_from_one_sender_are_a_counted_anomaly():
 
 
 def test_newer_line_closing_before_an_older_open_line_is_overlap():
-    # 正常 lp 递增的交叠：旧行还没收口，新行就收口了 → 收口时计一次异常
+    # Normal increasing-lp overlap: a new line finalizes before the old one -> count one anomaly on finalization.
     room = make_room("host")
     peer = Peer(room)
     a = peer.new_ref()
@@ -444,14 +444,14 @@ def test_newer_line_closing_before_an_older_open_line_is_overlap():
     assert eff.violation == "line_overlap"
     assert eff.finalize_reason is None
     assert room.anomalies_total == 1
-    # 同一条旧行不重复计数；它的 text 晚到仍照常处理
+    # Do not recount the same old line; its late text still processes normally.
     peer.done(peer.new_ref(), 3.0, to_kind="human")
     assert room.anomalies_total == 1
     assert room.on_incoming_done(IncomingLineDone(a, False, 0, False), 4.0).violation is None
 
 
 def test_newer_line_start_while_previous_text_waits_behind_a_gap_is_not_overlap():
-    # 上一行 text 在 seq 缺口后排队、新行首片先到：正常乱序，不是交叠
+    # Previous-line text queues after a seq gap while the next line's first fragment arrives: normal reordering, not overlap.
     room = make_room("host")
     peer = Peer(room)
     a = peer.new_ref()
@@ -460,7 +460,7 @@ def test_newer_line_start_while_previous_text_waits_behind_a_gap_is_not_overlap(
     eff_b = peer.start(b, 3.0, speaker="human")
     assert eff_b.violation is None
     assert room.anomalies_total == 0
-    # 旧行的 text 随后补到：元数据还在，照常收口（不当成新行）
+    # Old text arrives afterward: metadata remains, so finalize normally rather than treating it as a new line.
     eff_a = room.on_incoming_done(IncomingLineDone(a, False, 0, False), 4.0)
     assert eff_a.violation is None
     eff_b2 = peer.done(b, 5.0, speaker="human")
@@ -676,8 +676,8 @@ def test_tail_ms_out_of_range_is_treated_as_zero():
 
 
 def test_inbound_text_overflow_from_the_limiter_finalizes_the_room():
-    # 入站 text 限流只有 PeerRateLimiter 一处；它要求计入连续异常的丢弃由 runtime
-    # 转给 record_anomaly，房间不再自己另扣一个桶
+    # PeerRateLimiter alone limits inbound text; runtime forwards its anomaly-counting drops
+    # to record_anomaly instead of the room deducting another bucket itself.
     from main_logic.visit.limits import PeerRateLimiter, RateChannel
 
     room = make_room("host")
@@ -748,7 +748,7 @@ def test_line_cut_off_on_purpose_gets_no_reply(reason):
 
 @pytest.mark.parametrize("reason", ["wire_size", "tts_error", "llm_error", "stall", "goodbye_cap"])
 def test_line_truncated_by_a_fault_is_still_answered(reason):
-    # 对端这一轮已说完（只是没念完 / 超长被截），不回就两边都在等到 idle_timeout
+    # The peer finished this turn (still speaking / truncated for length); without replying, both wait until idle_timeout.
     room = make_room("host")
     peer = Peer(room)
     _, eff = peer.line(0.0, truncated=True, trunc_reason=reason)
@@ -793,7 +793,7 @@ def test_snapshot_is_plain_data():
 
 
 def test_older_line_closing_late_does_not_steal_the_newer_reply():
-    # 对端人类行先开口（lp 小）、对端猫娘行后开口却先收口：旧行晚到不能取消新行的回复
+    # Peer human starts first (smaller lp), peer catgirl starts later but finalizes first: late old text must not cancel the new reply.
     room = make_room("host")
     peer = Peer(room)
     human = peer.new_ref()
@@ -823,7 +823,7 @@ def test_whole_line_mode_human_line_still_interrupts_when_newest():
 def test_whole_line_mode_older_human_line_keeps_the_newer_reply():
     room = make_room("host")
     peer = Peer(room)
-    human = peer.new_ref()            # 先开口，但整句模式下没有首片
+    human = peer.new_ref()            # Starts first, but whole-sentence mode has no first fragment.
     cat = peer.new_ref()
     peer.start(cat, 0.5)
     eff_cat = peer.done(cat, 2.0)
@@ -833,7 +833,7 @@ def test_whole_line_mode_older_human_line_keeps_the_newer_reply():
 
 
 def test_a_line_keeps_the_lp_of_its_first_piece():
-    # 同一 ln 后续片 / text 换了 lp → 计异常并丢弃；同值重传照常
+    # Later fragments / text for the same ln change lp -> count anomaly and drop; same-value retransmissions remain normal.
     room = make_room("host")
     assert room.observe_lp(10, ln="g:1") is None
     assert room.observe_lp(10, ln="g:1") is None
@@ -848,26 +848,26 @@ def test_older_human_line_closing_late_keeps_the_newer_cat_count():
     peer = Peer(room)
     human = peer.new_ref()
     peer.start(human, 0.0, speaker="human")
-    peer.line(1.0)                                   # 更新的猫娘行
+    peer.line(1.0)                                   # Newer catgirl line.
     assert room.cat_turns_since_human == 1
-    peer.done(human, 5.0, speaker="human")           # 旧人类行晚收口
+    peer.done(human, 5.0, speaker="human")           # Older human line finalizes late.
     assert room.cat_turns_since_human == 1
 
 
 def test_whole_line_older_human_recounts_cat_lines_after_it():
     room = make_room("host")
     peer = Peer(room)
-    human = peer.new_ref()                           # 整句模式：没有首片
+    human = peer.new_ref()                           # Whole-sentence mode: no first fragment.
     cat = peer.new_ref()
     peer.start(cat, 0.5)
     peer.done(cat, 2.0)
     assert room.cat_turns_since_human == 1
     peer.done(human, 3.0, speaker="human")
-    assert room.cat_turns_since_human == 1           # 它之后的那句猫娘行仍算数
+    assert room.cat_turns_since_human == 1           # Its subsequent catgirl line still counts.
 
 
 def test_goodbye_only_wrap_up_uses_a_valid_reason():
-    # begin 丢了、只见到 host 的告别行：guest 随后发的 wrap_up{speaking} 必须编码得出来
+    # Lost begin, only host farewell observed: guest's subsequent wrap_up{speaking} must encode successfully.
     from utils.visit_wire import encode_msg
 
     room = make_room("guest")
@@ -886,10 +886,10 @@ def test_an_older_human_line_never_moves_the_human_mark_back():
     peer = Peer(room)
     a = peer.new_ref()
     peer.start(a, 0.0, speaker="human")
-    peer.line(1.0)                                   # 夹在两条人类行之间的猫娘行
+    peer.line(1.0)                                   # Catgirl line between two human lines.
     b = peer.new_ref()
     peer.start(b, 2.0, speaker="human")
-    peer.line(3.0)                                   # b 之后的猫娘行
+    peer.line(3.0)                                   # Catgirl line after b.
     assert room.cat_turns_since_human == 1
     peer.done(a, 6.0, speaker="human")
     assert room.cat_turns_since_human == 1
@@ -906,7 +906,7 @@ def test_unclosed_peer_lines_are_bounded():
 
 
 def test_host_step_timer_starts_when_begin_is_sent_not_when_created():
-    # outbox 暂停 / 拥塞时 begin 晚发：提前计时会让东家抢在客人之前送客
+    # Paused / congested outbox delays begin: premature timing makes the host dismiss guests before their farewell.
     host = make_room("host")
     host.on_local_recall(0.0)
     assert host.wrap_up.step_started_at is None
@@ -920,7 +920,7 @@ def test_host_step_timer_is_not_pushed_back_by_a_retransmitted_begin():
     host = make_room("host")
     host.on_local_recall(0.0)
     host.on_wrap_up_sent("begin", 12.0)
-    host.on_wrap_up_sent("begin", 20.0)                  # 重传：不把步骤计时器往后推
+    host.on_wrap_up_sent("begin", 20.0)                  # Retransmission does not postpone step timers.
     assert host.on_tick(27.0).say_goodbye
 
 
@@ -937,7 +937,7 @@ def test_local_goodbye_from_active_uses_a_valid_reason():
 
 
 def test_remembered_line_ids_are_bounded_and_keep_active_lines():
-    # 只发首片、永不收口的新行不能让 ln 表整场无界增长；仍在收片的行不被挤出
+    # A new line sending only its first fragment and never finalizing must not grow the ln table without bound; active fragmented lines remain retained.
     from main_logic.visit.room import _SEEN_LNS_MAX
 
     room = make_room("host")
@@ -953,7 +953,7 @@ def test_remembered_line_ids_are_bounded_and_keep_active_lines():
 
 
 def test_an_evicted_line_id_reused_with_another_lp_is_rejected():
-    # 旧 ln 被挤出表后再以更大的 lp 出现：不能当成新行接受
+    # An evicted old ln reappearing with larger lp cannot be accepted as a new line.
     from main_logic.visit.room import _SEEN_LNS_MAX
 
     room = make_room("host")
@@ -961,7 +961,7 @@ def test_an_evicted_line_id_reused_with_another_lp_is_rejected():
         assert room.observe_lp(1 + i, ln=f"g:{i}") is None
     assert "g:0" not in room._seen_lns
     assert room.observe_lp(_SEEN_LNS_MAX + 100, ln="g:0") == "lp_changed"
-    # 行号更大的新行照常
+    # New lines with larger line numbers remain normal.
     assert room.observe_lp(_SEEN_LNS_MAX + 101, ln=f"g:{_SEEN_LNS_MAX + 50}") is None
 
 
@@ -976,7 +976,7 @@ def test_remembered_aborted_line_ids_are_bounded():
 
 
 def test_a_started_cat_line_reserves_its_text_slot():
-    # 19 条已发 + 1 行猫娘在说：人类行不能再占第 20 个名额，否则收口的 text 成了第 21 条
+    # Nineteen sent + one speaking catgirl line: a human cannot take slot 20, or finalizing text becomes message 21.
     room = make_room("host")
     own = Own(room)
     for i in range(19):
@@ -986,13 +986,13 @@ def test_a_started_cat_line_reserves_its_text_slot():
     room.on_local_line_started(cat, None, False, 2.0)
     assert not room.can_accept_local_line(2.5)
     room.on_local_line_done(cat, False, 3.0)
-    assert not room.can_accept_local_line(3.5)        # 已发 20 条
-    assert room.can_accept_local_line(10.05)          # 只滑出一条：收口后预留已释放，19 < 20
-    assert room.can_accept_local_line(10.25)          # 最早的几条滑出窗口
+    assert not room.can_accept_local_line(3.5)        # Twenty messages sent.
+    assert room.can_accept_local_line(10.05)          # Only one slides out: finalization released the reservation, 19 <20.
+    assert room.can_accept_local_line(10.25)          # Earliest messages slide out of the window.
 
 
 def test_an_early_speaking_keeps_the_hosts_reason():
-    # speaking 经提前交付先到、begin 卡在缺口后：guest 记下的原因要是 host 的 time_up
+    # speaking arrives early while begin waits after a gap: guest must record host's time_up reason.
     room = make_room("guest")
     room.on_incoming_wrap_up("speaking", "time_up", 5, 1.0, ln="h:3")
     assert room.wrap_up.reason == "time_up"
@@ -1001,7 +1001,7 @@ def test_an_early_speaking_keeps_the_hosts_reason():
 
 
 def test_a_fallback_reason_is_corrected_by_the_late_begin():
-    # 只见到 wu 首片就进了收尾（回退 quiet），随后到的 begin 带真实原因：纠正
+    # Only wu's first fragment triggered cleanup (quiet fallback); later begin has the real reason: correct it.
     room = make_room("guest")
     peer = Peer(room)
     peer.start(peer.new_ref(), 1.0, goodbye=True)
@@ -1009,32 +1009,32 @@ def test_a_fallback_reason_is_corrected_by_the_late_begin():
     room.on_incoming_wrap_up("begin", "recall", 4, 1.2)
     assert room.wrap_up.reason == "recall"
     room.on_incoming_wrap_up("begin", "budget", 4, 1.3)
-    assert room.wrap_up.reason == "recall"          # 真实原因只纠正一次，不被覆盖
+    assert room.wrap_up.reason == "recall"          # Correct the real reason only once, never overwriting it.
 
 
 def test_a_retransmitted_reliable_line_overtaken_by_a_lossy_delta_is_accepted():
-    # seq2 首发丢失，下一行的可丢首片 lp=6 先到；seq2 重传（lp=5）补上缺口时看不出是重传：
-    # 不能按 lp_not_monotonic 丢掉——它的 seq 已被确认，这一行会永久消失
+    # seq2's initial send is lost; next line's lossy first fragment lp=6 arrives first. Retransmitted seq2 (lp=5) fills the gap without being identifiable as a retransmission:
+    # do not drop for lp_not_monotonic; its seq is already acknowledged, permanently losing this line.
     room = make_room("host")
     assert room.observe_lp(1, ln="g:1", reliable=True) is None
-    assert room.observe_lp(6, ln="g:3") is None                       # 可丢 delta 抢先
-    assert room.observe_lp(5, ln="g:2", reliable=True) is None        # 重传的必达 text
-    # 必达消息之间仍然要单调
+    assert room.observe_lp(6, ln="g:3") is None                       # Lossy delta arrives first.
+    assert room.observe_lp(5, ln="g:2", reliable=True) is None        # Retransmitted reliable text.
+    # Reliable messages must still remain monotonic relative to each other.
     assert room.observe_lp(4, ln="g:9", reliable=True) == "lp_not_monotonic"
-    # 可丢的新行事件仍和所有已见新行比
+    # Lossy new-line events still compare against every observed new line.
     assert room.observe_lp(5, ln="g:8") == "lp_not_monotonic"
 
 
 def test_the_text_of_a_line_cut_off_by_wrap_up_is_accepted():
-    # §3.6.3 ⑤：host 先发 wrap_up{begin, lp=3}，再发被掐断那一行 h:2 的 text（lp=2）；
-    # 这一行的首片没被看到（tx_backpressure / 全丢）时也不能按逆序拒掉
+    # §3.6.3 ⑤: host sends wrap_up{begin, lp=3}, then interrupted line h:2's text (lp=2);
+    # even if its first fragment was unseen (tx_backpressure / all lost), do not reject as out of order.
     room = make_room("guest")
     assert room.observe_lp(1, ln="h:1", reliable=True, closes_line=True) is None
     assert room.observe_lp(3, reliable=True) is None                      # wrap_up begin
     assert room.observe_lp(2, ln="h:2", reliable=True, closes_line=True) is None
-    # 必达控制消息之间仍按必达水位比
+    # Reliable control messages still compare against the reliable watermark.
     assert room.observe_lp(2, reliable=True) == "lp_not_monotonic"
-    # 值域与回退照常检查
+    # Validate ranges and fallbacks normally.
     assert room.observe_lp(-1, ln="h:9", reliable=True, closes_line=True) == "lp_out_of_range"
 
 
@@ -1043,7 +1043,7 @@ def test_the_text_of_a_line_cut_off_by_wrap_up_is_accepted():
     {"reply_to": LineRef("h:1", 1, "host")},
 ], ids=["speaker", "addressee", "goodbye", "reply_to"])
 def test_final_metadata_must_agree_with_the_opener(change):
-    # 首片按人类开口（打断、记人类插话），收口改成猫娘：绕开六句规则。按异常丢弃这一行
+    # First fragment claims human (interrupting, recording human interjection), finalization switches to catgirl: bypasses six-line rule. Drop this line as anomalous.
     room = make_room("host")
     peer = Peer(room)
     r = peer.new_ref()

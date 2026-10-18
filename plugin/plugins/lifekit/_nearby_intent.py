@@ -237,7 +237,7 @@ def _zh_nearby_candidates(text: str) -> tuple[str, ...]:
     """Try complete clauses, then one punctuation-split center/relation pair.
 
     Chinese conversational requests often put a polite preamble in one clause
-    or split ``漕宝路上，找餐厅`` across two adjacent clauses.  Restricting the
+    or split ``漕宝路上，找餐厅`` ('on Caobao Road, find restaurants') across two adjacent clauses. Restricting the
     recombination to one adjacent pair avoids joining unrelated sentences.
     """
     clauses = tuple(

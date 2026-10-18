@@ -136,8 +136,8 @@ def _download_verified(source: str, destination: Path, expected_sha256: str) -> 
             except AssetManifestError:
                 temporary.unlink(missing_ok=True)
                 raise
-            # IncompleteRead：连接在声明的 Content-Length 之前被断开（大文件常见），
-            # 它不是 OSError，漏掉的话既不会重试也到不了下一个镜像。
+            # IncompleteRead: the connection closed before the declared Content-Length (common for large files);
+            # it is not an OSError, so omitting it prevents both retries and fallback to the next mirror.
             except (OSError, TimeoutError, URLError, http.client.IncompleteRead) as exc:
                 last_error = exc
                 temporary.unlink(missing_ok=True)

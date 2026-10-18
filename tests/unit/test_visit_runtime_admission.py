@@ -97,7 +97,7 @@ async def _finished(rt):
     await finish(rt, rt.clock)
 
 
-# ── 准入 ─────────────────────────────────────────────────────────────
+# ── Admission ─────────────────────────────────────────────────────────────
 
 
 async def test_route_lock_is_checked_once_and_before_the_slot(tmp_path, monkeypatch, clocks):
@@ -114,7 +114,7 @@ async def test_route_lock_is_checked_once_and_before_the_slot(tmp_path, monkeypa
     side = make_side(tmp_path, "host", clock=clock, wall=wall)
     rt = await start_side(side, clock=clock, wall=wall)
     try:
-        assert calls == [None]   # 恰一次，且当时还没有占位
+        assert calls == [None]   # Exactly once, before reservation.
         assert visit_route_state.get_visit_route_state("Host") is rt.slot
         assert rt.phase == "pending"
         await settle()
@@ -196,7 +196,7 @@ async def test_recent_servers_ban_is_a_synchronous_403(tmp_path, monkeypatch, cl
     assert visit_route_state.get_visit_route_state("Host") is None
 
 
-# ── 能力门 ───────────────────────────────────────────────────────────
+# ── Capability gate ───────────────────────────────────────────────────────────
 
 
 async def test_failed_preflight_ends_without_servers_or_takeover(tmp_path, monkeypatch, clocks):
@@ -244,7 +244,7 @@ async def test_sdk_gate_failure_releases_the_takeover_after_one_issue(tmp_path, 
     assert msg is not None and msg["type"] == "credentials" and msg["peer_vid"] is None
     await rt.on_sdk_caps({"stage": "sdk", "transport_ok": False, "video_ok": False, "codecs": []})
     await _finished(rt)
-    assert len(side.creds_calls) == 1            # 这一次签发已经计了
+    assert len(side.creds_calls) == 1            # This issuance already counted.
     assert side.host.takeovers and side.host.released == side.host.takeovers
     assert rt.finalize_reason == "unsupported"
 
@@ -313,7 +313,7 @@ async def test_invite_code_only_after_joined_and_never_in_the_state(tmp_path, mo
     await through_gate(rt)
     assert side.host.frames_of("visit_state_change", "invite_ready") == []
     await rt.on_transport_state({"state": "joined", "peer_present": False})
-    await settle()                                            # 阶段帧经有序显示队列发出
+    await settle()                                            # Phase frames use the ordered display queue.
     ready = side.host.frames_of("visit_state_change", "invite_ready")
     try:
         assert len(ready) == 1 and ready[0]["invite_code"] == INVITE
@@ -335,12 +335,12 @@ async def test_gate_passed_but_never_joined_is_relay_lost_without_invite(tmp_pat
     await _finished(rt)
     assert rt.finalize_reason == "relay_lost"
     assert side.host.frames_of("visit_state_change", "invite_ready") == []
-    # 对端核验之前结束：后台取消房间
+    # End before peer verification: cancel room in background.
     await wait_for(lambda: side.cancelled)
     assert side.cancelled[0][0] == rt.visit_id
 
 
-# ── 等客 / 等对端 ─────────────────────────────────────────────────────
+# ── Await guest /peer ─────────────────────────────────────────────────────
 
 
 async def test_host_waits_the_invite_and_ends_without_leave(tmp_path, monkeypatch, clocks):
@@ -371,7 +371,7 @@ async def test_guest_gives_up_after_thirty_seconds_without_hello(tmp_path, monke
     assert rt.finalize_reason == "peer_lost"
 
 
-# ── hello 核验 ───────────────────────────────────────────────────────
+# ── Hello verification ───────────────────────────────────────────────────────
 
 
 async def test_a_hello_before_joined_keeps_the_awaiting_phase(tmp_path, monkeypatch, clocks):
@@ -382,12 +382,12 @@ async def test_a_hello_before_joined_keeps_the_awaiting_phase(tmp_path, monkeypa
     wire = Wire()
     wire.attach(rt, None, HOST_VID)
     await through_gate(rt)
-    await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)  # 对端 hello 先到
+    await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)  # Peer hello arrives first.
     assert rt.phase == "awaiting_accept"
     monkeypatch.setattr(transport_ws, "is_transport_attached", lambda visit_id, side: True)
-    assert not rt.joined and rtm.VisitRuntime.transport_alive(rt)  # 已核验对端：通道算活着，收尾照样发 leave
-    await rt.on_transport_state({"state": "joined", "peer_present": True})            # 入房报告后到
-    assert rt.phase == "awaiting_accept"                  # 不翻回 invite_ready：邀请仍能接受
+    assert not rt.joined and rtm.VisitRuntime.transport_alive(rt)  # Verified peer: channel is live, so cleanup still sends leave.
+    await rt.on_transport_state({"state": "joined", "peer_present": True})            # Room-entry report arrives later.
+    assert rt.phase == "awaiting_accept"                  # Do not revert to invite_ready: invitation remains acceptable.
     assert not side.host.frames_of("visit_state_change", "invite_ready")
     status, _ = await rt.accept(False)
     assert status == 200
@@ -403,12 +403,12 @@ async def test_verified_hello_invites_the_family_and_fills_peer_vid(tmp_path, mo
         assert "hello" in wire.sent_types("host")
         await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)
         assert rt.phase == "awaiting_accept" and rt.peer.uid == GUEST_UID
-        await settle()                                        # 邀请帧经有序显示队列发出
+        await settle()                                        # Invite frames use the ordered display queue.
         invite = side.host.frames_of("visit_invite")
         assert len(invite) == 1 and invite[0]["peer_short_id"] == GUEST_UID[:6].upper()
         media = [m for m in wire.downlinks["host"] if m.get("type") == "media"]
         assert media[-1]["subscribe"] is False and media[-1]["peer_vid"] == GUEST_VID
-        assert side.clients == []                  # 接待之前不建隔离会话
+        assert side.clients == []                  # No isolated session before reception.
     finally:
         await teardown(side, wire=wire, clock=clocks[0])
 
@@ -485,15 +485,15 @@ async def test_awaiting_accept_gate_acks_text_but_shows_and_stores_nothing(tmp_p
             await hrt.on_recv(from_vid=GUEST_VID, cmd=cmd, payload=payload, nbytes=300)
         assert not [f for f in host.host.frames[before:] if str(f.get("type", "")).startswith("visit_line")]
         assert hrt.gate_dropped >= 3 and hrt.room is None and host.clients == []
-        assert hrt.sequencer.contiguous_seq == 3            # text 照常按 seq 推进（会回 ack）
+        assert hrt.sequencer.contiguous_seq == 3            # text advances seq normally and gets acked.
         await hrt.flush()
-        # 可靠消息的交付在受保护的任务里做完，ack 由泵稍后送出：等它到线上
+        # Reliable delivery finishes in shielded tasks; pumps send ack later, so await wire delivery.
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "ack" and p.get("seq") == 3])
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
 
-# ── 接待与激活 ───────────────────────────────────────────────────────
+# ── Reception and activation ───────────────────────────────────────────────────────
 
 
 async def test_ready_goes_out_only_after_the_host_is_ready_to_receive(tmp_path, monkeypatch):
@@ -562,7 +562,7 @@ async def test_late_accept_within_the_activation_allowance_is_not_declined(tmp_p
         await step(clock, 59, host.rt, guest.rt)
         status, _ = await host.rt.accept(True)
         assert status == 200
-        clock.advance(9)                       # host 第 67 s 才发出 ready
+        clock.advance(9)                       # Host sends ready only at second 67.
         await wait_for(lambda: guest.rt.activated, timeout=10)
         await guest.rt.tick()
         assert guest.rt.exit_task is None
@@ -598,7 +598,7 @@ async def test_page_reload_before_ready_keeps_media_off(tmp_path, monkeypatch):
         hsnap, gsnap = host.rt.media_snapshot(), guest.rt.media_snapshot()
         assert hsnap["subscribe"] is False and hsnap["peer_vid"] == GUEST_VID
         assert gsnap["publish"] is False
-        # 重载后的首发凭证带上已核验的 peer_vid
+        # First credentials after reload include verified peer_vid.
         msg = await host.rt.issue_credentials()
         assert msg["peer_vid"] == GUEST_VID
     finally:
@@ -616,7 +616,7 @@ async def test_video_unavailable_keeps_media_off_after_ready(tmp_path, monkeypat
         await teardown(host, guest, wire=wire, clock=clock)
 
 
-# ── 在飞的凭证 / 激活与收尾、关机的竞态 ─────────────────────────────
+# ── In-flight credentials /activation racing cleanup and shutdown ───────────────────────
 
 
 @pytest.mark.parametrize("role", ["host", "guest"])
@@ -645,14 +645,14 @@ async def test_room_minted_after_the_host_already_ended_is_cancelled_once(tmp_pa
     issuing = asyncio.ensure_future(rt.issue_credentials())
     await wait_for(lambda: side.creds_calls)
     rt.request_finalize("route_end")
-    await _finished(rt)                                   # 收尾走完时还没有凭证：那时没有房间可取消
+    await _finished(rt)                                   # Cleanup ends before credentials exist; no room yet to cancel.
     assert side.cancelled == []
     creds_task = rt._creds_task
-    assert creds_task is not None and not creds_task.done() and creds_task in rtm._detached  # 注销后关机收得到
-    side.creds_gate.set()                                 # Servers 这才签出房间
+    assert creds_task is not None and not creds_task.done() and creds_task in rtm._detached  # Shutdown can collect after unregistration.
+    side.creds_gate.set()                                 # Servers only now issues the room.
     assert await issuing is None
     await wait_for(lambda: side.cancelled)
-    rt._cancel_room_once()                                # 收尾流程与晚到的凭证各调一次：只发一次
+    rt._cancel_room_once()                                # Cleanup and late credentials each call it; send once.
     await settle()
     assert len(side.cancelled) == 1
     assert side.host.takeovers == []
@@ -669,7 +669,7 @@ async def test_shutdown_while_credentials_are_pending_takes_nothing_over(tmp_pat
     issuing = asyncio.ensure_future(rt.issue_credentials())
     await wait_for(lambda: side.creds_calls)
     await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
-    # 不等 Servers 回话：挂起的领凭证随关机取消，也不把 CancelledError 抛给 transport 处理器
+    # Do not await Servers: shutdown cancels pending credentials without exposing CancelledError to transport handlers.
     assert await asyncio.wait_for(issuing, 1) is None
     side.creds_gate.set()
     await settle()
@@ -692,10 +692,10 @@ async def test_a_cancelled_accept_request_still_finishes_the_acceptance(tmp_path
     try:
         accepting = asyncio.ensure_future(hrt.accept(True))
         await asyncio.wait_for(reached.wait(), 5)
-        accepting.cancel()                                # 接受请求被取消（页面断开等）
+        accepting.cancel()                                # Accept request cancelled (page disconnected, etc.).
         await asyncio.gather(accepting, return_exceptions=True)
         gate.set()
-        await wait_for(lambda: "ready" in [p.get("t") for p in wire.sent["host"]], timeout=5)  # 照样发 ready
+        await wait_for(lambda: "ready" in [p.get("t") for p in wire.sent["host"]], timeout=5)  # Still send ready.
         assert hrt.ready_exchanged and not hrt.finalizing
     finally:
         gate.set()
@@ -709,7 +709,7 @@ async def test_an_activation_cancelled_while_opening_the_spool_leaves_a_memory_o
     real_open = spool_mod.VisitSpool.open
 
     async def slow_open(self, *args, **kwargs):
-        await asyncio.sleep(5)                            # 打开 spool 超出激活时限：激活被取消
+        await asyncio.sleep(5)                            # Spool opening exceeds activation deadline: activation cancelled.
         return await real_open(self, *args, **kwargs)
 
     monkeypatch.setattr(spool_mod.VisitSpool, "open", slow_open)
@@ -720,7 +720,7 @@ async def test_an_activation_cancelled_while_opening_the_spool_leaves_a_memory_o
         assert status == 200
         await asyncio.wait_for(_finished(hrt), 15)
         state = await spool_mod.VisitSpool(hrt.config_dir, hrt.visit_id).read_state()
-        assert state["memory_enabled"] is False            # 已按记忆开写下的状态由收尾改回记忆关
+        assert state["memory_enabled"] is False            # Cleanup changes already-written memory-enabled state back to disabled.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -733,11 +733,11 @@ async def test_an_activation_cancelled_while_writing_the_state_still_leaves_memo
     real_write = spool_mod.VisitSpool.write_state
 
     async def late_write(self, state):
-        await asyncio.sleep(1.0)                         # 取消落在写 state 期间，写比收尾那次 update 晚落地
+        await asyncio.sleep(1.0)                         # Cancellation during state write; it persists after cleanup's update.
         await real_write(self, state)
 
     async def slow_write(self, state):
-        # 像写盘线程一样：等它的人被取消了，它照样写完
+        # Like disk-writing threads: complete the write despite cancelled waiters.
         await asyncio.shield(asyncio.ensure_future(late_write(self, state)))
 
     monkeypatch.setattr(spool_mod.VisitSpool, "write_state", slow_write)
@@ -754,8 +754,8 @@ async def test_an_activation_cancelled_while_writing_the_state_still_leaves_memo
             if state and state.get("finalized"):
                 break
             await asyncio.sleep(0.1)
-        assert state and state["finalized"]               # 收尾等那次写落定才写 finalized（记忆关的场次也照常收尾）
-        assert state["memory_enabled"] is False           # 照样由收尾改回记忆关
+        assert state and state["finalized"]               # Cleanup awaits that write before finalized, even for memory-disabled visits.
+        assert state["memory_enabled"] is False           # Cleanup still restores memory disabled.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -775,7 +775,7 @@ async def test_activation_that_finishes_after_the_end_publishes_nothing(tmp_path
     try:
         accepting = asyncio.ensure_future(hrt.accept(True))
         await asyncio.wait_for(reached.wait(), 5)
-        hrt.request_finalize("route_end")                 # 等 spool 落盘期间这场被结束
+        hrt.request_finalize("route_end")                 # Visit ended while awaiting spool persistence.
         await settle()
         gate.set()
         assert (await accepting)[0] == 200
@@ -807,7 +807,7 @@ async def test_session_created_while_ending_is_still_closed(tmp_path, monkeypatc
         hrt.request_finalize("route_end")
         await settle()
         await asyncio.sleep(0.3)
-        gate.set()                                        # 收尾已开始之后会话才建好
+        gate.set()                                        # Session constructed only after cleanup starts.
         assert (await accepting)[0] == 200
         await finish(hrt, clock)
         assert len(host.clients) == 1 and host.clients[0].closed
@@ -826,7 +826,7 @@ async def test_a_session_created_after_teardown_is_closed_in_the_background(tmp_
 
     async def stubborn_create(*args, **kwargs):
         reached.set()
-        while not gate.is_set():                              # 吞掉取消：拖过收尾的等待
+        while not gate.is_set():                              # Swallow cancellation, exceeding cleanup wait.
             try:
                 await gate.wait()
             except asyncio.CancelledError:
@@ -838,10 +838,10 @@ async def test_a_session_created_after_teardown_is_closed_in_the_background(tmp_
         accepting = asyncio.ensure_future(hrt.accept(True))
         await asyncio.wait_for(reached.wait(), 5)
         hrt.request_finalize("route_end")
-        await asyncio.wait_for(_finished(hrt), 10)            # teardown 没等到它就注销了
+        await asyncio.wait_for(_finished(hrt), 10)            # teardown unregisters without waiting for it.
         assert not host.clients
-        gate.set()                                            # 这时会话才建好
-        await wait_for(lambda: host.clients and host.clients[0].closed, timeout=5)   # 自己在后台关掉
+        gate.set()                                            # Session only now constructed.
+        await wait_for(lambda: host.clients and host.clients[0].closed, timeout=5)   # Close itself in background.
         accepting.cancel()
     finally:
         gate.set()
@@ -859,7 +859,7 @@ async def test_a_stalled_seal_does_not_keep_the_visit_registered(tmp_path, monke
     order: list[str] = []
 
     def slow_seal(doc):
-        release.wait(10)                                      # 写 .upload.json 时磁盘卡住
+        release.wait(10)                                      # Disk stalls while writing .upload.json
         real_seal(doc)
         order.append("sealed")
 
@@ -874,16 +874,16 @@ async def test_a_stalled_seal_does_not_keep_the_visit_registered(tmp_path, monke
     try:
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
-        assert rtm.get_runtime("Host") is None                # 照样注销、释放占位
-        await asyncio.sleep(0.3)                              # 让后台的收尾链跑起来
-        assert "finalized" not in order                       # 封存没写完：spool 先不标 finalized
-        assert rtm.has_visit_background_tasks("Host")         # 后台收尾跑完之前，角色不能改名 / 删除
-        assert rt.visit_id not in host.uploads                # .upload.json 还没落盘：先不排上传
+        assert rtm.get_runtime("Host") is None                # Still unregister and release reservation.
+        await asyncio.sleep(0.3)                              # Start the background cleanup chain.
+        assert "finalized" not in order                       # Seal incomplete: do not mark spool finalized yet.
+        assert rtm.has_visit_background_tasks("Host")         # Character cannot rename/delete before background cleanup finishes.
+        assert rt.visit_id not in host.uploads                # .upload.json unpersisted: do not schedule upload yet.
         release.set()
         await wait_for(lambda: "finalized" in order, timeout=5)
-        assert order == ["sealed", "finalized"]               # 后台仍按先封存后 finalized 的顺序
+        assert order == ["sealed", "finalized"]               # Background order remains seal before finalized.
         assert rt.journal.sealed
-        await wait_for(lambda: rt.visit_id in host.uploads, timeout=5)   # 落盘后再排上传
+        await wait_for(lambda: rt.visit_id in host.uploads, timeout=5)   # Schedule upload after persistence.
         await wait_for(lambda: not rtm.has_visit_background_tasks("Host"), timeout=5)
     finally:
         release.set()
@@ -907,14 +907,14 @@ async def test_shutdown_during_a_stalled_seal_waits_for_the_same_seal(tmp_path, 
     rt.journal._seal_sync = slow_seal
     try:
         rt.request_finalize("route_end")
-        await wait_for(lambda: seals, timeout=5)              # 退出流程正卡在封存上
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 这时关机
+        await wait_for(lambda: seals, timeout=5)              # Exit flow blocked on sealing.
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # Shut down now.
         state = await rt.spool.read_state() if rt.spool is not None else None
-        assert not (state or {}).get("finalized")             # 封存没落盘：不能先标 finalized
+        assert not (state or {}).get("finalized")             # Seal unpersisted: do not mark finalized first.
         assert not rt._spool_finalized
         release.set()
         await wait_for(lambda: rt.journal.sealed and rt._sealing.done(), timeout=5)
-        assert len(seals) == 1                                # 只封存一次，没有第二次空封存
+        assert len(seals) == 1                                # Seal exactly once, without a second empty seal.
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -929,7 +929,7 @@ async def test_a_spool_opened_after_teardown_is_finalized(tmp_path, monkeypatch)
 
     async def stubborn_open(subjects):
         reached.set()
-        while not gate.is_set():                              # 吞掉取消：拖过收尾的等待
+        while not gate.is_set():                              # Swallow cancellation, exceeding cleanup wait.
             try:
                 await gate.wait()
             except asyncio.CancelledError:
@@ -941,9 +941,9 @@ async def test_a_spool_opened_after_teardown_is_finalized(tmp_path, monkeypatch)
         accepting = asyncio.ensure_future(hrt.accept(True))
         await asyncio.wait_for(reached.wait(), 5)
         hrt.request_finalize("route_end")
-        await asyncio.wait_for(_finished(hrt), 10)            # 封存时 spool 还没挂上
+        await asyncio.wait_for(_finished(hrt), 10)            # No spool attached at sealing.
         assert hrt.spool is None
-        gate.set()                                            # 这时 spool 才打开
+        gate.set()                                            # Spool opens only now.
         await wait_for(lambda: hrt.spool is not None and hrt._spool_finalized, timeout=5)
         state = None
         for _ in range(50):
@@ -951,7 +951,7 @@ async def test_a_spool_opened_after_teardown_is_finalized(tmp_path, monkeypatch)
             if state and state.get("finalized"):
                 break
             await asyncio.sleep(0.1)
-        assert state and state.get("finalized")               # 晚到的这份自己关掉、标 finalized
+        assert state and state.get("finalized")               # Late spool closes/finalizes itself.
         assert not hrt.spool.is_open
         accepting.cancel()
     finally:
@@ -1001,10 +1001,10 @@ async def test_a_header_still_writing_at_the_end_keeps_seal_before_finalized(tmp
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
         await asyncio.sleep(0.2)
-        assert order == []                                    # 上传头还在写：不封存，也不先标 finalized
+        assert order == []                                    # Upload header still writing: neither seal nor mark finalized first.
         assert rtm.has_visit_background_tasks("Host")
-        gate.set()                                            # 上传头落盘
-        await wait_for(lambda: order == ["sealed", "finalized"], timeout=5)   # 先封存、后 finalized
+        gate.set()                                            # Upload header persists.
+        await wait_for(lambda: order == ["sealed", "finalized"], timeout=5)   # Seal before finalized.
         await wait_for(lambda: not rtm.has_visit_background_tasks("Host"), timeout=5)
     finally:
         gate.set()
@@ -1017,13 +1017,13 @@ async def test_shutdown_with_a_header_still_writing_does_not_finalize_the_spool(
     try:
         assert rt.spool is not None
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-        assert not rt._spool_finalized                        # seal() 立即返回 None 不算封存完成
+        assert not rt._spool_finalized                        # seal() immediately returning None is not completed sealing.
         state = await rt.spool.read_state()
-        assert not (state or {}).get("finalized")             # 留给下次启动补录
-        assert rt._sealing is None                            # 关机没调 seal()，不留一个 None 的封存缓存
-        assert rt.journal._open_abandoned                     # 写上传头被取消时不再等卡住的写盘
-        assert rt._journal_opening.done()                     # 关机主动取消了它，不靠事件循环收尾
-        assert not rtm.has_visit_background_tasks("Host")     # 不起不设上限的后台封存链（进程才退得出去）
+        assert not (state or {}).get("finalized")             # Leave for startup recovery.
+        assert rt._sealing is None                            # Shutdown never calls seal(), avoiding a None seal cache.
+        assert rt.journal._open_abandoned                     # Cancelled upload-header writes stop awaiting stuck disk.
+        assert rt._journal_opening.done()                     # Shutdown cancels it explicitly, without relying on event-loop teardown.
+        assert not rtm.has_visit_background_tasks("Host")     # Do not start unbounded background sealing chains, allowing process exit.
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1039,10 +1039,10 @@ async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_p
 
     async def send_frame(payload):
         if payload.get("line_id") in ("slow1", "slow2"):
-            await asyncio.sleep(0.5)                          # 页面背压：每帧写得慢
+            await asyncio.sleep(0.5)                          # Page backpressure: slow writes per frame.
         if payload.get("type") == "visit_state_change" and payload.get("action") == rtm.PHASE_ENDED:
             task = rt._display_task
-            queued_at_end.append((len(rt._display), task is None or task.done()))   # 队列剩几帧、发送任务停了没
+            queued_at_end.append((len(rt._display), task is None or task.done()))   # Remaining queue frames and sender stopped status.
         return await real_send(payload)
 
     host.host.send_frame = send_frame
@@ -1057,8 +1057,8 @@ async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_p
                  and f.get("action") == rtm.PHASE_ENDED]
         assert ended
         late = [f for f in frames[ended[0]:] if f.get("line_id") in ("slow1", "slow2")]
-        assert not late                                       # 送不完的先停掉：「已结束」之后不再冒出整句
-        assert queued_at_end == [(0, True)]                   # 发「已结束」之前显示队列已停下、清空，不并发写
+        assert not late                                       # Stop undeliverable frames first: no whole sentences after ended.
+        assert queued_at_end == [(0, True)]                   # Stop/clear display queues before ended; no concurrent writes.
     finally:
         host.host.send_frame = real_send
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1080,12 +1080,12 @@ async def test_a_seal_landing_after_stop_all_leaves_the_spool_to_recovery(tmp_pa
     rt.journal._seal_sync = slow_seal
     try:
         rt.request_finalize("route_end")
-        await asyncio.wait_for(_finished(rt), 10)             # 封存转到后台
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 这时进程开始关机
+        await asyncio.wait_for(_finished(rt), 10)             # Sealing moved to background.
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # Process starts shutdown now.
         release.set()
         await wait_for(lambda: rt.journal.sealed and rt._sealing.done(), timeout=5)
         await wait_for(lambda: not rtm.has_visit_background_tasks("Host"), timeout=5)
-        assert not rt._spool_finalized                        # 关机之后落盘：spool / 记忆提交留给启动补录
+        assert not rt._spool_finalized                        # Persistence after shutdown: startup recovers spool/memory commits.
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1103,8 +1103,8 @@ async def test_a_late_seal_that_fails_still_schedules_the_upload(tmp_path, monke
             raise OSError("disk full")
 
         rt.journal._seal_sync = broken_seal
-        gate.set()                                            # 上传头落盘，封存却写不出来
-        await wait_for(lambda: rt.visit_id in host.uploads, timeout=5)   # 照样排上传，重试从流水重封
+        gate.set()                                            # Upload header persisted but sealing fails.
+        await wait_for(lambda: rt.visit_id in host.uploads, timeout=5)   # Still schedule upload; retries reseal from the stream.
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1116,11 +1116,11 @@ async def test_stop_all_abandons_a_header_left_to_a_deferred_seal(tmp_path, monk
     try:
         opening = rt._journal_opening
         rt.request_finalize("route_end")
-        await asyncio.wait_for(_finished(rt), 10)             # 正常收尾等上传头超时：运行时已注销
-        assert rtm.has_visit_background_tasks("Host") and not opening.done()  # 只剩后台封存链在等它
+        await asyncio.wait_for(_finished(rt), 10)             # Normal cleanup times out awaiting header; runtime already unregistered.
+        assert rtm.has_visit_background_tasks("Host") and not opening.done()  # Only background sealing chain awaits it.
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
         await wait_for(lambda: opening.done(), timeout=2)
-        assert opening.cancelled() and rt.journal._open_abandoned  # 后台链被取消时一并放弃并取消写上传头
+        assert opening.cancelled() and rt.journal._open_abandoned  # Cancelling background chains abandons/cancels header writes too.
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1134,7 +1134,7 @@ async def test_stop_all_abandons_the_header_even_before_the_deferred_seal_starts
     stuck = asyncio.Event()
 
     async def stuck_resolve(uid):
-        await stuck.wait()                                    # 磁盘卡住：读角色名也卡着，后台链还没进 _seal_after_header
+        await stuck.wait()                                    # Stuck disk also blocks character-name lookup; background chain has not entered _seal_after_header.
         return "Host"
 
     try:
@@ -1143,8 +1143,8 @@ async def test_stop_all_abandons_the_header_even_before_the_deferred_seal_starts
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
         assert not opening.done()
-        await wait_for(lambda: bool(rtm._resolving_names))    # 前提：后台链确实还停在读角色名、没进 _seal_after_header
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)  # 取消落在读角色名那一步
+        await wait_for(lambda: bool(rtm._resolving_names))    # Prove chain still reads character names, not _seal_after_header.
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)  # Cancellation during character-name read.
         await wait_for(lambda: opening.done(), timeout=2)
         assert opening.cancelled() and rt.journal._open_abandoned
     finally:
@@ -1156,15 +1156,15 @@ async def test_stop_all_abandons_the_header_even_before_the_deferred_seal_starts
 async def test_the_header_wait_shares_the_seal_deadline(tmp_path, monkeypatch):
     host, guest, wire, clock, gate = await _bring_up_with_a_pending_header(tmp_path, monkeypatch)
     rt = host.rt
-    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 5.0)      # 写上传头自己的上限远大于封存期限
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 5.0)      # Header write's own limit far exceeds sealing deadline.
     monkeypatch.setattr(rtm, "_SEAL_MAX_S", 1.0)
     stuck = asyncio.get_running_loop().create_future()
-    rt.family_records.add(stuck)                              # 一句亲人发言一直落不了盘：耗光封存期限
+    rt.family_records.add(stuck)                              # One relative utterance never persists, exhausting the sealing deadline.
     try:
         loop = asyncio.get_running_loop()
         started = loop.time()
         assert await asyncio.wait_for(rt.seal_and_finalize("route_end"), 10) is False
-        assert loop.time() - started < 1.6                    # 等上传头不再另起一段：共用同一个期限
+        assert loop.time() - started < 1.6                    # No separate header-wait budget; share the same deadline.
     finally:
         stuck.cancel()
         rt.family_records.discard(stuck)
@@ -1182,18 +1182,18 @@ async def test_a_seal_outliving_the_exit_flow_is_handed_to_stop_all(tmp_path, mo
     real_seal = rt.journal._seal_sync
 
     def slow_seal(doc):
-        release.wait(10)                                      # 封存写盘卡住
+        release.wait(10)                                      # Stuck seal write.
         real_seal(doc)
 
     rt.journal._seal_sync = slow_seal
     try:
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 15)
-        write = rt.journal.seal_write                         # 真正写盘的那个任务（外层只是 shield 着等它）
+        write = rt.journal.seal_write                         # Actual disk-writing task, awaited only through shield outside.
         assert write is not None and not write.done()
-        assert write in rtm._awaited_writes and write not in rtm._detached  # 登记为只等不取消
+        assert write in rtm._awaited_writes and write not in rtm._detached  # Registered as wait-only, never cancel.
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
-        assert not write.cancelled()                          # 关机不取消它：排着的封存放开后照样写成
+        assert not write.cancelled()                          # Shutdown does not cancel it; queued sealing persists when released.
         release.set()
         await wait_for(lambda: write.done() and rt.journal.sealed, timeout=5)
     finally:
@@ -1210,16 +1210,16 @@ async def test_stop_all_waits_for_a_seal_write_started_during_shutdown(tmp_path,
     real_seal = rt.journal._seal_sync
 
     def slow_seal(doc):
-        threading.Timer(0.7, release.set).start()         # 写盘拖过这一场自己的关机等待
+        threading.Timer(0.7, release.set).start()         # Disk write exceeds this visit's shutdown wait.
         release.wait(10)
         real_seal(doc)
 
     rt.journal._seal_sync = slow_seal
     try:
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)   # 这一场的封存在关机途中才起
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)   # This seal starts only during shutdown.
         write = rt.journal.seal_write
-        assert write is not None and write.done() and not write.cancelled()   # stop_all 最后那遍等到它写完
-        assert rt.journal.sealed_path.exists()            # .upload.json 真的落盘了
+        assert write is not None and write.done() and not write.cancelled()   # stop_all's final wait catches its completion.
+        assert rt.journal.sealed_path.exists()            # .upload.json really persisted.
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1234,15 +1234,15 @@ async def test_a_seal_wrapper_left_by_shutdown_is_retired_by_stop_all(tmp_path, 
     real_seal = rt.journal._seal_sync
 
     def stuck_seal(doc):
-        release.wait(10)                                  # 写盘卡过整个关机预算
+        release.wait(10)                                  # Disk write exceeds the entire shutdown budget.
         real_seal(doc)
 
     rt.journal._seal_sync = stuck_seal
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
         write = rt.journal.seal_write
-        assert write is not None and not write.done()     # 写盘只等不取消：还在线程里
-        assert rt._sealing is not None and rt._sealing.done()   # 外层（只是 shield 着等）被 stop_all 收掉，没留到事件循环销毁
+        assert write is not None and not write.done()     # Wait without cancelling disk writes still in threads.
+        assert rt._sealing is not None and rt._sealing.done()   # stop_all collects outer shield-waiters, not leaving them until loop destruction.
         release.set()
         await wait_for(lambda: write.done() and rt.journal.sealed_path.exists(), timeout=5)
     finally:
@@ -1256,7 +1256,7 @@ async def test_stop_all_lets_an_outbox_cleanup_started_during_shutdown_finish(tm
     real_flush = rt.outbox.flush
 
     async def slow_flush():
-        await asyncio.sleep(0.7)                          # 拖过这一场自己的关机等待，但在总预算内
+        await asyncio.sleep(0.7)                          # Exceeds this visit's own wait, still within total budget.
         await real_flush()
 
     rt.outbox.flush = slow_flush
@@ -1264,7 +1264,7 @@ async def test_stop_all_lets_an_outbox_cleanup_started_during_shutdown_finish(tm
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
         cleanup = rt.outbox.close_task
         assert cleanup is not None and cleanup.done()
-        assert not cleanup.cancelled()                    # 先限时等它删完文件，没有一上来就取消
+        assert not cleanup.cancelled()                    # First await file deletion with a deadline, without immediate cancellation.
         assert not rt.outbox.path.exists()
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1286,9 +1286,9 @@ async def test_a_late_seal_is_the_one_seal_of_the_visit(tmp_path, monkeypatch):
             real_seal(doc)
 
         rt.journal._seal_sync = slow_seal
-        gate.set()                                            # 上传头落盘：后台链开始封存，写盘卡住
+        gate.set()                                            # Header persisted: background sealing begins, disk write stuck.
         await wait_for(lambda: rt._sealing is not None, timeout=5)
-        assert not rt._seal_settled()                         # 关机 / teardown 看到的是同一次还没落盘的封存
+        assert not rt._seal_settled()                         # Shutdown/teardown see the same pending seal.
         release.set()
         await wait_for(lambda: rt._sealing.done() and rt.journal.sealed, timeout=5)
     finally:
@@ -1329,12 +1329,12 @@ async def test_a_late_spool_waits_for_a_deferred_seal(tmp_path, monkeypatch):
         accepting = asyncio.ensure_future(hrt.accept(True))
         await asyncio.wait_for(reached.wait(), 5)
         hrt.request_finalize("route_end")
-        await asyncio.wait_for(_finished(hrt), 10)            # 上传头还在写：封存推迟到后台
-        spool_gate.set()                                      # spool 这时才挂上
+        await asyncio.wait_for(_finished(hrt), 10)            # Header writing: defer sealing to background.
+        spool_gate.set()                                      # Spool attaches only now.
         await wait_for(lambda: hrt.spool is not None, timeout=5)
         await asyncio.sleep(0.2)
-        assert not hrt._spool_finalized                       # 封存还没落盘：不先标 finalized
-        header_gate.set()                                     # 上传头落盘 → 封存 → finalize
+        assert not hrt._spool_finalized                       # Seal unpersisted: do not mark finalized first.
+        header_gate.set()                                     # Header persists ->seal ->finalize.
         await wait_for(lambda: hrt._spool_finalized, timeout=5)
         assert hrt.journal.sealed
         accepting.cancel()
@@ -1353,7 +1353,7 @@ async def test_a_stalled_spool_finalize_does_not_keep_the_visit_registered(tmp_p
 
     async def slow_update(**changes):
         if "finalized" in changes:
-            await gate.wait()                                 # 写 finalized 时磁盘卡住
+            await gate.wait()                                 # Disk stuck during finalized write.
         return await real_update(**changes)
 
     rt.spool.update_state = slow_update
@@ -1369,12 +1369,12 @@ async def test_a_stalled_spool_finalize_does_not_keep_the_visit_registered(tmp_p
         before = len(host.commits)
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
-        assert rtm.get_runtime("Host") is None                # 照样注销、释放占位
-        assert rtm.has_visit_background_tasks("Host")         # 记忆提交还在后台等它
-        assert finalizers and finalizers[0] in rtm._detached  # 底下卡着的那个写盘任务本身也登记了，关机收得到
+        assert rtm.get_runtime("Host") is None                # Still unregister and release reservation.
+        assert rtm.has_visit_background_tasks("Host")         # Memory commit still awaits it in background.
+        assert finalizers and finalizers[0] in rtm._detached  # Underlying stuck disk task also registered, visible to shutdown.
         assert len(host.commits) == before
         gate.set()
-        await wait_for(lambda: len(host.commits) > before, timeout=5)   # spool 写完后再起记忆提交
+        await wait_for(lambda: len(host.commits) > before, timeout=5)   # Start memory commit after spool writes.
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1388,7 +1388,7 @@ async def test_a_late_line_recorded_after_ended_was_sent_is_not_shown(tmp_path, 
         lp = rt.room.max_lp_seen + 1
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:120", "i": 0, "lp": lp, "txt": "半截", "sp": "c", "ad": "hc",
-            "rt": "", "wu": False}, nbytes=200)                # 页面上开出半截气泡
+            "rt": "", "wu": False}, nbytes=200)                # Partial bubble opens on page.
         stuck = asyncio.Event()
 
         async def slow_close(*args, **kwargs):
@@ -1400,7 +1400,7 @@ async def test_a_late_line_recorded_after_ended_was_sent_is_not_shown(tmp_path, 
         real_record = rt.record_line
 
         async def slow_record(*args, **kwargs):
-            await gate.wait()                                 # 落盘慢：这期间「已结束」发了出去
+            await gate.wait()                                 # Slow persistence while ended sends.
             return await real_record(*args, **kwargs)
 
         rt.record_line = slow_record
@@ -1415,7 +1415,7 @@ async def test_a_late_line_recorded_after_ended_was_sent_is_not_shown(tmp_path, 
         await asyncio.wait_for(receiving, 5)
         await settle()
         assert not [f for f in host.host.frames[before:] if f.get("type") == "visit_line"
-                    and f.get("line_id") == "g:120"]          # 「已结束」之后不再往页面补
+                    and f.get("line_id") == "g:120"]          # No later page completion after ended.
         stuck.set()
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1454,10 +1454,10 @@ async def test_a_spool_attached_after_the_deferred_files_finished_is_finalized(t
         await asyncio.wait_for(reached.wait(), 5)
         hrt.request_finalize("route_end")
         await asyncio.wait_for(_finished(hrt), 10)
-        header_gate.set()                                     # 推迟的封存链先跑完（这时还没有 spool）
+        header_gate.set()                                     # Deferred seal chain finishes first, without a spool yet.
         await wait_for(lambda: hrt._deferred_files_done, timeout=5)
         assert not hrt._spool_finalized
-        spool_gate.set()                                      # spool 之后才挂上：没人会再收它，自己收尾
+        spool_gate.set()                                      # Spool attaches later with no collector; finalize itself.
         await wait_for(lambda: hrt._spool_finalized, timeout=5)
         accepting.cancel()
     finally:
@@ -1474,7 +1474,7 @@ async def test_nothing_reaches_the_page_once_ended_was_decided(tmp_path, monkeyp
         rt._ended_published = True
         rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "after-ended"})
         await settle()
-        assert not rt._display                                # 所有入口统一挡住
+        assert not rt._display                                # Gate every entry point consistently.
         assert not [f for f in host.host.frames[before:] if f.get("line_id") == "after-ended"]
     finally:
         rt._ended_published = False
@@ -1507,7 +1507,7 @@ async def test_shutdown_stays_within_its_total_budget(tmp_path, monkeypatch):
         await stuck.wait()
 
     async def stubborn():
-        while not stuck.is_set():                             # 不理取消的后台任务
+        while not stuck.is_set():                             # Background task ignores cancellation.
             try:
                 await stuck.wait()
             except asyncio.CancelledError:
@@ -1521,8 +1521,8 @@ async def test_shutdown_stays_within_its_total_budget(tmp_path, monkeypatch):
     rtm._keep_detached(lingering)
     try:
         started = asyncio.get_running_loop().time()
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 每一步都卡住
-        # 总时长受总预算约束，不是各步上限相加；最后收后台任务那遍也截到剩余预算
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # Every step blocks.
+        # Total duration uses one budget, not summed step caps; final background cleanup also uses remaining budget.
         assert asyncio.get_running_loop().time() - started < 0.95
     finally:
         release.set()
@@ -1540,7 +1540,7 @@ async def test_non_finite_transport_stats_are_not_kept(tmp_path, monkeypatch):
         rt.on_transport_stats({"rtt_ms": float("inf"), "rx_fps": float("nan"), "tx_fps": 30, "rx_kbps": 500,
                                "loss_pct": 0.0, "rx_w": 640, "rx_h": 480})
         assert "rtt_ms" not in rt.stats and "rx_fps" not in rt.stats and rt.stats["tx_fps"] == 30
-        json.dumps(rt.snapshot(), allow_nan=False)            # /state 照样能序列化
+        json.dumps(rt.snapshot(), allow_nan=False)            # /state still serializes.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -1551,13 +1551,13 @@ async def test_shutdown_gives_the_room_cancel_its_floor_even_past_the_budget(tmp
     done = []
 
     async def slow_cancel(visit_id, **kwargs):
-        await asyncio.sleep(0.5)                              # 撤销房间的请求比总预算慢
+        await asyncio.sleep(0.5)                              # Room cancellation takes longer than total budget.
         done.append(visit_id)
         return True
 
     rt.deps.cancel_room = slow_cancel
     await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-    assert done == [rt.visit_id]                              # 保底等满：邀请码与配额占用不留到过期
+    assert done == [rt.visit_id]                              # Wait at least the minimum; do not retain invite/quota until expiry.
 
 
 async def test_stop_all_waits_for_a_room_cancel_left_by_a_finished_visit(tmp_path, monkeypatch, clocks):
@@ -1565,16 +1565,16 @@ async def test_stop_all_waits_for_a_room_cancel_left_by_a_finished_visit(tmp_pat
     done = []
 
     async def slow_cancel(visit_id, **kwargs):
-        await asyncio.sleep(0.3)                              # 撤销房间的请求还在飞
+        await asyncio.sleep(0.3)                              # Room cancellation still in flight.
         done.append(visit_id)
         return True
 
     rt.deps.cancel_room = slow_cancel
-    rt.request_finalize("route_end")                          # 没配上对的 host 正常结束
+    rt.request_finalize("route_end")                          # No matching host; normal ending.
     await _finished(rt)
     assert rt.visit_id not in [r.visit_id for r in rtm._runtimes.values()] and done == []
     await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-    assert done == [rt.visit_id]                              # 运行时已拆掉，关机照样等它发完
+    assert done == [rt.visit_id]                              # Runtime dismantled; shutdown still awaits cancellation delivery.
 
 
 async def test_stop_all_waits_for_orphan_room_cancels_alongside_the_shutdowns(tmp_path, monkeypatch, clocks):
@@ -1584,7 +1584,7 @@ async def test_stop_all_waits_for_orphan_room_cancels_alongside_the_shutdowns(tm
     order: list[str] = []
 
     async def slow_shutdown():
-        await asyncio.sleep(1.0)                              # 这一场关机要一会儿（远长于孤儿的等待上限）
+        await asyncio.sleep(1.0)                              # This visit shuts down slowly, much longer than orphan wait caps.
         await real_shutdown()
         order.append("shutdown_done")
 
@@ -1596,11 +1596,11 @@ async def test_stop_all_waits_for_orphan_room_cancels_alongside_the_shutdowns(tm
             raise
 
     rt.shutdown = slow_shutdown
-    orphan = asyncio.ensure_future(never_answers())          # 已拆掉的场次留下、一直不回的撤销房间请求
+    orphan = asyncio.ensure_future(never_answers())          # Dismantled visit left an unresponsive room-cancellation request.
     rtm._room_cancels.add(orphan)
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
-        # 与关机并行等：孤儿到点就取消，不等那一场关机做完之后再多等一段（只断言先后，不看绝对时长）
+        # Await alongside shutdown; cancel orphans at deadline rather than adding a wait after visit shutdown (order only, not absolute timings).
         assert order == ["orphan_cancelled", "shutdown_done"]
     finally:
         orphan.cancel()
@@ -1608,27 +1608,27 @@ async def test_stop_all_waits_for_orphan_room_cancels_alongside_the_shutdowns(tm
 
 
 async def test_stop_all_leaves_a_registered_visits_own_room_cancel_to_its_shutdown(tmp_path, monkeypatch, clocks):
-    # 孤儿路径会在 0.5 s 掐断它（能区分新旧行为）；shutdown 自己的等待最早 0.4 + 0.5 = 0.9 s 才到点，余量 0.3 s
+    # Orphans stop at 0.5s, distinguishing behavior; shutdown waits at least 0.4+0.5=0.9s, with 0.3s margin.
     monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 0.5)
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
     done = []
 
     async def slow_cancel(visit_id, **kwargs):
-        await asyncio.sleep(0.6)                              # 慢但正常的撤销房间
+        await asyncio.sleep(0.6)                              # Slow but normal room cancellation.
         done.append(visit_id)
         return True
 
     rt.deps.cancel_room = slow_cancel
-    rt._cancel_room_once()                                    # 还登记着的这一场自己已发出撤销
+    rt._cancel_room_once()                                    # Still-registered visit already sent cancellation.
     real_shutdown = rt.shutdown
 
     async def slow_shutdown():
-        await asyncio.sleep(0.4)                              # 封存、spool 等前面的步骤用掉一段
-        await real_shutdown()                                 # 走到撤销那步再按自己的保底等
+        await asyncio.sleep(0.4)                              # Earlier seal/spool steps consume time.
+        await real_shutdown()                                 # At cancellation step, await its own guaranteed minimum.
 
     rt.shutdown = slow_shutdown
     await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
-    assert done == [rt.visit_id]                              # 没被当成孤儿提前掐断
+    assert done == [rt.visit_id]                              # Not prematurely cut off as an orphan.
 
 
 async def test_stop_all_cancels_a_room_cancel_whose_shutdown_failed_early(tmp_path, monkeypatch, clocks, caplog):
@@ -1638,19 +1638,19 @@ async def test_stop_all_cancels_a_room_cancel_whose_shutdown_failed_early(tmp_pa
         await asyncio.sleep(30)
 
     rt.deps.cancel_room = never_answers
-    rt._cancel_room_once()                                    # 这一场自己发出的撤销
+    rt._cancel_room_once()                                    # This visit's own cancellation.
     pending = rt._room_cancel_task
 
     async def broken_shutdown():
-        raise RuntimeError("shutdown broke early")            # 没走到它自己的撤销等待
+        raise RuntimeError("shutdown broke early")            # Never reached its own cancellation wait.
 
     rt.shutdown = broken_shutdown
     try:
         with caplog.at_level(logging.WARNING):
             await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-        assert pending.cancelled()                            # 没人等也没人取消的那份由 stop_all 收掉（取消后也等过）
+        assert pending.cancelled()                            # stop_all collects unawaited/uncancelled requests, also waiting after cancellation.
         assert any("shutdown failed" in r.getMessage() and rt.visit_id[:6] in r.getMessage()
-                   for r in caplog.records)                   # 半路出错按场次留日志
+                   for r in caplog.records)                   # Log mid-flow errors by visit.
     finally:
         pending.cancel()
 
@@ -1677,11 +1677,11 @@ async def test_a_late_spool_after_stop_all_is_left_to_recovery(tmp_path, monkeyp
         await asyncio.wait_for(reached.wait(), 5)
         hrt.request_finalize("route_end")
         await asyncio.wait_for(_finished(hrt), 10)
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 已注销的这场不会被 shutdown()，但进程在关机
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # Unregistered visit skips shutdown(), but process is shutting down.
         gate.set()
         await wait_for(lambda: hrt.spool is not None, timeout=5)
         await asyncio.sleep(0.3)
-        assert not hrt._spool_finalized                       # 留给启动补录，不在进程退出途中写一半
+        assert not hrt._spool_finalized                       # Leave for startup recovery, not partial writes during process exit.
         accepting.cancel()
     finally:
         gate.set()
@@ -1698,11 +1698,11 @@ async def test_a_failing_deferred_chain_still_hands_late_spools_over(tmp_path, m
             raise RuntimeError("boom")
 
         rt._start_seal = broken_start_seal
-        await rt._seal_late_journal("route_end", rt.wall(), header_ok=True)   # 封存出错不漏出后台任务
-        assert rt._deferred_files_done                        # 链中途出错也置位：之后挂上的 spool 有人收
-        assert rt._spool_finalized                            # 已挂上的这份照常收
+        await rt._seal_late_journal("route_end", rt.wall(), header_ok=True)   # Sealing errors leak no background tasks.
+        assert rt._deferred_files_done                        # Set flags even on mid-chain errors so late-attached spools have collectors.
+        assert rt._spool_finalized                            # Already attached spool collected normally.
     finally:
-        rt.__dict__.pop("_start_seal", None)                  # 还原：teardown 的收尾走真的封存
+        rt.__dict__.pop("_start_seal", None)                  # Restore real sealing in teardown cleanup.
         await teardown(host, guest, wire=wire, clock=clock)
 
 
@@ -1714,9 +1714,9 @@ async def test_the_held_turn_wrap_up_is_released_when_the_visit_ends(tmp_path, m
         await asyncio.wait_for(_finished(rt), 10)
         events = host.host.events
         assert "release_turn_wrap_up" in events
-        assert events.index("release_turn_wrap_up") > events.index("release_takeover")   # 交还普通对话之后才结清
+        assert events.index("release_turn_wrap_up") > events.index("release_takeover")   # Settle only after returning ordinary conversation.
         outputs = [i for i, e in enumerate(events) if e.startswith("output:visit-")]
-        assert outputs and events.index("release_turn_wrap_up") > max(outputs)   # 仪式句、简述都用完管理器之后
+        assert outputs and events.index("release_turn_wrap_up") > max(outputs)   # After ritual line and overview finish using managers.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -1727,13 +1727,13 @@ async def test_a_busy_admission_releases_the_held_wrap_up(tmp_path, monkeypatch,
     side = make_side(tmp_path, "host", clock=clock, wall=wall)
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
-    side.host.interrupt_ok = False                        # 主对话打断不下来：按 busy 拒绝
+    side.host.interrupt_ok = False                        # Cannot interrupt main chat: reject as busy.
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
         assert await rt.issue_credentials() is None
         await asyncio.wait_for(_finished(rt), 10)
         assert rt.finalize_reason == "busy"
-        assert "release_turn_wrap_up" in side.host.events     # 准入失败的路径同样放开、结清
+        assert "release_turn_wrap_up" in side.host.events     # Admission failures also release and settle.
     finally:
         await teardown(side, clock=clock)
 
@@ -1742,7 +1742,7 @@ async def test_shutdown_keeps_the_turn_wrap_up_held(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-        assert "release_turn_wrap_up" not in host.host.events   # 关机不放开：关机途中不会因会话空闲去续期 / 换代
+        assert "release_turn_wrap_up" not in host.host.events   # Do not release at shutdown; idle sessions must not renew/replace during shutdown.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -1754,41 +1754,41 @@ async def test_lines_recorded_before_the_first_join_reach_the_journal(tmp_path, 
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
     await through_gate(rt)
-    assert rt._journal_opening is None                        # 还没入房：上传头还没开始写
-    # 对端 hello 先到、已被接受并激活：开场那句在入房报告之前就记了
+    assert rt._journal_opening is None                        # Before room entry, upload-header writing has not begun.
+    # Peer hello arrived/accepted/activated first; opening line recorded before room report.
     await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
-    assert [r["text"] for r in rt._journal_backlog if r.get("kind") == "line"] == ["开场"]  # 先攒着，不丢
+    assert [r["text"] for r in rt._journal_backlog if r.get("kind") == "line"] == ["开场"]  # Buffer without dropping.
     await rt.on_transport_state({"state": "joined", "peer_present": False})
-    await wait_for(lambda: any(r.get("text") == "开场" for r in rt.journal._records))  # 上传头写好后补进流水
+    await wait_for(lambda: any(r.get("text") == "开场" for r in rt.journal._records))  # Append to stream once header writes.
     rt.request_finalize("route_end")
     await _finished(rt)
 
 
 async def test_an_overrun_outbox_cleanup_is_handed_to_stop_all(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
-    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 5.0)  # 实时余量放宽（线程池 flush + 删文件，另一场也在关）
+    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 5.0)  # Allow realtime margin for thread-pool flush/file deletion while another visit closes.
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     stuck = asyncio.Event()
     real_impl = rt.outbox._close_impl
 
     async def slow_impl(delete):
-        await stuck.wait()                                    # outbox 的清理卡在写盘上
+        await stuck.wait()                                    # Outbox cleanup stuck on disk write.
         await real_impl(delete)
 
     rt.outbox._close_impl = slow_impl
-    rt.outbox.leave_done = lambda now: False                  # 关闭通道到点也没完，被收掉
+    rt.outbox.leave_done = lambda now: False                  # Channel close misses deadline and is collected.
     try:
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 15)
         cleanup = rt.outbox.close_task
         assert cleanup is not None and not cleanup.done()
-        assert cleanup in rtm._outbox_cleanups                # 运行时已注销：清理交给模块级登记，关机收得到
+        assert cleanup in rtm._outbox_cleanups                # Unregistered runtime: module-level registration makes cleanup visible to shutdown.
         assert rt.outbox.path.exists()
-        asyncio.get_running_loop().call_later(0.2, stuck.set)  # 写盘稍后恢复
+        asyncio.get_running_loop().call_later(0.2, stuck.set)  # Disk recovers later.
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
-        assert cleanup.done() and not cleanup.cancelled()     # 关机先等它做完，不在 flush 处掐断
-        assert not rt.outbox.path.exists()                    # 带正文的文件当场删掉
+        assert cleanup.done() and not cleanup.cancelled()     # Shutdown first awaits completion, without interrupting flush.
+        assert not rt.outbox.path.exists()                    # Remove body-containing files immediately.
     finally:
         stuck.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1801,7 +1801,7 @@ async def test_a_failed_grant_renewal_backs_off(tmp_path, monkeypatch, clocks):
 
     async def failing():
         calls.append(1)
-        raise cr.VisitServersError("upstream_down")           # Servers 暂时出错
+        raise cr.VisitServersError("upstream_down")           # Temporary Servers error.
 
     rt.grant.refresh_due = lambda **kw: True
     rt.grant.ensure_fresh = failing
@@ -1811,11 +1811,11 @@ async def test_a_failed_grant_renewal_backs_off(tmp_path, monkeypatch, clocks):
     clock.advance(2)
     await rt.tick()
     await settle()
-    assert len(calls) == 1                                    # 退避期内下一个 tick 不重发
+    assert len(calls) == 1                                    # No resend on next tick within backoff.
     clock.advance(4)
     await rt.tick()
     await settle()
-    assert len(calls) == 2                                    # 退避期过了再试
+    assert len(calls) == 2                                    # Retry after backoff.
     rt.request_finalize("route_end")
     await _finished(rt)
 
@@ -1826,7 +1826,7 @@ async def test_a_grant_renewal_finishing_after_the_end_sends_nothing(tmp_path, m
     sent: list[int] = []
 
     async def slow_fresh():
-        await release.wait()                                  # 等 Servers 期间这场进了收尾
+        await release.wait()                                  # Visit enters cleanup while awaiting Servers.
         return True
 
     rt.grant.refresh_due = lambda **kw: True
@@ -1843,7 +1843,7 @@ async def test_a_grant_renewal_finishing_after_the_end_sends_nothing(tmp_path, m
     rt.request_finalize("route_end")
     release.set()
     await _finished(rt)
-    assert sent == []                                         # 不再把刷新后的凭证写给页面
+    assert sent == []                                         # Stop writing refreshed credentials to pages.
 
 
 async def test_a_grant_renewal_failing_for_any_reason_backs_off(tmp_path, monkeypatch, clocks):
@@ -1853,7 +1853,7 @@ async def test_a_grant_renewal_failing_for_any_reason_backs_off(tmp_path, monkey
 
     async def broken():
         calls.append(1)
-        raise RuntimeError("socket reset")                    # 不是 VisitServersError 的失败
+        raise RuntimeError("socket reset")                    # Failure other than VisitServersError.
 
     rt.grant.refresh_due = lambda **kw: True
     rt.grant.ensure_fresh = broken
@@ -1862,7 +1862,7 @@ async def test_a_grant_renewal_failing_for_any_reason_backs_off(tmp_path, monkey
     clock.advance(2)
     await rt.tick()
     await settle()
-    assert len(calls) == 1                                    # 同样退避
+    assert len(calls) == 1                                    # Apply backoff too.
     rt.request_finalize("route_end")
     await _finished(rt)
 
@@ -1874,14 +1874,14 @@ async def test_the_journal_never_starts_after_its_earliest_buffered_line(tmp_pat
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
     await through_gate(rt)
-    rt._on_usage({"llm_input_tokens": 5})                     # 入房前的用量记录（更早），不拉开始时间
+    rt._on_usage({"llm_input_tokens": 5})                     # Earlier pre-entry usage does not pull start time backward.
     wall.advance(10)
     await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
     early = [r for r in rt._journal_backlog if r.get("kind") == "line"][0]["ts"]
-    wall.advance(30)                                          # 30 s 后才报入房
+    wall.advance(30)                                          # Room-entry report only after 30s.
     await rt.on_transport_state({"state": "joined", "peer_present": False})
     await wait_for(lambda: rt.journal.is_open)
-    assert rt.journal._started_at == early                    # 取最早那句台词：不晚于它，也不被更早的用量拉前
+    assert rt.journal._started_at == early                    # Use earliest dialogue, never later than it or pulled earlier by usage.
     rt.request_finalize("route_end")
     await _finished(rt)
 
@@ -1894,11 +1894,11 @@ async def test_lines_buffered_before_a_join_that_never_comes_are_still_sealed(tm
     Wire().attach(rt, None, HOST_VID)
     await through_gate(rt)
     await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
-    assert rt._journal_opening is None and rt._journal_backlog  # 只在积压里
-    rt.request_finalize("relay_lost")                         # 一直没等来入房报告就收尾
+    assert rt._journal_opening is None and rt._journal_backlog  # Only in backlog.
+    rt.request_finalize("relay_lost")                         # Cleanup without ever receiving room-entry report.
     await _finished(rt)
     assert rt.journal.sealed
-    assert [r["text"] for r in rt.journal.lines()] == ["开场"]  # 收尾时补写上传头，攒下的那句照样封存
+    assert [r["text"] for r in rt.journal.lines()] == ["开场"]  # Backfill header during cleanup and seal buffered dialogue normally.
 
 
 async def test_a_cancelled_ready_handler_still_finishes_the_guest_activation(tmp_path, monkeypatch):
@@ -1914,14 +1914,14 @@ async def test_a_cancelled_ready_handler_still_finishes_the_guest_activation(tmp
 
     grt._open_spool = slow_open
     try:
-        receiving = asyncio.ensure_future(grt.on_recv(        # 收到主人的 ready
+        receiving = asyncio.ensure_future(grt.on_recv(        # Receive owner's ready.
             from_vid=HOST_VID, cmd=1, payload={"t": "ready", "v": 1, "seq": grt.sequencer.contiguous_seq + 1},
             nbytes=50))
         await asyncio.wait_for(reached.wait(), 5)
-        receiving.cancel()                                    # 收包处理被取消（连接断开等）
+        receiving.cancel()                                    # Receive handler cancelled (connection lost, etc.).
         await asyncio.gather(receiving, return_exceptions=True)
         gate.set()
-        await wait_for(lambda: grt.ready_exchanged, timeout=5)  # 激活照样走完，这场照常开始
+        await wait_for(lambda: grt.ready_exchanged, timeout=5)  # Activation still finishes and starts the visit.
         assert not grt.finalizing
     finally:
         gate.set()
@@ -1952,27 +1952,27 @@ async def test_a_line_arriving_during_a_background_activation_waits_for_it(tmp_p
         receiving = asyncio.ensure_future(grt.on_recv(
             from_vid=HOST_VID, cmd=1, payload={"t": "ready", "v": 1, "seq": seq}, nbytes=50))
         await asyncio.wait_for(reached.wait(), 5)
-        receiving.cancel()                                    # 收下 ready 的那次处理被取消，ready 流程在后台继续
+        receiving.cancel()                                    # Handler accepting ready cancelled; ready flow continues in background.
         await asyncio.gather(receiving, return_exceptions=True)
         dropped = grt.gate_dropped
         media_gate = asyncio.Event()
         real_media = grt.send_media
 
         async def slow_media():
-            await media_gate.wait()                           # ready 流程激活之后的那段（推媒体、started、开场）
+            await media_gate.wait()                           # Post-activation ready flow: media push, started, opening.
             return await real_media()
 
         grt.send_media = slow_media
-        dispatching = asyncio.ensure_future(grt.on_recv(      # 重连后新连接送来主人的开场台词
+        dispatching = asyncio.ensure_future(grt.on_recv(      # Reconnected socket receives owner's opening dialogue.
             from_vid=HOST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": "h:1", "lp": 1, "seq": seq + 1, "sp": "c", "ad": "gc", "rt": "",
                 "wu": False, "final": True, "txt": "你好", "truncated": False, "i_done": 0}, nbytes=200))
         await settle()
-        assert not dispatching.done()                         # 等 ready 流程走完，不当早到的丢掉
+        assert not dispatching.done()                         # Await ready completion rather than discarding as early.
         gate.set()
         await wait_for(lambda: grt.activated)
         await settle()
-        assert not dispatching.done()                         # 激活完了也还等：ready 流程后半段没走完
+        assert not dispatching.done()                         # Keep waiting after activation; ready's later half remains incomplete.
         media_gate.set()
         await asyncio.wait_for(dispatching, 5)
         assert handled and grt.gate_dropped == dropped
@@ -1995,10 +1995,10 @@ async def test_the_host_does_not_hold_its_receive_loop_for_an_activation(tmp_pat
     hrt._open_spool = slow_open
     try:
         accepting = asyncio.ensure_future(hrt.accept(True))
-        await asyncio.wait_for(reached.wait(), 5)             # 主人接受、激活还在跑
+        await asyncio.wait_for(reached.wait(), 5)             # Owner accepts while activation runs.
         dropped = hrt.gate_dropped
-        await asyncio.wait_for(hrt._dispatch({"t": "text"}, GUEST_VID, clock()), 1)  # 不卡住收包循环
-        assert hrt.gate_dropped == dropped + 1                # 主人侧早到的台词照旧丢
+        await asyncio.wait_for(hrt._dispatch({"t": "text"}, GUEST_VID, clock()), 1)  # Do not block receive loop.
+        assert hrt.gate_dropped == dropped + 1                # Still discard early owner-side dialogue.
     finally:
         gate.set()
         await asyncio.gather(accepting, return_exceptions=True)
@@ -2012,11 +2012,11 @@ async def test_only_buffered_lines_start_a_journal_at_the_end(tmp_path, monkeypa
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
     await through_gate(rt)
-    rt._on_usage({"llm_input_tokens": 5})                     # 入房前只记过用量，没有台词
+    rt._on_usage({"llm_input_tokens": 5})                     # Only pre-entry usage recorded, no dialogue.
     assert rt._journal_backlog
     rt.request_finalize("relay_lost")
     await _finished(rt)
-    assert rt._journal_opening is None and not rt.journal.sealed  # 不为它生成一份零台词的转录
+    assert rt._journal_opening is None and not rt.journal.sealed  # Do not generate a zero-dialogue transcript.
 
 
 async def test_state_replay_includes_lines_still_buffered_before_the_header(tmp_path, monkeypatch, clocks):
@@ -2028,9 +2028,9 @@ async def test_state_replay_includes_lines_still_buffered_before_the_header(tmp_
     await through_gate(rt)
     try:
         await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
-        assert not rt.journal.lines() and rt._journal_backlog  # 上传头还没写：这句只在积压里
+        assert not rt.journal.lines() and rt._journal_backlog  # Header unpersisted: this line exists only in backlog.
         replay = rt.snapshot()["transcript"]
-        assert [r.get("text") for r in replay] == ["开场"]       # 页面此时重载，/state 照样看得到
+        assert [r.get("text") for r in replay] == ["开场"]       # Page reload now still sees it through /state.
     finally:
         rt.request_finalize("route_end")
         await _finished(rt)
@@ -2043,14 +2043,14 @@ async def test_buffered_usage_is_not_stamped_before_the_journal_start(tmp_path, 
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
     await through_gate(rt)
-    rt._on_usage({"llm_input_tokens": 5})                     # 比台词早的用量
+    rt._on_usage({"llm_input_tokens": 5})                     # Usage earlier than dialogue.
     wall.advance(10)
     await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
     await rt.on_transport_state({"state": "joined", "peer_present": False})
     await wait_for(lambda: rt.journal.is_open and not rt._journal_backlog)
     start = rt.journal._started_at
     stamped = [r["ts"] for r in rt.journal._records if r.get("kind") in ("usage", "anomaly")]
-    assert stamped and all(ts >= start for ts in stamped)     # 补写的用量不早于开始时间
+    assert stamped and all(ts >= start for ts in stamped)     # Backfilled usage is no earlier than start.
     rt.request_finalize("route_end")
     await _finished(rt)
 
@@ -2066,7 +2066,7 @@ async def test_an_activation_that_outlives_teardown_is_handed_to_stop_all(tmp_pa
         reached.set()
         while not gate.is_set():
             try:
-                await gate.wait()                             # 不理取消的写盘
+                await gate.wait()                             # Disk writes ignore cancellation.
             except asyncio.CancelledError:
                 continue
         await real_open(subjects)
@@ -2076,10 +2076,10 @@ async def test_an_activation_that_outlives_teardown_is_handed_to_stop_all(tmp_pa
         accepting = asyncio.ensure_future(hrt.accept(True))
         await asyncio.wait_for(reached.wait(), 5)
         hrt.request_finalize("route_end")
-        await asyncio.wait_for(_finished(hrt), 15)            # 收尾等满上限后照常注销
+        await asyncio.wait_for(_finished(hrt), 15)            # Cleanup waits its cap, then unregisters normally.
         activation = hrt._activation
         assert activation is not None and not activation.done()
-        assert activation in rtm._detached                    # 注销之后交给模块级登记，stop_all 收得到
+        assert activation in rtm._detached                    # After unregistering, module-level registration lets stop_all collect it.
     finally:
         gate.set()
         await asyncio.gather(accepting, return_exceptions=True)
@@ -2090,11 +2090,11 @@ async def test_an_owed_ack_after_the_local_leave_is_done_is_sent_directly(tmp_pa
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     try:
-        rt.sequencer.poll_ack = lambda now, force=False: 7     # 刚收下对端的 leave，欠着 ack
-        rt.outbox.leave_done = lambda now=None: True          # 本侧 leave 已完成
-        rt.outbox.due = lambda now: []                        # 队列不再出帧
+        rt.sequencer.poll_ack = lambda now, force=False: 7     # Just accepted peer leave, owing ack.
+        rt.outbox.leave_done = lambda now=None: True          # Local leave completed.
+        rt.outbox.due = lambda now: []                        # Queue stops emitting frames.
         await rt.flush()
-        assert [p for p in wire.sent["host"] if p.get("t") == "ack" and p.get("seq") == 7]  # 照样送到对端
+        assert [p for p in wire.sent["host"] if p.get("t") == "ack" and p.get("seq") == 7]  # Still reaches peer.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2110,7 +2110,7 @@ async def test_a_spool_that_fails_to_open_leaves_a_memory_off_state(tmp_path, mo
     try:
         assert host.rt.memory_enabled is False
         state = await host.rt.spool.read_state()
-        assert state["memory_enabled"] is False               # 已写下的状态改回记忆关：启动补录不会反复去提交
+        assert state["memory_enabled"] is False               # Restore persisted memory-disabled state so startup recovery does not repeatedly commit.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2127,17 +2127,17 @@ async def test_a_cancelled_first_join_still_finishes_its_bookkeeping(tmp_path, m
 
     async def slow_open(**kw):
         reached.set()
-        await gate.wait()                                     # 写上传头卡住
+        await gate.wait()                                     # Header write stuck.
         return await real_open(**kw)
 
     rt.journal.open = slow_open
     try:
         joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
         await asyncio.wait_for(reached.wait(), 5)
-        joining.cancel()                                      # 收包处理被取消（页面断开）
+        joining.cancel()                                      # Receive handler cancelled by page disconnect.
         await asyncio.gather(joining, return_exceptions=True)
         gate.set()
-        await wait_for(lambda: rt._first_join_gen is None)    # 代数照样收口：重连后的入房报告不会一直被搁着
+        await wait_for(lambda: rt._first_join_gen is None)    # Generation still closes, preventing reconnected room-entry reports waiting forever.
         assert rt.phase == "invite_ready"
     finally:
         gate.set()
@@ -2159,22 +2159,22 @@ async def test_a_reconnect_during_the_first_join_still_has_a_join_deadline(tmp_p
 
     async def slow_open(**kw):
         reached.set()
-        await gate.wait()                                     # 写上传头卡住
+        await gate.wait()                                     # Header write stuck.
         return await real_open(**kw)
 
     rt.journal.open = slow_open
     try:
         joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
         await asyncio.wait_for(reached.wait(), 5)
-        rt.on_page_gone()                                     # 页面断开，新连接接上
+        rt.on_page_gone()                                     # Page disconnects and reconnects.
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
-        assert rt._join_deadline is None                      # 那时 joined 还为真：能力门没起入房期限
+        assert rt._join_deadline is None                      # joined was still True then; capability gate never started entry deadlines.
         gate.set()
-        await asyncio.wait_for(joining, 5)                    # 旧那次作废（代数不符），新连接还没报 joined
-        assert not rt.joined and rt._join_deadline is not None  # 补起入房期限
+        await asyncio.wait_for(joining, 5)                    # Old attempt invalidated by generation; new connection not yet joined.
+        assert not rt.joined and rt._join_deadline is not None  # Start the missing entry deadline.
         clock.advance(VISIT_SELF_RECONNECT_S + 1)
         await rt.tick()
-        assert rt.finalize_reason == "relay_lost"             # 一直报不上就结束，不停在等待入房
+        assert rt.finalize_reason == "relay_lost"             # End if reports never arrive; do not wait forever for entry.
     finally:
         gate.set()
         rt.request_finalize("route_end")
@@ -2194,10 +2194,10 @@ async def test_a_left_report_while_waiting_for_the_guest_ends_after_the_reconnec
     try:
         await rt.on_transport_state({"state": "joined", "peer_present": False})
         assert rt.phase == rtm.PHASE_INVITE_READY
-        await rt.on_transport_state({"state": "left", "peer_present": False})   # iframe 离开房间、连接却没关
+        await rt.on_transport_state({"state": "left", "peer_present": False})   # iframe leaves room without closing connection.
         clock.advance(VISIT_SELF_RECONNECT_S + 1)
         await rt.tick()
-        assert rt.finalize_reason == "relay_lost"             # 不在 invite_ready 挂满整个邀请期限
+        assert rt.finalize_reason == "relay_lost"             # Do not stay invite_ready for the whole invitation lifetime.
     finally:
         rt.request_finalize("route_end")
         await _finished(rt)
@@ -2210,10 +2210,10 @@ async def test_a_left_report_during_the_visit_ends_after_the_reconnect_window(tm
     rt = host.rt
     try:
         await rt.on_transport_state({"state": "left", "peer_present": True})
-        assert rt.outbox.paused                               # 和断线重连一样：先暂停出站
+        assert rt.outbox.paused                               # Pause outbound traffic as on reconnect.
         clock.advance(VISIT_SELF_RECONNECT_S + 1)
         await rt.tick()
-        assert rt.finalize_reason == "relay_lost"             # 不等到对端心跳判死
+        assert rt.finalize_reason == "relay_lost"             # Do not wait for peer heartbeat death detection.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2230,7 +2230,7 @@ async def test_a_failed_memory_off_correction_is_written_with_finalized(tmp_path
     async def flaky_update(self, **changes):
         if changes == {"memory_enabled": False} and not failed:
             failed.append(1)
-            raise OSError("disk full")                        # 改回记忆关这次也没写成
+            raise OSError("disk full")                        # Memory-disabled restoration also failed to persist.
         return await real_update(self, **changes)
 
     monkeypatch.setattr(spool_mod.VisitSpool, "open", broken_open)
@@ -2241,7 +2241,7 @@ async def test_a_failed_memory_off_correction_is_written_with_finalized(tmp_path
         host.rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(host.rt), 15)
         state = await host.rt.spool.read_state()
-        assert state["finalized"] and state["memory_enabled"] is False  # 写 finalized 时一并改回记忆关
+        assert state["finalized"] and state["memory_enabled"] is False  # Restore memory disabled when writing finalized too.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2252,7 +2252,7 @@ async def test_runtime_tasks_surviving_shutdown_cancellation_are_handed_to_stop_
     release = asyncio.Event()
 
     async def stubborn():
-        while not release.is_set():                           # 卡在不理取消的依赖里
+        while not release.is_set():                           # Stuck in a cancellation-ignoring dependency.
             try:
                 await release.wait()
             except asyncio.CancelledError:
@@ -2261,7 +2261,7 @@ async def test_runtime_tasks_surviving_shutdown_cancellation_are_handed_to_stop_
     task = rt.spawn(stubborn())
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
-        assert not task.done() and task in rtm._detached      # 注销之后交给模块级登记，没有被丢下
+        assert not task.done() and task in rtm._detached      # Module-level registration collects it after unregistration; nothing abandoned.
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
@@ -2275,7 +2275,7 @@ async def test_lifecycle_tasks_surviving_shutdown_cancellation_are_handed_to_sto
     release = asyncio.Event()
 
     async def stubborn():
-        while not release.is_set():                           # 卡在不理取消的依赖里
+        while not release.is_set():                           # Stuck in a cancellation-ignoring dependency.
             try:
                 await release.wait()
             except asyncio.CancelledError:
@@ -2285,7 +2285,7 @@ async def test_lifecycle_tasks_surviving_shutdown_cancellation_are_handed_to_sto
     setattr(rt, attr, task)
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 15)
-        assert not task.done() and task in rtm._detached      # 注销之后交给模块级登记，没有被丢下
+        assert not task.done() and task in rtm._detached      # Module-level registration collects it after unregistration; nothing abandoned.
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
@@ -2294,7 +2294,7 @@ async def test_lifecycle_tasks_surviving_shutdown_cancellation_are_handed_to_sto
 
 async def test_ended_waits_behind_a_display_write_that_never_retired(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
-    monkeypatch.setattr(rtm, "_ENDED_AFTER_DISPLAY_S", 10.0)  # 后台排队等得够久：写在到点前退下
+    monkeypatch.setattr(rtm, "_ENDED_AFTER_DISPLAY_S", 10.0)  # Background queuing waits sufficiently long; write exits before deadline.
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     release = asyncio.Event()
@@ -2306,7 +2306,7 @@ async def test_ended_waits_behind_a_display_write_that_never_retired(tmp_path, m
             order.append("ended")
             return await real_send(frame)
         if frame.get("type") == "visit_line" and frame.get("text") == "卡住的一行":
-            while not release.is_set():                       # 页面这次写一直卡着、不理取消
+            while not release.is_set():                       # Page write remains blocked and ignores cancellation.
                 try:
                     await release.wait()
                 except asyncio.CancelledError:
@@ -2320,10 +2320,10 @@ async def test_ended_waits_behind_a_display_write_that_never_retired(tmp_path, m
         await settle()
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 15)
-        assert "ended" not in order                           # 那次写没退下：「已结束」不与它并发、不抢先
+        assert "ended" not in order                           # The write persists: ended neither races nor overtakes it.
         release.set()
         await wait_for(lambda: "ended" in order)
-        assert order == ["stuck_line", "ended"]               # 排在它后面送出
+        assert order == ["stuck_line", "ended"]               # Send afterward.
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2342,7 +2342,7 @@ async def test_ended_is_still_sent_when_the_display_write_never_retires(tmp_path
         if frame.get("type") == "visit_state_change" and frame.get("action") == "ended":
             order.append("ended")
         elif frame.get("type") == "visit_line" and frame.get("text") == "卡住的一行":
-            while not release.is_set():                       # 一直卡着、不理取消
+            while not release.is_set():                       # Remains stuck, ignoring cancellation.
                 try:
                     await release.wait()
                 except asyncio.CancelledError:
@@ -2358,10 +2358,10 @@ async def test_ended_is_still_sent_when_the_display_write_never_retires(tmp_path
     try:
         rt._post_display({"type": "visit_line", "text": "卡住的一行"})
         await settle()
-        rt.request_finalize("kicked")                         # 带 status（VISIT_KICKED）的结束原因
+        rt.request_finalize("kicked")                         # Ending reason includes status VISIT_KICKED.
         await asyncio.wait_for(_finished(rt), 15)
-        await wait_for(lambda: "ended" in order and "status:VISIT_KICKED" in order, timeout=5)  # 到点仍尽力发
-        assert order.index("ended") < order.index("status:VISIT_KICKED")  # status 排在「已结束」后面
+        await wait_for(lambda: "ended" in order and "status:VISIT_KICKED" in order, timeout=5)  # Still attempt delivery at deadline.
+        assert order.index("ended") < order.index("status:VISIT_KICKED")  # status follows ended.
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2370,12 +2370,12 @@ async def test_ended_is_still_sent_when_the_display_write_never_retires(tmp_path
 async def test_an_unpaired_room_is_cancelled_even_if_the_channel_close_is_cut_off(tmp_path, monkeypatch, clocks):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
-    rt.peer_present = True                                    # 客人在房、hello 一直没核验
-    rt.outbox.leave_done = lambda now=None: False            # leave 的补传窗口卡住：关闭任务到点被取消
+    rt.peer_present = True                                    # Guest in room, hello never verified.
+    rt.outbox.leave_done = lambda now=None: False            # leave recovery window blocked; cancel close task at deadline.
     rt.request_finalize("route_end")
     await asyncio.wait_for(_finished(rt), 15)
     await settle()
-    assert [c[0] for c in side.cancelled] == [rt.visit_id]    # 邀请码与配额占用照样撤销
+    assert [c[0] for c in side.cancelled] == [rt.visit_id]    # Still revoke invite-code/quota occupancy.
 
 
 async def test_stop_all_retires_transport_close_tasks(tmp_path, monkeypatch):
@@ -2384,7 +2384,7 @@ async def test_stop_all_retires_transport_close_tasks(tmp_path, monkeypatch):
     release = asyncio.Event()
 
     async def stuck_close():
-        while not release.is_set():                       # 背压下等发送锁与 close 帧
+        while not release.is_set():                       # Backpressure waits for send lock and close frame.
             try:
                 await release.wait()
             except asyncio.CancelledError:
@@ -2396,7 +2396,7 @@ async def test_stop_all_retires_transport_close_tasks(tmp_path, monkeypatch):
     task.add_done_callback(tw._close_tasks.discard)
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
-        assert task.cancelled()                           # 关机收尾一并取消、限时等，不留给事件循环销毁
+        assert task.cancelled()                           # Shutdown cancels and bounded-waits all, leaving nothing for loop destruction.
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
@@ -2406,13 +2406,13 @@ async def test_the_pump_keeps_sending_after_shutdown_marks_the_visit_terminated(
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     try:
-        rt._terminated = True                                 # 关机第一步就置上（之后几步还要靠泵发出去）
+        rt._terminated = True                                 # Set on shutdown's first step; later steps still need the pump to send.
         rt.kick()
         await settle()
-        await settle()                                        # 泵至少又转过一圈
+        await settle()                                        # Pump ran at least once more.
         rt.outbox.send({"t": "typing", "lp": 1, "sp": "c"}, now=clock())
         rt.kick()
-        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "typing"])  # 照常发出
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "typing"])  # Send normally.
         assert not rt._pump_task.done()
     finally:
         rt._terminated = False
@@ -2424,12 +2424,12 @@ async def test_an_overrun_channel_close_is_handed_to_stop_all(tmp_path, monkeypa
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     release, pump_stuck = asyncio.Event(), asyncio.Event()
-    rt.outbox.leave_done = lambda now=None: False            # 关闭通道到点也没完
+    rt.outbox.leave_done = lambda now=None: False            # Channel close still unfinished at deadline.
 
     async def stubborn_send(*args, **kwargs):
         if asyncio.current_task() is rt._pump_task:
             pump_stuck.set()
-        while not release.is_set():                           # 不理取消的写
+        while not release.is_set():                           # Cancellation-ignoring write.
             try:
                 await release.wait()
             except asyncio.CancelledError:
@@ -2439,16 +2439,16 @@ async def test_an_overrun_channel_close_is_handed_to_stop_all(tmp_path, monkeypa
     try:
         rt.transport.send = stubborn_send
         rt.kick()
-        await asyncio.wait_for(pump_stuck.wait(), 5)          # 前提：发送泵确实卡进了这次写
+        await asyncio.wait_for(pump_stuck.wait(), 5)          # Prove the send pump actually blocked in this write.
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 15)
         closing = rt._closing_task
         assert closing is not None and not closing.done()
-        assert closing in rtm._detached                       # 注销之后交给模块级登记，stop_all 收得到
-        pump = rt._pump_task                                  # 卡在同一个写里的发送泵也一样
+        assert closing in rtm._detached                       # After unregistering, module-level registration lets stop_all collect it.
+        pump = rt._pump_task                                  # Same for pumps blocked in the same write.
         assert pump is not None and not pump.done() and pump in rtm._detached
         release.set()
-        await wait_for(lambda: pump.done())                   # 写放开之后泵自己停下，不在已注销的运行时上接着转
+        await wait_for(lambda: pump.done())                   # After release the pump stops itself, without continuing on unregistered runtimes.
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2473,20 +2473,20 @@ async def test_a_channel_close_that_overruns_is_retired_before_sealing(tmp_path,
         return await real_seal(reason, **kw)
 
     rt.journal.seal = seal
-    rt.outbox.leave_done = lambda now: False                  # 对端一直不回 leave 的 ack：关闭通道到点也没完
+    rt.outbox.leave_done = lambda now: False                  # Peer never acks leave; channel close still unfinished at deadline.
     try:
         rt.request_finalize("route_end")
         await asyncio.sleep(0.1)
         real_send = rt.transport.send
 
         async def stalled_send(*args, **kwargs):
-            await asyncio.sleep(10)                           # 关闭任务 finally 里的发送也卡着
+            await asyncio.sleep(10)                           # Close task's finally send also blocks.
             return await real_send(*args, **kwargs)
 
         rt.transport.send = stalled_send
         await asyncio.wait_for(_finished(rt), 10)
         assert "unregister" in order and "seal" in order
-        assert order.index("unregister") < order.index("seal")  # 先收掉接收通道，再封存
+        assert order.index("unregister") < order.index("seal")  # Close receive channels before sealing.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2502,7 +2502,7 @@ async def test_lines_are_kept_in_memory_when_the_upload_header_fails(tmp_path, m
     rt = host.rt
     try:
         assert not rt.journal.is_open
-        await wait_for(lambda: len(rt.journal.lines()) >= 1, timeout=5)   # 内存转录照常（/state 重放、简述）
+        await wait_for(lambda: len(rt.journal.lines()) >= 1, timeout=5)   # In-memory transcript remains normal for /state replay and overviews.
         assert rt.snapshot()["transcript"]
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2515,7 +2515,7 @@ async def test_phase_frames_keep_their_order_with_queued_lines(tmp_path, monkeyp
 
     async def send_frame(payload):
         if payload.get("line_id") == "slow":
-            await asyncio.sleep(0.3)                          # 页面背压
+            await asyncio.sleep(0.3)                          # Page backpressure.
         return await real_send(payload)
 
     host.host.send_frame = send_frame
@@ -2527,7 +2527,7 @@ async def test_phase_frames_keep_their_order_with_queued_lines(tmp_path, monkeyp
         frames = host.host.frames[before:]
         line = [i for i, f in enumerate(frames) if f.get("line_id") == "slow"]
         phase = [i for i, f in enumerate(frames) if f.get("action") == "ending_soon"]
-        assert line and phase and line[0] < phase[0]          # 阶段帧不越过排在前面的整句
+        assert line and phase and line[0] < phase[0]          # Phase frames do not overtake preceding whole sentences.
     finally:
         host.host.send_frame = real_send
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2537,12 +2537,12 @@ async def test_a_retired_channel_close_still_sends_its_stop(tmp_path, monkeypatc
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
-    rt.outbox.leave_done = lambda now: False                  # 对端一直不回 leave 的 ack
+    rt.outbox.leave_done = lambda now: False                  # Peer never acks leave.
     order: list[str] = []
     real_unregister = rtm.unregister_transport_session
 
     def unregister(transport):
-        if transport is rt.transport:                         # 只记本侧（guest 那边也会注销自己的）
+        if transport is rt.transport:                         # Record only local side; guest unregisters itself too.
             order.append("unregister")
         return real_unregister(transport)
 
@@ -2559,7 +2559,7 @@ async def test_a_retired_channel_close_still_sends_its_stop(tmp_path, monkeypatc
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
         assert "stop:route_end" in order and "unregister" in order
-        assert order.index("stop:route_end") < order.index("unregister")   # 先让它发完 stop{reason}，再注销
+        assert order.index("stop:route_end") < order.index("unregister")   # Finish sending stop{reason} before unregistering.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2576,16 +2576,16 @@ async def test_backlog_lines_survive_a_header_that_fails_late(tmp_path, monkeypa
 
     async def slow_then_broken(**kw):
         await gate.wait()
-        raise OSError("disk full")                            # 写得慢，最后还写失败
+        raise OSError("disk full")                            # Slow write eventually fails.
 
     rt.journal.open = slow_then_broken
     try:
         await rt.on_transport_state({"state": "joined", "peer_present": False})
         await rt.record_line("own_human", side="host", lp=3, ln="h:3", text="开头那一句", truncated=False)
-        assert rt._journal_backlog                            # 先进了积压
+        assert rt._journal_backlog                            # Entered backlog first.
         gate.set()
         await wait_for(lambda: [r for r in rt.journal.lines() if r["text"] == "开头那一句"], timeout=5)
-        assert not rt._journal_backlog                        # 积压里的行转进了内存转录
+        assert not rt._journal_backlog                        # Backlogged lines enter in-memory transcripts.
     finally:
         gate.set()
         await teardown(side, clock=clock)
@@ -2597,7 +2597,7 @@ async def test_the_invite_frame_keeps_its_order_in_the_display_queue(tmp_path, m
 
     async def send_frame(payload):
         if payload.get("line_id") == "slow":
-            await asyncio.sleep(0.3)                          # 页面背压
+            await asyncio.sleep(0.3)                          # Page backpressure.
         return await real_send(payload)
 
     side.host.send_frame = send_frame
@@ -2610,7 +2610,7 @@ async def test_the_invite_frame_keeps_its_order_in_the_display_queue(tmp_path, m
         frames = side.host.frames[before:]
         slow = [i for i, f in enumerate(frames) if f.get("line_id") == "slow"]
         invite = [i for i, f in enumerate(frames) if f.get("type") == "visit_invite"]
-        assert slow and invite and slow[0] < invite[0]        # 邀请帧不越过排在前面的帧
+        assert slow and invite and slow[0] < invite[0]        # Invite frames cannot overtake earlier frames.
     finally:
         side.host.send_frame = real_send
         await teardown(side, wire=wire, clock=clocks[0])
@@ -2635,7 +2635,7 @@ async def test_a_channel_close_cancelled_mid_send_still_unregisters(tmp_path, mo
     async def send(msg, *args, **kwargs):
         if isinstance(msg, dict) and msg.get("type") == "stop":
             in_stop.set()
-            await stuck.wait()                                # finally 里发 stop 时页面背压
+            await stuck.wait()                                # Page backpressure while finally sends stop.
         return await real_send(msg, *args, **kwargs)
 
     rt.transport.send = send
@@ -2643,9 +2643,9 @@ async def test_a_channel_close_cancelled_mid_send_still_unregisters(tmp_path, mo
         rt.outbox.leave_done = lambda now: True
         closing = asyncio.ensure_future(rt._close_channel("route_end"))
         await asyncio.wait_for(in_stop.wait(), 5)
-        closing.cancel()                                      # 取消正好落在 finally 的发送上
+        closing.cancel()                                      # Cancellation lands precisely during finally's send.
         await asyncio.wait([closing], timeout=2)
-        assert closing.done() and unregistered                # 内层 finally：注销照样做
+        assert closing.done() and unregistered                # Inner finally still unregisters.
     finally:
         stuck.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2661,7 +2661,7 @@ async def test_lines_buffered_before_a_shutdown_reach_the_stream_left_for_recove
     real_open_sync = transcript_upload.UploadJournal._open_sync
 
     def slow_open_sync(self, data):
-        release.wait(10)                                      # 写上传头卡在写线程里
+        release.wait(10)                                      # Header writing blocks in the writer thread.
         return real_open_sync(self, data)
 
     monkeypatch.setattr(transcript_upload.UploadJournal, "_open_sync", slow_open_sync)
@@ -2669,15 +2669,15 @@ async def test_lines_buffered_before_a_shutdown_reach_the_stream_left_for_recove
     rt = host.rt
     try:
         await wait_for(lambda: any(r.get("kind") == "line" for r in rt._journal_backlog), timeout=5)
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 关机：放弃等上传头
-        release.set()                                         # 之后写线程建好流水，补上攒下的行
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # Shutdown abandons header waits.
+        release.set()                                         # Later the writer creates the stream and appends buffered lines.
         stream = host.config_dir / "visit_spool" / f"{rt.visit_id}.upload.jsonl"
         for _ in range(50):
             if stream.exists() and '"kind":"line"' in stream.read_text(encoding="utf-8").replace(" ", ""):
                 break
             await asyncio.sleep(0.05)
         kinds = [json.loads(line)["kind"] for line in stream.read_text(encoding="utf-8").splitlines()]
-        assert kinds[0] == "header" and "line" in kinds        # 下次启动补录拿得到这些行
+        assert kinds[0] == "header" and "line" in kinds        # Next-startup recovery can retrieve these lines.
     finally:
         release.set()
         await asyncio.sleep(0.1)
@@ -2692,9 +2692,9 @@ async def test_a_bad_buffered_record_does_not_break_the_shutdown(tmp_path, monke
         rt._journal_backlog.append({"kind": "line", "lp": "not-a-number", "side": "host", "speaker": "own_cat",
                                     "ts": None, "text": "坏记录", "truncated": False})
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-        assert rt.journal._open_abandoned                     # 转换失败也照样放弃
-        assert rt._journal_opening.done()                     # 并且取消了写上传头
-        assert rtm.get_runtime("Host") is None                # 关机后面的步骤都走到了
+        assert rt.journal._open_abandoned                     # Conversion failures also abandon waiting.
+        assert rt._journal_opening.done()                     # And cancel header writes.
+        assert rtm.get_runtime("Host") is None                # All later shutdown steps reached.
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2722,7 +2722,7 @@ async def test_shutdown_retires_the_transport_before_sealing(tmp_path, monkeypat
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
         assert "unregister" in order and "seal" in order
-        assert order.index("unregister") < order.index("seal")  # 封存之前不再收对端的帧
+        assert order.index("unregister") < order.index("seal")  # Stop accepting peer frames before sealing.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2734,9 +2734,9 @@ async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
         assert rt._spool_finalized
-        await rt._finalize_spool("shutdown")                  # 后台链 / 晚到分支再来一次
+        await rt._finalize_spool("shutdown")                  # Background chain /late branch calls again.
         state = await rt.spool.read_state()
-        assert state["finalized"] == "route_end"              # 不被第二次改写
+        assert state["finalized"] == "route_end"              # No second rewrite.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2750,14 +2750,14 @@ async def test_a_failed_takeover_release_is_retried_by_teardown(tmp_path, monkey
     def release_takeover(token):
         calls.append(token)
         if len(calls) == 1:
-            raise RuntimeError("release failed")              # 收尾第一次释放失败
+            raise RuntimeError("release failed")              # First cleanup release fails.
         return real_release(token)
 
     host.host.release_takeover = release_takeover
     try:
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
-        assert len(calls) == 2 and host.host.released == [calls[0]]   # teardown 拿着同一个 token 再试成功
+        assert len(calls) == 2 and host.host.released == [calls[0]]   # teardown retries successfully with the same token.
     finally:
         host.host.release_takeover = real_release
         await teardown(host, guest, wire=wire, clock=clock)
@@ -2779,12 +2779,12 @@ async def test_a_second_start_during_the_reservation_is_refused(tmp_path, monkey
     await asyncio.wait_for(reached.wait(), 5)
     slot = visit_route_state.get_visit_route_state("Host")
     assert slot is not None and rtm.get_runtime("Host") is None
-    assert rtm.is_visit_route_locked("Host")             # 占位即上锁：运行时还没登记也算
+    assert rtm.is_visit_route_locked("Host")             # Reservation locks immediately, even before runtime registration.
     with pytest.raises(rtm.VisitRefused) as refused:
         await rtm.start_visit("Host", "host", crop="upper", invite_code=None, visit_id="Y" * 22,
                               host=side.host, deps=side.deps, clock=clock, wall=wall)
     assert refused.value.status == 409 and refused.value.body["reason"] == "already_visiting"
-    assert visit_route_state.get_visit_route_state("Host") is slot   # 第一场的占位没被换掉
+    assert visit_route_state.get_visit_route_state("Host") is slot   # First visit's reservation remains intact.
     gate.set()
     rt = await first
     try:
@@ -2801,12 +2801,12 @@ def test_the_vp8_fallback_applies_to_the_next_livekit_visit_only(monkeypatch):
     nxt = SimpleNamespace(creds=livekit, _livekit_codec=None)
     assert rtm.VisitRuntime._codec(nxt) == "vp8"
     assert rtm._vp8_next_visit is False
-    assert rtm.VisitRuntime._codec(nxt) == "vp8"           # 本场续期 / 重连沿用
+    assert rtm.VisitRuntime._codec(nxt) == "vp8"           # Reuse for this visit's renewal/reconnection.
     later = SimpleNamespace(creds=livekit, _livekit_codec=None)
     assert rtm.VisitRuntime._codec(later) == "vp9"
     trtc = SimpleNamespace(creds=SimpleNamespace(transport="trtc"), _livekit_codec=None)
     monkeypatch.setattr(rtm, "_vp8_next_visit", True)
-    assert rtm.VisitRuntime._codec(trtc) == "h264" and rtm._vp8_next_visit is True   # TRTC 不消耗
+    assert rtm.VisitRuntime._codec(trtc) == "h264" and rtm._vp8_next_visit is True   # TRTC consumes none.
 
 
 async def test_ending_while_the_journal_opens_does_not_reopen_the_wait(tmp_path, monkeypatch, clocks):
@@ -2874,7 +2874,7 @@ async def test_a_stalled_guest_activation_ends_the_visit_within_the_allowance(tm
     guest.deps.create_session = hang
     try:
         started = asyncio.get_running_loop().time()
-        # 收包循环里同步激活：卡住也不能无限挂着（外层 3 s 只为让测试本身不挂死）
+        # Synchronous activation in receive loops must have a bound even if stuck (outer 3s only prevents test hangs).
         await asyncio.wait_for(guest.rt.on_ready(), 3)
         assert asyncio.get_running_loop().time() - started < 2.0
         assert guest.rt.finalize_reason == "llm_error" and not guest.rt.activated
@@ -2910,10 +2910,10 @@ async def test_ending_while_the_journal_opens_still_seals_it(tmp_path, monkeypat
     joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
     await asyncio.wait_for(reached.wait(), 5)
     rt.request_finalize("route_end")
-    asyncio.get_running_loop().call_later(0.1, gate.set)      # 封存之前写完上传头
+    asyncio.get_running_loop().call_later(0.1, gate.set)      # Finish header before sealing.
     await _finished(rt)
     await asyncio.gather(joining)
-    assert rt.journal.sealed                                   # 不留一份没封存的 .upload.jsonl
+    assert rt.journal.sealed                                   # Leave no unsealed .upload.jsonl.
     assert not list((side.config_dir / "visit_spool").glob("*.upload.jsonl"))
 
 
@@ -2924,7 +2924,7 @@ async def test_a_joined_report_before_credentials_does_not_count_as_entering(tmp
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
     try:
-        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 凭证还没下发
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # Credentials not issued yet.
         assert rt.joined is False
         await through_gate(rt)
         await rt.on_transport_state({"state": "joined", "peer_present": False})
@@ -2941,7 +2941,7 @@ async def test_preconditions_are_checked_again_after_the_account_lookup(tmp_path
     side = make_side(tmp_path, "host", clock=clock, wall=wall)
 
     async def account_while_voice_starts():
-        side.host.precondition = "voice_session_active"       # 查账号期间语音会话起来了
+        side.host.precondition = "voice_session_active"       # Voice session starts during account lookup.
         return "acct"
 
     monkeypatch.setattr(rtm, "_local_account", account_while_voice_starts)
@@ -2970,7 +2970,7 @@ async def test_a_slow_journal_open_is_awaited_before_sealing(tmp_path, monkeypat
     joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
     await asyncio.wait_for(reached.wait(), 5)
     rt.request_finalize("route_end")
-    asyncio.get_running_loop().call_later(0.9, gate.set)      # 比关机预算里的等待更久
+    asyncio.get_running_loop().call_later(0.9, gate.set)      # Longer than shutdown-budget waits.
     await _finished(rt)
     await asyncio.gather(joining)
     assert rt.journal.sealed
@@ -2986,7 +2986,7 @@ async def test_joined_before_the_sdk_gate_passed_does_not_count(tmp_path, monkey
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
         assert await rt.issue_credentials() is not None
-        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 能力门 ③ 还没报
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # Capability gate ③ unreported.
         assert rt.joined is False and not side.host.frames_of("visit_state_change", "invite_ready")
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
         await rt.on_transport_state({"state": "joined", "peer_present": False})
@@ -3003,7 +3003,7 @@ async def test_the_accept_deadline_starts_when_verification_finishes(tmp_path, m
     real = side.deps.fetch_pubkeys
 
     async def slow_pubkeys():
-        clock.advance(40)                                    # 核验读公钥花了 40 s
+        clock.advance(40)                                    # Public-key verification takes 40s.
         return await real()
 
     side.deps.fetch_pubkeys = slow_pubkeys
@@ -3011,7 +3011,7 @@ async def test_the_accept_deadline_starts_when_verification_finishes(tmp_path, m
         await rt.on_transport_state({"state": "connected", "peer_present": True})
         await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)
         assert rt.phase == "awaiting_accept"
-        assert rt._accept_deadline - clock() > VISIT_ACCEPT_TIMEOUT_S - 1   # 亲人仍有完整的接待时间
+        assert rt._accept_deadline - clock() > VISIT_ACCEPT_TIMEOUT_S - 1   # Relative retains full reception time.
     finally:
         await teardown(side, wire=wire, clock=clock)
 
@@ -3032,7 +3032,7 @@ async def test_two_characters_cannot_take_the_same_visit_at_once(tmp_path, monke
     first = asyncio.ensure_future(start_side(one, invite_code=INVITE, clock=clock, wall=wall))
     await asyncio.wait_for(reached.wait(), 5)
     with pytest.raises(rtm.VisitRefused) as refused:
-        await start_side(two, invite_code=INVITE, clock=clock, wall=wall)   # 同一张邀请、同一个 visit_id
+        await start_side(two, invite_code=INVITE, clock=clock, wall=wall)   # Same invitation and visit_id.
     assert refused.value.body["reason"] == "visit_in_progress"
     assert visit_route_state.get_visit_route_state("Nana") is None
     gate.set()
@@ -3048,12 +3048,12 @@ async def test_the_other_side_of_a_running_visit_is_refused_on_the_same_machine(
     clock, wall = clocks
     host = make_side(tmp_path, "host", clock=clock, wall=wall, name="Mimi")
     guest = make_side(tmp_path, "guest", clock=clock, wall=wall, name="Nana")
-    guest.deps.config_dir = host.deps.config_dir              # 同一个配置目录（生产里同一进程就是这样）
+    guest.deps.config_dir = host.deps.config_dir              # Same config directory, as in production's single process.
     rt = await start_side(host, clock=clock, wall=wall)
     try:
-        with pytest.raises(rtm.VisitRefused) as refused:      # 桌面端换了社区账号后兑换本机发出的邀请
+        with pytest.raises(rtm.VisitRefused) as refused:      # Redeem this machine's invite after switching community accounts.
             await start_side(guest, invite_code=INVITE, clock=clock, wall=wall)
-        assert refused.value.body["details"]["reason"] == "self_invite"  # 与 Servers 拒的提示一样，不覆盖这一场的文件
+        assert refused.value.body["details"]["reason"] == "self_invite"  # Same notice as Servers rejection, preserving visit files.
         assert visit_route_state.get_visit_route_state("Nana") is None
         assert rtm.get_runtime_by_visit(rt.visit_id) is rt
     finally:
@@ -3075,11 +3075,11 @@ async def test_an_admission_still_awaiting_when_stop_all_runs_does_not_register(
     starting = asyncio.ensure_future(start_side(side, clock=clock, wall=wall))
     try:
         await asyncio.wait_for(reached.wait(), 5)
-        await rtm.stop_all("shutdown")                        # 关机时它还在查账号
+        await rtm.stop_all("shutdown")                        # Account lookup still pending at shutdown.
         gate.set()
         with pytest.raises(rtm.VisitRefused):
             await asyncio.wait_for(starting, 5)
-        assert rtm.get_runtime("Host") is None                # 关机之后不再登记运行时
+        assert rtm.get_runtime("Host") is None                # No runtime registration after shutdown.
         assert visit_route_state.get_visit_route_state("Host") is None
     finally:
         gate.set()
@@ -3100,7 +3100,7 @@ async def test_an_admission_during_stop_all_is_refused_as_shutdown(tmp_path, mon
         return "acct"
 
     try:
-        monkeypatch.setattr(rtm, "_stopping", True)           # stop_all 正在跑时新到的入场
+        monkeypatch.setattr(rtm, "_stopping", True)           # New entry during stop_all.
         with pytest.raises(rtm.VisitRefused) as refused:
             await start_side(side, clock=clock, wall=wall)
         assert refused.value.body["reason"] == "shutdown"
@@ -3108,7 +3108,7 @@ async def test_an_admission_during_stop_all_is_refused_as_shutdown(tmp_path, mon
         monkeypatch.setattr(rtm, "_local_account", slow_account)
         starting = asyncio.ensure_future(start_side(side, clock=clock, wall=wall))
         await asyncio.wait_for(reached.wait(), 5)
-        monkeypatch.setattr(rtm, "_stopping", True)           # 查账号期间 stop_all 开始（代数还没变也拦）
+        monkeypatch.setattr(rtm, "_stopping", True)           # stop_all starts during account lookup; reject even before generation changes.
         gate.set()
         with pytest.raises(rtm.VisitRefused) as refused:
             await asyncio.wait_for(starting, 5)
@@ -3133,7 +3133,7 @@ async def test_a_session_that_will_not_close_does_not_keep_the_visit_registered(
         if session is not rt.session:
             await real_close(session)
             return
-        while not stuck.is_set():                             # 取消排空卡住：吞掉取消、继续等
+        while not stuck.is_set():                             # Cancellation drain blocks, swallowing cancellation and waiting.
             try:
                 await stuck.wait()
             except asyncio.CancelledError:
@@ -3143,8 +3143,8 @@ async def test_a_session_that_will_not_close_does_not_keep_the_visit_registered(
     try:
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
-        assert rtm.get_runtime("Host") is None                # 照样注销，这个角色不会一直锁着
-        assert [t for t in rtm._detached if not t.done()]     # 没关完的交给后台继续关
+        assert rtm.get_runtime("Host") is None                # Still unregister so the character does not remain locked.
+        assert [t for t in rtm._detached if not t.done()]     # Continue unfinished closure in background.
     finally:
         stuck.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -3175,12 +3175,12 @@ async def test_an_admission_that_wakes_after_stop_all_finished_does_not_register
     try:
         await wait_for(lambda: rtm._stopping)
         monkeypatch.setattr(rtm, "_local_account", slow_account)
-        starting = asyncio.ensure_future(start_side(second, invite_code=INVITE, clock=clock, wall=wall))   # stop_all 进行中才开始
+        starting = asyncio.ensure_future(start_side(second, invite_code=INVITE, clock=clock, wall=wall))   # Starts only during stop_all.
         await asyncio.wait_for(reached.wait(), 5)
         held.set()
-        await asyncio.wait_for(stopping, 5)                   # stop_all 先结束
+        await asyncio.wait_for(stopping, 5)                   # stop_all ends first.
         assert not rtm._stopping
-        gate.set()                                            # 它结束之后入场才查完账号
+        gate.set()                                            # Account lookup completes only afterward.
         with pytest.raises(rtm.VisitRefused):
             await asyncio.wait_for(starting, 5)
         assert rtm.get_runtime("Nana") is None
@@ -3201,7 +3201,7 @@ async def test_the_isolated_session_is_closed_once_even_when_teardown_is_cancell
 
     async def close_visit_session(session):
         closes.append(session)
-        while not release.is_set():                           # 关不掉、也不理取消
+        while not release.is_set():                           # Cannot close, ignores cancellation.
             try:
                 await release.wait()
             except asyncio.CancelledError:
@@ -3211,11 +3211,11 @@ async def test_the_isolated_session_is_closed_once_even_when_teardown_is_cancell
     try:
         caller = asyncio.ensure_future(rt.close_session(5))
         await asyncio.sleep(0.05)
-        caller.cancel()                                       # 收尾任务被关机取消
+        caller.cancel()                                       # Shutdown cancels cleanup task.
         with pytest.raises(asyncio.CancelledError):
             await caller
-        assert rt._session_closing in rtm._detached           # 没关完的交给后台
-        await rt.close_session(0.05)                          # 关机再关一次：等同一个关闭任务
+        assert rt._session_closing in rtm._detached           # Move unfinished closure to background.
+        await rt.close_session(0.05)                          # Shutdown closes again by awaiting the same task.
         assert len(closes) == 1
     finally:
         release.set()
@@ -3231,10 +3231,10 @@ async def test_a_single_joined_report_ahead_of_the_sdk_gate_is_replayed(tmp_path
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
         assert await rt.issue_credentials() is not None
-        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 只报这一次
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # Report only once.
         assert rt.joined is False
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
-        assert rt.joined is True and rt.phase == "invite_ready"                  # 能力门一过就补做首次入房
+        assert rt.joined is True and rt.phase == "invite_ready"                  # Backfill initial entry as soon as capability gates pass.
         await settle()
         assert side.host.frames_of("visit_state_change", "invite_ready")
     finally:
@@ -3251,10 +3251,10 @@ async def test_a_pending_joined_report_is_dropped_once_the_connection_drops(tmp_
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
         assert await rt.issue_credentials() is not None
         await rt.on_transport_state({"state": "joined", "peer_present": False})
-        await rt.on_transport_state({"state": "reconnecting"})                    # 能力门之前又断了
+        await rt.on_transport_state({"state": "reconnecting"})                    # Disconnect again before capability gate.
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
         assert rt.joined is False and rt.phase != "invite_ready"
-        assert rt.liveness.self_disconnected_at is not None                       # 仍按断线计时
+        assert rt.liveness.self_disconnected_at is not None                       # Retain disconnect timing.
     finally:
         await teardown(side, clock=clock)
 
@@ -3266,12 +3266,12 @@ def test_a_second_runtime_of_the_same_visit_does_not_take_over_its_registration(
     first = SimpleNamespace(lanlan_name="Mimi", visit_id="V" * 22, character_uid="")
     second = SimpleNamespace(lanlan_name="Nana", visit_id="V" * 22, character_uid="")
     rtm._register(first)
-    # 本机另一个角色兑换本机发出的邀请（Servers 以 self_invite 拒之前）：不顶掉在进行的那一场
+    # Another local character redeems this machine's invite before Servers self_invite rejection; do not replace the ongoing visit.
     rtm._register(second)
     assert rtm.get_runtime_by_visit("V" * 22) is first
     rtm._unregister(second)
     assert rtm.get_runtime_by_visit("V" * 22) is first and rtm.is_visit_live("V" * 22)
-    # 反过来：先登记的那个结束了、另一个还在，就由它接着代表这一场
+    # Reverse case: first registered runtime ends, while another remains and continues representing this visit.
     rtm._register(second)
     rtm._unregister(first)
     assert rtm.get_runtime_by_visit("V" * 22) is second
@@ -3288,8 +3288,8 @@ async def test_a_pending_joined_report_dies_with_its_page(tmp_path, monkeypatch,
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
         assert await rt.issue_credentials() is not None
-        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 记下，等能力门
-        rt.transport.on_page_lost(clock())                                         # 这条连接没报断线就没了
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # Record and await capability gate.
+        rt.transport.on_page_lost(clock())                                         # Connection disappears without reporting disconnect.
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
         assert rt.joined is False and not side.host.frames_of("visit_state_change", "invite_ready")
     finally:
@@ -3308,14 +3308,14 @@ async def test_the_guest_wait_starts_after_the_journal_header_is_written(tmp_pat
     real_open = rt.journal.open
 
     async def slow_open(**kw):
-        clock.advance(20)                                   # 磁盘慢：写上传头花了 20 s
+        clock.advance(20)                                   # Slow disk: upload-header write takes 20s.
         await real_open(**kw)
 
     rt.journal.open = slow_open
     try:
         await rt.on_transport_state({"state": "joined", "peer_present": True})
         assert rt.phase == "joining"
-        assert rt.liveness.wait_deadline - clock() > VISIT_PEER_LOST_S - 1   # 仍有完整的等对端时间
+        assert rt.liveness.wait_deadline - clock() > VISIT_PEER_LOST_S - 1   # Still preserve the full peer-wait duration.
     finally:
         await teardown(side, clock=clock)
 
@@ -3331,13 +3331,13 @@ async def test_a_superseded_socket_takes_its_pending_join_and_setup_deadlines_wi
         assert await rt.issue_credentials() is not None
         assert rt._sdk_deadline is not None
         await rt.on_transport_state({"state": "joined", "peer_present": False})
-        rt.transport.on_page_attached(clock())               # 新连接顶替了旧连接（旧连接不再报 page_lost）
+        rt.transport.on_page_attached(clock())               # New connection replaces old; old no longer reports page_lost.
         assert rt._sdk_deadline is None and rt._join_deadline is None and rt._preflight_deadline is None
         clock.advance(21)
-        await rt.tick()                                       # 旧连接的能力门期限（20 s）不会把重载中的这场判死
+        await rt.tick()                                       # Old connection's 20s capability deadline cannot end reloading visits.
         assert rt.finalize_reason is None
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
-        assert rt.joined is False                             # 旧连接的入房报告不算
+        assert rt.joined is False                             # Ignore old connection entry reports.
     finally:
         await teardown(side, clock=clock)
 
@@ -3348,7 +3348,7 @@ async def test_a_manager_replaced_during_the_account_lookup_is_refused(tmp_path,
     side = make_side(tmp_path, "host", clock=clock, wall=wall)
 
     async def account_while_replaced():
-        side.host.current = False                             # 查账号期间 manager 被换掉
+        side.host.current = False                             # Manager replaced during account lookup.
         return "acct"
 
     monkeypatch.setattr(rtm, "_local_account", account_while_replaced)
@@ -3366,7 +3366,7 @@ async def test_a_stuck_ordinary_speech_interrupt_releases_the_takeover(tmp_path,
     stuck = asyncio.Event()
 
     async def hang():
-        await stuck.wait()                                    # 页面不收：send_user_activity 一直等
+        await stuck.wait()                                    # Page never consumes; send_user_activity waits indefinitely.
 
     side.host.interrupt_ordinary_speech = hang
     rt = await start_side(side, clock=clock, wall=wall)
@@ -3389,7 +3389,7 @@ async def test_ending_while_the_main_turn_is_interrupted_fetches_no_credentials(
 
     async def slow_interrupt(timeout):
         reached.set()
-        await gate.wait()                                   # 主对话轮还在收尾
+        await gate.wait()                                   # Main-chat round still ending.
         return True
 
     side.host.interrupt_main_turn = slow_interrupt
@@ -3402,7 +3402,7 @@ async def test_ending_while_the_main_turn_is_interrupted_fetches_no_credentials(
     gate.set()
     assert await issuing is None
     await _finished(rt)
-    assert side.creds_calls == []                            # 一次性邀请码没被兑掉
+    assert side.creds_calls == []                            # One-use invitation remains unredeemed.
     assert side.host.takeovers == []
 
 
@@ -3412,14 +3412,14 @@ async def test_credential_setup_that_raises_ends_the_visit(tmp_path, monkeypatch
     side = make_side(tmp_path, "guest", clock=clock, wall=wall)
 
     async def broken_interrupt(timeout):
-        raise RuntimeError("adapter")                       # 打断主对话的适配层契约外失败
+        raise RuntimeError("adapter")                       # Unexpected adapter-contract failure interrupting main chat.
 
     side.host.interrupt_main_turn = broken_interrupt
     rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
     Wire().attach(rt, None, GUEST_VID)
     await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
-    assert await rt.issue_credentials() is None             # 不把异常抛进传输回调
-    assert rt.finalize_reason == "busy"                     # 收尾、释放路由，不挂在 pending
+    assert await rt.issue_credentials() is None             # Do not propagate into transport callbacks.
+    assert rt.finalize_reason == "busy"                     # Clean up/release routing instead of remaining pending.
     await _finished(rt)
     assert side.creds_calls == []
 
@@ -3446,14 +3446,14 @@ async def test_a_first_join_whose_socket_was_replaced_meanwhile_does_not_count(t
     try:
         joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
         await asyncio.wait_for(reached.wait(), 5)
-        rt.transport.on_page_attached(clock())               # 写上传头期间新连接顶替了它
+        rt.transport.on_page_attached(clock())               # New connection replaces it during header writing.
         gate.set()
         await asyncio.gather(joining)
         assert rt.joined is False and rt.phase != "invite_ready"
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
-        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 新连接自己报
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # New connection reports independently.
         assert rt.joined is True and rt.phase == "invite_ready" and rt.journal.is_open
-        assert len(opens) == 1                                # 上传头只写一次，新连接沿用
+        assert len(opens) == 1                                # Write header once; new connection reuses it.
     finally:
         gate.set()
         await teardown(side, clock=clock)
@@ -3466,9 +3466,9 @@ async def test_a_replacement_page_must_pass_its_own_sdk_gate_before_joining(tmp_
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
     try:
-        await through_gate(rt)                                 # 第一条连接过了能力门 ③，还没入房就断了
+        await through_gate(rt)                                 # First connection passed capability gate ③ but disconnected before entry.
         rt.transport.on_page_lost(clock())
-        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 新连接先报入房
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # New connection reports entry first.
         assert rt.joined is False and rt.phase != "invite_ready"
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
         assert rt.joined is True and rt.phase == "invite_ready"
@@ -3495,12 +3495,12 @@ async def test_a_successor_join_during_a_stale_first_join_is_kept(tmp_path, monk
     try:
         joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
         await asyncio.wait_for(reached.wait(), 5)
-        rt.transport.on_page_attached(clock())                # 旧连接被顶替
+        rt.transport.on_page_attached(clock())                # Old connection superseded.
         await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
-        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 新连接只报这一次
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # New connection reports only once.
         gate.set()
         await asyncio.gather(joining)
-        await wait_for(lambda: rt.joined and rt.phase == "invite_ready")         # 旧的那次结束后补做新连接的入房
+        await wait_for(lambda: rt.joined and rt.phase == "invite_ready")         # After old attempt ends, backfill new connection entry.
     finally:
         gate.set()
         await teardown(side, clock=clock)
@@ -3525,10 +3525,10 @@ async def test_a_successor_join_reported_before_its_sdk_gate_survives_a_stale_fi
     try:
         joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
         await asyncio.wait_for(reached.wait(), 5)
-        rt.transport.on_page_attached(clock())                # 旧连接被顶替
-        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 新连接先报入房
-        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})  # 再过能力门
-        gate.set()                                            # 旧的上传头这时才写完
+        rt.transport.on_page_attached(clock())                # Old connection superseded.
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # New connection reports entry first.
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})  # Pass capability gate again.
+        gate.set()                                            # Old header write completes only now.
         await asyncio.gather(joining)
         await wait_for(lambda: rt.joined and rt.phase == "invite_ready")
     finally:
@@ -3547,11 +3547,11 @@ async def test_credentials_that_arrive_for_a_replaced_page_start_no_sdk_deadline
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
         issuing = asyncio.ensure_future(rt.issue_credentials())
         await wait_for(lambda: side.creds_calls)
-        rt.transport.on_page_attached(clock())                # 等凭证期间页面被顶替
+        rt.transport.on_page_attached(clock())                # Page replaced while awaiting credentials.
         side.creds_gate.set()
-        assert await issuing is None                          # 旧连接拿不到，也不替新连接装能力门期限
+        assert await issuing is None                          # Old connection receives none and cannot start new connection's capability deadline.
         assert rt._sdk_deadline is None
-        assert await rt.issue_credentials() is not None       # 新连接自己来要
+        assert await rt.issue_credentials() is not None       # New connection requests its own.
         assert rt._sdk_deadline is not None
     finally:
         side.creds_gate.set()
@@ -3564,14 +3564,14 @@ async def test_no_new_exit_flow_once_shutdown_started(tmp_path, monkeypatch, clo
     real_seal = rt.journal.seal
 
     async def slow_seal(*args, **kwargs):
-        await stuck.wait()                                    # 关机封存期间
+        await stuck.wait()                                    # During shutdown sealing.
         return await real_seal(*args, **kwargs)
 
     rt.journal.seal = slow_seal
     try:
         stopping = asyncio.ensure_future(rtm.stop_all("shutdown"))
         await wait_for(lambda: rt._shutdown_started)
-        assert rt.request_finalize("peer_left") is False      # 对端 leave / route_end 不再另起收尾流程
+        assert rt.request_finalize("peer_left") is False      # Peer leave/route_end starts no additional cleanup.
         assert rt.exit_task is None
         stuck.set()
         await asyncio.wait_for(stopping, 3)
@@ -3587,7 +3587,7 @@ async def test_a_stuck_account_map_write_does_not_hold_the_visit(tmp_path, monke
     stuck = asyncio.Event()
 
     async def hang(account, visit_uid):
-        await stuck.wait()                                    # 本地记账卡住
+        await stuck.wait()                                    # Local accounting blocked.
 
     side.deps.record_account = hang
     rt = await start_side(side, clock=clock, wall=wall)
@@ -3611,15 +3611,15 @@ async def test_a_failed_account_map_write_is_retried_in_the_background(tmp_path,
     async def flaky(account, visit_uid):
         attempts.append(visit_uid)
         if len(attempts) < 5:
-            raise OSError("visit_accounts.json locked")   # 前四次写不进（超过退避表长度）
+            raise OSError("visit_accounts.json locked")   # First four writes fail, exceeding the backoff-table length.
 
     side.deps.record_account = flaky
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
-        assert await rt.issue_credentials() is not None    # 串门照常（凭证已签发，不为本地记账作废）
-        await wait_for(lambda: len(attempts) == 5)          # 退避表用完后按最后的间隔继续，补写到写成为止
+        assert await rt.issue_credentials() is not None    # Visit proceeds normally; issued credentials are not invalidated for local accounting.
+        await wait_for(lambda: len(attempts) == 5)          # After table exhaustion, repeat the final interval until persistence succeeds.
         await asyncio.sleep(0.1)
         assert len(attempts) == 5
     finally:
@@ -3634,14 +3634,14 @@ async def test_no_started_frame_once_the_visit_is_ending(tmp_path, monkeypatch):
 
     async def slow_media():
         reached.set()
-        await gate.wait()                                     # 页面写入卡住
+        await gate.wait()                                     # Page write blocked.
         return await real_media()
 
     hrt.send_media = slow_media
     try:
         accepting = asyncio.ensure_future(hrt.accept(True))
         await asyncio.wait_for(reached.wait(), 5)
-        hrt.request_finalize("route_end")                     # 这期间结束了
+        hrt.request_finalize("route_end")                     # Visit ends meanwhile.
         gate.set()
         await asyncio.gather(accepting)
         await finish(hrt, clock)
@@ -3663,22 +3663,22 @@ async def test_a_stalled_journal_open_neither_hangs_entry_nor_finalization(tmp_p
     real_open = rt.journal.open
 
     async def stalled_open(**kw):
-        await gate.wait()                                     # 磁盘卡住
+        await gate.wait()                                     # Disk stuck.
         await real_open(**kw)
 
     rt.journal.open = stalled_open
     try:
         assert rt._join_deadline is not None
-        # 收包处理不跟着挂死；入房期限在上传头写完之前一直在
+        # Receive handlers do not hang; room-entry deadline remains through header writing.
         await asyncio.wait_for(rt.on_transport_state({"state": "joined", "peer_present": False}), 3)
         rt.request_finalize("route_end")
-        await asyncio.wait_for(_finished(rt), 10)             # 收尾也不无限等上传头
-        wall.advance(3600)                                    # 磁盘卡了一个小时
-        gate.set()                                            # 上传头晚到写完
-        await wait_for(lambda: rt.journal.sealed)             # 立刻封存，不留没封存的流水
+        await asyncio.wait_for(_finished(rt), 10)             # Cleanup also avoids unbounded header waits.
+        wall.advance(3600)                                    # Disk stuck for an hour.
+        gate.set()                                            # Header finally persists late.
+        await wait_for(lambda: rt.journal.sealed)             # Seal immediately, leaving no unsealed stream.
         await wait_for(lambda: not list((side.config_dir / "visit_spool").glob("*.upload.jsonl")))
         doc = json.loads((side.config_dir / "visit_spool" / f"{rt.visit_id}.upload.json").read_text(encoding="utf-8"))
-        assert doc["request"]["usage"]["duration_s"] < 600    # 时长按收尾那一刻算，不把卡盘的时间算进去
+        assert doc["request"]["usage"]["duration_s"] < 600    # Duration ends at cleanup start, excluding disk delays.
     finally:
         gate.set()
         await teardown(side, clock=clock)
@@ -3688,16 +3688,16 @@ async def test_a_page_that_comes_back_too_late_is_page_lost_not_unsupported(tmp_
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     try:
-        rt.transport.on_page_lost(clock())                    # 页面重载
+        rt.transport.on_page_lost(clock())                    # Page reload.
         clock.advance(19)
-        rt.transport.on_page_attached(clock())                # 第 19 s 连回
+        rt.transport.on_page_attached(clock())                # Reconnect at second 19.
         assert await rt.issue_credentials() is not None
         page_deadline = rt.liveness.page_reload_deadline()
         assert rt._sdk_deadline is not None and page_deadline is not None
-        assert abs(rt._sdk_deadline - page_deadline) < 1e-6   # 能力门期限按绝对期限剩余截短：同时到点
-        clock.advance(page_deadline - clock() + 0.01)         # SDK 一直没报（设计稿：第 31 s 才加载完）
+        assert abs(rt._sdk_deadline - page_deadline) < 1e-6   # Capability wait clamps to remaining absolute deadline; both expire together.
+        clock.advance(page_deadline - clock() + 0.01)         # SDK never reports (design example loads at second 31).
         await rt.tick()
-        assert rt.finalize_reason == "local_page_lost"        # 不是「本机不支持串门」
+        assert rt.finalize_reason == "local_page_lost"        # Does not mean local visits unsupported.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -3710,7 +3710,7 @@ async def test_reliable_peer_messages_during_finalization_are_still_acked_and_re
         stuck = asyncio.Event()
 
         async def slow_close(*args, **kwargs):
-            await stuck.wait()                                # 收尾流程停在关闭数据通道之前
+            await stuck.wait()                                # Cleanup pauses before data-channel closure.
 
         rt.close_current_line = slow_close
         rt.request_finalize("route_end")
@@ -3720,10 +3720,10 @@ async def test_reliable_peer_messages_during_finalization_are_still_acked_and_re
             "t": "text", "v": 1, "ln": "g:90", "lp": rt.room.max_lp_seen + 1, "seq": seq, "sp": "c", "ad": "hc",
             "rt": "", "wu": False, "final": True, "txt": "临走前的最后一句", "truncated": False, "i_done": 0,
         }, nbytes=200)
-        assert rt.sequencer.contiguous_seq == seq             # 推进序号（会回 ack），对端的 leave 才等得到确认
-        assert [r for r in rt.journal.lines() if r["text"] == "临走前的最后一句"]   # 进本侧转录
+        assert rt.sequencer.contiguous_seq == seq             # Advance seq and ack so peer leave can be acknowledged.
+        assert [r for r in rt.journal.lines() if r["text"] == "临走前的最后一句"]   # Enter local transcript.
         await settle()
-        assert not [f for f in host.host.frames[before:] if f.get("type") == "visit_line"]   # 不上屏
+        assert not [f for f in host.host.frames[before:] if f.get("type") == "visit_line"]   # Do not display.
         stuck.set()
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
@@ -3751,7 +3751,7 @@ async def test_late_text_during_finalization_keeps_the_reception_gate_and_the_li
         lp = rt.room.max_lp_seen + 1
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:91", "i": 0, "lp": lp, "txt": "超速", "sp": "c", "ad": "hc",
-            "rt": "", "wu": False}, nbytes=200)                # 分片时已判超速
+            "rt": "", "wu": False}, nbytes=200)                # Already overspeed at fragment stage.
         assert len(text_calls) == 1
         stuck = asyncio.Event()
 
@@ -3765,11 +3765,11 @@ async def test_late_text_during_finalization_keeps_the_reception_gate_and_the_li
             "t": "text", "v": 1, "ln": "g:91", "lp": lp, "seq": seq, "sp": "c", "ad": "hc",
             "rt": "", "wu": False, "final": True, "txt": "超速的整句", "truncated": False, "i_done": 1,
         }, nbytes=200)
-        assert rt.sequencer.contiguous_seq == seq             # 照样推进序号（回 ack）
-        assert len(text_calls) == 1                           # 复用分片时的配额决定
+        assert rt.sequencer.contiguous_seq == seq             # Still advance seq and ack.
+        assert len(text_calls) == 1                           # Reuse fragment-stage quota decision.
         assert not [r for r in rt.journal.lines() if r["text"] == "超速的整句"]
-        monkeypatch.setattr(rt.limiter, "admit", real_admit)  # 下一行配额放行，只看接待闸门
-        rt.activated = False                                  # 接待前开始收尾：补到的台词同样不收
+        monkeypatch.setattr(rt.limiter, "admit", real_admit)  # Next line passes quota; only reception gate applies.
+        rt.activated = False                                  # Cleanup before reception also rejects backfilled dialogue.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:92", "lp": lp + 1, "seq": seq + 1, "sp": "c", "ad": "hc",
             "rt": "", "wu": False, "final": True, "txt": "接待前的一句", "truncated": False, "i_done": 0,
@@ -3790,9 +3790,9 @@ async def test_late_text_during_finalization_keeps_the_reception_gate_and_the_li
             "rt": "", "wu": False, "final": True, "txt": "越界 lp 的一句", "truncated": False, "i_done": 0,
         }, nbytes=200)
         texts = [r["text"] for r in rt.journal.lines()]
-        assert "合法的最后一句" in texts                         # 合法的照样进转录
+        assert "合法的最后一句" in texts                         # Valid lines still enter transcripts.
         replay = [r for r in rt.snapshot()["transcript"] if r.get("line_id") == "g:93"]
-        assert replay and replay[0]["addressee"] == {"side": "host", "kind": "cat"}   # 重放带完整帧形状
+        assert replay and replay[0]["addressee"] == {"side": "host", "kind": "cat"}   # Replay full frame shape.
         assert "占用同一 lp 的一句" not in texts and "越界 lp 的一句" not in texts
         stuck.set()
     finally:
@@ -3807,13 +3807,13 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         lp = rt.room.max_lp_seen + 1
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:96", "i": 0, "lp": lp, "txt": "猫", "sp": "c", "ad": "hc",
-            "rt": "", "wu": False}, nbytes=200)                # 开口按猫娘行
+            "rt": "", "wu": False}, nbytes=200)                # Starts as catgirl line.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:97", "i": 0, "lp": lp + 1, "txt": "猫", "sp": "c", "ad": "hc",
-            "rt": "", "wu": False}, nbytes=200)                # 开口不是告别
+            "rt": "", "wu": False}, nbytes=200)                # Starts without farewell status.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:98", "i": 0, "lp": lp + 2, "txt": "半截", "sp": "c", "ad": "hc",
-            "rt": "", "wu": False}, nbytes=200)                # 页面上开出半截气泡
+            "rt": "", "wu": False}, nbytes=200)                # Partial bubble opens on page.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:99", "i": 0, "lp": lp + 3, "txt": "又一行", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)
@@ -3834,13 +3834,13 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
             "rt": "", "wu": False, "final": True, "txt": "收口改成人类说的", "truncated": False, "i_done": 1,
         }, nbytes=200)
         assert rt.sequencer.contiguous_seq == seq
-        assert not [r for r in rt.journal.lines() if r["text"] == "收口改成人类说的"]   # 说话人记不准：不进转录
+        assert not [r for r in rt.journal.lines() if r["text"] == "收口改成人类说的"]   # Uncertain speaker: exclude from transcript.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:97", "lp": lp + 1, "seq": seq + 1, "sp": "c", "ad": "hc",
             "rt": "", "wu": True, "final": True, "txt": "收口改成告别", "truncated": False, "i_done": 1,
         }, nbytes=200)
         assert rt.sequencer.contiguous_seq == seq + 1
-        assert not [r for r in rt.journal.lines() if r["text"] == "收口改成告别"]   # 与 room 同一判据（含 wu）
+        assert not [r for r in rt.journal.lines() if r["text"] == "收口改成告别"]   # Same criterion as room, including wu.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:98", "lp": lp + 2, "seq": seq + 2, "sp": "c", "ad": "hc",
             "rt": "", "wu": False, "final": True, "txt": "半截补成整句", "truncated": False, "i_done": 1,
@@ -3849,20 +3849,20 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:99", "lp": lp + 2, "seq": seq + 3, "sp": "c", "ad": "hc",
             "rt": "", "wu": False, "final": True, "txt": "占了别人的 lp", "truncated": False, "i_done": 1,
-        }, nbytes=200)                                        # 收口的 lp 与开口时不一致：整行作废
-        rt._ended_published = True                            # 「已结束」已经发出
+        }, nbytes=200)                                        # Finalization lp differs from start: invalidate whole line.
+        rt._ended_published = True                            # Ended already sent.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:100", "lp": lp + 4, "seq": seq + 4, "sp": "c", "ad": "hc",
             "rt": "", "wu": False, "final": True, "txt": "已结束之后补到", "truncated": False, "i_done": 1,
         }, nbytes=200)
-        assert [r for r in rt.journal.lines() if r["text"] == "已结束之后补到"]   # 照样进转录
+        assert [r for r in rt.journal.lines() if r["text"] == "已结束之后补到"]   # Still enter transcript.
         await settle()
         frames = host.host.frames[before:]
         aborted = {f.get("line_id") for f in frames if f.get("type") == "visit_line_abort"}
-        assert {"g:96", "g:97", "g:99"} <= aborted             # 被拒的行：撤掉半截气泡
-        assert [f for f in frames if f.get("type") == "visit_line" and f.get("line_id") == "g:98"]   # 整句收口
+        assert {"g:96", "g:97", "g:99"} <= aborted             # Rejected line: remove partial bubble.
+        assert [f for f in frames if f.get("type") == "visit_line" and f.get("line_id") == "g:98"]   # Finalize full sentence.
         assert not [f for f in frames if f.get("line_id") == "g:100"
-                    and f.get("type") in ("visit_line", "visit_line_abort")]   # 「已结束」之后不再往页面补
+                    and f.get("type") in ("visit_line", "visit_line_abort")]   # No later page completion after ended.
         stuck.set()
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
@@ -3886,11 +3886,11 @@ async def test_the_backlog_is_recorded_when_the_header_lands_in_time(tmp_path, m
     try:
         joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
         await wait_for(lambda: rt._journal_opening is not None)
-        rt._count_anomaly("test", streak=False)               # 上传头还在写：先攒着
+        rt._count_anomaly("test", streak=False)               # Header writing: buffer first.
         assert rt._journal_backlog
-        gate.set()                                            # 10 s 之内写完
+        gate.set()                                            # Finishes within 10s.
         await asyncio.wait_for(joining, 5)
-        await wait_for(lambda: not rt._journal_backlog)       # 不等下一句或封存，落盘时就补记
+        await wait_for(lambda: not rt._journal_backlog)       # Backfill on persistence, without waiting for another sentence or sealing.
         assert rt.journal.anomalies == 1
     finally:
         gate.set()
@@ -3905,7 +3905,7 @@ async def test_a_display_queue_whose_sender_stopped_is_restarted_by_the_flush(tm
 
     async def send_frame(payload):
         if payload.get("line_id") == "first":
-            await hold.wait()                                 # 第一帧写页面时卡住
+            await hold.wait()                                 # First frame blocks writing to page.
         return await real_send(payload)
 
     host.host.send_frame = send_frame
@@ -3913,10 +3913,10 @@ async def test_a_display_queue_whose_sender_stopped_is_restarted_by_the_flush(tm
         rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "first"})
         rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "second"})
         await settle()
-        rt._display_task.cancel()                             # 发送任务被取消：队列里还剩一句
+        rt._display_task.cancel()                             # Sender cancelled with one sentence remaining in queue.
         await settle()
         await rt._flush_display(2)
-        assert [f for f in host.host.frames if f.get("line_id") == "second"]   # flush 时重新拉起、送出去
+        assert [f for f in host.host.frames if f.get("line_id") == "second"]   # flush restarts sender and delivers.
     finally:
         hold.set()
         host.host.send_frame = real_send
@@ -3930,7 +3930,7 @@ async def test_page_frames_queued_before_the_end_reach_the_page_first(tmp_path, 
 
     async def send_frame(payload):
         if payload.get("type") == "visit_line" and payload.get("line_id") == "slow":
-            await asyncio.sleep(0.3)                          # 页面背压
+            await asyncio.sleep(0.3)                          # Page backpressure.
         return await real_send(payload)
 
     host.host.send_frame = send_frame
@@ -3943,7 +3943,7 @@ async def test_page_frames_queued_before_the_end_reach_the_page_first(tmp_path, 
         ended = [i for i, f in enumerate(frames) if f.get("type") == "visit_state_change"
                  and f.get("action") == rtm.PHASE_ENDED]
         shown = [i for i, f in enumerate(frames) if f.get("line_id") == "goodbye"]
-        assert ended and shown and shown[0] < ended[0]        # 告别句先上屏，再「已结束」
+        assert ended and shown and shown[0] < ended[0]        # Display farewell before ended.
     finally:
         host.host.send_frame = real_send
         await teardown(host, guest, wire=wire, clock=clock)
@@ -3969,11 +3969,11 @@ async def test_lines_recorded_while_the_journal_header_is_late_are_backfilled(tm
         await rt.on_transport_state({"state": "joined", "peer_present": False})
         assert not rt.journal.is_open
         await rt.record_line("own_human", side="host", lp=3, ln="h:3", text="上传头还没写完时说的", truncated=False)
-        rt._on_usage({"llm_output_tokens": 7})                # 这期间的用量与异常同样先攒着
+        rt._on_usage({"llm_output_tokens": 7})                # Buffer intervening usage/anomalies too.
         rt._count_anomaly("test", streak=False)
-        gate.set()                                            # 上传头晚到写完
+        gate.set()                                            # Header finally persists late.
         await wait_for(lambda: [r for r in rt.journal.lines() if r["text"] == "上传头还没写完时说的"])
-        await wait_for(lambda: not rt._journal_backlog)       # 用量 / 异常排在那一行后面补记
+        await wait_for(lambda: not rt._journal_backlog)       # Backfill usage/anomalies after that line.
         assert rt.journal.usage()["llm_output_tokens"] == 7
         assert rt.journal.anomalies == 1
     finally:
@@ -4004,7 +4004,7 @@ async def test_the_backlog_still_being_flushed_is_in_the_sealed_journal(tmp_path
 
     def slow_append(data):
         writing.set()
-        write_gate.wait(10)                                   # 补写第 1 行时磁盘卡住
+        write_gate.wait(10)                                   # Disk stuck backfilling line one.
         real_append(data)
 
     rt.journal.open = slow_open
@@ -4013,18 +4013,18 @@ async def test_the_backlog_still_being_flushed_is_in_the_sealed_journal(tmp_path
         for i in (3, 4):
             await rt.record_line("own_human", side="host", lp=i, ln=f"h:{i}", text=f"积压第{i}行", truncated=False)
         rt.journal._append_sync = slow_append
-        gate.set()                                            # 上传头落盘：后台补写开始，卡在第 1 行
+        gate.set()                                            # Header persists; background backfill starts and stalls on line one.
         await wait_for(writing.is_set)
         late = asyncio.ensure_future(rt.record_line("own_human", side="host", lp=5, ln="h:5", text="积压第5行",
                                                     truncated=False))
-        await asyncio.sleep(0)                                # 积压没补完时新来的行排在积压后面
-        rt.request_finalize("route_end")                      # 补写没跑完就开始收尾封存
+        await asyncio.sleep(0)                                # New lines queue behind incomplete backlog.
+        rt.request_finalize("route_end")                      # Cleanup sealing starts before backfill completes.
         await asyncio.sleep(0.2)
         write_gate.set()
         await asyncio.wait_for(_finished(rt), 10)
         await asyncio.wait_for(late, 5)
         assert rt.journal.sealed
-        # 按写入顺序看（lines() 会按 lp 重排）：积压没补完时新来的行排在积压后面
+        # Inspect write order (lines() reorders by lp): new lines follow unfinished backlog.
         texts = [r["text"] for r in rt.journal._records if str(r.get("text", "")).startswith("积压")]
         assert texts == ["积压第3行", "积压第4行", "积压第5行"]
     finally:
@@ -4039,13 +4039,13 @@ async def test_state_reports_a_page_reload_as_reconnecting(tmp_path, monkeypatch
     try:
         snap = rt.snapshot()
         assert snap["connected"] and not snap["reconnecting"]
-        rt.liveness.on_page_lost(clock())                     # 传输页重载中：没有页面能收发帧
+        rt.liveness.on_page_lost(clock())                     # Transport page reloading: no page can send/receive frames.
         snap = rt.snapshot()
         assert not snap["connected"] and snap["reconnecting"]
         rt.liveness.on_page_back(clock())
         assert rt.snapshot()["connected"]
         rt.liveness.on_page_lost(clock())
-        rt.phase = rtm.PHASE_ENDED                            # 结束后留在 _recent 里重放：不算重连中
+        rt.phase = rtm.PHASE_ENDED                            # Post-ending _recent replay is not reconnecting.
         assert not rt.snapshot()["reconnecting"]
         rt.phase = rtm.PHASE_ACTIVE
     finally:
@@ -4057,8 +4057,8 @@ async def test_shutdown_closes_the_outbox_and_the_isolated_session(tmp_path, mon
     rt = host.rt
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
-        assert host.clients[0].closed                         # 隔离会话的客户端关掉了
-        assert rt.outbox._executor is None                    # outbox 写线程停了、带正文的 .outbox.jsonl 删了
+        assert host.clients[0].closed                         # Isolated-session client closed.
+        assert rt.outbox._executor is None                    # Outbox writer stopped and body-containing .outbox.jsonl deleted.
         assert not list((host.config_dir / "visit_spool").glob("*.outbox.jsonl"))
     finally:
         await teardown(guest, wire=wire, clock=clock)
@@ -4068,7 +4068,7 @@ async def test_a_joined_visit_is_not_ended_by_the_join_deadline(tmp_path, monkey
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
     try:
         assert rt.joined
-        rt._join_deadline = clocks[0]() - 1                   # 已报入房、只是上传头写得慢时入房期限到点
+        rt._join_deadline = clocks[0]() - 1                   # Entry already reported; only slow header writing remains when deadline expires.
         await rt.tick()
         assert rt.finalize_reason != "relay_lost"
     finally:
@@ -4076,13 +4076,13 @@ async def test_a_joined_visit_is_not_ended_by_the_join_deadline(tmp_path, monkey
 
 
 async def test_credentials_of_another_account_end_the_visit_and_cancel_the_room(tmp_path, monkeypatch, clocks):
-    patch_admission(monkeypatch)      # 准入时本机账号是 acct
+    patch_admission(monkeypatch)      # Local account is acct at admission.
     clock, wall = clocks
     side = make_side(tmp_path, "host", clock=clock, wall=wall)
 
     async def other_account(**kwargs):
         side.creds_calls.append(kwargs)
-        return credentials("host", account="someone-else")   # 领凭证前换了社区账号
+        return credentials("host", account="someone-else")   # Switch community account before requesting credentials.
 
     side.deps.fetch_credentials = other_account
     rt = await start_side(side, clock=clock, wall=wall)
@@ -4098,17 +4098,17 @@ async def test_credentials_of_another_account_end_the_visit_and_cancel_the_room(
 
 
 async def test_guest_does_not_redeem_the_invite_after_an_account_switch(tmp_path, monkeypatch, clocks):
-    patch_admission(monkeypatch)      # 准入时本机账号是 acct
+    patch_admission(monkeypatch)      # Local account is acct at admission.
     clock, wall = clocks
     side = make_side(tmp_path, "guest", clock=clock, wall=wall)
     rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
 
-    # 准入之后有过一次登出 / 换账号（account_change 抬过代数）
+    # Logout/account change after admission raised account_change generation.
     monkeypatch.setattr(rtm, "_account_gen", rtm._account_gen + 1)
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
         assert await rt.issue_credentials() is None
-        # 一次性邀请码没被兑掉：领凭证请求一次都没发
+        # One-use invitation unredeemed: zero credential requests sent.
         assert side.creds_calls == [] and rt.finalize_reason == "busy"
     finally:
         await teardown(side, clock=clock)
@@ -4118,7 +4118,7 @@ async def test_account_change_waits_for_an_in_flight_credential_request(tmp_path
     patch_admission(monkeypatch)
     clock, wall = clocks
     side = make_side(tmp_path, "guest", clock=clock, wall=wall)
-    side.creds_gate = asyncio.Event()          # 领凭证请求发出、Servers 还没回
+    side.creds_gate = asyncio.Event()          # Credentials requested; Servers has not answered.
     rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
@@ -4127,15 +4127,15 @@ async def test_account_change_waits_for_an_in_flight_credential_request(tmp_path
         swapped = []
 
         async def keep_visits():
-            return False      # 这次变更不结束在飞场次（也覆盖场次已注销、请求仍在后台的情形）
+            return False      # This change does not end in-flight visits, including unregistered visits with background requests.
 
         async def logout():
             async with rtm.account_change(timeout=5.0, ends_visits=keep_visits):
-                swapped.append("session replaced")   # 调用方在这里改本机会话
+                swapped.append("session replaced")   # Caller changes local session here.
 
         change = asyncio.ensure_future(logout())
         await settle(60)
-        # 请求还在途：会话不能先被换掉（否则 _servers_session 可能按新账号兑掉邀请码）
+        # In-flight requests prevent session replacement, or _servers_session may redeem invites under the new account.
         assert swapped == []
         side.creds_gate.set()
         await asyncio.wait_for(change, 5)
@@ -4149,7 +4149,7 @@ async def test_credentials_request_is_pinned_to_the_admitted_account(tmp_path, m
     patch_admission(monkeypatch)
     clock, wall = clocks
     side = make_side(tmp_path, "guest", clock=clock, wall=wall)
-    side.creds_error = cr.VisitAccountChanged("account_change")    # 凭证客户端发现会话已换了账号
+    side.creds_error = cr.VisitAccountChanged("account_change")    # Credential client detects changed accounts.
     rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
@@ -4161,7 +4161,7 @@ async def test_credentials_request_is_pinned_to_the_admitted_account(tmp_path, m
 
 
 async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, monkeypatch, clocks):
-    # 核验之后、装入对端之前（读本机名字的 await 里）被拉黑：拉黑钩子此时找不到对端，装入前要再查一次
+    # Blocked after verification but before peer installation (local-name await): hooks cannot yet find peers, so recheck before installation.
     from main_logic.visit.limits import BlockEntry, Blocklist
     from main_routers.visit_router import display_socket
 
@@ -4177,7 +4177,7 @@ async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, mo
     async def clean_then_block(self, raw, uid):
         name = await real_clean(self, raw, uid)
         entries.append(BlockEntry(visit_uid=GUEST_UID, display_name_at_block="x", blocked_at=NOW))
-        assert await display_socket.end_visits_with_peer(GUEST_UID) == 0      # 钩子还找不到它
+        assert await display_socket.end_visits_with_peer(GUEST_UID) == 0      # Hook still cannot find it.
         return name
 
     monkeypatch.setattr(type(rt), "_clean_peer_name", clean_then_block)

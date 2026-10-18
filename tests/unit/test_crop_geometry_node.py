@@ -39,7 +39,7 @@ def test_upper_full_and_pixel_rects():
     assert abs(up["width"] - exp_w) < 1e-9 and abs(up["height"] - exp_h) < 1e-9
     assert abs(up["x"] + up["width"] / 2 - 300) < 1e-9
     assert abs(up["y"] + up["height"] / 2 - (50 + 1000 * 0.32)) < 1e-9
-    # 无头部信息：结果顶边贴包围盒顶（上 64%）
+    # No head information: align the result's top with the bounding-box top (upper 64%).
     assert abs(out["noHead"]["y"] - 50) < 1e-6 and abs(out["noHead"]["height"] - 640) < 1e-6
     assert out["withHead"]["y"] == 200 - 120 * 0.2
     full = out["full"]

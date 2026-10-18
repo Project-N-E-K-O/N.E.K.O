@@ -1,4 +1,4 @@
-"""固定旁白条件的证人来源诊断：以猫娘自身动作为准时提示自证触发风险（问题2.141 B1）。"""  # noqa: DOCSTRING_CJK
+"""Witness-source diagnostics for fixed-narration conditions: warn about self-triggering when based on the catgirl's own actions (issue 2.141 B1)."""  # noqa: DOCSTRING_CJK
 
 from theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
 
@@ -9,7 +9,7 @@ def _story(fixed_narrations):
     return {
         "schema": "neko.story.numeric.v2",
         "start_node_id": "start",
-        # 真实剧本常不声明隐藏数值；该诊断必须仍然生效（此前的提前返回会跳过它）。
+        # Real scripts often omit hidden values; this diagnostic must still run (the old early return skipped it).
         "metric_schema": {},
         "nodes": [{
             "id": "start",
@@ -47,7 +47,7 @@ def test_entry_trigger_is_not_reported():
 
 
 def test_warning_also_fires_on_the_metric_analyzed_path():
-    # 声明了隐藏数值时走完整可达性分析路径，该诊断同样必须保留。
+    # With hidden values declared, retain this diagnostic on the full reachability-analysis path too.
     story = _story([_piece("猫娘已经实际接过旧照片。")])
     story["metric_schema"] = {"trust": {"min": 0, "max": 10, "initial": 5,
                                         "per_turn_limit": {"increase": 2, "decrease": 2}}}

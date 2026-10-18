@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING, List, Any
 from utils.logger_config import get_module_logger
 import os
 
-# bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
-# system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
+# Import bs4 lazily on first use in each parser, with utils.module_warmup background warmup; system_router imports this module
+# at top level on main_server's startup chain, so eager bs4 delays port readiness.
 if TYPE_CHECKING:
     pass
 from pathlib import Path
@@ -74,18 +74,18 @@ def _fix_bilibili_api_env():
     """
     logger.info("正在检查 Bilibili API 运行环境兼容性...")
     
-    # 检查是否处于打包环境 (Nuitka 会定义 __nuitka_binary_dir)
+    # Detect packaged execution (Nuitka defines __nuitka_binary_dir).
     is_compiled = "__nuitka_binary_dir" in globals() or getattr(sys, 'frozen', False)
 
     try:
-        # 用 find_spec 定位安装路径而非 import bilibili_api：修复只需要目录位置 +
-        # mkdir/写 JSON，find_spec 不执行模块代码（毫秒级），而真 import 要 ~0.4s
-        # 且本函数在模块加载期跑、坐在 main_server 启动 import 链上。时序契约不变：
-        # 修复仍在 web_scraper import 期完成、先于 plugin/plugins/bilibili_* 的
-        # import bilibili_api（见下方调用处注释，PR #1496）。
+        # Locate the installed path with find_spec rather than importing bilibili_api: repair needs only the directory plus
+        # mkdir/JSON writes. find_spec executes no module code and takes milliseconds; importing takes about 0.4 s.
+        # This function runs during module loading on main_server's startup chain. Preserve the timing contract:
+        # repair still completes during web_scraper import, before plugin/plugins/bilibili_*
+        # import bilibili_api (see call-site comments below, PR #1496).
         import importlib.util
 
-        # 1. 定位 bilibili_api 库路径
+        # 1. Locate the bilibili_api library.
         try:
             spec = importlib.util.find_spec("bilibili_api")
             origin = spec.origin if spec else None
@@ -103,7 +103,7 @@ def _fix_bilibili_api_env():
 
         data_dir = base_path / "data"
 
-        # 2. 强制创建 data 目录
+        # 2. Ensure the data directory exists.
         if not data_dir.exists():
             try:
                 data_dir.mkdir(parents=True, exist_ok=True)
@@ -114,9 +114,9 @@ def _fix_bilibili_api_env():
         else:
             logger.debug("B站数据目录已存在，检查配置文件...")
 
-        # 3. 定义必须存在的配置文件及其默认内容
-        # video_uploader_lines.json: 核心报错文件，必须是字典格式 {}
-        # gevent_patch.json: 部分环境需要的补丁配置，通常是 {}
+        # 3. Define required configuration files and defaults.
+        # video_uploader_lines.json: the main failing file, which must contain a dict {}.
+        # gevent_patch.json: patch configuration required in some environments, usually {}.
         missing_files = {
             "video_uploader_lines.json": {},
             "gevent_patch.json": {}
@@ -133,7 +133,7 @@ def _fix_bilibili_api_env():
                 except Exception as e:
                     logger.warning(f"❌ 写入配置文件 {file_name} 失败: {e}")
             else:
-                # 检查文件是否为空或损坏 (可选)
+                # Optionally check whether the file is empty or corrupt.
                 try:
                     if file_path.stat().st_size == 0:
                         atomic_write_json(file_path, default_content)
@@ -150,25 +150,25 @@ def _fix_bilibili_api_env():
     except ImportError:
         logger.info("未检测到 bilibili_api 库，跳过环境修复逻辑。")
     except Exception as e:
-        # 最后的兜底，确保此函数无论如何不会导致主程序崩溃
+        # Final fallback: this function must never crash the main program.
         logger.warning(f"⚠️ 尝试自修复 B站 API 环境时发生非预期异常: {e}")
 
-# 在模块加载时立即执行：该修复会在 bilibili_api 安装目录里创建缺失的 data 文件
-# （磁盘级、进程无关、一次性）。除了 web_scraper 自身，plugin/plugins/bilibili_*
-# 也会直接 import bilibili_api 并依赖这些文件已就位——所以这一步必须在 import
-# 期跑（而非 lazy 到 web_scraper 的 B 站函数被调时），否则那些插件在全新环境下
-# 会踩到缺文件错误（见 PR #1496 codex review）。现用 find_spec 免去真 import，
-# 修复本身只剩目录/文件检查，bilibili_api 的 import 由 module_warmup 后台预热。
+# Run immediately during module loading: repair creates missing data files in bilibili_api's installation directory
+# once, at disk level and independently of processes. Besides web_scraper, plugin/plugins/bilibili_*
+# directly import bilibili_api and depend on these files already existing. Therefore run at import
+# time rather than lazily when web_scraper's Bilibili functions are called, or plugins in fresh environments
+# encounter missing files (PR #1496 codex review). find_spec now avoids actual import;
+# repair only checks directories/files, while module_warmup imports bilibili_api in the background.
 _fix_bilibili_api_env()
 
 # ==================================================
-# 从 language_utils 导入区域检测功能
+# Import region detection from language_utils.
 # ==================================================
 
 try:
     from utils.language_utils import is_china_region as is_china_region
 except ImportError:
-    # 如果 language_utils 不可用，使用回退方案
+    # Fall back if language_utils is unavailable.
     import locale
     def is_china_region() -> bool:
         """

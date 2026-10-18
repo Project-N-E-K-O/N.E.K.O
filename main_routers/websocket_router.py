@@ -24,7 +24,7 @@ Handles WebSocket endpoints including:
 URL convention: WebSocket routes (``@router.websocket('/ws/...')``) follow the
 same no-trailing-slash rule as HTTP routes. See
 ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -143,7 +143,7 @@ logger = get_module_logger(__name__, "Main")
 # Lock for session management
 _lock = asyncio.Lock()
 
-# 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
+# Retain fire-and-forget tasks against Python 3.11+ garbage collection.
 _ws_bg_tasks: set = set()
 # A character can have more than one WebSocket at a time (for example the
 # main page and /chat_full).  Each one sends its own greeting_check, so the
@@ -534,11 +534,11 @@ async def _publish_agent_intent_restore_signal(lanlan_name: str, *, new_session:
         logger.debug("[Greeting] agent intent restore signal publish failed: %s", exc)
 
 
-# 每个角色的 WS 断开时间戳（epoch），用于区分"首次连接"与"刷新/重连"
+# Per-character WebSocket disconnection epoch distinguishes first connections from refresh/reconnect.
 _ws_disconnect_time: dict[str, float] = {}
-# 每个角色当前活跃的 WS 连接数（pet + /chat_full 等可并存）。用于判定
-# greeting_check 是不是"真·新会话"：并发开第二个窗口时不能算新会话（否则会重置
-# 主动搭话预算被刷新/多窗口 farm）。单事件循环内 inc/dec 无 await 间隙，天然原子。
+# Per-character active WebSocket counts include concurrent Pet and /chat_full windows. greeting_check uses
+# them to identify genuinely new sessions: opening another window must not reset proactive budgets,
+# allowing refresh/multiwindow farming. Increment/decrement within one loop has no await and is naturally atomic.
 _ws_active_count: dict[str, int] = {}
 # Per-character registry of the socket that last claimed the manager-wide
 # voice connection identity: lanlan_name -> (session uuid, websocket). Used
@@ -552,18 +552,18 @@ _voice_connection_sockets: dict[str, tuple[uuid.UUID, WebSocket]] = {}
 
 # ---- Telemetry helpers ----
 
-# Dim 字段安全限制 —— 前端是 untrusted 输入，必须挡掉：
-# - 高基数维度（如把消息内容塞进 dim）会污染 instrument counter map
-# - 超长 key / value 浪费上报带宽
-# 32B key / 64B value 对所有合理的 enum 标签都够用；超的截断而不是丢，
-# 保留 prefix 至少能切片诊断（如果某个错误 dim 反复触发，前缀也能看出来源）。
+# Dimension-field safety: frontend input is untrusted; block:
+# - High-cardinality dimensions, such as message content, polluting instrument counter maps.
+# - Overlong keys/values wasting reporting bandwidth.
+# 32-byte keys / 64-byte values suffice for reasonable enum labels. Truncate rather than discard excess,
+# preserving prefixes for diagnostic slicing and identifying repeated bad dimensions' sources.
 _TELEM_MAX_DIMS = 8
 _TELEM_KEY_MAX = 32
 _TELEM_VAL_MAX = 64
 _TELEM_NAME_MAX = 64
-# event fields 的 value 比 counter dims 宽松（128B vs 64B），允许 hash / 短
-# stack signature 之类略长的标识进 event 但不进 counter map。fields **数量**
-# 仍受 _TELEM_MAX_DIMS=8 限制 —— event 也不该塞高基数 payload。
+# Event-field values allow 128 bytes versus 64 for counter dimensions, supporting hashes / short
+# stack signatures in events without entering counter maps. Field count still obeys
+# _TELEM_MAX_DIMS=8; events must not carry high-cardinality payloads either.
 _TELEM_EVENT_VAL_MAX = 128
 
 
@@ -587,7 +587,7 @@ def _sanitize_dims(d, value_max: int) -> dict:
             out[k] = v
         elif isinstance(v, str):
             out[k] = v[:value_max]
-        # 其它类型（list / dict / None）丢弃
+        # Discard other types: list / dict / None.
     return out
 
 
@@ -610,21 +610,21 @@ def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
 
         from utils.instrument import counter as _c, histogram as _h, event as _e
 
-        # 前端是 untrusted 输入：Python JSON 解析接受 NaN/Infinity token，
-        # 必须在这里挡掉非有限值。否则 NaN 会毒化 client 端 in-memory counter
-        # （nan + n = nan），上传时被 storage 的 isfinite 守卫整条丢弃 → 静默
-        # 丢掉该 counter 的整个窗口（Codex）。与 storage 端守卫对称。
+        # Frontend input is untrusted: Python JSON accepts NaN/Infinity tokens,
+        # so reject nonfinite values here. Otherwise NaN poisons client in-memory counters
+        # (nan+n=nan), and storage's isfinite guard silently drops the counter's
+        # entire reporting window (Codex). Symmetric with storage validation.
         if kind == "counter":
             dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
             val = message.get("value", 1)
             if isinstance(val, bool) or not isinstance(val, (int, float)):
-                val = 1  # 缺失 / 非数字 → 默认 +1（事件发生了）
+                val = 1  # Missing/nonnumeric values default to +1 because the event occurred.
             elif not math.isfinite(val):
-                return  # NaN / Inf：reject 整条，不污染 counter
+                return  # Reject entire NaN/Inf entries without contaminating counters.
             elif isinstance(val, float):
-                # counter 是整数计数：storage 只收整数（4.0 可、1.5 不可），
-                # 非整数 float 这里不挡的话会先聚合进内存、上传时被静默丢
-                # 整窗（CodeRabbit）。整数值 float 归一化成 int。
+                # Counters are integers; storage accepts integer-valued numbers (4.0 yes, 1.5 no).
+                # Unguarded fractional floats aggregate in memory then silently lose the whole
+                # window on upload (CodeRabbit). Normalize integral floats to int.
                 if not val.is_integer():
                     return
                 val = int(val)
@@ -639,7 +639,7 @@ def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
         elif kind == "event":
             fields = _sanitize_dims(message.get("fields"), _TELEM_EVENT_VAL_MAX)
             _e(name, **fields)
-        # 其它 kind 静默丢弃
+        # Silently discard other kinds.
     except Exception as e:
         logger.debug(f"WS telemetry handler error (non-critical): {e}")
 
@@ -650,31 +650,31 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     session_manager = get_session_manager()
     voice_control_tasks = set()
     await websocket.accept()
-    # Telemetry：WS 连接计数。**不带** lanlan_name dim —— 那是用户自定义的
-    # character 名（characters_router 接受 user-controlled new_name），直接进
-    # dim 会把 raw 用户字符串泄到远程 telemetry DB，同时让 metric_key 基数
-    # 按 (用户数 × 角色数) 爆炸。诊断"哪个角色被打开"对 D2-D7 流失意义有限，
-    # 不值得这两个风险。需要时由业务侧显式埋一个 bounded enum 维度。
+    # Telemetry: WebSocket connection count, without lanlan_name dimensions. Users control character names
+    # through characters_router new_name; dimensions would leak raw strings to
+    # remote telemetry databases and explode metric-key cardinality by
+    # user count x character count. Knowing which character opened adds little D2-D7 retention insight,
+    # not enough for either risk. Add explicit bounded-enum business dimensions if needed.
     try:
         from utils.instrument import counter as _instr_counter
         _instr_counter("ws_connect")
     except Exception:
-        # 埋点失败绝不阻塞 WS 业务路径 —— 计数丢一条比让用户连不上服务严重程度
-        # 差几个数量级。imports 失败的可能性主要在打包环境下 utils 不齐时。
+        # Telemetry failures never block WebSocket business paths: losing one count is orders of magnitude less severe
+        # than preventing connection. Import failures mainly arise from incomplete packaged utils.
         pass
     _ws_connect_ts = time.time()
 
-    # 检查角色是否存在，如果不存在则通知前端并关闭连接
+    # If the character does not exist, notify frontend and close the connection.
     if lanlan_name not in session_manager:
         logger.warning(f"❌ 角色 {lanlan_name} 不存在，当前可用角色: {list(session_manager.keys())}")
-        # 获取当前正确的角色名
+        # Get the currently correct character name.
         current_catgirl = None
         if session_manager:
             current_catgirl = next(iter(session_manager))
-        # 通知前端切换到正确的角色
+        # Tell frontend to switch to the correct character.
         if current_catgirl:
             try:
-                # 注意：此时还没有session_manager，无法获取用户语言，使用默认语言
+                # session_manager does not exist yet, so user language is unavailable; use the default.
                 message = {
                     "type": "catgirl_switched",
                     "new_catgirl": current_catgirl,
@@ -682,7 +682,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 }
                 await websocket.send_text(json.dumps(message))
                 logger.info(f"已通知前端切换到正确的角色: {current_catgirl}")
-                # 等待一下让客户端有时间处理消息，避免 onclose 在 onmessage 之前触发
+                # Briefly allow client message handling so onclose cannot precede onmessage.
                 await asyncio.sleep(0.5)
             except Exception as e:
                 logger.warning(f"通知前端失败: {e}")
@@ -690,15 +690,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         return
     
     this_session_id = uuid.uuid4()
-    # [DIAG] stream_data 计数器：按连接独立，重连后 `#1` 首包可见
+    # [DIAG] Per-connection stream_data counters expose first packet #1 after reconnect.
     # sd_log_counter = 0
     async with _lock:
         session_id = get_session_id()
         session_id[lanlan_name] = this_session_id
     logger.info(f"⭐ WebSocket accepted: {websocket.client}, new session id: {session_id[lanlan_name]}, lanlan_name: {lanlan_name}")
     
-    # 立即设置websocket到session manager，以支持主动搭话
-    # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
+    # Set session_manager websocket immediately for proactive chat.
+    # Even if cleanup() runs after this, start_session sets websocket again.
     mgr = session_manager[lanlan_name]
     mgr.websocket = websocket
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
@@ -920,13 +920,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
         _fire_task(mgr.trigger_agent_callbacks())
 
-    # finally 块要在所有路径上能读到这个变量，包括 BaseException 抢断
-    # try-else 链的情形（SystemExit / KeyboardInterrupt 都不走 else）。
+    # finally must read this variable on every path, including BaseException interrupting
+    # try-else; SystemExit/KeyboardInterrupt bypass else.
     _ws_disconnect_reason = "unknown"
     try:
         register_chat_avatar_connection(websocket)
-        # 计入活跃连接（finally 必减）。greeting_check 判定真·新会话时据此排除
-        # 「并发开第二个窗口」的情形。
+        # Count active connections and always decrement in finally. greeting_check uses this to exclude
+        # simultaneous second-window openings from new sessions.
         _ws_active_count[lanlan_name] = _ws_active_count.get(lanlan_name, 0) + 1
         malformed_frames = 0
         while True:
@@ -969,7 +969,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 connection_id=this_session_id,
                 is_current=session_id.get(lanlan_name) == this_session_id,
             )
-            # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
+            # Security: lanlan_name may disappear after rename/deletion.
             if lanlan_name not in session_manager:
                 logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                 await websocket.close()
@@ -1010,10 +1010,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                     await websocket.close()
                     break
-                # 「正在前往另一个终端」是说给被踢下线的这条旧连接听的。
-                # send_status 走 mgr.websocket，而它此刻已经归新窗口所有——发过去
-                # 就成了刚接走角色的那个窗口收到「角色要离开」。格式与 send_status
-                # 一致，前端按同一条 status 翻译路径显示。
+                # The moving-to-another-terminal notice belongs to this old displaced connection.
+                # send_status uses mgr.websocket, already owned by the new window; sending there
+                # wrongly tells the window that just acquired the character it is leaving. Use send_status's
+                # format so frontend localization follows the same status path.
                 try:
                     await websocket.send_text(json.dumps({
                         "type": "status",
@@ -1043,7 +1043,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 await asyncio.sleep(0)
                 continue
 
-            # 处理语言设置（可以在任何消息中携带）
+            # Handle language settings, which may accompany any message.
             render_language = _apply_session_language_message(
                 session_manager[lanlan_name],
                 message,
@@ -1051,12 +1051,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             # logger.debug(f"WebSocket received action: {action}") # Optional debug log
 
-            # ── Telemetry dispatch（前端 counter / histogram / event 通道）──
-            # 前端 static/app/app-telemetry.js 通过 action="telemetry" 投递数据；
-            # 这里转交 utils.instrument，跟 Python 端发出去的走同一上报通道。
-            # 早返回避免污染下面的业务 dispatch；不需要 session_manager 状态。
+            # -- Telemetry dispatch for frontend counters / histograms / events --
+            # static/app/app-telemetry.js sends action="telemetry";
+            # forward to utils.instrument through the same reporting channel as Python metrics.
+            # Return early without polluting business dispatch below; session_manager state is unnecessary.
             if action == "telemetry":
                 _handle_ws_telemetry(message, lanlan_name=lanlan_name)
+                continue
+
+            if action == "proactive_vision_consent":
+                session_manager[lanlan_name].update_proactive_vision_consent(
+                    message.get("enabled")
+                )
                 continue
 
             if action == "goodbye_state":
@@ -1065,8 +1071,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 goodbye_mgr = session_manager[lanlan_name]
                 goodbye_mgr.set_goodbye_silent(active, reason)
                 if active and _visit_owns_input(lanlan_name) and _visit_socket_bound(websocket):
-                    # 串门中收到全局告别：串门按 goodbye 收尾（OD-25）；不在串门时这里什么都不做。
-                    # 与串门的其它输入同口径：只认已 visit_bind 的连接（普通告别处理照旧）
+                    # Global goodbye during visits finalizes them as goodbye (OD-25); outside visits do nothing here.
+                    # Like other visit input, accept only visit_bind connections; ordinary goodbye behavior is unchanged.
                     from main_routers.visit_router import display_socket as _visit_display
 
                     _visit_display.finalize_on_goodbye(lanlan_name)
@@ -1134,10 +1140,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         message.get("independent_asr_provider_preference")
                     )
                 input_type = message.get("input_type", "audio")
-                # 前端每次 start_session 自带的请求标识，原样回带进
-                # session_started。多窗口下 ack 会经 voice-lease fan-out 到达
-                # 不是本请求方的窗口，标识就是接收方判断「这条是不是回应我」
-                # 的唯一依据（详见 core/notify.py send_session_started）。
+                # Echo each frontend start_session request's identifier unchanged into
+                # session_started. Voice-lease fan-out may deliver acknowledgments to other windows,
+                # making the identifier the recipient's sole way to determine whether it answers its request
+                # (see core/notify.py send_session_started).
                 request_id = message.get("request_id")
                 if isinstance(request_id, str):
                     request_id = request_id.strip()[:128] or None
@@ -1213,8 +1219,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                 )
                             )
                             continue
-                    # 传递input_mode参数，告知session manager使用何种模式
-                    # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
+                    # Pass input_mode to tell the session manager which mode to use.
+                    # main_server preloads audio modules in the background; Python import locks wait for first import automatically.
                     mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                     if mode == "audio" and is_theater_active(lanlan_name):
                         # Server-side backstop for the frontend theater voice guard:
@@ -1262,12 +1268,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                     )
                                 )
                                 continue
-                    # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
-                    # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
-                    # 但要避开"上一轮 start_session 还在跑"的 race：那时清零会让
-                    # 正在跑的失败重新算第 1 次，熔断永远开不起来。这种情况下
-                    # 让正在跑的那次自己处理；新的 start_session 进入后会被
-                    # _starting_session_count > 0 的早退拦掉。
+                    # Explicit user start_session (refresh/retry) clears circuit breakers.
+                    # Internal recovery bypasses this; breakers clear only on this path.
+                    # Avoid clearing while a prior start_session still runs: resetting then makes
+                    # its failure count as first again, preventing breakers from ever opening.
+                    # Let that running attempt handle itself; the new start_session exits early
+                    # under _starting_session_count > 0.
                     if session_manager[lanlan_name]._starting_session_count == 0:
                         session_manager[lanlan_name].reset_session_start_circuit()
                     _fire_task(
@@ -1330,8 +1336,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     and _visit_owns_input(lanlan_name)
                     and not _visit_socket_bound(websocket)
                 ):
-                    # 串门中、这条连接没 visit_bind：不交给串门，也不漏进普通聊天（§4.5）。
-                    # 麦克风 PCM 照旧交给路由（串门丢弃 PCM、节流提示语音不可用，不涉及内容）
+                    # During visits, unbound connections go neither to visits nor ordinary chat (section 4.5).
+                    # Microphone PCM still goes through routing: visits discard PCM and throttle voice-unavailable notices, without inspecting content.
                     from main_routers.visit_router import display_socket as _visit_display
 
                     await _visit_display.refuse(websocket, message.get("request_id"))
@@ -1345,14 +1351,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         and str(message.get("source") or "").startswith(VISIT_ROUTE_KIND + ":")
                         and not _visit_owns_input(lanlan_name)
                     ):
-                        # 写给串门的句子、当前输入却不归串门（页面漏了结束、别的路由如游戏已接管）：
-                        # 先于通用路由分派拒掉，不让别的路由认领、也不漏进普通聊天
+                        # Visit-addressed text with input no longer visit-owned (missed end events / another route such as games took over):
+                        # reject before generic dispatch so no other route claims it and it cannot leak into ordinary chat.
                         from main_routers.visit_router import display_socket as _visit_display
 
                         await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
                         continue
-                    # 分派途中路由可能换主（别的路由放手、串门刚好起来）：把发起这条输入的连接带进分派，
-                    # 串门据此拒绝未绑定连接的输入、把未授权提示发回这条连接
+                    # Ownership can change during dispatch, with another route releasing as visits start. Pass the originating connection
+                    # so visits reject unbound inputs and send authorization notices back to that connection.
                     connection_token = DISPLAY_SOCKET_CONNECTION.set(websocket)
                     try:
                         claim = await route_external_stream_message(lanlan_name, message)
@@ -1374,24 +1380,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         input_type in _TEXT_SESSION_INPUT_TYPES
                         and str(message.get("source") or "").startswith(VISIT_ROUTE_KIND + ":")
                     ):
-                        # 分派途中串门放手（路由在 ending 释放）、这句没人接：同样不漏进普通聊天，
-                        # 按「正在道别」拒掉，页面据 request_id 标未送达、放回原文
+                        # Visit ownership released during dispatch and nobody claims the line: still exclude ordinary chat,
+                        # rejecting as saying-goodbye; frontend request_id marks non-delivery and restores text.
                         from main_routers.visit_router import display_socket as _visit_display
 
                         await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
                         continue
-                # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
+                # [DIAG] Missing STT after character switches: verify frontend audio arrival.
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")
                 # _data_len = len(_data) if isinstance(_data, (str, bytes, bytearray)) else -1
-                # # 按连接计数，重连后 #1 首包仍可见；每 50 次打一条够判断通路是否活
+                # Per-connection counts retain #1 after reconnect; logging every 50 packets proves the path is alive.
                 # sd_log_counter += 1
                 # if sd_log_counter == 1 or sd_log_counter % 50 == 0:
                 #     logger.info(
                 #         f"[{lanlan_name}] stream_data #{sd_log_counter} input_type={_input_type_dbg} data_len={_data_len}"
                 #     )
                 # Extract and store avatar position metadata (paired with screenshot)
-                # 显式清空：前端不发 avatar_position = 不应叠加，防止旧坐标残留
+                # Explicitly clear: absent frontend avatar_position means no overlay, preventing stale coordinates.
                 av_pos = message.get("avatar_position")
                 if av_pos and isinstance(av_pos, dict):
                     session_manager[lanlan_name]._avatar_position = av_pos
@@ -1477,11 +1483,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # engages, its later engaged: false controls (stopping
                     # its own recording) dispatch normally below.
                     continue
-                # MicLease 是音频路由的后端权威控制面；按 websocket 消息顺序
-                # 同步处理，避免控制事件之后的 PCM 抢先进入旧 turn。
-                # getattr 守卫与 _begin_voice_input_connection /
-                # _ensure_voice_input_session_authorized 对齐：没有 mixin 的
-                # manager double 应 no-op 而不是抛出 SERVER_ERROR。
+                # MicLease is the authoritative backend audio-routing control plane; process synchronously in
+                # WebSocket message order so post-control PCM cannot enter the old turn early.
+                # getattr guards match _begin_voice_input_connection /
+                # _ensure_voice_input_session_authorized: manager doubles without the mixin
+                # must noop rather than raise SERVER_ERROR.
                 handle_voice_input_control = getattr(
                     session_manager[lanlan_name],
                     "_handle_voice_input_control",
@@ -1525,36 +1531,39 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 resolve_capture_response(lanlan_name, message)
 
             elif action == "screenshot_response":
-                raw = message.get("data", "")
+                declined = message.get("declined") is True
+                raw = "" if declined else message.get("data", "")
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
                 # Extract and store avatar position metadata (paired with fresh screenshot)
                 av_pos = message.get("avatar_position")
                 if not (av_pos and isinstance(av_pos, dict)):
-                    # 前端明确说这张图不该叠（窗口截图 / 相机 / Avatar 已折叠 / 多屏）。
+                    # Frontend explicitly forbids overlays for this image: window screenshot / camera / collapsed Avatar / multiple screens.
                     av_pos = None
-                session_manager[lanlan_name]._avatar_position = av_pos
-                # 坐标随图一起交给等待方，不让它去读会被别的帧改写的 _avatar_position。
-                session_manager[lanlan_name].resolve_screenshot_request(b64, av_pos)
+                # Deliver coordinates with the image, never reading _avatar_position that other frames may overwrite.
+                session_manager[lanlan_name].resolve_screenshot_request(
+                    b64, av_pos, declined=declined,
+                    request_id=message.get("request_id"),
+                )
 
             elif action == "greeting_check":
-                # 首次连接或切换角色时，前端请求检查是否需要主动搭话
-                # is_switch=true 时始终触发；否则检查上次断开距今是否 >15s（排除刷新/重连）
+                # On first connection or character switch, frontend asks whether proactive chat is needed.
+                # is_switch=true always triggers; otherwise require >15s since disconnect, excluding refresh/reconnect.
                 is_switch = message.get("is_switch", False)
                 greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
                 since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
-                # 触发问候的判定（保持原行为）：切角色 或 距上次断开 >15s。
+                # Preserve greeting behavior: character switch or >15s since last disconnect.
                 new_session = bool(is_switch or since_disconnect > 15)
-                # 重置主动搭话预算用的更严判定：在上面基础上还要求本连接是该角色唯一
-                # 活跃连接，排除「并发开第二个窗口」（无断开时间戳 → since_disconnect=inf
-                # 假成新会话 → 重置预算被多窗口 farm）。本连接已在 try 起始处计数，唯一
-                # 时为 1。问候判定不受此约束，避免改动既有问候行为。
+                # Budget resets require the stricter condition of this being the character's sole active connection too,
+                # excluding simultaneous second windows: absent disconnection timestamp gives since_disconnect=inf,
+                # falsely simulating new sessions and enabling multiwindow budget farming. Counted at try entry, sole means
+                # count=1. Greetings do not use this restriction, preserving existing behavior.
                 budget_new_session = new_session and _ws_active_count.get(lanlan_name, 1) <= 1
                 #
-                # 顺便：这也是 agent_server 启动后第一个"用户实际进入会话"的信号 ——
-                # 我们用它来触发 agent runtime intent restore (analyzer_enabled +
-                # 5 个 sub flag 上次会话的开关状态)。restore 是 fire-and-forget 的
-                # ZMQ event，agent_server 端有 once-flag 保证只跑一次。
+                # Also the first actual-user-entered-session signal after agent_server starts:
+                # Use it to restore Agent runtime intent: analyzer_enabled and five subflags
+                # from the previous session. Restore is a fire-and-forget ZMQ event;
+                # agent_server uses a once flag to run it only once.
                 _fire_task(_publish_agent_intent_restore_signal(lanlan_name, new_session=budget_new_session))
                 # A freshly-connected window (notably the separate /chat_full
                 # window, which has its own ws and misses any earlier Focus
@@ -1602,10 +1611,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
 
             elif action == "cat_greeting_check":
-                # 从猫咪形态变回猫娘（请她回来）时，前端按猫咪停留时长请求一次专属问候。
-                # 与 greeting_check 对偶，但独立计时：门槛采用服务端观测到的 goodbye 周期，
-                # 前端时长仅用于诊断且不能抬高门槛；不查对话 gap；
-                # 不发 agent intent restore（那是"首次进入会话"信号，变回不是）。
+                # On returning from cat form to catgirl, frontend requests a dedicated greeting based on time spent as a cat.
+                # Symmetric with greeting_check but timed independently: use the server-observed goodbye cycle as threshold;
+                # frontend duration is diagnostic only and cannot increase it. Do not inspect conversation gaps.
+                # Do not restore Agent intent; that signals first session entry, unlike returning to catgirl form.
                 reported_duration, cat_tier, cat_was_auto, episode = _normalize_cat_greeting_check(message)
                 cat_duration = session_manager[lanlan_name].consume_goodbye_cycle_duration()
                 if cat_duration is None:
@@ -1646,14 +1655,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 )
 
             elif action == "ping":
-                # 心跳保活消息，回复pong
+                # Heartbeat keepalive: reply pong.
                 await websocket.send_text(json.dumps({"type": "pong"}))
-                # logger.debug(f"收到心跳ping，已回复pong")
+                # logger.debug(f"Received heartbeat ping; replied pong")
 
             elif action == "language_update":
-                # 前端 i18next 'languageChanged' fire 时发的纯语言同步消息：``language``
-                # 字段已被 line 136-139 通用 handler 处理（``set_user_language``），
-                # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
+                # Frontend i18next languageChanged sends pure language synchronization. The language
+                # field was already handled by the shared handler at lines 136-139 through set_user_language;
+                # noop here to avoid default dispatch sending UNKNOWN_ACTION to the frontend.
                 pass
 
             elif action == "music_playback_state":
@@ -1690,14 +1699,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "visit_speech_progress":
                 if not _visit_socket_bound(websocket):
-                    # 只认已 visit_bind 的连接：串门结束后回家仪式句 / 简述的进度（决定插件回调何时交还）
-                    # 同样不收未绑定连接的。串门占着输入时回未授权，否则静默丢弃
+                    # Accept only visit_bind connections, including homecoming ritual/debrief progress that determines plugin handback;
+                    # reject unbound connections while visits own input, otherwise discard silently.
                     if _visit_owns_input(lanlan_name):
                         from main_routers.visit_router import display_socket as _visit_display
 
                         await _visit_display.refuse(websocket)
                     continue
-                # 交给注册表：没有 on_page_signal 的路由（game）不认领，忽略即可
+                # Delegate to the registry; routes without on_page_signal, such as games, do not claim it and may be ignored.
                 await route_external_page_signal(lanlan_name, message)
 
             else:
@@ -1717,8 +1726,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         except: # noqa
             pass
     else:
-        # 进 finally 时既不是 disconnect 也不是异常 —— 实际上 while True 循环
-        # 内只有 break 才到这；break 路径上面都设过 reason；这里兜底防 NameError。
+        # finally reached without disconnect/error means break from while True;
+        # every break path above sets reason. This fallback prevents NameError.
         _ws_disconnect_reason = "normal_break"
     finally:
         unregister_chat_avatar_connection(websocket)
@@ -1734,9 +1743,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         if lanlan_name in session_manager:
             from main_logic.voice_input.preview import preview_isolation_registry
             preview_isolation_registry.release_connection(session_manager[lanlan_name], str(this_session_id))
-        # Telemetry：连接生命周期。reason 是低基数 enum，duration 进 histogram
-        # 看用户实际停留时长（D2-D7 流失诊断的关键指标之一）。
-        # lanlan_name 不进 dim —— 见 accept 处 ws_connect 同样原因（PII + 高基数）。
+        # Telemetry: connection lifecycle. reason is a low-cardinality enum; duration enters a histogram
+        # measuring actual user dwell time, a key D2-D7 retention diagnostic.
+        # Exclude lanlan_name dimensions for the same PII/cardinality reasons as ws_connect at accept.
         try:
             from utils.instrument import counter as _instr_counter, histogram as _instr_histogram
             _ws_dur = time.time() - _ws_connect_ts
@@ -1744,22 +1753,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             if _ws_dur > 0:
                 _instr_histogram("ws_session_sec", _ws_dur)
         except Exception:
-            # finally 阶段 telemetry 失败不能再 raise —— 已经在 cleanup 路径上，
-            # 抛异常会污染调用栈让真正的 WS error 看不到。
+            # Never raise telemetry failures in finally, already on the cleanup path;
+            # exceptions obscure the real WebSocket error in the call stack.
             pass
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
-        # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
+        # Record disconnect time to distinguish refresh/reconnect next time.
         _ws_disconnect_time[lanlan_name] = time.time()
-        # 释放活跃连接计数（与 try 起始处的 +1 对偶）
+        # Release active-connection count, symmetric with +1 at try entry.
         _ws_active_count[lanlan_name] = max(0, _ws_active_count.get(lanlan_name, 1) - 1)
-        # 释放 capture_bridge 注册并 resolve 其所有 pending futures 为错误，
-        # 让 /api/capture/health 立即返回 503。
+        # Release capture_bridge registration and resolve all pending futures with errors,
+        # making /api/capture/health return 503 immediately.
         try:
             from utils.capture_bridge import unmark_capture_client
             unmark_capture_client(lanlan_name, expected_websocket=websocket)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[capture_bridge] unmark on disconnect failed: %s", exc)
-        # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
+        # Security: lanlan_name may disappear after rename/deletion.
         async with _lock:
             session_id = get_session_id()
             is_current = session_id.get(lanlan_name) == this_session_id

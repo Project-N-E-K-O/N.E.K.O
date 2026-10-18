@@ -94,8 +94,8 @@ def test_atomic_write_bytes_is_flagged_too():
 
 
 def test_a_named_sync_helper_that_writes_is_flagged_through_one_hop():
-    # 这是绝大多数真实调用点的形状：协程调一个同步的 save_xxx，落盘藏在
-    # helper 体内。
+    # Most real callers look like this: coroutine invokes synchronous save_xxx, hiding persistence inside
+    # the helper body.
     out = _violations('''
     def save_storage_policy(policy):
         atomic_write_json(path, policy)
@@ -108,9 +108,9 @@ def test_a_named_sync_helper_that_writes_is_flagged_through_one_hop():
 
 
 def test_the_module_qualified_form_is_flagged():
-    # `from utils import file_utils` 之后 `file_utils.atomic_write_json(...)` 是
-    # attribute 调用，走不到 RISKY_BARE_CALLS（那条只看 ast.Name）。不认这种写法
-    # 等于给一种完全正常的 import 风格开了后门。
+    # After `from utils import file_utils`, `file_utils.atomic_write_json(...)` is an
+    # attribute call, missed by RISKY_BARE_CALLS (ast.Name only). Ignoring this valid style
+    # would create a backdoor for ordinary imports.
     out = _violations("""
     async def handler(payload):
         file_utils.atomic_write_json(path, payload)
@@ -178,7 +178,7 @@ def test_an_unrelated_import_alias_is_not_flagged():
 
 
 def test_an_unrelated_receiver_with_the_same_attr_is_not_flagged():
-    # 反证：认的是 (file_utils, atomic_write_*) 这一对，不是光看方法名。
+    # Negative case: recognize (file_utils, atomic_write_*), not method names alone.
     out = _violations("""
     async def handler(payload):
         my_own_writer.atomic_write_json(path, payload)
@@ -215,7 +215,7 @@ def test_workshop_path_async_twin_is_allowed():
 
 
 def test_a_sync_caller_is_not_flagged():
-    # 规则只管事件循环上的调用；同步上下文里落盘本来就没问题。
+    # Rule covers event-loop calls only; persistence in synchronous contexts is fine.
     out = _violations('''
     def save_storage_policy(policy):
         atomic_write_json(path, policy)
@@ -226,14 +226,14 @@ def test_a_sync_caller_is_not_flagged():
     assert out == []
 
 
-# ── 通用名去噪 ──────────────────────────────────────────────────────────
+# ── Generic-name noise filtering ─────────────────────────────────────────
 
 
 @pytest.mark.parametrize("generic", ["save", "load", "write", "flush", "update"])
 def test_a_generic_helper_name_is_not_indexed(generic):
-    # 索引是按名字匹配的，`save` 这种通用动词会撞上 PIL 的 img.save() 和
-    # TokenTracker.save() 之类毫无关系的东西。宁可漏报也不制造假阳性 ——
-    # 与本文件对 queue/thread/socket 尾名的既有取舍同一条原则。
+    # Name-matched indexes make generic `save` collide with unrelated PIL img.save()
+    # and TokenTracker.save(). Prefer missed findings over false positives,
+    # consistent with existing queue/thread/socket suffix tradeoffs in this file.
     out = _violations(f'''
     def {generic}(payload):
         atomic_write_json(path, payload)
@@ -245,8 +245,8 @@ def test_a_generic_helper_name_is_not_indexed(generic):
 
 
 def test_the_denylist_is_about_the_helper_name_not_the_write():
-    # 反证：同一个 helper 体，换成一个够独特的名字就必须被抓到。这条保证
-    # 上面那组绿不是因为规则整个失效了。
+    # Negative case: identical helper body with a sufficiently distinctive name must be detected,
+    # proving earlier passing cases do not mean the rule stopped working entirely.
     out = _violations('''
     def save_workshop_config(payload):
         atomic_write_json(path, payload)
@@ -257,12 +257,12 @@ def test_the_denylist_is_about_the_helper_name_not_the_write():
     assert len(out) == 1
 
 
-# ── 报告形状 ────────────────────────────────────────────────────────────
+# ── Report shape ────────────────────────────────────────────────────────
 
 
 def test_one_call_site_is_reported_once():
-    # `atomic_write_json` 既是已知阻塞调用，本身又是一个体内含
-    # atomic_write_text 的同步 def —— 直接规则和传递规则会双双命中同一处。
+    # `atomic_write_json` is both a known blocking call and a synchronous def containing
+    # atomic_write_text, so direct and transitive rules both match one site.
     out = _violations('''
     def atomic_write_json(path, data):
         atomic_write_text(path, dumps(data))
@@ -282,7 +282,7 @@ def test_noqa_suppresses_the_call_site():
     assert out == []
 
 
-# ── 真实仓库：这条规则必须是绿的 ─────────────────────────────────────────
+# ── Real repository: this rule must pass ─────────────────────────────────
 
 
 def test_the_repo_itself_has_no_on_loop_atomic_writes():

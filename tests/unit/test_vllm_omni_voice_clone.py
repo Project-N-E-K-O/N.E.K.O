@@ -169,7 +169,7 @@ def test_vllm_omni_worker_clone_inlines_ref_audio_and_ref_text(monkeypatch):
     _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
 
     cfg = _config_frame(fake_ws)
-    # ⚠ 字段名严格 ref_audio/ref_text，vllm-omni 用旧名 prompt_audio/prompt_text 会 500
+    # Fields must be ref_audio/ref_text; vllm-omni returns 500 for legacy prompt_audio/prompt_text.
     assert cfg["ref_audio"] == clone_uri
     assert cfg["ref_text"] == ref_text
     assert "prompt_audio" not in cfg
@@ -220,9 +220,9 @@ def test_vllm_omni_worker_clone_id_without_ref_audio_falls_back(monkeypatch):
     _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
 
     cfg = _config_frame(fake_ws)
-    # voice 绝不能是克隆 ID，必须回退到 default
+    # voice must never be a clone ID; fall back to default.
     assert cfg["voice"] == "default"
-    # ref_audio 为空时 ref_text 不应单独发给服务端（服务端会 ValueError 崩溃）
+    # Do not send ref_text alone when ref_audio is empty (the server crashes with ValueError).
     assert "ref_audio" not in cfg
     assert "ref_text" not in cfg
 
@@ -287,7 +287,7 @@ def test_get_tts_worker_routes_vllm_omni_clone_voice(monkeypatch):
     assert isinstance(worker, partial)
     assert worker.func is tts_client.vllm_omni_tts_worker
     assert provider_key == "vllm_omni"
-    # 本地服务无 key：api_key override 为空串（禁止 fallback 别家 key）
+    # Local service needs no key: override api_key with an empty string, forbidding fallback to another vendor's key.
     assert api_key == ""
     expected_uri = "data:audio/wav;base64," + base64.b64encode(sample).decode("ascii")
     assert worker.keywords["ref_audio"] == expected_uri
@@ -642,7 +642,7 @@ def test_vllm_omni_preview_success(monkeypatch):
     assert result["success"] is True
     assert result.get("audio"), "preview response should contain audio base64"
 
-    # 验证 session.config 被正确发送
+    # Verify session.config is sent correctly.
     config_msg = None
     for m in fake_ws.sent:
         try:
@@ -726,7 +726,7 @@ def test_vllm_omni_preview_no_audio_frames(monkeypatch):
     }
     cm = _make_config_manager_for_preview(voice_id, voice_data)
 
-    # 服务端只发 session.done，无 PCM 帧
+    # Server sends only session.done, with no PCM frames.
     fake_ws = _FakePreviewWS(frames=[], events=[{"type": "session.done", "total_sentences": 0}])
     _orig_ws = _cr.websockets
     fake_ws_mod = _types.ModuleType("websockets")

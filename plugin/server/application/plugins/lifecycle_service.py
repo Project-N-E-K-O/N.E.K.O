@@ -168,34 +168,34 @@ async def clear_plugin_llm_tools(
 
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
-# 被整轮预算压缩后，一步至少还能拿到这么久。
+# Minimum time a step receives after compression by the whole-pass budget.
 #
-# 没有下界的话，预算见底时算出来的是 0 或负数，那等于"直接判这个插件启动失败"
-# 而不是"抓紧试一次"——而走到启动阶段的插件都是我们刚亲手停掉的，判它失败就是
-# 把它留在停止状态；关停侧则会退化成直接杀进程而不是先请它自己收尾。
+# Without a lower bound, an exhausted budget yields zero or negative time, immediately declaring startup failed
+# rather than giving one hurried attempt. Plugins reaching startup were just stopped by us, so failure
+# leaves them stopped; shutdown would similarly degenerate into killing the process without requesting cleanup first.
 #
-# 启动和关停各有各的下界。它们曾经共用一个数，而把启动的下界抬上去会连带把关停
-# 的最坏墙钟一起抬高——那是两件无关的事，一次改动不该同时动到。
+# Startup and shutdown have separate lower bounds. They once shared one value, so raising startup's minimum also
+# raised shutdown's worst-case wall time, coupling two unrelated concerns in one change.
 #
-# 启动 3.0 而不是 1.0：下界的意思是"至少给它一次真正的尝试"，而 1 秒买不到一次
-# 尝试。光是起子进程加导入框架，本机实测就要 0.74s（其中 0.38s 是 fastapi），插件
-# 自己的导入还没开始算。给一个必然超时的窗口，等于把健康插件在超支的那一轮记成
-# 启动失败。代价只落在已经超支的病态路径上：一轮 8 个插件最坏多花 16 秒，而正常
-# 一轮根本走不到这里。
+# Startup gets 3.0 rather than 1.0: the minimum promises one real attempt, and one second cannot buy one.
+# Spawning a subprocess and importing the framework alone measured 0.74s locally (fastapi accounts for 0.38s), before
+# any plugin imports. An inevitably insufficient window marks healthy plugins as startup failures on
+# an over-budget pass. Only the already pathological over-budget path pays: eight plugins cost up to 16 extra seconds;
+# a normal pass never reaches this case.
 _MIN_CLAMPED_START_TIMEOUT = 3.0
-# 关停保持 1.0：这一步不起进程，它只是给插件一个说"我收好了"的机会。
-# 清理远端工具表这一步在没有预算约束时愿意花的时间（它自己内部还有更细的超时）。
+# Keep shutdown at 1.0: this step spawns no process and merely lets the plugin acknowledge cleanup.
+# Time allotted to clearing the remote tool table without budget constraints (it has finer internal timeouts too).
 _CLEAR_TOOLS_BUDGET_SECONDS = 2.0
-# 预算见底时仍然留给它的一小段时间。不是"启动尝试"那种下界（那是
+# Keep a small allowance even when the budget is exhausted. This differs from the startup-attempt minimum;
 # _MIN_CLAMPED_START_TIMEOUT），
-# 只是让这次幂等的远端清除**发得出去**——跳过的代价是永久的幽灵工具，而这
-# 一小段的代价只在 main_server 真的卡住时才付。
+# it merely lets this idempotent remote clear be sent. Skipping leaves permanent ghost tools, whereas
+# this small allowance costs time only when main_server actually hangs.
 _MIN_TOOL_CLEANUP_TIMEOUT = 0.25
 
-# 关停门闩：ServerLifecycleService._shutdown_internal 在动任何插件宿主之前置位，
-# startup() 在开头重置。置位后 start_plugin 拒绝启动新插件——被 asyncio.shield
-# 保护的 in-flight reload 若在 host 快照/清空之后才注册新 host，那个子进程就是
-# 没人停止的孤儿。与 _delivery_path_shutting_down 同模式：关停置位、启动重置。
+# Shutdown latch: ServerLifecycleService._shutdown_internal sets it before touching any plugin host;
+# startup() resets it initially. Once set, start_plugin rejects new plugins: an in-flight reload protected
+# by asyncio.shield could otherwise register a new host after the host snapshot/clear, leaving an orphan
+# subprocess nobody stops. Follow _delivery_path_shutting_down: set on shutdown, reset on startup.
 _operations_shutting_down = False
 _hot_reload_failed: set[str] = set()
 
@@ -219,10 +219,10 @@ def active_startup_timeout(plugin_id: str) -> float | None:
 def revoke_hot_reload_recovery(plugin_id: str) -> None:
     """Drop the recovery permission when the plugin's source is replaced.
 
-    卸载、覆盖安装、开发关联的移除/改绑都不一定经过 stop_plugin（插件没在
-    跑时根本不会调），许可就会挂在 ID 上，被之后同 ID 的另一份源码（恢复的
-    内置插件、重装的包）继承——改一下文件就把用户从没启动过的插件拉起来。
-    调用方都在操作锁内。
+    Uninstallation, overwrite installation, and removing/rebinding development links may bypass stop_plugin (never
+    called when the plugin is stopped), leaving permission attached to the ID for different source installed later
+    (a restored built-in plugin or reinstalled package) to inherit, starting a plugin the user never started merely after editing a file.
+    All callers hold the operation lock.
     """
     _hot_reload_failed.discard(plugin_id)
 
@@ -234,8 +234,8 @@ def _resolve_python_requirements(
 ) -> tuple[list[str], list[Path], list[str]]:
     """Read a plugin's declared Python deps and check them against its vendor dir.
 
-    三步全是磁盘 I/O：读 pyproject.toml、列出 vendor/ 下每个 dist-info、逐个读它们
-    的 METADATA。合成一个函数只是为了让调用方能一次 to_thread 掉，见 start_plugin。
+    All three steps are disk I/O: read pyproject.toml, list each dist-info under vendor/, then read each
+    METADATA. Combining them lets callers offload everything with one to_thread call; see start_plugin.
     """
     requirements = _collect_plugin_python_requirements(conf, config_path, logger, plugin_id)
     paths = _collect_plugin_python_requirement_paths(config_path)
@@ -285,16 +285,16 @@ def _read_packaged_isolated_metadata(
     if packaged is None:
         return None
     if config_overrides_packaged_entries(conf, pdata, packaged):
-        # 打包期读的是暂存目录那份 plugin.toml，看不到用户的运行时配置/激活
-        # profile。生效配置一旦改过 entries 表，包里那份 handler 就不是这台机器上
-        # 该注册的那一套了（codex）。这种插件回落到真扫一次。
+        # Packaging reads plugin.toml in the staging directory and cannot see user runtime configuration or the active
+        # profile. If effective configuration changes entries, packaged handlers no longer describe the entries
+        # this machine should register (codex). Fall back to a real scan for such plugins.
         return None
     if not packaged.built_in_this_environment:
-        # 这一份是别的机器上 import 出来的结果。插件完全可以按 sys.platform 或
-        # Python 版本条件注册入口，那样的话包里那套 handler 描述的是打包机的能力
-        # 集，不是这台机器的（codex）。展示用的 entries 可以将就，但注册进
-        # state.event_handlers 的这份是权威能力集——它错了，模型会去调一个这台机器
-        # 上根本不存在的入口。回落到真扫一次，代价就是本 PR 之前的原样。
+        # These results were imported on another machine. Plugins may conditionally register entries based on sys.platform or
+        # Python version, so packaged handlers describe the packaging machine's capabilities,
+        # rather than this machine's (codex). Display-only entries can tolerate that, but the entries registered in
+        # state.event_handlers are authoritative: incorrect metadata makes the model invoke an entry absent on this
+        # machine. Fall back to a real scan, costing exactly what the pre-PR behavior did.
         logger.info(
             "packaged metadata was produced in a different environment; "
             "rescanning so the registered entries match this machine: "
@@ -382,9 +382,9 @@ def _refresh_scanned_packaged_metadata(
 ) -> None:
     """Turn the scan a refused package forced into the next start's fast path.
 
-    两种"被拒"，两种落盘位置（见函数末尾的分派）：schema 过期 → 就地改写包内那份；
-    ``build_env`` 不是本机的 → 写宿主运行时缓存，发行产物字节不动。
-    两者写成功之后，下次启动直接命中，不再扫描。
+    Two refusal reasons have distinct persistence locations (see dispatch at the function's end): outdated schema rewrites packaged metadata in place;
+    ``build_env`` differing from this machine writes the host runtime cache without changing distribution bytes.
+    After either successful write, the next startup hits directly without scanning.
 
     Only when the effective ``entries`` table is the manifest's own: the file
     describes the package, and an active profile or runtime override that
@@ -614,8 +614,8 @@ def _plugin_is_running_sync(plugin_id: str) -> bool:
         return plugin_id in state.plugin_hosts
 
 
-# 公开别名：hot_reload_service 等跨模块调用方应使用不带下划线的名字，
-# 避免私有符号被外部依赖。
+# Public alias: cross-module callers such as hot_reload_service should use the name without an underscore
+# to avoid external dependencies on private symbols.
 plugin_is_running_sync = _plugin_is_running_sync
 
 
@@ -737,14 +737,14 @@ def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> 
     rejected_by_shutdown_latch = False
     with state.acquire_plugin_hosts_write_lock():
         if _operations_shutting_down:
-            # 门闩的权威检查点。start_plugin 入口那次检查只负责快速失败（省掉
-            # 一次 spawn），挡不住"入口检查通过之后、注册之前"关停置闩的窗口。
-            # 这里的检查与注册落在同一个写锁临界区内，而 _shutdown_hosts 的
-            # 快照（读锁）和 Phase 4 的清空（写锁）拿的是同一把锁：关停置闩后
-            # 才注册的 host 要么早于快照（会被正常关停），要么在这里被拒绝，
-            # 不存在漏网的孤儿进程。抛出后 start_plugin 的 except
-            # ServerDomainError 分支会走 _cleanup_started_host 收掉已 spawn
-            # 的子进程。
+            # Authoritative latch checkpoint. The start_plugin entry check only fails fast, saving
+            # one spawn; it cannot close the window between that check passing and registration when shutdown sets the latch.
+            # Check and registration share a write-lock critical section; _shutdown_hosts takes its snapshot
+            # under the same lock for reading and Phase 4 clears under it for writing. A host registered after shutdown
+            # sets the latch is either captured before the snapshot (and shut down normally) or rejected here,
+            # leaving no orphan process. After this raises, start_plugin's except
+            # ServerDomainError branch invokes _cleanup_started_host to collect the already spawned
+            # subprocess.
             rejected_by_shutdown_latch = True
         else:
             if plugin_id in state.plugin_hosts:
@@ -754,11 +754,11 @@ def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> 
             state.plugin_hosts[plugin_id] = host
             current_count = len(state.plugin_hosts)
     if rejected_by_shutdown_latch:
-        # 在锁外抛：ServerDomainError 是 frozen dataclass，拒绝属性赋值，
-        # 从生成器式 context manager 的 with 块内抛出会被 gen.throw 的
-        # __traceback__ 赋值退化成 TypeError（见 operation_lock 里
-        # bounded_operation_wait 为什么写成类而不是 @contextmanager）。
-        # 检查本身仍在写锁临界区内，与快照/清空互斥的保证不受影响。
+        # Raise outside the lock: ServerDomainError is a frozen dataclass rejecting attribute assignment;
+        # raising inside a generator context manager's with block lets gen.throw's
+        # __traceback__ assignment turn it into TypeError (see operation_lock's explanation of
+        # why bounded_operation_wait is a class rather than @contextmanager).
+        # The check itself remains inside the write-lock critical section, preserving exclusion against snapshot/clear.
         raise _to_domain_error(
             code="PLUGIN_OPERATION_SHUTTING_DOWN",
             message="Server is shutting down; plugin start rejected",
@@ -993,12 +993,12 @@ async def _start_host_with_timeout(
         raise
 
 
-# reload-all 停止阶段的墙钟预算。
+# Wall-clock budget for the reload-all stop phase.
 #
-# 每个插件的 stop 都要独立抢一次跨进程锁（见下面 reload_all_plugins 里的说明：
-# 这一段无法真并行），所以耗时随插件数线性增长，而前端只等 30s。超预算就停下，
-# 已经停掉的照常汇报，剩下的留在原地——比让整个请求超时、而操作又在后台继续
-# 落地要好。
+# Each plugin stop separately acquires the cross-process lock (see reload_all_plugins below:
+# this part cannot truly run in parallel), so duration scales linearly with plugin count while the frontend waits only 30s.
+# Stop on budget exhaustion, report already stopped plugins normally, and leave the rest in place, avoiding a request
+# timeout while operations continue taking effect in the background.
 # Env: NEKO_PLUGIN_RELOAD_ALL_BUDGET
 
 _RELOAD_ALL_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_RELOAD_ALL_BUDGET", 20.0)
@@ -1045,10 +1045,10 @@ class PluginLifecycleService:
             raise RuntimeError("Plugin startup requires the operation lock")
         _hot_reload_failed.discard(plugin_id)
         if _operations_shutting_down:
-            # 关停已经开始了：这时候拉起的插件会落在 host 快照之后，变成没人
-            # 停止的孤儿进程。这里是快速失败（省掉 spawn）；权威的检查点在
-            # _register_or_replace_host_sync 的注册临界区里，兜住"这里通过
-            # 之后、注册之前"置闩的窗口（见 _operations_shutting_down 注释）。
+            # Shutdown has begun: starting plugins now could place them after the host snapshot, creating orphan processes
+            # nobody stops. This check fails fast to save a spawn; the authoritative checkpoint is inside
+            # _register_or_replace_host_sync's registration critical section, closing the window when the latch is set
+            # after this check but before registration (see _operations_shutting_down).
             raise _to_domain_error(
                 code="PLUGIN_OPERATION_SHUTTING_DOWN",
                 message="Server is shutting down; plugin start rejected",
@@ -1297,17 +1297,17 @@ class PluginLifecycleService:
                     error_type="DuplicatePlugin",
                 )
             current_plugin_id = resolved_id
-            # 这一步是真正的磁盘 I/O，而且原本直接跑在事件循环线程上：一个 200
-            # 个分发包的 vendor 目录冷读实测 0.31s、600 个 0.97s（Windows 本机；
-            # 热读分别是 45ms / 184ms），整个服务器在这期间不响应任何请求
-            # （Greptile）。挪进线程——它周围每一步本来就是这么做的（建 host、
-            # 元数据扫描、运行时元数据落盘）。
+            # This is real disk I/O that previously ran directly on the event-loop thread. Cold-reading a vendor directory
+            # with 200 distributions measured 0.31s locally on Windows; 600 took 0.97s
+            # (warm reads: 45ms / 184ms), during which the entire server responds to no requests
+            # (Greptile). Move it into a thread, as every surrounding step already does (host creation,
+            # metadata scanning, runtime metadata persistence).
             #
-            # 不给它套超时。这是一道**前置闸门**，不是可以缩短的步骤：超时之后
-            # 只剩两条路，蒙着头启动（缺依赖的进程起来就死，代价是一次完整的子
-            # 进程 spawn，更贵），或者判它依赖缺失（把好插件误报成硬失败，最坏）。
-            # 它花掉的时间本来就落在预算里——_remaining_step_budget 在它**之后**
-            # 才取，所以后面每一步的上限已经被它扣减过了。
+            # Do not wrap this in a timeout. This is a prerequisite gate, not a compressible step: after timeout,
+            # blindly starting leads to an immediate missing-dependency crash at the higher cost of a full subprocess
+            # spawn, while declaring missing dependencies incorrectly hard-fails healthy plugins, the worst outcome.
+            # Its duration already counts toward the budget: _remaining_step_budget is read only **after**
+            # this step, so every subsequent step's limit already deducts its cost.
             (
                 python_requirements,
                 python_requirement_paths,
@@ -1360,18 +1360,18 @@ class PluginLifecycleService:
                         error_type="DependencyCheckFailed",
                     )
 
-            # 元数据在 host 起来**之前**取。取法有两种：包里带了就直接读，没有才
-            # 起一次隔离 worker 去 import。
+            # Obtain metadata **before** starting the host: read packaged metadata directly when present;
+            # otherwise spawn an isolated worker to import it.
             #
-            # ⚠️ 顺序是承重的。放在 host 起来之后的话，那次 import 和插件进程自己
-            # 那次是并发的：模块级代码里拿文件锁、绑端口、起单例的插件会在第二次
-            # import 上失败，于是生命周期清理把一个健康的 host 杀掉、把这次启动报成
-            # 失败；没有直接冲突的插件也会把 import 期副作用执行两遍（codex）。
-            # 本 PR 之前这条路是安全的，因为扫描发生在 refresh_plugin 里、早于
-            # host 启动——刷新不再扫描之后，得在这里把那个顺序还回来。
+            # Ordering is essential. After host startup, this import would run concurrently with the plugin process's
+            # own import. Plugins acquiring file locks, binding ports, or starting singletons at module level fail on
+            # the second import, causing lifecycle cleanup to kill a healthy host and report startup
+            # failure; plugins without direct conflicts still execute import-time side effects twice (codex).
+            # Before this PR the path was safe because refresh_plugin scanned before host
+            # startup. Since refresh no longer scans, restore that ordering here.
             #
-            # 上限按剩余预算收窄：扫描自己的上限是 10s，只钳住 host 启动的话，一次
-            # 冷扫描就能把整轮 reload 的墙钟顶穿（CodeRabbit）。
+            # Narrow the limit to the remaining budget: scanning has its own 10s ceiling, so constraining only host startup lets
+            # one cold scan exceed the entire reload's wall-clock budget (CodeRabbit).
             module_path, class_name = entry.split(":", 1)
             isolated_metadata = None if development_snapshot is not None else await asyncio.to_thread(
                 partial(
@@ -1383,20 +1383,20 @@ class PluginLifecycleService:
                 )
             )
             if isolated_metadata is None:
-                # 预算在读完包内元数据之后才算。读那一步自己可能要哈希一整棵改过的
-                # 树，然后才回落——在它前面算出来的上限是过期快照，worker 还会拿到
-                # 接近 10s 的额度，整轮 reload 就会超出对外承诺的墙钟（codex）。
-                # 和下面 startup_timeout_value 的重算是同一条判据。
+                # Calculate the budget only after reading packaged metadata. That read may hash an entire modified
+                # tree before falling back; a limit computed beforehand is stale, letting the worker receive
+                # almost 10s and making the whole reload exceed the promised wall-clock duration (codex).
+                # Apply the same criterion as recalculating startup_timeout_value below.
                 scan_timeout = _clamp_step_timeout(
                     _DEFAULT_METADATA_SCAN_TIMEOUT,
                     _remaining_step_budget(start_deadline),
                     floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
-                # 包里那份元数据如果 schema 过期、**或者 build_env 不是本机的**，这次
-                # 扫描学到的就是打包器本该写的那份：写回去，下次启动走快路径。指纹在
-                # import 之前先取一份，之后比对，和打包器一样拒绝"import 改动了树"的
-                # 情况。reload_all 有总预算，可选的优化不放进去；应用启动的自动拉起没有
-                # 截止期，在那里做。
+                # If packaged metadata has an outdated schema **or build_env differs from this machine**, the scan
+                # learns what the packager should have written: persist it so the next startup uses the fast path. Capture the fingerprint
+                # before import and compare afterward, rejecting tree changes caused by import just as the packager does;
+                # cases. reload_all has an overall budget, so exclude optional optimization there; automatic application startup has
+                # no deadline, so perform it there instead.
                 before_scan = (
                     await asyncio.to_thread(
                         _snapshot_package_tree_for_rebuild,
@@ -1431,21 +1431,21 @@ class PluginLifecycleService:
                 )
 
             if start_deadline is not None and startup_timeout_value is not None:
-                # reload-all 把本轮的截止期压进来。只在启动**开始前**检查一次是不
-                # 够的：一个在截止期前一瞬开始的启动，之后仍会一路等到它自己的
-                # startup timeout，于是整轮 reload 照样冲破对外承诺的墙钟，前端早已
-                # 放弃而插件状态还在被改（codex / CodeRabbit / Greptile）。
+                # reload-all passes this pass's deadline inward. Checking only once **before** startup is
+                # insufficient: startup beginning just before the deadline could still wait until its own
+                # startup timeout, exceeding the promised wall-clock duration while the frontend has already
+                # given up and plugin state is still changing (codex / CodeRabbit / Greptile).
                 #
-                # 压进去而不是套 asyncio.wait_for：start_plugin 带
-                # @serialized_plugin_operation，那个包装器拿到锁之后会屏蔽取消，
-                # 外面套超时只会把一次真实结果报成超时（见 stop 那边的说明）。
+                # Pass the limit inward rather than wrapping asyncio.wait_for: start_plugin has
+                # @serialized_plugin_operation, whose wrapper shields cancellation once it acquires the lock;
+                # an outer timeout would only misreport a real result as timed out (see the stop-side explanation).
                 #
-                # ⚠️ 必须算在取元数据**之后**。取元数据现在排在 host 启动前面，它自己
-                # 最多要花一个 scan_timeout；在它前面算出来的上限，等真正调
-                # _start_host_with_timeout 时已经是过期快照，于是启动阶段的墙钟会比
-                # 设计值多出"每个插件一次扫描"——正是这段钳位本来要防的那件事
-                # （coderabbit）。_remaining_step_budget 按绝对截止期算，挪到这里重算
-                # 就是对的。
+                # Compute this **after** metadata retrieval. Metadata now precedes host startup and may
+                # itself consume a scan_timeout; a ceiling calculated beforehand is stale by the time
+                # _start_host_with_timeout actually runs, adding one scan per plugin to the startup phase's
+                # wall-clock duration, precisely what this clamp is meant to prevent
+                # (coderabbit). _remaining_step_budget uses an absolute deadline, so recalculating here
+                # is correct.
                 startup_timeout_value = _clamp_step_timeout(
                     startup_timeout_value,
                     _remaining_step_budget(start_deadline),
@@ -1735,11 +1735,11 @@ class PluginLifecycleService:
 
         try:
             _emit_lifecycle_event(event_type="plugin_stop_requested", plugin_id=plugin_id)
-            # 剩余预算在这里算，不在调用方那边算。这个函数体是在
-            # @serialized_plugin_operation 拿到锁**之后**才跑的，所以此刻的"还剩
-            # 多少"才是真的；在外面算的话，一次等了 19s 锁的关停照样会拿到按 20s
-            # 算出来的上限，停止阶段就此冲破对外承诺的墙钟（codex）。和启动侧收
-            # start_deadline 是同一个形状。
+            # Calculate remaining budget here rather than in the caller. This body runs only
+            # **after** @serialized_plugin_operation acquires the lock, so only the current remaining
+            # time is accurate. Calculating outside would let shutdown wait 19s for a lock yet retain a ceiling
+            # based on 20s, exceeding the stop phase's promised duration (codex). This follows the startup-side
+            # start_deadline pattern.
             await host_obj.shutdown(
                 timeout=(
                     PLUGIN_SHUTDOWN_TIMEOUT
@@ -1769,24 +1769,24 @@ class PluginLifecycleService:
             # model could still pick them only to hit a 404 on
             # dispatch.
             try:
-                # 这一步也在锁里，也在停止阶段的预算里。它自己那个 2s 超时是
-                # 独立的，所以一次卡住的 main_server 能让关停在预算之外再多花
-                # 两秒，而锁一直握着（codex）。按剩余预算收窄。
+                # This step also runs under the lock and within the stop-phase budget. Its independent 2s timeout
+                # could otherwise let a stuck main_server add another two seconds beyond the shutdown budget
+                # while holding the lock (codex). Narrow it to the remaining budget.
                 #
-                # 但**不能**用 _clamp_step_timeout：那个下界是给"启动"用的，因为
-                # 一个被我们停掉的插件必须拿到一次真正的尝试。这里是尽力而为的
-                # 远端清理，预算见底还硬给它 1s，就是每个插件都在锁上多压一秒
+                # Do **not** use _clamp_step_timeout: that lower bound is for startup, because
+                # a plugin we stopped must get one real attempt. Here remote cleanup is best-effort;
+                # forcing another 1s after budget exhaustion adds a second of lock occupancy per plugin.
                 # （CodeRabbit）。
                 #
-                # 也**不能**在预算见底时干脆跳过——我上一版就是那么写的，是错的。
-                # 全仓只有这一处清理远端工具注册，没有任何对账或重试兜底：跳过之后
-                # host 已经摘掉，而 main_server 那边的工具还在向模型公布，模型选中
-                # 它只会拿到"插件没在跑"，并且永远不会自愈（Greptile）。
+                # Nor may we simply skip when the budget runs out; my previous version did that incorrectly.
+                # This is the repository's only cleanup of remote tool registrations, with no reconciliation or retry fallback:
+                # skipping removes the host while main_server still advertises its tools to the model. Selecting one
+                # only reports that the plugin is not running, and this never heals itself (Greptile).
                 #
-                # 所以给一个很小的下界，让它至少发得出去。这比跳过**严格更好**：
-                # 失败了也不过回到跳过的状态（这个 POST 是按 source 整体清除、幂等，
-                # 重发无害），成功了就少一批幽灵工具。而正常情况下这是一次本机
-                # POST、毫秒级返回，下界根本不会生效。
+                # Give a tiny lower bound so the request can at least be sent. This is **strictly better** than skipping:
+                # failure merely returns to the skipped state (this POST clears a whole source idempotently,
+                # so resending is harmless), while success removes ghost tools. Normally this local
+                # POST returns within milliseconds, so the lower bound never applies.
                 cleanup_budget = _remaining_step_budget(stop_deadline)
                 cleanup_result = await clear_plugin_llm_tools(
                     plugin_id,
@@ -1800,8 +1800,8 @@ class PluginLifecycleService:
                     ),
                 )
                 if isinstance(cleanup_result, dict) and not cleanup_result.get("ok"):
-                    # 提到 warning。清理本身是尽力而为，但"没清掉"的后果是模型看得见
-                    # 一个调不通的工具、而没有任何东西会重试；debug 级别等于没留痕。
+                    # Raise to warning. Cleanup is best-effort, but failure leaves the model seeing an unusable
+                    # tool with no retry mechanism; debug level would leave effectively no trace.
                     logger.warning(
                         "plugin stopped but its LLM tools may still be advertised: "
                         "plugin_id={}, reason={}",
@@ -1809,13 +1809,13 @@ class PluginLifecycleService:
                         cleanup_result.get("error") or cleanup_result.get("status_code"),
                     )
             except Exception as exc:
-                # 和上面 ok=False 那条同一句话、同一个级别：两条路的后果一模一样
-                # ——工具可能还挂在 main_server 上，而没有任何东西会重试。
+                # Use the same wording and level as ok=False above: both paths have identical consequences;
+                # tools may remain on main_server with no retry mechanism.
                 #
-                # 抛出这条尤其隐蔽：clear_plugin_tools 内部只挡 httpx.HTTPError 和
-                # asyncio.TimeoutError，一个 content-type 声明是 JSON、正文却坏掉的
-                # 响应会让 resp.json() 抛 ValueError 一路冒到这里（CodeRabbit）。留在
-                # debug 的话，这条路上的幽灵工具照样无从追查。
+                # This exception path is particularly subtle: clear_plugin_tools catches only httpx.HTTPError and
+                # asyncio.TimeoutError internally. A response claiming JSON content-type with malformed body
+                # makes resp.json() raise ValueError all the way here (CodeRabbit). Keeping it at
+                # debug would likewise make ghost tools on this path untraceable.
                 logger.warning(
                     "plugin stopped but its LLM tools may still be advertised: "
                     "plugin_id={}, err_type={}, err={}",
@@ -1983,10 +1983,10 @@ class PluginLifecycleService:
         """Restart a plugin (stop + start). When ``only_if_running`` is set, a
         plugin that is no longer running is left stopped instead of started.
 
-        ``only_if_running`` 是给热重载 watcher 用的：watcher 在锁外查过 running，
-        但那次查询和这次复查之间插件可能被用户停掉。没有这个参数的话，
-        reload 的 start 半边会把它拉起来并持久化自启意图——把"改了代码"偷换成
-        "改变了我的启动意图"。
+        ``only_if_running`` serves the hot-reload watcher: it checked running outside the lock,
+        but a user may have stopped the plugin before this recheck. Without the parameter,
+        reload's start phase would restart it and persist autostart intent, silently turning a code change into
+        a change to the user's startup intent.
         """
         _emit_lifecycle_event(event_type="plugin_reload_requested", plugin_id=plugin_id)
         if not only_if_running:
@@ -2005,8 +2005,8 @@ class PluginLifecycleService:
                 if error.status_code != 404:
                     raise
         elif only_if_running and not plugin_needs_hot_reload_recovery(plugin_id):
-            # 复查发现插件已经停了（watcher 锁外检查之后用户 Stop 了它）：
-            # 不 start，不持久化自启意图。返回 skipped 让调用方知道这一轮没做。
+            # Rechecking finds the plugin already stopped (the user clicked Stop after the watcher's unlocked check):
+            # do not start it or persist autostart intent. Return skipped so the caller knows this pass did nothing.
             _emit_lifecycle_event(event_type="plugin_reload_skipped", plugin_id=plugin_id)
             return {
                 "success": True,
@@ -2057,27 +2057,27 @@ class PluginLifecycleService:
                 "message": "No running plugins to reload",
             }
 
-        # 顺序，不是 gather。
+        # Sequential, not gather.
         #
-        # 这里原本是 asyncio.gather，但它一点并发都买不到：每个
-        # _safe_stop_for_reload 内层的 stop_plugin 自己带
-        # @serialized_plugin_operation，而那把锁的重入是按 asyncio.Task 认的
-        # （_OPERATION_OWNER 存的是任务对象）。gather 给每个协程新建一个 Task，
-        # 子任务的 current_task 必然不等于持锁那个，于是重入判定失败，N 个 stop
-        # 严格排队。这个"按任务认"是刻意的——它防的正是无关任务蹭别人的锁——
-        # 所以不能靠改重入来让它真并行。
+        # This previously used asyncio.gather, but bought no concurrency: each
+        # _safe_stop_for_reload's inner stop_plugin itself has
+        # @serialized_plugin_operation, whose lock recognizes reentrancy by asyncio.Task
+        # (_OPERATION_OWNER stores the task object). gather creates a new Task for each coroutine;
+        # a child's current_task necessarily differs from the lock owner's, so reentrancy fails and all N stops
+        # queue strictly. Task-based ownership is intentional, preventing unrelated tasks from borrowing another's lock;
+        # changing reentrancy to achieve parallelism is therefore unsafe.
         #
-        # 写成顺序循环是为了让代码说实话：它本来就是顺序的。同时顺带能在中途
-        # 检查预算，gather 做不到这件事。
+        # A sequential loop makes the code reflect its actual behavior and also allows intermediate
+        # budget checks that gather cannot provide.
         stop_outcomes = []
         development_snapshots: dict[str, development_store.DevelopmentSnapshot] = {}
         skipped_over_budget: list[str] = []
         stop_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
         for index, plugin_id in enumerate(running_plugin_ids):
             if time_module.monotonic() > stop_deadline:
-                # 剩下的记进 skipped 再返回，不能让它们既不在成功里也不在失败里
-                # ——那样调用方看到的是一份"少了几个插件"的结果，而没有任何东西
-                # 说它们为什么不见了。
+                # Record remaining plugins in skipped before returning; they must not be absent from both successes and failures,
+                # leaving the caller with a result missing plugins and no explanation
+                # of their disappearance.
                 skipped_over_budget = list(running_plugin_ids[index:])
                 logger.warning(
                     "reload_all stop phase over budget after {}s, {} plugin(s) skipped",
@@ -2111,23 +2111,23 @@ class PluginLifecycleService:
                     _ReloadOutcome(plugin_id=plugin_id, success=False, error=f"{type(exc).__name__}: {exc}")
                 )
                 continue
-            # 这一次 stop 也要受剩余预算约束：只在开始前检查的话，一个慢关停
-            # （或者调大了的 NEKO_PLUGIN_SHUTDOWN_TIMEOUT）就能让整个阶段冲破
-            # 对外承诺的墙钟上限（codex）。
+            # This stop must also respect the remaining budget: checking only before starting lets a slow shutdown
+            # (or an increased NEKO_PLUGIN_SHUTDOWN_TIMEOUT) push the entire phase past
+            # its promised wall-clock ceiling (codex).
             #
-            # 但不能用 asyncio.wait_for 包在外面。stop_plugin 带
-            # @serialized_plugin_operation，而那个包装器一旦拿到锁就屏蔽取消、
-            # 等内层跑完再抛 CancelledError（operation_lock 里的 shield 循环）。
-            # 于是请求照样阻塞整个关停时长，然后把一次**已经成功**的停止报成超时，
-            # 插件被排除在重启名单外，最后停着没起来（codex）。
+            # Do not wrap the outside in asyncio.wait_for. stop_plugin has
+            # @serialized_plugin_operation, whose wrapper shields cancellation after acquiring the lock,
+            # waits for the inner operation, then raises CancelledError (operation_lock's shield loop).
+            # The request would still block for the entire shutdown, then report a **successful** stop as timed out,
+            # excluding the plugin from restarts and leaving it stopped (codex).
             #
-            # 把预算送进去，而不是套在外面：等锁那段由 bounded_operation_wait
-            # 管，真正关停那段由 shutdown_timeout 管，两段都在预算内结束，返回的
-            # 也是真实结果。
-            # 等锁和关停各自按"此刻还剩多少"算，不能共用一个快照。共用的话，一次
-            # 等满 remaining 的抢锁之后，关停又拿到一份完整的 remaining，一轮就能
-            # 花掉两倍预算——这跟两层锁各起一份截止期是同一个错误，只是换了个地方
-            # （本轮对抗复审）。
+            # Pass the budget inward: bounded_operation_wait controls lock waiting,
+            # shutdown_timeout controls actual shutdown, and both finish within budget while returning
+            # the actual result.
+            # Calculate lock wait and shutdown budgets separately using the time remaining **now**, without sharing a snapshot.
+            # Otherwise a lock acquisition consuming all remaining time would give shutdown another full remaining allowance,
+            # doubling the pass budget: the same error as assigning separate deadlines to nested locks, in a different place
+            # (this adversarial review pass).
             remaining = max(0.0, stop_deadline - time_module.monotonic())
             with bounded_operation_wait(remaining):
                 stop_outcomes.append(
@@ -2145,8 +2145,8 @@ class PluginLifecycleService:
                 continue
             failed.append({"plugin_id": outcome.plugin_id, "error": outcome.error or "Stop failed"})
 
-        # 也进 skipped：既有契约里 skipped 是"没被尝试"的意思，而这些插件正是
-        # 没被尝试。只放进 failed 会让调用方分不清"停失败了"和"根本没轮到"。
+        # Also mark skipped: the existing contract means not attempted, precisely the case for these plugins.
+        # Only adding failed prevents callers from distinguishing stop failure from never being attempted.
         for plugin_id in skipped_over_budget:
             failed.append(
                 {
@@ -2160,25 +2160,25 @@ class PluginLifecycleService:
 
         reloaded: list[str] = []
         ordered_plugin_ids = await plugin_registry_service.order_plugin_ids(plugins_to_start)
-        # 启动阶段有**自己**的预算，不吃停止阶段剩下的。
+        # Startup has its **own** budget, independent of the stop phase's remainder.
         #
-        # 启动阶段确实也需要上限：start_plugin 通常比 stop 慢得多（读配置、拉子
-        # 进程、扫元数据），只管住停止阶段的话整轮 reload 照样能冲破前端的 30s
-        # （CodeRabbit）。但两个阶段不能共用一份预算：走到这里的插件都是**已经被
-        # 我们停掉**的，停一个插件就欠它一次启动。共用预算时，一个慢关停就能把
-        # 剩下的额度吃光，于是 reload 悄悄变成 stop——插件全下线了，而调用方看到
-        # 的只是一行 "over budget"。宁可整轮多花一份预算，也不能把用户的插件留在
-        # 停止状态。
+        # Startup does need a ceiling: start_plugin is usually much slower than stop (configuration reads, subprocess
+        # spawning, metadata scans), so constraining only stopping still lets reload exceed the frontend's 30s
+        # (CodeRabbit). But the phases cannot share one budget: plugins reaching here were **already stopped
+        # by us**, and each stop owes a start attempt. With a shared budget, one slow shutdown can exhaust
+        # everything, quietly turning reload into stop: all plugins are offline while the caller sees
+        # only an over-budget line. Accept another phase budget rather than leaving the user's plugins
+        # stopped.
         #
-        # 而且这个循环**不会**因为预算耗尽而中途退出——这一点和停止阶段刻意不对称。
-        # 停止阶段跳过一个插件是安全的：没轮到的插件还好好跑着。启动阶段跳过一个
-        # 插件，等于把一个我们刚亲手停掉的插件永久留在停止状态：自启动只在服务器
-        # 启动时跑一次，没有任何周期性对账会把它捡回来，用户只能手动启动或者重启
-        # 整个服务器（Greptile）。所以每个被停掉的插件都必须拿到一次启动尝试；
-        # 预算见底之后它们各自拿下界那么长，够不够是另一回事，但"根本没试"不行。
+        # This loop also **does not** exit when the budget runs out, intentionally differing from the stop phase.
+        # Skipping during stopping is safe: unattempted plugins remain running. Skipping during startup
+        # permanently leaves a plugin we just stopped offline: autostart runs only once at server
+        # startup, with no periodic reconciliation to recover it. Users would have to start it manually or restart
+        # the entire server (Greptile). Every stopped plugin must therefore receive one startup attempt;
+        # after budget exhaustion each gets the minimum allowance. Whether it suffices is separate; never trying is unacceptable.
         #
-        # 代价说清楚：启动阶段的墙钟上限因此是 预算 + 剩余插件数 x 下界，而不是
-        # 一个硬预算。健康路径根本碰不到——实测启动很快，预算压根用不完。
+        # Explicit cost: startup's wall-clock ceiling is thus budget + remaining plugin count x minimum,
+        # rather than a hard budget. Healthy paths never reach it; measured startup is fast and leaves budget unused.
         start_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
         for plugin_id in ordered_plugin_ids:
             snapshot = development_snapshots.get(plugin_id)
@@ -2188,16 +2188,16 @@ class PluginLifecycleService:
                 except ServerDomainError as exc:
                     failed.append({"plugin_id": plugin_id, "error": exc.message})
                     continue
-            # 启动这半边同样把等锁和启动本身都封在剩余预算里——和上面的 stop
-            # 对称，否则预算只管住了两个阶段中的一个。
+            # Startup likewise bounds both lock waiting and startup itself by remaining budget, symmetrically with stop
+            # above; otherwise only one of the two phases would be constrained.
             #
-            # 但等锁那段和步骤超时用同一个下界，不能压到 0：预算见底时
-            # bounded_operation_wait(0.0) 等于"一次都不等"，此刻只要有别的插件操作
-            # 握着进程锁，start_plugin 立刻抛 PluginOperationBusy，而这个插件是刚被
-            # 我们停掉的——它会就这么一直停着（CodeRabbit）。刚去掉超预算 break 就是
-            # 为了不让这种事发生，零等待等于把它从后门放回来。
+            # Lock waiting uses the same minimum as step timeout and cannot reach zero: after budget exhaustion,
+            # bounded_operation_wait(0.0) means no waiting. If another plugin operation holds the process
+            # lock, start_plugin immediately raises PluginOperationBusy, leaving a plugin we just
+            # stopped offline indefinitely (CodeRabbit). Removing the over-budget break was meant to prevent
+            # this; zero waiting would reintroduce it through another path.
             #
-            # 停止侧不需要这个下界，而且那是刻意的：停止侧等不到锁，插件还好好跑着。
+            # The stop side intentionally needs no such minimum: if it cannot acquire the lock, the plugin remains running.
             remaining = max(
                 _MIN_CLAMPED_START_TIMEOUT, start_deadline - time_module.monotonic()
             )

@@ -23,7 +23,7 @@ URL convention: routes declared WITHOUT trailing slash. The literal root
 codebase (it serves ``index.html``); the lint exempts it explicitly. Every
 other page route uses ``@router.get('/voice_clone')``, ``@router.get('/api_key')``,
 etc. See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """  # noqa: DOCSTRING_CJK
 
@@ -302,7 +302,7 @@ async def get_model_manager(request: Request):
 
 @router.get("/theater", response_class=HTMLResponse)
 async def get_theater(request: Request):
-    """渲染唯一的 Numeric v2 剧本选择页。"""  # noqa: DOCSTRING_CJK
+    """Render the single Numeric v2 story-selection page."""  # noqa: DOCSTRING_CJK
     templates = get_templates()
     return templates.TemplateResponse(request, "templates/theater.html", {
         "request": request,
@@ -312,7 +312,7 @@ async def get_theater(request: Request):
 
 @router.get("/theater/settings", response_class=HTMLResponse)
 async def get_theater_settings(request: Request):
-    """渲染小剧场独立设置页。"""  # noqa: DOCSTRING_CJK
+    """Render the standalone theater settings page."""  # noqa: DOCSTRING_CJK
     templates = get_templates()
     return templates.TemplateResponse(request, "templates/theater_settings.html", {
         "request": request,
@@ -608,7 +608,7 @@ async def get_toast_page(request: Request):
 
 @router.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
-    # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
+    # Extract lanlan_name from the URL; frontend retrieves configuration through the API.
     templates = get_templates()
     return templates.TemplateResponse(request, "templates/index.html", {
         "request": request,

@@ -1,10 +1,10 @@
 """Concurrent-write protection for ``<model>.model3.json``."""
 
-# 原先同一个文件被 5 个端点写、无锁，其中两个还是同步 GET（补齐缺省配置项后写回）。
-# 把写挂在 GET 上意味着读流量变写流量，而且同步 GET 跑在 anyio 线程池里、和 async POST
-# 的 asyncio 锁不在同一个互斥域 —— 两个线程 os.replace 同一目标在 Windows 上互相
-# PermissionError(WinError 5)。这里钉三件事：GET 不再落盘、三个 POST 的读→改→写整段
-# 互斥、锁按解析后的文件路径分桶。
+# Originally, five endpoints wrote the same file without a lock, and two were synchronous GETs (writing back missing defaults).
+# Putting writes in GET makes read traffic become write traffic; synchronous GET also runs in an anyio thread pool alongside async POST
+# do not share the same mutex domain with the asyncio lock — two threads calling os.replace on the same target can get
+# PermissionError(WinError 5) on Windows. This enforces three rules: GET does not persist, the full read→modify→write of all three POSTs
+# is mutually exclusive, and locks are bucketed by resolved file path.
 
 from __future__ import annotations
 
@@ -34,9 +34,9 @@ _BASE_CONFIG = {
 @pytest.fixture(autouse=True)
 def _clear_model_config_write_locks():
     """Clear the lock registry between tests: an awaited asyncio.Lock binds to its loop."""
-    # pytest.ini 是 asyncio_mode=auto + function-scope loop，用例之间循环会换掉；留着
-    # 上一个用例争用过的锁，下一个用例 await 它就 RuntimeError（loop 不匹配）。生产上
-    # 只有一个循环（merged 单进程），所以这是测试侧的约束、不是设计缺陷。
+    # pytest.ini uses asyncio_mode=auto + function-scope loop, so loops are replaced between tests; retaining
+    # a lock contended by the previous test makes the next test's await fail with RuntimeError (loop mismatch). In production
+    # there is only one loop (merged single process), so this is a test constraint, not a design flaw.
     live2d_router._MODEL_CONFIG_WRITE_LOCKS.clear()
     yield
     live2d_router._MODEL_CONFIG_WRITE_LOCKS.clear()
@@ -62,15 +62,15 @@ class _FakeRequest:
         return self._payload
 
 
-# --- (1) 两个同步 GET 不得落盘 ---------------------------------------------------
+# --- (1) Neither synchronous GET may write to disk --------------------------------
 #
-# 主断言用「目标文件字节逐字节相同」而不是 spy `live2d_router.atomic_write_json`：
-# 修复之后那个名字在文件里已经没有调用点（import 也删掉了），spy 目标会消失，
-# 测试会因为 AttributeError 报错而不是因为断言失败。字节比对不依赖任何内部符号。
+# The primary assertion compares the target file byte-for-byte instead of spying on `live2d_router.atomic_write_json`:
+# after the fix, that name has no call sites in the file (and its import is gone), so the spy target would disappear
+# and the test would fail with AttributeError instead of an assertion failure. Byte comparison does not depend on internal symbols.
 
 
 def test_get_model_config_never_writes_disk(monkeypatch, tmp_path) -> None:
-    # 盘上是「老模型」：连 FileReferences 都没有，原实现一定会触发写回。
+    # Disk contains an "old model" with no FileReferences; the old implementation would definitely write it back.
     model_dir = _make_model_dir(tmp_path, config={"Version": 3})
     model_json = model_dir / "m.model3.json"
     before = model_json.read_bytes()
@@ -81,7 +81,7 @@ def test_get_model_config_never_writes_disk(monkeypatch, tmp_path) -> None:
     result = live2d_router.get_model_config("m")
 
     assert model_json.read_bytes() == before, "GET 不得写盘"
-    # 补齐逻辑本身必须留着——它是这个端点对前端的契约，别被顺手清理掉。
+    # Keep the backfill logic itself — it is part of this endpoint's frontend contract; do not clean it up incidentally.
     assert result["success"] is True
     assert result["config"]["FileReferences"]["Motions"] == {}
     assert result["config"]["FileReferences"]["Expressions"] == []
@@ -107,9 +107,9 @@ def test_get_model_config_by_id_never_writes_disk(monkeypatch, tmp_path) -> None
 
 def test_no_get_handler_writes_model_config() -> None:
     """Auto-discovering ratchet: no ``@router.get`` endpoint may write to disk."""
-    # 不写死函数名清单 —— 遍历装饰器，新增的 GET 端点自动进入覆盖范围（清单式的守卫
-    # 迟早漏项）。同步 GET 跑在 anyio 线程池里，与三个 POST 的 asyncio 锁不在同一个
-    # 互斥域，任何新的 GET 落盘都会重新引入 WinError 5。
+    # Do not hard-code a list of function names — traverse decorators so newly added GET endpoints are automatically covered (a checklist guard
+    # will eventually miss one). Synchronous GET runs in anyio's thread pool and does not share an asyncio-lock
+    # mutex domain with the three POSTs; any new GET write would reintroduce WinError 5.
     writers = {
         "atomic_write_json",
         "atomic_write_json_async",
@@ -152,7 +152,7 @@ def test_no_get_handler_writes_model_config() -> None:
                 and isinstance(func.value, ast.Name)
                 and func.value.id == "os"
             ):
-                # 只认 os.replace；str.replace 在这个文件里到处都是。
+                # Match only os.replace; str.replace appears throughout this file.
                 offenders.append(f"{node.name}:{call.lineno} 调用 os.replace")
             elif name == "open":
                 mode = None
@@ -164,14 +164,14 @@ def test_no_get_handler_writes_model_config() -> None:
                 if mode and any(flag in str(mode) for flag in "wax+"):
                     offenders.append(f"{node.name}:{call.lineno} open(mode={mode!r})")
 
-    # 先证明遍历真的找到了端点，否则「无违规」可能只是没扫到东西。
+    # First prove traversal found the endpoint; otherwise "no violation" could mean the scan found nothing.
     assert "get_model_config" in checked
     assert "get_model_config_by_id" in checked
     assert len(checked) >= 8
     assert offenders == []
 
 
-# --- (2) 三个 POST 的读→改→写整段互斥 -------------------------------------------
+# --- (2) Serialize the full read→modify→write of all three POSTs ------------------
 
 
 @pytest.mark.asyncio
@@ -179,10 +179,10 @@ async def test_concurrent_model_config_posts_do_not_lose_each_others_edits(
     monkeypatch, tmp_path
 ) -> None:
     """Two different POSTs racing on one model3.json: both edits must survive."""
-    # 真文件、真 handler、不 mock 写。两个改动落在互不相交的键上（emotion_mapping 传空
-    # expressions → emotion_prefixes 为空 → 现存 Expressions 全部 preserved；
-    # model_config 的 payload 里没有 Motions → Motions 不动），所以和执行顺序无关 ——
-    # 串行化之后两个都该在。
+    # Real file, real handler, no mocked writes. The two updates touch disjoint keys (empty
+    # expressions passed for emotion_mapping → empty emotion_prefixes → preserve every existing Expressions entry;
+    # model_config payload has no Motions → leave Motions untouched), so order does not matter —
+    # both should remain after serialization.
     model_dir = _make_model_dir(tmp_path)
     model_json = model_dir / "m.model3.json"
     monkeypatch.setattr(
@@ -193,7 +193,7 @@ async def test_concurrent_model_config_posts_do_not_lose_each_others_edits(
 
     async def slow_read(path, **kwargs):
         data = await real_read(path, **kwargs)
-        # 撑开「读到写」的窗口：丢写发生在这一段，只锁 os.replace 抓不到。
+        # Widen the "read to write" window: a lost update occurs here, so guarding only os.replace is insufficient.
         await asyncio.sleep(0.02)
         return data
 
@@ -229,10 +229,10 @@ async def test_cancelling_a_post_does_not_release_the_lock_before_the_write_ends
     monkeypatch, tmp_path
 ) -> None:
     """A cancelled POST must keep the per-file lock until its in-flight write finishes."""
-    # atomic_write_json_async 内部是 asyncio.to_thread，交出去就取消不掉：线程会一直跑到
-    # os.replace 结束。如果 async with 在 CancelledError 穿过的一刻就放锁（直接 await 就是
-    # 这样），第二个 handler 会在第一次 replace 还在飞的时候进临界区 —— 正是本 PR 要修的
-    # 那个并发 replace。请求被客户端断开或超时中间件取消是常态，不是边角情况。
+    # atomic_write_json_async uses asyncio.to_thread internally and cannot cancel the worker once submitted: the thread runs until
+    # os.replace finishes. If async with releases the lock as soon as CancelledError passes through (what a direct await does),
+    # the second handler can enter the critical section while the first replace is still in flight — exactly the concurrent replace this PR fixes.
+    # Client disconnects and timeout middleware cancellations are normal, not edge cases.
     model_dir = _make_model_dir(tmp_path)
     model_json = model_dir / "m.model3.json"
     monkeypatch.setattr(
@@ -262,8 +262,8 @@ async def test_cancelling_a_post_does_not_release_the_lock_before_the_write_ends
     assert lock.locked(), "前置条件：写在飞的时候锁是持有状态"
 
     task.cancel()
-    # 不靠「固定 yield 几次」猜取消传播完没有：按真实时钟走一小段，期间每圈都复查。
-    # 顺带把重复取消也覆盖掉 —— 超时取消之后再来一次应用退出，是真实会发生的组合。
+    # Do not guess cancellation propagation with "a fixed number of yields"; use a short real-time interval and recheck on every loop.
+    # Also cover repeated cancellation — timeout cancellation followed by app shutdown is a realistic combination.
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 0.1
     while loop.time() < deadline:
@@ -281,7 +281,7 @@ async def test_cancelling_a_post_does_not_release_the_lock_before_the_write_ends
 @pytest.mark.asyncio
 async def test_by_name_and_by_id_posts_share_one_lock(monkeypatch, tmp_path) -> None:
     """by-name and by-id hitting the same file must share one lock."""
-    # 按入参（model_name / model_id）分桶就会漏：两条路由可以落到同一个文件上。
+    # Bucketing by input (model_name / model_id) fails when two routes target the same file.
     model_dir = _make_model_dir(tmp_path)
     model_json = model_dir / "m.model3.json"
     monkeypatch.setattr(
@@ -325,12 +325,12 @@ def test_write_lock_is_keyed_on_the_resolved_file(tmp_path) -> None:
     second = _make_model_dir(tmp_path, name="two") / "two.model3.json"
 
     lock = live2d_router._model_config_write_lock(first)
-    # 同一个文件的另一种拼法（realpath 折掉 "."）必须拿到同一把锁。
+    # A second spelling of the same file (realpath collapsing ".") must resolve to the same lock.
     aliased = live2d_router._model_config_write_lock(first.parent / "." / first.name)
     assert aliased is lock
     if os.name == "nt":
-        # Windows 大小写不敏感，normcase 必须把它折平。
+        # Windows is case-insensitive, so normcase must fold case.
         assert live2d_router._model_config_write_lock(str(first).upper()) is lock
 
-    # 不同文件必须是不同的锁对象（退化成一把全局锁时这条红）。
+    # Different files must get distinct lock objects (this fails if they collapse to one global lock).
     assert live2d_router._model_config_write_lock(second) is not lock

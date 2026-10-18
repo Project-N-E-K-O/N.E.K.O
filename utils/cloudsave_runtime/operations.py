@@ -261,7 +261,7 @@ def _removed_local_characters(
             kept_name_of_uid.setdefault(uid, kept_name)
     local_uids = {uid for uid in (uid_in(local_map, name) for name in local_map) if uid}
     local_uid_of_name = {name: uid for name in local_map if (uid := uid_in(local_map, name))}
-    # 本机角色在快照里换了名字：uid -> (旧名, 新名)
+    # Local characters renamed in the snapshot: uid -> (old name, new name).
     moves: dict[str, tuple[str, str]] = {}
     for name in local_map:
         uid = uid_in(local_map, name)
@@ -270,7 +270,7 @@ def _removed_local_characters(
             moves[uid] = (name, moved_to)
 
     def next_in_chain(uid: str) -> str | None:
-        # 这个角色要搬进去的名字，导入前是哪个本机角色在用（它也得先搬走）
+        # Which local character used the destination name before import; it must move first too.
         holder = local_uid_of_name.get(moves[uid][1])
         return holder if holder in moves else None
 
@@ -293,17 +293,17 @@ def _removed_local_characters(
         uid = get_character_uid(data) if isinstance(data, dict) else None
         new_name = kept_name_of_uid.get(uid) if uid else None
         holder = uid_in(kept_character_map, name) if name in kept_character_map else None
-        # 快照里这个名字归了本机另一个角色（不是同名角色被换了 uid）
+        # This snapshot name belongs to another local character, rather than the same-named character changing uid.
         taken_by_local = holder is not None and holder != uid and holder in local_uids
         if name in kept_character_map and (new_name == name or not uid or (new_name is None and not taken_by_local)):
-            # 仍是同一个角色；或同名角色换了 uid（已知行为：名字下的条目归同名角色）
+            # Still the same character, or a same-named character changed uid (known behavior: entries under a name belong to that named character).
             continue
         if new_name is None:
             removed.append({"name": name, "character_uid": uid})
             continue
         depth = chain_depth(uid)
         if depth is None:
-            # 几个本机角色轮换了名字（成环）：各名字下的串门数据分不开，不迁
+            # Several local characters swapped names in a cycle: their visit data cannot be separated by name, so do not migrate.
             logger.warning("cloudsave import: %r renamed to %r in a cycle of local characters trading names; "
                            "visit data not moved", name, new_name)
             continue
@@ -313,19 +313,19 @@ def _removed_local_characters(
             continue
         new_holder = uid_in(local_map, new_name) if new_name in local_map else None
         if new_name in local_map and (new_holder is None or (new_holder in kept_name_of_uid and new_holder not in moves)):
-            # 新名字在导入前属于本机另一个仍保留、且没搬走的角色：迁过去会和它的串门数据混在一起。
-            # 那个角色被删了、或自己也改了名（链式改名，先迁它）则不同
+            # Before import, the new name belongs to another retained local character that has not moved; migration would mix their visit data.
+            # The case differs if that character was deleted or renamed itself; for chained renames, migrate it first.
             logger.warning("cloudsave import: %r renamed to %r, a name held by another local character; "
                            "visit data not moved", name, new_name)
             continue
         entry: dict[str, Any] = {"old": name, "new": new_name, "uid": uid}
         if taken_by_local:
-            # 链式改名：旧名接着归了本机另一个角色，它的改名排在这一笔之后；对账到这一笔时
-            # 旧名下的条目都还是这个角色的
+            # Chained rename: the old name later belongs to another local character whose rename follows this one; at this reconciliation,
+            # entries under the old name still belong to this character.
             entry["handed_over"] = [name]
         depth_of[uid] = depth
         renamed.append(entry)
-    # 链尾先迁：要搬进的名字先由原主人搬走（B -> C 先于 A -> B）
+    # Migrate the chain tail first: vacate the destination before moving into it (B -> C before A -> B).
     renamed.sort(key=lambda entry: depth_of[entry["uid"]])
     kept_local = frozenset(name for name in kept_character_map if name in local_map)
     return removed, kept_local, renamed
@@ -388,7 +388,7 @@ def _fresh_character_names(config_manager, kept_character_map: dict[str, Any]) -
     fresh: dict[str, str | None] = {}
     for name, data in kept_character_map.items():
         uid = get_character_uid(data) if isinstance(data, dict) else None
-        # 没有 uid 的按名字认：本机原来没有这个名字就是新带来的
+        # Identify uid-less characters by name: a name absent locally is newly imported.
         if (uid not in local_uids) if uid else (name not in local_map):
             holder = local_map.get(name)
             fresh[name] = None if name not in local_map else (
@@ -406,8 +406,8 @@ def _preserve_local_character_ids(character_map: dict[str, Any], local_character
     for name, payload in character_map.items():
         if not isinstance(payload, dict):
             continue
-        # 同名角色沿用本机身份：剧场会话等本地数据按 character_id 绑定，
-        # 云端下载覆盖内容时不能把它们变成孤儿。
+        # Same-named characters retain local identity; theater sessions and other local data bind to character_id,
+        # and cloud content replacement must not orphan them.
         local_id = normalize_character_id(get_reserved(local_map.get(name), "character_id", default=""))
         if local_id and local_id not in claimed_ids:
             set_reserved(payload, "character_id", local_id)
@@ -420,7 +420,7 @@ def _preserve_local_character_ids(character_map: dict[str, Any], local_character
         if cloud_id and cloud_id not in claimed_ids:
             claimed_ids.add(cloud_id)
             continue
-        # 本机新角色才采用云端身份；与本机其它角色冲突时交给下次 load_characters 重新生成。
+        # Only new local characters adopt cloud identity; let the next load_characters regenerate IDs conflicting with other local characters.
         delete_reserved(payload, "character_id")
 
 
@@ -787,10 +787,10 @@ def import_cloudsave_character_unit(
             candidate = target_memory_dir / filename
             if candidate.exists():
                 delete_file_targets.add(candidate)
-        # 带键写入的本地簿记与被改写的记忆同进退：留着会把被回滚掉的写入当成已完成 / 已暂存
+        # Keyed local bookkeeping must advance/roll back with rewritten memories; retaining it would mark rolled-back writes complete/staged.
         delete_file_targets |= keyed_write_bookkeeping_paths(target_memory_dir)
-        # 墓碑保留围栏（清除前发起的旧请求仍要被挡），只去掉「已擦完」标记：恢复回来的数据
-        # 可能又含被清内容，之后重放的清除得真的再擦一遍
+        # Preserve tombstone fences against pre-clear requests, removing only the erased marker; restored data
+        # may contain cleared content again, so subsequent clear replay must genuinely erase it again.
         stripped_tombstones = keyed_tombstones_without_completion(target_memory_dir)
         if stripped_tombstones is not None:
             runtime_targets[target_memory_dir / KEYED_WRITE_TOMBSTONES_FILENAME] = _stage_json_file(
@@ -827,8 +827,8 @@ def import_cloudsave_character_unit(
             }
             backup_records: list[dict[str, Any]] = []
             try:
-                # 锁覆盖 rollback snapshot、apply/delete 与内部 rollback，关闭
-                # fence 前已启动 writer 的 copy/apply 窗口。
+                # Hold locks across rollback snapshots, apply/delete, and internal rollback to close
+                # the copy/apply window for writers started before the fence.
                 backup_records = _snapshot_existing_targets(
                     config_manager, backup_root, backup_targets,
                 )
@@ -1918,8 +1918,8 @@ def import_local_cloudsave_snapshot(
             if not relative_path.startswith("memory/"):
                 continue
             parts = Path(relative_path).parts
-            # manifest key 是不可信输入：三段结构之外，还要挡住 '..'/'.' 段
-            # （"memory/../x" 的 parts 恰好三段）和白名单外的叶子文件名。
+            # Manifest keys are untrusted: besides requiring three segments, reject '..'/'.' segments
+            # ("memory/../x" has exactly three parts) and nonallowlisted leaf filenames.
             if (
                 len(parts) != 3
                 or Path(relative_path).is_absolute()
@@ -1964,7 +1964,7 @@ def import_local_cloudsave_snapshot(
                 target_path = character_dir / filename
                 if relative_path not in staged_entries and target_path.exists():
                     delete_file_targets.add(target_path)
-            # 带键写入的本地簿记与被改写的记忆同进退（见 keyed_write_bookkeeping_paths）
+            # Keyed local bookkeeping advances/rolls back with rewritten memories (see keyed_write_bookkeeping_paths).
             delete_file_targets |= keyed_write_bookkeeping_paths(character_dir)
             stripped_tombstones = keyed_tombstones_without_completion(character_dir)
             if stripped_tombstones is not None:
@@ -2088,8 +2088,8 @@ def import_local_cloudsave_snapshot(
             }
             backup_records: list[dict[str, Any]] = []
             try:
-                # recent 锁必须覆盖 rollback backup；否则 fence 前已启动的 writer
-                # 能在 copy 与 apply 之间成功落盘，失败回滚再拿旧 backup 把它盖掉。
+                # Hold the recent lock across rollback backup, or pre-fence writers can
+                # persist between copy and apply, then be overwritten by stale backup on failure rollback.
                 for target_path in sorted(
                     set(runtime_targets) | delete_file_targets | delete_dir_targets,
                     key=lambda path: len(path.parts),
@@ -2116,7 +2116,7 @@ def import_local_cloudsave_snapshot(
                 )
                 if removed_characters or renamed_characters or fresh_character_names or replaced_characters:
                     try:
-                        # 先于删除落盘：中途崩溃时记录已在，由记录方按落盘后的配置判定是否真删了
+                        # Persist before deletion so a crash leaves a record whose owner checks the persisted config to determine whether deletion actually occurred.
                         on_characters_removed(removed_characters, kept_local_names, renamed_characters,
                                               fresh_names=fresh_character_names, replaced=replaced_characters)
                     except Exception as exc:

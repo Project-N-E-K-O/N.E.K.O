@@ -50,10 +50,10 @@ def test_done_cancels_pending(tmp_path):
 
 
 def test_pending_persists_across_fresh_instances(tmp_path):
-    """核心用例：模拟 extract_facts LLM 调用途中进程被 kill。
+    """Core case: process killed during extract_facts LLM call.
 
-    进程 A 登记 pending，未 append_done 就"挂了"；进程 B 启动，
-    apending_ops 应当能看到未完成的 op，提供补跑依据。
+    Process A registers pending and dies before append_done; process B starts,
+    and apending_ops must expose the unfinished operation for replay.
     """
     ob_a = _fresh_outbox(str(tmp_path))
     op_id = ob_a.append_pending("小天", "extract_facts", {"msg_count": 3})
@@ -74,10 +74,10 @@ def test_multiple_characters_isolated(tmp_path):
 
 
 def test_corrupt_line_is_skipped(tmp_path):
-    """中途损坏的一行不应让整个 pending_ops 挂掉。"""
+    """A corrupt intermediate row must not break all pending_ops."""
     ob = _fresh_outbox(str(tmp_path))
     id1 = ob.append_pending("小天", "extract_facts", {"k": 1})
-    # 在两条有效记录之间塞一行损坏数据
+    # Insert corrupt row between two valid records.
     path = ob._outbox_path("小天")
     with open(path, "a", encoding="utf-8") as f:
         f.write("this is not json\n")
@@ -95,7 +95,7 @@ def test_compact_drops_completed_pairs(tmp_path):
     live = ob.append_pending("小天", "extract_facts", {"i": "unfinished"})
 
     dropped = ob.compact("小天")
-    # 3 pending + 3 done = 6 已完成行应被全部丢弃；1 live 保留
+    # Three pending + three done = six completed rows dropped; retain one live operation.
     assert dropped == 6
     pending = ob.pending_ops("小天")
     assert len(pending) == 1
@@ -112,14 +112,14 @@ def test_maybe_compact_below_threshold(tmp_path):
     for _ in range(5):
         op = ob.append_pending("小天", "x", {})
         ob.append_done("小天", op)
-    # 远低于阈值 (_COMPACT_LINES_THRESHOLD=1000)
+    # Far below threshold (_COMPACT_LINES_THRESHOLD=1000).
     assert ob.maybe_compact("小天") == 0
-    # 文件还在，只是没压
+    # File remains, just uncompacted.
     assert os.path.exists(ob._outbox_path("小天"))
 
 
 def test_payload_unicode_roundtrip(tmp_path):
-    """payload 中的中文/emoji 不应被 ensure_ascii 破坏。"""
+    """ensure_ascii must not corrupt Chinese/emoji in payloads."""
     ob = _fresh_outbox(str(tmp_path))
     payload = {"text": "主人喜欢咖啡 ☕", "nested": {"k": "值"}}
     op_id = ob.append_pending("小天", "extract_facts", payload)
@@ -142,7 +142,7 @@ async def test_async_append_and_scan(tmp_path):
 
 @pytest.mark.asyncio
 async def test_concurrent_async_appends_serialize_correctly(tmp_path):
-    """并发 aappend_pending 20 次：每条记录都要完整写入、无交叉。"""
+    """Twenty concurrent aappend_pending calls each write complete records without interleaving."""
     ob = _fresh_outbox(str(tmp_path))
 
     async def _append(i: int):
@@ -157,9 +157,9 @@ async def test_concurrent_async_appends_serialize_correctly(tmp_path):
 
 @pytest.mark.asyncio
 async def test_compact_preserves_pending_across_restart(tmp_path):
-    """compact 后的文件，新进程读 pending_ops 仍然正确。"""
+    """After compaction, a new process still reads pending_ops correctly."""
     ob = _fresh_outbox(str(tmp_path))
-    # 3 完成 + 2 进行中
+    # Three completed + two in progress.
     for i in range(3):
         op = await ob.aappend_pending("小天", "x", {"i": i})
         await ob.aappend_done("小天", op)
@@ -172,13 +172,13 @@ async def test_compact_preserves_pending_across_restart(tmp_path):
     fresh = _fresh_outbox(str(tmp_path))
     pending = await fresh.apending_ops("小天")
     assert {r["op_id"] for r in pending} == {live1, live2}
-    # payload 内容未损
+    # Payload content intact.
     tags = {r["payload"]["tag"] for r in pending}
     assert tags == {"L1", "L2"}
 
 
 def test_file_path_matches_character_dir_convention(tmp_path):
-    """outbox 与 facts.json / reflections.json 同目录，便于审阅。"""
+    """Outbox shares directory with facts.json / reflections.json for review."""
     ob = _fresh_outbox(str(tmp_path))
     ob.append_pending("小天", "extract_facts", {})
     expected = os.path.join(str(tmp_path), "小天", "outbox.ndjson")

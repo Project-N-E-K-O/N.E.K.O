@@ -378,7 +378,7 @@ def redact_export_bundle(
     (redacted_bundle, info) where ``info`` = ``{"tier", "identity_map_size",
     "strict_transcript_omitted", "lineage_transcript_omitted", "warnings"}``.
     ``info`` deliberately does NOT contain the pseudonym → real-name reverse
-    map (§5.3 铁律) — only the count.
+    map (section 5.3 hard rule) — only the count.
     """  # noqa: DOCSTRING_CJK
     if tier not in EXPORT_REDACTION_TIERS:
         raise ValueError(

@@ -72,8 +72,8 @@ logger = get_module_logger(__name__, "Memory")
 SCOPED_WRITE_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 15.0, 45.0)
 _RETRYABLE_STATUS = 502
 
-# 各端点的单次请求超时。scoped_history 要等服务端一次 LLM 抽取，其余是本地
-# 读写；数值与 b0b283e34 版 QQ memory_bridge 一致。
+# Per-endpoint single-request timeouts. scoped_history waits for one server-side LLM extraction; the others are local
+# reads/writes; values match the QQ memory_bridge at revision b0b283e34.
 _READ_TIMEOUT_S = 5.0
 _MENTIONS_TIMEOUT_S = 5.0
 _FORGET_TIMEOUT_S = 30.0
@@ -148,7 +148,7 @@ def _check_target_epochs(subject: dict, forget_epoch: int | None, target_epochs:
             raise ValueError("invalid target_epochs key")
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError("target_epochs values must be non-negative integers")
-    # 与服务端 MemorySubject.create 同样去掉首尾空白，否则 key 对不上、这条校验查不出来
+    # Like the server's MemorySubject.create, strip leading/trailing whitespace; otherwise the key will not match and this check will miss it
     subject_key = f"{str(subject.get('subject_kind') or '').strip()}:{str(subject.get('subject_id') or '').strip()}"
     if subject_key in target_epochs and target_epochs[subject_key] != forget_epoch:
         raise ValueError("target_epochs disagrees with forget_epoch")
@@ -177,8 +177,8 @@ def encode_wire_body(payload: dict[str, Any]) -> bytes:
 
 
 def _encode_history(messages: Sequence[dict[str, Any]]) -> str:
-    # 与 QQ 版逐字节一致：input_history 是 JSON 字符串而非嵌套对象，
-    # 用默认分隔符 + ensure_ascii=False。
+    # Byte-for-byte identical to the QQ version: input_history is a JSON string, not a nested object,
+    # Use the default separator and ensure_ascii=False.
     return json.dumps(list(messages), ensure_ascii=False)
 
 
@@ -222,8 +222,8 @@ class ScopedMemoryClient:
         return get_internal_http_client()
 
     def _url(self, lanlan: str, endpoint: str) -> str:
-        # 角色名作路径段：quote(safe="") 让 "/" "?" "#" 之类无法改写路由或
-        # 拼出查询串；非 ASCII 名按 UTF-8 百分号编码（与 cross_server 同法）。
+        # The character name is a path segment: quote(safe="") prevents "/", "?", "#", and similar characters from rewriting the route or
+        # forming a query string; non-ASCII names are percent-encoded as UTF-8 (same method as cross_server).
         return (
             f"{self._base_url}/internal/memory/"
             f"{quote(str(lanlan), safe='')}/{endpoint}"
@@ -329,9 +329,9 @@ class ScopedMemoryClient:
             raise ScopedMemoryError(
                 f"scoped_context failed: HTTP {response.status_code}"
             )
-        # 截断放在线程里：上游可能回一整段超长合并 reflection，tiktoken 对
-        # 切不开的超长 chunk 是二次退化，同步跑会卡住事件循环
-        # （b0b283e34 版 QQ memory_bridge.query_relevant_memory 同理）。
+        # Truncate in a thread: the upstream may return one very long merged reflection, and tiktoken on
+        # an unsplittable oversized chunk can trigger a second fallback; running synchronously would block the event loop
+        # (the QQ memory_bridge.query_relevant_memory at revision b0b283e34 has the same behavior).
         return await atruncate_to_tokens(response.text.strip(), max_tokens)
 
     async def list_scoped_subjects(
@@ -377,7 +377,7 @@ class ScopedMemoryClient:
         keys = list(dict.fromkeys(subject_keys))
         url = self._url(lanlan, "forget_epochs")
         merged: dict[str, int] = {}
-        # 服务端一次最多认 _FORGET_EPOCHS_BATCH 个 key：分批查、合并结果
+        # The server accepts at most _FORGET_EPOCHS_BATCH keys per request: query in batches and merge the results
         for start in range(0, len(keys), _FORGET_EPOCHS_BATCH):
             batch = keys[start:start + _FORGET_EPOCHS_BATCH]
             try:
@@ -432,7 +432,7 @@ class ScopedMemoryClient:
         except ValueError:
             payload = None
         if not isinstance(payload, dict) or payload.get("status") not in ("recorded", "skipped"):
-            # 没有明确确认就不算记上：调用方会丢掉这次更新，防复读计数却没涨
+            # Without explicit confirmation, do not count it as recorded: the caller will discard this update, but the repetition count would not increase
             logger.warning("scoped_mentions: response does not confirm the update")
             return False
         return True
@@ -470,8 +470,8 @@ class ScopedMemoryClient:
         truncated, non-JSON or wrong-shaped 2xx body is a failed erase.
         """
         if target_epochs is not None:
-            # 服务端对这些请求固定回 422：按普通失败返回 False 的话，撤销流程会一直重试一个
-            # 永远不会成功的请求。这是调用方的编程错误，直接抛出
+            # The server always returns 422 for these requests: treating it as an ordinary failure and returning False would make the revocation flow retry
+            # a request that can never succeed. This is a caller programming error; raise directly
             _check_target_epochs(subject, forget_epoch, target_epochs)
         body: dict[str, Any] = {"subject": subject}
         if forget_epoch is not None:
@@ -491,7 +491,7 @@ class ScopedMemoryClient:
         except ValueError:
             payload = None
         if not isinstance(payload, dict) or payload.get("status") != "forgotten":
-            # 没有明确确认就不能记完成：撤销流程会据此删名册与日志，失去重试入口
+            # Without explicit confirmation, it cannot be marked complete: the revocation flow would then delete the roster and logs, losing its retry path
             logger.warning("scoped_forget: response does not confirm the erase")
             return False
         return True
@@ -573,11 +573,11 @@ class ScopedMemoryClient:
         try:
             payload = _response_json(response)
         except ValueError:
-            # 截断 / HTML 之类的 2xx 不能证明抽取与信赖写入已完成：按失败，调用方重试
+            # A truncated or HTML-like 2xx response does not prove extraction and trust data were written: treat as failure so the caller retries
             logger.warning("scoped_history returned a non-JSON body; keep and retry")
             return False
         if not isinstance(payload, dict) or payload.get("status") != "processed":
-            # null / [] / {} 之类的 2xx 不能证明这批已处理：按失败，调用方重试
+            # A 2xx response such as null / [] / {} does not prove this batch was processed: treat as failure so the caller retries
             logger.warning("scoped_history: response does not confirm processing")
             return False
         if not _trust_settled(payload):
@@ -612,12 +612,12 @@ class ScopedMemoryClient:
         (the server rejects it and there would be nothing to retry).
         """
         if not segments:
-            # 服务端对空批次一律 422，结果里也没有可重试的位置：调用方的「只重试失败位」
-            # 循环会永远卡住。这是调用错误，直接报出来
+            # The server always returns 422 for an empty batch, and the result has no retryable positions: the caller's "retry failed positions only"
+            # loop would hang forever. Report this as a caller error
             raise ValueError("post_history_batch needs at least one segment")
         wire_segments = [_wire_segment(segment) for segment in segments]
         body: dict[str, Any] = {"segments": wire_segments}
-        # 同单条形状：只在是受支持的语言码时才上线（批次共用一个 language）
+        # Same shape as the single-item request: include only supported language codes (a batch shares one language)
         if is_supported_language_code(language):
             body["language"] = language
         _put_retry_identity(body, idempotency_key, client_requested_at, subject_epochs)
@@ -634,7 +634,7 @@ class ScopedMemoryClient:
             logger.warning("scoped_history segments returned invalid JSON")
             return none_ok
         if not isinstance(payload, dict) or payload.get("status") != "processed":
-            # 服务端只在整批的落盘写入完成后才回顶层 processed；没有它，逐段结果不可信
+            # The server sets top-level processed only after the entire batch is written to disk; without it, per-item results are untrustworthy
             logger.warning("scoped_history segments: response does not confirm processing")
             return none_ok
         results = payload.get("segments")
@@ -646,8 +646,8 @@ class ScopedMemoryClient:
             for result in results
         ))
         if idempotency_key is not None and outcome.failed_positions:
-            # 带键批次在服务端整键成败（信赖池没落盘时整键保留 pending）：只能同键整批重试，
-            # 只重试失败位的子集请求与键记录的请求身份对不上、会被 422。所以整批都算失败
+            # For keyed batches, the server succeeds or fails for the entire key (if the trust pool is not persisted, the whole key remains pending): retry the whole batch for that key only,
+            # because a subset request containing only failed positions does not match the key's recorded request identity and will receive 422. Treat the entire batch as failed
             outcome = none_ok
         if outcome.failed_positions:
             logger.warning(
@@ -662,8 +662,8 @@ def _response_json(response: httpx.Response) -> Any:
     try:
         return response.json()
     except RecursionError as exc:
-        # 深层嵌套的 2xx 响应体（"[[[[…"）与其他坏 JSON 一样按畸形处理：各调用点只认 ValueError，
-        # 漏出 RecursionError 会打断启动 / 撤销 / 补录，而不是按失败保留重试
+        # A deeply nested 2xx response body ("[[[[…") is malformed like any other bad JSON: callers handle only ValueError,
+        # so leaking RecursionError would interrupt startup / revocation / backfill instead of retaining a retry on failure
         raise ValueError("response JSON is too deeply nested") from exc
 
 
@@ -678,8 +678,8 @@ def _trust_settled(result: Any) -> bool:
     is treated like ``false``.
     """
     trust = result.get("trust") if isinstance(result, dict) else None
-    # 缺块 / 非对象 / 缺 persisted：没有确认就不能丢，按未落盘处理
-    # 按身份比：1 / 1.0 与 True 相等，元组成员判断会把它们当成「已落盘」
+    # Missing block / non-object / missing persisted: without confirmation, do not discard; treat as not persisted
+    # Compare by identity: 1 / 1.0 equals True, so tuple membership would treat them as "persisted"
     return isinstance(trust, dict) and "persisted" in trust and (
         trust["persisted"] is True or trust["persisted"] is None
     )
@@ -691,8 +691,8 @@ def _put_retry_identity(
     client_requested_at: float | None,
     subject_epochs: dict[str, int] | None = None,
 ) -> None:
-    # None 时这几个键都不出现：不带时请求体须与旧调用方逐字节一致；
-    # 非 None 原样带上，不做任何改写。
+    # When None, omit all these keys: without them, the request body must remain byte-for-byte compatible with old callers;
+    # when non-None, include them unchanged, with no rewriting.
     if idempotency_key is not None:
         body["idempotency_key"] = idempotency_key
     if client_requested_at is not None:
@@ -702,7 +702,7 @@ def _put_retry_identity(
 
 
 def _wire_segment(segment: dict[str, Any]) -> dict[str, Any]:
-    # 字段顺序与省略规则照 b0b283e34 版 QQ post_scoped_memory_history_batch。
+    # Field order and omission rules match the QQ post_scoped_memory_history_batch at revision b0b283e34.
     wire: dict[str, Any] = {
         "input_history": _encode_history(segment.get("messages") or []),
         "subject": segment.get("subject"),

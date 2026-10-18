@@ -1,4 +1,4 @@
-"""验证 Numeric v2 内部压测执行器的输入策略、报告与失败原子性。"""  # noqa: DOCSTRING_CJK
+"""Verify input strategy, reporting, and failure atomicity of the internal Numeric v2 stress runner."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def _write_baseline_manifest(tmp_path, stories=_BASELINE_TITLES):
 
 
 def test_numeric_v2_stress_parser_accepts_fixed_baseline_selection(tmp_path):
-    # 固定入口必须能被命令行解析，避免阶段 A 依赖手工复制 story_id。
+    # Fixed entry points must parse from the command line so phase A needs no manually copied story_id.
     parser = run_numeric_v2_stress._build_parser()
     manifest = _write_baseline_manifest(tmp_path)
 
@@ -39,7 +39,7 @@ def test_numeric_v2_stress_parser_accepts_fixed_baseline_selection(tmp_path):
 
 
 def test_numeric_v2_stress_script_does_not_hardcode_local_story_ids():
-    # 样本清单因人而异，脚本不能写死某台机器上安装的 story_id。
+    # Installed samples vary by user; never hardcode story_ids from a specific machine.
     assert not hasattr(run_numeric_v2_stress, "BASELINE_STORY_IDS")
     assert "story_51e71adb6ae5" not in open(run_numeric_v2_stress.__file__, encoding="utf-8").read()
 
@@ -55,7 +55,7 @@ def test_numeric_v2_stress_baseline_rejects_invalid_manifest(tmp_path, payload):
 
 
 def test_numeric_v2_stress_parser_accepts_isolated_package_root(tmp_path):
-    # 新生成包的压测必须能脱离正式安装目录，避免测试过程覆盖用户剧本。
+    # Stress tests for newly generated packages must run outside the official install directory to avoid overwriting user scripts.
     parser = run_numeric_v2_stress._build_parser()
 
     args = parser.parse_args(["--story-id", "story_test", "--package-root", str(tmp_path)])
@@ -72,7 +72,7 @@ def test_numeric_v2_stress_parser_accepts_chat_only_strategy():
 
 
 def test_numeric_v2_stress_parser_accepts_text_trace_directory(tmp_path):
-    # 压测必须能显式声明演绎文案日志目录，避免依赖不可见的继承环境。
+    # Allow an explicit enactment-text log directory rather than relying on an invisible inherited environment.
     parser = run_numeric_v2_stress._build_parser()
 
     args = parser.parse_args(["--story-id", "story_test", "--trace-dir", str(tmp_path)])
@@ -81,7 +81,7 @@ def test_numeric_v2_stress_parser_accepts_text_trace_directory(tmp_path):
 
 
 def test_numeric_v2_stress_baseline_selection_is_stable_and_reports_title_drift(tmp_path):
-    # 标题变化记入报告并使退出码非零（见下一个用例），但不改变固定 story_id 的执行顺序。
+    # Record title changes in the report and return nonzero (see next test), without changing fixed story_id execution order.
     installed = {story_id: {"title": title} for story_id, title in _BASELINE_TITLES.items()}
     drifted_story_id = list(_BASELINE_TITLES)[-1]
     installed[drifted_story_id] = {"title": "改稿后的标题"}
@@ -129,7 +129,7 @@ def test_numeric_v2_stress_baseline_title_drift_fails_the_exit_code(tmp_path):
 
 
 def test_numeric_v2_stress_baseline_selection_reports_missing_focus_package(tmp_path):
-    # 缺少固定样本时必须明确失败，不能静默压测不完整的基线。
+    # Missing fixed samples must fail explicitly rather than silently stress-testing an incomplete baseline.
     installed = {
         story_id: {"title": title} for story_id, title in list(_BASELINE_TITLES.items())[:-1]
     }
@@ -162,7 +162,7 @@ def test_numeric_v2_stress_mixed_strategy_uses_seven_recommendations_per_ten_att
 
 
 def test_numeric_v2_stress_uses_visible_order_without_internal_metadata():
-    # 推荐不再携带 advance/explore 标签，压测器必须按前端可见顺序消费。
+    # Recommendations no longer carry advance/explore tags; consume them in frontend-visible order.
     candidates = ["先看看窗外。", "我愿意把共同约定确认下来。", "这件事先到这里。"]
 
     assert run_numeric_v2_stress.choose_player_input(
@@ -202,7 +202,7 @@ def test_numeric_v2_stress_freeform_uses_latest_visible_context():
 
 
 def test_numeric_v2_stress_freeform_does_not_quote_catgirl_action_or_echo_question():
-    # 自由输入应回应可见事实，不应把猫娘动作或她抛回玩家的问题整段复制成玩家话术。
+    # Free input should respond to visible facts, not copy the catgirl's actions or questions back as the player's own words.
     player_input, source = run_numeric_v2_stress.choose_player_input(
         strategy="freeform",
         attempt_index=1,
@@ -221,7 +221,7 @@ def test_numeric_v2_stress_freeform_does_not_quote_catgirl_action_or_echo_questi
 
 
 def test_numeric_v2_stress_freeform_injects_low_frequency_off_topic_input():
-    # 长程轨迹必须偶尔覆盖跑偏恢复，但跑偏不能改变推荐与自由输入的总体比例。
+    # Long trajectories should occasionally cover recovery from deviations, without changing the overall recommendation/free-input ratio.
     player_input, source = run_numeric_v2_stress.choose_player_input(
         strategy="freeform",
         attempt_index=5,
@@ -245,7 +245,7 @@ def test_numeric_v2_stress_freeform_injects_low_frequency_off_topic_input():
 
 
 def test_numeric_v2_stress_freeform_ignores_generic_closing_anchor():
-    # 不能把“晚安/好啦”当作剧情事实继续追问，否则压测会人为制造休息循环。
+    # Do not treat goodnight/okay as plot facts requiring further questions, artificially creating rest loops.
     player_input, source = run_numeric_v2_stress.choose_player_input(
         strategy="freeform",
         attempt_index=1,
@@ -260,7 +260,7 @@ def test_numeric_v2_stress_freeform_ignores_generic_closing_anchor():
 
 
 def test_numeric_v2_stress_freeform_avoids_repeated_test_meta_language():
-    """上下文自由输入不能循环使用记录、复核和测试式追问。"""  # noqa: DOCSTRING_CJK
+    """Contextual free input must not cycle through record-, review-, and test-style follow-up questions."""  # noqa: DOCSTRING_CJK
 
     generated = [
         run_numeric_v2_stress.choose_player_input(
@@ -280,7 +280,7 @@ def test_numeric_v2_stress_freeform_avoids_repeated_test_meta_language():
 
 
 def test_numeric_v2_stress_dynamic_player_only_receives_visible_history():
-    """动态玩家不能借压测器偷看隐藏节点、数值或作者方向。"""  # noqa: DOCSTRING_CJK
+    """Dynamic players must not use the stress runner to inspect hidden nodes, values, or authorial direction."""  # noqa: DOCSTRING_CJK
 
     messages = run_numeric_v2_stress._dynamic_player_messages(
         latest_performance={
@@ -308,7 +308,7 @@ def test_numeric_v2_stress_dynamic_player_only_receives_visible_history():
     assert "trust" not in encoded
     assert "隐藏推荐" not in encoded
     assert "不要连续主动发起未经铺垫的亲密互动" in messages[0].content
-    # 完整历史取代三轮窗口，客观事实的授权来源仍然只限于玩家可见演绎。
+    # Full history replaces the three-turn window; objective facts still require authorization from player-visible enactment only.
     assert "所有事实、能力、行动与结果都必须由已提交的可见演绎支持" in messages[0].content
     assert "玩家没有可假定的库存、工具、特殊能力或专业知识" in messages[0].content
     assert "不能替环境、角色或 NPC 决定结果" in messages[0].content
@@ -523,7 +523,7 @@ def test_numeric_v2_stress_keeps_visible_order_in_transition_offer_state():
 
 
 def test_numeric_v2_stress_accepts_visible_offer_before_soft_pacing_window():
-    """Actor 已公开提议后必须下一轮测试接受，不能再被推荐回合门槛挡住。"""  # noqa: DOCSTRING_CJK
+    """After Actor publicly proposes, test acceptance next turn without another recommendation-turn threshold blocking it."""  # noqa: DOCSTRING_CJK
 
     assert run_numeric_v2_stress.choose_player_input(
         strategy="freeform",
@@ -573,7 +573,7 @@ def test_numeric_v2_stress_mixed_missing_suggestions_preserves_input_source(rout
 
 
 def test_numeric_v2_stress_pending_transition_uses_first_visible_option():
-    """待确认转场固定点击第一条可执行推荐，避免压测器轮换出额外停留。"""  # noqa: DOCSTRING_CJK
+    """For pending transitions, always click the first executable recommendation rather than rotating into extra stays."""  # noqa: DOCSTRING_CJK
 
     player_input, source = run_numeric_v2_stress.choose_player_input(
         strategy="recommended",
@@ -633,14 +633,14 @@ def test_numeric_v2_stress_stops_repeating_a_rejected_transition_input():
 
 
 def test_numeric_v2_stress_allows_one_retry_after_cancelled_offer():
-    """转场候选被撤销但待确认邀请仍保留时，允许压测器重试一次。"""  # noqa: DOCSTRING_CJK
+    """Allow one stress-runner retry when the transition candidate is withdrawn but the pending invitation remains."""  # noqa: DOCSTRING_CJK
 
     row = {
         "attempt": 20,
         "from_node_id": "node_branch_01",
         "to_node_id": "node_branch_01",
         "player_input": "好，我周六下午来负责现场引导。",
-        # 运行时撤销邀请后会清掉当前 offer 标记，但诊断仍保留撤回证据。
+        # Runtime revocation clears the current offer marker, while diagnostics retain evidence of withdrawal.
         "transition_offered": False,
         "workflow_diagnostics": {
             "transition_cancellations": 1,
@@ -746,7 +746,7 @@ def test_numeric_v2_stress_reports_scene_and_transition_stalls_from_runtime_stat
 
 
 def test_numeric_v2_stress_does_not_report_scene_stall_on_same_turn_completion():
-    """完成事实在本回合结束后才满足时，应给下一回合公开出口的机会。"""  # noqa: DOCSTRING_CJK
+    """If completion facts become satisfied only after this turn ends, allow next turn's public exit opportunity."""  # noqa: DOCSTRING_CJK
 
     just_completed = {
         "quality_errors": [],

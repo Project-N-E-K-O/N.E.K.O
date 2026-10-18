@@ -1,4 +1,4 @@
-"""Numeric v2 Session 与 Ledger 的原子文件存储。"""  # noqa: DOCSTRING_CJK
+"""Numeric v2 atomic file storage for Sessions and Ledgers."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ STORY_SESSION_INDEX_SCHEMA = "neko.script.story_session_index.numeric.v2.charact
 
 
 class NumericV2StoreError(ValueError):
-    """Numeric v2 存档无法安全读取或提交。"""  # noqa: DOCSTRING_CJK
+    """Numeric v2 archive cannot be read or committed safely."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2SessionExistsError(NumericV2StoreError):
@@ -57,7 +57,7 @@ class NumericV2StoredSession:
     ledger_events: tuple[dict[str, Any], ...]
 
 
-# 协程持有或等待锁时会保留强引用；空闲后由弱引用表自动回收，避免 Session/剧本 ID 无限积累。
+# A coroutine holding or waiting for a lock retains a strong reference; idle locks are reclaimed from the weak-reference table to prevent unbounded accumulation of Session/script IDs.
 _LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _STORY_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
@@ -66,7 +66,7 @@ def _lock(path: Path) -> asyncio.Lock:
     key = str(path.resolve())
     lock = _LOCKS.get(key)
     if lock is None:
-        # 新锁必须先由局部变量强持有，再登记弱引用；否则创建与返回之间就可能被立即回收。
+        # A new lock must first be held strongly in a local variable and only then registered weakly; otherwise it could be reclaimed between creation and return.
         lock = asyncio.Lock()
         _LOCKS[key] = lock
     return lock
@@ -76,7 +76,7 @@ def _story_lock(path: Path, story_id: str) -> asyncio.Lock:
     key = f"{path.resolve()}::{story_id}"
     lock = _STORY_LOCKS.get(key)
     if lock is None:
-        # 与 Session 文件锁保持相同生命周期，调用方进入 async with 前始终持有强引用。
+        # Match the Session file lock's lifetime; callers keep a strong reference until they enter async with.
         lock = asyncio.Lock()
         _STORY_LOCKS[key] = lock
     return lock
@@ -87,7 +87,7 @@ async def numeric_v2_story_session_guard(
     theater_storage_root: Path,
     story_id: str,
 ):
-    """在不加载剧本包的情况下复用指定剧本的 Session 生命周期锁。"""  # noqa: DOCSTRING_CJK
+    """Reuse the lifecycle lock for a specified script's Session without loading its script package."""  # noqa: DOCSTRING_CJK
 
     normalized_story_id = str(story_id or "").strip()
     if not normalized_story_id:
@@ -107,7 +107,7 @@ def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
             _retry_windows_permission_error(lambda: path.read_text(encoding="utf-8"))
         )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        # 已存在但不可读的索引不能等同于全新空索引，否则任一写请求都会覆盖全部恢复槽位。
+        # An existing but unreadable index is not equivalent to a new empty index; otherwise any write request would overwrite all recovery slots.
         raise NumericV2StoreError("numeric_story_session_index_read_failed") from exc
     if not isinstance(payload, dict) or payload.get("schema") != STORY_SESSION_INDEX_SCHEMA:
         raise NumericV2StoreError("numeric_story_session_index_invalid")
@@ -214,12 +214,12 @@ def _read_numeric_v2_session_summary(
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except OSError:
-        # 日常列表保持旧有容错；启动审计则必须区分暂时不可读与内容损坏。
+        # Keep ordinary listing tolerant as before; startup audit must distinguish temporary unreadability from corrupt contents.
         if raise_on_io_error:
             raise
         return None
     except (UnicodeError, json.JSONDecodeError) as exc:
-        # 删除前无法确认归属就必须中止；启动审计会按既有坏档隔离流程处理此错误。
+        # If ownership cannot be confirmed before deletion, abort; startup audit handles this error through the existing corrupt-archive quarantine flow.
         if raise_on_io_error:
             raise _with_failed_path(
                 NumericV2StoreError("numeric_session_read_failed"), path,
@@ -253,7 +253,7 @@ def list_numeric_v2_sessions(
     legacy_catgirl_name: str = "",
     raise_on_io_error: bool = False,
 ) -> list[dict[str, str]]:
-    """按剧本或角色列出可识别的 Numeric v2 Session。"""  # noqa: DOCSTRING_CJK
+    """List recognized Numeric v2 Sessions by script or character."""  # noqa: DOCSTRING_CJK
 
     normalized_story_id = str(story_id or "").strip()
     normalized_character_id = str(character_id or "").strip()
@@ -278,7 +278,7 @@ def list_numeric_v2_sessions(
                 and summary["catgirl_name"] == normalized_legacy_name
             )
         elif normalized_legacy_name:
-            # 旧角色卡没有 character_id 时，只能按角色名收窄；绝不能把空 ID 解释为“全部角色”。
+            # If an old character card has no character_id, narrow deletion by character name only; never interpret an empty ID as "all characters."
             binding_matches = summary["catgirl_name"] == normalized_legacy_name
         else:
             binding_matches = True
@@ -296,7 +296,7 @@ def list_numeric_v2_public_archives(
     legacy_catgirl_name: str = "",
     raise_on_io_error: bool = False,
 ) -> list[dict[str, str]]:
-    """列出与剧本或角色匹配的公开演绎冷档案。"""  # noqa: DOCSTRING_CJK
+    """List public performance cold archives matching a script or character."""  # noqa: DOCSTRING_CJK
 
     normalized_story_id = str(story_id or "").strip()
     normalized_character_id = str(character_id or "").strip()
@@ -309,7 +309,7 @@ def list_numeric_v2_public_archives(
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except OSError:
-            # 展示列表保持容错；删除事务必须把暂时不可读视为失败，不能遗漏用户档案。
+            # Keep display listing tolerant; the delete transaction must treat temporary unreadability as failure, not omit the user's archive.
             if raise_on_io_error:
                 raise
             continue
@@ -384,7 +384,7 @@ def _delete_numeric_v2_sessions_unlocked(
     character_id: str = "",
     legacy_catgirl_name: str = "",
 ) -> list[dict[str, str]]:
-    """删除指定剧本或角色的 Session，并同步清理恢复索引。"""  # noqa: DOCSTRING_CJK
+    """Delete Sessions for the specified script or character and update the recovery index."""  # noqa: DOCSTRING_CJK
 
     normalized_story_id = str(story_id or "").strip()
     normalized_character_id = str(character_id or "").strip()
@@ -397,7 +397,7 @@ def _delete_numeric_v2_sessions_unlocked(
         raise NumericV2StoreError("numeric_session_delete_scope_required")
     session_root = _numeric_v2_session_root(theater_storage_root)
     index_path = session_root.parent / "story_sessions.json"
-    # 索引不可读时必须在删除任何 Session 或冷档案之前失败。
+    # If the index is unreadable, fail before deleting any Session or cold archive.
     index_error: NumericV2StoreError | None = None
     try:
         stories = _read_story_session_slots(index_path)
@@ -463,7 +463,7 @@ def _delete_numeric_v2_sessions_unlocked(
             continue
         deleted.append(candidate)
 
-    # 公开冷档案与对应剧本/角色同生命周期；删除恢复槽位时不能留下孤儿文件。
+    # Public cold archives share the lifecycle of their script/character; deleting a recovery slot must not leave an orphan file.
     for archive in archive_candidates:
         path = Path(archive["path"])
         try:
@@ -529,7 +529,7 @@ def _rebind_session_file(
         for key, value in catgirl_binding.items()
     }
     if isinstance(existing_binding, Mapping):
-        # 历史 Ledger 按该 Session 当时的称呼事实重放；角色改名只能刷新猫娘展示字段。
+        # Replay historical Ledger data using the name facts from that Session; a character rename may refresh only the catgirl display fields.
         refreshed_binding["player_address"] = str(
             existing_binding.get("player_address") or ""
         )
@@ -554,7 +554,7 @@ async def update_numeric_v2_character_bindings(
     legacy_catgirl_name: str,
     catgirl_binding: Mapping[str, Any],
 ) -> int:
-    """角色卡改名时保留所有剧本进度，并更新持久化身份投影。"""  # noqa: DOCSTRING_CJK
+    """Preserve progress for every script when a character card is renamed and update persisted identity projections."""  # noqa: DOCSTRING_CJK
 
     normalized_character_id = str(character_id or "").strip()
     if not normalized_character_id:
@@ -603,7 +603,7 @@ async def update_numeric_v2_character_bindings(
 
 
 class NumericV2SessionStore:
-    """每个 Session 一个文件，所有提交都先复验 revision 再原子替换。"""  # noqa: DOCSTRING_CJK
+    """One file per Session; revalidate revision before every atomic replacement."""  # noqa: DOCSTRING_CJK
 
     def __init__(self, root: Path, engine: "NumericV2Engine", *, write_transaction=nullcontext):
         self.root = Path(root) / "numeric_v2" / "sessions"
@@ -647,7 +647,7 @@ class NumericV2SessionStore:
         character_id: str,
         legacy_catgirl_name: str = "",
     ) -> NumericV2StoredSession | None:
-        """按剧本和猫娘从恢复索引读取唯一 Session。"""  # noqa: DOCSTRING_CJK
+        """Read the unique Session for a script and catgirl from the recovery index."""  # noqa: DOCSTRING_CJK
 
         normalized_story_id = str(story_id or "").strip()
         normalized_character_id = str(character_id or "").strip()
@@ -675,7 +675,7 @@ class NumericV2SessionStore:
             try:
                 indexed = await self.load(session_id)
             except NumericV2StoreError as exc:
-                # JSON、合同或账本损坏可由冷启动审计修复；暂时性 I/O 故障必须交给调用方重试。
+                # Corrupt JSON, contracts, or ledgers can be repaired by cold-start audit; transient I/O errors must be returned for caller retry.
                 if isinstance(exc.__cause__, OSError):
                     raise
                 indexed = None
@@ -718,14 +718,14 @@ class NumericV2SessionStore:
         self,
         stored: NumericV2StoredSession,
     ) -> NumericV2StoredSession:
-        """原子写入已重放快照，但不发布到剧本恢复槽位，供压测分叉使用。"""  # noqa: DOCSTRING_CJK
+        """Atomically write a replayed snapshot without publishing it to the script's recovery slot, for load-testing forks."""  # noqa: DOCSTRING_CJK
 
         path = self._path(stored.session.session_id)
         async with _lock(path):
             def create() -> NumericV2StoredSession:
                 if path.exists():
                     raise NumericV2SessionExistsError("numeric_session_exists")
-                # 先在内存中验证完整账本，再一次落盘；失败时不会留下半条分叉链。
+                # Validate the full ledger in memory first, then write it once; on failure, do not leave a partial forked chain.
                 self._validate_chain(stored)
                 self._write(path, stored, exclusive=True)
                 return stored
@@ -736,7 +736,7 @@ class NumericV2SessionStore:
         self,
         session: "ScriptSessionV2",
     ) -> NumericV2StoredSession:
-        """原子创建 Session 文件并发布对应剧本恢复槽位。"""  # noqa: DOCSTRING_CJK
+        """Atomically create a Session file and publish its recovery slot for the script."""  # noqa: DOCSTRING_CJK
 
         path = self._path(session.session_id)
         index_path = self._story_session_index_path
@@ -758,7 +758,7 @@ class NumericV2SessionStore:
                     try:
                         self._write_story_session_index(stories)
                     except Exception:
-                        # 索引发布失败时撤销刚创建的不可达 Session，保持文件与恢复槽位原子一致。
+                        # If index publication fails, remove the newly created unreachable Session so files and recovery slots remain atomic.
                         try:
                             path.unlink()
                         except FileNotFoundError:
@@ -777,7 +777,7 @@ class NumericV2SessionStore:
         previous_session_id: str,
         session: "ScriptSessionV2",
     ) -> NumericV2StoredSession:
-        """用新 ID 替换槽位 Session，阻止旧页面继续提交且不累积历史。"""  # noqa: DOCSTRING_CJK
+        """Replace the slot's Session with a new ID so old pages cannot continue submitting, without accumulating history."""  # noqa: DOCSTRING_CJK
 
         previous_path = self._path(previous_session_id)
         next_path = self._path(session.session_id)
@@ -837,7 +837,7 @@ class NumericV2SessionStore:
             if isinstance(exc.__cause__, FileNotFoundError):
                 return None
             raise
-        # 先按持久化身份拒绝跨剧本 Session，再用当前剧本引擎重放 Ledger。
+        # Reject cross-script Sessions by persisted identity first, then replay the Ledger using the current script engine.
         if stored.session.story_package_id != self.engine.story_id:
             return None
         self._validate_chain(stored)
@@ -847,7 +847,7 @@ class NumericV2SessionStore:
         self,
         session_id: str,
     ) -> NumericV2StoredSession | None:
-        """读取只用于结束/删除的快照，不把旧剧本状态恢复到当前 Runtime。"""  # noqa: DOCSTRING_CJK
+        """Read a snapshot only for finishing/deletion; do not restore old script state into the current Runtime."""  # noqa: DOCSTRING_CJK
 
         path = self._path(session_id)
         async with _lock(path):
@@ -966,13 +966,13 @@ class NumericV2SessionStore:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
-                # 剧本包可能已升级，结束动作只改生命周期；仍需复验持久化账本自身连续，
-                # 但不能拿新剧本规则重放旧剧情，否则用户会永久卡在演绎状态。
+                # The script package may have been upgraded; the finish action changes only lifecycle state, but must still verify the persisted ledger is internally continuous,
+                # but do not replay old story using new script rules, or users could become permanently stuck in performance state.
                 self._validate_lifecycle_chain(current)
                 if current.session.revision != base_revision:
                     raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
                 if current.session.status == "ended":
-                    # 仅接受紧邻本次请求的成功重放；更早生命周期的延迟请求必须冲突。
+                    # Accept only a successful replay immediately associated with this request; a delayed request from an earlier lifecycle must conflict.
                     if (
                         current.session.ended_reason == str(reason or "user_exit")
                         and current.session.lifecycle_revision == base_lifecycle_revision + 1
@@ -1000,7 +1000,7 @@ class NumericV2SessionStore:
         base_revision: int,
         base_lifecycle_revision: int,
     ) -> NumericV2StoredSession:
-        """恢复玩家主动退出的 Session；剧情自然结局仍保持不可继续。"""  # noqa: DOCSTRING_CJK
+        """Restore a Session the player explicitly exited; a natural story ending remains non-resumable."""  # noqa: DOCSTRING_CJK
 
         path = self._path(session_id)
         async with _lock(path):
@@ -1011,7 +1011,7 @@ class NumericV2SessionStore:
                 if current.session.revision != base_revision:
                     raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
                 if current.session.status == "active":
-                    # 已成功继续后的同一请求可以安全重试，旧请求不能借当前 active 状态蒙混通过。
+                    # The same request may be retried safely after a successful continue; an old request must not pass by relying on the current active state.
                     if current.session.lifecycle_revision == base_lifecycle_revision + 1:
                         return current
                     raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
@@ -1040,7 +1040,7 @@ class NumericV2SessionStore:
         *,
         through_revision: int | None = None,
     ) -> NumericV2StoredSession:
-        """记录显式遗忘边界，防止继续旧 Session 后重新投影已忘内容。"""  # noqa: DOCSTRING_CJK
+        """Record an explicit forgetting boundary to prevent old Session continuation from projecting forgotten content again."""  # noqa: DOCSTRING_CJK
 
         path = self._path(session_id)
         async with _lock(path):
@@ -1122,7 +1122,7 @@ class NumericV2SessionStore:
         return NumericV2StoredSession(session, tuple(deepcopy(events)))
 
     def _validate_lifecycle_chain(self, stored: NumericV2StoredSession) -> None:
-        """校验与剧本内容无关的存档链，仅供生命周期收尾和启动审计。"""  # noqa: DOCSTRING_CJK
+        """Validate an archive chain independently of script content, only for lifecycle cleanup and startup audit."""  # noqa: DOCSTRING_CJK
 
         session = stored.session
         if session.story_package_id != self.engine.story_id:
@@ -1290,11 +1290,11 @@ class NumericV2SessionStore:
                 scene_complete = event.get("scene_complete")
                 if not isinstance(scene_complete, bool):
                     raise ValueError("scene_complete_shape")
-                # 重放必须使用当时记录的结局授权；旧 Ledger 缺省关闭，不能由完成信号推导。
+                # Replay must use the ending authorization recorded at the time; default this off for old Ledgers and never infer it from a completion signal.
                 natural_ending_ready = event.get("natural_ending_ready", False)
                 if not isinstance(natural_ending_ready, bool):
                     raise ValueError("natural_ending_ready_shape")
-                # 条件旁白离幕门槛随当时的复核开关记录；旧 Ledger 缺省开启。
+                # Record the conditional-narration scene-exit gate from the review setting at the time; default this on for old Ledgers.
                 condition_narrations_enabled = event.get("condition_narrations_enabled", True)
                 if not isinstance(condition_narrations_enabled, bool):
                     raise ValueError("condition_narrations_enabled_shape")
@@ -1363,7 +1363,7 @@ class NumericV2SessionStore:
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             replayed_session = replayed.session
-            # 邀请撤下边界参与后续接受判定，必须与同回合历史一致；旧记录缺省无边界。
+            # Invitation withdrawal boundaries affect later acceptance decisions and must match same-turn history; old records default to no boundary.
             for value in (event, performance):
                 if not isinstance(value.get("transition_offer_invalidated", False), bool):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
@@ -1371,7 +1371,7 @@ class NumericV2SessionStore:
                 raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if expected_event.get("transition_offer_invalidated") is True and event.get("transition_offer_invalidated") is not True:
                 raise NumericV2StoreError("numeric_ledger_replay_mismatch")
-            # 新邀请来源标记必须与可见正文同回合一致；缺省表示仅保留旧邀请。
+            # A new invitation source marker must match visible body text from the same turn; absent marker means retain only the old invitation.
             for value in (event, performance):
                 if not isinstance(value.get("transition_offer_presented", False), bool):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
@@ -1386,7 +1386,7 @@ class NumericV2SessionStore:
                         or event.get("transition_offer_presented") is not True):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if "transition_offered" in event:
-                # 新 Ledger 的提议状态来自同 revision 的 Actor 正文；重放时只复用已提交值。
+                # Proposal status in a new Ledger comes from the Actor body at the same revision; replay reuses only the committed value.
                 committed_transition_offered = event.get("transition_offered")
                 if not isinstance(committed_transition_offered, bool):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
@@ -1408,7 +1408,7 @@ class NumericV2SessionStore:
                 if committed_address_known != expected_event.get("player_address_known"):
                     if disclosure_version == 2 or committed_address_known is False:
                         raise NumericV2StoreError("numeric_ledger_replay_mismatch")
-                    # 版本字段加入前，任意昵称出现都会被提交为知情；既成 Session 不能因规则收紧而损坏。
+                    # Before the version field was added, any nickname occurrence was committed as informed; do not corrupt existing Sessions when tightening the rules.
                     replayed_session = replace(
                         replayed_session,
                         player_address_known=True,
@@ -1477,7 +1477,7 @@ class NumericV2SessionStore:
                         or not all(isinstance(segment, Mapping) for segment in segments)
                         or [segment.get("phase") for segment in segments]
                         != ["source_response", "transition_bridge", "target_opening"]
-                        # 来源旁白是版本 3 的可选字段；旧记录无此字段仍可原样恢复。
+                        # Source narration is an optional version 3 field; older records without it must still restore unchanged.
                         or set(segments[0]).difference({"fixed_narrations"}) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
                         or ("scene_narration" in segments[0] and not valid_scene_narration(segments[0]))
                         or set(segments[1]) != {"phase", "scene_narration"}
@@ -1488,7 +1488,7 @@ class NumericV2SessionStore:
                                 str(event.get("source_transition_dialogue_policy") or replay_session.dialogue_policy)
                             ),
                         )
-                        # 合同版本 3 允许去重后的空桥段；目标开场仍必须非空并由 Runtime 注入。
+                        # Contract version 3 allows an empty deduplicated beat; the target opening must remain non-empty and be injected by Runtime.
                         or not valid_scene_narration(segments[1], allow_empty=True)
                         or not valid_scene_narration(segments[2])
                         or not valid_mixed_performance_policy(
@@ -1524,7 +1524,7 @@ class NumericV2SessionStore:
                 except ValueError as exc:
                     raise NumericV2StoreError("numeric_narrative_replay_invalid") from exc
                 replayed_session = replace(replayed_session, narrative_state=narrative_state)
-            # 重放时同步补回正式正文历史，供后续上下文继续使用。
+            # Restore the committed body history during replay so it remains available to later context.
             replay_session = replace(
                 replayed_session,
                 performance_history=(*replayed_session.performance_history, deepcopy(dict(performance))),

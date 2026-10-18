@@ -14,7 +14,7 @@ import pytest
 import config
 from utils.conversation_settings_constants import ALLOWED_CONVERSATION_SETTINGS
 
-vs = config.visit_settings   # config 包导入时已加载该子模块
+vs = config.visit_settings   # Importing config already loaded this submodule.
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VISIT_KEYS = {"visitEnabled", "visitMemoryEnabled", "visitVoiceEnabled"}
@@ -123,26 +123,26 @@ def test_invariant_checker_rejects_a_broken_relation(monkeypatch):
 
 
 def test_page_reload_deadline_must_outlast_the_socket_grace(monkeypatch):
-    # 调小重入宽限或调大安全余量，绝对期限会悄悄短于 transport WS 的 20 s
+    # Reducing reentry grace/increasing safety margin silently shortens absolute deadline below transport WS's 20s.
     monkeypatch.setattr(vs, "VISIT_PAGE_REJOIN_SAFETY_S", 15)
     with pytest.raises(ValueError, match="absolute page reload deadline"):
         vs._check_invariants()
 
 
 def test_debrief_commit_backoff_caps_at_one_hour():
-    # 暂时性写入失败的退避：30 s / 2 min / 10 min / 1 h，之后一直取最后一项（owner 2026-10-02）
+    # Transient write-failure backoff: 30s / 2min / 10min / 1h, thereafter reuse last (owner 2026-10-02).
     assert vs.VISIT_DEBRIEF_COMMIT_BACKOFF_S == (30, 120, 600, 3600)
 
 
 def test_every_visit_constant_is_re_exported_from_config():
-    # 后续 PR 按惯例 from config import VISIT_*：漏了再导出就是 ImportError
+    # Later PRs conventionally use from config import VISIT_*; missing reexport causes ImportError.
     names = {n for n in dir(vs) if n.startswith("VISIT_")}
     assert names <= set(config.__all__)
     assert all(getattr(config, n) == getattr(vs, n) for n in names)
 
 
 def test_page_reload_safety_margin_must_be_positive(monkeypatch):
-    # 本侧要比对端的重入宽限早收口，靠的就是这个余量大于 0
+    # This side must finalize before peer reentry grace expires; requires strictly positive margin.
     monkeypatch.setattr(vs, "VISIT_PAGE_REJOIN_SAFETY_S", 0)
     with pytest.raises(ValueError, match="positive safety margin"):
         vs._check_invariants()

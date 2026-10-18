@@ -1,9 +1,9 @@
 """
-备忘提醒插件 (Memo Reminder)
+Memo Reminder plugin
 
-在指定时间通过 push_message 提醒主人。
-支持一次性提醒、每日重复、自定义间隔重复。
-数据通过 PluginStore (SQLite KV) 持久化，重启不丢失。
+Remind the owner at a specified time through push_message.
+Supports one-time, daily, and custom-interval reminders.
+Data persists in PluginStore (SQLite KV) across restarts.
 """
 
 from __future__ import annotations
@@ -55,9 +55,9 @@ def _now(tz: timezone | ZoneInfo) -> datetime:
 
 
 def _parse_time(raw: str, tz: timezone | ZoneInfo) -> Optional[Tuple[datetime, bool]]:
-    """解析时间字符串，返回 (aware datetime, 是否含日期)。
+    """Parse a time string, returning (aware datetime, whether a date is included).
 
-    时间字符串先按用户时区解释，再转为 UTC 存储。
+    Interpret time in the user's time zone, then convert to UTC for storage.
     """
     raw = raw.strip()
 
@@ -197,7 +197,7 @@ class MemoReminderPlugin(NekoPluginBase):
         return cleaned
 
     def _notify_change(self) -> None:
-        """唤醒 checker 线程，使其立即重新计算下次触发时间。若线程已死则重启。"""
+        """Wake the checker thread to immediately recalculate the next trigger; restart it if dead."""
         alive = self._checker_thread.is_alive() if self._checker_thread else False
         self.logger.info("_notify_change called: checker_alive={} stop={}", alive, self._stop_event.is_set())
         if self._checker_thread and not alive and not self._stop_event.is_set():
@@ -254,7 +254,7 @@ class MemoReminderPlugin(NekoPluginBase):
         return Ok({"status": "shutdown"})
 
     def _next_trigger_seconds(self) -> Optional[float]:
-        """计算距离最近一条提醒的剩余秒数，无提醒返回 None。"""
+        """Calculate seconds until the nearest reminder, or None if no reminders exist."""
         reminders = self._load_reminders()
         if not reminders:
             return None
@@ -374,7 +374,7 @@ class MemoReminderPlugin(NekoPluginBase):
         rid = r.get("id", "?")
         repeat_label = r.get("repeat", "once")
 
-        # 只有未发送过消息的提醒才发送（防止重试时重复发送）
+        # Send only reminders whose message has not been sent, preventing duplicate retry delivery.
         if not r.get("delivered"):
             self.ctx.push_message(
                 source="memo_reminder",
@@ -394,7 +394,7 @@ class MemoReminderPlugin(NekoPluginBase):
                 },
                 target_lanlan=r.get("lanlan_name"),
             )
-            # 标记消息已发送
+            # Mark the message as sent.
             r["delivered"] = True
 
     @staticmethod
@@ -445,7 +445,7 @@ class MemoReminderPlugin(NekoPluginBase):
 
         r = dict(r)
         r["trigger_at"] = next_dt.isoformat()
-        # 清除 transient 状态，以便下次触发时重新发送消息
+        # Clear transient state so the next trigger sends a message again.
         r.pop("delivered", None)
         r.pop("callback_pending", None)
         r.pop("callback_error", None)

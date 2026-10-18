@@ -496,7 +496,7 @@ async def test_cosyvoice_design_enrolls_with_user_preferred_model(monkeypatch):
             return {"TTS_MODEL": "cosyvoice-v3.5-flash"}
 
     async def fake_design(**kwargs):
-        # 模拟百炼行为：voice_id = <target_model>-<prefix>-随机后缀
+        # Simulate Bailian behavior: voice_id = <target_model>-<prefix>-random suffix.
         captured.update(kwargs)
         return f"{kwargs['target_model']}-aria1", "UklGRg==", "audio/wav", "req-1"
 
@@ -513,9 +513,9 @@ async def test_cosyvoice_design_enrolls_with_user_preferred_model(monkeypatch):
     body = json.loads(response.body)
 
     assert response.status_code == 200
-    # ① 传给服务端的 target_model 必须是用户填写的模型
+    # 1. The target_model sent to the server must be the user-supplied model.
     assert captured["target_model"] == "cosyvoice-v3.5-flash"
-    # ② 音色 ID 前缀跟随用户填写的模型变化（不再是 plus）
+    # 2. The voice ID prefix follows the user-supplied model rather than always using plus.
     assert body["voice_id"].startswith("cosyvoice-v3.5-flash-")
 
 
@@ -559,7 +559,7 @@ async def test_cosyvoice_design_enrolls_with_default_model_when_preference_unusa
     body = json.loads(response.body)
 
     assert response.status_code == 200
-    # 填了别家 ID：传给服务端的是回退默认 plus，前缀也是 plus
+    # Another provider's ID: both the server target and prefix fall back to the default plus.
     assert captured["target_model"] == "cosyvoice-v3.5-plus"
     assert body["voice_id"].startswith("cosyvoice-v3.5-plus-")
 

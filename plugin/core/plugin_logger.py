@@ -1,24 +1,24 @@
 """
-插件 Logger 工具模块（stdlib 薄壳）
+Plugin logger utilities (thin stdlib wrapper)
 
 ╔══════════════════════════════════════════════════════════════════════════╗
-║                        ⚠⚠⚠  警  告  ⚠⚠⚠                                ║
+║                        ⚠⚠⚠  WARNING  ⚠⚠⚠                              ║
 ║                                                                          ║
-║   本模块过去版本：                                                      ║
-║     - 用 Path.cwd() 推日志目录 → AppImage 打包后写入只读 squashfs 直接 ║
-║       崩溃；                                                             ║
-║     - 用 loguru 自创 sink → 和本体 RobustLoggerConfig 双轨制；         ║
-║     - 一堆 fallback 把 PermissionError 吞成 silent fail。              ║
+║   Previous versions of this module:                                     ║
+║     - Derived log directories from Path.cwd(), crashing when AppImage  ║
+║       attempted to write into read-only squashfs;                        ║
+║     - Invented loguru sinks alongside RobustLoggerConfig;               ║
+║     - Swallowed PermissionError through numerous silent fallbacks.     ║
 ║                                                                          ║
-║   现在：所有插件日志统一走 utils.logger_config.RobustLoggerConfig，    ║
-║   通过 setup_logging(service_name=f"Plugin_{plugin_id}") 落到          ║
-║   我的文档/N.E.K.O/logs/N.E.K.O_Plugin_{plugin_id}_*.log。            ║
+║   All plugin logs now use utils.logger_config.RobustLoggerConfig,      ║
+║   with setup_logging(service_name=f"Plugin_{plugin_id}") writing to    ║
+║   Documents/N.E.K.O/logs/N.E.K.O_Plugin_{plugin_id}_*.log.                ║
 ║                                                                          ║
-║   再有人在本模块（或仓库任何位置）：                                    ║
-║     - 重新引入 loguru                                                   ║
-║     - 用 cwd / __file__.parent 算日志目录                              ║
-║     - 自创 FileHandler 绕过 RobustLoggerConfig                         ║
-║   按维护者口径：**就把谁杀了。** lint 守门见 scripts/check_no_loguru.py。║
+║   If anyone, here or anywhere in this repository, again:                ║
+║     - Reintroduces loguru                                               ║
+║     - Derives log directories from cwd / __file__.parent                ║
+║     - Invents FileHandler paths bypassing RobustLoggerConfig           ║
+║   The maintainer says: **kill them.** See scripts/check_no_loguru.py.   ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 from __future__ import annotations
@@ -31,14 +31,14 @@ from plugin.logging_config import PluginLoggerAdapter, get_logger
 
 
 class PluginFileLogger:
-    """插件文件日志管理器。
+    """Plugin file-log manager.
 
-    历史接口保留。底层全部走 utils.logger_config.RobustLoggerConfig，
-    日志目录由本体决定（默认 我的文档/N.E.K.O/logs/），不再由插件控制。
+    Retains the historical interface. Everything delegates to utils.logger_config.RobustLoggerConfig;
+    the host determines the log directory (Documents/N.E.K.O/logs/ by default), not the plugin.
     """
 
     DEFAULT_LOG_LEVEL = "INFO"
-    DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # 兼容性常量；实际由 RobustLoggerConfig 决定
+    DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # Compatibility constant; actual value is determined by RobustLoggerConfig.
     DEFAULT_BACKUP_COUNT = 10
     DEFAULT_MAX_FILES = 20
 
@@ -66,11 +66,11 @@ class PluginFileLogger:
         self._logger: Optional[PluginLoggerAdapter] = None
 
     def setup(self, logger_instance: Optional[Any] = None) -> PluginLoggerAdapter:
-        """配置 logger（幂等）。
+        """Configure the logger (idempotent).
 
-        若 logger_instance 由 host 传入，直接返回它（host 已经配置过文件 sink，
-        本体 RobustLoggerConfig 也会同时落盘）；否则创建一个绑定 plugin_id 的
-        adapter。
+        Return a host-supplied logger_instance directly (the host already configured its file sink,
+        and the host's RobustLoggerConfig also writes to disk); otherwise create an adapter
+        bound to plugin_id.
         """
         if self._logger is not None:
             return self._logger
@@ -78,7 +78,7 @@ class PluginFileLogger:
         if isinstance(logger_instance, PluginLoggerAdapter):
             self._logger = logger_instance
         elif logger_instance is not None:
-            # 外部传入的 stdlib logger / 其他 adapter — 用 plugin namespace 包一层
+            # Externally supplied stdlib logger / other adapter: wrap with the plugin namespace.
             self._logger = get_logger(f"plugin.{self.plugin_id}").bind(plugin_id=self.plugin_id)
         else:
             self._logger = get_logger(f"plugin.{self.plugin_id}").bind(plugin_id=self.plugin_id)
@@ -88,7 +88,7 @@ class PluginFileLogger:
         return self._logger
 
     def get_log_file_path(self) -> Path:
-        """返回当前进程的日志文件路径（由本体 RobustLoggerConfig 决定）。"""
+        """Return this process's log-file path (determined by the host's RobustLoggerConfig)."""
         try:
             from utils.logger_config import RobustLoggerConfig
             cfg = RobustLoggerConfig(
@@ -123,9 +123,9 @@ def enable_plugin_file_logging(
     backup_count: int = PluginFileLogger.DEFAULT_BACKUP_COUNT,
     max_files: int = PluginFileLogger.DEFAULT_MAX_FILES,
 ) -> PluginLoggerAdapter:
-    """便捷函数：为插件返回一个绑定 plugin_id 的 logger。
+    """Convenience function returning a logger bound to plugin_id.
 
-    日志会自动落到本体的 plugin 日志文件（由 RobustLoggerConfig 管理路径）。
+    Logs automatically go to the host's plugin log file (path managed by RobustLoggerConfig).
     """
     file_logger = PluginFileLogger(
         plugin_id=plugin_id,
@@ -144,9 +144,9 @@ def plugin_file_logger(
     backup_count: int = PluginFileLogger.DEFAULT_BACKUP_COUNT,
     max_files: int = PluginFileLogger.DEFAULT_MAX_FILES,
 ):
-    """装饰器：给插件类自动挂 file_logger 属性。
+    """Decorator automatically attaching a file_logger attribute to plugin classes.
 
-    日志落盘位置由本体 RobustLoggerConfig 决定，插件无需关心。
+    The host's RobustLoggerConfig determines the log location; plugins need not manage it.
     """
     def decorator(cls):
         original_init = cls.__init__

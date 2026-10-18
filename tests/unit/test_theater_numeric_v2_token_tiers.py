@@ -17,7 +17,7 @@ from tests.unit.test_theater_numeric_v2_review_capacity import _fixture
 @pytest.mark.parametrize('profile,limits', [(name, (7000, 8500, 8500, 1500))
     for name in ('economy', 'balanced', 'quality')])
 def test_every_tier_keeps_player_and_candidate_complete(profile, limits):
-    # 正文超过过去360字段上限，句尾否定必须真的进入每档消息，当前输入也不能被截断。
+    # Narrative exceeds the old 360-character field cap; trailing negation must reach every tier's messages, and current input must remain complete.
     engine, session, _, _ = _fixture()
     session = replace(session, actor_budget_profile=profile)
     player = '我先整理工具。' * 40 + '但我没有同意离开。'
@@ -39,7 +39,7 @@ def test_every_tier_keeps_player_and_candidate_complete(profile, limits):
 
 
 def test_legacy_profile_names_use_identical_fixed_budget_and_evidence():
-    # 保留旧字段只为兼容；旧存档不得继续以不同容量演绎，也无需写回存档。
+    # Retain the legacy field for compatibility only; old archives must not continue with different capacities or require rewriting.
     _, session, _, _ = _fixture()
     history = tuple({'revision': i, 'from_node_id': 'start', 'to_node_id': 'start',
         'performance': f'第{i}号样本记录：样本已归还木盒，标签完好。' * 3} for i in range(1, 25))
@@ -106,7 +106,7 @@ async def test_request_usage_isolated_counts_retries_and_missing_reports():
     first, second = await asyncio.gather(request(123), request(456))
     assert [first['input_tokens'], second['input_tokens']] == [123, 456]
     assert all(not item['complete'] and len(item['calls']) == 3 for item in (first, second))
-    # 请求退出后不捕获别的链路；新请求或幂等重放不能重复上一轮用量。
+    # After a request exits, do not capture other flows; new requests and idempotent replays must not repeat the previous usage.
     with numeric_v2_usage_scope() as calls:
         pass
     assert with_numeric_v2_usage({'ok': True, 'idempotent_replay': True}, calls)['token_usage']['calls'] == []

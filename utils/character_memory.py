@@ -318,7 +318,7 @@ def iter_character_memory_roots(config_manager) -> list[Path]:
 
       - Startup soft migration: ``ConfigManager.migrate_legacy_documents_memory`` only
         moves directories still present in ``characters.json[猫娘]`` to the runtime.
-      - Manual cleanup button: the Workshop page's "clean up legacy memory" scan +
+      - Manual cleanup button: the Workshop page's \"clean up legacy memory\" scan +
         user-checked deletion.
     """  # noqa: DOCSTRING_CJK
     roots: list[Path] = []
@@ -622,7 +622,7 @@ def rename_character_memory_storage(
         # the case where this fence is somehow never set. Retiring the
         # SOURCE is not redundant: its directory is going away.
         fence_character_runtime_writes(old_name, new_name)
-        # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
+        # Target character name may have been renamed away; sever old redirects before reuse, preventing new characters writing to old targets.
         (
             _,
             activation_scope,

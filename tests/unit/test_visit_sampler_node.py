@@ -34,10 +34,10 @@ def test_any_refresh_rate_samples_exactly_thirty(hz):
         files=BRIDGE_FILES,
     )
     assert abs(out["fps"] - 30) <= 0.5
-    # 冷启动第一秒不多抓（刷新率作初值）
+    # No extra capture in the first cold-start second (initialize from refresh rate).
     assert abs(out["firstSecond"] - 30) <= 1
     if hz == 144:
-        assert out["gate"] < 29.5  # 对照：「距上次 ≥33 ms」门在 144 Hz 下只有约 28.8 fps
+        assert out["gate"] < 29.5  # Comparison: a >=33 ms since-last-capture gate yields only about 28.8 fps at 144 Hz.
 
 
 def test_timer_driven_seventeen_ms_and_compat_fifteen():
@@ -52,7 +52,7 @@ def test_timer_driven_seventeen_ms_and_compat_fifteen():
     )
     assert abs(out["timer"] - 30) <= 0.5
     assert abs(out["compat"] - 15) <= 0.5
-    assert abs(out["slow"] - 25) <= 0.15  # 源低于目标：每帧都抓
+    assert abs(out["slow"] - 25) <= 0.15  # Source below target rate: capture every frame.
 
 
 def test_high_rates_keep_the_fractional_remainder():

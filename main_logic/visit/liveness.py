@@ -107,7 +107,7 @@ class VisitLiveness:
         """
         if side not in ("host", "guest"):
             raise ValueError(f"invalid side: {side!r}")
-        # 与 config 的不变量同一组关系：注入的时长也要满足
+        # Match the config invariants: injected durations must satisfy the same relationships
         if not page_rejoin_safety_s > 0:
             raise ValueError("page_rejoin_safety_s must be positive")
         if not rejoin_grace_s - page_rejoin_safety_s > page_grace_s:
@@ -145,7 +145,7 @@ class VisitLiveness:
         self._verdict: Optional[LivenessVerdict] = None
 
     # ------------------------------------------------------------------
-    # 对端存在
+    # Peer presence
 
     def on_peer_entered(self, now: float) -> None:
         """Host observed the peer entering the vendor room: extend the wait deadline.
@@ -171,8 +171,8 @@ class VisitLiveness:
         """
         self.waiting = False
         self.peer_last_seen = now if self.peer_last_seen is None else max(self.peer_last_seen, now)
-        # 核验通过的 hello 本身就证明对端在场：等待期里留下的暂定离开（对端刷新后
-        # 换了 vendor 身份重进，runtime 不会调 on_peer_vendor_rejoined）不能再判 peer_left
+        # A verified hello itself proves peer presence: tentative departure retained during the wait (a refreshed peer
+        # reenters with a new vendor identity, so runtime does not call on_peer_vendor_rejoined) must no longer trigger peer_left
         self.peer_departed_at = None
 
     def on_peer_message(self, now: float) -> None:
@@ -207,7 +207,7 @@ class VisitLiveness:
         self.ready_deadline = None
 
     # ------------------------------------------------------------------
-    # 本侧连接与页面
+    # Local connection and page
 
     def on_message_sent(self, now: float) -> None:
         """A heartbeat or a reliable message was successfully handed to the vendor."""
@@ -259,9 +259,9 @@ class VisitLiveness:
         host side keeps the room-entry bound meanwhile.
         """
         if not self.hello_acked:
-            if self.peer_entered_at is not None:  # 只有 host 记录
-                # 掉线 / 掉页（since）那一刻访客的 30 s 等待已经过了（不带余量判断）：它已不在等，不再套这一项。
-                # 最后 3 s 内掉线时这一项落在过去、当场判死，是保守的一侧
+            if self.peer_entered_at is not None:  # Only the host records this
+                # If the visitor's 30 s wait had expired at disconnection/page loss (since), without margin, it is no longer waiting and this item does not apply.
+                # Disconnecting in the final 3 s puts this item in the past and immediately declares failure, the conservative choice
                 if self.peer_entered_at + self._peer_lost_s <= since:
                     return None
                 return self.peer_entered_at + self._peer_lost_s - self._reconnect_margin_s
@@ -270,7 +270,7 @@ class VisitLiveness:
             return None
         return self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s
 
-    # —— 页面重载（transport WS 断开到重新入房）——
+    # —— Page reload (from transport WS disconnection to room reentry) ——
 
     def page_reload_deadline(self) -> Optional[float]:
         """Absolute deadline of the current page reload, or ``None`` when no reload is running.
@@ -356,7 +356,7 @@ class VisitLiveness:
         self.page_socket_lost_at = None
 
     # ------------------------------------------------------------------
-    # 对端离开
+    # Peer departure
 
     def on_peer_leave_message(self, now: float, last_seq: int,
                               contiguous_seq: int) -> Optional[LivenessVerdict]:
@@ -389,7 +389,7 @@ class VisitLiveness:
         """
         if self.peer_departed_at is None:
             self.peer_departed_at = now
-        # 离开的访客不再等本侧 hello：入房时刻那一项不再适用（再来会有新的 on_peer_entered）
+        # A departed visitor no longer awaits our hello: room-entry timing no longer applies (a return triggers a new on_peer_entered)
         self.peer_entered_at = None
 
     def on_peer_vendor_rejoined(self, now: float) -> None:
@@ -413,7 +413,7 @@ class VisitLiveness:
         self.vendor_timeout_events += 1
 
     # ------------------------------------------------------------------
-    # 判定
+    # Evaluation
 
     def _set_verdict(self, verdict: LivenessVerdict) -> LivenessVerdict:
         if self._verdict is None:

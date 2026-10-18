@@ -264,7 +264,7 @@ def cosine_similarity(left, right) -> float:
 
 # Cosine cutoff for "candidate is *probably* a paraphrase". 0.85 is the design
 # number from the P2 plan: it was calibrated so a paraphrase pair clears the
-# bar while an antonym pair ("主人喜欢猫" / "主人讨厌猫") does not.
+# bar while an antonym pair ("主人喜欢猫" / "主人讨厌猫", likes/hates cats) does not.
 #
 # ⚠️ This comment used to quote absolute scores (≈0.88 paraphrase / ≈0.78
 # antonym) as if they were current. They were measured on the embedding
@@ -440,9 +440,9 @@ class FactDedupResolver:
                     if isinstance(row, dict) and row.get('id') is not None:
                         live_facts_by_id.setdefault(row.get('id'), []).append(row)
             existing = await self.aload_pending(name)
-            # scrub 老 schema 条目的明文残留。即使本次没有新 pair 可追加
-            # （全部撞去重），只要发生了 scrub 就必须重写队列文件——否则
-            # 磁盘上的明文要等下一次真正的写入才消失。
+            # Scrub plaintext residue from old-schema entries. Even with no new pairs due to
+            # complete deduplication, rewrite queues whenever scrub changes content;
+            # otherwise plaintext remains on disk until another genuine write.
             scrubbed = False
             for it in existing:
                 if 'candidate_text' in it or 'existing_text' in it:
@@ -509,9 +509,9 @@ class FactDedupResolver:
                     'candidate_subject_kind', 'candidate_subject_id',
                     'candidate_scope', 'existing_subject_kind',
                     'existing_subject_id', 'existing_scope',
-                    # FTS 近重复通道（#2703）带来的证据：文字重叠度不是
-                    # cosine，两者不能互相冒名——分开存，prompt 侧按 detector
-                    # 决定报哪一个。
+                    # FTS near-duplicate evidence (#2703) measures textual overlap, not
+                    # cosine; store separately without mislabeling, and let prompt detector
+                    # types choose which metric to report.
                     'text_overlap', 'detector',
                 ):
                     if p.get(field) is not None:
@@ -812,8 +812,8 @@ class FactDedupResolver:
             for cos, sib in scored:
                 if collected >= per_fact_limit:
                     break
-                # ids-only（隐私收口）：pair 不携带 text，resolve 侧按 id
-                # 从 facts.json 现取——队列文件因此不落任何成员衍生原文。
+                # Privacy-preserving ids-only pairs omit text; resolution reads current facts.json
+                # by ID, preventing member-derived plaintext in queue files.
                 results.append({
                     'candidate_id': cid,
                     'existing_id': sib.get('id'),
@@ -824,8 +824,8 @@ class FactDedupResolver:
                     'existing_subject_id': sib.get('subject_id'),
                     'existing_scope': sib.get('scope'),
                     'entity': entity,
-                    # 隔离域随 pair 入队（legacy 为 None/None）：resolve 侧
-                    # 按域锁批，跨隔离域的 fact 文本不得共现在同一个 prompt。
+                    # Enqueue isolation domains with pairs, legacy None/None; resolution batches
+                    # one domain, never mixing cross-domain fact text in one prompt.
                     'subject_key': bucket[1],
                     'scope': bucket[2],
                     'cosine': cos,
@@ -868,11 +868,11 @@ class FactDedupResolver:
         if not pending:
             return 0
 
-        # 队列 ids-only 迁移 scrub：老 schema 条目落盘携带 candidate_text/
-        # existing_text 明文副本（成员衍生内容），一经发现就地剥掉并立即
-        # 重写队列文件——不能等到批次消费时才顺带清，否则轮不上的长尾条
-        # 目会让明文在磁盘上一直躺到 dead-letter。维护态写失败无妨：内存
-        # 里已 scrub，本轮 prompt 不受影响，下轮重试重写。
+        # IDs-only migration scrubs old candidate_text/existing_text plaintext copies,
+        # derived from member content, immediately on discovery and rewrites queues.
+        # Waiting until consumption leaves unscheduled tail entries' plaintext
+        # on disk until dead-letter. Maintenance-write failures are tolerable:
+        # memory is scrubbed for current prompts, and later rounds retry rewriting.
         scrubbed = False
         for it in pending:
             if 'candidate_text' in it or 'existing_text' in it:
@@ -885,18 +885,18 @@ class FactDedupResolver:
                 "[FactDedup] %s: 队列明文字段 scrub 完成（ids-only 迁移）", name,
             )
 
-        # Liveness：过滤已达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 dead-letter pair
-        # （防御性——_abump_dedup_attempts_and_dead_letter_locked 命中阈值时直接
-        # 从 queue 删除，正常路径不会让 attempts ≥ MAX 的 entry 还留着）。
+        # Liveness: filter dead-letter pairs at MEMORY_LIVENESS_MAX_ATTEMPTS,
+        # defensively because _abump_dedup_attempts_and_dead_letter_locked normally
+        # removes threshold entries immediately.
         #
-        # 单批锁定单一隔离域（对偶 corrections 的 batch_domain 锁）：legacy
-        # 私聊为一域、每个 subject (key, scope) 各一域；跨域 pair 留队等
-        # 下一轮 FIFO 轮到。新条目带 subject_key/scope 直接分类；升级前的
-        # 老队列条目查活体 fact 行兜底分类。
+        # One batch locks one isolation domain, symmetric with corrections batch_domain:
+        # legacy private chat is one domain, each subject key/scope another. Other-domain
+        # pairs remain FIFO-queued for later rounds. New entries use subject_key/scope;
+        # legacy queue entries resolve domains from live facts.
         #
-        # prompt 文本按 id 从 facts.json 现取（队列 ids-only）：任一侧行已
-        # 消失（被 absorb 归档 / 上一轮 merge 掉 / subject 归档）的 pair 按
-        # 既有 disappeared-row 语义直接出队，不进任何 prompt（fail-closed）。
+        # Read current prompt text from facts.json by ID. If either row disappeared through
+        # absorbed archival/previous merges/subject archival, dequeue it using existing
+        # disappeared-row semantics without any prompt exposure, failing closed.
         from memory.scopes import subject_from_entry
 
         rows = await self._fact_store.aload_facts(name)
@@ -918,9 +918,9 @@ class FactDedupResolver:
             return None
 
         batch: list[dict] = []
-        # 与 batch 平行的 (candidate_text, existing_text)。独立结构而不是
-        # 临时挂在 item 上：batch 条目在失败路径会带着 resolve_attempts 原样
-        # 写回队列文件，挂上去的文本会跟着落盘，把 ids-only 改回去。
+        # Store batch-parallel candidate/existing text separately, never transiently on
+        # items: failure paths persist batch items with resolve_attempts,
+        # and attached text would undo ids-only persistence.
         batch_texts: list[tuple[str, str]] = []
         stale_keys: set[tuple] = set()
         batch_domain: tuple | None = None
@@ -961,7 +961,7 @@ class FactDedupResolver:
                 it for it in pending
                 if _queue_identity(it) not in stale_keys
             ]
-            # 落盘失败（维护态）无妨：下一轮重新识别重新丢。
+            # Maintenance persistence failure is tolerable; rediscover/discard next round.
             await self._asave_pending(name, kept)
             logger.info(
                 "[FactDedup] %s: 出队 %d 对行已消失/无法归域的陈旧候选",
@@ -1006,10 +1006,10 @@ class FactDedupResolver:
             printing its text overlap under the ``cosine=`` label would
             hand the model a number that means something else.
             """
-            # 脏值不抛：这段在 try 之外，一条被手改成字符串的 text_overlap
-            # 会让异常穿出 _aresolve_locked，既不 bump resolve_attempts 也不
-            # 进 dead-letter——整个队列永久卡在队头那条上（对齐同文件
-            # resolve_attempts 走 safe_int_field 的口径）。
+            # Tolerate bad values: outside try, manually string-valued text_overlap could
+            # escape _aresolve_locked without incrementing resolve_attempts or
+            # dead-lettering, permanently blocking the queue head. Match same-file
+            # resolve_attempts safe_int_field handling.
             def _num(value: object) -> float | None:
                 try:
                     return float(value)  # type: ignore[arg-type]
@@ -1043,9 +1043,9 @@ class FactDedupResolver:
         try:
             set_call_type("memory_fact_dedup")
             api_config = await self._config_manager.aget_model_api_config('summary')
-            # timeout=60: 持 FactDedup 锁但只阻 embedding worker enqueue
-            # （background→background），用户路径无感。
-            # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
+            # timeout=60 holds FactDedup locks but blocks only background embedding enqueue,
+            # without affecting user paths.
+            # max_retries=0 disables SDK retries; no business retries exist here, so one call is final.
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = await create_chat_llm_async(
                 api_config['model'],
@@ -1067,17 +1067,17 @@ class FactDedupResolver:
                     "[FactDedup] %s: LLM 返回非数组 (%s)，跳过本轮",
                     name, type(results).__name__,
                 )
-                # Parse 失败也算 attempt（same input → same parse failure）；
-                # 跟 Exception 分支同治。
+                # Parse failures count as attempts too; identical inputs repeat failures,
+                # matching exception handling.
                 await self._abump_dedup_attempts_and_dead_letter_locked(name, batch)
                 return 0
         except Exception as e:
             logger.warning("[FactDedup] %s: LLM 调用失败: %s", name, e)
-            # Liveness 兜底：给本批 pair bump resolve_attempts；达
-            # MEMORY_LIVENESS_MAX_ATTEMPTS 的 entry 从 queue dead-letter
-            # 丢弃。否则毒 pair（safety filter / prompt 过长 / 永远 parse
-            # 不出来）一直占队头让 dedup 永久卡死。caller (aresolve) 已持
-            # 着 _get_alock，这里走 _locked 变体不再重复获取。
+            # Liveness fallback increments resolve_attempts for this batch, discarding
+            # threshold entries through MEMORY_LIVENESS_MAX_ATTEMPTS dead-lettering.
+            # Otherwise poisonous safety-filter/oversized/unparseable pairs occupy
+            # queue heads forever. aresolve already holds _get_alock;
+            # use the locked variant without reacquisition.
             await self._abump_dedup_attempts_and_dead_letter_locked(name, batch)
             return 0
 
@@ -1085,11 +1085,11 @@ class FactDedupResolver:
             name, batch, results,
         )
 
-        # CodeRabbit: LLM 返了 list 但 ``_aapply_decisions`` 没消费任何 pair
-        # （所有 action 都被 reject = unknown action / missing index / invalid
-        # format 等），processed_keys 为空 → 下面的 ``remaining`` filter 不会
-        # 删任何东西 → 队头同一批 pair 下次 tick 重新喂 LLM 同样输出垃圾 →
-        # 永久卡死。算 attempts 一次（跟 LLM Exception / 非 list 同治）。
+        # CodeRabbit: LLM lists whose decisions consume no pairs, all actions rejected
+        # for unknown actions/missing indexes/invalid formats, leave processed_keys
+        # empty, so remaining filtering removes nothing. The same head batch
+        # feeds LLM garbage again next tick, deadlocking permanently;
+        # count an attempt just like exceptions/nonlists.
         if not processed_keys:
             logger.warning(
                 "[FactDedup] %s: LLM 输出 %d 条 action 全部无效（unknown action / "

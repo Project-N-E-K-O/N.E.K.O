@@ -17,37 +17,37 @@
 
 # ---- Plugin platform ----
 PLUGIN_USER_CONTEXT_MAX_ITEMS = 200
-"""每用户上下文 deque maxlen（plugin core state）。
-- 用途：plugin 跨调用维护的 per-user 上下文条数上限。
-- 上游：用户与 plugin 的交互事件序列。"""
+"""Per-user context deque maxlen (plugin core state).
+- Purpose: cap per-user context entries retained by the plugin across calls.
+- Upstream: sequence of user-plugin interaction events."""
 
 # ---- Utils: translation / vision / connectivity test / MCP ----
 TRANSLATION_OUTPUT_MAX_TOKENS = 1000
-"""翻译 LLM 的 max_completion_tokens。
-- 用途：单 chunk 翻译输出上限。
-- 上游：LLM 输出。"""
+"""Translation LLM max_completion_tokens.
+- Purpose: output limit for translating one chunk.
+- Upstream: LLM output."""
 
 TRANSLATION_CHUNK_MAX_TOKENS_SHORT = 2000
-"""翻译短文本路径的分块 token 上限。
-- 用途：单次翻译调用的输入 token 数；长文本被切成多块串行翻译。
-- 上游：用户/系统传入的待翻译原文。"""
+"""Chunk token limit for the short-text translation path.
+- Purpose: input tokens per translation call; long texts are split into chunks translated sequentially.
+- Upstream: source text supplied by the user/system for translation."""
 
 TRANSLATION_CHUNK_MAX_TOKENS_LONG = 5000
-"""翻译长文本路径的分块 token 上限。
-- 用途：长文本翻译路径下的更大 chunk size。
-- 上游：用户/系统传入的待翻译原文。"""
+"""Chunk token limit for the long-text translation path.
+- Purpose: larger chunk size for the long-text translation path.
+- Upstream: source text supplied by the user/system for translation."""
 
 VISION_ANALYSIS_MAX_TOKENS = 500
-"""截图 / 图像分析 LLM 的 max_completion_tokens。
-- 用途：返回画面描述。
-- 上游：LLM 输出。"""
+"""Screenshot / image-analysis LLM max_completion_tokens.
+- Purpose: return a description of the image.
+- Upstream: LLM output."""
 
 CONNECTIVITY_TEST_MAX_TOKENS = 1
-"""provider 连通性测试请求的 max_completion_tokens。
-- 用途：仅测试 API 可达，最小请求。
-- 上游：LLM 输出。"""
+"""Provider connectivity-test request max_completion_tokens.
+- Purpose: minimal request testing only API reachability.
+- Upstream: LLM output."""
 
 MCP_TOOL_RESULT_MAX_TOKENS = 1000
-"""MCP 工具结果回流给 LLM 前的 token 上限。
-- 用途：mcp_adapter._truncate_llm_text 默认 limit；超过则截断 + "..."。
-- 上游：MCP server 返回的工具执行结果。"""
+"""MCP tool-result token limit before returning results to the LLM.
+- Purpose: default mcp_adapter._truncate_llm_text limit; truncate and append \"...\" when exceeded.
+- Upstream: tool execution results returned by the MCP server."""

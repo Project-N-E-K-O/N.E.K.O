@@ -54,15 +54,15 @@ def _set_no_store_headers(response: Response) -> None:
     response.headers["Expires"] = "0"
 
 
-# /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
-# 远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
-# 会被反向代理 / 隧道绕过，``NEKO_ACTIVITY_TRACKER_REMOTE`` 是运维显式
-# 声明"后端不在用户本机"的硬开关，命中就直接拒绝本地截图。
+# Both /screenshot and /screenshot/interactive capture the backend machine's screen; deployed
+# remotely, they capture the server desktop instead of the user's. Reverse proxies/tunnels can bypass loopback
+# checks, so ``NEKO_ACTIVITY_TRACKER_REMOTE`` explicitly declares through an operator-controlled hard switch
+# that the backend is not local; when set, reject local screenshots immediately.
 #
-# 真正的实现在 ``main_logic/activity/system_signals.is_remote_backend_deployment``
-# —— PR #1015 给 activity tracker 用的，这里直接复用避免再发明一套部署变量。
-# 私有别名保留是为了 ``tests/unit/test_system_screenshot_router.py`` 还
-# 在调 ``system_router_module._is_remote_backend_deployment()``。
+# The implementation lives in ``main_logic/activity/system_signals.is_remote_backend_deployment``
+# from PR #1015's activity tracker; reuse it rather than inventing another deployment variable.
+# Retain the private alias because ``tests/unit/test_system_screenshot_router.py`` still
+# calls ``system_router_module._is_remote_backend_deployment()``.
 _is_remote_backend_deployment = is_remote_backend_deployment
 
 
@@ -166,8 +166,8 @@ def _validate_local_mutation_request(
     if has_valid_csrf and has_valid_origin:
         return None
 
-    # 端口无关的 hostname 降级匹配：Docker 端口映射下内部端口（如 48911）
-    # 与浏览器 Origin 端口（如 1081）不一致，CSRF token 有效时放宽检查
+    # Port-independent hostname fallback: Docker's internal port (such as 48911) may differ
+    # from the browser Origin port (such as 1081); relax the check when the CSRF token is valid
     if has_valid_csrf and request_origin:
         parsed_origin = urlparse(request_origin)
         origin_host = parsed_origin.hostname

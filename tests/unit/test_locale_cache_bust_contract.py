@@ -52,18 +52,18 @@ ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP = ROOT / "static" / "i18n-i18next.js"
 LOCALES_DIR = ROOT / "static" / "locales"
 
-# 版本串的形状：日期前缀 + 说明这次递增为什么发生的 slug。历史上出现过
-# `2026-01-31-1` 这种纯序号后缀，也出现过带下划线的 `guide1_7-upstream-main-merge`，
-# 所以下划线和数字都放行，只把日期前缀钉死 —— 日期前缀是别处（例如
-# static/yui-guide-day1-systray-intro.test.cjs）用来做“不早于某次递增”比较的依据。
+# Version shape: date prefix + slug explaining increment. Historical
+# `2026-01-31-1` numeric suffixes and underscore-containing `guide1_7-upstream-main-merge`
+# require digits/underscores allowed; fix date prefix only, used elsewhere (e.g.
+# static/yui-guide-day1-systray-intro.test.cjs) for no-earlier-than-increment checks.
 LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 
-# 这里穷举的是 git 历史里所有出现过的 LOCALE_VERSION 取值（含只活在分支上的，
-# 比如 `2026-08-14-language-preference-superseded`）。作用有两个：挡住“递增”被写成
-# 一个早就发过的字符串，以及挡住 rebase/revert 把版本串带回旧值 —— 这两种情况下
-# 客户端的缓存键都不会变，新 key 依旧吃不到。
+# Enumerate every LOCALE_VERSION in Git history, including branch-only values
+# such as `2026-08-14-language-preference-superseded`. Prevent increments reusing
+# previously released values and rebase/revert restoring old ones: either leaves
+# client cache keys unchanged and new locale keys unavailable.
 #
-# 递增 LOCALE_VERSION 时，把旧值追加到这里。
+# When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
         "2026-10-17-chat-sync-quota-split-oversized",
@@ -438,15 +438,15 @@ RETIRED_LOCALE_VERSIONS = frozenset(
     }
 )
 
-# 当前 8 个语言包的 key 结构指纹（只覆盖 key 路径，不覆盖译文本身）。
+# Current eight locale key-structure fingerprints (key paths only, excluding translation values).
 #
-# 为什么只按 key 而不按整文件内容：缓存陈旧时，改字面量的后果是用户多看几天旧措辞，
-# 而新增/改名 key 的后果是把 key 本身当文案渲染出来。只对后者敏感，等于把这条守卫的
-# 红灯精准打在真正需要递增版本的那类改动上，同时让纯润色文案的 PR 不必来动它 ——
-# 一条每个 PR 都要顺手改一下的守卫，很快就会被当成噪音机械地改绿。
+# Why keys, not whole-file content: stale literal edits show old wording for days,
+# while new/renamed keys render raw keys. Sensitivity only to latter targets
+# genuinely version-requiring changes without burdening wording-only PRs;
+# a guard requiring edits every PR soon becomes noise mechanically made green.
 #
-# 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
-# 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
+# Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
+# stale caches yield undefined, equivalent to missing keys.
 LOCALE_KEY_SIGNATURE = "84b0c9b392565efcd815e14d5006e6ddab6b397ada82e2e7e6669d887330f469"
 
 _BUMP_INSTRUCTIONS = (
@@ -476,7 +476,7 @@ def _supported_languages(bootstrap: str) -> tuple[str, ...]:
 
 
 def _key_paths(node: object, prefix: str = "") -> list[str]:
-    # 叶子按点分路径展开，数组按 [i] 下标展开，得到一个与译文无关的纯结构视图。
+    # Expand leaves as dotted paths, arrays as [i], yielding pure structure independent of translations.
     if isinstance(node, dict):
         collected: list[str] = []
         for key, value in node.items():
@@ -491,8 +491,8 @@ def _key_paths(node: object, prefix: str = "") -> list[str]:
 
 
 def _locale_key_signature(languages: tuple[str, ...]) -> str:
-    # 指纹覆盖的是 SUPPORTED_LANGUAGES 声明的那一组语言，而不是目录里躺着的所有 json：
-    # 引导脚本只会去拉这一组，所以新增一门语言同样必须递增版本才能被老客户端看见。
+    # Fingerprints cover SUPPORTED_LANGUAGES, not every JSON in directory:
+    # bootstrap loads only that set, so adding a language also requires version increment for existing clients.
     digest = hashlib.sha256()
     for language in sorted(languages):
         path = LOCALES_DIR / f"{language}.json"
@@ -525,9 +525,9 @@ def test_locale_version_is_not_a_value_that_already_shipped() -> None:
 
 
 def test_every_locale_load_site_carries_the_cache_bust_query() -> None:
-    # 两个装载点（手动 fetch 与 i18next backend 的 loadPath）必须都带 ?v=。断言写成
-    # “扫出所有 /static/locales/ 引用再逐个查”，而不是分别断言两条已知字符串：后者对
-    # “又加了第三个装载点、忘了带 ?v=”是瞎的，而那正是最容易发生的漏法。
+    # Both loaders (manual fetch and i18next backend loadPath) need ?v=. Scan every
+    # /static/locales/ reference then check individually, rather than assert two known strings;
+    # the latter misses a third loader forgetting ?v=, the most likely omission.
     bootstrap = _read_bootstrap()
     references = re.findall(r"/static/locales/[^\s'\"`]*", bootstrap)
     assert len(references) >= 2, (
@@ -567,11 +567,11 @@ def test_vrm_pages_refresh_the_locale_bootstrap_with_static_assets(template_name
 
 
 def test_bump_instructions_name_every_step_of_the_fix() -> None:
-    # 上一条用例的红灯文案是这条守卫唯一的“教学面”—— 它是把作者从指纹失配引到递增
-    # 版本的那根线。文案里漏掉任何一步，守卫就退化成“改个指纹就绿”。
+    # Previous test's failure message is this guard's sole instructional surface, guiding authors from mismatched
+    # fingerprints to incrementing version. Missing any step reduces it to change-fingerprint-to-pass.
     #
-    # 同时把“文案确实接在那条断言上”一并钉住：只查字符串内容、不查调用点的话，
-    # 别人把指纹用例的 message 换成一句就地写的短提示，这条依旧是绿的。
+    # Also assert message actually attaches to that assertion: content-only checks would still pass
+    # if someone replaced the fingerprint failure message with a short inline hint.
     signature_test_source = inspect.getsource(
         test_locale_key_signature_pins_the_shipped_key_set
     )

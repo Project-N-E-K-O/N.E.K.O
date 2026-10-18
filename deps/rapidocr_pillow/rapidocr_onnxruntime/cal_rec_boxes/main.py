@@ -140,10 +140,10 @@ class CalRecBoxes:
     def adjust_box_overlap(
         word_box_list: List[List[List[int]]],
     ) -> List[List[List[int]]]:
-        # 调整bbox有重叠的地方
+        # Adjust overlapping bounding boxes
         for i in range(len(word_box_list) - 1):
             cur, nxt = word_box_list[i], word_box_list[i + 1]
-            if cur[1][0] > nxt[0][0]:  # 有交集
+            if cur[1][0] > nxt[0][0]:  # The boxes intersect
                 distance = abs(cur[1][0] - nxt[0][0])
                 cur[1][0] -= distance / 2
                 cur[2][0] -= distance / 2
@@ -242,12 +242,12 @@ class CalRecBoxes:
         center_x, center_y = np.mean(box[:, 0]), np.mean(box[:, 1])
         if np.any(box[:, 0] == center_x) and np.any(
             box[:, 1] == center_y
-        ):  # 有两点横坐标相等，有两点纵坐标相等，菱形
+        ):  # Two points share an x coordinate and two share a y coordinate: a diamond
             p1 = box[np.where(box[:, 0] == np.min(box[:, 0]))]
             p2 = box[np.where(box[:, 1] == np.min(box[:, 1]))]
             p3 = box[np.where(box[:, 0] == np.max(box[:, 0]))]
             p4 = box[np.where(box[:, 1] == np.max(box[:, 1]))]
-        elif np.all(box[:, 0] == center_x):  # 四个点的横坐标都相同
+        elif np.all(box[:, 0] == center_x):  # All four points have the same x coordinate
             y_sort = np.argsort(box[:, 1])
             p1 = box[y_sort[0]]
             p2 = box[y_sort[1]]
@@ -255,7 +255,7 @@ class CalRecBoxes:
             p4 = box[y_sort[3]]
         elif np.any(box[:, 0] == center_x) and np.all(
             box[:, 1] != center_y
-        ):  # 只有两点横坐标相等，先上下再左右
+        ):  # Only two points share an x coordinate: order top/bottom before left/right
             p12, p34 = (
                 box[np.where(box[:, 1] < center_y)],
                 box[np.where(box[:, 1] > center_y)],
@@ -268,7 +268,7 @@ class CalRecBoxes:
                 p34[np.where(p34[:, 0] == np.max(p34[:, 0]))],
                 p34[np.where(p34[:, 0] == np.min(p34[:, 0]))],
             )
-        else:  # 只有两点纵坐标相等，或者是没有相等的，先左右再上下
+        else:  # Only two points share a y coordinate, or none match: order left/right before top/bottom
             p14, p23 = (
                 box[np.where(box[:, 0] < center_x)],
                 box[np.where(box[:, 0] > center_x)],
@@ -282,7 +282,7 @@ class CalRecBoxes:
                 p23[np.where(p23[:, 1] == np.max(p23[:, 1]))],
             )
 
-        # 解决单字切割后横坐标完全相同的shape错误
+        # Fix the shape error when all x coordinates match after splitting a single character
         p1 = convert_to_1x2(p1)
         p2 = convert_to_1x2(p2)
         p3 = convert_to_1x2(p3)

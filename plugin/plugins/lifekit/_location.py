@@ -753,7 +753,7 @@ def _candidate_context_match_rank(
 
     This is deliberately data-driven: it uses the provider's own admin fields
     and never contains a table of special cities or streets.  For example, an
-    address result whose ``admin1`` is present in ``上海南京东路`` outranks the
+    address result whose ``admin1`` occurs in ``上海南京东路`` outranks the
     otherwise identical street name returned for another province.
     """
     requested = _normalise_place_name(requested_name)

@@ -103,7 +103,7 @@ def _config_dir() -> Path:
     return Path(runtime.runtime_deps().config_dir())
 
 
-# ── 每角色准入锁 ───────────────────────────────────────────────────────
+# ── Per-character admission locks ───────────────────────────────────────
 
 _admission_locks: dict[str, list] = {}
 """character_uid → ``[asyncio.Lock, holders + waiters]`` (dropped once nobody uses it)."""
@@ -131,7 +131,7 @@ async def char_admission_lock(character_uid: str) -> AsyncIterator[None]:
             del _admission_locks[character_uid]
 
 
-# ── 邀请预览（入房复用其中的 host 身份比对黑名单）─────────────────────
+# ── Invite preview (room entry reuses host identity for blacklist checks) ──
 
 _previews: dict[tuple[str, str], tuple[float, cr.InvitePreview, int]] = {}
 """(community account, invite_code) → (monotonic time, preview, account epoch) of recent successful previews.
@@ -163,7 +163,7 @@ def _recent_preview(account: Optional[str], invite_code: str) -> Optional[tuple[
     hit = _previews.get(key)
     if (hit is None or time.monotonic() - hit[0] > VISIT_INVITE_PREVIEW_REUSE_S
             or time.time() >= hit[1].expires_at or hit[2] != runtime.account_epoch()):
-        # 邀请已到期的预览不复用：重新代转一次，过期的邀请在占位之前就被拒
+        # Never reuse expired invite previews: proxy anew, rejecting expired invitations before reserving.
         _previews.pop(key, None)
         return None
     return hit[1], hit[2]
@@ -179,7 +179,7 @@ async def _fetch_preview(invite_code: str, account: Optional[str]) -> tuple[cr.I
         generic_label=speaker_label("peer_cat", lang),
         protected_names=protected_display_names(lang, ctx.family_names, ctx.char_names),
     )
-    # 请求期间有过登出 / 换账号（含 A→B→A）：这份预览可能是按别的会话授权的，不进缓存
+    # Logout/account switch during request, including A→B→A: preview may use another session's authorization; do not cache.
     if epoch is None or runtime.account_epoch() != epoch:
         return preview, None
     _remember_preview(account, invite_code, preview, epoch)
@@ -189,7 +189,7 @@ async def _fetch_preview(invite_code: str, account: Optional[str]) -> tuple[cr.I
 async def _locally_blocked(preview: cr.InvitePreview) -> bool:
     try:
         blocklist = await Blocklist.aload(_config_dir())
-    except Exception as exc:  # noqa: BLE001 - 黑名单读不出来按命中处理（fail closed）
+    except Exception as exc:  # noqa: BLE001 - Unreadable blacklist counts as matched (fail closed).
         logger.warning("visit: blocklist unavailable: %s", type(exc).__name__)
         return True
     return cr.is_locally_blocked(preview, blocklist)
@@ -209,15 +209,15 @@ async def preview_invite(request: Request, invite_code: str):
         return _servers_error(exc)
     blocked = await _locally_blocked(preview)
     if epoch is None or runtime.account_epoch() != epoch:
-        # 请求途中（或读黑名单时）有过登出 / 换账号：这份预览可能是按别的账号授权的，不给此刻的人
+        # Logout/account change during request/blacklist read invalidates preview authorization for current user.
         return _error(409, "VISIT_E_BUSY", reason="account_change")
     if time.time() >= preview.expires_at:
-        # Servers 校验时还有效、到这里已过期：与 Servers 的 410 同样回，前端不弹确认框
+        # Valid at Servers validation but expired now: return same 410; frontend shows no confirmation dialog.
         return _servers_error(cr.VisitInviteExpired())
     return JSONResponse(preview.to_public(locally_blocked=blocked))
 
 
-# ── 建房 / 入房 ────────────────────────────────────────────────────────
+# ── Create / join room ─────────────────────────────────────────────────
 
 
 async def _refuse_before_admission(request: Request) -> Optional[JSONResponse]:
@@ -228,7 +228,7 @@ async def _refuse_before_admission(request: Request) -> Optional[JSONResponse]:
     try:
         full = await tu.upload_backlog_full(_config_dir(), is_live=runtime.is_visit_live)
     except OSError as exc:
-        # 目录一时读不了：判不出余量就不接新串门（下一次再试）
+        # Directory temporarily unreadable: unknown free capacity rejects new visits; retry later.
         logger.warning("visit: backlog check failed: %s", type(exc).__name__)
         full = True
     if full:
@@ -249,7 +249,7 @@ async def _resolve_uid(name: str) -> Optional[str]:
     """
     try:
         return await local_chars.resolve_char_uid(name)
-    except Exception as exc:  # noqa: BLE001 - 读不出角色文件：不能绕过准入锁与清除检查
+    except Exception as exc:  # noqa: BLE001 - Unreadable character file cannot bypass admission locks/clear checks.
         logger.warning("visit: character lookup failed: %s", type(exc).__name__)
         raise _CharacterLookupFailed from exc
 
@@ -263,7 +263,7 @@ async def _strict_local_names() -> tuple[set[str], dict[str, str] | None]:
     """
     config = local_chars.get_config_manager()
     runtime_path = getattr(config, "get_runtime_config_path", None)
-    # 要查的是运行时目录里那份：get_config_path 在运行时文件不在时会退回项目自带的种子文件
+    # Check runtime copy: get_config_path falls back to project seed if runtime file absent.
     path = runtime_path("characters.json") if callable(runtime_path) else config.get_config_path("characters.json")
     await local_chars.ensure_characters_file_readable(path, missing_ok=False)
     uid_of = await local_chars.load_local_characters()
@@ -289,13 +289,13 @@ async def _handover_pending(name: str, uid: str) -> bool:
         from utils import character_memory
 
         if background.startup_recovery_running():
-            # 启动对账在被改名角色的守卫里迁这笔改名、不拿配置锁：这里再对一遍会和它并发改同一份标记，
-            # 它清标记失败就把这次启动的清除重放与逐场补录推到下次启动。它马上会迁完，先拒绝
+            # Startup reconciliation migrates rename under character guard without config lock; reconciling again here races marker edits,
+            # and failed marker cleanup defers clear replay/per-visit backfill to next startup. Migration finishes shortly; reject for now.
             return True
 
         async with character_memory.character_config_mutation_lock:
             return await char_lifecycle.handover_blocks_visit(config_dir, name, uid, _strict_local_names)
-    except Exception as exc:  # noqa: BLE001 - 判不出就先不接这场串门，下一次再试
+    except Exception as exc:  # noqa: BLE001 - Cannot determine safety: reject visit for now, retry later.
         logger.warning("visit: handover check failed: %s", type(exc).__name__)
         return True
 
@@ -316,25 +316,25 @@ async def _admit(
     except _CharacterLookupFailed:
         return _refused(409, {"reason": "busy"})
     if uid and await _handover_pending(name, uid):
-        # 云快照刚把这个名字交给这个角色，原角色的改名还没迁完：现在写下的名册条目与场次会随迁移
-        # 归到原角色。等启动对账迁完再串门（通常几秒）
+        # Cloud snapshot assigned this name to this character before original rename migration finished: new roster/visit records would migrate
+        # to original character. Wait for startup reconciliation, usually seconds.
         return _refused(409, {"reason": "handover_pending"})
-    # 没有这个角色（uid 为 None）：不取锁，交给人设闸回 VISIT_PERSONA_UNREVIEWED{state:'missing'}
+    # Missing character (uid=None): acquire no lock; persona gate returns VISIT_PERSONA_UNREVIEWED{state:'missing'}.
     async with (char_admission_lock(uid) if uid else contextlib.nullcontext()):
         epoch = runtime.account_epoch()
         if epoch is None or (expect_epoch is not None and epoch != expect_epoch):
-            # 登出 / 换账号正在进行，或取预览之后发生过
+            # Logout/account change ongoing or occurred since preview.
             return _refused(409, {"reason": "busy"})
         account = await accounts.local_account()
         if expect_account is not None and account != expect_account:
-            # 预览（黑名单、邀请有效期）是按另一个账号查的：换了账号就不作数
+            # Preview blacklist/expiry checks belonged to another account; invalid after account change.
             return _refused(409, {"reason": "busy"})
         if uid:
             own_uid = await accounts.lookup_visit_uid(account)
             refusal = await memory_bridge.char_forget_refusal(_config_dir(), uid, own_uid=own_uid)
             if refusal == memory_bridge.FORGET_REFUSAL_UNREADABLE:
-                # 同一个码（旧前端照旧认得），多带 reason：挡住的是读不出的清除记录，不是真在清除，
-                # 前端据此引导到「丢弃损坏的清除记录」（POST /api/visit/memory/forget/discard_unreadable）
+                # Same code recognized by older frontend, plus reason: unreadable clear record blocks, not an active clear;
+                # frontend guides to discard corrupt clear records (POST /api/visit/memory/forget/discard_unreadable).
                 return _error(409, "VISIT_FORGET_IN_PROGRESS", reason=refusal)
             if refusal is not None:
                 return _error(409, "VISIT_FORGET_IN_PROGRESS")
@@ -342,8 +342,8 @@ async def _admit(
             rt = await runtime.start_visit(name, side, **kwargs)
         except runtime.VisitRefused as exc:
             return _refused(exc.status, exc.body)
-        # 清除检查按的角色 / 账号，必须就是这一场的：期间改了名、名字被占或换了社区账号，这次检查不作数。
-        # 账号比的是运行时自己记下的那个（领凭证时还要与它核对），中途换走又换回也认得出
+        # Clear checks must target this visit's exact character/account; rename/name reuse/community-account switch invalidates them.
+        # Compare runtime-recorded account (also checked at credential acquisition), detecting switch-away-and-back too.
         if rt.character_uid != uid or rt.admitted_account != account or rt.admitted_epoch != epoch:
             logger.warning("visit %s: character or account changed during admission, refusing", rt.visit_id[:6])
             rt.request_finalize("busy")
@@ -390,14 +390,14 @@ async def join_room(request: Request, visit_id: str):
         return _servers_error(cr.VisitInviteFormat())
     if payload.get("confirm") is not True:
         return _error(400, "confirm_required")
-    # 串门开关关着：在代转预览之前就拒（不出网）；start_visit 里还会再查一次
+    # Visits disabled: reject before proxy preview, no network; start_visit rechecks too.
     switch_off = await runtime.visit_switch_refusal()
     if switch_off is not None:
         return _refused(switch_off.status, switch_off.body)
     refused = await _refuse_before_admission(request)
     if refused is not None:
         return refused
-    # 黑名单在占位与领凭证之前比对：命中不扣双方配额、不进 vendor 房
+    # Check blacklist before reserving/acquiring credentials; matches consume neither side's quota nor vendor room.
     account = await accounts.local_account()
     cached = _recent_preview(account, invite_code)
     if cached is not None:
@@ -412,17 +412,17 @@ async def join_room(request: Request, visit_id: str):
     if preview.visit_id != visit_id:
         return _servers_error(cr.VisitInviteInvalid("invite_invalid"))
     if time.time() >= preview.expires_at:
-        # 刚取回的预览也可能在路上过了期：占位之前就按过期拒，不先 202 再等领凭证失败
+        # Fresh preview may expire in transit: reject before reservation, never 202 followed by credential failure.
         return _servers_error(cr.VisitInviteInvalid("invite_expired"))
     if await _locally_blocked(preview):
         return _servers_error(cr.VisitInviteInvalid("peer_blocked"))
     if time.time() >= preview.expires_at:
-        # 读黑名单要等一会儿：期间到了期限同样在占位之前拒
+        # Blacklist reads may take time: expiry meanwhile also rejects before reservation.
         return _servers_error(cr.VisitInviteInvalid("invite_expired"))
     if not account:
         return _servers_error(cr.VisitLoginRequired())
     if preview_epoch is None:
-        # 取预览途中有过登出 / 换账号（含 A→B→A）：这份预览不能代表此刻的账号
+        # Logout/account switch during preview, including A→B→A, means preview no longer represents current account.
         return _refused(409, {"reason": "busy"})
     admitted = await _admit(name, "guest", expect_account=account, expect_epoch=preview_epoch,
                             invite_code=invite_code, visit_id=visit_id)
@@ -447,11 +447,11 @@ async def accept_guest(request: Request, visit_id: str):
     if not isinstance(accept, bool):
         return _error(400, "accept_required")
     rt = runtime.get_runtime(name)
-    # 共用电脑上已换成别的社区账号：这份邀请不是它的，不能替原账号接待 / 婉拒
+    # Shared computer switched community accounts: invitation belongs elsewhere; cannot host/decline for original account.
     if rt is None or rt.visit_id != visit_id or not await _owned_by_current_account(rt):
         return JSONResponse({"ok": False, "error": "no_pending_invite"}, status_code=404)
     if accept:
-        # 「允许串门」已关、关闭钩子还没结束这一场：不接待（婉拒照常放行）
+        # Allow-visits disabled before shutdown hook ended visit: reject hosting, allow declining normally.
         switch_off = await runtime.visit_switch_refusal()
         if switch_off is not None:
             return _refused(switch_off.status, switch_off.body)
@@ -459,7 +459,7 @@ async def accept_guest(request: Request, visit_id: str):
     return JSONResponse(body, status_code=status)
 
 
-# ── 结束 / 状态 / 转录 ─────────────────────────────────────────────────
+# ── End / status / transcript ───────────────────────────────────────────
 
 
 @data_router.post("/route/end")
@@ -479,8 +479,8 @@ async def end_route(request: Request):
     if reason not in _END_REASONS:
         return _error(400, "invalid_reason")
     if reason == "recall":
-        # 「叫她回来 / 送客」会推进这一场的对话：只有这一场的社区账号能点。硬结束（route_end）谁都能做，
-        # 换了账号的人也要能把角色腾出来
+        # Recall her / send guest home advances dialogue: only visit's account may act. Anyone can hard-end via route_end,
+        # including switched accounts needing to free the character.
         rt = runtime.get_runtime(name)
         if rt is not None and rt.visit_id == visit_id and not await _owned_by_current_account(rt):
             return JSONResponse({"error": "unknown_visit"}, status_code=404)
@@ -535,7 +535,7 @@ async def visit_state(request: Request, catgirl: str = ""):
         return JSONResponse({**IDLE_STATE, **release_info()})
     snapshot = rt.snapshot()
     if not await _owned_by_current_account(rt):
-        # 共用电脑上已换成别的社区账号：只说这个角色正在串门，不给这一场的对端、房间与台词
+        # Shared computer changed community account: report visiting only, never peer/room/dialogue of that visit.
         return JSONResponse({**IDLE_STATE, "active": snapshot["active"], "phase": snapshot["phase"],
                              **release_info()})
     return JSONResponse({**snapshot, **release_info()})
@@ -547,7 +547,7 @@ def _local_line(line_id: Any, record: Mapping[str, Any], frame: Optional[Mapping
         "line_id": line_id if isinstance(line_id, str) and line_id else f"{side}:{record.get('lp')}",
         "lp": record.get("lp"), "side": side,
         "speaker_kind": _SPEAKER_KIND.get(str(record.get("from") or "")),
-        # 落盘的转录不记收件人与已放出片数：只有内存里还留着那一行的推送时才有
+        # Persisted transcripts omit recipients/emitted-chunk counts, available only in still-resident push rows.
         "addressee": (frame or {}).get("addressee"), "i_done": (frame or {}).get("i_done"),
         "ts": record.get("ts"), "text": record.get("text"), "truncated": bool(record.get("truncated")),
     }
@@ -568,7 +568,7 @@ async def _peer_forgotten(config_dir: Path, visit_id: str) -> bool:
     try:
         state = await VisitSpool(config_dir, visit_id).read_state()
     except (OSError, ValueError) as exc:
-        # 判不出有没有被清除：不露对端身份（正文照给）
+        # Cannot determine cleared status: hide peer identity, still provide body.
         logger.warning("visit transcript %s: state unreadable: %s", visit_id[:6], type(exc).__name__)
         return True
     return state is None or not state.get("peer_uid")
@@ -579,7 +579,7 @@ async def _memory_transcript(config_dir: Path, rt: runtime.VisitRuntime) -> dict
     for record in rt.transcript_records():
         frame = rt.visit_line_payload_from_record(record)
         lines.append(_local_line(frame.get("line_id"), record, frame))
-    # 刚结束的场次还在内存里：「清除这个人」之后同样不再给出对端身份
+    # Just-ended visits still in memory also hide peer identity after forgetting this person.
     peer = None if rt.peer is None or await _peer_forgotten(config_dir, rt.visit_id) else rt.peer
     out = {
         "visit_id": rt.visit_id,
@@ -609,10 +609,10 @@ async def _spool_transcript(
         return None
     header = contents.header
     if header is None or header.get("own_uid") != owner:
-        # 共用电脑上另一个社区账号的场次：本机副本不给，由云端按参与者判定
+        # Visit belongs to another community account on shared computer: deny local copy, let cloud authorize participants.
         return None
     peer_uid = header.get("peer_uid")
-    peer_uid = peer_uid if isinstance(peer_uid, str) and peer_uid else None  # 「清除这个人」后已抹掉
+    peer_uid = peer_uid if isinstance(peer_uid, str) and peer_uid else None  # Erased after forgetting this person.
     rt = _memory_runtime(visit_id)
     transport = rt.creds.transport if rt is not None and rt.creds else None
     if transport is None and pending is not None:
@@ -665,16 +665,16 @@ async def _local_transcript(
     the spool and the pending upload are merged by ``(lp, side)``: they are
     written independently, so each may lack a line the other kept.
     """
-    # 进程里还有这一场：内存里的流水最完整（spool 某一行写失败时只记了日志、行仍在流水里）。
-    # 按社区账号认属主：账号映射一时没写成（后台还在补写）也不该把它挡掉
+    # Visit still in process: memory ledger is fullest (failed spool-row writes only log, keeping rows in ledger).
+    # Identify owner by community account, never block for temporarily unwritten account mapping still retrying in background.
     rt = _memory_runtime(visit_id)
     if rt is not None and account and rt.creds is not None and rt.creds.account == account:
         return await _memory_transcript(config_dir, rt), None
     if not owner:
         return None, None
-    # 待传文件只读一次（崩溃场次要从流水重建，可能不小）：spool 的 transport 也从这一份取
+    # Read pending upload once (crashed visits reconstruct possibly large ledgers); spool transport uses same copy.
     pending = await _pending_upload(config_dir, visit_id)
-    # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
+    # Older upload files omit owner: recover from state.json / ledger header, matching reupload rules.
     if pending is not None and (pending[0].get("own_visit_uid")
                                 or await pending_upload_owner(config_dir, visit_id)) != owner:
         pending = None
@@ -682,17 +682,17 @@ async def _local_transcript(
     if spooled is not None:
         doc, dropped = spooled
         if pending is not None:
-            # spool 与上传流水各自独立写盘，各自可能漏掉不同的行（写失败只记日志）：按 (lp, side) 取并集。
-            # 丢掉的记录解析不了、认不出是哪一行，没法证明被另一边补回：丢行数照报（两边较大者）
+            # Spool/upload ledgers persist independently and may lose different rows (write failures only log); union by (lp, side).
+            # Unparseable dropped records cannot be identified/proven recovered from other side; report max dropped count.
             upload_doc, upload_dropped = pending
             doc = {**doc, "lines": _merge_lines(doc["lines"], upload_doc["request"]["lines"], local_shape=True)}
             dropped = max(dropped, upload_dropped)
         if dropped:
-            # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
+            # Dropped partial/corrupt crash rows: prefer complete sources, falling back here only if unavailable.
             return None, {**doc, "dropped_lines": dropped}
         if pending is None:
-            # 待传文件已经没了（上传已结清）：spool 某一行写失败只记日志、不留坏行，看不出少了什么。
-            # 云端那份就是这一侧的上传流水：拿来对一遍、缺的并进来，取不到再只给 spool
+            # Pending upload gone (settled): spool failed writes leave logs, no corrupt rows, concealing omissions.
+            # Cloud copy is this side's upload ledger: compare/merge missing rows; if unavailable use spool alone.
             return None, doc
         return doc, None
     if pending is not None:
@@ -702,7 +702,7 @@ async def _local_transcript(
                 "lines": request_body["lines"]}
         if not dropped:
             return body, None
-        # 崩溃流水里也有丢掉的记录：同样先去云端找完整的那份
+        # Crashed ledger also reports dropped records: seek complete cloud copy first.
         return None, {**body, "dropped_lines": dropped}
     return None, None
 
@@ -735,7 +735,7 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     if epoch is not None:
         local, partial = await _local_transcript(config_dir, visit_id, account, owner)
         if runtime.account_epoch() != epoch:
-            # 读的过程中有过登出 / 换账号：本机副本按的是旧账号，不交给此刻登录的人，只走云端
+            # Logout/account switch during read: local copy belongs to old account, never current user; cloud only.
             local = partial = None
     if local is not None:
         return JSONResponse(local)
@@ -748,18 +748,18 @@ async def visit_transcript(request: Request, visit_id: str = ""):
         except cloud_routes.CloudTranscriptIncomplete:
             failure = _error(502, "cloud_transcript_incomplete")
         except cloud_routes.CloudError:
-            # 未登录 / 离线 / Servers 不可达 / 云端没有：如实说本机副本已清理
+            # Logged out/offline/Servers unreachable/missing cloud copy: truthfully report local copy cleaned up.
             failure = _error(404, "transcript_gone_local")
     if cloud_epoch is None or runtime.account_epoch() != cloud_epoch:
-        # 云端请求途中（或此刻）有登出 / 换账号：这份结果按的可能是另一个账号的会话，什么都不给
+        # Logout/account switch during cloud request/currently: result may belong to another session; return nothing.
         return _error(409, "VISIT_E_BUSY", reason="account_change")
     if cloud is None:
         return JSONResponse(partial) if partial is not None else failure
     if partial is None:
         return JSONResponse(cloud)
-    # 云端的行并到本机这份里，丢行数照报：两边独立写入、各自可能漏行；本机报过的丢行认不出是哪一行，
-    # 云端多出的行证明不了它回来了。云端包含本机每一行时结果行数与云端一样，形态（对端、开始时间、
-    # transport、异常数、line_id）仍是本机这份，与同一场之前的导出一致
+    # Merge cloud rows into local copy but retain dropped count: independent writes lose rows; local drops lack identities,
+    # so extra cloud rows cannot prove recovery. If cloud contains all local rows, result count matches cloud, while metadata
+    # (peer/start/transport/error count/line_id) remains local, consistent with prior exports of same visit.
     merged = _merge_lines(partial["lines"], cloud["lines"], local_shape=partial.get("source") == "spool")
     return JSONResponse({**partial, "lines": merged})
 

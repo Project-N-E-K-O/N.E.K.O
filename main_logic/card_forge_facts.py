@@ -769,7 +769,7 @@ async def build_forge_facts_payload(
     )
     shareable_raw = _shareable_facts(raw)
     if shareable_raw is not raw:
-        # 归档的遮蔽只算可分享的活跃行：被排除的串门事实不能把同文的普通归档事实也挡掉（总数照旧按全池）
+        # Only shareable active rows shadow archived facts: excluded visit facts must not hide identical ordinary archived facts (totals still use the full pool)
         _, active_ids, active_hashes = await asyncio.to_thread(
             _memory_identity_stats, shareable_raw, [],
         )
@@ -792,10 +792,10 @@ async def build_forge_facts_payload(
         "archiveFilteredCount": 0,
     }
     if limit >= 5 and raw_archive:
-        # 排除集取自**全部**活跃 facts，而不是这次抽中的那几条：归档的两文件
-        # 提交（先 facts_archive.json 再 facts.json）被打断时同一行会同时留在
-        # 两个文件里，最长到下一次成功归档才收敛。只按抽中的几条排除的话，
-        # 那种行只要这轮没被抽中，就会作为"久远记忆"发出去，而它其实还活着。
+        # Build exclusions from **all** active facts, not just this sample: if the archive's two-file
+        # commit (facts_archive.json before facts.json) is interrupted, the same row can remain in
+        # both files until the next successful archive. Excluding only sampled rows would
+        # deliver any unsampled such row as an 'old memory', even though it remains active.
         archive_facts, archive_stats = await asyncio.to_thread(
             _select_archive_facts,
             _shareable_facts(raw_archive),

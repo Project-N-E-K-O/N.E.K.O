@@ -274,7 +274,7 @@ class GameAgentClient:
                         await self.on_inventory(data)
 
                     elif msg_type == "bot_status_nl" and self.on_bot_status is not None:
-                        # Natural-language activity status (🎯[按指令]/🤖[自主] +
+                        # Natural-language activity status (🎯[following instructions]/🤖[autonomous] +
                         # skill/kind). The service uses it to know whether the
                         # mc-agent is actively executing, so the autonomous
                         # nudge loop stops telling her to dispatch a new task

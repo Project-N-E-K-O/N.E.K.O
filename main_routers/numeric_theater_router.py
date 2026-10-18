@@ -1,4 +1,4 @@
-"""Numeric v2 独立剧本 HTTP 接口。"""  # noqa: DOCSTRING_CJK
+"""Numeric v2 standalone-script HTTP API."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -116,10 +116,10 @@ def _domain_value_error(exc: ValueError, status_code: int):
         raise exc
     return _error(reason, status_code)
 logger = logging.getLogger(__name__)
-# 请求执行期间由局部变量强持有锁；完成后弱引用表可自动回收不同请求 ID，避免长期运行持续增长。
+# Local variables strongly hold locks during requests; afterward weak maps reclaim distinct request IDs to avoid unbounded long-running growth.
 _speak_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _speak_request_results: dict[str, dict[str, Any]] = {}
-# 归档幂等事实保存在回执文件中，进程内锁只负责并发窗口，不应永久保留每个回执 ID。
+# Archive receipts persist idempotence; in-process locks cover only concurrency windows, not permanent receipt-ID retention.
 _archive_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 # One in-flight submission per (session, client_turn_id): a concurrent retry waits
 # for the first request and then takes the idempotent replay path instead of
@@ -160,11 +160,11 @@ def _request_lock(
     locks: WeakValueDictionary[str, asyncio.Lock],
     request_id: str,
 ) -> asyncio.Lock:
-    """返回请求粒度的共享锁，并在返回前用局部变量保持强引用。"""  # noqa: DOCSTRING_CJK
+    """Return a request-scoped shared lock, retaining a local strong reference before returning."""  # noqa: DOCSTRING_CJK
 
     lock = locks.get(request_id)
     if lock is None:
-        # 同一事件循环内没有跨线程写入；局部强引用可覆盖弱引用登记到调用方接管之间的空隙。
+        # No cross-thread writes occur within one loop; local strong references bridge weak registration and caller ownership.
         lock = asyncio.Lock()
         locks[request_id] = lock
     return lock
@@ -183,7 +183,7 @@ def _performance_block_group(
     performance: Mapping[str, Any],
     block_index: int,
 ) -> tuple[list[dict[str, str]], int] | None:
-    """定位内容块所属演绎段，避免把换场前后的对白合并成同一条语音。"""  # noqa: DOCSTRING_CJK
+    """Locate a block's enactment segment so dialogue before/after transitions never merges into one speech item."""  # noqa: DOCSTRING_CJK
 
     raw_segments = performance.get("segments")
     containers = raw_segments if isinstance(raw_segments, list) else [performance]
@@ -199,7 +199,7 @@ def _performance_block_group(
 
 
 def _current_suggested_inputs(session: Any) -> tuple[str, ...]:
-    """返回玩家此刻真正可见的推荐，供推荐点击来源复验。"""  # noqa: DOCSTRING_CJK
+    """Return currently player-visible recommendations to revalidate click sources."""  # noqa: DOCSTRING_CJK
 
     if session.revision == 0:
         performance = session.opening_performance
@@ -215,7 +215,7 @@ def _current_suggested_inputs(session: Any) -> tuple[str, ...]:
 
 
 def _numeric_root(config_manager: Any) -> Path:
-    """v2 复用统一剧场根目录，但只访问 numeric_v2 私有子目录。"""  # noqa: DOCSTRING_CJK
+    """v2 shares the theater root but accesses only its private numeric_v2 subdirectory."""  # noqa: DOCSTRING_CJK
     return theater_root(config_manager)
 
 
@@ -268,7 +268,7 @@ async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
 
 
 async def _create_ended_receipt(config_manager: Any, session: Any) -> dict[str, Any] | None:
-    """兼容旧 Session 补建结束回执前，先通过共享写栅栏。"""  # noqa: DOCSTRING_CJK
+    """Pass the shared write fence before repairing ending receipts for legacy Sessions."""  # noqa: DOCSTRING_CJK
 
     if session.ended_reason == "cancelled_start":
         return None
@@ -287,9 +287,9 @@ async def _create_receipt_for_existing_ended_session(
     runtime: NumericV2Runtime,
     session: Any,
 ) -> dict[str, Any]:
-    """持有生命周期锁复验已结束 Session，再创建或补建回执。"""  # noqa: DOCSTRING_CJK
+    """Revalidate ended Sessions under lifecycle locks before creating/repairing receipts."""  # noqa: DOCSTRING_CJK
 
-    # 固定角色锁先于故事锁，避免与删除、改名事务形成反向等待。
+    # Always acquire character locks before story locks to avoid inversion with rename/deletion transactions.
     async with character_config_mutation_lock, runtime.story_session_guard():
         current = await runtime.restore_session(str(session.session_id))
         if current is None or current.session.status != "ended":
@@ -313,13 +313,13 @@ async def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Run
 
 
 def _current_catgirl_binding(config_manager: Any) -> dict[str, str]:
-    """Session 只绑定服务端当前猫娘，客户端不能伪造人格。"""  # noqa: DOCSTRING_CJK
+    """Sessions bind only to the server's current catgirl; clients cannot forge personas."""  # noqa: DOCSTRING_CJK
 
     return numeric_v2_catgirl_binding(config_manager)
 
 
 def _surface_player_name(binding: Mapping[str, str], *, known: bool) -> str:
-    """用户可见投影只在 Session 确认后使用真实称呼。"""  # noqa: DOCSTRING_CJK
+    """Use real addresses in public projections only after Session confirmation."""  # noqa: DOCSTRING_CJK
 
     if not known:
         return "你"
@@ -343,7 +343,7 @@ def _participants(binding: Mapping[str, str], *, known: bool) -> dict[str, str]:
 
 
 def _ensure_current_catgirl(session: Any, config_manager: Any) -> dict[str, str]:
-    """只用不可变角色 ID 校验归属，允许同一角色改名或更新角色卡。"""  # noqa: DOCSTRING_CJK
+    """Validate ownership only through immutable character IDs, allowing renames/card updates."""  # noqa: DOCSTRING_CJK
 
     current_binding = _current_catgirl_binding(config_manager)
     if str(session.catgirl_binding.get("character_id") or "") != str(
@@ -442,7 +442,7 @@ _INTERNAL_PERFORMANCE_FIELDS = frozenset({
 
 
 def _public_performance(performance: Mapping[str, Any]) -> dict[str, Any]:
-    """移除只供 Runtime 重放和校验使用的路线标识。"""  # noqa: DOCSTRING_CJK
+    """Remove route identifiers used only for Runtime replay/validation."""  # noqa: DOCSTRING_CJK
 
     result = {
         str(key): value
@@ -462,7 +462,7 @@ def _public_performance(performance: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _public_session(session: Any) -> dict[str, Any]:
-    """隐藏 metric 原始值，只向页面提供恢复和回放需要的字段。"""  # noqa: DOCSTRING_CJK
+    """Hide raw metric values, exposing only fields needed for recovery/replay."""  # noqa: DOCSTRING_CJK
 
     return {
         "schema": session.to_dict()["schema"],
@@ -475,7 +475,7 @@ def _public_session(session: Any) -> dict[str, Any]:
         "lifecycle_revision": session.lifecycle_revision,
         "status": session.status,
         "player_address_known": session.player_address_known,
-        # 候选用途和目标 ID 只服务 Runtime/压测选择；开场与历史都必须经过同一公开投影。
+        # Candidate purposes/target IDs serve only Runtime/stress selection; openings and history share the same public projection.
         "opening_performance": _public_performance(session.opening_performance),
         "performance_history": [
             _public_performance(record)
@@ -499,7 +499,7 @@ async def _numeric_payload(
     modules = await aload_theater_module_options()
     binding = display_binding or stored.session.catgirl_binding
     if not story_projection_compatible:
-        # 旧 Session 可以在剧本升级后结束，但不能把新剧本的场景投影伪装成旧剧情。
+        # Old Sessions may end after script upgrades, but must not project new-script scenes as old story content.
         payload = {
             "session": {**_public_session(stored.session), "continuation_allowed": False},
             "story_title": str(runtime.engine.story["meta"]["title"]),
@@ -538,7 +538,7 @@ async def _numeric_payload(
     payload = {
         "session": _public_session(stored.session),
         "story_title": str(runtime.engine.story["meta"]["title"]),
-        # 历史区署名使用当前展示绑定；不要让前端从本地文案猜玩家或猫娘名称。
+        # History attribution uses current display bindings; frontends must not infer player/catgirl names from local prose.
         "participants": _participants(
             binding,
             known=bool(stored.session.player_address_known),
@@ -562,11 +562,11 @@ def _list_story_summaries(
     registry: NumericV2PackageRegistry,
     binding: Mapping[str, str],
 ) -> list[dict[str, Any]]:
-    """在线程中读取一次剧本列表，并直接投影已经校验过的简介。"""  # noqa: DOCSTRING_CJK
+    """Read the script list once in a thread and project already-validated introductions directly."""  # noqa: DOCSTRING_CJK
 
     stories: list[dict[str, Any]] = []
     for summary in registry.list_packages():
-        # list_packages 已经读取并编译过整包；这里只需要简介中的作者角色名，不能再次加载同一文件。
+        # list_packages already read/compiled packages; use author names from validated introductions rather than rereading files.
         projection_story = {"intro": dict(summary.get("intro") or {})}
         cast = NumericV2CastProjection.from_story(
             projection_story,
@@ -594,7 +594,7 @@ async def list_numeric_stories():
         return {
             "ok": True,
             "stories": stories,
-            # 破坏性操作必须绑定选剧页当前展示的角色，不能只依赖请求到达时的全局当前角色。
+            # Bind destructive operations to the character displayed on the selection page, not merely the global character when requests arrive.
             "character_id": binding["character_id"],
         }
     except MaintenanceModeError:
@@ -651,7 +651,7 @@ async def list_numeric_memory_stories():
 
 @router.get("/options")
 async def get_numeric_options():
-    """返回小剧场可选模块开关；未设置的模块使用默认值（除回复外全部关闭）。"""  # noqa: DOCSTRING_CJK
+    """Return optional theater-module switches, defaulting unset modules off except replies."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_options import aload_theater_module_options, disabled_effects
 
@@ -660,14 +660,14 @@ async def get_numeric_options():
         "ok": True,
         "modules": modules,
         "disabled_effects": disabled_effects(),
-        # 兼容既有前端键：争议复查即 dispute 模块。
+        # Preserve existing frontend keys: dispute review corresponds to the dispute module.
         "dispute_review_enabled": bool(modules.get("dispute")),
     }
 
 
 @router.post("/options")
 async def set_numeric_options(request: Request):
-    """保存小剧场可选模块开关；只接受已声明的模块键与布尔值，未知键拒绝。"""  # noqa: DOCSTRING_CJK
+    """Save optional theater-module switches; accept declared module keys and booleans only, rejecting unknown keys."""  # noqa: DOCSTRING_CJK
 
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(
@@ -722,7 +722,7 @@ async def import_numeric_story(request: Request):
             registry.compile_for_import,
             payload,
         )
-        # 导入与同 story_id 的删除事务共用生命周期锁，避免成功导入被迟到回滚覆盖。
+        # Imports share lifecycle locks with same-story_id deletions, preventing late rollback from overwriting successful imports.
         _assert_story_recovered(registry, compiled.story_id)
         async with numeric_v2_story_session_guard(
             _numeric_root(config_manager),
@@ -751,7 +751,7 @@ async def preview_numeric_story_delete(story_id: str):
     normalized_story_id = str(story_id or "").strip()
     try:
         registry = await _registry(config_manager)
-        # 预览和删除使用相同的安全路径检查，损坏或旧合同剧本也能进入删除确认。
+        # Preview/deletion share safe-path validation, allowing corrupt or old-contract scripts into deletion confirmation.
         if not await asyncio.to_thread(registry.package_file_exists, normalized_story_id):
             raise NumericV2PackageNotFoundError("numeric_story_not_found")
         sessions = await asyncio.to_thread(
@@ -787,11 +787,11 @@ async def delete_numeric_story(story_id: str, request: Request):
     normalized_story_id = str(story_id or "").strip()
     try:
         registry = await _registry(config_manager)
-        # 删除恢复入口只校验安全路径与文件存在性；损坏包无法编译时也必须允许原子清理。
+        # Deletion recovery checks only safe paths/file existence; permit atomic cleanup of uncompileable corrupt packages.
         registry.package_path(normalized_story_id)
         # A new delete would supersede the only backup of the failed rollback.
         _assert_story_recovered(registry, normalized_story_id)
-        # 剧本删除与角色改名/删除会读写同一批 Session、回执和归档，统一按角色锁→故事锁串行。
+        # Story deletion and character rename/deletion share Sessions, receipts, and archives; serialize character-lock then story-lock.
         async with _memory_operation_lock(
             config_manager, normalized_story_id,
         ), character_config_mutation_lock, numeric_v2_story_session_guard(
@@ -819,7 +819,7 @@ async def delete_numeric_story(story_id: str, request: Request):
 @router.post("/session/start")
 @_track_theater_activity
 async def start_numeric_session(request: Request, claim_activity: bool = True):
-    # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
+    # Request statistics include failed attempts/dispute reviews, without Session persistence or ordinary-chat pollution.
     with numeric_v2_usage_scope() as calls, text_trace_scope("opening"):
         response = await _start_numeric_session(request)
         if isinstance(response, JSONResponse):
@@ -874,7 +874,7 @@ async def _start_numeric_session(request: Request):
         return _error("numeric_actor_budget_profile_invalid", 400)
     try:
         runtime = await _runtime_for_story(config_manager, story_id)
-        # 先在统一锁顺序下取得角色与恢复槽位快照；已有进度可直接恢复，不浪费一次开场生成。
+        # Snapshot character/recovery slots under the standard lock order; restore existing progress without wasting opening generation.
         async with character_config_mutation_lock, runtime.story_session_guard():
             binding = _current_catgirl_binding(config_manager)
             if binding["character_id"] != expected_character_id:
@@ -882,7 +882,7 @@ async def _start_numeric_session(request: Request):
             existing, compatible = await _restore_selected_session(runtime, binding)
             if existing is not None:
                 _ensure_current_catgirl(existing.session, config_manager)
-                # 同一 character_id 的改名或角色卡更新只能刷新演绎上下文，不能替换进度。
+                # Rename/card updates for the same character_id may refresh enactment context, never replace progress.
                 if not replace_existing:
                     return {
                         "ok": True,
@@ -894,7 +894,7 @@ async def _start_numeric_session(request: Request):
                 if existing.session.status != "ended":
                     return _error("numeric_active_session_cannot_restart", 409)
 
-        # 开场模型调用不占用角色或剧本锁；最终提交前会重新读取并验证全部可变事实。
+        # Opening model calls hold neither character nor story locks; reread/revalidate all mutable facts before final commit.
         opening = await generate_validated_opening(
             engine=runtime.engine,
             config_manager=config_manager,
@@ -906,7 +906,7 @@ async def _start_numeric_session(request: Request):
         async with _memory_operation_lock(
             config_manager, story_id,
         ), character_config_mutation_lock, runtime.story_session_guard():
-            # Actor 调用期间剧本可能已被删除或同 ID 重装；提交前必须复验原包仍是当前事实。
+            # During Actor calls, scripts can be deleted or same-ID reinstalled; verify the original package is still current before committing.
             current_engine = await asyncio.to_thread(
                 NumericV2PackageRegistry(
                     _numeric_root(config_manager) / "numeric_v2" / "packages"
@@ -920,7 +920,7 @@ async def _start_numeric_session(request: Request):
             existing, compatible = await _restore_selected_session(runtime, binding)
             if existing is not None:
                 _ensure_current_catgirl(existing.session, config_manager)
-                # 等待 Actor 期间另一个开始请求可能已经提交；沿用原有“继续已有进度”语义。
+                # Another start request may commit while Actor runs; preserve resume-existing-progress semantics.
                 if not replace_existing:
                     return {
                         "ok": True,
@@ -952,8 +952,8 @@ async def _start_numeric_session(request: Request):
                         display_binding=binding,
                         story_projection_compatible=compatible,
                     ))
-                    # 兼容升级前已经写入记忆、但尚未生成冷档案的 Session；
-                    # 冷档案落盘失败时不能继续删除旧恢复槽位。
+                    # Support preupgrade Sessions already written to memory but lacking cold archives;
+                    # never delete old recovery slots if cold-archive persistence fails.
                     await archive_store.awrite_public_archive(
                         title=str(runtime.engine.story["meta"]["title"]),
                         session=existing.session,
@@ -966,21 +966,21 @@ async def _start_numeric_session(request: Request):
                     opening_performance=opening,
                     actor_budget_profile=actor_budget_profile,
                 )
-                # 新 Session 已原子接管恢复槽位，旧 Session 回执不再有任何合法消费者。
+                # The new Session atomically owns the recovery slot; old Session receipts have no valid consumers.
                 try:
                     await archive_store.mutate(
                         archive_store.delete_session_receipts,
                         existing.session.session_id,
                     )
                 except (NumericV2ArchiveError, OSError, NumericV2StoreRevisionConflictError, MaintenanceModeError):
-                    # 新 Session 和恢复槽位已经提交；旧回执清理失败只能延后维护，不能把成功重开报成失败。
+                    # New Session/slot already committed: defer failed old-receipt cleanup rather than report successful restart as failure.
                     logger.warning(
                         "Numeric v2 重新开始后清理旧回执失败: %s",
                         existing.session.session_id,
                         exc_info=True,
                     )
             else:
-                # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
+                # Create Sessions only after opening Actor succeeds, preventing empty shells from polluting recovery pointers.
                 stored = await runtime.start_session(
                     session_id=session_id,
                     catgirl_binding=binding,
@@ -1011,7 +1011,7 @@ async def get_active_numeric_session(story_id: str):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
-        # 恢复、身份复验与补建回执必须共用角色锁→故事锁，避免删除完成后重新写回孤立回执。
+        # Recovery, identity revalidation, and receipt repair share character-then-story locks, preventing orphan receipts after deletion.
         async with character_config_mutation_lock, runtime.story_session_guard():
             binding = _current_catgirl_binding(config_manager)
             stored, compatible = await _restore_selected_session(runtime, binding)
@@ -1048,14 +1048,14 @@ async def get_numeric_session(request: Request, session_id: str, story_id: str, 
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
-        # 指定 Session 的恢复也要覆盖回执写入，保持与角色、剧本删除事务相同的锁序。
+        # Specific-Session recovery also locks receipt writes in the same order as character/story deletion.
         async with character_config_mutation_lock, runtime.story_session_guard():
             stored = await runtime.restore_session(session_id)
             if (
                 stored is None
                 or stored.session.story_package_id != runtime.engine.story_id
             ):
-                # Session ID 是全局定位符，但指定恢复入口只能投影请求剧本自己的节点。
+                # Session IDs locate globally, but explicit recovery may project only nodes from the requested script.
                 return _error("numeric_session_not_found", 404)
             binding = _ensure_current_catgirl(stored.session, config_manager)
             receipt = (
@@ -1106,7 +1106,7 @@ async def _assert_commit_allowed(config_manager: Any, story_id: str, character_i
 @router.post("/session/input")
 @_track_theater_activity
 async def submit_numeric_input(request: Request):
-    # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
+    # Request statistics include failed attempts/dispute reviews, without Session persistence or ordinary-chat pollution.
     with numeric_v2_usage_scope() as calls:
         response = await _submit_numeric_input(request)
     return with_numeric_v2_usage(response, calls)
@@ -1144,7 +1144,7 @@ async def _submit_numeric_input_once(
         if current is None:
             return _error("numeric_session_not_found", 404)
         current_binding = _ensure_current_catgirl(current.session, config_manager)
-        # 幂等重放直接返回已提交快照，不能再次调用模型或重复结算。
+        # Idempotent replay returns committed snapshots without model calls or repeated settlement.
         if turn.client_turn_id in current.session.processed_client_turn_ids:
             replay_receipt = None
             replay_receipt_pending = False
@@ -1182,9 +1182,9 @@ async def _submit_numeric_input_once(
             turn.input_source == "suggestion"
             and turn.message not in _current_suggested_inputs(current.session)
         ):
-            # 推荐来源只能引用当前 revision 已公开的按钮；过期或伪造文本不能改变 Actor 节奏。
+            # Recommendation sources may reference only buttons published in the current revision; stale/forged text cannot change Actor pacing.
             return _error("numeric_suggested_input_not_current", 409)
-        # HTTP 层只完成请求前置校验和错误映射，模型顺序与原子提交由应用工作流固定。
+        # HTTP handles prevalidation/error mapping only; application workflows fix model sequencing and atomic commits.
         workflow = await execute_numeric_v2_turn(
             config_manager=config_manager,
             runtime=runtime,
@@ -1281,7 +1281,7 @@ async def end_numeric_session(request: Request):
     try:
         config_manager = get_config_manager()
         runtime = await _runtime_for_story(config_manager, story_id)
-        # 结束状态与回执必须和当前角色事实一起提交，锁序固定为角色锁→故事锁。
+        # Commit ending state/receipts with current character facts, always locking character before story.
         async with character_config_mutation_lock, runtime.story_session_guard():
             story_projection_compatible = True
             try:
@@ -1292,8 +1292,8 @@ async def end_numeric_session(request: Request):
                     "story_package_hash_mismatch",
                 }:
                     raise
-                # 结束只改变生命周期。剧本升级后的旧 Session 允许收尾，
-                # 但不会进入继续演绎或用新剧本投影旧节点。
+                # Ending changes lifecycle only. Old Sessions may finalize after script upgrades,
+                # without resuming enactment or projecting old nodes through new scripts.
                 current = await runtime.restore_session_for_lifecycle(session_id)
                 story_projection_compatible = False
             if current is None:
@@ -1304,7 +1304,7 @@ async def end_numeric_session(request: Request):
             )
             idempotent_replay = current.session.status == "ended"
             if idempotent_replay:
-                # Session 已提交但回执写入失败时只补建回执；仅相邻生命周期允许幂等重放。
+                # If Session committed but receipt writing failed, repair receipts only; idempotent replay allows adjacent lifecycle states only.
                 if (
                     current.session.revision != base_revision
                     or current.session.ended_reason != (
@@ -1368,7 +1368,7 @@ async def end_numeric_session(request: Request):
 @router.post("/session/resume")
 @_track_theater_activity
 async def resume_numeric_session(request: Request, claim_activity: bool = True):
-    """继续玩家主动退出的演绎；剧情自然结局不能从该入口恢复。"""  # noqa: DOCSTRING_CJK
+    """Resume player-exited enactments; naturally concluded stories cannot resume here."""  # noqa: DOCSTRING_CJK
 
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(
@@ -1396,7 +1396,7 @@ async def resume_numeric_session(request: Request, claim_activity: bool = True):
     try:
         config_manager = get_config_manager()
         runtime = await _runtime_for_story(config_manager, story_id)
-        # 恢复状态与当前角色属于同一份可变事实，必须在统一锁顺序内读取并复验。
+        # Recovery state/current character are shared mutable facts; read/revalidate under the standard lock order.
         # Resuming reopens the ledger, so it must not overlap an in-flight archive.
         async with _memory_operation_lock(
             config_manager, story_id,
@@ -1560,7 +1560,7 @@ async def speak_numeric_block(request: Request):
                 ):
                     return _error("numeric_speak_block_not_dialogue", 422)
                 dialogue_parts.append(str(requested_block.get("text") or "").strip())
-            # 括号动作已经被内容块解析器剔除；这里只合并前端声明且后端复验通过的对白块。
+            # The block parser already stripped parenthesized actions; merge only frontend-declared, backend-revalidated dialogue blocks.
             dialogue_text = " ".join(dialogue_parts).strip()
             all_blocks = performance_content_blocks(performance)
             first_dialogue_index = next(
@@ -1569,8 +1569,8 @@ async def speak_numeric_block(request: Request):
             )
             from main_routers.shared_state import get_session_manager
 
-            # 最终身份和 Session 复验与 TTS 入队共用生命周期锁；角色切换、剧本删除或
-            # Session 替换只能发生在旧对白入队前或入队后，不能在清理完成后迟到写回。
+            # Final identity/Session checks and TTS enqueue share lifecycle locks: character switches, script deletion, or
+            # Session replacement occur before/after old dialogue queues, never as late writes after cleanup.
             async with character_config_mutation_lock, runtime.story_session_guard():
                 latest = await runtime.restore_session(session_id)
                 if latest is None:
@@ -1602,7 +1602,7 @@ async def speak_numeric_block(request: Request):
                     dialogue_text,
                     session_id=session_id,
                     state_revision=revision,
-                    # TTS 必须使用 character_id 解析出的当前名称；角色改名后旧名称已无语音配置。
+                    # TTS uses the current name resolved from character_id; renamed characters have no voice config under old names.
                     lanlan_name=str(current_binding.get("catgirl_name") or ""),
                     resolve_current_catgirl=lambda: _current_catgirl_binding(config_manager)["catgirl_name"],
                     get_session_manager=get_session_manager,
@@ -1634,7 +1634,7 @@ async def _validated_receipt(
     store: NumericV2ArchiveStore,
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """异步读取并校验客户端只能引用本次已结束 Session 的回执。"""  # noqa: DOCSTRING_CJK
+    """Read asynchronously and verify clients reference only this ended Session's receipt."""  # noqa: DOCSTRING_CJK
 
     receipt = await store.aload(str(payload.get("end_receipt_id") or "").strip())
     if receipt is None:
@@ -1676,8 +1676,8 @@ async def archive_numeric_session(request: Request):
             if await asyncio.to_thread(store.pending_forget, receipt["story_id"], receipt.get("character_id", "")):
                 return _error("numeric_theater_memory_forget_pending", 409)
             if receipt.get("status") == "written":
-                # 上次进程可能在 written 回执与 Session 水位两次原子写之间中断；
-                # 幂等重试返回成功前先修复水位，避免续演后重复归档旧回合。
+                # A prior process may stop between atomic written-receipt and Session-watermark writes;
+                # repair the watermark before returning idempotent success, preventing duplicate old-turn archival after continuation.
                 await _assert_numeric_writable(config_manager, "archives")
                 await store.areconcile_written_receipt(receipt)
                 return {"ok": True, "status": "already_written"}
@@ -1688,7 +1688,7 @@ async def archive_numeric_session(request: Request):
                 return _error("numeric_archive_request_mismatch", 409)
             runtime = await _runtime_for_story(config_manager, receipt["story_id"])
             async with _memory_operation_lock(config_manager, receipt["story_id"]):
-                # 角色生命周期锁固定记忆目录名称；故事锁避免剧本删除完成后又写回孤立冷档案。
+                # Character lifecycle locks fix memory-directory names; story locks prevent orphan cold archives reappearing after deletion.
                 async with character_config_mutation_lock, runtime.story_session_guard():
                     if await asyncio.to_thread(store.pending_forget, receipt["story_id"], receipt.get("character_id", "")):
                         return _error("numeric_theater_memory_forget_pending", 409)
@@ -1749,8 +1749,8 @@ async def archive_numeric_session(request: Request):
                         archive_request_id=archive_request_id,
                         archive_attempt=archive_attempt,
                     )
-                    # 先落不含隐藏状态的完整冷档案，再让记忆服务迁移旧版全文；
-                    # 这样旧时间索引被折叠时，公开演绎仍有可恢复副本。
+                    # Persist complete cold archives without hidden state before memory services migrate legacy full text;
+                    # public enactments retain recoverable copies when old time indexes fold away.
                     await store.astage_public_archive(
                         receipt=receipt,
                         title=title,
@@ -1773,7 +1773,7 @@ async def archive_numeric_session(request: Request):
                     return _error("numeric_archive_memory_failed", 502)
                 response = await get_internal_http_client().post(
                     memory_url,
-                    # 记忆服务使用同一稳定键收敛未知响应和跨进程重试，不能只在剧场侧去重。
+                    # Memory services share the same stable key for unknown responses/cross-process retries; theater-only deduplication is insufficient.
                     json={
                         "input_history": json.dumps(messages, ensure_ascii=False),
                         "idempotency_key": archive_request_id,
@@ -1876,7 +1876,7 @@ async def skip_numeric_session_archive(request: Request):
 
             # Lock order: memory operation lock -> character lock -> story guard.
             async with _memory_operation_lock(config_manager, story_id):
-                # 跳过归档与角色/剧本删除使用相同锁顺序，防止删除后重新创建孤立回执。
+                # Skipping archival shares character/story deletion lock order, preventing orphan receipts after deletion.
                 async with character_config_mutation_lock, numeric_v2_story_session_guard(
                     _numeric_root(config_manager),
                     story_id,
@@ -2056,7 +2056,7 @@ async def _retract_forgotten_attempts(
 
 @router.get("/memory/archives")
 async def list_numeric_memory_archives(story_id: str):
-    """列出当前猫娘在指定剧本中的冷档案摘要。"""  # noqa: DOCSTRING_CJK
+    """List the current catgirl's cold-archive summaries for a script."""  # noqa: DOCSTRING_CJK
 
     config_manager = get_config_manager()
     normalized_story_id = str(story_id or "").strip()
@@ -2086,7 +2086,7 @@ async def list_numeric_memory_archives(story_id: str):
 
 @router.get("/memory/archive")
 async def get_numeric_memory_archive(story_id: str, session_id: str):
-    """读取当前猫娘有权查看的一份完整公开演绎。"""  # noqa: DOCSTRING_CJK
+    """Read one complete public enactment the current catgirl may access."""  # noqa: DOCSTRING_CJK
 
     normalized_story_id = str(story_id or "").strip()
     normalized_session_id = str(session_id or "").strip()
@@ -2095,7 +2095,7 @@ async def get_numeric_memory_archive(story_id: str, session_id: str):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, normalized_story_id)
-        # 读取与角色改名、角色删除和剧本删除串行，避免校验身份后文件立即迁移或消失。
+        # Serialize reads with character rename/deletion and script deletion, preventing files moving/disappearing immediately after identity checks.
         async with character_config_mutation_lock, runtime.story_session_guard():
             binding = _current_catgirl_binding(config_manager)
             archive = await asyncio.to_thread(
@@ -2129,7 +2129,7 @@ async def pin_numeric_memory_archive(request: Request):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, story_id)
-        # 置顶会改写角色归属的冷档案，锁顺序与归档、遗忘和角色删除保持一致。
+        # Pinning rewrites character-owned cold archives; match archival/forgetting/character-deletion lock order.
         async with character_config_mutation_lock, runtime.story_session_guard():
             await _assert_numeric_writable(config_manager, "public_archives")
             binding = _current_catgirl_binding(config_manager)
@@ -2151,7 +2151,7 @@ async def pin_numeric_memory_archive(request: Request):
 
 @router.post("/memory/forget")
 async def forget_numeric_story_memory(request: Request):
-    """显式忘记当前猫娘的指定剧本，不删除剧本包或 Session。"""  # noqa: DOCSTRING_CJK
+    """Explicitly forget the current catgirl's script without deleting the package or Session."""  # noqa: DOCSTRING_CJK
 
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(
@@ -2167,7 +2167,7 @@ async def forget_numeric_story_memory(request: Request):
         return _error("story_id_and_character_id_required", 400)
     config_manager = get_config_manager()
     try:
-        # 仅用注册表路径规则复验 ID；剧本包删除后仍必须允许清理其残留记忆。
+        # Revalidate IDs using registry path rules only; script-package deletion must still permit residual-memory cleanup.
         NumericV2PackageRegistry(
             _numeric_root(config_manager) / "numeric_v2" / "packages"
         ).package_path(story_id)
@@ -2178,7 +2178,7 @@ async def forget_numeric_story_memory(request: Request):
         from config import MEMORY_SERVER_PORT
         from utils.internal_http_client import get_internal_http_client
 
-        # 遗忘同样写入角色记忆目录，必须与角色改名串行；独立故事锁不依赖剧本包存在。
+        # Forgetting writes character memory and serializes with renaming; independent story locks do not require package existence.
         async with _memory_operation_lock(config_manager, story_id):
             async with character_config_mutation_lock, numeric_v2_story_session_guard(
                 _numeric_root(config_manager),
@@ -2265,7 +2265,7 @@ async def forget_numeric_story_memory(request: Request):
                 removed_receipts = len(pending["receipt_files"])
                 if (stored is not None and stored.session.status == "ended"
                         and stored.session.ended_reason != "cancelled_start"):
-                    # 保留一个最新“不写入”决策回执，防止选剧页立即再次询问。
+                    # Retain one latest do-not-write receipt to prevent the selection page immediately asking again.
                     skipped = await archive_store.acreate_or_get(stored.session)
                     await archive_store.aupdate(skipped, status="skipped")
                 # Removing the intent is the last step; every preceding operation is retryable.

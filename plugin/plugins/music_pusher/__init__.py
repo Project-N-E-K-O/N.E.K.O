@@ -1,10 +1,10 @@
 """
-汐音阁 · XiYin Pavilion
+XiYin Pavilion
 
-能力概览：
-1) 本地上传音频并可选自动推送。
-2) 在线音频链接入库与即时推送。
-3) 定时任务队列，支持立即执行、编辑、删除、运行态查询。
+Capabilities:
+1) Upload local audio with optional automatic delivery.
+2) Store online audio links and deliver immediately.
+3) Scheduled task queue with immediate execution, editing, deletion, and runtime-status queries.
 """
 
 from __future__ import annotations
@@ -365,7 +365,7 @@ def _is_public_unicast_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
 
 
 def _validate_url_for_av_open(url: str) -> bool:
-    """仅允许公网可路由地址给 PyAV 打开，防止 SSRF。"""
+    """Allow PyAV to open only publicly routable addresses, preventing SSRF."""
     parsed = _parse_http_url(url)
     if parsed is None:
         return False
@@ -406,7 +406,7 @@ def _extract_duration_from_av_container(container: Any) -> int | None:
 
 @neko_plugin
 class MusicPusherPlugin(NekoPluginBase):
-    """汐音阁 · XiYin Pavilion —— 音乐推送 + 定时队列插件。"""
+    """XiYin Pavilion -- music delivery and scheduled queue plugin."""
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
@@ -749,7 +749,7 @@ class MusicPusherPlugin(NekoPluginBase):
         return None
 
     def _detect_audio_duration_from_url(self, url: str) -> int | None:
-        # 不对用户提供的远程 URL 调用 FFmpeg/PyAV，避免 DNS rebinding 绕过 SSRF 校验。
+        # Do not call FFmpeg/PyAV on user-provided remote URLs, preventing DNS rebinding from bypassing SSRF checks.
         return None
 
     def _build_music_item(
@@ -1008,14 +1008,14 @@ class MusicPusherPlugin(NekoPluginBase):
             if p.is_file() and p.suffix.lower() in _ALLOWED_AUDIO_EXTENSIONS
         }
 
-        # 仅保留仍存在文件的映射，避免长期积累脏数据。
+        # Retain mappings only for existing files, preventing stale-data accumulation.
         self._upload_name_map = {
             name: meta
             for name, meta in self._upload_name_map.items()
             if name in upload_files
         }
 
-        # 清理已删除文件对应的 music_items，避免脏数据残留。
+        # Remove music_items for deleted files, avoiding stale data.
         self._music_items = [
             item for item in self._music_items
             if not str(item.get("stored_filename") or "").strip()
@@ -1449,7 +1449,7 @@ class MusicPusherPlugin(NekoPluginBase):
         return None
 
     def _install_push_mapper(self) -> None:
-        """插件内动态映射：统一给 music_pusher 推送打标签，便于跨模块识别。"""
+        """Dynamic plugin-local mapping: consistently tag music_pusher deliveries for identification across modules."""
         if self._push_mapper_installed:
             return
         original = getattr(self.ctx, "push_message", None)
@@ -1700,7 +1700,7 @@ class MusicPusherPlugin(NekoPluginBase):
 
     @lifecycle(id="startup")
     async def on_start(self, **_):
-        # 关键修复：插件 reload 后会切换事件循环，这里重建异步原语，避免绑定旧 loop。
+        # Key fix: plugin reload switches event loops, so rebuild async primitives here to avoid bindings to the old loop.
         self._state_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
         self._scheduler_stop = asyncio.Event()

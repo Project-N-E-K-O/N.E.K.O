@@ -28,7 +28,7 @@ def test_dims_and_profile_for_both_framings():
     assert {k: [tuple(s) for s in v] for k, v in out["ladder"].items()} == {k: list(v) for k, v in VISIT_CONGESTION_LADDER.items()}
     assert out["un1"]["splitY"] == 448 and abs(out["un1"]["aspect"] - 320 / 448) < 1e-9
     assert out["un2"]["splitY"] == 560 and abs(out["un2"]["aspect"] - 256 / 560) < 1e-9
-    # libwebrtc 自行降分辨率后照样按 videoHeight/2 推导
+    # Still derive from videoHeight/2 after libwebrtc reduces the resolution itself.
     assert out["un3"]["splitY"] == 336
 
 
@@ -97,7 +97,7 @@ def test_out_of_source_crop_is_clipped_not_painted_white():
         """
     )
     assert out["inside"] == {"sx": 100, "sy": 100, "sw": 320, "sh": 448, "dx": 0, "dy": 0, "dw": 320, "dh": 448}
-    # 右半越界：只画左半，目标宽度同比例缩成一半
+    # Right half out of bounds: draw only the left half and halve the target width proportionally.
     assert out["right"] == {"sx": 900, "sy": 0, "sw": 100, "sh": 400, "dx": 0, "dy": 0, "dw": 160, "dh": 640}
     assert out["outside"] is None
 

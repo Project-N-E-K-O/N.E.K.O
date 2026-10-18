@@ -170,7 +170,7 @@ def report() -> dict:
 
 
 def test_estimate_paced_delta_drives_live2d_mouth_even_with_voice_setting_on(report):
-    # visitVoiceEnabled 仍为 true（TTS 兜底）：只看 paced:'estimate' 就接管嘴型
+    # visitVoiceEnabled remains true (TTS fallback): take over lip movement based solely on paced:'estimate'.
     assert report["estimate_writes"] > 30
     assert 0.35 <= report["estimate_max"] <= 0.8
     assert 7 <= report["estimate_peaks_1s"] <= 11

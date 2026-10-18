@@ -617,27 +617,27 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 await _emit_agent_status_update(lanlan_name=lanlan_name)
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
-        # 在 inject 之前先把已被用户 UI 取消的 user turn 整段 redact，让 analyzer
-        # 完全看不到那条请求；inject 阶段也会跳过 cancelled 任务的所有 record。
+        # Before injection, redact the entire user turn cancelled through UI, hiding the request completely from analyzer;
+        # injection also skips every record for cancelled tasks.
         redacted_messages = _redact_cancelled_user_turns(messages, lanlan_name, preserve_trailing_assistant=proactive)
-        # 单条 user 消息签名：派单时塞到 task info 里。取自 redacted_messages
-        # 而非 raw —— analyzer 实际看到的最新 user 才是该任务的真触发者；
-        # 正常场景下 raw-latest 是 first-time bypass、没被 redact，两个签名
-        # 一致，区别仅在 raw-latest 已经被 redact 的边界 case。
-        # 主动搭话轮没有触发它的 user 消息：绝不把它绑到窗口里那条陈旧 user 签名上，
-        # 否则用户取消这条主动任务会误把那条旧 user turn 标记为 cancelled、下一轮被
-        # redact 掉。proactive → 不绑 user 触发签名。
+        # Single-user-message signature: stored in task info during dispatch. Read from redacted_messages
+        # rather than raw; the latest user message actually seen by analyzer is the task's real trigger.
+        # Normally raw-latest bypasses first-time redaction, so both signatures
+        # match; they differ only when raw-latest was already redacted.
+        # Proactive turns have no triggering user message; never bind them to an old user signature in the window,
+        # or cancelling a proactive task incorrectly marks that old user turn cancelled and redacts it
+        # next round. Proactive → no user-trigger signature binding.
         trigger_user_msg_sig = None if proactive else _last_user_message_signature(redacted_messages)
         enriched_messages = _task_tracker.inject(redacted_messages, lanlan_name)
 
-        # 一步完成：分析 + 执行
+        # Complete analysis + execution in one step
         #
-        # lang 必须显式传：analyzer 的全部频道描述和系统提示都走 _loc(..., lang)
-        # （task_executor 里的 _assess_unified_channels / _assess_user_plugin /
-        # _stage1_llm_coarse_screen），漏传会落到 analyze_and_execute 的默认值
-        # "en"，让日/韩/俄/西/葡/中文用户全都拿到英文 prompt。
-        # 取值优先 session locale（随 analyze_request 事件从 main_server 带过来的
-        # 前端 i18n 真值），取不到才回落本进程全局值——见 _resolve_analyze_lang。
+        # Pass lang explicitly: analyzer channel descriptions and system prompts all use _loc(..., lang)
+        # (_assess_unified_channels / _assess_user_plugin /
+        # _stage1_llm_coarse_screen in task_executor). Omitting it uses analyze_and_execute's default
+        # "en", giving Japanese/Korean/Russian/Spanish/Portuguese/Chinese users English prompts.
+        # Prefer session locale, the authoritative frontend i18n value carried by analyze_request from main_server;
+        # only fall back to this process's global value when unavailable. See _resolve_analyze_lang.
         result = await Modules.task_executor.analyze_and_execute(
             messages=enriched_messages,
             lanlan_name=lanlan_name,
@@ -745,14 +745,14 @@ async def startup():
         from utils.token_tracker import TokenTracker, install_hooks
         install_hooks()
         TokenTracker.get_instance().start_periodic_save()
-        # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+        # Include process in session_start/session_end dimensions to distinguish processes during diagnostics
         TokenTracker.get_instance().record_app_start(process="agent_server")
     except Exception as e:
         logger.warning(f"[Agent] Token tracker init failed: {e}")
 
-    # 注：模块预热统一由 main_server 在其 runtime init 完成后触发（见
-    # _ensure_main_server_runtime_initialized 末尾）。合并模式下三个 app 同进程，
-    # 那一处覆盖本进程全部 lazy 模块；不在这里另起，避免与启动期抢 GIL。
+    # Note: main_server triggers all module warming after runtime initialization (see the end of
+    # _ensure_main_server_runtime_initialized). In merged mode all three apps share a process,
+    # so that site covers all lazy modules; do not start another warmup here and compete for the startup GIL.
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()
@@ -762,16 +762,16 @@ async def startup():
         browser_use=None,
         openclaw=Modules.openclaw,
     )
-    # TaskDeduper 在 __init__ 里就把 summary 路由的 base_url 定死并缓存 client，整
-    # 个进程生命周期不再复议。agent_server 作为独立进程跑时不经过 main_server 的
-    # GeoIP 预热，海外用户于是被那一瞬的大陆兜底钉住——而 summary 是区域敏感路由
-    # （不同于有意豁免改写的 agent 专用 URL）。构造前先落定。
+    # TaskDeduper fixes summary base_url and caches its client in __init__, never reconsidering them throughout the
+    # process lifetime. Standalone agent_server skips main_server's GeoIP warmup,
+    # pinning overseas users to the temporary mainland fallback, while summary is region-sensitive routing
+    # unlike agent-specific URLs deliberately exempted from rewriting. Settle the region before construction.
     try:
         from utils.config_manager import get_config_manager as _get_cm
-        # 用启动预热原语而不是会话级 aensure：上面 ComputerUseAdapter 构造时已读过
-        # 配置、起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不 kick、
-        # 不穿退避（1.5s 也短于单次 3s 请求），撞上退避就放弃；awarmup 会催醒退避
-        # 并用启动级窗口等结论，与 main_server / memory_server 的启动路径对偶。
+        # Use startup warmup rather than session-level aensure: ComputerUseAdapter construction above already read
+        # configuration and started probing, which may fail quickly before network readiness and enter 30s backoff. aensure neither kicks
+        # nor bypasses backoff (its 1.5s is shorter than one 3s request), so it gives up; awarmup wakes backoff
+        # and waits with a startup-sized window, symmetric with main_server/memory_server startup.
         if not await _get_cm().awarmup_region_check():
             logger.warning("[GeoIP] Agent 去重器构造前区域判定仍未落定，本进程按大陆线路构造")
     except Exception as e:
@@ -899,9 +899,9 @@ async def startup():
         await Modules.agent_bridge.start()
     except Exception as e:
         logger.warning(f"[Agent] Event bridge startup failed: {e}")
-    # 免费版 Agent 每日配额耗尽 → 节流通知前端弹提示（最多每 10 秒一次）。
-    # consume_agent_daily_quota 跑在 worker 线程里调这个回调，用 run_coroutine_threadsafe
-    # 把异步 ZeroMQ emit 调度回 agent_server 的事件循环；不 .result()，保持非阻塞。
+    # Free Agent daily quota exhausted → throttle frontend prompts to at most once every 10 seconds.
+    # consume_agent_daily_quota invokes this callback from a worker; run_coroutine_threadsafe schedules
+    # asynchronous ZeroMQ emission on agent_server's event loop without .result(), preserving nonblocking execution.
     try:
         _quota_notify_loop = asyncio.get_running_loop()
 
@@ -1039,7 +1039,7 @@ async def health():
     )
 
 
-# 插件直接触发路由（放在顶层，确保不在其它函数体内）
+# Direct plugin-trigger route at top level, outside all other functions
 @app.post("/plugin/execute")
 async def plugin_execute_direct(payload: Dict[str, Any]):
     """
@@ -1060,7 +1060,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     # _stopped`` has already torn down, producing confusing failures.
     if not Modules.analyzer_enabled:
         raise HTTPException(403, "Agent master switch is off")
-    # 当后端显式关闭用户插件功能时，直接拒绝调用，避免绕过前端开关
+    # Reject calls when the backend explicitly disables user plugins, preventing bypass of the frontend switch
     if not Modules.agent_flags.get("user_plugin_enabled", False):
         raise HTTPException(403, "User plugin is disabled")
     plugin_id = (payload or {}).get("plugin_id")
@@ -1079,7 +1079,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     # Log request
     logger.info(f"[Plugin] Direct execute request: plugin_id={plugin_id}, entry_id={entry_id}, lanlan={lanlan_name}")
 
-    # 获取插件友好名称（用于 HUD 显示）
+    # Get the plugin's friendly name for HUD display
     plugin_name = await _get_plugin_friendly_name(plugin_id)
     task_params = {"plugin_id": plugin_id, "entry_id": entry_id, "args": args}
     if plugin_name:
@@ -1161,11 +1161,11 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 return
             info["result"] = res.result
             info["end_time"] = _now_iso()
-            # 兜底终态先行：下面 inner try 里 detail/delivery_mode 的解析若抛
-            # 异常会被 except 吞掉（只 debug 日志），没有这行 info["status"]
-            # 会永远停在 "running"，finally 的 task_update 只能把 running 广播
-            # 出去，HUD 卡片永久转圈。_plugin_terminal_status 算出精确终态后
-            # 会再覆盖。
+            # Set a fallback terminal state first: if detail/delivery_mode parsing in the inner try below raises,
+            # except swallows it with debug logging only. Without this assignment, info["status"]
+            # remains "running" forever, and finally's task_update can only broadcast running,
+            # leaving the HUD card spinning indefinitely. _plugin_terminal_status later overwrites this
+            # with the precise terminal state.
             info["status"] = "completed" if res.success else "failed"
             try:
                 run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
@@ -1194,8 +1194,8 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         info["error"] = _tt((detail or str(res.error or "")), TASK_ERROR_MAX_TOKENS)
                     display_id = await _get_plugin_display_id(plugin_id)
                     # summary = plain detail; status/source rendering handled in main_logic.
-                    # 失败情况下显式传 status="failed"，避免 _emit_task_result 把
-                    # success=False+非空 detail 默认推到 "partial"（"部分完成"）。
+                    # Explicitly pass status="failed" on failure so _emit_task_result does not default
+                    # success=False with nonempty detail to "partial" ('partially complete').
                     if _completed:
                         _summary_text = detail
                         _detail_text = detail
@@ -1263,8 +1263,8 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["status"] = "failed"
             info["end_time"] = _now_iso()
             info["error"] = _tt(str(e), TASK_ERROR_MAX_TOKENS)
-            # exception 字符串可能含 provider/plugin 原文 / 用户输入；logger
-            # 只记元数据，原文 + traceback 走 print 兜底。
+            # Exception strings may contain original provider/plugin text or user input; logger
+            # records only metadata, while raw text + traceback fall back to print.
             import traceback as _tb
             logger.error(
                 "[Plugin] Direct execute failed: task_id=%s plugin_id=%s exc_type=%s",
@@ -1489,10 +1489,10 @@ async def complete_deferred_task(task_id: str):
     if not info:
         raise HTTPException(status_code=404, detail="Task not found")
     if info.get("status") != "running":
-        # 已经是 terminal 状态，幂等返回
+        # Already terminal: return idempotently
         return {"ok": True, "skipped": True, "status": info.get("status")}
 
-    # 验证这是一个 deferred 任务（只有 user_plugin 且有 deferred_timeout 的任务才能通过此端点完成）
+    # Verify a deferred task: only user_plugin tasks with deferred_timeout may complete through this endpoint
     if info.get("type") != "user_plugin":
         raise HTTPException(status_code=403, detail="Only user_plugin tasks can be completed via this endpoint")
     if not info.get("deferred_timeout"):
@@ -1506,7 +1506,7 @@ async def complete_deferred_task(task_id: str):
     entry_id = params.get("entry_id", "")
     desc = params.get("description", "")
 
-    # 关闭 tracker 记录（deferred 任务之前只有 assigned 没有 completed）
+    # Close the tracker record; deferred tasks previously had assigned but no completed record
     _task_tracker.record_completed(
         lanlan_name, task_id=task_id, method="user_plugin",
         desc=f"{plugin_id}.{entry_id}: {desc}" if plugin_id else desc,

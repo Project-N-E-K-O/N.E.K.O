@@ -29,12 +29,12 @@ from typing import Any
 from config.prompts.prompts_visit import get_family_neutral_term, get_visit_speaker_header
 from utils.language_utils import get_global_language_full
 
-# 昵称一栏常见的分隔写法：中英文逗号、顿号、斜杠、分号、空白（与 memory.stop_names 的拆法一致，
-# 另认斜杠）。「Alice Ally」是两个称呼，单独出现的「Alice」也要替换
+# Common nickname separators: Chinese/English commas, enumeration commas, slashes, semicolons, and whitespace (matching memory.stop_names,
+# with slashes added). "Alice Ally" denotes two names; standalone "Alice" must also be replaced.
 _NICKNAME_SPLIT_RE = re.compile(r"[,，、/;；\s]+")
-# 音译档案名（「约翰·史密斯」）：整名之外，间隔号拆出的每段也单独算亲人名，只写名或姓也要替换。
-# 空白分隔的拉丁名（「Will Smith」）不拆：脱敏按 casefold 整词匹配，拆出的 Will / May / Brown 这类
-# 常用词会把人设里每个 will / brown 都换掉；只写名的情况由用户在昵称栏补上
+# Transliteration names such as "约翰·史密斯": replace both full names and middle-dot components, covering given names or surnames alone.
+# Do not split space-separated Latin names such as "Will Smith": casefold whole-word redaction would otherwise
+# replace common words like will / brown throughout the persona. Users can add given-name aliases in nicknames.
 _PROFILE_NAME_SPLIT_RE = re.compile(r"[·・]+")
 _NAME_PART_MIN_CHARS = 2
 
@@ -100,7 +100,7 @@ def prompt_lang() -> str:
     """Language of visit-generated text and labels (the UI language, ``zh-TW`` kept)."""
     try:
         return get_global_language_full()
-    except Exception:  # noqa: BLE001 - 语言只影响措辞，读不到按英文
+    except Exception:  # noqa: BLE001 - Language affects wording only; default to English if unreadable.
         return "en"
 
 

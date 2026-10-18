@@ -92,28 +92,28 @@ class RecentGenerationConflictError(RuntimeError):
 
 
 # ── per-path lock registry ────────────────────────────────────────────────
-# 锁按**文件路径**建，不按角色名：main_routers 那几个写者是按 filename 解析路径
-# 的（resolve_recent_file_path 还带 legacy 布局回退），它们拿不到「角色名 →
-# manager」的映射；而且两个角色误配到同一个文件时，按名字切的锁根本不互斥。
-# 资源的身份是文件。
+# Key locks by file path, not character name: main_routers writers resolve paths by filename,
+# including resolve_recent_file_path's legacy-layout fallback, and lack character-name-to-manager
+# mappings. Name-based locks also fail to exclude two characters misconfigured to share one file.
+# The file is the resource identity.
 #
-# 模块级而不是实例级：reload_memory_components 会构造新的
-# CompressedRecentHistoryManager，而旧实例上的 review / 后台压缩 task 还握着旧
-# 引用在跑。实例级的锁在那个窗口里零互斥。memory_server/runtime.py 特意复用
-# EventLog 实例，理由就是这个。
+# Module-level rather than instance-level: reload_memory_components constructs a new
+# CompressedRecentHistoryManager while old review/background-compression tasks retain old
+# references. Instance locks offer no exclusion during that window, the same reason memory_server/runtime.py
+# deliberately reuses EventLog instances.
 #
-# threading.Lock 而不是 asyncio.Lock：
-# 1) 要互斥的是 open() 与 os.replace() 两个 syscall，它们跑在 to_thread 的
-#    worker 线程上，asyncio 锁管不到跨线程；
-# 2) 模块级 asyncio.Lock 一旦真发生争用就绑定当时的 event loop。本仓库的 recent
-#    单测是一个用例一个 asyncio.run，第二个有争用的用例会直接 RuntimeError，而且
-#    失败后锁还残留成已持有状态；
-# 3) threading.Lock 把 json.dumps 也关进临界区（atomic_write_json 是先 dumps 再
-#    写），锁外残留的 mutation 撞不出 "dictionary changed size during iteration"。
-# 同一范式见 memory/event_log.py 与 app/memory_server/gates.py。
+# Use threading.Lock rather than asyncio.Lock:
+# 1) The mutually exclusive open() and os.replace() syscalls run in to_thread
+#    workers, beyond asyncio locks' cross-thread control.
+# 2) Module-level asyncio.Lock binds to the current loop on contention. Recent-history unit tests each
+#    use asyncio.run; the second contended test raises RuntimeError and leaves
+#    the failed lock held.
+# 3) threading.Lock also protects json.dumps (atomic_write_json serializes before
+#    writing), preventing residual concurrent mutations from changing dict size during iteration.
+# See the same pattern in memory/event_log.py and app/memory_server/gates.py.
 #
-# 故意不用 RLock：本模块所有 *_unlocked 函数都要求调用方已持锁，重入只会掩盖
-# 「嵌套 RMW 的内层落盘把外层改了一半的状态写进磁盘」这类真 bug。
+# Deliberately avoid RLock: every *_unlocked helper requires caller ownership; reentrancy would merely hide
+# bugs where an inner nested RMW persists the outer transaction's partially modified state.
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 _PENDING: dict[str, list[Any]] = {}
@@ -512,10 +512,10 @@ def write_recent_payload(
 
 
 # ── keyed entries leaving recent.json ─────────────────────────────────────
-# 带幂等键写进来的条目（串门「记成日记」）被移出 recent.json（压缩、裁剪、整表清空、
-# 记忆浏览器保存、云存档替换……）时，它的键记进旁路文件：这是「这条确实写过、只是
-# 已被移出」的正面证据，memory_server 的带键 /cache 重试据此判为已写、不把它补写回去。
-# recent.json 的 list 根格式不变。
+# When keyed entries (visit diary records) leave recent.json through compression, trimming, clearing,
+# memory-browser saves, cloud replacement, etc., record their keys in a sidecar as positive evidence
+# they were written then removed. Keyed memory_server /cache retries treat them as written and never reinsert them.
+# Keep recent.json's list-root format unchanged.
 
 RETIRED_KEYS_FILENAME = "recent.retired_keys.json"
 """Sidecar ``{key: retired_at}`` of keyed entries that left this recent file."""
@@ -530,7 +530,7 @@ _KEY_MARKER = '"' + RECENT_IDEMPOTENCY_META_KEY + '"'
 
 
 def _entry_key(entry: Any) -> str | None:
-    # 只认串门日记：AI 消息、键格式完整。普通消息里调用方带的同名 metadata 不是写过的证据
+    # Accept only visit diaries: AI messages with complete key formats. Same-named caller metadata on ordinary messages proves nothing.
     if not isinstance(entry, dict):
         return None
     meta = entry.get("metadata")
@@ -553,7 +553,7 @@ def strip_idempotency_metadata(messages: Any) -> None:
     """
     for message in messages or ():
         if isinstance(message, dict):
-            # 与 _entry_key 认的形态对齐：顶层 metadata，或落盘形态的 data.metadata（本模块是叶子，不引 llm_client）
+            # Match _entry_key's accepted shapes: top-level metadata or persisted data.metadata; this leaf module does not import llm_client.
             data = message.get("data")
             metas = [message.get("metadata"), data.get("metadata") if isinstance(data, dict) else None]
         else:
@@ -577,16 +577,16 @@ def _read_current_payload_unlocked(path: Any) -> Any:
     except FileNotFoundError:
         return []
     except (OSError, ValueError):
-        # 旧文件读不出 / 不是合法 UTF-8：比对不出移出了哪些键，但不能因此挡住替换它的写入
-        # （云存档下载正是用来覆盖坏掉的 recent.json）
+        # If the old file is unreadable or invalid UTF-8, removed keys cannot be compared, but replacement writes must proceed
+        # because cloud downloads intentionally overwrite corrupt recent.json files.
         return []
     if _KEY_MARKER not in text:
-        # 绝大多数文件没有带键条目：不解析就知道没有要退役的键
+        # Most files contain no keyed entries; detect that without parsing.
         return []
     try:
         return json.loads(text)
     except (ValueError, RecursionError):
-        # 旧文件已坏：比对不出移出了哪些键，照常写（坏文件本来就读不出任何条目）
+        # Corrupt old files cannot identify removed keys; write normally, since no entries were readable anyway.
         return []
 
 
@@ -614,11 +614,11 @@ def read_retired_keys_unlocked(path: Any) -> dict[str, float]:
     if not isinstance(data, dict):
         raise ValueError(f"{RETIRED_KEYS_FILENAME} is not an object")
     for key, stamp in data.items():
-        # 条目畸形（键不是串门日记键、时间不是有限数）同样按「坏了」处理：不把它当成「写过」的证据
+        # Also treat malformed entries, invalid diary keys or nonfinite timestamps as corrupt, never as proof of prior writes.
         if (
             not isinstance(key, str) or VISIT_DIARY_KEY_RE.fullmatch(key) is None
             or isinstance(stamp, bool) or not isinstance(stamp, (int, float))
-            # int 一律有限（超大整数交给 math.isfinite 会抛 OverflowError、挡住 recent.json 写入）；只查 float
+            # All ints are finite; math.isfinite over huge ints raises OverflowError and blocks recent.json writes, so check floats only.
             or (isinstance(stamp, float) and not math.isfinite(stamp))
         ):
             raise ValueError(f"{RETIRED_KEYS_FILENAME} has a malformed entry")
@@ -650,8 +650,8 @@ def retire_removed_keyed_entries(path: Any, old: Any, new: Any) -> list[str]:
     try:
         data = read_retired_keys_unlocked(path)
     except (OSError, ValueError, RecursionError):
-        # 旁路坏了 / 读不出：不挡 recent.json 的写入，但也不拿一份只含这几条的新旁路盖掉它——
-        # 那会丢掉旧键的证据，之后同键重试就把已移出的日记写回去。保留原样，带键读取继续 fail closed
+        # Corrupt/unreadable sidecars must not block recent.json writes, but do not overwrite them with a new sidecar containing only these entries;
+        # that loses old-key evidence and lets retries restore removed diaries. Retain unchanged and fail closed on keyed reads.
         return []
     now = time.time()
     added = sorted(key for key in removed if key not in data)

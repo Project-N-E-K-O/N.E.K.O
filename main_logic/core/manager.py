@@ -50,7 +50,7 @@ from .turn_context import TurnContextMixin
 from .takeover import TakeoverMixin, TakeoverToken, HoldToken
 
 
-# --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
+# --- Voice session manager with periodic context compression and live hot swapping ---
 class LLMSessionManager(
     ContextAppendMixin,
     FocusMixin,
@@ -86,44 +86,48 @@ class LLMSessionManager(
         self.is_active = False
         self.active_session_is_idle = False
         self.current_expression = None
-        self.tts_request_queue = Queue()  # TTS request (线程队列)
-        self.tts_response_queue = Queue()  # TTS response (线程队列)
-        self.tts_thread = None  # TTS线程
+        self.tts_request_queue = Queue()  # TTS request (thread queue).
+        self.tts_response_queue = Queue()  # TTS response (thread queue).
+        self.tts_thread = None  # TTS thread.
         self._tts_runtime_key = None
         # Runtime fallback excludes only providers that failed in this session;
         # the remaining dispatcher order is never rewritten.
-        # 运行时保底只排除本场失败的 provider，其余调度顺序保持不变。
+        # Runtime fallback excludes only providers failing this session; preserve remaining dispatch order.
         self._tts_active_provider_key: Optional[str] = None
         self._tts_excluded_provider_keys: frozenset[str] = frozenset()
-        # 跨 chunk 规范化器：Gemini Live 输出转录会在中文 token 之间插入 ASCII
-        # 空格，让 MiniMax / CosyVoice 等 streaming TTS 把中文读断。normalizer
-        # 按 replace_blank 的语义剔除空格，同时延后处理 chunk 尾部空格以保证边界正确。
-        # 注意：仅对 http_sentence 类 TTS provider 启用（它们做客户端切句，需要干净文本）。
-        # ws_bistream 类 provider（qwen / step / cosyvoice）直接把文本碎片发给服务端，
-        # normalizer 的 pending_spaces 延迟投递 + CJK 边界空格删除会干扰服务端处理节奏。
+        # Cross-chunk normalizer: Gemini Live output transcription inserts ASCII spaces between Chinese tokens,
+        # breaking Chinese pronunciation in streaming TTS such as MiniMax / CosyVoice. Normalizer
+        # removes spaces with replace_blank semantics, deferring trailing chunk spaces for correct boundaries.
+        # Note: enabled only for http_sentence TTS providers, whose client-side sentence splitting needs clean text.
+        # ws_bistream providers (qwen / step / cosyvoice) send fragments directly server-side;
+        # pending_spaces delays + CJK boundary space removal disrupt server processing cadence.
         self._tts_stream_normalizer = TtsStreamNormalizer()
         self._tts_norm_speech_id: Optional[str] = None
-        self._tts_normalize_enabled: bool = True  # 默认启用，_start_tts_thread 按 provider 类别覆盖
-        # 括号 / markdown 剥离器：朗读时不读括号内的旁白与 markdown 标记。
-        # 与 _tts_stream_normalizer 解耦——CJK 空格规范化是 provider 相关的
-        # （ws_bistream provider 关），但括号/markdown 剥离是 TTS 通用需求，
-        # 始终启用。两者串接顺序：normalizer → markdown → bracket，因为
-        # markdown 链接 ``[文本](url)`` 必须先剥成 ``文本`` 再交给 bracket，
-        # 否则 ``[`` ``]`` 会被 bracket 当成普通括号把链接文本一起吞掉。
+        self._tts_normalize_enabled: bool = True  # Enabled by default; _start_tts_thread overrides by provider class.
+        # Bracket/Markdown strippers omit bracketed narration and Markdown markers from speech.
+        # Independent of _tts_stream_normalizer: CJK space normalization depends on provider
+        # (off for ws_bistream), but bracket/Markdown stripping is universal TTS behavior,
+        # always enabled. Order: normalizer → markdown → bracket, because
+        # Markdown links ``[文本](url)`` must first become ``文本`` before bracket processing,
+        # or bracket treats ``[`` ``]`` as ordinary brackets and removes link text too.
         self._tts_markdown_stripper = TtsMarkdownStripper()
         self._tts_bracket_stripper = TtsBracketStripper()
-        # 流式音频重采样器（24kHz→48kHz）- 维护内部状态避免 chunk 边界不连续
+        # Streaming audio resampler (24kHz→48kHz) retains state to avoid chunk-boundary discontinuities.
         self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
-        self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
-        self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
-        self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
+        self.lock = asyncio.Lock()  # Use asynchronous rather than synchronous lock.
+        self.websocket_lock = None  # Shared WebSocket-operation lock, assigned by main_server.
+        self._bg_tasks: set = set()  # Prevent garbage collection of fire-and-forget tasks.
         self._screenshot_future: asyncio.Future | None = None
-        self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
-        # request_fresh_screenshot 与 resolve_screenshot_request 之间的一次性交接槽。
-        # 与 _avatar_position 分开是刻意的：后者被每一条 stream_data 覆写（屏幕分享帧、
-        # 主动视觉单帧都会写），拿它去配对 Phase 2 的那张截图，坐标会被中途到达的
-        # 别的帧换掉或抹成 None。只有 resolve_screenshot_request 写、只有配对的那一次
-        # request 读。
+        self._proactive_screenshot_request_id: str | None = None
+        # Live browser consent can arrive before the settings POST is persisted.
+        self._proactive_vision_enabled: bool | None = None
+        self._proactive_vision_revocation_epoch: int = 0
+        self._avatar_position: dict | None = None  # Frontend normalized Avatar coordinates {centerX, centerY, width, height}.
+        # One-shot handoff slot between request_fresh_screenshot and resolve_screenshot_request.
+        # Deliberately separate from _avatar_position, overwritten by every stream_data (screen-share frames,
+        # proactive single-frame vision). Pairing it with Phase 2 screenshot would let intervening frames
+        # replace coordinates or clear them to None. Only resolve_screenshot_request writes, and only its paired
+        # request reads.
         self._pending_screenshot_avatar_position: dict | None = None
         self.current_speech_id = None
         # Per-speech playback overrides are bounded and released on audio_done,
@@ -152,11 +156,11 @@ class LLMSessionManager(
         self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
         self._last_speech_output_time = 0.0
         self._last_speech_output_bytes = 0
-        # 只在「用户/前端主动结束启动」时递增（end_session 的 not by_server +
-        # reset_starting_count 路径），用于跨模式重启守卫区分"用户已放弃"与
-        # "内部 cleanup / in-flight 启动失败"。不能复用 _audio_stream_epoch——
-        # 它在所有 end_session cleanup（含 by_server=True 的 in-flight 失败收口）
-        # 里都会涨，会把用户仍在等待的 audio 请求误判为已放弃（CodeRabbit）。
+        # Increment only on user/frontend cancellation of startup (end_session's not by_server +
+        # reset_starting_count path), letting cross-mode restart guards distinguish user abandonment from
+        # internal cleanup / in-flight startup failure. Do not reuse _audio_stream_epoch:
+        # it increments in every end_session cleanup (including by_server=True in-flight failure),
+        # misclassifying still-awaited audio requests as abandoned (CodeRabbit).
         self._user_session_abandon_epoch = 0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
@@ -169,7 +173,7 @@ class LLMSessionManager(
 
         self.lanlan_prompt = lanlan_prompt
         self.lanlan_name = lanlan_name
-        # 获取角色相关配置
+        # Get character-related configuration.
         self._config_manager = get_config_manager()
 
         (
@@ -183,16 +187,16 @@ class LLMSessionManager(
             self.setting_store,
             self.recent_log
         ) = self._config_manager.get_character_data()
-        # API配置现在通过 _config_manager.get_model_api_config() 动态获取
-        # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
+        # API configuration is now dynamically fetched via _config_manager.get_model_api_config().
+        # core_api_type comes from realtime config, automatically 'local' for custom realtime APIs.
         realtime_config = self._config_manager.get_model_api_config('realtime')
         self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
         self.memory_server_port = MEMORY_SERVER_PORT
-        self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
+        self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # For CosyVoice custom voices.
         self._apply_voice_id_for_route()
-        # 注意：use_tts 会在 start_session 中根据 input_mode 重新设置
+        # Note: start_session resets use_tts according to input_mode.
         self.use_tts = False
-        self.generation_config = {}  # Qwen暂时不用
+        self.generation_config = {}  # Currently unused for Qwen.
         self.message_cache_for_new_session = []
         self.next_session_context_messages: list[dict] = []
         self.is_preparing_new_session = False
@@ -207,7 +211,7 @@ class LLMSessionManager(
         # hot swap (which only renews the provider session). Passive memory
         # recall leaves out facts written since (their turns are in context).
         self._turn_context_conversation_started_at = None
-        self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
+        self._session_turn_count = 0  # User-input turn count for current session.
         self.pending_connector = None
         self.pending_session = None
         # Closing a detached pending session is owned here, not by whoever
@@ -220,7 +224,7 @@ class LLMSessionManager(
         self.is_hot_swap_imminent = False
         self.tts_handler_task = None
         self._tts_handler_response_queue = None
-        # 热切换相关变量
+        # Hot-swap variables.
         self.background_preparation_task = None
         self.final_swap_task = None
         self.receive_task = None
@@ -234,7 +238,7 @@ class LLMSessionManager(
         # consumed at different lifecycle points (text mode = next stream_text,
         # voice mode = next hot-swap) and must not share state.
         self.pending_extra_replies: list[dict] = []
-        # 结构化 agent 任务回调队列（用于按会话类型注入）
+        # Structured agent-task callback queue for session-type-specific injection.
         self.pending_agent_callbacks: list[dict] = []
         # ── Proactive delivery front stage ───────────────────────────────
         # Generic, plugin-agnostic pacing/ordering for proactive cues
@@ -261,7 +265,7 @@ class LLMSessionManager(
         self.lifecycle_bus.subscribe("voice_play_end", self.proactive_manager.on_playback_end)
         self.lifecycle_bus.subscribe("text_start", self.proactive_manager.on_text_start)
         self.lifecycle_bus.subscribe("text_end", self.proactive_manager.on_text_end)
-        # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
+        # Prevent concurrent WS/sync_message_queue writes by trigger_agent_callbacks and finish_proactive_delivery.
         self._proactive_write_lock = asyncio.Lock()
         # Serializes the voice-mode proactive inject path. trigger_agent_callbacks
         # is fired via asyncio.create_task from multiple sites (EventBus per-
@@ -274,37 +278,37 @@ class LLMSessionManager(
         # making check-and-claim atomic. (Text mode uses the SM's
         # try_start_proactive claim instead; voice deliberately bypasses the SM.)
         self._voice_proactive_inject_lock = asyncio.Lock()
-        # 请她离开/变猫期间的后端静默闸门。前端会在进入猫态时置 True，
-        # 回来或显式 start_session 时清掉；所有主动搭话入口统一读取它。
+        # Backend silence gate while she leaves / becomes a cat. Frontend sets True upon entering cat mode,
+        # clears on return or explicit start_session; all proactive entries read it uniformly.
         self.goodbye_silent: bool = False
         self.goodbye_silent_reason: str = ""
         self.goodbye_silent_updated_at: float = 0.0
         self.goodbye_silent_started_monotonic: float = 0.0
         self.goodbye_silent_completed_duration: float | None = None
         # ── Session takeover ──────────────────────────────────────────
-        # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
+        # When an external controller takes over this session, local chat-LLM output
         # （text/audio delta、output transcript、response.complete、
-        # new-message 通知）都要静音；语音转写也要先丢给外部 dispatcher
-        # 处理，处理过的不再走本地 chat 路径。
-        # SessionManager 不知道 takeover 是谁、为什么——只认下面三个属性。
-        # 三个属性只由 TakeoverMixin（acquire_takeover / release_takeover /
-        # set_takeover_callback_sink）写；_takeover_token 记录当前持有者，
-        # 不是当前 token 的 release 不生效，接管者之间不会互相解除静音。
-        # 当前唯一消费者：main_routers.game_router；未来 plugin/agent 想完
-        # 全接管 chat 的场景也走同一套接口。
+        # new-message notifications) must be muted; first pass voice transcripts to external dispatcher,
+        # and skip local chat path when handled.
+        # SessionManager knows neither takeover identity nor reason, only these three attributes.
+        # Only TakeoverMixin (acquire_takeover / release_takeover /
+        # set_takeover_callback_sink) writes them; _takeover_token identifies current holder,
+        # and releases with other tokens do nothing, preventing controllers from unmuting one another.
+        # Currently consumed only by main_routers.game_router; future plugin/agent full-chat
+        # takeovers share this interface.
         self._takeover_token: Optional[TakeoverToken] = None
         self._takeover_active: bool = False
         self._takeover_input_dispatcher: Optional[
             Callable[..., Awaitable[bool]]
         ] = None
-        # 接管期间 respond 类回调的去处：返回 True 表示外部 controller 已收下，
-        # 不再进 proactive_manager。None 时保持原样（排队等 takeover 释放）。
+        # Respond-callback sink during takeover: True means external controller accepted it,
+        # bypassing proactive_manager. None preserves default queuing until takeover release.
         self._takeover_callback_sink: Optional[Callable[[dict], bool]] = None
-        # 与 takeover 独立的回调暂扣（TakeoverMixin.hold_callbacks）：takeover
-        # 释放后仍可让 respond 类回调先进这个 sink，不走普通主动搭话投递。
+        # Callback hold independent of takeover (TakeoverMixin.hold_callbacks): after release,
+        # respond callbacks may still enter this sink rather than ordinary proactive delivery.
         self._callback_hold_sink: Optional[Callable[[dict], bool]] = None
         self._callback_hold_token: Optional[HoldToken] = None
-        # 由前端控制的Agent相关开关
+        # Frontend-controlled Agent switches.
         self.agent_flags = {
             'agent_enabled': False,
             'computer_use_enabled': False,
@@ -314,7 +318,7 @@ class LLMSessionManager(
             'openclaw_ready': False,
         }
         
-        # 模式标志: 'audio' 或 'text'
+        # Mode flag: 'audio' or 'text'.
         self.input_mode = 'audio'
         # Input ownership and response backend are independent. Independent ASR
         # may keep the audio microphone route alive after the answering session
@@ -322,70 +326,70 @@ class LLMSessionManager(
         self.response_backend = 'realtime'
         self._multimodal_handoff_lock = asyncio.Lock()
         
-        # 初始化时创建audio模式的session（默认）
+        # Create audio-mode session by default at initialization.
         self.session = None
         
-        # 防止无限重试的保护机制
+        # Guard against infinite retries.
         self.session_start_failure_count = 0
         self.session_start_last_failure_time = None
-        self.session_start_cooldown_seconds = 3.0  # 冷却时间：3秒
-        self.session_start_max_failures = 3  # 最大连续失败次数
-        # 熔断：达到 max_failures 后必须等用户显式触发 start_session（刷新页面/点重试）
-        # 才会清。中间任何内部 recovery 路径都被早退拦截，避免日志被刷屏。
+        self.session_start_cooldown_seconds = 3.0  # Cooldown: 3 seconds.
+        self.session_start_max_failures = 3  # Maximum consecutive failures.
+        # Circuit breaker: max_failures requires explicit user start_session (refresh/retry)
+        # to clear. Internal recovery paths return early meanwhile, avoiding log flooding.
         self._session_start_circuit_open = False
-        self._memory_error_retry_after = 0  # Memory Server 专属冷却时间戳
-        self._memory_error_cooldown_seconds = 10  # Memory Server 冷却时间
+        self._memory_error_retry_after = 0  # Memory Server-specific cooldown timestamp.
+        self._memory_error_cooldown_seconds = 10  # Memory Server cooldown.
         
-        # 防止并发启动的标志（使用计数器避免并发 start_session 的 finally 互相覆盖）
+        # Prevent concurrent startup (counter avoids concurrent start_session finally blocks overwriting each other).
         self._starting_session_count = 0
         self._starting_input_mode = None
-        self._last_cooldown_turn_end_time = 0.0  # 冷却路径 turn_end 去重时间戳
+        self._last_cooldown_turn_end_time = 0.0  # Cooldown-path turn_end deduplication timestamp.
 
-        # TTS缓存机制：确保不丢包
-        self.tts_ready = False  # TTS是否完全就绪
-        self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
-        # 流式 mirror 语音（open_mirror_speech_stream）的入队回调: {speech_id: on_enqueued(n)}
+        # TTS buffering prevents lost chunks.
+        self.tts_ready = False  # Whether TTS is fully ready.
+        self.tts_pending_chunks = []  # Pending TTS text chunks: [(speech_id, text), ...].
+        # Streaming mirror speech (open_mirror_speech_stream) enqueue callbacks: {speech_id: on_enqueued(n)}.
         self._mirror_stream_callbacks: dict = {}
-        # 最近打开的那条流交出 TTS 轮次的时刻：下一条流按打开顺序等它再认领
+        # Latest opened stream's TTS-turn handover time; later streams wait in opening order before claiming.
         self._mirror_stream_tail = None
-        # 最后一条真正认领过 TTS 轮次的流的 speech id：中间的流没认领就结束时，下一条认得出它还是同一串
+        # Speech id of last stream actually claiming a TTS turn; if intervening streams end unclaimed, next stream recognizes the same sequence.
         self._mirror_last_claimed_sid = None
-        # 流式 mirror 的结束标记真正入队时交出 TTS 轮次: {speech_id: 回调}
+        # Streaming mirror hands over TTS turn when its end marker really queues: {speech_id: callback}.
         self._mirror_stream_ends: dict = {}
-        self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁
-        self._last_tts_respawn_time: float = 0.0  # 上次 respawn 时间戳，用于 12 秒冷却
-        self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
-        self._last_tts_error_code: str = ''  # 上次 TTS 错误码
-        self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
-        self._tts_rate_limit_backoff_level: int = 0  # API_RATE_LIMIT 定时 respawn 翻倍次数，就绪后清零
-        self._tts_rate_limit_retry_at: float = 0.0  # 限流退避截止时刻(monotonic)，定时与隐式 respawn 共用
-        self._tts_quota_blocked: bool = False  # 配额用完后停了定时重试；恢复就绪时丢弃旧轮缓存
-        self._tts_quota_from_server_close: bool = False  # 上次配额错误来自免费服务关闭帧（才停定时重试）
-        self._tts_quota_stale_speech_ids: Optional[frozenset] = None  # 配额拦截后首次隐式重试时判定的旧轮次 speech_id；None=尚未判定
+        self.tts_cache_lock = asyncio.Lock()  # Lock protecting buffer.
+        self._last_tts_respawn_time: float = 0.0  # Last respawn timestamp for 12-second cooldown.
+        self._tts_respawn_task: Optional[asyncio.Task] = None  # Delayed retry task, cancelled by end_session.
+        self._last_tts_error_code: str = ''  # Last TTS error code.
+        self._tts_retry_notify_count: int = 0  # TTS retry notification count; first three do not notify frontend.
+        self._tts_rate_limit_backoff_level: int = 0  # API_RATE_LIMIT scheduled-respawn doubling count, reset on readiness.
+        self._tts_rate_limit_retry_at: float = 0.0  # Monotonic rate-limit backoff deadline shared by scheduled/implicit respawn.
+        self._tts_quota_blocked: bool = False  # Quota exhaustion stopped scheduled retries; discard old-turn buffers on readiness recovery.
+        self._tts_quota_from_server_close: bool = False  # Last quota error came from free-service close frame (only then stop scheduled retry).
+        self._tts_quota_stale_speech_ids: Optional[frozenset] = None  # Old-turn speech_ids classified at first implicit retry after quota interception; None means not classified yet.
         # User-facing TTS notices must survive handler replacement during a
         # worker respawn. Entries are released by audio_done or session reset.
         self._tts_notified_error_keys: set[tuple[str, str]] = set()
-        self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
-        self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
-        # 文本空闲软 flush：realtime 语音 + 自定义 TTS 时，本轮转录停下 ~1s 而
-        # provider 的 response.done 还没来，就让 worker 先把攒着的尾句合成出来。
-        # 定时器由每个入队的文本 chunk 重置，done 入队 / 打断 / 拆除时取消。
+        self._tts_done_queued_for_turn: bool = False  # Prevent duplicate TTS end signals within one turn.
+        self._tts_done_pending_until_ready: bool = False  # If TTS not ready, enqueue end signal only after pending flush.
+        # Text-idle soft flush: with realtime voice + custom TTS, transcription pauses ~1s while
+        # provider response.done has not arrived; ask worker to synthesize buffered final phrase first.
+        # Every queued text chunk resets timer; done enqueue / interruption / teardown cancels it.
         self._tts_soft_flush_task: Optional[asyncio.Task] = None
-        self._tts_soft_flush_supported: bool = False  # 由 _start_tts_thread 按 provider 能力位设置
+        self._tts_soft_flush_supported: bool = False  # Set by _start_tts_thread using provider capabilities.
         # Keep one utterance ledger so a replacement worker can replay consumed text.
-        # 已送入当前 worker 的原始文本账本。配置型 provider 运行时失败时，
-        # 用它把本轮文本与 done 信号交给替代 worker，避免整段回复静音。
+        # Raw-text ledger already submitted to current worker. On configured-provider runtime failure,
+        # replay this turn's text + done to replacement, avoiding a wholly silent response.
         self._tts_replay_speech_id: Optional[str] = None
         self._tts_replay_chunks: list[tuple[Optional[str], str]] = []
-        # HTTP 分句 worker 回报已完成/失败的句界后，只保留尚未播出的规范化文本。
+        # After HTTP sentence-worker completion/failure boundary reports, retain only unplayed normalized text.
         self._tts_replay_sent_chunks: list[tuple[Optional[str], str]] = []
         self._tts_replay_done: bool = False
         self._tts_replay_audio_emitted: bool = False
         self._tts_replay_sentence_audio_emitted: bool = False
         self._tts_replay_progress_supported: bool = False
         # A failed configured preset must not leak its identity into legacy clone routing.
-        # 配置型 preset 失败后，本会话保留角色配置，但替代 worker 使用默认音色，
-        # 防止把该 Voice ID 和自定义凭证误送给 CosyVoice 等无关 provider。
+        # After configured-preset failure, retain character settings this session but use replacement worker's default voice,
+        # preventing Voice ID and custom credentials from reaching unrelated providers such as CosyVoice.
         self._tts_fallback_uses_default_voice: bool = False
         self._active_text_request_id: Optional[str] = None
         self._turn_wrap_up_owed = False
@@ -395,8 +399,8 @@ class LLMSessionManager(
         # The independent-ASR voice turn (its id) holding an owed wrap-up from
         # its speech onset until it ends (TurnMixin._voice_turn_holds_owed_wrap_up).
         self._voice_turn_wrap_up_hold: Optional[str] = None
-        # 最近一次交给 Offline client 的回复（见 _shared._ReplyTurn）。热切换
-        # promote 轮换 speech id 时靠它把仍在途的回复带到新 id 上。
+        # Last response handed to Offline client (see _shared._ReplyTurn). Hot-swap
+        # promotion uses it to carry in-flight responses across speech-id rotation.
         self._open_reply_turn: Optional[_ReplyTurn] = None
         self._magic_command_image_drop_request_ids: set[str] = set()
         self._magic_command_image_drop_request_order: deque[str] = deque()
@@ -404,47 +408,47 @@ class LLMSessionManager(
         # the session's _pending_images; pruned whenever a new image is recorded.
         self._request_staged_images: deque[tuple[str, object]] = deque()
         
-        # 输入数据缓存机制：确保session初始化期间的输入不丢失
-        self.session_ready = False  # Session是否完全就绪
-        self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
+        # Input buffering prevents loss during session initialization.
+        self.session_ready = False  # Whether session is fully ready.
+        self.pending_input_data = []  # Pending input data: [message_dict, ...].
         self.pending_context_appends: list[dict] = []
         self._context_append_sequence = 0
         self._context_append_request_ids: OrderedDict[tuple[Any, ...], float] = OrderedDict()
         self._context_append_inflight_results: dict[tuple[Any, ...], asyncio.Future[ContextAppendResult]] = {}
         self._require_context_append_current_delivery = False
-        self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
+        self.input_cache_lock = asyncio.Lock()  # Lock protecting input buffer.
         # Serialize pending-input replay with live input dispatch. The cache
         # lock cannot span awaits because attachment handoff reacquires it.
         self._pending_input_flush_active = False
         self._pending_input_flush_idle_event = None
         
-        # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
+        # User activity timestamp for detecting recent input during proactive checks.
         self.last_user_activity_time = None  # float timestamp or None
 
-        # 用户「真实消息」时间戳：仅在非空、非 AI 回声的真用户输入时刷新（语音
-        # 真转录 / 文本输入），不含 VAD 空噪声、麦克风录回 AI 自己 TTS 的回声。
-        # 区别于 last_user_activity_time（顶部无条件刷新，含回声/空噪声）——后者拿
-        # 来判 mini-game 邀请「用户是否已回应」会被 AI 念邀请台词的回声污染，导致
-        # 隐式 dismiss 在用户还没点按钮前就把 pending 邀请清掉、按钮撤走，用户随后
-        # 点「现在不想玩」落到 expired、真正的 decline 冷却起不来、邀请反复重来。
+        # Real-user-message timestamp: refresh only for nonempty genuine user input, excluding AI echoes (actual voice
+        # transcript / text), VAD noise, and microphone recordings of AI's own TTS.
+        # Distinct from last_user_activity_time (unconditional top-level refresh including echoes/noise); using the latter
+        # for mini-game invitation response checks would let spoken-invitation echoes
+        # implicitly dismiss pending invitations and remove buttons before user interaction. Subsequent
+        # 'do not want to play now' clicks expire, never starting real decline cooldown, so invitations recur.
         self.last_user_message_time = None  # float timestamp or None
-        # 用户真实互动时间戳：覆盖真实文本/语音，以及不产生消息的显式 UI
-        # 回应（例如 mini-game 邀请按钮）。仅供主动搭话的“持续无回应”窗口
-        # 使用；与 last_user_message_time 的邀请状态机语义保持分离。
+        # Real-user-interaction timestamp covers actual text/voice and explicit UI responses without messages
+        # (e.g. mini-game invitation buttons), used only for proactive sustained-no-response
+        # windows; separate from last_user_message_time's invitation-state semantics.
         self.last_user_engagement_time = None  # float timestamp or None
-        # 长窗口主动搭话反馈的本进程观察起点。anti-repeat corpus 会跨重启持久化，
-        # 但用户真实消息时间戳不会；用 manager 创建时刻兜底，避免重启后把上一次
-        # 运行里可能已经得到回应的旧搭话误算成「持续无互动」。
+        # Process-local observation start for long-window proactive feedback. Anti-repeat corpus persists across restarts,
+        # but genuine-user-message timestamps do not; use manager creation time so prior-run proactive messages
+        # potentially already answered are not miscounted as continuously ignored after restart.
         self.proactive_engagement_observation_started_at = time.time()
 
-        # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
-        # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager
-        # 单例），无 active session 时 sleep 后继续轮询。
+        # Background loop disconnects session when user silence ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS.
+        # Start lazily at first start_session; live permanently as a per-manager
+        # singleton, sleeping and polling without an active session.
         self._idle_session_reset_task: Optional[asyncio.Task] = None
 
-        # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
-        # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
-        # 详见 docs/design/user-activity-tracker.md。
+        # User-activity tracker aggregates window/process/CPU/idle/voice/chat signals into structured
+        # ActivitySnapshot for proactive_chat Phase 1/2's propensity-to-speak decisions.
+        # See docs/design/user-activity-tracker.md.
         from main_logic.activity import FocusScorer, MasterEmotionTracker, UserActivityTracker
         from main_logic.conversation_turns import create_default_turn_dispatcher
         self._activity_tracker = UserActivityTracker(lanlan_name)
@@ -453,33 +457,33 @@ class LLMSessionManager(
             self._activity_tracker,
         )
 
-        # Focus mode 凝神 scorer（docs/design/focus-truename-mode.md）：把
-        # ActivitySnapshot + 用户消息文本评成一个 [0,1] 分，喂给 self.state
-        # 的迟滞状态机决定这一轮是否「升档」开思考。per-session 实例，仅持有
-        # cadence 基线滚动 buffer。两条触发路径（inline stream_text / idle
-        # proactive）共用同一个 scorer，保证行为不分裂。
+        # Focus-mode scorer (docs/design/focus-truename-mode.md): score
+        # ActivitySnapshot + user-message text in [0,1], feeding self.state's
+        # hysteresis state machine to decide whether this turn enables thinking. Per-session instance retaining only
+        # rolling cadence-baseline buffer. Both triggers (inline stream_text / idle
+        # proactive) share one scorer for consistent behavior.
         self._focus_scorer = FocusScorer(lanlan_name)
-        # 凝神退出时清理历史 thinking/已闭合 tool call 残留的边沿标志：进入 FOCUS
-        # 时 arm，退出并清理后 disarm（见 _maybe_purge_focus_artifacts）。
+        # Edge flag for purging historical thinking / completed tool-call residue on focus exit: arm on FOCUS
+        # entry, disarm after exit cleanup (see _maybe_purge_focus_artifacts).
         self._focus_artifacts_pending = False
-        # 进入 FOCUS 那刻的历史长度；退出只清这之后（episode 期间）的闭合 tool call。
+        # History length upon FOCUS entry; on exit clear only completed tool calls after this point, during episode.
         self._focus_artifacts_history_start: int | None = None
 
-        # Master 情绪画像（基建，docs 见 config MASTER_EMOTION_*）：异步分析「用户
-        # 说的话」的 valence-arousal，单一权威源。凝神是第一个消费者（_focus_scorer
-        # 的 emotion 信号读它的最近读数）。绝不复用 lanlan 头像 outward-emotion 管线。
-        # privacy-independent（输入是对话不是屏幕），不受隐私门控。
+        # Master emotion profile (infrastructure; config MASTER_EMOTION_* docs): asynchronous valence-arousal analysis of
+        # user utterances, sole authority. Focus is first consumer (_focus_scorer's
+        # emotion signal reads latest result). Never reuse lanlan avatar outward-emotion pipeline.
+        # Privacy-independent (input is conversation, not screen), unaffected by privacy gate.
         self._master_emotion = MasterEmotionTracker(lanlan_name)
-        # 凝神 inline 评分用的 emotion 读数快照：每个 user turn 在 _note_user_turn 里
-        # 于「本轮 analyze 启动前」刷新，保证 emotion 信号确定性滞后一拍。
+        # Emotion snapshot for inline focus scoring: _note_user_turn refreshes before
+        # starting this turn's analysis, guaranteeing a deterministic one-turn lag.
         self._focus_emotion_reading = None
 
-        # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（每会话每类
-        # 一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。后端只检测「进入」那一刻
-        # 并推送，去重在前端。原本只对 A/B 实验组 vision_chat_default_off 生效，现该机制
-        # 已合并进 main，对所有用户开放。
-        # 屏幕分享来源只在隐私关（vision 开）时才有意义；隐私开时 tracker 心跳本就不
-        # tick（见 _activity_guess_loop 的 _privacy_mode_active 早退），自然不会触发。
+        # On entering gaming/entertainment or focused work, send one-shot context signal to frontend; once per type per session,
+        # frontend asks whether to enable/disable screen-sharing source for proactive chat. Backend detects entry
+        # and pushes only; frontend deduplicates. Originally limited to A/B vision_chat_default_off group, now
+        # merged into main for all users.
+        # Screen-sharing source matters only with privacy off (vision on); privacy mode already stops tracker heartbeat
+        # ticks (_activity_guess_loop's _privacy_mode_active early return), naturally preventing triggers.
         async def _push_activity_context_prompt(context: str) -> None:
             ws = self.websocket
             if not (
@@ -500,27 +504,27 @@ class LLMSessionManager(
                 )
         self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
 
-        # activity_guess narration 的「下游消费方」门控：narration 只喂 proactive
-        # Phase 2，Phase 2 在两种情况下都没人读 → 这次昂贵的 emotion-tier 外呼纯属空烧：
-        #   ① goodbye_silent（猫娘挂机静默）—— Phase 2 一进门就 bail；
-        #   ② 没有在线 WebSocket（普通断连 / End Session 后）—— proactive 没法送达。
-        # tracker 跨 session 长存、心跳不随 End Session 取消（break-reminder / 情境弹窗这些
-        # 规则心跳要继续跑），所以必须靠这个门控在「无消费方」时跳过 LLM；否则用户关掉页面
-        # 后整段挂机会一直空烧（cap 只是把间隔退避到 ~900s，不会停）。重连 / 退出静默后
-        # 每签名 cache 还在，narration 在该签名退避间隔走完时恢复（conv_seq 变化或间隔已
-        # 在挂起期间走完则下一 tick 立刻恢复）。
+        # Downstream-consumer gate for activity_guess narration, consumed only by proactive
+        # Phase 2. Two cases have no reader, wasting an expensive emotion-tier call:
+        #   ① goodbye_silent (idle catgirl silence): Phase 2 immediately exits;
+        #   ② no online WebSocket (ordinary disconnection / End Session): proactive delivery impossible.
+        # Tracker outlives sessions; End Session does not cancel heartbeat (break-reminder / contextual-popup
+        # rules must continue), so skip LLM through this gate without consumers. Otherwise after page closure
+        # idle time keeps spending (cap only backs off to ~900s, never stops). On reconnect / leaving silence,
+        # per-signature cache remains; narration resumes after that signature's backoff interval
+        # (immediately next tick if conv_seq changed or interval elapsed while suspended).
         self._activity_tracker.set_narration_suppressed_check(
             self._should_suppress_activity_narration
         )
 
-        # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
-        # 时作为一个 conversation turn 发给 dispatcher。activity sink 用末尾
-        # 文本判断是否问问号 → 触发 unfinished_thread 机制（5 分钟内允许至多 2
-        # 次跟进）；topic sink 独立消费同一 turn，不和 activity tracker 耦合。
+        # Current AI-turn text buffer: accumulate send_lanlan_response chunks, then at turn end
+        # send one conversation turn to dispatcher. Activity sink uses trailing
+        # text to detect questions and trigger unfinished_thread (at most two follow-ups within 5 minutes);
+        # topic sink independently consumes the same turn without activity-tracker coupling.
         self._current_ai_turn_text: str = ''
-        # 当前 AI 轮的身份，随 _current_ai_turn_text 一起在轮次结束时发布给插件总线。
+        # Current AI-turn identity, published with _current_ai_turn_text to plugin bus at turn end.
         self._current_ai_turn_id: str = ''
-        # 当前 AI 轮首块到达的时刻（插件总线上的 "她开口的时间"）。
+        # Arrival time of current AI turn's first chunk ('when she started speaking' on plugin bus).
         self._current_ai_turn_started_at: float = 0.0
         self._current_ai_turn_type: str | None = None
         self._current_ai_turn_client_owned: bool = False
@@ -533,13 +537,13 @@ class LLMSessionManager(
         self._pending_ai_voice_echo_chunks = deque()
         self._confirmed_ai_voice_echo_audio_speech_ids: set[str] = set()
 
-        # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
-        # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
-        # handle_new_message / stream_text 入口 / prepare_proactive_delivery /
-        # finish_proactive_delivery / system_router.proactive_chat 等处。
+        # Event-driven state machine centralizes turn-ownership signals, letting proactive pipeline
+        # frequently check is_proactive_preempted with O(1) reads. Emission sites include
+        # handle_new_message / stream_text entry / prepare_proactive_delivery /
+        # finish_proactive_delivery / system_router.proactive_chat, etc.
         self.state = SessionStateMachine(lanlan_name=lanlan_name)
-        # Focus 凝神: mirror enter/exit to the frontend as a subtle cognition
-        # indicator (极隐微光 badge — see react-neko-chat). Inert by default: the
+        # Focus mode: mirror enter/exit to the frontend as a subtle cognition
+        # indicator (very faint glow badge; see react-neko-chat). Inert by default: the
         # SM only enters Focus when FOCUS_MODE_ENABLED. The badge needs only
         # on/off; memory consumes FOCUS_EXIT's episode payload on a separate
         # (not-yet-wired) path.
@@ -554,18 +558,18 @@ class LLMSessionManager(
         self.state.subscribe(SessionEvent.FOCUS_ENTER, self._on_focus_transition)
         self.state.subscribe(SessionEvent.FOCUS_EXIT, self._on_focus_transition)
 
-        # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
+        # User language, set by start_session or frontend set_user_language(), initially None.
         self.user_language = None
         self._user_language_explicit = False
         self._conversation_render_language = None
         self._conversation_turn_language = None
-        # 翻译服务（延迟初始化）
+        # Translation service (lazy initialization).
         self._translation_service = None
         
-        # 防止log刷屏机制
-        self.session_closed_by_server = False  # Session被服务器关闭的标志
-        self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
-        self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
+        # Log-throttling mechanism.
+        self.session_closed_by_server = False  # Server-closed session flag.
+        self.last_audio_send_error_time = 0.0  # Last audio-send-error timestamp.
+        self.audio_error_log_interval = 2.0  # Audio-error logging interval in seconds.
 
         self._recent_avatar_interaction_ids = deque(maxlen=AVATAR_INTERACTION_DEDUPE_MAX_ITEMS)
         self._recent_avatar_interaction_id_set = set()
@@ -576,28 +580,28 @@ class LLMSessionManager(
         self.avatar_interaction_speak_cooldown_ms = 1500
 
         # ── Unified tool calling registry ─────────────────────────────
-        # 通过 ``register_tool`` / ``unregister_tool`` 公共方法对外开放。
-        # 同进程内的 callback / agent_bridge 走 local handler，跨进程的
-        # plugin / agent_server 走 ``remote_dispatcher``（由 main_routers/
-        # tool_router.py 在 main_server 启动时绑定 HTTP 转发器）。
-        # 同一份 registry 同时给 offline 和 realtime client 使用，所以
-        # 切换会话时不需要重新注册。
+        # Exposed via public ``register_tool`` / ``unregister_tool`` methods.
+        # Same-process callback / agent_bridge uses local handlers; cross-process
+        # plugin / agent_server uses ``remote_dispatcher`` (main_routers/
+        # tool_router.py binds HTTP forwarding at main_server startup).
+        # One registry serves offline and realtime clients,
+        # eliminating re-registration on session switching.
         self.tool_registry = ToolRegistry()
-        # 同步推送 tools 到 active/pending session 时的串行化锁。
-        # 防止连续多次 register/unregister/clear 触发的 session.update
-        # 在 wire 上乱序（OpenAI Realtime / GLM / Qwen / Step 都接受
-        # session.update 流式覆盖，乱序可能让最后一份快照不对应 registry
-        # 的最终状态）。
+        # Serialization lock for synchronizing tools to active/pending sessions.
+        # Prevent repeated register/unregister/clear session.update
+        # from reaching wire out of order (OpenAI Realtime / GLM / Qwen / Step accept
+        # streaming session.update replacement, so disorder can leave the last snapshot inconsistent
+        # with final registry state).
         self._tool_sync_lock = asyncio.Lock()
-        # 下一次 handle_response_complete 发出的 turn end 要携带的 meta。
-        # 在 handle_avatar_interaction 等需要标记特殊轮次的入口里设置，
-        # 由 handle_response_complete 读取并清空。比独立的
-        # sync_message_queue 控制消息更原子：meta 与 turn end 事件
-        # 同生共死，不会因为两条消息的时序错乱而把 avatar 轮当成 proactive。
+        # Metadata for next turn-end event from handle_response_complete.
+        # Set at special-turn entries such as handle_avatar_interaction,
+        # read and cleared by handle_response_complete. More atomic than separate
+        # sync_message_queue control messages: metadata shares turn-end event lifecycle,
+        # preventing out-of-order messages from misclassifying avatar turns as proactive.
         self._pending_turn_meta: Optional[dict] = None
 
-        # 内置 pseudo 工具（目前只有 recall_memory）。在 __init__ 末尾注册
-        # 一份占位，此时 user_language 还可能是 None → 短码兜底回退 'en'；
-        # 真正进 session 前会再 refresh 一次，把 description 对齐到当时
-        # 已知的 user_language。
+        # Built-in pseudo tools (currently recall_memory only). Register placeholder at __init__ end,
+        # when user_language may be None, falling back to 'en';
+        # refresh before actual session entry to align descriptions with
+        # then-known user_language.
         self._register_builtin_tools()

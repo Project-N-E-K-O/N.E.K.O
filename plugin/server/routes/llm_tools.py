@@ -200,10 +200,10 @@ async def llm_tool_callback(
     # remain inside the model-visible output. A bare dict carrying only
     # ``output`` also stays data for backward compatibility.
     #
-    # 刻意和 main_routers/tool_router.py 的 looks_like_tool_envelope 不同，别
-    # 顺手合并：那条路的 wire shape 文档写死了 {"output": ..., "is_error": ...}，
-    # 单独一个 ``output`` 就是信封；这里收的是插件 handler 的返回值，
-    # ``output`` 单独出现是普通数据。
+    # Deliberately differs from looks_like_tool_envelope in main_routers/tool_router.py; do not
+    # merge them. That path's documented wire shape is {"output": ..., "is_error": ...},
+    # and output alone is an envelope. Here values come from plugin handlers,
+    # where output alone is ordinary data.
     if isinstance(result, dict) and (
         "is_error" in result or ("output" in result and "images" in result)
     ):

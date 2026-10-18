@@ -34,8 +34,8 @@ from utils.config_manager import get_character_uid
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     runtime._reset_for_tests()
-    # 模块级 asyncio.Lock 第一次被争用时绑定到当时的事件循环；别的用例在另一个循环里争用过它，
-    # 这里再争用就会报错。每个用例换一把新锁（crud 在 _init_router_state 里重新加载，会拿到这把）
+    # A module-level asyncio.Lock binds to the event loop on its first contention; contention from another test's loop
+    # would then raise here. Give each test a new lock (crud reloads in _init_router_state and receives this lock)
     monkeypatch.setattr(character_memory, "character_config_mutation_lock", asyncio.Lock())
     yield
     runtime._reset_for_tests()
@@ -48,7 +48,7 @@ def _names(monkeypatch, mapping):
     monkeypatch.setattr(local_chars, "resolve_char_name", resolve)
 
 
-# ── 清除期间的生命周期守卫 ─────────────────────────────────────────────
+# ── Lifecycle guard during clearing ─────────────────────────────────────────────
 
 
 async def test_guard_locks_the_character_only_while_held(monkeypatch):
@@ -58,7 +58,7 @@ async def test_guard_locks_the_character_only_while_held(monkeypatch):
         assert runtime.has_visit_background_tasks("A")
         assert registry.is_character_lifecycle_locked("A")
         assert not registry.is_character_lifecycle_locked("B")
-        # 只挡改名 / 删除，不占串门槽位：照样能建新串门、开小游戏
+        # Block only renaming/deletion, without occupying a visit slot: new visits and minigames can still start
         assert not registry.is_external_route_locked("A")
     assert not registry.is_character_lifecycle_locked("A")
     assert runtime._visit_bg_tasks == {}
@@ -74,13 +74,13 @@ async def test_guard_waits_for_a_rename_already_in_progress(monkeypatch):
             entered.set()
             await asyncio.sleep(0.05)
 
-    async with character_memory.character_config_mutation_lock:      # 改名事务进行中
+    async with character_memory.character_config_mutation_lock:      # Rename transaction in progress
         task = asyncio.ensure_future(clearing())
         await asyncio.sleep(0.02)
         assert not entered.is_set()
-        names["uid-a"] = "New"                       # 事务提交
+        names["uid-a"] = "New"                       # Commit the transaction
     await asyncio.wait_for(entered.wait(), 1.0)
-    # 守卫拿到的是改名之后的名字：挡的是新名字
+    # The guard receives the post-rename name and blocks that new name
     assert registry.is_character_lifecycle_locked("New")
     assert await task is None
 
@@ -90,7 +90,7 @@ async def test_guard_survives_cancellation_by_shutdown(monkeypatch):
     async with runtime.hold_character_lifecycle(["uid-a"]):
         for bucket in list(runtime._visit_bg_tasks.values()):
             for fut in list(bucket):
-                fut.cancel()                         # stop_all 取消后台任务
+                fut.cancel()                         # stop_all cancels background tasks
     assert runtime._visit_bg_tasks == {}
 
 
@@ -106,7 +106,7 @@ def test_memory_routes_use_this_guard():
         memory_routes._hooks = saved
 
 
-# ── crud 改名 / 删除守卫 ───────────────────────────────────────────────
+# ── crud rename/deletion guards ───────────────────────────────────────────────
 
 
 def _result(response):
@@ -193,7 +193,7 @@ async def test_rename_without_any_route_is_unchanged(tmp_path):
     assert status == 200 and body.get("success") is True, body
 
 
-# ── 评审第 3 轮：改名 / 删除事务期间占住角色名 ─────────────────────────
+# ── Review round 3: reserve character names during rename/deletion transactions ─────────────────────────
 
 
 async def test_no_route_can_start_while_the_rename_transaction_runs(tmp_path):
@@ -202,7 +202,7 @@ async def test_no_route_can_start_while_the_rename_transaction_runs(tmp_path):
     crud = _init_router_state(cm)
 
     async def release(*_a, **_k):
-        # 事务中途（已过守卫、在 await 里）：新旧两个名字都不能开串门 / 小游戏
+        # Mid-transaction (past the guard and inside an await): neither old nor new name may start visits/minigames
         seen.append((registry.is_external_route_locked("Old"), registry.is_external_route_locked("New")))
         return True
 
@@ -244,7 +244,7 @@ async def test_refused_rename_holds_nothing(tmp_path):
 
 
 async def test_guard_fails_closed_when_the_name_cannot_be_read(monkeypatch):
-    # 读不出角色当前名字（配置一时读不了）：不能给出一个只按 uid 登记、挡不住改名的守卫
+    # If the current name cannot be read (configuration temporarily unreadable), do not return a uid-only guard that fails to block renaming
     async def broken(_uid):
         raise OSError("characters.json busy")
 

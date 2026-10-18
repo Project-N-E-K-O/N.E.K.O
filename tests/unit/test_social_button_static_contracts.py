@@ -140,7 +140,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
         "fetch('/api/card-drop/oauth/start'"
     )
-    # 桌面端改由设置页登录，悬浮按钮不再从这里拉起外部浏览器 OAuth。
+    # Desktop login now uses the settings page; the floating button no longer starts external-browser OAuth here.
     assert "openExternal(authUrl)" not in listener
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
@@ -179,7 +179,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     main_flow = listener[helper_end:]
     assert "let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';" in main_flow
     assert "if (initialNativeHandoff.loginState === 'unknown')" in main_flow
-    # 状态未知（delegate 超时且 auth-status 兜底失败）时不能提示去设置页登录。
+    # Unknown state (delegate timeout plus failed auth-status fallback) must not prompt users to log in through settings.
     assert "let communityLoggedOut = initialNativeHandoff.loginState === 'logged-out';" in main_flow
     assert re.search(
         r"if \(statusRes\.ok\) \{[^}]*communityLoggedOut = !communityLoggedIn\s*"
@@ -1008,12 +1008,12 @@ const fetch = async (url, options = {}) => {
 @pytest.mark.parametrize(
     ("scenario", "expected_toasts", "expected_delegate_requests"),
     [
-        # 明确登出：只提示一次，且不再重试 delegate。
+        # Explicitly logged out: prompt once and stop retrying delegate.
         ("delegate_409", 1, 1),
-        # delegate 超时后兜底也失败：状态未知，不提示。
+        # Fallback also fails after delegate timeout: state is unknown; do not prompt.
         ("delegate_slow_status_500", 0, 1),
         ("delegate_slow_status_rejected", 0, 1),
-        # 云端暂时校验不了但本地会话仍在：不是登出，不提示。
+        # Cloud validation temporarily unavailable while a local session exists means no logout; do not prompt.
         ("delegate_503_session_saved", 0, 2),
         ("delegate_ok", 0, 1),
     ],
@@ -1112,7 +1112,7 @@ const fetch = async (url, options = {}) => {
 """
     result = run_node_stdin(node, script, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
-    # 挂起的 promise 会让 node 以 0 退出而不跑断言，必须确认脚本真的走到了末尾。
+    # A pending promise can make node exit 0 without running assertions; confirm the script actually reaches its end.
     assert "SCENARIO_COMPLETE" in result.stdout, result.stdout + result.stderr
 
 
@@ -1180,7 +1180,7 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         listener,
     )
     assert "navigateBrowserPopup(refreshedTargetUrl.toString())" in listener
-    # 外层已经限定 !isElectron，块内不再保留桌面端分支。
+    # The outer guard already requires !isElectron; retain no desktop branches inside.
     assert "openElectronSocialWindow(refreshedTargetUrl.toString())" not in listener
     assert "oauthLaunched" not in listener
     assert re.search(
@@ -1250,8 +1250,8 @@ def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
     ) < reaction_handler.index("var now = Date.now();")
     assert "renderForgeBadge(active, true);" in play_one
     assert "playGeneration !== dropEffectsGeneration" in play_one
-    # 关闭效果的入口分支同样要按 revision 守卫，否则队尾券会用陈旧
-    # active_count 覆盖权威刷新写过的角标。
+    # The entry branch for closing effects also needs a revision guard, or the queue-tail ticket can overwrite the badge
+    # from an authoritative refresh using stale active_count.
     disabled_entry = play_one[play_one.index("if (window.forgeDropEffectsEnabled === false)"):]
     disabled_entry = disabled_entry[: disabled_entry.index("complete();")]
     assert "payloadRevision === creditStateRevision" in disabled_entry
@@ -1395,7 +1395,7 @@ def test_credit_drop_uses_yui_ticket_art_for_every_drop_rarity():
     assert "var CARD_ASPECT = 1192 / 445;" in overlay
     assert "var AVATAR_ANCHORED_RARITIES = { N: true, R: true };" in overlay
     assert "window.innerWidth - CARD_MARGIN * 2" in overlay
-    # SR 及以上不读模型边界，直接走屏幕中央兜底路径。
+    # SR and higher do not read model bounds; use the screen-center fallback directly.
     assert (
         "var avatarBounds = shouldAnchorToAvatar(rarity) ? getActiveAvatarBounds() : null;"
         in overlay

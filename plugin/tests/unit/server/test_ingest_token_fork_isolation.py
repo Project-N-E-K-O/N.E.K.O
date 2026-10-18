@@ -96,12 +96,12 @@ def test_the_after_fork_hook_is_registered_wherever_fork_exists() -> None:
 
     Mutation: drop the ``os.register_at_fork`` registration.
     """
-    # 平台判据在 Windows 上是 False，所以 `_FORK_HOOK_REGISTERED == hasattr(...)`
-    # 会退化成 False == False 恒真——变异验证抓到了这一点（去掉注册仍然绿）。
-    # 唯一能在 Windows 上真正咬住的是**结构断言**：这条接线在源码里存在，且接
-    # 的是重铸函数。它弱于行为验证，这就是分工：
-    #   这条        —— 到处都跑，证明接线还在
-    #   raw fork    —— 只在 POSIX 跑，证明接线真的起作用
+    # The platform criterion is False on Windows, so `_FORK_HOOK_REGISTERED == hasattr(...)`
+    # degenerates to the tautology False == False; mutation testing caught this (removing registration still passed).
+    # Only a structural assertion can catch this on Windows: the source contains this wiring and connects
+    # the recasting function. It is weaker than behavioral verification, hence this division:
+    #   this test  -- runs everywhere and proves the wiring remains
+    #   raw fork   -- runs only on POSIX and proves the wiring actually works
     import ast
     import inspect
 

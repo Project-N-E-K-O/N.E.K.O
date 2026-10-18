@@ -49,7 +49,7 @@ from .staging import (
 )
 
 
-# 与 ConfigManager._get_localized_characters_source 的语言后缀保持一致。
+# Match language suffixes in ConfigManager._get_localized_characters_source.
 _LOCALIZED_DEFAULT_CHARACTER_LANGUAGES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
 
@@ -67,8 +67,8 @@ def _iter_pristine_characters_payloads(config_manager):
         if seed_payload is not None:
             yield seed_payload
 
-    # characters.json 缺失时，首次 load_characters 以内存默认值为底稿补 character_id 并写回；
-    # 写入时的 Steam/系统语言可能与此刻不同，所以任一语言的内置默认值都算未改动。
+    # If characters.json is missing, first load_characters adds character_id to in-memory defaults and writes them back;
+    # Steam/system language at writing may differ from now, so built-in defaults in any language count as unchanged.
     yield DEFAULT_CONFIG_DATA.get("characters.json")
     try:
         from config import get_localized_default_characters
@@ -86,9 +86,9 @@ def _runtime_characters_config_matches_pristine_default(config_manager, runtime_
         runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
     except Exception:
         return False
-    # 首次 load_characters 会为每个角色生成随机 character_id 并写回，字节比较必然失败；
-    # 只忽略本地身份后按内容比较，全新安装才不会被误判为已有用户内容；其余差异（含旧版
-    # _reserved 迁移写回）仍按原语义视为已改动。
+    # First load_characters generates and persists random character_id for each character, making byte comparison fail.
+    # Compare content while ignoring only local identity so fresh installs are not mistaken for user content; other
+    # differences (including old _reserved migration writes) retain the original changed-content semantics.
     comparable_runtime_payload = _characters_payload_for_content_comparison(runtime_payload)
     for pristine_payload in _iter_pristine_characters_payloads(config_manager):
         if pristine_payload is None:
@@ -209,8 +209,8 @@ def _is_ignorable_runtime_entry(path: Path, *, transactional_pattern=None) -> bo
     if name == ".gitkeep":
         return True
     if name.startswith("."):
-        # 事务目录是崩溃恢复的唯一线索，判定「有没有用户内容」时它算内容。
-        # 名字必须逐字命中该目录声明的事务模式，不能只看点前缀和后缀。
+        # Transaction directories are the sole crash-recovery clue, so count as user content when checking its presence.
+        # Names must exactly match declared transaction patterns, not merely a dot prefix and suffix.
         return not (
             transactional_pattern is not None
             and transactional_pattern.fullmatch(name) is not None
@@ -288,8 +288,8 @@ def _catgirl_payload_without_character_id(payload: Any) -> dict[str, Any] | None
     from utils.config_manager import delete_reserved
 
     stripped_payload = deepcopy(payload)
-    # character_id 是每台设备各自生成的本地身份，不属于角色内容；
-    # 所有「内容是否相同」的比较（种子默认卡、云存档指纹）都必须忽略它。
+    # character_id is a device-local generated identity, not character content;
+    # all content-equality comparisons (seed defaults, cloud-save fingerprints) must ignore it.
     delete_reserved(stripped_payload, "character_id")
     return stripped_payload
 

@@ -749,8 +749,8 @@ class BrowserUseAdapter:
         """
         self._cancelled = False
 
-        # 后台异步获取 IP 信息（与 Chrome 启动并行），不阻塞
-        # 推迟到所有 pre-checks 通过后再创建，避免 pre-check 失败时浪费网络请求
+        # Fetch IP information asynchronously in the background (alongside Chrome startup), without blocking
+        # Defer creation until all pre-checks pass to avoid wasting network requests when pre-checks fail
         ip_info_future: Optional[asyncio.Task] = None
 
         status = self.is_available()
@@ -790,7 +790,7 @@ class BrowserUseAdapter:
                 "error": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get('used', 0), "limit": info.get('limit', 300)}}),
             }
 
-        # 所有 pre-checks 通过后才启动 IP 信息查询任务
+        # Start the IP-information query only after all pre-checks pass
         if not BrowserUseAdapter._ip_address_cache and not BrowserUseAdapter._ip_country_cache:
             ip_info_future = asyncio.create_task(
                 self._get_ip_info()
@@ -810,7 +810,7 @@ class BrowserUseAdapter:
                     try:
                         print(f"[BrowserUse] trying mode={mode}", flush=True)
                         llm = self._build_llm(mode=mode)
-                        # [优化] 等待 IP 信息查询结果（如正在进行）并注入到指令中
+                        # [Optimization] Await any ongoing IP-information query and inject its result into the instruction
                         if ip_info_future is not None:
                             try:
                                 ip_addr, country = await asyncio.wait_for(
@@ -1045,7 +1045,7 @@ class BrowserUseAdapter:
                 logger.error("[BrowserUse] Task failed: %s", e)
                 return {"success": False, "error": str(e)}
             finally:
-                # [收口] 取消并等待未完成的 IP 信息查询任务，避免残留后台请求
+                # [Cleanup] Cancel and await unfinished IP-information queries to avoid lingering background requests
                 if ip_info_future is not None:
                     if not ip_info_future.done():
                         ip_info_future.cancel()

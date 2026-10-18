@@ -231,7 +231,7 @@ def _hammer_readers_vs_writer(path: str, read_once) -> tuple[list[str], list[str
         while not stop.is_set():
             try:
                 read_once()
-            except Exception as exc:  # noqa: BLE001 - 测试要看到任何异常
+            except Exception as exc:  # noqa: BLE001 - Tests must see every exception.
                 read_errors.append(repr(exc))
 
     def _writer():
@@ -653,11 +653,11 @@ def test_compression_splice_keeps_messages_appended_during_compression(tmp_path)
         task = asyncio.create_task(
             mgr_a.update_history([HumanMessage(content="trigger")], name, compress=True)
         )
-        # update_history 要先过两次真正的 asyncio.to_thread（云存档栅栏 +
-        # CS-1 落盘）才走到 compress_history，实测要 ~3000 个事件循环 tick。
-        # 用 sleep(0) 只让出 1 个 tick，等于没握手：谁先落盘完全由线程池调度
-        # 决定，负载一重（整套 tests/unit 跑在前面时）mgr_b 就可能抢先，
-        # "trigger" 落在 "Z" 后面，末尾断言随机转红。
+        # update_history passes two real asyncio.to_thread calls (cloud-save fence +
+        # CS-1 persistence) before compress_history, measured at about 3000 event-loop ticks.
+        # sleep(0) yields one tick and provides no handshake: thread-pool scheduling determines
+        # which write wins. Under load after all tests/unit, mgr_b may win,
+        # placing trigger after Z and intermittently failing the final assertion.
         await asyncio.wait_for(compressing.wait(), timeout=5)
         await mgr_b.update_history([HumanMessage(content="Z")], name, compress=False)
         assert [m.content for m in _read_disk(path)][-1] == "Z"
@@ -667,7 +667,7 @@ def test_compression_splice_keeps_messages_appended_during_compression(tmp_path)
     asyncio.run(_go())
 
     final = [m.content for m in _read_disk(path)]
-    # 被压掉的是 m0..m4；m5/m6/trigger 既不在 memo 里也不该被切片丢掉。
+    # m0..m4 were compressed; m5/m6/trigger are neither in memo nor eligible for slicing away.
     assert final == [memo.content, "m5", "m6", "trigger", "Z"], \
         f"压缩期间落盘的消息与未压缩中段都必须保留，实际 {final}"
 
@@ -686,8 +686,8 @@ def test_unreadable_file_never_writes_and_never_wipes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(recent_file, "read_recent_text_unlocked", _unreadable)
 
-    # 全新 manager：user_histories 里没有这个角色 = 视图未知，不做任何
-    # 「历史已经在内存里」的前置假设。
+    # Fresh manager: no character in user_histories means unknown view, with no assumption
+    # that history is already in memory.
     assert name not in mgr.user_histories
 
     asyncio.run(mgr.update_history([HumanMessage(content="C")], name, compress=False))
@@ -781,16 +781,16 @@ def test_compress_callback_runs_with_no_file_lock_held(tmp_path, monkeypatch):
         observed["ok"] = ok
         observed["admission_generation"] = admission_generation
         observed["locked"] = recent_file.recent_file_lock(path).locked()
-        # 真的走一遍 dead-letter 分支做的事：拿同一把锁写盘。
+        # Exercise the actual dead-letter behavior: acquire the same lock and persist.
         await mgr.enforce_hard_cap(lanlan_name)
 
-    # 硬上限压到必然触发裁剪，让回调里的 enforce_hard_cap 真的要写盘
+    # Lower the hard cap to force trimming, making callback enforce_hard_cap actually write disk.
     import memory.recent as recent_mod
     monkeypatch.setattr(recent_mod, "RECENT_HARD_CAP_TOKENS", 20)
 
     async def _go():
-        # wait_for 兜底：一旦回调被挪进临界区，enforce_hard_cap 会在 worker
-        # 线程上永久死锁（threading.Lock 不可重入），没有超时就是挂死。
+        # wait_for fallback: moving callbacks inside the critical section makes enforce_hard_cap deadlock
+        # forever on the worker's nonreentrant threading.Lock; without timeout the test hangs.
         await asyncio.wait_for(
             mgr.update_history(
                 [HumanMessage(content="new")], name,
@@ -804,7 +804,7 @@ def test_compress_callback_runs_with_no_file_lock_held(tmp_path, monkeypatch):
     assert observed.get("ok") is False, "压缩失败必须以 ok=False 回调"
     assert observed.get("admission_generation") == recent_file.capture_recent_generation(path)
     assert observed.get("locked") is False, "回调运行时不得持有文件锁"
-    # 裁剪真的落了盘 —— 证明它确实拿到了锁并写成功，不是静默 no-op。
+    # Trimming actually persisted, proving lock acquisition and successful writing rather than a silent noop.
     assert len(_read_disk(path)) < 9
 
 
@@ -1703,11 +1703,11 @@ def test_review_commit_does_not_lose_messages_appended_during_review(tmp_path, m
 
     async def _go():
         review_task = asyncio.create_task(mgr.review_history(name, snapshot=list(snapshot)))
-        # 同 test_compression_splice_*：review 走到 LLM 之前隔着真正的
-        # asyncio.to_thread，sleep(0) 只让出一个 tick，握不住这个窗口。
-        # 等 LLM 真的被调用才是确定的握手点。
+        # Like test_compression_splice_*, review reaches its LLM only after real
+        # asyncio.to_thread calls; sleep(0)'s single tick cannot synchronize this window.
+        # Wait for the actual LLM call as the deterministic handshake.
         await asyncio.wait_for(reviewing.wait(), timeout=5)
-        # review LLM 卡在 gate 上时插一条新消息并确认已上盘
+        # While the review LLM waits at the gate, append a new message and confirm persistence.
         await mgr.update_history([HumanMessage(content="Z")], name, compress=False)
         assert [m.content for m in _read_disk(path)][-1] == "Z"
         gate.set()
@@ -1739,13 +1739,13 @@ def test_main_server_recent_writers_share_the_memory_server_lock(tmp_path, monke
     errors: list[BaseException] = []
 
     def _hammer_rename():
-        # 改名路径 = 锁内读 + 锁内写。来回改让它每轮都真的落一次盘；它写回的是
-        # 自己刚在锁里读到的内容，所以不该吞掉任何并发 append。
+        # Rename reads and writes under lock. Rename back and forth to ensure real writes every round; each write
+        # uses the content just read under lock and must preserve concurrent appends.
         try:
             for i in range(4):
                 old, new = ("A", "B") if i % 2 == 0 else ("B", "A")
                 rewrite_recent_file_character_name(Path(path), old, new)
-        except BaseException as exc:  # noqa: BLE001 - 测试要看到任何异常
+        except BaseException as exc:  # noqa: BLE001 - Tests must see every exception.
             errors.append(exc)
 
     def _hammer_read():
@@ -1873,8 +1873,8 @@ def test_no_recent_json_writer_bypasses_the_lock_module():
             continue
         lines = source.splitlines(keepends=True)
 
-        # 类作用域信号：类体里出现 recent.json 字面量 → 类里所有方法的落盘都算
-        # 「写 recent.json」，除非目标表达式明说是 meta。
+        # Class-scope signal: a recent.json literal in the class body marks every method's writes as recent.json writes,
+        # unless the target expression explicitly identifies meta.
         recent_scope_funcs: set[int] = set()
         for cls in ast.walk(tree):
             if not isinstance(cls, ast.ClassDef):
@@ -1898,8 +1898,8 @@ def test_no_recent_json_writer_bypasses_the_lock_module():
             in_recent_scope = (
                 "recent.json" in _segment(lines, func) or id(func) in recent_scope_funcs
             )
-            # 一级局部赋值解析：把 `x = <expr>` 记下来，好让 write(x, ...) 也能
-            # 看见目标表达式里的 "recent"。
+            # Resolve one-level local assignments by recording x = <expr>, so write(x, ...)
+            # can also detect recent in its target expression.
             assigned: dict[str, str] = {}
             for node in body:
                 if isinstance(node, ast.Assign) and len(node.targets) == 1 \
@@ -1913,10 +1913,10 @@ def test_no_recent_json_writer_bypasses_the_lock_module():
                 dest = _segment(lines, node.args[0])
                 resolved = f"{dest} {assigned.get(dest, '')}".lower()
                 if "meta" in resolved:
-                    continue  # recent_meta.json 是另一个文件，不归这把锁管
+                    continue  # recent_meta.json is a different file outside this lock's scope.
                 named = set(re.findall(r"[\w-]+\.json", resolved))
                 if named and "recent.json" not in named:
-                    continue  # 目标表达式明说了是别的文件（如 characters.json）
+                    continue  # The target expression explicitly identifies another file, such as characters.json.
                 if "recent" in resolved or in_recent_scope:
                     violations.append(
                         f"{rel.as_posix()}:{node.lineno} in {func.name}() -> {_call_name(node)}({dest})"

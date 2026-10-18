@@ -23,7 +23,7 @@ URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``)
 See ``main_routers/characters_router.py`` docstring or
 ``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
-"""
+"""  # noqa: DOCSTRING_CJK
 
 import asyncio
 import re
@@ -39,7 +39,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
-# 导入底层认证逻辑和常量
+# Import underlying authentication logic and constants.
 from utils.cookies_login import (
     PlatformLoginManager,
     save_cookies_to_file,
@@ -52,7 +52,7 @@ from main_routers.local_access import is_direct_loopback_request
 
 logger = get_module_logger(__name__, "Main")
 
-# 预编译恶意内容检测正则，避免每次请求时重复编译
+# Precompile malicious-content regexes rather than compiling per request.
 SUSPICIOUS_PATTERN = re.compile(
     r'(<script|javascript:|onload=|eval\(|UNION SELECT|\.\./)',
     re.IGNORECASE
@@ -86,10 +86,10 @@ PERSONAL_DYNAMIC_PLATFORMS = frozenset({
     "twitter",
 })
 
-# ============ 0. 数据模型与校验 ============
+# ============ 0. Data models and validation ============
 
 class CookieSubmit(BaseModel):
-    # 限制平台名称仅允许字母、数字和下划线，彻底杜绝路径遍历风险
+    # Restrict platform names to letters, digits, and underscores, eliminating path traversal.
     platform: str = Field(..., min_length=2, max_length=20, pattern=r"^[a-z0-9_-]+$")
     cookie_string: str = Field(..., min_length=5, max_length=8192)
     encrypt: Optional[bool] = Field(True, description="是否加密存储")
@@ -110,7 +110,7 @@ class TwitchDeviceSubmit(BaseModel):
     client_id: str = Field(..., min_length=8, max_length=80, pattern=r"^[A-Za-z0-9]+$")
 
 
-# ============ 1. 内部辅助逻辑 ============
+# ============ 1. Internal helpers ============
 
 def validate_platform_fields(platform: str, cookies: Dict[str, str]):
     """Unified sanity validation of core fields for each platform."""
@@ -144,7 +144,7 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
             )
 
 
-# ============ 2. 网页入口 ============
+# ============ 2. Web entry ============
 
 @router.get("/page", response_class=HTMLResponse, summary="凭证管理可视化后台入口")
 async def render_auth_page(request: Request):
@@ -167,7 +167,7 @@ async def render_auth_guide(request: Request):
         "static_asset_version": APP_VERSION,
     })
 
-# ============ 3. API 核心功能 ============
+# ============ 3. Core API functionality ============
 
 @router.get("/platforms", summary="获取支持的平台列表")
 async def get_supported_platforms():
@@ -190,7 +190,7 @@ async def get_supported_platforms():
 @router.post("/cookies/save", summary="保存Cookie")
 async def save_cookie(data: CookieSubmit):
     try:
-        # 1. 验证平台是否支持
+        # 1. Verify platform support.
         supported_platforms = login_manager.get_supported_platforms()
         if data.platform not in supported_platforms:
             raise HTTPException(status_code=400, detail=f"不支持的平台: {data.platform}")
@@ -202,14 +202,14 @@ async def save_cookie(data: CookieSubmit):
                 detail=f"{platform_info['name']} 凭证只能通过 {method} 授权保存",
             )
             
-        # 2. 解析与验证
+        # 2. Parse and validate.
         cookies = parse_cookie_string(data.cookie_string)
         if not cookies:
             raise HTTPException(status_code=400, detail="未提取到有效的键值对，请检查格式")
         
         validate_platform_fields(data.platform, cookies)
         
-        # 3. 存储
+        # 3. Store.
         encrypt = data.encrypt if data.encrypt is not None else True
         success = await asyncio.to_thread(save_cookies_to_file, data.platform, cookies, encrypt=encrypt)
         
@@ -225,7 +225,7 @@ async def save_cookie(data: CookieSubmit):
         raise
     except Exception as e:
         logger.error(f"保存失败: {type(e).__name__}")
-        logger.debug(f"详细错误: {e}")  # debug 级别记录详情
+        logger.debug(f"详细错误: {e}")  # Record details at DEBUG level.
         raise HTTPException(status_code=500, detail="内部服务器错误")
 
 
@@ -301,7 +301,7 @@ async def delete_platform_cookies(platform: str):
 
     return {"success": True, "message": f"✅ {platform.capitalize()} 凭证已删除"}
 
-# ============ 4. 兼容性适配 ============
+# ============ 4. Compatibility adapters ============
 
 @router.post("/save_cookie", summary="保存Cookie(兼容旧版)")
 async def api_save_cookie_legacy(data: CookieSubmit):
@@ -309,15 +309,15 @@ async def api_save_cookie_legacy(data: CookieSubmit):
     try:  
         result = await save_cookie(data)
         logger.info(f"✅ 兼容版cookies保存成功 | 平台: {data.platform}")
-        logger.debug(f"保存结果: {result}")  # debug 级别记录详情
+        logger.debug(f"保存结果: {result}")  # Record details at DEBUG level.
         return {"success": True, "msg": result["message"]}
     except HTTPException as e:
         logger.warning(f"❌ 兼容版cookies保存失败 | 平台: {data.platform} | 错误: {e.detail}")
-        logger.debug(f"详细错误: {e}")  # debug 级别记录详情
+        logger.debug(f"详细错误: {e}")  # Record details at DEBUG level.
         return {"success": False, "msg": f"❌ {e.detail}"}
     except Exception as e:
         logger.error(f"❌ 兼容性cookies保存失败 | 平台: {data.platform} | 错误: {type(e).__name__}")
-        logger.debug(f"详细错误: {e}")  # debug 级别记录详情
+        logger.debug(f"详细错误: {e}")  # Record details at DEBUG level.
         return {"success": False, "msg": "❌ 系统异常,请稍后尝试"}
 
 
@@ -482,11 +482,11 @@ async def api_get_qr_code(
     try:
         import time
         ts = str(int(time.time() * 1000))
-        # per-call AsyncClient: 用户扫码登录触发，冷路径（且每次访问外部平台 host 不同）
+        # Per-call AsyncClient: user-triggered QR login is a cold path (and each external platform uses a different host).
         async with httpx.AsyncClient() as client:
             req_method = config.get("method", "GET").upper()
             raw_get_params = config.get("get_params", {})
-            # 处理动态参数插入
+            # Handle dynamic parameter insertion.
             req_data = {k: (v.replace("{{timestamp}}", ts) if isinstance(v, str) else v) for k, v in raw_get_params.items()}
 
             if req_method == "POST":
@@ -509,7 +509,7 @@ async def api_get_qr_code(
         qrcode_key = get_nested_value(data, qrcode_key_path) if "." in qrcode_key_path else data.get(qrcode_key_path)
         qrcode_url = get_nested_value(data, qrcode_url_path) if "." in qrcode_url_path else data.get(qrcode_url_path)
         
-        # 兼容自定义拼接，例如网易云的二维码 URL 需要直接用 key 去拼
+        # Support custom concatenation, e.g. NetEase Cloud QR URLs require direct key concatenation.
         url_template = response_config.get("qrcode_url_template")
         if url_template and qrcode_key:
             qrcode_url = url_template.replace("{{qrcode_key}}", str(qrcode_key))
@@ -571,11 +571,11 @@ async def api_qr_login_poll(
         import time
         ts = str(int(time.time() * 1000))
         req_method = config.get("method", "GET").upper()
-        # 处理动态参数插入
+        # Handle dynamic parameter insertion.
         raw_poll_params = config.get("poll_params", {"qrcode_key": "{{qrcode_key}}"})
         processed_params = {k: (v.replace("{{qrcode_key}}", qrcode_key).replace("{{timestamp}}", ts) if isinstance(v, str) else v) for k, v in raw_poll_params.items()}
 
-        # per-call AsyncClient: 扫码轮询登录，用户触发冷路径
+        # Per-call AsyncClient: user-triggered QR login polling is a cold path.
         async with httpx.AsyncClient() as client:
             if req_method == "POST":
                 response = await client.post(
@@ -604,10 +604,10 @@ async def api_qr_login_poll(
         
         status_info = status_codes.get(code, {"status": "unknown", "message": raw_message})
         
-        # 动态匹配各平台的成功码，不再硬编码 code == 0
-        # 例如：Bilibili 成功码为 0
+        # Match platform-specific success codes dynamically instead of hardcoding code == 0.
+        # For example, Bilibili's success code is 0.
         if status_info.get("status") == "success":
-            # 兼容性设计：优先从响应头提取，若 JSON Body 中包含 cookie 字段则解析合并
+            # Compatibility: extract response headers first; parse and merge any cookie field in the JSON body.
             cookies = dict(response.cookies)
             body_cookie_str = resp_data.get("cookie")
             if body_cookie_str:
@@ -621,8 +621,8 @@ async def api_qr_login_poll(
             
             logger.info(f"✅ {platform} 二维码登录成功 (code={code})")
             
-            # QR 扫码成功后，自动将 Cookies 持久化到本地文件
-            # 避免用户扫码后忘记点击"保存配置"导致 Cookie 丢失
+            # Automatically persist cookies locally after successful QR login.
+            # Avoid losing cookies when users forget to click "save configuration" after scanning.
             if cookies and cookie_fields:
                 filtered_cookies = {k: v for k, v in cookies.items() if k in cookie_fields}
                 if filtered_cookies:
@@ -663,7 +663,7 @@ async def api_qr_login_poll(
         logger.debug(f"详细错误: {e}")
         raise HTTPException(status_code=500, detail="轮询登录状态失败")
 
-#存在用于直接复制后替换内容的方便示例,不需要检查NetworkQRLoginInfo["示例"]内部的东西
+# Convenient copy-and-replace examples are provided; do not inspect the contents of NetworkQRLoginInfo["示例"].
 NetworkQRLoginInfo = {
     "xhh": {
         "get": f"{_XHH_API_BASE}{_XHH_QR_CREATE_PATH}",

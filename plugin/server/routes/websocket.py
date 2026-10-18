@@ -1,5 +1,5 @@
 """
-WebSocket 路由
+WebSocket routes
 """
 from fastapi import APIRouter, WebSocket
 

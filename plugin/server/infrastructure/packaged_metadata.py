@@ -330,7 +330,7 @@ def _packaged_metadata_env_mismatched(raw: Mapping[str, object]) -> bool:
     if isinstance(version, bool) or not isinstance(version, int):
         return False
     if version != PACKAGED_METADATA_SCHEMA_VERSION:
-        # 更旧的由 stale_packaged_schema_version 负责；更新的我们无权改写（那是降级）。
+        # stale_packaged_schema_version handles older versions; newer versions are outside our rewrite authority because that would downgrade them.
         return False
     return not _environment_matches(raw.get("build_env"))
 
@@ -596,20 +596,20 @@ def _write_scanned_packaged_metadata(
     pdata: object,
     subject: str,
 ) -> bool:
-    """把一次扫描的结果按打包器的格式写到 ``target``。返回是否真的写了。
+    """Write scan results to ``target`` in packager format; return whether anything was written.
 
-    两条写路径共用这一段——改写包内那份 schema 过期的（:func:`refresh_stale_packaged_metadata`），
-    以及写宿主运行时缓存（:func:`write_local_packaged_metadata`）。**拒绝理由必须共用**：
-    读取方对两份文件跑的是同一套校验，一边写得出去另一边读不进来，就等于白写。
+    Shared by both write paths: refreshing stale packaged schemas (:func:`refresh_stale_packaged_metadata`)
+    and writing host runtime caches (:func:`write_local_packaged_metadata`). Rejection criteria must match:
+    readers validate both files identically, so writing data the other side cannot read accomplishes nothing.
 
-    与打包器 ``metadata_probe`` 同样的拒绝：带软链、空目录、或名字在 NFC 下会变的树
-    没法用指纹描述；import 自己改动过的树（``before_scan`` 对不上）则是 handler 与
-    指纹描述了两个不同状态。两种都不写。调用方负责保证生效的 ``entries`` 表就是
-    manifest 自己那份——文件描述的是包，不是某台机器的覆盖。
+    Match packager ``metadata_probe`` rejections: trees with symlinks, empty directories, or NFC-changing names
+    cannot be fingerprinted; trees modified by their own import (mismatching ``before_scan``) describe handlers and
+    fingerprints from different states. Write neither. Callers ensure the effective ``entries`` table is the
+    manifest's own, because the file describes the package, not a particular machine's overrides.
 
-    写失败不是错误：源文件可能在枚举和哈希之间消失，目录可能只读，而插件没有这份
-    文件也照样起来了。超过读取方尺寸上限的也不写：那样它会"schema 当前且超大"，
-    之后没有任何路径能再修它（codex）。
+    Write failure is not an error: source files may disappear between enumeration and hashing, directories may be
+    read-only, and plugins start without this file. Also avoid exceeding reader size limits, which would leave it
+    current-schema but oversized, with no later repair path (codex).
     """
     summary: SourceStatSummary | None = None
     try:
@@ -650,8 +650,8 @@ def _write_scanned_packaged_metadata(
             "handlers": dict(handlers),
             "entry_methods": dict(entry_methods),
         }
-        # 量的就是写的：按字节落盘，文本模式在 Windows 上会把换行展开成 CRLF，
-        # 刚好卡在上限下的文件落到磁盘上就超了（codex）。打包器同样用 newline=""。
+        # Persist the bytes actually measured: Windows text mode expands newlines to CRLF,
+        # pushing files just below the limit over it (codex). The packager likewise uses newline="".
         encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         if len(encoded) > MAX_PACKAGED_METADATA_BYTES:
             logger.info(
@@ -711,8 +711,8 @@ def write_local_packaged_metadata(
         return False
     raw, _meta_stat, _encoded = loaded
     if not _packaged_metadata_env_mismatched(raw):
-        # 不是"异环境"这一种情况就不归这里管：schema 过期走
-        # refresh_stale_packaged_metadata，本机包压根不需要写，缺文件则见上。
+        # Other cases are outside this helper: stale schemas use
+        # refresh_stale_packaged_metadata, local packages need no write, and missing files are handled above.
         return False
     target = _local_packaged_metadata_path(plugin_dir, raw)
     if target is None:
@@ -855,8 +855,8 @@ def _validate_packaged_metadata(
         return None
 
     packaged_sdk = str(raw.get("sdk_version") or "")
-    # 只比大版本。schema 推导的行为跟着 SDK 的大版本走，逐个补丁号比对会让每次
-    # SDK 发版把全生态的元数据一起作废。
+    # Compare only major versions. Schema inference follows SDK major versions; patch-by-patch comparison would invalidate
+    # the entire ecosystem's metadata on every SDK release.
     if _major_of(packaged_sdk) != _major_of(SDK_VERSION):
         logger.warning(
             "packaged plugin metadata SDK major mismatch, falling back to manifest: "
@@ -889,8 +889,8 @@ def _validate_packaged_metadata(
     if len(packaged_sha) != 64 or any(
         char not in "0123456789abcdef" for char in packaged_sha
     ):
-        # 缺了它或者写坏了，慢路径就没有可比的东西——而快路径（清单+尺寸+时间戳）
-        # 全过时，这份元数据会在从未做过任何内容校验的情况下被当成权威（codex）。
+        # Missing/corrupt data leaves nothing for slow-path comparison; if the fast path's inventory/size/timestamp checks pass,
+        # metadata would become authoritative without any content verification (codex).
         logger.warning(
             "packaged plugin metadata has no valid source digest, falling back "
             "to manifest: path={}",
@@ -898,16 +898,16 @@ def _validate_packaged_metadata(
         )
         return None
 
-    # 先比文件清单，再比时间戳。清单是确定性的：增删文件一定改变它，而"删掉一个
-    # 文件"在时间戳上只体现为父目录 mtime 变新——那要求它严格大于 meta.json 的
-    # mtime，同一个时间戳刻度内就不成立（本机过、CI 挂，就是这条）。清单还顺带让
-    # 判定不依赖解包顺序（codex）。
+    # Compare file inventory before timestamps. Inventory is deterministic: adding/removing files always changes it, while deleting a
+    # file only advances its parent's mtime, requiring strict inequality against meta.json's
+    # mtime that fails within one clock tick (the local-pass/CI-fail cause). Inventory also makes
+    # decisions independent of extraction order (codex).
     packaged_names = raw.get("source_files")
     if not isinstance(packaged_names, list) or not all(
         isinstance(item, str) for item in packaged_names
     ):
-        # 类型也要校验，不能只 str() 强转了事。强转确实会让比对失配、从而拒绝，
-        # 但那是"碰巧拒对了"，不是在表达契约——而这份文件来自第三方包
+        # Validate types rather than merely coercing with str(). Coercion may reject through mismatches,
+        # but accidental rejection does not express the contract, and this file comes from third-party packages.
         # （coderabbit）。
         logger.warning(
             "packaged plugin metadata has no valid source file list, falling "
@@ -925,9 +925,9 @@ def _validate_packaged_metadata(
 
     packaged_bytes = raw.get("source_bytes")
     if not isinstance(packaged_bytes, int) or isinstance(packaged_bytes, bool):
-        # schema v3 声明了这个字段，缺了就当整份元数据不合格——和 source_files
-        # 同一条判据。悄悄跳过尺寸比对的话，判定就退回到只看 mtime，而 mtime
-        # 不可靠正是这个字段存在的理由（coderabbit）。
+        # Schema v3 declares this field; absence invalidates all metadata, just as with source_files.
+        # Silently skipping size checks reverts validation to mtime alone, whose
+        # unreliability is precisely why this field exists (coderabbit).
         logger.warning(
             "packaged plugin metadata has no valid source byte total, falling "
             "back to manifest: path={}",
@@ -935,10 +935,10 @@ def _validate_packaged_metadata(
         )
         return None
     if packaged_bytes != summary.total_bytes:
-        # 尺寸对不上就到此为止，别再往下走整树哈希。这份元数据要么在描述自己时
-        # 就不自洽，要么源码真的变了——两种情况都该回落 manifest，而它们都不值得
-        # 每次刷新在持锁状态下重读一遍整棵树（包体上限 1 GiB）。拒绝放在慢路径
-        # **之前**，否则这道闸拦住的是结论、拦不住开销（coderabbit）。
+        # Stop on size mismatch before hashing the whole tree. Metadata either contradicts itself
+        # or source really changed; both require manifest fallback, neither justifies rereading
+        # the whole tree under lock on every refresh (packages may reach 1 GiB). Reject before
+        # the slow path or this gate limits conclusions without limiting cost (coderabbit).
         logger.info(
             "packaged plugin metadata does not match its tree's byte total, "
             "falling back to manifest: path={}, stated={}, actual={}",
@@ -949,10 +949,10 @@ def _validate_packaged_metadata(
         return None
     verified_source_mtime = None
     if newest_source_ns > meta_stat.st_mtime_ns:
-        # 时间戳只是快路径，不是判据。git 不保留 mtime，所以一份全新 clone 里源码
-        # 和生成物的时间戳关系是任意的——只看 mtime 的话，内置插件会在每台新机器上
-        # 集体退化成占位。所以时间戳说"可能过时"时再真算一次内容哈希来定夺；这条
-        # 昂贵的路（实测约 0.36s/全部插件）只有开发者真的改过代码才会走到。
+        # Timestamps are only a fast path, never the criterion. git does not preserve mtime, so fresh clones give source
+        # and generated files arbitrary timestamp relationships; mtime-only checks degrade every built-in plugin
+        # to placeholders on new machines. If timestamps suggest staleness, compute content hashes to decide; this
+        # expensive path (about 0.36 s for all plugins) runs only when developers actually changed code.
         try:
             actual_sha = compute_source_sha256(plugin_dir)
         except PackagedMetadataError as exc:

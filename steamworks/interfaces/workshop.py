@@ -369,7 +369,7 @@ class SteamWorkshop(object):
             return {}
 
         return {
-            'disk_size' : punSizeOnDisk.contents.value,  # 解包为数值而不是返回指针
+            'disk_size' : punSizeOnDisk.contents.value,  # Unpack the numeric value instead of returning a pointer
             'folder' : pchFolder.value.decode(),
             'timestamp' : punTimeStamp.contents.value
         }

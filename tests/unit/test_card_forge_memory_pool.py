@@ -767,7 +767,7 @@ async def test_current_scoped_wire_id_does_not_exclude_legacy_literal_namesake(q
 
 @pytest.mark.asyncio
 async def test_visit_facts_never_enter_a_card(query_pool):
-    # 串门「记成日记」的事实是邻居家的内容：不进社区分享卡片（OD-16 v4）
+    # Facts saved as diary entries during visits belong to the neighbor's context and are excluded from community sharing cards (OD-16 v4)
     visits = [memory(f"visit-{i}", origin="neko_visit", visit_id="v" * 22) for i in range(3)]
     for _ in range(200):
         payload = await query_pool([memory("own-1"), *visits[:2]], [visits[2], memory("old-1")])
@@ -781,7 +781,7 @@ def test_pool_without_visit_facts_is_passed_through_unchanged():
 
 @pytest.mark.asyncio
 async def test_an_unshareable_visit_fact_does_not_shadow_an_archived_memory(query_pool):
-    # 同文的串门事实在活跃池、普通事实在归档：串门那条被排除，归档那条照样可抽
+    # With identical text in an active visit fact and an archived ordinary fact, exclude the visit fact but keep the archived fact eligible
     archived = memory("old-1", hash="same-hash")
     visit = memory("visit-1", hash="same-hash", origin="neko_visit", visit_id="v" * 22)
     payload = await query_pool([visit], [archived])

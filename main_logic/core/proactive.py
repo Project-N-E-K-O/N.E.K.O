@@ -50,6 +50,7 @@ from main_logic.proactive_delivery import (
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.desktop_capture import capture_desktop_screenshot
+import main_logic.core as _core_facade
 from uuid import uuid4
 from ._shared import (
     _VOICE_PROACTIVE_ACK_GRACE_S,
@@ -62,6 +63,39 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
+
+    def update_proactive_vision_consent(self, enabled: bool) -> None:
+        """Apply live browser consent without granting persisted permission."""
+        if not isinstance(enabled, bool):
+            return
+        if not enabled and getattr(self, "_proactive_vision_enabled", None) is not False:
+            self._proactive_vision_revocation_epoch = (
+                getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
+            )
+        self._proactive_vision_enabled = enabled
+
+    def _proactive_round_owned(self, round_id: str | None) -> bool:
+        """Whether ``round_id`` still owns the proactive round; ``None`` opts out.
+
+        Session teardown retires the round ID but keeps ``current_speech_id``,
+        so SID guards alone cannot see a retired round.
+        """
+        return round_id is None or (
+            getattr(self, "_proactive_screenshot_request_id", None) == round_id
+            and getattr(getattr(self, "state", None), "proactive_round_id", None) == round_id
+        )
+
+    async def _proactive_screenshot_declined(self) -> bool:
+        """Read current consent strictly: unreadable preferences must not grant capture."""
+        try:
+            settings = await _core_facade.aload_global_conversation_settings(strict=True)
+            return (
+                getattr(self, "_proactive_vision_enabled", None) is False
+                or settings.get("proactiveVisionEnabled", True) is not True
+            )
+        except Exception as exc:
+            logger.warning("Proactive screenshot privacy check failed; declining capture: %s", exc)
+            return True
 
     @staticmethod
     def _terminal_callback_image_rejections() -> frozenset[str]:
@@ -93,7 +127,7 @@ class ProactiveMixin:
         except Exception:
             logger.exception("[%s] goodbye_silent proactive park failed", self.lanlan_name)
 
-    # 供主服务调用，更新Agent模式相关开关
+    # Called by main service to update Agent-mode switches.
     def update_agent_flags(self, flags: dict):
         try:
             for k in [
@@ -167,10 +201,13 @@ class ProactiveMixin:
         return delivered
 
     # ------------------------------------------------------------------
-    # Proactive streaming helpers (Phase 2 流式 TTS + 完整文本投递)
+    # Proactive streaming helpers (Phase 2 streaming TTS +complete-text delivery).
     # ------------------------------------------------------------------
 
-    async def request_fresh_screenshot(self, timeout: float = 3.0) -> FreshScreenshot:
+    async def request_fresh_screenshot(
+        self, timeout: float = 3.0, *, allow_backend_fallback: bool = True,
+        request_id: str | None = None,
+    ) -> FreshScreenshot:
         """Request the latest screenshot from the frontend over WebSocket, falling back to backend pyautogui on failure.
 
         Both paths normalize the screenshot down to 720p/JPEG-80 and return the
@@ -182,26 +219,55 @@ class ProactiveMixin:
         avatar position means "the frontend said don't annotate" or merely "the
         frontend was never asked".
 
+        Explicit declines and privacy changes stop capture. A window-bound request
+        also forbids desktop fallback if the frontend fails to answer.
         Neither path draws the avatar annotation; the caller owns that step.
         """
-        # 策略1: 前端 WebSocket 截图
+        # Service callers pass their own round ID, never borrow the shared ID.
+        # Standalone callers get a fresh ID on each request.
+        scoped = request_id is not None
+        if not scoped:
+            request_id = uuid4().hex
+            self._proactive_screenshot_request_id = request_id
+
+        def still_owned() -> bool:
+            return (
+                getattr(self, "_proactive_screenshot_request_id", None) == request_id
+                and (not scoped or getattr(getattr(self, "state", None), "proactive_round_id", request_id) == request_id)
+            )
+
+        if not still_owned():
+            return FreshScreenshot(declined=True)
+        if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
+            return FreshScreenshot(declined=True)
+
+        # Strategy 1: frontend WebSocket screenshot.
         if self.websocket:
+            future = None
             try:
                 loop = asyncio.get_running_loop()
-                # 先清槽再 arm future：上一次请求的残留坐标绝不能被这次读到。
+                # Clear slots before arming futures so old request coordinates cannot leak into this one.
                 self._pending_screenshot_avatar_position = None
-                self._screenshot_future = loop.create_future()
-                await self.websocket.send_json({"type": "request_screenshot"})
-                b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
-                # 紧贴 await 取走，中间不再 await → 事件循环插不进别的帧来改写它。
-                # getattr 守卫与本文件其余部分一致：窄 manager double 不一定带这个字段。
+                future = loop.create_future()
+                self._screenshot_future = future
+                await self.websocket.send_json({
+                    "type": "request_screenshot", "request_id": request_id,
+                })
+                reply = await asyncio.wait_for(future, timeout=timeout)
+                if not still_owned():
+                    return FreshScreenshot(declined=True)
+                if reply.declined:
+                    return reply
+                b64 = reply.b64
+                # Retrieve immediately after await, with no intervening await allowing other frames to overwrite.
+                # getattr matches other guards here; narrow manager doubles may lack this field.
                 ws_av_pos = getattr(self, "_pending_screenshot_avatar_position", None)
                 if b64:
-                    # 前端有的截图路径（如 Electron 主进程直捕 captureSourceAsDataUrl）
-                    # 返回原生分辨率，未走 720p 缩放，base64 可达 ~1.4MB，直接发给
-                    # vision LLM 会被代理 nginx 以 413 Request Entity Too Large 拒掉。
-                    # 这里和下方 pyautogui 兜底分支对称，统一压到 720p/JPEG-80 再返回
-                    # （avatar 注解会在其上二次编码，不影响）。压缩失败则退回原图。
+                    # Some frontend captures (e.g. Electron main-process captureSourceAsDataUrl) return native
+                    # resolution without 720p scaling, reaching ~1.4MB base64, rejected by proxy nginx
+                    # with 413 Request Entity Too Large when sent directly to vision LLMs.
+                    # Mirror pyautogui fallback below: compress to 720p/JPEG-80 before returning
+                    # (avatar annotation may re-encode afterward). Compression failures retain originals.
                     try:
                         from utils.screenshot_utils import (
                             decode_and_compress_screenshot_b64,
@@ -216,16 +282,32 @@ class ProactiveMixin:
                             "[%s] request_fresh_screenshot WS compress failed, using raw: %s",
                             self.lanlan_name, comp_err,
                         )
+                    # Privacy may be enabled while waiting for the frontend or compressing; legacy clients must honor it too.
+                    if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
+                        return FreshScreenshot(declined=True)
                     return FreshScreenshot(
                         b64=b64, source="websocket", avatar_position=ws_av_pos,
                     )
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning("[%s] request_fresh_screenshot WS failed: %s", self.lanlan_name, e)
             finally:
-                self._screenshot_future = None
-                self._pending_screenshot_avatar_position = None
+                if future is not None and not future.done():
+                    future.cancel()
+                if future is not None and self._screenshot_future is future:
+                    self._screenshot_future = None
+                    self._pending_screenshot_avatar_position = None
 
-        # 策略2: 后端 pyautogui 兜底（仅限本机连接，远程服务器截图无意义）
+        # The initial request carries window constraints; frontend timeouts or disconnects must not expand capture to the desktop.
+        if not still_owned():
+            return FreshScreenshot(declined=True)
+        if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
+            return FreshScreenshot(declined=True)
+        if not allow_backend_fallback:
+            # No new desktop capture; an ordinary timeout may still reuse the
+            # already validated Phase-1 window image. Only a decline forbids it.
+            return FreshScreenshot()
+
+        # Strategy 2: backend pyautogui fallback for local connections only; remote-server captures are meaningless.
         is_local = False
         try:
             ws = self.websocket
@@ -249,17 +331,25 @@ class ProactiveMixin:
                     )
 
                 jpg_bytes = await asyncio.to_thread(_capture_and_compress)
+                if await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned():
+                    return FreshScreenshot(declined=True)
                 b64_str = b64mod.b64encode(jpg_bytes).decode('utf-8')
                 logger.info("[%s] request_fresh_screenshot: 后端 pyautogui 兜底成功 (%dKB)", self.lanlan_name, len(jpg_bytes) // 1024)
-                # 这里不叠水印：后端手里没有任何属于这张图的 Avatar 坐标。谁有资格
-                # 补坐标由调用方按 source 判断（见 FreshScreenshot 的说明）。
+                # No watermark here: backend has no Avatar coordinates belonging to this image. Callers
+                # decide coordinate eligibility by source (see FreshScreenshot).
                 return FreshScreenshot(b64=b64_str, source="backend_fallback")
             except Exception as e2:
                 logger.warning("[%s] request_fresh_screenshot backend fallback failed: %s", self.lanlan_name, e2)
 
-        return FreshScreenshot()
+        # Recheck privacy after capture errors so a refusal is not treated as an ordinary failure that permits reusing an old image.
+        return FreshScreenshot(declined=(
+            await ProactiveMixin._proactive_screenshot_declined(self) or not still_owned()
+        ))
 
-    def resolve_screenshot_request(self, b64: str, avatar_position: dict | None = None):
+    def resolve_screenshot_request(
+        self, b64: str, avatar_position: dict | None = None, *, declined: bool = False,
+        request_id: str | None = None,
+    ):
         """Called by the WebSocket router to hand the frontend's returned screenshot -- and its avatar verdict -- to the waiting future.
 
         The position travels with the image instead of through ``_avatar_position``
@@ -267,14 +357,33 @@ class ProactiveMixin:
         share frame arriving between this call and the requester waking up would
         silently swap the coordinates.
         """
+        active_id = getattr(self, "_proactive_screenshot_request_id", None)
+        if active_id is None or (request_id is not None and request_id != active_id):
+            return
+        # Legacy browsers omit the ID. Keep their capture/fallback contract;
+        # they cannot provide cross-round correlation until the frontend updates.
+        if declined:
+            # A refusal arriving after the screenshot timeout still vetoes an
+            # image waiting on model creation; it does not disable future rounds.
+            self._proactive_vision_revocation_epoch = (
+                getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
+            )
         if self._screenshot_future and not self._screenshot_future.done():
-            # 顺序要紧：先落坐标再 resolve，等待方被唤醒时槽里一定是配对好的值。
+            self._avatar_position = avatar_position
+            # Ordering matters: store coordinates before resolving so awakened waiters find matching values.
             self._pending_screenshot_avatar_position = (
                 avatar_position if isinstance(avatar_position, dict) and avatar_position else None
             )
-            self._screenshot_future.set_result(b64)
+            # An explicit refusal takes precedence over image content; do not treat it as an empty image and capture again.
+            self._screenshot_future.set_result(FreshScreenshot(
+                b64="" if declined else b64,
+                source="websocket",
+                declined=declined,
+            ))
 
-    async def prepare_proactive_delivery(self, min_idle_secs: float = 10.0) -> bool:
+    async def prepare_proactive_delivery(
+        self, min_idle_secs: float = 10.0, *, round_id: str | None = None,
+    ) -> bool:
         """Pre-checks before Phase 2 streaming + speech_id generation. Returns True if it's OK to proceed."""
         def _user_active_recently() -> bool:
             now = time.time()
@@ -288,14 +397,19 @@ class ProactiveMixin:
                 for timestamp in activity_times
             )
 
+        def _round_owned() -> bool:
+            return ProactiveMixin._proactive_round_owned(self, round_id)
+
+        if not _round_owned():
+            return False
         if self.is_goodbye_silent():
             logger.info("[%s] prepare_proactive_delivery: goodbye silent", self.lanlan_name)
             return False
-        # 早期抢占检查：在任何 await / sid 改写前快速短路，防止用户刚在入口之后
-        # 抢占而后续 self.current_speech_id 写入覆盖用户的 user_sid。默认 reset()
-        # 对活动 phase no-op（保护 auto-start 期间偶发并发 reset），但 end_session
-        # 走 force=True 强制清场——这里短路不依赖 reset() 的语义差异，单纯是为
-        # 了更早放弃已被抢占的 proactive 轮次。
+        # Early preemption check before any await/sid mutation prevents a user taking over just after entry
+        # from having user_sid overwritten by current_speech_id later. Default reset() ignores active
+        # phases to protect incidental auto-start resets, while end_session forces clearing via force=True.
+        # This short circuit ignores reset semantic differences, merely abandoning preempted
+        # proactive rounds earlier.
         if self.state.is_proactive_preempted():
             logger.info("[%s] prepare_proactive_delivery: preempted before claim", self.lanlan_name)
             return False
@@ -327,7 +441,7 @@ class ProactiveMixin:
                 return False
             if not self.session or not hasattr(self.session, '_conversation_history'):
                 return False
-            # auto-start 期间耗时 await；再次确认 proactive 未被用户抢占
+            # Costly auto-start await; recheck user preemption.
             if self.state.is_proactive_preempted():
                 logger.info("[%s] prepare_proactive_delivery: preempted during auto-start", self.lanlan_name)
                 return False
@@ -340,9 +454,9 @@ class ProactiveMixin:
         except Exception as exc:  # pragma: no cover - best-effort cache
             logger.debug("[AntiRepeat] proactive preload skipped: %s", exc)
         async with self.lock:
-            # lock 内二次复查：USER_INPUT 在 self.lock 内 rotate sid，sticky preempt
-            # flag 先于 sid mutation 翻起；此处若已被抢占则不写 current_speech_id。
-            if self.state.is_proactive_preempted():
+            # Recheck under lock: USER_INPUT rotates sid under self.lock, setting sticky preempt
+            # before mutation; never write current_speech_id after preemption.
+            if not _round_owned() or self.state.is_proactive_preempted():
                 logger.info("[%s] prepare_proactive_delivery: preempted in claim lock", self.lanlan_name)
                 return False
             # UI-only engagement does not rotate the proactive SID, so repeat
@@ -358,9 +472,12 @@ class ProactiveMixin:
             self._tts_done_pending_until_ready = False
             claim_sid = self.current_speech_id
             claim_user_engagement_time = self.last_user_engagement_time
-        # 状态机：正式 claim turn。订阅者（诊断、frontend sync 等）在此之后
-        # 观察到 proactive_sid 已与 current_speech_id 一致。
-        await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid)
+        # State machine formally claims turn. Subscribers (diagnostics/frontend sync) now
+        # observe proactive_sid matching current_speech_id.
+        round_payload = {"round_id": round_id} if round_id is not None else {}
+        await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid, **round_payload)
+        if not _round_owned():
+            return False
         # ``fire`` may wait for the state-machine write lock. UI-only
         # engagement does not rotate ``current_speech_id``, so without this
         # post-await check a click arriving in that window would be treated as
@@ -374,7 +491,7 @@ class ProactiveMixin:
                 "[%s] prepare_proactive_delivery: user engaged while claiming",
                 self.lanlan_name,
             )
-            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+            await self.state.fire(SessionEvent.PROACTIVE_DONE, **round_payload)
             return False
         return True
 
@@ -383,6 +500,7 @@ class ProactiveMixin:
         text: str,
         expected_speech_id: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
+        expected_round_id: str | None = None,
     ) -> bool:
         """Feed text to the TTS pipeline only, without sending it to the frontend display.
 
@@ -396,13 +514,21 @@ class ProactiveMixin:
         expected_user_engagement_time: when supplied (including an expected
         ``None``), drop if genuine UI engagement advanced while this call waited
         for the TTS lock. Returns whether the chunk was accepted.
+
+        expected_round_id: when supplied, drop if the proactive round was retired
+        (e.g. by a session restart) while this call waited for the TTS lock.
         """
         if getattr(self, "_takeover_active", False):
+            return False
+        if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
             return False
         if not self.use_tts:
             return True
         async with self.tts_cache_lock:
             if getattr(self, "_takeover_active", False):
+                return False
+            if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
+                logger.debug("feed_tts_chunk drop: proactive round retired len=%d", len(text))
                 return False
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.debug(
@@ -432,7 +558,7 @@ class ProactiveMixin:
                     return False
             else:
                 self.tts_pending_chunks.append((self.current_speech_id, text))
-                # Worker 已死亡则尝试拉起（受 12 秒冷却限制，不会风暴重连）
+                # Restart dead workers with 12s cooldown, avoiding reconnect storms.
                 if self.tts_thread and not self.tts_thread.is_alive():
                     self._respawn_tts_worker()
             return True
@@ -445,6 +571,7 @@ class ProactiveMixin:
         source_tag: str | None = None,
         vision_screenshot_b64: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
+        expected_round_id: str | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -461,6 +588,10 @@ class ProactiveMixin:
         ``None``), skip the commit if genuine UI engagement advanced before the
         final commit boundary. The caller must clear any TTS chunk already queued
         before this check.
+
+        expected_round_id: when supplied, skip the commit if the proactive round
+        was retired (e.g. by a session restart). Rechecked at the publish
+        boundary, because teardown keeps ``current_speech_id`` unchanged.
 
         action_note: optional; when non-empty it is appended to the tail of that
         AIMessage's content in _conversation_history (history-only — never enters
@@ -497,6 +628,12 @@ class ProactiveMixin:
                     self.lanlan_name, expected_speech_id, self.current_speech_id,
                 )
                 return False
+            if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
+                logger.info(
+                    "[%s] finish_proactive_delivery skip: proactive round retired",
+                    self.lanlan_name,
+                )
+                return False
             if (
                 expected_user_engagement_time
                 is not Ellipsis
@@ -511,20 +648,23 @@ class ProactiveMixin:
                     self.last_user_engagement_time,
                 )
                 return False
-            # 冻结 commit 用的 turn_id：current_speech_id 由 self.lock 保护，不在
-            # _proactive_write_lock 范围内，下面 send_lanlan_response 之前若用户经
-            # handle_new_message/stream_text 抢占完成 sid 轮换，再让 send_lanlan_response
-            # 默认从 self.current_speech_id 取值会把这条 proactive 气泡打到用户新
-            # turn 上、前端分组串掉。expected_speech_id 在 phase2 已经一路传到这里
-            # 并且刚校验过，作为冻结快照最稳。
+            # Freeze commit turn_id: self.lock protects current_speech_id, outside
+            # _proactive_write_lock. User preemption through handle_new_message/stream_text before
+            # send_lanlan_response could rotate sid, and its default current_speech_id lookup
+            # would assign this proactive bubble to the user's new turn, mixing frontend grouping.
+            # expected_speech_id already passed through phase2 and was just validated;
+            # use that stable snapshot.
             commit_sid = expected_speech_id or self.current_speech_id
             # Pin ordinary proactive output separately from Agent callback turns.
             mark_turn_origin(self, commit_sid, 'proactive')
-            # 状态机：进入 COMMITTING 阶段。send_lanlan_response 会在它自身
-            # 最后一个 await 之后、同步队列写入之前再校验一次；这样 UI
-            # engagement 即使发生在 state.fire 或 Focus bubble 清理期间，
-            # 也不会漏出过期气泡。
-            await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
+            # Enter COMMITTING. send_lanlan_response rechecks after its own final await and
+            # before synchronous queue writing, preventing stale bubbles even if UI
+            # engagement occurs during state.fire or Focus-bubble cleanup.
+            #
+            round_payload = (
+                {"round_id": expected_round_id} if expected_round_id is not None else {}
+            )
+            await self.state.fire(SessionEvent.PROACTIVE_COMMITTING, **round_payload)
             publication_times: list[float] = []
             published = await self.send_lanlan_response(
                 full_text,
@@ -533,6 +673,10 @@ class ProactiveMixin:
                 expected_speech_id=expected_speech_id,
                 expected_user_engagement_time=expected_user_engagement_time,
                 on_published=publication_times.append,
+                publish_if=(
+                    None if expected_round_id is None
+                    else lambda: ProactiveMixin._proactive_round_owned(self, expected_round_id)
+                ),
             )
             if published is None:
                 logger.info(
@@ -549,9 +693,9 @@ class ProactiveMixin:
             self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
 
             if self.session and hasattr(self.session, '_conversation_history'):
-                # action_note 只进历史，不进 send_lanlan_response（前端不展示）
-                # 也不进 TTS。空 full_text + 非空 note 的场景目前不会发生
-                # （proactive 不允许空文本），但写法上仍然兜底拼接。
+                # action_note enters history only, never frontend send_lanlan_response
+                # or TTS. Empty full_text with nonempty notes currently cannot occur
+                # (proactive requires text), but concatenation still handles it defensively.
                 history_text = full_text
                 additional_kwargs = {
                     "anti_repeat_response_id": str(commit_sid),
@@ -588,26 +732,30 @@ class ProactiveMixin:
                         "[AntiRepeatEffects] delivered response link skipped: %s",
                         type(_exc).__name__,
                     )
-                # 本轮拿到截图（有可用 vision 模型）时，把那张截图暂存到 session
-                # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
-                # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复
-                # 时完全不知道刚才评论的屏幕长什么样。新一轮主动搭话产生即覆盖/清掉
-                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用短 TTL
-                # （_PROACTIVE_SCREENSHOT_TTL_SECONDS）兜底过期。set_* 在 sid 校验之
-                # 后，用户接管（sid 变→早 return）时
-                # 绝不会为未投递的轮次暂存截图。
+                # If this round captures a screenshot with an available vision model, stage it in session
+                # without writing an image to history. The next user text response through stream_text
+                # injects it as leading visual context; otherwise the model sees only proactive wording
+                # without knowing the commented-on screen. New proactive rounds replace/clear
+                # old cache (None without screenshots); session also enforces a short
+                # _PROACTIVE_SCREENSHOT_TTL_SECONDS. Call setters only after sid validation,
+                # so user takeover (changed sid ->early return)
+                # never stages screenshots for undelivered rounds.
                 if hasattr(self.session, "set_proactive_screenshot"):
+                    # A live revocation must not leave this round's screen for the
+                    # next user turn; staging None also clears an older screenshot.
+                    if getattr(self, "_proactive_vision_enabled", None) is False:
+                        vision_screenshot_b64 = None
                     self.session.set_proactive_screenshot(vision_screenshot_b64)
 
-            # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步、无 await，
-            # 所以不是取消点），落盘在之后。用户可能对着主动搭话立刻回一句，那一轮
-            # 打分必须已经看得到刚投递的这段；而落盘那个 await 一旦被取消就会跳过
-            # TTS 收尾和两处 turn end。两个要求方向相反，只有拆开才能同时满足。
+            # Split anti-repeat corpus updates: synchronous memory update **before** ending signals,
+            # without await/cancellation points; persistence afterward. Immediate user responses must
+            # already score against newly delivered text, while cancellation during persistence awaits
+            # would skip TTS cleanup and both turn ends. Splitting meets both opposing requirements.
             #
-            # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
-            # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
-            # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
-            # BM25 评分豁免对偶）。
+            # LLM self-metadata notes do not count as repetition. Source-push channels (songs)
+            # inherently use templates; including them pollutes FG windows and shifts other channels'
+            # repetition baselines. Exempt ANTI_REPEAT_EXEMPT_SOURCE_TAGS, symmetric
+            # with outbound BM25 exemptions.
             staged_anti_repeat = None
             if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
                 try:
@@ -620,10 +768,10 @@ class ProactiveMixin:
                     )
                 except Exception as _exc:  # pragma: no cover
                     logger.debug("[AntiRepeat] stage proactive skipped: %s", _exc)
-                # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
-                # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
-                # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
-                # BM25 评分豁免对偶）。
+                # LLM self-metadata notes do not count as repetition. Source-push channels (songs)
+                # inherently use templates; including them pollutes FG windows and shifts other channels'
+                # repetition baselines. Exempt ANTI_REPEAT_EXEMPT_SOURCE_TAGS, symmetric
+                # with outbound BM25 exemptions.
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
                     await self._request_tts_done_for_turn("finish_proactive_delivery")
@@ -641,19 +789,19 @@ class ProactiveMixin:
                 # Turn-end push is best-effort; the client may have gone away.
                 pass
 
-            # 落盘排在所有收尾信号之后（内存更新已经在投递后立刻做了，见上），而且
-            # **摘下来不 await**：到这里这一轮对用户已经发生完了，但下面那句
-            # `return True` 才是调用方的记账凭据（break reminder / 小游戏邀请看它决定
-            # 要不要把这条来源标记成已消费）。在这里 await 就等于把一个取消点插在
-            # 「已投递」和「报告已投递」之间 —— CancelledError 是 BaseException，
-            # 下面的 except Exception 接不住，同一条提醒会被再发一次。
+            # Persist after every ending signal (memory updated immediately on delivery above),
+            # **detached without awaiting**. Delivery is already visible, but return True below
+            # is callers' accounting receipt (break reminders/mini-game invites use it to mark
+            # sources consumed). Awaiting inserts cancellation between delivered and reported-delivered;
+            # CancelledError is BaseException, bypassing except Exception below
+            # and causing the same reminder to resend.
             if staged_anti_repeat is not None:
                 try:
                     from memory.anti_repeat import get_anti_repeat_corpus
                     get_anti_repeat_corpus().flush_staged_detached(staged_anti_repeat)
                 except Exception as _exc:  # pragma: no cover
                     logger.debug("[AntiRepeat] flush proactive skipped: %s", _exc)
-        # proactive 原文不写 logger（隐私）；本地 print 兜底
+        # Never log private proactive text with logger; use local print fallback.
         logger.info("[%s] Proactive stream delivered (text_len=%d)", self.lanlan_name, len(full_text or ""))
         print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")
         return True
@@ -775,9 +923,9 @@ class ProactiveMixin:
                 self.lanlan_name, len(self.pending_agent_callbacks),
             )
             return False
-        # 与 handle_text_data / handle_response_complete 等输出 handler 对偶：
-        # takeover 期间普通 chat LLM 输出会被静音，所以现在派发会被吞掉、callback
-        # 内容白丢。把入口卡住，callback 留在队列里等 takeover 释放。
+        # Mirror handle_text_data /handle_response_complete: normal chat LLM output is muted
+        # during takeover, so dispatch would swallow callbacks and lose their contents.
+        # Gate entry, retaining callbacks until takeover releases.
         if self._takeover_active:
             logger.info(
                 "[%s] trigger_agent_callbacks deferred: session takeover active, keeping %d callback(s) for next attempt",
@@ -799,15 +947,15 @@ class ProactiveMixin:
             )
             return False
 
-        # Voice mode：直接 conversation.item.create(role=user) + response.create，
-        # 让 LLM 立即用本角色嗓音主动回应 proactive callback，不等用户开口。
+        # Voice mode: directly conversation.item.create(role=user) +response.create,
+        # making this character proactively speak callback responses without waiting for user speech.
         #
-        # Gate：realtime API 同一时刻只允许一个 active response。如果 user 正在
-        # 说话（server-VAD 触发 → 自动 response.create）或上一个 response 还
-        # 没结束（含 prompt_ephemeral 触发的 proactive response），client 再发
-        # response.create 会被 reject。phase != IDLE 时说明 text-mode proactive
-        # 流水线在跑，也跳。两条都不满足时 callbacks 留在队列，等
-        # _finalize_turn_after_emit 在 response.done 之后重新调用本函数重试。
+        # Gate: realtime APIs allow only one active response. While users speak
+        # (server VAD automatically creates responses) or previous responses remain active
+        # (including prompt_ephemeral proactive responses), new response.create
+        # is rejected. Also skip non-IDLE phases with text-mode proactive pipelines running.
+        # If either gate blocks, retain callbacks for
+        # _finalize_turn_after_emit to retry after response.done.
         if isinstance(self.session, OmniRealtimeClient):
             # Serialize the whole check-and-claim against concurrent trigger
             # tasks (see ``_voice_proactive_inject_lock``). Hold the lock across
@@ -868,8 +1016,8 @@ class ProactiveMixin:
                         )
                     return False
 
-                # ⚠️ 不能砍成短码：_build_callback_instruction 的模板有 zh-TW 行，
-                # 短码在这里就把字形丢了，归一化器再也救不回来（issue #2500）。
+                # ⚠ Preserve full locale codes: _build_callback_instruction has zh-TW templates;
+                # short codes discard script irrecoverably before normalization (issue #2500).
                 _lang = normalize_language_code(self.user_language, format='full')
                 voice_snapshot = [
                     cb for cb in proactive_cbs
@@ -917,14 +1065,14 @@ class ProactiveMixin:
                 _reject_state = {
                     "rejected": False,
                     "acknowledged": False,
-                    # 已经为这次拒绝退休过会话没有？拒绝可能在 inject 返回**之前**
-                    # 落（分支里同步退休），也可能在返回之后、ack grace 到期之前落
-                    # （那时执行早已越过那个分支，只能由本回调补）。两条路共用这个
-                    # 标志，免得重复退休。
+                    # Was this rejection already handled by retiring the session? It may arrive **before** inject
+                    # returns (synchronous retirement branch), or afterward before ack grace expires,
+                    # when execution passed that branch and only callbacks can compensate. Share this
+                    # flag to prevent duplicate retirement.
                     "retired": False,
-                    # _stream_cb_media 是否已经返回。媒体退休判据要 count>1，而这个
-                    # 计数只有在媒体阶段跑完之后才是终态；迟到的媒体拒绝（返回之后
-                    # 才落）此时可以安全地在回调里判。
+                    # Whether _stream_cb_media returned. Media-retirement criteria need count>1, but counts
+                    # become final only after media processing completes. Late media rejection after return
+                    # can safely be evaluated in callbacks.
                     "media_done": False,
                 }
 
@@ -949,28 +1097,28 @@ class ProactiveMixin:
                         _snapshot
                     )
                     _state["rejected"] = True
-                    # 迟到的拒绝：inject 已经返回、执行越过了那条同步退休的分支。
-                    # 已提交的原生图仍留在这条活着的会话里，而 cb 正在被复原重试 ——
-                    # 不退休就会重复投递，或者让那张图配上一个不相关的回合。
-                    # 被拒的是**图**时不在这里退休：这个回调是在 stream_image 过程
-                    # 中触发的，native_media_prefix_count 还没走完（后面的图尚未
-                    # 记账），拿它判 >1 会漏。媒体那条留在 _stream_cb_media 返回后的
-                    # 分支里判 —— 那时计数才是终态。
+                    # Late rejection: inject returned and passed synchronous retirement.
+                    # Native images remain committed in this live session while callbacks are restored for retry;
+                    # without retirement they duplicate or accompany unrelated future turns.
+                    # Do not retire here for rejected **images**: callbacks run during stream_image,
+                    # before native_media_prefix_count finishes accounting for later images.
+                    # Evaluating >1 early misses cases; handle media after _stream_cb_media returns,
+                    # when counts are final.
                     #
-                    # 被拒的是 callback item / response.create 时才在这里退休：配对
-                    # 文本没落地，任何已提交的图都成了孤儿；而且这个拒绝可能落在
-                    # inject 返回**之后**，那时执行早已越过下面那条分支。
+                    # Retire here only for callback-item /response.create rejection: paired text never
+                    # committed, orphaning any submitted images. Rejection can arrive **after**
+                    # inject returns and execution passes the branch below.
                     if media:
-                        # 媒体被拒：只有当被拒那张之外另有图已经落进会话时才是孤儿
-                        # 前缀。计数在媒体阶段跑完之前还没走完，所以只有"迟到的"
-                        # 媒体拒绝（_stream_cb_media 已返回）能在这里判 —— 早到的那
-                        # 些由下面 _stream_cb_media 返回后的分支处理。
+                        # Rejected media creates orphan prefixes only if other images already committed.
+                        # Counts remain incomplete until media processing ends, so only **late** rejection
+                        # after _stream_cb_media returns can be evaluated here; earlier ones use
+                        # the post-return branch below.
                         orphaned = (
                             _state["media_done"]
                             and native_media_prefix_count > 1
                         )
                     else:
-                        # 文本被拒：配对文本没落地，任何已提交的图都成了孤儿。
+                        # Rejected text leaves all committed images orphaned.
                         orphaned = native_media_prefix_committed
                     if orphaned and not _state["retired"]:
                         _state["retired"] = True
@@ -978,10 +1126,10 @@ class ProactiveMixin:
                         self._fire_task(_retire_unsafe_media_session())
                     if not retry_snapshot:
                         return False
-                    # 有东西可重试就排一次：被拒的请求不保证产生 response.done，
-                    # 退休过会话之后更不会有。媒体拒绝那条是**委托**进来的
-                    # （_on_voice_media_rejected 调用本函数），所以重试统一收在这里
-                    # 一处，那边不再各排一次 —— 否则同一次拒绝会排两遍。
+                    # Schedule one retry whenever content remains: rejected requests need not emit response.done,
+                    # particularly after retirement. Media rejection is **delegated** here
+                    # via _on_voice_media_rejected, so centralize retries here,
+                    # rather than scheduling in both places for one rejection.
                     self._schedule_proactive_retry(
                         self.proactive_manager.min_gap_s
                     )
@@ -1050,10 +1198,10 @@ class ProactiveMixin:
                     return True
 
                 def _on_voice_media_rejected(error_msg: str) -> None:
-                    # 委托：退休判定与延迟重试都在 _on_voice_inject_rejected 里做。
-                    # 原来这里另排一次重试（理由是媒体拒绝可能等不到能用的
-                    # response.done）—— 那个理由现在由内层的无条件重试覆盖，两处都
-                    # 排会让同一次拒绝重试两遍。
+                    # Delegate retirement and delayed retries to _on_voice_inject_rejected.
+                    # Previously scheduled an extra retry here because media rejection might never get usable
+                    # response.done; inner unconditional retry now covers that,
+                    # and dual scheduling retries one rejection twice.
                     _on_voice_inject_rejected(error_msg, media=True)
 
                 # Stream any images carried by these cues into the (guaranteed)
@@ -1292,8 +1440,8 @@ class ProactiveMixin:
                         native_media_prefix_count > 1
                         and not _reject_state["retired"]
                     ):
-                        # 只有当被拒那张之外另有图已经落进会话时才是孤儿前缀。
-                        # 明确的拒绝证明被拒那张没落进去，count==1 时不退休。
+                        # Orphan prefixes require another image committed besides the rejected one.
+                        # Explicit rejection proves that image did not commit; do not retire for count==1.
                         _reject_state["retired"] = True
                         _mark_media_session_unsafe()
                         await _retire_unsafe_media_session()
@@ -1318,11 +1466,11 @@ class ProactiveMixin:
                             voice_commit_snapshot
                         )
                         if native_media_prefix_committed:
-                            # 原生图已经不可逆地写进这条会话，而这些 callback 刚被
-                            # 撤回 —— 配对文本永远不会送出去，callback 也已经离开
-                            # 队列（没有重试会来收拾）。留下的就是一张没有说明的
-                            # 图，会被后面某个不相关的用户回合消费。与其他几条
-                            # 「媒体已提交、文本未落地」的路同一判据：退休会话。
+                            # Native images committed irreversibly, but these callbacks were withdrawn;
+                            # paired text will never send, and callbacks already left
+                            # queues with no retry cleanup. Unexplained images remain for unrelated
+                            # user turns. Same criterion as other media-committed/text-missing
+                            # paths: retire sessions.
                             _mark_media_session_unsafe()
                             await _retire_unsafe_media_session()
                         logger.info(
@@ -1406,20 +1554,20 @@ class ProactiveMixin:
                     # WS error / fatal / response_already_active race — keep cbs
                     # in the queue so the next phase-idle hook retries them.
                     if native_media_prefix_committed:
-                        # 图已经不可逆地写进了这条会话，配对的 callback 文本却没
-                        # 送出去：会话里留着一张没有说明的图，会被后面某个不相关
-                        # 的用户回合消费掉，而重试又会再发一遍。与上面
-                        # media_ok=False / 活动抢跑两条路同一判据——媒体已提交但
-                        # 文本未落地，就是一笔不完整的事务，退休这条会话。
+                        # Images irreversibly committed while paired callback text did not send:
+                        # unexplained images remain for unrelated future turns,
+                        # while retries resend them too. Match media_ok=False /activity-overtake
+                        # paths above: committed media without paired text
+                        # is an incomplete transaction; retire the session.
                         _mark_media_session_unsafe()
                         await _retire_unsafe_media_session()
                     logger.warning(
                         "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry (native prefix committed=%s)",
                         self.lanlan_name, exc, native_media_prefix_committed,
                     )
-                    # 失败的注入没有产生 response，也就不会有 response.done 来重新
-                    # 驱动队列；退休会话之后更没有后续事件。与上面媒体失败那条路
-                    # 同款：自己补一次延迟重试，否则 cb 要等一个不相关的用户回合。
+                    # Failed injection creates no response/response.done to drive the queue,
+                    # especially after retirement. Like media failure above, schedule a delayed
+                    # retry instead of waiting for an unrelated user turn.
                     self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
                     return False
                 finally:
@@ -1434,9 +1582,9 @@ class ProactiveMixin:
                 # handler scheduled). The active response that caused the
                 # rejection will fire response.done and trigger the retry.
                 if _reject_state["rejected"]:
-                    # 退休与重试都由 _on_voice_inject_rejected 负责 —— 任何拒绝都先
-                    # 经过它，无论落在 inject 返回之前还是之后。这里只记录并退出，
-                    # 免得两处各做一次（会重复排重试、也可能重复退休）。
+                    # _on_voice_inject_rejected handles both retirement and retry for every rejection,
+                    # before or after inject returns. Only record and return here,
+                    # avoiding duplicate retries and potentially retirement.
                     logger.info(
                         "[%s] trigger_agent_callbacks: voice proactive inject rejected; keeping %d cb(s) queued for retry (native prefix committed=%s, retired=%s)",
                         self.lanlan_name,
@@ -1505,8 +1653,8 @@ class ProactiveMixin:
 
         callbacks_snapshot = list(proactive_cbs)
 
-        # 原子 check-and-claim：若另一路 proactive（router/greeting）在跑或 AI
-        # 正在为用户回复，SM 拒绝本次投递，callbacks 留在 pending 下轮重试。
+        # Atomic check-and-claim: SM rejects while other proactive work (router/greeting)
+        # or AI user responses run; callbacks remain pending for later retry.
         claim_session = self.session if isinstance(self.session, OmniOfflineClient) else None
         if not await self.state.try_start_proactive(session=claim_session):
             logger.debug(
@@ -1530,8 +1678,8 @@ class ProactiveMixin:
         # window is real). Filtering by ``delivery_mode == "passive"`` would
         # wipe such fresh proactive cbs since ``callbacks_snapshot`` only
         # restores pre-claim entries on exception. preempt / not-delivered /
-        # exception 路径靠 ``extend(callbacks_snapshot)`` 把本次 snapshot
-        # 放回队列，保证投递失败不会丢消息。
+        # Exception paths restore callbacks_snapshot via extend,
+        # preventing message loss on failed delivery.
         snapshot_ids = {id(cb) for cb in callbacks_snapshot}
         self.pending_agent_callbacks = [
             cb for cb in self.pending_agent_callbacks
@@ -1634,11 +1782,11 @@ class ProactiveMixin:
                     self.proactive_manager.release_inflight_noop()
                     return False
                 callbacks_snapshot[:] = active_callbacks
-                # sticky preempt 复查：与 prepare_proactive_delivery 同样，在持有
-                # self.lock 的临界区内判定。USER_INPUT 路径在本锁段内翻 flag 和
-                # 写 user sid 是原子的，如果此处 preempt==True 说明用户已抢到
-                # 本轮 turn，必须放弃本次 proactive（否则会把用户刚写好的 sid
-                # 再覆盖成 proactive sid，污染 TTS/chunk 分发）。
+                # Sticky preempt recheck, like prepare_proactive_delivery, under self.lock.
+                # USER_INPUT atomically sets the flag and user sid within this lock;
+                # preempt=True means users already took this turn,
+                # requiring abandonment instead of overwriting their sid
+                # with proactive sid and corrupting TTS/chunk routing.
                 if self.state.is_proactive_preempted():
                     logger.info("[%s] trigger_agent_callbacks: preempted before sid claim, skipping", self.lanlan_name)
                     self.pending_agent_callbacks.extend(active_callbacks)
@@ -1647,19 +1795,19 @@ class ProactiveMixin:
                 self._tts_done_queued_for_turn = False
                 self._tts_done_pending_until_ready = False
                 proactive_sid = self.current_speech_id
-            # SM：发射 CLAIM（把 proactive_sid 写入 state，供诊断/订阅者观察）
-            # 随后立刻 PHASE2，因 prompt_ephemeral 没有可分离的 phase1/phase2 边界
+            # SM fires CLAIM, exposing proactive_sid to diagnostics/subscribers,
+            # then PHASE2 immediately because prompt_ephemeral has no separable phase1/phase2 boundary.
             await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
             await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
             logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
-            # 更新字数限制（可能用户在对话期间修改了设置）
+            # Refresh length limits, potentially changed during conversation.
             if hasattr(self.session, 'update_max_response_length'):
                 self.session.update_max_response_length(self._get_text_guard_max_length())
             # NOTE: queue mutation moved to caller (trigger_agent_callbacks
             # extracts the proactive subset before claim). Do NOT clear
             # pending_agent_callbacks here — passive cbs would also get wiped.
-            # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
-            # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
+            # Per-task contextvar lets handle_text_data recognize this prompt_ephemeral
+            # callback chain's chunks and drop them after user sid takeover.
             # Collect proactive images carried ON the callbacks and pass them
             # EXPLICITLY to prompt_ephemeral — separate from the user's
             # _pending_images staging queue (which holds the user's next
@@ -2678,10 +2826,10 @@ class ProactiveMixin:
             # in OmniOfflineClient._pending_images, whose session-global
             # next-consumer semantics let a concurrent text task steal it.
             "system_prefix_images": [],
-            # 送出成功后仍挂着的图片拒绝回调。拒绝可能晚于 send 返回才到，所以
-            # stream_image 不会自己摘；但拿到 session.updated 屏障这种「provider
-            # 已处理」的更强证据之后它们就无关了，而每个闭包扣着整条 callback
-            # （可能数张 ~13MB base64）。交给屏障那一侧按 id 摘掉。
+            # Image-rejection callbacks remain after successful sends because rejections may arrive late;
+            # stream_image cannot remove them immediately. Stronger provider-processed evidence
+            # such as session.updated barriers makes them irrelevant; each closure retains entire
+            # callbacks, possibly several ~13MB base64 images. Barrier code removes by id.
             "rejection_event_ids": [],
         }
 
@@ -2731,13 +2879,13 @@ class ProactiveMixin:
             and bool(getattr(session, "_supports_native_image", False))
             and getattr(raw_visual_mode, "value", raw_visual_mode) == "native"
         )
-        # 先截到 drain 真正会渲染的那段 FIFO 前缀再 stage。
+        # Stage only the FIFO prefix drain will actually render.
         #
-        # drain 会在「带图的 proactive cue」处 STOP（它等的是 proactive 那条路）。
-        # staging 若越过它继续挂图，而它前面那条 passive 还是会被渲染，Offline
-        # 调用方就会把**整份** system_prefix_images 交给这一轮 —— 那条 proactive
-        # 的图脱离它自己的文字被送出去，而它本身还留在队列里，下次会把同一张图
-        # 再送一遍。预算记账同理：不该为这一轮根本不会投的东西花名额。
+        # Drain STOPs at image-bearing proactive cues awaiting proactive delivery.
+        # Staging beyond it while earlier passive cues render makes Offline
+        # consumers send the **whole** system_prefix_images this round, separating proactive
+        # images from their text, leaving the cue queued to resend images
+        # next time. Budgets likewise must not pay for content not delivered this round.
         _renderable = []
         for _cb in callbacks:
             if (
@@ -2750,21 +2898,21 @@ class ProactiveMixin:
         callbacks = _renderable
         if not callbacks:
             return outcome
-        # 每轮图片预算。#2964 引入的 passive/text 消费点是 main 的
-        # split_callbacks_by_image_budget 尚未覆盖的第三个消费点（前两个是
-        # proactive 投递和语音路径），判据完全相同，所以直接复用那个共享 helper，
-        # 而不是在这里另写一套：callback 原子取舍、严格 FIFO、队头即使单条超限
-        # 也照take（否则它永远排不进来、把后面全堵死）。
-        # 溢出的**留在队列里**等下一轮：不设 staged 标记 →
-        # _callback_media_ready_for_session 为假 → drain 不会摘走它。
+        # Per-round image budget. #2964 passive/text consumption is a third site not yet covered
+        # by main's split_callbacks_by_image_budget (first two: proactive and voice).
+        # Criteria are identical; reuse the shared helper instead of another implementation:
+        # atomic callback selection, strict FIFO, taking oversized head entries too
+        # so they cannot permanently block the queue.
+        # **Retain overflow in queue** for later; no staged marker means
+        # _callback_media_ready_for_session=False and drain leaves it queued.
         callbacks, _image_overflow = split_callbacks_by_image_budget(list(callbacks))
         for _taken in callbacks:
             if isinstance(_taken, dict):
                 _taken.pop(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY, None)
         for _deferred in _image_overflow:
             if isinstance(_deferred, dict):
-                # 专属状态：drain 要按「保序等下一轮」处理，而不是当成「挂图失败」
-                # 退化成 text-only —— 那会把它的图永久丢掉。
+                # Dedicated status makes drain preserve order for next round, rather than classify
+                # attachment failure and degrade to text-only, permanently losing images.
                 _deferred[PASSIVE_MEDIA_BUDGET_DEFERRED_KEY] = True
         if _image_overflow:
             logger.info(
@@ -2778,8 +2926,8 @@ class ProactiveMixin:
             if not isinstance(callback, dict):
                 continue
             images = list(callback.get("media_images") or [])
-            # 标记只反映**最近一次**尝试：新一轮开始就先清掉，让下面的失败分支
-            # 重新决定它是瞬时还是终局。
+            # Markers reflect only the **latest** attempt: clear at round start, letting failure
+            # branches decide transient versus terminal again.
             callback.pop(PASSIVE_MEDIA_TRANSIENT_KEY, None)
             if not images:
                 callback.pop("_passive_media_session_id", None)
@@ -2852,12 +3000,12 @@ class ProactiveMixin:
                         self.lanlan_name,
                         exc,
                     )
-                    # 刻意**不**打 PASSIVE_MEDIA_TRANSIENT_KEY：drain 对 staging
-                    # 异常的既定处置是"文字照投、图这一轮带不上"（best-effort），
-                    # 由 test_first_native_passive_media_exception_requires_session_
-                    # retirement 等三条用例钉死。打上瞬时标记会让 drain 改为多留
-                    # 一轮，把那条契约推翻。
-                    # swap prime 那边的 FIFO 问题不在这里解——见
+                    # Deliberately omit PASSIVE_MEDIA_TRANSIENT_KEY: established staging-exception handling
+                    # delivers text without images this round, best-effort,
+                    # pinned by test_first_native_passive_media_exception_requires_session_
+                    # retirement and two other tests. Transient markers retain another round
+                    # and overturn that contract.
+                    # Do not solve swap-prime FIFO issues here; see
                     # _render_claimed_passive_callbacks_for_swap_prime。
                     callback["media_images"] = images
                     if pending_images_snapshot is not None:
@@ -2897,7 +3045,7 @@ class ProactiveMixin:
                 if not accepted:
                     reason = getattr(stage_result, "rejection_reason", None)
                     if reason not in self._terminal_callback_image_rejections():
-                        # 瞬时失败：值得下一轮再试，drain 会据此多留一轮。
+                        # Transient failures merit another round; drain retains once more.
                         callback[PASSIVE_MEDIA_TRANSIENT_KEY] = True
                         callback["media_images"] = images
                         if pending_images_snapshot is not None:
@@ -3670,25 +3818,25 @@ class ProactiveMixin:
         ended up here because the SM denied the claim earlier). The caller
         therefore should NOT prepend an additional notification template.
         """
-        # 三方合并（#2964 × #2835）：main 侧加在 drain 里的那几道闸（purge、topic
-        # hook 回收、stale coalesce 回收、deliverable 过滤、swap claim、token 预算）
-        # 在本 PR 里**已经全部在 _claim_agent_callbacks_for_llm 内**——PR 把它们整合
-        # 到了「选取并围栏快照」那一步，因为 callback 媒体的 staging 必须发生在选取
-        # 之后、drain 之前。在这里再来一遍是重复的。
+        # Three-way merge (#2964 ×#2835): main's drain gates (purge, topic
+        # hook reclamation, stale-coalesce reclamation, deliverable filtering, swap claims, token budgets)
+        # **already live in _claim_agent_callbacks_for_llm** in this PR, integrated
+        # into selecting/fencing snapshots because media staging must follow selection
+        # and precede drain. Repeating them here duplicates work.
         if callbacks_snapshot is None:
             callbacks_snapshot = self._claim_agent_callbacks_for_llm()
         callbacks_snapshot = list(callbacks_snapshot or [])
         queued_obj_ids = {id(callback) for callback in self.pending_agent_callbacks}
-        # 判据（#2964 × #2835，按维护者拍板）：**文字一定投出去，图 best effort**。
+        # Criterion (#2964 ×#2835, maintainer decision): **always deliver text, images best-effort**.
         #
-        #   * passive + 带图：照投文字。图挂上了（_stage_passive_callback_media 已经
-        #     把它拷进 system_prefix_images / 送给 provider）就跟着走，没挂上就这一轮
-        #     不带 —— 但**不因此扣住这条通知**。扣住会让它在「两条路都投不了」时永远
-        #     卡在队列里，那比丢图更糟。
-        #   * proactive + 带图：STOP。它等的是 proactive 那条路（那条能带图），而且
-        #     跳过它去投更晚的 cue，模型听到的顺序就和排队顺序反了。STOP 而不是
-        #     skip：它后面的一律跟着等。
-        #   * 已退队 / 已撤回：跳过即可 —— 它们不会再出现，挡住后面没有意义。
+        #   * Passive with images: deliver text. Attached media (already copied to
+        #     system_prefix_images /provider by _stage_passive_callback_media) accompanies it;
+        #     otherwise omit this round, but **never withhold the notification** because of it.
+        #     Both delivery paths might fail forever, worse than losing an image.
+        #   * Proactive with images: STOP, awaiting the image-capable proactive path.
+        #     Skipping to later cues reverses model-observed queue order. STOP,
+        #     never skip; every later entry waits too.
+        #   * Already removed/withdrawn: skip; absent entries need not block later ones.
         _session = getattr(self, "session", None)
         active_callbacks = []
         for callback in callbacks_snapshot:
@@ -3702,14 +3850,14 @@ class ProactiveMixin:
             )
             if _has_media and callback.get("delivery_mode") != "passive":
                 break
-            # 无条件检查：split_callbacks_by_image_budget 是**严格 FIFO** 的，预算
-            # 耗尽之后连纯文本 callback 也会被延后。只在 _has_media 时检查的话，
-            # 队列形如「带图(占满预算) → 纯文本 → 带图」时那条纯文本会先被消费掉，
-            # 顺序就反了；而如果溢出队列里只有纯文本，它会被整条错误消费。
+            # Always check: split_callbacks_by_image_budget is **strict FIFO**; exhausting
+            # budget defers text-only callbacks too. Checking only _has_media consumes
+            # text early in image(full budget) ->text ->image queues,
+            # reversing order; all-text overflow would also be wrongly consumed.
             if callback.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY):
-                # 这一轮的图片预算根本没轮到它 —— 它没有「尝试失败」，所以既不套
-                # 重试上限，也不退化成 text-only（退化 = 把它的图永久丢掉，而预算
-                # 延后正是为了避免这个）。保序 STOP，整条留到下一轮。
+                # This round's image budget never attempted this entry, so apply neither failure-retry
+                # caps nor text-only degradation, which permanently loses images that budget
+                # deferral protects. STOP in order and retain the whole entry for next round.
                 logger.info(
                     "[%s] passive callback deferred by the per-turn image "
                     "budget; keeping it queued whole",
@@ -3724,10 +3872,10 @@ class ProactiveMixin:
                     callback.get(PASSIVE_MEDIA_TRANSIENT_KEY)
                     and _retries < PASSIVE_MEDIA_MAX_RETRIES
                 ):
-                    # 最近一次是**瞬时**失败（网络抖 / provider 临时拒），下一轮
-                    # 大概率能成，为它多留一轮。STOP 而不是 skip：跳过它去投更晚
-                    # 的 cue，模型听到的顺序就反了。留够次数还不成就走下面的
-                    # best-effort，不会无限扣住。
+                    # Latest failure was **transient** (network/provider rejection), likely recovering
+                    # next round; retain once more. STOP, not skip, preserving model-observed
+                    # queue order. After enough retained retries, use best-effort below,
+                    # never withholding forever.
                     callback[PASSIVE_MEDIA_RETRY_KEY] = _retries + 1
                     logger.info(
                         "[%s] passive callback media hit a transient failure; "
@@ -3737,8 +3885,8 @@ class ProactiveMixin:
                         PASSIVE_MEDIA_MAX_RETRIES,
                     )
                     break
-                # best effort：文字照走，图这一轮带不上。说出来 —— 静默丢失正是
-                # 当初让这个问题难被发现的原因。
+                # Best-effort: deliver text without images this round. Report it: silent loss
+                # originally made this issue hard to detect.
                 logger.warning(
                     "[%s] passive callback delivered as text-only; %d image(s) "
                     "were not staged for this session%s",
@@ -3752,7 +3900,7 @@ class ProactiveMixin:
             return ""
         delivered_to_prompt = False
         try:
-            # 同上；user_language 为空时才回落全局语言（此前回落的是短码）。
+            # Likewise; use global language only when user_language is empty, formerly short-code fallback.
             _lang = normalize_language_code(
                 getattr(self, 'user_language', '') or get_global_language_full(), format='full'
             )

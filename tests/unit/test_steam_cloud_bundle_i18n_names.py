@@ -714,8 +714,8 @@ def test_apply_bundle_rejects_archive_entries_outside_cloudsave_root(tmp_path):
 @pytest.mark.unit
 @pytest.mark.parametrize("hostile_key", ["../escaped.txt", "/abs/escaped.txt", "memory/../../escaped.txt"])
 def test_apply_bundle_rejects_manifest_file_keys_outside_stage_roots(hostile_key: str, tmp_path):
-    # zip 条目本身全部安全，恶意路径只藏在 manifest 的 files key 里——
-    # 复制源/替换目标的拼接必须独立于 zip 解压守卫完成根目录约束。
+    # All ZIP entries are safe; the malicious path is hidden only in the manifest's files keys.
+    # Constrain copy-source/replacement-target joins to the root independently of the ZIP extraction guard.
     cm = _make_config_manager(tmp_path / "target")
     bootstrap_local_cloudsave_environment(cm)
 

@@ -97,10 +97,10 @@ class InboundBodySizeLimitMiddleware:
 
         configured_route = self._matches_configured_route(scope)
         bounded_multipart = configured_route and self._is_bounded_multipart(content_type)
-        # preflight 按路由触发，不按 content-type：这些路由的 handler 声明了
-        # Form/File 参数，FastAPI 会在进入 handler（也就是路由内部那套同样的
-        # 本地访问 / CSRF 校验）之前就把 body 解析掉。只对 multipart 跑 preflight
-        # 的话，跨域客户端换个 content-type 就能反复让服务器解析大 body 再被拒。
+        # Trigger preflight by route, not content-type: these route handlers declare
+        # Form/File parameters, so FastAPI parses the body before entering the handler and its
+        # equivalent local-access/CSRF checks. Running preflight only for multipart lets cross-origin
+        # clients change content-type and repeatedly force large-body parsing before rejection.
         if configured_route and self.multipart_preflight is not None:
             rejected = self.multipart_preflight(scope)
             if rejected is not None:

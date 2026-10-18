@@ -1,4 +1,4 @@
-"""MCP 路由引擎。"""
+"""MCP routing engine."""
 
 from __future__ import annotations
 
@@ -16,19 +16,19 @@ from plugin.sdk.adapter.gateway_models import (
 if TYPE_CHECKING:
     from plugin.plugins.mcp_adapter import MCPClient
 
-# 工具注册回调类型：(tool_id, display_name, description, schema, server_name, tool_name)
+# Tool registration callback type: (tool_id, display_name, description, schema, server_name, tool_name)
 ToolRegisterCallback = Callable[[str, str, str, Optional[dict], str, str], Awaitable[bool]]
 ToolUnregisterCallback = Callable[[str], Awaitable[bool]]
 
 
 class MCPRouteEngine:
     """
-    MCP 路由引擎。
+    MCP routing engine.
     
-    根据请求决定路由目标：
-    - 如果 target_entry_id 匹配已注册的 MCP tool，路由到 SELF
-    - 如果 target_plugin_id 和 target_entry_id 都有，路由到 PLUGIN
-    - 否则 DROP
+    Selects the routing target based on the request:
+    - If target_entry_id matches a registered MCP tool, route to SELF
+    - If both target_plugin_id and target_entry_id are present, route to PLUGIN
+    - Otherwise, DROP
     """
 
     def __init__(
@@ -39,25 +39,25 @@ class MCPRouteEngine:
         on_tool_unregister: Optional[ToolUnregisterCallback] = None,
     ):
         """
-        初始化路由引擎。
+        Initialize the routing engine.
         
         Args:
-            mcp_clients: MCP 客户端映射 {server_name: client}
-            logger: 日志记录器
-            on_tool_register: 工具注册回调（用于通知前端）
-            on_tool_unregister: 工具注销回调（用于通知前端）
+            mcp_clients: MCP client mapping {server_name: client}.
+            logger: Logger.
+            on_tool_register: Tool registration callback (used to notify the frontend)
+            on_tool_unregister: Tool unregistration callback (used to notify the frontend)
         """
         self._mcp_clients = mcp_clients
         self._logger = logger
         self._on_tool_register = on_tool_register
         self._on_tool_unregister = on_tool_unregister
-        # 缓存 tool name -> server name 映射
+        # Cache the tool name -> server name mapping
         self._tool_index: dict[str, str] = {}
-        # 缓存 tool 详情 {tool_id: {name, description, schema}}
+        # Cache tool details {tool_id: {name, description, schema}}
         self._tool_details: dict[str, dict] = {}
 
     def rebuild_tool_index(self) -> None:
-        """重建 tool 索引（同步版本，不触发回调）。"""
+        """Rebuild the tool index (synchronous version; does not trigger callbacks)."""
         self._tool_index.clear()
         self._tool_details.clear()
         for server_name, client in self._mcp_clients.items():
@@ -86,14 +86,14 @@ class MCPRouteEngine:
     
     async def register_server_tools(self, server_name: str, client: "MCPClient") -> int:
         """
-        注册服务器的所有工具并触发回调。
+        Register all tools from a server and trigger callbacks.
         
         Args:
-            server_name: 服务器名称
-            client: MCP 客户端
+            server_name: Server name
+            client: MCP client
             
         Returns:
-            注册的工具数量
+            Number of registered tools
         """
         count = 0
         for tool in client.tools:
@@ -153,13 +153,13 @@ class MCPRouteEngine:
     
     async def unregister_server_tools(self, server_name: str) -> int:
         """
-        注销服务器的所有工具并触发回调。
+        Unregister all tools from a server and trigger callbacks.
         
         Args:
-            server_name: 服务器名称
+            server_name: Server name
             
         Returns:
-            注销的工具数量
+            Number of unregistered tools
         """
         tools_to_remove = [
             tool_id for tool_id, srv in self._tool_index.items()
@@ -203,15 +203,15 @@ class MCPRouteEngine:
 
     async def decide(self, request: GatewayRequest) -> Result[RouteDecision, TransportError]:
         """
-        决定请求路由。
+        Decide how to route a request.
         
         Args:
-            request: Gateway 请求
+            request: Gateway request.
             
         Returns:
-            路由决策
+            Routing decision
         """
-        # 如果显式指定了 plugin_id 和 entry_id，路由到 PLUGIN
+        # If both plugin_id and entry_id are specified explicitly, route to PLUGIN
         if request.target_plugin_id is not None and request.target_entry_id is not None:
             return Ok(RouteDecision(
                 mode=RouteMode.PLUGIN,
@@ -220,7 +220,7 @@ class MCPRouteEngine:
                 reason="explicit plugin target",
             ))
 
-        # 如果只有 entry_id，检查是否是 MCP tool
+        # If only entry_id is present, check whether it is an MCP tool
         if request.target_entry_id is not None:
             if request.target_entry_id in self._tool_index:
                 return Ok(RouteDecision(
@@ -229,30 +229,30 @@ class MCPRouteEngine:
                     reason=f"MCP tool on server '{self._tool_index[request.target_entry_id]}'",
                 ))
 
-            # 对于 TOOL_CALL action，如果找不到 tool，返回 DROP
+            # For a TOOL_CALL action, return DROP if the tool cannot be found
             if request.action == GatewayAction.TOOL_CALL:
                 return Ok(RouteDecision(
                     mode=RouteMode.DROP,
                     reason=f"MCP tool '{request.target_entry_id}' not found",
                 ))
 
-        # 对于 EVENT_PUSH，可以考虑广播（暂时 DROP）
+        # For EVENT_PUSH, broadcasting could be considered (currently DROP)
         if request.action == GatewayAction.EVENT_PUSH:
             return Ok(RouteDecision(
                 mode=RouteMode.DROP,
                 reason="event push not routed",
             ))
 
-        # 默认 DROP
+        # Default: DROP
         return Ok(RouteDecision(
             mode=RouteMode.DROP,
             reason="no route target specified",
         ))
 
     def get_tool_server(self, tool_name: str) -> str | None:
-        """获取 tool 所在的 server 名称。"""
+        """Get the server name that owns a tool."""
         return self._tool_index.get(tool_name)
 
     def list_tools(self) -> list[tuple[str, str]]:
-        """列出所有 tool 及其所在 server。"""
+        """List all tools and their server names."""
         return [(name, server) for name, server in self._tool_index.items()]

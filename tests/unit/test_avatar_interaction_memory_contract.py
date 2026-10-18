@@ -13,8 +13,8 @@ from main_logic.mirror_meta import (
 )
 
 
-# 测试公用 master_name —— 任意字符串即可，关键是验证它会被原样展开进 memory_note，
-# 而不是回落到"主人"等物化称呼。
+# Shared test master_name: any string works; verify it expands verbatim into memory_note,
+# rather than falling back to objectifying forms such as 'master'.
 MASTER = "小明"
 
 
@@ -200,24 +200,24 @@ def test_avatar_instruction_is_one_direct_fact_and_ignores_text_context():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 反 AI 物化护栏：禁止"主人 / Your master / ご主人さま / 주인 / Хозяин"
+# Guard against AI objectification: forbid "主人 / Your master / ご主人さま / 주인 / Хозяин"
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.unit
 def test_avatar_memory_templates_have_no_dehumanizing_literals():
-    """模板字面量层面：所有语言的所有 (tool, action) 模板都不能含物化称呼。
+    """At the template-literal level, no (tool, action) template in any language may contain objectifying forms of address.
 
-    这是项目核心价值观的护栏——以后再有人加新语言/新 action 模板，手滑写进
-    "主人"等附属称呼会被这条直接 fail 拦下。注意是检查模板原文（含 {master}
-    占位符），不是格式化后的输出。
+    This guards a core project value: new language/action templates accidentally containing
+    subordinate forms such as 'master' immediately fail this test. Check the raw template (including the {master}
+    placeholder), rather than formatted output.
     """
     forbidden = [
         "主人",
         "Your master",
         "your master",
         "Master",
-        "master",  # 跟 {master} 占位符以外的文字共存时 substring 也会命中
+        "master",  # Substring matching also catches terms alongside text other than the {master} placeholder
         "ご主人",
         "주인",
         "хозяин",
@@ -226,7 +226,7 @@ def test_avatar_memory_templates_have_no_dehumanizing_literals():
     for locale, by_tool in _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.items():
         for tool_id, by_action in by_tool.items():
             for action_id, template in by_action.items():
-                # 把 {master} 占位符抠掉，再检查残留文本是否含禁词
+                # Remove the {master} placeholder, then inspect remaining text for prohibited terms
                 stripped = template.replace("{master}", "")
                 for word in forbidden:
                     assert word not in stripped, (
@@ -237,7 +237,7 @@ def test_avatar_memory_templates_have_no_dehumanizing_literals():
 
 @pytest.mark.unit
 def test_avatar_memory_meta_expands_master_name_literally():
-    """build 出来的 memory_note 应该包含传入的 master_name，且不含物化称呼。"""
+    """The built memory_note must contain the supplied master_name without objectifying forms of address."""
     forbidden = ["主人", "Your master", "your master", "ご主人", "주인", "Хозяин", "хозяин"]
     payload = {"tool_id": "fist", "action_id": "poke", "intensity": "normal"}
     for locale in ("zh", "en", "ja", "ko", "ru", "zh-TW"):
@@ -250,8 +250,8 @@ def test_avatar_memory_meta_expands_master_name_literally():
 
 @pytest.mark.unit
 def test_avatar_memory_meta_empty_master_falls_back_to_neutral_word():
-    """master_name 传空时按本地化中性词兜底（"对方 / they / 相手 / 상대 /
-    собеседник"），同样不会回落到物化称呼。"""
+    """Empty master_name falls back to localized neutral terms (\"对方 / they / 相手 / 상대 /
+    собеседник\"), without reverting to objectifying address."""  # noqa: DOCSTRING_CJK
     forbidden = ["主人", "Your master", "your master", "ご主人", "주인", "Хозяин", "хозяин"]
     expected_neutral = {
         "zh": "对方",
@@ -272,7 +272,7 @@ def test_avatar_memory_meta_empty_master_falls_back_to_neutral_word():
 
 @pytest.mark.unit
 def test_avatar_memory_meta_master_name_passes_through_unchanged():
-    """各种 master_name 输入都应原样展开（中文、英文、emoji、含空格名字等）。"""
+    """Expand every master_name input verbatim (Chinese, English, emoji, names with spaces, etc.)."""
     payload = {"tool_id": "fist", "action_id": "poke", "intensity": "normal"}
     for name in ("小明", "Alice", "mochi", "猫猫", "Mei Wang"):
         meta = _build_avatar_interaction_memory_meta("zh", payload, name)

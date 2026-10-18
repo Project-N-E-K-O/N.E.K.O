@@ -274,7 +274,7 @@ def test_default_cap_is_16_mib():
     assert DEFAULT_MAX_INBOUND_BODY_BYTES == 16 * 1024 * 1024
 
 
-# --- 回归面：配置了 bounded multipart 之后，不匹配的请求必须原样走旧逻辑 ---
+# Regression coverage: after configuring bounded multipart, unmatched requests must retain existing behavior.
 
 
 def _scope(method, path, headers):
@@ -372,7 +372,7 @@ def test_preflight_runs_on_the_configured_route_whatever_the_content_type():
                                     (b"content-length", b"8"),
                                 ])))
         assert calls == ["/api/avatar-tools"], content_type
-        # 被 preflight 拒掉的请求绝不能到达下游，否则 body 还是会被解析。
+        # Requests rejected by preflight must never reach downstream, or their bodies would still be parsed.
         assert hit is False, content_type
         assert sent[0]["status"] == 403, content_type
 

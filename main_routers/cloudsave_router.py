@@ -21,7 +21,7 @@ and safety checks around runtime reload.
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -321,7 +321,7 @@ async def _force_terminate_session(character_name: str) -> tuple[bool, str]:
 
 
 def _character_config_lock():
-    # 晚绑定：测试会把这把模块级锁换成新的
+    # Late binding: tests replace this module-level lock.
     from utils import character_memory
 
     return character_memory.character_config_mutation_lock
@@ -347,7 +347,7 @@ async def _visit_name_refusal(config_manager, name: str):
         return None
     reason, names = blocked
     if reason == character_hooks.NAME_AMBIGUOUS:
-        # 链式改名的标记挂着不止两个名字：报本机真有的那个角色，不能按字母序挑到已不存在的中间名字
+        # Chained rename markers contain more than two names; report the character actually present locally, not an alphabetically earlier intermediate name that no longer exists.
         configured = set((await config_manager.aload_characters()).get("猫娘") or {})
         others = sorted(n for n in names if n != name)
         other = next((n for n in others if n in configured), others[0] if others else name)
@@ -540,8 +540,8 @@ async def _rollback_failed_character_download(
                     config_manager, backup_path, recent_locks_held=True,
                 )
             finally:
-                # 磁盘恢复失败也必须撤销导入期 recent identity；否则
-                # finally 释放文件锁后会把半提交的 redirect/generation 暴露出去。
+                # Even failed disk recovery must revoke import-time recent identity;
+                # otherwise releasing file locks in finally exposes partially committed redirects/generations.
                 rollback_cloudsave_character_import_registry(result)
             initialize_character_data = get_initialize_character_data()
             await initialize_character_data()
@@ -581,8 +581,8 @@ async def _complete_cloudsave_character_download(
             if not reload_ok:
                 raise RuntimeError(reload_error or "reload failed")
         except asyncio.CancelledError as exc:
-            # completion task 本身也可能被 shutdown 直接 cancel；此时仍须在
-            # retained recent locks 下把磁盘和 registry 回滚完，再传播取消。
+            # Shutdown may directly cancel the completion task itself; still roll back disk and registry
+            # under retained recent locks before propagating cancellation.
             await _rollback_failed_character_download(
                 config_manager, name, result, exc,
             )
@@ -687,8 +687,8 @@ async def post_cloudsave_character_download(name: str, request: Request):
             character_name=name,
         )
 
-    # 先查一次再做强制结束会话 / 释放句柄这些不可撤回的步骤：名字被串门标记占着时下面照样
-    # 会 409，不能先把用户的会话断掉。发布前在锁内还会再查一次
+    # Check before irreversible steps such as forcibly ending sessions / releasing handles: a visit marker reserving the name
+    # still causes 409 below, so do not disconnect the user first. Recheck under lock before publishing.
     async with _character_config_lock():
         visit_refusal = await _visit_name_refusal(config_manager, name)
     if visit_refusal is not None:
@@ -745,8 +745,8 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
                 reason=f"single_character_download:{name}",
             ):
-                # 判定与发布在角色配置变更锁内完成：否则并发的删除可以在判定之后写下退役标记
-                # 并提交，随后这里照样发布同名角色
+                # Evaluate and publish under the character-configuration mutation lock; otherwise concurrent deletion can retire
+                # and commit the name between evaluation and publication, after which this path recreates it.
                 async with _character_config_lock():
                     visit_refusal = await _visit_name_refusal(config_manager, name)
                     if visit_refusal is None:

@@ -1,11 +1,11 @@
 """Internal runtime wiring helpers for shared.core.base.
 
-⚠ 历史教训：本文件曾用 loguru.add/remove 给每个插件组件挂独立 sink，
-日志路径由 SDK 调用者乱传 log_dir 决定 → AppImage 打包后写到 squashfs 直接崩。
-现在统一走 utils.logger_config.RobustLoggerConfig（通过 setup_sdk_logging
-→ plugin.logging_config）。log_dir / max_bytes / backup_count 形参保留只为
-兼容旧调用，**不再生效**；本体决定路径与轮转。
-谁再往这里塞 loguru —— 按维护者口径就把谁杀了。lint: scripts/check_no_loguru.py。
+Historical lesson: this file once attached per-component sinks with loguru.add/remove,
+using SDK callers' arbitrary log_dir paths; AppImage then crashed writing to squashfs.
+All logging now uses utils.logger_config.RobustLoggerConfig through setup_sdk_logging
+and plugin.logging_config. log_dir / max_bytes / backup_count remain only for
+legacy compatibility and no longer affect behavior; the host controls paths and rotation.
+The maintainer emphatically forbids reintroducing loguru here. Lint: scripts/check_no_loguru.py.
 """
 
 from __future__ import annotations
@@ -123,11 +123,11 @@ def setup_plugin_file_logging(
     backup_count: int | None,
     previous_sink_id: int | None,
 ) -> int | None:
-    """配置 SDK 组件日志。
+    """Configure SDK component logging.
 
-    兼容形参 log_dir/max_bytes/backup_count 已废弃 —— 本体 RobustLoggerConfig
-    统一管路径与轮转。仅调用 setup_sdk_logging 应用 level，返回固定 sink_id=0
-    保持 base.py 的 self._file_sink_id: int | None 契约。
+    Compatibility parameters log_dir/max_bytes/backup_count are deprecated; the host's RobustLoggerConfig
+    controls paths and rotation. Call setup_sdk_logging only to apply level and return fixed sink_id=0
+    to preserve base.py's self._file_sink_id: int | None contract.
     """
     setup_sdk_logging(component=component, level=parsed_level)
     if previous_sink_id is None:

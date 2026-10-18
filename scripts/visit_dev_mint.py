@@ -61,8 +61,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from cryptography.hazmat.primitives import serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 
-# 项目模块导入时会初始化日志并往 stdout 打横幅：导入期间把 stdout 指到 stderr，
-# 保证 stdout 只有本脚本的 JSON / 票据（`--ticket-only` 可直接管道给别的命令）
+# Project imports initialize logging and print banners to stdout; redirect stdout to stderr during import
+# so stdout contains only this script's JSON / ticket (`--ticket-only` can pipe directly into other commands).
 with contextlib.redirect_stdout(sys.stderr):
     from config import visit_settings  # noqa: E402
     from main_logic.visit import identity  # noqa: E402
@@ -92,7 +92,7 @@ def resolve_keyfile(keyfile: str | os.PathLike[str] | None) -> Path:
 
 def load_private_key(path: str | os.PathLike[str]) -> Ed25519PrivateKey:
     """Load the dev private key in every format ``identity.load_dev_public_key`` accepts."""
-    # 与后端读开发公钥用同一个解析函数：两边接受的格式不会分叉
+    # Share the backend's development-public-key parser so accepted formats cannot diverge.
     return identity._private_key_from_bytes(Path(path).read_bytes())
 
 
@@ -126,7 +126,7 @@ def generate_keyfile(path: str | os.PathLike[str], *, force: bool = False) -> Ed
     except FileExistsError:
         raise DevMintError(f"{target} exists; pass --force to overwrite") from None
     if os.name == "posix":
-        # O_TRUNC 打开已存在的文件不会改权限位：写入私钥之前先在 fd 上收紧，避免以旧权限落盘
+        # O_TRUNC does not change existing file permissions: tighten permissions on the fd before writing the private key.
         os.fchmod(fd, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(pem)
@@ -162,7 +162,7 @@ def build_claims(
         raise DevMintError(f"role must be one of {ROLES}")
     if transport not in TRANSPORTS:
         raise DevMintError(f"transport must be one of {TRANSPORTS}")
-    # 显式给了就校验（含空串）；只有没给（None）时才生成
+    # Validate explicitly supplied values, including empty strings; generate only when absent (None).
     if visit_id is not None and not VISIT_ID_RE.fullmatch(visit_id):
         # The transport page and the backend session both require this format; never sign an unusable ticket
         raise DevMintError("visit_id must be 22 characters of [A-Za-z0-9_-]")

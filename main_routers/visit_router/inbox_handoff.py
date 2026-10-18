@@ -76,7 +76,7 @@ class InboxHandoff:
         self._segments = {name: _Segment() for name in SEGMENTS}
         self.handed_off = False
 
-    # —— 登记 ——
+    # -- Registration --
 
     def attach_speech(self, name: str, speech_id: str) -> None:
         """Register the speech id of a segment before its text reaches TTS."""
@@ -97,7 +97,7 @@ class InboxHandoff:
         seg = self._segments[name]
         if seg.queued_at is None:
             seg.queued_at = self._clock()
-        # 已登记过估时（入队后才失败的段）也不再算：它不会再出声，交还不为它多等
+        # Exclude segments whose duration was registered but which failed after enqueueing: they will not play, so handoff must not wait for them.
         seg.est_ms = 0
         seg.done = True
 
@@ -134,7 +134,7 @@ class InboxHandoff:
                 return True
         return False
 
-    # —— 判定 ——
+    # -- Decision --
 
     def _all_queued_at(self) -> Optional[float]:
         times = [seg.queued_at for seg in self._segments.values()]
@@ -170,8 +170,8 @@ class InboxHandoff:
         if all(seg.done for seg in segments):
             return True
         if not any(seg.voiced and not seg.done for seg in segments):
-            # 还没结束的段都不出声（语音关，或出声那段已结束 / 被跳过、剩下的改走文字）：与插件回调抢不了声音，
-            # 按文本的估时交还，不为一段已经结束的语音等满上限
+            # All unfinished segments are silent (voice off, or the voiced segment finished/was skipped and the rest became text), so they cannot compete with plugin callbacks for audio;
+            # hand back control using the text duration estimate instead of waiting the maximum for audio that has already ended.
             est = sum(seg.est_ms for seg in segments) / 1000.0
             return now >= queued + est
         if now >= queued + VISIT_INBOX_HANDOFF_MAX_S:

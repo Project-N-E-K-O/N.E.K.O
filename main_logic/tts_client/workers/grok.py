@@ -35,8 +35,8 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-# xAI 文档：'Individual deltas are capped at 15,000 characters'。
-# pending_text 累积 + 长 utterance 合并下可能超过这个上限，需要切片发送。
+# xAI documents individual deltas as capped at 15,000 characters.
+# Accumulated pending_text/merged long utterances may exceed this limit; split before sending.
 _XAI_TTS_DELTA_CAP = 15000
 
 def _grok_chunk_text_delta(text: str, cap: int = _XAI_TTS_DELTA_CAP) -> list[str]:
@@ -70,15 +70,15 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
             not aliases.
     """
     from utils.tts.providers.grok import normalize_grok_tts_voice
-    # 先 strip：whitespace-only 输入（如 '   '）等价于空，否则 'not voice_id'
-    # 判定通不过，残留的空白会被透传到 xAI 的 voice query param 引发合成失败。
+    # Strip first: whitespace-only input like '   ' equals empty; otherwise not voice_id
+    # fails and residual whitespace reaches xAI's voice query parameter, breaking synthesis.
     voice_id = (voice_id or "").strip()
     canonical_voice, recognized = normalize_grok_tts_voice(voice_id)
     if recognized or not voice_id:
-        # 识别出 native id / alias → 用归一化后的 canonical；
-        # 空输入 → normalize 已经返回 default (eve)。
+        # Recognized native IDs/aliases use normalized canonical values;
+        # empty input already normalizes to default eve.
         voice_id = canonical_voice
-    # else: 非空且不识别 → 视为用户自定义 8 位 voice_id，原样透传给 xAI
+    # Otherwise unrecognized nonempty input is a user-defined 8-character voice_id, passed unchanged to xAI.
 
     async def async_worker():
         from urllib.parse import urlencode
@@ -96,34 +96,34 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         receive_task = None
         text_done_sent = False
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
-        # 与 step/qwen 对偶：xAI 流式音频首包后第一个 inter-chunk gap 偏大，用共享
-        # jitter buffer 攒首包领先量盖过开头几个字的 jitter。
+        # Symmetric with step/qwen: xAI's first audio interchunk gap is large, so shared
+        # jitter buffers accumulate initial lead to cover the opening words.
         audio_jitter = make_audio_jitter_buffer(response_queue)
-        # audio.done = 本轮音频流关闭。bound_speech_id 在建任务时钉死本轮 sid，
-        # 避免 sid 切换后旧 receive 任务读到迟到的 audio.done 错标到新一轮。
-        # 再压一道 text_done_sent 闸：只有本轮已经发过 text.done，audio.done 才
-        # 可能是整轮收尾；上游若按 delta 发 audio.done，没这道闸就是早发。
+        # audio.done closes this turn's audio stream. Freeze bound_speech_id when creating tasks,
+        # preventing late old receive-task audio.done from being attributed to new turns after sid changes.
+        # Also require text_done_sent: audio.done can finalize the whole turn only after text.done;
+        # upstream per-delta audio.done otherwise causes premature completion.
         audio_done = AudioDoneEmitter(response_queue)
 
         def _emit_audio_done(bound_speech_id) -> None:
             """Signal end-of-stream once the round's terminal text was sent."""
             if text_done_sent:
                 audio_done.emit(bound_speech_id)
-        # 当 reconnect 失败时缓冲尚未发出的文本 chunks（同一 utterance）。下一次
-        # 同 sid chunk 到达并 reconnect 成功后，缓冲内容会拼到第一条 text.delta
-        # 前一起发送 —— 避免触发 reconnect 的那一条 chunk 在 continue 后丢失，
-        # 短回复（utterance 只有 1 个 chunk）尤其需要这条保险。
-        # `pending_text_sid` 把缓冲绑定到产生它的 sid：跨 utterance 时（sid 切换、
-        # interrupt、当前 utterance 结束 flush 不出）必须丢弃旧 pending，否则
-        # 上一轮的残文会被拼进下一轮的首条 text.delta —— 用户层会听到"上一轮内容
-        # 串进新回复"的内容污染。
+        # Buffer unsent text chunks for the same utterance after reconnect failure. When the next
+        # same-sid chunk reconnects successfully, prepend the buffer to the first text.delta,
+        # preventing the reconnect-triggering chunk from disappearing at continue;
+        # especially important for single-chunk replies.
+        # pending_text_sid binds buffered content to its originating sid. Across utterances, including sid changes,
+        # interruption, or failed end-of-utterance flush, discard old pending text or it contaminates
+        # the next utterance's first text.delta, audibly mixing previous-turn content
+        # into the new reply.
         pending_text: list[str] = []
         pending_text_sid: str | None = None
 
         async def receive_messages(bound_speech_id):
-            # xAI 实际可能发 binary frame（raw PCM）或 JSON-wrapped base64 audio.delta，
-            # 文档未明确给出，两路径都保留。字段名走 'delta'（OpenAI Realtime 标准）
-            # 但保留 'audio' 作为兜底，未来如果 xAI 改名也不会立刻挂。
+            # xAI may send binary raw PCM or JSON-wrapped base64 audio.delta;
+            # Documentation is unclear, so retain both paths. Prefer 'delta', the OpenAI Realtime standard,
+            # with 'audio' fallback against future xAI naming changes.
             cancelled = False
             try:
                 async for message in ws:
@@ -153,20 +153,20 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         except Exception as e:
                             logger.error(f"xAI TTS 音频解码失败: {e}")
                     elif event_type == "audio.done":
-                        # 本轮音频结束，放掉缓冲区里不足 steady 阈值的尾音
+                        # This round's audio ended: release tails below the steady buffer threshold.
                         audio_jitter.flush()
-                        # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
+                        # flush already enqueued the tail audio; only now is this round's audio stream truly closed.
                         _emit_audio_done(bound_speech_id)
                     elif event_type == "error":
                         logger.error(f"xAI TTS server error: {event}")
                         _enqueue_error(response_queue, event)
                     else:
-                        # 未知 event 留 INFO — 出现新事件类型时能立即看见
+                        # Log unknown events at INFO so new event types are immediately visible.
                         preview = message if len(message) < 200 else message[:200] + "...<truncated>"
                         logger.info(f"xAI TTS recv unknown type={event_type!r} raw={preview}")
             except websockets.exceptions.ConnectionClosed as e:
-                # 仅对异常关闭出 log（1006=abnormal、4xxx=应用层）。正常 1000 静默，
-                # 避免 worker 每次 sid 切换主动 close 时也刷一行。
+                # Log abnormal closures only, 1006 or application 4xxx; keep normal 1000 silent,
+                # avoiding logs on every worker-initiated sid-switch close.
                 if e.code != 1000:
                     logger.info(f"xAI TTS WebSocket closed: code={e.code} reason={e.reason!r}")
             except asyncio.CancelledError:
@@ -179,10 +179,10 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     audio_jitter.flush()
 
         try:
-            # close_timeout=0.5：上限 close handshake 等待，避免半开连接在 sid 切换
-            # 路径 / interrupt / finally 清理时阻塞主循环数秒，伤后续 TTS 响应。
+            # close_timeout=0.5 bounds handshakes, preventing half-open connections from blocking main loops for seconds
+            # during sid changes/interruption/finally cleanup and delaying later TTS.
             ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
-            # 预热连接不承载任何 speech（首个真实 sid 一定先走切换重连分支），绑 None。
+            # Warmup connections carry no speech; the first real sid necessarily reconnects, so bind None.
             receive_task = asyncio.create_task(receive_messages(current_speech_id))
 
             logger.info("xAI Grok TTS 已就绪，发送就绪信号")
@@ -200,7 +200,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
 
                 if sid == "__interrupt__":
                     audio_jitter.begin_interrupt()
-                    audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
+                    audio_done.begin_interrupt()  # Interrupted turns omit audio_done, using the independent cancellation channel.
                     try:
                         if receive_task and not receive_task.done():
                             receive_task.cancel()
@@ -223,22 +223,22 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         text_done_sent = False
                         pending_text.clear()
                         pending_text_sid = None
-                        audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                        audio_jitter.reset()  # Interruption: discard buffered audio not yet released.
                         audio_jitter.end_interrupt()
                         audio_done.reset()
                         audio_done.end_interrupt()
                     continue
 
                 if sid is None:
-                    # 当前 speech 文本流结束。如果 ws 还死着（reconnect 持续失败）
-                    # 但缓冲里有同 sid 的内容（典型场景：单 chunk 短消息首次 reconnect
-                    # 失败，pending 缓冲了那一条，下一个进来就是 sid=None 结束信号），
-                    # 做一次 last-chance reconnect，把 pending 发出去再 text.done。
-                    # 失败就放弃，避免短消息被 transient 网络故障吞掉。
+                    # Current speech text ends. If WebSocket remains dead after repeated reconnect failures
+                    # but pending contains same-sid text, typically a single-chunk short reply whose initial reconnect
+                    # failed before the next sid=None ending signal,
+                    # make one last reconnect attempt, send pending, then text.done.
+                    # Give up on failure; this extra attempt protects short replies from transient network loss.
                     if ws is None and pending_text and pending_text_sid is not None:
                         try:
                             ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
-                            # 绑 pending_text_sid：current_speech_id 下一行才补上
+                            # Bind pending_text_sid; current_speech_id is assigned only on the next line.
                             receive_task = asyncio.create_task(receive_messages(pending_text_sid))
                             current_speech_id = pending_text_sid
                             text_done_sent = False
@@ -254,9 +254,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                 for delta in _grok_chunk_text_delta("".join(pending_text)):
                                     await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
                             except Exception as e:
-                                # send 失败可能是 last-chance reconnect 拿到的 ws 半死状态
-                                # （服务端在 utterance 间隙 close）。再做一次 fresh reconnect
-                                # 重试，把 pending 救出去，避免 utterance 截尾静音。
+                                # send failure may indicate a half-dead socket from last-chance reconnect,
+                                # closed by the server between utterances. Retry with a fresh reconnect
+                                # to rescue pending text and avoid silent truncated endings.
                                 logger.warning(f"flush pending_text 首次失败，尝试重连重试: {e}")
                                 if ws:
                                     try:
@@ -272,9 +272,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                 try:
                                     ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
                                     receive_task = asyncio.create_task(receive_messages(current_speech_id))
-                                    # 换了新 receive_task：与 last-chance reconnect 一致，reset 掉旧连接
-                                    # 里未 flush 的残留音频，避免拼到重试音频前面（ws 原本存活、上一轮
-                                    # 已 append 过的路径才会非空；走过 last-chance 的路径 buffer 已空）。
+                                    # New receive_task: like last-chance reconnect, reset unflushed old-connection
+                                    # audio before retry audio. Only previously live, appended paths can retain data;
+                                    # last-chance reconnect paths already have empty buffers.
                                     resampler.clear()
                                     audio_jitter.reset()
                                     for delta in _grok_chunk_text_delta("".join(pending_text)):
@@ -291,16 +291,16 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     pending_text_sid = None
                     continue
 
-                # 新 speech_id — 关旧开新（对偶 step worker 的重连策略）
+                # New speech_id: close old/open new, symmetric with step-worker reconnect policy.
                 if current_speech_id != sid:
-                    # 关旧连接 / cancel 旧 receive_task 无条件做（避免泄漏），但
-                    # current_speech_id / text_done_sent / resampler 状态切换必须
-                    # 推迟到 connect 成功之后再 commit。否则一次瞬态 connect 失败会
-                    # 把 sid 提前推进，后续同 sid 的 chunks 走到 `if not ws: continue`
-                    # 被静默丢弃，直到出现新 sid 才重试 —— 当轮 utterance 静音。
+                    # Always close old connections/cancel old receive_task against leaks, but
+                    # defer committing current_speech_id/text_done_sent/resampler changes
+                    # until connect succeeds. Otherwise one transient connect failure prematurely advances
+                    # sid, and subsequent same-sid chunks silently hit ``if not ws: continue``
+                    # until a new sid retries, muting the entire utterance.
                     if ws:
-                        # bound close handshake — 默认 10s 在半开连接下会阻塞主循环、
-                        # 拖延下一条 chunk 响应，明显伤交互延迟。
+                        # Bound close handshakes; default 10 s blocks half-open connections in the main loop,
+                        # delaying next chunks and noticeably harming interaction latency.
                         try:
                             await asyncio.wait_for(ws.close(), timeout=0.5)
                         except Exception:
@@ -316,32 +316,32 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         receive_task = None
                     try:
                         ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
-                        # 绑 sid：current_speech_id 要等 connect 成功后才 commit
+                        # Bind sid now; commit current_speech_id only after connect succeeds.
                         receive_task = asyncio.create_task(receive_messages(sid))
                     except Exception as e:
                         logger.error(f"xAI TTS 重连失败: {e}")
                         if 'HTTP 503' in str(e):
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
-                        # 缓冲当前 chunk —— 否则 continue 后这条文本永远丢失，
-                        # 短消息（utterance 只有 1 个 chunk）会整段静音。绑 sid，
-                        # 后续如果切换到别的 sid 而旧 pending 还在，能在发送前丢掉
-                        # 避免跨 utterance 内容污染。
+                        # Buffer the current chunk or continue loses it permanently;
+                        # single-chunk replies become entirely silent. Bind sid so later
+                        # changes can discard pending from another utterance before sending,
+                        # avoiding cross-utterance contamination.
                         if tts_text and tts_text.strip():
                             if pending_text_sid != sid:
-                                # 上一个失败的 utterance 残留，丢弃后重新绑定到当前 sid
+                                # Discard residue from the previous failed utterance and rebind to current sid.
                                 pending_text.clear()
                             pending_text.append(tts_text)
                             pending_text_sid = sid
                         await asyncio.sleep(1.0)
-                        # 不更新 current_speech_id —— 下次同 sid 进来会重新尝试重连
+                        # Leave current_speech_id unchanged so the next same-sid chunk retries reconnection.
                         continue
-                    # connect 成功后再 commit sid 切换 + 状态 reset
+                    # Commit sid changes/reset state only after connect succeeds.
                     current_speech_id = sid
                     text_done_sent = False
                     resampler.clear()
-                    audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
-                    audio_done.reset()  # 新轮次重置 audio_done 去重标记
+                    audio_jitter.reset()  # Reset jitter-buffer lead for the new turn.
+                    audio_done.reset()  # Reset audio_done deduplication for the new turn.
 
                 if not tts_text or not tts_text.strip():
                     continue
@@ -350,9 +350,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 if not ws:
                     continue
 
-                # 如果之前 reconnect 失败缓冲了同 sid 的文本，先拼上一起发出去，
-                # 维持 utterance 内 chunk 的原顺序；如果 pending 属于别的 sid（跨
-                # utterance 残留），直接丢掉防止内容污染。
+                # Prepend same-sid text buffered by failed reconnects before sending,
+                # retaining original chunk order. Discard different-sid pending as
+                # cross-utterance residue to prevent contamination.
                 if pending_text and pending_text_sid == current_speech_id:
                     payload_text = "".join(pending_text) + tts_text
                     pending_text.clear()
@@ -368,25 +368,25 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     payload_text = tts_text
 
                 try:
-                    # 字段名用 'delta'（OpenAI Realtime 标准；xAI 文档把消息体叫
+                    # Use 'delta', the OpenAI Realtime standard; xAI documentation names the body
                     # "deltas"——"Individual deltas are capped at 15,000 characters"）。
-                    # 用 'text' 时服务端 silently 当空字符串处理，合成 0 字节后直接 audio.done。
-                    # 长 buffer 合并可能超 15k 上限，按 cap 切片顺序发；xAI 流式合成
-                    # 按到达顺序处理，多 delta 等价单 delta。
+                    # 'text' makes servers silently treat input as empty, synthesize zero bytes, and emit audio.done.
+                    # Merged buffers can exceed 15k; split sequentially by cap. xAI processes streaming
+                    # synthesis in arrival order, making multiple deltas equivalent to one.
                     for delta in _grok_chunk_text_delta(payload_text):
                         await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
                     _record_tts_telemetry("grok", len(payload_text))
                 except Exception as e:
                     logger.error(f"发送 text.delta 失败: {type(e).__name__}: {e}")
-                    # send 失败时把内容放回 pending（绑定当前 sid），等下次重连后重发。
+                    # On send failure, restore text to current-sid pending for retry after reconnection.
                     pending_text.append(payload_text)
                     pending_text_sid = current_speech_id
                     ws = None
                     current_speech_id = None
-                    # 与 step / qwen worker 对偶：send 失败时同步 cancel 旧
-                    # receive_task，避免短暂窗口内僵尸 receive 协程把残音频写
-                    # 进 response_queue。connection 已死，receive 会自然拿到
-                    # ConnectionClosed，cancel 只是加速清理。
+                    # Symmetric with step/qwen: synchronously cancel old receive_task on send failure,
+                    # preventing zombie receivers from putting residual audio into response_queue
+                    # during the gap. The dead connection naturally yields
+                    # ConnectionClosed; cancellation only accelerates cleanup.
                     if receive_task and not receive_task.done():
                         receive_task.cancel()
                     receive_task = None
@@ -415,10 +415,10 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         logger.error(f"xAI Grok TTS Worker 启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
 
-# xAI Grok 内置音色（eve/ara/leo/rex/sal）同样走 CORE_API_KEY。
-# 没有这个注册时，非空 voice_id 会让 core._has_custom_tts() 返 True，
-# get_tts_worker() 在 `core_api_type == 'grok'` 默认分支前就路由到
-# cosyvoice_vc_tts_worker —— 静默合成或鉴权失败。详见 PR #1306 Codex review。
+# Built-in xAI Grok voices eve/ara/leo/rex/sal also use CORE_API_KEY.
+# Without registration, nonempty voice_id makes core._has_custom_tts() return True,
+# routing get_tts_worker() to cosyvoice_vc_tts_worker before the default
+# core_api_type=='grok' branch, causing silence/auth failures; PR #1306 Codex review.
 register_tts_worker_resolver(
     'grok',
     make_native_tts_resolver(grok_streaming_tts_worker, 'core_api_key'),

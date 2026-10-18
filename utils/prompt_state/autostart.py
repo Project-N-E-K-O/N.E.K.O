@@ -165,8 +165,8 @@ def _normalize_autostart_prompt_state(raw_state: Any) -> dict[str, Any]:
         state["recent_heartbeat_tokens"] = _normalize_recent_heartbeat_tokens(
             state.get("recent_heartbeat_tokens")
         )
-        # 不再提示按钮自首次弹窗起即可见，避免给用户"被推着走"的压迫感；
-        # AUTOSTART_NEVER_AFTER_LATER_COUNT 现仅用于展示上限的渐进抬升逻辑。
+        # The never-prompt button is visible from the first dialog to avoid pressuring users;
+        # AUTOSTART_NEVER_AFTER_LATER_COUNT now only raises the display limit progressively.
         state["can_never_remind"] = True
 
     def _resolve_status(state: dict[str, Any]) -> None:
@@ -455,10 +455,10 @@ def process_autostart_prompt_heartbeat(
         state = load_autostart_prompt_state(config_manager)
         changed = False
 
-        # 客户端在网络失败时会把 delta 加回 pending 并重试同一 heartbeat_token。
-        # 识别 replay 时不再累加 delta，
-        # 只基于当前状态重算 eligibility。没有 active token 时强制 should_prompt=false，
-        # 避免前端收到 null token 去 shown/decision 报 400。
+        # On network failure, clients return delta to pending and retry the same heartbeat_token.
+        # Do not add delta again when detecting replay;
+        # only recompute eligibility from current state. Without an active token, force should_prompt=false,
+        # avoiding shown/decision 400 responses when the frontend receives a null token.
         if heartbeat_token and _is_autostart_heartbeat_replayed(state, heartbeat_token):
             if autostart_status_authoritative and not autostart_supported and not autostart_enabled:
                 should_prompt = False

@@ -3,13 +3,13 @@ import sys
 
 import pytest
 
-# 模块级导入是有意的，别挪回函数体里。``launcher_core.bootstrap`` 在 import 时会
-# 检查 ``ssl`` 是否已经被别人先 import 走，是就往 stdout 打一条 Warning。整套
-# tests/unit 跑起来 ssl 几乎必然已在 sys.modules 里，于是「谁第一个 import
-# launcher_core」决定了那条 Warning 落进谁的 capsys ——
-# test_relax_job_kill_on_close_clears_the_limit_flag 断言的恰好是
-# ``capsys.readouterr().out == ""``，轮到它当第一个导入者就红（seed 90210 实测）。
-# 放在模块级 = 导入发生在收集期，落在任何用例的捕获窗口之外。
+# The module-level import is intentional; do not move it into a function. On import, ``launcher_core.bootstrap``
+# checks whether ``ssl`` was imported earlier and prints a Warning to stdout if so. Running the full
+# tests/unit suite almost guarantees ssl is already in sys.modules, making the first importer of
+# launcher_core determine whose capsys captures that Warning.
+# test_relax_job_kill_on_close_clears_the_limit_flag specifically asserts
+# ``capsys.readouterr().out == ""``, so it fails if it imports first (observed with seed 90210).
+# Module scope imports during collection, outside every test's capture window.
 from launcher_core import runtime as launcher
 
 

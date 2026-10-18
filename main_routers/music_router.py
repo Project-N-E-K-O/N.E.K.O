@@ -20,7 +20,7 @@ Handles music search / playback / lyric proxy endpoints.
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (§\"API URLs have no trailing slash\") for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -86,20 +86,20 @@ def _patch_pyncm_async() -> None:
             logger.error("[Music] Failed to patch pyncm_async: %s", exc)
             return
 
-# pyncm_async 仅用于网易云 VIP 直链播放，import 偏重（~0.15s）且不在启动/greeting
-# 链上，改成首次播放时再 import（含 <3.12 兼容补丁），由 module_warmup 预热。
+# pyncm_async is used only for NetEase VIP direct-link playback; its import is heavy (~0.15s) and outside startup/greeting
+# paths, so import on first playback (including the <3.12 compatibility patch), warmed by module_warmup.
 pyncm_async = None  # type: ignore[assignment]
 GetTrackAudio = None  # type: ignore[assignment,misc]
-_PYNCM_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+_PYNCM_AVAILABLE: bool | None = None  # None = import not yet attempted
 
 
 def _ensure_pyncm() -> bool:
     """On first call, apply the patch and import pyncm_async, caching the result. Returns availability."""
     global pyncm_async, GetTrackAudio, _PYNCM_AVAILABLE
-    # 显式强制不可用优先 → 降级。
+    # Explicitly forced unavailability takes precedence → downgrade.
     if _PYNCM_AVAILABLE is False:
         return False
-    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    # An existing object (real import or test-injected mock) is trusted directly without reimporting.
     if pyncm_async is not None and GetTrackAudio is not None:
         _PYNCM_AVAILABLE = True
         return True
@@ -107,7 +107,7 @@ def _ensure_pyncm() -> bool:
     try:
         import pyncm_async as _pyncm
         from pyncm_async.apis.track import GetTrackAudio as _GetTrackAudio
-        # 只补缺失的，保住测试可能注入的 mock。
+        # Fill only missing values to preserve mocks injected by tests.
         if pyncm_async is None:
             pyncm_async = _pyncm
         if GetTrackAudio is None:
@@ -121,15 +121,15 @@ def _ensure_pyncm() -> bool:
     return _PYNCM_AVAILABLE
 
 
-# ==================== 音乐代理缓存 ====================
-# 仅缓存小文件（<10MB），大文件流式传输
+# ==================== Music-proxy cache ====================
+# Cache only small files (<10MB); stream larger files
 MUSIC_PROXY_CACHE = TTLCache(
-    maxsize=100 * 1024 * 1024,  # 100MB 内存预算（减小）
+    maxsize=100 * 1024 * 1024,  # 100MB memory budget (reduced)
     ttl=3600 * 6,
     getsizeof=lambda item: len(item.get('body', b''))
 )
 
-STREAMING_SIZE_THRESHOLD = 10 * 1024 * 1024  # 10MB 以上流式传输
+STREAMING_SIZE_THRESHOLD = 10 * 1024 * 1024  # Stream files above 10MB
 MAX_MUSIC_SIZE = 50 * 1024 * 1024
 PLAYABLE_BINARY_CONTENT_TYPES = {'application/octet-stream', 'binary/octet-stream'}
 
@@ -413,19 +413,19 @@ async def search_music(
     
     logger.info(f"[音乐API] 收到搜索请求: '{query}'")
     
-    # 空白输入校验
+    # Validate blank input
     if not query:
         logger.warning("[音乐API] 搜索关键词为空,返回失败结果")
         return {
-            "success": False,  # 【核心修复】标记为失败
+            "success": False,  # [Core fix] Mark as failed
             "data": [],
-            "error": "EMPTY_QUERY",  # 填入 error 字段方便前端捕获
+            "error": "EMPTY_QUERY",  # Fill the error field for frontend handling
             "message": "搜索关键词不能为空"
         }
     
-    # 异常保护
+    # Exception protection
     try:
-        # 确保至少返回 5 个候选项供前端智能匹配，同时尊重用户传入的 limit
+        # Ensure at least 5 candidates for frontend intelligent matching while respecting the supplied limit
         effective_limit = max(limit, 5)
         results = await fetch_music_content(keyword=query, limit=effective_limit)
         
@@ -435,7 +435,7 @@ async def search_music(
         else:
             error = results.get('error', '未知错误')
             logger.warning(f"[音乐API] 搜索失败: {error}")
-            # 统一失败返回结构
+            # Consistent failure response structure
             return {
                 "success": False,
                 "data": [],
@@ -472,13 +472,13 @@ async def play_netease_music(song_id: str):
         return JSONResponse(content={"success": False, "error": "歌曲没有可用音源"}, status_code=502)
 
     try:
-        # 加载 Cookie 并同步到 pyncm_async 会话
+        # Load cookies and synchronize them to the pyncm_async session
         cookies = await asyncio.to_thread(load_cookies_from_file, 'netease')
         session = pyncm_async.GetCurrentSession()
         _sync_pyncm_session_cookies(session, cookies)
 
-        # 获取真实播放地址 (IDs 接受列表)
-        # 默认获取 standard 标准音质，VIP 账户通常可获得更多 Token 授权
+        # Get real playback URLs (IDs accepts a list)
+        # Request standard audio quality by default; VIP accounts usually receive additional token authorization
         res = await GetTrackAudio([song_id_int])
 
         if res and res.get('data') and len(res['data']) > 0:
@@ -492,7 +492,7 @@ async def play_netease_music(song_id: str):
     except Exception as e:
         logger.error(f"[音乐播放] 解析歌曲 {song_id_int} 真实地址时发生异常: {e}")
 
-    # Fallback: 如果解析失败或无 Cookie，降级使用免登录的 outer/url 外链
+    # Fallback: if parsing fails or cookies are absent, use login-free outer/url external links
     fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id_int}.mp3"
     if await _probe_audio_url(fallback_url):
         logger.warning(f"[音乐播放] 无法获取歌曲 {song_id_int} 的真实链接，使用已验证的公开外链")

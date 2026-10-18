@@ -6,8 +6,8 @@ from theater_workshop.sdk.generation.facts import build_fact_sources, validate_f
 
 
 def test_fact_request_preserves_chronological_reading_order_and_all_original_fields():
-    # 原请求按JSON字段名排序，把结局和后续目标混到开场前；真实入口必须保留时序阅读顺序。
-    # 开场目标已交付，不能在精简检查指令时把它与普通回合待演目标混为一类。
+    # The original request sorted JSON keys, mixing endings and future targets before opening state; preserve chronological reading order at the real entry point.
+    # Opening targets are already delivered; concise review instructions must distinguish them from ordinary-turn pending targets.
     from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
     assert "opening对应开场已交付，turn对应普通回合待演" in FACT_REVIEW_PROMPT
     from copy import deepcopy
@@ -29,7 +29,7 @@ def test_fact_request_preserves_chronological_reading_order_and_all_original_fie
     assert keys.index("mainline") < keys.index("branches") < keys.index("endings")
     node_keys = list(outline["mainline"][0])
     assert node_keys.index("opening_scene") < node_keys.index("character_state") < node_keys.index("goals") < node_keys.index("outgoing_routes")
-    # 重排不是删字段或改作者文本；还原所有编号后必须与原评分投影相等。
+    # Reordering must not delete fields or alter author text; restoring all IDs must equal the original scoring projection.
     def restore(value):
         if isinstance(value, dict):
             if set(value) == {"ref", "text"}: return value["text"]
@@ -43,7 +43,7 @@ from .test_numeric_v2_generation import _quality_story_context, _generation_setu
 
 
 def test_fact_opening_comparisons_cover_branches_and_reuse_original_evidence():
-    # 同一请求的对照视图不能遗漏支线、结局，或重写原文及证据路径来制造可修问题。
+    # Alternate views of one request must not omit branches/endings or rewrite originals/evidence paths to invent fixable issues.
     story, authoring = _quality_story_context()
     branch = deepcopy(story["nodes"][0])
     branch.update(id="state_check_branch", type="scene", route_gates=[])
@@ -69,19 +69,19 @@ def test_fact_opening_comparisons_cover_branches_and_reuse_original_evidence():
         assert row["opening_performance"] == node["opening_scene"]
         assert row["declared_picture_after_performance"] == node["character_state"]
         assert row["same_moment_context"] == node["relationship_state"]
-    # 额外视图只存在于事实请求，不能变成剧本字段或污染原评分投影。
+    # Extra views exist only in fact requests, never as script fields or contamination of original scoring projections.
     assert "opening_end_state_comparisons" not in outline
     assert story == before
     assert len(captured) == 1
 
 
 def test_literary_prompt_does_not_repeat_generation_fact_review_tasks():
-    # 写稿入口仍使用完整生成合同，文学阶段只保留评审职责及用户确认的关联依据规则。
+    # Drafting entry points retain the complete generation contract; literary stages retain only review duties and user-approved relational-evidence rules.
     from theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT
     from theater_workshop.sdk.generation.numeric_v2 import _SCENE_PROCESS_AUTHORING_RULE
     assert _SCENE_PROCESS_AUTHORING_RULE not in _ASSESSMENT_PROMPT
     assert "先写issues和fact_issue_ids，再写summary和score" in _ASSESSMENT_PROMPT
-    # 用户批准共享文学/关系依据后，低分也可显式引用；仍不得无依据放行。
+    # After user approval of shared literary/relational evidence, low scores may cite it explicitly, but still cannot approve without grounds.
     assert "issues、fact_issue_ids和related_issue_ids不能同时为空" in _ASSESSMENT_PROMPT
     assert "不强加赞美、升温、额外确认或抽象难度" in _ASSESSMENT_PROMPT
 
@@ -122,7 +122,7 @@ def test_fact_report_rejects_unverifiable_or_incomplete_evidence(case):
     elif case == "evidence": issue["evidence"] = []
     elif case == "scope": issue["repair_scope"] = "maybe"
     elif case == "index": issue["evidence"][1]["path"] = "/node/rules/-1"
-    # 真实压测曾把整个数组的JSON序列化结果当原文，不能放宽为自动改写引文。
+    # Real stress tests treated the entire array's JSON serialization as original text; never relax this to automatic quotation rewriting.
     elif case == "serialized_array": issue["evidence"][1]["quote"] = json.dumps(context["node"]["rules"], ensure_ascii=False)
     with pytest.raises(ValueError):
         validate_fact_review(context, payload, {"node"})
@@ -134,7 +134,7 @@ def test_fact_review_allows_complete_report_without_issues():
 
 
 def test_source_refs_restore_original_fields_including_array_and_escaped_keys():
-    # 同样的文字在不同字段拥有不同编号，不能凭文字相同合并证据来源。
+    # Identical text in different fields has distinct IDs; do not merge evidence sources by text equality.
     context, payload = _citation_fixture()
     context["node"]["a/b~c"] = context["node"]["opening"]
     before = deepcopy(context)
@@ -151,7 +151,7 @@ def test_source_refs_restore_original_fields_including_array_and_escaped_keys():
 
 
 def test_fact_sources_keep_locators_without_treating_them_as_conflict_evidence():
-    # 实测曾用纯goal ID代替行动描述作为第二份证据；定位数据保留，但不能获得证据编号。
+    # Real runs substituted pure goal IDs for action descriptions as second evidence; keep location data but assign it no evidence IDs.
     story, authoring = _quality_story_context()
     context = NumericV2QualityAssessor._assessment_context(story, _generation_setup(), authoring)
     before = deepcopy(context)
@@ -161,7 +161,7 @@ def test_fact_sources_keep_locators_without_treating_them_as_conflict_evidence()
     assert node["goals"][0]["id"] == context["mainline"][0]["goals"][0]["id"]
     assert node["text_repair_fields"] == context["mainline"][0]["text_repair_fields"]
     assert node["outgoing_routes"][0]["target_node_id"] == context["mainline"][0]["outgoing_routes"][0]["target_node_id"]
-    # 权限与行动正文仍可引用；不能为了去掉ID证据而丢失事实检查所需的输入。
+    # Permissions and action text remain citable; removing ID evidence must not remove inputs needed for factual review.
     for field in ("description", "owner", "output_field"):
         ref = node["goals"][0][field]["ref"]
         assert sources[ref]["quote"] == context["mainline"][0]["goals"][0][field]
@@ -171,7 +171,7 @@ def test_fact_sources_keep_locators_without_treating_them_as_conflict_evidence()
 
 @pytest.mark.parametrize("case", ["unknown", "duplicate", "missing", "mixed", "tampered"])
 def test_source_refs_reject_unknown_duplicate_or_model_supplied_quotes(case):
-    # 编号避免转录错误，但不能绕过两个独立字段、原文真实性和完整报告校验。
+    # Numbering avoids transcription errors but cannot bypass two-independent-field, quotation-authenticity, or full-report validation.
     context, payload = _citation_fixture()
     marked, sources = build_fact_sources(context)
     issue = payload["issues"][0]
@@ -187,7 +187,7 @@ def test_source_refs_reject_unknown_duplicate_or_model_supplied_quotes(case):
 
 
 def test_confirmed_fact_repair_receives_evidence_and_preserves_other_nodes():
-    # 用户选择节点后，原文证据必须随建议进入修订；评分本身不会触发该步骤。
+    # Once the user selects nodes, original evidence accompanies suggestions into revision; scoring alone never triggers revision.
     story, authoring = _quality_story_context()
     before = deepcopy(story)
     evidence = [{"path": "/mainline/0/opening_scene", "quote": "旧信"}]
@@ -198,7 +198,7 @@ def test_confirmed_fact_repair_receives_evidence_and_preserves_other_nodes():
         "modification_plan": "仅修正女主当前状态", "expected_result": "与开场相符", "preserve": [],
     }]}
     _reviewed_fixture(assessment)
-    # 显式加入已完成的字段复核，旧无复核事实不能执行。
+    # Include explicit completed-field review; legacy facts lacking review cannot execute.
     assessment["issues"][0]["evidence_review"] = {"verdict": "supported", "reason": "状态确有冲突", "target_checks": [{"node_id": "mainline_01", "field": "/character_state/catgirl", "requires_change": True, "reason": "仅状态需要改"}]}
     calls = []
     assessor = NumericV2QualityAssessor()
@@ -222,7 +222,7 @@ def test_confirmed_fact_repair_receives_evidence_and_preserves_other_nodes():
 
 
 def test_literature_cannot_erase_fact_issues_or_override_them_with_high_scores():
-    # 真实两阶段编排：文学阶段收到事实报告，最终合并保持证据与修订范围。
+    # Real two-stage orchestration: literary review receives the fact report; final merging preserves evidence and revision scope.
     story, authoring = _quality_story_context()
     beat = story["nodes"][0]["story_beat"]
     beat["opening_scene"] = "女主把旧信放在桌上。"
@@ -266,7 +266,7 @@ def test_literature_cannot_erase_fact_issues_or_override_them_with_high_scores()
 
 
 def test_low_scores_can_share_fact_evidence_without_duplicate_repair_plans():
-    # 真实文学解析链路：两个低分引用同一事实，高分维度的独立问题仍完整保留。
+    # Real literary parsing: two low scores cite one fact, while independent high-score-dimension issues remain intact.
     story, authoring = _quality_story_context()
     assessor = NumericV2QualityAssessor()
     context = assessor._assessment_context(story, _generation_setup(), authoring)
@@ -289,7 +289,7 @@ def test_low_scores_can_share_fact_evidence_without_duplicate_repair_plans():
 
 @pytest.mark.parametrize("case", ["unknown_fact", "duplicate_fact", "missing_basis", "missing_issues", "extra_dimension", "mixed_issues"])
 def test_grouped_literature_rejects_incomplete_or_fabricated_basis(case):
-    # 编排变化不能通过丢弃问题、猜维度或伪造事实关联来让报告通过。
+    # Orchestration changes must not pass reports by dropping issues, guessing dimensions, or inventing factual links.
     story, authoring = _quality_story_context()
     assessor = NumericV2QualityAssessor()
     context = assessor._assessment_context(story, _generation_setup(), authoring)

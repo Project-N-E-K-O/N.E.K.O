@@ -47,12 +47,12 @@ def ensure_catgirl_character_id(
     *,
     used_ids: set[str] | None = None,
 ) -> tuple[str, bool]:
-    """确保本地角色卡拥有唯一且不可变的系统 ID。"""  # noqa: DOCSTRING_CJK
+    """Ensure local character cards have unique, immutable system IDs."""  # noqa: DOCSTRING_CJK
 
     raw_existing = get_reserved(catgirl_data, "character_id", default="")
     existing = normalize_character_id(raw_existing)
     if existing and (used_ids is None or existing not in used_ids):
-        # UUID 接受大写和连字符等多种写法；统一回写规范值，避免同一角色产生多种持久化表示。
+        # UUIDs accept uppercase, hyphens, and other forms; persist canonical values to avoid multiple representations of one character.
         normalized_changed = set_reserved(catgirl_data, "character_id", existing)
         if used_ids is not None:
             used_ids.add(existing)
@@ -85,7 +85,7 @@ def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] |
         if found:
             return current
 
-    # COMPAT(v1->v2): 旧平铺字段回退读取，避免历史配置在迁移前读不到值。
+    # COMPAT(v1->v2): read legacy flat fields as fallback so historical config remains readable before migration.
     if legacy_keys:
         for legacy_key in legacy_keys:
             if legacy_key in data and data[legacy_key] is not None:
@@ -224,7 +224,7 @@ def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:
         return ""
     if raw.endswith(".model3.json"):
         return raw
-    # COMPAT(v1->v2): 历史配置只有目录名（如 mao_pro），迁移时自动补全默认 model3 文件名。
+    # COMPAT(v1->v2): legacy config stores only directory names (e.g. mao_pro); append the default model3 filename on migration.
     return f"{raw}/{raw}.model3.json"
 
 
@@ -269,9 +269,9 @@ def validate_reserved_schema(reserved: dict) -> list[str]:
     if reserved is None:
         return errors
     _walk(reserved, RESERVED_FIELD_SCHEMA, "_reserved")
-    # voice_id 是 str | 结构对象的联合类型，schema 的 tuple 分支只做 isinstance，挡不住
-    # {"foo": 1} 这种坏 dict。结构对象形态额外校验 source/provider/ref 都为 str，避免
-    # 放宽 schema 后契约松掉（CodeRabbit）。
+    # voice_id accepts str or a structured object; tuple schema branches check only isinstance and cannot reject
+    # invalid dicts such as {"foo": 1}. Also require structured source/provider/ref fields to be strings,
+    # keeping the contract intact after broadening the schema (CodeRabbit).
     vid = reserved.get("voice_id")
     if isinstance(vid, dict):
         for field in ("source", "provider", "ref"):
@@ -294,10 +294,10 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         changed = True
 
     voice_id = get_reserved(catgirl_data, "voice_id", default="", legacy_keys=("voice_id",))
-    # 把 voice_id 收口进 _reserved。结构对象（惰性迁移形态，可能来自顶层 legacy 字段）
-    # 必须原样 set_reserved 搬进来：既不能被 str(dict) 损坏，也不能跳过——否则随后的旧
-    # 顶层字段清理会 pop 掉它，导致绑定在加载时悄悄丢失（Codex/CodeRabbit P2）。
-    # 普通 legacy 值仍规整成字符串。
+    # Move voice_id into _reserved. Preserve structured objects, the lazy migration format possibly coming from legacy top-level fields,
+    # through set_reserved: neither corrupt them with str(dict) nor skip them, or subsequent
+    # top-level cleanup pops them and silently loses bindings on load (Codex/CodeRabbit P2).
+    # Continue normalizing ordinary legacy values into strings.
     if isinstance(voice_id, dict):
         changed |= set_reserved(catgirl_data, "voice_id", voice_id)
     elif voice_id is not None:
@@ -318,7 +318,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
             model_type = "pngtuber"
         else:
             model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
-    # 归一化：旧配置中的 'vrm' 统一为 'live3d'
+    # Normalize legacy 'vrm' to 'live3d'.
     if model_type == "vrm":
         model_type = "live3d"
     changed |= set_reserved(catgirl_data, "avatar", "model_type", model_type)
@@ -400,7 +400,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("idleAnimation", "idleAnimations"),
     )
     if idle_animation is not None:
-        # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
+        # Compatibility: migrate legacy strings to lists; retain [] for empty values.
         if isinstance(idle_animation, str):
             changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", [idle_animation] if idle_animation else [])
         elif isinstance(idle_animation, list):
@@ -417,7 +417,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     if isinstance(lighting, dict):
         changed |= set_reserved(catgirl_data, "avatar", "vrm", "lighting", lighting)
 
-    # MMD 模型路径迁移
+    # Migrate MMD model paths.
     mmd_model_path = get_reserved(
         catgirl_data,
         "avatar",
@@ -469,7 +469,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("mmd_idle_animation", "mmd_idle_animations"),
     )
     if mmd_idle_animation is not None:
-        # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
+        # Compatibility: migrate legacy strings to lists; retain [] for empty values.
         if isinstance(mmd_idle_animation, str):
             changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", [mmd_idle_animation] if mmd_idle_animation else [])
         elif isinstance(mmd_idle_animation, list):
@@ -504,11 +504,11 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     if live3d_sub_type:
         changed |= set_reserved(catgirl_data, "avatar", "live3d_sub_type", live3d_sub_type)
     else:
-        # 非 3D 角色或没有明确活动 3D 子类型时，不要强行写回空字符串，
-        # 否则会让导出/导入后的角色配置出现无意义的额外字段。
+        # Do not write empty strings for non-3D characters or without an explicit active 3D subtype,
+        # which would add meaningless extra fields after character export/import.
         changed |= delete_reserved(catgirl_data, "avatar", "live3d_sub_type")
 
-    # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
+    # COMPAT(v1->v2): after moving reserved fields into _reserved, remove legacy flat fields to prevent leakage into editable fields.
     for legacy_key in (
         "voice_id",
         "system_prompt",
@@ -549,7 +549,7 @@ def flatten_reserved(catgirl_data: dict) -> dict:
         return catgirl_data
     result = dict(catgirl_data)
 
-    # 展平给 legacy 前端/调用方：始终吐 legacy 字符串形态（容忍结构对象）。
+    # Flatten for legacy frontends/callers: always emit legacy strings while tolerating structured objects.
     voice_id = read_legacy_voice_id(get_reserved(result, "voice_id", default=""))
     if voice_id:
         result["voice_id"] = voice_id
@@ -587,8 +587,8 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 
     idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default=None)
     if idle_animation is not None:
-        # idleAnimation (string): 供 vrm-init / vrm-manager 等运行时消费
-        # idleAnimations (list): 供 model_manager 多选 UI 消费
+        # idleAnimation (string): consumed by vrm-init / vrm-manager and other runtime code.
+        # idleAnimations (list): consumed by model_manager multiselect UI.
         if isinstance(idle_animation, str):
             result["idleAnimation"] = idle_animation
             result["idleAnimations"] = [idle_animation] if idle_animation else []
@@ -613,8 +613,8 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 
     mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default=None)
     if mmd_idle_animation is not None:
-        # mmd_idle_animation (string): 供 mmd-init / app-interpage 等运行时消费
-        # mmd_idle_animations (list): 供 model_manager 多选 UI 消费
+        # mmd_idle_animation (string): consumed by mmd-init / app-interpage and other runtime code.
+        # mmd_idle_animations (list): consumed by model_manager multiselect UI.
         if isinstance(mmd_idle_animation, str):
             result["mmd_idle_animation"] = mmd_idle_animation
             result["mmd_idle_animations"] = [mmd_idle_animation] if mmd_idle_animation else []

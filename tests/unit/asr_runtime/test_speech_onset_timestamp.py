@@ -22,18 +22,18 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
 
     source = inspect.getsource(asr_runtime_module).splitlines()
 
-    # ⚠️ 这个守卫的第一版只扫 runtime.py 里的字面量
-    # `lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)`，因此完全看不见
-    # lifecycle.py 自己的 `self.transition(...)`（begin_pending_turn 里那一处）——
-    # 第五个迁移点就是这么漏掉的，还给了"五处都打点了"的假绿。清单式守卫必须自己
-    # 证明清单是全的：先跨模块把所有迁移点数出来，再逐个查。
+    # ⚠ This guard initially scanned only runtime.py's literal
+    # `lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)`, missing
+    # lifecycle.py's own `self.transition(...)` in begin_pending_turn entirely.
+    # That omitted the fifth transition and falsely claimed coverage of all five. Inventory guards must prove
+    # completeness: enumerate transition sites across modules before checking each one.
     lifecycle_source = inspect.getsource(asr_lifecycle_module).splitlines()
     lifecycle_sites = [
         index
         for index, line in enumerate(lifecycle_source)
         if "transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)" in line
     ]
-    # lifecycle 侧的迁移点没有 runtime 字段可写，只能要求它的**调用方**补打点。
+    # Lifecycle-side sites cannot write runtime fields, so require instrumentation in their **callers**.
     for index in lifecycle_sites:
         owner = None
         for back in range(index, -1, -1):
@@ -62,8 +62,8 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
 
     assert sites, "no SPEECH_CONFIRMED transition found"
     for index in sites:
-        # 赋值必须**紧接**转换那一行开始（注释和空行不算，它们引入不了 await）。
-        # 值本身可以是多行表达式：几条路径都要在"暂存的 onset"和"进函数时刻"之间选。
+        # Assignment must begin **immediately after** the transition line (ignore comments/blank lines, which cannot introduce await).
+        # Values may span multiple lines: several paths choose between the stored onset and function-entry time.
         first = next(
             offset
             for offset in range(1, 12)
@@ -75,12 +75,12 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
             f"before anything else, got: {source[index + first].strip()!r}"
         )
 
-    # 每一条路径的 onset 赋值都必须**优先取暂存的 pending onset**，只有它为空时才
-    # 用进函数时刻。session 先未就绪、随后又 ready 时，真实开口时刻就是当初记下的
-    # 那个值；就地取时钟会把整段重连等待算成「开口之后」，期间拍的帧全被排除。
+    # Every path must **prefer the stored pending onset**, using function-entry time only
+    # when absent. If a session becomes ready after being unready, the true speech start is the original
+    # stored value; reading the clock now counts reconnection waits as after speech start, excluding every intervening frame.
     #
-    # 规则对所有迁移点一视同仁，因此不再需要"哪条是延迟路径"这种启发式识别 ——
-    # 之前那版靠往上扫若干行找条件语句，既会跨函数误标，也挡不住直接分支退化。
+    # Apply the same rule to every transition site, eliminating heuristics for delayed paths;
+    # the former upward scan for conditionals misclassified across functions and failed to prevent direct-branch degradation.
     for index in sites:
         begin = next(
             offset
@@ -102,7 +102,7 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
             f"onset captured before the reconnect, got: {window!r}"
         )
 
-    # detected_at 本身必须在函数里任何 await 之前捕获。
+    # Capture detected_at before any await in the function.
     for index, line in enumerate(source):
         if line.strip() != "detected_at = time.monotonic()":
             continue
@@ -117,10 +117,10 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
                 f"line {back + 1} is {stripped!r}"
             )
 
-    # 暂存的 pending turn onset 也必须用进函数时刻。函数入口已经存了 detected_at
-    # （上面那条规则保证它在任何 await 之前），DRAINING 分支再读一次时钟等于把
-    # 「进函数 → 走到这一行」之间拍的帧排除在这段发声之外，而这个字段正是后面
-    # begin_pending_turn 那处 _asr_turn_onset_at 的来源。
+    # Stored pending-turn onset also uses function-entry time. Entry already captured detected_at
+    # (the preceding rule ensures before any await); rereading the clock in DRAINING excludes frames captured
+    # between entry and this line from the utterance, yet this field later supplies
+    # _asr_turn_onset_at in begin_pending_turn.
     for index, line in enumerate(source):
         stripped = line.strip()
         if not stripped.startswith("self._asr_pending_turn_onset_at = "):
@@ -130,9 +130,9 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
             continue
         captures_detected_at = False
         for back in range(index, -1, -1):
-            # 只在**方法**定义处收边（4 空格缩进）。这些函数里 detected_at 与
-            # DRAINING 分支之间隔着 event_is_current / wake_is_current 这类嵌套
-            # def，按 "任意 def" 收边会提前停下，规则对这两处直接失效。
+            # Stop only at **method** definitions (four-space indentation). Nested defs such as
+            # event_is_current / wake_is_current occur between detected_at and DRAINING;
+            # stopping at any def ends too soon and disables both checks.
             if source[back].startswith(("    def ", "    async def ")):
                 break
             if source[back].strip() == "detected_at = time.monotonic()":

@@ -57,7 +57,7 @@ PRIVATE_MAP_KEY = "pmk-SECRET-55aa"
 LIVEKIT_TOKEN = "lk-jwt-SECRET-c0de"
 LIVEKIT_HOST = "lk.example.test"
 
-# §4.7 POST /api/visit/credentials 的全部非 2xx / 非 5xx 变体（逐字抄契约）
+# Every non-2xx/non-5xx variant of §4.7 POST /api/visit/credentials, copied verbatim from the contract
 CREDENTIALS_CONTRACT = {
     (401, "unauthenticated"),
     (403, "banned"),
@@ -99,13 +99,13 @@ class FakeServers:
         self.host_ttl = vs.VISIT_HOST_CREDENTIAL_TTL_S
         self.guest_ttl = vs.VISIT_CREDENTIAL_TTL_S
         self.vendor_ttl = vs.VISIT_VENDOR_GRANT_TTL_S
-        self.vendor_expires_ttl = None  # None = 与 vendor_ttl 相同
+        self.vendor_expires_ttl = None  # None = same as vendor_ttl
         self.cancelled: set[str] = set()
         self.pubkeys_status = 200
         self.key_window = (int(time.time()) - 86400, int(time.time()) + 30 * 86400)
         self.revoked: list[str] = []
 
-    # —— 路由 ——
+    # —— Routes ——
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
@@ -179,7 +179,7 @@ class FakeServers:
         else:
             out["invite_code"] = INVITE
             out["invite_expires_at"] = iat + 600
-        # 自己序列化（ensure_ascii）：httpx 的 json= 按 UTF-8 直写，带孤立代理字符的畸形值会编不出来
+        # Serialize explicitly with ensure_ascii: httpx json= writes UTF-8 directly and cannot encode malformed lone-surrogate values
         return httpx.Response(200, content=json.dumps(out).encode("ascii"),
                               headers={"content-type": "application/json"})
 
@@ -218,11 +218,11 @@ def servers(monkeypatch):
     monkeypatch.setattr(cm_pkg, "get_config_manager", lambda: region_cm)
     fake.region_cm = region_cm
 
-    def _forbidden(self):  # pragma: no cover - 被调用即失败
+    def _forbidden(self):  # pragma: no cover - fail if called
         raise AssertionError("_check_non_mainland must never be called by the visit client")
 
     monkeypatch.setattr(cm_pkg.ConfigManager, "_check_non_mainland", _forbidden)
-    # 内置表清空：每个用例自己决定
+    # Clear built-in tables; each test decides its contents
     monkeypatch.setattr(idm, "VISIT_SERVERS_PUBKEYS", {})
     monkeypatch.setattr(idm, "NEKO_VISIT_DEV_KEYFILE", "")
     yield fake
@@ -238,7 +238,7 @@ async def _guest(**kw) -> cr.VisitCredentials:
     return await cr.fetch_visit_credentials(role="guest", visit_id=VISIT_ID, char_tag=CHAR_TAG, **kw)
 
 
-# ── 请求体与 char_tag ──────────────────────────────────────────────────
+# ── Request body and char_tag ──────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -280,7 +280,7 @@ async def test_char_tag_is_the_stable_character_uid_across_rename(servers, monke
     cm = _CharsCM({"Mochi": {"_reserved": {"character_uid": CHAR_TAG}}})
     monkeypatch.setattr(cm_pkg, "get_config_manager", lambda: cm)
     tag_before = await cr.resolve_char_tag("Mochi")
-    # 改名：同一份角色数据换了键名
+    # Rename: identical character data under a different key
     cm.data["猫娘"] = {"Momo": cm.data["猫娘"].pop("Mochi")}
     tag_after = await cr.resolve_char_tag("Momo")
     assert tag_before == tag_after == CHAR_TAG
@@ -307,7 +307,7 @@ async def test_char_tag_must_be_a_character_uid(servers):
     assert servers.requests == []
 
 
-# ── OAuth 会话 ─────────────────────────────────────────────────────────
+# ── OAuth sessions ─────────────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -329,7 +329,7 @@ def oauth(monkeypatch):
 
     monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", _status)
     monkeypatch.setattr(community_oauth, "status_session_saved", lambda s: state["saved"])
-    # 磁盘上已经换成别的账号：会话必须用 resolver 校验过的那份，不能重读
+    # Disk now holds another account: use the resolver-validated session snapshot instead of rereading
     monkeypatch.setattr(card_drop, "_desktop_session_snapshot",
                         lambda: {"base_url": BASE, "access_token": "other-account-token", "local_user_id": "u9"})
     monkeypatch.setattr(card_drop, "_get_client_id", lambda: state["client_id"])
@@ -376,7 +376,7 @@ async def test_no_oauth_session_maps_to_login_required_without_network(oauth, mo
     assert calls == []
 
 
-# ── guest 邀请码 ───────────────────────────────────────────────────────
+# ── Guest invitation codes ───────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -394,7 +394,7 @@ async def test_guest_credentials_carry_peer_vid_and_invite(servers):
     assert creds.peer_vid == HOST_VID and creds.invite_code is None and creds.invite_expires_at is None
 
 
-# ── 错误分派 ───────────────────────────────────────────────────────────
+# ── Error dispatch ───────────────────────────────────────────────────────────
 
 
 def test_error_dispatch_tables_cover_exactly_the_contract():
@@ -430,7 +430,7 @@ async def test_every_credentials_error_variant_maps(servers, status, code):
     local_status, local_body = exc.value.to_local_error()
     assert (local_status, local_body["code"]) == _EXPECTED_CREDENTIALS[(status, code)]
     if local_body["code"] == "VISIT_INVITE_INVALID":
-        # toast 按原 code 选文案：失效 / 过期 / 房间已满 / 自己的邀请 / 位置已被占 / 即将过期
+        # Toast copy follows original codes: invalid / expired / full room / own invitation / occupied slot / expiring soon
         assert local_body["details"] == {"reason": code}
     if status == 429:
         assert local_body["retry_after_s"] == 321
@@ -446,7 +446,7 @@ async def test_banned_is_cached_for_a_minute_per_account(servers):
     with pytest.raises(cr.VisitBanned):
         await _host()
     assert cr.banned_recently("u1")
-    # 同一台机器换成别的账号不受牵连
+    # Switching accounts on the same machine must not affect the new account
     assert not cr.banned_recently("u2")
 
 
@@ -459,7 +459,7 @@ async def test_already_expired_credentials_are_rejected(servers, field):
         data = original(body).json()
         past = int(time.time()) - vs.VISIT_TICKET_CLOCK_TOLERANCE_S - 5
         if field == "expires_at":
-            # 票本身也一起过期（exp 与 expires_at 一致），只让「已过期」这一条把它拒掉
+            # The ticket itself also expires, with exp matching expires_at; only expiration should reject it
             ttl = vs.VISIT_CREDENTIAL_TTL_S
             data["identity_ticket"] = servers.ticket(
                 role="guest", iat=past - ttl, ttl=ttl, transport="trtc", char_tag=body["char_tag"],
@@ -542,7 +542,7 @@ async def test_redirects_are_not_followed(servers, monkeypatch):
     monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
     with pytest.raises(cr.VisitServersUnreachable):
         await _host()
-    # bearer 只发给 Servers：跳转目标一次都没被请求
+    # Send bearer only to Servers; never request the redirect destination
     assert not any(r.url.host == "elsewhere.test" for r in seen)
 
 
@@ -558,7 +558,7 @@ async def test_ticket_fixed_and_temporal_claims_are_checked(servers, claim, valu
         claims = idm.peek_ticket_claims(data["identity_ticket"]).__dict__.copy()
         claims = {k: v for k, v in claims.items() if v is not None}
         if claim == "iat":
-            # 未来签发：票面时长与 expires_at 都对得上，只有 iat 在未来
+            # Future issuance: ticket duration and expires_at agree, but iat alone is future-dated
             shift = vs.VISIT_TICKET_CLOCK_TOLERANCE_S + 60
             claims["iat"] += shift
             claims["exp"] += shift
@@ -583,7 +583,7 @@ async def test_invite_code_never_reaches_the_httpx_request_log(servers, caplog):
     assert "/api/visit/pubkeys" in caplog.text
 
 
-# ── 区域提示 ───────────────────────────────────────────────────────────
+# ── Region hints ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -596,7 +596,7 @@ async def test_region_hint_reads_the_cache_only(servers, monkeypatch, cached, ex
     assert servers.region_cm.waits == waits
 
 
-# ── LiveKit 白名单 ─────────────────────────────────────────────────────
+# ── LiveKit allowlist ─────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -611,7 +611,7 @@ async def test_livekit_url_host_must_be_allowlisted(servers, monkeypatch):
     servers.livekit_url = f"wss://{LIVEKIT_HOST}:bad/rtc"
     with pytest.raises(cr.VisitServersUnreachable):
         await _host()
-    # 含孤立代理字符：下发 credentials 时编码会抛错，领取时就当坏响应
+    # Lone surrogates would fail encoding during credential delivery; treat them as malformed on retrieval
     servers.livekit_url = f"wss://{LIVEKIT_HOST}/rtc" + chr(0xD800)
     with pytest.raises(cr.VisitServersUnreachable):
         await _host()
@@ -622,7 +622,7 @@ async def test_livekit_url_host_must_be_allowlisted(servers, monkeypatch):
             await _host()
 
 
-# ── 身份票与 vendor 凭证的有效期 ───────────────────────────────────────
+# ── Identity-ticket and vendor-credential validity ───────────────────────────────────────
 
 
 def test_host_ticket_lifetime_covers_invite_wait_visit_and_margin():
@@ -637,7 +637,7 @@ async def test_ticket_lifetime_is_per_role_and_vendor_grant_is_ten_minutes(serve
         claims = idm.peek_ticket_claims(creds.identity_ticket)
         assert claims.exp - claims.iat == ttl
         assert creds.expires_at == claims.exp
-        # vendor 凭证与身份票分开：恒为 600，客户端原样收下不改写
+        # Vendor credentials are separate from identity tickets: always 600, accepted unchanged by the client
         assert creds.vendor["trtc"]["expire"] == 600
         assert creds.vendor_expires_at - claims.iat == 600
 
@@ -663,7 +663,7 @@ async def test_vendor_grant_signed_for_ticket_lifetime_is_rejected(servers, monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("grant_ttl,expires_ttl", [(2400, 600), (600, 2400)])
 async def test_each_vendor_lifetime_field_is_checked_on_its_own(servers, grant_ttl, expires_ttl):
-    # vendor.trtc.expire 与 vendor_expires_at 各自校验：只改其中一个也要拒
+    # Validate vendor.trtc.expire and vendor_expires_at independently; changing either alone must reject
     servers.vendor_ttl = grant_ttl
     servers.vendor_expires_ttl = expires_ttl
     with pytest.raises(cr.VisitServersUnreachable):
@@ -697,7 +697,7 @@ async def test_non_ascii_vendor_secret_is_rejected(servers):
 
 @pytest.mark.asyncio
 async def test_vendor_expiry_is_normalized_to_the_local_clock(servers):
-    # 本机时钟比 Servers 慢 200 s（在容差内）：到期按「本机现在 + 600」排续期，不晚于实际到期
+    # Local clock trails Servers by 200 s, within tolerance: schedule renewal from local now + 600, never after actual expiry
     original = servers._credentials
 
     def _ahead(body):
@@ -819,7 +819,7 @@ async def test_inflight_pubkey_refresh_is_awaited_even_while_failures_are_suppre
             {"keys": [], "revoked": ["k-revoked"], "ttl_s": 86400}, fetched_at=time.time())
 
     monkeypatch.setattr(cr, "_refresh_pubkeys", _slow_refresh)
-    cr._pubkeys_failed_at = time.time()  # 刚失败过：非强制调用不会再发起新刷新
+    cr._pubkeys_failed_at = time.time()  # Recent failure: nonforced calls must not start another refresh
     forced = asyncio.ensure_future(cr.fetch_pubkeys(force_refresh=True))
     await asyncio.sleep(0)
     waiting = asyncio.ensure_future(cr.fetch_pubkeys())
@@ -838,11 +838,11 @@ async def test_huge_ticket_timestamps_are_a_bad_response(servers):
     def _huge(body):
         data = original(body).json()
         claims = {k: v for k, v in idm.peek_ticket_claims(data["identity_ticket"]).__dict__.items() if v is not None}
-        # 负向超大：能绕过「iat 不在未来」与票面时长两道检查，直到与浮点相减时溢出
+        # Huge negative values bypass future-iat and ticket-duration checks, then overflow when subtracting floats
         claims["iat"] = -(10 ** 400)
         claims["exp"] = -(10 ** 400) + idm.ticket_ttl_s("guest")
         data["identity_ticket"] = mint_ticket(claims, servers.key)
-        data["expires_at"] += 0.5  # 真实 Servers 回的是浮点：大整数与浮点相减才会溢出
+        data["expires_at"] += 0.5  # Real Servers returns floats; subtracting floats from huge integers triggers overflow
         return httpx.Response(200, json=data)
 
     servers._credentials = _huge
@@ -869,7 +869,7 @@ async def test_ticket_with_an_unpaired_surrogate_is_a_bad_response(servers):
                          ids=["400-digits", "5000-digits", "neg-5000-digits"])
 async def test_pubkey_ttl_overflow_falls_back_to_default_ttl(servers, monkeypatch, ttl_literal):
     original = servers.handler
-    # 5000 位超过 int 位数上限（默认 4300）：解析 JSON 时就会出错，不能让整次刷新作废
+    # 5000 digits exceed int's default 4300-digit limit, failing during JSON parsing; do not invalidate the entire refresh
     huge = "9" * 5000
     body = ('{"keys":[{"kid":"k-huge","not_before":0,"not_after":' + huge + '}],'
             '"revoked":["k-revoked"],"ttl_s":' + ttl_literal + "}")
@@ -882,7 +882,7 @@ async def test_pubkey_ttl_overflow_falls_back_to_default_ttl(servers, monkeypatc
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
     monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
     keys = await cr.fetch_pubkeys(force_refresh=True)
-    # 只有 ttl_s / 单个 key 坏：整次刷新照常生效（吊销名单生效，坏 key 的 kid 被吊销），TTL 取上限
+    # Only ttl_s/one key invalid: refresh still applies, revocations take effect including the invalid kid, and TTL clamps to maximum
     assert not keys.stale
     assert {"k-revoked", "k-huge"} <= keys.revoked
     assert cr._pubkeys_fetched.ttl_s == float(vs.VISIT_PUBKEYS_CACHE_S)
@@ -899,7 +899,7 @@ async def test_host_cancel_deadline_keeps_the_clock_tolerance(servers, monkeypat
     monkeypatch.setattr(cr, "_sleep", _sleep)
     servers.scripted["/api/visit/rooms/"] = [(503, {})] * 1000
     start = clock[0]
-    # 本机时钟比 Servers 快：Servers 说还剩 10 s，本机看已经到期——仍要在容差内继续重试
+    # Local clock leads Servers: the server reports 10 s left while local time sees expiration; still retry within tolerance
     assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=start - 10)
     assert clock[0] - start >= vs.VISIT_TICKET_CLOCK_TOLERANCE_S - 20
 
@@ -916,7 +916,7 @@ async def test_credentials_repr_and_logs_never_carry_secrets(servers, caplog):
         assert secret not in text
 
 
-# ── 续期 ───────────────────────────────────────────────────────────────
+# ── Renewal ───────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -978,7 +978,7 @@ async def test_grant_renewal_after_forced_end_is_room_ended(servers):
     assert exc.value.finalize_reason == "kicked"
 
 
-# ── host 取消 ──────────────────────────────────────────────────────────
+# ── Host cancellation ──────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -1037,7 +1037,7 @@ async def test_host_cancel_stops_when_the_account_changes(servers, monkeypatch):
 
     monkeypatch.setattr(cr, "_servers_session", _session)
     monkeypatch.setattr(cr, "_sleep", _sleep)
-    # 第一次 503，退避期间换了账号：第二次不能以新账号去取消（403 invite_invalid 会被误判成功）
+    # First request gets 503 and account switches during backoff; never cancel as the new account (403 invite_invalid would look successful)
     servers.scripted["/api/visit/rooms/"] = [(503, {}), (403, {"code": "invite_invalid"})]
     assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=time.time() + 500)
     assert servers.count("/cancel") == 1
@@ -1115,11 +1115,11 @@ async def test_host_cancel_gives_up_at_invite_expiry(servers, monkeypatch):
     servers.scripted["/api/visit/rooms/"] = [(503, {})] * 1000
     start = clock[0]
     assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=start + 5)
-    # 截止 = 邀请到期 + 时钟容差
+    # Deadline = invitation expiry + clock tolerance
     assert clock[0] - start <= 5 + vs.VISIT_TICKET_CLOCK_TOLERANCE_S
 
 
-# ── 公钥 ───────────────────────────────────────────────────────────────
+# ── Public keys ───────────────────────────────────────────────────────────────
 
 
 def _ticket_for(servers, *, iat: int, role: str = "guest") -> str:
@@ -1171,7 +1171,7 @@ async def test_pubkeys_fetch_failure_still_returns_builtin_table_but_stale(serve
     keys = await cr.fetch_pubkeys()
     assert "k-builtin" in keys.keys
     assert keys.stale
-    # stale = 不知道最新吊销名单：内置钥匙签的票也一律拒
+    # Stale means latest revocations are unknown; reject even built-in-key-signed tickets
     with pytest.raises(PubkeysStale):
         _verify(_ticket_for(servers, iat=int(time.time())), keys, time.time())
 
@@ -1193,13 +1193,13 @@ async def test_expired_cache_with_failed_refresh_fails_closed(servers, monkeypat
 @pytest.mark.asyncio
 async def test_key_validity_window_bounds_the_ticket_iat(servers):
     now = int(time.time())
-    # 钥匙已在 1 min 前下线：iat=now 的票不收
+    # Key retired 1 min ago: reject a ticket with iat=now
     servers.key_window = (now - 86400, now - 60)
     keys = await cr.fetch_pubkeys(force_refresh=True)
     assert keys.keys[KID].not_after == now - 60
     with pytest.raises(KeyOutOfWindow):
         _verify(_ticket_for(servers, iat=now), keys, now)
-    # 下线前 1 min 签的票，在其 exp 内仍然有效
+    # Tickets signed 1 min before retirement remain valid through their exp
     old = _ticket_for(servers, iat=now - 120)
     assert _verify(old, keys, now).iat == now - 120
 
@@ -1216,7 +1216,7 @@ async def test_revoked_kid_is_removed_even_from_builtin(servers, monkeypatch):
         _verify(_ticket_for(servers, iat=int(time.time())), keys, time.time())
 
 
-# ── 邀请预览 ───────────────────────────────────────────────────────────
+# ── Invitation preview ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -1270,7 +1270,7 @@ async def test_preview_display_name_is_cleaned(servers):
         "cross_region": True, "expires_at": time.time() + 300, "host_visit_uid": HOST_UID,
     })]
     preview = await cr.fetch_invite_preview(INVITE, generic_label="Neko", protected_names=["Alice"])
-    # 与本机亲人同名 → 换成通用标签 + 短码
+    # Same name as the local user → substitute a generic label + short code
     assert preview.host_display_name == f"Neko {HOST_UID[:6].upper()}"
     assert preview.cross_region is True
 
@@ -1310,7 +1310,7 @@ async def test_preview_error_mapping(servers, status, code):
         assert local_body["retry_after_s"] == 42
 
 
-# ── 评审（wehos，593d997）补的用例 ─────────────────────────────────────
+# ── Review-added cases (wehos, 593d997) ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -1320,10 +1320,10 @@ async def test_grant_expiry_runs_on_the_wall_clock_only(servers, monkeypatch):
     assert not grant.refresh_due()
     real = time.time()
     patch_module_clock(monkeypatch, cr, time=lambda: real + vs.VISIT_VENDOR_GRANT_TTL_S - 60)
-    # 不传时钟时自己读墙钟：快到期就要续
+    # Without an explicit clock, read wall time and renew near expiry
     assert grant.refresh_due()
     assert not first.ticket_expired()
-    # 单调钟读数不能被当成「现在」位置参数传进来
+    # Monotonic time must not be passed as the positional 'now' argument
     with pytest.raises(TypeError):
         grant.refresh_due(12345.0)
     with pytest.raises(TypeError):
@@ -1375,7 +1375,7 @@ async def test_pubkeys_refresh_starts_after_the_credentials_issue(servers, monke
     async def _handler(request):
         if request.url.path == "/api/visit/credentials":
             in_flight.set()
-            await gate.wait()  # 签发还没回来
+            await gate.wait()  # Issuance has not returned yet
         return original(request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
@@ -1384,7 +1384,7 @@ async def test_pubkeys_refresh_starts_after_the_credentials_issue(servers, monke
     await in_flight.wait()
     for _ in range(20):
         await asyncio.sleep(0)
-    # 先签发、后拉公钥：钥匙轮换时不会拿到比票更旧的钥匙表
+    # Issue first, then fetch public keys, avoiding a pre-ticket key table during rotation
     assert servers.count("/pubkeys") == 0
     gate.set()
     assert (await task).vid == HOST_VID
@@ -1406,7 +1406,7 @@ async def test_grant_renews_with_the_tier_it_was_issued_for(servers):
     grant = cr.VisitGrant(first, invite_code=INVITE)
     renewed = await grant.renew()
     assert servers.bodies("/api/visit/credentials")[-1]["tier"] == first.tier == renewed.tier
-    # tier 参数已删除（续期只用签发时的 tier）：传了就是调用方写错
+    # Removed tier parameter: renewal uses issuance tier only; passing it is caller error
     removed = {"tier": "hd1200"}
     with pytest.raises(TypeError):
         cr.VisitGrant(first, **removed)
@@ -1427,7 +1427,7 @@ async def test_refresh_sent_before_the_issue_is_followed_by_a_fresh_one(servers,
             calls += 1
             if calls == 1:
                 sent.set()
-                await gate.wait()  # 签发之前就已发出、还没回来的那次刷新
+                await gate.wait()  # A refresh requested before issuance remains pending
         return original(request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
@@ -1435,7 +1435,7 @@ async def test_refresh_sent_before_the_issue_is_followed_by_a_fresh_one(servers,
     early = cr._kick_pubkeys_refresh()
     await sent.wait()
     await _host()
-    # 不能只加入那次旧刷新：它可能带回比刚签的票更旧的钥匙表
+    # Do not merely join that old refresh, which may return keys older than the just-issued ticket
     assert cr._pubkeys_inflight is not early
     gate.set()
     await cr._pubkeys_inflight
@@ -1444,11 +1444,11 @@ async def test_refresh_sent_before_the_issue_is_followed_by_a_fresh_one(servers,
 
 @pytest.mark.asyncio
 async def test_refresh_not_yet_sent_is_joined_after_the_issue(servers):
-    queued = cr._kick_pubkeys_refresh()  # 还没开始跑：请求一定在此之后才发出
+    queued = cr._kick_pubkeys_refresh()  # Not running yet: the request necessarily starts afterward
     assert cr._kick_pubkeys_refresh(after_now=True) is queued
     assert await queued is None
     assert servers.count("/pubkeys") == 1
-    assert cr._pubkeys_requested_by is None  # 结束后不再持有已完成的任务
+    assert cr._pubkeys_requested_by is None  # Do not retain completed tasks afterward
 
 
 
@@ -1474,7 +1474,7 @@ async def test_forced_refresh_queues_behind_an_already_sent_request(servers, mon
     monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
     early = cr._kick_pubkeys_refresh()
     await sent.wait()
-    # 核验遇到未知 kid 强制刷新：不能只加入那次已发出的旧请求
+    # Verification encountering unknown kid forces refresh; do not merely join an already-issued stale request
     forced = asyncio.ensure_future(cr.fetch_pubkeys(force_refresh=True))
     for _ in range(20):
         await asyncio.sleep(0)
@@ -1488,7 +1488,7 @@ async def test_forced_refresh_queues_behind_an_already_sent_request(servers, mon
 async def test_valid_cache_does_not_wait_for_a_background_refresh(servers, monkeypatch):
     import asyncio
 
-    await cr.fetch_pubkeys()  # 先有一份有效缓存
+    await cr.fetch_pubkeys()  # Start with a valid cache
     gate = asyncio.Event()
     original = servers.handler
 
@@ -1523,11 +1523,11 @@ def _grant_with_renewals(first, lifetimes, wall):
 async def test_renewal_capped_by_the_room_deadline_is_not_repeated(servers):
     first = await _guest()
     wall = [first.vendor_expires_at - 60]
-    # Servers 把授权截到房间硬期限：续出来只剩 30 s，不够一个续期余量
+    # Servers caps authorization at the room deadline, leaving only 30 s, less than one renewal margin
     grant, calls = _grant_with_renewals(first, [30, 600], wall)
     assert grant.refresh_due(wall_now=wall[0])
     assert await grant.ensure_fresh(wall_now=wall[0])
-    # 再续也只会拿到同一个期限：不再续（否则每次轮询都 POST 一次）
+    # Further renewal gets the same deadline: stop renewing instead of POSTing every poll
     assert not grant.refresh_due(wall_now=wall[0])
     assert not await grant.ensure_fresh(wall_now=wall[0])
     assert len(calls) == 1
@@ -1540,7 +1540,7 @@ async def test_normal_renewal_keeps_renewing(servers):
     grant, calls = _grant_with_renewals(first, [600, 600], wall)
     assert await grant.ensure_fresh(wall_now=wall[0])
     assert not grant.refresh_due(wall_now=wall[0])
-    # 正常续出 10 min 的授权，快到期时照常再续
+    # Normal renewal grants 10 min; renew again near expiry as usual
     wall[0] += 550
     assert await grant.ensure_fresh(wall_now=wall[0])
     assert len(calls) == 2
@@ -1554,7 +1554,7 @@ async def test_capped_grant_is_renewed_again_once_it_expired(servers):
     grant, calls = _grant_with_renewals(first, [30, 600], wall)
     assert await grant.ensure_fresh(wall_now=wall[0])
     assert not grant.refresh_due(wall_now=wall[0] + 29)
-    # 截断的授权过期之后照常再续：房间期限后延时能拿到新期限，房间已结束时拿到 410
+    # Renew capped authorization normally after expiry: extended rooms yield new deadlines, ended rooms return 410
     assert grant.refresh_due(wall_now=wall[0] + 30)
     assert await grant.ensure_fresh(wall_now=wall[0] + 30)
     assert len(calls) == 2 and not grant.refresh_due(wall_now=wall[0] + 30)
@@ -1565,20 +1565,20 @@ async def test_capped_grant_is_renewed_again_once_it_expired(servers):
 async def test_capped_and_already_expired_grant_is_retried_at_most_once_per_margin(servers):
     first = await _guest()
     wall = [first.vendor_expires_at - 60]
-    # Servers 仍返回一个（按本地时钟）已过期的截断授权
+    # Servers still returns capped authorization already expired by local clock
     grant, calls = _grant_with_renewals(first, [-10, -10, 600], wall)
     assert await grant.ensure_fresh(wall_now=wall[0])
     assert not grant.refresh_due(wall_now=wall[0] + 1)
     assert not await grant.ensure_fresh(wall_now=wall[0] + 60)
     assert len(calls) == 1
-    # 过了一个余量再试一次
+    # Retry after one margin
     assert await grant.ensure_fresh(wall_now=wall[0] + 120)
     assert len(calls) == 2
 
 
 @pytest.mark.asyncio
 async def test_credentials_pinned_to_another_account_send_nothing(servers):
-    # 会话快照已是 u1 以外的账号（登出 / 换账号已落地）：guest 不能按它兑掉一次性邀请码
+    # Session snapshot is no longer u1 after logout/account switching: guests must not redeem one-time invitations through it
     with pytest.raises(cr.VisitAccountChanged):
         await _guest(expect_account="u0")
     assert servers.requests == []

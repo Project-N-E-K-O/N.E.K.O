@@ -135,8 +135,8 @@ def test_audio_done_trails_every_audio_chunk_of_the_round():
 
     request_queue.put(("speech-1", "First.Second."))
     request_queue.put((None, None))
-    # 卡住第二句的合成，逼出"本轮文本已结束但音频还没投完"的窗口：
-    # 早发的实现会在这个窗口里把哨兵插到尾音前面。
+    # Stall synthesis of the second sentence to expose the window where text has ended but audio is not fully submitted:
+    # an early-signal implementation inserts the sentinel before the trailing audio in this window.
     assert started.wait(5)
     time.sleep(0.3)
     gate.set()
@@ -211,7 +211,7 @@ def test_round_after_an_interrupt_still_reports_closure_with_the_new_speech_id()
 
 
 def test_undrained_round_stays_silent_instead_of_closing_early():
-    # 抽干撞上硬上限说明音频还没投完，此时发信号就是"早发"，前端会截掉尾音。
+    # Hitting the drain hard limit means audio is still pending; signaling now is early and makes the frontend truncate the tail.
     request_queue, response_queue, thread = _start_worker(
         _echo_setup(), response_queue=_StuckSlotQueue()
     )
@@ -270,7 +270,7 @@ def test_emitter_rejects_ownerless_and_interrupt_speech_ids():
         emitter.emit(sid)
 
     assert _drain(q) == []
-    # 守卫过的 sid 不应占用去重槽位，真实 sid 仍要发得出去。
+    # A guarded sid must not occupy a deduplication slot; the real sid must still be emitted.
     emitter.emit("speech-1")
     assert _drain(q) == [(TTS_AUDIO_DONE_SENTINEL, "speech-1")]
 
@@ -280,5 +280,5 @@ def test_emitter_swallows_queue_failures():
         def put(self, item):
             raise RuntimeError("queue is gone")
 
-    # 漏发是可接受降级；投递失败不能把 worker 的收尾路径炸掉。
+    # Missing delivery is an acceptable fallback; delivery failure must not break worker cleanup.
     AudioDoneEmitter(_DeadQueue()).emit("speech-1")

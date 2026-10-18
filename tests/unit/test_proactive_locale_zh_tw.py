@@ -65,7 +65,7 @@ def _mgr(user_language):
     return SimpleNamespace(user_language=user_language)
 
 
-# ── 1. 归一化器留住字形 ──────────────────────────────────────
+# -- 1. Normalization preserves orthography --
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_every_traditional_spelling_survives_the_normalizer(spelling):
     assert _normalize_prompt_language(spelling) == "zh-TW"
@@ -97,7 +97,7 @@ def test_public_normalizer_is_the_same_function():
         )
 
 
-# ── 2. 解析器把字形送到位 ────────────────────────────────────
+# -- 2. Parsing delivers orthography correctly --
 @pytest.mark.parametrize("source", ("request", "session", "global"))
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_prompt_format_preserves_traditional_from_every_source(source, spelling, monkeypatch):
@@ -114,15 +114,15 @@ def test_prompt_format_preserves_traditional_from_every_source(source, spelling,
 
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_short_format_still_collapses_it(spelling):
-    """前提守卫：短码方案确实会毁掉字形。这条一旦变绿，上面那些测试就
-    不再证明任何东西了——它们会在没修调用点的情况下照样通过。"""  # noqa: DOCSTRING_CJK
+    """Premise guard: short codes really destroy orthography. If this passes, the tests above
+    no longer prove anything; they would pass without fixing call sites."""  # noqa: DOCSTRING_CJK
     resolved = service._resolve_proactive_locale({}, _mgr(spelling))
     assert resolved == "zh", resolved
 
 
 @pytest.mark.parametrize("spelling", SIMPLIFIED_SPELLINGS)
 def test_prompt_format_yields_the_simplified_key_not_a_full_locale(spelling):
-    """⚠️ ``fmt="full"`` 会给出 ``zh-CN``，那不是任何 prompt 表的键。"""  # noqa: DOCSTRING_CJK
+    """``fmt="full"`` returns ``zh-CN``, which is not a key in any prompt table."""  # noqa: DOCSTRING_CJK
     assert service._resolve_proactive_locale({}, _mgr(spelling), fmt="prompt") == "zh"
 
 
@@ -137,19 +137,19 @@ def test_request_language_still_wins_over_the_session():
 
 
 def test_garbage_request_language_still_falls_through_to_the_session():
-    """白名单守卫早于本次改动，必须活下来：否则 localStorage 一坏，
-    文案就被短路成英文，而 session 里明明有真值。"""  # noqa: DOCSTRING_CJK
+    """Preserve the preexisting allowlist guard; otherwise corrupt localStorage
+    short-circuits prose to English despite valid session state."""  # noqa: DOCSTRING_CJK
     resolved = service._resolve_proactive_locale(
         {"language": "estonian"}, _mgr("zh-TW"), fmt="prompt"
     )
     assert resolved == "zh-TW", resolved
 
 
-# ── 3. 四条路径各自拿到 zh-TW 模板 ───────────────────────────
+# -- 3. All four paths receive zh-TW templates --
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_proactive_chat_copy_renders_traditional(spelling):
-    """主动搭话文案：屏幕分节 header 走 {master} 占位符展开，是整条
-    Phase 2 prompt 里最容易被漏掉字形的一段。"""  # noqa: DOCSTRING_CJK
+    """Proactive-chat prose: the screen-section header expands {master}, making it the easiest
+    section of the Phase 2 prompt in which to overlook orthography."""  # noqa: DOCSTRING_CJK
     lang = service._resolve_proactive_locale({}, _mgr(spelling), fmt="prompt")
     assert get_screen_section_header("博士", lang) == SCREEN_SECTION_HEADER["zh-TW"].format(
         master="博士"
@@ -158,8 +158,8 @@ def test_proactive_chat_copy_renders_traditional(spelling):
 
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_break_reminder_copy_renders_traditional(spelling):
-    """休息邀请：这两张表在 prompts_activity，用的是裸 ``dict.get``——
-    键错了不会报错，只会静默变英文。"""  # noqa: DOCSTRING_CJK
+    """Rest invitations: both prompts_activity tables use bare ``dict.get``,
+    so incorrect keys silently produce English rather than raising."""  # noqa: DOCSTRING_CJK
     from main_logic.proactive_chat.break_reminders import _resolve_break_reminder_label
 
     lang = service._resolve_proactive_locale({}, _mgr(spelling), fmt="prompt")
@@ -172,7 +172,7 @@ def test_break_reminder_copy_renders_traditional(spelling):
 
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_new_character_greeting_renders_traditional(spelling):
-    """破冰问候。"""  # noqa: DOCSTRING_CJK
+    """Icebreaker greetings."""  # noqa: DOCSTRING_CJK
     assert get_new_character_greeting_prompt(
         normalize_proactive_prompt_locale(spelling)
     ) == NEW_CHARACTER_GREETING_PROMPT["zh-TW"]
@@ -180,18 +180,18 @@ def test_new_character_greeting_renders_traditional(spelling):
 
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_cat_greeting_renders_traditional(spelling):
-    """猫咪问候：与破冰问候同族，同一个 mixin、同样的短码来源。"""  # noqa: DOCSTRING_CJK
+    """Cat greetings: same family as icebreakers, sharing their mixin and short-code source."""  # noqa: DOCSTRING_CJK
     assert get_cat_greeting_reason_hint(
         True, normalize_proactive_prompt_locale(spelling)
     ) == CAT_GREETING_REASON_AUTO["zh-TW"]
 
 
-# ── 4. 同一轮里所有文案同一个 locale ─────────────────────────
-# ⚠️ 这条是 C1 收口的存在理由。上面每条路径单独测都可能是绿的，而用户看到的是
-# 一整轮混排。以后谁再加一处绕过归一化器的查表，这里会红。
+# -- 4. All prose within one turn shares one locale --
+# This is why C1 centralization exists. Individual path tests may pass while users see a mixed-language
+# turn. Any future lookup bypassing normalization fails here.
 def _one_turn_renderings(lang: str) -> dict[str, str]:
-    """一轮主动搭话里真实会拼进 prompt 的若干片段，覆盖三种查表风格：
-    getter / ``_loc`` / 裸 ``dict.get``。"""  # noqa: DOCSTRING_CJK
+    """Fragments actually assembled in a proactive-chat turn's prompt, covering three lookup styles:
+    getters / ``_loc`` / bare ``dict.get``."""  # noqa: DOCSTRING_CJK
     return {
         "screen_header": get_screen_section_header("博士", lang),
         "meme_header": _loc(MEME_SECTION_HEADER, lang),
@@ -223,7 +223,7 @@ def _expected_for_key(key: str, row: str) -> str:
 def test_one_turn_is_entirely_traditional(spelling):
     lang = service._resolve_proactive_locale({}, _mgr(spelling), fmt="prompt")
     rendered = _one_turn_renderings(lang)
-    # 断言取值相等而不是"含某个繁体字"：包含式断言挡不住一半模板回落简体。
+    # Assert exact values, not merely presence of traditional characters; containment cannot detect half the templates falling back to simplified.
     assert rendered == {k: _expected_for_key(k, "zh-TW") for k in rendered}
 
 
@@ -235,10 +235,10 @@ def test_one_turn_is_entirely_simplified(spelling):
 
 
 def test_simplified_never_degrades_to_english():
-    """⚠️ 这条专门挡 ``fmt="full"``。
+    """Specifically guard against ``fmt="full"``.
 
-    ``full`` 给出的是 ``zh-CN``，而这些表一个 ``zh-CN`` 键都没有——裸 ``dict.get``
-    会直接落到 ``en``。繁中那一侧的测试全绿，简中用户却看到英文。
+    ``full`` yields ``zh-CN``, absent from all these tables, so bare ``dict.get``
+    falls directly to ``en``. Traditional-Chinese tests pass while simplified-Chinese users see English.
     """  # noqa: DOCSTRING_CJK
     lang = service._resolve_proactive_locale({}, _mgr("zh-CN"), fmt="prompt")
     english = {k: _expected_for_key(k, "en") for k in _one_turn_renderings(lang)}
@@ -248,10 +248,10 @@ def test_simplified_never_degrades_to_english():
 
 
 def test_full_format_would_have_broken_simplified():
-    """前提守卫：证明上一条测的不是空气。``fmt="full"`` 确实会打穿简中。
+    """Premise guard: prove the previous test is meaningful and ``fmt="full"`` really breaks simplified Chinese.
 
-    如果哪天 ``full`` 也开始返回 ``zh``（或这些表补了 ``zh-CN`` 行），这条会红，
-    提醒把上一条的理由重写——而不是让它退化成一条永远为真的断言。
+    If ``full`` ever returns ``zh`` or tables gain ``zh-CN`` rows, fail here to
+    prompt rewriting the previous rationale rather than letting it become a tautology.
     """  # noqa: DOCSTRING_CJK
     full = service._resolve_proactive_locale({}, _mgr("zh-CN"), fmt="full")
     assert full == "zh-CN"
@@ -259,16 +259,16 @@ def test_full_format_would_have_broken_simplified():
     assert RECENT_PROACTIVE_TIME_LABELS.get(full) is None
 
 
-# ── 5. 调用点：自动发现，不是列清单 ──────────────────────────
-# ⚠️ 上面全部是"归一化器和表各自没问题"。真正让 zh-TW 到达用户的是调用点：
-# 把 ``fmt="prompt"`` 删掉，第 1/3/4 节里很多条还是绿的（表本身没变）。所以这里
-# walk 一遍 service.py 的 AST，检查**每一个**调用点都显式给了 fmt。
+# -- 5. Discover call sites automatically rather than listing them --
+# Above only establishes independently correct normalizers/tables; call sites deliver zh-TW to users.
+# Removing ``fmt="prompt"`` leaves many section 1/3/4 tests green because tables do not change. Walk
+# service.py's AST and require explicit fmt at every call site.
 def _callee_name(node: ast.Call) -> str:
-    """调用名，属性式与裸名一视同仁。
+    """Call name, treating attribute calls and bare names equally.
 
-    ⚠️ 只认 ``ast.Name`` 会漏：``service._resolve_proactive_locale(...)`` /
-    ``prompts_proactive.normalize_proactive_prompt_locale(...)`` 都是 ``ast.Attribute``，
-    一个纯粹合法的重构会让守卫误红（或者更糟，漏掉一个真调用点）。
+    Checking only ``ast.Name`` misses ``service._resolve_proactive_locale(...)`` /
+    ``prompts_proactive.normalize_proactive_prompt_locale(...)``, both ``ast.Attribute``;
+    legitimate refactoring would falsely fail the guard or, worse, hide a real call site.
     """  # noqa: DOCSTRING_CJK
     func = node.func
     if isinstance(func, ast.Name):
@@ -293,13 +293,13 @@ def _resolver_calls() -> list[ast.Call]:
 
 
 def test_the_call_site_walk_finds_something():
-    """空断言陷阱：AST 匹配写错时下面那条会 vacuously 通过。"""  # noqa: DOCSTRING_CJK
+    """Vacuous-assertion trap: incorrect AST matching makes the following test pass without checking anything."""  # noqa: DOCSTRING_CJK
     assert len(_resolver_calls()) >= 4
 
 
 def test_no_call_site_relies_on_the_short_default():
-    """短码默认值留着是函数契约的一部分，但没有调用点该再用它——
-    proactive 一族的消费点如今全是 prompt dict。"""  # noqa: DOCSTRING_CJK
+    """The short-code default remains part of the function contract, but no call site should use it now:
+    proactive-family consumers all use prompt dictionaries."""  # noqa: DOCSTRING_CJK
     offenders = [
         node.lineno
         for node in _resolver_calls()
@@ -327,11 +327,11 @@ def _named_function(tree: ast.Module, name: str):
 
 
 def _greeting_scope(name: str) -> list:
-    """入口函数，**外加**它在本模块里调到的辅助函数（追一层）。
+    """Entry function plus locally called helpers, following one level.
 
-    ⚠️ 只 walk 入口函数体是有缝的：把 locale 解析挪进一个私有 helper
-    （``_resolve_greeting_lang()``），短码就藏到守卫看不见的地方了。追一层把这条缝
-    堵上——同时也让「必须调归一化器」那条不会因为纯粹的抽取重构而误红。
+    Walking only the entry body leaves a gap: moving locale resolution into a private helper
+    such as ``_resolve_greeting_lang()`` hides short codes from the guard. Following one level
+    closes that gap and prevents the required-normalizer check falsely failing after simple extraction refactors.
     """  # noqa: DOCSTRING_CJK
     tree = _greeting_tree()
     entry = _named_function(tree, name)
@@ -353,14 +353,14 @@ def _calls_in(scope: list) -> list[ast.Call]:
 
 @pytest.mark.parametrize("name", GREETING_ENTRYPOINTS)
 def test_the_greeting_scope_walk_finds_something(name):
-    """空断言陷阱：作用域解析写错时，下面两条会 vacuously 通过。"""  # noqa: DOCSTRING_CJK
+    """Vacuous-assertion trap: incorrect scope resolution makes the following two tests pass without checking anything."""  # noqa: DOCSTRING_CJK
     assert _calls_in(_greeting_scope(name)), f"{name} 作用域里一个调用都没扫到"
 
 
 @pytest.mark.parametrize("name", GREETING_ENTRYPOINTS)
 def test_greeting_entrypoints_do_not_shorten_the_locale(name):
-    """⚠️ 上面两条问候测试喂的是已归一化的 locale，测的是 getter 不是调用点：
-    把 greeting.py 改回 ``format='short'``，那两条照样绿。这里盯调用点。"""  # noqa: DOCSTRING_CJK
+    """The two greeting tests above supply normalized locales and test getters, not call sites:
+    changing greeting.py back to ``format='short'`` leaves both green. Check the call site here."""  # noqa: DOCSTRING_CJK
     offenders = [
         node.lineno
         for node in _calls_in(_greeting_scope(name))
@@ -382,7 +382,7 @@ def test_greeting_entrypoints_normalize_through_the_prompt_normalizer(name):
 
 
 def test_prompt_dict_consumers_ask_for_the_prompt_format():
-    """``_break_lang`` / ``proactive_lang`` 是喂 prompt 表的两条主干。"""  # noqa: DOCSTRING_CJK
+    """``_break_lang`` / ``proactive_lang`` are the two main paths feeding prompt tables."""  # noqa: DOCSTRING_CJK
     wanted = {"_break_lang", "proactive_lang"}
     seen: dict[str, str] = {}
     for node in ast.walk(_service_tree()):

@@ -183,7 +183,7 @@ def test_placeholders_match_across_locales(path: str, table: dict[str, str]):
 def test_traditional_chinese_is_not_a_copy_of_simplified(path: str, table: dict[str, str]):
     simplified = table["zh"]
     traditional = table["zh-TW"]
-    # Short tags such as "[你]" and the card block (its only words, "角色卡",
+    # Short tags such as "[你]" (you) and the card block (its only words, "角色卡" (character card),
     # are the same in both scripts) may legitimately coincide.
     if path == "VISIT_CHARACTER_CARD_BLOCK":
         return

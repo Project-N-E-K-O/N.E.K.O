@@ -36,11 +36,11 @@ from .character_fields import (  # noqa: F401
     LEGACY_FLAT_TO_RESERVED,
 )
 
-# `config` 是老单体模块的兼容门面，历史上 `from config import platform` 是能用的，
-# 而外部插件不在本仓能 grep 的范围内（codex）。所以名字留着——但直接在这里 import，
-# 不再从 config.network 转出：那边已经改用 sys.platform，转出会让它多一个纯为兼容
-# 而存在的未使用导入。
-import platform  # noqa: F401 - 兼容门面：外部可能 `from config import platform`
+# config is the legacy monolith's compatibility facade; `from config import platform` historically worked,
+# and external plugins cannot be searched from this repository (Codex). Keep the name, importing directly here
+# rather than re-exporting from config.network: that module now uses sys.platform, and re-exporting would
+# leave an unused import solely for compatibility.
+import platform  # noqa: F401 - Compatibility facade: external code may use `from config import platform`.
 
 from .network import (  # noqa: F401
     json,
@@ -711,7 +711,7 @@ __all__ = [
     'NATIVE_IMAGE_MIN_INTERVAL',
     'IMAGE_IDLE_RATE_MULTIPLIER',
     'MAX_MULTIMODAL_TURN_IMAGES',
-    # API 和模型配置的默认值
+    # Default API and model configuration values.
     'DEFAULT_CORE_API_KEY',
     'DEFAULT_AUDIO_API_KEY',
     'DEFAULT_OPENROUTER_API_KEY',
@@ -720,9 +720,9 @@ __all__ = [
     'DEFAULT_CORE_MODEL',
     'DEFAULT_OPENROUTER_URL',
     # ROUTER_MODEL / SEMANTIC_MODEL / RERANKER_MODEL / SETTING_PROPOSER_MODEL /
-    # SETTING_VERIFIER_MODEL 于 2026-04 全部退环境（无 Python 调用方），见
-    # memory/settings.py 顶部说明 + 上方常量块的注释。新增需求走 tier 化路径。
-    # 其他模型配置（仅导出 DEFAULT_ 版本）
+    # SETTING_VERIFIER_MODEL was fully retired in 2026-04 (no Python callers); see
+    # memory/settings.py's introduction and the constant-block comments above. New needs use tier-based paths.
+    # Other model configuration (export DEFAULT_ variants only).
     'DEFAULT_CONVERSATION_MODEL',
     'DEFAULT_SUMMARY_MODEL',
     'DEFAULT_CORRECTION_MODEL',
@@ -732,7 +732,7 @@ __all__ = [
     'DEFAULT_REALTIME_MODEL',
     'DEFAULT_TTS_MODEL',
     'HIDE_DIRTY_VOICE_TRANSCRIPTS',
-    # 用户自定义模型配置的 URL/API_KEY
+    # URL/API_KEY for user-defined models.
     'DEFAULT_CONVERSATION_MODEL_URL',
     'DEFAULT_CONVERSATION_MODEL_API_KEY',
     'DEFAULT_SUMMARY_MODEL_URL',

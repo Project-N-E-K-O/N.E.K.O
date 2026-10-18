@@ -42,13 +42,13 @@ async def _run_computer_use_task(
     instruction: str,
 ) -> None:
     """Run a computer-use task in a thread pool; emit results directly via ZeroMQ."""
-    # Telemetry：按 agent 类型计使用量（cua/browser/plugin/openclaw），
-    # 看哪类 agent 真被用、用多少。best-effort 不阻塞 agent 执行。
+    # Telemetry: count usage by agent type (cua/browser/plugin/openclaw),
+    # showing which agents are actually used and how much. Best-effort; never block agent execution.
     try:
         from utils.instrument import counter as _ic
         _ic("agent_invoked", agent_type="cua")
     except Exception:
-        pass  # 埋点 best-effort，不阻塞 cua 任务执行
+        pass  # Best-effort instrumentation must not block cua tasks
     info = _shared.Modules.task_registry.get(task_id, {})
     lanlan_name = info.get("lanlan_name")
 
@@ -103,16 +103,16 @@ async def _run_computer_use_task(
                 logger.warning("[ComputerUse] Thread did not stop within 15s after cancel")
     except Exception as e:
         info["error"] = _tt(str(e), TASK_ERROR_MAX_TOKENS)
-        # exception 字符串经常夹带用户输入 / 模型输出 / 上游响应原文，
-        # logger 只记 task_id + exc_type 元数据，原文走 print 兜底。
+        # Exception strings often contain user input / model output / raw upstream responses;
+        # logger records only task_id + exc_type metadata, with original text falling back to print.
         logger.error("[ComputerUse] Task %s failed (exc_type=%s)", task_id, type(e).__name__)
         print(f"[ComputerUse] Task {task_id} raw error: {e}")
     finally:
-        # 异常路径下 run_instruction() 直接抛错 → cu_detail 仍是空字符串，
-        # 但 info["error"] 已经写了 exception 文本。把 info["error"] 回填到
-        # cu_detail，让下游 summary / detail / error_message 三条出口都能
-        # 拿到失败原因（前端 task_update / task_result + analyzer 都依赖
-        # 这条；之前会发出 failed + error_message="" 让前端拿不到细节）。
+        # On exceptions, run_instruction() raises directly, leaving cu_detail empty,
+        # while info["error"] already contains exception text. Copy info["error"] into
+        # cu_detail so all three downstream outputs (summary / detail / error_message) receive
+        # the failure reason (frontend task_update / task_result and analyzer all depend on
+        # this; previously failed + error_message="" left the frontend without details).
         if not cu_detail and info.get("error"):
             cu_detail = info["error"]
         # cancel_task may have pre-marked status="cancelled" before this dispatch
@@ -131,7 +131,7 @@ async def _run_computer_use_task(
         if info.get("status") == "cancelled":
             success = False
         info["end_time"] = _now_iso()
-        # 记录任务完成状态供 analyzer 去重
+        # Record task completion for analyzer deduplication
         _task_tracker.record_completed(
             lanlan_name, task_id=task_id, method="computer_use",
             desc=instruction or "",
@@ -139,7 +139,7 @@ async def _run_computer_use_task(
             success=success and info["status"] != "cancelled",
             cancelled=(info["status"] == "cancelled"),
         )
-        # 失败时将解析后的 cu_detail 写入 info["error"]（仅在非异常路径下补全）
+        # On failure, copy parsed cu_detail into info["error"] (fill only on non-exception paths)
         if not success and not info.get("error") and cu_detail:
             info["error"] = _tt(cu_detail, TASK_ERROR_MAX_TOKENS)
         _shared.Modules.computer_use_running = False
@@ -200,18 +200,18 @@ async def _computer_use_scheduler_loop():
             # put_nowait from async contexts on the same loop, so get() wakes
             # immediately — no polling needed.
             next_task = await _shared.Modules.computer_use_queue.get()
-            # 先等前一个 CU task 跑完，再做 flag 检查——覆盖用户在 await 期间
-            # 通过 /agent/flags 关闭 CU 的窗口；否则被禁用后仍会 dispatch。
+            # Await the preceding CU task before checking flags, covering users disabling CU through
+            # /agent/flags during the await; otherwise it would still dispatch after being disabled.
             if _shared.Modules.computer_use_running and _shared.Modules.active_computer_use_async_task is not None:
                 try:
                     await _shared.Modules.active_computer_use_async_task
                 except Exception as e:
-                    # 前一个 CU task 的异常已由 _run_computer_use_task 的 finally 处理/记录；
-                    # 此处仅防御未预期的穿透，保留 scheduler 存活以调度下一任务。
+                    # The preceding CU task's exceptions were already handled/logged by _run_computer_use_task's finally;
+                    # this only guards unexpected propagation, keeping the scheduler alive for the next task.
                     logger.debug("[ComputerUse] prior task raised on await: %s", e)
             if not _shared.Modules.analyzer_enabled or not _shared.Modules.agent_flags.get("computer_use_enabled", False):
-                # 把排队任务显式标成 cancelled 并 emit task_update；否则 registry 里会
-                # 一直留着 "queued" 的僵尸项，污染重复任务判定与 UI 显示。
+                # Explicitly mark queued tasks cancelled and emit task_update; otherwise the registry retains
+                # zombie "queued" entries, corrupting duplicate detection and UI display.
                 dropped = [next_task]
                 while not _shared.Modules.computer_use_queue.empty():
                     try:
@@ -266,7 +266,7 @@ async def dispatch(
 ) -> None:
     """Handle an analyzer decision routed to the computer-use channel."""
     if _shared.Modules.agent_flags.get("computer_use_enabled", False):
-        # 检查重复
+        # Check for duplicates
         dup, matched = await _is_duplicate_task(result.task_description, lanlan_name)
         if not dup:
             ti = _spawn_task("computer_use", {"instruction": result.task_description, "screenshot": None})
@@ -277,7 +277,7 @@ async def dispatch(
                 lanlan_name, task_id=ti["id"], method="computer_use",
                 desc=result.task_description or "",
             )
-            # task_description 是用户/LLM 原文，不写进 logger；本地 print 兜底
+            # task_description is raw user/LLM content; never put it in logger, use local print fallback
             logger.info(f"[ComputerUse] Scheduled task {ti['id']} (desc_len={len(result.task_description or '')})")
             print(f"[ComputerUse] task {ti['id']} description: {(result.task_description or '')[:120]}")
             try:

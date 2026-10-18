@@ -1,24 +1,24 @@
 # -*- coding: utf-8 -*-
-"""Memory 模块 LLM 终态失败的 liveness dead-letter 兜底契约。
+"""Liveness dead-letter fallback contracts for terminal Memory-module LLM failures.
 
-Background：所有"同一 input + 反复 LLM 失败 + 无 attempt counter → 永久卡死"
-的后台路径都按 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` (=5) 计数，达上限后强推
-progress marker（cursor / 队头 / cluster_hash / op state）放弃毒输入，避免
-单条毒数据让该角色整条 pipeline 哑火。详见 issue #1409。
+Background: every background path where identical input and repeated LLM failures without counters
+would stall permanently counts to MEMORY_LIVENESS_MAX_ATTEMPTS (=5), then forces
+its progress marker (cursor / queue head / cluster_hash / operation state) past the toxic input,
+preventing one corrupt item from disabling a character's entire pipeline. See issue #1409.
 
-覆盖的 7 个 site：
-- Site 0a: ``_signal_check_one`` (path A Stage-1) cursor 强推到 now
-- Site 0b: ``_run_path_b`` (path B Stage-1) cursor 强推到 last_fetched_ts
-- Site 1:  ``_periodic_rebuttal_loop`` cursor 强推到 now
+Seven covered sites:
+- Site 0a: _signal_check_one (path A Stage-1), force cursor to now.
+- Site 0b: _run_path_b (path B Stage-1), force cursor to last_fetched_ts.
+- Site 1: _periodic_rebuttal_loop, force cursor to now.
 - Site 2:  ``PersonaManager.resolve_corrections`` batch entry dead-letter
 - Site 3:  ``FactDedupResolver.aresolve`` batch pair dead-letter
-- Site 4:  ``MemoryRefineEngine.refine_pass`` 非 fact 成员 dead-letter
-- Site 7:  outbox handler append_done dead-letter（解锁 compact）
+- Site 4: MemoryRefineEngine.refine_pass, dead-letter non-fact members.
+- Site 7: outbox handler append_done dead-letter, enabling compaction.
 
-每个 site 测：
-- 失败 N-1 次不动 progress marker
-- 第 N 次触发 dead-letter
-- 成功路径清 attempt 计数器
+At each site, test:
+- N-1 failures leave the progress marker unchanged.
+- The Nth failure triggers dead-lettering.
+- Success clears attempt counters.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ import pytest
 
 @pytest.mark.unit
 def test_path_a_bump_failure_under_threshold_returns_false():
-    """N-1 次失败：返 False（caller 走原"保留 cursor 重试"路径）。"""
+    """N-1 failures return False, retaining the caller's keep-cursor-and-retry path."""
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
 
@@ -53,15 +53,15 @@ def test_path_a_bump_failure_under_threshold_returns_false():
             'neko_test_a', state, cursor_key, now,
         )
     assert triggered is False, "未达 MAX 不该触发 dead-letter"
-    # cursor 不动
+    # Cursor unchanged.
     assert state['last_check_ts'] == '2026-05-18T10:00:00'
-    # counter 累计到 MAX-1
+    # Counter accumulates to MAX-1.
     assert state['a_extract_failures'][cursor_key] == MEMORY_LIVENESS_MAX_ATTEMPTS - 1
 
 
 @pytest.mark.unit
 def test_path_a_bump_failure_at_threshold_forces_cursor():
-    """第 N 次失败：返 True 并强推 cursor 到 now + 清 counter。"""
+    """Nth failure returns True, forcing cursor to now and clearing the counter."""
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
 
@@ -80,15 +80,15 @@ def test_path_a_bump_failure_at_threshold_forces_cursor():
         'neko_test_a', state, cursor_key, now,
     )
     assert triggered is True
-    # cursor 强推到 now
+    # Force cursor to now.
     assert state['last_check_ts'] == now.isoformat()
-    # counter 清零（mark_done 顺带做）
+    # Reset counter as a side effect of mark_done.
     assert state['a_extract_failures'] == {}
 
 
 @pytest.mark.unit
 def test_signal_check_mark_done_clears_path_a_failures():
-    """成功路径 mark_done 必须清 path-A counter，否则 cursor 历史拖累内存。"""
+    """Successful mark_done must clear path-A counters to prevent memory growth with cursor history."""
     from app import memory_server
 
     memory_server._signal_check_state.clear()
@@ -144,7 +144,7 @@ def test_path_b_bump_failure_under_threshold_returns_false():
             'neko_test_b', state, cursor_key, last_fetched,
         )
     assert triggered is False
-    # cursor 不动
+    # Cursor unchanged.
     assert state['last_b_check_ts'] == last_b_check
     assert state['b_extract_failures'][cursor_key] == MEMORY_LIVENESS_MAX_ATTEMPTS - 1
 
@@ -172,7 +172,7 @@ def test_path_b_bump_failure_at_threshold_forces_cursor():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_path_b_persisted_none_triggers_dead_letter_at_threshold():
-    """End-to-end: _run_path_b 第 N 次 persisted=None 时强推 last_b_check_ts。"""
+    """End-to-end: _run_path_b forces last_b_check_ts on the Nth persisted=None result."""
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
 
@@ -183,7 +183,7 @@ async def test_run_path_b_persisted_none_triggers_dead_letter_at_threshold():
         'last_b_check_ts': last_b,
     }
 
-    # 至少要 2 行 (user, ai) 才能过 bracket trim 进入 LLM
+    # At least two user/AI rows are needed to pass bracket trimming into the LLM.
     base = last_b + timedelta(seconds=10)
     rows = [
         (base + timedelta(seconds=0), 's', json.dumps({
@@ -205,13 +205,13 @@ async def test_run_path_b_persisted_none_triggers_dead_letter_at_threshold():
         for i in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
             await memory_server._run_path_b('neko_test_b_e2e', state)
 
-    # 第 N 次：last_b_check_ts 强推到 last_fetched_ts (=最后一行 ts)
+    # Nth failure: force last_b_check_ts to last_fetched_ts, the last row timestamp.
     expected_force_to = base + timedelta(seconds=10)
     assert state['last_b_check_ts'] == expected_force_to, (
         f"第 {MEMORY_LIVENESS_MAX_ATTEMPTS} 次失败应强推 cursor 到 {expected_force_to}, "
         f"实际 {state['last_b_check_ts']}"
     )
-    # counter 清零
+    # Reset counter.
     assert state.get('b_extract_failures', {}) == {}
 
 
@@ -254,7 +254,7 @@ def test_rebuttal_clear_failures_removes_name():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_corrections_dead_letter_at_threshold(tmp_path):
-    """resolve_corrections LLM 失败 N 次后 dead-letter 队头 corrections。"""
+    """resolve_corrections dead-letters head corrections after N LLM failures."""
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.persona import PersonaManager
 
@@ -274,12 +274,12 @@ async def test_corrections_dead_letter_at_threshold(tmp_path):
     ]
     corr_path.write_text(json.dumps(seed_items), encoding='utf-8')
     with patch.object(pm, '_corrections_path', return_value=str(corr_path)):
-        # 模拟 LLM 失败 N 次（每次 LLM 看到队头同样 N 条）
+        # Simulate N LLM failures; the LLM sees the same N head entries each time.
         for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
             await pm._abump_correction_attempts_and_dead_letter(name, seed_items)
 
         remaining = json.loads(corr_path.read_text(encoding='utf-8')) or []
-        # 所有 entry 都该被 dead-letter
+        # All entries should be dead-lettered.
         assert remaining == [], (
             f"N 次失败后 batch entry 全部 dead-letter, 实际剩余: {remaining}"
         )
@@ -288,7 +288,7 @@ async def test_corrections_dead_letter_at_threshold(tmp_path):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_corrections_under_threshold_keeps_items(tmp_path):
-    """N-1 次失败：所有 entry 保留 + resolve_attempts 字段递增。"""
+    """N-1 failures retain all entries and increment resolve_attempts."""
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.persona import PersonaManager
 
@@ -348,7 +348,7 @@ async def test_correction_attempt_bump_uses_full_identity_not_timestamp(tmp_path
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_dedup_dead_letter_at_threshold(tmp_path):
-    """fact_dedup LLM 失败 N 次后 pair 从 pending queue dead-letter。"""
+    """fact_dedup dead-letters pairs from the pending queue after N LLM failures."""
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.fact_dedup import FactDedupResolver
 
@@ -378,7 +378,7 @@ async def test_dedup_dead_letter_at_threshold(tmp_path):
     with patch.object(resolver, '_pending_path', return_value=str(pending_path)), \
          patch('memory.fact_dedup.assert_cloudsave_writable', _noop_assert):
         for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
-            # 模拟"每轮 LLM 失败"——batch 用 disk 上当前的 pair (dead-letter 后会缩短)
+            # Simulate LLM failure every round, using current on-disk pairs that shrink after dead-lettering.
             current = json.loads(pending_path.read_text(encoding='utf-8'))
             if not current:
                 break
@@ -398,21 +398,21 @@ async def test_dedup_dead_letter_at_threshold(tmp_path):
 @pytest.mark.unit
 def test_safe_int_field_handles_dirty_values():
     """Codex P2 regression：``refine_attempts`` / ``resolve_attempts`` / ``_attempt_count``
-    持久化字段被手改 / migration noise 写成 ``""`` / ``"unknown"`` / list / dict
-    等脏值时，``safe_int_field`` 必须兜底返 default，不让上游 list comprehension
-    挂掉整个 refine pass / resolve loop。
+    Manually edited or migrated persisted fields may contain dirty values such as \"\", \"unknown\", lists, or dictionaries;
+    safe_int_field must return default rather than letting upstream comprehensions
+    crash the entire refine pass / resolution loop.
     """
     from memory.facts import safe_int_field
 
-    # 合法值原样返回
+    # Return valid values unchanged.
     assert safe_int_field({'x': 5}, 'x') == 5
     assert safe_int_field({'x': '7'}, 'x') == 7
     assert safe_int_field({'x': 0}, 'x') == 0
-    # 缺失 / None → default
+    # Missing / None -> default.
     assert safe_int_field({}, 'x') == 0
     assert safe_int_field({'x': None}, 'x') == 0
     assert safe_int_field({}, 'x', default=3) == 3
-    # 脏值（manual edit / legacy / migration noise）→ default 不挂
+    # Dirty manual/legacy/migration values -> default without crashing.
     for bad in ('', 'unknown', 'high', [], {}, [1, 2]):
         assert safe_int_field({'x': bad}, 'x') == 0, (
             f"脏值 {bad!r} 必须兜底返 default 0，不能抛 ValueError/TypeError"
@@ -422,7 +422,7 @@ def test_safe_int_field_handles_dirty_values():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_refine_pass_failure_fn_invoked_on_resolve_false():
-    """refine_pass：_resolve_cluster 返 False 时必须调 failure_fn (Site 4 兜底)。"""
+    """refine_pass must call failure_fn when _resolve_cluster returns False (Site 4 fallback)."""
     from memory.refine import (
         FailureFn,
         MemoryRefineEngine,
@@ -432,7 +432,7 @@ async def test_refine_pass_failure_fn_invoked_on_resolve_false():
 
     engine = MemoryRefineEngine(MagicMock())
 
-    # Mock _compute_clusters 返回一个 cluster
+    # Mock _compute_clusters to return one cluster.
     fake_cluster_member = {
         'id': 'r_001',
         'text': 'sample',
@@ -473,13 +473,13 @@ async def test_refine_pass_failure_fn_invoked_on_resolve_false():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_refine_pass_exception_invokes_failure_fn():
-    """``_resolve_cluster`` 抛异常时**也**调 failure_fn（计入 refine_attempts）。
+    """Call failure_fn on _resolve_cluster exceptions too, counting refine_attempts.
 
-    先前设计（Codex P1 on PR #1412）把异常按"瞬态、不计数"处理，怕单次抖动
-    冤枉 entry。但持续性故障（correction 模型快照下线一直超时、cloudsave 卡
-    维护态、FS 只读）会让同一个毒 cluster 每 30min 原样重打 LLM 永不放弃。
-    现在异常也计入预算：N=MEMORY_LIVENESS_MAX_ATTEMPTS 跨过偶发抖动，cluster
-    内容一变 hash 即变、attempts 随新成员复位，所以持续故障收敛、偶发无损。
+    The earlier design (Codex P1 on PR #1412) treated exceptions as uncounted transient failures to avoid
+    penalizing entries for one glitch. But persistent failures (retired correction-model timeouts, cloudsave
+    maintenance, read-only filesystems) retry the same toxic cluster every 30 minutes forever.
+    Now exceptions consume budget too: N attempts tolerate intermittent failures, while cluster-content
+    changes reset hash and attempts, converging persistent faults without harming occasional ones.
     """
     from memory.refine import (
         MemoryRefineEngine,
@@ -530,7 +530,7 @@ async def test_refine_pass_exception_invokes_failure_fn():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_persona_abump_refine_attempts_at_threshold_warns():
-    """PersonaManager._abump_refine_attempts: 第 N 次 bump 命中阈值 → WARN log。"""
+    """PersonaManager._abump_refine_attempts: the Nth bump reaches threshold and logs WARN."""
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.persona import PersonaManager
     from memory.refine import REFINE_ENTITY_KEY, REFINE_TYPE_KEY
@@ -566,9 +566,9 @@ async def test_persona_abump_refine_attempts_at_threshold_warns():
         for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
             await pm._abump_refine_attempts(name, cluster, 'hash_1')
 
-    # 最终 refine_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS
+    # Final refine_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS.
     assert persona['master']['facts'][0]['refine_attempts'] == MEMORY_LIVENESS_MAX_ATTEMPTS
-    # 每次 bump 都戳失败时刻，供 dead-letter 时间自愈（cooldown_elapsed）
+    # Each bump timestamps failure for dead-letter cooldown_elapsed self-healing.
     assert persona['master']['facts'][0].get('last_refine_attempt_at'), (
         "bump 必须戳 last_refine_attempt_at，否则 dead-letter 无法时间自愈"
     )
@@ -581,7 +581,7 @@ async def test_persona_abump_refine_attempts_at_threshold_warns():
 
 @pytest.mark.unit
 def test_outbox_pending_ops_counts_attempts(tmp_path):
-    """pending_ops 应顺带把 attempt 计数附在每条返回 record 上 (Site 7 基础)。"""
+    """pending_ops must attach attempt counts to each returned record, supporting Site 7."""
     from memory.outbox import Outbox
 
     outbox = Outbox()
@@ -601,7 +601,7 @@ def test_outbox_pending_ops_counts_attempts(tmp_path):
 
 @pytest.mark.unit
 def test_outbox_done_clears_attempts(tmp_path):
-    """append_done 后该 op 出 pending list；attempt 计数无意义。"""
+    """After append_done the operation leaves pending lists; its attempt count no longer matters."""
     from memory.outbox import Outbox
 
     outbox = Outbox()
@@ -620,7 +620,7 @@ def test_outbox_done_clears_attempts(tmp_path):
 
 @pytest.mark.unit
 def test_outbox_compact_preserves_attempts_for_pending(tmp_path):
-    """compact 保留 still-pending op 的 attempt 行；done 的连同 attempt 一起丢。"""
+    """compact retains attempt rows for pending operations, dropping completed operations with their attempts."""
     from memory.outbox import Outbox
 
     outbox = Outbox()
@@ -638,7 +638,7 @@ def test_outbox_compact_preserves_attempts_for_pending(tmp_path):
         outbox.append_done(name, op2)
 
         dropped = outbox.compact(name)
-        # op2 pending + attempt + done = 3 行 dropped；op1 = pending + 2 attempts 留
+        # op2 pending+attempt+done drops three rows; op1 pending+two attempts remains.
         assert dropped == 3
 
         pending = outbox.pending_ops(name)
@@ -652,7 +652,7 @@ def test_outbox_compact_preserves_attempts_for_pending(tmp_path):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
-    """end-to-end: _run_outbox_op handler 累计失败 ≥ N → append_done dead-letter。"""
+    """End-to-end: _run_outbox_op appends done/dead-letter after cumulative handler failures reach N."""
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.outbox import Outbox
@@ -675,7 +675,7 @@ async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
         memory_server._OUTBOX_HANDLERS['poison_op'] = _poison_handler
 
         with patch.object(outbox, '_outbox_path', return_value=str(path)):
-            # 跑 MEMORY_LIVENESS_MAX_ATTEMPTS 次模拟"每次重启都重放该 op"
+            # Run MEMORY_LIVENESS_MAX_ATTEMPTS times, simulating replay on every restart.
             for round_idx in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
                 pending = outbox.pending_ops(name)
                 if not pending:
@@ -683,7 +683,7 @@ async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
                 op = pending[0]
                 await memory_server._run_outbox_op(name, op)
 
-            # 第 N 次 (i.e. attempt count 达 N) 后该 op 必须 append_done dead-letter
+            # After the Nth attempt, append_done must dead-letter the operation.
             pending_after = outbox.pending_ops(name)
             assert pending_after == [], (
                 f"达 {MEMORY_LIVENESS_MAX_ATTEMPTS} 次失败后该 op 应 dead-letter 出 pending, "
@@ -698,12 +698,12 @@ async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_outbox_op_short_circuits_when_already_dead_letter(tmp_path):
-    """CodeRabbit P1 regression：进门时 ``_attempt_count >= MAX`` → 跳 handler 直接 append_done。
+    """CodeRabbit P1 regression: _attempt_count >= MAX at entry skips the handler and directly appends done.
 
-    Setup：op 在磁盘上已经累计了 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 条 attempt
-    行（边缘场景：上轮 dead-letter ``aappend_done`` 失败留下的 stuck pending）。
-    断言：handler **不**被调用，直接 ``aappend_done`` 补 done。否则非幂等
-    handler 会被毒 op 重复执行造成副作用。
+    Setup: disk already holds MEMORY_LIVENESS_MAX_ATTEMPTS attempt rows
+    after a prior dead-letter aappend_done failed, leaving stuck pending state.
+    Assert the handler is never called; directly repair done with aappend_done. Otherwise nonidempotent
+    handlers execute toxic operations repeatedly with side effects.
     """
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
@@ -716,7 +716,7 @@ async def test_run_outbox_op_short_circuits_when_already_dead_letter(tmp_path):
     with patch.object(outbox, '_outbox_path', return_value=str(path)):
         outbox.append_pending(name, 'side_effect_op', {})
         op_id = outbox.pending_ops(name)[0]['op_id']
-        # 把 attempt 推满 → 模拟上轮 dead-letter append_done 失败的 stuck state
+        # Fill attempts to the limit, simulating stuck state after a prior dead-letter append_done failed.
         for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
             outbox.append_attempt(name, op_id)
 
@@ -756,14 +756,14 @@ async def test_run_outbox_op_short_circuits_when_already_dead_letter(tmp_path):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_outbox_op_attempt_persist_failure_keeps_pending(tmp_path):
-    """Codex P1 regression：``aappend_attempt`` 抛异常时不应触发 dead-letter。
+    """Codex P1 regression: failed aappend_attempt must not trigger dead-lettering.
 
-    Setup：op 已经在磁盘上有 ``MEMORY_LIVENESS_MAX_ATTEMPTS - 1`` 条 attempt
-    行（边缘 case：再失败一次就会触发 dead-letter）。让 ``aappend_attempt``
-    抛 IOError 模拟 transient 磁盘失败。
-    断言：op 仍在 pending（没被 append_done 当 dead-letter），允许下次重放
-    重新走一次 attempt。否则"未落盘的 +1" 误算成"已落盘的 N"，磁盘上看起来
-    只失败了 N-1 次就被 done 永久丢，违背契约。
+    Setup: disk already holds MEMORY_LIVENESS_MAX_ATTEMPTS - 1 attempt rows,
+    one failure below dead-lettering. Make aappend_attempt
+    raise IOError to simulate transient disk failure.
+    Assert the operation remains pending without append_done, allowing the next replay
+    to retry the attempt. Otherwise an unpersisted increment is counted as persisted N,
+    permanently discarding an operation with only N-1 on-disk failures, violating the contract.
     """
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
@@ -775,7 +775,7 @@ async def test_run_outbox_op_attempt_persist_failure_keeps_pending(tmp_path):
 
     with patch.object(outbox, '_outbox_path', return_value=str(path)):
         outbox.append_pending(name, 'poison_op', {'data': 'bad'})
-        # 预先填到 N-1 个 attempt（接下来再失败一次就该 dead-letter，正常路径下）
+        # Prefill N-1 attempts so one more failure should normally dead-letter.
         op_id_from_disk = outbox.pending_ops(name)[0]['op_id']
         for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS - 1):
             outbox.append_attempt(name, op_id_from_disk)
@@ -789,7 +789,7 @@ async def test_run_outbox_op_attempt_persist_failure_keeps_pending(tmp_path):
         memory_server.runtime.outbox = outbox
         memory_server._OUTBOX_HANDLERS['poison_op'] = _poison_handler
 
-        # 让 aappend_attempt 抛异常（模拟磁盘 transient 失败）
+        # Make aappend_attempt raise, simulating transient disk failure.
         async def _broken_append_attempt(*args, **kw):
             raise IOError("simulated disk transient")
 
@@ -800,14 +800,14 @@ async def test_run_outbox_op_attempt_persist_failure_keeps_pending(tmp_path):
             assert pending[0]['_attempt_count'] == MEMORY_LIVENESS_MAX_ATTEMPTS - 1
             await memory_server._run_outbox_op(name, pending[0])
 
-        # 关键断言：op 仍在 pending，不该被 dead-letter
+        # Key assertion: operation remains pending rather than being dead-lettered.
         with patch.object(outbox, '_outbox_path', return_value=str(path)):
             pending_after = outbox.pending_ops(name)
         assert len(pending_after) == 1, (
             f"aappend_attempt 失败时不应基于未落盘的 +1 触发 dead-letter, "
             f"应保留 pending 等下次自然重放. 实际 pending: {pending_after}"
         )
-        # 磁盘上 attempt 计数仍是 N-1（本次 attempt 没落盘）
+        # Persisted attempts remain N-1; this attempt was not written.
         assert pending_after[0]['_attempt_count'] == MEMORY_LIVENESS_MAX_ATTEMPTS - 1
     finally:
         memory_server.runtime.outbox = original_outbox

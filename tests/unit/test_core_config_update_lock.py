@@ -285,7 +285,7 @@ def test_update_writes_nothing_when_mutator_raises(light_manager):
     with pytest.raises(ValueError):
         light_manager.update_json_config(FILENAME, mutator)
     assert path.read_bytes() == before
-    # 锁已释放：下一次更新照常完成
+    # The lock has been released: the next update completes normally
     light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(a=3))
     assert _read(path) == {"a": 3}
 

@@ -30,7 +30,7 @@ ability to solve the problem and think insightfully"""
 
 
 # =====================================================================
-# ======= 多语言注入片段（用于 LLM 上下文注入，供各模块引用）  =======
+# ======= Multilingual LLM-context injection fragments shared by modules =======
 # =====================================================================
 
 def _loc(d: dict, lang: str) -> str:
@@ -74,9 +74,9 @@ def normalize_sys_prompt_locale(lang: str | None) -> str:
 
 
 
-# ---------- Agent 结果解析器 i18n ----------
+# -- Agent result-parser i18n --
 
-# 已知错误码映射
+# Known error-code mappings.
 RESULT_PARSER_ERROR_CODES = {
     'AGENT_QUOTA_EXCEEDED': {
         'zh': '配额已用完', 'zh-TW': '配額已用完', 'en': 'Quota exceeded',
@@ -85,7 +85,7 @@ RESULT_PARSER_ERROR_CODES = {
     },
 }
 
-# 已知错误子串映射（key=匹配子串，value=i18n dict）
+# Known error-substring mappings: key=matching substring, value=i18n dict.
 RESULT_PARSER_ERROR_SUBSTRINGS = {
     'Task cancelled by user': {
         'zh': '被用户取消', 'zh-TW': '被使用者取消', 'en': 'Cancelled by user',
@@ -121,7 +121,7 @@ RESULT_PARSER_ERROR_SUBSTRINGS = {
     },
 }
 
-# 通用结果短语
+# Generic result phrases.
 RESULT_PARSER_PHRASES = {
     'no_result':          {'zh': '无结果', 'zh-TW': '無結果', 'en': 'No result', 'ja': '結果なし', 'ko': '결과 없음', 'ru': 'Нет результата', 'es': 'Sin resultado', 'pt': 'Sem resultado'},
     'completed':          {'zh': '已完成', 'zh-TW': '已完成', 'en': 'Completed', 'ja': '完了', 'ko': '완료', 'ru': 'Выполнено', 'es': 'Completado', 'pt': 'Concluído'},
@@ -135,9 +135,9 @@ RESULT_PARSER_PHRASES = {
     'list_count':         {'zh': '({n}条)', 'zh-TW': '({n}筆)', 'en': '({n} items)', 'ja': '({n}件)', 'ko': '({n}건)', 'ru': '({n} шт.)', 'es': '({n} elementos)', 'pt': '({n} itens)'},
     'plugin_notification': {'zh': '收到插件通知', 'zh-TW': '收到外掛通知', 'en': 'Plugin notification received', 'ja': 'プラグイン通知を受信', 'ko': '플러그인 알림 수신', 'ru': 'Получено уведомление от плагина', 'es': 'Notificación de plugin recibida', 'pt': 'Notificação de plugin recebida'},
     'notification_received': {'zh': '收到通知', 'zh-TW': '收到通知', 'en': 'Notification received', 'ja': '通知を受信', 'ko': '알림 수신', 'ru': 'Получено уведомление', 'es': 'Notificación recibida', 'pt': 'Notificação recebida'},
-    # agent callback 注入 LLM 上下文的 detail 标签
-    # 状态信息（已完成/失败/取消等）由外层 SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE
-    # 表达，inner item 渲染时只需要可选的 detail label。
+    # Detail labels for agent callbacks injected into LLM context.
+    # Outer SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE expresses completed/failed/canceled status;
+    # inner items need only optional detail labels.
     'detail_result':      {'zh': '详细结果：', 'zh-TW': '詳細結果：', 'en': 'Detailed result: ', 'ja': '詳細結果：', 'ko': '상세 결과：', 'ru': 'Подробный результат: ', 'es': 'Resultado detallado: ', 'pt': 'Resultado detalhado: '},
     'cu_task_done':       {'zh': '你的任务"{desc}"{status}：{detail}', 'zh-TW': '你的任務「{desc}」{status}：{detail}', 'en': 'Your task "{desc}" {status}: {detail}', 'ja': 'タスク「{desc}」{status}：{detail}', 'ko': '작업 "{desc}" {status}: {detail}', 'ru': 'Ваша задача «{desc}» {status}: {detail}', 'es': 'Tu tarea "{desc}" {status}: {detail}', 'pt': 'Sua tarefa "{desc}" {status}: {detail}'},
     'cu_task_done_no_desc': {'zh': '你的任务{status}：{detail}', 'zh-TW': '你的任務{status}：{detail}', 'en': 'Your task {status}: {detail}', 'ja': 'タスク{status}：{detail}', 'ko': '작업 {status}: {detail}', 'ru': 'Ваша задача {status}: {detail}', 'es': 'Tu tarea {status}: {detail}', 'pt': 'Sua tarefa {status}: {detail}'},
@@ -155,7 +155,7 @@ RESULT_PARSER_PHRASES = {
     'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'zh-TW': '你的任務「{desc}」已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена', 'es': 'Tu tarea "{desc}" fue cancelada', 'pt': 'Sua tarefa "{desc}" foi cancelada'},
 }
 
-# ---------- 语音会话初始 prompt ----------
+# -- Initial voice-session prompt --
 SESSION_INIT_PROMPT = {
     'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。',
     'zh-TW': '你是一個角色扮演大師。請照要求扮演以下角色（{name}）。',
@@ -244,7 +244,7 @@ AGENT_CAPABILITY_SEPARATOR = {
     'pt': ', ',
 }
 
-# ---------- Agent 任务状态标签 ----------
+# -- Agent task-status labels --
 AGENT_TASK_STATUS_RUNNING = {
     'zh': '进行中',
     'zh-TW': '進行中',
@@ -267,7 +267,7 @@ AGENT_TASK_STATUS_QUEUED = {
     'pt': 'Na fila',
 }
 
-# ---------- Agent 插件摘要 ----------
+# -- Agent plugin summaries --
 AGENT_PLUGINS_HEADER = {
     'zh': '\n【已安装的插件】\n',
     'zh-TW': '\n【已安裝的外掛】\n',
@@ -312,14 +312,14 @@ AGENT_TASKS_NOTICE = {
     'pt': '\nNota: as tarefas acima estão sendo executadas em segundo plano. Você pode informar ao usuário que elas estão sendo processadas, mas nunca deve fabricar nem adivinhar resultados. Você também pode esperar em silêncio até terminarem. O sistema avisará os resultados reais ao final.\n',
 }
 
-# ---------- 前情概要 + 就绪（按会话形态选变体） ----------
-# 三份变体对应三种会话形态，别再有第四处裸拼：
-#   CONTEXT_SUMMARY_READY        —— 语音一对一（realtime / audio）
-#   CONTEXT_SUMMARY_READY_TEXT   —— 文字一对一（桌面 text 模式、私聊类插件）
-#   CONTEXT_SUMMARY_READY_GROUP  —— 群聊（文字，且没有固定的单一对话对象）
-# 统一入口 get_context_summary_ready()。{master} 只在一对一变体里出现，
-# 群变体不指认任何具体的人——群里没有那个固定对象，写进去既是错的指令
-# 又把私聊对象的名字泄漏进群 prompt。
+# -- Context summary and readiness variants by session type --
+# Three variants for three session types; avoid a fourth inline assembly:
+#   CONTEXT_SUMMARY_READY       -> One-to-one voice, realtime/audio.
+#   CONTEXT_SUMMARY_READY_TEXT  -> One-to-one text, desktop text mode/private-chat plugins.
+#   CONTEXT_SUMMARY_READY_GROUP -> Text group chat without one fixed conversation partner.
+# Shared entry get_context_summary_ready(); {master} appears only in one-to-one variants.
+# Groups identify nobody specific; inventing a fixed partner is both incorrect instruction
+# and leakage of private-chat names into group prompts.
 CONTEXT_SUMMARY_READY = {
     'zh': '======以上为前情概要。现在请{name}准备，即将开始用语音与{master}继续对话。======\n',
     'zh-TW': '======以上為前情概要。現在請{name}準備，即將開始用語音與{master}繼續對話。======\n',
@@ -369,9 +369,9 @@ def get_context_summary_ready(
         return _loc(CONTEXT_SUMMARY_READY_TEXT, lang)
     return _loc(CONTEXT_SUMMARY_READY, lang)
 
-# ---------- 来源描述符（agent_task_callback 渲染时按 user_language 动态拼装）----------
-# source_kind → 模板，``{name}`` 由 callback.source_name 填入。kind 缺失或未识别时
-# 走 'unknown'（按字面回显 source_name）。新增来源时只需往这里加一行。
+# -- Source descriptors assembled by user_language during agent_task_callback rendering --
+# source_kind -> template, with {name} from callback.source_name. Missing/unknown kinds use
+# 'unknown' to echo source_name literally. Add one row for new source types.
 SOURCE_DESCRIPTORS = {
     'plugin': {
         'zh': '插件「{name}」', 'zh-TW': '外掛「{name}」', 'en': 'plugin "{name}"',
@@ -423,7 +423,7 @@ SOURCE_DESCRIPTORS = {
     },
 }
 
-# ---------- Task 状态短语（外层模板的 {status_phrase} 槽位）----------
+# -- Task-status phrases for outer {status_phrase} slots --
 TASK_STATUS_PHRASES = {
     'completed': {
         'zh': '已完成', 'zh-TW': '已完成', 'en': 'has completed',
@@ -452,7 +452,7 @@ TASK_STATUS_PHRASES = {
     },
 }
 
-# ---------- Task 汇报动作短语（外层模板的 {action_phrase} 槽位，按 status 分化）----------
+# -- Status-specific task-reporting action phrases for outer {action_phrase} slots --
 TASK_ACTION_PHRASES = {
     'completed': {
         'zh': '汇报', 'zh-TW': '回報', 'en': 'report',
@@ -481,15 +481,15 @@ TASK_ACTION_PHRASES = {
     },
 }
 
-# ---------- 系统通知模板：按 (origin × passive) 二维选择 ----------
-# origin 由 host 在 EventBus → callback 边界根据 event_type 派生：
+# -- System notifications selected by origin x passive --
+# Host derives origin from event_type at the EventBus -> callback boundary;
 #   event_type == "task_result"      → origin = "task_result"
 #   event_type == "proactive_message" → origin = "event"
-# 插件作者无法干预这个分类——他们只能选 ai_behavior / delivery（控制时机），
-# 不能伪装"事件流"为"任务完成"。
+# plugin authors control only ai_behavior/delivery timing, never classification,
+# and cannot disguise event streams as task completion.
 #
-# task_result + active：真任务完成（@plugin_entry 跑完 / Computer Use 跑完 /
-# Browser Use 跑完 / MCP tool 返回），要求 AI 立即起 turn 汇报结果。
+# task_result + active: actual completion of @plugin_entry / Computer Use /
+# Browser Use / MCP tools; AI must start a turn and report immediately.
 SYSTEM_NOTIFICATION_TASK_ACTIVE = {
     'zh': '======[系统通知] 来自{source}的任务{status_phrase}，请{name}先用自然、简洁的口吻向{master}{action_phrase}，再恢复正常对话======\n',
     'zh-TW': '======[系統通知] 來自{source}的任務{status_phrase}，請{name}先用自然、簡潔的口吻向{master}{action_phrase}，再回到正常對話======\n',
@@ -501,8 +501,8 @@ SYSTEM_NOTIFICATION_TASK_ACTIVE = {
     'pt': '======[Aviso do sistema] Uma tarefa de {source} {status_phrase}. Faça {name} primeiro {action_phrase} para {master} de forma breve e natural, depois retome a conversa normal.======\n',
 }
 
-# task_result + passive：任务完成但 delivery="passive"——结果进上下文不打断，
-# 下一次用户开口时由 AI 自然提及。
+# task_result + passive: completed tasks with delivery="passive" enter context without interruption,
+# to be mentioned naturally on the user's next turn.
 SYSTEM_NOTIFICATION_TASK_PASSIVE = {
     'zh': '======[系统通知] 来自{source}的任务结果======\n',
     'zh-TW': '======[系統通知] 來自{source}的任務結果======\n',
@@ -514,9 +514,9 @@ SYSTEM_NOTIFICATION_TASK_PASSIVE = {
     'pt': '======[Aviso do sistema] Resultado de tarefa de {source}======\n',
 }
 
-# event + active：插件 push_message 推过来的事件流（弹幕 / 礼物 / 定时提醒 /
-# 外部系统通知等），AI 应该"回应这个事件本身"，**不**是"汇报做完了什么"。
-# 措辞刻意避开"任务"/"汇报"——它们在事件场景下会误导模型。
+# event + active: push_message event streams such as chat messages/gifts/reminders/
+# external notifications; AI responds to the event itself rather than reports completed work.
+# Deliberately avoid task/report wording, which misleads models for events.
 SYSTEM_NOTIFICATION_EVENT_ACTIVE = {
     'zh': '======[系统通知] 来自{source}的新消息，请{name}先用自然、简洁的口吻根据内容回应{master}，再恢复正常对话======\n',
     'zh-TW': '======[系統通知] 來自{source}的新訊息，請{name}先用自然、簡潔的口吻根據內容回應{master}，再回到正常對話======\n',
@@ -528,8 +528,8 @@ SYSTEM_NOTIFICATION_EVENT_ACTIVE = {
     'pt': '======[Aviso do sistema] Nova mensagem de {source}. Faça {name} primeiro responder a {master} de forma breve e natural conforme o conteúdo, depois retome a conversa normal.======\n',
 }
 
-# event + passive：事件流的被动版（push_message ai_behavior="read"），
-# 仅写入上下文，下一次用户开口时被自然带入 prompt。
+# event + passive: passive event streams with push_message ai_behavior="read",
+# entering context only for natural incorporation on the user's next turn.
 SYSTEM_NOTIFICATION_EVENT_PASSIVE = {
     'zh': '======[系统通知] 来自{source}的消息======\n',
     'zh-TW': '======[系統通知] 來自{source}的訊息======\n',
@@ -541,18 +541,18 @@ SYSTEM_NOTIFICATION_EVENT_PASSIVE = {
     'pt': '======[Aviso do sistema] Mensagem de {source}======\n',
 }
 
-# ---------- 向后兼容别名 ----------
-# 旧代码 / 测试还在用这两个名字；保留指向以避免破坏性变更。新代码请使用
-# 上面带 TASK_/EVENT_ 前缀的命名，让 origin 维度显式起来。
+# -- Backward-compatible aliases --
+# Legacy code/tests retain these names; preserve references against breaking changes. New code uses
+# TASK_/EVENT_ prefixes above to expose origin explicitly.
 #
-# 注意：旧 SYSTEM_NOTIFICATION_PASSIVE 的文案是 '来自{source}的消息'（中性、
-# 不带"任务"字样），同时被用于真任务被动汇报 AND 事件流被动写入。新设计把
-# 它拆成两个，旧名字保持原文案以避免破坏 testbench 等已知的字符串断言——
-# 旧别名指向 EVENT_PASSIVE（保留原 '消息' 措辞）。
+# Legacy SYSTEM_NOTIFICATION_PASSIVE's neutral message-from-source text omitted task wording,
+# serving both real passive task reports and passive event writes. Split them in the new design,
+# preserving old names/text against testbench and other known string assertions;
+# the legacy alias points to EVENT_PASSIVE, retaining message wording.
 SYSTEM_NOTIFICATION_PROACTIVE = SYSTEM_NOTIFICATION_TASK_ACTIVE
 SYSTEM_NOTIFICATION_PASSIVE = SYSTEM_NOTIFICATION_EVENT_PASSIVE
 
-# ---------- 前情概要 + 任务汇报 ----------
+# -- Context summary and task report --
 CONTEXT_SUMMARY_TASK_HEADER = {
     'zh': '\n======以上为前情概要。请{name}先用简洁自然的一段话向{master}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n',
     'zh-TW': '\n======以上為前情概要。請{name}先用簡潔自然的一段話向{master}回報並解釋先前執行的任務結果，簡單說明自己做了什麼：\n',
@@ -575,11 +575,11 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
     'pt': '\nDepois do relato, retome a conversa normal.======\n',
 }
 
-# ---------- 前情概要 + 事件回应（voice hot-swap 用 origin="event" 路径）----------
-# 跟 CONTEXT_SUMMARY_TASK_HEADER/FOOTER 对偶：voice mode 热切换时如果
-# pending_extra_replies 里有 origin="event" 的条目（push_message 推过来的弹幕 /
-# 礼物 / 外部事件等），就用这一组 wrapper 而不是任务汇报版——措辞强调"按内容自然
-# 回应"，不出现"任务"/"汇报"字样，避免兰兰把观众弹幕误读成"我刚才执行的任务"。
+# -- Context summary and event response for voice hot-swap origin="event" --
+# Symmetric with CONTEXT_SUMMARY_TASK_HEADER/FOOTER: during voice-mode hot swaps,
+# pending_extra_replies with origin="event", including push_message chat messages /
+# gifts/external events, use these wrappers rather than task reports. Emphasize natural
+# responses to content, avoiding task/report wording that miscasts audience messages as executed tasks.
 CONTEXT_SUMMARY_EVENT_HEADER = {
     'zh': '\n======以上为前情概要。请{name}先用自然、简洁的口吻根据下方新消息回应{master}：\n',
     'zh-TW': '\n======以上為前情概要。請{name}先用自然、簡潔的口吻根據下面的新訊息回應{master}：\n',
@@ -602,7 +602,7 @@ CONTEXT_SUMMARY_EVENT_FOOTER = {
     'pt': '\nDepois de responder, retome a conversa normal.======\n',
 }
 
-# ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------
+# -- Vision: avatar screenshot annotations, visible to vision models but not users --
 AVATAR_ANNOTATION_TEXT = {
     'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
     'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
@@ -615,7 +615,7 @@ AVATAR_ANNOTATION_TEXT = {
     'pt':    ('Este é o avatar virtual de {name} na área de trabalho,', 'Por favor, {name}, não mencione isso'),
 }
 
-# ⚠ 与 AVATAR_ANNOTATION_TEXT 同步维护：原文片段直接嵌进 hint，方便 LLM 视觉对模式后忽略。
+# Maintain with AVATAR_ANNOTATION_TEXT: embed exact original fragments into hints so vision models can match and ignore them.
 AVATAR_ANNOTATION_IGNORE_HINT = {
     'zh':    '注：截图上可能叠加了一段小字「这是<角色名>在桌面上的虚拟形象, 请<角色名>不要主动提及」。这只是用来标记桌面虚拟形象位置的系统元数据，不是用户屏幕的内容，请忽略，不要复述也不要主动提及。',
     'zh-CN': '注：截图上可能叠加了一段小字「这是<角色名>在桌面上的虚拟形象, 请<角色名>不要主动提及」。这只是用来标记桌面虚拟形象位置的系统元数据，不是用户屏幕的内容，请忽略，不要复述也不要主动提及。',
@@ -635,12 +635,12 @@ def get_avatar_annotation_ignore_hint(lang: str = 'zh') -> str:
             or AVATAR_ANNOTATION_IGNORE_HINT.get(lang.split('-')[0])
             or AVATAR_ANNOTATION_IGNORE_HINT['en'])
 
-# ---------- Vision 图像描述 prompt ----------
-# 安全水印前缀（所有语言固定不变，包括逗号和空格）
+# -- Vision image-description prompts --
+# Safety watermark prefix, identical across languages including comma/space.
 VISION_WATERMARK = "你是一个图像描述助手, "
 
-# 长度限制策略：CJK（zh/ja/ko）使用"250字/文字/자"（字符），en/ru 使用"250 words/слов"（词）
-# 有窗口标题时的 system prompt（水印后拼接）
+# Length policy: CJK zh/ja/ko uses 250 characters, while en/ru uses 250 words.
+# System prompt with window titles, appended after the watermark.
 VISION_SYSTEM_WITH_TITLE = {
     'zh': '请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。',
     'zh-TW': '請根據使用者的螢幕截圖和目前的視窗標題，簡潔描述使用者正在做什麼、螢幕上的主要內容、關鍵細節，以及你覺得有趣的地方。不超過 250 字。',
@@ -652,7 +652,7 @@ VISION_SYSTEM_WITH_TITLE = {
     'pt': 'Com base na captura de tela do usuário e no título da janela atual, descreva brevemente o que o usuário está fazendo, o conteúdo principal na tela, os detalhes importantes e qualquer coisa interessante. No máximo 250 palavras.',
 }
 
-# 无窗口标题时的 system prompt（水印后拼接）
+# System prompt without window titles, appended after the watermark.
 VISION_SYSTEM_NO_TITLE = {
     'zh': '请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。',
     'zh-TW': '請簡潔地描述圖片裡的主要內容、關鍵細節和你覺得有趣的地方。你的回答不能超過 250 字。',
@@ -664,7 +664,7 @@ VISION_SYSTEM_NO_TITLE = {
     'pt': 'Descreva brevemente o conteúdo principal, os detalhes importantes e qualquer coisa interessante na imagem. Sua resposta não deve passar de 250 palavras.',
 }
 
-# 有窗口标题时的 user prompt（{window_title} 占位符，水印包裹）
+# User prompt with watermarked {window_title} data.
 VISION_USER_WITH_TITLE = {
     'zh': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n请描述截图内容。',
     'zh-TW': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n請描述截圖的內容。',
@@ -676,7 +676,7 @@ VISION_USER_WITH_TITLE = {
     'pt': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nDescreva o conteúdo da captura de tela.',
 }
 
-# 无窗口标题时的 user prompt
+# User prompt without window titles.
 VISION_USER_NO_TITLE = {
     'zh': '请描述这张图片的内容。',
     'zh-TW': '請描述這張圖片的內容。',
@@ -688,12 +688,12 @@ VISION_USER_NO_TITLE = {
     'pt': 'Descreva o conteúdo desta imagem.',
 }
 
-# ---------- 翻译服务 prompt ----------
-# 安全水印（所有语言固定中文）
+# -- Translation-service prompts --
+# Safety watermark remains Chinese in every language.
 TRANSLATION_WATERMARK_START = "======以下为要求======"
 TRANSLATION_WATERMARK_END = "======以上为要求======"
 
-# 翻译指令行（{source_name} 和 {target_name} 为占位符）
+# Translation instruction line with source_name/target_name placeholders.
 TRANSLATION_INSTRUCTION = {
     'zh': '请根据要求将用户提供的文本从{source_name}翻译成{target_name}。',
     'zh-TW': '請照要求把使用者提供的文字從{source_name}翻譯成{target_name}。',
@@ -705,7 +705,7 @@ TRANSLATION_INSTRUCTION = {
     'pt': 'Traduza o texto do usuário de {source_name} para {target_name} conforme os requisitos.',
 }
 
-# 翻译要求（水印包裹部分）
+# Translation requirements inside watermark framing.
 TRANSLATION_REQUIREMENTS = {
     'zh': '1. 保持原文的语气和风格\n2. 准确传达原文的意思\n3. 只输出翻译结果，不要添加任何解释或说明\n4. 如果文本包含emoji或特殊符号，请保留它们',
     'zh-TW': '1. 保持原文的語氣和風格\n2. 準確傳達原文的意思\n3. 只輸出翻譯結果，不要加上任何解釋或說明\n4. 如果文字裡有 emoji 或特殊符號，請保留它們',
@@ -717,24 +717,24 @@ TRANSLATION_REQUIREMENTS = {
     'pt': '1. Mantenha o tom e o estilo do texto original\n2. Transmita o significado com precisão\n3. Retorne apenas a tradução, sem explicações ou notas\n4. Preserve emojis e símbolos especiais do texto',
 }
 
-# 语言名称（外层 key=UI 语言，内层 key=语言代码）
-# 外层 key 是 UI locale，内层 key 是 ``translate_text(text, target_lang)`` 的
-# 翻译目标语言域。该域固定为 zh/en/ja/ko/ru/es/pt（见 utils/language_utils.py
-# 的 target_lang 白名单），zh-TW 从来不是翻译目标——繁中用户要的是"把原文译成
-# 中文"，而不是"译成繁体中文"这一独立目标。所以内层的 zh-TW 缺失不是欠账，
-# 逐个标 noqa；只有外层需要补 zh-TW 行。
+# Language names: outer keys are UI locales, inner keys language codes.
+# Outer keys use UI locales; inner keys are translate_text(text, target_lang)'s
+# fixed zh/en/ja/ko/ru/es/pt target domain, per language_utils.py's
+# target_lang allowlist. zh-TW has never been a translation target; traditional-Chinese users ask
+# to translate into Chinese, not a separate traditional-Chinese target. Missing inner zh-TW is intentional,
+# recorded individually with noqa; only outer tables need zh-TW rows.
 TRANSLATION_LANG_NAMES = {
-    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
-    'zh-TW': {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韓文', 'ru': '俄文', 'es': '西班牙文', 'pt': '葡萄牙文'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
-    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
-    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
-    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
-    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
-    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
-    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},  # noqa: PROMPT_ZH_TW  # Inner keys belong to the translation-target domain.
+    'zh-TW': {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韓文', 'ru': '俄文', 'es': '西班牙文', 'pt': '葡萄牙文'},  # noqa: PROMPT_ZH_TW  # Inner keys belong to the translation-target domain.
+    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},  # noqa: PROMPT_ZH_TW  # Inner keys belong to the translation-target domain.
+    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},  # noqa: PROMPT_ZH_TW  # Inner keys belong to the translation-target domain.
+    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},  # noqa: PROMPT_ZH_TW  # Inner keys belong to the translation-target domain.
+    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},  # noqa: PROMPT_ZH_TW  # Inner keys belong to the translation-target domain.
+    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},  # noqa: PROMPT_ZH_TW  # Inner keys belong to the translation-target domain.
+    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},  # noqa: PROMPT_ZH_TW  # Inner keys belong to the translation-target domain.
 }
 
-# ---------- 对话备忘录注入 LLM 上下文 ----------
+# -- Conversation memo injection into LLM context --
 MEMORY_MEMO_WITH_SUMMARY = {
     'zh': '先前对话的备忘录: {summary}',
     'zh-TW': '先前對話的備忘錄: {summary}',
@@ -757,9 +757,9 @@ MEMORY_MEMO_EMPTY = {
     'pt': 'Notas de conversas anteriores: nenhuma.',
 }
 
-# ---------- 搜索关键词生成 prompt ----------
-# prompt 与搜索引擎无关；china_region 时使用 'zh'，否则按 get_global_language() 选择
-# 安全水印（所有语言固定中文，包裹窗口标题数据）
+# -- Search-keyword generation prompts --
+# Engine-independent prompts: use 'zh' in china_region, otherwise get_global_language().
+# Safety watermark remains Chinese across languages, framing window-title data.
 SEARCH_KEYWORD_WATERMARK_START = "======以下为窗口标题======"
 SEARCH_KEYWORD_WATERMARK_END = "======以上为窗口标题======"
 

@@ -51,7 +51,7 @@ _DO_NOT_TRACK = any(
 
 _TELEMETRY_REPORT_INTERVAL = 60
 
-_TELEMETRY_TIMEOUT = 10  # 秒
+_TELEMETRY_TIMEOUT = 10  # Seconds.
 
 _TELEMETRY_GZIP_THRESHOLD = 1024
 
@@ -106,11 +106,11 @@ def record_settings_state() -> None:
             interval=(_bucket_proactive_interval(s.get("proactiveChatInterval", 0))
                       if proactive_on else "off"),
             vision_chat="on" if s.get("proactiveVisionChatEnabled", False) else "off",
-            # 隐私模式 = proactiveVisionEnabled 的反面（default True → 默认隐私关）
+            # Privacy mode is the inverse of proactiveVisionEnabled (default True means privacy off).
             privacy="on" if not s.get("proactiveVisionEnabled", True) else "off",
         )
     except Exception:
-        # 埋点失败不影响业务，静默
+        # Telemetry failures silently leave business behavior unaffected.
         pass
 
 
@@ -140,10 +140,10 @@ class ReportingMixin:
         the dashboard's "abnormal exit rate" gets miscomputed as 100%. The event goes
         separately through event_logger.flush into local jsonl.
         """
-        # global 声明提到函数开头：下面 3b 步骤会读 _TELEMETRY_SERVER_URL，
-        # Python 要求 global 声明先于任何使用（否则 SyntaxError）。
+        # Move global declarations to function entry: step 3b reads _TELEMETRY_SERVER_URL;
+        # Python requires global before any use, otherwise SyntaxError.
         global _TELEMETRY_SERVER_URL
-        # ── 1) session_end 先落 instrument buffer，让随后的 save() 带上 ──
+        # ── 1) Emit session_end to instrument buffer before save() includes it ──
         try:
             from utils.instrument import (
                 event as _instr_event,
@@ -158,45 +158,45 @@ class ReportingMixin:
             )
             _instr_counter("session_end", process=self._session_process)
             if duration > 0:
-                # 直接传秒；instrument bounds 是数字通用，没绑定单位
+                # Pass seconds directly; instrument bounds are unit-agnostic numbers.
                 _instr_histogram("session_duration_sec", duration, process=self._session_process)
-            # 本 session 用户消息轮数（无条件 emit，含 0）——0 即零消息会话。
-            # 配合 session_duration_sec 看：短时长+0 轮 = 开了就走；长时长+0 轮 =
-            # 挂着没互动。是 D1 浅尝 vs 上瘾的核心区分。
+            # User-message turns this session (unconditional, including zero): zero means no-message session.
+            # Compare session_duration_sec: short +zero means opened and left; long +zero means
+            # idle without interaction. Core D1 distinction between sampling and engagement.
             _instr_histogram("session_turn_count", self._session_msg_count, process=self._session_process)
         except Exception:
-            # instrument import / emit 失败不能让进程退出卡住 —— 实在丢一条
-            # 也比 atexit 抛出强（atexit 异常会让 SIGTERM 退出码变化）。
+            # Instrument import/emit failures must not block process exit; losing one entry is preferable
+            # to atexit exceptions, which alter SIGTERM exit codes.
             pass
 
-        # ── 2) Bypass 60s throttle —— atexit 是最后机会，错过没下次 ──
-        # _report_to_server 内部 ``now - self._last_report_time < interval``
-        # 在短 session（启动后不到 60s 就退出）下会阻止上报，让刚 emit 的
-        # session_end counter / histogram 永远留在 instrument buffer。这里
-        # 显式归零让那条 if 一定不命中。会带来一个理论副作用：如果 atexit
-        # 之前距上次成功上报 < 60s，这次再发一份；server seen_batches 靠
-        # batch_seq dedupe，所以不会双倍计数。
+        # ── 2) Bypass 60s throttle: atexit is the final opportunity ──
+        # _report_to_server's ``now - self._last_report_time < interval``
+        # prevents reports for short sessions exiting within 60s, leaving freshly emitted
+        # session_end counters/histograms in buffers forever. Explicitly reset
+        # to zero so that condition never matches. Theoretical side effect: another report if last
+        # successful reporting was <60s before atexit; server seen_batches deduplicates
+        # by batch_seq, preventing double counting.
         with self._lock:
             self._last_report_time = 0.0
 
-        # ── 3) save() 把 daily_stats + 上面刚 emit 的 instrument snapshot 一起发 ──
+        # ── 3) save() sends daily_stats plus freshly emitted instrument snapshots ──
         try:
             # save() first: persists delta to disk and attempts remote report
             # (best-effort final push). Then disable remote URL so no further
             # network calls happen during interpreter teardown.
             self.save()
         except Exception:
-            # save 失败不抛进 atexit（同上）。失败时 unsent 已经被持久化，
-            # 下次进程启动会重传。
+            # save failures do not escape atexit; unsent already persisted on failure,
+            # retried next process startup.
             pass
 
-        # ── 3b) 若第一次 save 是「重传」（进程带着早先失败遗留的 _pending_batch_seq），
-        # _report_to_server 会按 is_retry 跳过 instrument snapshot，刚 emit 的
-        # session_end / session_duration_sec 仍留在 buffer。常见"网络早先挂、
-        # 退出前恢复"场景下重传会成功并清掉 batch_seq，但没有第二次发送，
-        # session 指标就在关 URL 前静默丢了（Codex）。所以这里检查：instrument
-        # 还有数据 + batch_seq 已清（说明重传成功、下次是 fresh 窗口会 snapshot）
-        # → 再 bypass throttle 发一次。
+        # ── 3b) First save may retransmit (old failed _pending_batch_seq):
+        # _report_to_server skips instrument snapshots on is_retry, leaving new
+        # session_end/session_duration_sec buffered. If networking recovers before exit,
+        # retry succeeds and clears batch_seq, but without another send,
+        # session metrics disappear before URL closure (Codex). Check remaining instruments
+        # plus cleared batch_seq (successful retry; next fresh window snapshots)
+        # and bypass throttle for one more send.
         try:
             from utils.instrument import has_data as _instrument_has_data
             if (_instrument_has_data() and self._pending_batch_seq is None
@@ -208,14 +208,14 @@ class ReportingMixin:
             # A final instrument flush is best-effort during interpreter shutdown.
             pass
 
-        # ── 4) flush event_logger —— event 不走远程 instrument 通道，本地 jsonl 兜底 ──
+        # ── 4) Flush event_logger: local jsonl, outside remote instrument delivery ──
         try:
             from utils.event_logger import EventLogger
             EventLogger.get_instance().flush()
         except Exception:
-            # event_logger flush 失败丢的是本地 jsonl 的稀疏事件，下次启动
-            # 没有恢复路径 —— 但 counter/histogram 已经走 instrument 通道
-            # 发出去了，这里失败影响的只是诊断细节，不阻塞 atexit。
+            # Failed event_logger flush loses sparse local jsonl events without startup
+            # recovery, but counters/histograms already went through instruments.
+            # Only diagnostic details are affected; never block atexit.
             pass
         finally:
             _TELEMETRY_SERVER_URL = ""
@@ -245,13 +245,13 @@ class ReportingMixin:
                     self._unsent_records.extend(loaded_records)
                     if len(self._unsent_records) > 200:
                         self._unsent_records = self._unsent_records[-200:]
-                    # 恢复 batch_seq：进程上次没发出去的窗口，重启后下次上报
-                    # 仍用同一 seq，让 server seen_batches 能 dedupe 那次的
-                    # 不确定成败（client 进程被 kill 时 server 可能已 commit）。
+                    # Restore batch_seq for the previous unsent window, reusing its sequence
+                    # after restart so server seen_batches deduplicates uncertain outcomes
+                    # (server may have committed before the client was killed).
                     if isinstance(loaded_batch_seq, str) and loaded_batch_seq:
                         self._pending_batch_seq = loaded_batch_seq
                 logger.debug(f"Token tracker: loaded {len(loaded_daily)} days of unsent telemetry from disk")
-            # 加载成功后删除文件，避免下次重复加载
+            # Delete after successful loading to avoid duplicate loads.
             p.unlink(missing_ok=True)
         except Exception as e:
             logger.debug(f"Token tracker: failed to load unsent queue: {e}")
@@ -272,7 +272,7 @@ class ReportingMixin:
         try:
             with self._lock:
                 if not self._unsent_daily:
-                    # 无数据，清理残留文件
+                    # No data: clean leftover files.
                     self._unsent_queue_path.unlink(missing_ok=True)
                     return
                 data = {
@@ -306,7 +306,7 @@ class ReportingMixin:
                 delta_records: list = []
             else:
                 report_only = False
-                # 取出 delta（swap 模式：先取出，成功后不放回）
+                # Extract deltas via swap; do not return them on success.
                 delta_daily = self._delta_daily
                 delta_records = list(self._delta_records)
                 self._delta_daily = {}
@@ -314,13 +314,13 @@ class ReportingMixin:
                 self._dirty = False
 
         if report_only:
-            # 没 LLM 数据写盘，只问问 instrument 有没有要发的
+            # No local LLM data to write; check only pending instruments.
             try:
                 self._report_to_server(delta_daily, delta_records)
             except Exception:
-                # 远程失败不影响 idle path —— 已经没本地数据要写，错误就是
-                # 纯网络的，下次 60s 周期或 atexit 会再试。_report_to_server
-                # 自己内部已有失败 unsent 持久化逻辑，这里不重复打日志。
+                # Remote failures do not affect idle paths: no local writes remain, only network
+                # errors retried next 60s cycle / atexit. _report_to_server already persists
+                # failed unsent data; avoid duplicate logging.
                 pass
             return
 
@@ -328,23 +328,23 @@ class ReportingMixin:
             self._storage_dir.mkdir(parents=True, exist_ok=True)
 
             with _file_lock(self._lock_file_path):
-                # 读取现有数据
+                # Read existing data.
                 existing = self._load_file(self._storage_path)
                 if not existing:
                     existing = self._empty_file_data()
 
-                # 合并 delta 到 existing
+                # Merge deltas into existing.
                 for day_key, day_delta in delta_daily.items():
                     if day_key not in existing["daily_stats"]:
                         existing["daily_stats"][day_key] = day_delta
                     else:
                         _merge_day_stats(existing["daily_stats"][day_key], day_delta)
 
-                # 合并 recent_records
+                # Merge recent_records.
                 existing["recent_records"].extend(delta_records)
                 existing["recent_records"] = self._dedupe_records(existing["recent_records"])
 
-                # 清理 90 天前的旧数据
+                # Clean records older than 90 days.
                 cutoff = (date.today() - timedelta(days=90)).isoformat()
                 old_keys = [k for k in existing["daily_stats"] if k < cutoff]
                 for k in old_keys:
@@ -353,22 +353,22 @@ class ReportingMixin:
                 existing["last_saved"] = datetime.now().isoformat()
                 atomic_write_json(self._storage_path, existing)
 
-            # 本地保存成功后，尝试远程上报（在文件锁外，避免阻塞其他进程）
+            # After local save, try remote reporting outside the file lock to avoid blocking other processes.
             try:
                 self._report_to_server(delta_daily, delta_records)
             except Exception:
-                pass  # 远程上报失败不影响本地保存，静默忽略
+                pass  # Remote-report failures silently leave local saves unaffected.
 
         except Exception as e:
             logger.warning(f"Failed to save token usage data: {e}")
-            # 写入失败，将 delta 放回内存，下次重试
+            # Write failure: restore deltas in memory for retry.
             with self._lock:
                 for day_key, day_delta in delta_daily.items():
                     if day_key not in self._delta_daily:
                         self._delta_daily[day_key] = day_delta
                     else:
                         _merge_day_stats(self._delta_daily[day_key], day_delta)
-                # 恢复 records（旧的在前，新的在后）
+                # Restore records oldest first, newest last.
                 restored = delta_records + list(self._delta_records)
                 self._delta_records.clear()
                 self._delta_records.extend(restored[-200:])
@@ -386,7 +386,7 @@ class ReportingMixin:
         if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
             return
 
-        # 累积 unsent 数据
+        # Accumulate unsent data.
         with self._lock:
             for day_key, day_delta in delta_daily.items():
                 if day_key not in self._unsent_daily:
@@ -397,30 +397,30 @@ class ReportingMixin:
             if len(self._unsent_records) > 200:
                 self._unsent_records = self._unsent_records[-200:]
 
-        # 持久化 unsent 队列（防 kill 丢数据）
+        # Persist unsent queue against process kills.
         self._save_unsent_queue()
 
-        # 检查上报间隔
+        # Check reporting interval.
         now = time.time()
         if now - self._last_report_time < self._report_interval:
             return
 
-        # peek instrument 累积 —— 即使 daily_stats 是空的（用户没触发 LLM 调
-        # 用，但有前端互动 counter），只要 instrument 里有东西，就值得发一次。
+        # Peek accumulated instruments: even without daily_stats (no LLM calls but frontend
+        # interaction counters), any instrument data merits a report.
         try:
             from utils.instrument import has_data as _instrument_has_data
             has_instruments = _instrument_has_data()
         except Exception:
             has_instruments = False
 
-        # 取出待发送数据。同时区分两种状态：
-        #   is_retry=False：新窗口，分配新 batch_seq，正常带 instrument snapshot
-        #   is_retry=True ：上次失败遗留下来的重传，复用同一 batch_seq，**不**
-        #                   附带任何新 instrument —— retry 的 batch_id 已经
-        #                   在 server seen_batches 里，整个 batch 会被 dedupe
-        #                   返回 duplicate，跟进去的 instrument 会被一起静默
-        #                   丢掉。把新 instrument 留在 buffer，下个新窗口
-        #                   （新 batch_seq）单独发出去。
+        # Retrieve outgoing data, distinguishing:
+        #   is_retry=False: fresh window, new batch_seq, normal instrument snapshot.
+        #   is_retry=True: retransmission of failed data with the same batch_seq; **exclude**
+        #                   new instruments because server seen_batches already knows
+        #                   this batch_id, deduplicating the entire batch as duplicate,
+        #                   silently discarding any added instruments too.
+        #                   Retain them in buffer and send separately in the next fresh window
+        #                   with a new batch_seq.
         with self._lock:
             if not self._unsent_daily and not has_instruments:
                 return
@@ -432,11 +432,11 @@ class ReportingMixin:
             if self._pending_batch_seq is None:
                 self._pending_batch_seq = secrets.token_hex(8)
             batch_seq = self._pending_batch_seq
-        # 标记这次发送是否带 daily/records —— instrument-only 失败后清
-        # stale batch_seq 时要用（见 except 路径注释）。
+        # Track whether daily/records accompany this send; needed to clear stale
+        # batch_seq after instrument-only failure (see except comments).
         had_unsent_payload = bool(send_daily or send_records)
 
-        # 仅新窗口才 snapshot instrument。重传时跳过保留 buffer 等下窗口。
+        # Snapshot instruments only for fresh windows; retries preserve them for later.
         instruments_snapshot: dict = {}
         if not is_retry:
             try:
@@ -454,37 +454,37 @@ class ReportingMixin:
             app_version = _get_app_version_from_changelog()
             telemetry_locale = _get_telemetry_locale()
             telemetry_timezone = _get_telemetry_timezone()
-            # 一次调用同时拿 distribution + steam_user_id，两个字段同源 ——
-            # 杜绝原本两次独立 GetSteamID() 跨 SDK ready 边界产生的
-            # release + 非空 Steam64 矛盾态。
+            # Get distribution +steam_user_id in one call from one source, avoiding
+            # two GetSteamID calls crossing SDK readiness and producing inconsistent
+            # release +nonempty Steam64.
             telemetry_distribution, telemetry_steam_user_id = _get_telemetry_metadata()
             telemetry_device_hw = _get_device_hw()
 
             payload = {
                 "device_id": self._device_id,
-                # 迁移期同时带旧算法 ID，便于 server 在 events.payload 里
-                # 留底，将来可建 legacy→new 映射 fold 历史 cohort。server
-                # 当前 Pydantic model 不声明此字段，会被默认 ignore；HMAC
-                # 签名是基于完整 payload dict 的 canonical JSON 计算的，所以
-                # server 端验签会自动覆盖到，不需要任何调整。
+                # During migration include the old-algorithm ID for server matching in events.payload
+                # for future legacy->new mappings that fold historical cohorts. Current server
+                # Pydantic models omit this field and ignore it by default; HMAC
+                # covers canonical JSON of the entire payload dict,
+                # so server verification automatically includes it without changes.
                 "device_id_legacy": _get_legacy_device_id(),
                 "app_version": app_version,
                 "branch": self._branch,
                 "locale": telemetry_locale,
                 "timezone": telemetry_timezone,
                 "distribution": telemetry_distribution,
-                # 仅在 Steamworks SDK 起来 + 拿到 Steam64 时填值，其它情况为
-                # 空 string。server 端按 preserve-known 处理：空值不覆写历史。
+                # Populate only when Steamworks SDK is ready and Steam64 available; otherwise use
+                # empty string. Server preserve-known semantics retain historical values on empties.
                 "steam_user_id": telemetry_steam_user_id,
-                # 设备硬件画像（低基数 enum 复合串）。设备属性，server preserve-known
-                # UPSERT；用来 JOIN 留存做"低配设备首日流失"分析。
+                # Device hardware profile (low-cardinality composite enums). Server preserve-known
+                # UPSERTs device attributes for retention joins analyzing day-one low-end-device churn.
                 "device_hw": telemetry_device_hw,
                 "daily_stats": send_daily,
                 "recent_records": send_records,
             }
-            # instrument snapshot 走 optional 字段：老 server 不识别会 ignore，
-            # 新 server 原样存进 events.payload，dashboard 端可后续解析。HMAC
-            # 签名覆盖整个 payload dict，所以加字段不影响验签。
+            # Instrument snapshots use optional fields: old servers ignore them; new servers
+            # store unchanged in events.payload for later dashboard parsing. HMAC
+            # covers the whole payload, so added fields preserve verification.
             if instruments_snapshot:
                 payload["instruments"] = instruments_snapshot
             payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -492,28 +492,28 @@ class ReportingMixin:
             ts = time.time()
             sig = _compute_telemetry_signature(payload_json, ts)
 
-            # batch_id 用于 server seen_batches 幂等去重，必须满足两个目标：
-            #   (a) 失败重传 / 网络 timeout（server commit 了 client 没收到 200）
-            #       下次重发同一份 daily 时 batch_id 必须**不变**，让 server
-            #       识别重复 commit 并跳过。
-            #   (b) 不同窗口（含纯 instrument-only 窗口、daily 都空时）的
-            #       batch_id 必须**唯一**，否则被前一窗口的 seen_batches dedupe
-            #       误伤，后续 instrument 数据全丢。
+            # batch_id supports server seen_batches idempotent deduplication with two goals:
+            #   (a) Failed retries / network timeouts after server commit without client 200
+            #       must preserve batch_id when resending the same daily data,
+            #       letting the server recognize and skip duplicate commits.
+            #   (b) Different windows, including instrument-only ones without daily data,
+            #       need unique batch_ids, or prior seen_batches entries
+            #       wrongly discard all subsequent instruments.
             #
-            # batch_seq 同时满足：进程内首次进入此窗口时分配新值，失败重传
-            # （含进程 kill 后重启）保留同一 seq，成功 200 后清空。把 seq 放进
-            # hash，daily / records / instruments 自己不需要进 hash —— 尤其
-            # instruments 是 clear-on-read、不会在重传中复现，把它进 hash 反而
-            # 破坏 (a)。
+            # batch_seq meets both: allocate on first entry to a window; preserve on retries,
+            # including after killed-process restarts; clear after 200. Hash the sequence,
+            # without hashing daily/records/instruments themselves, especially clear-on-read
+            # instruments that cannot recur on retry and would otherwise
+            # violate (a).
             #
-            # batch_core **只用 retry-stable 字段**：device_id + batch_seq。
-            # app_version 故意不进 —— 它在每次上报时实时读 changelog，重试之间
-            # 若用户更新了 app，同一份 unsent batch 会算出不同 batch_id；
-            # timeout-after-commit 后在新版本上重启重传就绕过 seen_batches、
-            # 把已 commit 的 daily_stats 重复计（Codex P1）。device_id_legacy
-            # 同理也不进（依赖 uuid.getnode()，多网卡枚举顺序不稳）。
-            # batch_seq 已是 per-window 唯一 + 跨重试稳定，device_id 保证跨设备
-            # 不撞，二者足够。签名 (HMAC) 仍覆盖完整 payload（含 app_version）。
+            # batch_core uses **only retry-stable fields**: device_id +batch_seq.
+            # Deliberately exclude app_version, read live from changelog each report;
+            # updating the app between retries would change the same unsent batch's ID,
+            # bypassing seen_batches on new-version restart after timeout-after-commit
+            # and double-counting committed daily_stats (Codex P1). Exclude device_id_legacy
+            # too, dependent on unstable multi-interface uuid.getnode() enumeration.
+            # batch_seq is unique per window and stable across retries; device_id prevents
+            # cross-device collisions. Enough; HMAC still covers the entire payload including app_version.
             batch_core = {
                 "device_id": payload["device_id"],
                 "batch_seq": batch_seq,
@@ -530,9 +530,9 @@ class ReportingMixin:
             body = json.dumps(submission, ensure_ascii=False).encode("utf-8")
             headers = {"Content-Type": "application/json"}
 
-            # >= 1KB 才 gzip：小 payload 不划算（见 _TELEMETRY_GZIP_THRESHOLD 注释）。
-            # mtime=0 让同一 body 总是产出相同压缩字节，便于 diff 调试和 fuzzing
-            # 期不会因为时间戳差异看起来像两次上报。
+            # Gzip only >=1KB: smaller payloads are not worth it (see _TELEMETRY_GZIP_THRESHOLD).
+            # mtime=0 makes identical bodies produce identical compressed bytes, avoiding timestamp
+            # differences resembling duplicate reports during diff debugging/fuzzing.
             if len(body) >= _TELEMETRY_GZIP_THRESHOLD:
                 body = gzip.compress(body, compresslevel=6, mtime=0)
                 headers["Content-Encoding"] = "gzip"
@@ -546,7 +546,7 @@ class ReportingMixin:
             with urllib.request.urlopen(req, timeout=_TELEMETRY_TIMEOUT) as resp:
                 if resp.status == 200:
                     self._last_report_time = now
-                    # 发送成功：清 batch_seq，下次窗口重新分配；清 unsent 文件。
+                    # Success: clear batch_seq for the next window and remove unsent files.
                     with self._lock:
                         self._pending_batch_seq = None
                     self._unsent_queue_path.unlink(missing_ok=True)
@@ -557,15 +557,15 @@ class ReportingMixin:
 
         except Exception as e:
             logger.debug(f"Token tracker: telemetry report failed (non-critical): {e}")
-            # 发送失败：放回 unsent + 持久化。daily-bearing 失败时**不清**
-            # _pending_batch_seq —— 下次重试用同一 seq，让 server seen_batches
-            # dedupe "网络 timeout 但 server 已经 commit" 的不确定成败重传。
+            # Failure: restore/persist unsent. Daily-bearing failures **retain**
+            # _pending_batch_seq for retries, so server seen_batches deduplicates
+            # uncertain outcomes where network timed out after server commit.
             #
-            # 但 instrument-only 失败（send_daily 和 send_records 都空，
-            # had_unsent_payload=False）必须清 batch_seq：instruments 是
-            # clear-on-read 没东西放回，留着 stale seq 会让**下一个新窗口**
-            # 复用它算出与已 commit 的 batch_id 相同的 hash，server 直接
-            # 返回 "duplicate, skipped"，新窗口的数据被静默丢弃。
+            # Instrument-only failures (empty send_daily/send_records,
+            # had_unsent_payload=False) must clear batch_seq: instruments are
+            # clear-on-read with nothing to restore. Stale sequences make the **next fresh window**
+            # reuse a committed batch_id hash, so the server
+            # returns duplicate, skipped, silently dropping new data.
             with self._lock:
                 for day_key, day_delta in send_daily.items():
                     if day_key not in self._unsent_daily:
@@ -575,7 +575,7 @@ class ReportingMixin:
                 restored = send_records + self._unsent_records
                 self._unsent_records = restored[-200:]
                 if not had_unsent_payload:
-                    # 没有真要重传的内容 —— 防 stale seq 误伤下一窗口
+                    # No actual retry content: prevent stale sequences harming the next window.
                     self._pending_batch_seq = None
             self._save_unsent_queue()
 
@@ -588,30 +588,30 @@ class ReportingMixin:
     async def _periodic_save_loop(self):
         while True:
             await asyncio.sleep(self._save_interval)
-            # 两种触发 save() 的条件：
-            #   (a) self._dirty —— 有 LLM token delta 要本地写盘 + 远程上报
-            #   (b) instrument has_data —— 纯前端互动（前端 ws telemetry /
-            #       ws_connect / 各种 feature counter）不会让 _dirty=True，
-            #       但 instrument 已经累积了一窗口需要 60s 节奏上报
-            # save() 内部对 (b) 走 report-only path（跳过本地 write，只调
-            # _report_to_server）；对 (a) 走完整 write + report。
+            # Two save() triggers:
+            #   (a) self._dirty: LLM token deltas need local writes +remote reporting.
+            #   (b) instrument has_data: frontend-only interactions (WS telemetry /
+            #       ws_connect / feature counters) never set _dirty=True,
+            #       but instruments accumulated a window due on the 60s cadence.
+            # save() takes report-only paths for (b), skipping local writes and only calling
+            # _report_to_server; (a) takes full write +report.
             need_save = self._dirty
             if not need_save:
                 try:
                     from utils.instrument import has_data as _instrument_has_data
                     need_save = _instrument_has_data()
                 except Exception:
-                    # has_data 在锁内只做 dict bool 检查，正常不会抛；
-                    # import 失败 fall through，本轮跳过，下轮重试。
+                    # Under lock, has_data only checks dict truthiness and normally cannot raise;
+                    # import failures fall through, skipping this cycle and retrying next.
                     pass
             if need_save:
                 await asyncio.to_thread(self.save)
-            # 顺手让 event_logger 落地稀疏事件 buffer + 跑 retention 清理。
-            # 即使本周期 token_tracker 没有 dirty，event_logger 也可能有
-            # session/crash 之类的事件等着写 —— 不挂在 self._dirty 后面，避免
-            # 纯前端互动（不触发 LLM 调用）的事件被一直憋在内存里。
-            # event_logger.flush 自带节流（cleanup 5min 一次），nothing-to-do
-            # 路径 ~微秒级。
+            # Also persist sparse event_logger buffers and run retention cleanup.
+            # Even without token_tracker dirty state, event_logger may hold
+            # session/crash events. Do not gate on self._dirty, or frontend-only
+            # interactions without LLM calls leave events buffered forever.
+            # event_logger.flush throttles itself (cleanup every 5min); nothing-to-do
+            # paths take roughly microseconds.
             try:
                 from utils.event_logger import EventLogger
                 await asyncio.to_thread(EventLogger.get_instance().flush)

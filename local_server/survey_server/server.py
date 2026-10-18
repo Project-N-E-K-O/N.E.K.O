@@ -50,17 +50,17 @@ from security import verify_signature, verify_timestamp, RateLimiter, DEFAULT_HM
 from storage import SurveyStorage
 
 # ---------------------------------------------------------------------------
-# 配置
+# Configuration.
 # ---------------------------------------------------------------------------
 
 HMAC_SECRET = os.getenv("SURVEY_HMAC_SECRET", DEFAULT_HMAC_SECRET)
 DB_PATH = os.getenv("SURVEY_DB_PATH", "./data/survey.db")
 ADMIN_TOKEN = os.getenv("SURVEY_ADMIN_TOKEN", "")
-MAX_BODY_SIZE = 256 * 1024            # 线路字节上限（gzip 后通常 ≤10KB）
-MAX_DECOMPRESSED_SIZE = 1024 * 1024   # 解压上限，挡 zip bomb
+MAX_BODY_SIZE = 256 * 1024            # Request body byte limit (usually <=10 KB after gzip).
+MAX_DECOMPRESSED_SIZE = 1024 * 1024   # Decompression limit to block zip bombs.
 
 # ---------------------------------------------------------------------------
-# 初始化
+# Initialization.
 # ---------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -121,9 +121,9 @@ def require_admin(request: Request):
     if not ADMIN_TOKEN:
         raise HTTPException(503, "Admin API not configured (set SURVEY_ADMIN_TOKEN env var on server)")
     token = _extract_token(request)
-    # 常数时间比较：admin 口暴露 device_id / steam_user_id，普通 != 会泄漏逐字节
-    # 匹配进度给时序侧信道，compare_digest 消除该差异。先挡非 ASCII：compare_digest
-    # 对含非 ASCII 的 str 抛 TypeError，否则一个 ?token=é 就把 401 变成 500。
+    # Constant-time comparison: the admin endpoint exposes device_id / steam_user_id; ordinary != leaks a byte-by-byte comparison
+    # progress through a timing side channel. compare_digest removes that difference. First reject non-ASCII: compare_digest
+    # raises TypeError for strings containing non-ASCII characters; otherwise a single ?token=é would turn a 401 into a 500.
     if not token or not token.isascii() or not hmac.compare_digest(token, ADMIN_TOKEN):
         raise HTTPException(401, "Invalid admin token")
 
@@ -153,9 +153,9 @@ def _sanitize_answers(answers) -> dict:
         elif isinstance(v, int):
             out[key] = v
         elif isinstance(v, float):
-            # 拒非有限浮点：JSON 允许 NaN/Infinity，但存回去后 FastAPI 渲染
-            # /api/v1/admin/responses 会对 non-finite 直接 500，一条投毒答案就能
-            # 整页挂掉（仓库既有约定：存前 math.isfinite 拒 NaN/Inf）。
+            # Reject non-finite floats: JSON allows NaN/Infinity, but after storing them, FastAPI rendering
+            # /api/v1/admin/responses will return a 500 for non-finite values; one poisoned answer could
+            # take down the entire page (repository convention: reject NaN/Inf with math.isfinite before storing).
             if math.isfinite(v):
                 out[key] = v
         elif isinstance(v, list):
@@ -164,22 +164,22 @@ def _sanitize_answers(answers) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 客户端上报（公开，HMAC 验证）
+# Client submissions (public, HMAC-verified).
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/survey", response_model=SubmitResponse)
 async def submit_survey(request: Request):
     """Receive a survey response. Validation: body size → decompress → timestamp → HMAC → rate limit → store."""
-    # Content-Length 预检：诚实客户端会带这个头，超限直接 413，省得先把整个 body
-    # buffer 进内存再拒。无 CL / chunked 的请求落到下面的实读检查（uvicorn 自身也有
-    # 帧上限兜底）。
+    # Content-Length preflight: well-behaved clients send this header, so reject oversized requests with 413 immediately instead of first buffering the entire body
+    # into memory and then rejecting it. Requests without CL / using chunked transfer fall through to the actual read check below (uvicorn also provides
+    # a frame-size limit as a safeguard).
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
             if int(content_length) > MAX_BODY_SIZE:
                 raise HTTPException(413, "Payload too large")
         except ValueError:
-            # CL 头不是合法整数：忽略这个预检，交给下面的实读 len 检查兜底。
+            # The CL header is not a valid integer: skip this preflight and rely on the actual read-length check below as a safeguard.
             pass
 
     body_bytes = await request.body()
@@ -197,7 +197,7 @@ async def submit_survey(request: Request):
     if not verify_timestamp(submission.timestamp):
         raise HTTPException(403, "Timestamp out of range")
 
-    # HMAC —— 用与客户端相同的 canonical JSON（sort_keys=True）验签
+    # HMAC — verify the signature using the same canonical JSON as the client (sort_keys=True).
     try:
         body_dict = json.loads(body_bytes)
         payload_json = json.dumps(body_dict["payload"], ensure_ascii=False, sort_keys=True)
@@ -206,9 +206,9 @@ async def submit_survey(request: Request):
     if not verify_signature(payload_json, submission.timestamp, submission.signature, HMAC_SECRET):
         raise HTTPException(403, "Invalid signature")
 
-    # 元数据裸存、无 Pydantic 长度上限：持开源密钥的伪造请求可把 survey_version
-    # （还建了索引）等字段塞到接近 1MB 解压上限。入口统一封顶到合理长度，挡少量
-    # 伪造提交把 SQLite / admin 响应灌大。device_id 同样封顶（它进限流键 + 幂等 key）。
+    # Metadata is stored raw, with no Pydantic length limit: a forged request made with the open-source key could make fields such as survey_version
+    # (which is also indexed) approach the 1 MB decompression limit. Apply a reasonable length cap at the entry point to prevent a small number of
+    # forged submissions from bloating SQLite / admin responses. device_id is capped as well (it is included in the rate-limit key and idempotency key).
     device_id = (submission.payload.device_id or "")[:128]
     app_version = (submission.payload.app_version or "")[:32]
     survey_version = (submission.payload.survey_version or "")[:32]
@@ -221,17 +221,17 @@ async def submit_survey(request: Request):
 
     action = submission.payload.action if submission.payload.action in ("submit", "skip") else "submit"
 
-    # 幂等 key 从**已签名**的 payload 字段派生，不信任信封里的 batch_id——后者不在
-    # HMAC 覆盖范围内，可被中间人/持密钥客户端改值，从而把同一份提交伪造成新行、
-    # 污染 submit/skip 漏斗。(device_id, survey_version, action) 三元组与客户端的
-    # 幂等语义一致：每个设备每版本每动作只算一次。
+    # Derive the idempotency key from a field in the **signed** payload; do not trust batch_id in the envelope — it is not covered by
+    # the HMAC and can be changed by a man-in-the-middle or a client holding the key, turning the same submission into a new row
+    # and polluting the submit/skip funnel. The (device_id, survey_version, action) tuple matches the client's
+    # idempotency semantics: count each device/version/action only once.
     batch_id = hashlib.sha256(
         f"{device_id}|{survey_version}|{action}".encode("utf-8")
     ).hexdigest()[:32]
 
-    # steam_user_id 归一到 canonical 十进制 Steam64，与 telemetry normalize_steam_id
-    # 同规则：纯 ASCII 数字 + <= 20 位 + 0 < int < 2^64 + str(int()) 去前导零。否则
-    # 伪造请求塞 '0' / 前导零 / 超 u64 的串会污染 survey↔telemetry 的账号级 JOIN。
+    # Normalize steam_user_id to the canonical decimal Steam64 form, using the same rules as telemetry normalize_steam_id:
+    # ASCII digits only + <= 20 digits + 0 < int < 2^64 + strip leading zeros with str(int()). Otherwise,
+    # a forged request containing '0' / leading zeros / a value above u64 can pollute account-level JOINs between survey and telemetry.
     raw_sid = submission.payload.steam_user_id or ""
     steam_user_id = ""
     if raw_sid.isascii() and raw_sid.isdigit() and len(raw_sid) <= 20:
@@ -239,7 +239,7 @@ async def submit_survey(request: Request):
         if 0 < _sid_val < (1 << 64):
             steam_user_id = str(_sid_val)
 
-    # 旧算法 device id（迁移期跨表 JOIN 同一个人用）。不可信串，封顶长度即可。
+    # Legacy algorithm device ID (used to JOIN the same person across tables during migration). Untrusted string; cap its length.
     device_id_legacy = (submission.payload.device_id_legacy or "")[:128]
 
     try:
@@ -263,8 +263,8 @@ async def submit_survey(request: Request):
     if not stored:
         return SubmitResponse(ok=True, message="duplicate, skipped")
 
-    # !r 转义控制符：device_id/survey_version 即便已封顶长度仍可能含伪造的 \n 等，
-    # 裸 log 会让一次提交往 journald 注入额外日志行（log forging）。
+    # !r escapes control characters: even after capping device_id/survey_version length, they could contain forged backslash-n and similar characters;
+    # raw logging would let a single submission inject extra log lines into journald (log forging).
     logger.info(
         f"OK device={device_id[:8]!r} survey={survey_version!r} action={action}"
     )
@@ -272,7 +272,7 @@ async def submit_survey(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# 健康检查（公开）
+# Health check (public).
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
@@ -281,7 +281,7 @@ async def health():
 
 
 # ---------------------------------------------------------------------------
-# 管理端 API（需 admin token）
+# Admin API (requires admin token).
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/admin/summary", dependencies=[Depends(require_admin)])
@@ -312,7 +312,7 @@ async def admin_prune(max_days: int = 365):
 
 
 # ---------------------------------------------------------------------------
-# 定期维护
+# Periodic maintenance.
 # ---------------------------------------------------------------------------
 
 async def _periodic_rate_limiter_cleanup():
@@ -322,8 +322,8 @@ async def _periodic_rate_limiter_cleanup():
         try:
             rate_limiter.cleanup_stale()
         except Exception:
-            # 后台清理是纯优化（防内存缓慢膨胀），失败无碍正确性；下个 tick 再试，
-            # 不能让一次异常杀掉清理循环。
+            # Background cleanup is a pure optimization (to prevent gradual memory growth); failure does not affect correctness. Try again on the next tick,
+            # and do not let one exception kill the cleanup loop.
             pass
 
 
@@ -337,7 +337,7 @@ async def on_startup():
 
 
 # ---------------------------------------------------------------------------
-# 入口
+# Entrypoint.
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

@@ -136,8 +136,8 @@ _NAGER_API = "https://date.nager.at/api/v3"
 _TIMOR_API = "http://timor.tech/api/holiday/year"
 _FETCH_TIMEOUT = 10.0
 
-# ── 全局补充节日（所有国家共享，固定日期，API 可能不含） ──────────
-# 格式: (month, day, localName_dict)
+# -- Additional global holidays (shared across countries, fixed dates, possibly absent from APIs). --
+# Format: (month, day, localName_dict).
 # Holiday display names below are *data*, not LLM prompts — they're returned
 # as HolidayEntry.localName for display. The dict-shape happens to match the
 # i18n-leak detector but the project convention exempts pure localized data.
@@ -174,9 +174,9 @@ def _inject_global_extras(entries: list[HolidayEntry], year: int,
     return result
 
 
-# 已知的中国法定节日名（用于从 timor API 的每日条目中归并 period 的展示名）
+# Known Chinese statutory holiday names, used to combine timor API daily entries into period display names.
 _CN_KNOWN_HOLIDAYS = {'元旦', '春节', '清明节', '劳动节', '端午节', '中秋节', '国庆节'}
-# 春节 period 里初一~初七等条目需要映射回 "春节"；名义日期用初一
+# Map lunar days 1-7 in Spring Festival periods back to Spring Festival; use lunar day 1 as the nominal date.
 _CN_SPRING_NOMINAL = '初一'
 
 
@@ -244,8 +244,8 @@ def _build_periods(entries: list[HolidayEntry]) -> list[HolidayPeriod]:
 async def _fetch_nager(country: str, year: int) -> list[HolidayEntry]:
     """Fetch from Nager.Date API (JP / KR / RU / US etc.)."""
     url = f"{_NAGER_API}/PublicHolidays/{year}/{country}"
-    # per-call AsyncClient: 每年每国家只拉一次（lazy warmup），且刻意 trust_env=False
-    # 绕开本地代理 —— 与 external_http_client（trust_env=True）配置不一致
+    # Per-call AsyncClient: fetch once per country/year (lazy warmup), deliberately trust_env=False
+    # to bypass local proxies, unlike external_http_client's trust_env=True configuration.
     async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, proxy=None, trust_env=False) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -255,7 +255,7 @@ async def _fetch_nager(country: str, year: int) -> list[HolidayEntry]:
 async def _fetch_cn(year: int) -> list[HolidayEntry]:
     """Fetch from timor.tech API for China — complete with adjusted rest days."""
     url = f"{_TIMOR_API}/{year}"
-    # per-call AsyncClient: 同上，每年一次，trust_env=False 绕开代理
+    # Per-call AsyncClient: likewise once per year, trust_env=False to bypass proxies.
     async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, proxy=None, trust_env=False) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -270,12 +270,12 @@ async def _fetch_cn(year: int) -> list[HolidayEntry]:
     result: list[HolidayEntry] = []
     for _key, info in sorted(raw.items()):
         if not info.get("holiday"):
-            continue  # 补班日，跳过
+            continue  # Make-up workday: skip.
         entry_name: str = info.get("name", "")
         entry_date: str = info.get("date", "")
         wage: int = info.get("wage", 1)
 
-        # Determine display name: map 除夕/初一~初七 → "春节"
+        # Determine display name: map 除夕/初一~初七 -> "春节".
         if entry_name in _CN_KNOWN_HOLIDAYS:
             display = entry_name
         elif entry_name in ('除夕', '初一', '初二', '初三', '初四', '初五', '初六', '初七'):
@@ -284,8 +284,8 @@ async def _fetch_cn(year: int) -> list[HolidayEntry]:
             display = entry_name
 
         # Nominal date: the canonical day of the holiday.
-        # wage=3 entry whose display==holiday name, AND for 春节 specifically
-        # the nominal is 初一 (not 除夕).
+        # wage=3 entry whose display==holiday name, AND for Spring Festival specifically
+        # the nominal date is lunar day 1, not New Year's Eve.
         is_nominal = False
         if wage == 3:
             if display == '春节':
@@ -431,7 +431,7 @@ async def get_nearest_holiday(lang: str) -> HolidayProximity | None:
 #     "periods": {
 #       "<period_start_iso>": {
 #         "holiday": <remaining>,    // statutory day budget (3)
-#         "period": <remaining>      // 调休 day budget (3)
+#         "period": <remaining>      // Adjusted-holiday day budget (3)
 #       }
 #     },
 #     "weekend_date": "YYYY-MM-DD",
@@ -448,8 +448,8 @@ _consumption_path: Path | None = None
 # concurrent writers in worker threads.
 _consumption_lock = threading.Lock()
 
-_BUDGET_HOLIDAY = 3   # statutory day budget (shared across all 假日 days)
-_BUDGET_PERIOD = 3    # 调休 day budget (shared across all 调休 days)
+_BUDGET_HOLIDAY = 3   # Statutory day budget shared across all statutory holiday days.
+_BUDGET_PERIOD = 3    # Adjusted-holiday day budget shared across all adjusted days off.
 _BUDGET_WEEKEND = 2   # weekend budget (daily)
 
 

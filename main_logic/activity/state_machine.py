@@ -150,16 +150,16 @@ UNFINISHED_THREAD_WINDOW_SECONDS = 5 * 60
 UNFINISHED_THREAD_MAX_FOLLOWUPS = 1
 
 # Question-detection heuristic: only the last N chars of the AI message
-# are scanned. Mid-sentence question marks (e.g. "你说『你好吗』我没听清")
+# are scanned. Mid-sentence question marks (e.g. "你说『你好吗』我没听清", an embedded "how are you" quote)
 # don't count as the message itself ending with a question.
 _QUESTION_TAIL_LEN = 60
 _QUESTION_MARKS: tuple[str, ...] = ('?', '？')
 # Sentence-final particles in CJK that imply a question even without a
 # punctuation mark. Checked against the trailing few chars (after
 # stripping trailing whitespace and one optional punctuation).
-# ⚠️ 只补「嗎」。呢/吧 简繁同形，所以繁中侧原本只漏这一个。
-# **不要**顺手补「麼」：判据是 trail[-1]（末位字符），而「什麼 / 怎麼」是极常见
-# 的非句末用法，收了会把「我不知道該說什麼」误判成问句。
+# Add only "嗎" (question particle). The other particles 呢/吧 have identical simplified/traditional forms, so this was the only omission.
+# Do NOT add "麼": the check uses trail[-1] (the final character), while "什麼 / 怎麼" (what/how) are very common
+# away from sentence endings; including them would misclassify "我不知道該說什麼" (I do not know what to say) as a question.
 _CN_QUESTION_PARTICLES: tuple[str, ...] = ('吗', '嗎', '呢', '么', '吧')
 
 

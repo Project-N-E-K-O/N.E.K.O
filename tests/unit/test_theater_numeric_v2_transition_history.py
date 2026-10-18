@@ -12,7 +12,7 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
 
 def _candidate():
-    # 桥段承接已返回后的状态；与作者的“走回来”刻意不同，以捕获静态覆盖。
+    # State after transition return; deliberately differs from author's "走回来" to catch static overwrite.
     return dict(source_performance='（接过毛巾）谢谢，消息已经发出。',
                 bridge_scene_narration='窗外的雨渐渐停了。',
                 target_scene_narration='她擦干头发，把毛巾搭在椅背上。',
@@ -58,7 +58,7 @@ def test_evaluator_uses_current_narrative_instead_of_transition_title():
     messages = _build_messages(engine, session, '先去旅店放行李吧。')
     data = json.loads(messages[1].content.split('\n', 1)[1])
     assert data['current_story_beat']['scene_direction'] == beat['narrative_summary']
-    # 结局预览也必须读取完整方向，不能回退到另一份旧摘要。
+    # Ending preview must read full direction too, never fall back to another old summary.
     ending = data['transition_preview']['natural_ending_context']
     assert ending['source_direction'] == beat['narrative_summary']
 
@@ -139,7 +139,7 @@ async def test_dynamic_transition_reviews_whole_candidate_before_atomic_commit(m
         assert kwargs['transition_outcome'].session.status == 'ended'
         if verdict == 'unavailable':
             raise NumericV2EvaluatorError('probe_unavailable')
-        # 同一首稿的快速与争议复查都确认冲突，必须等实际改写后才可放行。
+        # Fast/dispute reviews both confirm same-draft conflict; allow only after actual rewrite.
         bad = verdict == 'reject' or (verdict == 'repair' and len(generations) == 1)
         return NumericV2TransitionOfferReview(False, False,
             body_violations=('author_boundary',) if bad else (), unsafe_suggestion_indexes=(),
@@ -160,7 +160,7 @@ async def test_dynamic_transition_reviews_whole_candidate_before_atomic_commit(m
         result = await workflow.execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.status == 'ended'
         assert result.diagnostics['semantic_review_fallback'] is (verdict == 'reject')
-        # 诊断可见，但不能混入后续演员读取的剧情事实。
+        # Diagnostics stay visible but never enter plot facts consumed by later actors.
         assert result.diagnostics['ending_reason'] == '本幕结果已交付。'
         assert 'ending_reason' not in json.dumps(result.stored.ledger_events, ensure_ascii=False)
     assert len(generations) == (2 if verdict in ('repair', 'reject') else 1)
@@ -171,7 +171,7 @@ def test_transition_review_keeps_source_history_and_actual_destination():
     from services.theater.numeric_v2_evaluator import _build_transition_judge_messages
 
     engine = _engine()
-    # 来源幕已经过了公开开场；只有目标开场的临时限制在这次换幕生效。
+    # Source act already passed public opening; only destination opening's temporary restriction applies to this transition.
     engine.nodes['start']['story_beat']['opening_only_boundaries'] = ['来源开场不得披露姓名。']
     ending_direction = '回应获准的最后互动，完整收束本次告别。'
     engine.nodes['ending_leave']['story_beat']['narrative_summary'] = ending_direction
@@ -224,7 +224,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
                                         opening_performance=case['session'].opening_performance)
     invitation = f'我们去{destination}入口，好吗？'
     if intent == 'accept':
-        # 锁存并提交真实邀请；仅给 Session 设置布尔值不能提供原公开邀请。
+        # Latch/commit real invitation; setting Session boolean alone cannot supply the original public invitation.
         stored = await _commit(runtime, stored, invitation, offer=True)
     message = f'好，我们去{destination}入口。' if intent == 'accept' else case['message']
     outcome = runtime.prepare_turn(stored, TurnRequestV2('enter', stored.session.revision, message), (),
@@ -277,7 +277,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
             for segment in data['candidate_segments']] == candidate['segments']
     assert (engine.story, stored.session, outcome, candidate) == before
 
-    # 构造已提交的入口历史以验证下一普通回合装箱，不预置任何模型复核判决。
+    # Construct committed entry history to test next normal turn packing, without presetting model review verdicts.
     committed = await runtime.commit_turn(outcome, candidate)
     restored = await NumericV2Runtime(engine, tmp_path).restore_session('review_entry')
     assert restored == committed

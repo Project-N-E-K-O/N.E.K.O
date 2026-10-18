@@ -828,7 +828,7 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
     assert "nekoBroadcastChannel || getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
     assert "postGoodbyeChatComposerHiddenPayload({" in interpage_source
     assert "postGoodbyeComposerRequest();" in interpage_source
-    # config 注入后只通过 postStandaloneChatStateRequests 统一补发，不再单独注册 once 监听，避免重复请求
+    # After config injection, resend only through postStandaloneChatStateRequests; do not add a separate once listener that duplicates requests.
     assert (
         "window.addEventListener('neko:config-injected', postGoodbyeComposerRequest"
         not in interpage_source

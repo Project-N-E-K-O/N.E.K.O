@@ -134,7 +134,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
     return False
 
 
-def normalize_text(text):  # 对文本进行基本预处理
+def normalize_text(text):  # Perform basic text preprocessing.
     text = text.strip()
     text = replace_blank(text)
 
@@ -215,7 +215,7 @@ def merge_unsynced_tail_assistants(chat_history, last_synced_index):
     if not parts:
         return 0
 
-    # 只保留最后一条主动搭话，丢弃之前的冗余内容，避免持久记忆膨胀
+    # Keep only the latest proactive message, discarding older redundancy to avoid persistent-memory growth.
     merged = {'role': 'assistant', 'content': [{'type': 'text', 'text': parts[-1]}]}
     removed = consecutive - 1
     chat_history[first_idx:] = [merged]
@@ -534,7 +534,7 @@ class _WSSlot:
         self.reader: asyncio.Task | None = None
         self.maintainer: asyncio.Task | None = None
         self.dead_event = asyncio.Event()
-        self.dead_event.set()  # 初始即"死" → maintainer 第一次 wait 立即返回，触发首连
+        self.dead_event.set()  # Initially dead -> maintainer's first wait returns immediately, triggering initial connection.
 
 
 def _mark_dead(slot: _WSSlot) -> None:
@@ -562,7 +562,7 @@ async def _slot_reader(slot: _WSSlot, ws: aiohttp.ClientWebSocketResponse) -> No
                 return
     except Exception:
         pass
-    # 仅当当前 slot.ws 仍是这条 ws 时才标死，避免覆盖 maintainer 刚装上的新连接
+    # Mark dead only if slot.ws still references this socket, avoiding overwriting the maintainer's replacement.
     if slot.ws is ws:
         _mark_dead(slot)
 
@@ -592,7 +592,7 @@ async def _slot_maintainer(
     while True:
         await slot.dead_event.wait()
 
-        # 旧 reader / session 异步清理（不阻塞重连本身）
+        # Clean old readers/sessions asynchronously without blocking reconnection.
         old_reader = slot.reader
         old_session = slot.session
         slot.reader = None
@@ -613,11 +613,11 @@ async def _slot_maintainer(
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            # 失败的 session 立即后台收，避免 lingering
+            # Reap failed sessions in the background immediately to prevent lingering.
             asyncio.create_task(_safe_close(new_session))
             slot.session = None
             if isinstance(e, aiohttp.WSServerHandshakeError) and e.status in (401, 403):
-                # token 不一致快速重试也好不了：只提示一次，并放慢重试，别每 1.5s 刷 Monitor
+                # Token mismatch cannot recover through fast retries; notify once and slow retries rather than flooding Monitor every 1.5 s.
                 if not auth_warned:
                     logger.warning(
                         f"[{slot.lanlan_name}] {slot.name} Monitor 拒绝认证 (HTTP {e.status})，"
@@ -630,16 +630,16 @@ async def _slot_maintainer(
                 f"[{slot.lanlan_name}] {slot.name} ws_connect 失败: "
                 f"{type(e).__name__}: {e} (backoff {backoff:.2f}s)"
             )
-            # 拉到 backoff 周期：fast-fail (refused, ms 级) 时补 sleep；
-            # timeout 到点失败时基本不 sleep 直接进下一轮
+            # Maintain the backoff period: add sleep after millisecond-scale refused fast failures;
+            # deadline timeouts need little/no sleep before retry.
             elapsed = time.monotonic() - cycle_start
             if elapsed < backoff:
                 await asyncio.sleep(backoff - elapsed)
             backoff = min(backoff * 2, backoff_max)
-            continue  # dead_event 仍 set，下轮立即再试
+            continue  # dead_event remains set, triggering immediate retry next round.
 
-        # 顺序很重要：先把 ws 装上 + 清 dead_event，再创建 reader。
-        # 否则 reader 可能在 clear() 之前就 mark_dead，clear 会把这个信号擦掉。
+        # Ordering matters: install ws and clear dead_event before creating its reader;
+        # otherwise reader mark_dead may occur before clear(), which erases the signal.
         slot.ws = new_ws
         auth_warned = False
         slot.dead_event.clear()
@@ -893,18 +893,18 @@ async def run_sync_connector(
         language, render_language = _current_memory_languages()
         return language or render_language
 
-    # 历史保留：旧 thread 版本里多处 ``if shutdown_event.is_set(): break`` 用于
-    # 子进程时代跳过对正在关闭的 memory_server 的 HTTP 调用。改 async 后取消
-    # 由 await 点自然 raise CancelledError 顶替，guard 不再有意义。统一替换成
-    # 永远 False 的 stub，避免大面积重排缩进；这些 guard 现在是死代码，但语义
-    # 仍然正确（不阻挡正常路径），后续清理 PR 可一并删。
+    # Historical preservation: threaded code used ``if shutdown_event.is_set(): break`` to skip HTTP calls
+    # to a shutting-down memory_server in subprocess mode. Async cancellation now raises
+    # CancelledError naturally at awaits, making guards redundant. Replace uniformly with
+    # always-False stubs to avoid mass reindentation. They are now dead code but retain correct
+    # semantics by allowing normal paths; a later cleanup PR may remove them together.
     class _NeverShutdown:
         @staticmethod
         def is_set() -> bool:
             return False
     shutdown_event = _NeverShutdown()
 
-    # ws slots：config 里关掉的端点压根不创建 maintainer，零成本。
+    # WS slots: disabled config endpoints create no maintainer and cost nothing.
     sync_slot: _WSSlot | None = None
     binary_slot: _WSSlot | None = None
     bullet_slot: _WSSlot | None = None
@@ -942,16 +942,16 @@ async def run_sync_connector(
 
     user_input_cache = ''
     user_input_sources: set[str] = set()
-    text_output_cache = ''  # lanlan的当前消息
+    text_output_cache = ''  # lanlan's current message.
     text_output_request_id = None
     # Raw originals use server-created identities and never normalized memory text.
     original_output = AssistantOriginalBuffer(tail_grace=LATE_TEXT_GRACE_SECONDS)
     current_turn = 'user'
-    had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
+    had_user_input_this_turn = False  # Whether the current turn has user input; False means proactive chat.
     current_turn_start_index = 0
     last_screen = None
     pending_user_images: list = []
-    last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
+    last_synced_index = 0  # Sync only new messages to memory at turn end so memory_browser updates correctly.
     avatar_interaction_memory_cache: dict[str, dict[str, int | str]] = {}
     memory_cache_health_state = {
         MEMORY_CACHE_SCOPE_AVATAR: False,
@@ -960,14 +960,14 @@ async def run_sync_connector(
 
     try:
         while True:
-            # 阻塞等消息。无消息时主 loop 完全沉默——ws 维护已下沉到 _slot_maintainer，
-            # 不再需要周期唤醒做 reconnect/heartbeat 巡检。
+            # Block awaiting messages. With none, the main loop stays silent because WS maintenance lives in _slot_maintainer,
+            # eliminating periodic reconnect/heartbeat inspection wakeups.
             message = await message_queue.get()  # noqa: ASYNC_BLOCK — asyncio.Queue, not queue.Queue
 
             if message is not None:
                 try:
                     if message["type"] == "json":
-                        # Forward to monitor if enabled (fail-soft: monitor 不在直接跳过)
+                        # Forward to monitor if enabled, failing softly by skipping absent monitors.
                         await _try_send_json(sync_slot, message["data"])
 
                         # Only treat assistant turn when it's a gemini_response
@@ -1021,10 +1021,10 @@ async def run_sync_connector(
                     elif message["type"] == "binary":
                         await _try_send_bytes(binary_slot, message["data"])
 
-                    elif message["type"] == "user":  # 准备转录
+                    elif message["type"] == "user":  # Prepare transcription.
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
-                        if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
+                        if input_type == "transcript": # Handle only audio for now; images still need recording later.
                             for source_value in _iter_source_values(message["data"].get("source")):
                                 user_input_sources.add(source_value)
                             transcript_metadata = message["data"].get("metadata")
@@ -1034,9 +1034,9 @@ async def run_sync_connector(
                                 for source_value in _iter_source_values(transcript_metadata.get("sources")):
                                     user_input_sources.add(source_value)
                             if user_input_cache == '':
-                                await _try_send_json(sync_slot, {'type': 'user_activity'})  # 用于打断前端声音播放
+                                await _try_send_json(sync_slot, {'type': 'user_activity'})  # Interrupt frontend audio playback.
                             user_input_cache += data
-                            # 发送用户转录到 monitor 供副终端显示
+                            # Send user transcripts to monitor for secondary-terminal display.
                             if data:
                                 await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
                         elif input_type in MIRROR_USER_INPUT_TYPES:
@@ -1084,19 +1084,19 @@ async def run_sync_connector(
                                 text_output_request_id = None
                             
                             if message["data"] == "renew session":
-                                # 检查是否正在关闭
+                                # Check shutdown state.
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过renew session处理")
                                     break
                                 # The existing reset persists completed/partial output at this boundary.
                                 await original_output.finish(lanlan_name)
                                 
-                                # 先处理未完成的用户输入缓存（如果有）
+                                # First process unfinished user-input buffers, if any.
                                 if user_input_cache:
                                     _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
                                     user_input_cache = ''
                                 
-                                # 再处理未完成的输出缓存（如果有）
+                                # Then process unfinished output buffers, if any.
                                 current_turn = 'user'
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
@@ -1105,19 +1105,19 @@ async def run_sync_connector(
                                 text_output_cache = ''
                                 text_output_request_id = None
                                 current_turn_start_index = len(chat_history)
-                                # 合并未同步的连续主动搭话消息
+                                # Merge unsynced consecutive proactive-chat messages.
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
 
-                                # 再次检查关闭状态
+                                # Recheck shutdown state.
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过memory_server请求")
                                     chat_history.clear()
                                     break
                                 
-                                # 增量发送：只发 /cache 未覆盖的剩余消息，触发 LLM 结算
+                                # Send only remaining messages not covered by /cache, triggering LLM settlement.
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                # 确定调用端点：有增量走 /renew，无增量走 /settle（补全摘要+时间戳）
+                                # Select /renew for new messages, otherwise /settle to complete summaries/timestamps.
                                 _renew_endpoint = "renew" if remaining else "settle"
                                 _renew_payload = remaining if remaining else []
                                 _memory_language, _memory_render_language = (
@@ -1151,11 +1151,11 @@ async def run_sync_connector(
                                 chat_history.clear()
                                 last_synced_index = 0
 
-                            if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan的消息结束了
+                            if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan's message ended.
                                 is_agent_callback_turn_end = (message["data"] == 'turn end agent_callback')
-                                # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
-                                # 的 pending_* 状态。game-only 足球台词在这里先截断，避免
-                                # 未打标的兼容镜像文本先 append 到 ordinary chat_history。
+                                # Backend labeling atomically binds meta to turn-end events, removing reliance on separate-channel
+                                # pending_* state. Truncate game-only soccer dialogue here before
+                                # unlabeled compatibility mirror text can enter ordinary chat_history.
                                 turn_end_meta = message.get("meta") if isinstance(message, dict) else None
                                 if not isinstance(turn_end_meta, dict):
                                     turn_end_meta = None
@@ -1208,11 +1208,11 @@ async def run_sync_connector(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
                                 text_output_request_id = None
-                                # kind == 'avatar_interaction' 才进入隔离路径，其它情况按
-                                # proactive / normal 处理。
-                                # meta 由 core 端 turn end 原子打标；avatar 互动若被用户
-                                # 接管则 core 会清空 meta，所以这里不再需要 had_user_input
-                                # 二次兜底，避免"用户语音缓存刚好先入队"误落回普通路径。
+                                # Only kind == 'avatar_interaction' enters isolation; otherwise process as
+                                # proactive / normal.
+                                # Core labels turn-end meta atomically and clears it if user input takes over avatar
+                                # interactions. No had_user_input fallback is needed here, avoiding ordinary-path
+                                # misclassification when user audio buffers happen to enqueue first.
                                 is_avatar_interaction_turn = (
                                     turn_end_meta is not None
                                     and turn_end_meta.get("kind") == "avatar_interaction"
@@ -1222,7 +1222,7 @@ async def run_sync_connector(
                                 avatar_turn_assistant_text = ''
                                 if is_avatar_interaction_turn and avatar_turn_slice:
                                     avatar_turn_assistant_text = _extract_chat_item_text(avatar_turn_slice[-1]).strip()
-                                # 主动搭话（无用户输入）时：合并未同步的连续 assistant 消息，不写入 /cache
+                                # For proactive turns without user input, merge unsynced consecutive assistant messages without /cache writes.
                                 if not had_user_input_this_turn and not is_avatar_interaction_turn:
                                     merge_unsynced_tail_assistants(chat_history, last_synced_index)
                                 await _try_send_json(sync_slot, {'type': 'turn end'})
@@ -1233,8 +1233,8 @@ async def run_sync_connector(
                                     memory_note = str(turn_end_meta.get('memory_note') or '').strip()
                                     memory_dedupe_key = str(turn_end_meta.get('memory_dedupe_key') or '').strip()
                                     memory_dedupe_rank = turn_end_meta.get('memory_dedupe_rank', 1)
-                                    # 先快照 dedupe 槽位，/cache 失败时回滚，避免 8s 窗口内后续
-                                    # 真实互动被误判为"已记录"丢失。
+                                    # Snapshot dedupe slots first and roll back on /cache failure, preventing real interactions
+                                    # in the next 8 s from being dropped as already recorded.
                                     dedupe_rollback_key = (memory_dedupe_key or memory_note).strip()
                                     dedupe_prior_entry = avatar_interaction_memory_cache.get(dedupe_rollback_key)
                                     should_persist_avatar_turn = (
@@ -1298,12 +1298,12 @@ async def run_sync_connector(
                                             last_synced_index = len(chat_history)
 
                                     current_turn_start_index = len(chat_history)
-                                    # avatar 分支 continue 会跳过正常 finally 的 pending_user_images
-                                    # 清理，陈旧截图/摄像帧若留到下一轮 analyzer 会变成"跨轮污染"。
+                                    # The avatar branch's continue skips ordinary finally cleanup of pending_user_images;
+                                    # leftover screenshots/camera frames would contaminate the next analyzer turn.
                                     pending_user_images = []
                                     continue
-                                # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务。
-                                # 仅 agent-callback 专用通道会显式跳过，避免任务结果回调引发二次分析。
+                                # Send recent conversation to tool_server nonblockingly for potential-task analysis.
+                                # Skip only the dedicated agent-callback channel to avoid reanalyzing task-result callbacks.
                                 if not shutdown_event.is_set():
                                     selected_pending_user_images, remaining_pending_user_images = (
                                         _partition_pending_user_images_for_turn(
@@ -1313,7 +1313,7 @@ async def run_sync_connector(
                                         )
                                     )
                                     try:
-                                        # 构造最近的消息摘要，并保留本轮最近的图片附件
+                                        # Build recent-message summaries and retain this turn's latest image attachments.
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
                                             selected_pending_user_images,
@@ -1365,8 +1365,8 @@ async def run_sync_connector(
                                     finally:
                                         pending_user_images = remaining_pending_user_images
 
-                                # Turn end 轻量缓存：仅写入 recent history，不触发 LLM 摘要/整理
-                                # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库
+                                # Lightweight turn-end cache: write recent history only, without LLM summarization/organization.
+                                # Do not cache proactive chat; persist with the next ordinary turn after the user's response.
                                 if had_user_input_this_turn and not shutdown_event.is_set() and last_synced_index < len(chat_history):
                                     new_messages = chat_history[last_synced_index:]
                                     _memory_language, _memory_render_language = (
@@ -1403,22 +1403,22 @@ async def run_sync_connector(
                                             memory_cache_health_state,
                                         )
 
-                            elif message["data"] == 'session end': # 当前session结束了
+                            elif message["data"] == 'session end': # Current session ended.
                                 is_context_reset_barrier = callable(
                                     message.get("_after_memory_settlement")
                                 )
-                                # 检查是否正在关闭，如果是则跳过网络操作
+                                # Skip network operations during shutdown.
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过session end处理")
                                     break
                                 await original_output.finish(lanlan_name)
                                 
-                                # 先处理未完成的用户输入缓存（如果有）
+                                # First process any unfinished user-input buffers.
                                 if user_input_cache:
                                     _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
                                     user_input_cache = ''
                                 
-                                # 再处理未完成的输出缓存（如果有）
+                                # Then process any unfinished output buffers.
                                 current_turn = 'user'
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
@@ -1427,14 +1427,14 @@ async def run_sync_connector(
                                 text_output_cache = ''
                                 text_output_request_id = None
                                 current_turn_start_index = len(chat_history)
-                                # 合并未同步的连续主动搭话消息
+                                # Merge unsynced consecutive proactive-chat messages.
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
 
-                                # 向tool_server发送最近对话，供分析器识别潜在任务（与turn end逻辑相同）
-                                # 再次检查关闭状态
+                                # Send recent conversation to tool_server for potential-task analysis, matching turn-end handling.
+                                # Recheck shutdown state.
                                 if not shutdown_event.is_set():
                                     try:
-                                        # 构造最近的消息摘要，并保留本轮最近的图片附件
+                                        # Build recent-message summaries and retain this turn's latest image attachments.
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
                                             _select_pending_user_images_for_session_end(
@@ -1477,17 +1477,17 @@ async def run_sync_connector(
                                     finally:
                                         pending_user_images = []
                                 
-                                # 再次检查关闭状态
+                                # Recheck shutdown state.
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过 session end 收尾")
                                     chat_history.clear()
                                     last_synced_index = 0
                                     break
                                 
-                                # 普通会话结算：有增量走 /process，否则走 /settle。
-                                # 语言切换屏障随后会权威清空 recent.json，因此不再做
-                                # 注定被丢弃的摘要：仅把未同步尾部经轻量 /cache 写入
-                                # 时间索引/outbox；没有尾部时可以直接进入清理回调。
+                                # Ordinary-session settlement: /process with new messages, otherwise /settle.
+                                # The language-switch barrier authoritatively clears recent.json afterward, so skip
+                                # summaries destined for deletion; write only unsynced tails through lightweight /cache into
+                                # the time index/outbox. Without a tail, proceed directly to cleanup callbacks.
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 if is_context_reset_barrier:
@@ -1568,7 +1568,7 @@ async def run_sync_connector(
                             lanlan_name,
                         )
 
-            # ws 维护已下沉到独立 _slot_maintainer task，主 loop 不再做巡检。
+            # WS maintenance lives in independent _slot_maintainer tasks; the main loop no longer inspects it.
 
     except asyncio.CancelledError:
         raise
@@ -1578,9 +1578,9 @@ async def run_sync_connector(
             await original_output.flush_terminated()
         except Exception:
             print("[chat-sync] original_save_failed")
-        # cleanup 顺序：先 cancel maintainer + reader（停止新建连接 / 读循环），
-        # 再 close 现存的 ws + session。maintainer 自己持有 session 引用，cancel
-        # 后我们从 slot 里读出来一并关。
+        # Cleanup ordering: cancel maintainers/readers first to stop new connections/read loops,
+        # then close existing sockets/sessions. Maintainers own session references; after cancellation,
+        # retrieve them from slots and close together.
         for s in slots:
             if s.maintainer is not None:
                 s.maintainer.cancel()
@@ -1596,7 +1596,7 @@ async def run_sync_connector(
             *(_safe_close(s.session) for s in slots),
             return_exceptions=True,
         )
-        # 注意：不在这里调用 aclose_internal_http_client_current_loop()。
-        # 旧版子进程/独立线程拥有自己的 event loop，其 http client 也是 per-loop
-        # 缓存的，退出时需要 close。现在合并到主 loop，client 由主代码共享，
-        # 我们没有所有权，不应当 close。
+        # Do not call aclose_internal_http_client_current_loop() here.
+        # Old subprocesses/dedicated threads owned their loops and per-loop cached HTTP clients,
+        # requiring closure on exit. Now merged into the main loop, clients are shared with main code;
+        # we do not own them and must not close them.

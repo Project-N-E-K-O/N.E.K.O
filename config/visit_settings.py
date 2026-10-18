@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from .network import _read_bool_env, _read_str_env
 
-# ── 发布总闸与开发环回 ─────────────────────────────────────────────────
+# -- Release master gate and development loopback --
 
 VISIT_ENABLED = _read_bool_env("VISIT_ENABLED", False)
 """Release gate, read from ``NEKO_VISIT_ENABLED`` (default off).
@@ -61,7 +61,7 @@ NEKO_VISIT_DEV_LIVEKIT_API_KEY = _read_str_env("VISIT_DEV_LIVEKIT_API_KEY", "")
 NEKO_VISIT_DEV_LIVEKIT_SECRET = _read_str_env("VISIT_DEV_LIVEKIT_SECRET", "")
 """Local LiveKit API secret for the dev loopback (empty = unused)."""
 
-# ── 用户设置默认值（ALLOWED_CONVERSATION_SETTINGS 三键）──────────────────
+# -- User-setting defaults (three ALLOWED_CONVERSATION_SETTINGS keys) --
 
 VISIT_ENABLED_DEFAULT = False
 """Default of the ``visitEnabled`` conversation setting (off)."""
@@ -75,7 +75,7 @@ Read once per visit when it activates and frozen into
 VISIT_VOICE_DEFAULT = True
 """Default of the ``visitVoiceEnabled`` conversation setting (on)."""
 
-# ── 生命周期（OD-11 v2）────────────────────────────────────────────────
+# -- Lifecycle (OD-11 v2) --
 
 VISIT_HEARTBEAT_S = 5
 """Interval of the ``hb`` data-channel message."""
@@ -181,7 +181,7 @@ to TTS; extended while either is still reporting playback."""
 VISIT_INBOX_HANDOFF_ABS_MAX_S = 120
 """Absolute ceiling of the ``VisitInbox`` hand-back deadline."""
 
-# ── 数据通道、可靠层与限速（OD-30）──────────────────────────────────────
+# -- Data channels, reliability, and rate limits (OD-30) --
 
 VISIT_WIRE_PROTO = 1
 """Wire protocol major version (``hello.caps.proto``); mismatch → ``proto_mismatch``."""
@@ -327,7 +327,7 @@ VISIT_LINE_STALL_S = 20
 VISIT_TYPING_CLEAR_S = 8
 """Typing indicator clears itself when no first piece arrives within this long."""
 
-# ── 身份与凭证（OD-01 v2）──────────────────────────────────────────────
+# -- Identity and credentials (OD-01 v2) --
 
 VISIT_TICKET_VERSION = 1
 """Required ``v`` claim of the identity ticket."""
@@ -387,7 +387,7 @@ VISIT_FREE_MINUTES_PER_DAY = 120
 VISIT_MAX_CONCURRENT_ROOMS_PER_ACCOUNT = 2
 """Servers-side concurrent room limit per account (documentation only)."""
 
-# ── 视觉通道（OD-06 v2）────────────────────────────────────────────────
+# -- Visual channel (OD-06 v2) --
 
 VISIT_TIERS: dict[str, dict] = {
     "sd600": {
@@ -485,7 +485,7 @@ VISIT_VP9_CPU_FALLBACK = (VISIT_VP9_SOFTENC_MIN_FPS, 10)
 VISIT_FRAME_STARVATION_S = 1.0
 """No successful ``onFrame`` for this long → ``hidden{on:true}``."""
 
-# ── 对话（OD-08 v2 / OD-15 v3 / OD-21 v3）──────────────────────────────
+# -- Conversation (OD-08 v2 / OD-15 v3 / OD-21 v3) --
 
 VISIT_MAX_CAT_TURNS_WITHOUT_HUMAN = 6
 """Six cat lines in a row without any human line → wrap up."""
@@ -571,7 +571,7 @@ VISIT_CLAUSE_MIN_MS = 400
 VISIT_CLAUSE_MAX_MS = 12000
 """Upper clamp of ``estimate_speech_ms``; also the receiver bound of ``text.tail_ms``."""
 
-# ── 记忆 / spool / debrief（OD-16 v4 / OD-17 v2）────────────────────────
+# -- Memory / spool / debrief (OD-16 v4 / OD-17 v2) --
 
 VISIT_SPOOL_DIRNAME = "visit_spool"
 """Spool directory under ``config_dir`` (``.jsonl`` + ``.state.json`` + ``.outbox.jsonl``).

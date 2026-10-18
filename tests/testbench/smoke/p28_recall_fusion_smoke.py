@@ -82,9 +82,9 @@ def check_c1_import() -> tuple[bool, str]:
 def check_c2_tokenize() -> tuple[bool, str]:
     from tests.testbench.pipeline import recall_fusion
 
-    # CJK multiplicity: '猫猫猫' -> 2-grams ['猫猫','猫猫'] + 3-gram ['猫猫猫'].
+    # CJK multiplicity: '猫猫猫' -> 2-grams ['猫猫','猫猫'] + 3-gram ['猫猫猫'] (repeated cat characters).
     # The whole point of _tokenize (vs persona._extract_keywords' set) is that
-    # TF survives — '猫猫' must appear twice.
+    # TF survives — '猫猫' (cat-cat) must appear twice.
     toks = recall_fusion.tokenize("猫猫猫")
     if toks.count("猫猫") != 2 or "猫猫猫" not in toks:
         return False, f"C2 FAIL: CJK multiplicity lost: {toks}"
@@ -94,7 +94,7 @@ def check_c2_tokenize() -> tuple[bool, str]:
     if sorted(latin) != ["hello", "world"]:
         return False, f"C2 FAIL: Latin split wrong: {latin}"
 
-    # stop_names stripped before tokenizing: '主人' gone, '披萨' survives.
+    # stop_names stripped before tokenizing: '主人' (owner) gone, '披萨' (pizza) survives.
     stripped = recall_fusion.tokenize("主人喜欢披萨", stop_names=["主人"])
     if any("主" in t or "人" in t for t in stripped):
         return False, f"C2 FAIL: stop_name not stripped: {stripped}"

@@ -38,20 +38,20 @@ from main_logic.omni_offline_client import _streaming
 from main_routers import card_assist_router, galgame_router
 from utils.language_utils import language_context
 
-# 繁体独有写法，用来证明拿到的确实是 zh-TW 那一行而不是简体行。
+# Traditional-only wording proves the retrieved row is zh-TW rather than Simplified Chinese.
 TRADITIONAL_TAIL = "我剛剛講的那個計畫，其實還有一些細節沒有講完，你要不要聽聽看？"
 SIMPLIFIED_TAIL = "我刚刚讲的那个计划，其实还有一些细节没有讲完，你要不要听听看？"
 
 
-# ── card-assist：请求体没带 locale 时的全局兜底 ─────────────────────────────
+# ── card-assist: global fallback when request bodies omit locale ─────────────────────────────
 #
-# 带 locale 的路径本来就分得清繁简（payload 里就是 'zh-TW'）。塌掉的是兜底那一支：
-# 它读的是短码 getter，繁中用户在那里被当成简中。
+# Explicit locales already distinguish scripts (payload contains 'zh-TW'); the collapsed fallback
+# reads the short-code getter, treating Traditional users as Simplified.
 
 def test_card_assist_falls_back_to_traditional_when_payload_has_no_locale():
     with language_context("zh-TW"):
         assert card_assist_router._resolve_language(None) == "zh-TW"
-        # 角色卡模板文件名同样要跟着走，否则字段 key 还是简中那套。
+        # Character-card template filenames must follow too, or field keys stay Simplified.
         assert card_assist_router._resolve_locale_code(None) == "zh-TW"
 
     prompt = get_card_assist_clarify_prompt("zh-TW")
@@ -80,7 +80,7 @@ def test_card_assist_simplified_fallback_is_unchanged():
     ],
 )
 def test_card_assist_payload_locale_keeps_the_script(payload_locale, expected):
-    # 全局设成英文，确保结果只可能来自 payload 而不是兜底。
+    # Set global language to English so results can come only from payload, not fallback.
     with language_context("en"):
         assert card_assist_router._resolve_language(payload_locale) == expected
 
@@ -98,8 +98,8 @@ def test_card_assist_empty_reply_fallback_has_a_traditional_line():
     assert traditional != english
     assert "喵" in traditional
 
-    # 光测 accessor 不够：上面三条在 router 仍写 `lang == "zh"` 时也全绿，因为它们
-    # 根本没碰 router。先把 resolver→accessor 那一段链钉住：
+    # Accessor tests alone are insufficient: the preceding three pass even if the router still uses `lang == "zh"`,
+    # because they never reach it. First pin resolver->accessor linkage:
     with language_context("zh-TW"):
         lang = card_assist_router._resolve_language(None)
     assert get_card_assist_chat_empty_reply_fallback(lang) == traditional
@@ -151,7 +151,7 @@ def test_card_assist_action_recovery_prompt_stays_chinese_for_traditional():
     assert traditional != english
 
 
-# ── galgame：请求语言 + 文本检测 ────────────────────────────────────────────
+# ── galgame: request language + text detection ────────────────────────────────────────────
 
 @pytest.mark.parametrize(
     "request_lang, expected",
@@ -179,11 +179,11 @@ def test_galgame_detection_refines_chinese_with_the_session_locale():
     with language_context("zh-TW"):
         assert galgame_router._resolve_language(TRADITIONAL_TAIL, None) == "zh-TW"
     with language_context("zh-CN"):
-        # 同一段繁体文本，简中会话仍然拿简体模板 —— 检测器本来就分不出，
-        # 会话 locale 才是判据。
+        # The same Traditional text in a Simplified session still uses the Simplified template; the detector cannot
+        # distinguish scripts, and session locale is decisive.
         assert galgame_router._resolve_language(TRADITIONAL_TAIL, None) == "zh"
     with language_context("zh-TW"):
-        # 非中文检测结果不看会话 locale。
+        # Non-Chinese detection results ignore session locale.
         assert galgame_router._resolve_language("hello there my friend", None) == "en"
 
 
@@ -196,7 +196,7 @@ def test_galgame_traditional_locale_selects_the_traditional_templates():
     assert GALGAME_OPTION_GENERATION_PROMPT[lang] != GALGAME_OPTION_GENERATION_PROMPT["zh"]
 
 
-# ── 长回复收尾摘要（TTS）：_summarize_tail_for_tts ──────────────────────────
+# ── Long-reply closing summary (TTS): _summarize_tail_for_tts ──────────────────────────
 
 
 class _FakeResult:

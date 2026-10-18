@@ -99,8 +99,8 @@ def _detect_fact_extraction_prompt_language(
     )
 
 
-_ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
-_ARCHIVE_COOLDOWN_HOURS = 24   # 两次归档尝试之间的最小间隔
+_ARCHIVE_AGE_DAYS = 7          # Archive absorbed facts older than this many days.
+_ARCHIVE_COOLDOWN_HOURS = 24   # Minimum interval between archive attempts.
 
 def safe_importance(f: dict, default: int = 5) -> int:
     """Defensively coerce ``f['importance']`` to int.
@@ -169,14 +169,14 @@ def _readable_fact_id(entry: dict):
     ``signal_processed`` flags — trading the crash for quiet data loss.
     """
     fact_id = entry.get('id')
-    # 只排除「没有 id」这一类：None / 缺失 / 空串（空串会让所有没有真 id 的行
-    # 互相撞上）。不能写成 `not fact_id`——那会把老库里 id 为 0 的行也一并丢掉，
-    # 它是个完全可用的键，丢了就是又一次「崩溃换静默丢标记」。
+    # Exclude only absent IDs: None / missing / empty strings (empty IDs collide across all rows
+    # lacking real IDs). Never use `not fact_id`: that drops legacy ID 0 too,
+    # a fully usable key, trading crashes for silent marker loss again.
     if fact_id is None or fact_id == '':
         return None
     try:
         hash(fact_id)
-    except TypeError:  # list / dict 之类，进不了集合
+    except TypeError:  # list / dict, etc., cannot enter a set.
         return None
     return fact_id
 
@@ -293,34 +293,34 @@ def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
     return out
 
 
-# 惰性创建 recheck 镜像时的互斥（见 FactStore._recheck_mem）。放模块级而不是
-# 实例级，是因为它要保护的正是「实例上还没有那把锁」的那一瞬间。只护创建的
-# 那几行，不参与后续读写。
+# Mutex for lazy recheck-mirror creation (see FactStore._recheck_mem). Module-level rather than
+# instance-level because it protects the moment before an instance has its lock. Guards creation
+# lines only, never subsequent reads/writes.
 _RECHECK_MEM_BOOTSTRAP = threading.Lock()
 
 
 class FactStore:
     """Manages raw fact extraction, deduplication, and persistence."""
 
-    # legacy fact 重判的失败计数「进程内镜像」：{name: {fid: {"n", "at"}}}。
-    # session 内它是权威工作副本，facts.json 里那两栏只是持久化 + 重启恢复。
-    # 对齐 ReflectionEngine._synth_backoff_mem（memory/reflection/manager.py:79）：
-    # 计数器如果只活在「那个写不进去的文件」里，只读 FS / 权限 / 维护态下熔断
-    # 永远不会触发。
+    # In-process mirror of legacy-fact recheck failure counts: {name: {fid: {"n", "at"}}}.
+    # Authoritative session working copy; facts.json fields serve persistence/restart recovery only.
+    # Matches ReflectionEngine._synth_backoff_mem (memory/reflection/manager.py:79):
+    # counters stored only in the unwritable file can never trigger circuit breakers under read-only
+    # filesystems / permission errors / maintenance mode.
     #
-    # class 级默认 None + 惰性创建（不是只在 __init__ 里赋值）：仓库里有多处
-    # `FactStore.__new__(FactStore)` 绕过 __init__ 造实例
+    # Class default None + lazy creation, not just __init__: multiple repository sites
+    # construct via `FactStore.__new__(FactStore)`, bypassing __init__;
     # （tests/unit/test_ai_aware_stage1_path_b.py、tests/unit/test_group_memory_scopes.py），
-    # 那些实例一碰镜像就会 AttributeError。
+    # those instances would otherwise raise AttributeError upon mirror access.
     #
-    # 刻意用实例级而不是模块级状态：它是 liveness 兜底不是持久状态，热重载
-    # （app/memory_server/runtime.py 重建 FactStore）丢掉只是让卡住的 fact 多跑
-    # 几轮，而模块单例会在 pytest 用例之间串状态。
+    # Deliberate instance-level state: a liveness fallback, not persistent state. Hot reload
+    # (app/memory_server/runtime.py rebuilding FactStore) merely retries stuck facts a few extra
+    # rounds, whereas module singletons leak state between pytest cases.
     _recheck_attempts_mem: dict | None = None
     _recheck_mem_guard: threading.Lock | None = None
 
-    # fact_dedup 的 LLM 仲裁队列。Stage-2 只捞候选、由它裁决，所以这里拿不到
-    # resolver 时 Stage-2 的命中就只能记日志（见 _aenqueue_near_dup_pairs）。
+    # fact_dedup LLM arbitration queue. Stage-2 only finds candidates for its decisions; without
+    # resolver here, Stage-2 matches can only be logged (see _aenqueue_near_dup_pairs).
     _dedup_resolver = None
 
     def attach_dedup_resolver(self, resolver) -> None:
@@ -335,8 +335,8 @@ class FactStore:
         self._config_manager = get_config_manager()
         self._time_indexed = time_indexed_memory
         self._facts: dict[str, list[dict]] = {}  # {lanlan_name: [fact, ...]}
-        self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
-        self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
+        self._locks: dict[str, threading.Lock] = {}  # Per-character file locks.
+        self._locks_guard = threading.Lock()  # Protect the _locks dictionary itself.
         self._persist_alocks: dict[str, asyncio.Lock] = {}
         # Per-character, per-subject erase generations. Scoped extraction
         # captures one before its LLM call and rechecks it under the persistence
@@ -480,7 +480,7 @@ class FactStore:
         if name in self._facts:
             return self._facts[name]
         with self._get_lock(name):
-            # double-check: 另一个线程可能在等锁期间已经加载了
+            # Double-check: another thread may have loaded while waiting for lock.
             if name in self._facts:
                 return self._facts[name]
             if os.path.exists(path):
@@ -546,9 +546,9 @@ class FactStore:
             return list(active)
         if not isinstance(archived, list):
             return list(active)
-        # active 与 archive 的 id 重叠 = 归档两文件提交被打断后还没收敛的残留。
-        # 收敛到 active 那份：它至少和归档副本一样新，且 absorbed /
-        # signal_processed 之类的 monotonic 标记以它为准。
+        # Active/archive ID overlap is residue from an interrupted two-file archive commit.
+        # Converge to active copy: at least as recent as archive, authoritative for monotonic
+        # flags such as absorbed / signal_processed.
         merged = list(active)
         active_ids = {
             fid for fid in (
@@ -587,7 +587,7 @@ class FactStore:
         from utils.file_utils import read_json_tolerating_replace
 
         try:
-            # 扛过归档 / 去重写入方 os.replace 的 Windows 共享冲突，别把替换窗口当成读不出
+            # Tolerate Windows sharing conflicts from archive/dedup writers' os.replace; replacement windows are not unreadable files.
             data = read_json_tolerating_replace(path)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
             raise RuntimeError(f"facts of {name!r} unreadable: {e}") from e
@@ -629,7 +629,7 @@ class FactStore:
                     if fid is not None:
                         active_ids.add(fid)
                 elif fid is not None and fid in active_ids:
-                    # 与 load_facts_full 同一规则：归档两文件提交被打断时同一行在两边，以活跃池那份为准
+                    # Same as load_facts_full: interrupted two-file archive commits duplicate rows; active copy wins.
                     continue
                 rows.append(row)
         return rows
@@ -687,30 +687,30 @@ class FactStore:
                 )
                 facts = self._facts.get(name, [])
                 path = self._facts_path(name)
-                # 先统一摘纸条（见 _SIGNAL_RESET_PENDING）：摘的动作必须无条件
-                # 发生，不能挂在下面 read-merge 的任何一层分支里——文件还不存在
-                # 或这一批没有 monotonic 标记时那些分支都不进，纸条就会跟着落盘。
+                # Remove temporary notes first (see _SIGNAL_RESET_PENDING), unconditionally;
+                # never put this inside read-merge branches below. Missing files
+                # or batches without monotonic flags skip those branches and would persist the notes.
                 just_unsealed_ids = {
                     _readable_fact_id(f) for f in facts
                     if isinstance(f, dict)
                     and f.pop(self._SIGNAL_RESET_PENDING, False)
                     and _readable_fact_id(f) is not None
                 }
-                # Read-merge-write: 保护其他进程/路径写入的 monotonic 标记
-                # （只能从 False → True 单向翻的字段：absorbed、signal_processed）。
-                # 否则旧 cache 的写路径会用 False 覆盖磁盘上的 True，让同一批
-                # facts 被 drain loop 重复送进 Stage-2 / 重复合成 reflection。
+                # Read-merge-write protects monotonic flags written by other processes/paths
+                # (False → True only: absorbed, signal_processed).
+                # Otherwise stale-cache writes overwrite disk True with False, making drain loops
+                # resend facts to Stage-2 / synthesize duplicate reflections.
                 if os.path.exists(path):
                     try:
                         with open(path, encoding='utf-8') as f:
                             disk_facts = json.load(f)
                         if isinstance(disk_facts, list):
-                            # 索引键统一走 _readable_fact_id：手改/半损坏的 legacy 行
-                            # 可能没有 id（f['id'] 抛 KeyError），也可能 id 是 list/dict
-                            # （放进 set 抛 TypeError: unhashable）。内层只接 JSON/OS
-                            # 错误，这两种异常都会冒到外层把缓存清掉并重抛，此后每次存盘
-                            # 都死在同一行、新 fact 再也落不了盘——正好是 read-merge 想
-                            # 兜的「坏数据也要能覆盖写掉」的反面。
+                            # Index keys always use _readable_fact_id: manual/partly corrupt legacy rows
+                            # may lack ID (f['id'] raises KeyError) or use list/dict IDs
+                            # (sets raise TypeError: unhashable). Inner handlers catch JSON/OS errors only,
+                            # so either escapes, clears cache, and re-raises; every later persistence attempt
+                            # dies on that row, preventing new facts from persisting, contrary to read-merge's
+                            # intent to overwrite corrupt data safely.
                             absorbed_ids = {
                                 _readable_fact_id(f) for f in disk_facts
                                 if isinstance(f, dict) and f.get('absorbed')
@@ -721,28 +721,28 @@ class FactStore:
                                 if isinstance(f, dict) and f.get('signal_processed')
                                 and _readable_fact_id(f) is not None
                             }
-                            # ⚠残留窗口：这次读盘与下面的 atomic_write_json 之间没有
-                            # 跨进程锁（self._get_lock 只挡同进程的线程），所以理论上
-                            # 仍能被「读到 ai_disclosure → 别人升级并消费 → 我方写回
-                            # False」插进来。这不是本次豁免引入的新race：整段 read-merge
-                            # 从 #976 起就是「读盘-合并-覆盖写」的尽力而为，任何并发写
-                            # 者都能在同一窗口里丢掉合并结果。真要关掉它得给 facts.json
-                            # 加一把覆盖读+写全程的跨进程文件锁（portalocker，本仓库目前
-                            # 只在 galgame store 里用过）并让所有写者都走它——那是独立的
-                            # 架构改动，不在本次范围。豁免面已经收到「磁盘上那条仍是
-                            # ai_disclosure」这一个条件里，窗口比原来的整段合并更窄。
+                            # ⚠ Remaining window: no interprocess lock spans this disk read and
+                            # atomic_write_json below (self._get_lock protects local threads only), so
+                            # another process may upgrade/consume after we read ai_disclosure, then our write restores
+                            # False. This exemption introduces no new race: since #976, all read-merge
+                            # has been best-effort read/merge/overwrite; any concurrent writer
+                            # can lose merged results in that window. Closing it requires an interprocess
+                            # facts.json lock across read and write (portalocker, currently used only
+                            # in galgame store), honored by every writer: a separate architectural
+                            # change outside scope. Exemption now requires the disk row still be
+                            # ai_disclosure, narrower than the existing full merge window.
                             #
-                            # 纸条只在磁盘上那条**还没被别人升级过**时算数：另一个
-                            # 进程可能已经用它自己的缓存升级完、Stage-2 也消费过了
-                            # （磁盘上是 user_observation + True）。此时本进程拿着
-                            # 旧缓存再升一次并放行回写，等于把一条已消费的 fact 重新
-                            # 排回 Stage-2——正是这段 read-merge 要挡的跨进程回归。
-                            # 重复 id 按保守口径：只有当磁盘上带这个 id 的行**全部**
-                            # 还是 ai_disclosure 时才算「没人升过」。手改或对账后的
-                            # 文件里可能同一个 id 有两行——一行还是 ai_disclosure、
-                            # 另一行已升级且 signal_processed=True。两个集合各自都会
-                            # 包含它，只判「在 disclosure 集合里」就会放行回写，把已
-                            # 消费状态盖回 False。
+                            # Notes count only if the disk row has not already been upgraded by another process:
+                            # it may have upgraded using its cache and already consumed Stage-2,
+                            # leaving user_observation + True on disk. Upgrading again from this process's
+                            # stale cache and permitting writeback would requeue an already consumed fact
+                            # into Stage-2, exactly the cross-process regression read-merge prevents.
+                            # Handle duplicate IDs conservatively: nobody upgraded only if all disk rows
+                            # with that ID are still ai_disclosure. Manual/reconciled files
+                            # may contain two same-ID rows: one ai_disclosure,
+                            # another upgraded with signal_processed=True. Both sets
+                            # contain it; testing only disclosure membership would allow writeback
+                            # overwriting consumed state with False.
                             disk_disclosure_ids: set = set()
                             disk_other_source_ids: set = set()
                             for f in disk_facts:
@@ -785,54 +785,54 @@ class FactStore:
                 # divergent data. Evicting forces a fresh disk read.
                 self._facts.pop(name, None)
                 raise
-            # 基于文件修改时间节流归档：距上次归档超过 _ARCHIVE_COOLDOWN_HOURS 才尝试
+            # Throttle archive by file modification time: attempt only after _ARCHIVE_COOLDOWN_HOURS since last archive.
             try:
                 archive_path = self._facts_archive_path(name)
                 if os.path.exists(archive_path):
                     mtime = datetime.fromtimestamp(os.path.getmtime(archive_path))
                     if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
                         return
-                # 用 marker 文件记录上次归档尝试时间（即使归档文件尚不存在）
+                # Record last archive attempt time in marker file (even if archive file does not yet exist).
                 marker_path = archive_path + '.last_attempt'
                 if os.path.exists(marker_path):
                     mtime = datetime.fromtimestamp(os.path.getmtime(marker_path))
                     if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
                         return
-                # 只在归档「真跑过」（跑完或真失败）时才 touch marker。维护态是
-                # 预期跳过、不该消耗归档窗口：否则维护期间每次 save 都把冷却续
-                # 24h，维护结束后要再等一整天才归档。
+                # Touch marker only when archiving actually ran (completed or genuinely failed). Maintenance is
+                # an expected skip, consuming no archive window; otherwise every maintenance save extends
+                # cooldown by 24h, delaying archival another full day afterward.
                 archive_ran = True
                 try:
                     self._archive_absorbed(name)
                 except MaintenanceModeError as exc:
-                    # 对齐 load_facts 里的迁移分支：维护态跳过走 debug。
+                    # Match load_facts migration branch: maintenance skips log at debug.
                     #
-                    # 窄但不是死代码：save_facts 顶部的 assert_cloudsave_writable
-                    # 已经判过一次维护态，稳态维护期根本进不到这里。能走到的只有
-                    # 「顶部那次判定放行之后、_archive_absorbed 里那次判定之前
-                    # 进入维护态」这一窄窗——两次判定之间没有跨进程锁，root_state
-                    # 由别的进程/线程改。所以别按"不可达"把 archive_ran 一并删掉：
-                    # 真踩上时它决定了不消耗 24h 归档窗口。
+                    # Narrow but reachable: save_facts' initial assert_cloudsave_writable
+                    # already checks maintenance, excluding steady maintenance. Only the window where
+                    # maintenance begins after that check passes but before _archive_absorbed's
+                    # check can reach here. No interprocess lock spans the checks; another process/thread changes
+                    # root_state. Never delete archive_ran as unreachable:
+                    # in this race it prevents consuming the 24h archive window.
                     archive_ran = False
                     logger.debug(f"[FactStore] {name}: 维护态跳过归档: {exc}")
                 except Exception:
-                    # 归档失败不能让调用方的 save 失败（facts.json 本身已经落盘
-                    # 成功了），但必须留痕：原来是裸 pass，两文件半提交在生产里
-                    # 完全不可见。marker 照常 touch —— archive 那次写就失败时
-                    # archive 的 mtime 不变、冷却不生效，不 touch 就会每次 save
-                    # 都重跑一遍必然失败的归档。
+                    # Archive failure must not fail callers' saves (facts.json already persisted
+                    # successfully), but must leave evidence: former bare pass hid partial two-file
+                    # commits in production. Touch marker normally; if archive write itself fails,
+                    # archive mtime stays unchanged and cooldown fails, so omitting touch would rerun
+                    # inevitably failing archive on every save.
                     logger.warning(
                         f"[FactStore] {name}: 归档失败，facts.json 已落盘，"
                         f"{_ARCHIVE_COOLDOWN_HOURS}h 后重试",
                         exc_info=True,
                     )
                 if archive_ran:
-                    # 更新 marker（无论归档是否有实际条目都 touch 一次）
+                    # Update marker regardless of whether archiving found actual entries.
                     with open(marker_path, 'w', encoding='utf-8') as f:
                         f.write(datetime.now().isoformat())
             except Exception:
-                # 冷却判定 / marker 落盘本身出错：不影响已成功的 facts.json 保存，
-                # 但不再整个吞掉。
+                # Cooldown checks / marker persistence failures do not invalidate successful facts.json saves,
+                # but must no longer be swallowed entirely.
                 logger.debug(
                     f"[FactStore] {name}: 归档冷却判定失败", exc_info=True,
                 )
@@ -876,13 +876,13 @@ class FactStore:
     ) -> dict:
         """Delete every fact belonging to one exact (subject, scope) domain.
 
-        撤回入口（删好友/退群后清档）：活跃 facts、facts_archive、FTS 索引
-        三处一起清。匹配用 entry_matches_subject 的精确 (key, scope) 相等
-        ——legacy 无戳条目与其它 scope 的条目绝不落入删除面（fail-closed
-        方向与读侧过滤一致）。幂等：目标为空时是 no-op。
+        Retraction entry after friend removal/group departure: clear active facts, facts_archive,
+        and FTS index together. entry_matches_subject requires exact (key, scope)
+        equality: unstamped legacy entries and other scopes never fall in deletion scope
+        (fail-closed direction matches read filtering). Idempotent: absent targets are no-ops.
 
-        FTS 使用严格删除并排在 JSON 变更之前：无法确认索引清理时整次
-        forget 失败，保留主存中的 id 供重试；逐 id 的成功删除是幂等的。
+        Strict FTS deletion precedes JSON changes: unconfirmed index cleanup fails the entire
+        forget operation, retaining main-store IDs for retry; successful per-ID deletions are idempotent.
         """  # noqa: DOCSTRING_CJK
         from memory.scopes import coerce_subject, entry_matches_subject
         memory_subject = coerce_subject(subject)
@@ -950,8 +950,8 @@ class FactStore:
                 try:
                     archived = await asyncio.to_thread(_read_archive)
                 except (json.JSONDecodeError, OSError) as exc:
-                    # 归档损坏时明确失败：静默跳过会让"已删干净"的响应
-                    # 掩盖一份仍可被 BM25 召回的副本。
+                    # Explicitly fail corrupt archives: silently skipping lets "fully deleted" responses
+                    # conceal copies still retrievable by BM25.
                     raise RuntimeError(
                         f"facts_archive unreadable during forget: {exc}"
                     ) from exc
@@ -2022,8 +2022,8 @@ class FactStore:
                     return True
 
             try:
-                # 复活不需要碰索引：归档行本来就全在索引里（见
-                # _aensure_fact_index_backfilled 里的说明）。
+                # Restoration need not touch index: archive rows already reside there (see
+                # _aensure_fact_index_backfilled).
                 return await asyncio.to_thread(_restore)
             except BaseException:
                 def _invalidate() -> None:
@@ -2056,7 +2056,7 @@ class FactStore:
                 active.append(f)
         if not to_archive:
             return 0
-        # 追加到归档文件
+        # Append to archive file.
         archive_path = self._facts_archive_path(name)
         existing_archive: list[dict] = []
         if os.path.exists(archive_path):
@@ -2066,38 +2066,38 @@ class FactStore:
                 if isinstance(data, list):
                     existing_archive = data
             except (json.JSONDecodeError, OSError) as e:
-                # 归档文件损坏 → 放弃本次归档，避免覆盖丢数据
+                # Corrupt archive → abort this archive attempt, avoiding overwrite/data loss.
                 logger.warning(f"[FactStore] {name}: 读取归档文件失败，跳过本次归档: {e}")
                 return 0
-        # 追加按 id 幂等合并：半提交（archive 写成功、facts.json 没写成）之后
-        # 下一轮归档会把同一批 fact 再送进来一次，extend 会让它在归档里永久存在
-        # 两份。顺带修好已经落在用户盘上的历史重复。
+        # Idempotently merge appends by ID: after partial commit (archive succeeded, facts.json failed),
+        # next archive resubmits the same facts; extend would leave two permanent
+        # archive copies. Also repair historical on-disk duplicates.
         existing_archive = _merge_archive_entries(existing_archive, to_archive)
         atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
-        # 两文件提交顺序固定为「先 archive 再 facts.json」：中断窗口的状态是
-        # 「两边都有」（重复 —— 读侧 load_facts_full 按 id 收敛、下轮归档按 id
-        # 幂等追加），而不是「两边都没有」（永久丢已归档 fact，连带丢 daily
-        # import 的指纹 → 整天重导）。顺序不要反过来。
+        # Two-file commit order is always archive then facts.json: interruption leaves
+        # both copies (duplicates converged by load_facts_full ID deduplication and next archive's
+        # idempotent ID append), rather than neither (permanent archived-fact loss, including daily
+        # import fingerprints, reimporting whole days). Never reverse this order.
         atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
-        # 缓存只在 facts.json 落盘成功之后才动 —— 对齐 event_log.record_and_save
-        # 已经写明的纪律（cache only changes after the disk write）。原来是先改
-        # 缓存再写盘，写盘失败就留下「缓存少 k 条 / 磁盘多 k 条」的半提交，而
-        # save_facts 的 evict 只挂在前一个 try 上、这里不触发。
+        # Change cache only after facts.json persists, matching event_log.record_and_save's
+        # documented discipline (cache only changes after the disk write). Former cache-first
+        # writes left cache missing k rows versus disk after failure;
+        # save_facts eviction applies only to the preceding try, not here.
         #
-        # 原地更新活跃列表（保持对象引用不变，避免外部持有旧引用导致修改丢失）。
-        # 按身份剔除已归档的那几条，而不是拿函数开头算的 active 快照整体替换：
-        # add_facts 在 aload_facts 之后直接 append，并不持 _get_lock（本仓库既有
-        # 约定），快照整体替换会把「快照之后、这里之前」append 进来的 fact 一起
-        # 抹掉，而写序重排把这个窗口从一次写盘拉长成了两次。
-        # 用 id() 作键是安全的：to_archive 全程持有这些 dict 的强引用，它们不会
-        # 在此期间被回收、id 也就不会被别的对象复用。
+        # Update active list in place, preserving references so external holders do not lose modifications.
+        # Remove archived entries by object identity, not wholesale replacement with initial active snapshot:
+        # add_facts appends after aload_facts without _get_lock (existing repository convention),
+        # so snapshot replacement erases concurrent appends between snapshot and this point;
+        # reordered writes extend that window from one disk write to two.
+        # id() keys are safe: to_archive keeps strong references to these dictionaries throughout,
+        # preventing collection and ID reuse by other objects.
         archived_identities = {id(f) for f in to_archive}
         facts[:] = [f for f in facts if id(f) not in archived_identities]
-        # 剩余数报缓存实际长度而不是 active 快照长度：并发 append 进来的行也还在。
+        # Report actual remaining cache length, not snapshot length: concurrent appends remain.
         logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(facts)} 条")
         return len(to_archive)
 
-    # ── scoped subject archival (time-driven, 群记忆系列 5/7) ────────
+    # ── Scoped subject archival (time-driven, group memory series 5/7) ────────
 
     def _archive_subject_facts(
         self, name: str, subject: MemorySubject, archived_at_iso: str,
@@ -2158,9 +2158,9 @@ class FactStore:
             ]
             to_archive: list[dict] = []
             for f in matching:
-                # 复活检查同时看 created_at 与 restored_at：判定窗口内的
-                # 显式 restore 给行盖的是 restored_at（created_at 仍是旧
-                # 值），只看 created_at 会把刚恢复的行立刻再归档。
+                # Resurrection checks consider created_at and restored_at: explicit restores within
+                # the decision window stamp restored_at while created_at remains old;
+                # created_at alone would immediately rearchive newly restored rows.
                 latest: datetime | None = None
                 for field in ('created_at', 'restored_at'):
                     try:
@@ -2172,11 +2172,11 @@ class FactStore:
                     if latest is None or parsed > latest:
                         latest = parsed
                 if latest is None:
-                    continue  # 未知年龄的行留在活跃池（对齐 _archive_absorbed）
+                    continue  # Keep unknown-age rows active (as _archive_absorbed).
                 if latest >= stale_cutoff:
-                    # 判定后落进来的新写入/恢复：subject 已复活，本轮整体
-                    # 中止。新写入只会落在活跃池，归档池里的行都早于判定
-                    # 快照，所以复活检查只需要看活跃行。
+                    # New writes/restores after decision resurrect the subject; abort the entire
+                    # attempt. New writes enter active pool only; archive rows predate the decision
+                    # snapshot, so resurrection checks need active rows only.
                     logger.info(
                         f"[FactStore] {name}: subject "
                         f"[scoped {subject.kind}/{subject.subject_id}] 在归档窗口"
@@ -2198,15 +2198,15 @@ class FactStore:
                         return None
                     existing_archive = data
                 except (json.JSONDecodeError, OSError) as e:
-                    # 归档文件损坏时按中止（None）而非普通零结果返回：让
-                    # caller 跳过 reflection/persona——否则每轮都在同一处
-                    # 失败，subject 永久劈叉成「facts 活跃、高层已归档」。
+                    # Corrupt archives return abort (None), not ordinary zero, telling
+                    # caller to skip reflection/persona too; otherwise repeated failures permanently
+                    # split the subject into active facts but archived higher layers.
                     logger.warning(
                         f"[FactStore] {name}: 读取归档文件失败，中止本轮 subject 归档: {e}"
                     )
                     return None
-            # absorbed 收缩早已搬进归档文件的同 subject 行：就地补
-            # subject_archived_at 标记，让它们与活跃行一起退出召回。
+            # Same-subject rows already archived by absorbed shrinkage get subject_archived_at
+            # stamped in place, removing them from recall together with active rows.
             stamped_in_archive = 0
             for f in existing_archive:
                 if (
@@ -2229,10 +2229,10 @@ class FactStore:
             if to_archive:
                 active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
                 atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
-                # 缓存按身份原地剔除（并发 append 的行保留在缓存里，下次 save 落盘）。
+                # Remove cache rows in place by identity (retain concurrent appends for next save).
                 archived_identities = {id(f) for f in to_archive}
                 facts[:] = [f for f in facts if id(f) not in archived_identities]
-            # 隐私口径：只打域标识与条数，不打原文。
+            # Privacy: log domain identifiers/counts only, never original text.
             logger.info(
                 f"[FactStore] {name}: subject 归档 [scoped {subject.kind}"
                 f"/{subject.subject_id}] 活跃 {len(to_archive)} 条 + 归档池补标记 "
@@ -2337,8 +2337,8 @@ class FactStore:
             for f in to_restore:
                 fid = _readable_fact_id(f)
                 if fid is not None and fid in active_ids:
-                    # 上次恢复被打断留下的「两边都有」：active 赢，归档副本
-                    # 直接收敛掉即可。
+                    # Both copies left by interrupted restoration: active wins; simply
+                    # remove archive duplicate to converge.
                     continue
                 copy = dict(f)
                 copy.pop('subject_archived_at', None)
@@ -2448,25 +2448,25 @@ class FactStore:
             return cls._messages_locale_text(messages)
         return "\n".join(selected)
 
-    # 段首标记里不允许出现的结构字符：方括号 / 竖线 / 任何换行与制表。
-    # speaker_label 是**用户可改**的原始数据（群名片），不中和的话
-    # "X]\n[SEGMENT 2 | speaker: Alice" 这种名片会在渲染结果里造出一个
-    # 位于行首、逐字节合法的段首。
+    # Structural characters forbidden in segment headers: brackets / pipes / any newline or tab.
+    # speaker_label is user-editable raw data (group nickname); without neutralization,
+    # a nickname like "X]\n[SEGMENT 2 | speaker: Alice" creates a byte-valid
+    # segment header at line start in rendered output.
     _SEGMENT_LABEL_STRUCTURAL = re.compile(r'[\[\]|]')
-    # 正文里的段首字面量：即便有逐行前缀兜底（见 _format_speaker_segments），
-    # 也把它折成全角左括号，让"看起来像段首"的注入连形状都不成立。
+    # Header literals in bodies: even with per-line prefixes (_format_speaker_segments),
+    # replace opening bracket with fullwidth form, making header-shaped injection structurally invalid.
     _SEGMENT_MARKER_LITERAL = re.compile(r'\[\s*SEGMENT', re.IGNORECASE)
 
     @classmethod
     def sanitize_speaker_label(cls, label) -> str:
         """Strip a speaker label down to something that cannot forge markup.
 
-        剥掉方括号 / 竖线 / 换行 / 控制字符并压缩空白，最后截到 64 字符
-        （与路由的长度契约同口径）。返回空串表示这个 label 整个由结构字符
-        组成——调用方（路由）按契约违例 fail loud，不要静默替换成占位符：
-        插件侧的 label 恒含 "(sender_id)" 数字，空只可能是调用方 bug。"""  # noqa: DOCSTRING_CJK
+        Remove brackets / pipes / newlines / controls, collapse whitespace, then cap at 64 characters
+        (matching route length contract). Empty means the label consisted entirely of structural
+        characters; callers (routes) fail loudly on contract violation, never substitute placeholders:
+        plugin labels always include numeric \"(sender_id)\", so empty means a caller bug."""  # noqa: DOCSTRING_CJK
         text = cls._SEGMENT_LABEL_STRUCTURAL.sub(' ', str(label or ''))
-        # 控制字符（含各种换行/分隔符）一律折成空格再压缩：段首必须是单行。
+        # Fold all controls (newlines/separators included) to spaces, then collapse: headers must be single-line.
         text = ''.join(ch if ch.isprintable() else ' ' for ch in text)
         return ' '.join(text.split())[:64].strip()
 
@@ -2647,33 +2647,33 @@ class FactStore:
     ) -> str:
         """Render multi-speaker segments for the batch extraction prompt.
 
-        段首标记 ``[SEGMENT n:nonce | speaker: label]`` 是 locale 无关的固定
-        形状，批模板（FACT_EXTRACTION_BATCH_PROMPT）按原样向模型解释它。
+        Header ``[SEGMENT n:nonce | speaker: label]`` has a fixed locale-independent
+        shape, explained verbatim to the model by FACT_EXTRACTION_BATCH_PROMPT.
 
-        三层防伪，缺一不可（模板恰恰告诉模型"段首就是归属依据"，能伪造段首
-        的群成员就能把自己的内容写进别人的 subject，并借到别人的
-        speaker_trust 信任基线）：
+        Three indispensable anti-forgery layers (template says headers determine ownership;
+        members forging headers could write content into another subject and borrow
+        their speaker_trust baseline):
 
-        1. **每一行都带前缀**——正文永远不出现在行首，注入进来的
-           "\\n[SEGMENT 2 | speaker: Alice]" 只会渲染成
-           "| ［SEGMENT 2 | ...]"，明确落在自己那段里。按 ``splitlines()``
-           切，覆盖 \\r / \\x85 / U+2028 这些同样会被渲染成换行的分隔符。
+        1. Every body line is prefixed: text never starts at column zero; injected
+           \"\\n[SEGMENT 2 | speaker: Alice]\" renders only as
+           \"| ［SEGMENT 2 | ...]\", clearly inside its own segment. Use ``splitlines()``
+           to cover \\r / \\x85 / U+2028 separators also rendered as newlines.
 
-           正文每行用的是**短标记**而不是重复整条 label：label 可以到 64 字符，
-           而消息里的换行数不受任何上游限制（路由只数消息条数、群名片也
-           没有长度校验），逐行重复 label 等于给攻击者一个 ~67 倍的放大器
-           ——一条几千行的消息就能把 prompt 撑爆或耗光抽取超时，而失败的
-           批是保留重试的，同批其他成员会被一起拖住（Codex）。发言人已在
-           段首唯一标明；消息首行用 ``> ``、续行用 ``| ``，既保留消息边界，
-           又把固定开销压到每行 2 字节。这些生成前缀也计入 batch token
-           预算，避免换行密集正文再次放大。
-        2. **段首带一次性 nonce**——攻击者的消息在 nonce 生成之前就写死了，
-           猜不到本次请求的 token，伪造头与真段首形状对不上。
-        3. **label 与正文里的结构字面量中和**——label 剥方括号/竖线/换行，
-           正文里的 "[SEGMENT" 折成全角左括号。
+           Body lines use short markers, not repeated full labels: labels reach 64 characters,
+           while upstream does not bound message newlines (routes count messages only, and group
+           nicknames lack length validation). Repeating labels gives attackers ~67× amplification:
+           a message with thousands of lines can overflow prompts/extraction timeouts, and failed
+           batches remain for retry, blocking other members too (Codex). Speaker is already uniquely
+           named in header; first message line uses ``> ``, continuation ``| ``, retaining boundaries
+           while fixing overhead at two bytes per line. Include generated prefixes in batch token
+           budgets too, preventing newline-dense bodies from amplifying again.
+        2. One-time header nonce: attacker messages are fixed before nonce generation,
+           so request tokens cannot be guessed; forged headers cannot match genuine ones.
+        3. Neutralize structural literals in labels/body: strip brackets/pipes/newlines from labels,
+           and replace body's \"[SEGMENT\" opening bracket with fullwidth form.
 
-        nonce 只用于渲染侧的边界防伪，**不要求模型原样回吐**（归属输出仍是
-        段号整数）——让模型复述 token 只会凭空增加它出错的面。"""  # noqa: DOCSTRING_CJK
+        Nonce protects rendering boundaries only; models need not repeat it verbatim
+        (ownership output remains integer segment index). Repeating tokens only adds failure surface."""  # noqa: DOCSTRING_CJK
         omission_marker = get_scoped_batch_middle_omission_marker(lang)
         capped_bodies = cls._cap_speaker_message_bodies(
             segments,
@@ -2942,16 +2942,16 @@ class FactStore:
     ) -> list | None:
         """Stage-1 batch: one LLM call over multiple single-speaker segments.
 
-        输出契约是**每段一个对象**（``{"segment": n, "facts": [...]}``，由
-        ``extract_facts_batch`` fail-closed 解析）：归属结构化之后，一条带
-        内容的事实不可能"归属不明"，段覆盖也变成显式信号。非数组一律按终止
-        失败返回 None——唯一调用方是 fail-closed 的 scoped_history 路由，
-        没有"宽容当空"的模式。
+        Output contract: one object per segment (``{\"segment\": n, \"facts\": [...]}``, parsed
+        fail-closed by ``extract_facts_batch``). Structured ownership prevents content-bearing
+        facts from lacking attribution and makes segment coverage explicit. Non-arrays always mean terminal
+        failure, returning None; sole caller is fail-closed scoped_history routing,
+        with no permissive empty-result mode.
 
-        占位符替换顺序刻意 {LANLAN_NAME} → {SEGMENT_NONCE} → {SEGMENTS}：
-        消息正文里出现字面 "{LANLAN_NAME}" / "{SEGMENT_NONCE}" 时不得被
-        二次替换（后者尤其重要——那等于让攻击者把 nonce 印进自己的正文）。"""  # noqa: DOCSTRING_CJK
-        # 一次性段边界 token：攻击者的消息在它生成之前就写死了，猜不到。
+        Deliberate placeholder order: {LANLAN_NAME} → {SEGMENT_NONCE} → {SEGMENTS}.
+        Literal \"{LANLAN_NAME}\" / \"{SEGMENT_NONCE}\" in message bodies must not undergo
+        another replacement (especially nonce, which would let attackers print it in their bodies)."""  # noqa: DOCSTRING_CJK
+        # One-time segment-boundary token: attacker messages are fixed before generation, making it unpredictable.
         nonce = secrets.token_hex(SCOPED_BATCH_SEGMENT_NONCE_BYTES)
         ui_lang = get_global_language_full()
         lang, rendered_segments = await asyncio.to_thread(
@@ -2983,19 +2983,19 @@ class FactStore:
 
     @staticmethod
     def _coerce_segment_index(raw, segment_count: int) -> int | None:
-        """The 0-based segment index for a model-emitted段号, or None.
+        """The 0-based segment index for a model-emitted segment number, or None.
 
-        接受 int 与纯数字字符串（模型输出 "1" 的常见形态），bool 显式排除
-        （True 是 int 子类）。越界一律 None——绝不 clamp 到边界段：A 的内容
-        挂到 B 头上比整批重试严重得多。"""  # noqa: DOCSTRING_CJK
+        Accept integers and numeric strings (common model output \"1\"); explicitly exclude bool
+        (True subclasses int). Out-of-range always None; never clamp to boundary segments:
+        assigning A's content to B is much worse than retrying the whole batch."""  # noqa: DOCSTRING_CJK
         if isinstance(raw, bool):
             return None
         if isinstance(raw, int):
             seg = raw
         elif isinstance(raw, str):
-            # try/except 而非 isdigit() 预检：isdigit() 对上标数字（"²"）等
-            # int() 消化不了的字符也返回 True，预检放行后 int() 抛
-            # ValueError 会把整批弄崩。
+            # Use try/except, not isdigit(): superscript digits ("²") and other characters
+            # unsupported by int() still satisfy isdigit(); accepting them then raising ValueError
+            # would crash the whole batch.
             try:
                 seg = int(raw.strip())
             except ValueError:
@@ -3008,14 +3008,14 @@ class FactStore:
             return None
         return seg - 1
 
-    # 一条 LLM 事实里真正会被 :meth:`_apersist_new_facts_locked` 读走的键。
-    # 只有这一处用它：段对象被整个收作事实时，判断"还剩什么没人读"。
+    # Keys actually consumed from an LLM fact by :meth:`_apersist_new_facts_locked`.
+    # Used only here to determine unconsumed content when a whole segment object becomes a fact.
     #
-    # ⚠️ 手写清单会随 fact schema 演进变陈旧，而陈旧的后果是**每一条带新
-    # 字段的事实都被误判成 failed、桶被无休止重抽**。所以它由
-    # test_persisted_fact_fields_matches_what_persist_actually_reads 用 AST
-    # 扫 _apersist_new_facts_locked 反查兜底——加了字段忘了更新这里，那条
-    # 测试会红，而不是等着线上打转。
+    # ⚠️ Handwritten lists stale as schemas evolve, misclassifying every fact containing new
+    # fields as failed and endlessly re-extracting buckets. Therefore
+    # test_persisted_fact_fields_matches_what_persist_actually_reads uses AST
+    # to inspect _apersist_new_facts_locked; forgetting to update this list after new fields
+    # fails that test instead of looping in production.
     _PERSISTED_FACT_FIELDS = frozenset({
         'text', 'importance', 'entity', 'source', 'event_when',
         '_external_import',
@@ -3025,10 +3025,10 @@ class FactStore:
     def _as_fact_entry(entry) -> dict | None:
         """Normalize one ``facts[]`` element into a persistable fact, or None.
 
-        裸字符串 promote 成 ``{'text': ...}``：模型偶尔直接给一句话而不是
-        对象，它明确承载内容、归属又由所在段对象给定，收下来是无损的——
-        比"当垃圾丢掉"（丢内容）和"整段重试"（多花一次抽取）都好。限定
-        ``str``：数字/布尔之类的假值渲染成文本毫无意义。"""  # noqa: DOCSTRING_CJK
+        Promote bare strings to ``{'text': ...}``: models sometimes output sentences rather than
+        objects; content is clear, ownership supplied by enclosing segment, so acceptance loses nothing,
+        preferable to discarding content or paying for whole-segment re-extraction. Limit to
+        ``str``: rendering numeric/boolean false-like values as text has no meaning."""  # noqa: DOCSTRING_CJK
         if isinstance(entry, dict):
             text = entry.get('text')
             if isinstance(text, str) and text.strip():
@@ -3042,15 +3042,15 @@ class FactStore:
     def _carries_unused_text(cls, entry) -> bool:
         """True when a value still holds non-blank text somewhere.
 
-        纯粹看"这个值里有没有文字"，不认字段名——字段名那层由
-        :meth:`_has_unconsumed_text` 负责。"""  # noqa: DOCSTRING_CJK
+        Tests only whether the value contains text, without interpreting field names;
+        :meth:`_has_unconsumed_text` handles the field-name layer."""  # noqa: DOCSTRING_CJK
         if isinstance(entry, str):
             return bool(entry.strip())
         if isinstance(entry, dict):
-            # 键与值一视同仁地往下递归：map 形态的畸形事实
-            # （{"Alice likes cats": 7}）可以裹在任意深度的字段下
-            # （{"fact": {"Alice likes cats": 7}}），只查顶层键会漏。
-            # 字段名形状的键（confidence / start / unit …）不算内容。
+            # Recurse through keys and values equally: malformed fact maps
+            # ({"Alice likes cats": 7}) can occur at any field depth
+            # ({"fact": {"Alice likes cats": 7}}), missed by top-level-only checks.
+            # Field-shaped keys (confidence / start / unit, etc.) are not content.
             return any(
                 (
                     isinstance(key, str)
@@ -3064,31 +3064,31 @@ class FactStore:
             return any(cls._carries_unused_text(v) for v in entry)
         return False
 
-    # JSON 里像"字段名"的键：ASCII 标识符。模型给 schema 加字段时用的是
-    # confidence / reason / evidence 这种；而把事实文本塞进键的畸形形态
-    # （{"Alice likes cats": 7}）几乎不可能长成标识符——自然语言带空格或
-    # 非 ASCII。用它区分"键是字段名"与"键就是内容"。
+    # Field-like JSON keys are ASCII identifiers. New schema fields tend to use
+    # confidence / reason / evidence; malformed facts embedding prose into keys
+    # ({"Alice likes cats": 7}) rarely look like identifiers: natural language contains spaces
+    # or non-ASCII. Distinguish field-name keys from content keys this way.
     _FIELD_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
     @classmethod
     def _holds_unextracted_text(cls, entry, *, always_consumed: tuple = ()) -> bool:
         """True when a **rejected** entry still holds text nobody extracted.
 
-        只对"这一条什么都没抽出来"的元素问这个问题，理由是**重试能不能救**：
-        - 什么都没抽出来 → 重来一次抽取，模型完全可能给出规范形状，那截
-          内容就回来了。保留桶重试是有意义的；
-        - 已经抽出了事实、只是旁边还挂着别的字段 → 重抽会复现同一个形状，
-          那个字段照样没人读。判 failed 换不回任何东西，只会让这个成员的
-          记忆**永远结算不掉**：桶一路涨到硬顶后连原始消息一起丢，比丢一个
-          附注严重得多。那种情况只记一条 WARNING（见调用方），段照常 ok。
+        Ask only for entries yielding nothing, based on whether retries can rescue content:
+        - Nothing extracted → another extraction may produce canonical shape,
+          recovering the content. Retaining the bucket for retry is useful;
+        - Fact extracted, with extra side fields → re-extraction repeats the shape,
+          leaving those fields unread. Failing recovers nothing, merely prevents this member's
+          memory from ever settling: buckets grow to hard cap then lose original messages,
+          far worse than losing a note. Log WARNING only (see caller); segment remains ok.
 
-        ⚠️ **键本身也可能就是内容**：``{"Alice likes cats": 7}`` 这种 map
-        形态的畸形事实，文本全在键上、值是个数字——只查值会把它当空壳丢掉
-        （Codex）。所以非字段名形状的键（见 :attr:`_FIELD_NAME_RE`）只要
-        非空白就算内容。
+        ⚠️ Keys themselves may be content: malformed maps like ``{\"Alice likes cats\": 7}``
+        hold prose in keys and numeric values; checking values alone discards them as shells
+        (Codex). Non-field-shaped keys (see :attr:`_FIELD_NAME_RE`) count as content whenever
+        nonblank.
 
-        ``always_consumed``：调用方已经逐条解析过的键（段对象的 ``segment``
-        / ``facts``），当作已读走。"""  # noqa: DOCSTRING_CJK
+        ``always_consumed``: keys callers already parsed individually (segment object's ``segment``
+        / ``facts``), treated as consumed."""  # noqa: DOCSTRING_CJK
         if not isinstance(entry, dict):
             return cls._carries_unused_text(entry)
         for key, value in entry.items():
@@ -3108,19 +3108,19 @@ class FactStore:
     def _unread_fields_of_accepted_fact(cls, fact, *, always_consumed=()) -> list:
         """Field names on an accepted fact that nobody downstream reads.
 
-        只用于打日志（见 :meth:`_holds_unextracted_text` 里的理由：判 failed
-        换不回内容、只会让这个成员永远结算不掉）。留这条日志是为了让"模型
-        开始往事实上挂别的文字"这件事看得见——真发生了就去改 prompt，而不是
-        靠一个永远重试的闸门去发现。"""  # noqa: DOCSTRING_CJK
+        Logging only (rationale in :meth:`_holds_unextracted_text`: failure cannot recover
+        content and only prevents this member from settling forever). Logging makes models
+        attaching extra prose to facts visible, so prompts can be fixed when it happens,
+        rather than detected through an endlessly retrying gate."""  # noqa: DOCSTRING_CJK
         if not isinstance(fact, dict):
             return []
         return sorted(
             str(key)[:64] for key, value in fact.items()
             if key not in cls._PERSISTED_FACT_FIELDS
             and key not in always_consumed
-            # 键与值一视同仁（与 _carries_unused_text 同口径）：
-            # {"text": "A", "Bob 的生日是 3 月 5 日": 7} 里文本全在键上，
-            # 只查值的话这条内容连一行日志都留不下。
+            # Treat keys/values equally (as _carries_unused_text):
+            # {"text": "A", "Bob 的生日是 3 月 5 日": 7} stores prose in the key;
+            # value-only checking would not even log this content.
             and (
                 (
                     isinstance(key, str)
@@ -3137,34 +3137,34 @@ class FactStore:
     ) -> tuple[int | None, list[dict], int, int]:
         """Parse one top-level element of the batch payload.
 
-        Returns ``(0-based index | None, facts, dropped, suspect)``。
+        Returns ``(0-based index | None, facts, dropped, suspect)``.
 
-        ``index is None`` 表示这个元素**放不下去**——它可能承载着某一段的
-        内容而我们无从判断是哪段，调用方据此整批 raise（与
-        :meth:`extract_facts` 对畸形元素"整批可重试失败"同一条不变式：
-        persist 会静默跳过畸形项，调用方推进游标后该元素承载的内容永久丢失）。
+        ``index is None`` means unassignable: it might carry a segment's content,
+        but ownership is unknown. Callers raise for the whole batch (same invariant as
+        :meth:`extract_facts` retryable whole-batch failure on malformed entries:
+        persistence silently skips them; advancing caller cursors permanently loses content).
 
-        丢弃分两档，判据是"丢了会不会丢内容"：
-        - ``dropped``：空壳（``{}`` / ``{"text": ""}`` / ``{"importance": 5}``
-          / 空串），丢了不丢内容，本段照常 ``ok``；
-        - ``suspect``：我们**没能用上、但里面还有文字**的元素——本段判
-          ``failed`` 让调用方保留桶重试。嵌套形状消除了"有内容却归属不明"，
-          但消除不了"有内容却看不懂形状"，那一类必须 fail-closed。
+        Discard has two levels, based on whether content would be lost:
+        - ``dropped``: empty shells (``{}`` / ``{\"text\": \"\"}`` / ``{\"importance\": 5}``
+          / empty strings), losing no content; segment remains ``ok``;
+        - ``suspect``: unused entries still carrying text; mark segment
+          ``failed`` so callers retain buckets for retry. Nesting eliminates ambiguous
+          ownership, not content in unrecognized shapes; those must fail closed.
 
-        容忍的形状：
-        - 规范：``{"segment": n, "facts": [...]}``；
-        - 段内无事实：``{"segment": n}``（模型显式点名该段且没给内容——
-          这是合法的"本段无事实"结论，不是漏标）；
-        - 旧的扁平事实：``{"segment": n, "text": ...}``，**含与 facts 数组
-          同时出现的情形**——两种约定混用时归属并无歧义（都挂在这一个段
-          对象上），元素自带的 text 必须一起收下，不能被 list 分支吃掉。
-          这种形态整个 dict 原样交给 persist（event_when / entity / source
-          等字段那边自己读），所以它身上没有"被丢弃的内容"可言；
-        - ``facts`` 里的裸字符串（见 :meth:`_as_fact_entry`）。
-        ``facts`` 存在、不是数组、又不是 ``null`` = 形状坏了且可能带内容 →
-        放不下去。``null`` 例外：它不承载任何内容，语义与"没给这个字段"、
-        与空数组都一样是"本段无事实"，按缺席处理（判成畸形会为了一个空值
-        把整批 8 段一起打回重抽）。"""  # noqa: DOCSTRING_CJK
+        Tolerated shapes:
+        - Canonical: ``{\"segment\": n, \"facts\": [...]}``;
+        - No segment facts: ``{\"segment\": n}`` (explicitly names segment without content;
+          valid no-facts conclusion, not missing coverage);
+        - Legacy flat facts: ``{\"segment\": n, \"text\": ...}``, including simultaneous
+          facts arrays. Mixing conventions leaves attribution unambiguous (same segment
+          object); collect its own text too, never lose it through the list branch.
+          Pass entire dictionary unchanged to persistence (it consumes event_when / entity / source
+          itself), so none of this content is discarded;
+        - Bare strings inside ``facts`` (see :meth:`_as_fact_entry`).
+        Present ``facts`` neither array nor ``null`` means malformed, possibly content-bearing:
+        unassignable. ``null`` is exempt: carries no content and, like missing fields
+        or empty arrays, means no facts; treat as absent (rejecting would re-extract all eight
+        segments merely for one empty value)."""  # noqa: DOCSTRING_CJK
         if not isinstance(item, dict):
             return None, [], 0, 0
         index = cls._coerce_segment_index(item.get('segment'), segment_count)
@@ -3181,8 +3181,8 @@ class FactStore:
         for entry in (raw_facts or []):
             fact = cls._as_fact_entry(entry)
             if fact is None:
-                # 读不成事实：里面还攥着没人抽走的文字就 suspect（重抽有可能
-                # 把它变成规范形状救回来），纯空壳才丢。
+                # Unreadable as a fact: unused text makes it suspect (re-extraction may rescue
+                # it in canonical form); discard empty shells only.
                 if cls._holds_unextracted_text(entry):
                     suspect += 1
                 else:
@@ -3191,25 +3191,25 @@ class FactStore:
             kept.append(fact)
             unread_fields.extend(cls._unread_fields_of_accepted_fact(fact))
         own_fact = cls._as_fact_entry(item)
-        # 段对象上还剩什么没人读？剩下的键里若攥着文字，说明这个形状我们
-        # 没读懂，别把它当成"本段的结论"——那会让调用方 pop 掉桶，那截
-        # 文字就此消失。
+        # What remains unconsumed on the segment object? Text in remaining keys means this shape
+        # was not understood; do not count it as the segment's conclusion, which makes callers pop
+        # the bucket and permanently lose that text.
         #
-        # 排除集分两种情形，判据是"这次到底消费掉了什么"：
-        # - item 被整个收作事实 → persist 会读走 _PERSISTED_FACT_FIELDS 那
-        #   一组（event_when 里的 "day"、entity 的 "master" 都是被消费的，
-        #   算成旁挂文字会让每条带时间线索的扁平事实都误判 failed）；但
-        #   **它读不到的键仍然没人读**，比如 {"text": "...", "note": "..."}
-        #   里的 note——那截内容确实会随着 pop 一起消失，仍要判 suspect。
-        # - item 读不成事实 → 连 text 都没被消费（{"text": ["Alice 养猫"]}
-        #   这种内容裹在非字符串里），一个都不能排除。
+        # Two exclusion cases, based on what was actually consumed:
+        # - Whole item accepted as fact → persistence reads _PERSISTED_FACT_FIELDS
+        #   (event_when's "day", entity's "master" are consumed;
+        #   treating them as side text falsely fails every flat fact with temporal clues). But
+        #   unread keys remain unconsumed, e.g. note in {"text": "...", "note": "..."};
+        #   that content really disappears on pop, so still classify suspect.
+        # - Item unreadable as fact → even text was not consumed ({"text": ["Alice 养猫"]}
+        #   wraps content in a non-string); exclude nothing.
         if own_fact is not None:
             kept.append(own_fact)
-        # 段对象"答过了"= 给了自己的事实、或给了 facts 数组（哪怕是空的——
-        # 空数组正是"本段无事实"这个合法结论）。答过了就跟被收下的事实同
-        # 一档：旁挂字段只记日志。{"segment": 1, "facts": [],
-        # "reason": "..."} 判 failed 换不回任何东西，模型只要习惯性带上这个
-        # 字段，这个成员就永远结算不掉（Codex）。
+        # Segment object answered when it supplied its own fact or facts array (even empty:
+        # a valid conclusion of no facts). Answered objects get the same handling
+        # as accepted facts: side fields only log. Failing {"segment": 1, "facts": [],
+        # "reason": "..."} recovers nothing; a model habitually including that field
+        # would make this member impossible to settle (Codex).
         if own_fact is not None or isinstance(raw_facts, list):
             unread_fields.extend(cls._unread_fields_of_accepted_fact(
                 item, always_consumed=('segment', 'facts'),
@@ -3231,9 +3231,9 @@ class FactStore:
     def _speaker_provenance_of(segment: dict) -> dict | None:
         """The provenance fields to stamp onto this segment's persisted facts.
 
-        speaker_label = 谁说的，speaker_trust = 调用方的代码侧信赖度快照。
-        永远来自请求段，
-        绝不读 LLM 输出——模型在输出里伪造同名键不会被采纳。"""  # noqa: DOCSTRING_CJK
+        speaker_label identifies who spoke; speaker_trust is caller code's trust snapshot.
+        Always read from the request segment,
+        never LLM output: forged same-name model keys are ignored."""  # noqa: DOCSTRING_CJK
         prov: dict = {}
         label = str(segment.get('speaker_label') or '').strip()
         if label:
@@ -3267,33 +3267,33 @@ class FactStore:
         """Multi-segment scoped extraction: one LLM call, per-segment dispatch.
 
         ``segments``: ``[{'messages': [...], 'subject': MemorySubject,
-        'speaker_label': str, 'speaker_trust': float|None}, ...]``——每段一位
-        发言人。成本从 O(发言人数) 次 LLM 调用降到每批一次。
+        'speaker_label': str, 'speaker_trust': float|None}, ...]`` — one speaker
+        per segment. Reduces O(speakers) LLM calls to one per batch.
 
         Returns one result dict per segment, in request order:
-        ``{'status': 'ok'|'failed', 'created': list[dict], 'dropped': int}``。
+        ``{'status': 'ok'|'failed', 'created': list[dict], 'dropped': int}``.
 
-        fail-closed 语义是 **per-段** 的（对比 :meth:`extract_facts` 的整批
-        判定）：
-        - 整个 LLM 调用终止失败 / 返回非数组 → raise
-          :class:`FactExtractionFailed`（路由 502，调用方整批保留重试）；
-        - 任一顶层元素**放不下去**（段号缺失/越界、facts 不是数组）→ 整批
-          raise：它可能承载着某段的内容而我们无从判断是哪段，静默丢弃
-          等于让调用方 pop 掉一份内容已经消失的桶；
-        - 某段**没出现在输出里** → 该段 ``failed``（保留重试），绝不当成
-          "本段无事实"：模型把八段内容全并进段 1 时，另外七个人的桶
-          （成员维度唯一副本）会被调用方一次性弹光；
-        - 段对象里的空壳条目（``{}`` / ``{"text": ""}`` / 空串）→ 丢弃并
-          计入 ``dropped`` 回报给调用方，本段照常 ``ok``：它们**不承载
-          内容**，丢它不丢东西；
-        - 段对象里**看不懂形状、但还攥着文字**的条目 → 本段 ``failed``，
-          认出来的那些仍照常落盘（重试靠 SHA-256 去重兜住重复，而万一
-          重试一直失败，起码认出来的这些不会跟着丢）；
-        - 某段 persist 失败 → 只该段 ``failed``，其余段不连累重来。
+        Fail-closed semantics operate per segment (versus :meth:`extract_facts` whole-batch
+        decisions):
+        - Entire LLM call terminal failure / non-array return → raise
+          :class:`FactExtractionFailed` (route 502, callers retain all for retry);
+        - Unassignable top-level element (missing/out-of-range segment, non-array facts) → whole-batch
+          raise: may carry content whose segment is unknown; silently discarding
+          makes callers pop buckets whose content disappeared;
+        - Segment absent from output → that segment ``failed`` (retain/retry), never
+          no-facts: if model merges eight segments into segment 1, the other seven people's
+          buckets (sole per-member copies) would otherwise all be popped;
+        - Empty shells inside segment objects (``{}`` / ``{\"text\": \"\"}`` / empty strings) → discard,
+          count in ``dropped`` for caller; segment stays ``ok``: they carry no
+          content, so nothing is lost;
+        - Unrecognized shapes still carrying text inside segment → segment ``failed``;
+          persist recognized facts normally (SHA-256 deduplication covers retry repetitions,
+          preserving at least those facts if retries never succeed);
+        - Segment persistence failure → only that segment ``failed``, without restarting others.
 
-        整个输出为空数组是合法结论（"整批没有值得记的事实"），此时所有段
-        ``ok`` 且零 fact——群聊里这是最常见的一批，把它当成"零段被覆盖"
-        会让每一批安静的群消息都进入无尽重试。
+        Entire empty array is valid (no facts worth remembering in the whole batch); every segment
+        is ``ok`` with zero facts. This is the most common group batch; treating it as zero covered segments
+        would make every quiet group-message batch retry endlessly.
         """  # noqa: DOCSTRING_CJK
         if not segments:
             return []
@@ -3313,7 +3313,7 @@ class FactStore:
                 f"batch Stage-1 LLM call failed for {lanlan_name!r} "
                 f"({len(segments)} segments, fail_closed caller)"
             )
-        # None = 该段没出现在输出里（≠ 该段无事实，后者是空 list）。
+        # None = segment absent from output (distinct from no facts, represented by empty list).
         per_segment: list[list[dict] | None] = [None] * len(segments)
         dropped_per_segment = [0] * len(segments)
         suspect_per_segment = [0] * len(segments)
@@ -3336,7 +3336,7 @@ class FactStore:
                 f"unplaceable entries for {lanlan_name!r} (fail_closed caller)"
             )
         if not extracted:
-            # 空数组 = 模型对整批的结论是"没有值得记的事实"，每段都算已答复。
+            # Empty array = model concludes no facts worth remembering for the entire batch; every segment answered.
             per_segment = [[] for _ in segments]
         if any(facts is None for facts in per_segment):
             missing = [
@@ -3380,9 +3380,9 @@ class FactStore:
                 )
             status = 'ok'
             if suspect:
-                # 有看不懂但攥着文字的条目：本段报 failed 让调用方保留桶。
-                # 认出来的那些照常落盘——重试会把它们重新抽一遍，SHA-256
-                # 去重兜住重复，而万一重试一直失败，起码这些不会跟着丢。
+                # Unrecognized items carrying text: mark segment failed so caller retains bucket.
+                # Persist recognized entries normally; retries re-extract them, with SHA-256
+                # deduplication covering repeats, while preserving them even if retries never succeed.
                 logger.warning(
                     f"[FactStore] {lanlan_name}: 批抽取第 {position} 段有 "
                     f"{suspect} 条形状看不懂但带文字的条目——按失败保留重试"
@@ -3424,23 +3424,23 @@ class FactStore:
                 chronological_predecessor_failed = True
         return results
 
-    # Source-tier 白名单。'user_observation' = path A 抽出的 user msg ground truth；
-    # 'ai_disclosure' = path B 抽出的 AI 自我披露/屏幕上下文（trust-tier 较低）。
-    # 老 fact 没 source 字段时按 'user_observation' 回退（向后兼容——pre-#PR
-    # 时代所有 fact 都源自 user msg）。
+    # Source-tier whitelist. 'user_observation' = ground truth from path A user messages;
+    # 'ai_disclosure' = path B AI disclosures/screen context (lower trust tier).
+    # Legacy facts without source fall back to 'user_observation' (backward-compatible: all facts
+    # before this PR came from user messages).
     _SOURCE_VALUES = frozenset({'user_observation', 'ai_disclosure'})
     _SOURCE_DEFAULT = 'user_observation'
 
-    # 内存内纸条，由 source 升级分支挂上、由 save_facts 摘下并放行一次
-    # signal_processed 的单调回写。下划线前缀与 '_external_import' 同约定：
-    # 只在一次 persist 流程内活着，save_facts 写盘前一律剥掉，不进磁盘。
+    # In-memory note attached by source upgrade, removed by save_facts to permit one
+    # monotonic signal_processed writeback exception. Underscore convention matches '_external_import':
+    # survives one persistence flow only; always strip before save_facts disk writes.
     #
-    # 存在的理由：save_facts 的 read-merge 把 signal_processed 当成只能
-    # False→True 的字段（#976，防旧缓存用 False 覆盖磁盘上的 True 让同一批
-    # fact 被 drain loop 重复消费），而升级分支恰恰要把它翻回 False（#1408，
-    # 用户印证过的 AI 披露要重进 Stage-2）。两条规则正面撞车、存盘那条跑在
-    # 后面永远赢，于是"升级后重进 Stage-2"在盘上从来没成立过。让解封方留一
-    # 张显式纸条，比让 save_facts 去倒推"这条是不是刚被解封"更不容易看走眼。
+    # Rationale: save_facts read-merge treats signal_processed as False→True only
+    # (#976, preventing stale-cache False overriding disk True and drain loops
+    # consuming facts twice), but upgrade must reset it False (#1408,
+    # user-confirmed AI disclosures must reenter Stage-2). Rules conflict; later persistence
+    # always won, so upgraded Stage-2 reentry never actually persisted. Explicit upgrade notes
+    # are less error-prone than making save_facts infer whether a fact was just unblocked.
     _SIGNAL_RESET_PENDING = '_signal_reset_pending'
 
     @staticmethod
@@ -3474,11 +3474,11 @@ class FactStore:
         effect_keys: list[str | None] | None = None,
         visit_origin: dict | None = None,
     ) -> list[dict]:
-        # 近重复配对在锁内只收集，出锁之后才投递：投递要拿
-        # FactDedupResolver 的 per-character 锁，而 aresolve 是反着来的——
-        # 它持 resolver 锁调 aarchive_arbitrated_facts，那个方法要拿这里
-        # 这把 _persist_alock。两边在同一个 loop 上互等就是死锁，之后这个
-        # 角色的写入和去重裁决都再也走不动。
+        # Collect near-duplicate pairs under lock, submit only afterward: submission needs
+        # FactDedupResolver's per-character lock, while aresolve reverses the order,
+        # calling aarchive_arbitrated_facts under resolver lock, which needs
+        # this _persist_alock. Mutual waits on one loop deadlock, permanently blocking
+        # this character's writes and deduplication decisions.
         near_dup_pairs: list[tuple[dict, dict, float]] = []
         async with self._get_persist_alock(lanlan_name):
             memory_subject = coerce_subject(subject)
@@ -3581,11 +3581,11 @@ class FactStore:
         re-evaluates. The reverse (user→ai) never downgrades — user
         corroboration is irreversible.
 
-        ``speaker_provenance``: 发言人来源标识（speaker_label / speaker_trust /
-        speaker_id 白名单），只盖在本批**新建 user_observation** fact 上；AI
-        disclosure 不冒用参与者 provenance。来自调用方（scoped_history
-        请求段），绝不读 extracted
-        元素里的同名键——LLM 输出无法伪造它。
+        ``speaker_provenance``: speaker provenance identifiers (speaker_label / speaker_trust /
+        speaker_id whitelist), stamped only on this batch's newly created user_observation facts; AI
+        disclosures never impersonate participant provenance. Supplied by callers (scoped_history
+        request segments), never read from extracted
+        elements' same-name keys: LLM output cannot forge it.
 
         ``reconciled_facts`` receives snapshots of existing rows whose
         provenance this call reconciled, so callers can distinguish their own
@@ -3595,7 +3595,7 @@ class FactStore:
         with ``extracted``. A non-empty entry is stamped onto the created row
         as ``effect_key`` in the same save, and a candidate whose effect key
         already exists on any active or archived row is skipped. That closes
-        the "row written, journal not yet updated" crash window independently
+        the \"row written, journal not yet updated\" crash window independently
         of content dedup. It is a separate argument rather than a field on the
         extracted dict on purpose: extracted dicts are model output, and a
         model must never be able to mint or collide an effect key. ``None``
@@ -3606,18 +3606,18 @@ class FactStore:
         memory_subject = coerce_subject(subject)
 
         new_facts: list[dict] = []
-        # Stage-2 捞到的 (新 fact, 既存 fact, 文字重叠度)。这里只往调用方给的
-        # 篮子里放，**不投递**：投递要拿 resolver 的锁，而本方法整个跑在
-        # _persist_alock 里，两把锁的获取顺序跟 aresolve 是反的（见调用方的
-        # 注释）。落盘成功之后、出锁之后才真正入队——队列是 ids-only，指向
-        # 一条还没写进 facts.json 的 fact 就是悬空引用。
+        # Stage-2 candidates (new fact, existing fact, text overlap). Only collect into caller's
+        # basket here, never submit: submission acquires resolver lock, while this entire method
+        # runs under _persist_alock, opposite aresolve's lock order (see caller comments).
+        # Actually enqueue only after successful persistence and lock release; IDs-only queues
+        # referencing facts not yet in facts.json would hold dangling references.
         near_dup_pairs: list[tuple[dict, dict, float]] = (
             near_dup_pairs_out if near_dup_pairs_out is not None else []
         )
         upgraded_count = 0
         provenance_updated_count = 0
-        # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
-        # in-place 升级，否则重试撞守卫直接跳过保存。
+        # (entry, original source, original signal_processed): restore in-place upgrades on persistence/index
+        # failure, otherwise retries hit guard and skip saving.
         upgraded_snapshots: list[tuple[dict, Any, Any]] = []
         provenance_snapshots: list[tuple[dict, dict[str, Any]]] = []
         request_provenance: dict[str, Any] = {}
@@ -3743,33 +3743,33 @@ class FactStore:
                 f"incoming_speaker={request_provenance['speaker_id']}"
             )
         if effect_keys is not None:
-            # 带键写入：先严格核对磁盘，再从磁盘出发。宽松加载器曾把读不出的文件缓存成
-            # 空列表；文件修好后缓存仍是空的，照它保存会把修好的事实整个覆盖掉
+            # Keyed writes strictly verify disk first, then start from disk. Permissive loaders once cached unreadable files
+            # as empty lists; after repair cache remained empty, overwriting all repaired facts on save.
             on_disk = await asyncio.to_thread(self._assert_active_facts_readable, lanlan_name)
             if on_disk and not self._facts.get(lanlan_name):
                 self._facts.pop(lanlan_name, None)
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
-        # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
-        # 缓存了 list，这里读不复制。
+        # hash → fact lookup (upgrade path only). aload_facts already caches the list in place;
+        # read without copying here.
         hash_to_existing = {
             f.get('hash'): f for f in existing_facts if f.get('hash')
         }
-        # id → fact 快查表：Stage-2 语义命中后按 id 找到既存 fact，比较 daily
-        # event_date 决定是否豁免（跨日期重复事件不算 dup，CodeRabbit）。
+        # id → fact lookup: after Stage-2 semantic match, find existing fact by ID and compare daily
+        # event_date for exemptions (repeated events on different dates are not duplicates, CodeRabbit).
         facts_by_id = {f.get('id'): f for f in existing_facts if f.get('id')}
 
         if semantic_dedup and self._time_indexed is not None:
-            # 每批查一次（不是每条 fact），出了循环也就不需要进程内缓存。
+            # Check once per batch, not per fact; no process cache needed outside loop.
             await self._aensure_fact_index_backfilled(
                 lanlan_name, existing_facts,
             )
 
-        # 效果键集合（只有带幂等键的 scoped_history 才传 effect_keys）：活跃池
-        # + 归档里已出现过的 effect_key。不传时完全不读归档、不建集合。
+        # Effect-key set (only keyed scoped_history provides effect_keys): existing effect_key values
+        # across active + archive pools. Without them, read no archives and construct no set.
         existing_effect_keys: set[str] | None = None
-        # 重放命中的效果对应的现有行：一并作为这次的结果返回，否则「事实已写、日志未记」
-        # 之后的重试会报 created: 0、调用方拿不到这些事实的身份
+        # Return existing rows matching replayed effects too, or retries after facts persist but journal fails
+        # report created: 0 and cannot return fact identities to callers.
         replayed_effect_rows: list[dict] = []
         active_effect_rows: dict[str, dict] = {}
         if effect_keys is not None:
@@ -3791,7 +3791,7 @@ class FactStore:
                 if isinstance(candidate_effect_key, str) and candidate_effect_key:
                     effect_key = candidate_effect_key
             if effect_key is not None and effect_key in existing_effect_keys:
-                # 这条效果上一次已经落盘（崩在「事实已写、日志未记」之间）。
+                # This effect already persisted last time (crash between fact write and journal record).
                 if effect_key in active_effect_rows:
                     replayed_effect_rows.append(dict(active_effect_rows[effect_key]))
                 continue
@@ -3810,8 +3810,8 @@ class FactStore:
                 importance = 1
             elif importance > 10:
                 importance = 10
-            # RFC §3.1.3: **不再**在抽取入口硬丢 importance < 5。所有 fact
-            # 一律落盘，消费侧按场景 min_importance= 过滤；保留完整 audit。
+            # RFC §3.1.3: no longer drop importance < 5 at extraction entry. All facts
+            # Persist uniformly; consumers filter via scenario-specific min_importance=, retaining complete audit.
 
             # Scoped writes own their entity: untrusted LLM output must not
             # redirect a group/participant fact into the legacy master bucket.
@@ -3828,7 +3828,7 @@ class FactStore:
                     )
                     entity = 'master'
 
-            # Source resolution: LLM 显式 source 优先 + 白名单 + default fallback
+            # Source resolution: explicit LLM source first + whitelist + default fallback.
             raw_source = fact.get('source')
             if raw_source in self._SOURCE_VALUES:
                 source = raw_source
@@ -3836,9 +3836,9 @@ class FactStore:
                 source = default_source
 
             # Stage 1: SHA-256 exact dedup（+ source monotonic upgrade）。
-            # daily 导入 fact 以「event_date + 文本」为精确键：同一天重试仍幂等，
-            # 不同日期的重复事件（如连着两天"去了健身房"）各自落盘、各留 provenance
-            # （CodeRabbit）。盐进 'hash' 持久字段，重试对比的是同样盐化的值。
+            # Daily import uses event_date + text as exact key: same-day retries remain idempotent,
+            # while repeated events on different dates (e.g. gym visits on consecutive days) persist separately with provenance
+            # (CodeRabbit). Salt persisted 'hash'; retries compare equally salted values.
             external_import = fact.get('_external_import')
             if not isinstance(external_import, dict):
                 external_import = None
@@ -3860,10 +3860,10 @@ class FactStore:
                     and existing.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
                     and source == 'user_observation'
                 ):
-                    # Path A 用 user msg 印证了之前 path B 写过的 ai_disclosure fact
-                    # → 升级 source + 重新进 Stage-2 evidence loop。
-                    # scoped fact 例外：简化管线不进 Stage-2，升级 source 但
-                    # 保持 signal_processed=True。
+                    # Path A user messages confirm ai_disclosure facts previously written by path B:
+                    # upgrade source and reenter Stage-2 evidence loop.
+                    # Scoped facts are exempt: simplified pipeline skips Stage-2; upgrade source but
+                    # retain signal_processed=True.
                     upgraded_snapshots.append((
                         existing,
                         existing.get('source', self._SOURCE_DEFAULT),
@@ -3871,15 +3871,15 @@ class FactStore:
                     ))
                     existing['source'] = 'user_observation'
                     existing['signal_processed'] = memory_subject is not None
-                    # 若这条印证来自外部导入，补上 external_import provenance——否则
-                    # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
-                    # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
+                    # If confirmation comes from external import, attach external_import provenance too;
+                    # SHA hit followed by immediate continue would miss the label (external_import semantics reset
+                    # signal_processed=True and skip Stage-2) (Codex P2).
                     if external_import is not None:
                         self._apply_external_import_provenance(existing, external_import)
-                    # 给 save_facts 的单调 read-merge 留纸条：这次的 False 是故意
-                    # 翻回来的，别按"只能 False→True"把它顶回 True。放在 provenance
-                    # 之后并复查一次实际值——外部导入会把它重新封回 True，那种情况
-                    # 下不该留纸条，否则纸条与 entry 的真实状态对不上。
+                    # Leave a note for save_facts monotonic read-merge: this False reset is deliberate;
+                    # do not force it back to True via False→True-only rules. After provenance,
+                    # recheck actual value: external imports reseal it True, in which case
+                    # leave no note inconsistent with actual entry state.
                     if existing.get('signal_processed') is False:
                         existing[self._SIGNAL_RESET_PENDING] = True
                     upgraded_count += 1
@@ -3888,32 +3888,32 @@ class FactStore:
                 )
                 continue
 
-            # Stage 2: FTS5 近重复检索（轻量，无 LLM）。
+            # Stage 2: FTS5 near-duplicate retrieval (lightweight, no LLM).
             #
-            # 这道闸**不再自己判定重复**（#2703）：文字重叠度高和「说的是同
-            # 一件事」不是一回事——「养了一只猫」和「养了一只狗」的 2/3-gram
-            # 重叠 0.87，是全场最高分，而它们必须各留一条。所以除了折叠归一
-            # 后 token 集完全相同（overlap 1.0，等价于 Stage-1 hash 的
-            # 繁简/停用名变体）之外，命中一律照常写入，只把 (新, 旧) 配对丢
-            # 给 fact_dedup 的 LLM 仲裁去裁 merge / replace / keep_both。
+            # This gate no longer decides duplication itself (#2703): high text overlap does not mean
+            # identical meaning. "养了一只猫" and "养了一只狗" have 2/3-gram
+            # overlap 0.87, highest of all, yet both must remain. Thus except identical normalized
+            # token sets (overlap 1.0, Stage-1 hash variants from Traditional/Simplified folding
+            # or stop-name removal), persist all matches normally, submitting (new, old) pairs
+            # to fact_dedup LLM arbitration for merge / replace / keep_both.
             arbitration_hit: tuple[dict, float] | None = None
             if semantic_dedup and self._time_indexed is not None:
-                # 扇出场景（同一事件按 subject 存 N 份、BM25 并列）可能把
-                # 首窗 10 条全部占满——此时本 subject 的候选在 rank 11 之后，
-                # 一次性扩窗到 200 重扫；仍不足就放行（>200 条命中意味着
-                # 文本本身是退化的口水句，去重已无意义）。跨 subject / 跨
-                # entity / absorbed 的命中都只是被跳过，不影响扫描继续。
+                # Fanout (same event stored for N subjects, tied BM25 ranks) may fill
+                # all first-window ten slots, putting this subject's candidates below rank 10;
+                # expand once to 200 and rescan. If still insufficient, permit writes (>200 matches imply
+                # degenerate generic text where deduplication is pointless). Skip cross-subject /
+                # cross-entity / absorbed matches without stopping scanning.
                 is_dup = False
                 duplicate_hit: dict | None = None
                 raw_limit = 10
                 archived_by_id: dict | None = None
 
                 async def _aarchived_by_id() -> dict:
-                    # 惰性读 facts_archive.json（仅当 FTS 命中不在活跃集时）：
-                    # 归档行仍在 FTS 索引里，但 facts_by_id 只含活跃行——
-                    # 不解析归档元数据的话，归档后的同文本会绕过去重
-                    # （legacy 在 main 上本来是挡得住的，属回归；scoped
-                    # 需要 subject 戳判界）。
+                    # Lazily read facts_archive.json only for FTS hits outside the active set:
+                    # archive rows remain FTS-indexed, while facts_by_id contains active rows only.
+                    # Without archive metadata, archived identical text bypasses deduplication
+                    # (legacy blocked this on main, so regression; scoped needs
+                    # subject stamps for boundaries).
                     nonlocal archived_by_id
                     if archived_by_id is None:
                         def _read() -> dict:
@@ -3932,8 +3932,8 @@ class FactStore:
                                     UnicodeDecodeError,
                                     OSError,
                                 ):
-                                    # 损坏归档降级为"仅活跃数据"（对齐
-                                    # load_facts_full），不得阻断本次写入。
+                                    # Corrupt archives degrade to active-only data (matching
+                                    # load_facts_full), never blocking this write.
                                     pass
                             return {}
                         archived_by_id = await asyncio.to_thread(_read)
@@ -3943,19 +3943,19 @@ class FactStore:
                     similar = await self._time_indexed.asearch_similar_facts(
                         lanlan_name, text, raw_limit,
                     )
-                    # 每一趟都重扫全窗口并重挑：dice 是在 SQL 的 LIMIT
-                    # **之后**才算的，首窗里按 bm25 排在前面的行未必是
-                    # 重叠度最高的，扩窗后要以更大的窗口重新定夺。
+                    # Rescan and select across the full window each pass: dice is calculated after SQL LIMIT,
+                    # so highest-BM25 first-window rows need not have highest overlap;
+                    # expansion requires reconsidering the larger window.
                     arbitration_hit = None
                     for fid, overlap in similar:
                         hit = facts_by_id.get(fid)
                         if hit is None:
                             hit = (await _aarchived_by_id()).get(fid)
-                        # subject 时间归档的行（subject_archived_at 标记）不算
-                        # 去重障碍：subject 复活时重述的旧事实必须能落新
-                        # active fact——归档行已退出召回与渲染，挡住重述等于
-                        # 让这条信息永久不可见。absorbed 归档行（无标记）仍
-                        # 照旧挡重复。
+                        # Time-archived subject rows (subject_archived_at) do not block
+                        # deduplication: resurrected subjects must be able to persist restated old facts as
+                        # new active facts; archived rows no longer recall/render, so blocking restatements
+                        # makes information permanently invisible. Absorbed archives without this marker
+                        # continue blocking duplicates normally.
                         if (
                             hit is None
                             or hit.get('subject_archived_at')
@@ -3966,9 +3966,9 @@ class FactStore:
                         if overlap < FACT_NEAR_DUP_ARBITRATE_OVERLAP:
                             continue
                         if daily_event_date:
-                            # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
-                            # 跨日期重复事件，不算语义重复（同日期近似命中仍挡住，
-                            # 兜 LLM 重抽输出不稳定的重试幂等）。
+                            # Daily candidates matching existing daily facts on different dates represent
+                            # repeated events, not semantic duplicates (same-date near matches still block,
+                            # preserving retry idempotency despite variable LLM re-extraction).
                             hit_meta = (hit or {}).get('external_import')
                             hit_date = (
                                 str(hit_meta.get('event_date'))
@@ -3978,22 +3978,22 @@ class FactStore:
                             if hit_date and hit_date != daily_event_date:
                                 continue
                         if (hit.get('text') or '') == text:
-                            # 唯一允许直接丢弃新 fact 的判据：与命中行**逐字
-                            # 相同**。
+                            # Only criterion permitting immediate new-fact discard: text identical
+                            # character for character to the matched row.
                             #
-                            # 这里一度做过各种归一（token 集 / 繁简折叠 / 去
-                            # 停用名 / 去标点 / 大小写 / 折空白），每一种都被
-                            # 找出反例：n-gram 集丢顺序（「喜欢猫，不喜欢狗」
-                            # 对「喜欢狗，不喜欢猫」）、繁简一对多（`鍾`/`鐘`
-                            # 都成 `钟`）、停用名表同时含双方名字（`主人喜欢
-                            # 猫`/`兰兰喜欢猫`）、标点带语义（`-10`/`10`）、
-                            # 大小写带语义（`/Foo`/`/foo`）、空白带语义
-                            # （`echo 'a  b'`/`echo 'a b'`）。结论是这条路上
-                            # 没有安全的归一——不可逆的丢弃只配得上逐字相等。
+                            # Former normalizations included token sets / Traditional-Simplified folding / stop-name
+                            # removal / punctuation / case / whitespace; every one had counterexamples:
+                            # n-gram sets lose order ("喜欢猫，不喜欢狗"
+                            # versus "喜欢狗，不喜欢猫"); Traditional many-to-one (`鍾`/`鐘`
+                            # both become `钟`); stop-name lists contain both names (`主人喜欢
+                            # 猫`/`兰兰喜欢猫`); punctuation carries meaning (`-10`/`10`);
+                            # case carries meaning (`/Foo`/`/foo`); whitespace carries meaning
+                            # (`echo 'a  b'`/`echo 'a b'`). No normalization is safe here:
+                            # irreversible discard requires character-for-character equality.
                             #
-                            # 它仍然有活干：Stage-1 的 hash 集只含**活跃**行，
-                            # 所以「与某条归档行原文相同」这一类只有这里挡得
-                            # 住（归档行照旧参与拦截，是 main 上就有的行为）。
+                            # Still necessary: Stage-1 hash sets contain active rows only,
+                            # so only this gate blocks text identical to archived rows
+                            # (archives blocking duplicates is existing main behavior).
                             is_dup = True
                             duplicate_hit = hit
                             break
@@ -4001,20 +4001,20 @@ class FactStore:
                             (hit.get('entity') or 'master') != entity
                             or hit.get('absorbed')
                         ):
-                            # 跨 entity：仲裁队列按 entity 分桶（向量侧
-                            # detect_candidates 同款边界），master / neko /
-                            # relationship 的事实撞在一起没有可比性，交给
-                            # LLM 只会诱发误合并。absorbed：已折进反思，把
-                            # 新文本并进去会把它从归档路径复活，比留着重复
-                            # 更糟。上面的硬挡都不受此限——Stage-1 的 hash
-                            # 同样不含 entity，跨 entity 的同一句话本来就
-                            # 只留一条；absorbed 行挡重复是既有行为。
+                            # Cross-entity: arbitration queues bucket by entity (same boundary as vector
+                            # detect_candidates); master / neko /
+                            # relationship facts are incomparable; sending them to
+                            # LLM invites erroneous merges. Absorbed facts already entered reflections;
+                            # merging new text resurrects them from archives, worse than retaining duplicates.
+                            # Hard blockers above are unaffected: Stage-1 hashes
+                            # also omit entity, so identical sentences across entities already
+                            # retain only one row; absorbed rows blocking duplicates is existing behavior.
                             continue
-                        # 不再有「候选预算」：只取第一条（结果按 overlap
-                        # 降序，第一条就是最强的），所以数名额没有意义，而
-                        # 它带来的 break 会让扫描停在逐字相同那一行之前——
-                        # 几条 token 集相同但词序不同的行（overlap 都是
-                        # 1.0）排在前面，就能让真正的同文行永远没被看到。
+                        # No candidate budget anymore: take only first (descending overlap,
+                        # hence strongest), making quota counting pointless. Its break could
+                        # stop scanning before an exactly identical row:
+                        # several rows with equal token sets but differing order (all overlap
+                        # 1.0) ahead of it could permanently hide the true text match.
                         if arbitration_hit is None:
                             arbitration_hit = (hit, overlap)
                     if (
@@ -4022,13 +4022,13 @@ class FactStore:
                         or len(similar) < raw_limit
                         or raw_limit >= 200
                     ):
-                        # 收手的理由只有一个：首窗没坐满（外面没东西了）。
+                        # Only reason to stop: initial window not full (nothing outside it).
                         #
-                        # 刻意**不**因为「已经挑到候选」或「候选预算用完」
-                        # 就停：dice 是在 SQL 的 LIMIT 之后才算的，首窗里
-                        # 三条 0.26 的命中不该挡住窗外那条 0.9 的真重复
-                        # （它当时根本没被打分）。3 条预算只管「一趟里看
-                        # 几个候选」，不该当成「不用扩窗了」的信号。
+                        # Deliberately do not stop because a candidate was selected or budget exhausted:
+                        # dice is computed after SQL LIMIT, so three 0.26 matches in first window
+                        # must not block the true 0.9 duplicate outside it,
+                        # not yet scored. Three-candidate budgets govern candidates examined
+                        # per pass, never whether to expand the window.
                         break
                     raw_limit = 200
                 if is_dup:
@@ -4044,11 +4044,11 @@ class FactStore:
                     continue
 
             created_at_iso = datetime.now().isoformat()
-            # Event timing (schema v2): LLM 输出相对时间 (offset+unit)，系统
-            # 按 created_at 当锚点解算成 ISO。fact 没有 temporal_scope，但事件
-            # 起始时间在过时 block 渲染和未来重判时都需要——fallback_start=True
-            # 保证一定有 event_start_at。end_at 是 optional（fact 多数是即时
-            # 观察，无明确 end）。
+            # Event timing (schema v2): LLM outputs relative offsets + units; system
+            # resolves ISO timestamps anchored at created_at. Facts lack temporal_scope, but event
+            # start is needed for outdated-block rendering/future rechecks; fallback_start=True
+            # guarantees event_start_at. end_at is optional (facts mostly describe immediate
+            # observations without explicit end).
             event_when_raw = normalize_event_when(fact.get('event_when'))
             event_start_at, event_end_at = compute_event_timestamps(
                 event_when_raw,
@@ -4061,17 +4061,17 @@ class FactStore:
                 'text': text,
                 'importance': importance,
                 'entity': entity,
-                # Trust-tier source（path A 写 'user_observation'，path B 写
-                # 'ai_disclosure'）。Stage-2 / 其他 evidence-loop 消费者按需 filter。
-                # 老 fact 缺该字段时读侧默认 'user_observation' 向后兼容。
+                # Trust-tier source: path A writes 'user_observation', path B
+                # 'ai_disclosure'. Stage-2 / other evidence-loop consumers filter as needed.
+                # Missing legacy source defaults to 'user_observation' on read for backward compatibility.
                 'source': source,
-                # RFC §2.7: tags 字段保留位但新 fact 默认写空，LLM 不再填
+                # RFC §2.7: retain tags field, but new facts default empty; LLM no longer fills it.
                 'tags': [],
                 'hash': content_hash,
                 'created_at': created_at_iso,
-                # Schema v2 (memory/temporal.py)：事件发生时间，LLM 用相对偏移
-                # 输出（offset+unit），系统按 created_at 解算。event_when_raw
-                # 留底供后续重判 / debug 反查。
+                # Schema v2 (memory/temporal.py): event time, output by LLM as relative
+                # offset + unit, resolved against created_at. Retain event_when_raw
+                # for later rechecks / debug inspection.
                 'event_when_raw': event_when_raw,
                 'event_start_at': event_start_at,
                 'event_end_at': event_end_at,
@@ -4084,14 +4084,14 @@ class FactStore:
                 # already processed) so an upgrade doesn't replay months of
                 # history through Stage-2.
                 #
-                # ⚠️ source='ai_disclosure' fact：写盘时直接置 True，让 Stage-2
-                # 永不取它。配合 aextract_facts_and_detect_signals 内部的
-                # source filter 做双重防御，防漏。
-                # ⚠️ scoped（群/成员）fact 同样置 True：群记忆走简化管线
-                # （facts → 定期合成 confirmed reflection → time-driven 晋升），
-                # 不参与 Stage-2 evidence。scoped 分区没有 user-confirm 通道，
-                # 其观察池冷启动恒空，进队列只会永久占用 batch 名额，把 legacy
-                # 私聊主链路饿死。
+                # ⚠️ source='ai_disclosure' facts persist directly with True, so Stage-2
+                # never selects them. Together with aextract_facts_and_detect_signals'
+                # source filter, this provides double protection against leaks.
+                # ⚠️ Scoped group/member facts likewise use True: group memory takes simplified pipeline
+                # (facts → periodic confirmed reflection synthesis → time-driven promotion),
+                # not Stage-2 evidence. Scoped partitions lack user-confirm channels,
+                # leaving observation pools empty at cold start; queued entries permanently consume batch
+                # slots and starve legacy private-chat processing.
                 'signal_processed': (
                     source == 'ai_disclosure' or memory_subject is not None
                 ),
@@ -4116,8 +4116,8 @@ class FactStore:
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
             if visit_origin is not None:
-                # 串门「记成日记」的事实（只有 visit_facts 端点传这个参数，绝不读模型产出的字段）：
-                # 只盖在新建行上，精确去重命中的旧事实不升级。absorbed=True 让 reflection 永不合成它们
+                # Visit save-as-diary facts (only visit_facts passes this parameter; never read model-provided fields):
+                # stamp new rows only, never upgrade exact-dedup existing facts. absorbed=True prevents reflection synthesis.
                 self._apply_visit_origin(fact_entry, visit_origin)
             if effect_key is not None:
                 fact_entry['effect_key'] = effect_key
@@ -4125,12 +4125,12 @@ class FactStore:
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
             facts_by_id[fact_entry['id']] = fact_entry
-            # 同步更新 hash_to_existing：若本 batch 后续还有同 text 的 fact
-            # 出现（如 LLM 偶发重复 / 同 batch 跨段抽到同一观察），下一轮命
-            # 中 `content_hash in existing_hashes` 时能拿到本轮刚写入的
-            # fact_entry 走 monotonic upgrade 路径。否则 hash_to_existing.
-            # get() 返 None → 跳过 upgrade，新观察的 user_observation 升级被
-            # 静默丢弃 (Codex P2 round-10 on PR #1408)。
+            # Update hash_to_existing too: if later facts in this batch share text
+            # (occasional LLM repetition / same observation across segments), the next
+            # `content_hash in existing_hashes` match can obtain this turn's newly inserted
+            # fact_entry and take the monotonic upgrade path. Otherwise hash_to_existing.
+            # get() returns None, skipping upgrade and silently discarding
+            # the new user_observation upgrade (Codex P2 round-10 on PR #1408).
             hash_to_existing[content_hash] = fact_entry
             new_facts.append(fact_entry)
             if arbitration_hit is not None:
@@ -4144,10 +4144,10 @@ class FactStore:
                         lanlan_name, fact_entry['id'], text,
                     )
                 except BaseException:
-                    # 索引失败也必须回滚（含取消：CancelledError 不经
-                    # except Exception，留下的缓存会让重试撞去重"空成功"）：本行已进缓存/hash 集合，留着会让
-                    # fail-closed 重试撞去重拿"空成功"、调用方推游标，而
-                    # facts.json 从未收到它（维护模式等场景）。
+                    # Index failures also require rollback, including cancellation (CancelledError bypasses
+                    # except Exception; retained cache makes retries deduplicate into empty success). Row already entered cache/hash set;
+                    # retaining it makes fail-closed retries deduplicate to empty success and advance caller cursor,
+                    # though facts.json never received it (e.g. maintenance mode).
                     await self._rollback_uncommitted_facts(
                         lanlan_name, new_facts, existing_hashes,
                         upgraded_snapshots, provenance_snapshots,
@@ -4155,18 +4155,18 @@ class FactStore:
                     raise
 
         # Save if we either added new facts OR upgraded existing ones'
-        # source field. Without the upgrade path: A 后 B 跑时撞到 hash 但
-        # 上下源不同会丢 in-place 改的字段，下次启动 reload facts.json 就
-        # 把升级 wipe 了。
+        # source field. Without upgrade persistence, B after A hits hash but
+        # differing sources lose in-place modifications, and next startup's facts.json reload
+        # wipes the upgrade.
         if new_facts or upgraded_count or provenance_updated_count:
             try:
                 await self.asave_facts(lanlan_name)
             except BaseException:
-                # 落盘失败或被取消：进程内缓存已 append、FTS 已索引——留着的话
-                # fail-closed 调用方重试会撞内容 hash 去重、拿到"空成功"
-                # 并推进游标，而磁盘上什么都没有，重启即永久丢失。回滚
-                # 本批新增（upgrade 的 in-place 字段改动保留：字段级幂等，
-                # 重试会重做），让重试重新走完整提取+持久化。
+                # Persistence failure/cancellation: in-process cache already appended and FTS indexed;
+                # retaining makes fail-closed caller retries hit content-hash deduplication, get empty success,
+                # and advance cursor despite empty disk, permanently losing data on restart. Roll back
+                # batch additions (retain in-place upgrade fields: field-idempotent,
+                # retries redo them), allowing full extraction+persistence on retry.
                 await self._rollback_uncommitted_facts(
                     lanlan_name, new_facts, existing_hashes,
                     upgraded_snapshots, provenance_snapshots,
@@ -4178,8 +4178,8 @@ class FactStore:
             )
             for nf in new_facts:
                 if nf.get('subject_kind') or nf.get('subject_id') or nf.get('scope'):
-                    # scoped（群/成员衍生）事实原文不进日志：只打域标识与
-                    # 长度，对齐 scoped 反思/correction dead-letter 的口径。
+                    # Never log original scoped group/member-derived fact text: domain identifiers and
+                    # length only, matching scoped reflection/correction dead-letter accounting.
                     logger.debug(
                         f"   - [scoped {nf.get('subject_kind','?')}"
                         f"/{nf.get('subject_id','?')}] "
@@ -4243,15 +4243,15 @@ class FactStore:
                 self._time_indexed.fts_index_needs_backfill, lanlan_name,
             )
             if needs:
-                # id 一律**原样**带走，不要 str() 强转：本仓库允许 legacy 行
-                # 带非字符串标量 id（见 _speaker_trust_fact_id 的类型标注），
-                # 而 FTS5 的 `WHERE fact_id = :fid` 是类型敏感的——把 int 1
-                # 写成文本 "1"，隐私擦除按 int 1 删就删不掉，Stage-2 也用
-                # facts_by_id 反查不到。
-                # _readable_fact_id：facts.json 是用户/旧版本编辑过的普通
-                # 文件，id 位置可能是 list/dict。它们在别处一律当「不可用」
-                # 跳过，这里也必须——一行畸形 id 让整轮回填抛异常的话，标记
-                # 永远落不下，这个角色的近重复检索就此报废。
+                # Carry IDs unchanged, never force str(): legacy rows permit
+                # non-string scalar IDs (see _speaker_trust_fact_id annotation),
+                # and FTS5 `WHERE fact_id = :fid` is type-sensitive. Storing integer 1
+                # as text "1" defeats integer-ID privacy deletion, and Stage-2 cannot
+                # find it in facts_by_id either.
+                # _readable_fact_id: facts.json is an ordinary file modified by users/old versions;
+                # ID may be list/dict. Treat those as unusable and skip,
+                # matching all other paths; one malformed ID failing the whole backfill prevents
+                # its marker forever and disables near-duplicate search for this character.
                 rows: list[tuple[object, str]] = [
                     (fid, str(f.get('text') or ''))
                     for f in active_facts
@@ -4259,10 +4259,10 @@ class FactStore:
                     and (fid := _readable_fact_id(f)) is not None
                 ]
 
-                # 返回 None = 读失败，区别于「文件不存在」（合法的 0 行）。
-                # 把读失败当空归档的话，本轮回填会照常落下完成标记，而标记是
-                # 持久的——归档修好、进程重启都不会再回填，那些行从此挡不住
-                # 重复，与本方法 docstring 承诺的正相反。
+                # None return = read failure, distinct from missing file (valid zero rows).
+                # Treating read failure as empty archives persists backfill completion normally;
+                # that durable marker prevents retries after repair/restart, leaving those rows unable
+                # to block duplicates, contrary to this method's docstring promise.
                 def _read_archive() -> list[tuple[object, str]] | None:
                     path = self._facts_archive_path(lanlan_name)
                     if not os.path.exists(path):
@@ -4274,19 +4274,19 @@ class FactStore:
                         return None
                     if not isinstance(data, list):
                         return None
-                    # 归档行**全部**入索引，包括仲裁败者。
+                    # Index all archive rows, including arbitration losers.
                     #
-                    # 一度按「Stage-2 反正会跳过败者，留着只占候选窗口」把
-                    # 它们剔掉过，结果是：`arestore_arbitrated_fact` 能把
-                    # 败者搬回 active，于是复活的行必须有人补索引，而补索引
-                    # 这件事的每一步（index_fact、作废回填标记）都自己吞异
-                    # 常、成功与失败无法区分——连着四轮 review 都在这条链上
-                    # 挖出「失败了但看不出来」。
+                    # Previously excluded them because Stage-2 skips losers and they consume window space;
+                    # but `arestore_arbitrated_fact` can restore losers to active,
+                    # requiring index repair on resurrection. Every repair step
+                    # (index_fact / invalidate backfill marker) swallows its own exceptions,
+                    # making success indistinguishable from failure; four consecutive review rounds found
+                    # more invisible failures along this chain.
                     #
-                    # 那个剔除是个微优化（省几行候选窗口），换来的却是一整
-                    # 类静默失效。留着它们：Stage-2 检索到会跳过（在扣候选
-                    # 预算**之前**），首窗被占满还有一次扩窗到 200 兜底，而
-                    # 复活路径什么都不用做——行本来就在索引里。
+                    # This exclusion was a tiny candidate-window optimization, introducing an entire
+                    # class of silent failures. Retain rows: Stage-2 skips them before consuming candidate
+                    # budget, with one expansion to 200 if first window fills;
+                    # resurrection then needs no work because rows are already indexed.
                     return [
                         (fid, str(r.get('text') or ''))
                         for r in data
@@ -4304,8 +4304,8 @@ class FactStore:
                 indexed = await self._time_indexed.abackfill_fact_index(
                     lanlan_name, rows,
                 )
-                # 回填没跑成（indexed is None）不需要额外处理：标记只在
-                # backfill_fact_index 内部成功时才落，下一次写入自然重试。
+                # Failed backfill (indexed is None) needs no extra handling: only successful
+                # backfill_fact_index persists its marker, naturally retrying next write.
                 if indexed:
                     logger.info(
                         f"[FactStore] {lanlan_name}: 回填 {indexed} 条 fact 到近重复索引"
@@ -4368,25 +4368,25 @@ class FactStore:
                 'entity': existing.get('entity') or 'master',
                 'subject_key': domain[0],
                 'scope': domain[1],
-                # 不塞 cosine（入队时按缺省落 0.0）：这两个数不是一回事，
-                # 而队列里的 cosine 会原样进仲裁 prompt，冒名顶替等于对模型
-                # 谎报证据强度。文字重叠单独一栏，detector 标明来路。
+                # Do not stuff overlap into cosine (default 0.0 on enqueue): these differ,
+                # and queue cosine enters arbitration prompts unchanged, misrepresenting evidence strength
+                # if substituted. Store text overlap separately; detector identifies its origin.
                 'text_overlap': overlap,
                 'detector': 'fts_near_dup',
             })
         if not payload:
             return
         try:
-            # 有界**等待**：resolver 的 per-character 锁会被 aresolve 攥着
-            # 跑完整个 LLM 调用（超时 60s）。scoped-history 之类的路由是直接
-            # await 到 _apersist_new_facts 的，fact 早就提交完了，不该让请求
-            # 再为一次无关的后台仲裁干等一分钟。
+            # Bound waiting: aresolve holds resolver's per-character lock
+            # throughout the LLM call (60s timeout). Routes such as scoped-history directly
+            # await _apersist_new_facts; facts already committed, so requests should not
+            # wait another minute for unrelated background arbitration.
             #
-            # ⚠️ shield 是必需的，不能直接 wait_for 那个协程：超时若正好落在
-            # 它已经拿到队列锁、进了 _asave_pending 之后，取消会放掉锁而
-            # atomic_write_json_async 的线程还在写——另一个写者同时做读改写，
-            # 两次原子替换后完成的那次会把先完成的整段更新盖掉。shield 之后
-            # 我们只是不再等，队列那边照常把自己写完。
+            # ⚠️ shield is essential; never wait_for the coroutine directly: timeout after
+            # acquiring queue lock and entering _asave_pending cancels/releases that lock while
+            # atomic_write_json_async's thread keeps writing. Another writer can read-modify-write concurrently;
+            # whichever atomic replacement finishes last overwrites the other's entire update. With shield,
+            # stop waiting only; queue completes its write normally.
             enqueue = asyncio.ensure_future(
                 resolver.aenqueue_candidates(lanlan_name, payload)
             )
@@ -4407,10 +4407,10 @@ class FactStore:
             )
             return
         if not appended:
-            # 0 有两种含义：全撞了队列里的既有配对（正常），或维护态下队列
-            # 文件根本没写成（候选就此丢了——重试会撞 Stage-1 精确去重，
-            # Stage-2 不会再跑第二遍）。这里分不开，但至少让它留下痕迹，
-            # 别表现得像投递成功。
+            # Zero means either all pairs already queued (normal), or maintenance prevented
+            # queue-file writing (candidates lost: retry hits Stage-1 exact deduplication,
+            # never rerunning Stage-2). Indistinguishable here, but leave evidence rather than
+            # appearing successfully delivered.
             logger.debug(
                 f"[FactStore] {lanlan_name}: {len(payload)} 对近重复候选未入队"
                 f"（重复配对或队列不可写）"
@@ -4453,12 +4453,12 @@ class FactStore:
         now = datetime.now()
         pool: list[dict] = []
 
-        # CodeRabbit follow-up：之前 reflection / persona 加载失败时被 try-except
-        # 吞掉，只 debug log 后继续返回 partial pool。下游 caller 看到非空 pool
-        # 会正常 mark batch processed，那部分失败的池里可能 reinforce/negate 的
-        # signal 永久丢失。改成不 catch、直接 raise，让 caller (drain 路径) 用
-        # try-except 捕获并跳过 mark，保证下轮 idle 重试。
-        # NegKW caller (memory_server.py) 已有自己的 try-except，不受影响。
+        # CodeRabbit follow-up: reflection/persona load failures were previously caught,
+        # debug-logged, then partial pools returned. Downstream callers saw nonempty pools
+        # and marked batches processed, permanently losing potential reinforce/negate signals
+        # from failed pool parts. Let errors raise instead, so drain callers
+        # catch and skip marking, retrying next idle round.
+        # NegKW caller (memory_server.py) already catches errors independently, unaffected.
         if reflection_engine is not None:
             all_refl = await reflection_engine._aload_reflections_full(lanlan_name)
             for r in all_refl:
@@ -4499,8 +4499,8 @@ class FactStore:
                     if not isinstance(entry, dict):
                         continue
                     if entry.get('protected'):
-                        # protected = character_card；evidence 对它永远
-                        # inf，signal 施加它也没语义。跳过。
+                        # protected = character_card; evidence always
+                        # inf, so applying signals has no meaning. Skip.
                         continue
                     pool.append({
                         'id': f"persona.{entity_key}.{entry.get('id', '')}",
@@ -4606,11 +4606,11 @@ class FactStore:
             return []
 
         # Build prompt sections.
-        # 关键：先按预算累计构造 budgeted_observations 子集，prompt 和后面
-        # 的 valid_ids / id_to_obs 都从同一个子集构造。否则总量截断把尾部
-        # observation 砍掉后，valid_ids 还来自全集，LLM 可能 hallucinate
-        # 一个被截掉的 id 通过校验落到错误条目（CodeRabbit fingerprint
-        # e625b666 抓到的 race）。
+        # Crucial: build budgeted_observations by cumulative budget first; prompt and later
+        # valid_ids / id_to_obs must derive from that same subset. Otherwise tail truncation
+        # removes observations while valid_ids still includes all; LLM may hallucinate
+        # a truncated ID that passes validation, applying to the wrong entry (CodeRabbit fingerprint
+        # e625b666 caught this race).
         from config import (
             EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
             EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS,
@@ -4620,7 +4620,7 @@ class FactStore:
             f"[{f.get('id', '')}] {truncate_to_tokens(f.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)}"
             for f in new_facts
         )
-        # 累计 token 直到撞到总量上限，超过的尾部 obs 直接丢出本次 prompt。
+        # Accumulate tokens until total cap; omit excess tail observations from this prompt.
         budgeted_observations: list[tuple[dict, str]] = []  # (obs, formatted_line)
         running = 0
         for o in existing_observations:
@@ -4628,9 +4628,9 @@ class FactStore:
                 f"[{o['id']}] "
                 f"{truncate_to_tokens(o.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)}"
             )
-            line_tokens = count_tokens(line) + 1  # +1 ≈ 一个换行符
+            line_tokens = count_tokens(line) + 1  # +1 ≈ one newline.
             if budgeted_observations and running + line_tokens > EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS:
-                # 至少保留一条；超过总量后丢尾部
+                # Keep at least one; drop tail once over total.
                 break
             budgeted_observations.append((o, line))
             running += line_tokens
@@ -4653,13 +4653,13 @@ class FactStore:
             .replace('{EXISTING_OBSERVATIONS}', obs_text) \
             .replace('{LANLAN_NAME}', lanlan_name)
 
-        # Phase D：Stage-2 signal detection 开 thinking——
-        # 任务是 new_fact × existing_observation 的关系判断 + target_id 选择，
-        # 现有 [memory/facts.py:670-708](memory/facts.py:670) 防御代码本身就是
-        # 在补 LLM 幻觉，思考能减少 target_id 错位。完全后台 (signal extraction
-        # loop)，无人等。timeout 拉到 90s 给 thinking 模型留余量。
-        # 思考量由提示词开头的推理限制压住（#3319：不加限制时 qwen3.8-flash
-        # 思考 8k~10k token、耗时超过 90s），额度走 MEMORY_THINKING_OUTPUT_MAX_TOKENS。
+        # Phase D: enable thinking for Stage-2 signal detection:
+        # judge new_fact × existing_observation relations and select target_id.
+        # Existing defenses [memory/facts.py:670-708](memory/facts.py:670) already compensate
+        # for LLM hallucinations; thinking reduces target_id mismatch. Entirely background (signal extraction
+        # loop), nobody waits. Raise timeout to 90s for thinking headroom.
+        # Prompt-leading reasoning limits bound thinking (#3319: unconstrained qwen3.8-flash
+        # thought for 8k–10k tokens, exceeding 90s); quota uses MEMORY_THINKING_OUTPUT_MAX_TOKENS.
         parsed = await self._allm_call_with_retries(
             prompt, lanlan_name,
             tier=EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
@@ -4679,20 +4679,20 @@ class FactStore:
         if not isinstance(raw_signals, list):
             return []
 
-        # Defensive: drop hallucinated target_ids (§3.4.8). 校验池**必须**和
-        # prompt 看到的子集一致，否则被尾部预算切掉的 obs id 仍会被当成合法。
+        # Defensive: drop hallucinated target_ids (§3.4.8). Validation pool must match
+        # the prompt subset, or budget-truncated observation IDs still count as valid.
         valid_ids = {o['id'] for o, _ in budgeted_observations}
         id_to_obs = {o['id']: o for o, _ in budgeted_observations}
-        # source_fact_id 也要校验在本批 new_facts 里（CodeRabbit 1f follow-up）。
-        # 否则 LLM hallucinate 一个不在本次 prompt 里的 fact id 仍会被作为合法
-        # source 落到 evidence 计数器更新里。
+        # Validate source_fact_id against this batch's new_facts too (CodeRabbit 1f follow-up),
+        # or hallucinated fact IDs absent from this prompt become valid sources
+        # for evidence-counter updates.
         new_fact_ids = {f['id'] for f in new_facts if f.get('id')}
         validated: list[dict] = []
-        # 单次 Stage-2 调用可能返回 N 条 signal 都对同一 reflection 报告
-        # target_type 不一致——LLM 在猜命名规范（"persona.relationship"
-        # vs "persona" vs "persona.relationship.prom"），看到啥前缀就抄啥。
-        # 兜底逻辑一直按设计在跑，但每条一行 log 会刷屏；按 (LLM值→实际值)
-        # 去重计数，循环结束后一行汇总，方便看出"哪种猜法在被反复纠"。
+        # One Stage-2 call may return N signals for the same reflection with inconsistent
+        # target_type: model guesses naming conventions ("persona.relationship"
+        # versus "persona" versus "persona.relationship.prom"), copying visible prefixes.
+        # Fallback works as designed, but per-signal logs flood output; deduplicate/count (LLM value→actual value)
+        # and summarize once after loop, revealing repeated mistaken guesses.
         target_type_fixes: dict[tuple[str | None, str], int] = {}
         for s in raw_signals:
             if not isinstance(s, dict):
@@ -4725,11 +4725,11 @@ class FactStore:
                     continue
             obs = id_to_obs[candidate_full]
             if obs['target_type'] != ttype:
-                # LLM 说的 target_type 与实际不符 → 以实际为准（修正）。
-                # 不在 loop 里 log，循环结束统一汇总输出。
-                # ttype 来自 LLM JSON，理论上是 str/None；hallucinate 成
-                # list/dict 时直接进 dict key 会 TypeError 把整个 Stage-2 拖崩
-                # （codex review #1414）。用 repr 把非 hashable 值兜成 str。
+                # LLM target_type differs from actual → correct to actual.
+                # Do not log inside loop; summarize after completion.
+                # ttype comes from LLM JSON, theoretically str/None; hallucinated
+                # list/dict keys raise TypeError and crash all Stage-2
+                # (Codex review #1414). repr converts unhashable values to strings.
                 key_ttype = ttype if ttype is None or isinstance(ttype, str) else repr(ttype)
                 target_type_fixes[(key_ttype, obs['target_type'])] = (
                     target_type_fixes.get((key_ttype, obs['target_type']), 0) + 1
@@ -4739,7 +4739,7 @@ class FactStore:
                 'target_type': obs['target_type'],
                 'target_id': obs['raw_id'],
                 'target_full_id': candidate_full,
-                'entity_key': obs.get('entity_key'),   # 只 persona 有
+                'entity_key': obs.get('entity_key'),   # Persona only.
                 'signal': signal,
                 'reason': s.get('reason', ''),
             })
@@ -4799,27 +4799,27 @@ class FactStore:
         extracted = await self._allm_extract_facts(lanlan_name, messages)
         if extracted is None:
             # Stage-1 terminal failure — caller MUST NOT advance cursor
-            # (§3.4.3 "Stage-1 失败 → 整次 abort，... 下次 idle 触发再试")
+            # (§3.4.3: Stage-1 failure → abort whole operation; retry next idle trigger.)
             raise FactExtractionFailed(
                 f"Stage-1 LLM call exhausted retries for {lanlan_name!r}"
             )
         if not extracted:
             extracted = []
 
-        # Persist 本轮新抽到的 facts（带 signal_processed=False 入库）。
-        # 即使本轮抽到 0 条，下面仍要 drain 上轮没处理完的 unprocessed 尾部。
+        # Persist newly extracted facts with signal_processed=False.
+        # Even zero new facts still drains previous unprocessed tail below.
         persisted_this_round = await self._apersist_new_facts(lanlan_name, extracted)
 
-        # Drain：拉所有 signal_processed=False 的 facts（含历史尾部 + 本轮新增）。
-        # 老 facts 没这个字段时 default=True，避免升级后把几个月历史 fact
-        # 一起重跑 Stage-2。
+        # Drain all signal_processed=False facts (historical tail + current additions).
+        # Old facts lacking this field default True, avoiding months of historical facts
+        # reentering Stage-2 after upgrade.
         #
-        # ⚠️ Source filter：排除 source='ai_disclosure'——AI 自我披露的 fact
-        # 不进 evidence loop（防自我强化死循环：AI 说"我喜欢 X" → 抽出 → Stage-2
-        # 给 reflection "neko likes X" 涨分 → AI 更频繁说"我喜欢 X" → ...）。
-        # path B 写盘时已经把 signal_processed 置 True 兜底（_apersist_new_facts），
-        # 此处 source filter 做双重防御，防新加路径忘了置 signal_processed。
-        # 老 fact 缺 source 字段时按 'user_observation' 回退（向后兼容）。
+        # ⚠️ Source filter excludes source='ai_disclosure': AI self-disclosures
+        # must not enter evidence loops (avoids self-reinforcing cycle: AI says "I like X" → extraction → Stage-2
+        # increases "neko likes X" reflection score → AI says "I like X" more often → ...).
+        # Path B already persists signal_processed=True as fallback (_apersist_new_facts);
+        # this source filter adds protection if new paths forget to set signal_processed.
+        # Legacy facts without source default to 'user_observation' for compatibility.
         all_facts = await self.aload_facts(lanlan_name)
         unprocessed = [
             f for f in all_facts
@@ -4827,17 +4827,17 @@ class FactStore:
             and f.get('source', self._SOURCE_DEFAULT) != 'ai_disclosure'
         ]
 
-        # Stage-2 evidence 只属于 legacy 私聊管线。scoped（群/成员）fact 走
-        # 简化管线，写盘时就 signal_processed=True 不会出现在这里；万一出现
-        # （subject 元数据损坏、旧版本代码写入的滞留数据），直接标记出队——
-        # 这类 fact 没有对应的 evidence 观察池，留在队列里会永久占用 batch
-        # 名额，把 legacy 主链路饿死（每 tick 空转还烧额外 LLM 调用）。
+        # Stage-2 evidence belongs only to legacy private-chat pipeline. Scoped group/member facts use
+        # simplified pipeline, persisting signal_processed=True, so should never appear here. If they do
+        # (corrupt subject metadata / old-code residue), mark and dequeue directly:
+        # no corresponding evidence observation pool exists; retaining them permanently consumes batch
+        # slots, starving legacy processing (extra LLM calls wasted on every idle tick too).
         from memory.scopes import is_legacy_private_entry
 
         stray = [f for f in unprocessed if not is_legacy_private_entry(f)]
         if stray:
-            # 无条件把非 legacy 行滤出批次——包括没有 id、无法标记的行：
-            # 它们绝不能混进纯 legacy 的 Stage-2 prompt（跨边界泄漏）。
+            # Unconditionally filter nonlegacy rows from batches, including unmarkable rows without IDs:
+            # they must never enter legacy-only Stage-2 prompts (cross-boundary leakage).
             unprocessed = [
                 f for f in unprocessed if is_legacy_private_entry(f)
             ]
@@ -4852,8 +4852,8 @@ class FactStore:
         if not unprocessed:
             return persisted_this_round, [], []
 
-        # 按 importance DESC + 创建时间 ASC 排序，取前 N 条做这一批 batch。
-        # 多余的留 signal_processed=False 给下一轮 idle tick。
+        # Sort importance DESC + creation time ASC; take first N as this batch.
+        # Leave excess signal_processed=False for next idle tick.
         unprocessed.sort(
             key=lambda f: (
                 -safe_importance(f),
@@ -4862,10 +4862,10 @@ class FactStore:
         )
         batch = unprocessed[:EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS]
 
-        # 此时 batch 只含 legacy 私聊 facts（scoped 已在上面防御性出队），
-        # 保持与分区机制引入前一致的单批次 Stage-2。_aload_signal_targets
-        # 内部的 scope 过滤会把观察池收敛到 legacy（defense in depth：即使
-        # 未来有 scoped 观察写入 reflections/persona，也不会漏进这里）。
+        # Batch now contains legacy private facts only (scoped defensively dequeued above),
+        # retaining single-batch Stage-2 semantics predating partitions. _aload_signal_targets'
+        # scope filter also restricts observation pools to legacy (defense in depth: future scoped
+        # observations in reflections/persona still cannot leak here).
         try:
             existing_observations = await self._aload_signal_targets(
                 lanlan_name,
@@ -4880,18 +4880,18 @@ class FactStore:
             )
             return persisted_this_round, [], []
         if not existing_observations:
-            # 冷启动：还没有任何 confirmed reflection / persona 观察目标。
-            # 不 mark，下轮重试（与引入 scope 之前的语义一致）。
+            # Cold start: no confirmed reflection/persona observation targets yet.
+            # Leave unmarked and retry next round (same semantics as before scope).
             return persisted_this_round, [], []
 
         signals = await self._allm_detect_signals(
             lanlan_name, batch, existing_observations,
         )
         if signals is None:
-            # Stage-2 LLM failure: 不返回 ids，caller 不 mark，下轮重试同批。
+            # Stage-2 LLM failure: return no IDs; caller leaves unmarked and retries same batch next round.
             return persisted_this_round, [], []
 
-        # caller 仍需在所有返回 signals dispatch 成功后才 mark。
+        # Caller still marks only after every returned signal dispatch succeeds.
         return persisted_this_round, signals, [
             fact['id'] for fact in batch if fact.get('id')
         ]
@@ -4930,12 +4930,12 @@ class FactStore:
         ``speaker_label`` is forwarded to the extraction prompt — see
         :meth:`_allm_extract_facts`.
 
-        ``speaker_provenance``: stamped onto新建 user_observation fact
-        （speaker_label / speaker_trust / speaker_id）；AI
-        disclosure 保持独立来源。与 ``speaker_label`` 分开传：后者影响
-        prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——那种
-        "无单一发言人"的调用不该在 fact 上落 provenance，由调用方决定
-        是否给本参数。
+        ``speaker_provenance``: stamped onto newly created user_observation facts
+        (speaker_label / speaker_trust / speaker_id); AI
+        disclosures retain independent sources. Pass separately from ``speaker_label``: that controls
+        prompt rendering; group-digest routes default it to a collective descriptor. Such
+        calls without one speaker must not stamp fact provenance; callers decide
+        whether to supply this parameter.
 
         ``reconciled_facts`` receives snapshots of existing rows whose
         provenance this extraction reconciled.
@@ -4955,9 +4955,9 @@ class FactStore:
                 f"Stage-1 LLM call failed for {lanlan_name!r} (fail_closed caller)"
             )
         if fail_closed and isinstance(extracted, list) and extracted:
-            # 任一畸形元素都判整批可重试失败：persist 会静默跳过畸形项，
-            # 调用方推进游标后该元素承载的内容永久丢失；重试换一次完整
-            # 提取，去重机制兜住有效项的重复（对齐 daily import 语义）。
+            # Any malformed element makes the whole batch retryably fail: persistence silently skips bad items,
+            # permanently losing their content after callers advance cursors. Retry complete extraction;
+            # deduplication covers repeated valid items (matching daily import semantics).
             malformed = [
                 f for f in extracted
                 if not (
@@ -5005,10 +5005,10 @@ class FactStore:
                 if isinstance(data, dict):
                     return data
             except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
-                # UnicodeDecodeError（非法 UTF-8 字节，ValueError 子类，非
-                # JSONDecodeError/OSError）也要降级：_acollect_day_fp_sources 在
-                # per-day 隔离**之前**跑，一个损坏 sidecar 冒泡会 abort 整个导入，
-                # 违背 docstring 承诺的「降级空集」（Codex P2）。
+                # UnicodeDecodeError (invalid UTF-8, ValueError subclass, not
+                # JSONDecodeError/OSError) must also degrade: _acollect_day_fp_sources runs
+                # before per-day isolation, so one corrupt sidecar would abort entire import,
+                # violating docstring's empty-set fallback promise (Codex P2).
                 logger.warning(
                     f"[FactStore] {name}: 读取 external_import_state 失败，降级为空: {e}"
                 )
@@ -5148,7 +5148,7 @@ class FactStore:
         if not isinstance(daily, dict):
             daily = {}
             state['daily'] = daily
-        # 对偶 persona folded_fingerprints：集合语义、sorted 落盘（稳定可 diff）。
+        # Symmetric with persona folded_fingerprints: set semantics, sorted persistence for stable diffs.
         daily['imported_day_fingerprints'] = sorted(fps)
         atomic_write_json(
             self._external_import_state_path(name), state,
@@ -5177,7 +5177,7 @@ class FactStore:
     def _clear_day_fps_locked(self, name: str, fingerprints: set[str]) -> None:
         path = self._external_import_state_path(name)
         if not os.path.exists(path):
-            return  # 无 sidecar 文件 → 只一次 stat、不碰盘。
+            return  # Missing sidecar → one stat only, no disk content reads.
         state = self._load_external_import_state(name)
         fps = self._state_daily_fingerprints(state)
         to_drop = fps & fingerprints
@@ -5260,14 +5260,14 @@ class FactStore:
                 continue
             by_file.setdefault(str(cand.get("source_file") or ""), []).append(cand)
 
-        # 逐日指纹幂等（对偶 persona folded_fingerprints）：已导入且内容未变的
-        # 天直接 skip，不进 LLM。双载体：有 fact 天靠 provenance（含 archive），无
-        # fact 天靠 sidecar。
+        # Daily fingerprint idempotency (symmetric with persona folded_fingerprints): unchanged already imported
+        # days skip LLM. Two carriers: days with facts use provenance (including archives), days without
+        # facts use sidecars.
         sidecar_fps, provenance_fps = await self._acollect_day_fp_sources(lanlan_name)
-        # skip 前自愈：sidecar 里凡 fact provenance 也持有的指纹 = 陈旧（这天已有
-        # fact 载体、不该在 sidecar）→ 清掉。覆盖 exact-hash upgrade 残留、并发
-        # sidecar-only 残留、以及成功天即时清理失败/进程中断——那次清理在 persist
-        # 后、会被本处 skip 绕过而永不重跑（CodeRabbit + Codex）。
+        # Self-heal before skipping: sidecar fingerprints also present in fact provenance are stale (day already has
+        # a fact carrier, so sidecar unnecessary); clear them. Covers exact-hash upgrade residue, concurrent
+        # sidecar-only residue, and failed immediate cleanup/process interruption after successful days; that post-persist
+        # cleanup would otherwise be bypassed forever by skips here (CodeRabbit + Codex).
         stale_sidecar = sidecar_fps & provenance_fps
         if stale_sidecar:
             await self._aclear_day_fps(lanlan_name, stale_sidecar)
@@ -5279,8 +5279,8 @@ class FactStore:
             )
             for source_file, group in by_file.items()
         }
-        # 指纹掺 event_date：不同日期的重复例行日记（文本逐字相同）各自是新的
-        # 一天，不能被对方的指纹 skip（Codex P2）——与 fact 去重键含日期同理。
+        # Include event_date in fingerprints: identical routine diary text on different dates represents distinct
+        # days, which must not skip one another (Codex P2), just as fact deduplication keys include dates.
         day_fps = {
             source_file: self._daily_fingerprint(
                 [str(g.get("text") or "") for g in group],
@@ -5295,9 +5295,9 @@ class FactStore:
         }
         skipped_days = len(by_file) - len(pending)
 
-        # 分批预计算 + cap 按「总抽取调用数」而非天数：单个超大日记文件能拆出
-        # 几十批串行调用，len(pending) 拦不住它撞 240s 墙（Codex P2）。tiktoken
-        # 编码是同步 CPU，offload 线程池。
+        # Precompute batches and cap total extraction calls, not days: one huge diary file can split into
+        # dozens of serial calls, with len(pending) failing to prevent the 240s wall (Codex P2). tiktoken
+        # encoding is synchronous CPU work; offload to thread pool.
         batches_by_file: dict[str, list[str]] = await asyncio.to_thread(
             lambda: {
                 source_file: batch_daily_fragments(
@@ -5321,19 +5321,19 @@ class FactStore:
             """One day's extraction+persist; returns (added, day_failed)."""
             event_date = day_dates[source_file]
             batches = batches_by_file[source_file]
-            # 先抽完该天全部批次、**任一批失败则整天不落盘**：若早批先落盘（带
-            # 全天指纹）而后批失败，重试会被指纹整天 skip、失败批内容永久丢失
-            # （Greptile P1）。整天原子化后，失败天既无 fact 也无指纹，重试从头
-            # 重抽；persist 自身崩溃同理由 gather 计入 failed_days 且无指纹残留。
+            # Extract all batches for a day before persistence; any failed batch prevents persisting the entire day.
+            # Persisting early batches with full-day fingerprints before later failure makes retries skip the whole day,
+            # permanently losing failed content (Greptile P1). Atomic days leave no facts/fingerprints on failure, retrying
+            # from scratch; gather likewise counts persistence crashes as failed_days without fingerprint residue.
             day_extracted: list[dict] = []
             for batch_text in batches:
                 messages = convert_to_messages(
                     [{"role": "user", "content": batch_text}]
                 )
-                # 只有 LLM 往返占并发槽；写盘走 _apersist_new_facts 的 per-character
-                # 锁自行互斥，放在槽外让别的日子的 LLM 调用尽早起跑。
-                # 畸形非数组当失败天（可重试）：否则会被当空抽取天 checkpoint 进
-                # sidecar、后续导入 skip LLM 而静默丢该天 facts（Codex P2）。
+                # Only LLM round trips occupy concurrency slots; _apersist_new_facts serializes disk writes under
+                # per-character locks. Keep writes outside slots so other days' LLM calls start sooner.
+                # Malformed non-arrays are retryable failed days, never empty-extraction sidecar checkpoints,
+                # which would skip later LLM calls and silently lose that day's facts (Codex P2).
                 async with llm_slots:
                     extracted = await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
@@ -5346,10 +5346,10 @@ class FactStore:
                     return 0, True
                 batch_facts = [f for f in extracted if isinstance(f, dict)]
                 if extracted and not batch_facts:
-                    # 数组非空但无 object 元素（如 ["Master likes tea"]）= schema 失败、
-                    # 非确认空抽取——treat_malformed_as_failure 只挡「非数组」，挡不住
-                    # 「数组套字符串」。当失败天可重试，否则被 checkpoint 成空抽取天、
-                    # 后续导入 skip LLM 静默丢该天 facts（Codex P2）。
+                    # Nonempty arrays without object elements (e.g. ["Master likes tea"]) are schema failures,
+                    # not confirmed empty extraction; treat_malformed_as_failure rejects non-arrays only,
+                    # not arrays wrapping strings. Treat as retryable failed days, avoiding empty checkpoints
+                    # that silently skip future LLM extraction and lose facts (Codex P2).
                     logger.warning(
                         f"[FactStore] {lanlan_name}: 外部 daily 抽取返回无 object 元素的"
                         f"数组，放弃 {source_file}（整天重试重抽）"
@@ -5357,21 +5357,21 @@ class FactStore:
                     return 0, True
                 day_extracted.extend(batch_facts)
             if not day_extracted:
-                # 空抽取天：LLM 判该日无 fact，无 fact 载体存指纹，只能靠 sidecar，
-                # 否则每次重导都重抽该天并占 cap 配额（Codex P2 follow-up）。
-                # _arecord 锁内二次确认 active 无该天 provenance 才落（兜并发对方
-                # 已 persist 真实 facts 的情况）；best-effort 写失败退回重抽、不升级
+                # Empty-extraction days: LLM found no facts, leaving sidecar as sole fingerprint carrier;
+                # otherwise every reimport re-extracts the day and consumes cap allowance (Codex P2 follow-up).
+                # _arecord rechecks under lock that active facts lack that day's provenance before writing
+                # (covering concurrent real fact persistence). Best-effort write failure falls back to re-extraction, no escalation.
                 # failed_day。
                 await self._arecord_unpersisted_day_fp(lanlan_name, day_fps[source_file])
                 return 0, False
-            # 并发缩窗重查：两个同角色 commit 可能都在开头读过 imported_day_fps
-            # 才各自跑 LLM；persist 前重读一次，若对方已把这天真实 facts 落盘则
-            # 放弃本次写入（措辞不同的重复 facts 会绕过精确去重）。剩余极窄的
-            # TOCTOU 窗口由同日期 FTS5 近似去重兜底；前端 in-flight 单飞锁已挡住
-            # 单客户端的并发导入（Codex P2）。
-            # 只认 active fact provenance、**不查 sidecar**：本请求已抽出非空
-            # facts，不能被对方并发的 sidecar-only（空抽取/全去重、无 fact 载体）
-            # 结果挤掉——那会让「无 fact 的 sidecar」压掉真实抽取的 facts（Codex）。
+            # Narrow concurrency race by rechecking: two same-character commits may both read imported_day_fps
+            # initially then call LLM. Before persistence reread; if another already persisted actual facts,
+            # abandon this write (differently worded facts bypass exact deduplication). Remaining tiny
+            # TOCTOU window uses same-date FTS5 near-dedup fallback; frontend single-flight lock already prevents
+            # concurrent imports from one client (Codex P2).
+            # Check active fact provenance only, never sidecars: this request extracted nonempty
+            # facts, which concurrent sidecar-only results (empty/all-dedup, no fact carrier)
+            # must not displace; otherwise fact-free sidecars suppress real extracted facts (Codex).
             active_now = await self.aload_facts(lanlan_name)
             if self._facts_have_day_fingerprint(active_now, day_fps[source_file]):
                 logger.info(
@@ -5382,7 +5382,7 @@ class FactStore:
             for fact in day_extracted:
                 # Stamp provenance; _apersist_new_facts_locked turns event_date
                 # into event_start_at and tags the entry as external_import.
-                # day_fingerprint 是重导幂等的依据（见 docstring）。
+                # day_fingerprint supplies reimport idempotency (see docstring).
                 fact["_external_import"] = {
                     "format": source_format,
                     "file": source_file,
@@ -5396,21 +5396,21 @@ class FactStore:
                     lanlan_name, day_extracted, semantic_dedup=True,
                 )
             except Exception:
-                # persist 失败（FTS/JSON 写错等）也要清该天 sidecar：本请求已抽出真实
-                # facts（这天有内容），若并发空抽取先写下 sidecar，persist 失败后它会
-                # 成为唯一载体、压制用户重试 skip 未变日记而永不落盘（Codex）。收窄非
-                # 根除：对方空判定在本清理**之后**才落盘的序覆盖不到——失败天标识不
-                # 持久化、无法跨请求围栏，与「任意后续导入 LLM 恰判空即 checkpoint」
-                # 的既定接受面同构。失败天由 gather 计入 failed_days、重试从头重抽。
+                # Clear this day's sidecar on persistence failure too (FTS/JSON write errors, etc.): real facts were extracted,
+                # so day has content; if concurrent empty extraction wrote sidecar first, failed persistence leaves it
+                # the sole carrier, suppressing retries of unchanged diaries forever (Codex). Narrows rather than eliminates:
+                # cannot cover empty-result sidecars persisted after this cleanup; failed-day markers lack persistence
+                # and cross-request fences, matching the accepted possibility of later imports legitimately
+                # checkpointing when LLM returns empty. gather counts failed_days; retries re-extract from scratch.
                 await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
                 raise
-            # 抽出 fact 的天（成功落新 fact，或全去重命中既有）都清掉该天可能残留的
-            # sidecar 指纹（并发对方空抽取先写下的）——这些天不该在 sidecar：
-            #  - 成功/upgrade 天：指纹已在 fact provenance，与 facts 同处回滚单元、
-            #    回滚后一起消失重导自愈；残留 sidecar 会在回滚后压制重抽 → 记忆丢失。
-            #  - 全去重天：不记 sidecar，靠「每次重抽自愈」保 rollback-safe（既有 fact
-            #    回滚后重抽会重新 append）；若被并发空抽取的 sidecar 挡住就破坏自愈。
-            # 绝大多数天 sidecar 无此指纹 → 一次 stat 即返回（Codex）。
+            # Days with extracted facts (new persistence or all deduplicated) clear possible residual
+            # sidecar fingerprints from concurrent empty extraction; these days do not belong in sidecars:
+            #  - Success/upgrade: fingerprints live in fact provenance, in the same rollback unit;
+            #    rollback removes both, reimport self-heals; leftover sidecars block extraction and lose memory.
+            #  - All deduplicated: no sidecar; repeat extraction self-heals rollback (reappend rolled-back facts).
+            #    A concurrent empty-extraction sidecar would defeat that recovery.
+            # Most days lack this sidecar fingerprint, returning after one stat (Codex).
             await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
             return len(new_facts), False
 
@@ -5521,8 +5521,8 @@ class FactStore:
             ui_language=get_global_language_full(),
         )
 
-        # Known pool 段渲染：按 importance DESC 排（最重要的在最前，给 LLM
-        # 最强信号）。cap 已经在 caller 端做过，这里不重复。
+        # Render known pool sorted importance DESC, strongest signals first
+        # for LLM. Caller already capped it; no duplicate cap here.
         known_lines = []
         for f in known_pool:
             text = f.get('text', '') or ''
@@ -5548,10 +5548,10 @@ class FactStore:
         if extracted is None:
             return None
         if not isinstance(extracted, list):
-            # 非数组 payload（如 `{"facts": [...]}` 包了一层、或 LLM 偶发瞎写）
-            # 等同 Stage-1 terminal failure 处理——返 None 让 `_run_path_b`
-            # 保留 cursor 下次 trigger 重试同窗口，而不是当成"成功 0 抽"推
-            # cursor 永久 skip 这段消息（Codex P1 round-9 on PR #1408）。
+            # Non-array payload (e.g. wrapper `{"facts": [...]}` or occasional model garbage)
+            # is Stage-1 terminal failure: return None so `_run_path_b`
+            # retains cursor and retries same window next trigger, rather than successful zero extraction
+            # advancing cursor and permanently skipping messages (Codex P1 round-9 on PR #1408).
             logger.warning(
                 f"[FactStore] {lanlan_name}: path-B Stage-1 返回非数组 "
                 f"{type(extracted).__name__}，按 terminal failure 处理 (cursor 不推进)"
@@ -5590,9 +5590,9 @@ class FactStore:
         facts.json never received. In-place source and provenance changes are
         restored so a retry cannot hit the dedup guard and skip persistence."""
         for entry, prev_source, prev_signal in (upgraded_snapshots or []):
-            # in-place 升级同样要还原：留着的话重试会撞升级守卫（source
-            # 已是 user_observation）→ upgraded_count=0 → 整轮跳过保存，
-            # 调用方拿到"成功"推游标，磁盘上的 fact 却仍未被印证。
+            # Restore in-place upgrades too: otherwise retry hits upgrade guard (source already
+            # user_observation), gets upgraded_count=0, skips saving altogether;
+            # caller receives success and advances cursor while disk fact remains unconfirmed.
             entry['source'] = prev_source
             if prev_signal is None:
                 entry.pop('signal_processed', None)
@@ -5654,8 +5654,8 @@ class FactStore:
             if isinstance(f, dict)
             and f.get('id')
             and not f.get('absorbed')
-            # safe_importance：手改行的非数值 importance（如 "high"）在
-            # 原生比较下 TypeError，会让该角色的 scoped 合成每 tick 全灭。
+            # safe_importance: nonnumeric values in manually edited rows (e.g. "high") would
+            # raise TypeError in native comparisons, killing this character's scoped synthesis every tick.
             and safe_importance(f, 0) >= min_importance
             and entry_matches_subject(f, subject)
         ]
@@ -5718,8 +5718,8 @@ class FactStore:
             return mem, guard
         with _RECHECK_MEM_BOOTSTRAP:
             if self._recheck_attempts_mem is None:
-                # 赋到实例上（不是 class 上）：镜像必须是 per-instance，否则会变成
-                # 跨实例 / 跨 pytest 用例的单例。
+                # Assign to instance, not class: mirrors must be per-instance, or become
+                # singletons across instances / pytest cases.
                 self._recheck_attempts_mem = {}
             if self._recheck_mem_guard is None:
                 self._recheck_mem_guard = threading.Lock()
@@ -5809,8 +5809,8 @@ class FactStore:
             last_at = fact.get('last_recheck_attempt_at')
         if attempts < MEMORY_RECHECK_MAX_ATTEMPTS:
             return True
-        # 时间自愈：达上限的 entry 过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 后放行
-        # 一次 probe，让一次性写盘/网络故障恢复后自愈。
+        # Timed self-healing: entries at retry cap get one probe after MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        # recovering after transient disk/network failures resolve.
         return cooldown_elapsed(last_at, MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS)
 
     def _bump_fact_recheck_attempts(self, name: str, fid: str, reason: str) -> None:
@@ -5842,22 +5842,22 @@ class FactStore:
         except Exception as e:
             logger.debug(f"[Recheck-Fact] {name} {fid}: 读 facts 失败: {e}")
         if target is None and fid not in (self._recheck_attempts_mem or {}).get(name, {}):
-            # fact 已经不在库里、镜像里也没有历史计数 → 无需记账。
+            # Fact absent from store and no historical mirror count → no bookkeeping needed.
             return
-        # 1) 先更新进程内镜像（纯内存，不可能失败）。
+        # 1) Update in-process mirror first (memory-only, cannot fail).
         attempts, stamp = self._note_recheck_attempt(name, fid, base=target)
         if target is not None:
-            # 2) 再尽力持久化。写失败只 WARN 不抛 —— 镜像已经生效，熔断不受影响；
-            #    对齐 ReflectionEngine._asave_synth_backoff 的口径。
+            # 2) Best-effort persistence next. Failures WARN without raising; mirror already enforces circuit breaking,
+            #    matching ReflectionEngine._asave_synth_backoff.
             target['recheck_attempts'] = attempts
-            # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
+            # Stamp failure time for dead-letter cooldown_elapsed self-healing.
             target['last_recheck_attempt_at'] = stamp
             try:
                 self.save_facts(name)
             except MaintenanceModeError as e:
-                # 维护态是预期的写禁止（save_facts 顶部的闸），不是故障。对齐
-                # save_facts 里的归档分支：那里也把维护态从 WARNING 降到 debug，
-                # 否则维护期间每一次重判失败都在日志里报一条"落盘失败"。
+                # Maintenance is expected write prohibition (save_facts entry gate), not failure. Match
+                # save_facts archive branch, which also downgrades maintenance WARNING to debug,
+                # avoiding a persistence-failure warning on every failed recheck during maintenance.
                 logger.debug(
                     f"[Recheck-Fact] {name} {fid}: 维护态跳过 recheck_attempts "
                     f"落盘（进程内镜像仍生效）: {e}"
@@ -5890,14 +5890,14 @@ class FactStore:
         )
 
         facts = await self.aload_facts(name)
-        # 无锁单次读：写侧整体替换条目 dict，读者不会看到半写状态
-        # （契约见 _note_recheck_attempt）。
+        # One lock-free read: writers replace entire entry dictionaries, avoiding partial states
+        # (contract in _note_recheck_attempt).
         recheck_mem = (self._recheck_attempts_mem or {}).get(name, {})
         candidates = [
             f for f in facts
             if (f.get('schema_version') or 1) < MEMORY_SCHEMA_VERSION_CURRENT
-            # 重试预算：LLM 持续失败的 entry 累计达上限后不再阻塞队列
-            # (Codex review on PR #1316 P2，对齐 reflection 同样写法)。
+            # Retry budget: continuously failing LLM entries stop blocking queue after reaching cap
+            # (Codex review on PR #1316 P2, symmetric with reflections).
             and self._recheck_budget_open(
                 recheck_mem.get(_readable_fact_id(f)), f,
             )
@@ -5940,10 +5940,10 @@ class FactStore:
             set_call_type("memory_recheck_fact")
             api_config = await self._config_manager.aget_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-            # 不开思考（走工厂默认的关思考 extra_body）：同一个 event_when 字段在
-            # Stage-1 抽取里本来就是关思考标的，那边输入还更难（整段对话、多条
-            # fact 同时标）；这里只给单条老 fact 补标，开思考只多一条
-            # 「思考过长→截断/超时→耗尽重试后永远停在 v1」的失败路径。
+            # Disable thinking using factory-default extra_body: Stage-1 already annotates the same event_when
+            # without thinking, despite harder input (whole conversations, multiple facts
+            # simultaneously). This only annotates one legacy fact; thinking adds a failure path:
+            # excessive reasoning → truncation/timeout → exhausted retries leave it v1 forever.
             llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
@@ -5966,9 +5966,9 @@ class FactStore:
         except Exception as e:
             failure_reason = f"LLM call failed: {e}"
 
-        # 失败路径统一收口：bump recheck_attempts，让连续失败的 entry 在达到
-        # MAX 后被 candidates filter 排除（Codex review on PR #1316 P2，对齐
-        # reflection 同样写法）。
+        # Unify failure handling: bump recheck_attempts; consecutive failures at MAX
+        # are excluded by candidate filter (Codex review on PR #1316 P2, symmetric
+        # with reflections).
         if failure_reason is not None:
             logger.debug(
                 f"[Recheck-Fact] {name} {fid}: 跳过本轮 ({failure_reason})"
@@ -5983,12 +5983,12 @@ class FactStore:
             fallback_end=False,
         )
 
-        # 锁策略：和 mark_absorbed / mark_signal_processed (本文件 line 984
-        # 附近) 一致——直接 mutate `load_facts` 返回的 cached list（CPython
-        # 字段赋值是 atomic），不在外层套 _get_lock。save_facts 内部 (line 163)
-        # 会自取 lock + read-merge-write 兜底并发安全。
-        # 为什么不套外层锁：_get_lock 用 threading.Lock（非 reentrant），先
-        # acquire 再调 save_facts 会自我死锁（Codex review on PR #1316 catch）。
+        # Lock policy matches mark_absorbed / mark_signal_processed (around line 984):
+        # mutate cached list returned by `load_facts` directly (CPython
+        # field assignment is atomic), without outer _get_lock. save_facts (line 163)
+        # acquires lock internally and read-merge-writes for concurrency safety.
+        # No outer lock: _get_lock uses non-reentrant threading.Lock; acquiring it
+        # before save_facts self-deadlocks (caught in Codex review on PR #1316).
         def _apply_update() -> bool:
             current = self.load_facts(name)
             found = None
@@ -6011,9 +6011,9 @@ class FactStore:
             ok = await asyncio.to_thread(_apply_update)
         except Exception as e:
             logger.warning(f"[Recheck-Fact] {name} {fid}: save 失败: {e}")
-            # 落盘失败也计入 recheck_attempts：否则 cloudsave 维护态 / 只读 FS /
-            # 权限导致的持续写盘失败会让同一条 fact 每 30s 原样重判、熔断永不
-            # 触发（对齐上面 LLM 失败路径的 bump）。
+            # Persistence failures count toward recheck_attempts too: sustained cloudsave maintenance / read-only FS /
+            # permission failures would otherwise recheck the same unchanged fact every 30s forever,
+            # never triggering circuit breaker (matching LLM-failure bump above).
             await asyncio.to_thread(
                 self._bump_fact_recheck_attempts, name, fid, f"save failed: {e}",
             )

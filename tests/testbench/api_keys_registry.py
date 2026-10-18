@@ -220,7 +220,7 @@ def preset_has_bundled_api_key(provider_key: str) -> bool:
     """Cheap boolean view for UI — does this preset ship its own api_key?
 
     Used by ``GET /api/config/providers`` so the UI can render
-    "此预设内置 API Key, 无需填写" instead of the default "未配置" status.
+    the built-in-key/no-input-needed status instead of the default unconfigured status.
     """
     return bool(get_preset_bundled_api_key(provider_key))
 

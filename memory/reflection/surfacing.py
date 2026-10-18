@@ -398,8 +398,8 @@ class SurfacingMixin:
         try:
             set_call_type("memory_feedback_check")
             api_config = await self._config_manager.aget_model_api_config('summary')
-            # timeout=60: 后台 task 内调用，二分类任务 prompt + 输出都不大。
-            # max_retries=0: 禁 SDK 自动重试。
+            # timeout=60: called within a background task; binary-classification prompts and output are small.
+            # max_retries=0: disable SDK automatic retries.
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = await create_chat_llm_async(
                 api_config['model'],
@@ -420,7 +420,7 @@ class SurfacingMixin:
                 feedbacks = [feedbacks]
         except Exception as e:
             logger.warning(f"[Reflection] 反馈检查失败: {e}")
-            return None  # 区别于 []（无反馈），None 表示调用失败
+            return None  # Unlike [] (no feedback), None means the call failed.
 
         # Update surfaced records (whitelist valid feedback values)
         _VALID_FEEDBACK = {'confirmed', 'denied', 'ignored'}
@@ -472,12 +472,12 @@ class SurfacingMixin:
         try:
             set_call_type("memory_rebuttal_check")
             api_config = await self._config_manager.aget_model_api_config('summary')
-            # timeout=90: 开 thinking 后判断"用户最近的话否定了哪条 confirmed
-            # reflection"——drain 模式下每批最多 20 条 user msg × 多条
-            # confirmed reflection，思考能改善误判（防止把 user 的反讽 / 情景
-            # 转换误标为否定）。完全后台无锁，没人等结果，安全开 thinking。
-            # 不做 SDK 自动重试，失败 cursor 不推进自然下轮重试；显式开 thinking，
-            # 额度与回退见 memory.thinking_llm。
+            # timeout=90: thinking determines which confirmed reflection the user's recent messages contradict;
+            # drain mode handles up to 20 user messages per batch against multiple
+            # confirmed reflections. Thinking reduces false negatives from sarcasm /
+            # contextual changes. This is entirely background work without locks or waiting callers, so thinking is safe.
+            # No SDK retries: failures keep cursor unchanged for the next round. Enable thinking explicitly;
+            # see memory.thinking_llm for budgets and fallbacks.
             from memory.thinking_llm import ainvoke_thinking
             resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
                 api_config, prompt, timeout=90,

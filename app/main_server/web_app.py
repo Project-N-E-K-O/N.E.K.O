@@ -180,8 +180,8 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         )
 
         normalized_path = str(path).replace("\\", "/")
-        # is_symlink / resolve / is_file 都是同步 FS 调用；存储根指向慢的或
-        # 暂时不可用的网络位置时，它们会把整个事件循环卡住。
+        # is_symlink / resolve / is_file are synchronous filesystem calls; slow or temporarily unavailable
+        # network storage roots would block the entire event loop.
         if not await asyncio.to_thread(
             is_public_avatar_tool_resource_path, Path(self.directory), normalized_path
         ):
@@ -190,10 +190,10 @@ class AvatarToolStaticFiles(CustomStaticFiles):
             scope.get("query_string", b"")
         )
         if requested_digest is None:
-            # 生成的每个 URL 都恰好带一个 64 位十六进制摘要（见 _asset_url）。
-            # 没有摘要、摘要畸形、或者多带了参数，都不是本应用发出的请求；放它
-            # 走 StaticFiles 会绕过大小上限和内容核验，把手工改动过或同步坏掉的
-            # 存储根里的任意字节直接流出去。
+            # Every generated URL contains exactly one 64-character hexadecimal digest (see _asset_url).
+            # Missing/malformed digests or extra parameters cannot originate from this application. Passing them
+            # to StaticFiles bypasses size limits and content validation, streaming arbitrary bytes
+            # from manually altered or badly synchronized storage roots.
             raise StarletteHTTPException(status_code=404)
         try:
             full_path, stat_result = await asyncio.to_thread(
@@ -217,12 +217,12 @@ class AvatarToolStaticFiles(CustomStaticFiles):
             raise StarletteHTTPException(status_code=404)
         content, opened_stat, actual_digest = verified
         if not secrets.compare_digest(actual_digest, requested_digest):
-            # 这一层不判定完整性，只回 404。原因是这里拿到的字节和任何 record
-            # 都来自两次独立读取：陈旧请求读到 revision N 的文件时，一个原子
-            # PUT 可能刚发布 revision N+1，拿旧快照去比新 record 就会把一个刚
-            # 更新好的健康道具隔离掉。完整性归 store 的消费点——get_detail 和
-            # 互动前的权威读取都在 _STORE_LOCK 内一次性读 record 并核验，没有
-            # 这个窗口。用户看到图裂之后点进详情，就会在那里被隔离。
+            # Do not assess integrity here; return 404. These bytes and any record come from two independent
+            # reads: while a stale request reads revision N, an atomic PUT may just publish revision N+1.
+            # Comparing an old snapshot with a new record quarantines a freshly updated healthy prop.
+            # Integrity belongs at store consumption points: get_detail and authoritative pre-interaction
+            # reads load the record and validate under _STORE_LOCK, eliminating that window.
+            # A user clicking details after a broken image will trigger quarantine there.
             raise StarletteHTTPException(status_code=404)
         response = _VerifiedAssetFileResponse(
             full_path,
@@ -235,12 +235,12 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         return response
 
 
-# 确定 static 目录位置（使用 _get_app_root）
+# Determine the static directory with _get_app_root.
 static_dir = os.path.join(_get_app_root(), "static")
 
 app.mount("/static", StaticRootFiles(directory=static_dir), name="static")
 
-# 挂载用户文档下的live2d目录（只在主进程中执行，子进程不提供HTTP服务）
+# Mount live2d under user Documents (main process only; child processes provide no HTTP service).
 if _IS_MAIN_PROCESS:
     from utils.avatar_tool_store import AvatarToolStoreError, get_avatar_tool_store
 
@@ -253,14 +253,14 @@ if _IS_MAIN_PROCESS:
     except AvatarToolStoreError as exc:
         logger.warning("初始化本地 Avatar Tool 存储失败: %s", exc)
     except Exception:
-        # 本地道具只是可选功能：意外异常不能拖垮整个服务启动。存储根已留在
-        # 待恢复状态，首次存储操作会重试恢复。
+        # Local props are optional: unexpected errors must not break service startup. The storage root remains
+        # pending recovery, retried on its first storage operation.
         logger.exception("初始化本地 Avatar Tool 存储时发生意外错误")
     _config_manager.ensure_chara_directory()
 
-    # CFA (反勒索防护) 感知挂载：
-    # 优先从原始 Documents 目录（可读）提供模型文件，
-    # 可写回退目录（AppData）作为辅助挂载供新导入的模型使用
+    # CFA (Controlled Folder Access) aware mounting:
+    # Prefer readable original Documents models,
+    # with a writable AppData fallback mounted for newly imported models.
     _readable_live2d = _config_manager.readable_live2d_dir
     _serve_live2d_path = (
         str(_readable_live2d) if _readable_live2d else str(_config_manager.live2d_dir)
@@ -274,7 +274,7 @@ if _IS_MAIN_PROCESS:
         )
         logger.info(f"已挂载用户Live2D目录: {_serve_live2d_path}")
 
-    # CFA 场景：可写回退目录额外挂载，供新导入的模型使用
+    # CFA: mount the writable fallback additionally for newly imported models.
     if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
         _writable_live2d_path = str(_config_manager.live2d_dir)
         if os.path.exists(_writable_live2d_path):
@@ -291,7 +291,7 @@ if _IS_MAIN_PROCESS:
                     _writable_live2d_path,
                 )
 
-    # 挂载VRM动画目录（static/vrm/animation） 必须第一个挂载
+    # Mount VRM animations (static/vrm/animation) first.
     vrm_animation_path = str(_config_manager.vrm_animation_dir)
     if os.path.exists(vrm_animation_path):
         app.mount(
@@ -301,7 +301,7 @@ if _IS_MAIN_PROCESS:
         )
         logger.info(f"已挂载VRM动画目录: {vrm_animation_path}")
 
-    # 挂载VRM模型目录（用户文档目录）
+    # Mount VRM models (user Documents).
     user_vrm_path = str(_config_manager.vrm_dir)
     if os.path.exists(user_vrm_path):
         app.mount(
@@ -309,12 +309,12 @@ if _IS_MAIN_PROCESS:
         )
         logger.info(f"已挂载VRM目录: {user_vrm_path}")
 
-    # 挂载项目目录下的static/vrm（作为备用，如果文件在项目目录中）
+    # Mount project static/vrm as fallback when files reside in the project.
     project_vrm_path = os.path.join(static_dir, "vrm")
     if os.path.exists(project_vrm_path) and os.path.isdir(project_vrm_path):
         logger.info(f"项目VRM目录存在: {project_vrm_path} (可通过 /static/vrm/ 访问)")
 
-    # 挂载MMD动画目录（必须在MMD模型目录之前挂载）
+    # Mount MMD animations before MMD models.
     mmd_animation_path = str(_config_manager.mmd_animation_dir)
     if os.path.exists(mmd_animation_path):
         app.mount(
@@ -324,7 +324,7 @@ if _IS_MAIN_PROCESS:
         )
         logger.info(f"已挂载MMD动画目录: {mmd_animation_path}")
 
-    # 挂载MMD模型目录（用户文档目录）
+    # Mount MMD models (user Documents).
     user_mmd_path = str(_config_manager.mmd_dir)
     if os.path.exists(user_mmd_path):
         app.mount(
@@ -349,12 +349,12 @@ if _IS_MAIN_PROCESS:
     )
     logger.info("已挂载本地Avatar Tool资源目录: %s", user_avatar_tools_path)
 
-    # 挂载项目目录下的static/mmd（作为备用）
+    # Mount project static/mmd as fallback.
     project_mmd_path = os.path.join(static_dir, "mmd")
     if os.path.exists(project_mmd_path) and os.path.isdir(project_mmd_path):
         logger.info(f"项目MMD目录存在: {project_mmd_path} (可通过 /static/mmd/ 访问)")
 
-    # 挂载用户mod路径
+    # Mount user mod paths.
     user_mod_path = _config_manager.get_workshop_path()
     if os.path.exists(user_mod_path) and os.path.isdir(user_mod_path):
         app.mount(
@@ -362,8 +362,8 @@ if _IS_MAIN_PROCESS:
         )
         logger.info(f"已挂载用户mod路径: {user_mod_path}")
 
-# --- 初始化共享状态并挂载路由 ---
-# 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
+# --- Initialize shared state and mount routes ---
+# Import routers explicitly from submodules, avoiding same-name shadowing by package-level exports.
 from main_routers.agent_router import router as agent_router  # noqa
 from main_routers.avatar_drop_router import router as avatar_drop_router  # noqa
 from main_routers.avatar_tool_router import router as avatar_tool_router  # noqa
@@ -419,7 +419,7 @@ from main_routers.debug_router import (
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer  # noqa
 
 
-# ── 健康检查 / 指纹端点 ──────────────────────────────────────────
+# ── Health / fingerprint endpoints ──────────────────────────────────────────
 @app.get("/health")
 async def health():
     """Return a health response carrying the N.E.K.O signature so the launcher/frontend
@@ -564,12 +564,12 @@ async def get_card_drop_active_character(
 async def beacon_shutdown():
     """Beacon endpoint: used for graceful server shutdown"""
     try:
-        # 从 app.state 获取配置
+        # Get configuration from app.state.
         current_config = runtime.get_start_config()
-        # 仅当服务由 --open-browser 模式启动时才响应 beacon
+        # Respond to beacons only when started with --open-browser.
         if current_config["browser_mode_enabled"]:
             logger.info("收到beacon信号，准备关闭服务器...")
-            # 调度服务器关闭任务
+            # Schedule server shutdown.
             asyncio.create_task(runtime.shutdown_server_async())
             return {"success": True, "message": "服务器关闭信号已接收"}
     except Exception as e:
@@ -795,7 +795,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     )
 
 
-# 挂载全部路由
+# Mount all routes.
 app.include_router(config_router)
 app.include_router(proactive_router)
 app.include_router(characters_router)
@@ -814,7 +814,7 @@ app.include_router(cloudsave_router)
 app.include_router(storage_location_router)
 app.include_router(plugin_card_router)
 app.include_router(plugin_media_router)
-# 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
+# Note: pages_router includes the /{lanlan_name} fallback and must mount last.
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(avatar_drop_router)
@@ -831,7 +831,7 @@ app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(numeric_theater_router)
-# 猫娘串门：/api/visit（含 /api/visit/transport/ws）；发起入口受 NEKO_VISIT_ENABLED 总闸，数据管理不受
+# Catgirl visits: /api/visit (including /api/visit/transport/ws); initiation is gated by NEKO_VISIT_ENABLED, data management is not.
 app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)
@@ -842,8 +842,8 @@ app.include_router(vmc_router)
 app.include_router(voice_identity_router)
 app.include_router(
     cookies_login_router
-)  # Cookies登录相关路由，放在最后以避免与其他API路由冲突
+)  # Cookie-login routes go last to avoid conflicts with other API routes.
 app.include_router(
     debug_router
-)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）
-app.include_router(pages_router)  # 兜底路由需最后挂载
+)  # Diagnostic observation: /api/debug/health (lightweight, nonintrusive; see debug_router.py header).
+app.include_router(pages_router)  # Mount fallback routes last.

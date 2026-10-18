@@ -48,10 +48,10 @@ from ._shared import (
 _FRAME_SOURCE_SCREEN = "screen"    # the proactive-vision screenshot
 _FRAME_SOURCE_USER = "user"        # his pending queue + this turn's own frames
 _FRAME_SOURCE_PLUGIN = "plugin"    # plugin `read` frames + passive callback media
-# 主动搭话 / 问候 / agent 回调那一轮附上的图（prompt_ephemeral）。单独一个标签，
-# 因为它和上面三个都不是一回事：这些帧不是用户分享的，用户甚至不知道有这么一轮，
-# 一个按 "user" 过滤的插件绝不能读到它们。和 realtime 那侧对齐 —— 语音路径的同
-# 一批帧就是以 source="proactive" 进总线的。
+# Images attached to proactive conversation / greeting / agent-callback turns (prompt_ephemeral) need a separate label,
+# because they differ from all three sources above: users did not share these frames and may not know the turn exists.
+# A plugin filtering "user" must never see them. Match realtime behavior: the voice path publishes the same
+# frames to the bus with source="proactive".
 _FRAME_SOURCE_PROACTIVE = "proactive"
 # Attribution is positional, so it only holds while the turn keeps its shape.
 # ``_streaming.py`` falls back to this the moment the budget ladder changes the
@@ -408,31 +408,31 @@ class _MediaMixin:
             self._multimodal_submit_lock = lock
 
         async with lock:
-            # 用户在这一轮之前已经投递的一次性附件（拖图 / 聊天贴图）确实属于这次
-            # 发言，按快照一次取走并随本轮一起送；快照之后新到的附件留给下一轮，
-            # 不会被本轮的 await 窗口顺手吞掉。
+            # One-shot attachments already submitted before this turn (dragged/pasted images) belong to this utterance.
+            # Take them once via a snapshot and send with this turn; attachments arriving after the snapshot stay for the next turn,
+            # rather than being swallowed during this turn's await window.
             #
-            # 注意 MAX_MULTIMODAL_TURN_IMAGES 只闸上面那段环境帧，不闸这里的附件：
-            # 那个数是「一次发声抽样成开头/中间/结尾」的含义，而附件是用户自己决定
-            # 带几张的明确投递，按张数砍会静默丢掉他刚选中的图（普通文本轮同样不
-            # 闸，两条路保持一致）。
+            # MAX_MULTIMODAL_TURN_IMAGES gates only the ambient frames above, not these attachments:
+            # that limit means sampling one utterance at beginning/middle/end, whereas attachments are explicitly
+            # selected by the user. A count cap silently discards their chosen images (ordinary text turns likewise
+            # impose no cap; keep both paths consistent).
             pending = getattr(self, "_pending_images", None)
             attachments: tuple[str, ...] = ()
             if isinstance(pending, list) and pending:
                 attachments = tuple(pending)
                 del pending[:len(attachments)]
-                # 附件排在本轮抽样帧**之后**，不是之前。下游 fit/trim 一律「从最
-                # 旧丢、无条件保住最后一张」，排前面等于让用户明确拖进来的图先
-                # 死、环境抽样帧反而活着——用户看到的是"我给她的图她没看见，倒是
-                # 讲了屏幕"。顺序契约与 _streaming.py 那条一致：越靠近文本的越该
-                # 保住，而附件正是用户为这句话挑的。
+                # Place attachments **after** this turn's sampled frames. Downstream fit/trim always drops oldest first
+                # and preserves the final image unconditionally. Putting attachments first discards user-selected images
+                # while retaining ambient frames, so users observe that their image was ignored
+                # while the character discussed the screen. Match _streaming.py's order contract: images nearest the text
+                # deserve preservation, and attachments were chosen specifically for this utterance.
                 staged_images = staged_images + attachments
-            # 这一轮的帧作为 invocation-local 数据直接交给 stream_text，不进
-            # _pending_images。那条队列是 session 级的"下一个消费者拿走"：一次性
-            # 附件（拖图 / 聊天贴图）不拿 _multimodal_submit_lock，完全可能在这里
-            # staging 之后、子任务真正消费之前挤进队列，然后被本轮整批吞掉——用户
-            # 那张图既配错了发言，也不再能给它自己的追问用。顺带失败路径也不需要
-            # 再回滚一段共享队列。
+            # Pass this turn's frames directly to stream_text as invocation-local data, without
+            # _pending_images. That session-wide queue is consumed by the next consumer; one-shot
+            # dragged/pasted attachments do not take _multimodal_submit_lock and may enter it
+            # after staging here but before subtask consumption, then be swallowed by this turn.
+            # The user's image would be paired with the wrong utterance and unavailable for its own follow-up.
+            # This also removes the need to roll back shared-queue state on failure.
             committed_to_history = False
 
             def _mark_committed() -> None:
@@ -443,32 +443,32 @@ class _MediaMixin:
                 await self._run_external_voice_stream(
                     text,
                     turn_images=staged_images,
-                    # 与 realtime 侧同源：这批帧一起冻结的采集通道，不是会话
-                    # 此刻的通道，也不是"用户附件"这个默认。只盖住抽样帧那一
-                    # 段——附件是上面刚接到 staged_images 尾巴上的，它们仍是
-                    # 用户自己给的东西。
+                    # Match realtime provenance: use the capture channel frozen with this frame batch,
+                    # not the session's current channel or the default "user attachment". Apply only to
+                    # sampled frames; attachments were appended to staged_images above and remain
+                    # explicitly supplied user material.
                     turn_source=source,
                     turn_source_count=len(staged_images) - len(attachments),
-                    # 独立 ASR 这一轮自带一个稳定的 turn_id，一路带到帧总线上，
-                    # 插件才能把同一次发声抽出的几张帧认成一组。普通文本轮没有
-                    # 这个身份，留空即可（记录里就不带 turn_id）。
+                    # Standalone ASR supplies a stable turn_id for this utterance; carry it through to the frame bus
+                    # so plugins can group frames sampled from the same utterance. Ordinary text turns have
+                    # no such identity; leave it empty (omit turn_id from records).
                     turn_id=str(turn_id or "").strip() or None,
                     on_turn_committed=_mark_committed,
-                    # 本轮附加上下文（知识/语料/记忆），Core 在提交前取好。
+                    # Additional context for this turn (knowledge/corpus/memory), fetched by Core before submission.
                     turn_context=turn_context,
                 )
             except BaseException as exc:
-                # 本轮帧是 invocation-local 的，失败即消失；但取走的那段用户附件
-                # 是共享状态，一次失败的 ASR 回合不该把用户明确投递的图吃掉。
+                # This turn's frames are invocation-local and disappear on failure, but consumed user attachments
+                # are shared state: a failed ASR round must not swallow explicitly supplied images.
                 #
-                # 只在这一轮**还没进 history** 时放回。被后一句话打断时，
-                # stream_text 可能已经把带图的 HumanMessage 追加进去了，那些附件
-                # 已经在上下文里；此时再放回队列，下一轮会把同一批图再发一遍，配
-                # 上一段无关的 transcript。history 回滚不了，就以它为准。
+                # Restore them only if this turn has **not entered history**. When interrupted by another utterance,
+                # stream_text may already have appended the image-bearing HumanMessage, so the attachments
+                # are already in context. Requeueing would send them again next turn alongside an unrelated
+                # transcript. History cannot be rolled back, so treat it as authoritative.
                 #
-                # 判据是本次调用自己的回调，不是全局 history 长度：并发的另一条
-                # 文本请求或收尾中的响应同样会追加，长度增长并不代表**这一轮**进
-                # 去了，那会把用户的附件白白吃掉。
+                # Use this invocation's callback, not global history length: concurrent text requests
+                # or finishing responses also append history. Length growth does not prove this turn
+                # entered history and would needlessly lose the user's attachments.
                 if (
                     attachments
                     and isinstance(pending, list)
@@ -536,9 +536,9 @@ class _MediaMixin:
             self._proactive_image_history_len = 0
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
-        # 只保留最近 keep_turns 个含图 HumanMessage 的图片，更早的剥掉 image_url
-        # 仅留文本。base64 图片在 vision tokenizer 下约 1.5k~3k tokens/张，
-        # 多轮累积会把 input 推到 128k+。
+        # Retain images only in the most recent keep_turns image-bearing HumanMessages; remove image_url
+        # from older ones, keeping text. Base64 images cost roughly 1.5k–3k vision tokens each,
+        # so accumulated turns can push input beyond 128k.
         image_turn_indices = [
             idx for idx, msg in enumerate(self._conversation_history)
             if isinstance(msg, HumanMessage) and isinstance(msg.content, list)
@@ -561,7 +561,7 @@ class _MediaMixin:
             else:
                 replacement = HumanMessage(content=kept_parts)
             self._conversation_history[idx] = replacement
-            # 这一轮的 resident 块（知识）跟着替换后的消息走。
+            # This turn's resident knowledge block follows the replaced message.
             self._rebind_resident_anchor(old, replacement)
 
         logger.info(

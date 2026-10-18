@@ -16,7 +16,7 @@ from utils.tokenize import count_tokens
 
 
 def _long_session():
-    # 学校仅作跨幕对象之一，加入工具归还和隐私否定，避免只测单一剧本。
+    # School is only one cross-scene object; include tool return and privacy negation to avoid testing a single script.
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     old = {"revision": 1, "from_node_id": "old", "to_node_id": "old",
            "input_text": "我读本地综合大学；观察日记只是讨论过展示，今天没有同意公开。",
@@ -116,7 +116,7 @@ def test_three_consumers_receive_old_fact_without_changing_actor_six_fields():
 def test_optional_retrieval_fits_guard_budget_without_cutting_candidate(monkeypatch):
     engine, session = _long_session()
     candidate = {"performance": "我没有把观察日记公开，仍然保密。", "suggested_inputs": []}
-    # 先量出同份固定合同的成本，再给少量检索空间；不靠扩大容量让断言通过。
+    # Measure the same fixed contract's cost first, then allow limited retrieval room; do not inflate capacity to pass assertions.
     baseline = evaluator._build_transition_judge_messages(engine, session, player_input="", actor_performance=candidate)[0]
     budget = sum(count_tokens(x.content) for x in baseline) + 40
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES["balanced"], "judge_input_max_tokens", budget)
@@ -137,9 +137,9 @@ def test_new_event_is_not_blocked_by_criterion_or_wording(same_wording):
     response = json.dumps({"scene_complete": False, "metric_changes": {
         "trust": {"strength": "normal", "criterion_id": "trust.increase.1"}}})
     result = evaluator._parse_output(response, engine, message, _session(engine), ledger)
-    # 此处假定模型已依据不同对象确认新事件；重复事件能否识别须另跑真实模型正反例。
+    # Assume the model identified new events from different objects here; verify duplicate recognition separately with real-model positive/negative cases.
     assert len(result.metric_changes) == 1 and result.metric_changes[0].delta == 2
-    # 模型必须看见旧行为原文，才能把换句话复述与另一件新行为区分开。
+    # The model must see the original old action to distinguish paraphrases from a different new action.
     assert original in evaluator._build_messages(engine, _session(engine), message, recent_ledger_events=ledger)[1].content
 
 
@@ -149,7 +149,7 @@ def test_new_event_is_not_blocked_by_criterion_or_wording(same_wording):
     ("日记授权已撤回，今天继续保密，不能公开展示。", "日记授权撤回之后还能公开吗？"),
 ])
 def test_current_question_precedes_unrelated_route_vocabulary(fact, query):
-    # 长历史中的路线词不能挤掉玩家正在询问的事实，三个题材共用同一检索规则。
+    # Route words in long history must not displace the fact the player asks about; all three topics share retrieval rules.
     engine, session = _long_session()
     focus = "手账的未来约定，香樟树下碰面，展厅开放安排，明天结束整理。"
     rows = tuple({"revision": i, "from_node_id": "old", "to_node_id": "old",
@@ -163,7 +163,7 @@ def test_current_question_precedes_unrelated_route_vocabulary(fact, query):
 
 
 def test_question_retrieval_keeps_later_revocation_with_original_permission():
-    # 不能只召回较早的许可；后续撤回也是同一对象的完整原话。
+    # Do not recall only earlier permission; later withdrawal is also verbatim evidence for the same object.
     _, session = _long_session()
     rows = tuple({"revision": i, "from_node_id": "old", "to_node_id": "old", "performance": text}
                  for i, text in enumerate(["观察日记可以公开展示。", "观察日记的公开授权已撤回，继续保密。"], 1))
@@ -178,7 +178,7 @@ def test_question_retrieval_keeps_later_revocation_with_original_permission():
     (["铜钥匙已经归还木盒。", "铜钥匙后来交给档案管理员保管，不在木盒了。"], "铜钥匙还在木盒。"),
 ])
 def test_guard_uses_claim_to_find_original_and_later_changes(facts, claim):
-    # 模糊问题不含物件名；待审断言只能用于找原话，不能进入已提交历史。
+    # Ambiguous questions omit object names; disputed claims may locate original text but must not enter committed history.
     engine, session = _long_session()
     rows = tuple({"revision": i, "from_node_id": "old", "to_node_id": "old", "input_text": text}
                  for i, text in enumerate(facts, 1))
@@ -204,7 +204,7 @@ def test_short_object_query_is_not_displaced_by_question_filler(monkeypatch, obj
                   'input_text': '我们现在已经到了哪里？接下来呢？', 'performance': '先在长椅坐一会。'}
                  for i in range(2, 12)))
     session = replace(session, revision=11, performance_history=records)
-    # 极小条数预算让测试直接观察排序，不能用提高容量掩盖无关匹配。
+    # A tiny item budget exposes ranking directly; increasing capacity must not hide irrelevant matches.
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES['balanced'], 'evidence_max_units', 1)
     rows = history_evidence(session, f'我们现在已经拿到了哪些{object_name}？分别是谁保管的？')
     assert [row['text'] for row in rows] == [fact]

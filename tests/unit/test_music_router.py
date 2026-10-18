@@ -16,9 +16,9 @@ def _reset_music_proxy_cache():
     on the same URL take the cache branch and never reach the code it asserts
     on. Autouse + module-wide so new tests are covered without opting in.
     """
-    # 具体触发：test_music_proxy_streams_small_file_then_caches_complete_body 会把
-    # https://freemusicarchive.org/song.mp3 写进缓存，随机顺序下排到
-    # test_music_proxy_rejects_unsafe_redirect 之前，后者拿到 200 HIT 而不是 403。
+    # Specific trigger: test_music_proxy_streams_small_file_then_caches_complete_body caches
+    # https://freemusicarchive.org/song.mp3; when random order puts it before
+    # test_music_proxy_rejects_unsafe_redirect, the latter gets 200 HIT instead of 403.
     music_router.MUSIC_PROXY_CACHE.clear()
     try:
         yield

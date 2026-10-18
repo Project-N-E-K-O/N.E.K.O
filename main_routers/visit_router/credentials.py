@@ -122,7 +122,7 @@ class InviteCodeLogRedactor(logging.Filter):
                 record.args = tuple(self._redact_arg(a) for a in args)
             elif isinstance(args, Mapping):
                 record.args = {k: self._redact_arg(v) for k, v in args.items()}
-        except Exception:  # noqa: BLE001 - 改写失败也不能把这一行日志弄丢
+        except Exception:  # noqa: BLE001 - a failed rewrite must not lose this log line
             pass
         return True
 
@@ -169,26 +169,26 @@ _CREDENTIALS_TIMEOUT_S = 10.0
 _PREVIEW_TIMEOUT_S = 8.0
 _CANCEL_TIMEOUT_S = 8.0
 _PUBKEYS_TIMEOUT_S = 5.0
-# 非强制刷新失败后的最小重试间隔：拉不到时不要每次核验都打一遍 Servers。
+# Minimum retry interval after a non-forced refresh fails: if it cannot be fetched, do not call Servers on every validation.
 _PUBKEYS_RETRY_MIN_S = 30.0
 _CANCEL_BACKOFF_S = (1, 2, 4, 8)
 _JS_MAX_SAFE_INT = 2 ** 53 - 1
 _RETRY_AFTER_MAX_S = 7 * 86400
-_HELLO_TICKET_MAX_BYTES = 2048  # = utils.visit_wire 的 hello.ticket 上限（_TICKET_MAX_BYTES）
+_HELLO_TICKET_MAX_BYTES = 2048  # = utils.visit_wire hello.ticket limit (_TICKET_MAX_BYTES)
 _REGION_WAIT_S = 1.5
 _DISPLAY_NAME_MAX_CHARS = 64
-# vendor 凭证字段上限：留够实际长度（UserSig / privateMapKey 数百字节、LiveKit JWT 约 1 KB），
-# 同时保证校验通过的凭证拼成下行 credentials 后一定不超过 8 KB
+# Vendor credential field limit: leave room for real values (UserSig / privateMapKey are hundreds of bytes; LiveKit JWT about 1 KB),
+# while ensuring validated credentials always fit within the 8 KB downstream credentials payload
 _TRTC_SIG_MAX_CHARS = 2048
 _LIVEKIT_TOKEN_MAX_CHARS = 4096
 _ROOM_ID_MAX_CHARS = 64
 _ENTITLEMENT_MAX_KEYS = 16
 
-# 测试注入点：退避等待。
+# Test injection point: backoff wait.
 _sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep
 
 
-# ── 错误 ───────────────────────────────────────────────────────────────
+# ── Errors ─────────────────────────────────────────────────────────────────
 
 
 class VisitServersError(Exception):
@@ -360,8 +360,8 @@ CANCEL_DONE_REPLIES: frozenset[tuple[int, str]] = frozenset({
 """Non-2xx cancel replies that still mean "nothing left to cancel"."""
 
 
-# 被封缓存（§4.6 rooms / join：上次 Servers 403 banned 的 60 s 内本机直接 403）。
-# 按社区账号（local_user_id）分开记：同一台机器 60 s 内换成未被封的账号不受牵连
+# Quarantined cache (§4.6 rooms / join: return local 403 within 60s of the previous Servers 403 banned response).
+# Track separately by community account (local_user_id): switching to an unbanned account on the same machine within 60s is unaffected
 _banned_until: dict[str, float] = {}
 
 
@@ -393,14 +393,14 @@ def _reset_for_tests() -> None:
 def _body_json(resp: httpx.Response, **json_kwargs: Any) -> Any:
     try:
         return resp.json(**json_kwargs)
-    except (ValueError, TypeError, RecursionError):  # 深层嵌套的 JSON 同样按坏响应处理
+    except (ValueError, TypeError, RecursionError):  # Deeply nested JSON is also treated as a malformed response
         return None
 
 
 def _json_int_or_inf(text: str) -> int | float:
     try:
         return int(text)
-    except ValueError:  # 超过 int 位数上限（默认 4300 位）：按无穷大交给字段校验，别让整个响应作废
+    except ValueError:  # If an integer exceeds the bit limit (4300 digits by default), treat it as infinity and let field validation handle it; do not invalidate the entire response
         return -math.inf if text.startswith("-") else math.inf
 
 
@@ -414,15 +414,15 @@ def _retry_after(body: Any, resp: httpx.Response) -> int | None:
     if type(raw) is int and 0 <= raw <= _RETRY_AFTER_MAX_S:
         return raw
     header = resp.headers.get("retry-after", "")
-    # 只认 ASCII 数字且限长：isdigit() 也认「²」「١」这类 Unicode 数字（int() 会抛错），
-    # 超长数字串会撞 3.11 的整数位数上限；不合规就当没给
+    # Accept only ASCII digits and impose a length cap: isdigit() also accepts Unicode digits such as "²" and "١" (which int() may reject),
+    # while a very long digit string hits Python 3.11's integer digit limit; treat invalid values as absent
     if header.isascii() and header.isdigit() and len(header) <= 9:
         return min(int(header), _RETRY_AFTER_MAX_S)
     return None
 
 
 def _diag_code(code: str | None) -> str:
-    # 契约外的 code 只记形状安全的短串，防止把对端回显的任意文本写进日志
+    # For codes outside the contract, record only a short shape-safe string to prevent arbitrary echoed peer text from entering logs
     if code is None:
         return "-"
     return code if _SERVERS_CODE_RE.fullmatch(code) else "<unprintable>"
@@ -450,7 +450,7 @@ def _map_error(
     return err
 
 
-# ── 会话与出网 ─────────────────────────────────────────────────────────
+# ── Session and outbound requests ──────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -482,7 +482,7 @@ async def _servers_session() -> _ServersSession:
         if community_oauth.status_session_saved(status):
             raise VisitServersUnreachable("session_unverified")
         raise VisitLoginRequired()
-    # 只用 resolver 刚校验过（必要时刷新过）的那份快照：再从磁盘重读可能读到并发换号后的另一个账号
+    # Use only the snapshot just validated (and refreshed if needed) by the resolver: rereading from disk could pick up another account after a concurrent account switch
     snapshot = status.get("snapshot")
     if not isinstance(snapshot, Mapping) or not snapshot or not snapshot.get("local_user_id") or not snapshot.get("access_token"):
         raise VisitLoginRequired()
@@ -526,7 +526,7 @@ async def _send(
             content=content,
             params=dict(params) if params else None,
             timeout=timeout,
-            # bearer 只发给 Servers 自己：任何跳转都不跟
+            # Send the bearer token only to Servers itself; never forward it across redirects
             follow_redirects=False,
         )
     except (httpx.HTTPError, OSError) as exc:
@@ -547,7 +547,7 @@ async def _region_hint() -> str:
     if cached is None:
         try:
             await get_config_manager().aensure_region_resolved(timeout=_REGION_WAIT_S)
-        except Exception as exc:  # noqa: BLE001 - 区域只是提示，拿不到按 unknown
+        except Exception as exc:  # noqa: BLE001 - area is only a hint; use unknown if unavailable
             logger.debug("visit servers: region wait failed: %s", type(exc).__name__)
         cached = ConfigManager._region_cache
     if cached is None:
@@ -596,7 +596,7 @@ def _require_invite_code(invite_code: Any) -> str:
     return invite_code
 
 
-# ── 凭证 ───────────────────────────────────────────────────────────────
+# ── Credentials ────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -666,7 +666,7 @@ def _finite(value: Any) -> bool:
         return False
     try:
         return math.isfinite(value)
-    except OverflowError:  # 超大 JSON 整数转不成 float
+    except OverflowError:  # Very large JSON integers cannot be converted to float
         return False
 
 
@@ -686,7 +686,7 @@ def _grant_ttl_ok(value: Any) -> bool:
 def _parse_trtc(raw: Any, *, vid: str, visit_id: str) -> dict[str, Any]:
     _need(isinstance(raw, Mapping), "vendor.trtc")
     sdk_app_id = raw.get("sdk_app_id")
-    # 下行经 JSON 给 iframe：超出 JS 安全整数会被 JSON.parse 改值
+    # Sent to the iframe via JSON: integers beyond JavaScript's safe range are changed by JSON.parse
     _need(type(sdk_app_id) is int and 0 < sdk_app_id <= _JS_MAX_SAFE_INT, "vendor.trtc.sdk_app_id")
     user_id = raw.get("user_id")
     _need(isinstance(user_id, str) and _TRTC_USER_ID_RE.fullmatch(user_id) is not None, "vendor.trtc.user_id")
@@ -709,18 +709,18 @@ def _parse_trtc(raw: Any, *, vid: str, visit_id: str) -> dict[str, Any]:
 def _parse_livekit(raw: Any) -> dict[str, Any]:
     _need(isinstance(raw, Mapping), "vendor.livekit")
     url = raw.get("url")
-    # URL 只收 ASCII（国际化域名应是 punycode）：含孤立代理字符等的串下发时编码会抛错
+    # Accept ASCII URLs only (internationalized domain names must use punycode): strings containing lone surrogates, etc. would fail encoding when sent downstream
     _need(_short_str(url, 512) and url.isascii(), "vendor.livekit.url")
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower()
-        _ = parsed.port  # 非法端口（wss://host:bad）在这里抛 ValueError
+        _ = parsed.port  # Invalid port (wss://host:bad) raises ValueError here
     except ValueError:
         raise _BadResponse("vendor.livekit.url") from None
     allowed = allowed_livekit_hosts()
     if not host or host not in allowed:
         raise VisitLivekitHostRejected("livekit_host_not_allowed")
-    # 明文 ws:// 只给开发环回：配置的开发主机必须是回环字面地址（localhost / 127.0.0.0/8 / ::1）
+    # Plain ws:// is allowed only for development loopback: configured development host must be a loopback literal (localhost / 127.0.0.0/8 / ::1)
     secure_ok = parsed.scheme == "wss" or (
         parsed.scheme == "ws" and host == _dev_livekit_host() and _is_loopback_name(host)
     )
@@ -747,10 +747,10 @@ def _parse_credentials(
     vendor_expires_at = payload.get("vendor_expires_at")
     _need(_finite(expires_at), "expires_at")
     _need(_finite(vendor_expires_at), "vendor_expires_at")
-    # 已经过期（含时钟容差）的凭证没法入房：当坏响应处理，不当成功
+    # Expired credentials (including clock tolerance) cannot join a room: treat as a malformed response, not success
     _need(expires_at + VISIT_TICKET_CLOCK_TOLERANCE_S > now, "expires_at")
     _need(vendor_expires_at + VISIT_TICKET_CLOCK_TOLERANCE_S > now, "vendor_expires_at")
-    # vendor 凭证只有 10 min：比这更长的一律不收（短凭证续期与强制结束后的暴露上限靠它）
+    # Vendor credentials last only 10 min: reject anything longer (this caps short-credential renewal and exposure after forced termination)
     _need(
         vendor_expires_at - now <= VISIT_VENDOR_GRANT_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S,
         "vendor_expires_at",
@@ -762,26 +762,26 @@ def _parse_credentials(
         vendor = {"trtc": _parse_trtc(vendor_raw.get("trtc"), vid=vid, visit_id=visit_id)}
     else:
         vendor = {"livekit": _parse_livekit(vendor_raw.get("livekit"))}
-    # 相对时长与绝对到期要对得上：到期时刻不能比「现在 + 授权时长」更晚
+    # Relative duration must agree with absolute expiry: the expiry time cannot be later than "now + authorized duration"
     grant_ttl = vendor[transport]["expire" if transport == "trtc" else "ttl_s"]
     _need(vendor_expires_at - now <= grant_ttl + VISIT_TICKET_CLOCK_TOLERANCE_S, "vendor_expires_at")
-    # 续期按本机时钟排：本机比 Servers 慢时绝对到期会被高估，取「现在 + 授权时长」与它的较早者
+    # Schedule renewal using the local clock: if the local clock trails Servers, absolute expiry is overestimated; use the earlier of "now + authorized duration" and the expiry time
     local_vendor_expiry = min(float(vendor_expires_at), now + grant_ttl)
 
     ticket = payload.get("identity_ticket")
-    # 与 hello 线协议同一上限：领得到却发不出 hello 的票当坏响应
-    # 票是两段 base64url：先要求 ASCII（孤立代理字符等在 encode 时会抛错），再按字节限长
+    # Same limit as the hello wire protocol: a ticket that can be acquired but not sent in hello is a malformed response
+    # Ticket consists of two base64url segments: require ASCII first (lone surrogates fail during encoding), then enforce byte length
     _need(isinstance(ticket, str) and ticket.isascii() and len(ticket) <= _HELLO_TICKET_MAX_BYTES, "identity_ticket")
     try:
         claims = peek_ticket_claims(ticket)
     except MalformedTicket:
         raise _BadResponse("identity_ticket") from None
-    # 后面要与浮点做运算：超出 JS 安全整数的时间戳先拒，免得 OverflowError 漏出去
+    # Used in floating-point calculations below: reject timestamps beyond JavaScript's safe integer range first to prevent OverflowError escaping
     _need(0 <= claims.iat <= _JS_MAX_SAFE_INT and 0 <= claims.exp <= _JS_MAX_SAFE_INT, "identity_ticket.time")
     _need(claims.v == VISIT_TICKET_VERSION, "identity_ticket.v")
     _need(claims.iss == VISIT_TICKET_ISS, "identity_ticket.iss")
     _need(claims.aud == VISIT_TICKET_AUD, "identity_ticket.aud")
-    # 签发时刻不能在未来（含时钟容差）；过期由下面的 expires_at 检查兜住
+    # Issuance time cannot be in the future (including clock tolerance); the expires_at check below handles expiration
     _need(claims.iat - VISIT_TICKET_CLOCK_TOLERANCE_S <= now, "identity_ticket.iat")
     _need(claims.role == role, "identity_ticket.role")
     _need(claims.visit_id == visit_id, "identity_ticket.visit_id")
@@ -789,7 +789,7 @@ def _parse_credentials(
     _need(claims.sub == visit_uid, "identity_ticket.sub")
     _need(claims.transport == transport, "identity_ticket.transport")
     _need(claims.char_tag == char_tag, "identity_ticket.char_tag")
-    # 身份票按侧位：guest 40 min、host 50 min（等客 10 + 硬顶 30 + 余量 10）
+    # Identity tickets are side-specific: guest 40 min, host 50 min (10 waiting + 30 hard cap + 10 margin)
     _need(claims.exp - claims.iat == ticket_ttl_s(role), "identity_ticket.lifetime")
     _need(abs(claims.exp - expires_at) <= 1, "expires_at")
 
@@ -802,17 +802,17 @@ def _parse_credentials(
         invite_code = None
         invite_expires_at = None
     else:
-        # host 的对端 vid 只认 hello 核验结果（media{peer_vid}），Servers 给了也不用
+        # For the host, accept the peer vid only from the hello verification result (media{peer_vid}); ignore any value from Servers
         _need(peer_vid is None or (isinstance(peer_vid, str) and _VID_RE.fullmatch(peer_vid) is not None),
               "peer_vid")
         peer_vid = None
-        # 换发（续期 / 重连）时邀请可能已被兑换、Servers 不再回邀请码：有就校验，没有不算坏响应；
-        # 首发缺邀请码由 runtime 判（没有可推给前端的 invite_ready）
+        # On renewal / reconnect, an invitation may already have been redeemed and Servers may no longer return its code: validate it if present; absence is not a malformed response;
+        # for the initial response, runtime handles a missing code (there is no invite_ready to send to the frontend)
         if invite_code is not None or invite_expires_at is not None:
             _need(isinstance(invite_code, str) and INVITE_CODE_RE.fullmatch(invite_code) is not None,
                   "invite_code")
             _need(_finite(invite_expires_at), "invite_expires_at")
-            # 邀请只活 10 min：更远的到期时刻是坏响应（取消重试的截止时刻以它为准）
+            # Invitations last only 10 min: a later expiry time is a malformed response (retry cutoff is based on it)
             _need(invite_expires_at - now <= VISIT_INVITE_CODE_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S,
                   "invite_expires_at")
             _need(invite_expires_at + VISIT_TICKET_CLOCK_TOLERANCE_S > now, "invite_expires_at")
@@ -882,7 +882,7 @@ async def fetch_visit_credentials(
 
     session = await _servers_session()
     if expect_account is not None and session.account != expect_account:
-        # 请求用的就是这份会话快照：快照已经是别的账号的，就一个字节都不发
+        # This request uses this exact session snapshot: if it already belongs to another account, send not even one byte
         raise VisitAccountChanged("account_change")
     body: dict[str, Any] = {
         "role": role,
@@ -915,9 +915,9 @@ async def fetch_visit_credentials(
     except _BadResponse as exc:
         logger.warning("visit servers credentials: malformed reply field=%s", exc)
         raise VisitServersUnreachable("invalid_response") from None
-    # 签发之后再刷新公钥与吊销名单（后台、不等）：签名钥匙轮换时，先拉公钥再签发
-    # 可能拿到旧的钥匙表、却收到新 kid 签的票，旧表还会被当成新鲜缓存 24 h；
-    # 签发前就已发出的那次刷新同理不算数，要排在它后面再拉一次
+    # Refresh public keys and the revocation list after issuance (in the background, without waiting): if signing keys rotate, fetching keys before issuing
+    # could return an old key table while the ticket is signed with a new kid; the old table would then be cached as fresh for 24 hours.
+    # A refresh launched before issuance does not count either; schedule another fetch after it.
     _kick_pubkeys_refresh(after_now=True)
     return creds
 
@@ -1023,15 +1023,15 @@ class VisitGrant:
             display_name=self._display_name,
             invite_code=self._invite_code,
         )
-        # tier 取自请求参数（续期传的就是 cur.tier），回复里没有可比的字段，不在这里比
+        # tier comes from the request (renewal passes cur.tier); the response has no comparable field, so do not compare it here
         if (fresh.vid, fresh.visit_uid, fresh.transport) != (cur.vid, cur.visit_uid, cur.transport):
             logger.warning("visit servers credentials: renewal changed the room binding")
             raise VisitServersUnreachable("renewal_mismatch")
-        # Servers 把授权截到房间硬期限时，续出来的剩余时间仍不足余量：之后不再续，
-        # 否则每次轮询都会再 POST 一次、拿回同一个期限
+        # If Servers caps authorization at the room's hard deadline and the remaining renewal time is still below the margin, stop renewing;
+        # otherwise every poll would POST again and receive the same deadline
         remaining = fresh.vendor_remaining_s(wall_now=wall_now)
         self._capped = remaining < self._margin
-        # 截断且回来就已过期（本地时钟偏快 / Servers 过了硬期限还没标结束）：不要每次轮询都再 POST
+        # If a capped response is already expired on arrival (local clock is fast / Servers passed the hard deadline without marking it ended), do not POST again on every poll
         now = time.time() if wall_now is None else wall_now
         self._capped_retry_at = now + self._margin if self._capped and remaining <= 0 else None
         self._current = cur.with_renewed_vendor(fresh)
@@ -1045,7 +1045,7 @@ class VisitGrant:
         return True
 
 
-# ── 取消邀请 ───────────────────────────────────────────────────────────
+# ── Cancel invitation ─────────────────────────────────────────────────────
 
 
 async def cancel_visit_room(
@@ -1071,9 +1071,9 @@ async def cancel_visit_room(
     False when it gave up (expired, logged out, uncontracted reply).
     """
     require_visit_id(visit_id)
-    # 截止时刻再夹一道上限：无论传进来什么，最多重试到「现在 + 邀请有效期 + 容差」
+    # Apply another cap to the deadline: regardless of input, retry at most until "now + invitation lifetime + tolerance"
     latest = time.time() + VISIT_INVITE_CODE_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S
-    # invite_expires_at 是 Servers 时间：本机时钟快时要加容差，否则邀请还活着就先放弃了
+    # invite_expires_at uses Servers time: add tolerance in case the local clock is fast, or we may abandon while the invitation is still valid
     deadline = (
         min(float(invite_expires_at) + VISIT_TICKET_CLOCK_TOLERANCE_S, latest)
         if invite_expires_at is not None else latest
@@ -1119,12 +1119,12 @@ async def cancel_visit_room(
         await _sleep(delay)
 
 
-# ── 公钥 ───────────────────────────────────────────────────────────────
+# ── Public keys ────────────────────────────────────────────────────────────
 
 _pubkeys_fetched: FetchedPubkeys | None = None
 _pubkeys_failed_at: float | None = None
 _pubkeys_inflight: asyncio.Task | None = None
-# 已经把 GET 发出去的那个刷新任务；_pubkeys_inflight 不是它时，在飞的刷新还没发请求
+# The refresh task that already sent its GET request; when _pubkeys_inflight is not this task, the in-flight refresh has not sent its request yet
 _pubkeys_requested_by: asyncio.Task | None = None
 
 
@@ -1141,7 +1141,7 @@ async def _refresh_pubkeys() -> None:
     try:
         await _request_pubkeys()
     finally:
-        # 结束后不再引用这个任务（连同它异常里的 traceback / httpx 对象）
+        # Do not retain this task after it finishes (including traceback / httpx objects from its exception)
         if _pubkeys_requested_by is asyncio.current_task():
             _pubkeys_requested_by = None
 
@@ -1159,7 +1159,7 @@ async def _request_pubkeys() -> None:
         _pubkeys_failed_at = time.time()
         return
     try:
-        # 超长整数解析成无穷大：ttl_s 被截到上限，坏的 not_before/not_after 只吊销该 kid，吊销名单照常生效
+        # Extremely large integer parses as infinity: cap ttl_s; invalid not_before/not_after revokes only that kid, while the revocation list still takes effect
         fetched = parse_pubkeys_response(_body_json(resp, parse_int=_json_int_or_inf), fetched_at=time.time())
     except (ValueError, TypeError) as exc:
         logger.warning("visit servers pubkeys: malformed reply: %s", exc)
@@ -1178,7 +1178,7 @@ def _log_refresh_failure(task: asyncio.Task) -> None:
 
 
 async def _refresh_pubkeys_after(previous: asyncio.Task) -> None:
-    # 前一次的结果（含失败）由它自己的回调记日志，这里只等它结束
+    # The previous result (including failure) is logged by its own callback; here only wait for it to finish
     await asyncio.wait([previous])
     await _refresh_pubkeys()
 
@@ -1223,20 +1223,20 @@ async def fetch_pubkeys(*, force_refresh: bool = False) -> PubkeySet:
     if task is not None and (task.done() or task.get_loop() is not asyncio.get_running_loop()):
         task = None
     if force_refresh:
-        # 遇到未知 kid 才强制刷新：已在签发 / 轮换之前发出的那次可能带回旧表，要排在它后面再拉一次
+        # Force refresh only for an unknown kid: a refresh launched before issuance / rotation may return the old table, so schedule another fetch after it
         task = _kick_pubkeys_refresh(after_now=True)
     elif task is None and not cache_valid and not recently_failed:
         task = _kick_pubkeys_refresh()
     elif cache_valid:
-        # 缓存有效就不等后台刷新（串起来最多两次请求），核验不该被它拖住
+        # Do not wait for the background refresh while the cache is valid (at most two sequential requests); verification must not be delayed by it
         task = None
     if task is not None:
-        # 失败抑制期内也要等已经在进行的刷新：它可能正好带回新的吊销名单
+        # During the failure-suppression window, still wait for an already running refresh: it may be returning a new revocation list
         await asyncio.shield(task)
     return await asyncio.to_thread(PubkeySet.from_runtime, now=time.time(), fetched=_pubkeys_fetched)
 
 
-# ── 邀请预览 ───────────────────────────────────────────────────────────
+# ── Invitation preview ─────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1271,7 +1271,7 @@ def is_locally_blocked(preview: InvitePreview, blocklist: Any) -> bool:
     """Blocklist verdict for the inviting host; an unreadable list counts as blocked (fail closed)."""
     try:
         return bool(blocklist.is_blocked(preview.host_visit_uid))
-    except Exception as exc:  # noqa: BLE001 - 黑名单读不出来按命中处理
+    except Exception as exc:  # noqa: BLE001 - if the blocklist cannot be read, treat it as a match
         logger.warning("visit invite preview: blocklist unavailable: %s", type(exc).__name__)
         return True
 

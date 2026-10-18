@@ -27,10 +27,10 @@ from plugin.server.application.plugins import registry_service as module
 from plugin.server.infrastructure import autostart_approvals, packaged_metadata
 from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT
 
-# `platform` 第一次问操作系统版本时会 shell 出一个 `ver`，答案之后缓存在它自己的
-# 模块全局里。跑整个文件时这一下发生在某条更早的用例里，`_no_subprocess` 看不到；
-# 单跑任意一条用它的用例时却落进毒化窗口，报成"discovery 起了子进程"。在这里先问
-# 一次，让这些用例单跑和全量跑是同一个结果。
+# The first time `platform` queries the OS version, it shells out to `ver` and caches the answer in its
+# module globals. Running the entire file triggers this in an earlier test, outside `_no_subprocess`;
+# running an individual test instead places it inside the poisoned window and falsely reports 'discovery started a subprocess'. Query once
+# here to make individual and whole-file runs behave identically.
 packaged_metadata.build_environment()
 
 pytestmark = pytest.mark.plugin_unit
@@ -159,7 +159,7 @@ def _write_plugin(tmp_path: Path, *, entries: list[dict], sdk_version: str | Non
             else packaged_metadata.build_environment()
         ),
         "entries": entries,
-        # 当前 schema 一定会写这三张表，缺哪张都算包坏了。
+        # The current schema always writes these three tables; any missing table means a broken package.
         "handlers": {},
         "entry_methods": {},
         "entries_config_sha256": packaged_metadata.entries_config_digest({}, {}),
@@ -658,8 +658,8 @@ def test_an_oversized_metadata_file_is_refused_before_parsing(tmp_path: Path) ->
     plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
     meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
 
-    # 除了体积，这份元数据其它方面完全合法——否则"被拒"可能是缺字段导致的，
-    # 去掉大小闸门测试照样通过，守卫等于没守（本轮变异验证抓到过这一点）。
+    # Aside from size, this metadata is fully valid; otherwise rejection might result from missing fields,
+    # and removing the size gate would still pass, leaving it untested (caught by this round's mutation testing).
     payload = json.loads(meta_path.read_text(encoding="utf-8"))
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
         "前提没成立：这份元数据在放大之前就该是可用的"
@@ -727,9 +727,9 @@ def test_deleting_a_source_file_invalidates_the_metadata(tmp_path: Path) -> None
 
     extra.unlink()
 
-    # 把 meta.json 的时间戳推到未来，关掉 mtime 那条快路径。不这样做的话，目录
-    # mtime 变新也能拒掉这次读取，测试就分辨不出到底是哪条判据在起作用——而 mtime
-    # 那条恰恰是不可靠的那条（本机过、CI 挂）。这里要单独证明清单校验有效。
+    # Move meta.json's timestamp into the future to disable the mtime fast path. Otherwise a newer directory
+    # mtime could also reject this read, obscuring which criterion worked; mtime is precisely
+    # the unreliable criterion (local passes, CI fails). Prove manifest validation independently here.
     future = time.time() + 3600
     os.utime(meta_path, (future, future))
     assert packaged_metadata.source_stat_summary(plugin_dir).newest_mtime_ns <= (
@@ -1055,7 +1055,7 @@ def test_the_fingerprint_uses_one_spelling_for_a_decomposed_name(
 
     names, _untrustworthy = packaged_metadata.source_file_names(plugin_dir)
     assert composed in names, f"记录的是分解形式，和包里的档案名对不上：{names}"
-    # 摘要必须真的能读到文件——归一化后的名字在保留原拼写的文件系统上打不开。
+    # Digest computation must actually read files: normalized names cannot open files on filesystems preserving original spelling.
     assert packaged_metadata.compute_source_sha256(plugin_dir)
 
 
@@ -1558,7 +1558,7 @@ def test_a_v3_package_is_refused_and_takes_the_worker_path(tmp_path, monkeypatch
     assert lifecycle_service._read_packaged_isolated_metadata(
         plugin_dir / "plugin.toml", "demo",
     ) is None
-    # 发现侧照旧走 manifest 声明的那条通路，不会因为包过期就没有入口可列。
+    # Discovery still uses the manifest-declared path; stale packages must not lose their listed entry points.
     conf = {"entries": [{"id": "go", "name": "Declared"}]}
     listed = module._packaged_entries_preview(
         SimpleNamespace(toml_path=plugin_dir / "plugin.toml", conf=conf, pdata={}), "demo",
@@ -1635,10 +1635,10 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
         conf={}, pdata={},
     ) is True
     written_bytes = meta_path.read_bytes()
-    # 落盘的字节就是量过的字节：不能经文本模式在 Windows 上被展开成 CRLF（codex）。
+    # Persist exactly the measured bytes; Windows text mode must not expand them to CRLF (codex).
     assert b"\r" not in written_bytes
     written = json.loads(written_bytes.decode("utf-8"))
-    # 键集合和打包器 derive_plugin_metadata 返回的字典一致：多一个少一个都算格式漂移。
+    # The key set must match the dictionary returned by the packager's derive_plugin_metadata; any extra or missing key is format drift.
     import ast as _ast
     import inspect as _inspect
 
@@ -1657,7 +1657,7 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
     packaged = packaged_metadata.read_packaged_metadata(plugin_dir)
     assert packaged is not None
     assert packaged.handlers["demo.go"]["timeout"] == 4
-    # 指纹阶段出错（文件在枚举和哈希之间消失）不能变成启动失败：只记日志、不写。
+    # Fingerprinting errors (a file disappearing between enumeration and hashing) must not fail startup: log only, without writing.
     raw = json.loads(meta_path.read_text(encoding="utf-8"))
     raw["schema_version"] = 3
     meta_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -1677,9 +1677,9 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
         packaged_metadata.compute_source_sha256 = original
     assert meta_path.read_bytes() == before
 
-    # 写出来的文件读取器读不了（超过尺寸上限）就不写：它会是"当前版本且超大"，
-    # 之后没有任何路径能再修它。上限设成正好等于输入文件的大小：输入能过
-    # stale 判据，带缩进、多了指纹字段的输出一定超（coderabbit）。
+    # Do not write a file the reader would reject as oversized: it would be 'current version and oversized',
+    # leaving no repair path. Set the limit exactly to input size: input passes
+    # the stale check, but indented output with extra fingerprint fields necessarily exceeds it (coderabbit).
     original_cap = packaged_metadata.MAX_PACKAGED_METADATA_BYTES
     packaged_metadata.MAX_PACKAGED_METADATA_BYTES = len(before)
     assert packaged_metadata.stale_packaged_schema_version(plugin_dir) == 3
@@ -1695,7 +1695,7 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
     raw["schema_version"] = packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION
     meta_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    # 第二次没有过期文件可升，什么都不写。
+    # On the second pass, no stale files remain to upgrade, so write nothing.
     before = meta_path.read_bytes()
     assert packaged_metadata.refresh_stale_packaged_metadata(
         plugin_dir, before_scan=before_scan,

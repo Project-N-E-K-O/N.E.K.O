@@ -144,7 +144,7 @@ async def test_confirmed_acceptance_keeps_route_during_body_repair(tmp_path, mon
     async def generate(self, **kwargs):
         calls["actor"] += 1
         if calls["actor"] == 2 and mode in {"repair", "unrepaired"}:
-            # 落点修复只使用历史与当前合同，不把被拒的旧场景再次喂作编辑底稿。
+            # Repair the landing point using only history and the current contract; do not reuse the rejected old scene as an editing draft.
             assert "仍在旧接待台" not in kwargs["retry_hint"]
             assert "目标段仍在旧场景" in kwargs["retry_hint"]
         if kwargs["outcome"].session.current_node_id == "start":

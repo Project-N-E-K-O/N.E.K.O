@@ -123,6 +123,39 @@
         return !!S.proactiveVisionEnabled;
     }
 
+    mod.isProactiveVisionEnabledNow = isProactiveVisionEnabledNow;
+
+    // 每次撤回授权递增。截图之后递增过，这张图就属于撤权前：即使随后又重新
+    // 开启，也不能随请求发出——后端只能察觉它收到请求之后的撤权。
+    var proactiveVisionRevocationSeq = 0;
+
+    function noteProactiveVisionConsent(enabled) {
+        if (enabled === false) proactiveVisionRevocationSeq += 1;
+    }
+
+    function currentProactiveVisionRevocationSeq() {
+        return proactiveVisionRevocationSeq;
+    }
+
+    // vision 与 window 同属视觉授权（见 latestModes），撤权时两者一起去掉。
+    function discardVisionRevokedSince(requestBody, seqAtCapture) {
+        var modes = requestBody.enabled_modes || [];
+        if (!requestBody.screenshot_data && !requestBody.window_title
+            && modes.indexOf('vision') === -1 && modes.indexOf('window') === -1) return false;
+        // 另一窗口的撤权先落 localStorage，本窗口的同步事件可能还没到，序号未变。
+        if (seqAtCapture === proactiveVisionRevocationSeq && isProactiveVisionEnabledNow()) return false;
+        delete requestBody.screenshot_data;
+        delete requestBody.screenshot_allow_desktop_fallback;
+        delete requestBody.avatar_position;
+        delete requestBody.window_title;
+        requestBody.enabled_modes = modes.filter(function (m) { return m !== 'vision' && m !== 'window'; });
+        return true;
+    }
+
+    mod.noteProactiveVisionConsent = noteProactiveVisionConsent;
+    mod.currentProactiveVisionRevocationSeq = currentProactiveVisionRevocationSeq;
+    mod.discardVisionRevokedSince = discardVisionRevokedSince;
+
     function isHomeTutorialFeatureSuppressed() {
         if (window.isNekoClickGuideActive === true) return true;
         try {
@@ -1317,6 +1350,9 @@
                 }
             }
 
+            // 截图开始前记下撤权序号，发送前比对（见 discardVisionRevokedSince）。
+            var visionRevocationSeqAtCapture = proactiveVisionRevocationSeq;
+
             // 如果包含 vision 模式，需要在前端获取截图和窗口标题
             if (availableModes.includes('vision') || availableModes.includes('window')) {
                 var fetchTasks = [];
@@ -1388,6 +1424,9 @@
                     var screenshotDataUrl = screenshotResult.dataUrl;
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
+                        // 先传窗口约束，Phase 2 前端失联时后端也不能扩大到整屏。
+                        requestBody.screenshot_allow_desktop_fallback =
+                            screenshotResult.allowDesktopFallback !== false;
                         // captureType 由截图函数在抓帧那一刻定好（见 resolveCaptureTypeFor）。
                         // 这里不再二次推断：抓帧是异步的，等到这一步 S 里的流 / 源
                         // 可能已经换人，拿它解释这张旧图会叠错或漏叠。
@@ -1471,6 +1510,11 @@
                 var hdrs = { 'Content-Type': 'application/json' };
                 if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
+                }
+                // 截图、取 header、CSRF 重试期间都可能撤权后又重新开启。
+                if (discardVisionRevokedSince(requestBody, visionRevocationSeqAtCapture)) {
+                    console.log('截图后视觉授权被撤回过，本次请求不带截图和窗口信息');
+                    proactiveBody = JSON.stringify(requestBody);
                 }
                 return fetch('/api/proactive_chat', {
                     method: 'POST',
@@ -2388,16 +2432,28 @@
         return (!stream && !sourceId) ? 'screen' : null;
     }
 
+    function isProactiveScreenshotBlocked() {
+        return isHomeTutorialFeatureSuppressed() || !isProactiveVisionEnabledNow();
+    }
+
+    function declinedProactiveScreenshot() {
+        // “不允许”必须保留到后端；普通空图仍表示技术失败、允许原有兜底。
+        return { dataUrl: null, via: null, captureType: null, declined: true, allowDesktopFallback: false };
+    }
+
     async function captureProactiveChatScreenshotWithSourceInternal() {
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+            if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
             if (rememberedWindowCapture && rememberedWindowCapture.required
                 && !rememberedWindowCapture.allowed) {
                 console.warn('[主动搭话截图] 记忆窗口无法唯一确认，停止本次截图');
-                return { dataUrl: null, via: null, captureType: null };
+                return declinedProactiveScreenshot();
             }
         }
+
+        var allowDesktopFallback = !(rememberedWindowCapture && rememberedWindowCapture.required);
 
         function rememberedCaptureStillCurrent() {
             return !rememberedWindowCapture
@@ -2422,7 +2478,7 @@
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
                         if (discardSupersededRememberedFrame('缓存流截图')) {
-                            return { dataUrl: null, via: null, captureType: null };
+                            return declinedProactiveScreenshot();
                         }
                         S.screenCaptureStreamLastUsed = Date.now();
                         if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
@@ -2430,6 +2486,7 @@
                         return {
                             dataUrl: cachedFrame.dataUrl,
                             via: 'stream',
+                            allowDesktopFallback: allowDesktopFallback,
                             captureType: resolveCaptureTypeFor('stream', cachedStream, cachedSourceId)
                         };
                     }
@@ -2438,6 +2495,7 @@
         }
 
         // 策略 0b: 桌面壳直接捕获选中源（Electron / Tauri）
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var desktopProvider = getDesktopProvider();
         if (S.selectedScreenSourceId && desktopProvider
             && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
@@ -2451,12 +2509,13 @@
                 );
                 if (direct && direct.success && direct.dataUrl) {
                     if (discardSupersededRememberedFrame('主进程直接捕获')) {
-                        return { dataUrl: null, via: null, captureType: null };
+                        return declinedProactiveScreenshot();
                     }
                     console.log('[主动搭话截图] 主进程直接捕获成功:', nativeSourceId);
                     return {
                         dataUrl: direct.dataUrl,
                         via: 'native',
+                        allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('native', null, nativeSourceId)
                     };
                 } else if (direct && direct.error) {
@@ -2469,10 +2528,11 @@
         }
 
         // 策略1: 缓存流 / Electron窗口ID / getDisplayMedia（非user gesture不弹窗）
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
-        if (isHomeTutorialFeatureSuppressed()) {
+        if (isProactiveScreenshotBlocked()) {
             releaseProactiveVisionStream();
-            return { dataUrl: null, via: null, captureType: null };
+            return declinedProactiveScreenshot();
         }
         if (stream) {
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
@@ -2480,12 +2540,13 @@
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 if (discardSupersededRememberedFrame('前端流截图')) {
-                    return { dataUrl: null, via: null, captureType: null };
+                    return declinedProactiveScreenshot();
                 }
                 console.log('[主动搭话截图] 前端截图成功');
                 return {
                     dataUrl: frame.dataUrl,
                     via: 'stream',
+                    allowDesktopFallback: allowDesktopFallback,
                     captureType: resolveCaptureTypeFor('stream', stream, streamSourceId)
                 };
             }
@@ -2496,22 +2557,24 @@
                 S.screenCaptureStream = null;
                 S.screenCaptureStreamLastUsed = null;
             }
+            if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
             // 重试：会走 Electron sourceId 路径
             stream = await acquireOrReuseCachedStream({ allowPrompt: false });
-            if (isHomeTutorialFeatureSuppressed()) {
+            if (isProactiveScreenshotBlocked()) {
                 releaseProactiveVisionStream();
-                return { dataUrl: null, via: null, captureType: null };
+                return declinedProactiveScreenshot();
             }
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
                     if (discardSupersededRememberedFrame('前端流重试截图')) {
-                        return { dataUrl: null, via: null, captureType: null };
+                        return declinedProactiveScreenshot();
                     }
                     return {
                         dataUrl: frame.dataUrl,
                         via: 'stream',
+                        allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('stream', stream, retrySourceId)
                     };
                 }
@@ -2528,11 +2591,18 @@
         // Remember-window is a fail-closed boundary. A validated window whose
         // direct/stream capture failed must not widen to a desktop screenshot.
         if (rememberedWindowCapture && rememberedWindowCapture.required) {
+            // 截图期间记忆窗口已换：旧图属于未确认的窗口，必须明确拒绝。
+            if (discardSupersededRememberedFrame('记忆窗口捕获失败')) {
+                return declinedProactiveScreenshot();
+            }
             console.warn('[主动搭话截图] 记忆窗口捕获失败，停止整桌面兜底');
-            return { dataUrl: null, via: null, captureType: null };
+            // 窗口仍是同一个、只是这次没截到：属于技术失败，不是拒绝。后端仍可回用
+            // 本轮同窗口旧图，allowDesktopFallback=false 保证不扩大到整桌面。
+            return { dataUrl: null, via: null, captureType: null, allowDesktopFallback: false };
         }
 
         // 策略2: 后端 pyautogui 兜底
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
@@ -2547,15 +2617,15 @@
         return { dataUrl: null, via: null, captureType: null };
     }
     async function captureProactiveChatScreenshotWithSource() {
-        if (isHomeTutorialFeatureSuppressed()) {
-            return { dataUrl: null, via: null, captureType: null };
+        if (isProactiveScreenshotBlocked()) {
+            return declinedProactiveScreenshot();
         }
         var shot = await captureProactiveChatScreenshotWithSourceInternal();
         // 统一结果闸门：缓存帧、原生捕获、前端流和后端截图的所有异步
-        // 成功路径都经过这里，避免教程在抓帧期间开始后返回屏幕内容。
-        if (isHomeTutorialFeatureSuppressed()) {
+        // 成功路径都经过这里，避免教程/隐私在抓帧期间开启后返回屏幕内容。
+        if (isProactiveScreenshotBlocked()) {
             releaseProactiveVisionStream();
-            return { dataUrl: null, via: null, captureType: null };
+            return declinedProactiveScreenshot();
         }
         return shot;
     }

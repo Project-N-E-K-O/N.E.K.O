@@ -1,4 +1,4 @@
-"""玩家动作结果投影只保留可证明的完成与未来边界。"""  # noqa: DOCSTRING_CJK
+"""Project player action outcomes using only provable completion and future boundaries."""  # noqa: DOCSTRING_CJK
 
 import pytest
 

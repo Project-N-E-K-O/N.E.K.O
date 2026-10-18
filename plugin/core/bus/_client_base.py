@@ -45,21 +45,21 @@ def _ensure_rpc(ctx: "PluginContext") -> _MessagePlaneRpcClient:
     """
     endpoint = resolve_message_plane_rpc_endpoint()
     rpc = getattr(ctx, "_mp_rpc_client", None)
-    # 只重建**这里自己造的**客户端。调用方注入的那个不许碰：进程内的端到端
-    # 测试就是这么把 ctx 接到一个临时端口上的，按环境值去比较会把它换成默认
-    # 端点，而那个端口上没人监听——整套测试直接挂死（我第一版就是这样）。
-    # 这和 plane_bridge 那边不在 start() 里重读环境是同一条理由。
+    # Rebuild only clients created here. Do not touch injected clients: in-process end-to-end
+    # tests connect ctx to a temporary port this way. Comparing against environment values would
+    # replace it with the default endpoint, where nobody listens, hanging the entire test suite (as my first version did).
+    # This is the same rationale as plane_bridge not rereading environment in start().
     if (
         rpc is not None
         and getattr(rpc, "_neko_endpoint_autoresolved", False)
         and getattr(rpc, "_endpoint", None) != endpoint
     ):
-        # 端点变了：旧客户端的 socket 已经连在老地址上，留着它只会一直超时。
+        # Endpoint changed: old client sockets remain connected to the old address and would only keep timing out.
         #
-        # 只是丢引用，没有 close() 可调——_MessagePlaneRpcClient 不提供关闭接口，
-        # 它的 socket 随对象一起被 pyzmq 在终结时关掉。写一个 try: rpc.close()
-        # 在这里会是纯装饰：那个方法不存在，异常会被吞掉，看着像清理其实没有。
-        # 端点变动是罕见事件（plane 重启换端口），到 GC 之前的短暂滞留可以接受。
+        # Drop the reference only; no close() exists. _MessagePlaneRpcClient exposes no close interface;
+        # pyzmq closes its socket during object finalization. A try: rpc.close() here
+        # would be decorative: the method does not exist, its exception is swallowed, and no actual cleanup occurs.
+        # Endpoint changes are rare (plane restarts on another port); brief retention until GC is acceptable.
         rpc = None
     if rpc is None:
         rpc = _MessagePlaneRpcClient(
@@ -67,7 +67,7 @@ def _ensure_rpc(ctx: "PluginContext") -> _MessagePlaneRpcClient:
             endpoint=endpoint,
         )
         with suppress(Exception):
-            # 打上"我造的"标记，下次端点变了才敢换掉它。
+            # Mark it as locally created so a future endpoint change may replace it.
             rpc._neko_endpoint_autoresolved = True
         try:
             ctx._mp_rpc_client = rpc

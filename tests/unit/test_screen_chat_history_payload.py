@@ -16,7 +16,7 @@ from utils.llm_client import ChatOpenAI
 
 
 # Synthetic samples. They keep the incident's structure (eight single
-# comments that take a label, a "哇…呀！…" cadence, some ending in "喵～",
+# comments that take a label, a "哇…呀！…" (wow... ah!...) cadence, some ending in "喵～" (meow),
 # 40-70 characters each) and none of its wording: user chat never goes
 # into the repo.
 SCREEN_COMMENTS = (

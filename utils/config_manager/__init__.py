@@ -158,11 +158,11 @@ class ConfigManager(
     """Config file manager"""
     _agent_quota_lock = threading.Lock()
     _selected_root_unavailable_recovery_override_roots: set[str] = set()
-    _free_agent_daily_limit = 500 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
-    # 本地每日配额只对真正的免费 Agent 模型计数；模型名与 config/api_providers.json 的 assist free profile 保持一致。
+    _free_agent_daily_limit = 500 # Free quotas are not enforced only locally; local calculations reduce invalid requests and network bandwidth.
+    # Local daily quota counts only actual free Agent models; model names match config/api_providers.json's assist free profile.
     _free_agent_model_name = "free-agent-model"
-    # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
-    # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
+    # Throttle frontend quota-exhaustion prompts using a separate lock from _agent_quota_lock, avoiding reentry while holding the quota lock.
+    # agent_server registers a process-level notifier at startup; exhaustion signals trigger it at most once per _quota_notify_interval_s seconds.
     _quota_notify_lock = threading.Lock()
     _quota_notify_interval_s = 10.0
     _quota_notify_last_monotonic = 0.0
@@ -171,36 +171,36 @@ class ConfigManager(
     CLOUDSAVE_LOCAL_STATE_VERSION = 2
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
 
-    # 区域判定的三个缓存（None=未定，True=非大陆，False=大陆）：
-    #  - _region_cache：最终裁决，只由 IP 结论写（Steam 兜底票从不落定它）
-    #  - _ip_check_cache：背景探测线程的产物，唯一写者是 _ip_probe_loop
-    #  - _steam_check_cache：Steam SDK 的国家码
+    # Three region-detection caches (None=unknown, True=outside mainland, False=mainland):
+    #  - _region_cache: final determination, written only by IP results, never by Steam fallback decisions
+    #  - _ip_check_cache: background probe output, written only by _ip_probe_loop
+    #  - _steam_check_cache: Steam SDK country code
     _region_cache = None
     _ip_check_cache = None
     _steam_check_cache = None
     _geo_indeterminate_logged = False
     _geo_steam_fallback_logged = False
-    # 保护背景探测线程的幂等启动（_ensure_ip_probe_started 的 check-and-set）。
+    # Protect idempotent background-probe startup (_ensure_ip_probe_started check-and-set).
     _geo_probe_lock = threading.Lock()
-    # 背景探测线程：单个 daemon 循环，内部退避重试到成功即退出，是 _ip_check_cache
-    # 的唯一写者。单线程单写者 → 无需票号 / 卡死顶替 / 泄漏封顶那套并发管理。
+    # Background probe: one daemon loop retries with backoff until success, then exits; the sole writer of _ip_check_cache.
+    # A single thread/writer needs no ticketing, stuck-worker replacement, or leak-cap concurrency machinery.
     _ip_probe_thread = None
-    # 可中断退避：set 它让探测循环从退避 sleep 中醒来并退出（进程 shutdown / 测试
-    # 清理）。生产从不 set，退避行为等同 time.sleep。
+    # Interruptible backoff: set this to wake the probe from sleep and exit during process shutdown/test
+    # cleanup. Production never sets it, so backoff behaves like time.sleep.
     _ip_probe_wake = threading.Event()
-    # 探测是否「正在发请求」。退避 sleep 期间为 False：线程仍 alive，但那段时间不会
-    # 有结论到达，等待方据此跳过 join，避免每个会话白付一次超时。
+    # Whether a probe request is active. False during backoff sleep: the thread remains alive, but no result
+    # can arrive then; waiters skip join to avoid wasting a timeout on every session.
     _ip_probe_in_flight = threading.Event()
-    # 与 _ip_probe_wake 配套：唤醒时若为 True 则循环退出，否则只是「立刻重试」。
+    # Paired with _ip_probe_wake: when awakened, True exits the loop, otherwise retry immediately.
     _ip_probe_stopping = False
-    # 上一次读配置时免费路由是否被选中。用来识别「运行时新选中免费路由」这个边沿，
-    # 好催醒可能正在长退避里睡觉的探测循环——退避最长 600 秒，而用户刚切过来就要
-    # 开会话，会话线路一旦冻结整场不再复议。只在边沿催一次：每次读配置都催等于
-    # 让退避形同虚设，被墙时会退化成对 ip-api.com 的请求风暴。
+    # Whether free routing was selected on the previous configuration read. Detect newly selecting free routing at runtime,
+    # waking probes potentially sleeping in long backoff (up to 600 seconds). Users may start sessions immediately after switching,
+    # and frozen session routing is not reconsidered. Wake only on this edge; waking on every configuration read
+    # defeats backoff and turns blocked access into a request storm against ip-api.com.
     _free_route_selected = False
 
 
-# 全局配置管理器实例
+# Global configuration-manager instance
 _config_manager = None
 _config_manager_migrated = False
 
@@ -211,34 +211,34 @@ def _ensure_config_manager_migrated():
         return _config_manager
     if bool(getattr(_config_manager, "recovery_committed_root_unavailable", False)):
         return _config_manager
-    # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
-    # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
+    # Defer migration until runtime configuration is actually needed, allowing startup phase-0
+    # to decide cloud-snapshot import using the runtime root before default configuration is injected.
     _config_manager.migrate_config_files()
     _config_manager.migrate_default_card_faces()
     _config_manager.migrate_memory_files()
-    # openclawUrl 8089→8088 的落盘迁移。必须在这里而不是 get_core_config 里：那个方法
-    # 现在普遍经 asyncio.to_thread 调用，读路径写盘会和 /core_api 的保存互相顶掉。
-    # 失败只打日志，绝不阻塞启动（读路径仍会在内存里归一化）。
+    # Persist openclawUrl migration 8089→8088 here, not in get_core_config: that method
+    # now commonly runs through asyncio.to_thread, so writes on its read path race /core_api saves.
+    # Log failures without blocking startup; reads still normalize in memory.
     try:
         _config_manager.migrate_openclaw_url_port()
     except Exception as exc:
-        # "shouldn't happen"：该方法内部已吞掉并记录所有异常，这层只是兜住它自身
-        # 意外抛出的情况（例如 logger 配置坏掉）。不能让一次可选的落盘迁移拦住启动，
-        # 读路径无论如何都会在内存里归一化，功能不受影响。只打类名，避免 OSError 的
-        # str(exc) 带上 filename 泄露用户名。
+        # 'shouldn't happen': the method already catches/logs all exceptions; this catches its own unexpected
+        # failures, such as broken logger configuration. Optional persistence migration must never block startup;
+        # reads always normalize in memory, preserving behavior. Log only class names because OSError
+        # str(exc) can reveal usernames through filename.
         logger.warning(
             "[ConfigManager] migrate_openclaw_url_port 抛异常（已忽略）: %s",
             type(exc).__name__,
         )
-    # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
-    # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
-    # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。
-    # 失败只打日志不抛异常，绝不阻塞启动。
+    # After basic config/memory migration, perform a one-time soft migration of N.E.K.O/memory under legacy
+    # Documents/AppData paths: migrate only entries associated with characters, leaving unassociated entries
+    # for manual frontend legacy-cleanup UI rather than deleting them automatically at startup.
+    # Log failures without raising or blocking startup.
     try:
         _config_manager.migrate_legacy_documents_memory()
     except Exception as exc:
-        # "shouldn't happen" 路径（方法内部已吞所有异常），但 OSError 的 str(exc)
-        # 带 filename 会泄露 Documents 用户名，只打类名避免绕过脱敏。
+        # 'shouldn't happen' path (the method catches all exceptions), but OSError str(exc)
+        # includes filenames revealing Documents usernames; log only class names to preserve redaction.
         try:
             _config_manager._log(
                 f"[ConfigManager] migrate_legacy_documents_memory 抛异常（已忽略）: "
@@ -268,7 +268,7 @@ def get_config_manager(app_name=None, *, migrate=True):
     return _config_manager
 
 
-# 便捷函数
+# Convenience functions
 def get_config_path(filename):
     """Get the config file path"""
     return get_config_manager().get_config_path(filename)
@@ -304,7 +304,7 @@ async def aupdate_json_config(filename, mutator):
     """Locked read-modify-write of a JSON config (async paths; never blocks the loop)."""
     return await get_config_manager().aupdate_json_config(filename, mutator)
 
-# Workshop配置便捷函数
+# Workshop-configuration convenience functions
 def load_workshop_config():
     """Load workshop config"""
     return get_config_manager().load_workshop_config()

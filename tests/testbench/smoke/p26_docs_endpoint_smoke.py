@@ -138,7 +138,7 @@ Usage::
     .venv\\Scripts\\python.exe tests/testbench/smoke/p26_docs_endpoint_smoke.py
 
 Exits non-zero on any violation. Fast (< 1s) — no network, no LLM.
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import ast

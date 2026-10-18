@@ -40,8 +40,8 @@ from main_logic.proactive_chat.mini_game_invite import (
     _render_mini_game_invite_line,
 )
 
-# 一一对应的字形标记；两侧同形的字（局/不/想/玩/球…）不能拿来当标记，
-# 否则会把一条好好的词条判成"没转换"。
+# One-to-one glyph markers: characters identical in both forms (局/不/想/玩/球...) cannot serve as markers,
+# or valid entries would be misclassified as unconverted.
 TRADITIONAL_ONLY = "來現遊戲會戰選個"
 SIMPLIFIED_ONLY = "来现游戏会战选个"
 
@@ -49,10 +49,10 @@ OPTION_KEYS = ("accept", "decline", "later")
 GAME_TYPES = tuple(MINI_GAME_INVITE_LINES_BY_GAME)
 
 
-# ── 1. 两张表都有 zh-TW 行 ───────────────────────────────────
+# -- 1. Both tables have zh-TW rows --
 @pytest.mark.parametrize("game_type", GAME_TYPES)
 def test_every_game_invite_line_has_a_traditional_row(game_type):
-    """自动发现：新接一个 mini-game 时忘了写 zh-TW，这里就红。"""  # noqa: DOCSTRING_CJK
+    """Automatic discovery fails here if a newly integrated minigame omits zh-TW."""  # noqa: DOCSTRING_CJK
     assert "zh-TW" in MINI_GAME_INVITE_LINES_BY_GAME[game_type], (
         f"{game_type} 缺 zh-TW 邀请文案"
     )
@@ -82,11 +82,11 @@ def test_traditional_option_labels_are_not_a_copy():
 
 @pytest.mark.parametrize("game_type", GAME_TYPES)
 def test_traditional_invite_line_keeps_the_placeholder(game_type):
-    """占位符丢了就会把 master_name 直接吞掉，用户看到的是一句没有称呼的邀请。"""  # noqa: DOCSTRING_CJK
+    """A missing placeholder swallows master_name, producing an invitation without an address."""  # noqa: DOCSTRING_CJK
     assert "{master_name}" in MINI_GAME_INVITE_LINES_BY_GAME[game_type]["zh-TW"]
 
 
-# ── 2. locale 真的走得到那一行 ───────────────────────────────
+# -- 2. Locale resolution actually reaches those rows --
 TRADITIONAL_SPELLINGS = ("zh-TW", "zh-tw", "zh_TW", "zh-Hant", "zh-Hant-TW", "tchinese")
 SIMPLIFIED_SPELLINGS = ("zh", "zh-CN", "zh_CN", "zh-Hans", "schinese")
 
@@ -118,8 +118,8 @@ def _expected_line(game_type: str, key: str, master: str) -> str:
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 @pytest.mark.parametrize("game_type", GAME_TYPES)
 def test_invite_line_renders_traditional(game_type, spelling):
-    """⚠️ 走生产渲染函数，不在测试里先归一化再喂 ``_loc``——那样测的是
-    ``_loc`` 而不是调用点，把归一化从调用点拿掉测试照样绿。"""  # noqa: DOCSTRING_CJK
+    """Exercise the production renderer, without normalizing before feeding ``_loc`` in the test; that would test
+    ``_loc`` rather than the call site and still pass if normalization were removed there."""  # noqa: DOCSTRING_CJK
     rendered = _render_mini_game_invite_line(game_type, spelling, "博士")
     assert rendered == _expected_line(game_type, "zh-TW", "博士")
 
@@ -133,8 +133,8 @@ def test_invite_line_still_renders_simplified(game_type, spelling):
 
 @pytest.mark.parametrize("game_type", GAME_TYPES)
 def test_invite_line_falls_back_to_simplified_via_loc(game_type):
-    """前提守卫：``_loc`` 对缺失的中文 key 会**静默**回落到简体（不报错），
-    所以少归一化一步的后果是"字形错了"而不是"崩了"——没有别的信号能发现。"""  # noqa: DOCSTRING_CJK
+    """Premise guard: ``_loc`` silently falls back to simplified Chinese for missing Chinese keys,
+    so missing normalization produces wrong glyphs rather than a crash, leaving no other failure signal."""  # noqa: DOCSTRING_CJK
     assert _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], "zh-Hant") == (
         MINI_GAME_INVITE_LINES_BY_GAME[game_type]["zh"]
     )
@@ -149,7 +149,7 @@ def test_option_payload_renders_traditional_labels(spelling):
     )
     labels = {opt["choice"]: opt["label"] for opt in payload["options"]}
     assert labels == MINI_GAME_INVITE_OPTION_LABELS["zh-TW"]
-    # choice 是 wire-format 标识符，不跟着 locale 变。
+    # choice is a wire-format identifier and does not vary with locale.
     assert set(labels) == set(OPTION_KEYS)
 
 
@@ -162,7 +162,7 @@ def test_option_payload_still_renders_simplified_labels(spelling):
     assert labels == MINI_GAME_INVITE_OPTION_LABELS["zh"]
 
 
-# ── 3. 解析器：短码方案会把 zh-TW 折掉 ──────────────────────
+# -- 3. Parser: short-code handling collapses zh-TW --
 @pytest.mark.parametrize("source", ("request", "session"))
 def test_short_format_collapses_traditional_and_full_keeps_it(source):
     """This is the whole reason the invite path needs its own format.
@@ -217,11 +217,11 @@ def test_garbage_request_language_still_falls_through_to_the_session():
     assert normalize_mini_game_invite_locale(resolved) == "zh-TW", resolved
 
 
-# ── 4. 调用点：谁给邀请路径喂 locale ─────────────────────────
-# ⚠️ 上面全是"表和解析器各自没问题"，但让 zh-TW 真正到达用户的是**调用点**。
-# 把调用点改回默认短码，上面每一条都还是绿的。所以这里 walk 一遍 service.py 的
-# AST 找出所有喂 invite_lang 的地方——自动发现，不是列清单：以后加第三个调用点
-# 也会被查到。
+# -- 4. Call sites supplying locale to invitations --
+# The above checks establish only that tables and parsers work independently; call sites actually deliver zh-TW to users.
+# Reverting call sites to short codes leaves all those checks green. Walk service.py's
+# AST to discover every source of invite_lang automatically, rather than listing them, so a future third call site
+# is checked too.
 INVITE_CALLEES = {
     "_build_mini_game_invite_options_payload",
     "run_mini_game_invite_short_circuit",
@@ -263,7 +263,7 @@ def _invite_lang_arg_names() -> dict[str, set[str]]:
 
 
 def test_both_invite_call_sites_are_found():
-    """Premise guard: 没找到调用点的话，下面那条测试是空转。"""  # noqa: DOCSTRING_CJK
+    """Premise guard: if no call sites are found, the test below is vacuous."""  # noqa: DOCSTRING_CJK
     found = _invite_lang_arg_names()
     assert set(found) == INVITE_CALLEES, f"只找到 {sorted(found)}"
 

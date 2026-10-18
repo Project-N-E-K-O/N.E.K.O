@@ -22,233 +22,233 @@ TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
 
 # ── Memory evidence mechanism (docs/design/memory-evidence-rfc.md) ────
-# 用户驱动的 evidence 计数器相关常量。所有评分计算都以 "净用户确认次数"
-# 为单位（§3.1.2 偏离 task spec 原公式——去掉 importance 项）。阈值改值
-# 会产生实际 behavior 变化，详见 RFC §6.5 pre-merge reviewer gates。
+# User-driven evidence counter constants. Scores measured in net user confirmations
+# (§3.1.2 differs from task-spec formula by removing importance). Changing thresholds
+# changes behavior; see RFC §6.5 pre-merge reviewer gates.
 
-# §3.1.4 派生状态阈值
+# §3.1.4 Derived-state thresholds.
 EVIDENCE_CONFIRMED_THRESHOLD = 1.0   # score ≥ 1 → confirmed
 EVIDENCE_PROMOTED_THRESHOLD = 2.0    # score ≥ 2 → promoted
 EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 
-# 强力记忆 OFF（powerful_memory_enabled=False）时的 time-driven fallback 阈值。
-# pre-RFC 行为：不靠 evidence_score，纯按 reflection 年龄推进 lifecycle，零
-# LLM 成本。pre-RFC 用 3 天，但实测过激（"3 天没否认 != 用户认可"）；这里
-# 拉到 7 天给用户更长窗口主动反驳。
-WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed (按 created_at 计)
-WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted (按 confirmed_at 计)
+# Time-driven fallback when powerful_memory_enabled=False.
+# Pre-RFC: advance lifecycle solely by reflection age, without evidence_score or
+# LLM cost. Previous 3 days proved too aggressive (no denial for3days is not agreement);
+# extend to7days for more opportunity to dispute.
+WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed, measured from created_at.
+WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted, measured from confirmed_at.
 
-# §3.5.3 归档相关（sub_zero_days 计数 + 分片大小上限）
-EVIDENCE_ARCHIVE_DAYS = 14           # sub_zero 累计达此天数 → 真正归档
-ARCHIVE_FILE_MAX_ENTRIES = 500       # 归档分片文件单文件最大 entry 数
+# §3.5.3 Archival (sub_zero_days counts + shard-size cap).
+EVIDENCE_ARCHIVE_DAYS = 14           # Archive after this many accumulated sub_zero days.
+ARCHIVE_FILE_MAX_ENTRIES = 500       # Maximum entries per archive shard.
 
-# §3.1.5 ignored 扣分
+# §3.1.5 Ignored penalty.
 IGNORED_REINFORCEMENT_DELTA = -0.2   # check_feedback ignored → reinforcement += delta
 
-# §3.1.8 每种 signal 源的 delta 权重（v1.2.1：区分 direct vs indirect）
-# 直接信号（用户显式回应 surfaced reflection 或命中负面关键词）权重 1.0；
-# 间接信号（Stage-2 LLM 推断 fact 对 reflection 的关系）权重 0.5，避免
-# LLM 误关联把 evidence 污染太快。
-USER_FACT_REINFORCE_DELTA = 0.5      # Stage-2 reinforces（间接，银标准）
-USER_FACT_NEGATE_DELTA = 1.0         # Stage-2 negates（否定即使间接也保留强权，
-                                     # 因 LLM 判 negates 通常语义更明确）
-USER_CONFIRM_DELTA = 1.0             # check_feedback confirmed（直接，金标准）
-USER_REBUT_DELTA = 1.0               # check_feedback denied（直接）
-USER_KEYWORD_REBUT_DELTA = 1.0       # 关键词 + LLM target 检查（直接 + 显式）
+# §3.1.8 Delta weights by signal source (v1.2.1 direct vs indirect).
+# Direct signals (explicit surfaced-reflection responses / negative-keyword hits) weight1.0;
+# indirect Stage2 model-inferred fact/reflection relations weight0.5 to avoid
+# rapid evidence pollution through false LLM associations.
+USER_FACT_REINFORCE_DELTA = 0.5      # Stage2 reinforces (indirect, silver standard).
+USER_FACT_NEGATE_DELTA = 1.0         # Stage2 negates retains strong weight even indirectly,
+                                     # since model-negated relations usually have clearer semantics.
+USER_CONFIRM_DELTA = 1.0             # check_feedback confirmed (direct, gold standard).
+USER_REBUT_DELTA = 1.0               # check_feedback denied (direct).
+USER_KEYWORD_REBUT_DELTA = 1.0       # Keywords + LLM target validation (direct + explicit).
 
-# user_fact reinforces 的 combo bonus：累计 count 超过阈值后，每条新信号额
-# 外加 bonus，让"用户反复间接表达"的信号仍能追上"一次直接确认"的权重。
-# 默认：前 2 条各 0.5；第 3 条起每条 0.5 + 0.5 bonus = 1.0。
-USER_FACT_REINFORCE_COMBO_THRESHOLD = 2   # count > threshold 时激活
-USER_FACT_REINFORCE_COMBO_BONUS = 0.5     # 超阈值后每条的额外加权
+# user_fact reinforces combo bonus: after count exceeds threshold, each new signal
+# adds bonus so repeated indirect user expression can catch one direct confirmation's weight.
+# Default first2 signals0.5 each; from third,0.5 +0.5 bonus=1.0.
+USER_FACT_REINFORCE_COMBO_THRESHOLD = 2   # Active when count > threshold.
+USER_FACT_REINFORCE_COMBO_BONUS = 0.5     # Extra weight per signal above threshold.
 
-# §3.4.3 signal 抽取背景循环触发条件
-EVIDENCE_SIGNAL_CHECK_ENABLED = True             # 独立开关
-EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS = 10         # 累积 N 轮触发
-EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
-EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
-EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
+# §3.4.3 Background signal-extraction triggers.
+EVIDENCE_SIGNAL_CHECK_ENABLED = True             # Independent switch.
+EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS = 10         # Trigger after N accumulated turns.
+EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # Or after N idle minutes.
+EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # Poll interval aligned with IDLE_CHECK_INTERVAL.
+EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Maximum obs entering prompt after Stage2 LLM rerank (reduce NxM pairing decisions).
 
-# ── activity_guess 自适应退避门控 ──────────────────────────────────────
-# 活动心跳 (main_logic/activity/tracker.py:_activity_guess_loop) 通过 emotion-tier
-# LLM 把"用户在干嘛"叙述出来，只喂 proactive 搭话 prompt。这组旋钮约束「活动没
-# 实质变化时」它多久刷一次——用户在两个 app 间来回切窗口曾让它每 ~40s 烧一次
-# (静默, 无业务日志) 无限持续。详见 main_logic/activity/activity_guess_gate.py。
-# 同一活动每被重述一次，下次重述间隔就 ×MULTIPLIER 增长，封顶 CAP：30→120→480→900。
-# CAP 选 900s 对齐 AWAY_IDLE_SECONDS（state_machine.py，挂机 15min 进 away 后心跳硬 bail），
-# 这样稳定活动退避到地板时差不多也该转 away 了。消费端 get_snapshot 读 cache 无 TTL
-# 守卫，所以 CAP 放大不会让 proactive 拿到“过期”叙述（叙述只描述“在干嘛”，旧 = 仍准）。
-ACTIVITY_GUESS_BACKOFF_BASE_SECONDS = 30.0   # 两次调用之间的硬地板 + 首次重述间隔
-ACTIVITY_GUESS_BACKOFF_MULTIPLIER = 4.0      # 每次重述后退避间隔的增长倍数（必须 > 1）
-ACTIVITY_GUESS_BACKOFF_CAP_SECONDS = 900.0   # 活动稳定后重述间隔的封顶（对齐 AWAY_IDLE 15min）
-ACTIVITY_GUESS_SIG_CACHE_SIZE = 8            # 退避记忆的「不同活动签名」条数
+# ── activity_guess adaptive backoff ──────────────────────────────────────
+# Activity heartbeat (main_logic/activity/tracker.py:_activity_guess_loop) uses emotion-tier
+# LLM to narrate user activity solely for proactive prompts. Controls refresh rate while activity
+# is substantively unchanged; switching between two apps previously burned a call every~40s
+# silently forever. See main_logic/activity/activity_guess_gate.py.
+# Every same-activity narration multiplies next interval by MULTIPLIER, capped at CAP:30→120→480→900.
+# CAP900s matches AWAY_IDLE_SECONDS (state_machine.py; heartbeat exits after15min away),
+# so stable activity approaches away at maximum backoff. get_snapshot reads cache without TTL;
+# increasing cap does not make narration stale: unchanged activity remains accurate.
+ACTIVITY_GUESS_BACKOFF_BASE_SECONDS = 30.0   # Hard minimum between calls + first repeat interval.
+ACTIVITY_GUESS_BACKOFF_MULTIPLIER = 4.0      # Backoff growth multiplier after each narration, must >1.
+ACTIVITY_GUESS_BACKOFF_CAP_SECONDS = 900.0   # Maximum stable-activity narration interval (aligned15min AWAY_IDLE).
+ACTIVITY_GUESS_SIG_CACHE_SIZE = 8            # Number of distinct activity signatures retained for backoff.
 
 # ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
-# 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
-# 引入的屏幕/活动上下文全失明。Path B 走每 N 个 A tick 触发一次的 piggyback
-# 节奏：A 跑完后 b_tick_counter++，达到 N 就跑 B；窗口下游边界用 A 实际处理过
-# 的最晚 msg ts（不是 wall-clock now）保证 B 看的消息严格被 A 看过。
+# Original SignalLoop (path A) reads only user messages, missing AI disclosures and proactive
+# screen/activity context introduced after PR #1346. Path B piggybacks on every N A ticks:
+# after A finishes, increment b_tick_counter and run B at N; bound the window by the latest
+# message timestamp A actually processed, not wall-clock now, so B sees only messages A saw.
 EVIDENCE_AI_AWARE_EVERY_N_A_TICKS = 3
-"""Path B 每 N 次 A tick 触发一次（piggyback 在 A 循环里，不维护独立 wall-clock cadence）。
-- 选 3：A 平均 5 min 一次 tick → B 平均 15 min 一次。tempo 跟着对话强度自适应——
-  用户聊得越多 B 越频繁，符合"对话量大才需要补抓 AI fact"的直觉
-- B cold start lookback 自动 = N × EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 15 min"""
+"""Trigger path B every N path-A ticks (piggyback on A's loop without a separate wall-clock cadence).
+- Choose 3: A averages one tick per 5 min -> B averages 15 min. Tempo adapts to conversation intensity:
+  more conversation triggers B more often, matching the need for supplementary AI-fact extraction at higher volume.
+- B cold-start lookback automatically = N × EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 15 min."""
 
 MAX_AI_AWARE_WINDOW_MSGS = 200
-"""Path B 单次窗口 SQL LIMIT 上限。挂机后重启 / 长 idle 突发 burst 可能让
-[last_b_check_ts, last_a_msg_ts] 窗口跨越数小时百余条消息——cap 住防 prompt
-爆炸。LIMIT 在 SQL 层执行（aretrieve_original_by_timeframe 的 limit_rows 参数），
-ORDER BY ts ASC 取最早 N 条而不是最新（保 cursor 单调推进）。"""
+"""SQL LIMIT cap per path-B window. Restarts after idle / sudden post-idle bursts can make
+[last_b_check_ts, last_a_msg_ts] span hours and over a hundred messages; cap it to bound prompts.
+Apply LIMIT in SQL (aretrieve_original_by_timeframe limit_rows),
+using ORDER BY ts ASC for the earliest N entries, preserving monotonic cursor progress."""
 
 MAX_KNOWN_POOL_FACTS = 30
-"""Path B prompt 里塞的"已知 fact 池"上限（按 importance DESC 取前 N）。
-- 30 × ~30 tok = ~900 tok overhead，控制在 prompt 总 budget 的 ~20%
-- 作用：让 path B 的 LLM 知道哪些 fact 已被 path A 抽出，主动避免重抽 user 段
-  内容；命中的 fact 通常带 source='user_observation'"""
+"""Known-fact pool cap in path-B prompts (top N by importance DESC).
+- 30 × ~30 tok = ~900 tok overhead, around 20% of the full prompt budget.
+- Purpose: show path B which facts path A already extracted, avoiding repeated user-content
+  extraction; matching facts usually have source='user_observation'."""
 
-# §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
-# 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
-# 所以扫描频率 ≥ 一天即可保证不漏；选 1h 是为了让"score 跌穿 0 当天"
-# 也能尽快被抓住而非等到次日 00:00。低频远低于 evidence 信号循环
-# (40s)，对 IO/CPU 影响可以忽略。
+# §3.5 / §6.5 Gate 4: background archive scan interval.
+# Hourly: sub_zero_days debounces by calendar day (at most +1 per day),
+# so at least daily scans suffice; 1h detects a score crossing below zero on the same day
+# promptly rather than waiting until midnight. This is much less frequent than the evidence
+# signal loop (40s), with negligible IO/CPU impact.
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
-# §3.6 render budget（PR-3 使用，此处先占位）
-# 私聊 / 本体（legacy，subjects 为空）时这两条各是一个全局池；scoped 渲染
-# （群聊，subjects 非空）时改为**每个 subject 各一份**，再由下面的
-# SCOPED_RENDER_TOTAL_MAX_TOKENS 总闸兜底。改前群 subject 与成员 subject 抢
-# 的是同一个 2000，成员越多群自己的人设越薄。
-PERSONA_RENDER_MAX_TOKENS = 2000         # 非-protected persona 预算（per subject）
-REFLECTION_RENDER_MAX_TOKENS = 2000      # reflection 渲染预算（pending+confirmed 总和，per subject）
+# §3.6 render budget (placeholder for PR-3).
+# Private/base legacy mode (empty subjects) uses two global pools; scoped rendering
+# (groups, nonempty subjects) gives each subject its own pools, backed by
+# SCOPED_RENDER_TOTAL_MAX_TOKENS. Previously group and member subjects competed
+# for the same 2000, diluting the group's persona as membership grew.
+PERSONA_RENDER_MAX_TOKENS = 2000         # Non-protected persona budget (per subject).
+REFLECTION_RENDER_MAX_TOKENS = 2000      # Reflection rendering budget (pending + confirmed, per subject).
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 
-# ── scoped（群聊）L10 核心记忆的整块总闸 ─────────────────────────────────
-# per-subject 预算解决了"互抢"，但没解决"人多了总量爆炸"：一次渲染带 5 个
-# subject 就是 5 × 4000 = 20k，光核心记忆就吃掉大半个上下文窗口。这里是那
-# 一整块的硬顶，按调用方给的 subjects 顺序先到先得——没有任何 subject 类型
-# 享有预留额度或插队权。要优先就排在前面，这是调用方唯一的旋钮（现有调用方
-# 都把群排在第一位）。曾经给群 subject 留过一份保底额度，对所有现有与已规划
-# 的调用方都是死代码，而它的每一处交互（多个群、空群、只有免预算内容的群、
-# 没花完的额度外溢）都是一种把它本想保护的顺序倒过来的方式，故删除。
-# 选 16000：4 个 subject 各拿满 (2000 persona + 2000 reflection) 的量。当前
-# 调用方传 [群, 当前发言人]，后续 PR 扩到 [群, 当前发言人, 最近说话的另外
-# 3 人] 共 5 个——最后一个会分到剩量，正是这条常量该起作用的地方。
+# ── Overall cap for scoped (group) L10 core memory ──────────────────────────
+# Per-subject budgets stop competition but not total growth: rendering five
+# subjects costs 5 × 4000 = 20k, consuming most context with core memory alone.
+# This hard cap covers the entire block, allocated in caller-provided subject order;
+# no subject type reserves capacity or jumps the queue. Ordering is the caller's only
+# priority control (existing callers put the group first). A former group reservation
+# was dead code for all callers; interactions (multiple/empty groups, exempt-only groups, unused capacity spillover)
+# could reverse the order it intended to protect, so it was removed.
+# 16000 lets four subjects fill their (2000 persona + 2000 reflection) allowances. Current
+# callers pass [group, current speaker]; later PRs expand to [group, current speaker,
+# three recent others], five total: the last gets the remainder, as this cap intends.
 SCOPED_RENDER_TOTAL_MAX_TOKENS = 16000
 
-# 单个 subject 的最小可用额度：总闸剩不到这个数就整段跳过该 subject，而不
-# 是塞进一两条。半截的 persona 比没有更糟——模型会拿残缺的人设当完整的用
-# （"这个人只有一条偏好"），而缺席至少是诚实的空白。
+# Minimum useful subject allowance: skip the entire subject below this remaining budget,
+# rather than insert one or two entries. Partial persona is worse than absence: the model
+# treats an incomplete persona as complete ("this person has just one preference"); absence is honest.
 SCOPED_RENDER_SUBJECT_MIN_TOKENS = 200
 
-# 每条 kept 条目在**总闸**上额外记的渲染开销。两个口径是分开的，别混：
-#   · per-subject 的两个池按条目 **text** 计——scoped 与 legacy 同一个含义，
-#     一个常量不能在两种模式下代表两件事；
-#   · 总闸按**渲染出来的行**计，即 text + 本常量（compose 给每条加的 "- "
-#     前缀和换行）。短条目下 markup 占比很大，只数 text 的总闸根本不是上限。
-# 选取时两条同时满足才收下（见 _score_trim_entries 的 budget / gate_budget）。
+# Extra rendering overhead per kept entry charged to the overall cap. Distinct accounting:
+#   · Both per-subject pools count entry text, identically in scoped and legacy modes;
+#     one constant must not mean different things in the two modes.
+#   · The overall cap counts rendered lines: text + this constant (compose's "- "
+#     prefix and newline). Markup dominates short entries; counting only text is no real cap.
+# Accept entries only when both budgets fit (see budget / gate_budget in _score_trim_entries).
 #
-# 12 是**最坏情况**下的单条装饰量，不是典型值：
-#   "- " 前缀 2 + 换行 1 = 3，普通条目就这些；
-#   过时 reflection 还会被 compose 加一个本地化时间标签前缀
-#   （`[13 ヶ月前] ` / `[hace 13mes] ` 之类，实测七种语言里最长 8 tok）。
-# 取和 3 + 8 = 11，进位到 12 留一点余量。按典型值取会让「短条目很多」的
-# 场景越过总闸——这段预算的意义就在于最坏情况下也成立，所以按最坏取。
-# 段落标题不摊到单条上（它按 subject 数有界，不随条目数增长），不计入。
+# 12 is worst-case per-entry decoration, not the typical value:
+#   "- " prefix 2 + newline 1 = 3 for normal entries;
+#   compose adds a localized time-label prefix to outdated reflections
+#   (e.g. `[13 ヶ月前] ` / `[hace 13mes] `; measured maximum 8 tok across seven languages).
+# 3 + 8 = 11, rounded to 12 for margin. Typical values let many short entries
+# exceed the overall cap; this budget must hold in the worst case, so use that case.
+# Section headings are excluded: bounded by subject count, not entry count, with no per-entry allocation.
 SCOPED_RENDER_ENTRY_MARKUP_TOKENS = 12
 
-# ── 特权段的条数上限（protected / suppressed） ───────────────────────────
-# 这两段刻意不吃 token 预算：protected 是角色卡来源（evidence_score 返回
-# inf），被裁掉等于人格破裂；suppressed 是"记得但别主动提"，整段的意义就在
-# 于完整。但"不吃预算"不等于"可以无限膨胀"——一次导入把角色卡灌进几百条，
-# 或 suppress 冷却期堆积，都会让这两段悄悄把上下文吃光。所以给条数上限，
-# 超限截断并打 warning（token 上限会切断单条，条数上限只丢整条）。
+# ── Entry-count caps for privileged sections (protected / suppressed) ───────
+# Both sections deliberately bypass token budgets: protected entries come from character cards
+# (evidence_score returns inf), so trimming fractures persona; suppressed means "remember, don't mention",
+# whose meaning requires completeness. Budget exemption does not permit unlimited growth:
+# importing hundreds of card entries or accumulating suppression cooldowns can silently consume
+# all context. Cap entry counts and warn on truncation (token caps cut entries; count caps drop whole entries).
 PERSONA_RENDER_PROTECTED_MAX_ENTRIES = 80
 PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES = 40
 
-# ── L21 长期记忆召回段（/query_memory → prompt）的预算 ───────────────────
-# 召回段此前只有"取前 5 条"，单条文本零上限：一条被 LLM 合并出来的超长
-# reflection 就能把整段撑到几千 token。两条常量分别管"单条"和"整段"。
-# 单条 400：够放一条完整的 fact / reflection（典型 30-80 token）加上被
-# 合并过的长条目，又不至于让一条吃掉整段。超出的**截断**不丢弃——召回是
-# 按相关度排的，命中的那条哪怕只剩前半段也比整条消失有用。
+# ── Budget for L21 long-term recall (/query_memory → prompt) ─────────────────
+# Previously recall took only the top five, with no per-entry text cap: one long LLM-merged
+# reflection could swell the block to thousands of tokens. Separate constants cap entries and the block.
+# 400 per entry fits a complete fact/reflection (typically 30–80 tokens), including merged
+# long entries, without consuming the whole block. Truncate excess rather than discard:
+# recall is relevance-ordered; even the first half of a match is more useful than none.
 RECALL_RENDER_ENTRY_MAX_TOKENS = 400
-# 整段上限。⚠️ 单条 cap 只截 text，而总闸数的是**整行**
-# `f"{i}. {tag} {text}{suffix}"`——序号 + 本地化 tier/entity 标签 + 日期
-# 后缀实测约 17-25 tok/行（英文标签更长）。所以「5 × 400 = 2000」是错的
-# 算术：5 条满额实际是 5 × 425 ≈ 2125，按 2000 设会把相关度第 5 的那条
-# 静默丢掉。按含开销的口径给 40 tok/行余量。
+# Overall cap. ⚠️ Per-entry caps truncate text, while the overall gate counts the entire line
+# `f"{i}. {tag} {text}{suffix}"`: numbering + localized tier/entity label + date
+# suffix, measured around 17–25 tok/line (English labels are longer). Thus "5 × 400 = 2000"
+# is incorrect: five full entries actually cost 5 × 425 ≈ 2125; a 2000 cap silently drops
+# the fifth-most-relevant entry. Allow 40 tok/line of overhead.
 #
-# 但 5 × (400 + 40) = 2200 仍然少算了一项：take_lines_within_token_budget
-# 拼行用 separator，**separator 自己也计费**（见它的 docstring —— 数裸行
-# 会每个缝隙少算一个 token）。N 行有 N-1 个缝隙，换行实测 1 tok，所以 5 行
-# 的真实需求是 5 × (400 + 40) + 4 × 1 = 2204。按 2200 设时第 5 条恰好
-# 越界被丢——正常条目（tag 6-8 tok）每行约 417 tok 够不着，是畸形/满额
-# 数据才咬人的那种差 4 tok。后续 PR 放大 limit 时这条才是真正绑定的闸，
-# 那时按 limit × (ENTRY + OVERHEAD) + (limit - 1) × 换行 重新推导。
+# Yet 5 × (400 + 40) = 2200 still misses one item: take_lines_within_token_budget
+# joins lines with a separator, which also costs tokens (see its docstring: bare-line counting
+# misses one token per gap). N lines have N-1 gaps; measured newline cost is 1 tok, so five lines
+# actually require 5 × (400 + 40) + 4 × 1 = 2204. At 2200, the fifth entry falls just
+# outside the cap and is dropped. Normal lines (6–8 tok tags) cost about 417 tok; malformed/full
+# data exposes this four-token shortfall. If later PRs raise limit, this gate becomes binding;
+# rederive it as limit × (ENTRY + OVERHEAD) + (limit - 1) × newline.
 #
-# ⚠️ 这个推导只覆盖**按原值传闸**的调用方（QQ 插件 render_relevant_memory）。
-# 本体的 recall_memory 工具（main_logic/core/tool_calling.py）还要先扣掉首行
-# i18n 总览的 header_reserve 再传给 helper，所以它实际拿到的比这条常量小，
-# 装不下 limit 条满额行——那是刻意的（表头和条目进同一个字符串，不扣就整段
-# 超预算），不是漏算。改这条常量时两个口径都要过一遍。
+# ⚠️ This derivation covers callers passing the unchanged cap (QQ plugin render_relevant_memory).
+# The base recall_memory tool (main_logic/core/tool_calling.py) first subtracts the initial
+# i18n overview's header_reserve, then passes a smaller value to the helper,
+# intentionally leaving insufficient room for limit full lines: header and entries share a string,
+# so omitting that reserve would exceed the budget. Check both accounting paths when changing this constant.
 RECALL_RENDER_LINE_OVERHEAD_TOKENS = 40
-RECALL_RENDER_LINE_SEPARATOR_TOKENS = 1  # "\n"，take_lines_within_token_budget 的缝隙计费
+RECALL_RENDER_LINE_SEPARATOR_TOKENS = 1  # "\n": gap cost in take_lines_within_token_budget.
 RECALL_RENDER_TOTAL_MAX_TOKENS = 2204
 
-# ── scoped 批抽取（写路径 /scoped_history 的 segments 形态） ─────────────
-# 成员记忆抽取的成本此前与**说话的人数**成正比：一个 subject = 一次 LLM
-# 抽取，桶里 1 条和 150 条一样贵。批形态把多个 (subject, speaker, messages)
-# 段并进一次请求 / 一次 LLM 调用，调用数从 O(发言人数) 降到 O(总消息数/批容量)。
+# ── Scoped batch extraction (segments form of write path /scoped_history) ────
+# Member memory extraction previously scaled with speaker count: one subject = one LLM
+# extraction, costing the same for one or 150 messages. Batching combines multiple (subject, speaker, messages)
+# segments in one request/LLM call, reducing O(speakers) calls to O(total messages / batch capacity).
 #
-# 段数上限 8：与读侧三个端点的 subjects 1..8 同一口径，也等于插件侧一趟
-# 排空最多带走的桶数（GROUP_MEMBER_MAX_PARTICIPANTS）。
+# Eight-segment cap matches subjects 1..8 at the three read endpoints and the plugin's
+# maximum buckets drained per pass (GROUP_MEMBER_MAX_PARTICIPANTS).
 SCOPED_HISTORY_BATCH_MAX_SEGMENTS = 8
-# 单批消息总量上限：沿用 legacy 单 subject 请求的 200——一次 LLM 抽取的
-# 输入工作量上界不因批形态而变（这正是"批不比单发慢"成立的前提，插件侧
-# 30s 单发超时与由它推导的结算等待上限才能原样沿用）。每个成员桶的硬顶
-# 是 150（GROUP_MEMBER_HARD_LIMIT）< 200，所以一个桶永远不用跨批拆分。
+# Batch message cap retains legacy's 200 per single-subject request, keeping the input work
+# bound unchanged by batching (the premise that batches are no slower than single requests,
+# allowing reuse of the plugin's 30s timeout and derived settlement wait). Each member bucket
+# caps at 150 (GROUP_MEMBER_HARD_LIMIT) < 200, so no bucket needs splitting across batches.
 SCOPED_HISTORY_BATCH_MAX_MESSAGES = 200
-# 带幂等键写入（串门 digest / 日记，docs/design/visit-infrastructure.md §4.6）
-# 的辅助数据保留期：暂存产物残留、键已终态的退役记录与墓碑。done / cancelled
-# 键记录永久保留，不受它约束。
+# Retention for auxiliary data from idempotency-key writes (visit digest / diary,
+# docs/design/visit-infrastructure.md §4.6): staged residue, retired records and tombstones for terminal keys.
+# done / cancelled key records remain forever and are exempt.
 MEMORY_IDEMPOTENCY_TTL_S = 365 * 86400
-# 每条消息进入批抽取 prompt 前的正文上限。与 recent 压缩的单条口径一致：
-# 500 token，超限时保留头尾、用 locale 对应的可见标记替换中段。
+# Per-message body cap before batch extraction prompts, matching recent compression:
+# 500 tokens; retain head/tail and replace the middle with a locale-specific visible marker.
 SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS = 500
-# 整批只给消息正文 8000 token。仅做单条 500 token 闸时，200 条仍可能达到
-# 100k token，足以超过部分 summary 模型上下文并拖过插件侧 30s 超时。总闸
-# 超限时按“剩余预算 / 剩余消息数”公平分配；短消息按原文计费，省下的额度
-# 继续给后面的消息，避免按请求顺序贪心导致尾段完全拿不到正文。
+# Batch message bodies get 8000 tokens total. A 500-token per-message cap alone still permits
+# 200 × 500 = 100k tokens, exceeding some summary model contexts and the plugin's 30s timeout.
+# On exceeding the overall cap, distribute remaining budget / remaining messages fairly; charge short
+# messages their actual size and carry savings forward, avoiding greedy ordering starving later bodies.
 SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS = 8000
-# 段首标记里那截一次性 token 的字节数（token_hex → 2 倍长度的十六进制）。
-# 它防的是"群成员在自己的消息里伪造 [SEGMENT n | speaker: 别人]"：批模板
-# 恰恰告诉模型段首就是归属依据，伪造成功 = 把自己的内容写进别人的 subject
-# 并借到别人的 speaker_trust。攻击者的消息在 nonce 生成之前就写死了，猜不
-# 到本次请求的 token。4 字节 = 8 个十六进制字符，够挡住盲猜（每次请求重新
-# 生成，没有多次试探的机会），又不至于在 prompt 里占掉可观的 token。
+# Bytes in the one-time segment-header token (token_hex doubles this length in hexadecimal).
+# Prevents members forging [SEGMENT n | speaker: 别人] inside their own messages: the batch template
+# tells the model that headers determine ownership; successful forgery writes to another subject
+# and borrows their speaker_trust. Attacker messages are fixed before nonce generation, so cannot
+# predict the request token. Four bytes = eight hex characters block blind guessing (fresh per
+# request, with no repeated probing), without substantial prompt token overhead.
 SCOPED_BATCH_SEGMENT_NONCE_BYTES = 4
 
-# ── 群召回读侧的 subject 形状 ────────────────────────────────────────────
-# 一轮群回复带的 subject：1 个群 + 最多这么多个成员（当前发言人 + 本轮
-# 上下文里最近说过话的另外 N-1 人）。群恒排最前——subjects 顺序就是渲染
-# 预算的分配顺序（SCOPED_RENDER_TOTAL_MAX_TOKENS 按序先到先得），总数
-# 1 + 4 = 5 不触读端点的 1..8 上限。第二个"群"槽位刻意留空当预留：今天
-# 唯一能填的是别的群的记忆，那是跨群披露，要不要开是单独的决定（现在的
-# 跨群段只读活会话内存、从不碰记忆库）。
+# ── Subject shape for group recall reads ────────────────────────────────────
+# Subjects per group reply: one group + at most this many members (current speaker + the other
+# N-1 most recent speakers in this turn's context). Group always comes first: subject order allocates
+# rendering budget (SCOPED_RENDER_TOTAL_MAX_TOKENS is first-come-first-served). Total
+# 1 + 4 = 5 stays below the read endpoint's 1..8 cap. The second group slot is deliberately reserved:
+# only another group's memory could fill it today, requiring a separate cross-group disclosure decision
+# (the current cross-group section reads active session memory only, never the memory store).
 GROUP_RECALL_MAX_MEMBER_SUBJECTS = 4
-# 找"另外 3 人"要扫多少条最近群消息：同一个人连发是常态，只取 3 条扫不
-# 出 3 个不同的人；30 条覆盖到几分钟前的对话，成本只是读一次 backlog。
+# Recent group messages scanned for three other people: repeated messages from one speaker are common,
+# so three messages rarely yield three people; 30 cover a few minutes at the cost of one backlog read.
 GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT = 30
 
-# ── 发言人信赖度（speaker_trust）字段 ────────────────────────────────────
-# 「不同人说的话可信度不同，矛盾时影响覆盖优先级」——本阶段只落字段：
-# 抽取时给每条 scoped fact 打上 speaker_label（谁说的）与 speaker_trust
-# （0..1 初值，由调用方按权限等级派生后随请求带上）。消费点（fact_dedup
-# 的 LLM 仲裁 / corrections 纠错队列 / refine merge / aadd_fact 矛盾扫描）
-# 留给后续 PR，本阶段任何路径都不得读这两个字段做决策。
+# ── Speaker trust (speaker_trust) fields ─────────────────────────────────────
+# Speakers differ in credibility, affecting conflict overwrite priority; this phase adds fields only:
+# extraction tags each scoped fact with speaker_label (who said it) and speaker_trust
+# (initial 0..1, derived from caller permission level and included in the request). Consumers (fact_dedup
+# LLM arbitration / corrections queue / refine merge / aadd_fact conflict scan)
+# belong to later PRs; no current path may use these fields for decisions.
 #
-# 初值按 QQ 插件权限等级派生（permission.py 的四档）。数值只需保序
-# （admin > trusted > normal > none），绝对值留给消费 PR 调参。
+# Initial values derive from the QQ plugin's four permission tiers (permission.py); only order matters
+# (admin > trusted > normal > none), with absolute values tuned by the consumer PR.
 SPEAKER_TRUST_DEFAULT = 0.5
 SPEAKER_TRUST_BY_PERMISSION_LEVEL = {
     "admin": 1.0,
@@ -257,10 +257,10 @@ SPEAKER_TRUST_BY_PERMISSION_LEVEL = {
     "none": 0.3,
 }
 
-# 信赖度仲裁 / 演化（群记忆系列 7/7）。trust 池由 memory_server 进程按
-# account_id（platform:actor）全局持有，落 <memory_dir>/speaker_trust.json：
-# 同一人在不同群、不同角色、以及非 admin 私聊 participant 中共用一份。
-# 这是产品拍板的跨 scope / 跨角色通道，不得误改成 subject-local 或角色态。
+# Trust arbitration / evolution (group memory series 7/7). memory_server owns the trust pool
+# globally by account_id (platform:actor), persisted at <memory_dir>/speaker_trust.json:
+# one person shares it across groups, characters, and non-admin private participants.
+# This product-approved cross-scope/cross-character channel must not become subject-local or character state.
 SPEAKER_TRUST_ARBITRATION_MARGIN = 0.15
 SPEAKER_TRUST_ACTIVITY_WEIGHT = 0.001
 SPEAKER_TRUST_ACTIVITY_MAX_BONUS = 0.02
@@ -268,70 +268,70 @@ SPEAKER_TRUST_CONFIRMATION_DELTA = 0.04
 SPEAKER_TRUST_CORRECTION_DELTA = 0.08
 SPEAKER_TRUST_ADJUSTMENT_LIMIT = 0.30
 SPEAKER_TRUST_EVENT_HISTORY_LIMIT = 128
-"""Deprecated：插件本地 trust 池的活跃度环上限。池上移服务端后唯一使用者
-（`permission.py`）已删除，服务端活跃度环改用
-`SPEAKER_TRUST_ACTIVITY_EVENT_HISTORY_LIMIT`。保留常量与 re-export 是因为
-删掉公开常量是破坏性变更，且它可能被树外插件读。"""
+"""Deprecated: activity-ring cap for plugin-local trust pools. The sole consumer
+(`permission.py`) was removed after moving pools server-side; the server ring uses
+`SPEAKER_TRUST_ACTIVITY_EVENT_HISTORY_LIMIT`. Retain the constant and re-export because
+removing public constants breaks compatibility, including possible out-of-tree plugins."""
 
-# ── 服务端 trust 池（平台中立化） ────────────────────────────────────────
-# 落点必须是 memory_dir **根级平铺文件**，不能开子目录：
-# `utils/cloudsave_runtime/operations.py` 的 import 清理里 `delete_dir_targets`
-# 会把 memory_dir 下每一个不在导入角色名单里的**子目录** rmtree 掉，而
-# `delete_file_targets` 只认 `memory/<角色>/<白名单叶名>` 三段路径。根级平铺
-# 文件两条都躲开。先例：`app/memory_server/gates.py` 的
+# ── Server trust pool (platform-neutral) ─────────────────────────────────────
+# Persist as a flat file directly under memory_dir, never a subdirectory:
+# import cleanup's `delete_dir_targets` in `utils/cloudsave_runtime/operations.py`
+# recursively removes every memory_dir subdirectory absent from the imported character list, while
+# `delete_file_targets` recognizes only three-component `memory/<角色>/<白名单叶名>` paths. Root-level
+# flat files avoid both. Precedent: `app/memory_server/gates.py`'s
 # `idle_maintenance_state.json`。
-# 将来若要分片，只能是 `speaker_trust.<n>.json` 这种平铺文件名。
+# Future shards must likewise use flat filenames such as `speaker_trust.<n>.json`.
 SPEAKER_TRUST_POOL_FILENAME = "speaker_trust.json"
 
-# 自报 base 通道（无四档权限阶梯的平台，如弹幕 guard_level）的上界。
-# **这个 clamp 施加在本段最终分上，不是只夹 base**：只夹 base 时
-# 0.8 + 0.30(adjustment) + 0.02(activity) = 1.0 = admin 同权，那样「上界
-# 0.8 < admin 的 1.0，封死把 guard_level 映射成 owner 级仲裁权」这句安全
-# 断言在算术上就是假的。上移之后引入一个**有意的不对称**：`tier='trusted'`
-# （base 0.8，有平台权限模型背书）能靠自己挣来的 adjustment/activity 爬到
-# 1.0，而无鉴权自报的 `base=0.8` 永远爬不过 0.8。
+# Cap for self-reported base channels (platforms without four permission tiers, e.g. danmaku guard_level).
+# Clamp the final score here, not just base: clamping base alone permits
+# 0.8 + 0.30(adjustment) + 0.02(activity) = 1.0, matching admin rights; the safety claim
+# "cap 0.8 < admin 1.0, preventing guard_level mapping to owner arbitration rights"
+# would be arithmetically false. Moving the clamp introduces deliberate asymmetry: `tier='trusted'`
+# (base 0.8, backed by platform permissions) can earn adjustment/activity up to
+# 1.0, while unauthenticated self-reported `base=0.8` can never exceed 0.8.
 SPEAKER_TRUST_MAX_REPORTED_BASE = 0.8
 
-# wire 上 `speaker_tier` 的合法取值。用 Literal 而不是 `.get(level, DEFAULT)`
-# 的 silent-default：拼错的 "Admin" 必须 422，不能静默落到中间档。
+# Legal wire values for `speaker_tier`. Use Literal rather than `.get(level, DEFAULT)`
+# silent defaults: misspelled "Admin" must return 422, never silently become a middle tier.
 SPEAKER_TRUST_PERMISSION_TIERS = ("admin", "trusted", "normal", "none")
 
-# 服务端 activity 事件环的截断上限。必须 > 单批最大消息数（200），否则同一
-# 批里靠后的消息会把靠前的 id 挤出环、重投时重复计数。signal 环**永不截断**
-# （append-only 账本，截断会让旧纠错事件重放），两个环必须分开处理。
+# Server activity-event ring cap. Must exceed the maximum batch message count (200), or later
+# messages evict earlier IDs from the same batch and retries double count. Never truncate the signal ring
+# (append-only ledger; truncation replays old correction events); handle the two rings separately.
 SPEAKER_TRUST_ACTIVITY_EVENT_HISTORY_LIMIT = 256
 
-# 单次 legacy 导入请求携带的 profile 条数上限。分块由调用方控制，越界是契约
-# bug ⇒ 422。单条 profile 的 `processed_signal_events` **不设上限**。
+# Profiles allowed per legacy import request. Callers control chunking; exceeding the contract is
+# a bug ⇒ 422. Individual profile `processed_signal_events` has no cap.
 SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX = 500
 
-# 存量迁移闸门。池首次创建时按此表种成 `status="pending"`；pending 期间该
-# platform 的 account 一律：resolve_trust 返回 None（弃权，不盖 speaker_trust
-# 键）、活跃度不计、信号计入 signals_deferred、reconcile 跳过。
-# 这一把闸门是「导入窗口双算」的唯一防线：没有它，pending 期 owner 复述触发
-# 的重放事件会先按空账本扣一次，随后导入再把已含这一次的 legacy adjustment
-# 加上去 —— 单笔 correction 双记 0.16 > 仲裁 margin 0.15，且环里只存 id 不存
-# kind，事后不可反算。
+# Legacy migration gate. First-created pools initialize each platform from this table as `status="pending"`;
+# pending accounts get resolve_trust=None (abstain; no speaker_trust key),
+# no activity accounting, signals added to signals_deferred, and no reconcile.
+# This is the sole defense against import-window double counting: without it, owner restatements while pending
+# replay against an empty ledger first, then import adds legacy adjustment already including that correction,
+# counting one correction twice: 0.16 > arbitration margin 0.15. The ring stores IDs only, not
+# kind, making later reversal impossible.
 SPEAKER_TRUST_LEGACY_BARRIERS = {
     "qq": "qq_auto_reply.business_config.speaker_trust_profiles.v1",
 }
 
-# channel（观测属性）的长度上限。channel **不是键**：它只用于碰撞探测与运维
-# 诊断，绝不参与账本分区、bind/merge 判据或任何权限判定。
+# Maximum channel length (observational attribute). Channel is not a key: collision detection and operational
+# diagnostics only, never ledger partitioning, bind/merge criteria, or authorization.
 SPEAKER_TRUST_CHANNEL_MAX_LEN = 16
 
-# 一个 entity 在同一 platform 下最多绑几个 account。超限 bind/merge 返回 409。
-# 用「bind 时拒绝」换掉「读时截断」：读时截断会让「从 A₁ 出发」与「从 A₅
-# 出发」得到成员不同的展开集合，两个 ParticipantGroup 结构上不相等、按值去重
-# 救不回来，直接打破「同一 entity 在同一 group 只有一个 participant」。bind
-# 是人工稀有操作，409 是可接受的失败模式；读时截断不是。
+# Maximum accounts per entity on one platform. Excess bind/merge returns 409.
+# Reject at bind time instead of truncating reads: starting from A₁ versus A₅ would otherwise
+# expand to different member sets, yielding structurally unequal ParticipantGroups that value deduplication
+# cannot repair, violating one participant per entity per group. Binding
+# is a rare manual operation where 409 is acceptable; read-time truncation is not.
 IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM = 8
 
-# 按 platform 收紧上面的上限：{platform: (上限, 原因)}。只在比通用上限更紧时生效，
-# 超限 409 的报错带上这里的原因，所以每条都要写清自己为什么收紧。
-# neko_visit（串门，即 VISIT_MEMORY_PLATFORM）= 1：同一个 entity 下有两个串门
-# account，串门清除就会扇出到另一个 account；串门客户端还没接上 target_epochs，
-# 扇出目标没有持久墓碑，迟到的旧写入会把已清除的记忆写回。接上之前不许关联。
+# Platform-specific tighter caps: {platform: (cap, reason)}; effective only below the generic cap.
+# Excess-cap 409 errors include this reason, so explain each restriction clearly.
+# neko_visit (visits, VISIT_MEMORY_PLATFORM) = 1: two visit accounts in one entity
+# make visit clearing fan out to the other account; visit clients lack target_epochs,
+# so targets lack persistent tombstones and late old writes restore cleared memory. Forbid linking until integrated.
 IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM = {
     "neko_visit": (
         1,
@@ -375,646 +375,646 @@ def _assert_activity_bonus_reachable() -> None:
 
 _assert_activity_bonus_reachable()
 
-# ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
-# 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
-# cosine 召回，两路各自阈值过滤 + 限 top-K，RRF 融合后整体再限 N 条返回。
+# ── Hybrid memory recall (recall_memory tool backend) ────────────────────────
+# When the model calls recall_memory(query), memory_server runs in-memory BM25 +
+# cosine recall in parallel, filters each by threshold and top-K, then RRF-fuses and returns at most N.
 #
-# 候选范围：
-#   - BM25 池：     facts.json + reflections.json + facts_archive.json
-#                  （BM25 对大池子廉价，archive 也能搜到罕见关键词命中）
-#   - Embedding 池: facts.json + reflections.json
-#                  （embedding 计算贵 + archive 已经超出常态记忆窗口；
-#                   persona 整段不入池——它已经被常态渲染进 system prompt，
-#                   再检索就是冗余）
+# Candidate scope:
+#   - BM25 pool: facts.json + reflections.json + facts_archive.json
+#                  (BM25 is cheap over large pools; archives can match rare keywords).
+#   - Embedding pool: facts.json + reflections.json
+#                  (embeddings are expensive and archives lie beyond normal memory windows;
+#                   exclude persona entirely: already rendered into the system prompt,
+#                   so retrieving it would be redundant).
 #
-# 阈值是经验值，跑起来再调；cosine 用 sentence-embedding 常见的相关性下限
-# 0.3；BM25 用 0.1 接近 "any meaningful overlap"（零 overlap 早就被
-# _bm25_rank 的 score > 0 卡掉了，0.1 主要挡偶发高频词碰瓷）。
+# Empirical thresholds, to tune in practice: cosine uses the common sentence-embedding
+# relevance floor 0.3; BM25 0.1 approximates "any meaningful overlap" (zero overlap is already
+# excluded by _bm25_rank's score > 0; 0.1 mainly rejects incidental common-word matches).
 #
-# ⚠️ BM25 阈值不能定高：Okapi 公式在小 pool 下 IDF 系数自然就矮，
-# 单 doc pool 即使 exact match 最高也就 ~0.72（``log((1-1+0.5)/(1+0.5)
-# + 1) × (k1+1)``）；2-doc pool 两条都有词时 IDF 跌到 ~0.18。最初拍
-# 1.0 是用大语料经验值，结果新用户 / 小语料 / 高频词查询全部被阈值
-# 杀掉，BM25 兜底功能等于死掉（codex P1 review on PR #1385）。
-HYBRID_RECALL_BUDGET_EACH = 4            # 每路（BM25 / embedding）top-K 上限
-HYBRID_RECALL_BUDGET_TOTAL = 8           # RRF 融合后总条数上限（两路去重 + 取分前 N）
-HYBRID_RECALL_TIME_BUDGET = 8            # 按时间回溯（recall_memory time 参数）返回的最接近条数上限
-HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine < 阈值视为不相关
-HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 < 阈值视为不相关（保 small-pool exact match）
-HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSearch 默认）
+# ⚠️ Do not set BM25 threshold high: Okapi IDF is naturally low for small pools;
+# even exact matches in a single-document pool peak near 0.72 (``log((1-1+0.5)/(1+0.5)
+# + 1) × (k1+1)``); two documents sharing the word yield IDF ~0.18. Initial
+# 1.0 came from large-corpus experience and filtered all new-user/small-corpus/common-word
+# queries, effectively disabling BM25 fallback (Codex P1 review on PR #1385).
+HYBRID_RECALL_BUDGET_EACH = 4            # Per-channel (BM25 / embedding) top-K cap.
+HYBRID_RECALL_BUDGET_TOTAL = 8           # Total cap after RRF fusion (deduplicate both channels and take top N by score).
+HYBRID_RECALL_TIME_BUDGET = 8            # Maximum nearest entries returned for temporal recall (recall_memory time parameter).
+HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine below threshold is irrelevant.
+HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 below threshold is irrelevant (retain small-pool exact matches).
+HYBRID_RECALL_RRF_K = 60                 # RRF constant (k=60, Elastic / OpenSearch default).
 
-# 召回池解析缓存（memory.hybrid_recall._POOL_CACHE）保留的文件数上限。
-# 每个角色占 2 个文件（facts_archive.json + reflections.json），所以 6 ≈ 同时
-# 保持 3 个角色是"热"的。
+# Maximum files retained in recall pool parsing cache (memory.hybrid_recall._POOL_CACHE).
+# Each character uses two files (facts_archive.json + reflections.json), so six keeps about
+# three characters warm simultaneously.
 #
-# 这个闸管的是**闲置角色**的常驻：缓存没有淘汰时，凡是被召回过的角色都会把
-# 整份归档永久留在内存里，多角色安装等于同时为所有角色付费，而通常只有一个
-# 在用。LRU 一上，闲置的自然掉出去。
+# This gate bounds residency of idle characters: without eviction, every recalled character's
+# entire archive stays in memory forever, paying for all installed characters despite usually
+# using only one. LRU naturally evicts idle ones.
 #
-# ⚠️ 它**不**给单个超大归档设上限——把当前活跃角色的池子淘汰掉，只会把每次
-# 召回重新解析一遍的成本还回来，而那正是这个缓存存在的理由。限制单角色语料
-# 总量是另一个问题（归档分片，见 #2716）。
-# 调小到 2 会让"两个角色交替说话"退化成每轮都重新解析，别为了省几十 MB 这么调。
+# ⚠️ This does not cap one huge archive: evicting the active character's pool merely brings back
+# per-recall parsing costs, defeating the cache's purpose. Limiting a single character's total
+# corpus is a separate issue (archive sharding, see #2716).
+# Reducing to two reparses every turn when two characters alternate; don't do that to save tens of MB.
 HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 
-# 召回向量解码缓存（memory.hybrid_recall._VEC_CACHE）的常驻字节上限。
-# cosine 路径每次查询都要把池子里每条候选的 base64-fp16 embedding 解成
-# fp32 向量——5000 条实测 ~49ms（base64+fp16→fp32 ~32ms、逐条 isfinite
-# ~7ms、sha256 ~4ms），全部跑在 memory_server 的事件循环上；而池子行本身
-# 已被 _POOL_CACHE 按文件身份缓存，稳态语料下这些向量每次解出来都一样，
-# 纯属重复劳动。缓存命中要求 (model_id, text 对象, 行内两项戳记,
-# embedding 原串) 全部未变，任何一项对不上都自动回退完整解码校验路径，
-# 所以这个上限只影响内存，不影响正确性。
+# Resident-byte cap for decoded recall vectors (memory.hybrid_recall._VEC_CACHE).
+# Each cosine query decodes every candidate's base64-fp16 embedding into
+# fp32: measured ~49ms for 5000 entries (base64+fp16→fp32 ~32ms, per-entry isfinite
+# ~7ms, sha256 ~4ms), all on memory_server's event loop. Pool rows themselves
+# are already cached by file identity in _POOL_CACHE; stable corpora decode identical vectors
+# every time, wasting work. Hits require unchanged (model_id, text object, both row stamps,
+# original embedding string); any mismatch falls back to full decoding and validation,
+# so this cap affects memory only, never correctness.
 #
-# ⚠️ 闸的单位是**字节**而不是条数，因为一条 entry 的大小随维度浮动、
-# 而且不止装向量：除了 fp32 向量本身（512d ≈ 2KB、768d ≈ 3KB），entry
-# 还持有该行的 embedding 原串与 text 的引用。这两个字符串平时活在池子
-# 行里不算额外开销，但池子行被 _POOL_CACHE 淘汰后就只剩这里拽着，成为
-# 真正的常驻。512d 下 base64-fp16 原串约 1.4KB，也就是每条最坏
-# 2KB + 1.4KB + text ≈ 3.7KB——按条数封顶会让标称值和实际常驻差出近一倍
-# （旧口径 10000 条标称 20MB，实际最坏 ~34MB；768d 配置超 50MB）。
-# 按字节记账则标称即实际，且维度变了不用重新标定。
+# ⚠️ The cap counts bytes, not entries, because size varies by dimension
+# and includes more than vectors: besides fp32 data (512d ≈ 2KB, 768d ≈ 3KB), entries
+# retain references to the row's original embedding string and text. Normally these strings
+# live in pool rows without extra overhead, but after _POOL_CACHE evicts those rows,
+# these references alone keep them resident. A 512d base64-fp16 string costs ~1.4KB:
+# worst-case 2KB + 1.4KB + text ≈ 3.7KB per entry. Count caps can nearly double
+# nominal residency (old 10000-entry estimate 20MB, actual worst case ~34MB; 768d exceeds 50MB).
+# Byte accounting matches nominal to actual usage, without recalibration for changed dimensions.
 #
-# ⚠️ 记账是按**最坏情况**来的：那两个字符串只有在池子行被淘汰后才真的
-# 归缓存独占，而向量池的主体是活跃 facts——它走 FactStore 自己的 _facts
-# 进程缓存，六处失效点全在异常路径（except: pop; raise），正常写入不清。
-# 也就是说常见情况下 emb / text 一直由池子行持有，缓存的引用并不构成额外
-# 常驻，每条真实增量只有向量加簿记（512d 实测 ~2.4KB，而保守口径记的是
-# ~3.9KB）。别把这个闸当成"实际会占这么多内存"来读。
+# ⚠️ Accounting is worst-case: those two strings become cache-exclusive only after
+# pool-row eviction. Most vectors are active facts using FactStore's own _facts
+# process cache, whose six invalidation sites are exception paths (except: pop; raise); normal writes retain it.
+# Thus emb/text usually remain held by pool rows; cache references add no extra
+# residency, and actual growth is vector + bookkeeping (~2.4KB measured at 512d versus conservative
+# ~3.9KB). Do not read this cap as actual expected memory consumption.
 #
-# 32MB 是照着"常见情况下的真实增量回到 20MB"定的：保守口径下 512d 约装
-# 8300 条，这些条目在字符串共享时真正多占的是 8300 × 2.4KB ≈ 19MB，也就
-# 是按条数封顶时那个 20MB 的意图值。按最坏情况定容量会在常见情况下白扔
-# 一半命中率，所以标称取保守、容量按常见情况回填。向量池只含活跃 facts +
-# reflections（归档行入池前就被投影掉 embedding 列），正常远低于这个闸；
-# 它防的是"多角色 × 大语料"叠出来的极端常驻，和上面的文件数闸一个思路。
+# 32MB aims to restore typical actual growth to 20MB: conservative 512d accounting holds
+# ~8300 entries, which add 8300 × 2.4KB ≈ 19MB with shared strings, matching
+# the count cap's intended 20MB. Sizing capacity for worst-case usage needlessly halves
+# typical hit rate, so accounting is conservative but capacity targets typical usage. Vector pools contain active facts +
+# reflections only (archive embeddings are projected out before pooling), normally far below this gate;
+# it protects extreme multi-character × large-corpus residency, like the file-count gate above.
 HYBRID_RECALL_VEC_CACHE_MAX_BYTES = 32 * 1024 * 1024
 
-# BM25 分词缓存（memory.hybrid_recall._TOKEN_CACHE）的常驻字节上限。
-# 被动注入让 BM25 在每个文字回合都对整个召回池跑一遍，以前每次都从头分词
-# （CJK 2/3-gram 滑窗，5000 条约占 BM25 总耗时的四分之三）。缓存按「停用名 +
-# 原文」记住分词结果，存成一条 \x00 连接的字符串（比存 token 元组省约 10 倍
-# 内存，5000 条约 3MB），命中时 split 一下即可。记账同样按最坏情况：原文本
-# 身也记进去，虽然常见情况下它一直由池子行持有。32MB 约够 5 万条短记忆。
+# Resident byte limit for the BM25 token cache (memory.hybrid_recall._TOKEN_CACHE).
+# Passive injection runs BM25 over the entire recall pool on every text turn; previously each call retokenized
+# from scratch (CJK 2/3-gram sliding windows account for about three quarters of BM25 time for 5000 entries). Cache by stop names +
+# original text, storing a single \x00-joined string (about 10 times less memory than token tuples;
+# roughly 3MB for 5000 entries), then split on a hit. Accounting remains conservative: include the original text
+# itself, even though pool rows usually retain it. 32MB holds about 50,000 short memories.
 HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES = 32 * 1024 * 1024
 
 # ========================================================================
 # §3.7 LLM Context & Output Budget
 # ------------------------------------------------------------------------
-# 所有"会被拼进 LLM messages 的输入侧 component"和"LLM 输出侧 max_tokens"
-# 都集中在这里。对应的设计文档：docs/design/llm-prompt-budget.md
+# All input components assembled into LLM messages and output max_tokens
+# are centralized here. Design: docs/design/llm-prompt-budget.md
 #
-# 命名约定：
-#   *_MAX_TOKENS                       → tiktoken o200k_base token 数
+# Naming conventions:
+#   *_MAX_TOKENS                       → tiktoken o200k_base token count
 #                                         （≈ 1.3-1.5 CJK char / 4 EN char）
-#   *_TRIGGER_TOKENS                   → 触发某个动作的 token 阈值（不是硬上限）
-#   *_MAX_ITEMS / *_MAX                → 条数（消息 / deque maxlen / list[-N:]）
-#   *_MAX_CHARS                        → 字符数（仅非 prompt-facing 的 UI /
-#                                         payload 防爆流程用，不作为 LLM input
-#                                         budget 证据）
-#   *_BYTES                            → 字节
-#   *_MS                               → 毫秒
+#   *_TRIGGER_TOKENS                   → token threshold triggering an action (not a hard cap)
+#   *_MAX_ITEMS / *_MAX                → item count (messages / deque maxlen / list[-N:])
+#   *_MAX_CHARS                        → character count (non-prompt-facing UI /
+#                                         payload growth protection only; not evidence of
+#                                         an LLM input budget)
+#   *_BYTES                            → bytes
+#   *_MS                               → milliseconds
 #
-# 注释格式（每条常量）：
-#   - "用途"：这个值会卡哪个 component
-#   - "上游"：被 cap 的内容来自哪里（用户输入 / 外部 API / 内部计算）
-#   - 设计依据 / 互动关系（如有）
+# Comment format (per constant):
+#   - "Purpose": component bounded by this value
+#   - "Upstream": capped content source (user input / external API / internal computation)
+#   - Design rationale / interactions (if any)
 #
-# 已知"咎由自取"项（NOT capped by design）：
-#   - 用户原话直接拼进 HumanMessage（omni_offline_client.py:413）
-#   - OpenClaw magic intent user_text（用 1MB 输入做 80-token 分类，自找的）
-#   - emotion 分析 user text
-#   - bilibili knowledge_context（用户配置的知识库）
-#   - 插件自定义 prompt / strategy 文件（由插件自行管理）
-# 详见 docs/design/llm-prompt-budget.md "已知不 cap 项"。
+# Known user-responsibility items (NOT capped by design):
+#   - Verbatim user input assembled into HumanMessage (omni_offline_client.py:413)
+#   - OpenClaw magic intent user_text (1MB input for 80-token classification is self-imposed)
+#   - User text for emotion analysis
+#   - bilibili knowledge_context (user-configured knowledge base)
+#   - Plugin custom prompt / strategy files (managed by plugins)
+# See docs/design/llm-prompt-budget.md, "Known uncapped items".
 # ========================================================================
 
 # ---- Memory: recent history compression ----
 RECENT_HISTORY_MAX_ITEMS = 10
-"""压缩后保留的近期消息条数。
-- 用途：CompressedRecentHistoryManager 把超过 compress_threshold 的旧消息
-  压缩成 1 条 summary 后，原始消息列表保留最后 N 条。
-- 上游：用户和 AI 的对话流水。
-- 互动：和 RECENT_COMPRESS_THRESHOLD_ITEMS 配对——压缩后保留 N 条 +
-  Stage-1 summary 1 条 = N+1 条进入下次压缩计数。"""
+"""Recent messages retained after compression.
+- Purpose: after CompressedRecentHistoryManager compresses old messages exceeding
+  compress_threshold into 1 summary, retain the original list's final N messages.
+- Upstream: user/AI conversation stream.
+- Interaction: paired with RECENT_COMPRESS_THRESHOLD_ITEMS; N retained messages +
+  1 Stage-1 summary = N+1 entries counted toward the next compression."""
 
 RECENT_COMPRESS_THRESHOLD_ITEMS = 20
-"""触发 LLM 压缩的条数阈值。
-- 用途：当某 lanlan 的 user_histories 累积到 > 此值时调一次
-  compress_history。
-- 上游：累积的对话条数。"""
+"""Message-count threshold triggering LLM compression.
+- Purpose: call compress_history once when a character's user_histories
+  accumulates more than this value.
+- Upstream: accumulated conversation-message count."""
 
 RECENT_SUMMARY_MAX_TOKENS = 1000
-"""Stage-1 压缩输出的 token 上限。
-- 用途：Stage-1 LLM 把 N 条原始消息压缩成一段文本；如果输出
-  > 此值则触发 Stage-2 进一步压缩（500 chars/words 硬截）。
-- 上游：Stage-1 LLM 自由生成的摘要长度。
-- 触发关系：output_tokens > 此值 → further_compress() 二次压缩。"""
+"""Stage-1 compressed-output token cap.
+- Purpose: Stage-1 LLM compresses N original messages into text; output
+  above this value triggers Stage-2 further compression (hard limit 500 chars/words).
+- Upstream: length of freely generated Stage-1 summaries.
+- Trigger: output_tokens above this value -> further_compress() second pass."""
 
 RECENT_PER_MESSAGE_MAX_TOKENS = 500
-"""压缩输入的单条 message token 上限。
-- 用途：compress_history 把每条原始 message 拼进 prompt 前先做头尾保留
-  截断（utils.tokenize.truncate_head_tail_tokens，head=tail=250）。
-- 上游：用户/AI 的原始对话文本，正常一轮 30-500 token，长贴可能数 KB。
-- 截断策略：保留头尾各 250 token，中段用 "…[省略中段]…" 替换。"""
+"""Per-message token cap for compression input.
+- Purpose: before prompt assembly, compress_history truncates each original message, retaining head/tail
+  via utils.tokenize.truncate_head_tail_tokens, head=tail=250.
+- Upstream: user/AI original text, normally 30-500 tokens per turn; long pastes can reach several KB.
+- Strategy: retain 250 tokens at each end, replacing the middle with \"…[省略中段]…\"."""
 
 RECENT_COMPRESS_INPUT_BUDGET_TOKENS = 8000
-"""后台 best-effort 压缩的单段输入 token 预算（分段阈值）。
-- 用途：待压积压渲染成文本后若超过此值，compress_history 走分段
-  map-reduce——切成每段 ≤ 此值的小段分别压成中间摘要，再 reduce 成最终
-  备忘录，减小单次 LLM 输入、避免输入过大导致超时。未超此值的正常压缩
-  走原一次性路径，行为不变。
-- 上游：积压对话渲染文本的 token 数。"""
+"""Per-segment input token budget for best-effort background compression (segmentation threshold).
+- Purpose: if rendered backlog exceeds this value, compress_history uses segmented
+  map-reduce: chunks no larger than this value become intermediate summaries, then reduce into a final
+  memo, shrinking individual LLM inputs and avoiding oversized-input timeouts. Ordinary compression
+  below the threshold retains the original single-pass behavior.
+- Upstream: token count of rendered conversation backlog."""
 
 RECENT_HARD_CAP_TOKENS = 60000
-"""recent 历史的硬上限（最终兜底，平时不触发）。
-- 用途：压缩持续失败（如持续 429，best-effort 后台也救不回）导致历史
-  一直压不掉、无限膨胀时，update_history 保留完整历史前若总 token 超过
-  此值，丢弃最旧的未压缩对话原文，保留近期若干条 + 备忘录，保证 prompt
-  有界。设得很大，只作最后防线。
-- 上游：未被压缩而累积的 recent 历史 token 数。"""
+"""Hard recent-history limit, a last resort normally unused.
+- Purpose: if persistent compression failures (e.g. ongoing 429s, even background fallback failing)
+  leave history growing indefinitely, update_history checks total tokens before preserving
+  full history; above this value, drop oldest uncompressed dialogue, retaining recent entries
+  plus the memo to bound prompts. Intentionally large, serving only as final defense.
+- Upstream: accumulated uncompressed recent-history tokens."""
 
 # ---- Memory: reflection ----
 REFLECTION_TEXT_MAX_TOKENS = 150
-"""单条 reflection 文本的 soft cap。
-- 用途：超过此值的 reflection 在保存时会剥离 ontology 字段
-  (relation_type / temporal_scope) — 文本本身不丢。
-- 上游：LLM 综合若干 fact 后输出的反思文本。"""
+"""Soft cap for one reflection's text.
+- Purpose: exceeding this value strips ontology fields on save
+  (relation_type / temporal_scope), preserving the text itself.
+- Upstream: LLM reflections synthesizing several facts."""
 
 REFLECTION_SURFACE_TOP_K = 3
-"""单次 surfacing 最多返回的反思条数。
-- 用途：get_pending_reflections_for_check / followup 等查询接口的截断。
-- 上游：满足 evidence_score≥0 且 cooldown 已过的候选反思集合。"""
+"""Maximum reflections returned per surfacing query.
+- Purpose: truncate get_pending_reflections_for_check / followup and related queries.
+- Upstream: candidate reflections with evidence_score≥0 and expired cooldowns."""
 
 REFLECTION_SYNTHESIS_FACTS_MAX = 20
-"""单次 reflection synthesis 最多带入的 unabsorbed fact 数。
-- 用途：_synthesize_reflections_locked 调用 LLM 前先按 importance/创建
-  时间排序，截到此数。
-- 上游：用户长期不"吸收"事实就会堆积；外循环（aget_unabsorbed_facts）
-  当前没数量限制，所以这层是唯一保护。
-- 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
+"""Maximum unabsorbed facts per reflection synthesis.
+- Purpose: _synthesize_reflections_locked sorts by importance/creation
+  time before sending at most this count to LLMs.
+- Upstream: prolonged unabsorbed facts accumulate; the outer aget_unabsorbed_facts
+  loop currently has no count limit, making this the only protection.
+- Rationale: 30 entries × average 50 tokens = 1500 tokens, sufficient for synthesis."""
 
 MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 180
-"""``_periodic_reflection_synthesis_loop`` 每轮轮询间隔（秒）。
-- 用途：后端定期对每个角色调 ``reflection_engine.synthesize_reflections``。
-- 设计依据：synthesize_reflections 内部对"同批 source_fact_ids → 同 rid"做
-  幂等 short-circuit，无新 unabsorbed fact 时 LLM 不会被调，所以这层只是
-  调度频率上限。**真 LLM 调用频率约等于"用户在 N 秒内新积了 ≥5 条 unabsorbed
-  fact 的次数"**，与 SignalLoop 实际产出速率绑死、与本常量解耦——把间隔从
-  600s 缩到 180s 不会按比例加 LLM 成本。
-- 选 180s：对齐 ``AUTO_PROMOTE_CHECK_INTERVAL = 180s``。两条 loop 一个产
-  pending、一个把 pending 推 confirmed，节奏对齐让 user-visible 状态机延迟
-  最短（合成 → 下一 tick 内就能被 promote 看到）。也跟
-  ``EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 60 = 300s`` 错峰，让 SignalLoop 抽
-  完一批 fact 后 1-2 个 reflection tick 内能消化掉。
-- 历史：以前 reflection 合成挂在 ``/api/proactive_chat`` handler 里（PR #1015
-  顺手塞的，见 main_routers/system_router.py 历史 blame），整套合成链路与
-  前端 setTimeout 强耦合——前端不开 / proactive 不触发 → reflection 永远不
-  增长。本常量配套的后端 loop 把合成从 HTTP/前端解耦，与其他 9 条 periodic
-  loop（rebuttal / auto_promote / idle_maint / signal_extraction / archive /
-  refine 等）对偶。"""
+"""Polling interval in seconds for ``_periodic_reflection_synthesis_loop``.
+- Purpose: periodically call ``reflection_engine.synthesize_reflections`` per character.
+- Rationale: synthesize_reflections idempotently short-circuits same source_fact_ids ->same rid;
+  without new unabsorbed facts no LLM runs, so this only caps scheduling frequency.
+  **Actual LLM frequency approximately equals occasions when users accumulate ≥5 new unabsorbed
+  facts within N seconds**, tied to SignalLoop output rather than this constant. Shortening
+  600s to 180s does not proportionally increase LLM cost.
+- Choose 180s: align ``AUTO_PROMOTE_CHECK_INTERVAL = 180s``. One loop creates
+  pending entries and the other promotes them to confirmed; matching cadence minimizes visible
+  state-machine delay (synthesis becomes eligible for promotion within the next tick). Also stagger against
+  ``EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 60 = 300s``, letting reflection consume new
+  SignalLoop facts within 1-2 ticks.
+- History: synthesis once ran inside ``/api/proactive_chat`` (added in PR #1015;
+  see main_routers/system_router.py blame), tightly coupling the whole chain to frontend
+  setTimeout: no frontend / no proactive trigger meant reflections never grew.
+  This backend loop decouples synthesis from HTTP/frontend, matching 9 other periodic
+  loops (rebuttal / auto_promote / idle_maint / signal_extraction / archive /
+  refine, etc.)."""
 
 REFLECTION_RELATED_PER_QUERY_K = 3
-"""Reflection synthesis 时，每条 unabsorbed fact 单独 query 召回的 absorbed
-fact 数量上限。
-- 上游：synthesize_reflections 调 ``MemoryRecallReranker.aretrieve_per_query_topk``
-  时按本常量给每条 query 配独立预算。
-- 设计依据（PR #1401 thread 拍板）：原先用 max-pool top-K (=6 全局预算)，
-  20 条 unabsorbed 主题分散时冷门主题会被高频主题挤掉冷板凳。改成 per-query
-  K=3 + 全局 cap，保证每条 unabsorbed 至少能拿到自己的 top-3 锚（除非这条
-  query embed 失败 / 候选池没语义匹配）。
-- 单条 query 拿 3 条而不是 1 条：考虑到主题边界模糊（用户聊 MC 同时聊到
-  红石和挖矿，cosine top-1 可能只命中其中一条），多给两条让 LLM 能看出
-  "主题群"的轮廓。"""
+"""Maximum absorbed facts recalled by each unabsorbed fact's separate query
+at reflection synthesis.
+- Upstream: synthesize_reflections allocates independent query budgets through this constant when calling
+  ``MemoryRecallReranker.aretrieve_per_query_topk``.
+- Rationale (PR #1401 thread decision): global max-pool top-K=6 lets common themes
+  crowd out rare themes when 20 unabsorbed facts span many topics. Per-query
+  K=3 plus a global cap gives each source its own top-3 anchors unless query
+  embedding fails or the candidate pool lacks semantic matches.
+- 3 rather than 1 per query accommodates fuzzy themes (Minecraft discussions include
+  redstone and mining; cosine top-1 may cover only one), giving LLMs two additional
+  examples to recognize topic clusters."""
 
 REFLECTION_RELATED_TOTAL_CAP = 20
-"""``aretrieve_per_query_topk`` 跨 query union+dedup 后的最终上限。
-- 设计依据：与 ``REFLECTION_SYNTHESIS_FACTS_MAX`` (=20) 同档，让 anchor 集
-  最坏也能跟 source 集等量——但实际命中通常远小于此（query 间 nearest
-  neighbor 大量重叠 + dedup）。典型 batch 10 条 unabsorbed × per_query=3
-  = 30 候选 → dedup 后落在 ~10-15 anchor。
-- 上界用于防御性截断：极端"20 条全主题不重叠"假设下，per_query=3 × 20 = 60
-  候选，dedup 不能去重时砍到 20，避免 prompt token 爆。
-- prompt 实际成本：20 × ~50 tok ≈ 1000 tok anchor + 20 × ~50 tok ≈ 1000 tok
-  source = 2k 上限，summary tier 模型完全吃得下。"""
+"""Final cap after cross-query union/dedup in ``aretrieve_per_query_topk``.
+- Rationale: match ``REFLECTION_SYNTHESIS_FACTS_MAX`` (=20), allowing anchor sets
+  as large as source sets at worst; actual counts are usually smaller due to overlapping
+  nearest neighbors and dedup. Typical batch: 10 unabsorbed ×per_query=3
+  =30 candidates -> ~10-15 deduplicated anchors.
+- Defensive truncation: worst-case 20 entirely disjoint themes produce per_query=3 ×20=60
+  candidates; without duplicates, cap at 20 to prevent prompt growth.
+- Prompt cost: 20 ×~50 tok ≈1000 anchor tokens +20 ×~50 tok ≈1000
+  source tokens =2k maximum, easily handled by summary-tier models."""
 
 # ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
-# Reflection 用 4 档 temporal_scope（pattern / state / episode / past）做时间
-# 衰减。state 与 episode 各有 TTL，超期自动进过时 block。pattern 永不过时。
-# `past` 是历史兼容值（旧数据可能存了），render 时直接进过时 block。
+# Reflection temporal decay uses four temporal_scope values (pattern / state / episode / past).
+# state and episode have TTLs and automatically enter the outdated block on expiry; pattern never expires.
+# `past` is a legacy-compatible value (possibly stored in old data), rendered directly in the outdated block.
 MEMORY_STATE_PAST_DAYS = 7
-"""state 类 reflection 距 event 多少天后被视为已过时。
-- 用途：memory.temporal.is_past_for_render；render 时把此条移入过时 block。
-- 上游：reflection synth LLM 标注 temporal_scope='state' 的条目。"""
+"""Days after event before state reflections become outdated.
+- Purpose: memory.temporal.is_past_for_render moves these into outdated blocks on render.
+- Upstream: reflection synthesis entries labeled temporal_scope='state'."""
 
 MEMORY_EPISODE_PAST_DAYS = 3
-"""episode 类 reflection 距 event 多少天后被视为已过时。
-- 用途：同上，但 episode 是一次性事件，衰减更快。
-- 上游：reflection synth LLM 标注 temporal_scope='episode' 的条目。"""
+"""Days after event before episode reflections become outdated.
+- Purpose: as above, but one-off episodes decay faster.
+- Upstream: reflection synthesis entries labeled temporal_scope='episode'."""
 
 MEMORY_SCHEMA_VERSION_CURRENT = 2
-"""fact / reflection 当前 schema 版本号。
-- v1（缺失或显式 1）：旧 ontology（current/ongoing/None temporal_scope，无
-  event_when）。
-- v2：新 ontology（pattern/state/episode）+ event_start_at / event_end_at。
-- 用途：背景循环找 schema_version < CURRENT 的条目慢慢重判升版本。"""
+"""Current fact/reflection schema version.
+- v1 (missing or explicit 1): old ontology (current/ongoing/None temporal_scope, without
+  event_when).
+- v2: new ontology (pattern/state/episode) +event_start_at /event_end_at.
+- Purpose: background loops gradually reassess/upgrade entries with schema_version<CURRENT."""
 
 # ---- Memory: slow recheck loop (memory/temporal.py + app/memory_server/) ─
 MEMORY_RECHECK_ENABLED = True
-"""慢速记忆重判循环总开关。
-- 用途：app/memory_server/evidence_loops.py _periodic_slow_memory_recheck_loop 启动门控。
-- 关闭时老数据不会被升版本（render 兜底走 pattern 不淡出）。"""
+"""Master switch for slow memory reassessment.
+- Purpose: gate app/memory_server/evidence_loops.py _periodic_slow_memory_recheck_loop.
+- Disabled: old data stays unupgraded; render fallback treats it as nonfading pattern."""
 
 MEMORY_RECHECK_INTERVAL_SECONDS = 30
-"""慢速重判循环单条间隔。
-- 用途：每 N 秒重判 1 条 reflection / fact。
-- 上游：背景循环 sleep；设计参考 §3.5 archive_sweep（更慢、低 IO）。"""
+"""Per-entry interval for slow reassessment.
+- Purpose: reassess 1 reflection/fact every N seconds.
+- Upstream: background-loop sleep; design follows §3.5 archive_sweep (slower, low I/O)."""
 
 MEMORY_RECHECK_INITIAL_DELAY_SECONDS = 180
-"""慢速重判循环启动延迟（错峰）。
-- 用途：和现有 6 个循环错峰，避开启动峰值。
-- 现有 _INITIAL_DELAY_* 在 20s~250s，本值 180s 接近末尾。"""
+"""Staggered startup delay for slow reassessment.
+- Purpose: stagger with 6 existing loops to avoid startup peaks.
+- Existing _INITIAL_DELAY_* span 20s~250s; 180s is near the end."""
 
 MEMORY_RECHECK_MAX_ATTEMPTS = 5
-"""单条 v1 entry 重判失败几次后放弃，避免饥饿后续合法 v1 条目。
-- 失败定义：LLM 调用抛异常、返回非 dict、temporal_scope 不在合法集合
-  （reflection 限定 pattern/state/episode）。
-- 计数字段：reflection / fact entry 上的 `recheck_attempts` (int)。
-- 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
-  排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
+"""Failures before abandoning 1 v1 entry, avoiding starvation of later valid v1 entries.
+- Failure: LLM exceptions, non-dict results, or invalid temporal_scope
+  (reflections allow only pattern/state/episode).
+- Counter: `recheck_attempts` (int) on reflection/fact entries.
+- At threshold retain schema_version<2 without silently legitimizing upgrades, but filter
+  these entries out so others get processed. Developers inspect backlog through logger.debug."""
 
 MEMORY_LIVENESS_MAX_ATTEMPTS = 5
-"""LLM 终态失败 N 次后强推 progress marker / dead-letter 的统一上限。
-- 适用场景：所有"同点 input + 无 counter + LLM 永久失败 → 永久卡死"的后台
-  路径。包括 signal extraction path A/B、rebuttal feedback、persona
-  corrections resolve、fact dedup resolve、refine cluster、outbox handler。
-- 治理思路：参考 `MEMORY_RECHECK_MAX_ATTEMPTS` (schema 重判 dead-letter) 的
-  套路，把"同一 cursor / 队头 / cluster_hash / op 反复打 LLM"收敛掉，避免
-  毒窗口 / 毒 payload 让整条 pipeline 哑火。
-- 失败定义：LLM 返 None / 抛异常 / handler raise / parse 失败等终态。
-- 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
-  跨过偶发 transient failure 够用；再多就属于真正 poison。"""
+"""Shared limit before advancing progress markers /dead-lettering after N terminal LLM failures.
+- Applies to background paths where identical input without counters plus permanent failure
+  stalls forever: signal extraction A/B, rebuttal feedback, persona
+  correction resolution, fact dedup resolution, refine clusters, outbox handlers.
+- Approach: follow `MEMORY_RECHECK_MAX_ATTEMPTS` schema-recheck dead-lettering,
+  bounding repeated LLM calls for one cursor /queue head /cluster_hash /operation,
+  preventing poisoned windows/payloads from disabling pipelines.
+- Failure: None results, exceptions, handler raises, parse failures, and other terminal outcomes.
+- 5 matches `MEMORY_RECHECK_MAX_ATTEMPTS`; at 40s per cycle, roughly 3 minutes
+  accommodates transient failures; more failures indicate genuinely poisoned input."""
 
 MEMORY_THINKING_OUTPUT_MAX_TOKENS = 8192
-"""记忆系统里有意开思考的调用共用的输出额度。
+"""Shared output allowance for memory calls intentionally enabling thinking.
 
-适用：历史审阅、Stage-2 信号检测、refine、persona correction / 外部融合、
-reflection 合成 / 反驳判定 / promote 合并。这些调用不套用工厂的关思考
-extra_body（走原生思考，或 ``config.providers.memory_thinking_extra_body`` 给的
-压档形式），推理 token 和 JSON 正文共用这一额度。共享护栏
-``LLM_OUTPUT_GUARD_MAX_TOKENS``（4096）会被默认开思考的模型在 JSON 写完前打满
-（#3319：qwen3.8-flash 的信号检测精确顶格 4096、正文为空）。8192 给思考链留头寸；
-光抬额度不够，信号检测和审阅的提示词另带思考长度限制。
+Applies to history review, Stage-2 signal detection, refine, persona correction /external fusion,
+reflection synthesis /rebuttal checks /promotion merge. These bypass factory thinking-disabled
+extra_body, using native thinking or reduced modes from ``config.providers.memory_thinking_extra_body``;
+reasoning and JSON body share the allowance. Shared guard
+``LLM_OUTPUT_GUARD_MAX_TOKENS`` (4096) can be exhausted before JSON appears on default-thinking models
+(#3319: qwen3.8-flash signal detection hit exactly 4096 with empty body). 8192 reserves reasoning headroom;
+raising limits alone is insufficient, so signal/review prompts also constrain reasoning length.
 
-不抬全局护栏：``max_completion_tokens`` 超过模型自身输出上限时，不少兼容端点
-会在请求时直接 400。所以 ``memory.thinking_llm`` 遇到这种 400 会退回 4096 重发
-一次。摘要、去重、recheck 等不开思考的短 JSON 仍用 4096。"""
+Do not raise the global guard: many compatible endpoints return 400 when ``max_completion_tokens``
+exceeds model output limits. ``memory.thinking_llm`` retries once at 4096 for that 400.
+Short nonthinking JSON calls (summaries, dedup, recheck) retain 4096."""
 
 MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS = 3
-"""历史审阅因输出 token 耗尽而暂停前的连续失败次数。
+"""Consecutive output-exhaustion failures before pausing history review.
 
-- 只统计 provider 明确返回 ``length`` / ``max_tokens``，或空正文且输出 token
-  已触及本次实际请求额度的调用；网络、429、普通 JSON 错误仍走
-  ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的通用 fingerprint 退避。
-- 达到 3 次后按角色暂停 review。新增消息不会解禁；只有当前 review 上下文 token
-  数严格低于失败期间的最小值（通常由 recent compression 造成）才清零恢复。"""
+- Count only explicit provider ``length`` /``max_tokens``, or empty bodies with output tokens
+  reaching the actual requested allowance; networking, 429, ordinary JSON errors still use
+  ``MEMORY_LIVENESS_MAX_ATTEMPTS`` fingerprint-based backoff.
+- After 3 failures pause review per character. New messages do not resume it; only current context
+  tokens strictly below the minimum seen during failure (usually recent compression) reset/resume."""
 
 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS = 5 * 60 * 60
-"""dead-letter 的时间冷却自愈窗口（秒）。
+"""Time-based dead-letter cooldown recovery window, seconds.
 
-- 问题：达 `MEMORY_LIVENESS_MAX_ATTEMPTS` 被冻结的 entry（reflection synth /
-  schema recheck / refine cluster）只在"成功"或"输入变化"时才解冻。但当失败
-  其实是**一次性持续故障**（correction 模型快照下线一直超时 / cloudsave 卡
-  维护态 / FS 只读）时，故障期间会把一批无辜 entry 一路 bump 到 MAX 永久冻死，
-  故障恢复后也不会自愈（内容没变、又进不了候选）。
-- 治理：给这些 dead-letter 加时间冷却——冻结后每过本窗口放行**一次** probe。
-  probe 成功 → 计数清零彻底恢复；probe 失败 → 重新计时、再等一个窗口。这样
-  一次性故障 5h 后自愈，真正 poison 仍被压到"每 5h 一次"不空烧。
-- **不适用 memory_review**：它的恢复机制是"对话尾部 fingerprint 变化即复位"
-  （master 一发新消息就重试），不需要也不应该有时间自愈——挂机期间就该一直停。
-- 5h：refine cron 30min 一轮 → 一次 >2.5h 的模型宕机会把 entry 顶到 MAX；
-  5h 冷却确保宕机恢复后下一轮就能 probe，又远大于偶发抖动窗口。"""
+- Problem: entries frozen at `MEMORY_LIVENESS_MAX_ATTEMPTS` (reflection synthesis /
+  schema recheck /refine clusters) reset only after success or changed input. A **single prolonged outage**
+  (retired correction snapshots timing out /cloud-save maintenance /read-only filesystems)
+  drives innocent entries to MAX, permanently freezing them even after recovery because
+  content is unchanged and they cannot reenter candidates.
+- Remedy: allow **one** probe per window after freezing. Success resets counts and restores
+  processing; failure restarts cooldown. Temporary outages self-heal after 5h,
+  while genuinely poisoned input is limited to one attempt every 5h.
+- **Exclude memory_review**: tail-fingerprint changes already reset it
+  whenever users send new messages; time-based recovery is unnecessary and inappropriate while idle.
+- 5h: refine cron runs every 30min, so >2.5h outages drive entries to MAX;
+  5h allows probing next cycle after recovery while far exceeding incidental jitter windows."""
 
 # ---- Memory: followup picker (memory/reflection.py) ─
 REFLECTION_FOLLOWUP_WEIGHTED = True
-"""主动搭话 followup 候选采样是否按 evidence_score 加权随机。
-- 用途：_filter_followup_candidates；False 时回退到旧行为（按落盘顺序取
-  top-K）。
-- 设计依据：候选池大时纯落盘顺序总取同一批，造成主动搭话内容雷同。"""
+"""Whether proactive follow-up sampling is randomly weighted by evidence_score.
+- Purpose: _filter_followup_candidates; False restores old behavior, taking
+  top-K in persisted order.
+- Rationale: large pools otherwise repeatedly choose the same entries, making proactive speech repetitive."""
 
 REFLECTION_FOLLOWUP_WEIGHT_BASE = 0.5
-"""加权采样的最低权重（score=0 时也有此权重，避免全 0 score 时退化）。"""
+"""Minimum sampling weight, including score=0, preventing degeneracy when all scores are 0."""
 
 # ---- Memory: summary stale prompt (memory/recent.py) ─
 RECENT_SUMMARY_STALE_HOURS = 1
-"""距上次"LLM 实际更新 past block 的时刻"超过此小时数，下一次 compress
-时在 prompt 头部附加"时间已过 X"提示，让 LLM 主动把过时片段挪进 summary
-内部的过时 block。
-- 锚点：不是"上次 summary 时间"——summary 每轮压缩都会跑，跟着锚点会让
-  stale hint 永远跟在最后一次压缩后 1 小时，无法形成"每隔 N 小时刷一次
-  past block"的稳定节奏。改记"上次 hint 真正注入的时刻"，即 LLM 实际
-  被要求更新 past block 的那一刻。
-- 上游：recent_meta.json 里的 last_past_block_update_at 字段。
-- 注意：summary 的过时 block 只在当前 session 临时降级，不持久化到
-  reflection / persona。"""
+"""After this many hours since the last actual LLM past-block update, prepend an elapsed-time
+hint on the next compression so the LLM moves outdated material into the summary's
+internal past block.
+- Anchor: not last summary time, since summaries run on every compression; anchoring there
+  perpetually delays hints until 1 hour after the latest compression, defeating a stable
+  every-N-hours past-block update cadence. Record actual hint injection time instead,
+  when the LLM was explicitly asked to refresh the past block.
+- Upstream: recent_meta.json last_past_block_update_at.
+- Note: summary past blocks temporarily demote content only in current sessions, without persisting
+  to reflections/persona."""
 
 # ---- Memory: persona ----
 PERSONA_MERGE_POOL_MAX_TOKENS = 4000
-"""promote-merge 时同 entity persona+reflection 池总 token 上限。
-- 用途：_allm_call_promotion_merge 把同 entity 的所有 confirmed/promoted
-  persona 和 reflection 全拼进 prompt，本 cap 防止该池失控。
-- 上游：同一 entity 长期累积的 persona/reflection。
-- 注意：这条不复用 PERSONA_RENDER_MAX_TOKENS（render 是给主对话看的，
-  merge 是给 promotion LLM 看的，需要更大的池才能做合并判断）。"""
+"""Total token cap for same-entity persona+reflection pools during promotion merge.
+- Purpose: _allm_call_promotion_merge assembles all confirmed/promoted
+  persona/reflections for one entity; cap prevents runaway pool size.
+- Upstream: persona/reflections accumulated over time for one entity.
+- Do not reuse PERSONA_RENDER_MAX_TOKENS: rendering feeds main conversations,
+  while merging feeds promotion LLMs that need larger pools to judge merges."""
 
-# ---- Memory: 外部记忆导入 · persona LLM 融合预算 ----
-# 背景（也是这条链路存在的根本原因）：persona 渲染进 system prompt 有一个严格的
-# token 上限（PERSONA_RENDER_MAX_TOKENS；scoped 群渲染是每个 subject 各一份，但外部
-# 导入只写 legacy 私聊语料，所以这里绑定的是单池那份），外部工作
-# 区（OpenClaw/Hermes 的 USER.md / SOUL.md）动辄几十条自由 Markdown，若原样精确
-# 去重后逐条追加，很快就会把 persona 池撑爆、把角色自身积累的印象挤掉。因此
-# USER.md / SOUL.md 必须先经一次 LLM 融合（归纳/合并/去重/消歧/按重要度排序），
-# 把内容压进下面的预算，再落盘为 non-protected persona 条目。
-# 两个 entity 各自的融合产出上限（token）。neko(SOUL.md 助手人格) 给得比
-# master(USER.md 用户) 多；两者合计 < PERSONA_RENDER_MAX_TOKENS，给对话中自然
-# 积累的 persona 条目留出竞争空间。
+# ---- Memory: external memory import · persona LLM fusion budget ----
+# Background and rationale: persona rendering in the system prompt has a strict
+# token cap (PERSONA_RENDER_MAX_TOKENS; scoped group rendering gives each subject its own,
+# but external imports write only legacy private corpora, so the single pool applies here).
+# External workspaces (OpenClaw/Hermes USER.md / SOUL.md) often contain dozens of free-form
+# Markdown entries; appending after exact deduplication quickly overfills persona and displaces
+# the character's impressions. USER.md / SOUL.md require LLM fusion (summarize/merge/deduplicate/disambiguate/rank) into this budget
+# before persisting as non-protected persona entries.
+# Per-entity fusion output caps (tokens). neko (SOUL.md assistant persona) gets more than
+# master (USER.md user); combined total < PERSONA_RENDER_MAX_TOKENS leaves competition space
+# for persona entries naturally accumulated in conversation.
 EXTERNAL_IMPORT_PERSONA_NEKO_MAX_TOKENS = 1000
 EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS = 600
-# 喂给融合 LLM 的输入池上限（原始候选拼起来的 token 上界，防超长 prompt）。
+# Fusion LLM input-pool cap (total raw-candidate tokens, preventing oversized prompts).
 EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS = 6000
-# 融合产出的单条 soft cap（token）：防 LLM 把多条揉成一条超长文本，在渲染层
-# whole-entry 贪心截断里挤掉大量其它条目。
+# Soft per-entry fusion output cap (tokens): prevents merging many entries into one long text
+# that displaces others during rendering's greedy whole-entry trimming.
 EXTERNAL_IMPORT_FUSION_ENTRY_MAX_TOKENS = 200
-# 融合输入里单条候选的面包屑（source_section）前缀 token 上界：面包屑只提供分节
-# 上下文，不钉死的话大量带长标题的候选会把输入池吃光、把后面候选的正文挤出 LLM
-# 输入（尾部截断），导致后段记忆永久漏掉。
+# Token cap for each fusion candidate's breadcrumb (source_section) prefix: breadcrumbs provide section
+# context only; without a cap, long titles exhaust the input pool and displace later candidate bodies
+# from LLM input via tail truncation, permanently omitting later memories.
 EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
-# daily 日记（memory/·memories/YYYY-MM-DD.md）走 LLM 事实抽取时，喂给抽取 LLM 的
-# 单日日记输入上限（token）：一天的日记片段拼起来的上界，防超长 prompt。
+# When daily diaries (memory/·memories/YYYY-MM-DD.md) undergo LLM fact extraction, cap
+# one day's combined diary input tokens to prevent oversized prompts.
 EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS = 6000
-# daily 抽取的并发上限：每天一次 LLM 调用，串行跑 30 天日记 ≈ 300-900s，必撞
-# 上游 commit 转发的 240s 墙；有界并发把 wall-clock 压回 天数/并发 × 单次耗时。
-# 不设太高：抽取 LLM 共享 provider 配额，且写盘侧由 per-character 锁天然串行。
+# Daily extraction concurrency cap: one LLM call per day; 30 serial days cost ~300–900s, hitting
+# upstream commit forwarding's 240s wall. Bounded concurrency reduces wall time to days / concurrency × call time.
+# Keep it moderate: extraction shares provider quotas, and per-character locks serialize disk writes.
 EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY = 4
-# 单次导入允许的「真正要抽取」的日记天数上限（逐日指纹幂等 skip 的不计）：
-# 45 天 / 4 并发 ≈ 12 批 × 单次十几秒，稳落在 240s 窗口内；超限走 too_large
-# 引导拆分导入——已导入的天在下一次会被指纹白嫖 skip，多次导入无重复成本。
+# Maximum diary days actually requiring extraction per import (daily fingerprint idempotent skips excluded):
+# 45 days / concurrency 4 ≈ 12 batches × ten-plus seconds fits 240s. Excess returns too_large
+# to prompt split imports; later imports skip prior days by fingerprint, avoiding repeated costs.
 EXTERNAL_IMPORT_DAILY_MAX_FILES = 45
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
-"""单次 persona corrections resolve 处理的 batch 大小。
-- 用途：_resolve_corrections_locked 从 pending_corrections 队列取前 N
-  条丢给 LLM 做对错判断，剩下的下一轮再处理。
-- 上游：pending_corrections 队列。"""
+"""Batch size for one persona-correction resolution.
+- Purpose: _resolve_corrections_locked sends the first N entries from
+  pending_corrections to LLM judgment, leaving the rest for later cycles.
+- Upstream: pending_corrections queue."""
 
 PERSONA_VERSION_HISTORY_MAX = 5
-"""单条 persona entry 的 version_history 保留上限（Phase B-1）。
-- 用途：每次 resolve_corrections 的 replace/merge 或 apply_refine_actions
-  的 merge/modify append 后裁到最近 K 个，防长期运行无限累积。
-- 老版本直接丢；version_history 是审计而非数据，超过 5 条价值极低。"""
+"""Maximum version_history per persona entry (Phase B-1).
+- Purpose: trim to the latest K after resolve_corrections replace/merge or
+  apply_refine_actions merge/modify appends, bounding long-running growth.
+- Discard old versions directly; version_history is audit metadata, not data, with little value beyond 5 entries."""
 
 MEMORY_LLM_HARD_TIMEOUT_SECONDS = 110
-"""所有 memory 后台 LLM 调用的硬上限 timeout（秒）。
-- 上游转发服务器 hard timeout 120s；client 必须留 ≥10s margin，否则会被
-  转发层先 timeout 截断，连 response 都拿不到。**不能超过 110**。
-- 覆盖：reflection synthesis / persona correction / memory_refine /
-  recent review_history 等所有后台跑的 LLM 调用。
-- 不适用：用户面前的 chat / realtime 路径有独立的更严 timeout 控制。"""
+"""Hard timeout in seconds for every background memory LLM call.
+- Upstream proxy hard-times out at 120s; clients need ≥10s margin or proxies
+  terminate first without any response. **Never exceed 110**.
+- Covers reflection synthesis /persona correction /memory_refine /
+  recent review_history and all background LLM calls.
+- Excludes user-facing chat/realtime paths, which have separate stricter timeouts."""
 
 LLM_OUTPUT_GUARD_MAX_TOKENS = 4096
-"""变长输出 LLM 调用的 max_completion_tokens **runaway guard**（不是紧 budget）。
-- 用途：那些输出长度天然变动、没有紧的 task-specific budget 的调用——memory
-  的结构化 JSON（reflection / recall / persona / facts / refine / dedup recheck）、
-  fact dedup、card-assist、window-title 关键词等。
-- 取值：4096。**必须保持在主流 provider 的输出上限之内**——`max_completion_tokens`
-  是上限不是目标，但很多 provider（OpenAI 及兼容端点）会在请求时就校验它 >
-  模型 max output 而直接 400，而不是退回默认值。这正是 `omni_offline_client.
-  _budget_to_max_tokens` 对 unlimited 直接 **omit 字段**（"large fixed values get
-  rejected as out-of-range by some providers"）的原因。8000 会打爆 max output<8000
-  的自建/老模型；4096 是绝大多数 summary/correction/agent tier 模型都接受的安全档，
-  同时对这些任务的正常输出（含 thinking reasoning）仍是宽裕兜底。
-- 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 token budget；本常量是
-  "无紧 budget 但仍需有上限"这类调用的统一来源（见 docs/design/llm-prompt-budget.md §0）。
-- 不适用：有明确紧 budget 的调用（emotion / translation / vision / plugin 粗筛等）
-  仍用各自的 *_MAX_TOKENS 常量，不要图省事换成本 guard。
-- 残留边界：max output < 4096 的极老/极小模型仍可能 400；这类安装可下调本常量。
-  彻底鲁棒需要 per-model 上限元数据（codebase 目前不跟踪），故取保守定值。"""
+"""max_completion_tokens **runaway guard** for variable-length LLM output, not a tight budget.
+- Purpose: calls with naturally variable output and no tight task-specific budget: structured memory
+  JSON (reflection /recall /persona /facts /refine /dedup recheck),
+  fact dedup, card-assist, window-title keywords, etc.
+- Value: 4096. **Stay within common providers' output limits**: `max_completion_tokens`
+  is a ceiling, not a target, but OpenAI/compatible providers often validate it against
+  model output limits and return 400 rather than defaulting. Hence `omni_offline_client.
+  _budget_to_max_tokens` deliberately **omits** unlimited fields (\"large fixed values get
+  rejected as out-of-range by some providers\"). 8000 breaks older/self-hosted models below 8000;
+  4096 is accepted by most summary/correction/agent-tier models,
+  while still providing ample normal-output headroom, including thinking reasoning.
+- Policy: LLM_OUTPUT_BUDGET lint requires token budgets for each client; this constant centralizes
+  calls lacking tight budgets but still requiring a ceiling (docs/design/llm-prompt-budget.md §0).
+- Excludes explicitly tight-budget calls (emotion /translation /vision /plugin coarse filtering),
+  which retain dedicated *_MAX_TOKENS constants rather than substituting this guard.
+- Remaining boundary: very old/small models below 4096 output may still return 400; installations can lower this constant.
+  Full robustness needs per-model metadata, currently untracked, so use a conservative fixed value."""
 
 ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS = 20.0
-"""新用户破冰自由输入解释器 LLM timeout（秒）。用户面前的短分类/短回复调用，卡住时应快速失败。"""
+"""New-user icebreaker free-input interpreter LLM timeout, seconds. Fail quickly on stalled user-facing short classification/reply calls."""
 
 ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS = 512
-"""新用户破冰自由输入解释器输出 token 上限。输出固定 JSON，512 只作短任务上限。"""
+"""New-user icebreaker free-input interpreter output cap. Output is fixed JSON; 512 is only a short-task ceiling."""
 
 ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS = 800
-"""破冰自由输入解释器：当前 YUI 台词输入 token 上限。"""
+"""Icebreaker free-input interpreter: input-token cap for current YUI dialogue."""
 
 ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS = 800
-"""破冰自由输入解释器：用户自由输入 token 上限。"""
+"""Icebreaker free-input interpreter: user free-input token cap."""
 
 ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS = 200
-"""破冰自由输入解释器：单个选项文案 token 上限。"""
+"""Icebreaker free-input interpreter: token cap per option label."""
 
 ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS = 240
-"""破冰自由输入解释器：近期自由输入记录单段文本 token 上限。"""
+"""Icebreaker free-input interpreter: token cap per recent free-input text segment."""
 
 ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS = 4
-"""破冰自由输入解释器：近期自由输入记录最多带入条数。"""
+"""Icebreaker free-input interpreter: maximum recent free-input records included."""
 
 ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS = 240
-"""破冰自由输入解释器：模型 reply 字段清洗后的 token 上限。"""
+"""Icebreaker free-input interpreter: token cap for sanitized model reply fields."""
 
 DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
-"""主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
-- 用途：OmniOfflineClient 的 streaming chat client（stream_text /
-  prompt_ephemeral 共用同一个 self.llm）。SDK 的 timeout 是整次请求上限，
-  对流式即"出完整条回复"的时间。
-- 取值：刻意取大（180s）——正常 TTS 短回复 / summary 3000-token 长回复
-  都远低于此，不会被截；只在上游真正卡死（既不出 token 也不断流）时兜底
-  释放连接。比 MEMORY_LLM_HARD_TIMEOUT_SECONDS 大，因为主对话是用户面前
-  路径，宁可多等也不能误截正常回复。
-- 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 timeout；本常量是
-  主对话流式路径的统一来源。"""
+"""Total main-conversation streaming LLM request timeout, seconds, as a hang guard.
+- Purpose: OmniOfflineClient streaming chat client, shared by stream_text /
+  prompt_ephemeral through self.llm. SDK timeout caps the entire request,
+  meaning complete-response generation for streaming.
+- Value: deliberately large at 180s; normal short TTS /3000-token summary-mode replies
+  finish well below it. Only truly stuck upstream streams (neither tokens nor closure)
+  trigger fallback connection release. Larger than MEMORY_LLM_HARD_TIMEOUT_SECONDS because
+  user-facing main conversation should wait longer rather than wrongly truncate normal replies.
+- Policy: LLM_OUTPUT_BUDGET lint requires every client timeout; this constant supplies
+  the main streaming-conversation value."""
 
 FOCUS_THINKING_EXTRA_TOKENS = 800
-"""凝神（focus / thinking-on）轮次额外放宽的 max_completion_tokens。
-- 背景：thinking 模型（Qwen enable_thinking / GLM·Kimi·Doubao thinking.type /
-  OpenRouter reasoning.effort）的 reasoning token 与正式回复共享同一个
-  max_completion_tokens 预算池（见 docs/design/llm-prompt-budget.md §0），
-  凝神轮一开思考就会从回复额度里扣，把正式回复挤短。
-- 作用：仅在 thinking_on 的那一轮，把 API 端 max_completion_tokens 临时
-  抬高本值，给推理链单独留头寸，不动 Python-side 长度 guard（回复可见
-  长度仍按 max_response_length 收口）。
-- 路由：作为 per-call override 经 _focus_stream_overrides → astream →
-  ChatOpenAI._params 透传，不改 self.llm 实例属性（与 extra_body 同一条
-  per-call 路径，并发安全、下一轮自动复位）。
-- 适用面：Claude 凝神保持 thinking-off（config/providers.py），本加值对其
-  天然 no-op；Gemini thinking_budget 是独立字段（800），本余量也足够覆盖。
-- 取值：扁平 800，不按 provider 分叉——只在真正开思考的轮次生效。"""
+"""Additional max_completion_tokens allowance for focus /thinking-on turns.
+- Background: thinking models (Qwen enable_thinking /GLM·Kimi·Doubao thinking.type /
+  OpenRouter reasoning.effort) share one max_completion_tokens pool between reasoning
+  and final replies (docs/design/llm-prompt-budget.md §0),
+  so thinking consumes reply allowance and shortens visible answers.
+- Purpose: temporarily raise API max_completion_tokens by this value only on thinking_on
+  turns, reserving reasoning headroom without changing Python-side length guards;
+  visible replies still end at max_response_length.
+- Routing: per-call override through _focus_stream_overrides ->astream ->
+  ChatOpenAI._params, never mutating self.llm (same per-call route as extra_body,
+  concurrency-safe, automatically restored next turn).
+- Scope: Claude focus remains thinking-off (config/providers.py), making this naturally
+  a noop; Gemini's separate thinking_budget=800 is also covered by this headroom.
+- Value: flat 800 without provider branches, effective only when thinking actually runs."""
 
-# ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
-# 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
-# REFLECTION_REFINE 两条 cron 上。fact 不可变（只能作 merge/modify
-# 的信息源，不能被 split/discard）。
+# ---- Memory: refine (Phase A-3) — MemoryRefineEngine cron parameters ----
+# Generic cosine clustering + LLM decision pipeline reused by PERSONA_REFINE and
+# REFLECTION_REFINE cron jobs. Facts are immutable (information sources for merge/modify
+# only, never split/discard targets).
 
 MEMORY_REFINE_COSINE_THRESHOLD = 0.82
-"""refine cluster 的 cosine 阈值。比 FACT_DEDUP 的 0.85 略松——persona
-和 reflection 文本通常更长，cosine 难拉到 0.85+；同时这里是聚类找
-"相关"而非 dedup 找"等价"，松一点更合适。"""
+"""Refine-cluster cosine threshold, slightly looser than FACT_DEDUP's 0.85: persona
+and reflection texts are longer, making 0.85+ harder; clustering seeks relatedness
+rather than deduplication equivalence, so looser matching is appropriate."""
 
 MEMORY_REFINE_TOPK_PER_ENTRY = 5
-"""单个 entry 在邻接图上最多保留的近邻数（双 cap 的第二条）。防止某条
-被高度引用的 hub entry 把一大坨弱相关条目都拉进同一 cluster。"""
+"""Maximum retained neighbors per entry in adjacency graphs, the second dual cap. Prevent highly
+referenced hub entries from pulling large groups of weakly related items into one cluster."""
 
 MEMORY_REFINE_CLUSTER_SIZE_MAX = 6
-"""单 cluster 内最多成员数。超过 6 LLM 难以一致处理；溢出的 cluster
-按 cosine 强度截到前 6 条。"""
+"""Maximum members per cluster. More than 6 is difficult for consistent LLM processing;
+truncate overflow to the top 6 by cosine strength."""
 
 MEMORY_REFINE_REVISIT_AFTER_DAYS = 30
-"""同一 cluster_hash 多久后允许重审（即使 hash 全员命中也不 skip）。
-LLM 行为月级别可能漂移，1 个月重审一次成本可控。"""
+"""Time before re-reviewing the same cluster_hash, even when all members match hashes.
+Monthly LLM behavior may drift; 1 review per month has manageable cost."""
 
 MEMORY_REFINE_CLUSTERS_PER_PASS = 3
-"""单次 cron 触发最多送 LLM 的 cluster 数。按饥饿度（cluster 内
-min(last_refine_at)）升序取前 N。约 3 次 LLM call ≈ 60-90s 阻塞。"""
+"""Maximum clusters sent to LLMs per cron trigger. Take N by ascending starvation
+min(last_refine_at) within each cluster. About 3 LLM calls block for 60-90s."""
 
 MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
-"""PERSONA_REFINE / REFLECTION_REFINE cron 的轮询间隔（秒）。
-- 30 分钟一次；engine 内 cluster_hash skip 让"刚审过"的 cluster
-  零成本跳过，所以高频触发也不会浪费 LLM token。
-- 两条 cron 用同一间隔，靠 _INITIAL_DELAY_* 错峰起始。"""
+"""PERSONA_REFINE / REFLECTION_REFINE polling interval, seconds.
+- Every 30 minutes; engine cluster_hash checks skip recently reviewed clusters
+  at zero cost, so frequent polls do not waste LLM tokens.
+- Both cron loops share the interval, staggering starts through _INITIAL_DELAY_*."""
 
-# ---- Memory: scoped subject 淘汰（群记忆系列 5/7 主线一） ----
-# scoped（群/成员）条目拿不到任何 evidence 信号（fact 写盘即
-# signal_processed=True、reflection 直落 confirmed、surfacing legacy-only），
-# score 驱动的 sub_zero 归档对它们结构性不可达。scoped 的淘汰维度只有
-# 时间：按「subject 最后写入时间」超期归档。判据从数据本身推导
-# （per-subject max(created_at)，facts 为主、reflection/persona 时间戳并入
-# 取 max 的保守口径），刻意不建 sidecar 账本——PR#2394 的教训是账本比数据
-# 活得久就会永久失联，嵌在数据里的判据在结构上不可能失配。
+# ---- Memory: scoped subject eviction (group memory series 5/7, track one) ----
+# Scoped group/member entries receive no evidence signals (facts persist with
+# signal_processed=True, reflections directly confirmed, surfacing legacy-only),
+# making score-driven sub_zero archiving structurally unreachable. Scoped eviction uses
+# time only: archive subjects whose last write expired. Derive criteria from data
+# (per-subject max(created_at), primarily facts, conservatively including reflection/persona timestamps
+# in the maximum). Deliberately avoid a sidecar ledger: PR #2394 showed ledgers outliving data
+# become permanently disconnected; data-embedded criteria cannot structurally diverge.
 
 SCOPED_SUBJECT_ARCHIVE_ENABLED = True
-"""scoped subject 时间驱动归档的总开关。关掉后 sweep 只跳过，不影响
-score 驱动的 legacy 归档。"""
+"""Master switch for time-driven scoped-subject archiving. Disabled sweeps skip this stage,
+without affecting score-driven legacy archiving."""
 
 SCOPED_SUBJECT_STALE_DAYS = 90
-"""subject 最后写入时间超过此天数（严格大于）→ 该 subject 的
-fact / reflection / persona 条目整体归档。恰好 N 天不归档。90 天
-≈ 一个季度没有任何新写入的群/成员，其记忆继续占据渲染与召回
-候选池的价值已低于串味/矛盾风险。"""
+"""Strictly more than this many days since a subject's last write archives all its
+fact/reflection/persona entries. Exactly N days does not archive. 90 days,
+roughly a quarter without new group/member writes, makes continued rendering/recall
+value lower than contamination/contradiction risk."""
 
 SCOPED_SUBJECT_ARCHIVE_DRY_RUN = False
-"""True 时 sweep 只打「将归档」日志（域标识+条数，不含原文），不动
-任何数据。排查判据用的逃生阀。"""
+"""True logs only would-archive scope identifiers/counts without original text,
+changing no data. Diagnostic escape hatch for investigating criteria."""
 
 SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS = 21600
-"""scoped subject 归档阶段在 archive sweep 循环内的最小间隔（秒）。
-判据粒度是天，6h 一次绰绰有余；挂在 1h 一轮的
-_periodic_archive_sweep_loop 里靠进程内时间戳节流。"""
+"""Minimum scoped-subject archiving interval within archive sweeps, seconds.
+Day-level criteria need only 6h checks; throttle via in-process timestamps
+inside the 1h _periodic_archive_sweep_loop."""
 
-# ---- Memory: scoped 轻量 refine（群记忆系列 5/7 主线二） ----
-# scoped 条目结构性进不了本体 MemoryRefineEngine 的两条 cron（entity 白名
-# 单只有 master/neko/relationship），语义重复与矛盾条目会无限并存，谁进
-# prompt 由 2000-token 裁剪决定。这里是 scoped 专用的轻量对偶：
-#   本体 = correction tier + thinking + 3 cluster/轮 + 定期全扫；
-#   scoped = summary tier + 无 thinking + 全角色每轮 1 个 cluster +
-#            仅在单 subject 条目数达阈值时触发。
-# 分桶键必须是 (kind, subject_id, scope)——所有群共享 entity='group_chat'，
-# 按 entity 分桶会把 A 群和 B 群塞进同一个 cosine cluster 跨群覆写
-# （成文先例见 memory/fact_dedup.py 的 _bucket_key docstring）。
+# ---- Memory: lightweight scoped refine (group memory series 5/7, track two) ----
+# Scoped entries cannot enter the base MemoryRefineEngine's two cron jobs (entity whitelist
+# permits only master/neko/relationship), so semantic duplicates/conflicts coexist forever;
+# the 2000-token trim decides what enters prompts. This is the lightweight scoped counterpart:
+#   Base = correction tier + thinking + three clusters/turn + periodic full scans;
+#   Scoped = summary tier + no thinking + one cluster per turn across all characters +
+#            triggers only when one subject reaches the entry-count threshold.
+# Bucket key must be (kind, subject_id, scope): all groups share entity='group_chat',
+# so entity bucketing would place groups A and B in one cosine cluster, overwriting across groups
+# (documented precedent: _bucket_key docstring in memory/fact_dedup.py).
 
 SCOPED_REFINE_MIN_ENTRIES = 8
-"""单 (subject, 存储) 池触发 refine 的最小条目数。per-subject 渲染预算
-2000 token ≈ 10-15 条典型条目，8 条起审让合并发生在预算裁剪开始
-静默丢条目之前。"""
+"""Minimum entries triggering refine per (subject, store) pool. Per-subject rendering
+budget 2000 tokens fits ~10-15 typical entries; reviewing from 8 enables merges
+before budget trimming silently discards entries."""
 
 SCOPED_REFINE_COSINE_THRESHOLD = 0.82
-"""scoped cluster 的 cosine 阈值，沿用本体 refine 的取值（聚类找
-"相关"而非 dedup 找"等价"）。"""
+"""Scoped-cluster cosine threshold, matching main refine, which seeks
+relatedness rather than deduplication equivalence."""
 
 SCOPED_REFINE_TOPK_PER_ENTRY = 5
-"""邻接图上单条目最多保留的近邻数（同本体 refine 的双 cap 第二条）。"""
+"""Maximum graph neighbors retained per entry, matching main refine's second dual cap."""
 
 SCOPED_REFINE_CLUSTER_SIZE_MAX = 5
-"""单 cluster 上限。比本体的 6 略紧：lite prompt 无 thinking，控制单
-次决策面让 summary tier 模型稳定输出。"""
+"""Per-cluster cap, tighter than main refine's 6. Lite prompts lack thinking;
+limit each decision's scope for stable summary-tier output."""
 
 SCOPED_REFINE_REVISIT_AFTER_DAYS = 30
-"""同一 cluster_hash 的重审窗口，同本体取值。"""
+"""Re-review window for identical cluster_hash, matching main refine."""
 
 SCOPED_REFINE_CRON_INTERVAL_SECONDS = 1800
-"""scoped refine cron 的轮询间隔（秒）。每轮全角色最多 1 次 LLM 调用
-（1 个 cluster），配合 cluster_hash skip 高频空转零成本。"""
+"""Scoped-refine polling interval, seconds. At most 1 LLM call across all characters
+per cycle (1 cluster); cluster_hash skipping makes frequent empty polls free."""
 
 SCOPED_REFINE_LLM_TIMEOUT_SECONDS = 60
-"""scoped refine 单次 LLM 调用超时（秒）。无 thinking + 单 cluster 输出
-量小，60s 对齐 fact_dedup 的裁决调用；不用本体 refine 的 110s——lite
-管线的存在前提就是比本体便宜。"""
+"""Scoped-refine LLM timeout, seconds. No thinking and small single-cluster output
+allow 60s, matching fact_dedup judgment calls, rather than main refine's 110s; lite
+pipelines exist specifically to cost less than main refine."""
 
 # ---- Memory: recall ----
 RECALL_COARSE_OVERSAMPLE = 3
-"""vector coarse-rank 的过采样倍数。
-- 用途：top_k = budget * 此值；coarse 阶段多取 3× 候选给 LLM rerank
-  挑选。
-- 上游：embedding 检索的 candidate pool。"""
+"""Vector coarse-rank oversampling multiplier.
+- Purpose: top_k = budget * this value; coarse ranking retrieves 3× candidates for LLM rerank
+  selection.
+- Upstream: embedding-search candidate pool."""
 
 RECALL_PER_CANDIDATE_MAX_TOKENS = 200
-"""LLM rerank 输入的单条 candidate text 上限。
-- 用途：_fine_rank 拼 candidates 前对每条 candidate.text 做截断。
-- 上游：archived fact / observation 文本。"""
+"""Per-candidate text cap for LLM reranking input.
+- Purpose: _fine_rank truncates each candidate.text before assembling candidates.
+- Upstream: archived fact/observation text."""
 
 RECALL_CANDIDATES_TOTAL_MAX_TOKENS = 15000
-"""LLM rerank 输入的 candidates 拼合后总 token 上限。
-- 用途：候选数已 cap 但单条单独 cap 仍可能撑爆——这条是兜底。
-- 上游：cap 之后的 candidates 列表序列化。
-- 设计依据：理论上 budget*3 × per_candidate = 600*200 = 120k；25k 是
-  实际安全值，超出时按尾部截断（保留高 score 的）。"""
+"""Total token cap after assembling LLM-rerank candidates.
+- Purpose: count/per-entry caps can still multiply into oversized input; final fallback.
+- Upstream: serialized capped candidate lists.
+- Rationale: theoretical budget*3 ×per_candidate =600*200=120k; 25k is
+  practically safe. Trim excess from the tail, retaining higher scores."""
 
 # ---- Memory: evidence signal detection ----
 EVIDENCE_PER_OBSERVATION_MAX_TOKENS = 200
-"""Stage-2 signal detection 输入的单条 observation text 上限。
-- 用途：_allm_detect_signals 拼 observations 前对每条 text 截断。
-- 上游：archived fact / observation 文本。"""
+"""Per-observation text cap for Stage-2 signal-detection input.
+- Purpose: _allm_detect_signals truncates each text before observation assembly.
+- Upstream: archived fact/observation text."""
 
 EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS = 15000
-"""Stage-2 signal detection observations 拼合后总 token 上限。
-- 用途：兜底，防止单条上限 × 条数撑爆。
-- 上游：cap 之后的 observations 列表序列化。"""
+"""Total token cap after assembling Stage-2 signal-detection observations.
+- Purpose: fallback preventing per-entry limits multiplied by counts from overflowing.
+- Upstream: serialized capped observation lists."""
 
 EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS = 20
-"""Stage-2 signal detection 单次 batch 处理的 new_facts 上限。
-- 用途：_allm_detect_signals 入口对 new_facts 按 importance DESC 截到 N 条；
-  超出部分留在 facts.json 中 `signal_processed=False`，下次 idle 维护循环
-  再 drain 一批。
-- 与 FACT_DEDUP_BATCH_LIMIT 同口径（LLM 在 N×M 配对决策时的舒适 batch
-  ~20 条），避免 LLM 在 30+ 条 new_facts 上判失焦。
-- 上游：Stage-1 LLM 抽取出来的 new facts 列表。"""
+"""Maximum new_facts per Stage-2 signal-detection batch.
+- Purpose: _allm_detect_signals takes top N new_facts by importance DESC;
+  excess remains in facts.json with `signal_processed=False`, drained in another
+  idle-maintenance batch.
+- Match FACT_DEDUP_BATCH_LIMIT (comfortable LLM N×M matching batches
+  around 20), avoiding lost focus across 30+ new_facts.
+- Upstream: new facts extracted by Stage-1 LLM."""
 
 NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS = 3
-"""负面关键词检查带的 user message 上下文条数。
-- 用途：memory_server._amaybe_trigger_negative_keyword_hook 取 user
-  消息列表的最后 N 条作为 LLM 上下文。
-- 上游：会话流水。"""
+"""User-message context count for negative-keyword checks.
+- Purpose: memory_server._amaybe_trigger_negative_keyword_hook takes the final N
+  user messages as LLM context.
+- Upstream: conversation stream."""
 
-# §3.9 merge-on-promote 节流（PR-3 使用）
-EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES = 30      # 连续失败节流窗口
-EVIDENCE_PROMOTE_MAX_RETRIES = 5                 # 死信阈值
+# §3.9 merge-on-promote throttling (used by PR-3).
+EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES = 30      # Consecutive failure throttling window.
+EVIDENCE_PROMOTE_MAX_RETRIES = 5                 # Dead-letter threshold.
 
-# §6.5 pre-merge reviewer gates —— 草案值，reviewer 敲定前保留
-# Gate 1: 半衰期（§3.5.2）
-EVIDENCE_REIN_HALF_LIFE_DAYS = 30        # reinforcement 半衰期
-EVIDENCE_DISP_HALF_LIFE_DAYS = 180       # disputation 半衰期（longer than rein）
+# §6.5 pre-merge reviewer gates: draft values retained until reviewer approval.
+# Gate 1: half-life (§3.5.2).
+EVIDENCE_REIN_HALF_LIFE_DAYS = 30        # Reinforcement half-life.
+EVIDENCE_DISP_HALF_LIFE_DAYS = 180       # Disputation half-life (longer than rein).
 
-# Gate 2: reflection 合成 context 量（§3.4.3 阶段 2）
-REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT = 10   # 最近 N 条 absorbed fact 作参考
-REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # 且在 N 天内
+# Gate 2: context volume for reflection synthesis (§3.4.3 stage 2).
+REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT = 10   # Reference the latest N absorbed facts.
+REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # Within N days as well.
 
-# Gate 3: LLM tier 选型（候选见 RFC §6.5 Gate 3 表）
-# "summary" = qwen-plus 级；"correction" = qwen-max 级；"emotion" = qwen-flash 级
-EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 抽 fact
-EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "summary"      # Stage-2 判 signal 映射
-EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # 关键词二次判定（延迟敏感）
-EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
+# Gate 3: LLM tier selection (candidates in RFC §6.5 Gate 3 table).
+# "summary" = qwen-plus class; "correction" = qwen-max class; "emotion" = qwen-flash class.
+EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 fact extraction.
+EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "summary"      # Stage-2 signal mapping decisions.
+EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # Secondary keyword classification (latency-sensitive).
+EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote merge decisions.
 
 
 # memory-enhancements P2: vector hybrid retrieval (memory/embeddings.py).
@@ -1023,9 +1023,9 @@ EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 # model file. See memory/embeddings.py docstring for the full fallback
 # matrix. Defaults are tuned so the feature is opt-out at the install
 # level (drop the model file → on; remove it → off) without a config edit.
-# 默认值不变；额外支持 env 覆盖（opt-in 逃生口，不设就走原 auto 策略）。
-# 典型用途：无 AVX-VNNI 的老 CPU 上 auto 会自动关闭向量，用户可设
-# NEKO_VECTORS_QUANTIZATION=int8 强制照跑 int8（慢但正确），无需重新打包。
+# Defaults unchanged; optional env override provides an escape hatch, otherwise original auto policy applies.
+# Typical use: auto disables vectors on old CPUs lacking AVX-VNNI; users can set
+# NEKO_VECTORS_QUANTIZATION=int8 to force int8 (slow but correct) without repackaging.
 VECTORS_ENABLED = _read_bool_env("VECTORS_ENABLED", True)        # master kill switch
 VECTORS_EMBEDDING_DIM = "auto"               # "auto" | 32/64/128/256/512/768
 VECTORS_QUANTIZATION = _read_str_env(        # "auto" | "int8" | "fp32" (fp32 needs model.onnx on disk)

@@ -37,7 +37,7 @@ class MessagePlanePubServer:
             self._sock.bind(self.endpoint)
         except Exception as e:
             self._sock.close(linger=0)
-            self._sock = None  # 清理 socket
+            self._sock = None  # Clean up the socket
             raise e
         logger.info("pub server bound: {}", self.endpoint)
 

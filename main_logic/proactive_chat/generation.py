@@ -16,13 +16,14 @@
 """Parsers and output guards for proactive Phase 1/2 generation."""
 
 import asyncio
+from contextlib import suppress
 import logging
 import unicodedata
 import re
 from dataclasses import dataclass
 from functools import partial
 from itertools import zip_longest
-from typing import Any
+from typing import Any, Callable
 
 from config import (
     ANTI_REPEAT_DROP_THRESHOLD,
@@ -132,21 +133,21 @@ def _append_directives_section(
     return (memory_context or "") + block
 
 
-# 有词边界的文字 vs 没有的。CJK / 假名 / 谚文连写不分词，只能子串匹配；拉丁、
-# 西里尔、希腊这些用空格分词的，子串匹配会撞进更长的词里 —— ban 掉 ``it`` 会
-# 让 ``favorite`` / ``waiting`` 全部命中，主动搭话直接全静默（对抗审查实测
-# 3/3 草稿被 drop）。判据是 term 里**有没有**连写文字，有就退回子串。
+# Scripts with/without word boundaries: CJK/kana/Hangul concatenate without spaces, requiring substrings; Latin,
+# Cyrillic/Greek use spaces, so substrings collide inside longer words. Banning ``it``
+# matches ``favorite`` / ``waiting``, silencing all proactive speech (adversarial review
+# dropped 3/3 drafts). If term contains any unspaced-script character, fall back to substrings.
 _BOUNDARYLESS_SCRIPT_RE = re.compile(
     r"[⺀-鿿぀-ヿ가-힯豈-﫿ｦ-ﾟ]"
 )
 
-# 分词文字的字符集：ASCII + 拉丁扩展（西 / 葡的重音字母）+ 希腊 + 西里尔。
-# ⚠️⚠️ **不能用 ``\b``**。Python 的 ``\w`` 把汉字也算词字符，于是 ``\b`` 在字母
-# 与汉字的交界处**不触发**：``今天work很累`` 里 ``work`` 两侧都是 ``\w``，
-# ``\bwork\b`` 整个匹配不上 —— 而中英混说（用户说 "stop talking about
-# work"、角色输出"今天work怎么样"）恰恰是 prompts_directives 反复声明
-# **明确支持**的路径，一刀切用 \b 等于在主用例上漏杀（coderabbit 抳到，
-# 实测 3/3 全漏）。判据要的是"两侧有没有**同一族**的分词字符"，不是"是不是 \w"。
+# Word-delimited alphabet: ASCII + extended Latin (Spanish/Portuguese accents) + Greek + Cyrillic.
+# ⚠️ Never use ``\b``: Python ``\w`` includes Han, so ``\b`` never fires between
+# letters and Han; ``今天work很累`` has ``\w`` on both sides of ``work``,
+# and ``\bwork\b`` misses entirely. Mixed-language speech (user says "stop talking about
+# work", character says "今天work怎么样") is explicitly supported repeatedly by
+# prompts_directives. Blanket \b misses the main scenario (CodeRabbit caught;
+# 3/3 missed). Check neighboring word characters from same script family, not generic \w.
 _LATIN_WORD_CHAR = r"0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ"
 _LATIN_EDGE_RE = re.compile(rf"[{_LATIN_WORD_CHAR}]")
 
@@ -183,13 +184,13 @@ def _directive_term_in_draft(
         return False
     if _BOUNDARYLESS_SCRIPT_RE.search(folded_term):
         return folded_term in draft_folded
-    # ⚠️ 边界只对**两端本身就是分词字符**的 term 有意义。``my ex`` 两端是
-    # 字母，没问题；而 term 若以标点收尾（正则抽取是宽松的），lookaround 会贴
-    # 在标点外侧、几乎匹配不上任何东西 —— 那种情况退回子串，宁可多拦。
+    # ⚠️ Boundaries matter only when both term ends are word-delimited characters. ``my ex`` ends
+    # with letters, fine; punctuation-ended terms from permissive extraction place lookarounds
+    # outside punctuation, nearly always missing. Fall back to substrings, favoring extra blocking.
     if not (_LATIN_EDGE_RE.match(folded_term[0])
             and _LATIN_EDGE_RE.match(folded_term[-1])):
         return folded_term in draft_folded
-    # re 模块自带编译缓存，不用再包一层 lru_cache。
+    # re already caches compiled patterns; no extra lru_cache.
     return re.search(
         rf"(?<![{_LATIN_WORD_CHAR}]){re.escape(folded_term)}"
         rf"(?![{_LATIN_WORD_CHAR}])",
@@ -227,42 +228,42 @@ def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
         return []
     if not terms:
         return []
-    # 延迟 import：memory 层在偏窄的 entrypoint 下未必加载，与本函数其余
-    # 部分对 memory 的取用方式一致。
-    # ⚠️ import **和**调用都必须在 try 内。docstring 承诺 "Never raises"，而这个
-    # 延迟 import 的理由恰恰是"memory 层未必加载"—— 它自己举的那个场景正是会抛
-    # 的场景，放在 try 外等于契约在唯一相关的情况下不成立（上面那次
-    # get_active_terms 已经护住了，唯独这里漏了）。
+    # Lazy import: narrow entrypoints may not load memory layer, matching this function's
+    # other memory access patterns.
+    # ⚠️ Both import and invocation belong in try. Docstring promises never raises, while
+    # lazy import specifically accounts for missing memory layers, exactly the raising case.
+    # Outside try breaks contract in its sole relevant scenario (get_active_terms above
+    # is guarded, only this site missed it).
     def _no_fold(text: str) -> str:
         return text
 
-    # ⚠️ 繁简折叠两侧都做。用户换个输入法说"别再提遊戲"，落盘 term 是繁体，
-    # 而角色按 locale 输出简体"游戏"——不折的话逐字不等、直接漏杀，用户明确
-    # 禁掉的话题照样被推到脸上。项目里 memory.script_fold 就是为这条造的
-    # （#2584 召回侧同款问题）；新代码直接用，不重蹈 anti_repeat 那边"两套
-    # 分词各走各的"的覆辙。
-    # ⚠️ 还要 Unicode 归一：西 / 葡的重音字母可能以分解形式（e + 组合重音符）
-    # 落盘，与合成形式（é）逐字节不等，重音 term 会静默永不命中（codex）。
+    # ⚠️ Fold Traditional/Simplified on both sides. Input-method switch gives "别再提遊戲", storing Traditional term,
+    # while locale outputs Simplified "游戏"; literal mismatch misses, pushing explicitly banned
+    # topics at users. memory.script_fold already serves this purpose
+    # (#2584 same recall-side issue); reuse, avoiding anti_repeat's duplicate
+    # tokenization implementations diverging independently.
+    # ⚠️ Normalize Unicode too: Spanish/Portuguese accents may persist decomposed (e + combining accent),
+    # byte-distinct from composed é, silently never matching accented terms (Codex).
     try:
         from memory.script_fold import fold_script
         folded = _normalize_for_match(fold_script(draft)).casefold()
     except Exception as exc:  # pragma: no cover - defensive
-        # ⚠️ 降级成**不折叠继续匹配**，不是放弃整道闸。折叠只解决跨字形
-        # （遊戲/游戏）那一档，丢了它仍能拦住同字形的绝大多数命中；而直接
-        # return [] 会把用户明确禁掉的话题原样推到脸上 —— 两者严格可比，
-        # 降级那侧在任何输入上都不比放弃更差。
+        # ⚠️ Fallback continues matching without folding, never abandons entire gate. Folding handles cross-script
+        # variants (遊戲/游戏); losing it still blocks most same-script matches. Immediate
+        # return [] instead pushes explicitly banned topics at users; degraded matching is
+        # never worse than abandonment on any input.
         logger.debug("[UserDirectives] script fold unavailable: %s", exc)
         fold_script = _no_fold
         folded = _normalize_for_match(draft).casefold()
-    # ⚠️ 纯指代词（``这个`` / ``this`` / ``それ``）只走软约束，不参与硬拦截。
-    # 抽取侧是会存下它们的（"别再讲这个了"），而且那个行为被既有测试成片钉着，
-    # 不该由这条改动顺手动；但拿汉语最高频的词去做子串匹配，等于让主动搭话在
-    # 这条指令的整个生命周期里（递增 TTL 后最长 30 天）全面静默，而用户今天
-    # 没有界面能看到、更别说删掉它。判据与危害都在消费侧，就在消费侧收口。
-    # ⚠️ 保留大小写的那一份草稿，专给专名 term 用（``US`` / ``Us`` / ``Her``）。
-    # 它们在表里的小写形态是代词，casefold 之后会命中草稿里每一个普通的
-    # ``us`` / ``her``；反过来若把它们当代词豁免，用户明确 ban 掉的话题就直接
-    # 放行了。两条路都是 P1，所以判据落在 term 自己的大小写上，两侧配套。
+    # ⚠️ Pure demonstratives (``这个`` / ``this`` / ``それ``) use soft constraints only, never hard blocks.
+    # Extraction stores them ("别再讲这个了"), already pinned by existing tests and
+    # outside this change. But substring matching ubiquitous Chinese words silences all proactive
+    # speech throughout directive lifetime (escalating TTL up to 30 days), with no current
+    # UI to inspect/delete it. Criteria/harm are consumer-side, so resolve there.
+    # ⚠️ Retain original-case draft for proper-name terms (``US`` / ``Us`` / ``Her``).
+    # Lowercase forms are table pronouns; casefold would match every ordinary draft
+    # ``us`` / ``her``. Treating them as exempt pronouns instead permits explicitly banned
+    # topics. Both are P1; decide from term's own case, consistently on both sides.
     cased = _normalize_for_match(fold_script(draft))
     hits: list[str] = []
     for t in terms:
@@ -326,8 +327,8 @@ class ProactiveModelConfig:
 
     @property
     def has_vision_model(self) -> bool:
-        # 自定义视觉端点（本地 Ollama / 局域网 OpenAI 兼容服务）常常故意不填
-        # Key，和 screenshot_utils 的判据对齐：自定义配置下空 Key 也算已配置。
+        # Custom vision endpoints (local Ollama/LAN OpenAI-compatible) often omit keys;
+        # match screenshot_utils: empty key with custom config still counts configured.
         return bool(
             self.vision_model and (self.vision_api_key or self.vision_is_custom)
         )
@@ -384,6 +385,36 @@ def _proactive_llm_retry_error_types() -> tuple[type[BaseException], ...]:
     return _PROACTIVE_LLM_RETRY_ERROR_TYPES
 
 
+def _proactive_vision_consent_checker(
+    mgr: Any, vision_consent_epoch: int,
+) -> Callable[[], bool]:
+    """Live consent for one round, judged against the epoch it started under."""
+    def live_consent_check() -> bool:
+        # A quick off/on must not restore vision input held by the revoked round.
+        return (
+            getattr(mgr, "_proactive_vision_enabled", None) is not False
+            and getattr(mgr, "_proactive_vision_revocation_epoch", 0) == vision_consent_epoch
+        )
+
+    return live_consent_check
+
+
+async def _check_proactive_vision_consent(
+    live_consent_check: Callable[[], bool] | None = None,
+) -> None:
+    """Require current consent before exposing proactive images to a model."""
+    from utils.preferences import aload_global_conversation_settings
+
+    if live_consent_check is not None and not live_consent_check():
+        raise PermissionError("Proactive screenshot use declined by live consent")
+    settings = await aload_global_conversation_settings(strict=True)
+    if (
+        settings.get("proactiveVisionEnabled", True) is not True
+        or (live_consent_check is not None and not live_consent_check())
+    ):
+        raise PermissionError("Proactive screenshot use declined by privacy mode")
+
+
 async def _make_proactive_llm(
     model_config: ProactiveModelConfig,
     *,
@@ -391,8 +422,25 @@ async def _make_proactive_llm(
     max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     use_vision: bool = False,
     disable_thinking: bool = True,
+    live_consent_check: Callable[[], bool] | None = None,
+    round_is_current: Callable[[], bool] | None = None,
+    vision_consent_required: bool = False,
 ):
-    """Create the configured proactive-chat model without owning lifecycle state."""
+    """Create the configured proactive-chat model without owning lifecycle state.
+
+    ``vision_consent_required`` gates a text-only call whose prompt carries
+    screen- or window-derived material the same way as an image call.
+    """
+    needs_vision_consent = use_vision or vision_consent_required
+
+    def require_current_round() -> None:
+        if round_is_current is not None and not round_is_current():
+            raise PermissionError("Proactive round retired")
+
+    require_current_round()
+    if needs_vision_consent:
+        await _check_proactive_vision_consent(live_consent_check)
+    require_current_round()
     if use_vision and model_config.has_vision_model:
         model = model_config.vision_model
         base_url = model_config.vision_base_url
@@ -415,12 +463,24 @@ async def _make_proactive_llm(
     }
     if not disable_thinking:
         kwargs["extra_body"] = focus_extra_body(model)
-    return await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET
+    llm = await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET
         model,
         base_url,
         api_key,
         **kwargs,
     )
+    if needs_vision_consent or round_is_current is not None:
+        # Client creation awaits a worker thread; consent may change while it runs.
+        # The caller has not entered the client context yet, so denial owns cleanup.
+        try:
+            if needs_vision_consent:
+                await _check_proactive_vision_consent(live_consent_check)
+            require_current_round()
+        except BaseException:
+            with suppress(Exception):
+                await llm.aclose()
+            raise
+    return llm
 
 
 async def _llm_call_with_retry(
@@ -438,6 +498,8 @@ async def _llm_call_with_retry(
     image_b64: str = "",
     dynamic_context: str = "",
     log: logging.Logger | None = None,
+    live_consent_check: Callable[[], bool] | None = None,
+    vision_consent_required: bool = False,
 ) -> str:
     """Call the proactive model with the established retry and message shape."""
     active_logger = log or logger
@@ -470,6 +532,8 @@ async def _llm_call_with_retry(
                 max_completion_tokens=max_completion_tokens,
                 use_vision=use_vision,
                 disable_thinking=disable_thinking,
+                live_consent_check=live_consent_check,
+                vision_consent_required=vision_consent_required,
             ) as llm:
                 response = await asyncio.wait_for(
                     llm.ainvoke(messages),
@@ -547,6 +611,8 @@ async def _run_unified_phase1(
     has_music_task: bool,
     has_meme_task: bool,
     log: logging.Logger | None = None,
+    live_consent_check: Callable[[], bool] | None = None,
+    vision_consent_required: bool = False,
 ) -> dict[str, Any]:
     """Build, call, and parse the unified Phase 1 model request."""
     active_logger = log or logger
@@ -582,6 +648,8 @@ async def _run_unified_phase1(
             system_prompt=prompt,
             label="unified_phase1",
             log=active_logger,
+            live_consent_check=live_consent_check,
+            vision_consent_required=vision_consent_required,
         )
         print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {result_text[:500]}")
         parsed = _parse_unified_phase1_result(result_text)
@@ -731,6 +799,9 @@ async def _run_phase2_generation(
     is_playing_music: bool,
     music_cooldown: bool,
     log: logging.Logger | None = None,
+    vision_consent_epoch: int | None = None,
+    round_is_current: Callable[[], bool] | None = None,
+    vision_consent_required: bool = False,
 ) -> Phase2GuardedOutput:
     """Own Phase 2 messages, model stream, and output guards."""
     active_logger = log or logger
@@ -755,14 +826,14 @@ async def _run_phase2_generation(
     actual_model = (
         model_config.vision_model if use_vision else model_config.conversation_model
     )
-    # ⚠️ **不打印 prompt 正文**。这行 print 本身是既有的调试输出，但本 PR 往
-    # Phase 2 的 system prompt 里注入了用户 ban-topic 禁令块，于是它开始把
-    # "用户明说不想再听的东西"（前任 / 病名 / 逝者姓名）原样刷到 stdout ——
-    # 与本 PR 已经修过两次的那条判据同族（proactive 出口闸、_report_if_kept
-    # 都改成只输出计数），只是这次是**经由 prompt 间接**进去的，第一次自检
-    # 只搜直接变量所以漏了（coderabbit outside-diff）。
-    # 顺带说明：prompt 里本来就还有记忆上下文与活动状态，同样不该无条件落
-    # stdout；这里保留调试所需的模型 / 模态 / 规模，去掉正文。
+    # ⚠️ Never print prompt bodies. Existing debug print began leaking user ban-topic directives
+    # when this PR injected them into Phase 2 system prompt,
+    # sending explicit do-not-mention content (ex-partners/illness/deceased names) verbatim to stdout.
+    # Same issue already fixed twice here (proactive output gate/_report_if_kept
+    # now counts only), but indirectly introduced through prompts; initial self-check
+    # searched direct variables only and missed it (CodeRabbit outside diff).
+    # Prompts already contain memory/activity context, also unsuitable for unconditional stdout;
+    # retain debugging model/modality/size, remove bodies.
     print(
         f"\n{'=' * 60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: "
         f"model={actual_model} | vision={use_vision} | "
@@ -770,7 +841,15 @@ async def _run_phase2_generation(
         f"prompt_chars={len(system_prompt)}\n{'=' * 60}\n"
     )
 
-    make_llm = partial(_make_proactive_llm, model_config)
+    if vision_consent_epoch is None:
+        vision_consent_epoch = getattr(mgr, "_proactive_vision_revocation_epoch", 0)
+    live_consent_check = _proactive_vision_consent_checker(mgr, vision_consent_epoch)
+
+    make_llm = partial(
+        _make_proactive_llm, model_config, live_consent_check=live_consent_check,
+        round_is_current=round_is_current,
+        vision_consent_required=vision_consent_required,
+    )
     silence_since_before_generation = _proactive_silence_since(mgr)
     generated = await _generate_phase2_stream(
         mgr=mgr,
@@ -1149,10 +1228,10 @@ async def _generate_phase2_stream(
                 else:
                     _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
-    # ⚠️ 不打印草稿正文。这两处（还有下面那处 response_text）在**禁令闸之前**
-    # 执行：草稿命中 ban term 时，term 会先落进 stdout，然后才被闸丢掉 —— 拦住了
-    # 投递，没拦住泄漏。与本 PR 已经收口的另外两处（出口闸日志、prompt 正文）同
-    # 一条判据，这里补齐，免得留下"prompt 不打但草稿打"这种说不通的半拉子状态。
+    # ⚠️ Never print draft bodies. These two sites and response_text below run before ban gates:
+    # matched banned terms reach stdout before drafts are discarded, blocking
+    # delivery but not leakage. Apply same criterion as output-gate logs/prompt bodies,
+    # avoiding inconsistent no-prompt-logging-but-draft-logging behavior.
     print(
         "\n[PROACTIVE-DEBUG] Phase 2 STREAM output "
         f"(aborted={aborted}, tag={source_tag}, chars={len(full_text)})\n"
@@ -1308,32 +1387,32 @@ async def _guard_phase2_output(
             else "similarity+BM25",
         )
 
-    # ── 用户显式 ban-topic 硬闸 ────────────────────────────────────
-    # Phase 2 prompt 里已经有一段软约束（service.py 注入），这里是出口兜底：
-    # 草稿里仍然逐字出现被 ban 的话题就直接 drop。
+    # ── Explicit user ban-topic hard gate ────────────────────────────────────
+    # Phase 2 prompt has soft constraints injected by service.py; this output fallback
+    # drops drafts still containing banned topics verbatim.
     #
-    # ⚠️ **drop 而不是 regen**：regen 是一次额外的 LLM 调用，直接进账单，而
-    # 这道闸命中的前提已经是"模型看过禁令还是提了"，再花一次钱赌它改口不划算。
-    # drop 零成本，且语义正确——用户明说不想听，这次不搭话就是对的。
+    # ⚠️ Drop rather than regenerate: regeneration bills another LLM call after model
+    # already ignored known bans, making another paid gamble unwarranted.
+    # Drop costs nothing and respects users explicitly declining the topic.
     #
-    # ⚠️ **不受 exempt_text_dedup 豁免**。那个豁免的判据是"素材新鲜就别拿
-    # 台词复读度卡它"，针对的是 BM25 误杀模板化开场白；而用户 ban 的话题跟
-    # 素材新不新鲜无关——推歌台词里提到用户说过别提的事，照样该拦。
+    # ⚠️ exempt_text_dedup never exempts this. That exception avoids BM25 false positives
+    # on formulaic openings with fresh material, while topic bans ignore freshness:
+    # music recommendations mentioning forbidden subjects still must be blocked.
     #
-    # ⚠️⚠️ **必须排在所有复读检测之前**（字面查重 / BM25 / 未回应长窗）。
-    # 那几道闸 drop 时会调 ``record_anti_repeat_decision``，而它带的
-    # ``RepeatSignature`` 含 ``phrase`` / ``normalized_phrase`` —— **草稿片段
-    # 原文**，并且经 store **落盘**到 anti_repeat_effects.json。草稿同时命中
-    # 禁令与复读时，排在后面的 ban 闸只拦住了投递，那段含 ban term 的片段早已
-    # 被写进磁盘（比 stdout 严重：会话结束也不会消失）。
-    # 顺带这也是让下面那句"防复读没有做决策"成立的前提 —— 闸排在后面时那句话
-    # 是假的：复读检测已经跑过、已经记过了（coderabbit）。
+    # ⚠️ Must precede all repetition checks (literal/BM25/unanswered long window).
+    # Their drops call ``record_anti_repeat_decision``, whose
+    # ``RepeatSignature`` includes ``phrase`` / ``normalized_phrase``, original draft
+    # fragments persisted in anti_repeat_effects.json. If draft hits both bans
+    # and repetition, a later ban gate blocks delivery only after sensitive snippets
+    # persisted, worse than stdout because they survive sessions.
+    # Also prerequisite for claim below that anti-repeat made no decision; later placement
+    # makes that false because repetition checks already ran/recorded (CodeRabbit).
     directive_hits = _proactive_directive_hits(lanlan_name, response_text)
     if directive_hits:
-        # ⚠️ **不打印 term 原文**。被 ban 的话题按定义就是用户明说了不想再听
-        # 的东西——前任、病名、裁员、逝者姓名。日志会落盘（logs/ 下持久化），
-        # 用户报 bug 时可能整包交出去，而这批词恰恰是全流程里最敏感的一类文本。
-        # 只记条数，够定位"这次是被禁令闸拦的"，不够复原用户说了什么。
+        # ⚠️ Never print term text. Banned topics are explicitly unwanted sensitive content:
+        # ex-partners/illness/layoffs/deceased names. Logs persist under logs/,
+        # potentially bundled in bug reports, and these terms are among the most sensitive text.
+        # Counts alone identify ban-gate blocking without reconstructing user statements.
         active_logger.info(
             "[%s] proactive blocked by user ban-topic directive (%d term(s) matched)",
             lanlan_name,
@@ -1350,8 +1429,8 @@ async def _guard_phase2_output(
                 body=_proactive_pass_body(
                     PROACTIVE_REASON_PASS_USER_DIRECTIVE,
                     message="主动搭话命中用户明确要求回避的话题，已拦截",
-                    # 同上：只回条数，不回原文。这个 body 会经 /api/proactive_chat
-                    # 出到前端。
+                    # Likewise response includes counts only, no original text; body reaches frontend
+                    # via /api/proactive_chat.
                     directive_match_count=len(directive_hits),
                 )
             )
@@ -1699,25 +1778,25 @@ async def _guard_phase2_output(
             )
         )
 
-        # 与出稿侧那道 ban-topic 闸对偶：走到 regen 的草稿本来是干净的，但
-        # 重写可能把被 ban 的话题引进来（avoidance prompt 只针对 BM25 词，
-        # 不认用户禁令）。同样是纯字符串匹配，零额外 LLM。
+        # Symmetric with initial ban gate: drafts entering regeneration were clean, but rewriting
+        # can introduce bans (avoidance prompts concern BM25 terms, not user
+        # prohibitions). Again pure string matching, no extra LLM calls.
         #
-        # ⚠️⚠️ 必须排在**所有** regen 侧复读检测之前（BM25 评分、未回应长窗、
-        # 字面查重），而不只是排在 ``record_regen_effect("regen_guard_passed")``
-        # 之前。理由与出稿侧同一条：那几道闸 drop 时记的
-        # ``record_anti_repeat_decision`` 带着**草稿片段原文**并落盘到
-        # anti_repeat_effects.json；排在它们后面的话，含 ban term 的片段已经
-        # 进了磁盘，闸只拦住投递。
-        # （"所有闸都过了才记 passed"那条也顺带成立，它是这个位置的推论。）
+        # ⚠️ Precede all regeneration repetition checks (BM25/unanswered long-window/
+        # literal dedup), not merely ``record_regen_effect("regen_guard_passed")``.
+        # Same rationale as initial output: those drops record
+        # ``record_anti_repeat_decision`` with original draft fragments persisted in
+        # anti_repeat_effects.json; later placement leaks banned snippets to disk
+        # while only preventing delivery.
+        # Passing recorded only after all gates also follows from this placement.
         regen_directive_hits = _proactive_directive_hits(lanlan_name, cleaned)
         if regen_directive_hits:
-            # ⚠️ 这里**刻意不记** record_regen_effect。它写的是
-            # ``record_anti_repeat_decision``（#2876 的本地重复表达洞察），而
-            # ban-topic 不是复读判定，是另一个维度的用户禁令。往那个面板记一条
-            # 非复读原因的 outcome，会把这条 regen 的归因指向错误的检测器 ——
-            # 面板上"这条被判定为复读"是假的。真实情况是防复读**没有**做决策：
-            # 草稿被另一个系统提前终止了，所以它在该面板上不出现才是对的。
+            # ⚠️ Deliberately omit record_regen_effect here. It writes
+            # ``record_anti_repeat_decision`` (#2876 local repeated-expression insights), whereas
+            # ban-topic is user prohibition, a separate dimension. Recording a nonrepetition
+            # outcome there attributes regeneration to the wrong detector,
+            # falsely claiming repetition. Anti-repeat made no decision:
+            # another system terminated draft early; absence from that panel is correct.
             active_logger.info(
                 "[%s] proactive regen hit user ban-topic directive "
                 "(%d term(s) matched), drop",
@@ -1938,8 +2017,8 @@ def _parse_web_screening_result(text: str) -> dict | None:
     Returns dict(title, source, number) or None
     """  # noqa: DOCSTRING_CJK
     result = {}
-    # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
-    # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
+    # ^ + re.MULTILINE anchors line starts, avoiding prefixed "有值得分享的话题：" matches.
+    # [ \t]* replaces \s*, horizontal whitespace only, preventing next-line captures.
     patterns = {
         "title": r"^[ \t]*(?:话题|标题|Topic|Title|話題|주제|\u0422\u0435\u043c\u0430)[ \t]*[：:][ \t]*(.+)",
         "source": r"^[ \t]*(?:来源|來源|Source|出典|출처|\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a)[ \t]*[：:][ \t]*(.+)",
@@ -1993,8 +2072,8 @@ def _parse_unified_phase1_result(text: str) -> dict:
         "meme_pass": False,
     }
 
-    # 按 [WEB] / [MUSIC] / [MEME] 分段
-    # 使用正则切分，保留标签
+    # Split into [WEB] / [MUSIC] / [MEME] sections.
+    # Regex split retaining labels.
     sections: dict[str, str] = {}
     current_tag = None
     current_lines: list[str] = []
@@ -2002,12 +2081,12 @@ def _parse_unified_phase1_result(text: str) -> dict:
     for line in text.splitlines():
         stripped = line.strip()
         upper = stripped.upper()
-        # 检测段标签
+        # Detect section labels.
         if upper.startswith("[WEB]"):
             if current_tag:
                 sections[current_tag] = "\n".join(current_lines)
             current_tag = "web"
-            # 标签行后面可能有内容（如 [WEB] [PASS]）
+            # Label lines may contain trailing content, e.g. [WEB] [PASS].
             remainder = stripped[5:].strip()
             current_lines = [remainder] if remainder else []
         elif upper.startswith("[MUSIC]"):
@@ -2028,33 +2107,33 @@ def _parse_unified_phase1_result(text: str) -> dict:
     if current_tag:
         sections[current_tag] = "\n".join(current_lines)
 
-    # 如果 LLM 没有输出段标签（fallback：尝试当作纯 web 输出解析）
+    # Missing section labels: try plain-web parsing fallback.
     if not sections:
         web_parsed = _parse_web_screening_result(text)
         if web_parsed:
             result["web"] = web_parsed
         return result
 
-    # --- 解析 web 段 ---
-    # 先尝试提取结构化字段；LLM 经常同时输出话题详情和模板里的
-    # "If nothing is worth sharing: [WEB] [PASS]" 行，导致 [PASS]
-    # 误杀已填好的话题。因此优先以 parse 结果为准。
+    # --- Parse web section ---
+    # Extract structured fields first: models often output topic details alongside template's
+    # "If nothing is worth sharing: [WEB] [PASS]", making [PASS]
+    # wrongly discard completed topics. Prefer parsed results.
     web_text = sections.get("web", "")
     if web_text:
         parsed_web = _parse_web_screening_result(web_text)
         if parsed_web:
             result["web"] = parsed_web
         elif _text_is_pass_sentinel(web_text):
-            result["web_pass"] = True  # 确实是 PASS，web 保持 None
+            result["web_pass"] = True  # Actual PASS: leave web None.
 
-    # --- 解析 music 段 ---
+    # --- Parse music section ---
     music_text = sections.get("music", "")
     if music_text:
         music_text = music_text.strip()
         if _text_is_pass_sentinel(music_text):
             result["music_pass"] = True
         elif music_text:
-            # 去掉前缀标签（如"关键词：" "keyword:" 等）
+            # Strip prefix labels such as "关键词：" / "keyword:".
             keyword = re.sub(
                 r"(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+",
                 "",
@@ -2062,14 +2141,14 @@ def _parse_unified_phase1_result(text: str) -> dict:
                 count=1,
             )
             keyword = keyword.strip("'\"「」【】[]《》<> \n\r\t")
-            # 取第一行非空内容
+            # First nonempty line.
             keyword = keyword.splitlines()[0].strip() if keyword else ""
             if keyword and not re.fullmatch(
                 r"\[?\s*pass\s*\]?", keyword, re.IGNORECASE
             ):
                 result["music_keyword"] = keyword
 
-    # --- 解析 meme 段 ---
+    # --- Parse meme section ---
     meme_text = sections.get("meme", "")
     if meme_text:
         meme_text = meme_text.strip()
@@ -2579,8 +2658,8 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     rest = body[match.end() :].lstrip()
     rest, nested_prefix_tag = _strip_proactive_known_prefix_tag_leak(rest)
     normalized_rest = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", rest, count=1)
-    # 兼容 [Screen][CHAT] 组合：泄漏标签后若紧跟合法来源标签，剥掉并采用真实 tag
-    # （否则该 [CHAT] 字面会作为正文漏给 TTS）；没有则按 CHAT 兜底。
+    # Support [Screen][CHAT]: remove leaked label then adopt following valid source tag,
+    # or literal [CHAT] leaks to TTS; default CHAT if absent.
     legal = _PROACTIVE_LEGAL_TAG_RE.match(normalized_rest)
     if legal:
         return (

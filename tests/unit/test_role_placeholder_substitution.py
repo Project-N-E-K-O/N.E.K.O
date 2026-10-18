@@ -73,7 +73,7 @@ def test_apply_role_placeholders_empty_name_leaves_token_literal():
     """When the host hasn't resolved a name yet (extremely early
     initialization), the helper must leave the placeholder as-is rather than
     replacing with the empty string and producing broken sentences like
-    '向  汇报' or 'Hi, ! Welcome.'."""
+    '向  汇报' or 'Hi, ! Welcome.'."""  # noqa: DOCSTRING_CJK
     from main_logic.core import apply_role_placeholders
 
     out = apply_role_placeholders(
@@ -371,18 +371,18 @@ async def test_main_server_event_failure_logs_only_exception_type(monkeypatch):
     )
     assert private_error not in rendered
 
-    # 异常消息可能带用户对话文本，所以一个 logger 级别都不能碰——DEBUG 也不行：
-    # 源码运行且 log_level<=DEBUG 时 setup_logging 会挂一个只收 DEBUG 的
-    # RotatingFileHandler 落到 logs/，logger.debug 同样会被持久化。仓库规则见
-    # .agent/rules/neko-guide.md 与 docs/contributing/code-style.md。
+    # An error message may contain user conversation text, so do not use any logger level — not even DEBUG:
+    # when running from source with log_level<=DEBUG, setup_logging installs a DEBUG-only
+    # RotatingFileHandler that writes to logs/, so logger.debug would be persisted too. See repository rules in
+    # .agent/rules/neko-guide.md and docs/contributing/code-style.md.
     for forbidden in ("debug", "info", "error", "critical", "exception"):
         assert not getattr(test_logger, forbidden).called, (
             f"异常详情不得进 logger.{forbidden}（logger 输出会落盘）"
         )
-    # traceback 走 print，且只在 DEBUG 级下输出
+    # Print the traceback, and only when DEBUG is enabled
     assert printed == [1], "DEBUG 级下应通过 print 输出 traceback"
 
-    # DEBUG 关闭时连 print 也不该有
+    # When DEBUG is disabled, do not even call print
     printed.clear()
     test_logger.reset_mock()
     test_logger.isEnabledFor.return_value = False

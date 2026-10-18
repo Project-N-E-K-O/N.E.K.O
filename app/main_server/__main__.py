@@ -50,7 +50,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     logger.info("--- Starting FastAPI Server ---")
-    # 使用 os.path.abspath 输出更清晰的完整路径
+    # Use os.path.abspath for clearer full paths.
     logger.info(f"Serving static files from: {os.path.abspath('static')}")
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
     logger.info(
@@ -58,7 +58,7 @@ if __name__ == "__main__":
     )
     logger.info("-----------------------------")
 
-    # ── 前端构建产物检测 ──────────────────────────────────────
+    # ── Frontend build artifact detection ─────────────────────────────────────
     _frontend_missing = []
     if not os.path.isfile("frontend/plugin-manager/dist/index.html"):
         _frontend_missing.append(
@@ -87,23 +87,23 @@ if __name__ == "__main__":
             "前端资源未构建，部分页面将无法正常显示！请运行 build_frontend.sh / build_frontend.bat"
         )
 
-    # 使用统一的速率限制日志过滤器
+    # Use the shared rate-limited log filter
     from utils.logger_config import create_main_server_filter, create_httpx_filter
 
-    # 为 uvicorn access 日志添加过滤器
+    # Add filter to uvicorn access logs.
     logging.getLogger("uvicorn.access").addFilter(create_main_server_filter())
 
-    # 为 httpx 日志添加可用性检查过滤器
+    # Add availability-check filter to httpx logs.
     logging.getLogger("httpx").addFilter(create_httpx_filter())
 
-    # 启动前预检端口，避免 uvicorn 启动后立刻退出且日志不明显
+    # Precheck port before startup, avoiding uvicorn immediately exiting with unclear logs.
     if not _is_port_available(MAIN_SERVER_PORT):
         owner_pids = _get_port_owners(MAIN_SERVER_PORT)
         owner_hint = f"，占用PID: {owner_pids}" if owner_pids else ""
         logger.error(f"启动失败：端口 {MAIN_SERVER_PORT} 已被占用{owner_hint}")
         raise SystemExit(1)
 
-    # 1) 配置 UVicorn
+    # 1) Configure Uvicorn.
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
@@ -120,7 +120,7 @@ if __name__ == "__main__":
 
     # Set browser mode flag if --open-browser is used
     if args.open_browser:
-        # 使用 FastAPI 的 app.state 来管理配置
+        # Manage configuration via FastAPI app.state.
         start_config = {
             "browser_mode_enabled": True,
             "browser_page": args.page if args.page != "index" else "",
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         }
         set_start_config(start_config)
     else:
-        # 设置默认配置
+        # Set defaults.
         start_config = {
             "browser_mode_enabled": False,
             "browser_page": "",
@@ -140,10 +140,10 @@ if __name__ == "__main__":
 
     print(f"启动配置: {get_start_config()}")
 
-    # 2) 信号处理：Ctrl+C 时快速关闭
-    #    uvicorn 的 install_signal_handlers() 会用 signal.signal(sig, self.handle_exit)
-    #    覆盖我们直接注册的信号处理器。所以这里 monkey-patch server.handle_exit，
-    #    这样无论 uvicorn 何时安装信号处理器，最终调用的都是我们的逻辑。
+    # 2) Signal handling: fast Ctrl+C shutdown.
+    #    uvicorn install_signal_handlers() uses signal.signal(sig, self.handle_exit),
+    #    overwriting directly registered handlers. Monkey-patch server.handle_exit here,
+    #    ensuring our logic runs whenever uvicorn installs signal handlers.
     _shutdown_state = {"signal_count": 0}
     _original_handle_exit = server.handle_exit
 
@@ -159,20 +159,20 @@ if __name__ == "__main__":
 
     server.handle_exit = _custom_handle_exit
 
-    # 4) 启动服务器（阻塞，直到 server.should_exit=True）
+    # 4) Start server (blocks until server.should_exit=True).
     logger.info("--- Starting FastAPI Server ---")
     logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT}/{args.page}")
 
     try:
         server.run()
     except KeyboardInterrupt:
-        # Ctrl+C 正常关闭，不显示 traceback
+        # Ctrl+C normal shutdown, no traceback.
         logger.info("收到关闭信号（Ctrl+C），正在关闭服务器...")
     except (asyncio.CancelledError, SystemExit):
-        # 正常的关闭信号
+        # Normal shutdown signal.
         pass
     except Exception as e:
-        # 真正的错误，显示完整 traceback
+        # Real error: show complete traceback.
         logger.error(f"服务器运行时发生错误: {e}", exc_info=True)
         raise
     finally:

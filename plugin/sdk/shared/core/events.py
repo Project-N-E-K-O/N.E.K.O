@@ -10,7 +10,7 @@ from .types import InputSchema, JsonValue
 
 @dataclass(slots=True)
 class QuickActionConfig:
-    """快捷操作配置（typed，不用松散 dict）。"""
+    """Quick-action configuration (typed, rather than an unstructured dict)."""
     icon: str | None = None
     priority: int = 0
 

@@ -85,20 +85,20 @@ Phase = Literal["active", "wrap_up", "ending"]
 WrapUpPhase = Literal["propose", "begin", "ack", "speaking", "done"]
 WrapUpAction = Literal["none", "begin", "propose", "ack", "speaking", "done"]
 
-# 一整行 text 编码后的最大体积（8 片 × 每片上限）；may_start_cat_line 的 busy 判据
-# = 在途字节 > VISIT_OUTBOX_PENDING_MAX_BYTES − 这个值（§4.2 text 末尾）。
-# 设计稿写的是「8 片 × 1 KiB」，按信封真实上限 1000 B 计更紧；取两者较大值偏保守。
+# Maximum encoded size of a full text line (eight fragments × fragment cap); may_start_cat_line is busy
+# when in-flight bytes >VISIT_OUTBOX_PENDING_MAX_BYTES minus this value (§4.2 text ending).
+# Design says eight ×1KiB, tighter under the actual 1000B envelope cap; conservatively take the larger value.
 _LINE_MAX_ENCODED_BYTES = VISIT_PIECES_MAX * max(VISIT_PIECE_MAX_BYTES, 1024)
 _OWN_TEXT_WINDOW_S = 10.0
 _MINUTE_WINDOW_S = 60.0
 _VALID_CROPS = ("upper", "full")
 
-# finalize reason（§3.6.8 集合内的值）
+# Finalize reason (from the §3.6.8 set).
 FINALIZE_WRAP_UP = "wrap_up"
 FINALIZE_PROTOCOL_VIOLATION = "peer_protocol_violation"
 FINALIZE_MAX_LINES = "max_lines"
 
-# wrap_up.reason 线上枚举（§4.2 wrap_up）
+# wrap_up.reason wire enum (§4.2 wrap_up).
 WRAP_REASON_QUIET = "quiet"
 WRAP_REASON_BUDGET = "budget"
 WRAP_REASON_RECALL = "recall"
@@ -149,9 +149,9 @@ class IncomingLineStart:
     goodbye: bool
 
 
-# 截断原因里只有这几种是「被故意掐断、不该接话」：人类插话（随后有人类行）、
-# 收尾掐旧行、整场结束（集合与 fit_text_to_wire 共用）。wire_size / tts_error /
-# llm_error / stall 截断的行是对端这一轮已经说完——不回就两边都在等，一直拖到 idle_timeout。
+# Only these truncation reasons mean intentionally interrupted, do not reply: human interjection (followed by a human line),
+# interrupting an old line for cleanup, or whole-visit ending (shared set with fit_text_to_wire). wire_size / tts_error /
+# llm_error / stall mean the peer finished this turn; no reply leaves both waiting until idle_timeout.
 _SILENCING_TRUNC_REASONS = SILENCING_TRUNC_REASONS
 
 
@@ -244,7 +244,7 @@ class WrapUpState:
     initiated_by: Optional[Side] = None
     began_at: float = 0.0
     reason: str = ""
-    reason_fallback: bool = False   # reason 是只见到告别行时的回退值，真实 reason 到达时纠正
+    reason_fallback: bool = False   # reason is a fallback when only farewell is observed; correct when the true reason arrives.
     guest_goodbye_done: bool = False
     host_goodbye_done: bool = False
     proposed_at: float = 0.0
@@ -274,8 +274,8 @@ class _PeerLine:
     lp: int = 0
 
 
-# 记住的 ln 上限（按最近使用淘汰）：只发首片、永不收口的新行能把它撑到整场无界。
-# 仍在收片的行每片都会刷新，正常场次远到不了这个量
+# Remembered ln cap (LRU): new lines sending only first fragments and never finalizing can grow unbounded across a visit.
+# Active fragments refresh their lines; normal visits stay far below this limit.
 _SEEN_LNS_MAX = 4 * (VISIT_REORDER_BUFFER_MAX + 1)
 
 
@@ -286,7 +286,7 @@ def _ln_counter(ln: str) -> Optional[tuple[str, int]]:
         return None
     return side, int(num)
 
-_GOODBYE_ONLY_REASON = "quiet"   # 只收到告别行（没有 begin / propose）时的收尾原因
+_GOODBYE_ONLY_REASON = "quiet"   # Cleanup reason when only farewell arrives (no begin / propose).
 
 
 class VisitRoom:
@@ -335,29 +335,29 @@ class VisitRoom:
         self._phase: Phase = "active"
         self._wrap = WrapUpState()
 
-        # 计数（§3.6.3 ⑤）
+        # Counts (§3.6.3 ⑤).
         self.cat_turns_since_human = 0
         self.own_lines_total = 0
         self.peer_cat_lines_total = 0
         self.own_line_starts: deque[float] = deque()
         self._last_human_key: Optional[tuple[int, int]] = None
-        # 已计入的猫娘行的排序键：人类行可能晚于更新的猫娘行收口，
-        # 「最近一次人类插话之后的猫娘句数」要按 Lamport 序重算，不能直接清零
+        # Sort keys of counted catgirl lines: human lines may finalize after newer catgirl lines;
+        # recompute catgirl sentences since the latest human interjection in Lamport order instead of clearing directly.
         self._cat_line_keys: list[tuple[int, int]] = []
 
-        # Lamport 钟
+        # Lamport clock.
         self.own_lp = 0
         self.max_lp_seen = 0
         self._peer_max_new_lp = -1
-        # 必达消息的单调水位单独记：可丢的新行首片 / typing 可能先于首发丢失、随后
-        # 重传的必达消息到达，重传恰好补上 seq 时接收端看不出它是重传
+        # Track reliable messages' monotonic watermark separately: lossy first fragments / typing may precede a reliable
+        # message whose initial send was lost; retransmission filling a seq gap is indistinguishable at reception.
         self._peer_max_reliable_lp = -1
-        self._seen_lns: dict[str, int] = {}   # ln → 首次见到的 lp（一行一个 lp；LRU）
-        # 被挤出 _seen_lns 的最大行号（按发送方前缀）：行号逐行递增，号不大于它的
-        # 「新」ln 只能是被挤出的旧行重用，已无从比对首片 lp
+        self._seen_lns: dict[str, int] = {}   # ln -> first observed lp (one lp per line; LRU).
+        # Largest line number evicted from _seen_lns by sender prefix: numbers increase per line, so any new
+        # ln not exceeding it reuses an evicted old line whose first-fragment lp is unavailable.
         self._evicted_ln_max: dict[str, int] = {}
 
-        # 发言状态
+        # Speaking state.
         self.local_speaking: Optional[LineRef] = None
         self.local_speaking_since = 0.0
         self._local_speaking_goodbye = False
@@ -367,35 +367,35 @@ class VisitRoom:
         self._yield_once = False
         self._yield_line: Optional[str] = None
 
-        # 对端行
+        # Peer line.
         self._peer_meta: dict[str, _PeerLine] = {}
         self._peer_open: set[str] = set()
         self._peer_done: set[str] = set()
-        self._aborted: dict[str, None] = {}   # 有界（按插入先后淘汰），见 _remember_aborted
+        self._aborted: dict[str, None] = {}   # Bounded by insertion-order eviction; see _remember_aborted.
         self._latest_to_me: Optional[tuple[int, int]] = None
-        # 已收口的对端行里排序最大的那条：同一发送方的 text 按收口先后发，
-        # 先开口的行可能更晚收口（人类插话行常见），晚到的旧行不能盖掉新行的回复
+        # Largest sorted finalized peer line: a sender sends text in finalization order, so earlier-started lines may
+        # finalize later (common with human interjections); late old lines cannot override replies to newer lines.
         self._latest_peer_done: Optional[tuple[int, int]] = None
         self._overlap_reported: set[str] = set()
 
-        # 异常计数（§4.1）
+        # Anomaly counts (§4.1).
         self.violation_streak = 0
         self.anomalies_total = 0
         self.unknown_type_count = 0
         self._last_violation: Optional[str] = None
 
-        # 限速
+        # Rate limits.
         self._own_text_sends: deque[float] = deque()
-        # 已开口、还没发 text{final} 的本侧猫娘行：每行收口时必发一条 text，开口即占名额，
-        # 免得说话途中插进来的人类行用掉最后一个名额、收口的 text 越过硬上限
+        # Local catgirl lines started but awaiting text{final}: each must send text on finalization, reserving a slot on start,
+        # preventing intervening human lines from taking the final slot and pushing finalized text above the hard cap.
         self._own_text_reserved: set[str] = set()
 
-        # 对端画面
+        # Peer display.
         self.peer_crop = peer_crop if peer_crop in _VALID_CROPS else VISIT_CROP_DEFAULT
         self.peer_hidden = False
 
     # ------------------------------------------------------------------
-    # 查询属性
+    # Query properties.
 
     @property
     def phase(self) -> Phase:
@@ -408,7 +408,7 @@ class VisitRoom:
         return self._wrap
 
     # ------------------------------------------------------------------
-    # Lamport 钟与排序
+    # Lamport clock and ordering.
 
     def next_lp(self) -> int:
         """Allocate the ``lp`` of a new local line: ``max(own, max_seen) + 1``."""
@@ -468,14 +468,14 @@ class VisitRoom:
         if known_line and self._seen_lns[ln] != lp:
             return self._count_anomaly("lp_changed")
         if not known_line and ln is not None and self._ln_evicted(ln):
-            # 被挤出表的旧 ln 又来了：可能换了 lp，按 lp_changed 拒绝
+            # Evicted old ln reappears, possibly with changed lp: reject as lp_changed.
             return self._count_anomaly("lp_changed")
         if not known_line and not is_retransmit:
             if lp < self.max_lp_seen - VISIT_LP_REGRESS_MAX:
                 return self._count_anomaly("lp_regress")
             floor = self._peer_max_reliable_lp if reliable else self._peer_max_new_lp
-            # 收口一行的 text 带的是开口时分配的 lp：开口到收口之间发出的必达消息
-            # （收尾时掐断这一行的 wrap_up{begin}）lp 更大、seq 更前，不能据此判它逆序
+            # Final text retains the lp assigned on start; reliable messages between start and finalization
+            # (wrap_up{begin} interrupting it during cleanup) have larger lp and earlier seq, not proof of disorder.
             if not closes_line and lp < floor:
                 return self._count_anomaly("lp_not_monotonic")
             self._peer_max_new_lp = max(self._peer_max_new_lp, lp)
@@ -484,7 +484,7 @@ class VisitRoom:
         self.max_lp_seen = max(self.max_lp_seen, lp)
         if ln is not None:
             if known_line:
-                self._seen_lns[ln] = self._seen_lns.pop(ln)     # 刷新为最近使用
+                self._seen_lns[ln] = self._seen_lns.pop(ln)     # Refresh as most recently used.
             else:
                 self._seen_lns[ln] = lp
                 while len(self._seen_lns) > _SEEN_LNS_MAX:
@@ -501,15 +501,15 @@ class VisitRoom:
         return counter is not None and counter[1] <= self._evicted_ln_max.get(counter[0], -1)
 
     def _remember_aborted(self, ln: str) -> None:
-        # 只发 line_abort 不发 text 的新行会让这张表整场增长：按插入先后淘汰。
-        # 它只用来判断待发回复是否针对已停嘴的行，待发回复总是针对最近的行
+        # New lines sending only line_abort without text grow this table throughout visits; evict by insertion order.
+        # It only determines whether pending replies target already stopped lines; pending replies always target recent lines.
         self._aborted.pop(ln, None)
         self._aborted[ln] = None
         while len(self._aborted) > _SEEN_LNS_MAX:
             del self._aborted[next(iter(self._aborted))]
 
     # ------------------------------------------------------------------
-    # 异常计数（§4.1 版本偏斜与异常计数）
+    # Anomaly counts (§4.1 version skew and anomaly counting).
 
     def _count_anomaly(self, kind: str) -> str:
         self.anomalies_total += 1
@@ -560,7 +560,7 @@ class VisitRoom:
             self._finalize(eff, FINALIZE_PROTOCOL_VIOLATION)
 
     # ------------------------------------------------------------------
-    # 内部工具
+    # Internal helpers.
 
     def _finalize(self, eff: RoomEffects, reason: str) -> None:
         if eff.finalize_reason is None:
@@ -586,7 +586,7 @@ class VisitRoom:
     def _note_human(self, ref: LineRef) -> None:
         key = self.sort_key(ref)
         if self._last_human_key is not None and key <= self._last_human_key:
-            # 同一条人类行的收口（首片已记过）或更旧的人类行：不动计数
+            # Finalizing the same human line (already counted on first fragment), or an older one, leaves counts unchanged.
             return
         self._last_human_key = key
         self.cat_turns_since_human = sum(1 for k in self._cat_line_keys if k > key)
@@ -613,13 +613,13 @@ class VisitRoom:
         self._cancel_pending(eff)
         self._yield_once = False
         if self.side == "host" and not w.peer_goodbye_started:
-            # 15 s 步进表从 begin 真正发出时才开始（on_wrap_up_sent）：outbox
-            # 暂停 / 拥塞时 begin 可能晚发，提前计时会让东家抢在客人之前送客
+            # Start the 15s step schedule only once begin actually sends (on_wrap_up_sent); paused/congested
+            # outboxes may delay begin, and premature timing dismisses guests before their farewell.
             w.step_awaiting_begin = True
 
     def _correct_fallback_reason(self, reason: Optional[str]) -> None:
-        # 只见到告别行就进了收尾（reason 是回退值）：随后到达的 begin / propose / speaking
-        # 带着真实原因，用它纠正，免得告别提示词与回发的 wrap_up 一直带着错的原因
+        # Cleanup started from farewell alone (fallback reason); later begin / propose / speaking
+        # carries the true reason. Correct it so farewell prompts and outgoing wrap_up stop carrying the wrong reason.
         w = self._wrap
         if w.reason_fallback and reason in _WRAP_REASONS:
             w.reason = reason
@@ -681,7 +681,7 @@ class VisitRoom:
             self._yield_line = None
 
     def _interrupt_for_human(self, eff: RoomEffects) -> None:
-        # 收尾期间人类行不打断告别、不取消送客计划（旧行由 10 s 规则收口）
+        # During cleanup human lines neither interrupt farewell nor cancel departure plans (old lines finalize under the 10s rule).
         if self._phase != "active":
             return
         if self.local_speaking is not None and not self._local_speaking_goodbye:
@@ -689,7 +689,7 @@ class VisitRoom:
         self._cancel_pending(eff)
 
     # ------------------------------------------------------------------
-    # 入站事件
+    # Incoming events.
 
     def on_incoming_start(self, ev: IncomingLineStart, now: float) -> RoomEffects:
         """First piece of a peer line arrived (``line_delta`` with ``i == 0``).
@@ -707,10 +707,10 @@ class VisitRoom:
         if ln in self._peer_done or ln in self._peer_meta:
             return eff
         if self._peer_open:
-            # 上一行的 text{final} 可能还在 seq 缺口后面排队，而新行的首片（可丢、
-            # 不经重排）先到了：lp 更大的新行说明旧行已经说完，只是收口未到。
-            # 旧行移出「未收口」但保留元数据，等它的 text 照常处理；只有 lp
-            # 不递增的才是真交叠。
+            # Previous text{final} may queue after a seq gap while a new line's lossy first fragment arrives first,
+            # without reordering. A larger-lp new line means the old utterance finished but its finalization is pending.
+            # Remove the old line from unfinished while retaining metadata for normal later text processing;
+            # only nonincreasing lp indicates true overlap.
             for other in [o for o in self._peer_open
                           if (m := self._peer_meta.get(o)) is not None and m.lp < ev.ref.lp]:
                 self._peer_open.discard(other)
@@ -720,8 +720,8 @@ class VisitRoom:
                 return eff
         self._peer_meta[ln] = _PeerLine(ev.speaker, ev.addressee_side, ev.addressee_kind,
                                         ev.reply_to, ev.goodbye, ev.ref.lp)
-        # 只开口不收口的行有上限（同 LineDeltaAssembler）：丢最旧的元数据，它的 text
-        # 若真的晚到，按「没见过首片」处理
+        # Cap lines that start without finalizing (as LineDeltaAssembler does): drop oldest metadata;
+        # eventual late text is treated as having no observed first fragment.
         while len(self._peer_meta) > VISIT_REORDER_BUFFER_MAX + 1:
             oldest = next(iter(self._peer_meta))
             del self._peer_meta[oldest]
@@ -750,9 +750,9 @@ class VisitRoom:
         corrected once ``begin`` / ``propose`` arrives.
         """
         if self._phase == "active":
-            # begin / propose 丢了或排在 seq 缺口后面、只见到告别行：reason 必须是协议
-            # 合法值，否则本侧随后的 wrap_up{speaking} 编码不出来；speaking 自带的
-            # reason 优先，回退值留待真实 reason 到达时纠正
+            # If begin / propose is lost or behind a seq gap and only farewell arrives, reason must be a valid protocol
+            # value so local wrap_up{speaking} can encode. Prefer speaking's own reason;
+            # correct the fallback when the true reason arrives.
             if reason in _WRAP_REASONS:
                 self._enter_wrap_up(eff, now, initiated_by=self.peer_side, reason=reason)
             else:
@@ -763,7 +763,7 @@ class VisitRoom:
             self._correct_fallback_reason(reason)
         self._peer_goodbye_started(now)
         if self.side == "guest":
-            # begin 丢了也不卡死：guest 见到 host 的告别行就自己告别一句
+            # Lost begin cannot stall: guest seeing host farewell says its own farewell.
             self._request_goodbye(eff)
 
     def on_incoming_done(self, ev: IncomingLineDone, now: float) -> RoomEffects:
@@ -795,17 +795,17 @@ class VisitRoom:
         opened = self._peer_meta.pop(ln, None)
         self._peer_open.discard(ln)
         if opened is not None and self._meta_mismatch(ev, opened):
-            # 同一行只能有一种解释：首片按人类开口（打断本侧、记人类插话）、收口又改成
-            # 猫娘行，会让六句规则的计数绕开。按协议异常丢弃这一行，不两种解释都用
+            # A line has only one interpretation: human first fragments interrupt/count human interjection, then catgirl
+            # finalization bypasses the six-sentence count. Drop as a protocol anomaly instead of using both interpretations.
             self._peer_done.add(ln)
             kind = self._count_anomaly("line_meta_mismatch")
             if eff.violation is None:
                 eff.violation = kind
             self._maybe_finalize_anomalies(eff)
             return eff
-        # 交叠在收口时判：同一发送方的 text 按 seq 有序，诚实的对端总是先收口旧行
-        # 再开新行。较新的行先收口、较旧的已开口行还没收到 text，才是真交叠
-        # （开口时分不清「旧行 text 排在缺口后」与「交叠」，见 on_incoming_start）
+        # Detect overlap on finalization: one sender's text is seq-ordered; honest peers finalize old lines before
+        # starting new ones. Only a newer line finalized while an older started line lacks text is true overlap
+        # (start cannot distinguish old text behind gaps from overlap; see on_incoming_start).
         overlapped = [o for o, m in self._peer_meta.items()
                       if m.lp < ev.ref.lp and o not in self._overlap_reported]
         if overlapped:
@@ -842,8 +842,8 @@ class VisitRoom:
             self._latest_peer_done = key
         if speaker == "human":
             self._note_human(ev.ref)
-            # 首片到达时已经打断过；只有整句模式（没见过首片）才在收口时打断，
-            # 且比已收口的行旧时不打断——那会取消针对更新那行的回复
+            # First-fragment arrival already interrupted; only whole-sentence mode (no observed first fragment) interrupts on finalization,
+            # and never for lines older than finalized ones, which would cancel replies to newer lines.
             if opened is None and not older:
                 self._interrupt_for_human(eff)
         elif goodbye:
@@ -883,7 +883,7 @@ class VisitRoom:
     @staticmethod
     def _meta_mismatch(ev: IncomingLineDone, opened: _PeerLine) -> bool:
         """True when the final ``text`` contradicts what the line's first piece declared."""
-        # 收口带全套元数据（sp/ad/rt）时逐项比；rt 只比行号（lp 由运行时按需解析）
+        # Compare each finalization metadata field (sp/ad/rt); rt compares only line numbers (runtime resolves lp as needed).
         if ev.speaker is not None and (
             ev.speaker != opened.speaker
             or ev.addressee_side != opened.addressee_side
@@ -903,7 +903,7 @@ class VisitRoom:
         else:
             w.host_goodbye_done = True
         if self.side == "host":
-            # 客人告别说完 → 东家送客一句（按对端末句 tail_ms + 间隙排程）
+            # Guest farewell finishes -> host sends one closing line (scheduled by peer tail_ms + gap).
             self._request_goodbye(eff, plan=self._plan(ref, tail_ms, now, goodbye=True))
 
     def on_incoming_abort(self, line_id: str, now: float,
@@ -917,7 +917,7 @@ class VisitRoom:
         eff = RoomEffects()
         if self._phase == "ending":
             return eff
-        # line_abort = 这行已停嘴：不再算「未收口」，免得紧随其后的告别行首片被当成交叠
+        # line_abort means stopped speaking: remove unfinished status so the next farewell first fragment does not look overlapping.
         self._peer_open.discard(line_id)
         if not _silences(True, reason):
             return eff
@@ -971,7 +971,7 @@ class VisitRoom:
             if self.side != "guest":
                 return self.record_anomaly("wrap_up_bad_direction")
             self._wrap.begin_received = True
-            # 已在收尾中（只见到告别行进来的）时 _enter_wrap_up 只纠正回退的 reason
+            # If already cleaning up from farewell alone, _enter_wrap_up only corrects fallback reason.
             self._enter_wrap_up(eff, now, initiated_by="host", reason=reason)
             self._request_goodbye(eff)
             return eff
@@ -1031,7 +1031,7 @@ class VisitRoom:
             eff.peer_hidden = hidden
 
     # ------------------------------------------------------------------
-    # 本地事件
+    # Local events.
 
     def _prune_own_text(self, now: float) -> None:
         while self._own_text_sends and self._own_text_sends[0] <= now - _OWN_TEXT_WINDOW_S:
@@ -1082,10 +1082,10 @@ class VisitRoom:
         if goodbye:
             w = self._wrap
             if self._phase == "active":
-                # 本侧未经 recall / time_up / 对端收尾就先开口告别：同样要合法 reason
+                # Local farewell before recall / time_up / peer cleanup also requires a valid reason.
                 self._enter_wrap_up(eff, now, initiated_by=self.side,
                                     reason=w.reason or _GOODBYE_ONLY_REASON)
-                w.reason_fallback = False   # 本侧主动收尾，原因就是 quiet
+                w.reason_fallback = False   # Locally initiated cleanup reason is quiet.
             w.own_goodbye_requested = True
             w.own_goodbye_started = True
             self._goodbye_line_id = ref.line_id
@@ -1203,7 +1203,7 @@ class VisitRoom:
         return eff
 
     # ------------------------------------------------------------------
-    # 查询
+    # Queries.
 
     def is_stale(self, plan: ReplyPlan) -> bool:
         """True when ``plan`` should be dropped before speaking.

@@ -756,7 +756,7 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """省略 plugins_root/profiles_root 时，默认落盘到 _INSTALL_*_ROOT 下。"""
+    """When plugins_root/profiles_root are omitted, persist under _INSTALL_*_ROOT by default."""
     plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
     package_path = tmp_path / "simple_plugin.neko-plugin"
     pack_plugin(plugin_dir, package_path)

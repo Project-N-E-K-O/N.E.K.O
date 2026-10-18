@@ -221,7 +221,7 @@ def test_interactive_screenshot_rejects_non_loopback_requests():
 
 @pytest.mark.unit
 def test_interactive_screenshot_skips_csrf_when_no_origin_or_referer(monkeypatch):
-    """纯服务端 loopback 调用（无 Origin/Referer）不需要 CSRF 头。"""
+    """Pure server-side loopback calls (without Origin/Referer) need no CSRF header."""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
     monkeypatch.setattr(
@@ -242,7 +242,7 @@ def test_interactive_screenshot_skips_csrf_when_no_origin_or_referer(monkeypatch
 
 @pytest.mark.unit
 def test_interactive_screenshot_requires_csrf_when_origin_present(monkeypatch):
-    """带 Origin 的浏览器请求必须通过 CSRF/origin 校验，否则 localhost CSRF。"""
+    """Browser requests with Origin must pass CSRF/origin validation to prevent localhost CSRF."""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
 
@@ -256,7 +256,7 @@ def test_interactive_screenshot_requires_csrf_when_origin_present(monkeypatch):
     )
 
     with _build_client() as client:
-        # 模拟跨站页面：有 Origin（浏览器自动塞），但既无 CSRF token，origin 也不在白名单里。
+        # Simulate a cross-site page: Origin is supplied automatically by the browser, but there is no CSRF token and origin is not allowlisted.
         response = client.post(
             INTERACTIVE_SCREENSHOT_ENDPOINT,
             headers={"Origin": "https://evil.example"},
@@ -273,14 +273,14 @@ def test_interactive_screenshot_requires_csrf_when_origin_present(monkeypatch):
     "header_name, header_value",
     [
         ("Origin", "null"),       # sandboxed iframe / file:// / data:
-        ("Origin", "ftp://x"),    # 非 http(s) scheme，归一化会变空
+        ("Origin", "ftp://x"),    # A non-http(s) scheme normalizes to empty
         ("Referer", "null"),
     ],
 )
 def test_interactive_screenshot_blocks_browser_requests_with_unparseable_origin(
     monkeypatch, header_name, header_value
 ):
-    """`Origin: null` 等归一化后为空的浏览器请求必须仍走 CSRF 校验，不能旁路。"""
+    """Browser requests normalizing to empty, such as `Origin: null`, must still undergo CSRF validation without bypassing it."""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
 
@@ -310,7 +310,7 @@ def test_interactive_screenshot_blocks_browser_requests_with_unparseable_origin(
 
 @pytest.mark.unit
 def test_interactive_screenshot_passes_with_valid_csrf_and_origin(monkeypatch):
-    """合法本地前端：带 Origin + CSRF token，应当通过校验进入 runner。"""
+    """A valid local frontend with Origin + CSRF token must pass validation and enter the runner."""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
     monkeypatch.setattr(
@@ -334,7 +334,7 @@ def test_interactive_screenshot_passes_with_valid_csrf_and_origin(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.parametrize("platform_name", ["linux", "win32"])
 def test_interactive_screenshot_returns_unsupported_on_non_macos(monkeypatch, platform_name):
-    """Win32 / Linux 不再有 backend interactive 路径，统一 501 让前端走 Electron 兜底。"""
+    """Win32 / Linux no longer have backend interactive paths; return 501 consistently so the frontend uses Electron fallback."""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", platform_name)
 
@@ -550,8 +550,8 @@ def test_interactive_screenshot_returns_failure_for_runtime_errors(monkeypatch):
 
 @pytest.mark.unit
 def test_interactive_screenshot_swallows_systemexit_from_runner(monkeypatch):
-    """Nuitka 等场景下 runner 抛 SystemExit（如缺 tk-inter 插件）必须被截住转 500，
-    否则会逃出 asyncio worker thread 拖死后端进程。"""
+    """Intercept runner SystemExit in scenarios such as Nuitka (for example, missing tk-inter plugin) and convert it to 500,
+    or it can escape the asyncio worker thread and kill the backend process."""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
 

@@ -66,13 +66,13 @@ def oauth_app(tmp_path, monkeypatch):
 @pytest.mark.unit
 def test_desktop_client_id_is_owned_here_and_rejects_plugin_market_client(monkeypatch):
     """This module owns the community PKCE client id and rejects the Market one."""
-    # plugin/settings.py 的 NEKO_AUTH_CLIENT_ID（默认 neko-desktop）是插件市场的
-    # public client，在 neko-auth-platform 上与社区桌面端是两个不同的注册。误把它
-    # 配到 NEKO_SERVERS_DESKTOP_CLIENT_ID 上会让授权请求指向错误的 client，所以
-    # 这里必须回落到 servers-desktop 默认值而不是照用。
+    # NEKO_AUTH_CLIENT_ID in plugin/settings.py (default neko-desktop) is the plugin market's
+    # public client, registered separately from the community desktop client on neko-auth-platform. Configuring it
+    # as NEKO_SERVERS_DESKTOP_CLIENT_ID sends authorization to the wrong client, so
+    # fall back to the servers-desktop default rather than reusing it.
     #
-    # 单一真相源：main_routers 是 L3、plugin 是 L4，前者不能 import 后者，所以这个
-    # 值不在 plugin/settings.py 里另立常量（那份曾经存在但无人消费）。
+    # Single source of truth: main_routers is L3 and plugin is L4; the former cannot import the latter, so do not
+    # duplicate this constant in plugin/settings.py (an unused copy once existed there).
     monkeypatch.setenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "neko-desktop")
     assert O._desktop_client_id() == "neko-servers-desktop-prod"
 
@@ -189,7 +189,7 @@ async def test_oauth_status_offloads_session_reads(monkeypatch):
 
 @pytest.mark.unit
 async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
-    # /oauth/status 放行无 Origin 的本机进程且不验身份，手机号不能从这里读到。
+    # /oauth/status admits local processes without Origin or authentication; phone numbers must not be readable there.
     def load_records():
         return (
             {"access_token": "access", "auth_source": "oauth"},
@@ -221,8 +221,8 @@ async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
 
 @pytest.mark.unit
 async def test_oauth_status_reports_session_paths_when_signed_out(monkeypatch, tmp_path):
-    # 宿主只有亲自拉起后端时才下发得到 NEKO_USER_DATA_DIR；attach 复用的后端会把凭证落到
-    # 自己推导的根目录。未登录时也必须回报它实际使用的文件，那正是宿主需要知道去哪等写入的时刻。
+    # The host can provide NEKO_USER_DATA_DIR only when starting the backend itself; attached backends persist credentials under
+    # their own inferred root. Even before login, report the actual file so the host knows where to await writes.
     session_file = tmp_path / "social_session.json"
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
     monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
@@ -241,8 +241,8 @@ async def test_oauth_status_reports_session_paths_when_signed_out(monkeypatch, t
 
 @pytest.mark.unit
 async def test_oauth_status_reports_legacy_path_holding_the_credentials(monkeypatch, tmp_path):
-    # 后端读取带回落：override 是写入目标，有效凭证可能只在旧目录。只报 override 会让
-    # 宿主去盯一份空文件，正好重现「后端说已登录、界面仍未登录」。
+    # Backend reads allow fallback: override is the write target, but valid credentials may exist only in the old directory. Reporting only override
+    # makes the host watch an empty file, reproducing backend-logged-in/UI-logged-out divergence.
     override = tmp_path / "roaming" / "social_session.json"
     legacy = tmp_path / "local" / "social_session.json"
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
@@ -266,8 +266,8 @@ async def test_oauth_status_reports_legacy_path_holding_the_credentials(monkeypa
 
 @pytest.mark.unit
 async def test_oauth_status_rejects_remote_peer_before_reading_identity(monkeypatch, tmp_path):
-    # _local_request_source_allowed() 放行「不带 Origin 也不带 Sec-Fetch-Site 的原生客户端」，
-    # Docker 部署里经 nginx 转发的远程请求正好如此；那种场合不能把容器文件系统发出去。
+    # _local_request_source_allowed() admits native clients without Origin or Sec-Fetch-Site; remote Docker
+    # requests forwarded by nginx look exactly like that, so never expose container filesystem paths in that case.
     session_file = tmp_path / "social_session.json"
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
     monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
@@ -280,7 +280,7 @@ async def test_oauth_status_rejects_remote_peer_before_reading_identity(monkeypa
     assert remote.status_code == 403
     assert json.loads(remote.body) == {"detail": "loopback_only"}
 
-    # ::ffff: 前缀（v4-mapped）和 localhost 仍算同机
+    # The ::ffff: IPv4-mapped prefix and localhost still count as local.
     assert O._loopback_request_source(_local_source_request("::ffff:127.0.0.1")) is True
     assert O._loopback_request_source(_local_source_request("localhost")) is True
     assert O._loopback_request_source(_local_source_request("10.0.0.5")) is False
@@ -410,7 +410,7 @@ def test_desktop_session_paths_absolutize_and_empty_when_unresolvable(monkeypatc
     monkeypatch.setattr(C, "_social_session_paths", unresolvable_paths)
     assert O._desktop_session_paths_for_host() == ("", [])
 
-    # memory_dir 万一给出相对路径，也要按后端自己 open() 的口径绝对化：宿主会忽略非绝对路径。
+    # If memory_dir is relative, absolutize it exactly as backend open() does; the host ignores nonabsolute paths.
     monkeypatch.setattr(C, "_social_session_paths", lambda: [Path("relative/social_session.json")])
     primary, paths = O._desktop_session_paths_for_host()
     assert os.path.isabs(primary)
@@ -471,8 +471,8 @@ async def test_oauth_status_invalid_override_uses_legacy_for_reads_and_paths(mon
 
 @pytest.mark.unit
 def test_persisted_user_profile_masks_phone_and_public_profile_never_has_it():
-    # 回调落盘的 community_auth.json 是明文、本机还有其它读取方，只存脱敏手机号，
-    # 桌面端设置页用它在没有邮箱时显示账号；经本机路由返回的 public 版本永远不带手机号。
+    # Callback-persisted community_auth.json is plaintext with other local readers; store only masked phone numbers,
+    # used by desktop settings when no email exists. The locally routed public version never includes phone numbers.
     raw = {"username": "User", "email": None, "phone_number": " +8613800000000 "}
     assert "phone" not in O._public_user_profile(raw, USER_ID)
     profile = O._persisted_user_profile(raw, USER_ID)
@@ -1295,7 +1295,7 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     response = await O._handle_oauth_callback("auth-code", "expected-state")
 
     assert response.status_code == 200
-    # 读 pending 两次（开头校验 + 写凭证前确认没被新的 /oauth/start 顶掉）、两份凭证、删 pending
+    # Read pending twice (initial check and before credential writes to detect a newer /oauth/start), write both credentials, then delete pending.
     assert len(worker_threads) == 5
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 

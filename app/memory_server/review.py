@@ -47,14 +47,14 @@ from memory.message_sources import is_theater_memory_message
 from utils.recent_file import capture_recent_generation
 
 
-# 全局变量用于管理correction任务
+# Global variables managing correction tasks.
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 
 
-# Phase C: 防 spawn 竞态——/process /renew /settle / IdleMaint 都共用 maybe_spawn_review，
-# 多入口同时进 gate 检查会有 in-flight check → spawn 之间的 await 窗口；用 per-name lock
-# 串行化 gate+spawn 这一段，确保同名角色至多一个 review 在跑。
+# Phase C: prevent spawn races; /process /renew /settle / IdleMaint share maybe_spawn_review,
+# with an await gap between in-flight check and spawn when multiple entries check gates; use per-name locks
+# to serialize gate + spawn and ensure at most one running review per character name.
 _review_spawn_locks: dict[str, asyncio.Lock] = {}
 _retired_derived_task_names: set[str] = set()
 _publication_held_derived_task_names: set[str] = set()
@@ -158,8 +158,8 @@ def _clear_review_output_exhaustion_state(state: dict) -> bool:
     Mutator helper — always call it with the sub-dict handed to a mutator, never
     with a ``gates._maint_view`` result.
     """
-    # 三个键无条件写回（保持重构前的内存形状），但 dirty 只按「原本是否非默认值」
-    # 算：全是默认值时把键补齐一遍不需要落盘，磁盘上缺这三个键与三个默认值等价。
+    # Always write all three keys back (preserve pre-refactor memory shape), but dirty depends only on nondefault original values:
+    # completing default keys needs no disk write; three missing keys on disk equal three defaults.
     changed = (
         bool(state.get('review_output_exhaustion_attempts'))
         or state.get('review_output_exhaustion_min_context_tokens') is not None
@@ -196,11 +196,11 @@ def _mutate_clear_output_exhaustion(
     seen_generation=None,
 ) -> tuple[bool, bool]:
     """Mutator: clear the output-exhaustion breaker, unless a newer failure was armed."""
-    # Gate 6a 的恢复判定必须在锁外做（token 计数是 async，进不了同步 mutator），所以
-    # 锁内要复查它依赖的那份输入还在不在：另一个后台 review 可能在那次 await 期间刚写下
-    # 一次**新的**输出耗尽失败（带着新的 attempts / min_context_tokens）。无条件清零会把
-    # 刚 armed 的断路器抹掉，于是那条已经证明压不动的 context 又会被放行重烧一轮。
-    # 与 _mutate_reset_review_fail_backoff 的锁内复查同构。
+    # Gate 6a recovery must be evaluated outside the lock (async token counting cannot run in a sync mutator), so
+    # recheck its input under lock: another background review may record a **new** output-exhaustion failure
+    # during that await (with new attempts / min_context_tokens). Unconditionally resetting would erase
+    # the newly armed breaker and retry token spending on context already proven uncompressible.
+    # Mirrors _mutate_reset_review_fail_backoff's locked recheck.
     try:
         current_min = int(state.get('review_output_exhaustion_min_context_tokens') or 0)
     except (TypeError, ValueError):
@@ -213,8 +213,8 @@ def _mutate_clear_output_exhaustion(
     ):
         return False, False
     _clear_review_output_exhaustion_state(state)
-    # value 把「恢复是否成立」带给调用方（这正是 (dirty, value) 里 value 的用途）。
-    # dirty 恒 True：走到这里说明观测到的断路器确实还在，清零一定改变了状态。
+    # value carries recovery validity to the caller (precisely the role of value in (dirty, value)).
+    # dirty is always True: reaching here means the observed breaker still exists, so resetting changes state.
     return True, True
 
 
@@ -365,7 +365,7 @@ async def maybe_spawn_review(name: str) -> None:
         # Gate 2: review_enabled
         if not await gates._ais_review_enabled():
             return
-        # 拉 history（gate 3/5 + 后续做 snapshot 都需要）
+        # Fetch history (needed for gates 3/5 and later snapshot).
         try:
             history, admission_generation = (
                 await runtime.recent_history_manager.aget_recent_history(
@@ -375,13 +375,13 @@ async def maybe_spawn_review(name: str) -> None:
         except Exception as e:
             logger.debug(f"[Review/spawn] {name}: 拉 history 失败: {e}")
             return
-        # 剧场胶囊不进入通用 review，但其前后的普通聊天仍属于同一条可复盘时间线。
+        # Theater capsules bypass general review, but surrounding ordinary chat still forms one replayable timeline.
         history = [
             message
             for message in history
             if not is_theater_memory_message(message)
         ]
-        # Gate 3: history 长度
+        # Gate 3: history length.
         if len(history) < REVIEW_SKIP_HISTORY_LEN:
             return
         # Gate 4: min interval
@@ -393,16 +393,16 @@ async def maybe_spawn_review(name: str) -> None:
                 if elapsed < effective_min:
                     return
             except (ValueError, TypeError):
-                # last_review_ts 格式损坏（旧版本字段 / 手改文件 / 编码错误）→
-                # 视为"从未 review 过"，不阻塞触发；继续走 gate 5（新消息门）。
-                # 下次 review 成功后会用合法 ISO 字符串覆写。
+                # Malformed last_review_ts (legacy fields / manual edits / encoding errors) →
+                # treat as never reviewed, allowing triggering to continue to gate 5 (new-message gate).
+                # The next successful review overwrites it with valid ISO text.
                 pass
-        # Gate 5: 够多新 user 消息（含长挂机 bypass）
+        # Gate 5: enough new user messages (including long-idle bypass).
         new_msg_count = _count_new_user_msgs_since_last_review(name, history)
         if new_msg_count < MIN_NEW_MSGS_FOR_REVIEW:
-            # 长挂机 bypass：≥1 条未 review 的新消息且全局静默 ≥ 30 min →
-            # 允许凑不够批量的尾巴也跑一次 review。否则用户挂机一夜回来发现
-            # console 里前一晚的零散对话永远停在"差几条不够触发"。
+            # Long-idle bypass: at least one unreviewed new message and global silence ≥ 30 min →
+            # review the remaining partial batch too, otherwise users returning after an idle night find
+            # the previous evening's sparse conversation permanently short of the console's triggering threshold.
             idle_secs = (datetime.now() - gates._last_activity_time).total_seconds()
             if not (new_msg_count >= 1 and idle_secs >= LONG_IDLE_REVIEW_BYPASS_SECONDS):
                 return
@@ -410,9 +410,9 @@ async def maybe_spawn_review(name: str) -> None:
                 f"[Review/spawn] {name}: 长挂机 bypass MIN_NEW_MSGS_FOR_REVIEW "
                 f"(new_msgs={new_msg_count}, idle={idle_secs:.0f}s)"
             )
-        # Gate 6a: 输出 token 耗尽断路器。它跨 tail fingerprint 累计，因此新增
-        # 消息/上下文增长不会解禁；只有压缩后 context token 严格低于失败期间的
-        # 最小值才恢复。
+        # Gate 6a: output-token-exhaustion breaker. Counts across tail fingerprints, so new
+        # messages/context growth cannot release it; recover only when compressed context tokens are strictly below
+        # the minimum observed during failures.
         from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         from memory.recent import review_context_token_count
         view = gates._maint_view(name)
@@ -439,7 +439,7 @@ async def maybe_spawn_review(name: str) -> None:
                 failed_min_tokens = int(failed_min_tokens or 0)
             except (TypeError, ValueError):
                 failed_min_tokens = 0
-            # token 计数是 async（可能走 tiktoken），必须留在临界区外算完再进 mutator。
+            # Token counting is async (possibly tiktoken); finish outside the critical section before entering the mutator.
             current_tokens = await review_context_token_count(history)
             if failed_min_tokens > 0 and current_tokens >= failed_min_tokens:
                 logger.debug(
@@ -458,9 +458,9 @@ async def maybe_spawn_review(name: str) -> None:
                 ),
             )
             if not cleared:
-                # 锁内复查发现断路器已经被换成更新的一份（在 await token 计数期间又失败
-                # 了一次）。恢复判定已经过期，本轮必须跟着放弃 —— 只是不清零却继续往下
-                # spawn 的话，等于拿一个过期的判定绕过了刚 armed 的断路器。
+                # Locked recheck finds the breaker replaced by a newer version (another failure during awaited
+                # token counting). Recovery decision is stale; abandon this attempt. Merely retaining the count but continuing
+                # to spawn would bypass a newly armed breaker using a stale decision.
                 logger.debug(
                     f"[Review/spawn] {name}: 恢复判定已过期"
                     f"（断路器在 token 计数期间被并发写者更新），跳过本轮"
@@ -471,22 +471,22 @@ async def maybe_spawn_review(name: str) -> None:
                 f"({current_tokens} < {failed_min_tokens})，恢复历史审阅"
             )
 
-        # Gate 6b: 通用失败退避（dead-letter）。review 连续失败 ≥
-        # MEMORY_LIVENESS_MAX_ATTEMPTS 次且**输入未变**（当前 history 末尾 K 条
-        # fingerprint == 上次失败时记下的）→ 跳过本次 spawn，不再每轮空烧
-        # 3×110s 超时。输入一变（master 发了新消息，尾部 fingerprint 变）→ 视为
-        # 新输入，清掉失败计数放行重试。
-        # 必须放在 Gate 5 之后：长挂机 bypass 在 correction 模型持续超时时会
-        # 主动给死循环续命，本闸门要能压过它（用户审计 #1：实锤的整夜无限重烧）。
+        # Gate 6b: general failure backoff (dead-letter). Consecutive review failures ≥
+        # MEMORY_LIVENESS_MAX_ATTEMPTS with **unchanged input** (current last K history messages'
+        # fingerprint matches the previous failure) → skip spawning instead of repeatedly wasting
+        # 3×110s timeouts. Changed input (master sends a message, changing tail fingerprint) → treat as
+        # new input, reset failure count and allow retry.
+        # Must follow Gate 5: long-idle bypass would otherwise perpetuate retries while correction times out;
+        # this gate must override it (user audit #1: confirmed overnight endless waste).
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from memory.recent import build_review_fingerprint
-        # Gate 6a 可能刚落过盘，重新取一次 view（旧的可能还是空角色的 _EMPTY 视图）。
+        # Gate 6a may just have persisted; refresh view (the previous one may be an empty character's _EMPTY view).
         view = gates._maint_view(name)
         fail_attempts = view.get('review_fail_attempts', 0) or 0
         if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
             cur_fp = build_review_fingerprint(history)
-            # dead-letter 判定本身也进临界区：判定和复位是同一次 RMW，别的写者不可能
-            # 在「读到输入已变」和「把计数清零」之间插进来。
+            # Dead-letter check also enters the critical section: check and reset form one RMW, preventing another writer
+            # from intervening between detecting changed input and clearing the count.
             decision = await gates._amutate_maint_state(
                 name,
                 functools.partial(
@@ -505,13 +505,13 @@ async def maybe_spawn_review(name: str) -> None:
                     f"且输入未变)，跳过本轮"
                 )
                 return
-        # 全过 → spawn
+        # All gates pass → spawn.
         logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
         cancel_event = asyncio.Event()
         correction_cancel_flags[name] = cancel_event
-        snapshot = list(history)  # 浅拷贝即可，消息对象不可变
-        # 把 cancel_event 显式传给后台 task（不再依靠 finally 时再从 dict 拿），
-        # 这样 task 自己持有的 event 引用不会被并发的新 spawn 覆盖。
+        snapshot = list(history)  # Shallow copy suffices; message objects are immutable.
+        # Pass cancel_event explicitly to the background task rather than looking it up in dict during finally,
+        # preserving the task's event reference against concurrent new spawns.
         task = asyncio.create_task(
             _run_review_in_background(
                 name, snapshot, cancel_event, admission_generation,
@@ -531,8 +531,8 @@ def _mutate_reset_review_fail_backoff(
 
     Returns ``'dead_letter'`` (caller must skip this spawn) or ``'proceed'``.
     """
-    # 配置常量由调用方在锁外取好传进来：mutator 跑在临界区里，不该在里面碰 import
-    # machinery（本仓库这些 config import 都是函数内 lazy import）。
+    # Caller fetches config constants outside the lock: the mutator runs in the critical section and must not touch import
+    # machinery there (config imports here are function-local lazy imports).
     if not _generation_is_current(admission_generation):
         return False, 'stale'
     generation_marker = _generation_marker(admission_generation)
@@ -543,7 +543,7 @@ def _mutate_reset_review_fail_backoff(
         return True, 'proceed'
     attempts = state.get('review_fail_attempts', 0) or 0
     if attempts < max_attempts:
-        # 锁外快筛之后另一个写者已经把计数清了（如成功的 review）→ 直接放行。
+        # Another writer already reset the count after the unlocked quick check (e.g. successful review) → allow directly.
         return False, 'proceed'
     if state.get('review_fail_fp') == cur_fp:
         return False, 'dead_letter'
@@ -568,9 +568,9 @@ def _mutate_record_review_failure(
     state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
     state['review_fail_fp'] = cur_fp
     state['review_fail_generation'] = generation_marker
-    # 普通失败会中断"连续输出耗尽"序列，不能让两类失败交错累计后误开断路器。这一步
-    # 必须和 bump 同在一个临界区、同一次落盘里：重构前它靠调用方先改内存、再靠本函数
-    # 的 save 顺带持久化，拆成两次落盘会留下"清了但没写"的窗口。
+    # Ordinary failures interrupt consecutive output exhaustion, preventing mixed failure types from wrongly opening the breaker. This
+    # must share the bump's critical section and persistence write: before refactoring, callers mutated memory and this function's
+    # save persisted it incidentally; separate saves create a cleared-but-unpersisted interval.
     _clear_review_output_exhaustion_state(state)
     return True, state['review_fail_attempts']
 
@@ -636,7 +636,7 @@ async def _record_review_output_exhaustion(
     from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
     from memory.recent import review_context_token_count
 
-    # token 计数是 async，必须在进临界区前算完（mutator 是同步函数，写不出 await）。
+    # Token counting is async: finish before entering the critical section (the mutator is synchronous and cannot await).
     current_tokens = await review_context_token_count(snapshot)
     recorded = await gates._amutate_maint_state(
         lanlan_name,
@@ -653,12 +653,12 @@ async def _record_review_output_exhaustion(
     return attempts, current_tokens, minimum_tokens
 
 
-# ── best-effort 后台压缩（主路径 compress 失败时兜底）─────────────────────
-# 真根因：主路径压缩走 LLM 耗时数秒~数十秒，限流抖动 / 偶发失败 → #1629 跳过
-# 保留完整历史、下轮重试。但若持续失败，历史一直压不掉、越积越多。这里在主路径
-# 压缩失败时起一个受保护的一次性后台任务尽力压（基于快照、不被对话打断；压完用
-# fingerprint 对齐合并回写）。主路径某轮成功 → cancel 在跑的后台。失败退避复用
-# review 的 Gate 6 模式，防 summary 模型持续故障时每轮起一个注定失败的任务空烧。
+# ── Best-effort background compression (fallback when primary compression fails) ─────────────────────
+# Root cause: primary LLM compression takes seconds to tens of seconds; rate-limit jitter / occasional failure → #1629 skips,
+# preserves full history, and retries next round. Persistent failure leaves history uncompressed and growing. On primary
+# failure, launch a protected one-shot background compression task (snapshot-based, uninterrupted by conversation; merge afterward
+# using fingerprints). Primary success cancels any running backup. Failure backoff reuses
+# review Gate 6 to avoid spawning doomed tasks every round during persistent summary-model failure.
 compress_backup_tasks: dict[str, asyncio.Task] = {}
 compress_backup_task_generations: dict[str, tuple[str, int] | None] = {}
 
@@ -740,14 +740,14 @@ async def _clear_compress_backup_failure(
     lanlan_name: str, admission_generation=None,
 ) -> None:
     """Clear the backup-compression failure backoff counter."""
-    # 锁外快筛，与 gates._aclear_review_clean 对偶。调用点 _on_compress_done 的
-    # ok=True 分支每次主路径压缩成功都会走到这里，而它由 memory/recent.py 的
-    # _notify_compress_done 触发 —— /renew、/settle 是持着 settle lock 调
-    # update_history 的，该回调的 docstring 自己写明 "must not block"。退避计数
-    # 绝大多数时候本来就是空的，没有这一层就等于每次压缩成功都在 settle lock 内
-    # 白排一次 default executor。快筛读到的值可能过期，但无害——真正的判定在
-    # _mutate_clear_compress_backup_failure 里锁内又做了一次，「假阴性」只会让本轮
-    # 少写一次（下次压缩成功立刻会补上），不会写坏状态。
+    # Unlocked quick check, symmetric with gates._aclear_review_clean. _on_compress_done's
+    # ok=True branch reaches here on every primary compression success, triggered by memory/recent.py's
+    # _notify_compress_done; /renew and /settle call update_history while holding settle lock,
+    # and this callback's docstring explicitly says 'must not block'. Backoff counts are
+    # usually empty; without this check, every successful compression unnecessarily queues a default executor
+    # inside settle lock. Quick-check values may be stale harmlessly: the real decision is repeated
+    # under lock in _mutate_clear_compress_backup_failure; false negatives merely skip one write
+    # until the next compression success, without corrupting state.
     if not _generation_is_current(admission_generation):
         return
     view = gates._maint_view(lanlan_name)
@@ -796,7 +796,7 @@ async def _run_backup_compress(
 ):
     """Run best-effort background compression and merge the result under lock."""
     try:
-        # 1) 压缩（锁外）。剧场胶囊不进入普通摘要模型，但仍随完整快照参与提交定位。
+        # 1) Compress outside lock. Theater capsules bypass the ordinary summary model but remain in the full snapshot for commit alignment.
         preserved_theater = [
             message
             for message in snapshot
@@ -829,16 +829,16 @@ async def _run_backup_compress(
             if attempts is None:
                 return
             logger.info(f"[CompressBackup] {lanlan_name} 后台压缩失败，退避计数 → {attempts}")
-            # best-effort 也没压成 → 实在不行才丢：若历史仍超硬上限，裁剪最旧未压缩
-            # 原文兜底（锁内串行化写）。暂时性失败时后台会成功、走不到这里。
+            # Best effort also failed: discard only as a last resort. If history still exceeds the hard cap, trim oldest uncompressed
+            # originals as fallback (serialized writes under lock). Temporary failures recover in background and never reach here.
             async with runtime._get_settle_lock(lanlan_name):
                 await runtime.recent_history_manager.enforce_hard_cap(
                     lanlan_name,
                     expected_generation=admission_generation,
                 )
             return
-        # 2) 合并写回（锁内，快）。merge_backup_memo 用 fingerprint 对齐，积压已被
-        #    主路径压掉 / 被清空就返回 'moot' 丢弃（白做）。
+        # 2) Merge back under lock (fast). merge_backup_memo aligns fingerprints; if the primary path already compressed
+        #    or cleared the backlog, return 'moot' and discard the redundant work.
         async with runtime._get_settle_lock(lanlan_name):
             merge_kwargs = {"expected_generation": admission_generation}
             if preserved_theater:
@@ -850,7 +850,7 @@ async def _run_backup_compress(
                 **merge_kwargs,
             )
         if status == 'failed':
-            # 合并落盘失败 → 没真正写成功，bump 退避（不清），下次再试。
+            # Merge persistence fails → not truly saved; bump backoff rather than clearing, and retry later.
             attempts = await _record_compress_backup_failure(
                 lanlan_name, snapshot, admission_generation,
             )
@@ -858,7 +858,7 @@ async def _run_backup_compress(
                 return
             logger.info(f"[CompressBackup] {lanlan_name} 后台压缩合并落盘失败，退避计数 → {attempts}")
             return
-        # 'merged' 或 'moot' 都说明这段积压已处理 / 已过时，清退避计数。
+        # 'merged' and 'moot' both mean backlog handled or obsolete; clear backoff counts.
         await _clear_compress_backup_failure(lanlan_name, admission_generation)
         logger.info(f"[CompressBackup] {lanlan_name} 后台压缩完成：{status}")
     except asyncio.CancelledError:
@@ -899,16 +899,16 @@ async def _on_compress_done(
             task.cancel()
         await _clear_compress_backup_failure(lanlan_name, admission_generation)
         return
-    # ok=False：主路径压缩失败 → 起后台兜底
+    # ok=False: primary compression failed → launch background fallback.
     if not snapshot:
         return
     existing = compress_backup_tasks.get(lanlan_name)
     if existing is not None and not existing.done():
         if compress_backup_task_generations.get(lanlan_name) == admission_generation:
-            return  # in-flight：同一身份已有后台压缩在跑，不重复起
+            return  # In-flight: same identity already has background compression; do not duplicate.
         existing.cancel()
-    # 失败退避（Gate 6 模式）：连续失败 ≥ N 且输入未变 → dead-letter，不再起，
-    # 防 summary 模型持续故障时每轮都起一个注定失败的后台任务空烧。
+    # Failure backoff (Gate 6): consecutive failures ≥ N with unchanged input → dead-letter; stop spawning,
+    # preventing doomed background tasks every round during persistent summary-model failure.
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.recent import build_review_fingerprint
     state_view = gates._maint_view(lanlan_name)
@@ -919,10 +919,10 @@ async def _on_compress_done(
         fail_attempts = state_view.get('compress_backup_fail_attempts', 0) or 0
     if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
         cur_fp = build_review_fingerprint(snapshot)
-        # dead-letter 判定与复位是同一次 RMW（见 _mutate_reset_compress_backup_backoff）。
-        # mutator 是同步函数，所以它既不可能在锁内 await、也不可能在锁内去取
-        # _get_settle_lock —— 本回调可能已经在 /renew·/settle 的 settle lock 内被调，
-        # 这条结构性约束正是它不会反向死锁的原因。
+        # Dead-letter check and reset are one RMW (see _mutate_reset_compress_backup_backoff).
+        # The synchronous mutator can neither await nor acquire
+        # _get_settle_lock while locked; this callback may already run inside /renew·/settle's settle lock,
+        # and this structural constraint prevents reverse lock-order deadlocks.
         decision = await gates._amutate_maint_state(
             lanlan_name,
             functools.partial(
@@ -937,24 +937,24 @@ async def _on_compress_done(
                 f"[CompressBackup] {lanlan_name} 失败退避 dead-letter"
                 f"（连续失败 {fail_attempts} 次且输入未变），跳过"
             )
-            # dead-letter：后台已救不回 → 此时才裁剪兜底（实在不行才丢）。不 acquire
-            # settle lock：本回调可能已在 /renew·/settle 的锁内被调（重入会死锁）；
-            # enforce_hard_cap 是 best-effort 写。
+            # Dead-letter: background recovery cannot help → only now trim as last resort. Do not acquire
+            # settle lock: this callback may already run under /renew·/settle's lock (reentry would deadlock);
+            # enforce_hard_cap writes best effort.
             #
-            # recent.json 的互斥不靠这里：它由 utils.recent_file 的 per-path
-            # threading.Lock 保证，enforce_hard_cap 的落盘走那把锁。本回调是从
-            # update_history 的 async 体里、CS-1 已返回而 CS-2 未进入的间隙被调的，
-            # 那一刻文件锁必定未被本调用链持有，所以这里是首次获取。
-            # ⚠️ 谁把 _notify_compress_done 挪进任何一个文件临界区，这行就是 worker
-            # 线程上的无超时永久死锁（threading.Lock 不可重入）。
+            # recent.json mutual exclusion is elsewhere: utils.recent_file's per-path
+            # threading.Lock protects enforce_hard_cap persistence. This callback runs from
+            # update_history's async body between CS-1's return and CS-2 entry,
+            # when this call chain cannot hold the file lock, so acquisition here is the first.
+            # Warning: moving _notify_compress_done into either file critical section creates an unbounded permanent
+            # worker-thread deadlock here (threading.Lock is not reentrant).
             await runtime.recent_history_manager.enforce_hard_cap(
                 lanlan_name,
                 expected_generation=admission_generation,
             )
             return
-    # 上面的 dead-letter RMW / hard-cap 都可能 await；角色生命周期事务可能在
-    # 这段窗口里退休旧名并排空 registry。spawn+register 必须回到与 release 共用
-    # 的准入锁下复查，不能在 drain 完成后再把旧身份任务塞回 registry。
+    # The dead-letter RMW / hard cap above may await; a character lifecycle transaction may
+    # retire the old name and drain the registry meanwhile. Recheck spawn + register under
+    # the admission lock shared with release; never reinsert old-identity tasks after draining completes.
     async with _get_review_spawn_lock(lanlan_name):
         if (
             lanlan_name in _retired_derived_task_names
@@ -988,7 +988,7 @@ def _mutate_review_patched(
     state['review_clean'] = True
     state['last_review_ts'] = datetime.now().isoformat()
     state['last_reviewed_cutoff_tail'] = fingerprint
-    # 成功 → 清掉失败退避计数（Gate 6）
+    # Success → clear failure backoff counts (Gate 6).
     state['review_fail_attempts'] = 0
     state['review_fail_fp'] = None
     state['review_fail_generation'] = None
@@ -1001,9 +1001,9 @@ def _mutate_review_white(admission_generation, state: dict) -> tuple[bool, bool]
     if not _generation_is_current(admission_generation):
         return False, False
     state['last_reviewed_cutoff_tail'] = None
-    # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
-    # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
-    # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
+    # Intentionally leave last_review_ts unchanged: next round Gate 4 uses the old timestamp (usually older than 30/60s)
+    # and passes directly, while fingerprint=None gives Gate 5 infinite allowance → immediate re-review.
+    # Wasted review means cutoff mismatch (input actually changed), not failure; clear backoff to rebuild anchors immediately.
     state['review_fail_attempts'] = 0
     state['review_fail_fp'] = None
     state['review_fail_generation'] = None
@@ -1049,13 +1049,13 @@ async def _run_review_in_background(
         if not _generation_is_current(admission_generation):
             logger.info(f"ℹ️ {lanlan_name} 的旧身份记忆整理在调用 LLM 前失效，已丢弃")
             return
-        # 只把 review_history 调用本身包进内层 try：它抛异常才算"review 失败"，
-        # 收口成 ('failed', None) 走下面统一的失败分支记一次退避。成功后的 result
-        # 处理 / state 落盘异常**不**能被当成 review 失败（否则 patched/white 的
-        # save 抖动会误判成失败、误触 Gate 6 dead-letter；'failed' 分支自己 save
-        # 抛异常也会被重复记一次）——那类异常交给外层 except 纯兜底、不 bump。
-        # 注：asyncio.CancelledError 是 BaseException，不被 except Exception 捕获，
-        # 会正常冒泡到外层 CancelledError 分支。
+        # Wrap only review_history itself in the inner try: only its exceptions count as review failure,
+        # normalized to ('failed', None) for one backoff increment in the unified failure branch. Successful-result
+        # processing / state-save exceptions must **not** count as review failure (or patched/white
+        # save instability would falsely trigger Gate 6 dead-letter; errors saving the 'failed' branch itself
+        # would also increment twice). Leave these to the outer fallback except, without bumping.
+        # Note: asyncio.CancelledError inherits BaseException, so except Exception does not catch it;
+        # it propagates normally to the outer CancelledError branch.
         try:
             result = await runtime.recent_history_manager.review_history(
                 lanlan_name,
@@ -1066,7 +1066,7 @@ async def _run_review_in_background(
         except Exception as e:
             logger.error(f"❌ {lanlan_name} 的 review_history 抛异常，按失败处理: {e}")
             result = ('failed', None)
-        # 兼容意外的返回类型，统一解包
+        # Tolerate unexpected return types; unpack uniformly.
         if isinstance(result, tuple) and len(result) == 2:
             status, fingerprint = result
         else:
@@ -1093,9 +1093,9 @@ async def _run_review_in_background(
                     f"⚠️ {lanlan_name} 白 review（cutoff 失配），fingerprint 清空、不刷 ts，允许立即重试"
                 )
         elif cancel_event.is_set():
-            # review_history 在 cancel_event 置位时也返回 ('failed', None)，但这是
-            # 主动取消（cancel_correction：记忆编辑后立即生效）而非失败，不能计入
-            # 失败退避——否则用户频繁编辑记忆会被误判成 poison。
+            # review_history also returns ('failed', None) when cancel_event is set, but this is
+            # deliberate cancellation (cancel_correction: memory edits take immediate effect), not failure; exclude it
+            # from failure backoff or frequent user memory edits would be misclassified as poison.
             logger.info(f"ℹ️ {lanlan_name} 的记忆整理被取消（不计入失败退避）")
         elif status == 'output_exhausted':
             recorded = await _record_review_output_exhaustion(
@@ -1117,11 +1117,11 @@ async def _run_review_in_background(
                     f"(context={context_tokens}, 失败最小值={minimum_tokens})"
                 )
         else:
-            # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
-            # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
-            # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
-            # 普通失败中断“连续输出耗尽”序列这一步已并进 _record_review_failure 的
-            # mutator：清计数与 bump 必须落在同一次写里，不能拆成两次。
+            # 'failed': persistent LLM failure / timeout / malformed output. Bump failure backoff and record
+            # this input fingerprint so Gate 6 dead-letters unchanged input, avoiding
+            # overnight waste from correction timeouts prolonged by long-idle bypass (user audit #1).
+            # Ordinary failures interrupt consecutive output exhaustion within _record_review_failure's
+            # mutator now: clearing and bumping must persist in one write, not two.
             attempts = await _record_review_failure(
                 lanlan_name, snapshot, admission_generation,
             )
@@ -1134,14 +1134,14 @@ async def _run_review_in_background(
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
-        # 纯兜底：能到这里的只剩 result 处理 / state 持久化等"非 review 失败"
-        # 的异常（review_history 自身抛已在内层收口成 'failed'）。这类异常**不**
-        # 计入失败退避——否则成功 review 的 save 抖动会被误判成失败、误触
-        # Gate 6 dead-letter 压住后续 review（Codex P2）。
+        # Pure fallback: only result-processing / state-persistence exceptions that are **not review failures**
+        # reach here (review_history exceptions already normalized to 'failed' inside). These do **not**
+        # count toward failure backoff, or successful-review save instability would wrongly trigger
+        # Gate 6 dead-letter and suppress future reviews (Codex P2).
         logger.error(f"❌ {lanlan_name} 的记忆整理后处理出错（不计入失败退避）: {e}")
     finally:
-        # 按 task/event 身份比对再清理：如果并发的新 spawn 已经写入了新 task /
-        # 新 event，本 task 不应该把它们清掉。
+        # Compare task/event identity before cleanup: if a concurrent spawn stored a new task /
+        # new event, this task must not clear them.
         current_task = asyncio.current_task()
         if correction_tasks.get(lanlan_name) is current_task:
             correction_tasks.pop(lanlan_name, None)

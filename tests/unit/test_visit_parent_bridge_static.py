@@ -55,12 +55,12 @@ def test_host_frame_never_takes_pointer_events_and_sits_below_the_model():
     assert "pointer-events:none" in rule and int(re.search(r"z-index:(\d+)", rule).group(1)) < 10
     live2d_z = int(re.search(r"#live2d-container\s*\{[^}]*?z-index:\s*(\d+)", css).group(1))
     assert z < live2d_z
-    # 非 Pet 的移动端布局把模型层降到 5：访客图层同样要在它之下
+    # Non-Pet mobile layouts lower the model layer to 5; the visitor layer must remain below it.
     mobile_z = min(int(v) for v in re.findall(
         r"#live2d-container\s*\{[^}]*?z-index:\s*(\d+)", css))
     assert z < mobile_z and int(re.search(r"z-index:(\d+)", rule).group(1)) < mobile_z
     assert "f.className = 'transparent-overlay'" in code
-    # 用户把模型最小化时由 .minimized 决定透明度
+    # .minimized controls opacity when the user minimizes the model.
     for cid in ("live2d-container", "vrm-container", "mmd-container", "pngtuber-container"):
         assert f"#{cid}.visiting-away:not(.minimized)" in css
 
@@ -85,7 +85,7 @@ def test_only_index_loads_the_bridge_after_the_websocket_script():
 
 
 def test_websocket_dispatch_skips_the_chat_follower_window():
-    # 串门 PR-12 起 visit_* 帧集中在一个分派块里：父页取帧桥只在非 chat 跟随窗口调用（判定抽成共用 helper）
+    # Since visit PR-12, visit_* frames share a dispatch block: only non-chat follower windows call the parent frame bridge (shared helper).
     src = _read("static/app/app-websocket.js")
     i = src.index("if (response.type === 'visit_state_change') {")
     block = src[i:i + 500]
@@ -115,5 +115,5 @@ def test_fps_popup_dispatches_before_saving():
     src = (ROOT / "static" / "avatar" / "avatar-ui-popup.js").read_text(encoding="utf-8")
     i = src.index("fpsSlider.addEventListener('change'")
     block = src[i:src.index("});", i)]
-    # 先派发撤掉串门的临时帧率，保存时才存用户新选的值
+    # Dispatch removal of the temporary visit frame rate first; save only the user's newly selected value.
     assert block.index("neko-frame-rate-changed") < block.index("saveNEKOSettings")

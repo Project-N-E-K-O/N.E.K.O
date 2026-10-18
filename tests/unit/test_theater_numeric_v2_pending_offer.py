@@ -184,7 +184,7 @@ async def test_invitation_invalidation_cannot_be_injected_by_actor(tmp_path):
 
 @pytest.mark.asyncio
 async def test_valid_represented_invitation_refreshes_origin_after_restore_and_fork(tmp_path):
-    """本轮重新公开有效邀请要刷新回复对象，单纯保留旧状态则不能刷新。"""  # noqa: DOCSTRING_CJK
+    """Republishing a valid invitation this turn refreshes the reply target; merely retaining old state must not refresh it."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_context import pending_transition_record
 
@@ -276,7 +276,7 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
         assert invitation in pending["visible_performance"]
         assert "不会很远" not in pending["visible_performance"]
         assert pending["suggested_inputs"] == original["suggested_inputs"]
-        # Actor 在重试前后也必须看到同一原提议，且账本本身不进入演绎输入。
+        # Actor must see the same original proposal before and after retries; the ledger itself must not enter performance input.
         outcome = runtime.prepare_turn(current,
             TurnRequestV2("followup", current.session.revision, "我再想一想。"), (), transition_intent="unclear")
         for retry_hint in ("", "请修正未提交的重复正文。"):
@@ -285,7 +285,7 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
             actor_data = json.loads(actor_messages[1].content.split("：", 1)[1])
             assert invitation in actor_data["pacing"]
             assert "ledger_events" not in actor_data
-            # 锁存只证明曾经公开，不能将错误原话变成演员必须兑现的正确安排。
+            # Latching proves only prior public disclosure; it cannot turn erroneous wording into a valid arrangement the actor must fulfill.
             assert "只证明此前说过，不证明安排正确" in actor_data["pacing"]
             assert "不为更正补造人物行程或新的阻碍" in actor_data["pacing"]
 
@@ -324,14 +324,14 @@ async def test_withdrawn_offer_can_be_explicitly_accepted_without_reinviting(tmp
     assert data["pending_transition"]["status"] == "withdrawn"
     assert "沿长街寻找旧信" in data["pending_transition"]["visible_performance"]
     assert "我听着" not in data["pending_transition"]["visible_performance"]
-    # 不明确接受时仍留幕；光有历史邀请不能使旧邀请自动重新生效。
+    # Remain in the act without explicit acceptance; historical invitations alone cannot automatically reactivate an old invitation.
     waiting = runtime.prepare_turn(stored, TurnRequestV2("wait", 4, "再想想。"), (), transition_intent="unclear")
     assert waiting.session.current_node_id == stored.session.current_node_id
     assert not waiting.session.transition_offered
     outcome = runtime.prepare_turn(stored, TurnRequestV2("go", 4, "我改主意了，就按刚才说的走。"), (), transition_intent="accept")
     assert outcome.session.current_node_id != stored.session.current_node_id
     assert outcome.ledger_event["transition_intent"] == "accept"
-    # 使用正式组装和提交链，确保无需新存档字段也能完整重放重新接受的回合。
+    # Use formal assembly and commit paths to prove complete replay of the reacceptance turn without new save fields.
     from tests.unit.test_theater_numeric_v2_transition_history import _candidate
     performance = engine.finalize_transition_performance(outcome, _candidate(), target_opening="旧开场。")
     committed = await runtime.commit_turn(outcome, performance)
@@ -365,7 +365,7 @@ async def test_evaluator_parser_keeps_evidenced_accept_of_withdrawn_offer(tmp_pa
 
     explicit = "我改主意了，就沿长街寻找旧信吧。"
     assert parse(explicit) == "accept"
-    # 与隔轮回复相同：没有逐字指回原邀请，或模型未把回复绑定到原邀请时仍保守留幕。
+    # As with replies after intervening turns: conservatively stay in the act without a verbatim reference to the original invitation or a model-confirmed binding.
     assert parse("我改主意了，就按刚才说的走。") == "unclear"
     assert parse(explicit, reply_target="latest_interaction") == "unclear"
     outcome = runtime.prepare_turn(stored, TurnRequestV2("go", stored.session.revision, explicit), (),
@@ -384,7 +384,7 @@ async def test_withdrawn_offer_does_not_cross_a_scene_visit(tmp_path):
     runtime = NumericV2Runtime(engine, tmp_path)
     stored = await runtime.start_session(session_id="old_visit", catgirl_binding=_binding(), opening_performance=_opening())
     stored = await _commit(runtime, stored, "我们沿长街走，好吗？", offer=True)
-    # 构造重新访问的明确边界；它会截断旧访问，不能从旧 true 提取邀请。
+    # Construct an explicit revisit boundary: it cuts off the previous visit, so invitations cannot be extracted from an old true.
     boundary = {"revision": 2, "from_node_id": "elsewhere", "to_node_id": "start", "transition_offered": False}
     revisited = replace(stored.session, transition_offered=False, performance_history=stored.session.performance_history + (boundary,))
     assert pending_transition_record(revisited, include_withdrawn=True) is None
@@ -446,7 +446,7 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
     assert len(reviews) == (3 if needs_repair else 1)
     assert len(evaluations) == 1 and len(generations) == (2 if needs_repair else 1)
     if needs_repair:
-        # 改稿仍用原输入和已提交历史；被拒的第一稿不能再成为演员续写底稿。
+        # Revisions still use original input and committed history; the rejected first draft cannot become the actor's continuation base.
         repair = generations[1]
         assert repair['player_input'] == generations[0]['player_input'] == '我先问个细节。'
         assert repair['session'].performance_history == invitations
@@ -461,7 +461,7 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
     assert result.diagnostics['transition_judge_degraded'] is (mode == 'fast_failure')
     assert result.diagnostics['dispute_review_degraded'] is (mode == 'dispute_timeout')
     if mode == 'buttons':
-        # 原邀请仍有效，但本次送审整组被否定，接受按钮不能在复核后绕回。
+        # The original invitation remains valid, but this entire submitted group was rejected; the acceptance button must not bypass review afterward.
         assert result.performance['suggested_inputs'] == []
     assert await runtime.restore_session(current.session.session_id) == result.stored
     # A fallback response ends the invitation; reviewed safe replies retain it.
@@ -472,7 +472,7 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
 
 @pytest.mark.asyncio
 async def test_invalid_fallback_offer_without_prior_invitation_is_not_latched(tmp_path, monkeypatch):
-    """末稿兜底可提交正文，但复核无效的新去向不能创建可接受的会话邀请。"""  # noqa: DOCSTRING_CJK
+    """Final-draft fallback may commit the body, but a newly proposed destination invalidated by review must not create an acceptable session invitation."""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 
@@ -523,7 +523,7 @@ async def test_invalid_fallback_offer_without_prior_invitation_is_not_latched(tm
 
 @pytest.mark.asyncio
 async def test_current_scene_completion_action_is_not_rewritten_as_wrong_exit(tmp_path, monkeypatch):
-    """玩家已授权且能写入完成事实的幕内移动，不应因模型误报出口而进入改写和争议复查。"""  # noqa: DOCSTRING_CJK
+    """Player-authorized movement within the act that can record completion facts must not enter rewriting/dispute review because the model falsely reports an exit."""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 
@@ -551,7 +551,7 @@ async def test_current_scene_completion_action_is_not_rewritten_as_wrong_exit(tm
     player_input = '大家互相搀扶，跟着我进入深层走廊。'
     narration = '三名平民已经进入深层屏蔽走廊并安全安置。'
 
-    # 即使复核同时返回了当前幕完成事实，无关的错误目的地也不能借此逃过改写。
+    # Even if review also returns current-act completion facts, an unrelated incorrect destination cannot use them to avoid rewriting.
     wrong_destination_review = ev.NumericV2TransitionOfferReview(
         offer_present=True,
         valid=False,
@@ -631,7 +631,7 @@ async def test_current_scene_completion_action_is_not_rewritten_as_wrong_exit(tm
 
 @pytest.mark.asyncio
 async def test_fact_candidates_keep_valid_siblings_when_one_candidate_is_stale_or_invalid(tmp_path, monkeypatch):
-    """旧候选与坏证据各自淘汰，本轮可核验事实仍与回合一起原子提交。"""  # noqa: DOCSTRING_CJK
+    """Discard stale candidates and invalid evidence independently, while atomically committing verifiable current-turn facts with the turn."""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 
@@ -684,7 +684,7 @@ async def test_fact_candidates_keep_valid_siblings_when_one_candidate_is_stale_o
         }
 
     async def review(self, **kwargs):
-        # 本例检查 Runtime 对复核所确认候选的逐项证据校验；未确认的 Actor 候选另测旁路拒绝。
+        # This case checks Runtime's per-item evidence validation for review-confirmed candidates; bypass rejection of unconfirmed Actor candidates is tested separately.
         return ev.NumericV2TransitionOfferReview(False, False, (), (),
             fact_candidates=tuple(kwargs['actor_performance']['fact_candidates']))
 
@@ -715,14 +715,14 @@ async def test_fact_candidates_keep_valid_siblings_when_one_candidate_is_stale_o
 @pytest.mark.asyncio
 @pytest.mark.parametrize('offer_kind,cleared', [
     ('exit_mention_only', True),
-    # Prose alone ("正文仅…未发出…邀请") must not clear the flag: absent or other kinds fail closed.
+    # Prose alone ('the body merely... did not issue... an invitation') must not clear the flag: absent or other kinds fail closed.
     ('', False),
     ('invitation', False),
 ])
 async def test_narration_location_is_not_rewritten_when_review_denies_its_own_offer(
     tmp_path, monkeypatch, offer_kind, cleared,
 ):
-    """旁白只公开出口标识时，只凭结构化 offer_kind 清除邀请标志，不解析失败理由。"""  # noqa: DOCSTRING_CJK
+    """When narration only reveals an exit marker, clear the invitation flag solely by structured offer_kind, without parsing rejection reasons."""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 
@@ -748,7 +748,7 @@ async def test_narration_location_is_not_rewritten_when_review_denies_its_own_of
         offer_quote=quote,
         offer_kind=offer_kind,
     )
-    # 同一句若由角色对白说出，即使结构化码声称只是位置，也仍须交给原复核链处理。
+    # The same sentence in character dialogue must still go through the original review chain, even if structured codes claim it merely states location.
     assert workflow._review_denies_narration_only_offer(
         {'performance': quote, 'suggested_inputs': []},
         review_result,
@@ -786,7 +786,7 @@ async def test_narration_location_is_not_rewritten_when_review_denies_its_own_of
     )
 
     if not cleared:
-        # 缺少结构化码时保留邀请判定：无效邀请照常进入改稿链，理由文案不能让它跳过。
+        # Without structured codes, retain invitation evaluation: invalid invitations still enter revision, and explanatory wording cannot bypass it.
         assert result.diagnostics['narration_offer_flags_cleared'] == 0
         assert result.diagnostics['semantic_rewrite_attempts'] == 1
         assert len(generations) == 2
@@ -815,7 +815,7 @@ async def test_narration_location_is_not_rewritten_when_review_denies_its_own_of
 async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no_offer(
     tmp_path, monkeypatch, destination, known, message, departed, reject_fallback,
 ):
-    """作者兜底拼接后必须通过复核；技术失败回滚，正文拒绝则保留原稿。"""  # noqa: DOCSTRING_CJK
+    """Review author-fallback concatenation before accepting it; technical failures roll back, while body rejection retains the original draft."""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 
@@ -890,7 +890,7 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
 
     async def generate(self, **kwargs):
         generations.append(kwargs)
-        # 模拟真实样本：Actor 自报已经邀请，但正文只完成当前幕收束。
+        # Simulate the real example: Actor claims an invitation was issued, but the body only concludes the current act.
         return {
             'performance': '（收回工具）这边总算处理完了。',
             'suggested_inputs': ['（擦去汗水）接下来呢？'],

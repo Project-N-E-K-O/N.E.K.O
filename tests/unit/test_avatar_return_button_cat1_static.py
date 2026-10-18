@@ -268,7 +268,7 @@ def test_cat1_pair_move_is_adapter_only_small_move_runner():
 def test_cat1_minimized_side_target_separates_look_and_move_direction():
     source = _read_avatar_ui_buttons_source()
 
-    # #1749 的“朝毛球前进、避免倒退”的取侧逻辑只用于本次走路首次决策，已抽到 forward picker。
+    # #1749's 'move toward the furball without backing up' side selection applies only to the walk's first decision and now lives in the forward picker.
     forward_pick_block = source.split("function _pickNekoIdleCat1ForwardSideTarget", 1)[1].split(
         "function _clearNekoIdleCat1WalkApproachSide",
         1,
@@ -328,7 +328,7 @@ def test_cat1_native_wayland_yarn_corrections_are_direction_and_state_specific()
     assert "? _NEKO_IDLE_CAT1_NATIVE_YARN_LEFT_SIDE_CONTACT_CORRECTION_PX" in visual_target_block
     assert ": 0;" in visual_target_block
 
-    # 右侧待机终点不动；待机素材与已正常的走路/伸懒腰素材使用同一 33px 视觉校准。
+    # Keep the right idle endpoint fixed; calibrate idle assets visually by the same 33px used for working walk/stretch assets.
     assert 'data-neko-cat1-native-yarn-visual-anchor="true"' in css
     assert 'data-neko-cat1-native-yarn-side="right"' in css
     assert 'data-neko-cat1-substate="idle"' in css
@@ -364,15 +364,15 @@ def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_stra
         1,
     )[0]
     assert "_NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP" in side_target_block
-    # 仍在毛球水平跨度内 -> 保持提交侧，不在球心附近翻面
+    # Still within the furball's horizontal span -> retain the committed side without flipping near the center
     assert "catCenterX >= chatRect.left && catCenterX <= chatRect.right" in side_target_block
-    # 只在猫已整体越到毛球另一侧时才重选接近侧
+    # Reselect the approach side only after the entire cat has crossed to the furball's opposite side
     assert "committed === true && catCenterX > chatRect.right" in side_target_block
     assert "committed === false && catCenterX < chatRect.left" in side_target_block
-    # 提交侧持有期间，禁止再出现旧的“每帧重判 lookFacingRight”
+    # While holding the committed side, forbid the old 'reevaluate lookFacingRight every frame' behavior
     assert "const lookFacingRight = chatCenterX > catCenterX;" not in side_target_block
 
-    # 走完/取消时必须清掉提交侧，便于下次重新决策
+    # Clear the committed side when the walk finishes or is cancelled so the next walk can decide anew
     assert "function _clearNekoIdleCat1WalkApproachSide" in source
     finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
         "function _finishNekoIdleCat1CompactTopEdgeWalk",

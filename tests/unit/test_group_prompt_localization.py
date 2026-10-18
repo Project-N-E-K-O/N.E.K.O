@@ -45,7 +45,7 @@ _LANGS = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 _MEMORY_LANGS = _LANGS
 
 
-# ── scoped 渲染不得泄漏私聊对象的名字 ────────────────────────────────
+# -- Scoped rendering must not leak private-chat counterpart names. --
 
 
 class _ScopedRenderHarness:
@@ -55,8 +55,8 @@ class _ScopedRenderHarness:
         from memory.persona.mentions import MentionsMixin
         from memory.persona.rendering import RenderingMixin
 
-        # 本类在前：ensure_persona / update_suppressions 用桩，其余（含
-        # _collect_all_entries）都跑真实实现。
+        # Place this class first: stub ensure_persona / update_suppressions; everything else, including
+        # _collect_all_entries, uses the real implementation.
         self.__class__ = type(
             "_Harness",
             (_ScopedRenderHarness, RenderingMixin, MentionsMixin),
@@ -116,7 +116,7 @@ async def test_scoped_past_memory_block_never_names_the_private_counterpart():
     harness = _ScopedRenderHarness({}, {"human": "老张"})
     scoped = _stale_reflection("群里聊过露营", **subject.as_entry_fields())
 
-    # 两种 locale 都要过：这一段整段按 active language 渲染。
+    # Both locales must pass: this entire section renders in the active language.
     for lang, scoped_phrase, legacy_phrase in (
         ("zh", "除非有人先主动提起", "除非 老张 先主动提起"),
         ("en", "Unless someone brings them up first", "Unless 老张 brings them up first"),
@@ -132,8 +132,8 @@ async def test_scoped_past_memory_block_never_names_the_private_counterpart():
                 "小天", None, [scoped],
                 subjects=[subject], include_legacy_private=False,
             )
-            # legacy 私聊渲染（无 subjects）照旧点名对话对象——群变体不是
-            # 把这条指令删掉了，只是换成不指认任何人的说法。
+            # Legacy private-chat rendering without subjects still names the counterpart; the group variant
+            # changes wording to avoid identifying anyone rather than removing the instruction.
             legacy = _ScopedRenderHarness(
                 {}, {"human": "老张"},
             ).render_persona_markdown(
@@ -160,7 +160,7 @@ def test_scoped_past_block_signal_matches_the_scope_filter():
     assert RenderingMixin._renders_scoped_only([], None) is False
     assert RenderingMixin._renders_scoped_only([group], None) is True
     assert RenderingMixin._renders_scoped_only([group], False) is True
-    # 显式带上 legacy 私聊内容时，点名对话对象仍然是对的。
+    # Explicit legacy private-chat content should still name the counterpart.
     assert RenderingMixin._renders_scoped_only([group], True) is False
 
 
@@ -188,7 +188,7 @@ def test_scoped_past_memory_block_is_localized_everywhere():
         assert "小天" in rendered and "- 条目" in rendered
 
 
-# ── 前情概要收尾句：语音 / 文字 / 群聊 ──────────────────────────────
+# -- Context-summary closing sentence: voice / text / group chat. --
 
 
 def test_context_summary_ready_variants_match_the_session_shape():
@@ -202,7 +202,7 @@ def test_context_summary_ready_variants_match_the_session_shape():
             get_context_summary_ready(lang, input_mode="text")
             == CONTEXT_SUMMARY_READY_TEXT[lang]
         )
-        # 群聊压过模态：群里就没有那个固定的一对一对象。
+        # Group chat overrides modality: no fixed one-to-one counterpart exists there.
         assert (
             get_context_summary_ready(lang, input_mode="text", is_group=True)
             == CONTEXT_SUMMARY_READY_GROUP[lang]
@@ -224,8 +224,8 @@ def test_context_summary_ready_group_variant_has_no_counterpart_slot():
         assert "{master}" not in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "{name}" in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "{master}" in CONTEXT_SUMMARY_READY_TEXT[lang]
-        # 文字变体不能还说"语音"。简繁两种写法都要挡：只查简体的话，繁中那行
-        # 写成「語音」会从这条断言底下溜过去。
+        # Text variants must not still say voice. Guard both Simplified and Traditional spellings;
+        # checking only Simplified lets the Traditional voice spelling slip through.
         for spelling in ("语音", "語音"):
             assert spelling not in CONTEXT_SUMMARY_READY_TEXT[lang]
             assert spelling not in CONTEXT_SUMMARY_READY_GROUP[lang]
@@ -275,7 +275,7 @@ def test_no_module_picks_the_voice_template_directly():
         except SyntaxError:
             continue
         relative = str(path.relative_to(_REPO_ROOT))
-        # 走 AST 而不是子串：注释里提一句模板名不算调用点。
+        # Use AST rather than substrings: comments mentioning template names are not call sites.
         for node in ast.walk(tree):
             if isinstance(node, (ast.Name, ast.Attribute, ast.alias)):
                 referenced = (
@@ -352,7 +352,7 @@ async def test_hot_swap_prime_closing_line_follows_the_session_mode(
         await _drain_task(manager.message_handler_task)
 
 
-# ── 召回条目的 [层级/归属] 标签 ────────────────────────────────────
+# -- Recall-entry [level/ownership] labels. --
 
 
 def test_recall_entry_tag_is_localized_and_covers_the_scoped_kinds():
@@ -368,14 +368,14 @@ def test_recall_entry_tag_is_localized_and_covers_the_scoped_kinds():
                 f"{key} 缺语言：{set(_MEMORY_LANGS) - set(entry)}"
             )
 
-    # scoped 写入把 entity 强制成 subject.kind，这几个必须在表里。
+    # Scoped writes force entity to subject.kind; these values must appear in the table.
     for kind in ("group_chat", "participant", "group_participant"):
         assert kind in RECALL_ENTRY_ENTITY_LABEL
 
     assert render_recall_entry_tag("fact", "group_chat", "zh") == "[事实/群聊]"
     assert render_recall_entry_tag("fact", "group_chat", "en") == "[fact/group chat]"
     assert render_recall_entry_tag("reflection", "master", "zh") == "[印象/关于用户]"
-    # 未知枚举原样透出，别静默变成空串。
+    # Preserve unknown enums instead of silently converting them to empty strings.
     assert render_recall_entry_tag("brand_new_tier", "", "zh") == "[brand_new_tier/-]"
 
 

@@ -117,8 +117,8 @@ async def test_replayed_repair_survives_live_writer_inside_critical_section(tmp_
     ev, _pm, engine, rec = _boot_real_stack(tmpdir)
     await engine.asave_reflections(NAME, _seed_two_reflections())
 
-    # 尾巴上留一条"append 之后崩在 view save 之前"的事件：A 的
-    # reinforcement 应该是 7.0，但 view 里还是 0.0，哨兵为空。
+    # Leave a tail event appended before a crash preceding view save: A's
+    # reinforcement should be 7.0, but the view still shows 0.0 with an empty sentinel.
     event_id = ev.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {
         "reflection_id": "A", "reinforcement": 7.0, "disputation": 0.0,
         "rein_last_signal_at": _NOW, "disp_last_signal_at": None,
@@ -132,8 +132,8 @@ async def test_replayed_repair_survives_live_writer_inside_critical_section(tmp_
     real_aread_since = ev.aread_since
 
     async def _paused_aread_since(name, after_event_id):
-        # 尾巴读完（read_since 内部的锁也已释放），停在"还没 apply"的位置，
-        # 把舞台让给 live writer。停顿点在事件循环上，不占任何锁。
+        # After reading the tail (read_since's lock released), pause before apply,
+        # allowing the live writer to run. Pause on the event loop without holding locks.
         tail = await real_aread_since(name, after_event_id)
         tail_read.set()
         await released.wait()
@@ -143,8 +143,8 @@ async def test_replayed_repair_survives_live_writer_inside_critical_section(tmp_
     real_write_line = ev._write_line_unlocked
 
     def _parked_write_line(path, line):
-        # 模拟一次慢 fsync：live writer 此刻持有 per-character 锁，事件还没
-        # 落盘、view 更没保存 —— 正是 handler 修复前会挤进去的那段空隙。
+        # Simulate slow fsync: the live writer holds the per-character lock, but the event
+        # and view are not persisted yet, exactly where the old handler could intrude.
         parked.set()
         time.sleep(0.4)
         return real_write_line(path, line)
@@ -169,8 +169,8 @@ async def test_replayed_repair_survives_live_writer_inside_critical_section(tmp_
             await asyncio.wait_for(reconcile_task, timeout=30)
             assert await asyncio.wait_for(live_write, timeout=30) is True
         finally:
-            # 断言中途失败也别把协程/线程留在飞：放行卡住的 reconcile，
-            # 再把还没结束的 task 收干净，免得污染后续用例。
+            # Even an intermediate assertion failure must release paused reconcile so no coroutine/thread remains running,
+            # Then collect all unfinished tasks so subsequent cases are not contaminated.
             released.set()
             for task in pending:
                 if not task.done():
@@ -183,10 +183,10 @@ async def test_replayed_repair_survives_live_writer_inside_critical_section(tmp_
         "live write — this is the silent permanent data loss"
     )
     assert final["B"]["reinforcement"] == 3.0, "live signal on B was lost"
-    # 重放那条事件必须已经越过哨兵 —— 它不会再被重放，所以只要 A 的修复没落盘
-    # 就是永久丢失，而不是"下次开机重试"。哨兵的具体位置由谁最后写决定：live
-    # writer 在临界区里推到了自己那条（在 A 之后），重放侧发现哨兵已被推进就
-    # 冻结不回写（改从自己的已应用位置重扫到日志末尾，按日志顺序补完 A 和 B
-    # 那两条），两种情况下 A 都在哨兵之前。
+    # Replay must already have passed this event's sentinel: it cannot be replayed again, so an unpersisted A repair
+    # is permanently lost rather than retried next startup. The final writer determines sentinel position: the live
+    # writer advances it to its own event after A under the lock; replay detects this advancement and
+    # freezes without writing back, instead rescanning from its applied position through the log tail to apply A and B
+    # in log order. A precedes the sentinel in either case.
     remaining = [r.get("event_id") for r in ev.read_since(NAME, ev.read_sentinel(NAME))]
     assert event_id not in remaining, "A 的事件还在尾巴里，本用例的永久丢失前提不成立"

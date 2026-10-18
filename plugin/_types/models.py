@@ -1,5 +1,5 @@
 """
-Pydantic 模型定义：用于 API 请求/响应和核心数据结构。
+Pydantic model definitions for API requests/responses and core data structures.
 """
 from __future__ import annotations
 
@@ -40,35 +40,35 @@ class RunCreateResponse(BaseModel):
     expires_at: Optional[int] = None
 
 
-# 核心数据结构
+# Core data structures
 class PluginAuthor(BaseModel):
-    """插件作者信息"""
+    """Plugin author information"""
     name: Optional[str] = None
     email: Optional[str] = None
 
 
 class PluginDependency(BaseModel):
     """
-    插件依赖信息
+    Plugin dependency information
     
-    支持多种依赖方式：
-    1. 依赖特定插件ID：id = "plugin_id"
-    2. 依赖特定入口点：entry = "entry_id" 或 entry = "plugin_id:entry_id"（只能引用 @plugin_entry）
-    3. 依赖特定自定义事件：custom_event = "event_type:event_id" 或 custom_event = "plugin_id:event_type:event_id"（只能引用 @custom_event）
-    4. 依赖多个候选插件：providers = ["plugin1", "plugin2"]（任一满足即可）
+    Supports several dependency forms:
+    1. Depend on a specific plugin ID: id = \"plugin_id\"
+    2. Depend on a specific entry point: entry = \"entry_id\" or entry = \"plugin_id:entry_id\" (may reference only @plugin_entry)
+    3. Depend on a specific custom event: custom_event = \"event_type:event_id\" or custom_event = \"plugin_id:event_type:event_id\" (may reference only @custom_event)
+    4. Depend on multiple candidate plugins: providers = [\"plugin1\", \"plugin2\"] (any one is sufficient)
     
-    注意：
-    - id、entry、custom_event、providers 至少需要提供一个
-    - entry 和 custom_event 互斥（不能同时使用）
+    Notes:
+    - At least one of id, entry, custom_event, or providers is required
+    - entry and custom_event are mutually exclusive (cannot be used together)
     """
-    id: Optional[str] = None  # 依赖特定插件ID
-    entry: Optional[str] = None  # 依赖特定入口点（格式：entry_id 或 plugin_id:entry_id，只能引用 @plugin_entry）
-    custom_event: Optional[str] = None  # 依赖特定自定义事件（格式：event_type:event_id 或 plugin_id:event_type:event_id，只能引用 @custom_event）
-    providers: Optional[List[str]] = None  # 多个候选插件ID列表（任一满足即可）
+    id: Optional[str] = None  # Depend on a specific plugin ID
+    entry: Optional[str] = None  # Depend on a specific entry point (format: entry_id or plugin_id:entry_id; may reference only @plugin_entry)
+    custom_event: Optional[str] = None  # Depend on a specific custom event (format: event_type:event_id or plugin_id:event_type:event_id; may reference only @custom_event)
+    providers: Optional[List[str]] = None  # List of candidate plugin IDs (any one is sufficient)
     recommended: Optional[str] = None
     supported: Optional[str] = None
-    untested: Optional[str] = None  # 如果使用依赖配置，此字段是必须的
-    conflicts: Optional[Union[List[str], bool]] = None  # 可以是版本范围列表，或 true（表示冲突）
+    untested: Optional[str] = None  # This field is required when dependency configuration is used
+    conflicts: Optional[Union[List[str], bool]] = None  # May be a list of version ranges, or true (meaning conflict)
 
     @model_validator(mode="after")
     def validate_dependency_constraints(self) -> "PluginDependency":
@@ -78,7 +78,7 @@ class PluginDependency(BaseModel):
         if self.entry is not None and self.custom_event is not None:
             raise ValueError("entry 和 custom_event 不能同时使用")
 
-        # 简化冲突格式（conflicts=true）可不要求 untested
+        # Simplified conflict format (conflicts=true) does not require untested
         if self.conflicts is True:
             return self
         if self.untested is None:
@@ -125,14 +125,14 @@ class PluginUiSurfacesResponse(BaseModel):
 
 
 class PluginMeta(BaseModel):
-    """插件元数据"""
+    """Plugin metadata"""
     id: str
     name: str
     type: PluginType = "plugin"
     description: str = ""
-    short_description: str = ""  # 简短描述（<300字符），用于 agent 两阶段插件筛选
-    keywords: List[str] = Field(default_factory=list)  # 关键词正则表达式列表，用于快速匹配
-    passive: bool = False  # 被动插件（如弹幕监听、QQ 自动回复），不参与 agent 主动分派
+    short_description: str = ""  # Short description (<300 characters) for the agent's two-stage plugin selection
+    keywords: List[str] = Field(default_factory=list)  # List of keyword regular expressions for quick matching
+    passive: bool = False  # Passive plugins (such as danmaku listeners and QQ auto-replies) do not participate in active agent dispatch
     version: str = "0.1.0"
     sdk_version: str = SDK_VERSION
     sdk_recommended: Optional[str] = None
@@ -152,7 +152,7 @@ class PluginMeta(BaseModel):
 
 
 class HealthCheckResponse(BaseModel):
-    """健康检查响应"""
+    """Health check response"""
     alive: bool
     exitcode: Optional[int] = None
     pid: Optional[int] = None
@@ -160,20 +160,20 @@ class HealthCheckResponse(BaseModel):
     communication: Dict[str, Any]
 
 
-# 插件推送消息相关模型 — v2 schema 见 plugin/sdk/shared/core/push_message_schema.py
-# 已废弃字段（message_type / description / content / binary_data / binary_url /
+# Models related to plugin-pushed messages — v2 schema: plugin/sdk/shared/core/push_message_schema.py
+# Deprecated fields (message_type / description / content / binary_data / binary_url /
 # mime / delivery / reply / unsafe / fast_mode）
-# 在 v0.9 移除（见 docs/changelog）。模型本身不再做严格校验，host 端的
-# translate_push_message + proactive_bridge 是单一权威翻译/分发处。
+# Removed in v0.9 (see docs/changelog). The model no longer performs strict validation; host-side
+# translate_push_message + proactive_bridge are the single authoritative translation and dispatch path.
 
 
 class PluginPushMessageRequest(BaseModel):
-    """插件推送消息请求（v2 + v1 兼容）。
+    """Plugin-pushed message request (v2 + v1 compatibility).
 
-    v2 字段：visibility / ai_behavior / parts。
-    v1 字段（deprecated, removed in v0.9）：message_type / content /
+    v2 fields: visibility / ai_behavior / parts.
+    v1 fields (deprecated, removed in v0.9): message_type / content /
     binary_data / binary_url / mime / description / delivery / reply / unsafe /
-    fast_mode。两套字段同时存在以兼容旧调用方；权威翻译在
+    fast_mode. Both sets of fields coexist for compatibility with older callers; authoritative translation is in
     ``plugin.sdk.shared.core.push_message_schema``。
     """
 
@@ -206,7 +206,7 @@ class PluginPushMessageRequest(BaseModel):
 
 
 class PluginPushMessage(BaseModel):
-    """插件推送消息（主进程中的完整消息记录，v2 + v1 兼容字段并存）。"""
+    """Plugin-pushed message (full message record in the main process, with v2 and v1 compatibility fields side by side)."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -229,10 +229,10 @@ class PluginPushMessage(BaseModel):
     message_type: Optional[str] = None
     description: Optional[str] = None
     content: Optional[str] = None
-    # 通常是 None。push_message 曾经把 parts[].binary_base64 解回裸字节再挂一份
-    # 到这里，一张图因此要走两遍线（约 2.34x），256 KiB 的 payload 上限实际只兜得
-    # 住约 110 KiB 的图。那份副本已经去掉：现在只有"调用方同时传了 binary_data=
-    # 和显式 parts=" 这一种形态会填充本字段——那时它是唯一的载体。其余情况请读
+    # Usually None. push_message used to decode parts[].binary_base64 back into raw bytes and add another copy
+    # here, making an image travel over the wire twice (~2.34x); the 256 KiB payload cap then only allowed
+    # an image of about 110 KiB. That copy was removed: this field is now populated only in the single case where the caller passes both binary_data=
+    # and explicit parts= — then it is the only carrier. In other cases, read
     # parts[].binary_base64。
     binary_data: Optional[bytes] = None
     binary_url: Optional[str] = None
@@ -249,7 +249,7 @@ class PluginPushMessage(BaseModel):
 
 
 class PluginPushMessageResponse(BaseModel):
-    """推送消息响应"""
+    """Push-message response"""
     success: bool
     message_id: str
     received_at: str

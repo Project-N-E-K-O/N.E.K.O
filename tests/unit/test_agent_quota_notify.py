@@ -1,13 +1,13 @@
-"""免费版 Agent 配额耗尽 → 前端提示通知器的回归测试。
+"""Regression tests for frontend notifications when the free Agent quota is exhausted.
 
-锁住两件事：
-  1. 节流语义：配额耗尽信号在 `_quota_notify_interval_s` 窗口内最多触发一次回调，
-     过窗口后可再触发一次（对应"每 10 秒最多给一次提示"）。
-  2. 卡点接线：免费版配额耗尽时 `consume_agent_daily_quota` 会触发已注册的回调。
+Guard two properties:
+  1. Throttling: exhausted-quota signals invoke the callback at most once per `_quota_notify_interval_s` window,
+     then may invoke it again after that window (at most one notice every 10 seconds).
+  2. Gate wiring: `consume_agent_daily_quota` invokes the registered callback when the free quota is exhausted.
 
-历史背景：配额耗尽的"提示"原本走 app-agent.js 的 modal（maybeShowAgentQuotaExceededModal），
-依赖前端文本匹配人类可读短语；后端把信号退化成机器码 AGENT_QUOTA_EXCEEDED 后匹配不上、提示消失。
-现改为后端在唯一卡点直接按 code 触发节流通知 → status toast，不再依赖脆弱的文本匹配。
+Background: exhausted-quota notices originally used app-agent.js's modal (maybeShowAgentQuotaExceededModal),
+with frontend matching of human-readable phrases; after the backend switched to machine code AGENT_QUOTA_EXCEEDED, matching failed and notices vanished.
+Now the backend triggers throttled notifications directly by code at the single gate → status toast, avoiding fragile text matching.
 """
 
 from datetime import date
@@ -22,7 +22,7 @@ from utils.config_manager import ConfigManager
 
 @pytest.fixture(autouse=True)
 def _isolate_quota_notify_state():
-    """隔离类级节流/回调状态，避免测试间（以及与真实运行时）串扰。"""
+    """Isolate class-level throttle/callback state to prevent interference between tests or with real runtime."""
     saved_notifier = ConfigManager._quota_exceeded_notifier
     saved_last = ConfigManager._quota_notify_last_monotonic
     ConfigManager._quota_exceeded_notifier = None
@@ -35,16 +35,16 @@ def _isolate_quota_notify_state():
 
 
 def test_quota_notifier_throttled_to_one_per_interval():
-    """节流：窗口内连撞多次只通知 1 次；过窗口后再通知 1 次。"""
+    """Throttling: repeated hits within a window notify once; after the window, notify once again."""
     calls = []
     ConfigManager.register_quota_exceeded_notifier(lambda used, limit: calls.append((used, limit)))
-    cm = ConfigManager.__new__(ConfigManager)  # 只用到类级状态，无需 config_dir
+    cm = ConfigManager.__new__(ConfigManager)  # Only class-level state is used; config_dir is unnecessary
 
     for _ in range(5):
         cm._maybe_notify_quota_exceeded(300, 300)
     assert calls == [(300, 300)], "窗口内应只通知一次"
 
-    # 把"上次通知时间"推到节流窗口之外，模拟过了 interval
+    # Move the last-notification time outside the throttle window to simulate an elapsed interval
     ConfigManager._quota_notify_last_monotonic = time.monotonic() - (ConfigManager._quota_notify_interval_s + 1)
     cm._maybe_notify_quota_exceeded(300, 300)
     assert calls == [(300, 300), (300, 300)], "过窗口后应再通知一次"
@@ -54,23 +54,23 @@ def test_quota_notifier_throttled_to_one_per_interval():
 
 
 def test_quota_notifier_noop_without_registration():
-    """没注册回调时应安静返回、不抛错。"""
+    """Without a registered callback, return quietly without raising."""
     cm = ConfigManager.__new__(ConfigManager)
-    cm._maybe_notify_quota_exceeded(300, 300)  # 不应抛异常
+    cm._maybe_notify_quota_exceeded(300, 300)  # Must not raise
 
 
 def test_quota_notifier_swallows_callback_error():
-    """回调自身抛错不应冒泡到配额消费路径。"""
+    """Exceptions in the callback must not propagate into quota consumption."""
     def _boom(used, limit):
         raise RuntimeError("notifier boom")
 
     ConfigManager.register_quota_exceeded_notifier(_boom)
     cm = ConfigManager.__new__(ConfigManager)
-    cm._maybe_notify_quota_exceeded(300, 300)  # 不应抛异常
+    cm._maybe_notify_quota_exceeded(300, 300)  # Must not raise
 
 
 def test_consume_agent_daily_quota_triggers_notifier_on_exhaustion(tmp_path, monkeypatch):
-    """卡点回归：实际 Agent 模型为 free-agent-model 时配额耗尽，consume_agent_daily_quota 触发通知器一次。"""
+    """Gate regression: when the actual Agent model is free-agent-model and quota is exhausted, consume_agent_daily_quota invokes the notifier once."""
     calls = []
     ConfigManager.register_quota_exceeded_notifier(lambda used, limit: calls.append((used, limit)))
 
@@ -91,10 +91,10 @@ def test_consume_agent_daily_quota_triggers_notifier_on_exhaustion(tmp_path, mon
 
 
 def test_consume_non_free_agent_model_never_notifies(tmp_path, monkeypatch):
-    """实际 Agent 模型非 free-agent-model（自费/自定义）时不计配额、不通知（早退路径）。
+    """When the actual Agent model is not free-agent-model (paid/custom), do not count quota or notify (early-return path).
 
-    锁住本次修复点：哪怕 core/assist 仍是免费 provider，只要用户实际用的 agent model
-    是自费/自定义的，就不该再被这条免费试用配额拦截。
+    Guard this fix: even if core/assist still use a free provider, an actual agent model
+    that is paid/custom must not be blocked by this free-trial quota.
     """
     calls = []
     ConfigManager.register_quota_exceeded_notifier(lambda used, limit: calls.append((used, limit)))

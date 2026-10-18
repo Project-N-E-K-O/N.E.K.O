@@ -235,7 +235,7 @@ def _end_visits_disabled() -> None:
         from main_routers.visit_router import runtime as visit_runtime
 
         ended = visit_runtime.end_visits_disabled()
-    except Exception as exc:  # noqa: BLE001 - 设置已落盘：结束串门失败只记日志
+    except Exception as exc:  # noqa: BLE001 - Settings are persisted; only log failure to end visits.
         logger.error("visitEnabled switched off: ending live visits failed: %r", exc)
         return
     if ended:
@@ -261,7 +261,7 @@ def _apply_visit_voice(enabled: bool, revision: int) -> None:
         from main_routers.visit_router import runtime as visit_runtime
 
         visit_runtime.apply_voice_setting(enabled)
-    except Exception as exc:  # noqa: BLE001 - 设置已落盘：推给串门失败只记日志
+    except Exception as exc:  # noqa: BLE001 - Settings are persisted; only log failure to push to visits.
         logger.error("visitVoiceEnabled saved: applying to live visits failed: %r", exc)
 
 
@@ -299,38 +299,38 @@ async def save_preferences(request: Request):
         if not data:
             return {"success": False, "error": "无效的数据"}
         
-        # 验证偏好数据
+        # Validate preference data.
         if not validate_model_preferences(data):
             return {"success": False, "error": "偏好数据格式无效"}
         
-        # 防止使用保留的全局对话设置键作为模型路径
+        # Prevent reserved global conversation-setting keys from being used as model paths.
         if data.get('model_path') == GLOBAL_CONVERSATION_KEY:
             return {"success": False, "error": "model_path 不能使用保留键"}
         
-        # 获取参数（可选）
+        # Get optional parameters.
         parameters = data.get('parameters')
-        # 获取显示器信息（可选，用于多屏幕位置恢复）
+        # Get optional monitor information for multi-monitor position restoration.
         display = data.get('display')
-        # 获取旋转信息（可选，用于VRM模型朝向）
+        # Get optional rotation information for VRM model orientation.
         rotation = data.get('rotation')
-        # 获取视口信息（可选，用于跨分辨率位置和缩放归一化）
+        # Get optional viewport information for position/scale normalization across resolutions.
         viewport = data.get('viewport')
-        # 获取相机位置信息（可选，用于恢复VRM滚轮缩放状态）
+        # Get optional camera position for restoring VRM scroll-wheel zoom.
         camera_position = data.get('camera_position')
 
-        # 验证和清理 viewport 数据
+        # Validate and clean viewport data.
         if viewport is not None:
             if not isinstance(viewport, dict):
                 viewport = None
             else:
-                # 验证必需的数值字段
+                # Validate required numeric fields.
                 width = viewport.get('width')
                 height = viewport.get('height')
                 if not (isinstance(width, (int, float)) and isinstance(height, (int, float)) and
                         width > 0 and height > 0):
                     viewport = None
 
-        # 更新偏好（底层 atomic_write_json 会阻塞事件循环，offload 到线程池）
+        # Update preferences; offload blocking atomic_write_json to the thread pool.
         ok = await asyncio.to_thread(
             update_model_preferences,
             data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport, camera_position,
@@ -375,19 +375,19 @@ async def get_conversation_settings(response: Response):
     control/experiment mismatches between client and server.
     """
     try:
-        # 先解析 telemetry branch、再 load settings：get_telemetry_branch 可能在 slow
-        # path 触发退役实验（proactive_interval_20s）的一次性偏好回滚（20s→15s）。若按
-        # 旧顺序先 load，会拿到回滚前的 20s 返回前端；而存量用户没有首启 pending marker、
-        # 会直接应用并经 periodic sync 把 20s POST 回来，撤销本次迁移（见 token_tracker
+        # Resolve telemetry branch before loading settings: get_telemetry_branch's slow path may perform
+        # the retired proactive_interval_20s experiment's one-time rollback from 20 s to 15 s. Loading first
+        # returns the old 20 s to existing users, who lack a first-launch pending marker and would immediately apply it,
+        # then POST it back through periodic sync, undoing migration (see token_tracker).
         # ._rollback_retired_proactive_interval）。
         try:
             from utils.token_tracker import get_telemetry_branch
             telemetry_branch = await asyncio.to_thread(get_telemetry_branch)
         except Exception:
-            # 故意返回 None：前端只在 telemetryBranch 是字符串时清掉首启 pending
-            # marker；如果这里 fallback 到 "main"，瞬时报错会被当成「控制组分流
-            # 已决议」永久锁住，下次也不会重试。返 None 让前端保留 pending、
-            # 下次 fetch 成功再决议
+            # Intentionally return None: frontend clears first-launch pending only when telemetryBranch is a string.
+            # Falling back to "main" would permanently treat a transient failure as a finalized control-group
+            # assignment without retry. Returning None preserves pending,
+            # allowing the next successful fetch to finalize assignment.
             logger.exception("解析 telemetry branch 失败，返回 null 让前端保留 pending marker")
             telemetry_branch = None
         snapshot = await aload_global_conversation_settings_snapshot()
@@ -477,16 +477,16 @@ async def save_conversation_settings(request: Request):
                 },
             )
 
-        # 串门开关：只在这次保存把它从开改成关时结束正在进行的串门（§3.7.6）。默认就是关，
-        # 不能因为别的设置项随手一存就把串门掐掉；前后值取自同一把锁里的那次写入，
-        # 并发保存之间不会漏判
+        # Visit switch: end active visits only when this save changes on to off (section 3.7.6). Off is the default,
+        # so saving unrelated settings must not terminate visits. Read old/new values from the same locked write
+        # to avoid missed transitions between concurrent saves.
         if (
             result.previous is not None
             and result.previous.settings.get("visitEnabled") is True
             and result.snapshot.settings.get("visitEnabled") is False
         ):
             _end_visits_disabled()
-        # 串门语音：中途切换从下一句生效（§3.7.6），由这里推给正在进行的串门
+        # Visit voice changes take effect next sentence (section 3.7.6); push them from here to active visits.
         saved_voice = result.snapshot.settings.get("visitVoiceEnabled")
         if (
             result.previous is not None

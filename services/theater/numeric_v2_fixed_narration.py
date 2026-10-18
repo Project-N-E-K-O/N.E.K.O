@@ -138,7 +138,7 @@ def actor_note(node: Mapping[str, Any], session: Any, binding: Mapping[str, Any]
         if item["trigger"]["type"] == "entry":
             lines.append("入幕固定旁白：" + render_text(item["text"], _bindings(binding, known)))
         else:
-            # Actor 不选择片段或结算依赖；只接收实际触发条件，避免内部编号进入可见旁白。
+            # Actor selects neither fragments nor settlement dependencies; supply only actual triggers to keep internal IDs out of visible narration.
             lines.append(f"待展示原文的触发条件：{project_condition(item['trigger']['condition'])}。不得替玩家执行触发动作。")
             if "player_handoff_required" in item["trigger"]:
                 lines.append("此条件必须有玩家实际递交。" if item["trigger"]["player_handoff_required"] else
@@ -156,7 +156,7 @@ def review_candidates(node: Mapping[str, Any], session: Any) -> list[dict[str, A
 
 
 def _actor_receive_requires_handoff(condition: str) -> bool:
-    """只对明确写成猫娘接收/持有的条件增加交接方向门槛。"""  # noqa: DOCSTRING_CJK
+    """Add a directional handover gate only to conditions explicitly requiring catgirl receipt/possession."""  # noqa: DOCSTRING_CJK
 
     return any(marker in str(condition or "") for marker in _ACTOR_RECEIVE_MARKERS)
 
@@ -189,10 +189,10 @@ def apply_triggers(node: Mapping[str, Any], session: Any, performance: Mapping[s
         trigger = (definition or {}).get("trigger", {})
         condition = str(trigger.get("condition") or "")
         requires_handoff = trigger.get("player_handoff_required", _actor_receive_requires_handoff(condition))
-        # 显式触碰条件可不要求递交，但引用实际写成接收动作时仍保留交接保护。
+        # Explicit touching conditions need not require handover, but actual receiving actions retain handover protection.
         if requires_handoff or ("player_handoff_required" in trigger and _actor_receive_requires_handoff(evidence)):
-            # 候选正文自称“接过/收到”不能证明交接已经发生；必须有玩家明确递交，
-            # 或历史中已有该证据。这样保留“玩家递出→猫娘接收”，拦住“玩家拿起→猫娘接收”。
+            # Candidate narration claiming receipt cannot prove a handover occurred: require explicit player delivery
+            # or historical evidence. Allow player-offers -> catgirl-receives, but block player-picks-up -> catgirl-receives.
             historical_text = "\n".join(
                 row["text"] for row in performance_history_records(session)
                 if isinstance(row, Mapping) and isinstance(row.get("text"), str)

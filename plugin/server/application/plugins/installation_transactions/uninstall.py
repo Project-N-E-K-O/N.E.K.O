@@ -658,8 +658,8 @@ def _stage_plugin_code_sync(plugin_dir: Path) -> _StagedPluginCode:
 
 
 def _restore_staged_plugin_code_sync(staged: _StagedPluginCode) -> None:
-    # staged 只在挪走成功后才存在，暂存目录没了就是旧代码回不来了，必须报失败，
-    # 否则回滚会被记成"源码已恢复"。清理照做，最后再抛。
+    # staged exists only after a successful move; missing staging means old code cannot be restored and must fail,
+    # or rollback falsely records source restoration. Still clean up, then raise.
     staged_missing = not staged.staged_dir.exists()
     if not staged_missing:
         staged.staged_dir.replace(staged.original_dir)
@@ -919,9 +919,9 @@ def _registry_failure_matches_target(
 async def _refresh_registry(
     target: _RegistryRefreshTarget,
 ) -> dict[str, object]:
-    # 这里原本要先显式清一次元数据扫描缓存，因为缓存键只看得见插件目录内部、
-    # 看不到共享 vendor/ 或装进 site-packages 的包。缓存没有了，刷新每次都重读
-    # 盘面，所以直接刷新即可。
+    # This previously cleared metadata scan cache explicitly because cache keys saw only plugin-directory contents,
+    # not shared vendor/ or site-packages dependencies. With caching removed, every refresh rereads
+    # disk state, so refresh directly.
     result = await plugin_registry_service.refresh_registry()
     failed = result.get("failed")
     if isinstance(failed, list) and any(
@@ -1158,21 +1158,21 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         restored_builtin = bool(
             restored_meta and restored_meta.get("effective_source") == "builtin"
         )
-        # 卸载之后那条待批准记录一定是过时的：它是为被卸掉的那份代码记的。
-        # 留着的话，恢复出来的内置插件（用户原本就在自启）会被它继续拦下来；
-        # 插件被整个移除时，它也会挂在这个 id 上等着误伤将来的重装（codex）。
+        # After uninstall, pending approval is necessarily stale because it referred to removed code.
+        # Retaining it keeps blocking the restored built-in plugin that the user already autostarted;
+        # if the plugin is removed entirely, it remains on the ID and wrongly blocks future reinstalls (codex).
         #
-        # 但清之前要记下原状态：这一步之后还有预提交步骤会失败，而
-        # _rollback_precommit 会把插件文件和偏好都恢复回去，却不知道批准位被动过。
-        # 一个从没被启动过的新插件在那种回滚之后会变成"已批准"，下次开机直接自启
-        # （codex）。所以下面的 except 分支要把它放回去。
+        # Record the old state before clearing: subsequent precommit steps can fail,
+        # and _rollback_precommit restores plugin files/preferences without knowing the approval bit changed.
+        # A never-started new plugin would then become approved after rollback and autostart next launch
+        # (codex), so restore it in the except branch below.
         autostart_was_pending = not await asyncio.to_thread(
             is_autostart_approved, plugin_id
         )
         if not await asyncio.to_thread(clear_autostart_pending, plugin_id):
-            # 清不掉就不能报成功。盘上那条旧记录会继续拦住恢复出来的内置插件，
-            # 而且同 id 的重装还会继承它（coderabbit）。抛出去交给既有的预提交
-            # 回滚，把卸载恢复回去，比留下一个说不清的状态好。
+            # Failure to clear means failure overall. The old disk record keeps blocking the restored built-in plugin,
+            # and same-ID reinstalls inherit it too (coderabbit). Raise into the existing precommit
+            # rollback to restore the uninstall rather than leave ambiguous state.
             raise UninstallPluginError(
                 code="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
                 message=(
@@ -1208,21 +1208,21 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             registry_target=registry_target,
         )
         if not rollback.source_restored:
-            # 旧源码没能原样恢复，恢复许可不能留给盘上剩下的东西。只看插件
-            # 自己的源码；包配置目录没恢复好不改变盘上是哪份代码。
+            # If original source cannot be restored exactly, recovery permission must not cover whatever remains on disk. Check only
+            # plugin source; incomplete package-config restoration does not change which code is present.
             from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
 
             revoke_hot_reload_recovery(plugin_id)
         if autostart_was_pending and await asyncio.to_thread(plugin_dir.exists):
-            # 回滚把插件文件放回去了，那条待批准记录也得跟着回去。少了它，一个
-            # 用户从没启动过的插件在一次失败的卸载之后变成"已批准"，下次开机自己
-            # 跑起来（codex）。和别处同一条判据：看盘不看意图——代码真的没了就
-            # 别补记录，否则将来占用这个 id 的插件会被它误伤。
+            # When rollback restores plugin files, restore pending approval too. Otherwise a plugin the user
+            # never started becomes approved after a failed uninstall and automatically
+            # runs next launch (codex). Apply the shared criterion: inspect disk, not intent; if code really is gone,
+            # do not restore a record that would wrongly block a future plugin using this ID.
             if not await asyncio.to_thread(mark_autostart_pending, plugin_id):
-                # 改抛会把真正的失败原因换掉，所以这里不抛；但也不能只写日志——
-                # 补偿失败要跟着回滚结果一起交出去，和 preference_rollback 同一个
-                # 形状（coderabbit）。coderabbit 还要求「持久化一条可恢复的阻止
-                # 状态」，那一半我没做：能持久化的只有刚刚写失败的那个存储。
+                # Reraising would replace the real failure reason, so do not raise here; logging alone is also insufficient.
+                # Return compensation failure with rollback results, matching preference_rollback's
+                # shape (coderabbit). Its additional request to persist recoverable blocking
+                # state is not implemented: the only available persistence store just failed to write.
                 autostart_gate_rollback = "incomplete"
                 logger.error(
                     "uninstall rollback restored plugin {} but could not restore "
@@ -1283,8 +1283,8 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     # here on are reported, never presented as a rolled-back uninstall. ----
     from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
 
-    # 没在跑的插件不会走 stop_plugin；恢复许可要在提交后撤销，否则会被恢复的
-    # 同 ID 内置插件或之后重装的包继承。回滚则保留：旧源码原样回来了。
+    # Stopped plugins do not pass through stop_plugin; revoke recovery permission after commit so restored
+    # same-ID built-ins or reinstalls cannot inherit it. Keep it on rollback, which restores the original source exactly.
     revoke_hot_reload_recovery(plugin_id)
     runtime_restart: RuntimeRestart = "not_needed"
     runtime_restart_error: dict[str, str] | None = None

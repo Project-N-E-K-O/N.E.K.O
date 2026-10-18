@@ -468,7 +468,7 @@ proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{m
 """
 
 # ======
-# ====== 新增：个人动态专属 Prompt ======
+# ====== Added: personal-update prompts ======
 # ======
 
 proactive_chat_prompt_personal = """你是{lanlan_name}，现在看到了一些你关注的UP主或博主的最新动态。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些内容。
@@ -928,7 +928,7 @@ proactive_chat_rewrite_prompt_ru = """Вы - специалист по очис�
 Верните только очищенный текст без каких-либо дополнительных пояснений."""
 
 # ======
-# ====== 新增：音乐专属 Prompt ======
+# ====== Added: music prompts ======
 # ======
 
 proactive_chat_prompt_music = """你是{lanlan_name}，现在{master_name}可能想听音乐了。请根据与{master_name}的对话历史和当前的对话内容，判断是否要为{master_name}播放音乐。
@@ -1059,18 +1059,18 @@ proactive_chat_prompt_music_ru = """Вы - {lanlan_name}, и {master_name}, во
 
 
 # ======
-# Phase 1: Screening Prompts — 筛选阶段 prompt（不生成搭话，只筛选话题）
+# Phase 1 screening selects topics without generating conversation.
 # ======
 #
-# 视觉通道：不需要 Phase 1 LLM 调用。
-# analyze_screenshot_from_data_url 已使用"图像描述助手"prompt 生成 250 字描述，
-# 直接作为 topic_summary 传入 Phase 2。
+# Vision needs no Phase-1 LLM call.
+# analyze_screenshot_from_data_url already creates 250-character image descriptions;
+# pass directly as Phase-2 topic_summary.
 #
-# Web 通道：合并所有文本源，让 LLM 选出最佳话题并保留原始来源信息和链接。
+# Web merges text sources for LLM topic selection while preserving source metadata/links.
 
 
-# 注意： ======开头的内容中包含安全水印，不要修改。
-# --- Phase 1 Web Screening (文本源合并筛选) ---
+# Content beginning ====== includes security watermarks; never change them.
+# --- Phase-1 merged text-source screening ---
 
 proactive_screen_web_zh = """你是一个面向年轻人的话题筛选助手。从下面汇总的多源内容中，选出1个最适合和朋友闲聊的话题。
 
@@ -1272,7 +1272,7 @@ proactive_screen_web_ru = """Вы - куратор тем для молодой 
 
 
 # ======
-# Phase 2: Generation Prompt — 生成阶段 prompt（用完整人设 + 话题生成搭话）
+# Phase-2 generation uses full persona plus topics to produce proactive dialogue.
 # ======
 
 proactive_generate_zh = """你的人设：
@@ -2251,7 +2251,7 @@ PROACTIVE_GENERATE_PROMPTS = {
     "pt": proactive_generate_pt,
 }
 
-# Phase 2 动态注入：音乐/表情包行为指令（仅在对应来源可用时注入，避免幻觉）
+# Inject music/meme behavior only when corresponding sources exist, avoiding hallucination.
 # Music/meme instructions are slotted directly after source_instruction
 # in the prompt template (no separating newline in the template), so each
 # value carries its own leading "\n" when present and resolves to "" when
@@ -2469,8 +2469,8 @@ def get_proactive_chat_rewrite_prompt(lang: str = "zh") -> str:
 
 
 # ======
-# Unified Phase 1 Prompt — 合并 web筛选 + music关键词 + meme关键词
-# 分段存储，由 build_unified_phase1_prompt() 动态拼接
+# Unified Phase 1 combines web screening with music/meme keywords.
+# Store segments separately and assemble dynamically in build_unified_phase1_prompt().
 # ======
 
 _UNIFIED_P1_HEADER = {
@@ -3070,7 +3070,7 @@ def build_unified_phase1_prompt(
     def _get(table: dict, key: str = lang_key) -> str:
         return table.get(key, table.get("en", table["zh"]))
 
-    # --- 头部 ---
+    # --- Header ---
     parts = [
         _get(_UNIFIED_P1_HEADER).format(
             memory_context=memory_context,
@@ -3078,7 +3078,7 @@ def build_unified_phase1_prompt(
         )
     ]
 
-    # --- 收集启用的 section 和对应格式 ---
+    # --- Collect enabled sections and their formats ---
     format_parts = []
     fmt = _get(_UNIFIED_P1_FORMAT)
 
@@ -3104,7 +3104,7 @@ def build_unified_phase1_prompt(
         parts.append(_get(_UNIFIED_P1_MEME_SECTION))
         format_parts.append(fmt["meme"])
 
-    # --- 尾部 ---
+    # --- Footer ---
     if format_parts:
         format_instructions = "\n\n".join(format_parts)
         parts.append(
@@ -3150,7 +3150,7 @@ def get_proactive_generate_prompt(
         lang_key, PROACTIVE_GENERATE_PROMPTS.get("en", PROACTIVE_GENERATE_PROMPTS["zh"])
     )
 
-    # 动态注入音乐/表情包行为指令
+    # Inject music/meme behavior dynamically.
     music_instr = (
         _P2_MUSIC_INSTRUCTION.get(
             lang_key, _P2_MUSIC_INSTRUCTION.get("en", _P2_MUSIC_INSTRUCTION["zh"])
@@ -3165,12 +3165,12 @@ def get_proactive_generate_prompt(
         if has_meme
         else ""
     )
-    # meme_instr 含 {master} 占位符，需要在拼回外层 prompt 之前展开掉。否则它会
-    # 流到 main_routers/system_router.py 的整体 .format(master_name=..., ...) 那里，
-    # 而那一步只传 master_name 不传 master，会触发 KeyError。
-    # master_name 含 `{` / `}`（异常但合法的用户输入，例如 "A{B}"）时必须先转义，
-    # 否则第一次 .format 把字面量 `{B}` 注进 meme_instr，外层 .format 会再次解析
-    # 这个字面量并报 KeyError。Codex review #1043 r3164599879 抓的就是这条。
+    # Expand meme_instr's {master} before rejoining the outer prompt; otherwise
+    # system_router's outer .format(master_name=...,...) sees it,
+    # provides no master argument, and raises KeyError.
+    # Escape braces in master_name first; unusual but valid A{B}
+    # would otherwise inject literal {B} through first formatting, then outer formatting
+    # parses it again and raises KeyError (Codex #1043 r3164599879).
     if meme_instr:
         master_value = _escape_format_braces(
             _resolve_master_for_template(master_name, lang_key)
@@ -3181,7 +3181,7 @@ def get_proactive_generate_prompt(
     )
 
     if music_playing_hint:
-        # 将提示注入到 prompt 末尾，确保 AI 能看到
+        # Append hints at prompt end so the AI sees them.
         prompt += f"\n\n{music_playing_hint}"
     return prompt
 
@@ -3207,7 +3207,7 @@ def get_proactive_format_sections(
     """
     lang_key = _normalize_prompt_language(lang)
 
-    # ── i18n 素材片段 ──────────────────────────────────────────────
+    # -- i18n material fragments --
     _material_labels = {
         "zh": {
             "screen": "屏幕内容",
@@ -3292,7 +3292,7 @@ def get_proactive_format_sections(
         "pt": "- Você pode iniciar uma conversa naturalmente com base no histórico e no estado atual, mas pule se vocês falaram recentemente de algo parecido ou se não houver nada a dizer",
     }
 
-    # ── 动态拼接 source_instruction ────────────────────────────────
+    # -- Dynamically assemble source_instruction --
     labels = _material_labels.get(lang_key, _material_labels["en"])
     available = []
     if has_screen:
@@ -3307,8 +3307,8 @@ def get_proactive_format_sections(
     if available:
         joiner = {
             "zh": "、",
-            # 顿号也适用繁中：这里跟着 _material_labels 的 zh-TW 行一起补，
-            # 否则等调用点改传全码后，繁中素材会用西文逗号拼起来。
+            # Enumeration commas apply to Traditional Chinese too; update with _material_labels zh-TW,
+            # avoiding Western commas once callers supply full locale codes.
             "zh-TW": "、",
             "ja": "、",
             "ko": ", ",
@@ -3324,10 +3324,10 @@ def get_proactive_format_sections(
     else:
         source_instruction = _none_instruction.get(lang_key, _none_instruction["en"])
 
-    # ── 动态拼接 output_format_section ─────────────────────────────
+    # -- Dynamically assemble output_format_section --
     #
-    # 可用 tag = 固定([CHAT], [PASS]) + 按需([WEB], [MUSIC], [MEME])
-    # [CHAT] 始终存在：无副作用的纯文字聊天
+    # Available tags: fixed [CHAT]/[PASS], plus optional [WEB]/[MUSIC]/[MEME].
+    # [CHAT] always exists for side-effect-free plain text.
 
     _tag_desc = {
         "zh": {
@@ -3453,7 +3453,7 @@ def get_proactive_format_sections(
         "pt": "Se não houver nada adequado para mencionar, responda [PASS].\nCaso contrário, escreva diretamente sua mensagem (sem tag de fonte).",
     }
 
-    # 确定哪些"有副作用"的 tag 可用
+    # Determine available side-effect tags.
     effect_tags = []
     if has_web:
         effect_tags.append("WEB")
@@ -3463,14 +3463,14 @@ def get_proactive_format_sections(
         effect_tags.append("MEME")
 
     if effect_tags:
-        # 有副作用 tag 时：[CHAT] + 各有副作用 tag + [PASS]
+        # With side effects: [CHAT], each side-effect tag, then [PASS].
         td = _tag_desc.get(lang_key, _tag_desc["en"])
         header = _of_header.get(lang_key, _of_header["en"])
         tag_lines = [f"  {td['CHAT']}"]
         for t in effect_tags:
             tag_lines.append(f"  {td[t]}")
 
-        # 选一个有副作用的 tag 作为示例（优先 MEME > MUSIC > WEB，后添加的优先）
+        # Pick one side-effect example, priority MEME>MUSIC>WEB, later additions first.
         example_tag = effect_tags[-1]
         examples = _of_example.get(lang_key, _of_example["en"])
         example_text = examples.get(example_tag, examples["CHAT"])
@@ -3479,7 +3479,7 @@ def get_proactive_format_sections(
             header + "\n" + "\n".join(tag_lines) + "\n\n" + example_text
         )
     else:
-        # 完全没有副作用 tag：不需要标签系统
+        # Without side-effect tags, no tag system is needed.
         output_format_section = _of_none.get(lang_key, _of_none["en"])
 
     return source_instruction, output_format_section
@@ -3508,7 +3508,7 @@ SCREEN_WINDOW_TITLE = {
     "pt": "Janela ativa: {window}\n",
 }
 
-# ---------- 截图提示 ----------
+# ---------- Screenshot hints ----------
 SCREEN_IMG_HINT = {
     "zh": "（上方附有{master}当前的屏幕截图，请直接观察截图内容来搭话）",
     "zh-TW": "（上面附了{master}目前的螢幕截圖，請直接看截圖的內容來搭話）",
@@ -3520,7 +3520,7 @@ SCREEN_IMG_HINT = {
     "pt": "(A captura de tela atual de {master} está anexada acima; observe-a diretamente)",
 }
 
-# ---------- 触发 LLM 开始生成 ----------
+# ---------- Trigger LLM generation ----------
 BEGIN_GENERATE = {
     "zh": "======请开始======",
     "zh-TW": "======請開始======",
@@ -3532,7 +3532,7 @@ BEGIN_GENERATE = {
     "pt": "======Início======",
 }
 
-# ---------- 近期搭话记录注入 ----------
+# ---------- Recent proactive-history injection ----------
 RECENT_PROACTIVE_CHATS_HEADER = {
     "zh": "======以下为近期搭话记录（你应该避免雷同；想不到新切入点就必须 [PASS]）======\n以下是你最近主动搭话时说过的话。新的搭话务必避免与这些内容雷同（包括话题、句式和语气）。如果只能想到相似内容，必须输出 [PASS]：",
     "zh-TW": "======以下為近期搭話紀錄（你應該避免雷同；想不到新切入點就必須 [PASS]）======\n以下是你最近主動搭話時說過的話。新的搭話務必避免跟這些內容雷同（包括話題、句式和語氣）。如果只想得到相似的內容，就必須輸出 [PASS]：",
@@ -3555,7 +3555,7 @@ RECENT_PROACTIVE_CHATS_FOOTER = {
     "pt": "======Acima estão os chats proativos recentes (NÃO repita; use [PASS] para conteúdo similar) ======",
 }
 
-# ---------- 近期搭话时间/来源标签 ----------
+# ---------- Recent proactive time/source labels ----------
 RECENT_PROACTIVE_TIME_LABELS = {
     "zh": {0: "刚刚", "m": "{}分钟前", "h": "{}小时前"},
     "zh-TW": {0: "剛剛", "m": "{}分鐘前", "h": "{}小時前"},
@@ -3578,7 +3578,7 @@ RECENT_PROACTIVE_CHANNEL_LABELS = {
     "pt": {"vision": "tela", "web": "web"},
 }
 
-# ---------- 屏幕区块 ----------
+# ---------- Screen block ----------
 SCREEN_SECTION_HEADER = {
     "zh": "======以下为{master}的屏幕======",
     "zh-TW": "======以下為{master}的螢幕======",
@@ -3601,7 +3601,7 @@ SCREEN_SECTION_FOOTER = {
     "pt": "======Acima está a tela de {master}======",
 }
 
-# ---------- 网络话题区块 ----------
+# ---------- Web-topic block ----------
 # Header is bare-marker only, matching the screen / music / meme sections.
 # The earlier preamble ("你注意到一个有趣的话题：") was a holdover from
 # when this was the dominant external channel and needed narrative framing;
@@ -3634,7 +3634,7 @@ EXTERNAL_TOPIC_FOOTER = {
     "pt": "======Acima está o tema web======",
 }
 
-# ---------- 音乐推荐素材区块 ----------
+# ---------- Music recommendation materials ----------
 MUSIC_SECTION_HEADER = {
     "zh": "======以下为音乐推荐素材======",
     "zh-TW": "======以下為音樂推薦素材======",
@@ -3657,7 +3657,7 @@ MUSIC_SECTION_FOOTER = {
     "pt": "======Acima estão as recomendações musicais======",
 }
 
-# ---------- 表情包素材区块 ----------
+# ---------- Meme materials ----------
 MEME_SECTION_HEADER = {
     "zh": "======以下为表情包素材======",
     "zh-TW": "======以下為梗圖素材======",
@@ -3680,11 +3680,11 @@ MEME_SECTION_FOOTER = {
     "pt": "======Acima está o material de meme======",
 }
 
-# ---------- 表情包话题描述 ----------
-# 抓取源（尤其国内站）常常没返回有意义的标题，title 退化成占位符 "表情包_N"，
-# 模型完全不知道这张图是关于什么的梗。LLM 当初搜图用的 keyword（如"开心猫咪"）
-# 才是对图片内容/情绪的描述，必须带进话题里，模型才能"利用图片情绪表达"。
-# keyword 为空（fallback 随机热词，无法对应具体描述）时退回不带 keyword 的措辞。
+# ---------- Meme-topic description ----------
+# Sources, especially domestic sites, often lack meaningful titles, returning placeholders like 表情包_N,
+# leaving models unaware of the meme. Search keywords such as 开心猫咪
+# describe image content/emotion and must enter topics so models can express emotion through images.
+# Empty keywords from random-trend fallback cannot describe images; use keyword-free wording.
 MEME_TOPIC_WITH_KEYWORD = {
     "zh": "发现一个关于「{keyword}」的[表情包]：'{title}'（来自 {source}）",
     "zh-TW": "發現一張關於「{keyword}」的[梗圖]：'{title}'（來自 {source}）",
@@ -3717,7 +3717,7 @@ def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> 
     happened to land in -- see the module note above ``_normalize_prompt_language``.
     """
     lang_key = _normalize_prompt_language(lang)
-    # 先归一化空白：纯空白关键词（"   "）应视为无关键词，否则会误走带关键词模板。
+    # Normalize whitespace first: whitespace-only keywords count as absent, avoiding keyword-template misuse.
     normalized_keyword = " ".join((keyword or "").split())
     if normalized_keyword:
         return _loc(MEME_TOPIC_WITH_KEYWORD, lang_key).format(
@@ -3725,7 +3725,7 @@ def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> 
         )
     return _loc(MEME_TOPIC_NO_KEYWORD, lang_key).format(title=title, source=source)
 
-# ---------- Realtime 语音模式主动搭话文本触发（无视觉） ----------
+# ---------- Realtime-voice proactive text trigger without vision ----------
 REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS = {
     "zh": (
         "======主动搭话触发======\n"
@@ -3778,7 +3778,7 @@ REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS = {
 }
 
 
-# ---------- Realtime 语音模式主动搭话文本触发（带视觉） ----------
+# ---------- Realtime-voice proactive text trigger with vision ----------
 REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS = {
     "zh": (
         "======屏幕主动搭话触发======\n"
@@ -3827,7 +3827,7 @@ REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS = {
 }
 
 
-# ---------- 主动搭话信息源标签 ----------
+# ---------- Proactive information-source labels ----------
 PROACTIVE_SOURCE_LABELS = {
     "zh": {
         "news": "热议话题",
@@ -3911,15 +3911,15 @@ PROACTIVE_SOURCE_LABELS = {
     },
 }
 
-# ---------- Mini-game 邀请短路文案 ----------
-# proactive_chat 在 propensity / skip_probability / restricted_screen_only 全过
-# 之后短路成"邀请玩家来玩小游戏"，跳过 Phase 1/2 LLM。文案保持单句、轻量、
-# 不预设玩家答应；称呼用 master_name 实名，不用"主人"等物化称呼。1h+10 chats
-# cooldown 在 main_routers.system_router 那侧管理，与文案解耦。
+# ---------- Mini-game shortcut invitation wording ----------
+# After propensity/skip_probability/restricted_screen_only gates pass,
+# proactive_chat shortcuts to game invitations, skipping Phase 1/2. Keep one lightweight sentence,
+# never presume acceptance; use actual master_name rather than objectifying owner labels. One-hour-plus-ten-chat
+# cooldown belongs to main_routers.system_router, independent of wording.
 #
-# 多游戏接口契约：外层 key 是 game_type（与 config.MINI_GAME_INVITE_AVAILABLE_GAMES
-# 对齐），内层是各支持 locale 的句子。新接 mini-game 时往这里加一个新外层
-# key 即可，short-circuit 分发逻辑无须改动。
+# Multigame contract: outer game_type keys match config.MINI_GAME_INVITE_AVAILABLE_GAMES,
+# inner keys hold supported-locale lines. New games require another outer
+# key only, without shortcut-dispatch changes.
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     "watch-together": {
         "zh": "{master_name}，要不要选个视频和我一起看？",
@@ -3943,7 +3943,7 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     },
     "badminton": {
         "zh": "{master_name}，要不要现在来一局羽毛球挑战？",
-        # 台湾惯用「羽球」而非「羽毛球」——这不是字形转换，是词汇选择。
+        # Taiwan prefers 羽球 over 羽毛球: lexical choice, not script conversion.
         "zh-TW": "{master_name}，要不要現在來一局羽球挑戰？",
         "en": "{master_name}, want to try a quick badminton rally challenge with me?",
         "ja": "{master_name}、今ちょっとバドミントンチャレンジやらない？",
@@ -3974,11 +3974,11 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     },
 }
 
-# ---------- Mini-game 邀请三选项按钮 ----------
-# choice 是 wire-format 标识符（accept/decline/later），不进 UI；UI label 由
-# MINI_GAME_INVITE_OPTION_LABELS 按 locale 渲染。前端 ChoicePrompt 组件读
-# label 直接展示，点击发 ``choice`` 给 endpoint。文案设计：accept 热情但不
-# 过度、decline 客气不冷漠、later 自然不催促，三者语义清晰互不重叠。
+# ---------- Three mini-game invitation buttons ----------
+# choice is a wire identifier (accept/decline/later), not UI text; render labels through
+# MINI_GAME_INVITE_OPTION_LABELS locales. Frontend ChoicePrompt displays
+# label and submits choice. Acceptance is enthusiastic but restrained,
+# refusal polite but warm, and later unhurried; meanings remain distinct.
 MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
     "zh": {
         "accept": "来一局！",
@@ -3988,7 +3988,7 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
     "zh-TW": {
         "accept": "來一局！",
         "decline": "現在不想玩",
-        # 「等一会儿」的台湾口语说法是「等一下」，不是「等一會兒」。
+        # Taiwan colloquial wait-a-moment is 等一下 rather than 等一會兒.
         "later": "等一下",
     },
     "en": {
@@ -4023,34 +4023,34 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
     },
 }
 
-# ---------- Mini-game 邀请回应关键词（文本兜底匹配）----------
-# 用户没点按钮、自己打字时（"好啊"/"不要"/"晚点说"），后端 message handler 入口
-# 扫一遍这份关键词表：命中即触发对应 action（accept / decline / later），不吃掉
-# 用户消息（继续走普通 chat 流水线）。
+# ---------- Invitation response keywords, text fallback ----------
+# Typed responses such as 好啊/不要/晚点说 instead of buttons are scanned at
+# backend message-handler entry; matches trigger accept/decline/later without consuming
+# user messages, which continue ordinary chat processing.
 #
-# 匹配规则：消息**全文小写后包含任一关键词**视为命中；ASCII / Cyrillic 走
-# word-boundary regex 防 'yes' 命中 'yesterday'；CJK / Hiragana / Katakana /
-# Hangul 走 substring（无 word boundary）。多类同时命中按优先级
-# **decline > later > accept**（含明确 negation 必判 decline，"好的等下" 含
-# accept + later 关键词时判 later——别立刻开游戏）。匹配在
-# main_routers.system_router 的 helper 内做 —— 关键词列表本身放这里集中维护。
-# 早期版本曾用 accept-priority 简单兜底，被 codex / CodeRabbit Major 指出后
-# 改成 decline-priority 防 negation 句误判。
+# Match any keyword in lowercased full messages; ASCII/Cyrillic use
+# word boundaries so yes cannot match yesterday. CJK/Hiragana/Katakana/
+# Hangul use substrings. Multiple categories prioritize
+# decline>later>accept: explicit negation declines, 好的等下 combines
+# acceptance and delay into later rather than immediately launching games. Match within
+# main_routers.system_router helpers; centralize vocabulary here.
+# Early acceptance-first fallback was changed after Codex/CodeRabbit Major findings
+# to refusal-first, preventing negative sentences misclassifying.
 #
-# 5 native locale 都列：用户可能切语言但仍用中文打字，所以匹配时逐个 locale 全
-# 扫一遍而不是只看 active locale。
+# Scan all five native locales, not active locale only, because users can switch UI
+# languages while continuing to type Chinese.
 MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
     "zh": {
-        # accept 必须用**短语 / 双字以上**且**不被任何 decline 短语作 substring
-        # 包含**——CJK 走 substring 没 word boundary 兜底，priority 仅在 decline
-        # 也命中时救场，"不可以" 这种 decline list 没列的 negation phrase 完全
-        # 救不了。设计原则：accept 短语必须保证「decline phrase 不含它」。
-        # - 单字 '好' '行' 被 "不好" / "我不行" / "不好玩" 包含。
-        # - 单字 '玩' '走' 太宽——"不想玩" / "走开"。
-        # - 单字 '冲' 也宽——"冲个澡" / "冲咖啡"（codex P2 指出）。
-        # - 双字 '可以' 被 "不可以" 包含——decline list 又没 '不可以'，
-        #   priority 救不了（codex P2 指出后删）。
-        # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起玩」等明确接受 phrase。
+        # Acceptance needs phrases/two-or-more characters not contained inside decline phrases;
+        # CJK substring matching lacks word boundaries, and priority only helps when decline
+        # also matches. Unlisted negative phrases like 不可以 remain unprotected.
+        # Acceptance phrases must not be substrings of refusal phrases.
+        # - Single 好/行 appear in 不好/我不行/不好玩.
+        # - 玩/走 are too broad, appearing in 不想玩/走开.
+        # - 冲 also appears in 冲个澡/冲咖啡 (Codex P2).
+        # - 可以 appears in 不可以, absent from old decline lists,
+        #   making priority ineffective; removed after Codex P2.
+        # Use explicit phrases 好啊/好的/行啊/来吧/一起玩 instead.
         "accept": ["好啊", "好的", "行啊", "来吧", "一起玩"],
         "decline": [
             "不要",
@@ -4065,15 +4065,15 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         ],
         "later": ["回头", "等会", "等下", "晚点", "一会", "等等", "稍后", "过会"],
     },
-    # 繁体是**独立一块**，不是 zh 的另一种写法：这张表匹配的是用户实际打出来的
-    # 字，与界面语言无关（消费点 mini_game_invite.py 是 .values() 全语种遍历）。
-    # 繁简是不同码位，简体词条对繁中输入是 0 命中而不是低分。
-    # 与 zh 块逐条对应，方便改一侧时对照；两处偏离各有实测理由：
-    # - later 不收裸 '回頭'：日文 '今回頭が痛い' / '前回頭を打った' 里 回+頭 同形
-    #   会误命中（回/頭 在日文新字体里就是这两个字）。改收台湾最常用的 '待會'，
-    #   會 在现代日文写作 会，零碰撞。
-    # - accept 不收 '來玩'：'我不來玩' 会被判 accept——decline 里是 '不玩'，
-    #   substring 盖不住 '不來玩'，decline-priority 救不了。'來吧' 无此问题。
+    # Traditional Chinese is an independent block, not another UI rendering of zh. Match actual
+    # typed characters irrespective of UI language; mini_game_invite.py iterates all .values().
+    # Distinct code points mean Simplified entries yield zero Traditional matches, not merely lower confidence.
+    # Keep paired entries for maintenance, with two evidence-based deviations:
+    # - Exclude bare 回頭 from later: Japanese 今回頭が痛い/前回頭を打った share
+    #   回/頭 spellings and false-match. Use Taiwan-common 待會;
+    #   modern Japanese writes 會 as 会, avoiding collisions.
+    # - Exclude 來玩: 我不來玩 wrongly accepts because decline 不玩 does not
+    #   substring-match 不來玩, defeating priority. 來吧 avoids this.
     "zh-TW": {
         "accept": ["好啊", "好的", "行啊", "來吧", "一起玩"],
         "decline": [
@@ -4090,20 +4090,20 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         "later": ["待會", "等會", "等下", "晚點", "一會", "等等", "稍後", "過會"],
     },
     "en": {
-        # 'play' 太宽——"don't want to play" 会被 accept 误命中。改用 phrase。
-        # 单字 'no' 已删——即使 word-boundary 也会命中 "no idea"/"no worries"
-        # 等常规英文表达（CodeRabbit Major 指出）。改用 'no thanks' / 'nope' /
-        # 'don't want' / 'not now' 等 phrase。'after' 也太宽（"after lunch"），
-        # 改用更长的 'after this' / 仅保留 'in a bit'/'in a minute' 等明确 later。
-        # 'okay' 已删——"not okay" 会被 word-boundary accept 命中且 decline 没
-        # 'not okay' 时 priority 救不了（codex P2 指出）。其它单词 accept ('sure'
-        # /'yes'/'yeah'/'yep') 同类风险靠 decline list 加 'not sure' / 'not yet'
-        # 等 negation phrase 双保险拦截。
-        # accept："let's" 单字太宽（"let's not play" 命中），改 "let's play"
-        # 更具体；'wanna play' 同样被 "I don't wanna play" 命中，priority 兜底
-        # 不可靠（之前规则已加 "don't want"），但仍保留 'wanna play' 作 accept
-        # phrase——decline list 同步加 "don't wanna" / "let's not" 双保险
-        # （CodeRabbit Major 指出后调整）。
+        # play is too broad inside don't want to play; use phrases.
+        # Remove standalone no: even word boundaries match ordinary no idea/no worries,
+        # as CodeRabbit Major noted. Use no thanks/nope/
+        # don't want/not now. after is too broad in after lunch;
+        # prefer after this or explicit in a bit/in a minute delays.
+        # Remove okay: not okay still matches word-bounded acceptance, and missing
+        # decline not okay defeats priority (Codex P2). Other single-word accepts sure/
+        # yes/yeah/yep have the same risk, guarded by decline not sure/not yet
+        # and related negative phrases.
+        # Bare let's is too broad in let's not play; prefer let's play.
+        # wanna play still matches I don't wanna play, with prior don't want
+        # insufficient for priority. Retain wanna play but add
+        # don't wanna/let's not to decline as dual protection,
+        # following CodeRabbit Major review.
         "accept": [
             "yes",
             "sure",
@@ -4132,15 +4132,15 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         "later": ["later", "in a bit", "in a minute", "in a moment", "after this"],
     },
     "ja": {
-        # 'やる' 太宽（'やめる' 含子串），换成 'やるよ'。
+        # やる was considered too broad due to substring overlap with やめる; replace with やるよ.
         "accept": ["やろう", "いいよ", "うん", "はい", "やるよ", "やります"],
         "decline": ["パス", "嫌", "いいえ", "やめる", "いやだ"],
         "later": ["あとで", "今度", "また今度", "もうちょい", "ちょっと待って"],
     },
     "ko": {
-        # '안' 太宽（'안녕' / '안 그래도' 都会命中），改用 phrase。
-        # 单字 '응' 也宽——"적응" / "반응" 等含子串命中。codex P2 指出后删；
-        # 留 '좋아' / '그래' / '가자' / 'ㅇㅇ' 已 cover 接受意图。
+        # 안 matches ordinary 안녕/안 그래도; use phrases.
+        # 응 matches 적응/반응; removed after Codex P2.
+        # 좋아/그래/가자/ㅇㅇ still cover acceptance.
         "accept": ["좋아", "그래", "가자", "ㅇㅇ"],
         "decline": ["싫어", "아니", "됐어", "안 해"],
         "later": ["나중", "이따", "잠시", "잠깐만"],
@@ -4199,13 +4199,13 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
     },
 }
 
-# ---------- Mini-game 斜杠快捷指令 ----------
-# 用户在文本框里整条只发 ``/<别名>``（半角 / 或全角 ／，大小写与多余空白不敏感）
-# → 直接打开对应小游戏页面：不走 LLM，不经过邀请状态机，也不计入邀请冷却。
-# 匹配在 main_logic.core.turn._normalize_mini_game_magic_command，页面 URL 取
-# config.MINI_GAME_LAUNCH_URL_BY_GAME，外层 key 必须是其中存在的 game_type。
-# 与 MINI_GAME_INVITE_KEYWORDS 同理，所有 locale 的别名一起参与匹配（用户可能
-# 切了界面语言仍用中文打字）。别名一律写成小写、单空格，匹配时不再二次归一化。
+# ---------- Mini-game slash shortcuts ----------
+# Messages containing only /<alias>, ASCII/fullwidth slash, ignoring case/excess whitespace,
+# open game pages directly, bypassing LLMs, invitation state, and invitation cooldown.
+# Match in main_logic.core.turn._normalize_mini_game_magic_command; URLs come from
+# config.MINI_GAME_LAUNCH_URL_BY_GAME, requiring existing game_type keys.
+# Like invitation keywords, match aliases across every locale because typing language may differ
+# from UI. Store lowercase/single-space aliases; matching performs no further normalization.
 MINI_GAME_MAGIC_COMMANDS: dict[str, dict[str, list[str]]] = {
     "watch-together": {
         "zh": ["一起看", "一起看视频"],
@@ -4259,7 +4259,7 @@ MINI_GAME_MAGIC_COMMANDS: dict[str, dict[str, list[str]]] = {
     },
 }
 
-# ---------- 音乐搜索结果格式化 ----------
+# ---------- Music-search result formatting ----------
 MUSIC_SEARCH_RESULT_TEXTS = {
     "zh": {
         "title": "【音乐搜索结果】",
@@ -4311,7 +4311,7 @@ MUSIC_SEARCH_RESULT_TEXTS = {
     },
 }
 
-# ---------- 主动搭话：当前正在放歌时的提示（引导 AI 聊当前的歌，而不是推荐新歌） ----------
+# ---------- Proactive hints while music plays: discuss the current song, not new recommendations. ----------
 PROACTIVE_MUSIC_PLAYING_HINT = {
     "zh": '\n[绝对指令] 当前正在播放音乐："{track_name}"。请仅限评价或探讨这首歌、歌手或音乐风格。**严禁**推荐新歌、**严禁**尝试更换曲目，请全力维持当前的听歌氛围，不要打扰{master}的雅致。',
     "zh-TW": '\n[絕對指令] 目前正在播放音樂："{track_name}"。請只評價或討論這首歌、歌手或音樂風格。**嚴禁**推薦新歌、**嚴禁**嘗試換曲，請全力維持現在的聽歌氣氛，不要打擾{master}的興致。',
@@ -4451,14 +4451,14 @@ def get_proactive_music_strict_constraint(lang: str = "zh") -> str:
 
 
 # ======
-# ====== Reunion greeting prompts (首次连接/切换角色时的主动搭话) =====
+# ====== Reunion greetings on first connection / character switching ======
 # ======
 
-# ---------- 当前时段分类提示 ----------
-# 根据当前小时数给AI额外的时间感知，让问候更贴合实际场景
+# ---------- Current time-of-day hints ----------
+# Add hour-based time awareness for context-appropriate greetings.
 
 _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
-    # 凌晨 0:00-5:59 —— 保留时段特征作为开场素材，只禁止断言对方的状态
+    # 00:00-05:59: retain late-night ambience, prohibiting only assumptions about the person's state.
     "late_night": {
         "zh": "现在是凌晨，夜已经很深了。夜色、安静、这个时段本身都可以成为开场的话题方向；但不要断言{master}刚睡醒、还没睡或刚开机。",
         "zh-TW": "現在是凌晨，夜已經很深了。夜色、安靜、這個時段本身都可以成為開場的話題方向；但不要斷言{master}剛睡醒、還沒睡或剛開機。",
@@ -4469,7 +4469,7 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
         "es": "Es de madrugada. La oscuridad, el silencio y la propia hora tardía sirven como material para abrir. Pero no afirmes que {master} acaba de despertar, que no ha dormido o que acaba de encender el dispositivo.",
         "pt": "É madrugada. O escuro, o silêncio e a própria hora avançada servem como material para abrir. Mas não afirme que {master} acabou de acordar, não dormiu ou acabou de ligar o dispositivo.",
     },
-    # 清晨 6:00-8:59 —— 新一天开始，保留早安方向
+    # 06:00-08:59: new-day/morning greeting direction.
     "early_morning": {
         "zh": "现在是清晨，天刚亮，新的一天正在开始。可以道一句早安，也可以聊清晨本身的感觉；但不要断言{master}睡得好不好或刚起床。",
         "zh-TW": "現在是清晨，天剛亮，新的一天正在開始。可以道一句早安，也可以聊清晨本身的感覺；但不要斷言{master}睡得好不好或剛起床。",
@@ -4480,7 +4480,7 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
         "es": "Es temprano por la mañana y el día apenas empieza. Cabe un buenos días, y la sensación del amanecer también sirve de material. Pero no afirmes cómo durmió {master} ni que acaba de levantarse.",
         "pt": "É bem cedo e o dia está começando. Cabe um bom dia, e a sensação da manhã cedo também serve de material. Mas não afirme como {master} dormiu nem que acabou de levantar.",
     },
-    # 上午 9:00-11:59
+    # 09:00-11:59: morning.
     "morning": {
         "zh": "现在是上午。",
         "zh-TW": "現在是上午。",
@@ -4491,7 +4491,7 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
         "es": "Es por la mañana.",
         "pt": "É de manhã.",
     },
-    # 中午 12:00-13:59 —— 午饭时段，保留吃饭这个搭话方向
+    # 12:00-13:59: lunchtime conversation direction.
     "noon": {
         "zh": "现在是中午，通常是午饭时段。可以把吃饭聊成一个轻松的方向；但不要断言{master}正在吃、已经吃过或刚忙完。",
         "zh-TW": "現在是中午，通常是午餐時段。可以把吃飯聊成一個輕鬆的方向；但不要斷言{master}正在吃、已經吃過或剛忙完。",
@@ -4502,7 +4502,7 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
         "es": "Es alrededor del mediodía, que suele ser la hora de comer. La comida es una dirección ligera perfectamente válida para abrir. Pero no afirmes que {master} está comiendo, ya comió o acaba de desocuparse.",
         "pt": "É por volta do meio-dia, normalmente a hora do almoço. Comida é uma direção leve perfeitamente válida para abrir. Mas não afirme que {master} está comendo, já comeu ou acabou de ficar livre.",
     },
-    # 下午 14:00-17:59
+    # 14:00-17:59: afternoon.
     "afternoon": {
         "zh": "现在是下午。",
         "zh-TW": "現在是下午。",
@@ -4513,7 +4513,7 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
         "es": "Es por la tarde.",
         "pt": "É à tarde.",
     },
-    # 傍晚 18:00-20:59 —— 一天转入夜晚，保留氛围与晚饭方向
+    # 18:00-20:59: evening transition, ambience/dinner directions.
     "evening": {
         "zh": "现在是傍晚，天正在暗下来，一天开始转入夜晚。可以聊这个时段的氛围，或把晚饭当作轻松方向；但不要断言{master}刚下班、刚吃完或忙了一整天。",
         "zh-TW": "現在是傍晚，天正在暗下來，一天開始轉入夜晚。可以聊這個時段的氛圍，或把晚餐當作輕鬆方向；但不要斷言{master}剛下班、剛吃完或忙了一整天。",
@@ -4524,7 +4524,7 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
         "es": "Es el atardecer: cae la luz y el día pasa a la noche. El ambiente de esta hora, o la cena, sirven como dirección ligera. Pero no afirmes que {master} acaba de salir del trabajo, de comer o de tener un día ocupado.",
         "pt": "É o fim da tarde: a luz vai embora e o dia vira noite. O clima desta hora, ou o jantar, servem como direção leve. Mas não afirme que {master} acabou de sair do trabalho, de comer ou de ter um dia corrido.",
     },
-    # 夜晚 21:00-23:59 —— 保留夜的氛围，但休息只跟不提
+    # 21:00-23:59: nighttime ambience; follow existing rest topics without introducing them.
     "night": {
         "zh": "现在是夜晚，时间不早了。可以聊夜里的氛围；只有近期对话明确提到休息时才顺着聊休息，不要主动断言{master}要睡了。",
         "zh-TW": "現在是夜晚，時間不早了。可以聊夜裡的氛圍；只有近期對話明確提到休息時才順著聊休息，不要主動斷言{master}要睡了。",
@@ -4566,8 +4566,8 @@ def get_time_of_day_hint(lang: str = "zh") -> str:
     return hints.get(lang_key, hints.get("en", hints["zh"]))
 
 
-# 分段引导词：根据不同间隔时长，描述角色的内心感受，由AI按自身性格自由发挥
-# 15分钟 ~ 1小时：轻微分别感，刚注意到对方回来
+# Interval-specific inner-feeling guidance, leaving expression to the AI's personality.
+# 15 minutes to one hour: slight separation, just noticing their return.
 GREETING_PROMPT_SHORT = {
     "zh": "======以下是环境提示======\n"
     "距离你和{master}上次有记录的对话已经过了{elapsed}，现在又有了说话的机会。\n"
@@ -4627,7 +4627,7 @@ GREETING_PROMPT_SHORT = {
     "======Acima está o aviso de ambiente======",
 }
 
-# 1小时 ~ 5小时：中性重连，不推断离线活动
+# One to five hours: neutral reunion without guessing offline activity.
 GREETING_PROMPT_MEDIUM = {
     "zh": "======以下是环境提示======\n"
     "距离你和{master}上次有记录的对话已经过了{elapsed}，现在又有了说话的机会。\n"
@@ -4687,7 +4687,7 @@ GREETING_PROMPT_MEDIUM = {
     "======Acima está o aviso de ambiente======",
 }
 
-# 5小时 ~ 24小时：较长间隔仍只作事实提示
+# Five to 24 hours: longer gaps remain factual hints only.
 GREETING_PROMPT_LONG = {
     "zh": "======以下是环境提示======\n"
     "距离你和{master}上次有记录的对话已经过了{elapsed}。\n"
@@ -4747,7 +4747,7 @@ GREETING_PROMPT_LONG = {
     "======Acima está o aviso de ambiente======",
 }
 
-# 24小时以上：久别重连
+# Over 24 hours: reunion after long separation.
 GREETING_PROMPT_VERY_LONG = {
     "zh": "======以下是环境提示======\n"
     "距离你和{master}上次有聊天已经过了{elapsed}。\n"
@@ -4859,7 +4859,7 @@ def get_greeting_prompt(gap_seconds: float, lang: str = "zh") -> str | None:
         The unformatted lead-in template (with {elapsed}/{name}/{master} placeholders),
         or None when the gap is under 15 minutes.
     """
-    if gap_seconds < 900:  # < 15分钟
+    if gap_seconds < 900:  # Under 15 minutes.
         return None
     lang_key = _normalize_startup_greeting_language(lang)
     if gap_seconds < 3600:  # 15min ~ 1h
@@ -5057,7 +5057,7 @@ _STARTUP_REFERENCE_NOTICE = {
 }
 
 
-# 强约束层：24 小时内已经真正说出口的开场，必须完全另起说法。
+# Strong constraints: openings actually spoken within 24 hours require entirely fresh wording.
 _STARTUP_RECENT_OPENINGS_LABEL = {
     "zh": "过去 24 小时内已经说过的开场，绝对不要复述、翻译或近义改写：",
     "zh-TW": "過去 24 小時內已經說過的開場，絕對不要複述、翻譯或近義改寫：",
@@ -5070,7 +5070,7 @@ _STARTUP_RECENT_OPENINGS_LABEL = {
 }
 
 
-# 弱约束层：1~3 天前的开场，只要求明显区别，不要求完全另起。
+# Weak constraints: one-to-three-day-old openings need clear differences, not entirely new phrasing.
 _STARTUP_EARLIER_OPENINGS_LABEL = {
     "zh": "更早（三天内）说过的开场，本次要和它们有明显区别：",
     "zh-TW": "更早（三天內）說過的開場，本次要和它們有明顯區別：",
@@ -5099,7 +5099,7 @@ def startup_crossed_conversation_day(gap_seconds: float, observed_at=None) -> bo
     return (last_observed - shift).date() != (observed - shift).date()
 
 
-# 每层参考开场最多列几条。调用方按窗口自己封顶，这里是渲染侧的兜底。
+# Maximum reference openings per layer; callers cap by window, with this renderer safeguard.
 _STARTUP_OPENING_SAMPLE_CAP = 6
 
 
@@ -5223,15 +5223,15 @@ def get_new_character_greeting_prompt(lang: str = "zh") -> str:
     )
 
 
-# ── 猫咪专属问候（从猫咪形态变回猫娘 / 请她回来时触发）──────────────────
-# 与 GREETING_PROMPT_* 对偶，但独立计时：按"行为(tier) × 猫咪停留时长"选模板。
-# tier 在 core 层映射为 awake(清醒/CAT1) / nap(打盹/CAT2) / sleep(熟睡/CAT3)；
-# 时长 < 3min 静默，清醒"憋坏"门槛 15min、打盹/熟睡"久"门槛 30min。
-# {reason_hint} 由入口(自动/手动)注入，并在 core 层 .format 前已 format 好
-# {master}。旧表中的 {time_hint} 仅为兼容占位；猫形态 return 不会注入普通
-# 主动问候的时段/餐食提示。
+# -- Cat-specific greetings on return to catgirl form. --
+# Symmetric with GREETING_PROMPT_* but independently timed; select behavior-tier x cat-duration templates.
+# Core maps tiers to awake/CAT1, nap/CAT2, and sleep/CAT3;
+# under three minutes stays silent, awake restlessness starts at 15min, long nap/sleep at 30min.
+# Entry points inject automatic/manual reason_hint and already expand
+# master before core formatting. Legacy time_hint remains for compatibility; cat returns never inject
+# ordinary proactive time-of-day/meal hints.
 
-# 入口原因片段（注入 {reason_hint}）。仅含 {master} 占位符。
+# Entry-reason fragments injected as reason_hint, containing master placeholders only.
 CAT_GREETING_REASON_AUTO = {
     "zh": "刚才{master}忙着没顾上你，",
     "zh-TW": "剛才{master}忙著沒空理你，",
@@ -5254,7 +5254,7 @@ CAT_GREETING_REASON_MANUAL = {
     "pt": "Agora há pouco {master} te pediu para esperar de lado um pouco, então ",
 }
 
-# 清醒 · 短：醒着待了一会儿，轻松
+# Awake, short: lightly waiting awake.
 CAT_GREETING_AWAKE_SHORT = {
     "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子在旁边待了{elapsed}，一直醒着等{master}。现在{master}把你叫回来了。\n"
@@ -5306,7 +5306,7 @@ CAT_GREETING_AWAKE_SHORT = {
     "======以上为环境提示======",
 }
 
-# 清醒 · 久：醒着干等太久，憋坏了
+# Awake, long: bored/restless after long waiting.
 CAT_GREETING_AWAKE_LONG = {
     "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子在旁边醒着待了{elapsed}，一直没人理，都快憋坏了。现在{master}总算把你叫回来。\n"
@@ -5358,7 +5358,7 @@ CAT_GREETING_AWAKE_LONG = {
     "======以上为环境提示======",
 }
 
-# 打盹 · 短：随便眯一下，没啥事
+# Nap, short: casual dozing without concern.
 CAT_GREETING_NAP_SHORT = {
     "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子眯了{elapsed}，没睡多沉，随便打了个盹。{master}把你叫回来了。\n"
@@ -5410,7 +5410,7 @@ CAT_GREETING_NAP_SHORT = {
     "======以上为环境提示======",
 }
 
-# 打盹 · 久：盹打久了，有点迷糊
+# Nap, long: groggy after a long doze.
 CAT_GREETING_NAP_LONG = {
     "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子打盹打了{elapsed}，睡得有点迷糊。{master}把你叫醒、叫回来了。\n"
@@ -5462,7 +5462,7 @@ CAT_GREETING_NAP_LONG = {
     "======以上为环境提示======",
 }
 
-# 熟睡 · 短：小睡一下，没负担
+# Sleep, short: an unburdened short sleep.
 CAT_GREETING_SLEEP_SHORT = {
     "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子小睡了{elapsed}。{master}把你叫回来，你迷糊一下就醒了。\n"
@@ -5514,7 +5514,7 @@ CAT_GREETING_SLEEP_SHORT = {
     "======以上为环境提示======",
 }
 
-# 熟睡 · 久：睡了好久，乍醒带点想念
+# Sleep, long: waking from long sleep with some longing.
 CAT_GREETING_SLEEP_LONG = {
     "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子蜷成一团睡了{elapsed}，睡得很沉。{master}把你叫醒、叫回来了，你刚醒还迷迷糊糊，但有点“终于等到你”的想念。\n"
@@ -5566,7 +5566,7 @@ CAT_GREETING_SLEEP_LONG = {
     "======以上为环境提示======",
 }
 
-# 行为(tier) × 时长档 → 模板查表。tier 在 core 层已映射为 awake/nap/sleep。
+# Behavior tier x duration table; core already maps awake/nap/sleep.
 _CAT_GREETING_TABLES = {
     ("awake", "short"): CAT_GREETING_AWAKE_SHORT,
     ("awake", "long"): CAT_GREETING_AWAKE_LONG,
@@ -5576,8 +5576,8 @@ _CAT_GREETING_TABLES = {
     ("sleep", "long"): CAT_GREETING_SLEEP_LONG,
 }
 
-# 时长分档门槛（秒）：猫形态少于 3 分钟统一静默，Cat Mind 动作不能
-# 缩短或绕过该门槛。清醒"憋坏"门槛 15min，打盹/熟睡"久"门槛 30min。
+# Duration thresholds in seconds: all cat forms under three minutes remain silent; Cat Mind actions cannot
+# shorten/bypass it. Awake restlessness starts at 15min; long nap/sleep at 30min.
 CAT_GREETING_SILENT_BELOW_SECONDS = 180
 _CAT_GREETING_LONG_THRESHOLDS = {
     "awake": 900,
@@ -5945,24 +5945,24 @@ def get_cat_greeting_reason_hint(was_auto: bool, lang: str = "zh") -> str:
     return table.get(lang_key, table.get("en", table["zh"]))
 
 
-# ── 节日 / 周末提示模板 ─────────────────────────────────────────────
+# -- Holiday/weekend hint templates --
 # Consumed by utils.holiday_cache for proactive holiday/weekend hint
 # injection. Templates carry {name} (holiday name) and optionally {days}.
 
-# ⚠️ 用中性的「假期」而不是「連假」：HolidayPeriod 允许单日节日
-# （_inject_global_extras 就会塞「情人節」这类），而 SOON / WEEK 两条只按
-# days_away 选模板、不看 period.is_multi_day。写「連假」会对单日节日做出一句
-# 假陈述——`再過3天就是情人節連假了`（Codex P2）。
+# Use neutral 假期 rather than 連假: HolidayPeriod allows single-day holidays,
+# including 情人節 from _inject_global_extras, while SOON/WEEK select only by
+# days_away without period.is_multi_day. 連假 then creates false claims such as
+# 再過3天就是情人節連假了 (Codex P2).
 #
-# ⚠️⚠️ 这四张表必须**同批**补 zh-TW，不能只补一两张。
-# utils/holiday_cache.py 的 _holiday_hint_language_key 固定拿
-# HOLIDAY_HINT_TODAY 的键集做判断（:608 / :663），选出的 lang_key 再拿去索引
-# SOON / WEEK / WEEKEND。所以只补 TODAY 的话，lang_key 会选成 'zh-TW'，而其余
-# 三张没有该键 → `.get(lang_key, ...['en'])` 直接掉英文。半补比不补更糟。
+# Add zh-TW to all four tables together, never just one or two.
+# utils/holiday_cache.py _holiday_hint_language_key uses
+# HOLIDAY_HINT_TODAY's keys at :608/:663, then indexes SOON/WEEK/WEEKEND.
+# Updating TODAY only selects zh-TW but leaves the other three missing it,
+# falling directly to English via .get(lang_key,...['en']); partial updates are worse than none.
 #
-# 这四张是 prompts_proactive 里少数**补键即生效**的表：上游
-# main_logic/core/greeting.py 的 _greeting_locale_keys 用 format='full' 取值，
-# zh-TW 一路传到底，不需要任何调用点改动。
+# These four tables take effect immediately when keys are added: upstream
+# main_logic/core/greeting.py _greeting_locale_keys uses format='full',
+# passing zh-TW all the way without caller changes.
 HOLIDAY_HINT_TODAY: dict[str, str] = {
     "zh": "今天是{name}！这是一个特别的日子。",
     "zh-TW": "今天是{name}！這是一個特別的日子。",
@@ -6009,12 +6009,12 @@ WEEKEND_HINT: dict[str, str] = {
 
 
 # ── Proactive action note (memory metadata appended to AI history) ──
-# 主动搭话完成时把"实际投递的素材"以一行 [...] 注解的形式追加到 AIMessage 文本里：
-# 放了哪首歌、分享了什么内容、来源是哪里。下一轮 LLM 拿到 memory_context 时
-# 就能看到这些事实，避免出现"刚才放的什么歌？""不知道，没记住"的违和感。
+# At proactive completion append actual delivered material as a single [...] annotation to AIMessage:
+# song played, content shared, and source. Next-round memory_context then contains
+# those facts, avoiding an AI unable to recall the song it just played.
 #
-# 注解只进 _conversation_history（→ memory_context），不进 send_lanlan_response、
-# 不进 TTS — 用户不会在前端看到这一行；它只是给 AI 自己留的一份"行动日志"。
+# Annotations enter _conversation_history/memory_context only, never send_lanlan_response
+# or TTS; invisible to users, serving as the AI's own action log.
 
 PROACTIVE_ACTION_NOTE_MUSIC: dict[str, str] = {
     "zh": "[给{master}放了《{title}》— {artist}]",
@@ -6044,10 +6044,10 @@ PROACTIVE_ACTION_NOTE_WEB: dict[str, str] = {
     "en": '[Shared with {master}: "{title}" (from {source})]',
     "ja": "[{master}にシェアした内容：『{title}』（{source} より）]",
     "ko": "[{master}에게 공유한 내용: 《{title}》 ({source} 출처)]",
-    # 俄语：三条 PROACTIVE_ACTION_NOTE_* 统一用 "для + genitive" 结构，与 placeholders
-    # 'master': 'собеседника'（genitive 形式）兼容；空名兜底直接得到合法俄语，真实
-    # 名字塞进 для 后不变格但 LLM 仍能正确理解。原 'с {master}'（instrumental 介词）
-    # 跟 fallback 的 genitive 形式不匹配，改成 для 让三条 ru 模板一致。
+    # Russian PROACTIVE_ACTION_NOTE_* consistently use для+genitive, compatible with placeholders
+    # master=собеседника. Empty names produce grammatical Russian; actual names after для
+    # remain uninflected but understandable. Previous instrumental с {master}
+    # mismatched fallback genitive; unify all three Russian templates with для.
     "ru": "[Поделено для {master}: «{title}» (из {source})]",
     "es": '[Compartió con {master}: "{title}" (de {source})]',
     "pt": '[Compartilhou com {master}: "{title}" (de {source})]',
@@ -6148,21 +6148,21 @@ def build_proactive_action_note(
         return ""
     channel = (primary_channel or "").strip().lower()
 
-    # vision: 屏幕本身不是分享出去的素材，即便 source_links 有数据也不写。
+    # Vision screens are not shared material; omit notes even with populated source_links.
     if channel == "vision":
         return ""
 
-    # 归一化 language：caller 通常已经传短码（zh/en/ja/ko/ru），但区域标签
-    # （zh-CN / ja-JP 等）应被映射到对应短码，否则 placeholders 和 _loc 会双双
-    # 落英文兜底，丢失本地化。下面 .format() 用 lang_key 而不是原始 language。
+    # Normalize language: callers usually supply short zh/en/ja/ko/ru, but regional tags
+    # such as zh-CN/ja-JP must map appropriately, or placeholders/_loc both
+    # fall back to English. Format with lang_key below, not original language.
     lang_key = _normalize_prompt_language(language)
     placeholders = PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
         lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS["en"]
     )
 
-    # action_note 是单行元数据，必须强制压成一行。title/source/master_name 任一
-    # 含 \n/\r/\t 都会让 _conversation_history 里那条 AIMessage 的 content 多
-    # 出几行结构，下游 LLM context 渲染容易把 note 误当成正常对话内容。
+    # Force action_note metadata onto one line; newlines/carriage returns/tabs in
+    # title/source/master_name add structural lines to AIMessage content
+    # and can make downstream context rendering mistake notes for dialogue.
     def _single_line(value) -> str:
         return " ".join(str(value or "").split())
 
@@ -6208,9 +6208,9 @@ def build_proactive_action_note(
             (l for l in source_links if isinstance(l, dict) and _is_meme(l)),
             None,
         )
-        # primary_channel='meme' 但素材没填 type=meme（早期 fallback 链路）：
-        # 回退到第一条非音乐链接当 meme 处理。chat/unknown 通道走探测路径时
-        # 不开这个回退，避免把任意 web link 误当作 meme。
+        # Meme primary_channel with missing type=meme, from early fallback paths,
+        # uses the first nonmusic link as a meme. Do not apply this fallback to chat/unknown
+        # probing, which would misclassify arbitrary web links as memes.
         if not meme and allow_typeless_fallback:
             meme = next(
                 (l for l in source_links if isinstance(l, dict) and not _is_music(l)),
@@ -6253,9 +6253,9 @@ def build_proactive_action_note(
     if channel in {"web", "news", "community", "video", "home", "personal", "window"}:
         return _try_web()
 
-    # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，
-    # 处理 should_try_music_fallback 等"primary_channel 与实际投递素材不一致"
-    # 的边角 case。优先 music > meme > web。
+    # Chat/unknown/empty/unrecognized channels inspect actual source_links materials,
+    # covering should_try_music_fallback cases where primary_channel differs
+    # from delivered material. Priority music>meme>web.
     for builder in (_try_music, _try_meme, _try_web):
         note = builder()
         if note:

@@ -117,7 +117,7 @@ async def test_reflection_apply_independent_clocks(tmp_path):
 
 @pytest.mark.asyncio
 async def test_reflection_apply_both_sides_updates_both_clocks(tmp_path):
-    """RFC §3.4.1: "如果未来出现双侧同步触动的场景，两个时间戳都重置。"
+    """RFC §3.4.1: \"If a future scenario affects both sides simultaneously, reset both timestamps.\"
     Locks the both-sides delta path so a future caller passing e.g.
     {'reinforcement': 1.0, 'disputation': 0.5} gets both clocks set
     and both counters updated (CodeRabbit PR #929 forward-compat nit)."""
@@ -203,8 +203,8 @@ async def test_reflection_apply_emits_evidence_event(tmp_path):
 
 @pytest.mark.asyncio
 async def test_user_fact_reinforce_combo_kicks_in_after_threshold(tmp_path):
-    """Base rein delta 0.5；前 2 条各 +0.5；第 3 条起 +0.5 + 0.5 bonus = +1.0。
-    直到 count 永久跨阈值（不重置）。"""
+    """Base rein delta 0.5; first 2 entries each add +0.5; from entry 3 add +0.5 + 0.5 bonus = +1.0.
+    This continues after count permanently crosses the threshold (without resetting)."""
     ev, _fs, _pm, re, _cm = _install(str(tmp_path))
     rid = "ref_combo"
     seed = [{
@@ -252,7 +252,7 @@ async def test_user_fact_reinforce_combo_kicks_in_after_threshold(tmp_path):
 
 @pytest.mark.asyncio
 async def test_combo_counter_not_triggered_by_user_confirm(tmp_path):
-    """user_confirm 是直接信号，不走 user_fact combo 计数；count 保持 0。"""
+    """user_confirm is a direct signal and does not use user_fact combo counting; count stays 0."""
     _, _, _, re, _ = _install(str(tmp_path))
     rid = "ref_direct"
     seed = [{
@@ -272,7 +272,7 @@ async def test_combo_counter_not_triggered_by_user_confirm(tmp_path):
 
 @pytest.mark.asyncio
 async def test_combo_counter_not_triggered_by_user_fact_negates(tmp_path):
-    """user_fact negates 走 disp 侧，不碰 user_fact reinforce 计数器。"""
+    """user_fact negates uses the disp side without touching the user_fact reinforce counter."""
     _, _, _, re, _ = _install(str(tmp_path))
     rid = "ref_neg"
     seed = [{

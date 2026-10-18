@@ -22,7 +22,7 @@ from utils.config_manager import get_config_manager
 
 
 if __name__ == "__main__":
-    # 测试代码
+    # Test code
     manager = get_config_manager()
     print("配置管理器信息:")
     info = manager.get_config_info()

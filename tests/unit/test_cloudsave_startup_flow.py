@@ -1305,7 +1305,7 @@ def test_launcher_import_records_removed_characters_for_visit_retirement(monkeyp
 
     launcher._prepare_cloudsave_runtime_for_launch()
 
-    # 有真实配置目录：带上串门退役记录回调；测试替身没有：不带（导入照常）
+    # Pass the visit-retirement callback with a real config directory; omit it for test doubles without one (import still works)
     assert callable(seen["on_characters_removed"]) is with_config_dir
     if not with_config_dir:
         assert seen["on_characters_removed"] is None

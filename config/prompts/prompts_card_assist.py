@@ -101,8 +101,8 @@ CARD_ASSIST_CLARIFY_PROMPT = {
     }
   ]
 }""",
-    # 欄位 key（"招牌台词" 這類）是 characters.json 裡真正存的鍵名，屬於識別碼而非
-    # 文案，繁中模板一律照抄簡體原樣，避免模型回傳一組對不上的 key。
+    # Field keys (such as "招牌台词") are actual keys stored in characters.json, so they are identifiers rather than
+    # copy. Traditional-Chinese templates copy the simplified-Chinese keys verbatim to avoid model responses with mismatched keys.
     "zh-TW": """你是貓娘角色卡設計助手。使用者給出一句話的角色描述，你要拋出 2 到 4 個最有價值的釐清問題，幫助後續生成完整設定。
 
 使用者描述：
@@ -402,8 +402,8 @@ CARD_ASSIST_CHAT_ADVICE_ONLY_DIRECTIVE = {
 }
 
 
-# 兜底文案：LLM 既没回话也没给动作时，聊天框不能空着。跟本模块其余 dict 一样只写
-# zh / zh-TW / en —— 其它 locale 的助手回复本来就是英文。
+# Fallback copy: the chat box must not be empty when the LLM returns neither speech nor actions. Like other dictionaries in this module, include only
+# zh / zh-TW / en; assistant responses for other locales already use English.
 CARD_ASSIST_CHAT_EMPTY_REPLY_FALLBACK = {
     "zh": "（嗯…我没想好怎么回，能再说一遍喵？）",
     "zh-TW": "（嗯…我沒想好怎麼回，可以再說一次喵？）",

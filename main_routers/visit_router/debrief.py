@@ -111,7 +111,7 @@ async def show_chips(host: Any, visit_id: str, *, own_char: str, lang: Optional[
         return bool(await host.render_chat_blocks(chip_blocks(visit_id, lang),
                                                   request_id=chips_request_id(visit_id),
                                                   source_name=own_char))
-    except Exception as exc:  # noqa: BLE001 - 页面不在：标记留在 state.json，等下次 bind 重放
+    except Exception as exc:  # noqa: BLE001 - Missing page: retain state.json markers for next-bind replay.
         logger.info("visit %s: debrief chips not shown: %s", visit_id[:6], type(exc).__name__)
         return False
 
@@ -133,11 +133,11 @@ async def render_chips(visit_id: str, *, own_char: str, status: Optional[str] = 
 
     host = ManagerHost.for_character(own_char)
     if host is None or not host.display_bound():
-        # 页面还没 bind（启动补录通常早于页面连上）：芯片与「意外中断」都等 visit_bind 重放，不先发半套
+        # Page unbound, as startup backfill often precedes connection: replay chips/interruption notices together after visit_bind, never partially.
         return False
     owner = await _visit_owner(visit_id)
     if owner is None or owner != await own_visit_uid():
-        # 启动补录逐场回调、不分账号：不是当前登录账号的场次不发（换回那个账号后由 visit_bind 重放）
+        # Startup backfill callbacks cover all accounts; suppress visits outside the logged-in account until that account returns and binds.
         return False
     return await show_owed(host, visit_id, own_char=own_char, lang=prompt_lang(),
                            interrupted=status == "interrupted")
@@ -158,19 +158,19 @@ async def _show_owed_locked(host: Any, visit_id: str, *, own_char: str, lang: Op
                             interrupted: bool = False) -> bool:
     try:
         state = await _spool(visit_id).read_state()
-    except Exception as exc:  # noqa: BLE001 - 读不出：等 bind 重放
+    except Exception as exc:  # noqa: BLE001 - Unreadable: defer to bind replay.
         logger.debug("visit %s: state unreadable: %s", visit_id[:6], type(exc).__name__)
         return False
     if state is None or owed_request_id(state) is None:
         return False
     try:
         async with contextlib.AsyncExitStack() as stack:
-            # 核名字、核账号到推送都按住这只猫的生命周期与登录账号：中途改名（旧名字归了另一只猫）、切号都进不来
+            # Hold character lifecycle/account identity across name/account checks and pushing, preventing renames with old-name reuse or account switches.
             if not await _pin_push(stack, state):
                 return False
             return await _push_owed(host, visit_id, state, lang, own_char=own_char, interrupted=interrupted)
     except TimeoutError:
-        # 按住账号的推送超过了时限（_ACCOUNT_BOUND_PUSH_MAX_S）：这次截断，标记留在 state.json，等 bind 重放
+        # Account-bound push exceeded _ACCOUNT_BOUND_PUSH_MAX_S: truncate this attempt, retaining state markers for bind replay.
         logger.info("visit %s: debrief push took longer than the account hold limit; cut off", visit_id[:6])
         return False
 
@@ -180,10 +180,10 @@ async def _push_owed(host: Any, visit_id: str, state: Mapping[str, Any], lang: O
     from main_routers.visit_router.accounts import own_visit_uid
 
     if await _own_char(state) != own_char:
-        # 补录拿到名字之后、等锁期间改了名（旧名字可能已归另一只猫）：不推给那个名字的页面，等 bind 重放
+        # Rename occurred after backfill name resolution while waiting for locks; do not push to the potentially reused old name, defer until bind.
         return False
     if await own_visit_uid() != state.get("own_uid"):
-        # 账号放在最后核（解析名字有 await）：换了账号就不把这一场的预览正文推给现在登录的账号
+        # Check account last because name resolution awaits; never push this visit's preview into a newly logged-in account.
         return False
     state = await reread_for_delivery(state)
     owed = owed_block(state, lang) if state is not None else None
@@ -191,17 +191,17 @@ async def _push_owed(host: Any, visit_id: str, state: Mapping[str, Any], lang: O
         return False
     request_id, blocks, frame = owed
     if interrupted and state["debrief_choice"] in _CHIP_CHOICES:
-        # 「意外中断」与它所跟的块按同一份锁内状态决定：只跟芯片一起出（与 bind 重放同一口径）。
-        # 与芯片同一出口：校验 bind 与写入用同一个连接对象（send_status 会重读 mgr.websocket）
+        # Interruption notices and accompanying blocks use the same locked state; send only with chips, matching bind replay.
+        # Same outlet as chips: validate/write one connection object rather than send_status rereading mgr.websocket.
         if not await host.send_frame({"type": "status", "message": json.dumps(
                 {"code": "VISIT_INTERRUPTED_LAST_TIME", "details": {"visit_id": visit_id}}, ensure_ascii=False)}):
-            # 提示没送出（连接刚被换掉等）：芯片也不单独发，下次 visit_bind 连同提示一起重放
+            # If the notice was not delivered, e.g. connection replacement, withhold the chip too and replay both on next visit_bind.
             return False
         if await own_visit_uid() != state.get("own_uid"):
-            return False  # 写提示的这段 await 里登出 / 换了账号：芯片不再发
+            return False  # If the user signs out or switches accounts during the await that sends the notice, do not send the chip
     try:
         shown = bool(await host.render_chat_blocks(blocks, request_id=request_id, source_name=own_char))
-    except Exception as exc:  # noqa: BLE001 - 页面不在：标记留在 state.json，等下次 bind 重放
+    except Exception as exc:  # noqa: BLE001 - Missing page: retain state.json markers for next-bind replay.
         logger.info("visit %s: debrief block not shown: %s", visit_id[:6], type(exc).__name__)
         return False
     if shown and frame is not None:
@@ -240,7 +240,7 @@ async def reread_for_delivery(state: Mapping[str, Any]) -> Optional[dict]:
     """
     try:
         fresh = await _spool(state["visit_id"]).read_state()
-    except Exception as exc:  # noqa: BLE001 - 读不出：这次不推，等下次 bind 重放
+    except Exception as exc:  # noqa: BLE001 - Unreadable: skip this push and await next-bind replay.
         logger.debug("visit %s: state unreadable before delivery: %s", state["visit_id"][:6], type(exc).__name__)
         return None
     if (fresh is None or fresh.get("own_uid") != state.get("own_uid")
@@ -284,7 +284,7 @@ async def clean_summary(raw: Optional[str], *, family_names: tuple[str, ...], ne
         text = redact_outbound(text, family_names=family_names, replacement=neutral_term)
     text = (await atruncate_to_tokens(text, VISIT_DEBRIEF_MAX_TOKENS)).strip()
     try:
-        # 整场对端句子可能很多：扫描放到线程里，不卡住事件循环上别的场次
+        # Peer transcripts may contain many sentences; scan in workers without blocking other visits' event-loop work.
         await asyncio.to_thread(assert_no_peer_ngram, text, peer_lines, n=VISIT_PEER_NGRAM_N)
     except PeerNgramHit:
         logger.info("visit debrief: summary copied the peer, using the fixed line")
@@ -296,13 +296,13 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
     """Finalize step 4 for ``rt`` (a ``VisitRuntime``): summary, chips, ``ask_later``."""
     from config.prompts.prompts_visit import build_visit_debrief_prompt, get_visit_debrief_fallback
 
-    # 上传头卡住、超过封存期限时台词还在积压里：与 /state 一样合并进来，不因此退成通用简述
+    # Include queued dialogue when upload headers stall past archival deadlines, matching /state rather than degrading to generic summaries.
     lines = rt._replay_lines()
     peer_lines = [str(line.get("text") or "") for line in lines if str(line.get("from")).startswith("peer_")]
     text: Optional[str] = None
     if lines:
         block = await build_debrief_record(lines, rt.lang)
-        # 输入只用有预算的整场记录：不再带隔离会话里的近期历史（重复、超预算、对端原文出了数据块）
+        # Use only budgeted whole-visit records, excluding redundant/oversized isolated-session recent history that exposes peer text outside data blocks.
         raw = await rt.one_shot_turn(build_visit_debrief_prompt(block, rt.lang), timeout=VISIT_CEREMONY_TIMEOUT_S,
                                      without_history=True)
         text = await clean_summary(raw, family_names=tuple(rt.family_names), neutral_term=rt.neutral_term,
@@ -311,7 +311,7 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
         text = get_visit_debrief_fallback(rt.lang)
     family_spoke = rt.host.last_user_input() > input_stamp
     if family_spoke:
-        # 亲人在仪式句 / 简述生成中先开口：简述与芯片排到那一轮 turn end 之后、只上屏不出声
+        # If family speaks during ritual/summary generation, queue summaries/chips after that turn ends and display silently.
         await rt.wait_family_turn()
         if rt.handoff is not None:
             rt.handoff.skip("debrief")
@@ -323,9 +323,9 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
     else:
         await rt.speak_home_segment("debrief", text, kind="visit_debrief", silent=rt.finalize_reason == "goodbye")
     await _push_state(rt, "summary")
-    # 日记读的是 spool：有没有可记的句子按 spool 实际写进去的算（与上传流水各自独立）。
-    # spool_lines 要等写盘线程写完才加一：还有句子在写（落盘慢、收尾没等它）就先限时等它落定再判断，
-    # 不把这一场当成「没有可记的」。追加在提交时就排进了单线程写盘队列、关 spool 排在它后面，不会被关掉
+    # Diary uses spool; actual persisted sentences determine recordability independently of upload logs.
+    # spool_lines increments after writer completion. If writes remain pending after bounded finalization, wait briefly before deciding,
+    # never classify as empty prematurely. Appends already entered the single-writer queue before spool closure, so closure cannot discard them.
     await rt.settle_spool_appends(_STATE_WRITE_MAX_S)
     await _offer_chips(rt, has_lines=rt.spool_lines > 0)
 
@@ -340,17 +340,17 @@ async def _offer_chips(rt: Any, *, has_lines: bool) -> None:
     spool = rt.spool
     if not rt.memory_enabled or spool is None or not has_lines:
         return
-    # 有界：磁盘卡住时不能让退出流程停在这里（交还回调、teardown 都在后面）；到点不等，写没写成由启动补录兜底
-    # 有条件写入：芯片先出、用户选得快时，晚到的这次写不会把已记下的选择改回「以后再说」
+    # Bound disk waiting because exit callbacks/teardown follow; stop at deadline and let startup backfill establish actual persistence.
+    # Conditional write prevents late updates from replacing quick user choices with ask-later after chips appear.
     writing = asyncio.ensure_future(spool.mark_debrief_pending())
     writing.add_done_callback(lambda t: t.cancelled() or t.exception())
-    # 一创建就登记（做完即移除）：退出流程在这里被取消时也不会漏掉它
+    # Register immediately and remove on completion, preventing loss if exit is canceled here.
     rt._keep_background(writing)
     await asyncio.wait([writing], timeout=_STATE_WRITE_MAX_S)
     if not writing.done():
         logger.warning("visit %s: debrief state still writing; continuing", rt.visit_id[:6])
     elif not writing.cancelled() and writing.exception() is not None:
-        # 标记写不进：芯片照常出，下次启动由补录兜底
+        # Marker persistence failure still shows chips; next-startup backfill handles recovery.
         logger.warning("visit %s: debrief state not written: %s", rt.visit_id[:6],
                        type(writing.exception()).__name__)
     await show_chips(rt.host, rt.visit_id, own_char=rt.lanlan_name, lang=rt.lang)
@@ -358,7 +358,7 @@ async def _offer_chips(rt: Any, *, has_lines: bool) -> None:
 
 
 # =====================================================================
-# 「记成日记」：预览、两步写入与状态机（OD-16 v4，§3.7.4 / §4.6，PR-14）
+# Diary recording: preview, two-step writes, and state machine; OD-16 v4 sections 3.7.4/4.6, PR-14.
 # =====================================================================
 
 CHOICES = ("diary", "confirm", "forget", "abandon")
@@ -393,7 +393,7 @@ def failed_request_id(visit_id: str, seq: int) -> str:
 
 
 def _visit_lock(visit_id: str) -> asyncio.Lock:
-    # 同一场的选择、生成与提交串行；按事件循环分开（测试一个用例一个循环）
+    # Serialize choices/generation/commit per visit, partitioned by event loop for tests' per-case loops.
     key = (id(asyncio.get_running_loop()), visit_id)
     lock = _locks.get(key)
     if lock is None:
@@ -558,7 +558,7 @@ def _host(own_char: str):
 async def _owner_signed_in(owner: str) -> bool:
     from main_routers.visit_router.accounts import own_visit_uid
 
-    # 按社区账号分区：别的账号登录着时不把这一场的内容推给页面（等那个账号回来 bind 时重放）
+    # Partition by community account: withhold another account's visit until it returns and binds.
     return await own_visit_uid() == owner
 
 
@@ -576,10 +576,10 @@ async def _pin_push(stack: contextlib.AsyncExitStack, state: Mapping[str, Any]) 
 
     try:
         await stack.enter_async_context(_hold_lifecycle([state["own_char_uid"]]))
-    except Exception as exc:  # noqa: BLE001 - 角色配置读不出：这次不推，标记留在 state.json 等 bind 重放
+    except Exception as exc:  # noqa: BLE001 - Unreadable character config: skip push, retaining state markers for bind replay.
         logger.info("visit debrief: lifecycle not held, push skipped: %s", type(exc).__name__)
         return False
-    # 生命周期按住之后再按账号（同步登记、不 await）：切号要等这次推完才改会话，切号进行中就不推
+    # Lock account after character lifecycle, synchronously without await; switches wait for pushes, and ongoing switches prevent pushing.
     return await stack.enter_async_context(runtime.hold_account_for_push())
 
 
@@ -593,7 +593,7 @@ async def _target(state: Mapping[str, Any]) -> Optional[tuple[str, Any]]:
     diary to that cat's page, nor a switch hand it to another account.
     """
     name = await _own_char(state)
-    # 账号放在最后核：解析名字会读角色配置（有 await），期间换了账号也拦得住
+    # Check account last because name resolution awaits config reads; catch intervening switches too.
     if not name or not await _owner_signed_in(state["own_uid"]):
         return None
     host = _host(name)
@@ -615,7 +615,7 @@ async def _send(state: Mapping[str, Any], frame: dict) -> bool:
             if target is None:
                 return False
             return bool(await target[1].send_frame(frame))
-    except Exception as exc:  # noqa: BLE001 - 推送尽力而为：状态已落盘，页面靠 bind 重放校正
+    except Exception as exc:  # noqa: BLE001 - Best-effort push: persisted state is corrected through bind replay.
         logger.info("visit debrief: frame not sent: %s", type(exc).__name__)
         return False
 
@@ -631,7 +631,7 @@ async def _render(state: Mapping[str, Any], blocks: list[dict], request_id: str)
                 return False
             name, host = target
             return bool(await host.render_chat_blocks(blocks, request_id=request_id, source_name=name))
-    except Exception as exc:  # noqa: BLE001 - 页面不在等：标记留在 state.json，等 bind 重放
+    except Exception as exc:  # noqa: BLE001 - Missing page/etc.: retain state markers for bind replay.
         logger.info("visit debrief: block %s not shown: %s", request_id, type(exc).__name__)
         return False
 
@@ -645,7 +645,7 @@ def _lang() -> str:
 async def _own_char(state: Mapping[str, Any]) -> Optional[str]:
     from main_logic.visit import local_chars
 
-    # 按 uid 认当前名字：改名后跟着新名字走；角色已删就是 None
+    # Resolve current names by uid, following renames; deleted characters yield None.
     return await local_chars.resolve_char_name(state["own_char_uid"])
 
 
@@ -669,7 +669,7 @@ async def _family_names() -> tuple[str, ...]:
     return await family_names()
 
 
-# ── 后台退避重试 ──────────────────────────────────────────────────────────
+# -- Background backoff retries --
 
 
 def _cancel_timer(visit_id: str) -> None:
@@ -703,19 +703,19 @@ async def _retry_at(visit_id: str, next_at: float) -> None:
         return
     me = asyncio.current_task()
     if _timers.get(visit_id) is me:
-        # 先摘掉自己：这次再暂时失败会登记下一次定时，不能把正在跑的自己取消掉
+        # Remove this timer first: another transient failure schedules the next one without canceling this running task.
         del _timers[visit_id]
     _running.add(me)
     try:
-        # 醒来后在锁内确认没有更新的定时：等锁期间一次手动「写入」已暂时失败、排了新定时时，
-        # 这次不再立刻重试（否则绕过退避、还会顶掉新定时）。所有定时（含本地失败补排的）都适用
+        # After waking, check under lock for newer timers scheduled by failed manual writes while waiting;
+        # skip immediate retry to preserve backoff/new scheduling. Apply to all timers, including local-failure replacements.
         await run_commit(visit_id, "timer")
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001 - state.json 一时读写不了等：不能就此断掉自动重试
+    except Exception as exc:  # noqa: BLE001 - Temporary state.json access failures must not terminate automatic retries.
         logger.warning("visit %s: diary retry failed locally, again in %ds: %r",
                        visit_id[:6], _LOCAL_FAILURE_RETRY_S, exc)
-        # 写入不设重试上限：本地失败同样再排一次（停止 / 回滚之后代次过期，不再排）
+        # Writes have unlimited retries; local failures reschedule too, unless stopped/rolled-back generations expire.
         if visit_id not in _timers:
             schedule_commit_retry(visit_id, _now() + _LOCAL_FAILURE_RETRY_S, epoch=epoch)
     finally:
@@ -751,7 +751,7 @@ async def resume_diary_commit(spool: Any, state: Mapping[str, Any]) -> None:
     """
     visit_id = spool.visit_id
     async with _visit_lock(visit_id):
-        # 补录拿的是扫描时的快照：期间手动「写入」可能已暂时失败、排了更新的 next_at，不能用旧值覆盖
+        # Backfill holds scan-time snapshots; never overwrite newer next_at scheduled by an intervening failed manual write.
         if visit_id in _timers:
             return
         current = await spool.read_state()
@@ -762,7 +762,7 @@ async def resume_diary_commit(spool: Any, state: Mapping[str, Any]) -> None:
         schedule_commit_retry(visit_id, next_at)
 
 
-# ── 两步提交（端点、定时重试、启动补录共用） ─────────────────────────────
+# -- Shared two-step commits for endpoints, timers, and startup backfill --
 
 
 async def run_commit(visit_id: str, trigger: str) -> tuple[int, dict]:
@@ -786,9 +786,9 @@ async def _run_commit_locked(visit_id: str, trigger: str) -> tuple[int, dict]:
     if state["debrief_choice"] != "committing:diary":
         return _not_committing(state)
     if trigger == "timer" and visit_id in _timers:
-        # 这次定时醒来后（已从 _timers 摘掉自己）又排进了更新的定时：排期被换掉，这次作废
+        # A newer timer appeared after this one woke and removed itself from _timers; replacement invalidates this attempt.
         return 409, {"error": "superseded"}
-    # 两步写入期间按住这个角色的生命周期：改名 / 删除 400，不会一步写在旧名字下、一步写在新名字下
+    # Hold character lifecycle during both writes; rename/deletion gets 400, preventing split writes across old/new names.
     async with _hold_lifecycle([state["own_char_uid"]]):
         return await _commit_held(visit_id, trigger, spool, state, epoch)
 
@@ -800,14 +800,14 @@ async def _commit_held(visit_id: str, trigger: str, spool: Any, state: Mapping[s
 
     own_char = await _own_char(state)
     if not own_char:
-        # 角色已删：退役流程负责这场的文件，不再写
+        # Deleted character: retirement owns visit files; stop writing.
         return 404, {"error": "unknown_or_expired"}
     writes = dict(state["debrief_writes"])
 
     async def on_transition(step: str, event: str, detail: Mapping[str, Any]) -> None:
         nonlocal writes
         writes = apply_transition(writes, step, event, detail)
-        # 落盘之后 commit_diary 才继续：请求在途时崩溃，「可能已写」的证据也在
+        # Persist before commit_diary continues, retaining evidence of possible writes after in-flight crashes.
         await spool.update_state(debrief_writes=writes)
 
     result = await debrief_writers.commit_diary(own_char, visit_id, state["debrief_pending"], writes, on_transition)
@@ -818,11 +818,11 @@ async def _commit_held(visit_id: str, trigger: str, spool: Any, state: Mapping[s
         _cancel_timer(visit_id)
         try:
             await spool.delete_if_settled()
-        except Exception as exc:  # noqa: BLE001 - 日记已写成、状态已落盘：清理没做成留给之后的清扫，不改写结果
+        except Exception as exc:  # noqa: BLE001 - Diary/state persisted: defer cleanup failures to later sweeps without changing the result.
             logger.info("visit %s: settled files not removed yet: %s", visit_id[:6], type(exc).__name__)
         await _send(state, _state_frame(visit_id, "chosen", preview_request_id(visit_id), choice="diary"))
         if trigger != "http":
-            # 发起页自己追加状态；后台补完时没有发起页，单独发一条
+            # Originating pages append status themselves; background completion without an origin sends a separate update.
             await _render(state, [{"type": "status", "tone": "success", "text": t("savedDiary", lang)}],
                           f"visit-debrief-done:{visit_id}")
         return 200, {"ok": True, "applied": "diary"}
@@ -877,17 +877,17 @@ async def _choose(visit_id: str, choice: str, seq: Optional[int], lanlan_name: s
     spool = _spool(visit_id)
     lock = _visit_lock(visit_id)
     async with lock:
-        # 进锁先记代次：之后任何一个 await 期间关机 / 回滚都算数，确认失败时不再补排定时
+        # Capture generation on lock entry; shutdown/rollback during any later await prevents rescheduling after failed confirmation.
         epoch = _timer_epoch
         state = await spool.read_state()
-        # 别的社区账号的场次（共用电脑）当作不存在；记忆关的场次本来就没有芯片
+        # Treat other community accounts' visits as absent on shared computers; memory-disabled visits have no chips anyway.
         if (state is None or state["own_uid"] != await own_visit_uid() or not is_digestable(state)
                 or state["finalized"] is None):
             return 404, {"error": "unknown_or_expired"}
         own_char = await _own_char(state)
         if not own_char or own_char != lanlan_name:
-            # 发起页不是这只猫现在的页面：改名后旧名字归了另一只猫，旧页面上残留的块点下去，
-            # 不把这一场的预览回给那一页、也不替它改这一场的选择
+            # Origin no longer belongs to this catgirl, possibly after old-name reuse: clicking stale blocks must neither
+            # return this preview there nor change its choice.
             return 404, {"error": "unknown_or_expired"}
         current = state["debrief_choice"]
         if choice == "diary":
@@ -897,7 +897,7 @@ async def _choose(visit_id: str, choice: str, seq: Optional[int], lanlan_name: s
                 from main_logic.visit.debrief_writers import write_forget
 
                 await write_forget(spool)
-                # 帧指向页上被点的那一块：从预览块选的「不记」置灰预览块，不是早先的芯片
+                # Frames target the clicked block: forgetting from preview disables that preview, not the earlier chip.
                 target = preview_request_id(visit_id) if current == "preview:diary" else chips_request_id(visit_id)
                 await _send(state, _state_frame(visit_id, "chosen", target, choice="forget"))
                 return 200, {"ok": True, "applied": "forget"}
@@ -925,12 +925,12 @@ async def _choose(visit_id: str, choice: str, seq: Optional[int], lanlan_name: s
                 return _already_chosen(state)
         elif current == "commit_failed:diary":
             if seq != state["debrief_commit_error"]["seq"]:
-                # 点的是旧版失败块（或绕过前端不带 seq）：以新块为准，不重新提交
+                # Clicked legacy failure block or missing seq bypass: honor the latest block without resubmission.
                 return 409, {"error": "stale_failure", "seq": state["debrief_commit_error"]["seq"]}
-            # 「重试」：退避计数清零，只补未完成那步
+            # Retry resets backoff and completes only the unfinished step.
             state = await spool.update_state(debrief_choice="committing:diary", debrief_retry=None)
         elif current == "committing:diary":
-            # 写入中又手动点「写入」：同样是用户主动重试，退避计数清零（连点不把自动重试推到 1 小时后）
+            # Manual write during committing also resets backoff; repeated clicks must not defer automatic retries by an hour.
             state = await spool.update_state(debrief_retry=None)
         else:
             return _not_committing(state)
@@ -941,7 +941,7 @@ async def _choose(visit_id: str, choice: str, seq: Optional[int], lanlan_name: s
         except asyncio.CancelledError:
             raise
         except Exception:
-            # 本地失败（state.json 一时写不了等）：上面已撤掉定时，补排一次，不让它停在 committing
+            # Local failure, e.g. temporary state.json write failure: prior timer was removed, so reschedule instead of stranding committing.
             if visit_id not in _timers:
                 schedule_commit_retry(visit_id, _now() + _LOCAL_FAILURE_RETRY_S, epoch=epoch)
             raise
@@ -961,7 +961,7 @@ async def _caller_still_current(state: Mapping[str, Any], own_char: str) -> bool
 
     if await _own_char(state) != own_char:
         return False
-    # 账号放在最后核（解析名字有 await）
+    # Check account last because name resolution awaits.
     return await own_visit_uid() == state["own_uid"]
 
 
@@ -972,17 +972,17 @@ async def _choose_diary(spool: Any, state: Mapping[str, Any], own_char: str) -> 
     visit_id = spool.visit_id
     current = state["debrief_choice"]
     if current == "preview:diary":
-        # 预览已落盘：只复用，不再生成。与新生成同一出口：按住角色与账号核调用方、最后重读选择
+        # Reuse persisted previews without regeneration; share new-generation output checks under character/account locks and reread choices last.
         try:
             return await _answer_preview(spool, state, own_char, state["debrief_pending"])
         except TimeoutError:
             return 503, {"retry": True}
     if current not in _CHIP_CHOICES:
         return _already_chosen(state)
-    # 条件转移：「清除这个人」的作废步骤不拿这把锁、会把未定的 debrief 直接改成 forget，不能盖掉它
-    # 期望值是整组芯片状态：芯片状态之间的变化（收尾时 mark_debrief_pending 的 None → ask_later 可能晚于芯片
-    # 落盘、生成失败后再点是 generating → generating）不算被别人抢先；作废步骤写的 forget 仍拦得住
-    # 同一次写把待投递标记补上：收尾那次有界的 mark_debrief_pending 没写成时，生成失败后重连也还能重放芯片
+    # Conditional transition must not overwrite clear-person invalidation, which bypasses this lock and changes undecided debriefs to forget.
+    # Expected values include all chip states: normal transitions, including late finalization None->ask_later after chip persistence
+    # or retry generating->generating, are not competing writes. Invalidation's forget still blocks them.
+    # Atomically include pending-delivery markers; if bounded finalization marking failed, reconnect can still replay chips after generation failure.
     applied, found = await spool.update_state_if(_CHIP_CHOICES, debrief_choice="generating:diary",
                                                  debrief_chip_pending=True)
     if not applied:
@@ -992,31 +992,31 @@ async def _choose_diary(spool: Any, state: Mapping[str, Any], own_char: str) -> 
             spool, llm=_diary_llm(), own_char=own_char, family_names=await _family_names(),
         )
     except debrief_writers.NothingToRecord:
-        # 芯片只在 spool 有句子时出：走到这里是 spool 事后丢了。与「记忆开却无转录」同一终态（已放弃），
-        # 不再每次 bind 重放一个点了必然 404 的芯片
+        # Chips require spool sentences; reaching here means spool disappeared later. Mark abandoned, as for memory-on/no-transcript,
+        # rather than replaying chips that inevitably return 404 on every bind.
         applied, found = await spool.update_state_if("generating:diary", debrief_choice="abandoned",
                                                      debrief_pending=None, debrief_chip_pending=False)
         if not applied:
             return _already_chosen(found)
         try:
             await spool.delete_if_settled()
-        except Exception as exc:  # noqa: BLE001 - 已落成 abandoned、芯片不再重放：清理留给之后的清扫，置灰帧照发
+        except Exception as exc:  # noqa: BLE001 - Abandoned persisted and chip replay disabled: defer cleanup, still sending disabled-state frames.
             logger.info("visit %s: settled files not removed yet: %s", visit_id[:6], type(exc).__name__)
-        # 已打开的页面上芯片还亮着：让它置灰（choice='abandoned'）
+        # Chips remain active on already-open pages; disable with choice='abandoned'.
         await _send(state, _state_frame(visit_id, "chosen", chips_request_id(visit_id), choice="abandoned"))
         return 404, {"error": "unknown_or_expired"}
     except debrief_writers.DiaryGenerationFailed:
-        # 留在 generating:diary：再点「记成日记」重新生成
+        # Retain generating:diary so the next diary click regenerates.
         return 503, {"retry": True}
     pending = preview.to_pending()
-    # 预览、状态与待投递标记一次原子写：之后 bind 重放的就是这一份。只在仍处于 generating 时写：
-    # 生成期间「清除这个人」已把这场作废（forget）时，不能把这个人的日记与事实重新落盘
+    # Atomically persist preview/state/pending delivery so bind replays this version; write only while still generating,
+    # never restoring this person's diary/facts if clearing invalidated the visit as forget during generation.
     applied, found = await spool.update_state_if("generating:diary", debrief_pending=pending,
                                                  debrief_choice="preview:diary", debrief_chip_pending=True)
     if not applied:
         return _already_chosen(found)
     if await own_visit_uid() != state["own_uid"]:
-        # 生成期间登出 / 换了账号：预览已落盘、等那个账号回来 bind 时重放，不推给现在这一页、也不回给它
+        # Logout/account switch during generation: retain persisted previews for that account's bind, without pushing/returning to the current page.
         return 404, {"error": "unknown_or_expired"}
     lang = _lang()
     await _render(state, preview_blocks(visit_id, pending, lang), preview_request_id(visit_id))
@@ -1024,7 +1024,7 @@ async def _choose_diary(spool: Any, state: Mapping[str, Any], own_char: str) -> 
     try:
         return await _answer_preview(spool, state, own_char, pending)
     except TimeoutError:
-        # 按住账号的时限到了：不回正文，预览已落盘，前端重试或 bind 重放都能拿到
+        # Account-bound deadline expired: return no body; persisted previews remain available through frontend retry/bind replay.
         return 503, {"retry": True}
 
 
@@ -1041,26 +1041,26 @@ async def _answer_preview(spool: Any, state: Mapping[str, Any], own_char: str,
     visit_id = spool.visit_id
     async with contextlib.AsyncExitStack() as stack:
         if not await _pin_push(stack, state):
-            # 正在切号 / 角色配置读不出：不回正文（预览已落盘，按 uid 重放给它现在的页面）
+            # Switching account/unreadable character config: return no body; replay persisted previews by uid to its current page.
             return 404, {"error": "unknown_or_expired"}
         caller_current = await _caller_still_current(state, own_char)
         try:
             now = await spool.read_state()
-        except Exception:  # noqa: BLE001 - 读不出：不回正文（拿不准是否已被作废），bind 重放会以 state.json 为准
+        except Exception:  # noqa: BLE001 - Unreadable: withhold body because invalidation is uncertain; bind replay uses authoritative state.json.
             return 503, {"retry": True}
         if now is None or now["debrief_choice"] != "preview:diary":
             if now is not None:
-                # 推送期间这场已被作废：把刚推上去的预览块置灰，不回预览正文
+                # Visit invalidated during push: disable the just-pushed preview and return no preview body.
                 await _send(now, _state_frame(visit_id, "chosen", preview_request_id(visit_id),
                                               choice=now["debrief_choice"]))
                 return _already_chosen(now)
             return 404, {"error": "unknown_or_expired"}
         if not caller_current:
-            # 生成期间改了名（旧名字可能已归另一只猫）/ 换了账号：不再回给发起请求的旧页面
+            # Rename/old-name reuse or account switch during generation: never return to the stale origin page.
             return 404, {"error": "unknown_or_expired"}
         from main_routers.visit_router.display_socket import chat_blocks_frame
 
-        # 预览块推送没到发起页（显示连接断了 / 写失败）时，页面用这份同样的块补上屏（按 request_id 去重）
+        # If push missed the origin through disconnection/write failure, use this identical block to display locally with request_id deduplication.
         frame = chat_blocks_frame(preview_blocks(visit_id, pending, _lang()),
                                   request_id=preview_request_id(visit_id), source_name=own_char)
         return 200, {"ok": True, "applied": "preview", "preview": dict(pending), "chat_blocks": frame}
@@ -1083,7 +1083,7 @@ def _parse_choice(payload: Mapping[str, Any]) -> tuple[Optional[str], Optional[s
         return None, None, None, None, "invalid_seq"
     lanlan_name = payload.get("lanlan_name")
     if not _valid_name(lanlan_name):
-        # 与串门其他端点同一套角色名校验（非空、可打印、上限 128）
+        # Match other visit endpoints' character-name validation: nonempty, printable, at most 128 characters.
         return None, None, None, None, "invalid_lanlan_name"
     return visit_id, choice, seq, lanlan_name, None
 
@@ -1103,7 +1103,7 @@ async def debrief_choice(request: Request):
         return JSONResponse({"ok": False, "code": error}, status_code=400)
     try:
         status, body = await _choose(visit_id, choice, seq, lanlan_name)
-    except Exception as exc:  # noqa: BLE001 - state.json 读写失败等：可重试
+    except Exception as exc:  # noqa: BLE001 - state.json access failures etc. are retryable.
         logger.warning("visit %s: debrief choice %s failed: %r", visit_id[:6], choice, exc)
         return JSONResponse({"retry": True}, status_code=503)
     return JSONResponse(body, status_code=status)

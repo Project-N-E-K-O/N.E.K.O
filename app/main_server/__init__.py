@@ -42,33 +42,33 @@ from app.runtime_bindings import install_runtime_bindings as _install_runtime_bi
 
 _install_runtime_bindings()
 
-# Windows multiprocessing 支持：确保子进程不会重复执行模块级初始化
+# Windows multiprocessing: prevent duplicate module-level initialization in subprocesses.
 from multiprocessing import freeze_support
 import multiprocessing
 from utils.port_utils import set_port_probe_reuse
 
 freeze_support()
 
-# 设置 multiprocessing 启动方法（确保跨进程共享结构的一致性）
-# 在 Linux/macOS 上使用 fork，在 Windows 上使用 spawn（默认）
+# Set multiprocessing start methods for consistent cross-process sharing.
+# Use fork on Linux/macOS and default spawn on Windows.
 if sys.platform != "win32":
     try:
         multiprocessing.set_start_method("fork", force=False)
     except RuntimeError:
-        # 启动方法已经设置过，忽略
+        # Ignore already-configured start methods.
         pass
 
-# 检查是否需要执行初始化（用于防止 Windows spawn 方式创建的子进程重复初始化）
-# 方案：首次导入时设置环境变量标记，子进程会继承这个标记从而跳过初始化
+# Determine whether initialization is needed, avoiding repeated Windows spawned-child initialization.
+# Mark the environment on first import; inherited child markers skip initialization.
 _INIT_MARKER = "_NEKO_MAIN_SERVER_INITIALIZED"
 _IS_MAIN_PROCESS = _INIT_MARKER not in os.environ
 
 if _IS_MAIN_PROCESS:
-    # 立即设置标记，这样任何从此进程 spawn 的子进程都会继承此标记
+    # Set immediately so every subsequently spawned child inherits it.
     os.environ[_INIT_MARKER] = "1"
 
 
-# 获取应用程序根目录（与 config_manager 保持一致）
+# Get application root consistently with config_manager.
 def _get_app_root():
     if getattr(sys, "frozen", False):
         if hasattr(sys, "_MEIPASS"):
@@ -83,7 +83,7 @@ def _get_app_root():
         )
 
 
-# 仅在 Windows 上调整 DLL 搜索路径
+# Adjust DLL search paths only on Windows.
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
     os.add_dll_directory(_get_app_root())
 
@@ -121,7 +121,7 @@ from utils.config_manager import get_config_manager, get_reserved  # noqa
 from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 
-# 将日志初始化提前，确保导入阶段异常也能落盘
+# Initialize logging early to persist import-time errors too.
 from utils.logger_config import setup_logging  # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic  # noqa: E402
 from utils.asyncio_executor import configure_default_executor  # noqa: E402
@@ -196,29 +196,29 @@ except Exception as e:
     logger.exception(f"[Main] Module import failed during startup: {e}")
     raise
 
-# 导入创意工坊工具模块
+# Import Workshop utilities.
 from utils.workshop_utils import (  # noqa
     get_workshop_root,
     get_workshop_path,
 )
 
-# 导入创意工坊路由中的函数
+# Import Workshop-router functions.
 from main_routers.workshop_router import (
     get_subscribed_workshop_items,
     sync_workshop_character_cards,
     warmup_ugc_cache,
 )  # noqa
 
-# 确定 templates 目录位置（使用 _get_app_root）
+# Resolve templates through _get_app_root.
 template_dir = _get_app_root()
 
 templates = Jinja2Templates(directory=template_dir)
 
 
 def initialize_steamworks(*, quiet: bool = False):
-    # quiet=True 供后台静默重试使用：无 Steam 环境（如远端服务器部署）下，
-    # 前端轮询会每隔几秒触发一次重试，若按 ERROR/print 输出会无限刷屏。静默
-    # 模式把进度与失败日志统一降到 DEBUG，只有首次启动的尝试保持可见。
+    # quiet=True enables silent background retries; without Steam, e.g. remote deployment,
+    # frontend polling retries every few seconds and ERROR/print would flood indefinitely. Quiet
+    # mode lowers progress/failure logs to DEBUG while preserving visible initial-startup attempts.
     def _trace(msg: str) -> None:
         if quiet:
             if "logger" in globals():
@@ -227,7 +227,7 @@ def initialize_steamworks(*, quiet: bool = False):
             print(msg)
 
     try:
-        # 明确读取steam_appid.txt文件以获取应用ID
+        # Explicitly read steam_appid.txt for the app ID.
         app_id = None
         app_id_file = os.path.join(_get_app_root(), "steam_appid.txt")
         if os.path.exists(app_id_file):
@@ -235,19 +235,19 @@ def initialize_steamworks(*, quiet: bool = False):
                 app_id = f.read().strip()
             _trace(f"从steam_appid.txt读取到应用ID: {app_id}")
 
-        # 创建并初始化Steamworks实例
+        # Create/initialize Steamworks.
         from steamworks import STEAMWORKS
 
         steamworks = STEAMWORKS()
-        # 显示Steamworks初始化过程的详细日志
+        # Show detailed Steamworks initialization logs.
         _trace("正在初始化Steamworks...")
         steamworks.initialize()
         steamworks.UserStats.RequestCurrentStats()
-        # 初始化后再次获取应用ID以确认
+        # Retrieve app ID again after initialization to confirm.
         actual_app_id = steamworks.app_id
         _trace(f"Steamworks初始化完成，实际使用的应用ID: {actual_app_id}")
 
-        # 检查全局logger是否已初始化，如果已初始化则记录成功信息
+        # Log success if the global logger is initialized.
         if "logger" in globals():
             logger.info(f"Steamworks初始化成功，应用ID: {actual_app_id}")
             logger.info(f"Steam客户端运行状态: {steamworks.IsSteamRunning()}")
@@ -258,7 +258,7 @@ def initialize_steamworks(*, quiet: bool = False):
 
         return steamworks
     except Exception as e:
-        # 检查全局logger是否已初始化，如果已初始化则记录错误，否则使用print
+        # Log errors through initialized global logger, otherwise print.
         error_msg = f"初始化Steamworks失败: {e}"
         if quiet:
             if "logger" in globals():
@@ -294,7 +294,7 @@ def ensure_steamworks_initialized():
 
 def get_default_steam_info():
     global steamworks
-    # 检查steamworks是否初始化成功
+    # Check Steamworks initialization.
     if steamworks is None:
         print("Steamworks not initialized. Skipping Steam functionality.")
         if "logger" in globals():
@@ -315,8 +315,8 @@ def get_default_steam_info():
             logger.error(f"Error accessing Steamworks API: {e}")
 
 
-# Steamworks 初始化将在 @app.on_event("startup") 中延迟执行
-# 这样可以避免在模块导入时就执行 DLL 加载等操作
+# Delay Steamworks initialization until @app.on_event("startup"),
+# avoiding DLL loading during module imports.
 steamworks = None
 _server_loop: asyncio.AbstractEventLoop | None = None
 
@@ -559,8 +559,8 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
 _MAIN_LIMITED_MODE_ALLOWED_PREFIXES = (
     "/static/",
     "/api/storage/location/",
-    # 诊断观测：limited-mode 本身就是要排查的故障形态之一（启动阻断），
-    # 这时候反而最需要 /api/debug/health 能读到 ring + watchdog 落盘。
+    # Diagnostic observability: limited-mode startup blocking itself needs investigation,
+    # making /api/debug/health's ring/watchdog persistence especially necessary here.
     "/api/debug/",
 )
 
@@ -631,9 +631,9 @@ def _avatar_tool_multipart_preflight(scope):
     return _validate_local_mutation_request(request)
 
 
-# 全局非 multipart 请求继续沿用 16 MiB Content-Length 守门。自定义道具
-# POST/PUT 另外在 FastAPI 解析 multipart 前完成本地访问、CSRF/origin 和聚合
-# 体积校验；receive 计数同时覆盖缺失或不可信的 Content-Length。
+# Global nonmultipart requests retain 16 MiB Content-Length guards. Custom-prop
+# POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
+# multipart parsing; receive-byte counting covers missing/untrusted Content-Length.
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
     multipart_path_prefix="/api/avatar-tools",
@@ -1098,7 +1098,7 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                 try:
                     from main_logic.cloudsave_visit_retire import removed_characters_recorder
 
-                    # 导入删掉的本地角色记成串门退役项，由启动对账补完退役（没有配置目录时不挂回调）
+                    # Record imported-away local characters for visit retirement, reconciled at startup; omit callbacks without config directories.
                     recorder = removed_characters_recorder(_config_manager)
                     import_result = await _run_cloudsave_manager_action(
                         "import_if_needed",
@@ -1115,10 +1115,10 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                     logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()
-            # 存量角色一次性补发稳定 id（character_uid）：放在 cloudsave 引导 /
-            # 启动导入之后（引导期的 seed 文件不能被改写），也放在
-            # initialize_character_data 之后（全新安装时 characters.json 由它
-            # 写出）；失败只记日志，不挡启动。
+            # One-time stable character_uid backfill for existing characters comes after cloudsave bootstrap/
+            # startup imports, whose seed files must remain untouched, and after
+            # initialize_character_data creates fresh-install characters.json.
+            # Failures log without blocking startup.
             try:
                 from utils.character_memory import character_config_mutation_lock
 
@@ -1137,13 +1137,13 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             get_default_steam_info()
 
             _preload_task = asyncio.create_task(_background_preload())
-            # 启动游戏 session 超时清理后台任务
+            # Start game-session timeout cleanup tasks.
             from main_routers.game_router import cleanup_expired_sessions
 
             if _game_cleanup_task is None or _game_cleanup_task.done():
                 _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
-            # 猫娘串门：计时 sweep 与启动补录（转录补传、崩溃场次芯片、digest / 摘要补做）。
-            # 两个都以 create_task 挂到后台，不在启动链路上等
+            # Catgirl visits: timed sweep and startup backfill for transcript uploads, crashed chips, digests, and summaries.
+            # Schedule both with create_task without awaiting on startup.
             try:
                 from main_routers.visit_router.background import start_visit_background_tasks
 
@@ -1159,9 +1159,9 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception as e:
                 logger.warning(f"Agent event bridge startup failed: {e}")
 
-            # 创意工坊：目录挂载保持同步（开销小，且必须在 ready 前完成，
-            # 否则 /workshop 静态资源在挂载窗口内会 404 —— 见 PR #1496 review）。
-            # 真正慢的 UGC 缓存预热 + 角色卡网络同步仍后台化（与原始行为一致）。
+            # Keep Workshop directory mounting synchronous: cheap and required before ready,
+            # avoiding /workshop 404s during delayed mounting (PR #1496 review).
+            # Slow UGC warmup and card network synchronization remain background work as before.
             await _init_and_mount_workshop()
             _schedule_workshop_sync(steamworks)
 
@@ -1170,7 +1170,7 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
                 install_hooks()
                 TokenTracker.get_instance().start_periodic_save()
-                # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+                # Distinguish processes in session_start/session_end dimensions for cross-process diagnostics.
                 TokenTracker.get_instance().record_app_start(process="main_server")
                 logger.info("Token usage tracker initialized")
             except Exception as e:
@@ -1202,20 +1202,20 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                         "跳过 ROOT_MODE_NORMAL 写入：root_state 缺失或读取失败"
                     )
             elif should_write_root_mode_normal_after_startup(current_root_state):
-                # 挪进工作线程有两个理由，缺一不可：
-                # 1) set_root_mode 是同步落盘（mkstemp + fsync + os.replace）；
-                # 2) 它拿 root_state 的写者锁，而 storage_location 那几条变更路由
-                #    现在在工作线程里持同一把锁。受限启动期存储页跟这段是可以
-                #    重叠的，留在循环上就等于把工作线程那次 fsync（撞上 Windows
-                #    占用还要加最多 155ms 退避）接回循环。同一把锁的所有入口要么
-                #    都在工作线程，要么都不在。
+                # Offload for two independent reasons:
+                # 1) set_root_mode synchronously persists via mkstemp/fsync/os.replace.
+                # 2) It takes root_state's writer lock, also held by storage_location mutation
+                #    workers. Restricted-startup storage pages can overlap this code;
+                #    running on the loop would propagate worker fsync, plus up to 155 ms Windows
+                #    busy backoff, onto it. Every entry acquiring this lock must either
+                #    run in workers or none must.
                 #
-                # ⚠️ 上面那次 should_write_root_mode_normal_after_startup 判定是在
-                # 循环上做的，跟这次落盘之间隔了一个 await。job 排队期间，存储变更
-                # 路由的工作线程完全可能刚提交 ROOT_MODE_MAINTENANCE_READONLY（用户
-                # 正在发起重启迁移）——那时无脑写 NORMAL 就是把它的受限态踩掉。
-                # 所以判定跟着写一起进锁内重做一遍，恢复"检查和写不可分割"这条原本
-                # 靠"同在循环线程"隐式成立的性质。
+                # The preceding should_write_root_mode_normal_after_startup check ran
+                # on the loop with an intervening await before persistence. While queued, storage-mutation
+                # workers may commit ROOT_MODE_MAINTENANCE_READONLY for a user-requested
+                # migration restart; blindly writing NORMAL would erase restricted state.
+                # Recheck under the write lock to restore atomic check/write semantics previously
+                # implicit in sharing one event-loop thread.
                 def _mark_startup_successful() -> bool:
                     with root_state_transaction():
                         state = _config_manager.load_root_state()
@@ -1252,13 +1252,13 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                     current_root_state.get("mode") or ROOT_MODE_NORMAL,
                 )
 
-            # GeoIP 预热必须在放开会话准入之前完成：会话的线路在 start_session 时
-            # 定死，一旦 _runtime_startup_init_completed 置位、limited mode 解除，
-            # 请求就能进来，此时若区域判定还没落地，首个会话会整场钉在大陆兜底线路。
-            # 放在这里（而不是本函数末尾）正是为了堵住那个准入窗口。
-            # 配置到这一步才最终成型（Cloud Save 快照已导入、Steamworks 已初始化），
-            # 所以也不能再往前挪——早读会看到导入前的旧配置而得出「无需区域判定」。
-            # 等待经 to_thread offload，不占事件循环；请求路径依然从不等探测。
+            # Complete GeoIP warmup before session admission: start_session fixes routing,
+            # and setting _runtime_startup_init_completed exits limited mode, admitting
+            # requests. Unresolved regions would pin the whole first session to mainland fallback.
+            # This placement rather than function end closes that admission gap.
+            # Config becomes final only here, after Cloud Save imports and Steamworks initialization,
+            # so earlier placement could read stale preimport settings and wrongly skip region detection.
+            # Offloaded to_thread waiting leaves the event loop free; request paths still never wait for probes.
             try:
                 if not await _config_manager.awarmup_region_check():
                     logger.info("[GeoIP] 启动预热未拿到区域结论，后续调用按退避重试")
@@ -1268,9 +1268,9 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
 
-            # runtime init 完成后再起后台预热：把已改 lazy 的重模块（genai+mcp /
-            # translatepy / 功能路由依赖）提前 import 好，用户首次用到时不等。放在
-            # 这里而非 on_startup 开头，是为了不在关键启动路径上和 runtime init 抢 GIL。
+            # Start heavyweight lazy-module background warmup after runtime init, preimporting genai/mcp,
+            # translatepy, and router dependencies before first use. Avoid early on_startup
+            # placement, which competes for GIL with critical runtime initialization.
             try:
                 from utils.module_warmup import (
                     MAIN_SERVER_WARMUP,
@@ -1362,7 +1362,7 @@ async def release_storage_startup_barrier(
     }
 
 
-# Startup 事件：延迟初始化 Steamworks 和全局语言
+# Startup: delayed Steamworks/global-language initialization.
 @app.on_event("startup")
 async def on_startup():
     """Initialization performed at server startup"""
@@ -1398,19 +1398,19 @@ async def on_startup():
             # speech must remain available even when secure storage or model
             # wiring cannot initialize.
             logger.warning("voice identity startup degraded: %s", _e)
-        # GeoIP 预热已移到 _ensure_main_server_runtime_initialized 末尾——配置到那里
-        # 才最终成型（Cloud Save 快照导入 + Steamworks 初始化完成）。
-        # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
-        # 需要排查事件循环停顿时设 NEKO_DEBUG_ASYNC=1 启用（会略微增加每 callback 开销）。
+        # GeoIP warmup moved near _ensure_main_server_runtime_initialized's end, where Cloud Save
+        # imports and Steamworks initialization have finalized configuration.
+        # Asyncio slow-callback warnings require loop debug, disabled by default;
+        # enable NEKO_DEBUG_ASYNC=1 to diagnose stalls, with slight per-callback overhead.
         if os.environ.get("NEKO_DEBUG_ASYNC") == "1":
             _server_loop.set_debug(True)
             _server_loop.slow_callback_duration = 0.05
             logger.info("[asyncio] debug mode enabled (slow_callback_duration=0.05s)")
 
-        # 事件循环心跳：每 200ms 打一个点。当 /new_dialog 或其他 async 操作
-        # 莫名其妙变慢时，看心跳是否缺席 —— 缺席 = 事件循环被阻塞，这段时间
-        # 内所有 async 都没机会跑。心跳日志仅在开启 NEKO_DEBUG_HEARTBEAT=1
-        # 时输出到 stdout，避免日志刷屏。
+        # Event-loop heartbeat every 200 ms: unexplained /new_dialog/async slowness
+        # with missing beats indicates loop blocking that prevents all async tasks
+        # from running. Log heartbeats to stdout only with NEKO_DEBUG_HEARTBEAT=1,
+        # avoiding noise.
         if os.environ.get("NEKO_DEBUG_HEARTBEAT") == "1":
 
             async def _event_loop_heartbeat():
@@ -1421,7 +1421,7 @@ async def on_startup():
                     await asyncio.sleep(0.2)
                     _now = _t.perf_counter()
                     _gap_ms = int((_now - _last) * 1000)
-                    # 只打异常的心跳（间隔 > 300ms），正常跳过
+                    # Log only abnormal intervals above 300 ms; skip normal beats.
                     if _gap_ms > 300:
                         print(
                             f"[{_t.strftime('%H:%M:%S')}] [heartbeat] stall {_gap_ms}ms (expected ~200ms)",
@@ -1432,9 +1432,9 @@ async def on_startup():
             asyncio.create_task(_event_loop_heartbeat())
             logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
 
-        # 诊断观测 watchdog：5-min 周期采集 counter 写内存 ring buffer，
-        # NEKO_DEBUG_HEALTH_LOG=1 时同时落盘 jsonl。详见 main_routers/debug_router.py。
-        # 无条件启动 —— 单 task + 5-min 周期，开销远低于 heartbeat。
+        # Health watchdog captures counters into the memory ring every 5 minutes,
+        # additionally persisting JSONL with NEKO_DEBUG_HEALTH_LOG=1; see debug_router.py.
+        # Start unconditionally; one task per 5 minutes costs far less than heartbeat.
         try:
             _start_debug_health_watchdog()
         except Exception as _e:
@@ -1464,12 +1464,12 @@ async def on_shutdown():
 
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
-        # 每一步隔离失败；首次调用方取消后共用 8s 等待预算（包含取消宽限）。
-        # 总预算耗尽才跳过后续异步步骤，末尾统一 re-raise 第一次取消。
+        # Isolate each step's failure; after first caller cancellation share 8 s including cancellation grace.
+        # Skip subsequent async steps only on total-budget exhaustion, then reraise the first cancellation.
         shutdown_cancellation: asyncio.CancelledError | None = None
         cancellation_budget = _ShutdownCancellationBudget()
-        # 猫娘串门最先收：先封存上传文件、再写 finalized，不发 leave（VISIT_SHUTDOWN_BUDGET_S 内，
-        # 到点不挡后面的钩子；没收口的留给下次启动补录）
+        # Finalize visits first: seal uploads before finalized state, without leave, within VISIT_SHUTDOWN_BUDGET_S;
+        # expiry cannot block later hooks, and unfinished work remains for startup backfill.
         try:
             from main_routers.visit_router.background import SHUTDOWN_STEP_BUDGET_S, stop_visit_background_tasks
 
@@ -1498,7 +1498,7 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"voice identity cleanup failed: {e}")
         cleanup()
-        # join_sync_connector_threads 内部已经 gather 并行 join
+        # join_sync_connector_threads already gathers joins concurrently.
         shutdown_cancellation = await _run_shutdown_step(
             lambda: join_sync_connector_threads(3.0),
             what="同步连接器线程清理",
@@ -1507,7 +1507,7 @@ async def on_shutdown():
             cancellation_budget=cancellation_budget,
         )
 
-        # 等待预加载任务完成（如果还在运行）
+        # Wait for preload tasks if still running.
         if _preload_task:
             preload_task = _preload_task
 
@@ -1564,7 +1564,7 @@ async def on_shutdown():
                 cancellation_budget=cancellation_budget,
             )
 
-        # 释放 soxr ResampleStream（nanobind C 扩展），避免解释器退出时泄漏警告
+        # Release soxr ResampleStream nanobind extensions against interpreter-exit leak warnings.
         try:
             for _, mgr in _iter_session_managers():
                 if hasattr(mgr, "audio_resampler"):
@@ -1572,7 +1572,7 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"soxr resampler cleanup failed: {e}")
 
-        # 关闭翻译服务
+        # Close translation services.
         try:
             from utils import language_utils
 
@@ -1592,7 +1592,7 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"Translation service cleanup failed: {e}")
 
-        # 保存 Token 用量数据
+        # Save token usage.
         try:
             from utils.token_tracker import TokenTracker
 
@@ -1600,7 +1600,7 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"Token usage save on shutdown failed: {e}")
 
-        # 关闭音乐爬虫连接池：1 秒内关不完就取消，保障服务器顺利退出
+        # Close music-scraper pools within 1 s, then cancel to preserve server exit.
         try:
             from utils.music_crawlers import close_all_crawlers
 
@@ -1614,8 +1614,8 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
 
-        # Steam Auto-Cloud: 预先释放 memory_server 句柄 + 上传 staged snapshot
-        # 必须在关 http pool 之前，因为 release / upload 都依赖 internal_http_client
+        # Steam Auto-Cloud: release memory_server handles, then upload staged snapshots.
+        # Before HTTP-pool closure because release/upload use internal_http_client.
         any_release_failed = False
         failed_release_characters: list[str] = []
         try:
@@ -1623,9 +1623,9 @@ async def on_shutdown():
 
             releasable_names = sorted(name for name, _mgr in _iter_session_managers())
 
-            # 并发释放所有角色句柄：给整体一个 3s 总预算，而不是 N*1s 串行
-            # memory_server 端是独立进程，/release_character 之间没有共享状态依赖，
-            # 可以安全并发；单角色仍设 2.5s 上限避免慢调用拖尾
+            # Release all character handles concurrently under a shared 3 s budget, not serial N*1 s.
+            # memory_server is separate and release_character calls have no shared dependencies,
+            # making concurrency safe; retain per-character 2.5 s bounds against tails.
             async def _release_one(
                 character_name: str,
             ) -> tuple[str, bool, Exception | None]:
@@ -1712,22 +1712,22 @@ async def on_shutdown():
                         **upload_action_kwargs,
                     )
                 except CloudsaveDeadlineExceeded:
-                    # 预算超时只记录这条专属提示，避免 helper 再记录通用失败日志
+                    # On budget timeout, emit only the dedicated message, suppressing helper generic-failure noise.
                     logger.warning(
                         "Steam Auto-Cloud shutdown staged snapshot upload exceeded 5.0s budget; source launch may leave Steam remote snapshot unchanged"
                     )
                     return
-                # 结果日志放在 step 内：上传失败会被 _run_shutdown_step 吸收，step
-                # 之后再打就会在失败时也输出一条 "upload: None"
+                # Log results inside the step because _run_shutdown_step swallows upload failures;
+                # logging afterward would also print upload:None on failure.
                 logger.info(
                     "Steam Auto-Cloud shutdown staged snapshot upload: %s",
                     remote_upload_result,
                 )
 
-            # 不设截止时间：上传在 to_thread 里同步写 Steam，5s 预算由线程内部自己检查；
-            # 取消 await 停不了线程，只会让关闭在远端快照写到一半时就往下走。
-            # 关闭一旦被取消（之前或等待期间），就只再给它上传自身预算的时间，
-            # 避免卡死的 Steam 调用把关闭永远挂住，同时能完成的上传照常完成。
+            # No outer deadline: to_thread upload writes Steam synchronously and checks its own 5 s budget;
+            # canceling await cannot stop the thread and would advance shutdown midway through remote snapshot writes.
+            # Once shutdown is canceled, beforehand or while waiting, allow only upload's own budget,
+            # preventing stuck Steam calls from hanging forever while letting viable uploads complete.
             shutdown_cancellation = await _run_shutdown_step(
                 _upload_cloudsave,
                 what="Steam Auto-Cloud shutdown staged snapshot upload",
@@ -1750,7 +1750,7 @@ async def on_shutdown():
                 cancellation_budget=cancellation_budget,
             )
 
-        # 关闭内部共享 httpx 连接池（必须在 release/upload 之后，因为它们依赖此 pool）
+        # Close shared internal httpx pools after dependent release/upload.
         try:
             from utils.internal_http_client import aclose_internal_http_client
 
@@ -1764,7 +1764,7 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"internal_http_client 清理失败: {e}", exc_info=True)
 
-        # 关闭外部共享 httpx 连接池
+        # Close shared external httpx pools.
         try:
             from utils.external_http_client import aclose_external_http_client
 
@@ -1782,7 +1782,7 @@ async def on_shutdown():
             raise shutdown_cancellation
 
 
-# 使用 FastAPI 的 app.state 来管理启动配置
+# Manage startup configuration through FastAPI app.state.
 def get_start_config():
     """Get the startup config from app.state"""
     if hasattr(app.state, "start_config"):
@@ -1852,16 +1852,16 @@ from .workshop_runtime import _init_and_mount_workshop, _schedule_workshop_sync 
 async def shutdown_server_async():
     """Shut down the server asynchronously"""
     try:
-        # 短暂延时，确保 beacon 响应有机会先发送
+        # Delay briefly so beacon responses can send first.
         await asyncio.sleep(0.5)
         logger.info("正在关闭服务器...")
 
-        # 取消后台创意工坊任务，避免残留协程
+        # Cancel background Workshop tasks to avoid residual coroutines.
         await _cancel_workshop_background_tasks(timeout=5.0)
         # HEAD: memory_server shutdown signal moved into on_shutdown via
         # _request_memory_server_shutdown() to share internal_http_client pool
 
-        # 通知服务器退出
+        # Notify server exit.
         current_config = get_start_config()
         current_config["shutdown_memory_server_on_exit"] = True
         if current_config["server"] is not None:
@@ -1878,8 +1878,8 @@ importlib.import_module(
 ).runtime.request_application_shutdown_async = request_application_shutdown_async
 
 
-# Steam 创意工坊管理相关API路由
-# 确保这个路由被正确注册
+# Steam Workshop-management API routes.
+# Ensure this route registers correctly.
 if _IS_MAIN_PROCESS:
     logger.info("注册Steam创意工坊扫描API路由")
 

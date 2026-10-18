@@ -219,7 +219,7 @@ async def test_import_query_and_remove(tmp_path):
         miss = await service.query(query="明天的天气预报怎么样", language="zh")
         assert miss["result"] == "miss"
         assert miss["context"] == ""
-        # Shares one bigram (网络) with a card, far below the coverage bar.
+        # Shares one bigram (网络, network) with a card, far below the coverage bar.
         weak = await service.query(query="网络安全漏洞扫描工具推荐", language="zh")
         assert weak["result"] == "miss"
 

@@ -1,11 +1,11 @@
 """
-Plugin 模块
+Plugin module
 
-提供插件系统的核心功能和SDK。
+Provides the core plugin system and SDK.
 
-包级名字按需导入（PEP 562）：``import plugin`` 本身不加载任何宿主模块。插件子进程
-只需要 SDK，而导入 ``plugin.xxx`` 任意子模块都会先执行本文件——在这里全量导入
-state / host / registry 会让每个插件进程白白多付约 1 秒和几十 MB。
+Import package-level names on demand (PEP 562): ``import plugin`` itself loads no host modules. Plugin subprocesses
+need only the SDK, but importing any ``plugin.xxx`` submodule executes this file first. Eagerly importing
+state / host / registry here would waste about one second and tens of MB in every plugin process.
 """
 
 from __future__ import annotations

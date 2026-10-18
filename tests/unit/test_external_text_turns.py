@@ -244,7 +244,7 @@ async def test_response_arbiter_runs_pre_commit_right_before_the_write():
     seen_before_write = []
 
     def _strip_images(event):
-        # 断言钩子确实跑在写之前：此刻这条 item 还没出现在 sent 里。
+        # Assert the hook runs before writing: the item is not yet in sent.
         seen_before_write.append(len(sent))
         item = event.get("item")
         item["content"] = [
@@ -273,7 +273,7 @@ async def test_response_arbiter_runs_pre_commit_right_before_the_write():
     item_events = [e for e in sent if e.get("type") == "conversation.item.create"]
     assert item_events, "item 没被发出去"
     content = item_events[0]["item"]["content"]
-    # 图被摘掉了，文字照发。
+    # The image is removed, but text is still sent.
     assert all(part["type"] != "input_image" for part in content)
     assert any(part.get("text") == "look" for part in content)
     await arbiter.shutdown()
@@ -4527,8 +4527,8 @@ def test_every_bounded_wait_is_measured_or_says_why_not():
     import re
     from pathlib import Path
 
-    # 显式 utf-8：默认编码在 Windows CI runner 上是 cp1252，仓库源码里的中文
-    # 注释会让这条守卫以 UnicodeDecodeError 挂掉（本机默认编码能解 GBK，看不出来）。
+    # Explicit UTF-8: Windows CI defaults to cp1252, so Chinese comments in repository source
+    # would break this guard with UnicodeDecodeError (local GBK-capable defaults hide it).
     source = Path(
         "main_logic/omni_realtime_client/_response_arbiter.py"
     ).read_text(encoding="utf-8")

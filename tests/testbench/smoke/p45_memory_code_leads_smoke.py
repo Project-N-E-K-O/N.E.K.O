@@ -1,7 +1,7 @@
 """P45 (P32) — memory **code leads** aggregator smoke.
 
 Guards the read-only code-leads chokepoint
-(``tests/testbench/pipeline/memory_code_leads.py``) behind the 代码线索 (开发者)
+(``tests/testbench/pipeline/memory_code_leads.py``) behind the Code leads (developer)
 sub-page: ``GET /api/memory/code_leads``.
 
 Contracts under test
@@ -15,15 +15,15 @@ Y3 — **ID-DUP**: a duplicate primary id inside facts.json (flat) AND persona.j
      (nested persona[entity].facts[].id) → one high-strength ID-DUP lead whose
      examples cite the duplicate ids.
 Y4 — **EVT-DUP**: a duplicate event_id in events.ndjson → high-strength EVT-DUP
-     lead + evt_status=="ran"; all-unique → no EVT-DUP, evt_status=="ran";
-     missing events.ndjson → evt_status=="unavailable" (NOT "passed").
+     lead + evt_status==\"ran\"; all-unique → no EVT-DUP, evt_status==\"ran\";
+     missing events.ndjson → evt_status==\"unavailable\" (NOT \"passed\").
 Y5 — **endpoint happy shape**: 200 + leads / excluded_content_findings /
      embedding_status / evt_status / warnings.
 Y6 — **errors**: no session → 404; no character → 409 NoCharacterSelected.
 Y7 — **honest empty**: a clean character (facts only, no invariant violations)
      → leads == [].
 Y8 — **honest status (LR-1)**: a zero-vector character → embedding_status ==
-     "unavailable" and NO E* leads (absence of E* ≠ "vectors are fine").
+     \"unavailable\" and NO E* leads (absence of E* ≠ \"vectors are fine\").
 Y9 — **full classification, no silent drop (LR-2)**: for the rich fixture every
      finding code the overview emits is either mapped to a lead or counted in
      excluded — no finding is silently discarded.

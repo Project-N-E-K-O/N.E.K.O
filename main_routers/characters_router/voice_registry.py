@@ -93,7 +93,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
         legacy_keys=('voice_id',)
     ))
 
-    # 幂等保护：提交同值时直接返回，避免无实际变更触发会话重置。
+    # Idempotency guard: return immediately when the submitted value is unchanged, avoiding a session reset with no actual change.
     if old_voice_id == voice_id:
         logger.info("猫娘 %s 的 voice_id 未变化，跳过会话重置流程", name)
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
@@ -101,7 +101,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
         return _voice_session_starting_response()
 
-    # 验证voice_id是否在voice_storage中
+    # Check whether voice_id exists in voice_storage.
     if not _config_manager.validate_voice_id(voice_id):
         voices = _config_manager.get_voices_for_current_api()
         available_voices = list(voices.keys())
@@ -111,41 +111,41 @@ async def update_catgirl_voice_id(name: str, request: Request):
             'available_voices': available_voices
         }, status_code=400)
 
-    # 用户设音色：惰性迁移这一条到结构对象（用到哪条迁哪条，见 voice_id_to_storage_value）。
+    # User-selected voice: lazily migrate this entry to the structured object (migrate each entry only when used; see voice_id_to_storage_value).
     set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
     await _config_manager.asave_characters(characters)
 
-    # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
+    # If this is the currently active catgirl, notify the frontend first, then close the session.
     is_current_catgirl = (name == characters.get('当前猫娘', ''))
     session_ended = False
 
     if is_current_catgirl and name in session_manager:
-        # 检查是否有活跃的session
+        # Check whether there is an active session.
         if session_manager[name].is_active:
             logger.info(f"检测到 {name} 的voice_id已更新（{old_voice_id} -> {voice_id}），准备结束当前语音会话...")
 
-            # 1. 通知前端按 session 结束路径收口，避免 Electron 为音色切换整页重载。
+            # 1. Notify the frontend to follow the session-ending path, avoiding a full-page reload in Electron when switching voices.
             notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
             if callable(notify_session_ended):
                 await notify_session_ended()
 
-            # 2. 立刻关闭session（这会断开WebSocket）
+            # 2. Close the session immediately (this disconnects the WebSocket).
             try:
                 await session_manager[name].end_session(by_server=True)
                 session_ended = True
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
-            # 切音色后，前一会话累计的失败计数 / 熔断不再适用：
-            # 用户的下一次 start_session 应是全新尝试，否则
-            # 这条 SessionManager 实例还会被旧失败计数 / 熔断继续静默拦截。
+            # After switching voices, the previous session's accumulated failure count / circuit breaker no longer applies:
+            # The user's next start_session should be a fresh attempt; otherwise,
+            # this SessionManager instance will still silently block it using the old failure count / circuit breaker.
             session_manager[name].reset_session_start_circuit()
 
-    # Fast path：只刷新被编辑角色的 session_manager（voice_id），不遍历其它 N-1 个。
-    # 非当前角色分支也要显式刷 session_manager[name]：以前靠下次 switch 的全量 init 顺带
-    # rescue，但 set_current_catgirl 已切到 switch_current_catgirl_fast，rescue 不再发生，
-    # 必须在这里就把 voice_id 写进 session_manager[name]（init_one_catgirl 只写该 key，
-    # 不会影响当前 session）。
+    # Fast path: refresh only the edited character's session_manager (voice_id), without iterating over the other N-1 entries.
+    # The non-current-character branch must also explicitly refresh session_manager[name]: it previously relied on the next switch's full initialization to
+    # rescue it, but set_current_catgirl has switched to switch_current_catgirl_fast, so that rescue no longer happens;
+    # voice_id must be written into session_manager[name] here (init_one_catgirl writes only this key,
+    # and does not affect the current session).
     init_one_catgirl = get_init_one_catgirl()
     await init_one_catgirl(name, is_new=False)
     if is_current_catgirl:
@@ -189,7 +189,7 @@ async def get_catgirl_voice_mode_status(name: str):
 
     is_voice_mode = is_audio_starting
     if is_active and mgr:
-        # 检查是否是语音模式（通过session类型判断）
+        # Check whether this is voice mode (determined by the session type).
         from main_logic.omni_realtime_client import OmniRealtimeClient
         is_voice_mode = is_voice_mode or bool(
             getattr(mgr, 'input_mode', '') == 'audio'
@@ -215,7 +215,7 @@ async def unregister_voice(name: str):
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
-        # 检查是否已有voice_id
+        # Check whether voice_id is already set.
         old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
         if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
@@ -223,11 +223,11 @@ async def unregister_voice(name: str):
         if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
             return _voice_session_starting_response()
 
-        # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
+        # COMPAT(v1->v2): consistently store in _reserved.voice_id; the legacy flat voice_id is no longer written or deleted.
         set_reserved(characters['猫娘'][name], 'voice_id', '')
         await _config_manager.asave_characters(characters)
 
-        # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
+        # If this is the currently active catgirl, notify the frontend first, then close the session.
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
         session_ended = False
 
@@ -243,13 +243,13 @@ async def unregister_voice(name: str):
                     logger.info(f"{name} 的session已结束")
                 except Exception as e:
                     logger.error(f"结束session时出错: {e}")
-                # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-                # 否则下一次 start_session 会被旧熔断静默拦截。
+                # Symmetric with the set_voice_id path: clear the previous session's failure count / circuit breaker,
+                # or the next start_session will be silently blocked by the old circuit breaker.
                 session_manager[name].reset_session_start_circuit()
 
-        # Fast path：只刷新被编辑角色的 session_manager（voice_id），不遍历其它 N-1 个。
-        # 非当前角色分支也要走 init_one_catgirl：以前靠下次 switch 的全量 init 顺带 rescue，
-        # 但 set_current_catgirl 已切到 switch_current_catgirl_fast，rescue 不再发生。
+        # Fast path: refresh only the edited character's session_manager (voice_id), without iterating over the other N-1 entries.
+        # The non-current-character branch must also call init_one_catgirl: it previously relied on the next switch's full initialization to rescue it,
+        # but set_current_catgirl has switched to switch_current_catgirl_fast, so that rescue no longer happens.
         init_one_catgirl = get_init_one_catgirl()
         await init_one_catgirl(name, is_new=False)
 
@@ -269,7 +269,7 @@ async def clear_voice_ids():
         characters = await _config_manager.aload_characters()
         cleared_count = 0
 
-        # 清除所有猫娘的voice_id
+        # Clear voice_id for all catgirls.
         if '猫娘' in characters:
             for name in characters['猫娘']:
                 if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))):
@@ -278,7 +278,7 @@ async def clear_voice_ids():
 
         await _config_manager.asave_characters(characters)
         await ensure_default_yui_voice_for_free_api(_config_manager)
-        # 自动重新加载配置
+        # Automatically reload the configuration.
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
 
@@ -381,7 +381,7 @@ async def register_voice(request: Request):
                 'code': 'TTS_VOICE_REGISTER_MISSING_PARAMS'
             }, status_code=400)
 
-        # 准备音色数据
+        # Prepare voice data.
         complete_voice_data = {
             **voice_data,
             'voice_id': voice_id,
@@ -421,7 +421,7 @@ async def delete_voice(voice_id: str):
             }, status_code=409)
 
         if deleted:
-            # 清理所有角色中使用该音色的引用
+            # Remove references to this voice from all characters.
             _config_manager = get_config_manager()
             session_manager = get_session_manager()
             characters = await _config_manager.aload_characters()
@@ -434,28 +434,28 @@ async def delete_voice(voice_id: str):
                         set_reserved(characters['猫娘'][name], 'voice_id', '')
                         cleaned_count += 1
 
-                        # 检查该角色是否是当前活跃的 session
+                        # Check whether this character has the currently active session.
                         if name in session_manager and session_manager[name].is_active:
                             affected_active_names.append(name)
 
             if cleaned_count > 0:
                 await _config_manager.asave_characters(characters)
 
-                # 对于受影响的活跃角色，并行通知 + 结束 session（每个 end_session ≈ 1s）
+                # For affected active characters, notify and end sessions in parallel (each end_session takes about 1 second).
                 async def _refresh_one(name):
                     logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备结束当前语音会话...")
-                    # 1. 通知前端按 session 结束路径收口，避免 Electron 为音色切换整页重载。
+                    # 1. Notify the frontend to follow the session-ending path, avoiding a full-page reload in Electron when switching voices.
                     notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
                     if callable(notify_session_ended):
                         await notify_session_ended()
-                    # 2. 结束 session
+                    # 2. End the session.
                     try:
                         await session_manager[name].end_session(by_server=True)
                         logger.info(f"已结束受影响角色 {name} 的 session")
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
-                    # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-                    # 否则下一次 start_session 会被旧熔断静默拦截。
+                    # Symmetric with the set_voice_id path: clear the previous session's failure count / circuit breaker,
+                    # or the next start_session will be silently blocked by the old circuit breaker.
                     session_manager[name].reset_session_start_circuit()
 
                 if affected_active_names:
@@ -464,7 +464,7 @@ async def delete_voice(voice_id: str):
                         return_exceptions=True,
                     )
 
-                # 自动重新加载配置
+                # Automatically reload the configuration.
                 initialize_character_data = get_initialize_character_data()
                 await initialize_character_data()
 

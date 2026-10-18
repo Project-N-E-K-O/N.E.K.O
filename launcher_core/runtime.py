@@ -98,9 +98,9 @@ def _configure_multiprocessing_executable(project_dir: str) -> None:
         print(f"[Launcher] Warning: failed to pin multiprocessing executable: {exc}", flush=True)
 
 
-# 本次 launcher 启动的唯一标识
+# Unique identifier for this launcher startup.
 LAUNCH_ID = ""
-# 实例 ID：在显式启动路径中初始化，确保导入模块时不改动进程环境
+# Instance ID initialized only on explicit startup, without mutating process environment on import.
 INSTANCE_ID = ""
 
 JOB_HANDLE = None
@@ -124,7 +124,7 @@ _running_descendants_known = True
 _uninspected_servers: set = set()
 _UNTRACKED_SCAN = "<launcher>"
 _expected_launcher_shutdown = False
-_existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
+_existing_neko_services: set[str] = set()  # Port keys occupied by existing N.E.K.O instances.
 _partial_or_mixed_existing_backend = False
 DEFAULT_PORTS = {
     "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
@@ -137,11 +137,11 @@ INTERNAL_DEFAULT_PORTS = {
     "ZMQ_AGENT_PUSH_PORT": 48962,
     "ZMQ_ANALYZE_PUSH_PORT": 48963,
 }
-# 该区间保留给 N.E.K.O 已知默认端口，避免 fallback 与伴生服务冲突。
-# 48917/48918 已退役，仍保留：本机可能还跑着占用它们的旧版本。
+# Reserve known default N.E.K.O ports, preventing fallbacks conflicting with companion services.
+# Retain retired 48917/48918: older local versions may still occupy them.
 AVOID_FALLBACK_PORTS = set(range(48911, 48919)) | {48961, 48962, 48963}
 
-# 模块名到端口键的映射（用于判断已有 N.E.K.O 实例是否占用对应端口）
+# Module-to-port-key mapping identifies ports held by existing N.E.K.O instances.
 MODULE_TO_PORT_KEY: dict[str, str] = {
     "memory_server": "MEMORY_SERVER_PORT",
     "agent_server": "TOOL_SERVER_PORT",
@@ -326,7 +326,7 @@ def _install_logging_brace_compat() -> None:
 
 
 def _patch_http_user_agents() -> None:
-    """全局 patch HTTP 客户端的默认 User-Agent，防止 CF 拦截自定义 API。"""
+    """Globally patch HTTP clients' default User-Agent to prevent CF blocking custom APIs."""
     try:
         from utils.http_client import patch_requests_default_user_agent
         patch_requests_default_user_agent()
@@ -346,9 +346,9 @@ def _initialize_launcher_context() -> None:
         os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
         _sync_runtime_config_globals()
 
-    # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
-    # httpx 优先读小写 no_proxy，因此大小写都需要设置
-    # 使用精确 token 匹配，防止 "127.0.0.1" in "127.0.0.10" 这类子串误判
+    # Bypass system proxies for local services, preventing Clash/Surge interception of localhost.
+    # httpx prefers lowercase no_proxy; set both cases.
+    # Exact token matching prevents substring errors such as "127.0.0.1" in "127.0.0.10".
     for _key in ("NO_PROXY", "no_proxy"):
         _no_proxy_raw = os.environ.get(_key, "")
         _tokens = set(map(str.strip, filter(None, _no_proxy_raw.split(","))))
@@ -367,7 +367,7 @@ def _bootstrap_launcher_runtime(project_dir: str) -> None:
     _configure_multiprocessing_executable(project_dir)
     _install_logging_brace_compat()
     _initialize_launcher_context()
-    # 全局 patch requests 库的默认 User-Agent，防止 CF 拦截
+    # Globally patch requests' default User-Agent to avoid CF blocking.
     _patch_http_user_agents()
 
 
@@ -660,7 +660,7 @@ def _maybe_schedule_storage_restart() -> bool:
             "error_message": str(migration_result.get("error_message") or ""),
             "layout": storage_bootstrap.get("layout") or {},
             "restart_reason": restart_reason,
-            # 告诉属主由谁负责起下一代：属主重启是首选，自旋是无属主时的回退。
+            # Tell the owner who starts the next generation: prefer owner restarts, spinning only without an owner.
             "relaunch": "owner" if owner_relaunch else "self",
         },
     )
@@ -673,8 +673,8 @@ def _maybe_schedule_storage_restart() -> bool:
 
     release_single_instance_ownership()
     if owner_relaunch:
-        # 前台进程不自己复活。属主声明了会重启我们，就干净退出，让下一代由
-        # 属主 spawn —— 这样它天生就是被属主拥有、被属主监督的进程。
+        # Foreground processes never resurrect themselves. If owners promise restarts, exit cleanly
+        # and let them spawn successors, inherently owned and supervised by them.
         print("[Launcher] Storage restart delegated to owner; exiting cleanly", flush=True)
         return True
     _spawn_restarted_launcher()
@@ -682,8 +682,8 @@ def _maybe_schedule_storage_restart() -> bool:
 
 
 def _persist_post_startup_root_state(config_manager) -> None:
-    # 判定和写进同一个锁内事务，理由同 app/memory_server/runtime.py 那处：
-    # "中间没有 await"只挡得住同一循环上的协程，挡不住工作线程上的存储变更写。
+    # Decide and write inside one locked transaction, as in app/memory_server/runtime.py:
+    # no await protects same-loop coroutines, not storage writes on worker threads.
     with root_state_transaction():
         current_root_state = config_manager.load_root_state()
         if should_write_root_mode_normal_after_startup(current_root_state):
@@ -958,26 +958,26 @@ def setup_job_object():
         kernel32 = _get_windows_job_api()
         from ctypes import wintypes
 
-        # Job Object 常量
+        # Job Object constants.
         JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
-        # 先检查当前进程是否已在某个 Job 中（Steam 场景常见）
+        # First check whether the process already belongs to a Job, common under Steam.
         is_in_job = wintypes.BOOL(0)
         current_process = kernel32.GetCurrentProcess()
         if not kernel32.IsProcessInJob(current_process, None, ctypes.byref(is_in_job)):
             print(f"[Launcher] Warning: IsProcessInJob failed (err={_get_last_error()})", flush=True)
             is_in_job.value = 0
 
-        # 创建 Job Object
+        # Create Job Object.
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             print(f"[Launcher] Warning: Failed to create Job Object (err={_get_last_error()})", flush=True)
             return None
 
-        # 设置 Job Object 信息
-        # JOBOBJECT_EXTENDED_LIMIT_INFORMATION 结构体
-        # 我们只需要设置 BasicLimitInformation.LimitFlags
+        # Set Job Object information.
+        # JOBOBJECT_EXTENDED_LIMIT_INFORMATION structure.
+        # Only BasicLimitInformation.LimitFlags needs setting.
         info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
@@ -992,7 +992,7 @@ def setup_job_object():
             kernel32.CloseHandle(job)
             return None
 
-        # 将当前进程加入 Job Object
+        # Assign the current process to the Job.
         result = kernel32.AssignProcessToJobObject(job, current_process)
         if not result:
             err = _get_last_error()
@@ -1008,8 +1008,8 @@ def setup_job_object():
             kernel32.CloseHandle(job)
             return None
 
-        # 保持 handle 在进程生命周期内有效（模块级引用）
-        # 进程退出时句柄会关闭，触发 KILL_ON_JOB_CLOSE
+        # Keep the handle alive for process lifetime via module reference.
+        # Process exit closes handles, triggering KILL_ON_JOB_CLOSE.
         JOB_HANDLE = job
         print("[Launcher] Job Object created - child processes will auto-terminate on exit", flush=True)
         return job
@@ -1018,7 +1018,7 @@ def setup_job_object():
         print(f"[Launcher] Warning: Job Object setup failed: {e}", flush=True)
         return None
 
-# 服务器配置（按内存占用从轻到重排列，用于分步启动以降低峰值内存）
+# Server config ordered lightest to heaviest memory use for staged startup with lower peaks.
 SERVERS = [
     {
         'name': 'Memory Server',
@@ -1049,13 +1049,13 @@ SERVERS = [
     },
 ]
 
-# 不再启动主程序，用户自己启动 lanlan_frd.exe
+# Stop launching the main application; users launch lanlan_frd.exe themselves.
 
 
-# ===== 合并进程模式 =====
-# 打包时三个 FastAPI 服务跑在同一个进程里，共享 Python 运行时，
-# 省掉 2 份 CPython + uvicorn + 共享库的重复加载（约 150-200 MB）。
-# 每个服务仍然监听自己的端口，前端 / 服务间 HTTP 调用零改动。
+# ===== Merged-process mode =====
+# Packaged builds run three FastAPI services in one process sharing Python,
+# avoiding two duplicate CPython/uvicorn/shared-library loads (~150-200MB).
+# Each service retains its port, with no frontend/interservice HTTP changes.
 
 
 def _merged_health_issues(
@@ -1191,7 +1191,7 @@ def run_merged_servers() -> int:
 
     _reload_runtime_config_from_env()
 
-    # frozen 环境通用设置
+    # Common frozen-environment settings.
     if IS_FROZEN:
         if hasattr(sys, '_MEIPASS'):
             os.chdir(sys._MEIPASS)
@@ -1208,9 +1208,9 @@ def run_merged_servers() -> int:
 
     _proxy_kw = uvicorn_proxy_options()
 
-    # 分步 import（控制峰值内存 & 提供进度反馈），逐段计时：三段 import 串行坐在
-    # 端口就绪关键路径上，回归过一次没人发现（#1496 优化后被 openai 2.x 静默吃回
-    # 3.6 倍），日志留数字才能在用户报告启动慢时定位是哪段涨了。
+    # Stage and time imports to control memory peaks and show progress: all three serial imports
+    # sit on the port-readiness critical path. An unnoticed regression (openai 2.x silently consuming
+    # #1496's gains 3.6-fold) makes logged timings essential for diagnosing startup reports.
     _t_import = time.perf_counter()
     print("[Merged] Importing memory_server...", flush=True)
     from app import memory_server
@@ -1247,10 +1247,10 @@ def run_merged_servers() -> int:
         for (_app, _port, name), server in zip(_apps, servers)
     }
 
-    # ── 信号处理 ──
-    # 3 个 uvicorn.Server 各自 install_signal_handlers() 会互相覆盖
-    # （最后一个赢），导致 Ctrl+C 只通知 1 个退出，其余卡死。
-    # 禁用各自的处理器，统一安装一个全局处理器。
+    # ── Signal handling ──
+    # Three uvicorn.Server install_signal_handlers() overwrite one another
+    # (last wins), so Ctrl+C stops only one and hangs others.
+    # Disable individual handlers and install one global handler.
     for s in servers:
         _disable_uvicorn_signal_handlers(s)
 
@@ -1295,7 +1295,7 @@ def run_merged_servers() -> int:
     def _on_exit_signal(_sig, _frame):
         nonlocal _exiting
         if _exiting:
-            # 第二次 Ctrl+C → 强制退出（与多进程模式行为一致）
+            # Second Ctrl+C forces exit, matching multiprocess mode.
             print("\n[Merged] Force exit!", flush=True)
             os._exit(1)
         _begin_merged_shutdown(reason=f"signal:{_sig}")
@@ -1337,7 +1337,7 @@ def run_merged_servers() -> int:
     _merged_shutdown_request = _begin_merged_shutdown
 
     async def _serve_all() -> None:
-        # 并发启动所有 uvicorn.Server
+        # Start all uvicorn.Server instances concurrently.
         tasks = {
             name: asyncio.create_task(
                 _serve_merged_server(server, name),
@@ -1402,7 +1402,7 @@ def run_merged_servers() -> int:
     try:
         asyncio.run(_serve_all())
     except KeyboardInterrupt:
-        # 备用路径：如果自定义信号处理器未拦截到（理论上不会走到这里）
+        # Fallback if custom signal handlers miss the signal; theoretically unreachable.
         if not _exiting:
             for s in servers:
                 s.should_exit = True
@@ -1429,7 +1429,7 @@ def run_memory_server(
     try:
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
-        # 确保工作目录正确
+        # Ensure correct working directory.
         if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
@@ -1437,7 +1437,7 @@ def run_memory_server(
             else:
                 # Nuitka
                 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-            # 禁用 typeguard（子进程需要重新禁用）
+            # Disable typeguard again in child processes.
             try:
                 import typeguard
                 def dummy_typechecked(func=None, **kwargs):
@@ -1455,7 +1455,7 @@ def run_memory_server(
 
         print(f"[Memory Server] Starting on port {MEMORY_SERVER_PORT}")
 
-        # 使用 Server 对象，在启动后通知父进程
+        # Use Server objects and notify parents after startup.
         config = uvicorn.Config(
             app=memory_server.app,
             host="127.0.0.1",
@@ -1464,9 +1464,9 @@ def run_memory_server(
             **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
-        # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
-        # 处置，把 Ctrl+C 重新变成"每个子服务各自退出"。禁掉它，保持单一
-        # launcher 拥有的信号策略（与合并模式同一处理）。
+        # uvicorn in the main thread overrides _apply_child_process_signal_policy,
+        # restoring per-service Ctrl+C exits. Disable it, retaining the launcher's single
+        # signal policy, as in merged mode.
         _disable_uvicorn_signal_handlers(server)
 
         if shutdown_complete_event is not None:
@@ -1479,8 +1479,8 @@ def run_memory_server(
 
             memory_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
-        # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
-        # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
+        # Group signals (owner death / forced fallback) bypass ordered launcher shutdown;
+        # let this process drive graceful uvicorn exit, preserving release/cleanup order.
         register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
 
         if shutdown_event is not None:
@@ -1497,28 +1497,28 @@ def run_memory_server(
 
             threading.Thread(target=_watch_shutdown, name="memory-shutdown-watch", daemon=True).start()
 
-        # 在后台线程中运行服务器
+        # Run the server in a background thread.
         import asyncio
 
         async def run_with_notify():
-            # 启动服务器
+            # Start the server.
             await server.serve()
 
-        # 启动线程来运行服务器，并在启动后通知
+        # Start the server thread and notify after startup.
         def run_server():
-            # 创建事件循环
+            # Create event loop.
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            # 添加启动完成的回调
+            # Add startup-complete callback.
             async def startup():
                 print(f"[Memory Server] Running on port {MEMORY_SERVER_PORT}")
                 ready_event.set()
 
-            # 将 startup 添加到服务器的启动事件
+            # Attach startup to server startup events.
             server.config.app.router.add_event_handler("startup", startup)
 
-            # 运行服务器
+            # Run server.
             loop.run_until_complete(server.serve())
 
         run_server()
@@ -1541,7 +1541,7 @@ def run_agent_server(
     try:
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
-        # 确保工作目录正确
+        # Ensure correct working directory.
         if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
@@ -1549,7 +1549,7 @@ def run_agent_server(
             else:
                 # Nuitka
                 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-            # 禁用 typeguard（子进程需要重新禁用）
+            # Disable typeguard again in child processes.
             try:
                 import typeguard
                 def dummy_typechecked(func=None, **kwargs):
@@ -1567,7 +1567,7 @@ def run_agent_server(
 
         print(f"[Agent Server] Starting on port {TOOL_SERVER_PORT}")
 
-        # Agent Server 不需要等待，立即通知就绪
+        # Agent Server needs no wait; notify readiness immediately.
         ready_event.set()
 
         config = uvicorn.Config(
@@ -1578,9 +1578,9 @@ def run_agent_server(
             **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
-        # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
-        # 处置，把 Ctrl+C 重新变成"每个子服务各自退出"。禁掉它，保持单一
-        # launcher 拥有的信号策略（与合并模式同一处理）。
+        # uvicorn in the main thread overrides _apply_child_process_signal_policy,
+        # restoring per-service Ctrl+C exits. Disable it, retaining the launcher's single
+        # signal policy, as in merged mode.
         _disable_uvicorn_signal_handlers(server)
 
         if shutdown_complete_event is not None:
@@ -1593,8 +1593,8 @@ def run_agent_server(
 
             agent_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
-        # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
-        # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
+        # Group signals (owner death / forced fallback) bypass ordered launcher shutdown;
+        # let this process drive graceful uvicorn exit, preserving release/cleanup order.
         register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
 
         if shutdown_event is not None:
@@ -1630,7 +1630,7 @@ def run_main_server(
     try:
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
-        # 确保工作目录正确
+        # Ensure correct working directory.
         if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
@@ -1647,7 +1647,7 @@ def run_main_server(
 
         print(f"[Main Server] Starting on port {MAIN_SERVER_PORT}")
 
-        # 直接运行 FastAPI app，不依赖 main_server 的 __main__ 块
+        # Run FastAPI app directly, independent of main_server __main__.
         config = uvicorn.Config(
             app=main_server.app,
             host="127.0.0.1",
@@ -1658,9 +1658,9 @@ def run_main_server(
             **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
-        # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
-        # 处置，把 Ctrl+C 重新变成"每个子服务各自退出"。禁掉它，保持单一
-        # launcher 拥有的信号策略（与合并模式同一处理）。
+        # uvicorn in the main thread overrides _apply_child_process_signal_policy,
+        # restoring per-service Ctrl+C exits. Disable it, retaining the launcher's single
+        # signal policy, as in merged mode.
         _disable_uvicorn_signal_handlers(server)
         try:
             main_server.set_start_config(
@@ -1685,8 +1685,8 @@ def run_main_server(
 
             main_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
-        # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
-        # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
+        # Group signals (owner death / forced fallback) bypass ordered launcher shutdown;
+        # let this process drive graceful uvicorn exit, preserving release/cleanup order.
         register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
 
         if shutdown_event is not None:
@@ -1703,18 +1703,18 @@ def run_main_server(
 
             threading.Thread(target=_watch_shutdown, name="main-shutdown-watch", daemon=True).start()
 
-        # 添加启动完成的回调
+        # Add startup-complete callback.
         async def startup():
             print(f"[Main Server] Running on port {MAIN_SERVER_PORT}")
             ready_event.set()
 
-        # 将 startup 添加到服务器的启动事件
+        # Attach startup to server startup events.
         main_server.app.router.add_event_handler("startup", startup)
 
-        # 运行服务器
+        # Run server.
         server.run()
     except Exception as e:
-        # 兜底崩溃日志：即使主日志系统未初始化，也能保留首个异常原因
+        # Fallback crash log retains the first exception even before logging initializes.
         try:
             import traceback
             crash_file = os.path.join(os.getcwd(), "main_server_bootstrap_crash.log")
@@ -1837,7 +1837,7 @@ def _classify_port_conflict(
     health = probe_neko_health(port)
     if health is not None:
         return "neko", get_port_owners(port)
-    # 将 excluded_ranges 解析一次，避免重复 netsh 子进程调用
+    # Parse excluded_ranges once, avoiding repeated netsh processes.
     ranges = excluded_ranges if excluded_ranges is not None else get_hyperv_excluded_ranges()
     if is_port_in_excluded_range(port, ranges):
         return "hyperv_excluded", []
@@ -1893,14 +1893,14 @@ def apply_port_strategy() -> bool | str:
     existing_owners_by_key: dict[str, list] = {}
     reserved: set[int] = set()
 
-    # Hyper-V/WSL 保留端口范围只有端口**已经**绑不上时才用得到，而查询它要
-    # spawn 一个 `netsh interface ipv4 show excludedportrange` 子进程——本机实测
-    # 122 / 49 / 50 ms。原来它无条件跑在所有 bind 探测**之前**，也就是每一次正常
-    # 启动都白付一次子进程，而正常启动恰恰是没有端口冲突、结果用不上的那种。
+    # Hyper-V/WSL reserved ranges matter only **after** bind fails. Querying requires
+    # spawning `netsh interface ipv4 show excludedportrange`, measured locally at
+    # 122 /49 /50ms. Previously unconditional before every bind probe,
+    # normal conflict-free startup paid for an unused result.
     #
-    # 改成用到时再查。仍然只查一次（结果缓存在闭包里），原来那句"避免重复子进程
-    # 调用"照旧成立；那行 Detected 日志跟着挪到真的查过之后，免得报一个没查过的
-    # 数字。
+    # Query lazily when needed, still once via closure caching, retaining the original
+    # no-repeated-subprocess guarantee. Move Detected logging after the actual query,
+    # never reporting an unqueried number.
     _excluded_ranges_cache: list[list[tuple[int, int]]] = []
 
     def _excluded_ranges() -> list[tuple[int, int]]:
@@ -1921,7 +1921,7 @@ def apply_port_strategy() -> bool | str:
             reserved.add(preferred)
             continue
 
-        # 端口不可绑定，识别具体原因（同时获取 owners 避免重复查询）
+        # Diagnose unbindable ports, retrieving owners at once to avoid duplicate queries.
         reason, owners = _classify_port_conflict(preferred, _excluded_ranges())
 
         if reason == "neko":
@@ -1933,7 +1933,7 @@ def apply_port_strategy() -> bool | str:
             existing_owners_by_key[key] = owners
             continue
 
-        # 需要选择回退端口
+        # Select fallback ports.
         fallback = _pick_fallback_port(preferred, reserved)
         if fallback is None:
             report_startup_failure(
@@ -2101,8 +2101,8 @@ def show_spinner(stop_event: threading.Event, message: str = "正在启动服务
         sys.stdout.write(f'\r{message}... {next(spinner)} ')
         sys.stdout.flush()
         time.sleep(0.1)
-    sys.stdout.write('\r' + ' ' * 60 + '\r')  # 清除动画行
-    sys.stdout.write('\n')  # 换行，确保后续输出在新行
+    sys.stdout.write('\r' + ' ' * 60 + '\r')  # Clear animation line.
+    sys.stdout.write('\n')  # Start a new line for subsequent output.
     sys.stdout.flush()
 
 def start_server(server: Dict) -> bool:
@@ -2116,7 +2116,7 @@ def start_server(server: Dict) -> bool:
             report_startup_failure(f"Start failed: {server['name']} port {port} already in use{owner_suffix}")
             return False
 
-        # 根据模块名选择启动函数
+        # Select startup function by module name.
         if server['module'] == 'memory_server':
             target_func = run_memory_server
         elif server['module'] == 'agent_server':
@@ -2127,14 +2127,14 @@ def start_server(server: Dict) -> bool:
             report_startup_failure(f"Start failed: {server['name']} has unknown module")
             return False
 
-        # 创建进程间同步事件
+        # Create interprocess synchronization event.
         server['ready_event'] = Event()
         server['import_event'] = Event()
         server['shutdown_event'] = Event()
         server['shutdown_complete_event'] = Event()
 
-        # 使用 multiprocessing 启动服务器
-        # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
+        # Start servers with multiprocessing.
+        # Do not set daemon=True: main_server creates children itself.
         server['process'] = Process(
             target=target_func,
             args=(
@@ -2157,7 +2157,7 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
     """Wait for all servers to finish starting"""
     print("\n等待服务器准备就绪...", flush=True)
 
-    # 启动动画线程
+    # Start animation thread.
     stop_spinner = threading.Event()
     spinner_thread = threading.Thread(target=show_spinner, args=(stop_spinner, "检查服务器状态"))
     spinner_thread.daemon = True
@@ -2166,14 +2166,14 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
     start_time = time.time()
     all_ready = False
 
-    # 第一步：等待所有端口就绪
+    # Step 1: await all ports.
     while time.time() - start_time < timeout:
         # Servers can start plugin hosts while still getting ready, and a
         # storage restart may end Main at any point here: refresh before
         # checking for an exited server (snapshots accumulate, so a refresh
         # after Main is gone loses nothing).
         _refresh_running_descendants()
-        # 若某个子进程提前退出，立即报错而不是等到超时
+        # Report early child exit immediately rather than waiting for timeout.
         for server in SERVERS:
             proc = server.get('process')
             if proc is not None and not proc.is_alive() and not check_port(server['port']):
@@ -2206,7 +2206,7 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
 
         time.sleep(0.5)
 
-    # 第二步：等待所有服务器的 ready_event（同步初始化完成）
+    # Step 2: await every ready_event for synchronous initialization completion.
     if ready_count == len(SERVERS):
         for server in SERVERS:
             remaining_time = timeout - (time.time() - start_time)
@@ -2214,13 +2214,13 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
                 if server['ready_event'].wait(timeout=remaining_time):
                     continue
                 else:
-                    # 超时
+                    # Timeout.
                     break
         else:
-            # 所有服务器都就绪了
+            # All servers ready.
             all_ready = True
 
-    # 停止动画
+    # Stop animation.
     stop_spinner.set()
     spinner_thread.join()
 
@@ -2238,7 +2238,7 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
         print("=" * 60, flush=True)
         print("\n", flush=True)
         report_startup_failure("Startup timeout: at least one service did not become ready")
-        # 显示未就绪的服务器
+        # Show unready servers.
         for server in SERVERS:
             if not server['ready_event'].is_set():
                 print(f"  - {server['name']} 初始化未完成", flush=True)
@@ -2535,7 +2535,7 @@ def cleanup_servers():
                 shutdown_complete_evt = server.get('shutdown_complete_event')
                 graceful_timeout = float(server.get('graceful_shutdown_timeout') or 8)
 
-                # 先请求子进程优雅退出
+                # First request graceful child exits.
                 if proc.is_alive():
                     if shutdown_evt is not None:
                         shutdown_evt.set()
@@ -2554,7 +2554,7 @@ def cleanup_servers():
                         except KeyboardInterrupt:
                             _teardown_print(f"[Launcher] {server['name']} join interrupted, escalating shutdown")
 
-                # 第二步：仍存活则发送终止信号
+                # Step 2: terminate survivors.
                 if proc.is_alive():
                     proc.terminate()
                     try:
@@ -2562,7 +2562,7 @@ def cleanup_servers():
                     except KeyboardInterrupt:
                         _teardown_print(f"[Launcher] {server['name']} terminate wait interrupted, forcing shutdown")
 
-                # 第三步：仍存活则 kill
+                # Step 3: kill survivors.
                 if proc.is_alive():
                     proc.kill()
                     try:
@@ -2570,7 +2570,7 @@ def cleanup_servers():
                     except KeyboardInterrupt:
                         _teardown_print(f"[Launcher] {server['name']} kill wait interrupted, moving on")
 
-                # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
+                # Step 4: force-kill full trees only while parents still live, avoiding PID-reuse mistakes.
                 if proc.is_alive():
                     pid = proc.pid
                     if pid:
@@ -2582,7 +2582,7 @@ def cleanup_servers():
                                 check=False
                             )
                         else:
-                            # macOS / Linux 下兜底强杀整个进程树
+                            # macOS/Linux fallback force-kills whole trees.
                             try:
                                 import psutil
                                 try:
@@ -2594,7 +2594,7 @@ def cleanup_servers():
                                     pass
                             except ImportError:
                                 try:
-                                    # 尽力而为的 pkill 兜底
+                                    # Best-effort pkill fallback.
                                     subprocess.run(
                                         ["pkill", "-9", "-P", str(pid)],
                                         stdout=subprocess.DEVNULL,
@@ -2608,10 +2608,10 @@ def cleanup_servers():
             except Exception as e:
                 _teardown_print(f"✗ {server['name']} 关闭失败: {e}")
 
-        # 不在这里关闭 Job handle。这个 Job 带 KILL_ON_JOB_CLOSE 且 launcher 自己
-        # 就是成员，关掉最后一个句柄会连本进程一起终止——cleanup_servers 之后的
-        # 一切（存储重启调度、单实例锁释放、退出码）都会变成死代码。句柄在进程
-        # 退出时由内核关闭，那时终止整个 Job 正是我们要的语义。
+        # Do not close Job handles here: KILL_ON_JOB_CLOSE includes the launcher itself,
+        # so closing the final handle terminates this process and makes everything after cleanup_servers
+        # (storage restart scheduling, single-instance unlock, exit code) dead code. The kernel closes
+        # handles on process exit, exactly when whole-Job termination is desired.
     finally:
         _cleanup_complete.set()
 
@@ -2625,10 +2625,10 @@ def _safe_getppid_for_owner_check() -> int:
 
 def _handle_termination_signal(signum, _frame):
     """Handle termination signals, doing our best to ensure cleanup logic runs."""
-    # 属主之死的清扫正在进行：这一发 TERM 就是我们自己那次组级清扫打回本进程的。
-    # 此刻退出会把「TERM → 宽限 → 组级 KILL」停在第一步，正好放走它要收割的那些
-    # 孙子进程。_handle_owner_death 必定以 os._exit 收尾，所以在它跑完之前忽略
-    # 停止请求是正确语义，而不是把信号吞了。
+    # Owner-death cleanup is running; this TERM is our own group cleanup signaling us.
+    # Exiting now stops TERM ->grace ->group KILL at step one, releasing the grandchildren
+    # it must reap. _handle_owner_death always ends with os._exit, so ignoring stop requests
+    # until cleanup finishes is correct semantics, not signal swallowing.
     # Also yield once the guard has merely *fired*. Between fire() setting that
     # flag and _handle_owner_death setting _owner_death_in_progress there are a
     # few dozen bytecodes, and on Linux the pdeathsig callback runs on this very
@@ -2641,14 +2641,14 @@ def _handle_termination_signal(signum, _frame):
     if _owner_death_in_progress or (guard is not None and guard.fired):
         return
 
-    # 兜底：属主已经死了，但送达的是普通 SIGTERM 而不是 guard 的专用信号
-    # （比如属主用组级 TERM 清扫）。属主之死需要组级清扫，而这条普通关闭路径
-    # 没有——所以改走 _handle_owner_death，它不会返回。
+    # Fallback: dead owner but ordinary SIGTERM rather than guard-specific signal
+    # (e.g. owner uses group TERM). Owner death requires group cleanup absent from this
+    # ordinary shutdown path; use nonreturning _handle_owner_death instead.
     #
-    # 只在属主就是直连父进程时才用这条判据。交接世代里属主是祖父，我们的父进程
-    # 是那个已经按计划退出的上一代 launcher，于是「getppid() 不等于属主」在正常
-    # 运行下恒为真——那样任何一次普通 SIGTERM 都会被误读成属主之死，进而触发组级
-    # 清扫。guard 自己知道这个区别，问它。
+    # Use this criterion only if owner is the direct parent. In handoff generations, owner
+    # is a grandparent and direct parent is the previous launcher that exited as planned;
+    # getppid()!=owner is normally always true, misreading every ordinary SIGTERM as owner death
+    # and triggering group cleanup. Ask the guard, which knows the distinction.
     if (
         guard is not None
         and guard.parent_pid > 1
@@ -2722,15 +2722,15 @@ def _handle_owner_death(mechanism: str) -> None:
     try:
         emit_frontend_event("owner_exit", {"mechanism": mechanism})
     except Exception:
-        # 通知前端只是尽力而为：属主已死，stdout 管道很可能已断。任何 IPC
-        # 失败都不能挡住下面的拆除流程与最终的 os._exit(0)。
+        # Frontend notification is best-effort: dead owners often leave broken stdout pipes. IPC
+        # failures must not block teardown and final os._exit(0).
         pass
 
-    # 合并模式（打包默认）下三个 server 就在本进程里，SERVERS 里没有任何子进程
-    # 句柄，cleanup_servers() 无事可做。必须先驱动有序关停，让 Main 在 Memory
-    # 还活着的时候跑完 release/cloudsave，否则下面几行会直接 os._exit 把它连根
-    # 切掉。收尾放到独立线程：Linux 的 pdeathsig 回调跑在主线程信号处理器里，
-    # 而 asyncio 事件循环也在主线程——就地等待会让我们等的那个关停永远推进不了。
+    # Merged mode (packaged default) hosts three servers in-process, with no child handles
+    # in SERVERS, so cleanup_servers() does nothing. Drive ordered shutdown first so Main
+    # finishes release/cloudsave while Memory lives, before os._exit cuts it off below.
+    # Run cleanup in a separate thread: Linux pdeathsig callbacks run in main-thread signal handlers,
+    # as does asyncio; waiting there prevents awaited shutdown from progressing.
     requester = _merged_shutdown_request
     if requester is not None:
         try:
@@ -2761,8 +2761,8 @@ def _handle_owner_death(mechanism: str) -> None:
 def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
     """Second half of owner-death teardown: cleanup, release, group sweep, exit."""
     if wait_for_merged:
-        # 有界等待：超时后照常收尾。_begin_merged_shutdown 自带的看门狗也会在
-        # 同样的预算后 os._exit(1)，两道保险都不会让这里无限期挂住。
+        # Bound waits; still finish on timeout. _begin_merged_shutdown's watchdog also
+        # os._exit(1)s after the same budget; neither protection allows indefinite hangs.
         if not _merged_shutdown_complete.wait(OWNER_DEATH_MERGED_SHUTDOWN_BUDGET):
             _teardown_print(
                 "[Launcher] Warning: merged shutdown did not finish within "
@@ -2801,22 +2801,22 @@ def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
         sys.stdout.flush()
         sys.stderr.flush()
     except Exception:
-        # 属主关掉管道后 flush 抛 BrokenPipeError 是常态；退出路径不能因此中断。
+        # BrokenPipeError on flush after owners close pipes is normal; never interrupt exit.
         pass
 
-    # 最后一步：收掉 cleanup 未记录的孙子进程（插件、MCP、Chromium…）。
+    # Finally reap grandchildren missed by cleanup (plugins, MCP, Chromium...).
     #
-    # 要如实说明它的适用范围：这一步只在 launcher **自己是进程组组长**时才发生。
-    # 而最常见的拓扑恰恰不是——属主直接 spawn 我们、我们继承属主的组，此时
-    # `_own_process_group_id()` 恒为 None，下面整段是死代码。所以它不是"POSIX 上
-    # 对应 Windows Job 的收容锚点"（早先的注释这么写，是过度声称）：Windows 的 Job
-    # 无条件生效，这一段有条件。终端直接跑、或属主以 detached 方式拉起时才有它。
+    # State the limit accurately: this runs only when the launcher **leads its own process group**.
+    # Most common topology does not: owners spawn us into their inherited group,
+    # making _own_process_group_id() always None and this entire block dead. It is not POSIX's
+    # equivalent of Windows Job containment (the old comment overclaimed): Windows Jobs
+    # apply unconditionally; this applies only for direct terminal launches or detached owner spawns.
     #
-    # 非组长拓扑下真正在收容的是：cleanup_servers() 对仍存活的已记录 server 做
-    # psutil 整树强杀，以及各 server 自己的优雅停机路径。裸露的只剩一类——被一个
-    # **已经死掉**的 server 遗弃的后代：它们当场被内核改挂到 init，既不再是该
-    # server 的后代，也不在我们能清扫的组里。那是 main 上的既有缺口（本 PR 只改了
-    # 那段的缩进），要补需要按 create_time 记名跟踪后代，属于独立改动。
+    # Nonleader topologies rely on cleanup_servers() psutil tree-killing recorded surviving servers
+    # and each server's graceful shutdown. Only descendants orphaned by an **already dead**
+    # server remain exposed: the kernel reparents them to init, outside both that server's
+    # descendants and our cleanup group. This is a preexisting main-branch gap (this PR only
+    # changed indentation), requiring separate create_time-based descendant tracking.
     _escalate_own_process_group()
     os._exit(0)
 
@@ -2835,7 +2835,7 @@ def _escalate_own_process_group() -> None:
     try:
         os.killpg(os.getpid(), signal.SIGKILL)
     except OSError:
-        # ESRCH/EPERM 意味着没有可收的组成员，交给调用方继续退出。
+        # ESRCH/EPERM means no reapable group members; callers continue exiting.
         pass
 
 
@@ -2897,9 +2897,9 @@ def _acquire_single_instance_ownership() -> bool:
             retry_interval=RESTART_HANDOFF_LOCK_RETRY_INTERVAL,
         )
     except OSError as exc:
-        # 拿不到锁文件不等于"已有实例在跑"（只读 HOME、磁盘满、权限）。这是
-        # unknown，不能塌缩成"有人在跑"而拒绝启动，也不能塌缩成"没人在跑"而
-        # 谎称唯一性成立——如实上报，照常启动。
+        # Failure to acquire lock files does not prove another instance (read-only HOME/full disk/permissions).
+        # Unknown cannot mean running and reject startup, nor absent and falsely claim uniqueness;
+        # report honestly and start normally.
         print(
             f"[Launcher] Warning: single-instance lock unavailable ({exc}); "
             "starting without a uniqueness proof",
@@ -2961,7 +2961,7 @@ def _acquire_single_instance_ownership() -> bool:
             "single_instance",
             {"role": "duplicate", "owner": owner, "record_path": str(single_instance.record_path())},
         )
-        # 保留既有事件名，老版本前端仍能识别"已有实例在启动"这一场景。
+        # Retain existing event names so older frontends recognize another instance starting.
         emit_frontend_event("startup_in_progress", {"message": msg, "owner": owner})
         return False
 
@@ -3159,11 +3159,11 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
         import_result = get_cloudsave_manager(config_manager).import_if_needed(
             reason="launcher_phase0_prelaunch_import",
             fence_already_active=True,
-            # 导入删掉的本地角色记成串门退役项，由主服务启动对账补完退役
+            # Record imported deleted local characters as retired visit entries; main-service startup reconciliation finishes retirement.
             on_characters_removed=removed_characters_recorder(config_manager),
         )
 
-    # 同上：判定和写不能被别的线程插进来，整段进锁。
+    # Likewise, lock the entire decision/write so other threads cannot intervene.
     with root_state_transaction():
         load_root_state = getattr(config_manager, "load_root_state", None)
         current_root_state = load_root_state() if callable(load_root_state) else {"mode": ROOT_MODE_NORMAL}
@@ -3217,19 +3217,19 @@ def _is_local_state_directory_error(exc) -> bool:
 
 def main():
     """Main entry point"""
-    # 支持 multiprocessing 在 Windows 上的打包
+    # Support frozen Windows multiprocessing.
     freeze_support()
 
-    # ── 发送 startup_begin，便于前端绑定本次启动会话 ──
+    # ── Send startup_begin so frontends bind this startup session ──
     emit_frontend_event("startup_begin", {"instance_id": INSTANCE_ID})
     os.environ["NEKO_LAUNCHER_PID"] = str(os.getpid())
 
-    # ── 前台常驻：属主一死，整套拓扑自清理 ──────────────
+    # ── Foreground lifetime: owner death cleans the whole topology ──────────────
     install_parent_death_guard()
 
-    # ── 单实例自证：进程生命周期文件锁 + 权威运行时记录 ──
+    # ── Single-instance proof: lifetime file lock +authoritative runtime record ──
     if not _acquire_single_instance_ownership():
-        return 0  # 非错误场景：前端应附加到已有实例
+        return 0  # Nonerror: frontend attaches to the existing instance.
 
     restart_scheduled = False
     allow_storage_restart = False
@@ -3237,11 +3237,11 @@ def main():
     try:
         port_result = apply_port_strategy()
         if port_result == "attach":
-            # 已有 N.E.K.O 后端在运行，无需再次拉起。这里**不**写运行时记录：
-            # 记录的寿命刻意绑定在锁的寿命上，而我们马上就要在 finally 里释放锁
-            # 并删掉记录——写了也是死写入。属主要认的那个既有后端，
-            # apply_port_strategy() 已经通过 port_plan / attach_existing 两条
-            # NEKO_EVENT 把 instance_id 与端口推过去了，那才是它消费的通道。
+            # Existing N.E.K.O backend needs no relaunch. **Do not** write runtime records here:
+            # lifetime deliberately follows the lock, released with record deletion in finally imminently;
+            # writing would be dead work. apply_port_strategy already sent the existing backend's
+            # instance_id and ports through port_plan /attach_existing
+            # NEKO_EVENTs, the actual owner-consumed channel.
             return 0
         if not port_result:
             return 1
@@ -3260,7 +3260,7 @@ def main():
 
         register_shutdown_hooks()
 
-        # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
+        # Create Job Object so killing the main process also terminates children.
         setup_job_object()
 
         _resolve_storage_layout_for_launch()
@@ -3287,16 +3287,16 @@ def main():
                 flush=True,
             )
 
-        # 自动安装 Playwright Chromium（browser-use 依赖）
+        # Automatically install Playwright Chromium for browser-use.
         _ensure_playwright_browsers()
 
         print("=" * 60, flush=True)
         print("N.E.K.O. 服务器启动器", flush=True)
         print("=" * 60, flush=True)
 
-        # ── 合并 / 多进程模式选择 ──
-        # 打包环境默认合并（省内存），开发环境默认分离（方便调试）。
-        # 可通过环境变量 NEKO_MERGED=1/0 强制覆盖。
+        # ── Merged/multiprocess selection ──
+        # Packaged defaults merged to save memory; development defaults separate for debugging.
+        # NEKO_MERGED=1/0 overrides either.
         selected_mode, mode_reason = _select_launcher_mode()
         if mode_reason == "partial_existing_services":
             print(
@@ -3321,15 +3321,15 @@ def main():
 
         os.environ["NEKO_LAUNCH_MODE"] = "multi"
 
-        # 1. 分步启动服务器（错开 import 阶段以降低内存峰值）
-        #    Windows spawn 模式下每个子进程独立加载所有依赖，
-        #    同时 import 会导致 3 个进程同时分配大量临时对象，
-        #    在 <=4GB 内存的机器上容易 OOM。
-        #    只需等 import 完成（内存稳定）即可放行下一个，
-        #    后续 uvicorn 初始化很轻量，可并行。
+        # 1. Stage server startup to stagger imports and reduce memory peaks.
+        #    Windows spawn loads dependencies independently per child;
+        #    concurrent imports allocate many temporary objects in all three processes,
+        #    risking OOM on <=4GB machines.
+        #    Allow the next once import finishes and memory stabilizes;
+        #    later lightweight uvicorn initialization may run concurrently.
         print("\n正在启动服务器...\n", flush=True)
         all_started = True
-        import_timeout = 90  # 单个服务 import 阶段超时秒数
+        import_timeout = 90  # Per-service import-stage timeout seconds.
         for i, server in enumerate(SERVERS):
             if not start_server(server):
                 all_started = False
@@ -3376,7 +3376,7 @@ def main():
             cleanup_servers()
             return 1
 
-        # 2. 等待最后一个服务器也准备就绪
+        # 2. Await the final server's readiness.
         wait_result = wait_for_servers()
         if wait_result is not True:
             if wait_result == STARTUP_WAIT_RESULT_STORAGE_RESTART:
@@ -3388,7 +3388,7 @@ def main():
             cleanup_servers()
             return 1
 
-        # 3. 服务器已启动，通知前端
+        # 3. Notify frontend that servers started.
         try:
             _config_manager = get_config_manager(APP_NAME)
             _persist_post_startup_root_state(_config_manager)
@@ -3416,9 +3416,9 @@ def main():
         print("=" * 60, flush=True)
         print("", flush=True)
 
-        # 持续运行，监控服务器状态
-        # agent_server 崩溃不应牵连 main/memory，仅记录日志。
-        # 只有 main_server 或 memory_server 死亡才触发全局关闭。
+        # Run continuously, monitoring servers.
+        # agent_server crashes only log, without affecting main/memory.
+        # Only main_server or memory_server death triggers global shutdown.
         _CRITICAL_MODULES = {"memory_server", "main_server"}
         _reported_exits: set[str] = set()
         while True:
@@ -3439,7 +3439,7 @@ def main():
                         print(f"\n[Launcher] {s['name']} 已退出 (exitcode={s['process'].exitcode})，不影响核心服务", flush=True)
             if any_critical_dead:
                 break
-            # 对复用已有实例的服务进行健康探测
+            # Health-check reused existing-instance services.
             reused = [s for s in SERVERS if s.get('process') is None and s.get('port')]
             for s in reused:
                 if probe_neko_health(s['port']) is None:
@@ -3472,13 +3472,13 @@ def main():
     finally:
         print("\n正在关闭所有进程...", flush=True)
 
-        # 尝试优雅关闭
+        # Try graceful shutdown.
         cleanup_servers()
 
-        # 等待一段时间，确认进程是否真的无法终止
+        # Wait to confirm processes really cannot terminate.
         print("\n等待进程清理完成...", flush=True)
 
-        # 检查是否还有存活的进程
+        # Check remaining live processes.
         has_alive = any(
             server.get('process') and server['process'].is_alive()
             for server in SERVERS
@@ -3489,7 +3489,7 @@ def main():
 
             try:
                 if hasattr(os, 'killpg'):
-                    # POSIX: 逐个终止子进程，避免向自身进程组发送 SIGKILL
+                    # POSIX: terminate children individually, avoiding SIGKILL to our own group.
                     for server in SERVERS:
                         proc = server.get('process')
                         if not proc or not proc.is_alive():
@@ -3516,7 +3516,7 @@ def main():
                             pass
                     time.sleep(0.5)
                 else:
-                    # Windows: 使用 taskkill 强制杀死进程树
+                    # Windows: taskkill force-kills process trees.
                     import subprocess
                     for server in SERVERS:
                         proc = server.get('process')
@@ -3529,10 +3529,10 @@ def main():
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     time.sleep(0.5)
             except Exception as e:
-                # 强制终止失败，忽略错误（进程可能已经退出）
+                # Ignore forced-termination failures; processes may already have exited.
                 print(f"强制终止进程组时出错（可能进程已退出）: {e}", flush=True)
 
-            # 强制终止后重新检查是否还有存活的进程
+            # Recheck survivors after forced termination.
             has_alive = any(
                 server.get('process') and server['process'].is_alive()
                 for server in SERVERS
@@ -3562,14 +3562,14 @@ def main():
                 print(f"[Launcher] Warning: failed to schedule storage migration restart: {e}", flush=True)
                 restart_scheduled = False
 
-        # 交接路径已在 _maybe_schedule_storage_restart 里先释放过锁并把句柄置空；
-        # 这里再判一次，是为了覆盖调度本身抛异常、锁仍在手上的分支。
+        # Handoff already unlocked and cleared handles in _maybe_schedule_storage_restart;
+        # recheck here for scheduling exceptions leaving the lock held.
         # Not while an owner-death teardown is running: its thread is still
         # sweeping the process group, and releasing here would reopen the same
         # window the teardown path just closed.
         if not restart_scheduled and not _owner_death_in_progress:
             release_single_instance_ownership()
-        # 如果还有残留进程，使用非零退出码
+        # Use a nonzero exit code if processes remain.
         if has_alive:
             sys.exit(1)
 

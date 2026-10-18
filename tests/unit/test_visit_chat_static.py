@@ -91,7 +91,7 @@ def test_onopen_sends_visit_bind_with_the_csrf_token():
     assert "_sendVisitBind(_thisSocket)" in onopen
     bind = _function_body(source, "_sendVisitBind")
     assert "action: 'visit_bind'" in bind and "csrf_token: token" in bind
-    # token 与本机 HTTP 变更端点同一个来源；nekoLocalMutationSecurity 对外只有 getMutationHeaders / refreshToken
+    # Token uses the same source as local HTTP mutation endpoints; nekoLocalMutationSecurity exposes only getMutationHeaders / refreshToken
     token = _function_body(source, "_visitCsrfToken")
     assert "security.getMutationHeaders()" in token and "security.refreshToken()" in token
     assert "getToken" not in token
@@ -112,7 +112,7 @@ def test_chat_surface_handles_every_state_change_action_of_the_design():
     body = _function_body(_read(CHAT), "onStateChange")
     cases = set(re.findall(r"case '([a-z_]+)':", body))
     assert cases == _design_state_actions()
-    # invite_ready 是邀请码送到 host 前端的唯一途径
+    # invite_ready is the only path delivering invite codes to the host frontend
     assert "visit.inviteCode = frame.invite_code" in body
 
 
@@ -151,14 +151,14 @@ def test_chat_window_skips_the_iframe_but_still_renders_lines():
     bridge = block.index("nekoVisitParentBridge.onStateChange")
     guard = block.rfind("_isVisitChatFollowerWindow()", 0, bridge)
     assert guard != -1 and "!_isVisitChatFollowerWindow()" in block
-    # 台词交给聊天面不看窗口
+    # Route dialogue to the chat surface regardless of window
     handle = block.index("nekoVisitChat.handleFrame(response)")
     assert "_isVisitChatFollowerWindow" not in block[block.index("if (window.nekoVisitChat"):handle]
     follower = _function_body(source, "_isVisitChatFollowerWindow")
     assert "__NEKO_MULTI_WINDOW__ === true" in follower and "chat(?:_full)?" in follower
 
 
-# ── 纯文本台词（§3.6.6，两层）──────────────────────────────────────
+# ── Plain-text dialogue (§3.6.6, two layers) ──────────────────────────────────────
 
 
 def test_schema_declares_plain_text():
@@ -183,7 +183,7 @@ def test_adapter_and_local_bubble_mark_visit_lines_plain_text():
     render = _function_body(adapter, "renderVisitLine")
     assert "plain_text: true" in render
     role = _function_body(adapter, "visitLineRole")
-    # 对端（访客猫娘 / 对方家里人）一律 role 'tool'
+    # Peers (visiting catgirl / the other household's human) always use role 'tool'
     assert "if (!speaker || speaker.self !== true) return 'tool';" in role
     assert set(re.findall(r"'(user|assistant|system|tool|[a-z]+)'", role)) <= {"tool", "user", "assistant", "human"}
     chat = _read(CHAT)
@@ -196,7 +196,7 @@ def test_index_css_has_the_tool_rules():
     assert re.search(r"\.avatar-tool\s*\{", css)
 
 
-# ── 加载与禁用能力 ───────────────────────────────────────────────
+# ── Loading and disabling capabilities ───────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
@@ -205,7 +205,7 @@ def test_both_templates_load_the_chat_surface_before_the_host_api(template):
     chat = html.index("/static/app/app-react-chat-window/visit-chat.js")
     persona = html.index("/static/app/visit-persona-panel.js")
     host_api = html.index("/static/app/app-react-chat-window/resize-drag-and-api.js")
-    # resize-drag-and-api.js 最后删掉 __appReactChatWindowParts：必须排在它前面
+    # resize-drag-and-api.js deletes __appReactChatWindowParts at its end; this must precede it
     assert chat < host_api and persona > 0
 
 
@@ -223,7 +223,7 @@ def test_composer_submit_goes_through_the_visit_gate_first():
     assert gate < submit.index("window.appButtons.sendTextPayload(detail.text")
 
 
-# ── 确认框不出现技术数字；端点字面量 ─────────────────────────────────
+# ── Confirmation dialogs contain no technical numbers; endpoint literals ─────────────────────────────────
 
 
 def test_confirm_dialogs_show_no_technical_numbers():
@@ -255,7 +255,7 @@ def test_join_previews_first_and_never_joins_after_a_failed_preview():
     preview = _function_body(chat, "previewThenConfirm")
     assert "'/api/visit/invites/' + encodeURIComponent(inviteCode) + '/preview'" in preview
     assert "/join" not in preview
-    # 预览失败分支先 return，不弹框
+    # The preview-failure branch returns first without opening a dialog
     fail = preview.index("if (preview.status !== 200")
     assert preview.index("return null;", fail) < preview.index("openDialog(")
     join = _function_body(chat, "joinWithCode")
@@ -303,7 +303,7 @@ def test_no_visit_url_has_a_trailing_slash_before_the_query():
             assert not url.endswith("/") or url in ("/api/visit/details/", "/api/visit/rooms/", "/api/visit/invites/"), url
 
 
-# ── 8 语 ─────────────────────────────────────────────────────────
+# ── Eight languages ─────────────────────────────────────────────────────────
 
 
 def _flatten(prefix: str, node) -> set[str]:
@@ -369,7 +369,7 @@ def test_persona_panel_escape_and_failed_first_generation():
 def test_refused_bind_refreshes_the_token_and_retries_once_per_socket():
     source = _read(WS)
     status = _function_body(source, "_showVisitStatus")
-    # 只认 bind 自己被拒（后端带 reason:bind_refused），按收到这条状态的那条连接重试
+    # Recognize only rejection of bind itself (backend reason:bind_refused), and retry using the connection that received this status
     assert "code === 'VISIT_E_UNAUTHORIZED' && details && details.reason === 'bind_refused'" in status
     assert "_retryVisitBindAfterRefusal(socket || S.socket)" in status
     assert "_showVisitStatus(statusCode, statusDetails || {}, _thisSocket);" in source
@@ -379,14 +379,14 @@ def test_refused_bind_refreshes_the_token_and_retries_once_per_socket():
 
 
 def test_visit_line_render_carries_the_lamport_sort_key():
-    # visit-chat 按 (lp, side_rank) 算好的排序键要随消息交给宿主，否则台词仍按到达先后排
+    # Pass visit-chat's (lp, side_rank) sorting key to the host with each message, or dialogue still sorts by arrival order
     render = _function_body(_read(ADAPTER), "renderVisitLine")
     assert "patch.sortKey = spec.sortKey" in render
     assert "sortKey: entry.rendered ? undefined : lineSortKey(entry)" in _function_body(_read(CHAT), "renderLine")
 
 
 def test_galgame_choices_are_hidden_while_the_visit_owns_the_composer():
-    # GalGame 选项是给普通聊天生成的：串门接管输入框时点了会被当成串门台词发给客人
+    # GalGame choices are generated for normal chat; clicking during visit ownership sends them to the guest as visit dialogue
     props = _function_body(_read(ROOT / "static" / "app" / "app-react-chat-window" / "geometry-and-messages.js"), "buildRenderProps")
     assert "var visitOwnsComposer = typeof I.isVisitChatActive === 'function' && I.isVisitChatActive();" in props
     assert "galgameOptions: !visitOwnsComposer &&" in props
@@ -399,12 +399,12 @@ def test_refused_ordinary_submission_is_closed_by_request_id():
     body = _function_body(buttons, "markTextSubmissionRefused")
     assert "updateMessage(record.messageId, { status: 'failed' })" in body
     assert "window._lastSubmittedRequestId === id" in body and "S.pendingTextTurnSubmitAt = 0;" in body
-    # 「回复在途」按开轮的那句认，不依赖 _lastSubmittedRequestId（头像拖放不写它）
+    # Identify in-flight replies by the sentence that started the turn, not _lastSubmittedRequestId (avatar drops do not write it)
     assert "if (lastTurnRequestId === id) {" in body
 
 
 def test_choice_prompts_are_hidden_while_the_visit_owns_the_composer():
-    # 渲染层与命中区都经 getRevealedChoicePrompt 取选项：串门接管输入框期间它返回 null
+    # Both rendering and hit areas fetch choices through getRevealedChoicePrompt, which returns null while visits own the input
     reveal = _function_body(_read(SUBMIT), "getRevealedChoicePrompt")
     assert "if (typeof I.isVisitChatActive === 'function' && I.isVisitChatActive()) return null;" in reveal
 
@@ -422,7 +422,7 @@ def test_visit_lines_do_not_toast_text_chatting():
 
 
 def test_persona_panel_is_reused_only_for_the_same_character():
-    # 别的窗口换了角色：旧角色面板的确认不能放行新角色的串门
+    # Another window switched characters: confirmation in the old character's panel must not admit a visit for the new character
     source = _read(PERSONA)
     assert "if (openPanel.catgirl === catgirl) return openPanel.result;" in source
     assert "openPanel.close(false);" in source
@@ -430,13 +430,13 @@ def test_persona_panel_is_reused_only_for_the_same_character():
 
 
 def test_refused_ordinary_submission_releases_an_ack_only_text_session():
-    # 普通提交顺带发了开会话请求、串门只回 ack：被拒后撤回「文本会话已开」
+    # A normal submission also requests session startup, while visits return only ack; undo 'text session started' on rejection
     buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
     assert "startedTextSessionHere = true;" in buttons
     assert "!isVisitLine, startedTextSessionHere);" in buttons
     body = _function_body(buttons, "markTextSubmissionRefused")
     assert "if (record.startedSession && lastSessionStartRequestId === id && S.isTextSessionActive === true) {" in body
-    # 当前会话已归后来的那句时不撤
+    # Do not undo if a later sentence now owns the current session
     assert "if (startedSession === true) lastSessionStartRequestId = String(requestId);" in buttons
     assert "S.isTextSessionActive = false;" in body
 

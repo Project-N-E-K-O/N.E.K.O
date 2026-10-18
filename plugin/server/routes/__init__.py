@@ -1,7 +1,7 @@
 """
-路由模块
+Routing module
 
-提供所有 HTTP 和 WebSocket 路由端点。
+Provides all HTTP and WebSocket route endpoints.
 """
 from plugin.server.routes.health import router as health_router
 from plugin.server.routes.plugins import router as plugins_router

@@ -129,7 +129,7 @@ def _feed_all(h, text=LINE, step=3):
         h.speaker.feed(text[k:k + step])
 
 
-# ── 一行一条流 ─────────────────────────────────────────────────────────
+# ── One stream per line ─────────────────────────────────────────────────────────
 
 
 def test_one_stream_per_line_every_delta_pushed_finished_once():
@@ -167,14 +167,14 @@ def test_release_thresholds_follow_the_spoken_raw_text():
     raw_est = estimate_speech_ms(first)
     assert raw_est > estimate_speech_ms(NEUTRAL + "回来了。")
     h.t += raw_est / 1000 - 0.1
-    h.progress(raw_est - 100)            # 按脱敏后的短文本估时会在这里提前放出
+    h.progress(raw_est - 100)            # Estimating from shorter redacted text would release early here
     assert len(h.pieces) == 1 and NEUTRAL in h.pieces[0].text
     h.t += 0.1
     h.progress(raw_est)
     assert len(h.pieces) == 2
 
 
-# ── 按已播音频放出 ─────────────────────────────────────────────────────
+# ── Release according to played audio ─────────────────────────────────────────────────────
 
 
 def test_progress_releases_each_piece_once_at_its_threshold():
@@ -183,7 +183,7 @@ def test_progress_releases_each_piece_once_at_its_threshold():
     h.speaker.llm_done()
     h.at(0.1)
     h.progress(0)
-    assert h.texts() == CLAUSES[:1]                   # 第 0 片阈值 0：开播即放
+    assert h.texts() == CLAUSES[:1]                   # Chunk 0 has threshold 0: release when playback starts
     h.at(0.2)
     h.progress(EST[0] - 1)
     assert h.texts() == CLAUSES[:1]
@@ -191,7 +191,7 @@ def test_progress_releases_each_piece_once_at_its_threshold():
     h.progress(EST[0])
     assert h.texts() == CLAUSES[:2]
     h.progress(EST[0])
-    assert h.texts() == CLAUSES[:2]                   # 恰一次
+    assert h.texts() == CLAUSES[:2]                   # Exactly once
     h.progress(EST[0] + 100, ended=True, final=True)
     assert h.texts() == CLAUSES and h.results[0].tail_ms == 0 and h.results[0].text == LINE
     assert h.router.route("unknown", played_ms=1, ended=False, final=False) is False
@@ -210,7 +210,7 @@ def test_generation_ending_first_does_not_close_the_line():
     h = Harness()
     _feed_all(h)
     h.progress(0)
-    h.speaker.llm_done()                          # LLM 在第 1 片播放中就结束
+    h.speaker.llm_done()                          # The LLM finishes while chunk 1 plays
     assert h.results == [] and h.texts() == CLAUSES[:1]
     h.t += EST[0] / 1000
     h.progress(EST[0])
@@ -226,7 +226,7 @@ def test_audio_faster_than_estimate_closes_without_tail():
     h.speaker.llm_done()
     h.progress(0)
     h.t += 0.5
-    h.progress(500, ended=True, final=True)       # 第 2 片估时未到就播完了
+    h.progress(500, ended=True, final=True)       # Chunk 2 finishes before its estimated time
     assert h.texts() == CLAUSES and h.results[0].tail_ms == 0
 
 
@@ -237,7 +237,7 @@ def test_emotion_tags_never_reach_tts_even_split_across_deltas():
     h.speaker.llm_done()
     spoken = "".join(h.stream.pushed)
     assert spoken == LINE and "happy" not in spoken
-    # 阈值按真正念出的（去掉标签的）原文估时
+    # Estimate thresholds from the actual spoken, tag-stripped original text
     assert [p.est_ms for p in h.speaker._pieces] == EST
 
 
@@ -245,7 +245,7 @@ def test_a_family_name_split_by_a_tag_is_budgeted_as_the_name():
     filler = "谢。" * 5000
     capacity = len(Harness().speaker.feed(filler))
     h = Harness()
-    # 「小<happy>明」剥标签后就是「小明」：预算必须按换成「家里人」之后的长度量
+    # Stripping tags from '小<happy>明' yields '小明'; measure budget after replacement with '家里人' ('household member')
     h.speaker.feed(filler[:capacity - 2] + "小<happy>明同学")
     h.progress(0)
     h.progress(10**7, ended=True, final=True)
@@ -268,8 +268,8 @@ def test_goodbye_cap_does_not_count_tags():
 
 def test_a_held_bracket_tail_still_obeys_the_goodbye_cap():
     h = Harness(wu=True)
-    h.speaker.feed("好" * 39 + "<abc")            # 末尾「<abc」被当作可能的标签扣着
-    h.speaker.llm_done()                          # 收尾放出时同样过告别硬顶
+    h.speaker.feed("好" * 39 + "<abc")            # Hold trailing '<abc' as a possible tag
+    h.speaker.llm_done()                          # Final release also obeys the goodbye hard cap
     h.progress(0)
     h.progress(10**7, ended=True, final=True)
     result = h.results[0]
@@ -278,7 +278,7 @@ def test_a_held_bracket_tail_still_obeys_the_goodbye_cap():
 
 def test_a_hard_clause_cut_never_splits_a_tag_into_the_subtitles():
     h = Harness()
-    # 没有标点的长句在 800 字节处硬切，切点正好落在 <happy> 中间
+    # A long sentence without punctuation hard-splits at 800 bytes, exactly inside <happy>
     line = "谢" * 265 + "<happy>" + "谢" * 60 + "。"
     for k in range(0, len(line), 7):
         h.speaker.feed(line[k:k + 7])
@@ -310,7 +310,7 @@ def test_an_unclosed_bracket_at_the_end_is_spoken_and_shown():
 def test_emotion_tag_filter_lets_a_long_unclosed_tail_through():
     f = ls.EmotionTagFilter()
     assert f.feed("x <") == "x "
-    assert f.feed("b" * 40) == "<" + "b" * 40          # 不可能是标签：不再扣着
+    assert f.feed("b" * 40) == "<" + "b" * 40          # Cannot be a tag: stop withholding it
     assert f.feed("<sad") == "" and f.flush() == "<sad"
 
 
@@ -318,10 +318,10 @@ def test_a_non_final_drain_releases_only_what_played():
     h = Harness()
     first_two = CLAUSES[0] + CLAUSES[1]
     h.speaker.feed(first_two)
-    h.speaker.feed(CLAUSES[2][:1])                # 第 3 片开了个头，还没成片
+    h.speaker.feed(CLAUSES[2][:1])                # Chunk 3 has begun but is not complete
     h.progress(0)
     h.t += 1
-    h.progress(900, ended=True, final=False)      # 已入队的音频播空，第 2 片可能还在合成
+    h.progress(900, ended=True, final=False)      # Queued audio drains while chunk 2 may still be synthesizing
     assert h.texts() == CLAUSES[:1] and h.results == []
     h.speaker.feed(CLAUSES[2][1:])
     h.speaker.llm_done()
@@ -338,12 +338,12 @@ def test_pieces_after_a_drain_keep_following_played_ms():
     h.speaker.feed(CLAUSES[2][:1])
     h.progress(0)
     h.t += 0.5
-    h.progress(500, ended=True, final=False)      # 播空：不提前放第 2 片
+    h.progress(500, ended=True, final=False)      # Drained: do not release chunk 2 early
     assert h.texts() == CLAUSES[:1]
-    h.speaker.feed(CLAUSES[2][1:] + "好")          # 第 3 片成片、随新音频入队
+    h.speaker.feed(CLAUSES[2][1:] + "好")          # Chunk 3 completes and queues with new audio
     h.t += 1.0
     h.progress(EST[0])
-    assert h.texts() == CLAUSES[:2]                # 第 2 片的音频到点才放
+    assert h.texts() == CLAUSES[:2]                # Release chunk 2 only when its audio reaches the threshold
     h.t += 2.0
     h.progress(EST[0] + EST[1])
     assert h.texts() == CLAUSES
@@ -355,7 +355,7 @@ def test_stale_non_final_ended_after_finish_does_not_close():
     h.progress(0)
     h.speaker.llm_done()
     h.t += 0.5
-    h.progress(500, ended=True, final=False)      # 路上的旧 ended，晚于 finish 才到
+    h.progress(500, ended=True, final=False)      # An old in-flight ended arrives after finish
     assert h.results == []
     h.t += 0.5
     h.progress(4000, ended=True, final=True)
@@ -368,7 +368,7 @@ def test_drain_just_before_finish_then_silence_closes_by_estimate():
     h.progress(0)
     h.t += 1
     h.progress(1000, ended=True, final=False)
-    h.speaker.llm_done()                          # finish 之后再无任何信号
+    h.speaker.llm_done()                          # No signals after finish
     h.at(1 + 2.9)
     assert h.results == [] and h.stream.aborts == 0
     h.at(1 + 3.0)
@@ -377,7 +377,7 @@ def test_drain_just_before_finish_then_silence_closes_by_estimate():
     assert h.results and h.results[0].text == LINE
 
 
-# ── TTS 故障兜底 ───────────────────────────────────────────────────────
+# ── TTS failure fallback ───────────────────────────────────────────────────────
 
 
 def test_no_first_progress_in_4s_aborts_and_falls_back_for_the_visit():
@@ -388,12 +388,12 @@ def test_no_first_progress_in_4s_aborts_and_falls_back_for_the_visit():
     assert h.stream.aborts == 0
     h.at(4.0)
     assert h.stream.aborts == 1 and h.fallbacks == 1 and h.voice.fallen_back
-    assert h.texts() == CLAUSES[:1]               # 估时从切换时刻起：第 0 片立即放出
+    assert h.texts() == CLAUSES[:1]               # Estimate time from the switch: release chunk 0 immediately
     h.at(4.0 + sum(EST) / 1000)
     assert h.results[0].text == LINE and h.results[0].tail_ms == EST[-1]
-    # 迟到的音频进度不再生效
+    # Late audio progress no longer takes effect
     assert h.progress(100) is False
-    # 本场后续各行不再开流
+    # Later lines in this session no longer open streams
     h.speaker = h.new_line("h:2")
     h.speaker.feed("好的。")
     assert len(h.streams) == 1 and h.speaker.mode == ls.PACED_ESTIMATE
@@ -424,7 +424,7 @@ def test_progress_stall_aborts_and_continues_from_last_played():
     h.at(0.3 + 3.0)
     assert h.stream.aborts == 1 and h.speaker.mode == ls.PACED_ESTIMATE
     assert h.texts() == CLAUSES[:1]
-    # 第 1 片在 300 + (now - stall) >= EST[0] 时放出
+    # Release chunk 1 when 300 + (now - stall) >= EST[0]
     h.at(0.3 + 3.0 + (EST[0] - 300) / 1000 - 0.01)
     assert h.texts() == CLAUSES[:1]
     h.at(0.3 + 3.0 + (EST[0] - 300) / 1000)
@@ -456,7 +456,7 @@ def test_deltas_after_an_abort_only_reach_the_subtitles():
     h = Harness()
     h.speaker.feed(CLAUSES[0])
     h.progress(0)
-    h.at(3.0)                                     # 进度中断 → abort
+    h.at(3.0)                                     # Interrupted progress → abort
     pushed = list(h.stream.pushed)
     chars = sum(u.get("tts_chars", 0) for u in h.usage)
     h.speaker.feed(CLAUSES[1])
@@ -483,26 +483,26 @@ def test_voice_off_never_opens_a_stream_and_paces_by_estimate():
     assert {p.paced for p in h.pieces} == {ls.PACED_ESTIMATE}
 
 
-# ── 打断 ───────────────────────────────────────────────────────────────
+# ── Interruption ───────────────────────────────────────────────────────────────
 
 
 def test_interrupt_stops_now_and_ignores_the_cleared_pipeline_ended():
     h = Harness()
-    _feed_all(h, LINE + "好")                     # 第 3 片已生成、尚未放出
+    _feed_all(h, LINE + "好")                     # Chunk 3 generated but not released
     h.progress(0)
     h.t += EST[0] / 1000
-    h.progress(EST[0])                            # 第 2 片在播
+    h.progress(EST[0])                            # Chunk 2 playing
     result = h.speaker.interrupt("human_interrupt")
     assert h.stream.aborts == 1 and h.cancels == 1
     assert result.truncated and result.trunc_reason == "human_interrupt"
     assert result.text == CLAUSES[0] + CLAUSES[1] and result.pieces == 2
-    # 管线被清后前端回报的 ended 不是播完：未念出的不再放出
+    # ended reported after pipeline clearing does not mean playback completed; do not release unspoken content
     assert h.progress(EST[0] + 10, ended=True, final=True) is False
     assert h.texts() == CLAUSES[:2] and len(h.results) == 1
     assert h.speaker.interrupt("human_interrupt") is None
 
 
-# ── 入口截断 ───────────────────────────────────────────────────────────
+# ── Input truncation ───────────────────────────────────────────────────────────
 
 
 def test_goodbye_line_is_capped_at_40_chars_everywhere():
@@ -526,7 +526,7 @@ def test_a_cut_in_the_middle_of_a_family_name_does_not_leak_its_prefix():
         family_names=["小明同学"], neutral_term=NEUTRAL, voice=h.voice, open_stream=h.open_stream,
         router=h.router, clock=lambda: h.t, on_piece=h.pieces.append, on_done=h.results.append,
     )
-    h.speaker.feed("谢" * 38 + "小明同学要记得来玩哦")         # 第 40 字截在名字中间
+    h.speaker.feed("谢" * 38 + "小明同学要记得来玩哦")         # Character 40 splits the name
     h.speaker.llm_done()
     h.progress(0)
     h.progress(99_999, ended=True, final=True)
@@ -540,7 +540,7 @@ def test_a_wire_cut_inside_a_family_name_still_fits_the_wire():
     filler = "谢。" * 5000
     capacity = len(Harness().speaker.feed(filler))
     h = Harness()
-    # 只剩 1 字的余量时来了「小明」：「小」按原样量放得下，收尾换成更长的「家里人」就超了
+    # With one character remaining, '小明' arrives: original '小' fits, but final replacement with longer '家里人' exceeds the cap
     accepted = h.speaker.feed(filler[:capacity - 1] + "小明同学")
     assert accepted == filler[:capacity - 1]
     h.progress(0)
@@ -550,7 +550,7 @@ def test_a_wire_cut_inside_a_family_name_still_fits_the_wire():
     payload = {"t": "text", "v": 1, "ln": "h:1", "lp": 1, "sp": "c", "ad": "gc", "rt": "", "wu": False,
                "final": True, "txt": result.text, "truncated": True, "i_done": result.pieces,
                "trunc_reason": "wire_size", "tail_ms": 0}
-    assert fit_text_to_wire(payload, visit_id=VISIT) == payload          # 兜底截断未触发
+    assert fit_text_to_wire(payload, visit_id=VISIT) == payload          # Fallback truncation not triggered
 
 
 def test_a_stream_rejecting_its_first_push_falls_back_for_the_visit():
@@ -559,7 +559,7 @@ def test_a_stream_rejecting_its_first_push_falls_back_for_the_visit():
 
     def closed_at_once(on_enqueued):
         stream = opener(on_enqueued)
-        stream.closed = True                    # worker 一开流就退出了
+        stream.closed = True                    # Worker exits as soon as the stream opens
         return stream
 
     h.open_stream = closed_at_once
@@ -568,7 +568,7 @@ def test_a_stream_rejecting_its_first_push_falls_back_for_the_visit():
     assert h.speaker.mode == ls.PACED_ESTIMATE and h.voice.fallen_back and h.fallbacks == 1
     h.speaker = h.new_line("h:3")
     h.speaker.feed(CLAUSES[1])
-    assert len(h.streams) == 1                  # 本场后续各行不再开流
+    assert len(h.streams) == 1                  # Later lines in this session no longer open streams
 
 
 def test_frozen_playback_reporting_the_same_position_still_stalls():
@@ -577,7 +577,7 @@ def test_frozen_playback_reporting_the_same_position_still_stalls():
     h.progress(0)
     h.t += 1
     h.progress(1000)
-    for k in range(1, 7):                       # 播放冻住：页面照报同一个 played_ms
+    for k in range(1, 7):                       # Playback frozen: the page keeps reporting the same played_ms
         h.at(1 + 0.5 * k)
         h.progress(1000)
     assert h.stream.aborts == 1 and h.speaker.mode == ls.PACED_ESTIMATE
@@ -587,7 +587,7 @@ def test_stream_closed_under_us_switches_to_estimate_at_once():
     h = Harness()
     h.speaker.feed(CLAUSES[0])
     h.progress(0)
-    h.stream.closed = True                      # worker 退出把流关了（不是本行 abort 的）
+    h.stream.closed = True                      # Worker exit closed the stream, not this line's abort
     h.speaker.feed(CLAUSES[1])
     assert h.speaker.mode == ls.PACED_ESTIMATE
     h.speaker.feed(CLAUSES[2])
@@ -601,10 +601,10 @@ def test_new_audio_after_a_drain_restarts_the_stall_clock():
     h.speaker.feed(CLAUSES[0] + CLAUSES[1][:1])
     h.progress(0)
     h.t += 1
-    h.progress(1000, ended=True, final=False)   # 播空：没有停滞计时
+    h.progress(1000, ended=True, final=False)   # Drained: no stall timer
     assert h.speaker.next_deadline() is None
     h.t += 5
-    h.speaker.feed(CLAUSES[1][1:])              # 新文本入队，之后 TTS 再无任何回报
+    h.speaker.feed(CLAUSES[1][1:])              # New text queues, then TTS never reports again
     assert h.speaker.next_deadline() == pytest.approx(h.t + 3)
     h.at(6 + 3)
     assert h.stream.aborts == 1 and h.speaker.mode == ls.PACED_ESTIMATE
@@ -631,7 +631,7 @@ def test_wire_cut_keeps_tts_subtitles_and_final_identical():
     payload = {"t": "text", "v": 1, "ln": "h:1", "lp": 1, "sp": "c", "ad": "gc", "rt": "", "wu": False,
                "final": True, "txt": result.text, "truncated": True, "i_done": result.pieces,
                "trunc_reason": "wire_size", "tail_ms": 0}
-    assert fit_text_to_wire(payload, visit_id=VISIT) == payload          # 兜底截断未触发
+    assert fit_text_to_wire(payload, visit_id=VISIT) == payload          # Fallback truncation not triggered
     body = dict(payload, seq=2**32 - 1)
     assert wire_size(encode_msg(body), visit_id=VISIT)[0] <= 8
 
@@ -639,7 +639,7 @@ def test_wire_cut_keeps_tts_subtitles_and_final_identical():
 def test_a_cut_delta_never_reaches_the_splitter_beyond_its_accepted_part():
     h = Harness()
     text = _backslash_line()
-    h.speaker.feed(text)                          # 一大段一次进来，被截
+    h.speaker.feed(text)                          # A large block arrives at once and is truncated
     h.speaker.llm_done()
     h.progress(0)
     h.progress(10**7, ended=True, final=True)
@@ -647,7 +647,7 @@ def test_a_cut_delta_never_reaches_the_splitter_beyond_its_accepted_part():
 
 
 def test_whole_sentence_mode_cuts_at_entry_too():
-    # 整句模式（不发 line_delta）也是同一个入口：截断与 final 不变
+    # Whole-sentence mode without line_delta shares this input path; truncation and final remain unchanged
     h = Harness(voice=False)
     text = _backslash_line()
     h.speaker.feed(text)
@@ -655,7 +655,7 @@ def test_whole_sentence_mode_cuts_at_entry_too():
     assert h.results[0].trunc_reason == "wire_size" and len(h.results[0].text) < len(text)
 
 
-# ── 路由表 ─────────────────────────────────────────────────────────────
+# ── Routing table ─────────────────────────────────────────────────────────────
 
 
 def test_router_holds_no_speech_after_the_visit_stops():
@@ -667,7 +667,7 @@ def test_router_holds_no_speech_after_the_visit_stops():
     assert len(h.router) == 0 and h.stream.aborts == 1
 
 
-# ── 驱动循环 ───────────────────────────────────────────────────────────
+# ── Driver loop ───────────────────────────────────────────────────────────
 
 
 async def test_drive_ticks_until_the_line_is_done():
@@ -704,7 +704,7 @@ def test_merged_pieces_keep_wire_indices_contiguous(tmp_path):
     h.speaker.llm_done()
     h.progress(0)
     frames = outbox.due(h.t)
-    for step in range(1, 6):                       # 五片在 250 ms 内陆续放出
+    for step in range(1, 6):                       # Five chunks release successively within 250 ms
         h.t += 0.04
         h.progress(10**5 if step == 5 else 40 * step, ended=step == 5, final=step == 5)
         frames += outbox.due(h.t)
@@ -717,7 +717,7 @@ def test_merged_pieces_keep_wire_indices_contiguous(tmp_path):
         frames += outbox.due(h.t)
     deltas = [f.payload for f in frames if f.t == "line_delta"]
     texts = [f.payload for f in frames if f.t == "text"]
-    assert len(deltas) < 5                                 # 发生了合并
+    assert len(deltas) < 5                                 # Merging occurred
     assert [d["i"] for d in deltas] == list(range(len(deltas)))
     assert "".join(d["txt"] for d in deltas) == result.text == five
     assert texts[0]["i_done"] == len(deltas)
@@ -746,7 +746,7 @@ async def test_drive_returns_when_interrupted_without_any_deadline(voice):
         router=ls.SpeechRouter(), clock=time.monotonic,
     )
     task = asyncio.ensure_future(ls.drive(speaker, clock=time.monotonic))
-    await asyncio.sleep(0.05)                    # LLM 还在想：没有任何计时
+    await asyncio.sleep(0.05)                    # The LLM is still thinking: no timer
     assert speaker.next_deadline() is None and not task.done()
     speaker.interrupt("human_interrupt")
     result = await asyncio.wait_for(task, 1.0)
@@ -758,7 +758,7 @@ def test_a_rejected_end_marker_switches_to_estimate_at_once():
     _feed_all(h)
     h.progress(0)
     h.speaker.llm_done()
-    assert h.speaker.mode == ls.PACED_ESTIMATE           # 不等 3 s 停滞兜底
+    assert h.speaker.mode == ls.PACED_ESTIMATE           # Do not wait for the 3 s stall fallback
 
 
 def test_unspoken_stage_directions_add_no_time():
@@ -766,7 +766,7 @@ def test_unspoken_stage_directions_add_no_time():
     h.speaker.feed("（伸了个懒腰，慢慢地眨了眨眼睛，又打了个大大的哈欠）好呀。我们走吧！")
     h.speaker.llm_done()
     ests = [p.est_ms for p in h.speaker._pieces]
-    assert ests[0] == estimate_speech_ms("好呀。")      # 括号里的舞台说明不念，不占时间
+    assert ests[0] == estimate_speech_ms("好呀。")      # Parenthesized stage directions are unspoken and consume no time
 
 
 def test_markdown_open_across_a_clause_is_timed_in_its_own_clause():
@@ -775,7 +775,7 @@ def test_markdown_open_across_a_clause_is_timed_in_its_own_clause():
     h.speaker.feed("今天*真好。")
     h.speaker.llm_done()
     ests = [p.est_ms for p in h.speaker._pieces]
-    assert ests[0] == estimate_speech_ms("她说你好呀朋友。")      # 未闭合标记里的字照样念、照样计时
+    assert ests[0] == estimate_speech_ms("她说你好呀朋友。")      # Characters in unclosed markers remain spoken and count toward time
 
 
 class _SilentStream(FakeStream):
@@ -792,14 +792,14 @@ def test_unspoken_first_text_does_not_arm_the_start_timeout():
     h = Harness()
     h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
     h.speaker = h.new_line("h:2")
-    h.speaker.feed("（微笑）")                       # 被剥成空：不出声
-    h.at(10)                                         # 模型想了很久才吐出能念的字
+    h.speaker.feed("（微笑）")                       # Stripped to empty: silent
+    h.at(10)                                         # The model thinks a long time before producing speakable text
     assert h.speaker.mode == ls.PACED_AUDIO and not h.voice.fallen_back
-    h.stream.on_enqueued(3)                          # 第一段真正入队
+    h.stream.on_enqueued(3)                          # The first segment actually queues
     h.at(10 + 3.9)
     assert h.speaker.mode == ls.PACED_AUDIO
     h.at(10 + 4.0)
-    assert h.voice.fallen_back                       # 从真正入队起算的 4 s 才是起播超时
+    assert h.voice.fallen_back                       # Playback-start timeout is 4 s from actual enqueue
 
 
 def test_a_line_with_nothing_speakable_closes_by_estimate_without_disabling_voice():
@@ -817,7 +817,7 @@ def test_speakable_text_stuck_before_tts_still_times_out():
     h = Harness()
     h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
     h.speaker = h.new_line("h:2")
-    h.speaker.feed("你好呀。")                       # 能念，但 TTS 未就绪，一直没入队
+    h.speaker.feed("你好呀。")                       # Speakable, but TTS is unready and never queued it
     h.at(3.9)
     assert not h.voice.fallen_back
     h.at(4.0)
@@ -831,7 +831,7 @@ def test_unspeakable_text_after_a_drain_does_not_restart_the_stall_clock():
     h.t += 1
     h.progress(1000, ended=True, final=False)
     h.speaker.feed("（笑）")
-    assert h.speaker.next_deadline() is None         # 不出声的推入不重启停滞计时
+    assert h.speaker.next_deadline() is None         # Silent pushes do not restart stall timing
 
 
 def test_end_marker_failing_before_any_playback_falls_back_for_the_visit():
@@ -845,7 +845,7 @@ def test_a_line_opened_after_the_visit_fell_back_never_opens_a_stream():
     h = Harness()
     first = h.speaker
     second = h.new_line("h:2")
-    h.voice.fallen_back = True                       # 别的行在这之间触发了整场回退
+    h.voice.fallen_back = True                       # Another line triggered whole-session fallback meanwhile
     second.feed("你好。")
     assert second.mode == ls.PACED_ESTIMATE and h.streams == []
     assert first.mode == ls.PACED_AUDIO
@@ -874,9 +874,9 @@ async def test_late_first_enqueue_wakes_the_driver():
         router=ls.SpeechRouter(), clock=time.monotonic, start_timeout_s=0.1,
     )
     task = asyncio.ensure_future(ls.drive(speaker, clock=time.monotonic))
-    speaker.feed("（笑）")                            # 不出声：没有任何计时，drive 在等唤醒
+    speaker.feed("（笑）")                            # Silent: no timers, drive awaits a wakeup
     await asyncio.sleep(0.05)
-    streams[0].on_enqueued(3)                        # TTS 晚些时候真的入队了：起播计时开始，必须叫醒 drive
+    streams[0].on_enqueued(3)                        # TTS actually queues later: playback-start timing begins and must wake drive
     for _ in range(50):
         if voice.fallen_back:
             break
@@ -890,17 +890,17 @@ async def test_late_first_enqueue_wakes_the_driver():
 def test_goodbye_cap_never_splits_a_long_combining_sequence():
     from utils.visit_wire import grapheme_safe_cut
 
-    zalgo = "a" + "́" * 30                       # 一个字形簇、31 个码点
+    zalgo = "a" + "́" * 30                       # One grapheme cluster, 31 code points
     text = "好" * 20 + zalgo + "拜拜"
     cut = grapheme_safe_cut(text, 40)
-    assert cut == 20                                 # 整个簇都不进，而不是切在它中间
+    assert cut == 20                                 # Omit the entire cluster rather than split it
 
 
 
 def test_goodbye_cap_never_splits_a_flag_across_deltas():
     h = Harness(wu=True)
     flag = "🇯🇵"
-    h.speaker.feed("好" * 39 + flag[0])              # 正好填满 40 个码点，国旗的后一半还在下一段
+    h.speaker.feed("好" * 39 + flag[0])              # Exactly fill 40 code points, with the flag's second half in the next segment
     h.speaker.feed(flag[1] + "拜拜")
     h.speaker.llm_done()
     h.progress(0)
@@ -955,7 +955,7 @@ def test_a_held_name_prefix_is_still_spoken_when_the_line_ends_there():
 def test_goodbye_cap_never_splits_conjoining_hangul_jamo():
     from utils.visit_wire import grapheme_safe_cut
 
-    syllable = "\u1112\u1161"                        # 用组合字母拼出的「하」：一个字形簇、两个码点
+    syllable = "\u1112\u1161"                        # Combining letters form '하': one grapheme cluster, two code points
     text = "好" * 39 + syllable + "拜"
     assert grapheme_safe_cut(text, 40) == 39
     h = Harness(wu=True)
@@ -972,9 +972,9 @@ def test_a_rejected_end_marker_after_unclosed_markdown_falls_back_for_the_visit(
     h.open_stream = lambda on_enqueued: h.streams.append(
         _SilentStream(on_enqueued, finish_result=False)) or h.streams[-1]
     h.speaker = h.new_line("h:2")
-    h.speaker.feed("`你好")                          # 推入时 markdown 未闭合：看不出能念的字
+    h.speaker.feed("`你好")                          # Markdown is unclosed on push: no speakable text is recognizable
     assert h.speaker.mode == ls.PACED_AUDIO and not h.voice.fallen_back
-    h.speaker.llm_done()                             # 收尾后「你好」能念，结束标记却送不进去
+    h.speaker.llm_done()                             # After finalization, '你好' ('hello') is speakable, but the end marker cannot be sent
     assert h.voice.fallen_back and h.speaker.mode == ls.PACED_ESTIMATE
 
 
@@ -991,8 +991,8 @@ def test_a_rejected_end_marker_after_only_stage_directions_keeps_tts():
 
 def test_goodbye_cap_never_leaves_a_dangling_zwj_across_deltas():
     h = Harness(wu=True)
-    h.speaker.feed("好" * 38 + "👩")                  # 还剩 1 个码点的额度
-    h.speaker.feed("‍💻拜拜")                         # 同一个字形簇在下一段继续
+    h.speaker.feed("好" * 38 + "👩")                  # One code point of budget remains
+    h.speaker.feed("‍💻拜拜")                         # The same grapheme cluster continues in the next segment
     h.speaker.llm_done()
     h.progress(0)
     h.progress(10**7, ended=True, final=True)
@@ -1005,9 +1005,9 @@ def test_an_open_silent_stream_follows_a_visit_fallback():
     h = Harness()
     h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
     h.speaker = h.new_line("h:2")
-    h.speaker.feed("（微笑）")                       # 流开着，但没推过能念的字
+    h.speaker.feed("（微笑）")                       # Stream open, but no speakable text pushed
     stream = h.stream
-    h.voice.fallen_back = True                       # 另一行起播失败，本场回退估时
+    h.voice.fallen_back = True                       # Another line failed to start playback; this session falls back to estimates
     h.speaker.feed("你好呀。")
     assert h.speaker.mode == ls.PACED_ESTIMATE and stream.aborts == 1
     assert "你好呀。" not in stream.pushed
@@ -1017,7 +1017,7 @@ def test_an_open_silent_stream_follows_a_visit_fallback():
 def test_goodbye_text_far_from_the_cap_is_not_held_back():
     h = Harness(wu=True)
     h.speaker.feed("好")
-    assert "".join(h.stream.pushed) == "好"            # 逐段播放，不等下一段
+    assert "".join(h.stream.pushed) == "好"            # Play segments independently without waiting for the next
 
 
 def test_a_punctuated_name_hidden_by_zero_width_characters_is_still_held():
@@ -1040,7 +1040,7 @@ def test_a_punctuated_name_hidden_by_zero_width_characters_is_still_held():
 def test_goodbye_cap_keeps_regional_indicators_paired_across_deltas():
     h = Harness(wu=True)
     ri = "\U0001F1EF"
-    h.speaker.feed("好" * 23 + ri)                    # 离上限正好 16 个码点：不扣
+    h.speaker.feed("好" * 23 + ri)                    # Exactly 16 code points below the cap: no withholding
     h.speaker.feed(ri * 17 + "拜")
     h.speaker.llm_done()
     h.progress(0)
@@ -1058,7 +1058,7 @@ def test_a_name_stretched_by_zero_width_characters_is_held_at_a_hard_cut():
         family_names=["小明"], neutral_term=NEUTRAL, voice=h.voice, open_stream=h.open_stream,
         router=h.router, clock=lambda: h.t, on_piece=h.pieces.append, on_done=h.results.append,
     )
-    h.speaker.feed("好" * 230 + "小" + "\u200b" * 36)    # 超出分句硬上限，名字后一半还没到
+    h.speaker.feed("好" * 230 + "小" + "\u200b" * 36)    # Sentence-splitting hard limit exceeded before the name's second half arrives
     h.speaker.feed("明来玩。")
     h.speaker.llm_done()
     h.progress(0)

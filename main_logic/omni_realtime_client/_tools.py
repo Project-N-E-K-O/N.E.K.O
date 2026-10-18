@@ -782,8 +782,8 @@ class _ToolingMixin:
             return
         api = canonical_realtime_dialect(self._api_type)
         if api == 'step' or api == 'free':
-            # stepaudio-2.5-realtime 不再支持内置 web_search，与
-            # update_session 初始化路径保持一致：只发 caller 注册的
+            # stepaudio-2.5-realtime no longer supports built-in web_search; match
+            # update_session initialization by sending only caller-registered tools.
             # function tools。
             tools_payload: List[Dict[str, Any]] = self._tools_for_step()
             await self.update_session({"tools": tools_payload})
@@ -793,24 +793,24 @@ class _ToolingMixin:
                 payload["tool_choice"] = "auto"
             await self.update_session(payload)
         elif api == 'grok':
-            # xAI Grok 走 OpenAI Realtime 协议，schema 与 GPT 同构。
+            # xAI Grok uses the OpenAI Realtime protocol with GPT-compatible schema.
             payload: Dict[str, Any] = {"tools": self._tools_for_openai_realtime()}
             if self.has_tools():
                 payload["tool_choice"] = "auto"
             await self.update_session(payload)
         elif api == 'glm':
-            # GLM 文档要求："ServerVAD 时更新 tools 需同时传入 turn_detection"。
-            # 此方法的调用前提是已 connect()，连接时已把 turn_detection 设成
-            # server_vad —— 这里复发同样的值即可，免得服务端 reset 成默认。
-            # beta_fields 不在这里重复：update_session 对 GLM 的局部更新会
-            # 自动补上，漏掉它会让下游重连超限并关掉连接。
+            # GLM documentation requires turn_detection whenever tools change under ServerVAD.
+            # This method requires connect() first, which already configured turn_detection as
+            # server_vad. Resend the same value to prevent server reset to its default.
+            # Do not repeat beta_fields here: GLM partial updates automatically add them
+            # in update_session. Omitting them would exceed downstream reconnect limits and close the connection.
             await self.update_session({
                 "tools": self._tools_for_openai_realtime(),
                 "turn_detection": {"type": "server_vad"},
             })
         elif api == 'qwen':
-            # Qwen-Omni-Realtime: tools 与 enable_search 互斥；当我们
-            # 注册了自定义工具，强制关掉 enable_search 防止 server 拒绝。
+            # Qwen-Omni-Realtime: tools and enable_search are mutually exclusive; registering
+            # custom tools forces enable_search off to prevent server rejection.
             qwen_payload: Dict[str, Any] = {"tools": self._tools_for_qwen()}
             if self.has_tools():
                 qwen_payload["enable_search"] = False
@@ -921,7 +921,7 @@ class _ToolingMixin:
                 "output": result.output_as_json_string(),
             }
             if api == 'glm':
-                # GLM 协议不接受 call_id。哪怕我们内部合成了，也不外传。
+                # GLM protocol rejects call_id. Even internally synthesized IDs must not be transmitted.
                 pass
             elif result.call_id:
                 item["call_id"] = result.call_id
