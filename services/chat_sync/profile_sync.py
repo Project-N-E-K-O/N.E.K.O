@@ -14,6 +14,7 @@ import sqlite3
 from services.chat_sync.writer import store_connection
 from uuid import uuid4
 
+from services.chat_sync import host as _host
 from services.chat_sync.profile_protocol import (
     RESERVED_PROFILE_FIELD_KEYS, decode_character_profile, encode_character_profile,
 )
@@ -327,16 +328,10 @@ class DesktopProfileAdapter:
 
     def busy(self, name):
         """An active/starting conversation keeps its current prompt until it is idle."""
-        from main_routers.shared_state import get_session_manager
-        from main_logic.session_state import ProactivePhase, session_reply_in_progress
-        manager = (get_session_manager() or {}).get(name)
-        state = getattr(manager, "state", None)
-        # The existing state machine owns streaming/playback; a connected idle
-        # session alone is not a reason to defer settings indefinitely.
-        return bool(manager and (getattr(manager, "is_starting", False)
-                                 or session_reply_in_progress(getattr(manager, "session", None))
-                                 or getattr(manager, "_is_voice_playing", lambda: False)()
-                                 or getattr(state, "phase", ProactivePhase.IDLE) is not ProactivePhase.IDLE))
+        manager = (_host.get_session_manager() or {}).get(name)
+        # Asked even without a manager: a missing predicate raises instead of
+        # reporting "not busy".
+        return _host.conversation_busy(manager)
 
     async def apply(self, uid, status, commit, *, confirm_rename=False, before_apply=None):
         """Preserve identity/avatar/preferences and bypass greeting/recent-clear paths."""
@@ -365,10 +360,14 @@ class DesktopProfileAdapter:
                     raise ValueError("character_profile_name_invalid")
                 # The user's explicit choice reuses the existing complete rename
                 # transaction; a dictionary-key edit would orphan local histories.
-                from main_routers.characters_router.crud import _rename_catgirl_serialized
                 from utils.external_route_registry import end_character_mutation
                 try:
-                    result = await _rename_catgirl_serialized(current["name"], target["name"], sync_commit=commit)
+                    renaming = _host.rename_character(current["name"], target["name"], sync_commit=commit)
+                except _host.CapabilityNotInstalled:
+                    # Nothing has begun or been written; never fall back to a key edit.
+                    raise ValueError("character_profile_rename_failed") from None
+                try:
+                    result = await renaming
                 finally:
                     end_character_mutation(current["name"], target["name"])
                 if not isinstance(result, dict) or not result.get("success"):
@@ -402,8 +401,7 @@ class DesktopProfileAdapter:
             await commit(self.config.save_characters, characters)
         # The existing fast edit refresh does not call a model, mark a greeting,
         # clear recent history, or restart an existing active session.
-        from main_routers.shared_state import get_init_one_catgirl
-        await get_init_one_catgirl()(target["name"], is_new=False)
+        await _host.get_init_one_catgirl()(target["name"], is_new=False)
         return True
 
     async def import_new(self, uid, profile, commit):
@@ -444,8 +442,7 @@ class DesktopProfileAdapter:
             characters.setdefault("猫娘", {})[name] = raw
             await commit(self.config.save_characters, characters)
         # Do not mark a new-character greeting, select this role, or touch memory.
-        from main_routers.shared_state import get_init_one_catgirl
-        await get_init_one_catgirl()(name, is_new=False)
+        await _host.get_init_one_catgirl()(name, is_new=False)
         return name, False
 
 

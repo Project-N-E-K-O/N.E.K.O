@@ -609,6 +609,14 @@ async def test_confirmed_remote_rename_reuses_local_name_validation_before_any_m
         await adapter.apply(UID, state, AsyncMock(), confirm_rename=True)
     rename.assert_not_awaited()
     assert not config.saves
+    # A valid name does reach the patched transaction, so the check above is
+    # not vacuous; a non-dict result never commits.
+    commit = AsyncMock()
+    state["head"]["name"] = "Renamed"
+    with pytest.raises(ValueError, match="character_profile_rename_failed"):
+        await adapter.apply(UID, state, commit, confirm_rename=True)
+    rename.assert_awaited_once_with("Synthetic", "Renamed", sync_commit=commit)
+    assert not config.saves
 
 
 @pytest.mark.parametrize("name", [

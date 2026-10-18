@@ -30,6 +30,7 @@ from main_routers.local_access import is_local_oauth_status_request as _loopback
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
+from services.chat_sync import host as _chat_sync_host
 # Re-exported: card_drop_router / visit_router.credentials read it as
 # ``community_oauth.status_session_saved``, and tests patch it here.
 from utils.community_session import status_session_saved
@@ -490,6 +491,13 @@ async def resolve_saved_oauth_status() -> dict[str, Any]:
             )
             _oauth_status_tasks[records_key] = task
     return await asyncio.shield(task)
+
+
+# Chat sync (services layer) joins this same resolver, so a rotating refresh
+# token is never refreshed twice. Late-bound: patches of this module reach it.
+_chat_sync_host.install_oauth_status_resolver(
+    resolve_saved_oauth_status=lambda: resolve_saved_oauth_status(),
+)
 
 
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:

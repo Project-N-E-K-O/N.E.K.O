@@ -127,6 +127,7 @@ from services.theater.numeric_v2_maintenance import (
 )
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.paths import theater_root
+from services.chat_sync import host as _chat_sync_host
 
 
 def _get_new_catgirl_default_voice_id() -> str:
@@ -1149,6 +1150,16 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
         # 收尾期间来了取消：标记已处理完，照常把取消传出去（与其它收尾调用一致）
         raise asyncio.CancelledError
     return result
+
+
+# Chat sync's confirmed remote rename (services layer) reuses this exact
+# transaction. The lambda looks the function up on every call, so patches of
+# _rename_catgirl_serialized reach chat sync and reload(crud) just reinstalls.
+_chat_sync_host.install_rename_transaction(
+    rename_character=lambda old_name, new_name, *, sync_commit=None: _rename_catgirl_serialized(
+        old_name, new_name, sync_commit=sync_commit,
+    ),
+)
 
 
 async def _visit_name_refusal(config_manager, name: str, label: str):
