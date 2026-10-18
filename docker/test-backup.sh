@@ -69,7 +69,11 @@ if sh "$BACKUP" --home "$WORK/t2home" --out "$WORK/t2out" --no-stop >"$WORK/t2.l
                     ssl/N.E.K.O.crt; do
             printf '%s\n' "$entries" | grep -qF "$want" || fail "主副本缺失: $want"
         done
-        printf '%s\n' "$entries" | grep -qF 'vendor' && fail "vendor/ 未被排除" || pass "主副本齐全，vendor/ 已排除"
+        # 插件 vendor/ 是插件的 Python 依赖，容器启动时不会重建：默认必须备份，
+        # 否则恢复出来的插件会报依赖缺失并被跳过。
+        printf '%s\n' "$entries" | grep -qF 'vendor' \
+            || fail "插件 vendor/ 没有被备份（恢复后插件会报依赖缺失）"
+        pass "主副本齐全，插件 vendor/ 也在归档内"
         printf '%s\n' "$entries" | grep -qF 'unrelated.txt' && fail "清单外内容被打包了" || pass "清单外内容未被打包"
         printf '%s\n' "$entries" | grep -qF '__pycache__' && fail "__pycache__ 未被排除" || pass "__pycache__ 已排除"
     fi
@@ -180,6 +184,21 @@ if [ -n "$archive" ]; then
     fi
 else
     fail "没有生成归档"
+fi
+
+echo
+echo "== T11 --slim 才排除插件 vendor/（默认必须备份）=="
+make_home "$WORK/t11home"
+sh "$BACKUP" --home "$WORK/t11home" --out "$WORK/t11out" --no-stop --slim >/dev/null 2>&1
+archive=$(ls "$WORK/t11out"/neko-backup-*.tar.gz 2>/dev/null | head -1)
+if [ -n "$archive" ]; then
+    if tar -tzf "$archive" | grep -qF 'vendor'; then
+        fail "--slim 仍然打进了 vendor/"
+    else
+        pass "--slim 排除了 vendor/（恢复后需重新安装插件依赖）"
+    fi
+else
+    fail "--slim 没有生成归档"
 fi
 
 echo

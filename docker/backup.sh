@@ -33,6 +33,7 @@ set -eu
 umask 077
 
 DRY_RUN=0
+SLIM=0
 KEEP=0
 STOP_CONTAINER=1
 CONTAINER=${NEKO_CONTAINER_NAME:-neko}
@@ -52,6 +53,7 @@ while [ "$#" -gt 0 ]; do
         --container) [ "$#" -ge 2 ] || { echo "backup: --container needs a value" >&2; exit 2; }; CONTAINER=$2; shift 2 ;;
         --keep)      [ "$#" -ge 2 ] || { echo "backup: --keep needs a value" >&2; exit 2; }; KEEP=$2; shift 2 ;;
         --no-stop)   STOP_CONTAINER=0; shift ;;
+        --slim)      SLIM=1; shift ;;
         --dry-run)   DRY_RUN=1; shift ;;
         -h|--help)   usage; exit 0 ;;
         *) echo "backup: unknown argument '$1' (see --help)" >&2; exit 2 ;;
@@ -63,6 +65,14 @@ case "$KEEP" in ''|*[!0-9]*) echo "backup: --keep must be a non-negative integer
 # 相对路径按 docker/ 解析，与 Compose 对 ./$ 的解析一致
 case "$home_dir" in /*) ;; *) home_dir=$script_dir/$home_dir ;; esac
 case "$out_dir"  in /*) ;; *) out_dir=$script_dir/$out_dir ;; esac
+
+# ── 运行环境 ────────────────────────────────────────────────────────────────
+# 本脚本面向 Linux 宿主：用到 GNU stat / tar / flock。BSD/macOS 上的 stat 不认 -c，
+# 在 set -eu 下会以"命令失败"的形式静默退出，所以先明确报错。
+stat -c '%u' . >/dev/null 2>&1 || {
+    echo "backup: 需要 GNU stat（Linux 宿主）；BSD/macOS 请改用 docker run --volumes-from 方式备份" >&2
+    exit 1
+}
 
 # ── 数据目录必须是真实目录：Docker 会挂载符号链接的目标 ──────────────────────
 [ -d "$home_dir" ] || { echo "backup: 数据目录不存在: $home_dir" >&2; exit 1; }
@@ -110,14 +120,18 @@ echo "backup: 将打包:$found"
 # ssl/ 与 instance_access.key 决定"终端要不要重新配对"，单独点名提示
 [ -e "$home_dir/ssl" ] || echo "backup: 注意：未找到 $home_dir/ssl（TLS 证书与私钥）"
 
-# ── 排除清单：可以从镜像 / 网络重建，别占备份体积 ───────────────────────────
-# 插件 vendor/ 由 uv pip install 重建（需要网络）；缓存与字节码纯属噪声。
+# ── 排除清单 ────────────────────────────────────────────────────────────────
+# 默认**不排除**插件的 vendor/：那是插件的 Python 依赖，容器启动时不会重建，
+# 少了它恢复出来的插件会直接报「依赖缺失」并被跳过 —— 恢复了数据却少了能力。
+# 想让备份瘦身，用 --slim 明确接受"恢复后要重新安装插件依赖"。
 EXCLUDES="
---exclude=*/.neko-plugin-installations/*/vendor
 --exclude=*/__pycache__
 --exclude=*.pyc
 --exclude=.DS_Store
 "
+if [ "$SLIM" = "1" ]; then
+    EXCLUDES="--exclude=*/.neko-plugin-installations/*/vendor $EXCLUDES"
+fi
 
 if [ "$DRY_RUN" = "1" ]; then
     echo "backup: --dry-run，未写入任何文件"
@@ -153,6 +167,20 @@ if command -v flock >/dev/null 2>&1; then
         echo "backup: 另一个备份正在进行（锁 $out_dir/.neko-backup.lock），本次退出" >&2
         exit 1
     fi
+    # 输出目录锁只防"同一目录写冲突"，防不住"同一实例、不同 --out"的重叠：
+    # 第二次冷备看到容器已停就开始拷，而第一次结束时会把容器拉起来，
+    # 于是第二次正在读的 SQLite 又被写入。再按数据目录加一把实例锁。
+    _instance_key=$(printf '%s' "$resolved_home" | cksum | cut -d' ' -f1)
+    INSTANCE_LOCK="${TMPDIR:-/tmp}/neko-backup-instance-$_instance_key.lock"
+    if ! exec 7>"$INSTANCE_LOCK"; then
+        echo "backup: 无法创建实例锁 $INSTANCE_LOCK" >&2
+        exit 1
+    fi
+    if ! flock -n 7; then
+        echo "backup: 同一实例已有备份在进行（锁 $INSTANCE_LOCK），本次退出" >&2
+        exit 1
+    fi
+    unset _instance_key
 fi
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 archive="$out_dir/neko-backup-$stamp-$$.tar.gz"
@@ -169,6 +197,18 @@ elif ! container_state=$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/
 fi
 
 container_was_running=0
+
+# 恢复钩子必须在 docker stop **之前**装好：stop 成功但随后的 inspect 失败时
+# 会走 exit，如果那时还没装 trap，容器就永远停在停止状态 ——
+# 一次失败的备份不该换来一段计划外停机。
+restart_container() {
+    if [ "$container_was_running" = "1" ]; then
+        echo "backup: 重新启动容器 $CONTAINER"
+        docker start "$CONTAINER" >/dev/null || echo "backup: ⚠️ 容器启动失败，请手动检查" >&2
+    fi
+}
+trap restart_container EXIT INT TERM
+
 if [ "$STOP_CONTAINER" = "1" ]; then
     case "$container_state" in
         true)
@@ -202,14 +242,6 @@ else
     echo "backup: ⚠️  --no-stop：容器仍在写入。memory/time_indexed.db 等 SQLite 可能在打包"
     echo "backup:    过程中被改写到不一致状态，**本次备份不保证可恢复**。"
 fi
-
-restart_container() {
-    if [ "$container_was_running" = "1" ]; then
-        echo "backup: 重新启动容器 $CONTAINER"
-        docker start "$CONTAINER" >/dev/null || echo "backup: ⚠️ 容器启动失败，请手动检查" >&2
-    fi
-}
-trap restart_container EXIT INT TERM
 
 # ── 打包 ────────────────────────────────────────────────────────────────────
 # 只带清单里的子树，不整包 home：/home/neko 是挂载点，用户完全可能往里再挂别的
@@ -250,13 +282,10 @@ if [ "$entry_count" -eq 0 ]; then
     rm -f "$archive" "$archive.manifest.txt"
     exit 1
 fi
-# 校验和单独算：恢复方可以用 sha256sum -c 验证传输/存放过程没损坏
+# 校验和单独算：恢复方可以用 sha256sum -c 验证传输或存放过程没损坏。
+# 只算一次 —— 归档可能有几百 MB，冷备期间容器是停着的，别白白多读一遍。
 if command -v sha256sum >/dev/null 2>&1; then
     (cd "$out_dir" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
-fi
-
-if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$out_dir" && sha256sum "$(basename "$archive")" > "$archive.sha256")
     echo "backup: 校验和 $archive.sha256"
 fi
 echo "backup: 完成，$entry_count 个条目，$(du -h "$archive" | cut -f1)"
