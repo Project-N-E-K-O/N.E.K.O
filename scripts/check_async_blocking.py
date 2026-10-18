@@ -462,8 +462,10 @@ _ASYNCIO_AWAITABLE_ARG = {
 # ``asyncio.TaskGroup``. Two ways in: a plain name whose every binding in
 # its resolving scope comes from one of the asyncio constructors below
 # (``async with asyncio.TaskGroup() as group`` /
-# ``loop = asyncio.get_running_loop()``, see ``_task_owner_verdicts``), or the
-# same tail-name matching as the queue/thread/socket heuristics. An unrelated
+# ``loop = asyncio.get_running_loop()``, see ``_task_owner_verdicts``), or,
+# for attribute / call receivers such as ``self._loop`` that scope analysis
+# cannot see, the same tail-name matching as the queue/thread/socket
+# heuristics. A plain name is never trusted by its spelling alone. An unrelated
 # ``scheduler.create_task(...)`` may accept an already-computed value, so it
 # gets no suppression.
 TASK_OWNER_CONSTRUCTORS = {
@@ -474,6 +476,45 @@ TASK_OWNER_EXACT = {
     "tg", "task_group", "taskgroup",
 }
 TASK_OWNER_SUFFIX = ("_loop", "_tg", "_task_group")
+
+
+def _asyncio_is_module(tree: ast.AST) -> bool:
+    """True when every binding of the name ``asyncio`` in the file is ``import asyncio``.
+
+    All asyncio-based trust in this module (awaitable slots, task-owner
+    constructors) keys on the spelling ``asyncio``. If anything else ever
+    binds that name -- a parameter, an assignment, ``import x as asyncio``,
+    ``from pkg import asyncio``, a def/class, ``except ... as asyncio`` --
+    the whole file falls back to the plain checks rather than resolving
+    which binding is live at each call.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == "asyncio":
+            return False
+        if isinstance(node, ast.arg) and node.arg == "asyncio":
+            return False
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                # ``import asyncio`` / ``import asyncio.subprocess`` bind the
+                # package; any ``... as asyncio`` other than the plain module
+                # binds something else.
+                if alias.asname == "asyncio" and alias.name != "asyncio":
+                    return False
+        elif isinstance(node, ast.ImportFrom):
+            if any((alias.asname or alias.name) == "asyncio" for alias in node.names):
+                return False
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == "asyncio":
+                return False
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            if "asyncio" in node.names:
+                return False
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            if node.name == "asyncio":
+                return False
+        elif isinstance(node, ast.MatchMapping) and node.rest == "asyncio":
+            return False
+    return True
 
 
 def _is_task_owner_constructor(expr: ast.expr | None) -> bool:
@@ -500,7 +541,8 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
     ``global`` / ``nonlocal``, match captures and nested def/class names
     make it untrusted. Bodies of nested functions and classes, and
     comprehension targets, belong to their own scopes and are skipped (a
-    walrus inside a comprehension still binds here).
+    walrus inside a comprehension still binds here). ``scope`` may also be
+    a ``ClassDef``, whose body is analysed as its own namespace.
     """
     verdicts: dict[str, bool] = {}
     owner_targets: set[int] = set()
@@ -557,12 +599,15 @@ def _task_owner_verdicts(scope: ast.AST) -> dict[str, bool]:
 def _slot_calls(expr: ast.expr) -> list[ast.Call]:
     """Calls whose result becomes the value of an awaitable slot.
 
-    A direct call, or either result branch of a conditional expression
-    (``a.recv() if c else q.get()``). The condition and any nested argument
-    calls are not results, so they keep the normal checks.
+    A direct call, the value of an assignment expression
+    (``(coro := ws.recv())``), or either result branch of a conditional
+    expression (``a.recv() if c else q.get()``). The condition and any
+    nested argument calls are not results, so they keep the normal checks.
     """
     if isinstance(expr, ast.Call):
         return [expr]
+    if isinstance(expr, ast.NamedExpr):
+        return _slot_calls(expr.value)
     if isinstance(expr, ast.IfExp):
         return _slot_calls(expr.body) + _slot_calls(expr.orelse)
     return []
@@ -583,7 +628,10 @@ def _expanded_elements(arg: ast.expr) -> list[ast.expr]:
 
 
 def _awaitable_argument_slots(
-    call: ast.Call, is_task_owner_name: Callable[[str], bool] | None = None,
+    call: ast.Call,
+    is_task_owner_name: Callable[[str], bool] | None = None,
+    *,
+    asyncio_is_module: bool = True,
 ) -> list[ast.expr]:
     """Return the arguments of ``call`` that asyncio requires to be awaitable.
 
@@ -594,12 +642,18 @@ def _awaitable_argument_slots(
     ``TASK_OWNER_CONSTRUCTORS`` / ``TASK_OWNER_EXACT``;
     ``is_task_owner_name`` resolves a plain-name receiver). Bare names such
     as an imported ``wait_for`` are not resolved, so a same-named repo
-    helper can never hide a real blocking call.
+    helper can never hide a real blocking call. With ``asyncio_is_module``
+    false (see ``_asyncio_is_module``) the ``asyncio.*`` forms are not
+    trusted.
     """
     func = call.func
     if not isinstance(func, ast.Attribute):
         return []
-    on_asyncio = isinstance(func.value, ast.Name) and func.value.id == "asyncio"
+    on_asyncio = (
+        asyncio_is_module
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "asyncio"
+    )
     if on_asyncio and func.attr == "gather":
         slots: list[ast.expr] = []
         for a in call.args:
@@ -608,14 +662,13 @@ def _awaitable_argument_slots(
             else:
                 slots.append(a)
         return slots
-    task_owner = func.attr == "create_task" and (
-        (
-            isinstance(func.value, ast.Name)
-            and is_task_owner_name is not None
-            and is_task_owner_name(func.value.id)
-        )
-        or _tail_matches(_tail_name(func.value), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX)
-    )
+    task_owner = False
+    if func.attr == "create_task":
+        receiver = func.value
+        if isinstance(receiver, ast.Name):
+            task_owner = is_task_owner_name is not None and is_task_owner_name(receiver.id)
+        else:
+            task_owner = _tail_matches(_tail_name(receiver), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX)
     if task_owner or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
         if call.args and not isinstance(call.args[0], ast.Starred):
             return [call.args[0]]
@@ -668,23 +721,45 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         # depth-1 pass does not apply, so ``gather(foo())`` still reports a
         # risky sync ``foo`` exactly as it did before slots existed.
         self._slot_call_ids: set[int] = set()
-        # ``_task_owner_verdicts`` of the module and each enclosing function,
-        # innermost last; a plain-name receiver resolves in the innermost
-        # scope that binds it.
-        self._task_owner_scopes: list[dict[str, bool]] = []
+        # ``(_task_owner_verdicts, is_class_body)`` of the module and each
+        # enclosing function / class body / comprehension, innermost last;
+        # a plain-name receiver resolves in the innermost scope that binds
+        # it. A class body is visible only to code directly inside it, not
+        # to its methods or comprehensions (Python's own rule).
+        self._task_owner_scopes: list[tuple[dict[str, bool], bool]] = []
+        # Set per module in visit_Module; see ``_asyncio_is_module``.
+        self._asyncio_is_module = True
 
     # ── function tracking ────────────────────────────────────────────────
     def visit_Module(self, node: ast.Module) -> None:
-        self._task_owner_scopes.append(_task_owner_verdicts(node))
+        self._asyncio_is_module = _asyncio_is_module(node)
+        self._task_owner_scopes.append((self._verdicts(node), False))
         self.generic_visit(node)
         self._task_owner_scopes.pop()
 
+    def _verdicts(self, scope: ast.AST) -> dict[str, bool]:
+        verdicts = _task_owner_verdicts(scope)
+        if not self._asyncio_is_module:
+            # Constructor bindings are only meaningful on the real module.
+            verdicts = dict.fromkeys(verdicts, False)
+        return verdicts
+
     def _visit_function(self, node: ast.AST, kind: str) -> None:
         self._func_stack.append(kind)
-        self._task_owner_scopes.append(_task_owner_verdicts(node))
+        self._task_owner_scopes.append((self._verdicts(node), False))
         self.generic_visit(node)
         self._task_owner_scopes.pop()
         self._func_stack.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # Decorators, bases and keywords run in the enclosing scope; the
+        # body runs in the class namespace.
+        for expr in (*node.decorator_list, *node.bases, *node.keywords):
+            self.visit(expr)
+        self._task_owner_scopes.append((self._verdicts(node), True))
+        for stmt in node.body:
+            self.visit(stmt)
+        self._task_owner_scopes.pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._visit_function(node, "async")
@@ -697,15 +772,27 @@ class AsyncBlockingChecker(ast.NodeVisitor):
 
     def _visit_comprehension(self, node: ast.AST) -> None:
         # Comprehension targets live in their own scope and shadow any
-        # enclosing task owner of the same name.
+        # enclosing task owner of the same name. The outermost iterable is
+        # evaluated in the enclosing scope, before any target is bound.
+        generators = node.generators  # type: ignore[attr-defined]
+        self.visit(generators[0].iter)
         targets = {
             n.id
-            for gen in node.generators  # type: ignore[attr-defined]
+            for gen in generators
             for n in ast.walk(gen.target)
-            if isinstance(n, ast.Name)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
         }
-        self._task_owner_scopes.append(dict.fromkeys(targets, False))
-        self.generic_visit(node)
+        self._task_owner_scopes.append((dict.fromkeys(targets, False), False))
+        for index, gen in enumerate(generators):
+            self.visit(gen.target)
+            if index:
+                self.visit(gen.iter)
+            for cond in gen.ifs:
+                self.visit(cond)
+        for field in ("elt", "key", "value"):
+            child = getattr(node, field, None)
+            if child is not None:
+                self.visit(child)
         self._task_owner_scopes.pop()
 
     visit_ListComp = _visit_comprehension
@@ -714,7 +801,9 @@ class AsyncBlockingChecker(ast.NodeVisitor):
     visit_GeneratorExp = _visit_comprehension
 
     def _is_task_owner_name(self, name: str) -> bool:
-        for verdicts in reversed(self._task_owner_scopes):
+        for depth, (verdicts, is_class_body) in enumerate(reversed(self._task_owner_scopes)):
+            if is_class_body and depth:
+                continue
             if name in verdicts:
                 return verdicts[name]
         return False
@@ -760,7 +849,9 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         # TypeError, so the argument must be a coroutine/future. Only
         # these positions are marked; other arguments (and the outer
         # call itself) keep the normal checks.
-        for arg in _awaitable_argument_slots(call, self._is_task_owner_name):
+        for arg in _awaitable_argument_slots(
+            call, self._is_task_owner_name, asyncio_is_module=self._asyncio_is_module,
+        ):
             for slot_call in _slot_calls(arg):
                 self._slot_call_ids.add(id(slot_call))
 

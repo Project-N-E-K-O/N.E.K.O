@@ -318,8 +318,8 @@ def test_recv_inside_wait_for_is_not_flagged():
     "asyncio.shield(socket.recv())",
     "asyncio.ensure_future(request_queue.get())",
     "asyncio.create_task(coro=socket.recv())",
-    "tg.create_task(socket.recv())",
-    "loop.create_task(socket.recv())",
+    "self.tg.create_task(socket.recv())",
+    "self.event_loop.create_task(socket.recv())",
     "self._loop.create_task(socket.recv())",
     "asyncio.get_running_loop().create_task(socket.recv())",
     "asyncio.gather(socket.recv(), request_queue.get())",
@@ -343,6 +343,9 @@ def test_other_awaitable_slots_are_not_flagged(wrapped):
     "await relay(socket.recv())",
     # create_task is trusted only on event loops / TaskGroups.
     "scheduler.create_task(socket.recv())",
+    # A plain-name receiver is trusted only through scope analysis, never by its spelling.
+    "loop.create_task(socket.recv())",
+    "tg.create_task(socket.recv())",
     # Positions other than the awaitable slot keep the normal checks.
     "await asyncio.wait_for(fut, timeout=socket.recv())",
 ])
@@ -350,7 +353,7 @@ def test_non_slot_arguments_are_still_flagged(call):
     out = _violations(f'''
     import asyncio
 
-    async def handler(socket, fut):
+    async def handler(socket, fut, loop, tg):
         {call}
     ''')
     assert len(out) == 1
@@ -479,6 +482,61 @@ def test_comprehension_and_annotation_rebinding_is_not_trusted(body):
     async def handler(socket, groups, scheduler):
         {body}
     ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+@pytest.mark.parametrize("body", [
+    # The value of an assignment expression is what fills the slot.
+    "await asyncio.wait_for((coro := socket.recv()), 10)",
+    # The outermost iterable runs in the enclosing scope, before targets bind.
+    "runner = asyncio.get_running_loop()\n        [x for runner in wrap(runner.create_task(socket.recv()))]",
+    # A name only read inside a target expression is not rebound.
+    "runner = asyncio.get_running_loop()\n        [runner.create_task(socket.recv()) for cache[runner] in items]",
+])
+def test_slot_and_scope_edge_cases_that_stay_trusted(body):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, wrap, cache, items):
+        {body}
+    ''')
+    assert out == []
+
+
+def test_a_class_body_has_its_own_namespace_hidden_from_its_methods():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = asyncio.get_running_loop()
+
+        class Local:
+            runner = scheduler
+            runner.create_task(socket.recv())
+
+            async def method(self):
+                runner.create_task(socket.recv())
+    ''')
+    assert [lineno for lineno, _, _ in out] == [9]
+
+
+@pytest.mark.parametrize("source", [
+    '''
+    async def handler(socket, asyncio):
+        await asyncio.wait_for(socket.recv(), 10)
+    ''',
+    '''
+    import asyncio
+    import fake_asyncio as asyncio
+
+    async def handler(socket):
+        runner = asyncio.get_running_loop()
+        runner.create_task(socket.recv())
+    ''',
+])
+def test_a_shadowed_asyncio_name_lifts_no_trust(source):
+    out = _violations(source)
     assert len(out) == 1
     assert "socket.recv" in out[0][2]
 
