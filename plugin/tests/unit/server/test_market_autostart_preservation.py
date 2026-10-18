@@ -277,6 +277,48 @@ async def test_market_first_install_still_disables_and_gates_autostart(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_write_fails", [False, True], ids=["post-install-idempotent", "preflight-fails"])
+async def test_first_install_persists_off_before_promotion_without_a_second_write(
+    market_install_environment, monkeypatch, first_write_fails
+) -> None:
+    """A read-only preference store must not permit an unguarded first install.
+
+    The post-install pass is idempotent for the manifest ID already protected by
+    the real install plan; it does not depend on another successful disk write.
+    """
+    env = market_install_environment
+    before = deepcopy(env.preference_store)
+    save_preferences = runtime_overrides._save_to_disk
+    writes = []
+
+    def fail_if_not_preflight(value):
+        writes.append(deepcopy(value))
+        assert not (env.user_root / PLUGIN_ID).exists(), "preferences must precede code promotion"
+        if first_write_fails or len(writes) > 1:
+            raise runtime_overrides.RuntimeOverrideWriteError("preference store is read-only")
+        save_preferences(value)
+
+    monkeypatch.setattr(runtime_overrides, "_save_to_disk", fail_if_not_preflight)
+    if first_write_fails:
+        with pytest.raises(ServerDomainError) as raised:
+            await _upload_market_package(env, mode="install", version="1.0.0")
+        assert raised.value.code == "PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED"
+        assert not (env.user_root / PLUGIN_ID).exists()
+        expected = before
+        assert env.pending_store == {"unrelated_pending"}
+    else:
+        result = await _upload_market_package(env, mode="install", version="1.0.0")
+        assert (env.user_root / PLUGIN_ID / "plugin.toml").is_file()
+        assert not result.get("autostart_gate_warning")
+        expected = {**before, PLUGIN_ID: {"auto_start": False}}
+        assert env.pending_store == {"unrelated_pending", PLUGIN_ID}
+    assert len(writes) == 1
+    runtime_overrides.reset_cache_for_testing()
+    assert runtime_overrides.load_runtime_overrides() == expected
+    assert env.preference_store == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "plan",
     [

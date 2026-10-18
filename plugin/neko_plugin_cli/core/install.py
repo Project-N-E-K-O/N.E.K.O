@@ -23,6 +23,12 @@ class PackageInstaller:
         profiles_root: str | Path | None = None,
         on_conflict: str = "fail",
     ) -> InstallResult:
+        """Install code without exporting package-level profiles.
+
+        ``profiles_root`` is a deprecated compatibility argument and is ignored.
+        The result's ``profiles_root`` and ``profile_dir`` are always ``None``.
+        Use ``unpack_package()`` to explicitly export the complete package.
+        """
         # Retained for callers using the old install signature. Complete
         # profile exports belong to unpack_package(), not runtime deployment.
         del profiles_root
