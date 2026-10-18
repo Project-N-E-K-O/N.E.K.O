@@ -237,6 +237,22 @@ def test_physics_profile_utf16_file_falls_back_instead_of_500(client, config_dir
     assert response.json() == {"success": True, "config": None, "source": "corrupt"}
 
 
+def test_physics_profile_non_finite_numbers_become_null(client, config_dir):
+    (config_dir / "sister1.0_physics.json").write_text(
+        '{"colliders": [{"bone": "Head", "radius": NaN}],'
+        ' "chains": [{"bones": ["Hair"], "stiffness": 0.5, "drag_force": Infinity, "hit_radius": 1e400}]}',
+        encoding="utf-8",
+    )
+    response = client.get("/api/model/vrm/physics_profile/sister1.0")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "file"
+    assert payload["config"] == {
+        "colliders": [{"bone": "Head", "radius": None}],
+        "chains": [{"bones": ["Hair"], "stiffness": 0.5, "drag_force": None, "hit_radius": None}],
+    }
+
+
 def test_cleanup_skips_workshop_lookup_when_no_config_exists(tmp_path, monkeypatch):
     class _Mgr:
         project_root = tmp_path

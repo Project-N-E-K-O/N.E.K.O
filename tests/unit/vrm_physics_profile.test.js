@@ -392,6 +392,55 @@ test('a bone name with spaces and brackets is sanitized the same way', () => {
     assert.equal(collider.shape.radius, 0.05);
 });
 
+test('bones whose names sanitize alike match by the original glTF name', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [
+            { bone: 'hair.001', shape: 'sphere', radius: 0.01 },
+            { bone: 'hair001', shape: 'sphere', radius: 0.02 }
+        ],
+        chains: [
+            { bones: ['hair.001'], stiffness: 0.3 },
+            { bones: ['hair001'], stiffness: 0.8 }
+        ]
+    };
+    // GLTFLoader: node.name is sanitized and de-duplicated, userData.name keeps the original.
+    // Runtime order is reversed on purpose so positional pairing cannot pass by accident.
+    const second = makeCollider('hair001_1', 0.5);
+    second.parent.userData = { name: 'hair001' };
+    const first = makeCollider('hair001', 0.5);
+    first.parent.userData = { name: 'hair.001' };
+    [first, second].forEach((c) => { c.shape.type = 'sphere'; });
+    assert.equal(profile.applyColliders(makeManager([second, first])), 2);
+    assert.equal(first.shape.radius, 0.01);
+    assert.equal(second.shape.radius, 0.02);
+
+    const jointSecond = { bone: { name: 'hair001_1', userData: { name: 'hair001' } }, settings: {} };
+    const jointFirst = { bone: { name: 'hair001', userData: { name: 'hair.001' } }, settings: {} };
+    assert.equal(profile.applyJoints(makeManager([], [jointSecond, jointFirst])), 2);
+    assert.equal(jointFirst.settings.stiffness, 0.3);
+    assert.equal(jointSecond.settings.stiffness, 0.8);
+});
+
+test('a bone with an original name absent from the profile does not borrow a sanitized match', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [{ bone: 'hair001', shape: 'sphere', radius: 0.02 }],
+        chains: [{ bones: ['hair001'], stiffness: 0.8 }]
+    };
+    const stranger = makeCollider('hair001', 0.5);
+    stranger.parent.userData = { name: 'hair.001' };
+    stranger.shape.type = 'sphere';
+    assert.equal(profile.applyColliders(makeManager([stranger])), 0);
+    assert.equal(stranger.shape.radius, 0.25);
+
+    const joint = { bone: { name: 'hair001', userData: { name: 'hair.001' } }, settings: { stiffness: 1 } };
+    assert.equal(profile.applyJoints(makeManager([], [joint])), 0);
+    assert.equal(joint.settings.stiffness, 1);
+});
+
 test('a geometry mismatch stays unmatched instead of stealing the next entry', () => {
     const { VrmPhysicsProfile } = loadProfileClass();
     const profile = new VrmPhysicsProfile();
@@ -506,6 +555,11 @@ function readVrmJson(relPath) {
     }
 }
 
+// GLTFLoader keeps the glTF node name in userData.name (sister1.0's names need no sanitizing).
+function runtimeNode(node) {
+    return { name: node.name, userData: { name: node.name } };
+}
+
 // Builds the runtime collider/joint layout three-vrm creates for a VRM1 model:
 // one sphere/capsule collider per entry (child of its node), one joint per spring segment.
 function runtimeFromVrm1(gltf) {
@@ -514,7 +568,7 @@ function runtimeFromVrm1(gltf) {
     const colliders = spring.colliders.map((entry) => {
         const type = entry.shape.sphere ? 'sphere' : 'capsule';
         const data = entry.shape[type];
-        const bone = { name: nodes[entry.node].name };
+        const bone = runtimeNode(nodes[entry.node]);
         const offset = data.offset || [0, 0, 0];
         return {
             parent: bone,
@@ -526,7 +580,7 @@ function runtimeFromVrm1(gltf) {
         for (let i = 0; i < s.joints.length - 1; i++) {
             const j = s.joints[i];
             joints.push({
-                bone: { name: nodes[j.node].name },
+                bone: runtimeNode(nodes[j.node]),
                 settings: {
                     hitRadius: j.hitRadius || 0,
                     stiffness: j.stiffness,

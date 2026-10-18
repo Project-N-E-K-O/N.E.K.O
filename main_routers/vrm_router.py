@@ -29,6 +29,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -618,6 +619,22 @@ def _get_physics_config_path(model_name: str) -> Path | None:
     return _get_vrm_config_path(model_name, "_physics.json", create_dir=False)
 
 
+def _drop_non_finite(value):
+    """Replace NaN/Infinity with None so the response stays valid JSON.
+
+    Python's json reader accepts NaN, Infinity and overflowing exponents, but the
+    response renderer refuses them and the request would fail with 500. Nulls are
+    skipped by the frontend's Number.isFinite checks, so the finite values still apply.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _drop_non_finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_drop_non_finite(item) for item in value]
+    return value
+
+
 def _get_model_path(model_name: str) -> tuple[Path | None, str]:
     """Get the VRM model file path; returns (path, url_prefix)."""
     if not _is_valid_vrm_model_name(model_name):
@@ -804,7 +821,7 @@ async def get_physics_profile(model_name: str):
         if not isinstance(config, dict):
             logger.warning(f"物理配置文件不是 JSON 对象，回退到默认行为: {config_path.name}")
             return {"success": True, "config": None, "source": "corrupt"}
-        return {"success": True, "config": config, "source": "file"}
+        return {"success": True, "config": _drop_non_finite(config), "source": "file"}
 
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         logger.warning(f"物理配置文件 JSON 损坏，回退到默认行为: {e}")

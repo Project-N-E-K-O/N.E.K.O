@@ -77,12 +77,35 @@
             return Array.isArray(config.colliders) || Array.isArray(config.chains);
         }
 
-        _boneNameOfCollider(collider) {
+        _boneOfCollider(collider) {
             const parent = collider && collider.parent;
-            if (parent && typeof parent.name === 'string' && parent.name) return parent.name;
+            if (parent && typeof parent.name === 'string' && parent.name) return parent;
             const bone = collider && collider.bone;
-            if (bone && typeof bone.name === 'string' && bone.name) return bone.name;
-            return '';
+            if (bone && typeof bone.name === 'string' && bone.name) return bone;
+            return null;
+        }
+
+        // GLTFLoader sanitizes node.name and appends "_1", "_2"... when two names sanitize to the
+        // same string ("hair.001" and "hair001"), but keeps the glTF name in userData.name. The
+        // profile is written with those original names, so match them first and only fall back
+        // to the sanitized name when the loader did not record the original.
+        _boneKey(node) {
+            if (!node) return '';
+            const raw = node.userData && node.userData.name;
+            if (typeof raw === 'string' && raw) return 'raw:' + raw;
+            const name = this._sanitizeNodeName(typeof node.name === 'string' ? node.name : '');
+            return name ? 'name:' + name : '';
+        }
+
+        _addToIndex(index, boneName, item) {
+            if (typeof boneName !== 'string' || !boneName) return;
+            const keys = ['raw:' + boneName];
+            const sanitized = this._sanitizeNodeName(boneName);
+            if (sanitized) keys.push('name:' + sanitized);
+            for (let i = 0; i < keys.length; i++) {
+                if (!index.has(keys[i])) index.set(keys[i], []);
+                index.get(keys[i]).push(item);
+            }
         }
 
         _sanitizeNodeName(name) {
@@ -140,11 +163,8 @@
                 : [];
             for (let i = 0; i < list.length; i++) {
                 const entry = list[i];
-                if (!entry || !entry.bone) continue;
-                const key = this._sanitizeNodeName(entry.bone);
-                if (!key) continue;
-                if (!index.has(key)) index.set(key, []);
-                index.get(key).push(entry);
+                if (!entry) continue;
+                this._addToIndex(index, entry.bone, entry);
             }
             return index;
         }
@@ -158,10 +178,7 @@
                 const chain = list[i];
                 if (!chain || !Array.isArray(chain.bones)) continue;
                 for (let b = 0; b < chain.bones.length; b++) {
-                    const key = this._sanitizeNodeName(chain.bones[b]);
-                    if (!key) continue;
-                    if (!index.has(key)) index.set(key, []);
-                    index.get(key).push(chain);
+                    this._addToIndex(index, chain.bones[b], chain);
                 }
             }
             return index;
@@ -179,9 +196,9 @@
             const claimed = new Set();
             const runtime = colliders.map((collider) => {
                 if (!collider || !collider.shape || collider.shape.radius === undefined) return null;
-                const boneName = this._sanitizeNodeName(this._boneNameOfCollider(collider));
+                const boneKey = this._boneKey(this._boneOfCollider(collider));
                 return {
-                    entries: boneName ? index.get(boneName) : null,
+                    entries: boneKey ? index.get(boneKey) : null,
                     type: typeof collider.shape.type === 'string' ? collider.shape.type : '',
                     offsetKey: this._offsetKey(collider.shape.offset),
                     tailKey: this._vecKey(collider.shape.tail)
@@ -257,15 +274,14 @@
             for (let i = 0; i < joints.length; i++) {
                 const joint = joints[i];
                 if (!joint || !joint.settings) continue;
-                const bone = joint.bone;
-                const boneName = this._sanitizeNodeName(bone && bone.name ? bone.name : '');
-                if (!boneName) continue;
-                const chains = index.get(boneName);
+                const boneKey = this._boneKey(joint.bone);
+                if (!boneKey) continue;
+                const chains = index.get(boneKey);
                 if (!chains || !chains.length) continue;
 
-                const cursor = claimed.get(boneName) || 0;
+                const cursor = claimed.get(boneKey) || 0;
                 const chain = chains[cursor < chains.length ? cursor : chains.length - 1];
-                claimed.set(boneName, cursor + 1);
+                claimed.set(boneKey, cursor + 1);
                 if (!chain) continue;
 
                 const settings = joint.settings;
