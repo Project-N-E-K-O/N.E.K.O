@@ -183,40 +183,39 @@
                 return {
                     entries: boneName ? index.get(boneName) : null,
                     type: typeof collider.shape.type === 'string' ? collider.shape.type : '',
-                    offsetKey: this._offsetKey(collider.shape.offset)
+                    offsetKey: this._offsetKey(collider.shape.offset),
+                    tailKey: this._vecKey(collider.shape.tail)
                 };
             });
 
-            // Pass 1: exact bone + shape + offset (profiles that copy the model's own colliders).
-            for (let i = 0; i < colliders.length; i++) {
-                const info = runtime[i];
-                if (!info || !info.entries) continue;
-                for (let k = 0; k < info.entries.length; k++) {
-                    const entry = info.entries[k];
-                    if (claimed.has(entry)) continue;
-                    if (!this._shapeCompatible(entry, info.type)) continue;
-                    if (this._offsetKey(entry.offset) !== info.offsetKey) continue;
-                    matched[i] = entry;
-                    claimed.add(entry);
-                    break;
+            const claimFirst = (accepts) => {
+                for (let i = 0; i < colliders.length; i++) {
+                    const info = runtime[i];
+                    if (!info || !info.entries || matched[i]) continue;
+                    for (let k = 0; k < info.entries.length; k++) {
+                        const entry = info.entries[k];
+                        if (claimed.has(entry)) continue;
+                        if (!this._shapeCompatible(entry, info.type)) continue;
+                        if (!accepts(entry, info)) continue;
+                        matched[i] = entry;
+                        claimed.add(entry);
+                        break;
+                    }
                 }
-            }
+            };
+            const sameOffset = (entry, info) => this._offsetKey(entry.offset) === info.offsetKey;
+
+            // Pass 1a: bone + shape + offset + capsule tail, so capsules sharing an offset keep
+            // their own radii. The tuner writes tails in Unity space, so this pass is a preference.
+            claimFirst((entry, info) => sameOffset(entry, info)
+                && info.tailKey !== ''
+                && this._vecKey(entry.tail) === info.tailKey);
+            // Pass 1b: bone + shape + offset (profiles that copy the model's own colliders).
+            claimFirst(sameOffset);
 
             // Pass 2: same bone + same shape, in order, only for entries without a real position.
             // A shape mismatch or a known offset mismatch stays unmatched.
-            for (let i = 0; i < colliders.length; i++) {
-                const info = runtime[i];
-                if (!info || !info.entries || matched[i]) continue;
-                for (let k = 0; k < info.entries.length; k++) {
-                    const entry = info.entries[k];
-                    if (claimed.has(entry)) continue;
-                    if (!this._shapeCompatible(entry, info.type)) continue;
-                    if (this._hasPositionInfo(entry)) continue;
-                    matched[i] = entry;
-                    claimed.add(entry);
-                    break;
-                }
-            }
+            claimFirst((entry) => !this._hasPositionInfo(entry));
 
             let applied = 0;
             for (let i = 0; i < colliders.length; i++) {
@@ -272,7 +271,7 @@
                 const settings = joint.settings;
                 for (let k = 0; k < JOINT_SETTING_KEYS.length; k++) {
                     const map = JOINT_SETTING_KEYS[k];
-                    if (typeof chain[map.profile] !== 'number') continue;
+                    if (!Number.isFinite(chain[map.profile])) continue;
                     if (map.settings === 'hitRadius') {
                         // Unscaled base for setModelScale, like collider._originalRadius.
                         joint._originalHitRadius = chain[map.profile];
@@ -283,7 +282,7 @@
                 }
 
                 const dir = chain.gravity_dir;
-                if (Array.isArray(dir) && dir.length === 3
+                if (Array.isArray(dir) && dir.length === 3 && dir.every(Number.isFinite)
                     && settings.gravityDir && typeof settings.gravityDir.set === 'function') {
                     settings.gravityDir.set(dir[0], dir[1], dir[2]);
                 }

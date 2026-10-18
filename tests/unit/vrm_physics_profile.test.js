@@ -720,3 +720,73 @@ test('an empty or array config is not treated as a profile', async () => {
         assert.equal(profile.hasProfile, false);
     }
 });
+
+test('capsules sharing an offset are told apart by their tails, whatever the profile order', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [
+            { bone: 'Hips', shape: 'capsule', radius: 0.09, offset: [0, 0, 0], tail: [0, 0, 0.2] },
+            { bone: 'Hips', shape: 'capsule', radius: 0.03, offset: [0, 0, 0], tail: [0.2, 0, 0] }
+        ],
+        chains: []
+    };
+    const sideways = makeCollider('Hips', 0.5);
+    sideways.shape.type = 'capsule';
+    sideways.shape.tail = { x: 0.2, y: 0, z: 0 };
+    const forward = makeCollider('Hips', 0.5);
+    forward.shape.type = 'capsule';
+    forward.shape.tail = { x: 0, y: 0, z: 0.2 };
+    assert.equal(profile.applyColliders(makeManager([sideways, forward])), 2);
+    assert.equal(sideways.shape.radius, 0.03);
+    assert.equal(forward.shape.radius, 0.09);
+});
+
+test('a capsule tail in another coordinate space still matches by offset', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [{ bone: 'Hips', shape: 'capsule', radius: 0.04, offset: [0, 0.1, 0], tail: [-0.2, 0, 0] }],
+        chains: []
+    };
+    const capsule = makeCollider('Hips', 0.5);
+    capsule.shape.type = 'capsule';
+    capsule.shape.offset = { x: 0, y: 0.1, z: 0 };
+    capsule.shape.tail = { x: 0.2, y: 0, z: 0 };
+    assert.equal(profile.applyColliders(makeManager([capsule])), 1);
+    assert.equal(capsule.shape.radius, 0.04);
+});
+
+test('non-finite joint values in the profile leave those settings untouched', () => {
+    const { VrmPhysicsProfile } = loadProfileClass();
+    const profile = new VrmPhysicsProfile();
+    profile.profile = {
+        colliders: [],
+        chains: [{
+            bones: ['Hair'],
+            stiffness: 'bad',
+            drag_force: NaN,
+            gravity_power: 0.2,
+            hit_radius: Infinity,
+            gravity_dir: ['bad', -1, 0]
+        }]
+    };
+    const calls = [];
+    const joint = {
+        bone: { name: 'Hair' },
+        settings: {
+            stiffness: 0.8,
+            dragForce: 0.4,
+            gravityPower: 0,
+            hitRadius: 0.01,
+            gravityDir: { set: (...v) => calls.push(v) }
+        }
+    };
+    profile.applyJoints(makeManager([], [joint]));
+    assert.equal(joint.settings.stiffness, 0.8);
+    assert.equal(joint.settings.dragForce, 0.4);
+    assert.equal(joint.settings.gravityPower, 0.2);
+    assert.equal(joint.settings.hitRadius, 0.01);
+    assert.equal(joint._originalHitRadius, undefined);
+    assert.deepEqual(calls, []);
+});
