@@ -54,7 +54,10 @@ done
 if [ "$CONTAINER" = "neko" ]; then
     SCOPE=""
 else
-    SCOPE=$(printf '%s' "$CONTAINER" | tr -c 'A-Za-z0-9._-' '_')
+    # 前导 "-" 是文件名的一部分：文档里写的是 restart-count-neko-2，
+    # 少了这个分隔符会变成 restart-countneko-2 —— 运维按文档删计数会删到
+    # 一个不存在的文件，真实的恢复预算却一直没清。
+    SCOPE="-$(printf '%s' "$CONTAINER" | tr -c 'A-Za-z0-9._-' '_')"
 fi
 LOCK_FILE="$STATE_DIR/watchdog$SCOPE.lock"
 COUNT_FILE="$STATE_DIR/fail-count$SCOPE"

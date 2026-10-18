@@ -171,11 +171,14 @@ else
     printf '%s\n' "$hardcoded" | sed 's/^/     /' >&2
 fi
 
+# 数量不写死：合法新增一条带 proxy_pass 的路由不该把测试判红。
+# 断言的是"渲染没有丢或凭空加 location"—— 与模板里的条数一致。
 route_count=$(grep -cE '^location' "$WORK/snap-http/etc/nginx/neko/locations.conf" || true)
-if [ "$route_count" = "9" ]; then
-    pass "路由表包含预期的 9 条 location"
+template_count=$(grep -cE '^location' "$SCRIPT_DIR/locations.conf.template" || true)
+if [ "$route_count" = "$template_count" ]; then
+    pass "路由表条数与模板一致（$route_count 条）"
 else
-    fail "路由表 location 数量与预期不符：$route_count"
+    fail "路由表条数与模板不一致：渲染 $route_count / 模板 $template_count"
 fi
 
 echo
@@ -184,10 +187,13 @@ echo "== T6 路由表契约：每个 location 要么反代，要么在直出白�
 # 对外端点（会话事件流、文件同步、设备注册…），任何一个图省事写成直出，就是一个
 # 没有任何症状的永久口子。这条断言把它变成 CI 红灯。
 #
-# 白名单是当前仅有的三条直出，新增必须在这里显式登记（并在 README 里说明理由）：
-#   location = /health        仅回 healthy，不返回任何数据
-#   location /static/         alias 到构建产物，无用户内容
-#   location ~ /\.            拒绝隐藏文件（deny，不是放行）
+# 白名单是当前仅有的三条直出，新增必须在这里显式登记（并在 README 里说明理由）。
+# 用固定行匹配（grep -F）而不是 case 模式：隐藏文件那条的匹配串里有一个字面
+# 反斜杠，写成 case 模式要 \\ 才能表达，既不可读也容易写错（第一版就写错了，
+# 结果 "location ~ /private" 这种本该拒绝的直出也能通过）。
+DIRECT_ALLOWLIST='location = /health
+location /static/
+location ~ /\.'
 mapfile -t ROUTE_VERDICTS < <(awk '
     /^location/ { name=$0; sub(/[[:space:]]*\{[[:space:]]*$/, "", name); has=0; inb=1; next }
     inb && /proxy_pass/ { has=1 }
@@ -206,13 +212,11 @@ else
         verdict="${entry%% *}"
         name="${entry#* }"
         [ "$verdict" = "PROXY" ] && continue
-        case "$name" in
-            "location = /health"|"location /static/"|"location ~ /"*) ;;
-            *)
-                fail "location 既没有 proxy_pass、也不在直出白名单：$name"
-                DIRECT_ALLOWLIST_VIOLATION=1
-                ;;
-        esac
+        if printf '%s\n' "$DIRECT_ALLOWLIST" | grep -qxF -- "$name"; then
+            continue
+        fi
+        fail "location 既没有 proxy_pass、也不在直出白名单：$name"
+        DIRECT_ALLOWLIST_VIOLATION=1
     done
     [ "$DIRECT_ALLOWLIST_VIOLATION" = "0" ] && pass "所有 location 要么反代要么在白名单内"
 fi

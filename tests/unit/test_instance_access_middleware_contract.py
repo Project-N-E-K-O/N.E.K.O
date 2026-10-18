@@ -157,9 +157,11 @@ def test_gated_services_mount_the_instance_access_middleware():
     for rel, label in GATED.items():
         assert rel in facts, f"{rel}（{label}）没有被识别出 FastAPI 应用"
         app_vars, gated_vars = facts[rel]
-        # 必须是"这个文件自己创建的 app 上调用了 add_middleware(InstanceAccessMiddleware)"。
+        # 必须是"这个文件自己创建的**每一个** app 上都调用了 add_middleware(InstanceAccessMiddleware)"。
+        # 用子集而不是交集：一个文件里出现第二个 FastAPI() 却没挂门禁时，
+        # 交集判定仍会通过，那个 app 就裸奔了。
         # 注释掉的代码不在 AST 里，给别的对象挂中间件也不算。
-        assert gated_vars & app_vars, (
+        assert app_vars <= gated_vars, (
             f"{rel}（{label}）没有在它自己创建的 FastAPI 应用上挂 InstanceAccessMiddleware —— "
             "该服务的 HTTP/WS 不受实例门禁保护"
         )
