@@ -1347,7 +1347,8 @@ def _collect_plugin_contexts(
         (plugin_contexts, pid_to_context)
     """
     found_toml_files = list(plugin_config_root.glob("*/plugin.toml"))
-    logger.info("Found {} plugin.toml files: {}", len(found_toml_files), [str(p) for p in found_toml_files])
+    logger.info("Found {} plugin.toml files in {}", len(found_toml_files), plugin_config_root)
+    logger.debug("plugin.toml files in {}: {}", plugin_config_root, [str(p) for p in found_toml_files])
     
     plugin_contexts: List[PluginContext] = []
     processed_paths: set = set()
