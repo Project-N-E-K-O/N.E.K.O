@@ -25,6 +25,7 @@ import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
+from utils.language_utils import get_global_language_full, normalize_language_code
 import random
 import re
 import time
@@ -55,7 +56,7 @@ XHH_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
-# The community API's discover feed is deliberately fetched as its first page
+# Each proactive fetch starts a fresh server recommendation round with a page
 # of 60 cards. The caller's smaller ``limit`` is applied after normalization,
 # so Phase 1 keeps its existing prompt budget while still getting a varied pool.
 NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
@@ -77,7 +78,7 @@ def _neko_community_urls() -> tuple[str, str]:
     """Return community feed and discover URLs for the configured social host."""
 
     base_url = social_base_url().rstrip("/")
-    return f"{base_url}/api/feed", f"{base_url}/discover"
+    return f"{base_url}/api/feed/recommendations", f"{base_url}/discover"
 
 
 def _same_community_origin(left: str, right: str) -> bool:
@@ -2138,14 +2139,14 @@ async def _fetch_neko_community_payload(
     client: httpx.AsyncClient,
     feed_api: str,
     *,
-    params: dict[str, int],
+    query: dict[str, Any],
     headers: dict[str, str],
 ) -> tuple[int, Any | None]:
     """Read one bounded community feed response before JSON decoding."""
 
     body = bytearray()
     async with client.stream(
-        "GET", feed_api, params=params, headers=headers, timeout=10.0
+        "POST", feed_api, json=query, headers=headers, timeout=10.0
     ) as response:
         if response.status_code in {401, 403}:
             return response.status_code, None
@@ -2167,14 +2168,14 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
             "Referer": discover_url,
             "User-Agent": XHH_USER_AGENT,
         }
-        params = {"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
+        query: dict[str, Any] = {"cursor": None, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
         access_token = ""
         if _neko_community_bearer_transport_allowed(feed_api):
             access_token = await _neko_community_access_token(feed_api)
         authenticated = bool(access_token)
         if authenticated:
-            # Never put a refreshable community bearer into the process-wide client:
-            # its cookie jar and connection lifetime are shared by unrelated scrapers.
+            # Omit locale so the server honors the account's saved language.
+            # Keep the refreshable bearer out of the shared client's cookie jar.
             headers["Authorization"] = f"Bearer {access_token}"
             async with httpx.AsyncClient(
                 timeout=10.0,
@@ -2182,30 +2183,25 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
                 follow_redirects=False,
             ) as client:
                 status_code, payload = await _fetch_neko_community_payload(
-                    client, feed_api, params=params, headers=headers
+                    client, feed_api, query=query, headers=headers
                 )
-            # A permission/scope mismatch must not suppress the public discovery feed.
             if status_code in {401, 403}:
                 authenticated = False
                 headers.pop("Authorization", None)
-                _, payload = await _fetch_neko_community_payload(
-                    get_external_http_client(), feed_api, params=params, headers=headers
-                )
-        else:
-            _, payload = await _fetch_neko_community_payload(
-                get_external_http_client(), feed_api, params=params, headers=headers
+        if not authenticated:
+            # Missing or rejected credentials use anonymous recommendations.
+            query["locale"] = normalize_language_code(
+                get_global_language_full(), format="full"
             )
+            status_code, payload = await _fetch_neko_community_payload(
+                get_external_http_client(), feed_api, query=query, headers=headers
+            )
+        if status_code in {401, 403}:
+            raise ValueError(f"Community recommendations rejected: HTTP {status_code}")
         posts = normalize_neko_community_feed(payload, limit=limit)
-        if not posts:
+        if not posts and not (isinstance(payload, dict) and payload.get("items") == []):
             raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
-        # The feed API ranks cards by hot score, so this first page's order is
-        # near-static within a day. Feeding Phase 1 that fixed order every
-        # round made the same candidate prefix — and the same logged top
-        # titles — reappear on every proactive cycle. Shuffle the bounded
-        # pool so each round presents a fresh slice of it; the source-history
-        # cooldown (keyed by dedupe_key, order-independent) still keeps
-        # already-delivered cards out.
-        random.shuffle(posts)
+        # Preserve server ranking; an exhausted language pool may legitimately be empty.
         return {
             "success": True,
             "posts": posts,
