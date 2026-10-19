@@ -47,6 +47,11 @@ from ._shared import (
     logger,
 )
 
+# Card entries for synthetic ``__ai_context.*`` fields store the fingerprint of
+# the events they were rendered from (see ``ai_context_field_fingerprints``).
+_CARD_SOURCE_FINGERPRINT_KEY = 'source_fingerprint'
+
+
 class PersistenceMixin:
     def _persona_path(self, name: str) -> str:
         from memory import ensure_character_dir
@@ -377,7 +382,8 @@ class PersistenceMixin:
         Returns ``(False, None)`` when the locale file exists but could not be
         read this pass; the caller skips the sync, since falling back to the
         process language would rewrite the stored fact. ``(True, None)`` means
-        no persisted locale: render as before.
+        no persisted locale: render in the current language and compare the
+        synthetic fields by source fingerprint instead of text.
         """
         reader = getattr(self._config_manager, "_read_durable_prompt_locale", None)
         if not callable(reader):
@@ -393,8 +399,18 @@ class PersistenceMixin:
     def _apply_character_card_sync(
         self, name: str, persona: dict,
         master_basic_config, lanlan_basic_config,
+        *, durable_locale: str | None = None,
     ) -> bool:
+        """Write the card fields into ``persona``; returns whether anything changed.
+
+        With a ``durable_locale`` the card was rendered in that language and
+        every field compares by text. Without one, the synthetic fields were
+        rendered in whatever language is current, so they compare by source
+        fingerprint instead: the same events in another language are not a
+        change, and are not rewritten.
+        """
         from config import CHARACTER_RESERVED_FIELDS
+        from utils.config_manager import ai_context_field_fingerprints
         excluded_fields = set(CHARACTER_RESERVED_FIELDS)
         changed = False
 
@@ -407,8 +423,9 @@ class PersistenceMixin:
                 return len(val) > 0
             return True
 
-        def _build_expected(card_data: dict, entity: str) -> list[tuple[str, dict]]:
-            """Build the expected (id, entry) list from card fields, preserving card field order."""
+        def _build_expected(card_data: dict, entity: str) -> list[tuple[str, str, str | None]]:
+            """Build the expected (id, text, source fingerprint) list, preserving card field order."""
+            fingerprints = ai_context_field_fingerprints(card_data)
             expected = []
             for k, v in card_data.items():
                 if k in excluded_fields or not _is_syncable(v):
@@ -418,23 +435,37 @@ class PersistenceMixin:
                 if isinstance(v, list):
                     v = '、'.join(str(item) for item in v)
                 entry_id = self._card_entry_id(entity, k)
+                fingerprint = None
                 if str(k).startswith("__ai_context."):
                     # Synthesized runtime-context fields (e.g. __ai_context.profile_rename_events):
                     # value already contains a complete sentence with localized labels; never prefix the internal key,
                     # or the bare "__ai_context.xxx: ..." key leaks unchanged into model-facing facts.
                     # Match the dotted prefix precisely to avoid ordinary keys such as __ai_contextual_*.
                     text = str(v)
+                    # A user field that merely shares the prefix has no fingerprint.
+                    fingerprint = fingerprints.get(str(k))
                 else:
                     text = f"{k}: {v}"
-                expected.append((entry_id, text))
+                expected.append((entry_id, text, fingerprint))
             return expected
+
+        def _needs_rewrite(entry: dict, text: str, fingerprint: str | None) -> bool:
+            if fingerprint is not None and durable_locale is None:
+                return entry.get(_CARD_SOURCE_FINGERPRINT_KEY) != fingerprint
+            return entry.get('text') != text
+
+        def _stamp_fingerprint(entry: dict, fingerprint: str | None) -> None:
+            if fingerprint is None:
+                entry.pop(_CARD_SOURCE_FINGERPRINT_KEY, None)
+            else:
+                entry[_CARD_SOURCE_FINGERPRINT_KEY] = fingerprint
 
         def _sync_entity(entity: str, card_data: dict) -> bool:
             """Sync a single entity section. Returns whether anything changed."""
             section = persona.setdefault(entity, {})
             facts = section.setdefault('facts', [])
             expected = _build_expected(card_data, entity)
-            expected_ids = {eid for eid, _ in expected}
+            expected_ids = {eid for eid, _, _ in expected}
 
             # Separate card and non-card entries.
             existing_card = {}  # id → entry
@@ -448,26 +479,29 @@ class PersistenceMixin:
             # Build the new card-entry list in card order.
             modified = False
             new_card_entries = []
-            for eid, text in expected:
+            for eid, text, fingerprint in expected:
                 if eid in existing_card:
                     entry = existing_card[eid]
-                    if entry.get('text') != text:
-                        # Text changed → update.
+                    if _needs_rewrite(entry, text, fingerprint):
                         old_text = entry.get('text', '')
-                        entry['text'] = text
-                        # token_count cache derives from text; in-place text mutation here
-                        # must invalidate it, or rendering recalculates only after fingerprint
-                        # mismatch, wasting an additional sha256
-                        # (symmetric with amerge_into's _sync_mutate_entry).
-                        self._invalidate_token_count_cache(entry)
-                        # Same logic for the embedding cache: a stale
-                        # vector under the old text would slip into
-                        # cosine-based retrieval matches.
-                        self._invalidate_embedding_cache(entry)
+                        if old_text != text:
+                            # Text changed → update.
+                            entry['text'] = text
+                            # token_count cache derives from text; in-place text mutation here
+                            # must invalidate it, or rendering recalculates only after fingerprint
+                            # mismatch, wasting an additional sha256
+                            # (symmetric with amerge_into's _sync_mutate_entry).
+                            self._invalidate_token_count_cache(entry)
+                            # Same logic for the embedding cache: a stale
+                            # vector under the old text would slip into
+                            # cosine-based retrieval matches.
+                            self._invalidate_embedding_cache(entry)
+                            # Never write persona text to logger.
+                            logger.info(f"[Persona] {name}: card 同步更新 [{entity}] (old_len={len(old_text)} new_len={len(text)})")
+                            print(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
+                        # An entry written before fingerprints existed gets one here, once.
+                        _stamp_fingerprint(entry, fingerprint)
                         modified = True
-                        # Never write persona text to logger.
-                        logger.info(f"[Persona] {name}: card 同步更新 [{entity}] (old_len={len(old_text)} new_len={len(text)})")
-                        print(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
                     new_card_entries.append(entry)
                 else:
                     # New field → create.
@@ -475,6 +509,7 @@ class PersistenceMixin:
                     entry['id'] = eid
                     entry['source'] = 'character_card'
                     entry['protected'] = True
+                    _stamp_fingerprint(entry, fingerprint)
                     new_card_entries.append(entry)
                     modified = True
                     logger.info(f"[Persona] {name}: card 同步新增 [{entity}] (len={len(text)})")
@@ -535,6 +570,7 @@ class PersistenceMixin:
             return False
         return self._apply_character_card_sync(
             name, persona, master_basic_config, lanlan_basic_config,
+            durable_locale=locale,
         )
 
     async def _async_sync_character_card(self, name: str, persona: dict) -> bool:
@@ -552,6 +588,7 @@ class PersistenceMixin:
             return False
         return self._apply_character_card_sync(
             name, persona, master_basic_config, lanlan_basic_config,
+            durable_locale=locale,
         )
 
     def save_persona(self, name: str, persona: dict | None = None) -> None:

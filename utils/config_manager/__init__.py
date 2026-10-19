@@ -134,6 +134,7 @@ from .persona_payload import (  # noqa: F401
     _normalize_persona_override_profile,
     _resolve_effective_character_prompt,
     _unique_ai_context_field_name,
+    ai_context_field_fingerprints,
     ensure_default_yui_voice_for_free_api,
     strip_generated_persona_selection_prompt,
 )
