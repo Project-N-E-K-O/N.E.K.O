@@ -17,10 +17,12 @@ ENDPOINT = 'https://api.atlascloud.ai/v1'
     'google/gemini-3.1-flash-lite',
     'google/gemini-2.5-flash-lite',
     'google/gemini-3-flash-preview',
+    'deepseek-ai/deepseek-v4-flash',
 ])
 def test_atlascloud_regular_and_focus_wire_payloads(model):
     """Normal and Focus effort reach Atlas Cloud as a top-level reasoning_effort."""
     captured = []
+    assert focus_extra_body(model) is not None
 
     def respond(request):
         captured.append(json.loads(request.content))

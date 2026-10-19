@@ -214,6 +214,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
     "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
     "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER,
+    # Atlas Cloud 的 summary/correction 默认模型（小写 id，与 SiliconFlow 的大小写不同）。
+    # 同样走 reasoning.effort 方言，在 Atlas 线上由 openai_client 转成顶层 reasoning_effort。
+    "deepseek-ai/deepseek-v4-flash": EXTRA_BODY_OPENROUTER,
     "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
