@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from services.chat_sync import runtime as chat_sync_runtime
+from main_routers import proactive_feedback_router
 
 
 def hooks(monkeypatch, *, blocked=False, fail_initialization=False):
@@ -43,6 +44,7 @@ def hooks(monkeypatch, *, blocked=False, fail_initialization=False):
     voice_module.initialize_voice_identity_runtime = voice
     monkeypatch.setitem(sys.modules, voice_module.__name__, voice_module)
     monkeypatch.setattr(chat_sync_runtime, "schedule_desktop_chat_sync_start", lambda _manager: order.append("chat_sync"))
+    monkeypatch.setattr(proactive_feedback_router, "schedule_start", lambda: order.append("proactive_feedback"))
     namespace = {
         "__package__": "app.main_server", "Any": Any, "asyncio": asyncio, "_IS_MAIN_PROCESS": True,
         "importlib": SimpleNamespace(import_module=lambda _: SimpleNamespace(runtime=SimpleNamespace())),
@@ -70,9 +72,10 @@ def test_startup_starts_chat_sync_only_after_storage_gate(monkeypatch, blocked):
     namespace, order = hooks(monkeypatch, blocked=blocked)
     asyncio.run(namespace["on_startup"]())
     if blocked:
-        assert "chat_sync" not in order and "initialize" not in order
+        assert "chat_sync" not in order and "initialize" not in order and "proactive_feedback" not in order
     else:
         assert order.index("initialize") < order.index("integrations") < order.index("chat_sync")
+        assert order.index("integrations") < order.index("proactive_feedback")
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -85,7 +88,7 @@ def test_storage_continue_starts_sync_only_after_successful_release(monkeypatch,
         assert order == ["continue", "initialize", "blocked", "compensate"]
     else:
         assert asyncio.run(namespace["release_storage_startup_barrier"]()) == {"ok": True, "initialized": True}
-        assert order == ["continue", "initialize", "released", "integrations", "chat_sync"]
+        assert order == ["continue", "initialize", "released", "integrations", "chat_sync", "proactive_feedback"]
 
 
 @pytest.mark.parametrize("outcome", ["success", "rejected", "unexpected", "cancelled"])

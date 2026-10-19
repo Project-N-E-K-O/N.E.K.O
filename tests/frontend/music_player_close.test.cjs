@@ -197,6 +197,24 @@ const endedState = { track: {name:'finished', artist:'test'}, playbackId:'finish
     ended:true, currentTime:60, duration:60, volume:0.2 };
 const remoteEvent = (type, payload) => ({ sender:'remote-owner', type, payload });
 
+for (const transport of ['Electron IPC', 'web BroadcastChannel']) {
+    test(`${transport} mirrors chat append/update and bookkeeping without echo`, t => {
+        const options=transport==='web BroadcastChannel'?{channelHub:new Set()}:{};
+        const {owner,follower}=pair(t,options);
+        const events=[], messages=new Map();
+        follower.w.reactChatWindowHost={appendMessage(m){messages.set(m.id,m);},
+            updateMessage(id,patch){Object.assign(messages.get(id),patch);}};
+        follower.w.addEventListener('neko:chat-mirror',e=>events.push(e.detail));
+        const message={id:'consent',blocks:[{type:'music_recommendation',state:'pending'}]};
+        owner.w.__nekoMirrorChatAppend(null,message);
+        owner.w.__nekoMirrorChatUpdate(null,'consent',{blocks:[{type:'music_recommendation',state:'skipped'}]});
+        assert.equal(messages.get('consent').blocks[0].state,'skipped');
+        assert.equal(events.length,2);
+        assert.equal(follower.sent.filter(e=>e.type==='chat_mirror'||e.type==='append'||e.type==='update').length,0);
+        assert.equal(owner.players.length+follower.players.length,0);
+    });
+}
+
 for (const stage of ['late player', 'canceled factory', 'rejected factory', 'media wait']) {
     test(`rejected replacement removes superseded bar after ${stage}`, async t => {
         const s = createSurface(t, {

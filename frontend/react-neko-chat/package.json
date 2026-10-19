@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run && npm run test:music",
-    "test:music": "node --test ../../tests/frontend/music_player_close.test.cjs",
+    "test:music": "node --test ../../tests/frontend/music_player_close.test.cjs ../../tests/frontend/music_recommendations.test.cjs ../../tests/frontend/proactive_recommendations.test.cjs",
     "sync-css": "node scripts/sync-css.mjs"
   },
   "dependencies": {

@@ -45,6 +45,32 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 }
 
 describe('CompactExportHistoryPanel', () => {
+  it('omits retired proactive placeholder rows while preserving actual dialogue', () => {
+    const placeholder = parseChatMessage({ ...message, id: 'retired-topic', blocks: [{
+      type: 'proactive_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943',
+      category: 'chat', state: 'accepted', content: { title: '', source: '', url: '' },
+    }] });
+    const { container } = renderPanel({ messages: [placeholder, message], controlsOpen: false, previewOpen: false });
+    expect(container.querySelector('[data-message-id="retired-topic"]')).toBeNull();
+    expect(container.querySelector('.proactive-recommendation')).toBeNull();
+    expect(screen.getByText('Export me.')).toBeInTheDocument();
+  });
+  it('renders music recommendations inside the existing bubble and routes decisions only outside selection mode', () => {
+    const recommendation = parseChatMessage({ ...message, blocks: [{ type: 'music_recommendation',
+      recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943', state: 'pending',
+      track: { name: 'Song', artist: 'Artist', url: '/music.wav', cover: '' } }] });
+    const props = createPanelProps({ messages: [recommendation], controlsOpen: false, previewOpen: false,
+      visibilityState: 'open', onAction: vi.fn() });
+    const view = render(<CompactExportHistoryPanel {...props} />);
+    expect(view.container.querySelector('.compact-export-history-bubble .music-recommendation-bubble')).toBeInTheDocument();
+    expect(view.container.querySelector('.music-recommendation-card,img')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Listen/ }));
+    expect(props.onAction).toHaveBeenLastCalledWith(recommendation, expect.objectContaining({ payload: {
+      recommendationId: recommendation.blocks[0].type === 'music_recommendation' && recommendation.blocks[0].recommendationId,
+      kind: 'accepted' } }));
+    view.rerender(<CompactExportHistoryPanel {...props} controlsOpen />);
+    expect(screen.queryByRole('button', { name: /Listen/ })).not.toBeInTheDocument();
+  });
   it('keeps image saving enabled in history and preserves message selection mode', () => {
     const imageMessage = parseChatMessage({
       ...message,

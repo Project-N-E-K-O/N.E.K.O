@@ -15,6 +15,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import MessageList from './MessageList';
+import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   isCompactExportMessageSelectable,
@@ -3055,7 +3056,7 @@ export default function FullChatSurface({
           </div>
         </div>
       ) : null}
-      {choicePromptHasOptions ? (
+      {choicePromptHasOptions && choicePrompt.source !== 'mini_game_invite' ? (
         <div
           className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
@@ -3064,9 +3065,7 @@ export default function FullChatSurface({
           <div
             className="composer-galgame-options composer-choice-options"
             role="group"
-            aria-label={choicePrompt.source === 'mini_game_invite'
-              ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
-              : choicePrompt.source === 'new_user_icebreaker'
+            aria-label={choicePrompt.source === 'new_user_icebreaker'
                 ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
               : galgameToggleButtonLabel}
           >
@@ -3110,6 +3109,19 @@ export default function FullChatSurface({
       failedStatusLabel={failedStatusLabel}
       thinking={focusThinking}
       onAction={onMessageAction}
+      footerKey={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? choicePrompt.sessionId || 'mini-game-invite' : undefined}
+      footer={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? (
+        <MiniGameInvitePrompt key={choicePrompt.sessionId} prompt={choicePrompt} presentation="card"
+          disabled={composerInteractionsDisabled} onSelect={(option) => {
+            if (submittingRef.current) return;
+            submittingRef.current = true;
+            try {
+              onChoiceSelect?.(option, 'mini_game_invite');
+            } finally {
+              requestAnimationFrame(() => { submittingRef.current = false; });
+            }
+          }} />
+      ) : null}
     />
   );
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryOpen ? (

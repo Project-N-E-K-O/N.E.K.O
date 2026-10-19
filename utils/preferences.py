@@ -13,16 +13,13 @@
 # limitations under the License.
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-import threading
 import time
 from typing import Dict, Any, Optional, List
-
-import portalocker
 
 from utils.config_manager import get_config_manager
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
@@ -35,11 +32,23 @@ from utils.conversation_settings_constants import (
     MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
 )
 from utils.file_utils import atomic_write_json
+from utils.preferences_store_lock import (
+    PREFERENCES_THREAD_LOCK as _PREFERENCES_THREAD_LOCK,
+    PREFERENCES_LOCK_TIMEOUT_SECONDS as _PREFERENCES_LOCK_TIMEOUT_SECONDS,
+    preferences_store_lock,
+)
+from utils.preferences_audit import (
+    JOURNAL_KEY as _SETTINGS_JOURNAL_KEY,
+    attach_journal as _attach_settings_journal,
+    install_settings_attribution_context,
+    prepare_atomic_preferences as _prepare_atomic_preferences,
+    read_journal as _read_settings_journal,
+    settings_attribution_context as _settings_attribution_context,
+    without_journal as _without_settings_journal,
+)
 
 # Initialize the configuration manager
 _config_manager = get_config_manager()
-_PREFERENCES_THREAD_LOCK = threading.RLock()
-_PREFERENCES_LOCK_TIMEOUT_SECONDS = 10
 
 
 def _get_preferences_read_path() -> str:
@@ -58,15 +67,16 @@ def _get_active_preferences_path() -> str:
 
 
 @contextmanager
-def _locked_preferences_store():
+def _locked_preferences_store(*, attribute=True, audit_origin="user"):
     """Serialize every user_preferences.json read-modify-write."""
     write_path = Path(_get_preferences_write_path())
-    write_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = write_path.with_name(f"{write_path.name}.lock")
-    with _PREFERENCES_THREAD_LOCK, portalocker.Lock(
-        str(lock_path),
-        mode="a+",
+    # Account fence must precede the preferences lock. Journal reads/acks do not
+    # acquire account state, and cannot reattribute already committed changes.
+    attribution = _settings_attribution_context(audit_origin) if attribute else nullcontext()
+    with attribution, preferences_store_lock(
+        write_path,
         timeout=_PREFERENCES_LOCK_TIMEOUT_SECONDS,
+        thread_lock=_PREFERENCES_THREAD_LOCK,
     ):
         yield
 
@@ -90,11 +100,11 @@ def load_user_preferences() -> List[Dict[str, Any]]:
                 # Legacy compatibility: convert dictionary format to list format
                 if isinstance(data, dict):
                     if 'model_path' in data and 'position' in data and 'scale' in data:
-                        return [data]  # Convert the legacy format to a list
+                        return _without_settings_journal([data])
                     else:
                         return []
                 elif isinstance(data, list):
-                    return data
+                    return _without_settings_journal(data)
                 else:
                     return []
     except Exception as e:
@@ -116,7 +126,10 @@ def _save_user_preferences_unlocked(preferences: List[Dict[str, Any]]) -> None:
     """Write an already-prepared preference list while the caller holds the lock."""
     global PREFERENCES_FILE
     PREFERENCES_FILE = _get_preferences_write_path()
-    atomic_write_json(PREFERENCES_FILE, preferences, ensure_ascii=False, indent=2)
+    previous = _load_preferences_data_for_write_unlocked()
+    committed = _prepare_atomic_preferences(previous, preferences)
+    # Settings and their journal share one temp-file + os.replace commit.
+    atomic_write_json(PREFERENCES_FILE, committed, ensure_ascii=False, indent=2)
 
 
 def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
@@ -694,7 +707,7 @@ def load_global_entry_flags() -> Dict[str, Any]:
             if isinstance(data, list):
                 for pref in data:
                     if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
-                        return {k: v for k, v in pref.items() if k != "model_path"}
+                        return {k: v for k, v in pref.items() if k not in {"model_path", _SETTINGS_JOURNAL_KEY}}
     except Exception as e:
         print(f"加载全局开关集合失败: {e}")
     return {}
@@ -792,6 +805,7 @@ def save_global_conversation_settings_versioned(
     expected_revision: Optional[int] = None,
     asr_decision: Optional[Dict[str, Any]] = None,
     full_snapshot: bool = False,
+    audit_origin: str = "user",
 ) -> ConversationSettingsWriteResult:
     """Compare-and-set a partial conversation-settings update."""
     empty_snapshot = ConversationSettingsSnapshot(
@@ -808,7 +822,7 @@ def save_global_conversation_settings_versioned(
         ):
             incoming_decision = None
 
-        with _locked_preferences_store():
+        with _locked_preferences_store(audit_origin=audit_origin):
             data = _load_preferences_data_for_write_unlocked()
             current = _snapshot_from_preferences_data(data)
             if expected_revision is not None and expected_revision != current.revision:
@@ -899,6 +913,54 @@ def save_global_conversation_settings_versioned(
         )
 
 
-def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
+def save_global_conversation_settings(settings: Dict[str, Any], *, audit_origin: str = "user") -> bool:
     """Backward-compatible unconditional wrapper for internal writers."""
-    return save_global_conversation_settings_versioned(settings).success
+    return save_global_conversation_settings_versioned(settings, audit_origin=audit_origin).success
+
+
+def pending_settings_changes(limit: int = 100) -> List[Dict[str, Any]]:
+    """Read committed changes for all original owners; never bind anonymous history."""
+    if type(limit) is not int or not 1 <= limit <= 4096:
+        raise ValueError("Settings journal limit must be between 1 and 4096")
+    with _locked_preferences_store(attribute=False):
+        return _read_settings_journal(_load_preferences_data_for_write_unlocked())["entries"][:limit]
+
+
+def acknowledge_settings_changes(ids) -> int:
+    """Remove only IDs already durably handed to an outbox, or confirmed by cloud.
+
+    This function is synchronous; asynchronous workers must offload it to a
+    thread. A failed atomic write propagates and leaves the original journal.
+    """
+    confirmed = set(ids)
+    if not confirmed or any(not isinstance(value, str) for value in confirmed):
+        if confirmed:
+            raise ValueError("Settings acknowledgement IDs must be strings")
+        return 0
+    assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+    with _locked_preferences_store(attribute=False):
+        data = _load_preferences_data_for_write_unlocked()
+        journal = _read_settings_journal(data)
+        remaining = [entry for entry in journal["entries"] if entry["id"] not in confirmed]
+        count = len(journal["entries"]) - len(remaining)
+        if count:
+            journal["entries"] = remaining
+            committed = _attach_settings_journal(data, journal)
+            atomic_write_json(_get_preferences_write_path(), committed, ensure_ascii=False, indent=2)
+        return count
+
+
+async def apending_settings_changes(limit: int = 100) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(pending_settings_changes, limit)
+
+
+async def aacknowledge_settings_changes(ids) -> int:
+    return await asyncio.to_thread(acknowledge_settings_changes, ids)
+
+
+async def asave_global_conversation_settings(settings: Dict[str, Any], *, audit_origin: str = "user") -> bool:
+    return await asyncio.to_thread(save_global_conversation_settings, settings, audit_origin=audit_origin)
+
+
+async def asave_global_conversation_settings_versioned(settings: Dict[str, Any], **kwargs) -> ConversationSettingsWriteResult:
+    return await asyncio.to_thread(save_global_conversation_settings_versioned, settings, **kwargs)

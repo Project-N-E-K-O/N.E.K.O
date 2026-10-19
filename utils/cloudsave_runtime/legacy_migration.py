@@ -350,15 +350,20 @@ def _preferences_entry_key(entry: Any) -> str:
 
 
 def _merge_preferences_payloads(legacy_payload: Any, current_payload: Any) -> list[Any]:
+    from utils.preferences_audit import attach_journal, merge_local_journals
+
+    legacy = _normalize_preferences_payload(legacy_payload)
+    current = _normalize_preferences_payload(current_payload)
+    journal = merge_local_journals(legacy, current)
     merged_entries: dict[str, Any] = {}
     ordered_keys: list[str] = []
-    for payload in (_normalize_preferences_payload(legacy_payload), _normalize_preferences_payload(current_payload)):
+    for payload in (legacy, current):
         for entry in payload:
             key = _preferences_entry_key(entry)
             if key not in merged_entries:
                 ordered_keys.append(key)
             merged_entries[key] = deepcopy(entry)
-    return [merged_entries[key] for key in ordered_keys]
+    return attach_journal([merged_entries[key] for key in ordered_keys], journal)
 
 
 def _deep_merge_json_dicts(legacy_payload: Any, current_payload: Any) -> dict[str, Any]:

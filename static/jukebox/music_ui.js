@@ -166,6 +166,13 @@
     function createMusicPlaybackReportContext(playbackId, options, track, token) {
         options = options || {};
         track = track || {};
+        const previousContext = localPlayer && localPlayer._musicPlaybackReportContext;
+        if (previousContext && previousContext.recommendationId && (
+            previousContext.playbackId !== playbackId
+            || previousContext.recommendationId !== (options.recommendationId || '')
+        )) {
+            reportRecommendationPlaybackState('stopped', previousContext, 'replaced');
+        }
         return {
             playbackId: playbackId || '',
             token: token,
@@ -174,6 +181,9 @@
             source: typeof options.source === 'string' ? options.source.slice(0, 16) : '',
             hasNextCandidate: options.hasNextCandidate === true,
             failureUiHandled: false,
+            recommendationId: typeof options.recommendationId === 'string' ? options.recommendationId : '',
+            recommendationPlaybackId: options.recommendationId ? MUSIC_COORD_SENDER_ID + ':' + String(token) : '',
+            listenedSeconds: 0,
             url: String(track.url || ''),
             track: {
                 name: String(track.name || '').slice(0, 120),
@@ -182,7 +192,36 @@
         };
     }
 
+    function reportRecommendationPlaybackState(state, evidenceContext, failureReason) {
+        try {
+            // Recommendation evidence is independent of the conversational socket.
+            // Only the owning player carries this immutable recommendation id.
+            if (evidenceContext && evidenceContext.recommendationId && window.nekoMusicRecommendations) {
+                if (['ended', 'stopped', 'failed'].includes(evidenceContext.recommendationLastState)) return;
+                const audio = localPlayer && localPlayer.audio;
+                const kind = state === 'error' ? 'failed'
+                    : state === 'ended' && audio && !audio.ended ? 'stopped' : state;
+                let listened = 0;
+                const played = audio && audio.played;
+                if (played) {
+                    for (let i = 0; i < played.length; i++) listened += Math.max(0, played.end(i) - played.start(i));
+                }
+                evidenceContext.listenedSeconds = Math.min(86400, Math.max(evidenceContext.listenedSeconds, listened));
+                evidenceContext.recommendationLastState = kind;
+                window.nekoMusicRecommendations.recordPlayback(evidenceContext.recommendationId, kind, {
+                    playback_id: evidenceContext.recommendationPlaybackId,
+                    listened_seconds: evidenceContext.listenedSeconds,
+                    position_seconds: audio && Number.isFinite(audio.currentTime) ? Math.min(86400, Math.max(0, audio.currentTime)) : 0,
+                    reason: String(failureReason || '').slice(0, 64)
+                });
+            }
+        } catch (_) {
+            console.warn('[Music recommendation] Playback evidence could not be recorded');
+        }
+    }
+
     function reportMusicPlaybackState(state, track, playbackContext, failureReason) {
+        reportRecommendationPlaybackState(state, playbackContext, failureReason);
         try {
             const appState = window.appState;
             const socket = appState && appState.socket;
@@ -389,6 +428,26 @@
     // 不走 'neko_music_coord' 是为了职责分离：那个 channel 仅用于
     // "谁在播音乐/是否占用"的互斥协调，这里是 UI 层消息镜像，语义不同。
     const CHAT_MIRROR_CHANNEL_NAME = 'neko_chat_ui_mirror';
+    function applyChatMirror(data) {
+        if (!data || typeof data !== 'object') return;
+        if (data.target && data.target !== MUSIC_COORD_SENDER_ID) return;
+        if (data.type === 'recommendation_request' || data.type === 'recommendation_snapshot') {
+            window.dispatchEvent(new CustomEvent('neko:chat-mirror', { detail: data }));
+            return;
+        }
+        const host = window.reactChatWindowHost;
+        if (!host) return;
+        try {
+            if (data.type === 'append' && typeof host.appendMessage === 'function' && data.message) {
+                host.appendMessage(data.message);
+            } else if (data.type === 'update' && typeof host.updateMessage === 'function' && data.messageId) {
+                host.updateMessage(data.messageId, data.patch || {});
+            } else return;
+            window.dispatchEvent(new CustomEvent('neko:chat-mirror', { detail: data }));
+        } catch (e) {
+            console.warn('[Music UI] 镜像 React chat 消息失败:', e);
+        }
+    }
     let chatMirrorChannel = null;
     try {
         if (typeof BroadcastChannel !== 'undefined') {
@@ -397,17 +456,7 @@
                 const data = event && event.data;
                 if (!data || typeof data !== 'object') return;
                 if (!data.sender || data.sender === MUSIC_COORD_SENDER_ID) return;
-                const host = window.reactChatWindowHost;
-                if (!host) return;
-                try {
-                    if (data.type === 'append' && typeof host.appendMessage === 'function' && data.message) {
-                        host.appendMessage(data.message);
-                    } else if (data.type === 'update' && typeof host.updateMessage === 'function' && data.messageId) {
-                        host.updateMessage(data.messageId, data.patch || {});
-                    }
-                } catch (e) {
-                    console.warn('[Music UI] 镜像 React chat 消息失败:', e);
-                }
+                applyChatMirror(data);
             };
             window.addEventListener('pagehide', (event) => {
                 if (event.persisted) return;
@@ -421,11 +470,16 @@
     }
 
     const broadcastChatMirror = (payload) => {
+        if (getMusicIpcBridge()) {
+            postMusicPlayerBridgeEvent('chat_mirror', payload);
+            return;
+        }
         if (!chatMirrorChannel) return;
         try {
             chatMirrorChannel.postMessage(Object.assign({ sender: MUSIC_COORD_SENDER_ID, ts: Date.now() }, payload));
         } catch (_) { /* ignore */ }
     };
+    window.__nekoBroadcastChatMirror = broadcastChatMirror;
 
     // 对外暴露的"本地 append + 广播镜像"两合一 helper —— 供 app-proactive.js
     // 等下游在想让一条消息同时落到所有窗口的 React chat 时使用。
@@ -1569,7 +1623,10 @@
         if (!sender || sender === MUSIC_COORD_SENDER_ID) return false;
         const payload = event.payload || {};
         try {
-            if (event.type === 'coord') {
+            if (event.type === 'chat_mirror') {
+                applyChatMirror(Object.assign({}, payload, { sender }));
+                return true;
+            } else if (event.type === 'coord') {
                 if (payload.coordType === 'request_state') {
                     // 晚加入的窗口请求当前 owner 状态：我是 owner 就立即补发一帧 bar_state，
                     // 让它无需等下一次 timeupdate / 心跳就能镜像出播放器条。

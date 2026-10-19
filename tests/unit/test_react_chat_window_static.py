@@ -256,10 +256,12 @@ def test_choice_prompt_sources_have_distinct_accessibility_labels():
             "{choicePrompt.options.slice",
             1,
         )[0]
-        assert "choicePrompt.source === 'mini_game_invite'" in choice_prompt_block
-        assert "chat.miniGameInviteOptionsAriaLabel" in choice_prompt_block
+        assert "<MiniGameInvitePrompt" in source
         assert "choicePrompt.source === 'new_user_icebreaker'" in choice_prompt_block
         assert "chat.newUserIcebreakerOptionsAriaLabel" in choice_prompt_block
+    invitation_source = (REACT_CHAT_APP_PATH.parent / 'MiniGameInvitePrompt.tsx').read_text(encoding='utf-8')
+    assert "chat.miniGameInviteOptionsAriaLabel" in invitation_source
+    assert "chat.newUserIcebreakerOptionsAriaLabel" not in invitation_source
 
 
 def test_react_chat_host_can_clear_only_yui_guide_messages():

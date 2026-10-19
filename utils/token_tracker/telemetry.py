@@ -246,7 +246,8 @@ def _rollback_retired_proactive_interval(branch_path: Path) -> None:
         # Roll back only preferences still at the experimental override (20s); retain manual changes after first startup (!=20).
         if interval == _RETIRED_INTERVAL_EXPERIMENT_VALUE:
             save_global_conversation_settings(
-                {"proactiveChatInterval": _CONTROL_PROACTIVE_INTERVAL}
+                {"proactiveChatInterval": _CONTROL_PROACTIVE_INTERVAL},
+                audit_origin="system",
             )
             logger.info(
                 "Telemetry: rolled back retired proactive_interval_20s default "

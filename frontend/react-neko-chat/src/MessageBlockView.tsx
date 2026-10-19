@@ -1,4 +1,6 @@
 import HtmlCardBlock from './HtmlCardBlock';
+import MusicRecommendationBlock from './MusicRecommendationBlock';
+import ProactiveRecommendationBlock from './ProactiveRecommendationBlock';
 import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
 import MessageImageBlock from './MessageImageBlock';
@@ -14,6 +16,7 @@ type MessageBlockViewProps = {
   message: ChatMessage;
   isStreaming?: boolean;
   interactive?: boolean;
+  presentation?: 'card' | 'bubble';
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -41,7 +44,14 @@ export default function MessageBlockView({
   isStreaming,
   onAction,
   interactive = true,
+  presentation = 'card',
 }: MessageBlockViewProps) {
+  if (block.type === 'proactive_recommendation') {
+    return <ProactiveRecommendationBlock block={block} message={message} interactive={interactive} onAction={onAction} presentation={presentation} />;
+  }
+  if (block.type === 'music_recommendation') {
+    return <MusicRecommendationBlock block={block} message={message} interactive={interactive} onAction={onAction} presentation={presentation} />;
+  }
   if (block.type === 'html_card') {
     return interactive ? <HtmlCardBlock block={block} /> : <div className="message-block message-block-text">{block.summary}</div>;
   }

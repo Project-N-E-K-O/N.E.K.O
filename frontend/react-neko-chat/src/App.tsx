@@ -13,6 +13,8 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useReplyTailPresentation } from './useReplyTailPresentation';
+import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
+import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import AvatarToolItemManager, {
   type AvatarToolEditorResultMessage,
   type AvatarToolManagerAnchorRect,
@@ -5948,12 +5950,23 @@ function CompactChatApp({
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
           data-choice-source={choicePrompt.source}
         >
-          <div
+          {choicePrompt.source === 'mini_game_invite' ? (
+            <MiniGameInvitePrompt key={choicePrompt.sessionId} prompt={choicePrompt} presentation="bubble"
+              disabled={composerDisabled || !compactChoiceLayerOpen} onSelect={(option) => {
+                if (submittingRef.current) return;
+                submittingRef.current = true;
+                try {
+                  restoreCompactExportHistoryToBottomForOutgoingMessage();
+                  onChoiceSelect?.(option, 'mini_game_invite');
+                  requestCompactChatState('default');
+                } finally {
+                  requestAnimationFrame(() => { submittingRef.current = false; });
+                }
+              }} />
+          ) : <div
             className="composer-galgame-options composer-choice-options"
             role="group"
-            aria-label={choicePrompt.source === 'mini_game_invite'
-              ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
-              : choicePrompt.source === 'new_user_icebreaker'
+            aria-label={choicePrompt.source === 'new_user_icebreaker'
                 ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
                 : galgameToggleButtonLabel}
           >
@@ -5984,7 +5997,7 @@ function CompactChatApp({
                 </span>
               </button>
             ))}
-          </div>
+          </div>}
         </div>
       ) : null}
     </div>
@@ -6054,6 +6067,13 @@ function CompactChatApp({
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
       messages={compactExportHistoryMessages}
+      onAction={(message, action) => {
+        // Ordinary historical buttons stay inert; recommendation choices
+        // have their own server-side decision fence and remain actionable.
+        if (['music_recommendation_decision', 'music_recommendation_shown', 'proactive_recommendation_decision', 'proactive_recommendation_shown', 'proactive_recommendation_dismiss', 'proactive_recommendation_reveal'].includes(action.action)) {
+          _onMessageAction?.(message, action);
+        }
+      }}
       mode={theaterActive ? 'theater' : 'chat'}
       theaterTitle={theaterPresentation.storyTitle}
       theaterEnded={theaterPresentation.sessionEnded === true}
@@ -6180,6 +6200,9 @@ function CompactChatApp({
       ) : null}
       <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
+      {chatSurfaceMode === 'compact' && !compactExportHistoryMounted && !theaterActive && !catLocalTextOnly ? (
+        <CompactMusicRecommendationPrompt messages={messages} onAction={_onMessageAction} />
+      ) : null}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
       {compactChoiceLayerNode}
