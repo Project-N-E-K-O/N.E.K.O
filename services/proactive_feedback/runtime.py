@@ -3,11 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sqlite3
 import threading
 import time
-from pathlib import Path
 
 import httpx
 
@@ -319,18 +317,3 @@ def drain_settings(store):
 def pending_settings():
     from utils.preferences import pending_settings_changes
     return pending_settings_changes(limit=4096)
-
-
-def _create_store():
-    from main_logic.recommendation_feedback import RecommendationStore
-    from utils.config_manager import get_config_manager
-    manager = get_config_manager()
-    return RecommendationStore(Path(manager.get_runtime_config_path("recommendation_feedback.sqlite3")))
-
-
-async def create_runtime():
-    # A cancelled worker-thread read may complete late, but owns no HTTP pool.
-    store = await asyncio.to_thread(_create_store)
-    paused = os.environ.get("NEKO_PROACTIVE_FEEDBACK_UPLOAD_PAUSED", "").strip().lower() in {"1", "true", "yes", "on"}
-    return ProactiveFeedbackRuntime(store, settings_drain=drain_settings, settings_pending_provider=pending_settings,
-                                    upload_paused=paused)

@@ -3,16 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from main_logic.recommendation_feedback import FeedbackConflict
+from main_logic.recommendation_feedback import FeedbackConflict, RecommendationStore
 from services.proactive_feedback import host
-from services.proactive_feedback.runtime import SyncFailure, create_runtime
+from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, SyncFailure, drain_settings, pending_settings
 
 router = APIRouter(prefix="/api/proactive/feedback", tags=["proactive-feedback"])
 _runtime = None
@@ -25,6 +27,21 @@ class ResumeBlockedBatch(BaseModel):
     owner_key: str = Field(pattern=r"^[a-f0-9]{64}$")
     batch_id: str = Field(pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
     batch_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+def _create_store():
+    from utils.config_manager import get_config_manager
+    manager = get_config_manager()
+    return RecommendationStore(Path(manager.get_runtime_config_path("recommendation_feedback.sqlite3")))
+
+
+async def create_runtime():
+    # Composition owns the concrete store; services receive a neutral instance.
+    # A cancelled worker-thread read may complete late, but owns no HTTP pool.
+    store = await asyncio.to_thread(_create_store)
+    paused = os.environ.get("NEKO_PROACTIVE_FEEDBACK_UPLOAD_PAUSED", "").strip().lower() in {"1", "true", "yes", "on"}
+    return ProactiveFeedbackRuntime(store, settings_drain=drain_settings, settings_pending_provider=pending_settings,
+                                    upload_paused=paused)
 
 
 @router.on_event("startup")

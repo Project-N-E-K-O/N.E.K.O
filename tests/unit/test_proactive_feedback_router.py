@@ -204,7 +204,7 @@ async def test_optional_bootstrap_failure_does_not_break_application(monkeypatch
 
 @pytest.mark.asyncio
 async def test_default_factory_owns_http_client_with_no_environment_proxy(tmp_path, monkeypatch):
-    from services.proactive_feedback.runtime import create_runtime
+    from main_routers.proactive_feedback_router import create_runtime
     from utils import config_manager
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: SimpleNamespace(get_runtime_config_path=lambda name: tmp_path / name))
     runtime = await create_runtime()
@@ -218,7 +218,7 @@ async def test_default_factory_owns_http_client_with_no_environment_proxy(tmp_pa
 @pytest.mark.parametrize("value", ["1", "true", "yes", "on", " TRUE "])
 @pytest.mark.asyncio
 async def test_factory_honors_operator_upload_pause_at_startup(tmp_path, monkeypatch, value):
-    from services.proactive_feedback.runtime import create_runtime
+    from main_routers.proactive_feedback_router import create_runtime
     from utils import config_manager
 
     monkeypatch.setenv("NEKO_PROACTIVE_FEEDBACK_UPLOAD_PAUSED", value)

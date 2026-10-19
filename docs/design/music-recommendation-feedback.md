@@ -105,6 +105,8 @@ Electron41.2.0 双窗口隔离复验：音乐 11 条推荐/12 条真实行为全
 
 最终图检查强制无解析缓存重建，解决增量漏类方法映射；全功能分支76文件/711符号/24已抽取流程，CRITICAL影响规模包含此前全部UI。关键恢复/容量/备份及最后深JSON测试均映射正确；detect输出无partial/truncated标记不代表全仓流程完整，工具候选/深度/分支预算仍截断。证据 `%TEMP%/neko-feedback-desktop-detect-forced-final-20261019.json`。本轮未commit/push或操作生产。
 
+Draft交付更新：桌面 [#3467](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3467) 与云端 [#401](https://github.com/Project-N-E-K-O/N.E.K.O.Verse/pull/401) 已提交推送，均以main为目标且保持Draft，生产未操作。提交前桌面相关226项、React/播放器回归及构建通过。首轮CI发现services反向导入main_logic的真实分层错误，已把具体Store与runtime工厂组装移至main_routers，服务只接收Store实例；启动存储barrier、取消无HTTP泄漏和暂停语义保持不变。完整模块分层守卫及相关生命周期回归需随此修复重新验收，不通过降低分层规则绕过。
+
 单元与 HTTP 集成覆盖原子确认、重试、账号替换、禁用开关、过期、数据保全、容量回滚、非法输入和终局状态。`tests/frontend/run_music_recommendation_smoke.py` 用隔离账号、配置、SQLite 和静音 WAV 音轨运行真实 HTTP/APlayer 验收，可传入 Electron 可执行文件，或使用 `--serve` 在浏览器中验收。Electron 模式使用两个隔离 session，并加载桌面仓库现有的 preload 音乐桥及 IPC router；默认从桌面仓库内的 Electron 可执行路径推导源码目录，也可设置 `NEKO_MUSIC_SMOKE_PC_ROOT`。未打包的测试 preload 使用 `contextIsolation: true`、`sandbox: false`，窗口隐藏且静音。截图、事件数据库等输出均在独立临时目录；验收不使用真实账号或 LLM。
 
 ## 回归报告 / Regression Report
