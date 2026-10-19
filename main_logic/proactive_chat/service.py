@@ -526,6 +526,7 @@ async def _collect_sources_under_vision_consent(
     enabled_modes: list[str],
     lanlan_name: str,
     vision_consent_check: Any,
+    mgr: Any = None,
 ) -> tuple[list[str], dict[str, dict], bool]:
     """Collect enabled sources; screen and window sources only under vision consent.
 
@@ -550,6 +551,10 @@ async def _collect_sources_under_vision_consent(
         enabled_modes=enabled_modes,
         lanlan_name=lanlan_name,
         log=logger,
+        community_locale=(
+            _resolve_proactive_locale(command, mgr, fmt="full")
+            if "community" in enabled_modes else None
+        ),
     )
     if await _withhold_revoked_vision_sources(
         sources, vision_consent_check, lanlan_name=lanlan_name, stage="采集期间",
@@ -1433,6 +1438,7 @@ async def handle_proactive_chat(
                 enabled_modes=enabled_modes,
                 lanlan_name=lanlan_name,
                 vision_consent_check=vision_consent_check,
+                mgr=mgr,
             )
         )
         avatar_position = command.avatar_position

@@ -305,6 +305,7 @@ async def _fetch_source(
     command: ProactiveChatCommand,
     lanlan_name: str,
     log: Any,
+    community_locale: str | None = None,
 ) -> tuple[str, dict]:
     """Fetch and normalize one enabled source using the established shape."""
     screenshot_data = command.screenshot_data
@@ -376,7 +377,8 @@ async def _fetch_source(
         content = await fetch_neko_community_feed(
             # Keep the API page available for cooldown filtering; Phase 1 still
             # caps the prompt with its cross-source total candidate budget.
-            limit=NEKO_COMMUNITY_FEED_PAGE_SIZE
+            limit=NEKO_COMMUNITY_FEED_PAGE_SIZE,
+            locale=community_locale,
         )
         if not content["success"]:
             raise ValueError(f"获取喵宇宙社区失败: {content.get('error')}")
@@ -461,6 +463,7 @@ async def collect_proactive_sources(
     enabled_modes: list[str],
     lanlan_name: str,
     log: Any,
+    community_locale: str | None = None,
 ) -> dict[str, dict]:
     """Fetch enabled sources concurrently and retain successful results."""
     fetch_results = await asyncio.gather(
@@ -470,6 +473,7 @@ async def collect_proactive_sources(
                 command=command,
                 lanlan_name=lanlan_name,
                 log=log,
+                community_locale=community_locale,
             )
             for mode in enabled_modes
         ),

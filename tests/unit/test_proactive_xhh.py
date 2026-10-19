@@ -1105,7 +1105,7 @@ async def test_community_mode_fetches_only_neko_community_cards():
             "published_at": "2026-08-31T00:00:00Z",
         }
     ]
-    fetch_community.assert_awaited_once_with(limit=60)
+    fetch_community.assert_awaited_once_with(limit=60, locale=None)
     fetch_news.assert_not_awaited()
 
 
@@ -1670,7 +1670,7 @@ async def test_community_recommendations_empty_pool_and_failures(status, monkeyp
     assert requests[0].url.path == "/api/feed/recommendations"
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload", [None, {}, {"items": None}, {"items": [{"title": ""}]}])
+@pytest.mark.parametrize("payload", [None, {}, {"items": None}, {"items": [{"title": ""}]}, {"data": {"items": [None]}}])
 async def test_community_recommendations_invalid_payload_is_failure(payload, monkeypatch):
     async with httpx.AsyncClient(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, content=json.dumps(payload)),
@@ -1681,3 +1681,45 @@ async def test_community_recommendations_invalid_payload_is_failure(payload, mon
 
     assert result["success"] is False
     assert result["posts"] == []
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container", [None, "data", "result", "feed"])
+@pytest.mark.parametrize("collection", [None, "items", "posts", "cards", "results", "list"])
+async def test_community_recommendations_accept_supported_empty_collections(
+    container, collection, monkeypatch,
+):
+    payload = {collection: []} if collection else []
+    if container:
+        payload = {container: payload}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=payload),
+    )) as client:
+        monkeypatch.setattr(trending_content, "get_external_http_client", lambda: client)
+        monkeypatch.setattr(trending_content, "_neko_community_access_token", AsyncMock(return_value=""))
+        result = await fetch_neko_community_feed()
+
+    assert result["success"] is True
+    assert result["posts"] == []
+    assert result["formatted_content"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authenticated", [False, True])
+async def test_community_recommendations_denial_identifies_both_attempts(authenticated, monkeypatch):
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        401 if "Authorization" in request.headers else 403,
+    ))
+    isolated = httpx.AsyncClient(transport=transport)
+    async with httpx.AsyncClient(transport=transport) as shared:
+        monkeypatch.setattr(trending_content, "get_external_http_client", lambda: shared)
+        monkeypatch.setattr(trending_content, "_neko_community_access_token", AsyncMock(
+            return_value="expired-token" if authenticated else "",
+        ))
+        monkeypatch.setattr(trending_content.httpx, "AsyncClient", lambda **kwargs: isolated)
+        result = await fetch_neko_community_feed()
+    await isolated.aclose()
+
+    assert result["success"] is False
+    assert "Anonymous community recommendations rejected: HTTP 403" in result["error"]
+    assert ("after authenticated HTTP 401" in result["error"]) is authenticated
+    assert "expired-token" not in result["error"]

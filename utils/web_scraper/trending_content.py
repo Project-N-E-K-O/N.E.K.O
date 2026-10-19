@@ -1841,20 +1841,12 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
-    """Return a bounded prefix of the first list-shaped card collection."""
-
-    def bounded_items(items: list[Any]) -> list[dict[str, Any]]:
-        return [
-            item
-            for item in islice(items, NEKO_COMMUNITY_FEED_PAGE_SIZE)
-            if isinstance(item, dict)
-        ]
-
+def _community_feed_collection(payload: Any) -> list[Any] | None:
+    """Locate the first supported card collection, distinguishing empty from absent."""
     if isinstance(payload, list):
-        return bounded_items(payload)
+        return payload
     if not isinstance(payload, dict):
-        return []
+        return None
 
     containers: list[Any] = [payload]
     for key in ("data", "result", "feed"):
@@ -1863,14 +1855,24 @@ def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
             containers.append(value)
     for container in containers:
         if isinstance(container, list):
-            return bounded_items(container)
+            return container
         if not isinstance(container, dict):
             continue
         for key in ("items", "posts", "cards", "results", "list"):
             value = container.get(key)
             if isinstance(value, list):
-                return bounded_items(value)
-    return []
+                return value
+    return None
+
+
+def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
+    """Return a bounded prefix of the first list-shaped card collection."""
+    items = _community_feed_collection(payload)
+    return [
+        item
+        for item in islice(items if items is not None else [], NEKO_COMMUNITY_FEED_PAGE_SIZE)
+        if isinstance(item, dict)
+    ]
 
 
 def _community_text(
@@ -2158,7 +2160,9 @@ async def _fetch_neko_community_payload(
     return response.status_code, json.loads(body)
 
 
-async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
+async def fetch_neko_community_feed(
+    limit: int = 10, *, locale: str | None = None
+) -> dict[str, Any]:
     """Fetch community cards with the validated desktop OAuth session when available."""
 
     try:
@@ -2173,6 +2177,7 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
         if _neko_community_bearer_transport_allowed(feed_api):
             access_token = await _neko_community_access_token(feed_api)
         authenticated = bool(access_token)
+        rejected_auth_status: int | None = None
         if authenticated:
             # Omit locale so the server honors the account's saved language.
             # Keep the refreshable bearer out of the shared client's cookie jar.
@@ -2186,20 +2191,27 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
                     client, feed_api, query=query, headers=headers
                 )
             if status_code in {401, 403}:
+                rejected_auth_status = status_code
                 authenticated = False
                 headers.pop("Authorization", None)
         if not authenticated:
             # Missing or rejected credentials use anonymous recommendations.
             query["locale"] = normalize_language_code(
-                get_global_language_full(), format="full"
+                locale or get_global_language_full(), format="full"
             )
             status_code, payload = await _fetch_neko_community_payload(
                 get_external_http_client(), feed_api, query=query, headers=headers
             )
         if status_code in {401, 403}:
-            raise ValueError(f"Community recommendations rejected: HTTP {status_code}")
+            auth_context = (
+                f" after authenticated HTTP {rejected_auth_status}"
+                if rejected_auth_status is not None else ""
+            )
+            raise ValueError(
+                f"Anonymous community recommendations rejected: HTTP {status_code}{auth_context}"
+            )
         posts = normalize_neko_community_feed(payload, limit=limit)
-        if not posts and not (isinstance(payload, dict) and payload.get("items") == []):
+        if not posts and _community_feed_collection(payload) != []:
             raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
         # Preserve server ranking; an exhausted language pool may legitimately be empty.
         return {
