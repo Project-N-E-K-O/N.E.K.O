@@ -30,11 +30,11 @@
 
 | 紧凑模式待确认 | 完整模式待确认 | 接受并播放后的完整模式 |
 |---|---|---|
-| ![音乐推荐气泡](../media/proactive-recommendations/music-compact-pending.png) | ![音乐推荐卡片](../media/proactive-recommendations/music-full-pending.png) | ![播放停止/结束状态](../media/proactive-recommendations/music-full-playback-state.png) |
+| ![音乐推荐气泡](https://raw.githubusercontent.com/MomiJiSan/N.E.K.O/567095ae1110bab5c23ed4374b0ff6764e45880d/docs/media/proactive-recommendations/music-compact-pending.png) | ![音乐推荐卡片](https://raw.githubusercontent.com/MomiJiSan/N.E.K.O/567095ae1110bab5c23ed4374b0ff6764e45880d/docs/media/proactive-recommendations/music-full-pending.png) | ![播放停止/结束状态](https://raw.githubusercontent.com/MomiJiSan/N.E.K.O/567095ae1110bab5c23ed4374b0ff6764e45880d/docs/media/proactive-recommendations/music-full-playback-state.png) |
 
 | 新闻紧凑气泡 | 其他内容完整卡片 |
 |---|---|
-| ![新闻推荐气泡](../media/proactive-recommendations/news-compact-pending.png) | ![视频/社区/新闻完整卡片](../media/proactive-recommendations/content-full-pending.png) |
+| ![新闻推荐气泡](https://raw.githubusercontent.com/MomiJiSan/N.E.K.O/567095ae1110bab5c23ed4374b0ff6764e45880d/docs/media/proactive-recommendations/news-compact-pending.png) | ![视频/社区/新闻完整卡片](https://raw.githubusercontent.com/MomiJiSan/N.E.K.O/567095ae1110bab5c23ed4374b0ff6764e45880d/docs/media/proactive-recommendations/content-full-pending.png) |
 
 2026-10-19 真实 Electron 最终定位与显示验收：只凭 phase2 流日志缺少标签推断卡片漏判不充分。只读查运行库发现 17:28:02、17:30:13 等多个真实回合已有 vision 推荐，却没有 shown；因此这些轮次已经完成后端登记。实际 Pet DevTools 执行只读版本检查，旧 `window.nekoRecommendations.offer.toString()` 不含 `screenObservation`，React build 为 1792399416；确认运行页面未加载新前端。桌面源码 `protectWindowNavigationShortcuts` 会拦截 Ctrl+R/Ctrl+Shift+R，单独重启后端也不能替换已运行的脚本。通过各自 DevTools 的 `location.reload()` 更新 Pet 与 chat_full 后，Pet 的屏幕控制器检查为 true、React build 为 1792401177；真实 chat_full 已显示 17:36:28 的“总览计划”视觉回复卡片，含“√ 感兴趣／× 略过”。该内容来自真实屏幕与模型，未伪造新推荐或代点用户选择。后续触发中的 BM25 重复过滤／接管 pass 不应被误报为卡片交付成功。发布/体验说明须明确完整重启 Electron 或逐页 DevTools 重载，不能再把刷新快捷键当作已加载新脚本的证据。
 
