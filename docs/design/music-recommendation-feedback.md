@@ -30,7 +30,7 @@
 
 | 紧凑模式待确认 | 完整模式待确认 | 接受并播放后的完整模式 |
 |---|---|---|
-| ![音乐推荐气泡](../media/proactive-recommendations/music-compact-pending.png) | ![音乐推荐卡片](../media/proactive-recommendations/music-full-pending.png) | ![播放停止/结束状态](../media/proactive-recommendations/music-full-after-playback.png) |
+| ![音乐推荐气泡](../media/proactive-recommendations/music-compact-pending.png) | ![音乐推荐卡片](../media/proactive-recommendations/music-full-pending.png) | ![播放停止/结束状态](../media/proactive-recommendations/music-full-playback-state.png) |
 
 | 新闻紧凑气泡 | 其他内容完整卡片 |
 |---|---|
