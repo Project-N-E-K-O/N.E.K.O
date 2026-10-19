@@ -123,7 +123,7 @@ from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 
 # Initialize logging early to persist import-time errors too.
-from utils.logger_config import setup_logging  # noqa: E402
+from utils.logger_config import install_httpx_filter, setup_logging  # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic  # noqa: E402
 from utils.asyncio_executor import configure_default_executor  # noqa: E402
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware  # noqa: E402
@@ -136,6 +136,9 @@ _main_log_level = getattr(
 logger, log_config = setup_logging(
     service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS
 )
+# Here rather than in __main__: the launcher imports this package and runs the
+# app directly, so only module import is shared by every startup path.
+install_httpx_filter()
 importlib.import_module(f"{__package__}._shared").runtime.logger = logger
 importlib.import_module(
     f"{__package__}._shared"
