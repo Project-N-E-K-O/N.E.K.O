@@ -326,6 +326,11 @@ def _plugin_config_roots() -> tuple[Path, ...]:
 def _read_plugin_toml_metadata(manifest: Path) -> tuple[str | None, str]:
     try:
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # Expected: the upgrade path probes the builtin root for a same-id
+        # plugin that a Market install may be overriding; most have none.
+        logger.debug("Plugin manifest not found: {}", manifest)
+        return None, ""
     except (OSError, tomllib.TOMLDecodeError) as exc:
         logger.warning("Failed to read plugin manifest {}: {}", manifest, exc)
         return None, ""

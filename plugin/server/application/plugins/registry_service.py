@@ -567,8 +567,12 @@ def _discover_registry_snapshot_sync(
             if not path.parent.name.startswith(".")
         ]
         logger.info(
-            "Found {} plugin.toml files in {}: {}",
+            "Found {} plugin.toml files in {}",
             len(found_toml_files),
+            resolved_root,
+        )
+        logger.debug(
+            "plugin.toml files in {}: {}",
             resolved_root,
             [str(path) for path in found_toml_files],
         )

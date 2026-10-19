@@ -623,7 +623,7 @@ class TimeIndexedMemory:
                 db_path = expected_db_path
                 # Fall through to the 'create engine' branch below.
             elif not readonly and cached_readonly and lanlan_name not in self._writable_bootstrapped:
-                logger.info("[TimeIndexedMemory] 角色 %s 当前为只读引擎，切换为可写引擎后再执行迁移", lanlan_name)
+                logger.debug("[TimeIndexedMemory] 角色 %s 当前为只读引擎，切换为可写引擎后再执行迁移", lanlan_name)
                 self.dispose_engine(lanlan_name)
                 if not db_path:
                     db_path = cached_db_path
@@ -779,7 +779,7 @@ class TimeIndexedMemory:
             try:
                 engine.dispose()
                 engine_disposed = True
-                logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
+                logger.debug(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
             except Exception as exc:
                 # Continue with _engine_cache cleanup below: the pool actually holding file handles is often
                 # cached there, so failure at this step must not skip the entire section.

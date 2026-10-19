@@ -6,7 +6,7 @@ from pathlib import Path
 
 from plugin.server.infrastructure.error_mapping import http_exception
 
-from plugin.logging_config import get_logger
+from plugin.logging_config import get_logger, info_once
 from plugin.server.infrastructure.config_merge import deep_merge
 
 logger = get_logger("server.infrastructure.config_profiles")
@@ -101,7 +101,10 @@ def load_profiles_cfg_from_file(
         )
         return None
 
-    logger.info(
+    # Every plugin rescan re-resolves profiles; report each source once per process.
+    info_once(
+        logger,
+        ("config_profiles.using_profiles_toml", str(plugin_id), str(profiles_path)),
         "Plugin {}: using profiles.toml at {} for config_profiles; plugin.toml [plugin.config_profiles] will be ignored",
         plugin_id,
         profiles_path,
@@ -288,7 +291,10 @@ def apply_user_config_profiles(
         else:
             merged[key] = value
 
-    logger.info(
+    # Keyed by profile name too, so switching the active profile is reported again.
+    info_once(
+        logger,
+        ("config_profiles.applied_profile", str(plugin_id), str(active_name), str(profile_path)),
         "Plugin {}: applied user config profile '{}' from {}",
         plugin_id,
         active_name,

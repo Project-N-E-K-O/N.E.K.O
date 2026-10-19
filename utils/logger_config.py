@@ -589,10 +589,12 @@ class RateLimitedEndpointFilter(logging.Filter):
     """
     Unified rate-limited log filter
     
-    Two modes are supported:
+    Three modes are supported:
     1. full suppression: logs for certain endpoints are never shown
-    2. rate limiting: logs for certain endpoints are shown only once every N seconds
-    
+    2. success-only suppression: logs for certain endpoints are hidden only when
+       the record carries a 2xx status code (httpx client logs)
+    3. rate limiting: logs for certain endpoints are shown only once every N seconds
+
     Usage example:
         filter = RateLimitedEndpointFilter(
             suppressed_endpoints=["/health", "/ping"],
@@ -601,25 +603,30 @@ class RateLimitedEndpointFilter(logging.Filter):
         )
         logging.getLogger("uvicorn.access").addFilter(filter)
     """
-    
+
     DEFAULT_RATE_LIMIT_INTERVAL = 15.0  # Default: 15 seconds.
-    
-    def __init__(self, 
+
+    def __init__(self,
                  suppressed_endpoints: list = None,
                  rate_limited_endpoints: list = None,
                  rate_limit_interval: float = None,
-                 rate_limit_message: str = None):
+                 rate_limit_message: str = None,
+                 suppressed_on_success_endpoints: list = None):
         """
         Initialize the filter
-        
+
         Args:
             suppressed_endpoints: endpoints to suppress entirely (logs never shown)
             rate_limited_endpoints: endpoints to rate-limit (shown once every N seconds)
             rate_limit_interval: rate-limit interval in seconds, default 15
             rate_limit_message: rate-limit hint message, default "(this log is shown every {N} seconds)"
+            suppressed_on_success_endpoints: endpoints whose logs are hidden only
+                when the record's status code is 2xx; other statuses, or records
+                without a readable status code, are still shown
         """
         super().__init__()
         self.suppressed_endpoints = suppressed_endpoints or []
+        self.suppressed_on_success_endpoints = suppressed_on_success_endpoints or []
         self.rate_limited_endpoints = rate_limited_endpoints or []
         self.rate_limit_interval = rate_limit_interval or self.DEFAULT_RATE_LIMIT_INTERVAL
         self.rate_limit_message = rate_limit_message or f"(此日志每{int(self.rate_limit_interval)}秒显示一次)"
@@ -646,7 +653,13 @@ class RateLimitedEndpointFilter(logging.Filter):
         for endpoint in self.suppressed_endpoints:
             if endpoint in msg:
                 return False
-        
+
+        # Check success-only suppressed endpoints.
+        if self.suppressed_on_success_endpoints and self._is_success_status(record):
+            for endpoint in self.suppressed_on_success_endpoints:
+                if endpoint in msg:
+                    return False
+
         # Check rate-limited endpoints.
         current_time = time.time()
         for endpoint in self.rate_limited_endpoints:
@@ -661,7 +674,23 @@ class RateLimitedEndpointFilter(logging.Filter):
                     return False
         
         return True
-    
+
+    @staticmethod
+    def _is_success_status(record: logging.LogRecord) -> bool:
+        """Return True only when the record carries a 2xx status code.
+
+        httpx logs ``'HTTP Request: %s %s "%s %d %s"'`` with args
+        ``(method, url, http_version, status_code, reason_phrase)``. Any other
+        shape counts as "unknown" and is never treated as success.
+        """
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 5:
+            return False
+        status_code = args[3]
+        if isinstance(status_code, bool) or not isinstance(status_code, int):
+            return False
+        return 200 <= status_code < 300
+
     def reset_timer(self, endpoint: str = None):
         """
         Reset timers
@@ -801,6 +830,16 @@ HTTPX_SUPPRESSED_PATTERNS = [
     "getdaytrends.com",
 ]
 
+# HTTPX client: hide only 2xx responses; failures still reach the log so an
+# unreachable or erroring peer stays visible.
+HTTPX_SUPPRESSED_ON_SUCCESS_PATTERNS = [
+    # Main Server -> Memory Server knowledge availability heartbeat (every 60s).
+    "/internal/knowledge/availability",
+    # Plugin Server -> Market update check; market_bridge logs its own
+    # "[market-update-check]" line with the status, so the httpx line is a duplicate.
+    "/api/v1/plugins/latest-versions",
+]
+
 # HTTPX client rate limits (display once every N seconds).
 HTTPX_RATE_LIMITED_PATTERNS = [
     "/mcp",  # Rate-limit MCP request logs.
@@ -830,9 +869,27 @@ def create_httpx_filter() -> RateLimitedEndpointFilter:
     """Create the HTTPX client log filter"""
     return RateLimitedEndpointFilter(
         suppressed_endpoints=HTTPX_SUPPRESSED_PATTERNS,
+        suppressed_on_success_endpoints=HTTPX_SUPPRESSED_ON_SUCCESS_PATTERNS,
         rate_limited_endpoints=HTTPX_RATE_LIMITED_PATTERNS,
         rate_limit_interval=15.0
     )
+
+
+_HTTPX_FILTER_MARKER = "_neko_httpx_filter_installed"
+
+
+def install_httpx_filter() -> None:
+    """Attach the HTTPX client filter to the ``httpx`` logger once per process.
+
+    Several services can share one process (launcher merged mode, the plugin
+    server embedded in the Agent Server), and each may reach this call; the
+    marker keeps a single filter instance so rate-limit state is not split.
+    """
+    httpx_logger = logging.getLogger("httpx")
+    if getattr(httpx_logger, _HTTPX_FILTER_MARKER, False):
+        return
+    httpx_logger.addFilter(create_httpx_filter())
+    setattr(httpx_logger, _HTTPX_FILTER_MARKER, True)
 
 
 def _ensure_shared_parent_logger(config, service_logger):
@@ -889,11 +946,13 @@ __all__ = [
     'AGENT_SERVER_SUPPRESSED_ENDPOINTS',
     'AGENT_SERVER_RATE_LIMITED_ENDPOINTS',
     'HTTPX_SUPPRESSED_PATTERNS',
+    'HTTPX_SUPPRESSED_ON_SUCCESS_PATTERNS',
     'HTTPX_RATE_LIMITED_PATTERNS',
     # Factory functions.
     'create_main_server_filter',
     'create_agent_server_filter',
     'create_httpx_filter',
+    'install_httpx_filter',
 ]
 
 

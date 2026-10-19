@@ -208,7 +208,10 @@ def _ensure_root_logger() -> None:
             return
         # Use utils.logger_config's main persistence path.
         try:
-            from utils.logger_config import setup_logging as _bootstrap_setup_logging
+            from utils.logger_config import (
+                install_httpx_filter as _install_httpx_filter,
+                setup_logging as _bootstrap_setup_logging,
+            )
         except ModuleNotFoundError:
             # Very early SDK-test imports may lack utils in sys.path;
             # return silently without freezing _root_initialised, allowing later retry.
@@ -250,6 +253,10 @@ def _ensure_root_logger() -> None:
         # Loguru's intercept_standard_logging previously installed root forwarding;
         # removing loguru removed that bridge, requiring explicit restoration.
         _install_root_bridge(service_logger)
+        # The bridge is what lands httpx client records in this service's log
+        # (standalone PluginServer and the server embedded in the Agent
+        # process alike), so it brings the shared httpx filter with it.
+        _install_httpx_filter()
 
         _root_initialised = True
 
@@ -554,6 +561,27 @@ def format_log_text(value: Any, max_len: Optional[int] = None, wrap: Optional[in
     return s
 
 
+_INFO_ONCE_KEYS: set[tuple[str, ...]] = set()
+_INFO_ONCE_LOCK = threading.Lock()
+
+
+def info_once(logger: PluginLoggerAdapter, key: tuple[str, ...], msg: Any, *args: Any) -> None:
+    """Log at INFO the first time ``key`` is seen in this process, DEBUG afterwards.
+
+    For notices that every plugin rescan (startup, each Market install or
+    upgrade) would otherwise repeat verbatim: the first occurrence stays
+    visible, the repeats remain available at DEBUG.
+    """
+    with _INFO_ONCE_LOCK:
+        first = key not in _INFO_ONCE_KEYS
+        if first:
+            _INFO_ONCE_KEYS.add(key)
+    if first:
+        logger.info(msg, *args)
+    else:
+        logger.debug(msg, *args)
+
+
 # Module default logger supports from plugin.logging_config import logger.
 logger: PluginLoggerAdapter = get_logger("plugin")
 
@@ -575,6 +603,7 @@ __all__ = [
     "configure_default_logger",
     "intercept_standard_logging",
     "format_log_text",
+    "info_once",
     "PluginLoggerAdapter",
     # Legacy format constants for compatibility imports, unused by stdlib.
     "FORMAT_CONSOLE",

@@ -1170,7 +1170,7 @@ def _parse_single_plugin_config(
     Returns:
         PluginContext, or None on failure/skip.
     """
-    logger.info("Processing plugin config: {}", toml_path)
+    logger.debug("Processing plugin config: {}", toml_path)
     
     try:
         with toml_path.open("rb") as f:
@@ -1269,7 +1269,7 @@ def _parse_single_plugin_config(
     # user override, the final authority.
     override = get_runtime_override(str(pid)) if apply_user_overlays else None
     if override is not None and override != enabled_val:
-        logger.info(
+        logger.debug(
             "Plugin {} runtime_enabled overridden by user preference: {} -> {}",
             pid,
             enabled_val,
@@ -1281,7 +1281,7 @@ def _parse_single_plugin_config(
         get_runtime_auto_start_override(str(pid)) if apply_user_overlays else None
     )
     if auto_start_override is not None and auto_start_override != auto_start_val:
-        logger.info(
+        logger.debug(
             "Plugin {} runtime_auto_start overridden by user preference: {} -> {}",
             pid,
             auto_start_val,
@@ -1290,12 +1290,12 @@ def _parse_single_plugin_config(
         auto_start_val = auto_start_override
 
     if not enabled_val:
-        logger.info(
+        logger.debug(
             "Plugin {} is disabled by plugin_runtime.enabled=false; will register for visibility only (no runtime load)",
             pid,
         )
     if not auto_start_val:
-        logger.info(
+        logger.debug(
             "Plugin {} has plugin_runtime.auto_start=false; treating as manual-start-only (will register metadata but skip auto process start)",
             pid,
         )
@@ -1394,7 +1394,8 @@ def _collect_plugin_contexts_from_roots(
             continue
 
         found_toml_files = list(root.glob("*/plugin.toml"))
-        logger.info("Found {} plugin.toml files in {}: {}", len(found_toml_files), root, [str(p) for p in found_toml_files])
+        logger.info("Found {} plugin.toml files in {}", len(found_toml_files), root)
+        logger.debug("plugin.toml files in {}: {}", root, [str(p) for p in found_toml_files])
 
         for toml_path in found_toml_files:
             try:
