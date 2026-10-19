@@ -122,6 +122,7 @@ async def test_music_delivery_reports_effective_source_mode(
         'type': 'music',
     }
     delivery = CommittedDelivery(
+        turn_id='turn-1',
         primary_channel=primary_channel,
         source_links=[music_link],
         delivered_tag='MUSIC',
@@ -204,7 +205,7 @@ async def test_only_committed_visual_content_carries_a_screen_presentation(monke
     for name in ('_record_proactive_chat', '_record_proactive_material', '_mini_game_invite_count_post_response_chat'):
         monkeypatch.setattr(proactive_delivery, name, MagicMock())
     monkeypatch.setattr(proactive_delivery, '_increment_proactive_chat_total', AsyncMock())
-    delivery = CommittedDelivery(primary_channel=primary_channel, source_links=links, delivered_tag=source_tag,
+    delivery = CommittedDelivery(turn_id='visual-turn', primary_channel=primary_channel, source_links=links, delivered_tag=source_tag,
                                  delivered_music_link=None, is_music_used=False, action_note='',
                                  vision_screenshot_b64=screenshot)
     result = await _record_committed_delivery(

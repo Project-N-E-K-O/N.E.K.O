@@ -197,6 +197,94 @@ const endedState = { track: {name:'finished', artist:'test'}, playbackId:'finish
     ended:true, currentTime:60, duration:60, volume:0.2 };
 const remoteEvent = (type, payload) => ({ sender:'remote-owner', type, payload });
 
+async function startRecommendation(s, awarenessState) {
+    const events = [], awareness = [], messages = new Map();
+    const socket = awarenessState === undefined ? null : { readyState: awarenessState,
+        send(value) { awareness.push(JSON.parse(value)); } };
+    s.w.appState = { socket };
+    s.w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({}) };
+    s.w.AbortSignal.timeout = () => undefined;
+    s.w.fetch = async (url, init) => {
+        if (!init || !init.body) return { ok: true, json: async () => ({ domains: [] }) };
+        const event = JSON.parse(init.body); events.push(event);
+        return { ok: true, status: 200, json: async () => ({ success: true, state: event.kind,
+            playback_grant: event.kind === 'accepted' }) };
+    };
+    s.w.reactChatWindowHost = { appendMessage(m) { messages.set(m.id, m); },
+        updateMessage(id, patch) { Object.assign(messages.get(id), patch); } };
+    // Exercise the real consent controller AND dispatcher, not the smoke fixture shortcut.
+    s.w.eval(fs.readFileSync(path.join(root, 'static/app/app-chat.js'), 'utf8'));
+    s.w.eval(fs.readFileSync(path.join(root, 'static/app/app-recommendations.js'), 'utf8'));
+    const id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    s.w.nekoMusicRecommendations.offer({ id, state: 'pending', expires_at: s.w.Date.now()/1000+1800,
+        track: { name: 'Recommended', artist: 'Neko', url: 'https://music.163.com/test.mp3', cover: '' } });
+    const message = messages.values().next().value;
+    s.w.dispatchEvent(new s.w.CustomEvent('react-chat-window:action', { detail: { message,
+        action: { action: 'music_recommendation_decision', payload: { recommendationId: id, kind: 'accepted' } } } }));
+    await s.advance(100);
+    assert.equal(s.players.length, 1);
+    assert.equal(s.players[0].audio.paused, false);
+    assert.ok(events.some(event => event.kind === 'accepted'));
+    assert.ok(events.some(event => event.kind === 'playing'));
+    const audio = s.players[0].audio;
+    audio.currentTime = 12;
+    audio.played = { length: 1, start: () => 0, end: () => 12 };
+    return { events, awareness, socket, message };
+}
+
+for (const [name, startState, endState] of [['missing', undefined, undefined], ['closed', 3, 3],
+    ['open', 1, 1], ['reconnected', 3, 1], ['disconnected after playing', 1, 3]]) {
+    test(`recommendation close reports its final evidence with ${name} awareness socket`, async t => {
+        const s = createSurface(t), r = await startRecommendation(s, startState);
+        if (r.socket) r.socket.readyState = endState;
+        s.clickClose(); await flush();
+        s.w.destroyMusicPlayer(true, true, true); await flush();
+        const terminal = r.events.filter(event => ['stopped', 'ended', 'failed'].includes(event.kind));
+        assert.equal(terminal.length, 1, 'close and repeated teardown produce exactly one terminal event');
+        assert.equal(terminal[0].kind, 'stopped');
+        assert.equal(terminal[0].listened_seconds, 12);
+        assert.equal(terminal[0].position_seconds, 12);
+        assert.equal(r.message.blocks[0].state, 'stopped');
+        if (startState === 3 && endState === 3 || startState === undefined) assert.equal(r.awareness.length, 0);
+    });
+}
+
+for (const state of ['ended', 'failed']) {
+    test(`recommendation ${state} stays terminal after close without awareness socket`, async t => {
+        const s = createSurface(t), r = await startRecommendation(s);
+        if (state === 'ended') s.players[0].finish();
+        else { s.players[0].audio.error = { code: 3 }; s.players[0].emit('error'); await s.advance(220); }
+        await flush();
+        s.clickClose(); await flush();
+        assert.deepEqual(r.events.filter(event => ['stopped', 'ended', 'failed'].includes(event.kind)).map(event => event.kind), [state]);
+        assert.equal(r.message.blocks[0].state, state);
+    });
+}
+
+test('paused recommendation closes with final evidence when awareness never connected', async t => {
+    const s = createSurface(t), r = await startRecommendation(s, 3);
+    s.players[0].pause(); await flush();
+    assert.equal(r.message.blocks[0].state, 'paused');
+    s.clickClose(); await flush();
+    assert.deepEqual(r.events.filter(event => ['paused', 'stopped'].includes(event.kind)).map(event => event.kind), ['paused', 'stopped']);
+    assert.equal(r.events.at(-1).listened_seconds, 12);
+});
+
+test('replacing an offline-started recommendation finalizes only the old evidence identity', async t => {
+    const s = createSurface(t), r = await startRecommendation(s);
+    // Ordinary user intent can adopt the same media through the real dispatcher.
+    const result = await s.w.dispatchMusicPlayDetailed({ name: 'Recommended', artist: 'Neko', url: 'https://music.163.com/test.mp3' });
+    await flush();
+    assert.equal(result.ok, true);
+    s.clickClose(); await flush();
+    const terminal = r.events.filter(event => ['stopped', 'ended', 'failed'].includes(event.kind));
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0].kind, 'stopped');
+    assert.equal(terminal[0].reason, 'replaced');
+    assert.equal(terminal[0].listened_seconds, 12);
+    assert.equal(terminal[0].playback_id, r.events.find(event => event.kind === 'playing').playback_id);
+});
+
 for (const transport of ['Electron IPC', 'web BroadcastChannel']) {
     test(`${transport} mirrors chat append/update and bookkeeping without echo`, t => {
         const options=transport==='web BroadcastChannel'?{channelHub:new Set()}:{};

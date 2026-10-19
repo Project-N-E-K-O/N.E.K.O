@@ -368,7 +368,27 @@ class RecommendationStore:
         retry imports the same ID/body and cannot lose or duplicate the mutation.
         """
         allowed = {"revision", "origin", "occurred_at", "previous", "settings"}
-        if set(payload) != allowed or payload["origin"] not in {"user", "system", "baseline"}:
+        # Journals survive process restarts and local-root migration. Validate
+        # their JSON fields before hashing, set lookup or SQLite binding: a bad
+        # local member must use the existing unavailable/preserve path rather
+        # than terminate the upload worker with TypeError or KeyError.
+        if (not isinstance(owner, dict) or not isinstance(owner.get("key"), str) or not owner["key"]
+                or not {"user_id", "community"} <= owner.keys()
+                or any(value is not None and not isinstance(value, str)
+                       for value in (owner["user_id"], owner["community"]))
+                or not isinstance(entry_id, str) or not entry_id
+                or not isinstance(payload, dict) or set(payload) != allowed
+                or not isinstance(payload["origin"], str)
+                or payload["origin"] not in {"user", "system", "baseline"}
+                or type(payload["revision"]) is not int or payload["revision"] < 1
+                or type(payload["occurred_at"]) not in (int, float)):
+            raise FeedbackConflict("invalid_settings_evidence")
+        try:
+            finite_timestamp = math.isfinite(payload["occurred_at"])
+        except OverflowError:
+            # A JSON integer may exceed the finite timestamp representation.
+            finite_timestamp = False
+        if not finite_timestamp:
             raise FeedbackConflict("invalid_settings_evidence")
         for name in ("previous", "settings"):
             if not isinstance(payload[name], dict) or _settings_snapshot(payload[name]) != payload[name]:

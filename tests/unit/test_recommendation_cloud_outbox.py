@@ -248,6 +248,42 @@ def test_settings_type_mismatches_cannot_poison_immutable_uploads(store, invalid
         store.enqueue_settings(OWNER, "invalid", {**settings(), "settings": invalid})
 
 
+@pytest.mark.parametrize("field,value", [
+    ("origin", []), ("origin", {}), ("origin", None),
+    ("revision", []), ("revision", True), ("revision", 0),
+    ("occurred_at", []), ("occurred_at", True),
+    ("occurred_at", float("nan")), ("occurred_at", float("inf")),
+    ("occurred_at", 10 ** 400),
+])
+def test_deeply_invalid_settings_are_typed_conflicts_without_committing(store, field, value):
+    recommend(store)
+    frozen = store.prepare_batch(OWNER)
+    with pytest.raises(FeedbackConflict, match="invalid_settings_evidence"):
+        store.enqueue_settings(OWNER, "invalid", {**settings(), field: value})
+    assert store.prepare_batch(OWNER) == frozen
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT count(*) FROM feedback_settings_evidence").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("owner,entry_id", [
+    ({**OWNER, "key": []}, "entry"), ({"key": "missing-fields"}, "entry"),
+    ({**OWNER, "user_id": []}, "entry"), ({**OWNER, "community": {}}, "entry"),
+    (OWNER, []),
+])
+def test_invalid_settings_identity_is_a_conflict_before_sqlite(store, owner, entry_id):
+    with pytest.raises(FeedbackConflict, match="invalid_settings_evidence"):
+        store.enqueue_settings(owner, entry_id, settings())
+    assert not store.path.exists()
+
+
+@pytest.mark.parametrize("occurred_at", [0, 100, 100.5])
+def test_settings_numeric_timestamps_and_existing_non_uuid_ids_remain_compatible(store, occurred_at):
+    payload = {**settings(), "occurred_at": occurred_at}
+    store.enqueue_settings(OWNER, "settings-1", payload)
+    item, = store.prepare_batch(OWNER)["items"]
+    assert item["id"] == "settings-1" and item["payload"] == payload
+
+
 @pytest.mark.parametrize("kind", ["shown", "accepted", "skipped"])
 @pytest.mark.parametrize("fields", [{"playback_id": "bad"}, {"listened_seconds": 1}, {"position_seconds": 1}])
 def test_non_playback_fields_are_rejected_before_local_commit(store, kind, fields):

@@ -2341,7 +2341,8 @@
         if (
             fullTeardown
             && terminalReportContext
-            && ['playing', 'paused'].includes(terminalReportContext.lastReportedState)
+            && (['playing', 'paused'].includes(terminalReportContext.lastReportedState)
+                || ['playing', 'paused'].includes(terminalReportContext.recommendationLastState))
         ) {
             reportMusicPlaybackState('ended', null, terminalReportContext);
         }

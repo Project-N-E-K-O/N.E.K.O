@@ -362,6 +362,140 @@ def test_real_json_to_sqlite_handoff_survives_ack_failure_without_duplicate(isol
     assert json.loads(payload) == original[0]["payload"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [("origin", []), ("origin", {}), ("revision", []),
+                                         ("occurred_at", []), ("occurred_at", 10 ** 400)])
+async def test_damaged_journal_preserved_while_worker_uploads_other_facts_and_closes(isolated, field, value):
+    import httpx
+    from main_logic.recommendation_feedback import RecommendationStore
+    from services.proactive_feedback.host import owner_from_snapshot
+    from services.proactive_feedback.protocol import COMMUNITY_ORIGIN
+    from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, drain_settings, pending_settings
+    from tests.unit.test_proactive_feedback_runtime import receipt
+
+    saved = {"access_token": "fixture-token", "base_url": COMMUNITY_ORIGIN, "local_user_id": "original-owner"}
+    owner = owner_from_snapshot(saved)
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    preferences.install_settings_attribution_context(attribution)
+    seed(isolated, proactiveMusicEnabled=False)
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": True})
+    data = json.loads(isolated.read_text(encoding="utf-8"))
+    data[0][preferences_audit.JOURNAL_KEY]["entries"][0]["payload"][field] = value
+    isolated.write_text(json.dumps(data), encoding="utf-8")
+    original = isolated.read_bytes()
+    entries = preferences.pending_settings_changes()
+    assert entries[0]["owner"] == owner
+
+    store = RecommendationStore(isolated.parent / "feedback.sqlite3")
+    store.create(owner, "Fixture", "turn", {"name": "Fixture", "artist": "Fixture", "url": "https://media.example/song"}, {})
+    uploaded = asyncio.Event()
+
+    async def resolver():
+        return {"logged_in": True, "snapshot": dict(saved)}
+
+    async def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"user": {"id": "original-owner"}})
+        batch = json.loads(request.content)
+        assert [item["kind"] for item in batch["items"]] == ["recommendation"]
+        uploaded.set()
+        return httpx.Response(200, json=receipt(batch))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    runtime = ProactiveFeedbackRuntime(store, snapshot_provider=lambda: dict(saved), session_provider=resolver,
+                                       attribution_context=attribution, client=client,
+                                       settings_drain=drain_settings, settings_pending_provider=pending_settings)
+    try:
+        runtime.start()
+        # Await the worker itself as well: the pre-fix TypeError must fail this
+        # probe immediately rather than leaving it to an unrelated timeout.
+        request_seen = asyncio.create_task(uploaded.wait())
+        try:
+            done, _ = await asyncio.wait({request_seen, runtime._task}, timeout=3, return_when=asyncio.FIRST_COMPLETED)
+            if runtime._task in done:
+                await runtime._task
+            assert request_seen in done
+        finally:
+            request_seen.cancel()
+            await asyncio.gather(request_seen, return_exceptions=True)
+        async with runtime._lock:
+            pass  # The actual receipt transaction has now finished.
+        status = await runtime.status()
+        assert status["running"] and status["settings_import_error"] == "settings_import_unavailable"
+        assert status["settings_journal_pending"] == 1 and not status["fully_synced"]
+        assert status["pending"] == 0 and status["acked"] == 1
+        assert isolated.read_bytes() == original
+        assert preferences.pending_settings_changes() == entries
+        await asyncio.wait_for(runtime.close(), 3)
+        assert runtime._task is None
+    finally:
+        try:
+            await runtime.close()
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.parametrize("failure", ["schema", "capacity", "io"])
+def test_settings_handoff_storage_failures_keep_exact_journal_for_retry(isolated, failure):
+    import sqlite3
+    from main_logic.recommendation_feedback import FeedbackConflict, RecommendationStore
+    from services.proactive_feedback.host import owner_from_snapshot
+    from services.proactive_feedback.protocol import COMMUNITY_ORIGIN
+    from services.proactive_feedback.runtime import drain_settings
+
+    owner = owner_from_snapshot({"access_token": "fixture-token", "base_url": COMMUNITY_ORIGIN, "local_user_id": "original-owner"})
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    preferences.install_settings_attribution_context(attribution)
+    seed(isolated, proactiveMusicEnabled=False)
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": True})
+    entries = preferences.pending_settings_changes()
+    original = isolated.read_bytes()
+    blocked_path = isolated.parent / "blocked-directory"
+    if failure == "io":
+        blocked_path.write_text("not a directory", encoding="utf-8")
+        store = RecommendationStore(blocked_path / "feedback.sqlite3")
+        expected, code = OSError, None
+    else:
+        store = RecommendationStore(isolated.parent / "feedback.sqlite3")
+        store.sync_status(owner)
+        expected = FeedbackConflict
+        if failure == "schema":
+            with sqlite3.connect(store.path) as db:
+                db.execute("PRAGMA user_version=99")
+            code = "unsupported_feedback_schema"
+        else:
+            store.MAX_PENDING_UPLOADS = 0
+            code = "feedback_upload_capacity_reached"
+    with pytest.raises(expected) as caught:
+        drain_settings(store)
+    if code is not None:
+        assert str(caught.value) == code
+    assert isolated.read_bytes() == original
+    assert preferences.pending_settings_changes() == entries
+    if failure == "io":
+        assert blocked_path.read_text(encoding="utf-8") == "not a directory"
+        blocked_path.unlink()
+    elif failure == "schema":
+        with sqlite3.connect(store.path) as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 99
+            assert db.execute("SELECT count(*) FROM feedback_settings_evidence").fetchone()[0] == 0
+            db.execute("PRAGMA user_version=2")
+    else:
+        store.MAX_PENDING_UPLOADS = RecommendationStore.MAX_PENDING_UPLOADS
+    drain_settings(store)
+    assert preferences.pending_settings_changes() == []
+    item, = store.prepare_batch(owner)["items"]
+    assert item["id"] == entries[0]["id"] and item["payload"] == entries[0]["payload"]
+
+
 @pytest.mark.parametrize("fail_after_preferences_apply", [False, True], ids=["successful-restore", "rollback-after-apply"])
 def test_restore_and_prechecked_writer_share_journal_lock_through_rollback(
     isolated, monkeypatch, fail_after_preferences_apply,

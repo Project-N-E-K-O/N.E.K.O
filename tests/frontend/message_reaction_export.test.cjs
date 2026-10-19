@@ -4,7 +4,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 
-const source = fs.readFileSync(path.join(__dirname, '../../static/app/app-chat-export.js'), 'utf8');
+const source = process.env.CHAT_EXPORT_REVISION
+  ? require('node:child_process').execFileSync('git', ['show', `${process.env.CHAT_EXPORT_REVISION}:static/app/app-chat-export.js`],
+    { cwd: path.join(__dirname, '../..'), encoding: 'utf8' })
+  : fs.readFileSync(path.join(__dirname, '../../static/app/app-chat-export.js'), 'utf8');
 const body = '谢谢你一直陪着我';
 const label = 'Neko reacted with ❤️';
 
@@ -19,6 +22,7 @@ function fixture(messages = [message()]) {
   const clipboard = [];
   const frames = [];
   const errors = [];
+  const imageSources = [];
   let sequence = 0;
   const host = { messages };
   const url = Object.assign(class extends URL {}, { createObjectURL(blob) { const id = `blob:test-${++sequence}`; blobs.set(id, blob); return id; },
@@ -48,7 +52,7 @@ function fixture(messages = [message()]) {
     matchMedia() { return { matches: false }; }, addEventListener() {} };
   class Image {
     constructor() { this.width = this.height = this.naturalWidth = this.naturalHeight = 32; }
-    set src(value) { if (value) queueMicrotask(() => this.onload?.()); }
+    set src(value) { imageSources.push(value); if (value) queueMicrotask(() => this.onload?.()); }
   }
   const context = vm.createContext({ window, document, Blob, URL: url, Image, AbortController,
     console: { error(...args) { errors.push(args); } },
@@ -65,8 +69,130 @@ function fixture(messages = [message()]) {
     '    window.testExport = { state, buildExportEntry, getSelectedEntries, getOrBuildPreviewPayload, '
       + 'setPreviewFunctions(open, modal) { openExportPreviewWindow = open; openPreviewModal = modal; } };\n'
       + '    window.appChatExport = {'), context);
-  return { api: window.appChatExport, internal: window.testExport, host, blobs, downloads, clipboard, frames, errors };
+  return { api: window.appChatExport, internal: window.testExport, host, blobs, downloads, clipboard, frames, errors, imageSources };
 }
+
+function recommendation(kind, fields = {}) {
+  const block = kind === 'music'
+    ? { type: 'music_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943', state: 'pending',
+      track: { name: 'Evening Song', artist: 'Neko Quartet', url: 'https://example.test/song.mp3', cover: '' } }
+    : { type: 'proactive_recommendation', recommendationId: '023bf0f3-77ac-433a-8138-5ba7dc6da15f', state: 'pending',
+      category: 'news', content: { title: 'An interesting story', source: 'Example Journal', url: 'https://example.test/story' } };
+  return message({ id: kind === 'music' ? 'music-recommendation-test' : 'proactive-recommendation-test',
+    role: 'assistant', reaction: undefined, blocks: [{ ...block, ...fields }] });
+}
+
+for (const kind of ['music', 'news', 'vision']) {
+  test(`${kind} recommendation metadata survives normal Markdown preview, copy and download`, async () => {
+    const m = recommendation(kind, kind === 'vision'
+      ? { category: 'vision', content: { title: 'You are tending a farm.', source: '', url: '' } } : {});
+    const before = JSON.stringify(m);
+    const expected = kind === 'music' ? ['Evening Song', 'Neko Quartet']
+      : kind === 'vision' ? ['You are tending a farm'] : ['An interesting story', 'Example Journal', 'https://example.test/story'];
+    const f = fixture([m]), options = { messageIds: [m.id], format: 'markdown' };
+    const preview = await f.api.buildCompactInlinePreview(options);
+    await f.api.copyCompactInlineSelection(options);
+    await f.api.downloadCompactInlineSelection(options);
+    for (const content of [preview.previewDocument, f.clipboard[0], await f.downloads[0].text()]) {
+      for (const text of expected) assert.ok(content.includes(text), `missing ${text}`);
+      if (kind === 'music') assert.equal(content.includes('https://example.test/song.mp3'), false, 'playback URLs stay out of music exports');
+    }
+    assert.equal(JSON.stringify(m), before, 'export projection must not mutate live recommendation blocks');
+    assert.equal(f.errors.length, 0);
+  });
+
+  for (const imageStyle of ['neko', 'original', 'poster', 'lyrics']) {
+    test(`${kind} recommendation draws its metadata in ${imageStyle} image preview, copy and download`, async () => {
+      const m = recommendation(kind, kind === 'vision'
+        ? { category: 'vision', content: { title: 'You are tending a farm.', source: '', url: '' } } : {});
+      const expected = kind === 'music' ? ['Evening Song', 'Neko Quartet']
+        : kind === 'vision' ? ['You are tending a farm.'] : ['An interesting story', 'Example Journal'];
+      const f = fixture([m]), options = { messageIds: [m.id], format: 'image', imageStyle, imageFormat: 'png' };
+      const preview = await f.api.buildCompactInlinePreview(options);
+      await f.api.copyCompactInlineSelection(options);
+      await f.api.downloadCompactInlineSelection(options);
+      for (const blob of [f.blobs.get(preview.previewUrl), f.clipboard[0], f.downloads[0]]) {
+        const drawn = JSON.parse(await blob.text()).join('\n');
+        for (const text of expected) assert.ok(drawn.includes(text), `missing painted ${text}`);
+      }
+      assert.equal(f.errors.length, 0);
+    });
+  }
+}
+
+for (const [state, dismissed, imageExpected] of [['pending', false, false], ['skipped', false, false],
+  ['accepted', false, true], ['accepted', true, false]]) {
+  test(`meme export respects visible preview consent: ${state}, dismissed=${dismissed}`, async () => {
+    const m = recommendation('meme', { category: 'meme', state, dismissed,
+      content: { title: 'A waving cat', source: 'Example', url: 'https://example.test/cat.png' } });
+    const f = fixture([m]);
+    const preview = await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'markdown' });
+    assert.ok(preview.previewDocument.includes('A waving cat'));
+    assert.equal(preview.previewDocument.includes('<img'), imageExpected);
+    await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'image' });
+    assert.equal(f.imageSources.some(url => url.includes('/api/meme/proxy-image?')), imageExpected);
+    assert.equal(f.errors.length, 0);
+  });
+}
+
+test('recommendation text stays literal and its URL cannot inject another Markdown image', async () => {
+  const m = recommendation('news', { state: 'accepted', content: {
+    title: 'Story ![secret](https://hidden.test/a.png)', source: 'Source\n![secret](https://hidden.test/b.png)',
+    url: 'https://example.test/)[secret](https://hidden.test/asset)' } });
+  const f = fixture([m]);
+  const result = await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'markdown' });
+  assert.equal(result.previewDocument.includes('<img'), false);
+  assert.ok(result.previewDocument.includes('Story ![secret]'));
+  assert.equal(f.imageSources.length, 0);
+});
+
+for (const url of ['javascript:alert(1)', 'data:image/png;base64,AA==', 'https://user:secret@example.test/image']) {
+  test('recommendation exports refuse invisible or unsafe content ' + url, async () => {
+    const m = recommendation('meme', { category: 'meme', state: 'accepted', content: { title: 'Hidden material', source: '', url } });
+    const f = fixture([m]);
+    const result = await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'markdown' });
+    assert.equal(result.previewDocument.includes('Hidden material'), false);
+    assert.equal(result.previewDocument.includes('<img'), false);
+    await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'image' });
+    assert.equal(f.imageSources.some(source => source.includes('/api/meme/proxy-image?') || source.includes('example.test/image')
+      || source.startsWith('javascript:') || source.startsWith('data:image/png;base64,AA==')), false);
+  });
+}
+
+for (const cover of ['https://example.test/cover(1).png', 'https://example.test/cover.png) ![hidden](https://hidden.test/pixel.png)',
+  'https://user:secret@example.test/cover.png']) {
+  test('music recommendation export keeps cover boundaries and rejects credentials: ' + cover, async () => {
+    const m = recommendation('music'); m.blocks[0].track.cover = cover;
+    m.blocks[0].track.name = 'Song [one] ![hidden](https://hidden.test/title.png)';
+    const f = fixture([m]);
+    const preview = await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'markdown' });
+    assert.equal((preview.previewDocument.match(/<img /g) || []).length, 1);
+    assert.equal(preview.previewDocument.includes('src="https://hidden.test/'), false);
+    assert.equal(preview.previewDocument.includes('user:secret@'), false);
+    if (cover.includes('cover(1)')) assert.ok(preview.previewDocument.includes('cover%281%29.png'));
+    await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'image' });
+    assert.equal(f.imageSources.some(source => source.includes('user:secret@') || source.startsWith('https://hidden.test/')), false);
+  });
+}
+
+test('accepted meme parentheses and literal alt survive Markdown image projection', async () => {
+  const m = recommendation('meme', { category: 'meme', state: 'accepted', content: {
+    title: 'Cat [one] ![hidden](https://hidden.test/pixel.png)', source: '', url: 'https://example.test/cat(1).png' } });
+  const f = fixture([m]);
+  const preview = await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'markdown' });
+  assert.equal((preview.previewDocument.match(/<img /g) || []).length, 1);
+  assert.ok(preview.previewDocument.includes('src="/api/meme/proxy-image?url=https%3A%2F%2Fexample.test%2Fcat%281%29.png"'));
+  assert.equal(preview.previewDocument.includes('src="https://hidden.test/'), false);
+});
+
+test('a screen observation containing tilde fences exports literal text, not a code block', async () => {
+  const m = recommendation('vision', { category: 'vision', content: { title: '~~~\nkeep _literal_\n~~~', source: '', url: '' } });
+  const f = fixture([m]);
+  const preview = await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'markdown' });
+  assert.equal(preview.previewDocument.includes('<pre>'), false);
+  assert.ok(preview.previewDocument.includes('~~~'));
+  assert.ok(preview.previewDocument.includes('keep _literal_'));
+});
 
 test('normal Markdown preview, copy and download preserve body and reacting character', async () => {
   const f = fixture();
