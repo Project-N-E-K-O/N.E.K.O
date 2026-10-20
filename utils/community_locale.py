@@ -55,7 +55,7 @@ def community_bootstrap_locale_hints() -> dict[str, str]:
     if china_region:
         hints["region"] = "CN"
     else:
-        parts = re.split(r"[-_]", system_locale.split(".", 1)[0])
+        parts = re.split(r"[-_]", system_locale.split("@", 1)[0].split(".", 1)[0])
         region = None
         for part in parts[1:]:
             # Extension/private-use keys (e.g. u-ca or x-US) are not regions.

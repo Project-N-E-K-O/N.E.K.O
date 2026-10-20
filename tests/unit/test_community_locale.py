@@ -203,3 +203,17 @@ def test_bootstrap_does_not_treat_locale_extensions_as_regions(
     monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
     monkeypatch.setenv("LANG", device_locale)
     assert community_locale.community_bootstrap_locale_hints() == expected
+
+
+@pytest.mark.parametrize("device_locale, expected", [
+    ("ca_ES@valencia", {"locale": "en", "region": "ES"}),
+    ("ca_ES.UTF-8@valencia", {"locale": "en", "region": "ES"}),
+    ("ja_JP@calendar=japanese", {"locale": "ja", "region": "JP"}),
+    ("zh_Hant_TW@calendar=roc", {"locale": "zh-TW", "region": "TW"}),
+])
+def test_bootstrap_region_ignores_posix_modifiers(
+    monkeypatch, isolate_device_probes, device_locale, expected,
+):
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    monkeypatch.setenv("LANG", device_locale)
+    assert community_locale.community_bootstrap_locale_hints() == expected
