@@ -90,6 +90,8 @@ export default {
     languageAuto: 'Auto'
   },
   nav: {
+    collapseSidebar: 'Collapse sidebar',
+    expandSidebar: 'Expand sidebar',
     dashboard: 'Dashboard',
     plugins: 'Plugins',
     metrics: 'Metrics',

@@ -90,6 +90,8 @@ export default {
     languageAuto: '自動'
   },
   nav: {
+    collapseSidebar: '收合側邊欄',
+    expandSidebar: '展開側邊欄',
     dashboard: '儀表板',
     plugins: '外掛管理',
     metrics: '效能指標',

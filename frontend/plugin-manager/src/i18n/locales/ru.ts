@@ -90,6 +90,8 @@ export default {
     languageAuto: 'Авто'
   },
   nav: {
+    collapseSidebar: 'Свернуть боковую панель',
+    expandSidebar: 'Развернуть боковую панель',
     dashboard: 'Панель',
     plugins: 'Плагины',
     metrics: 'Производительность',

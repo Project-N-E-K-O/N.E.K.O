@@ -90,6 +90,8 @@ export default {
     languageAuto: '自动'
   },
   nav: {
+    collapseSidebar: '收起侧边栏',
+    expandSidebar: '展开侧边栏',
     dashboard: '仪表盘',
     plugins: '插件管理',
     metrics: '性能指标',

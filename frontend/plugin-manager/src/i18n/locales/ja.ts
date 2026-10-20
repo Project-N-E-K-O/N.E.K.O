@@ -90,6 +90,8 @@ export default {
     languageAuto: '自動'
   },
   nav: {
+    collapseSidebar: 'サイドバーを折りたたむ',
+    expandSidebar: 'サイドバーを展開',
     dashboard: 'ダッシュボード',
     plugins: 'プラグイン管理',
     metrics: 'パフォーマンス',

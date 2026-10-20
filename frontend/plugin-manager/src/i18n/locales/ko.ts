@@ -90,6 +90,8 @@ export default {
     languageAuto: '자동'
   },
   nav: {
+    collapseSidebar: '사이드바 접기',
+    expandSidebar: '사이드바 펼치기',
     dashboard: '대시보드',
     plugins: '플러그인 관리',
     metrics: '성능 지표',

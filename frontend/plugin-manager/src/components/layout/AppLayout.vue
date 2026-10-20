@@ -52,8 +52,8 @@
     </div>
 
     <div class="app-shell">
-      <aside class="app-sidebar">
-        <Sidebar />
+      <aside class="app-sidebar" :class="{ 'app-sidebar--collapsed': sidebarCollapsed }">
+        <Sidebar @collapse-change="sidebarCollapsed = $event" />
       </aside>
 
       <div class="app-body">
@@ -92,6 +92,7 @@ import { useConnectionStore } from '@/stores/connection'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
+const sidebarCollapsed = ref(false)
 
 // The update check, its popup and the install-progress UI stay off the
 // cold-start path (payload-budget e2e): the store is imported when the boot
@@ -295,7 +296,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-/* 标题栏玻璃效果 */
+/* Shared surfaces keep the titlebar consistent with the panel theme. */
 .window-titlebar {
   padding: 0 6px 0 12px;
   height: 38px;
@@ -306,19 +307,12 @@ onBeforeUnmount(() => {
   -webkit-app-region: drag;
   user-select: none;
   z-index: 9999;
-  background:
-    linear-gradient(135deg,
-      rgba(75, 212, 253, 0.82) 0%,
-      rgba(23, 167, 255, 0.78) 50%,
-      rgba(91, 141, 239, 0.80) 100%
-    );
-  backdrop-filter: blur(48px) saturate(180%);
-  -webkit-backdrop-filter: blur(48px) saturate(180%);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.12),
-    0 1px 6px rgba(23, 120, 200, 0.12);
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--surface-inset) 94%, var(--el-color-primary)),
+    var(--surface-card)
+  );
+  border-bottom: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .titlebar-left {
@@ -331,16 +325,15 @@ onBeforeUnmount(() => {
   width: 20px;
   height: 16px;
   object-fit: contain;
-  filter: brightness(0) invert(1);
-  opacity: 0.9;
+  filter: brightness(0);
+  opacity: 0.4;
 }
 
 .titlebar-text {
   font-size: 12.5px;
   font-weight: 650;
-  color: #fff;
+  color: var(--el-text-color-primary);
   letter-spacing: 0.5px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 .titlebar-controls {
@@ -354,7 +347,7 @@ onBeforeUnmount(() => {
   -webkit-app-region: no-drag;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.75);
+  color: var(--el-text-color-regular);
   cursor: pointer;
   width: 30px;
   height: 26px;
@@ -369,39 +362,36 @@ onBeforeUnmount(() => {
 }
 
 .titlebar-control:hover {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  background: color-mix(in srgb, var(--el-color-primary) 10%, var(--surface-card));
+  color: var(--el-color-primary);
 }
 
 .titlebar-control:active {
-  background: rgba(0, 0, 0, 0.08);
+  background: color-mix(in srgb, var(--el-color-primary) 16%, var(--surface-card));
 }
 
 .titlebar-control--close:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: color-mix(in srgb, var(--el-color-danger) 10%, var(--surface-card));
+  color: var(--el-color-danger);
 }
 
 .titlebar-control--pin {
-  color: rgba(255, 255, 255, 0.88);
+  color: var(--el-text-color-regular);
 }
 
 .titlebar-control--pin.is-pinned {
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.18));
-  color: #fff;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.32),
-    0 3px 10px rgba(15, 79, 120, 0.16);
+  background: color-mix(in srgb, var(--el-color-primary) 12%, var(--surface-card));
+  color: var(--el-color-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--el-color-primary) 28%, var(--surface-border));
 }
 
 .titlebar-control--pin.is-pinned:hover {
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.24));
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.4),
-    0 4px 12px rgba(15, 79, 120, 0.2);
+  background: color-mix(in srgb, var(--el-color-primary) 18%, var(--surface-card));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--el-color-primary) 40%, var(--surface-border));
 }
 
-.titlebar-control--pin:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.92);
+.titlebar-control:focus-visible {
+  outline: 2px solid var(--el-color-primary);
   outline-offset: 2px;
 }
 
@@ -490,17 +480,25 @@ onBeforeUnmount(() => {
   flex: 1;
   display: flex;
   overflow: hidden;
+  gap: 12px;
+  padding: 12px;
+  background: var(--surface-page);
 }
 
 .app-sidebar {
-  width: 220px;
+  position: relative;
+  z-index: 901;
+  width: var(--sidebar-width);
   flex-shrink: 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(32px) saturate(160%);
-  -webkit-backdrop-filter: blur(32px) saturate(160%);
-  overflow-y: auto;
+  min-height: 0;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-card);
+  background: var(--surface-card);
+  box-shadow: var(--surface-shadow);
+  transition: width var(--motion-duration-normal) var(--motion-ease-standard);
 }
+
+.app-sidebar--collapsed { width: var(--sidebar-collapsed-width); }
 
 .app-body {
   flex: 1;
@@ -508,6 +506,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-card);
+  background: var(--surface-card);
+  box-shadow: var(--surface-shadow);
 }
 
 .app-header {
@@ -522,13 +524,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   padding: 0 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.65);
-  backdrop-filter: blur(32px) saturate(160%);
-  -webkit-backdrop-filter: blur(32px) saturate(160%);
-  box-shadow:
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.15),
-    0 1px 4px rgba(100, 120, 160, 0.04);
+  border-bottom: 1px solid var(--surface-border);
+  background: var(--surface-card);
 }
 
 .app-main {
@@ -536,7 +533,7 @@ onBeforeUnmount(() => {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
-  background: var(--el-bg-color-page);
+  background: var(--surface-page);
 }
 
 /* 连接状态提示 */
@@ -546,7 +543,7 @@ onBeforeUnmount(() => {
 
 .connection-banner__inner {
   padding: 8px 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--el-color-danger) 20%, var(--el-border-color));
   color: var(--el-color-danger);
@@ -554,38 +551,19 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 
-/* 深色模式覆盖 */
-html.dark .window-titlebar {
-  background:
-    linear-gradient(135deg,
-      rgba(50, 50, 72, 0.75) 0%,
-      rgba(38, 38, 58, 0.70) 50%,
-      rgba(45, 42, 68, 0.72) 100%
-    );
-  border-bottom-color: rgba(255, 255, 255, 0.08);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.04),
-    0 1px 4px rgba(0, 0, 0, 0.2);
-}
-
-html.dark .app-sidebar {
-  background: rgba(28, 28, 46, 0.78);
-  border-right-color: rgba(255, 255, 255, 0.06);
-}
-
-html.dark .app-header {
-  background: rgba(28, 28, 46, 0.72);
-  border-bottom-color: rgba(255, 255, 255, 0.06);
-  box-shadow:
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.04),
-    0 1px 4px rgba(0, 0, 0, 0.12);
+:global(html.dark) .titlebar-paw {
+  filter: brightness(0) invert(1);
+  opacity: 0.65;
 }
 
 @media (max-width: 640px) {
-  .app-sidebar { width: 68px; }
+  .app-shell { gap: 6px; padding: 6px; }
+  .app-sidebar { width: var(--sidebar-collapsed-width); }
   .app-header { padding: 0 12px; }
   .app-main { padding: 0; }
   .connection-banner { padding-inline: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-sidebar { transition: none; }
 }
 </style>

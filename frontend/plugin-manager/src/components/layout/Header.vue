@@ -74,9 +74,9 @@ async function handleRefresh() {
 .header-btn {
   width: 34px;
   height: 34px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  border-radius: 10px;
-  background: transparent;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-control);
+  background: var(--surface-card);
   color: var(--el-text-color-regular);
   font-size: 16px;
   cursor: pointer;
@@ -84,10 +84,10 @@ async function handleRefresh() {
   align-items: center;
   justify-content: center;
   transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.18s ease;
+    background-color var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard),
+    color var(--motion-duration-normal) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .header-btn:hover {
@@ -114,5 +114,10 @@ async function handleRefresh() {
 @keyframes spin-rotate {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .header-btn { transition: none; }
+  .header-btn:hover, .header-btn:active { transform: none; }
+  .spin { animation: none; }
 }
 </style>
