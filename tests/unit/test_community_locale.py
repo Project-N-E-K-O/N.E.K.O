@@ -1,8 +1,22 @@
 """Device bootstrap hints stay independent of interface language settings."""
 
 import pytest
+from unittest.mock import Mock
 
 from utils import community_locale, language_utils
+
+_REAL_REGION_PROBE = language_utils.is_china_region
+
+
+@pytest.fixture
+def real_region_probe(monkeypatch):
+    monkeypatch.setattr(language_utils, "is_china_region", _REAL_REGION_PROBE)
+    # Keep region initialization real without probing unrelated UI/Steam state.
+    monkeypatch.setattr(language_utils, "_global_language_initialized", True)
+    monkeypatch.setattr(language_utils, "_global_region_initialized", False)
+    monkeypatch.setattr(language_utils, "_global_region", None)
+    monkeypatch.setattr(language_utils, "_global_probe_next_retry_monotonic", 0.0)
+    monkeypatch.setattr(language_utils, "_global_probe_retry_delay_seconds", 1.0)
 
 
 @pytest.fixture(autouse=True)
@@ -90,3 +104,56 @@ def test_unavailable_process_locale_omits_region(monkeypatch, error):
 
     monkeypatch.setattr(community_locale.locale, "getlocale", unavailable)
     assert community_locale.community_bootstrap_locale_hints() == {"locale": "en"}
+
+
+@pytest.mark.parametrize("source", ["windows", "macos"])
+def test_bootstrap_samples_transient_device_probe_once_and_retries_next_call(
+    monkeypatch, isolate_device_probes, source,
+):
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    probe = Mock(side_effect=[None, "es-CH"])
+    monkeypatch.setattr(language_utils, f"_get_{source}_locale", probe)
+
+    assert community_locale.community_bootstrap_locale_hints() == {"locale": "en"}
+    assert probe.call_count == 1
+    assert language_utils._system_locale_probe_snapshot.get() is None
+    assert community_locale.community_bootstrap_locale_hints() == {"locale": "es", "region": "CH"}
+    assert probe.call_count == 2
+    assert language_utils._system_locale_probe_snapshot.get() is None
+
+
+@pytest.mark.parametrize("override", ["false", "FALSE", "0", "no", "off"])
+@pytest.mark.parametrize("device_locale, expected", [
+    ("zh-CN", {"locale": "zh-CN"}),
+    ("es-ES", {"locale": "es", "region": "ES"}),
+])
+def test_bootstrap_honors_negative_region_override(
+    monkeypatch, isolate_device_probes, real_region_probe, override, device_locale, expected,
+):
+    monkeypatch.setenv("NEKO_IS_CHINA_REGION", override)
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: device_locale)
+    assert community_locale.community_bootstrap_locale_hints() == expected
+
+
+@pytest.mark.parametrize("override", ["true", "TRUE", "1", "yes", "on"])
+def test_bootstrap_honors_positive_region_override(
+    monkeypatch, isolate_device_probes, real_region_probe, override,
+):
+    monkeypatch.setenv("NEKO_IS_CHINA_REGION", override)
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: "es-ES")
+    assert community_locale.community_bootstrap_locale_hints() == {"locale": "es", "region": "CN"}
+
+
+@pytest.mark.parametrize("override", [None, "", "invalid"])
+def test_bootstrap_region_auto_detection_keeps_china(
+    monkeypatch, isolate_device_probes, real_region_probe, override,
+):
+    if override is None:
+        monkeypatch.delenv("NEKO_IS_CHINA_REGION", raising=False)
+    else:
+        monkeypatch.setenv("NEKO_IS_CHINA_REGION", override)
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: "zh-CN")
+    assert community_locale.community_bootstrap_locale_hints() == {"locale": "zh-CN", "region": "CN"}
