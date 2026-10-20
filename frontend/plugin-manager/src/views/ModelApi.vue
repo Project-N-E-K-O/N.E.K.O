@@ -250,7 +250,7 @@ p { line-height: 1.6; }
 .section-heading { margin: 6px 0 20px; }
 .slot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 18px; min-height: 140px; }
 .slot-grid > .el-empty { grid-column: 1 / -1; }
-.slot-card { border-radius: 12px; }
+.slot-card { border-radius: var(--radius-card); }
 .slot-heading { align-items: flex-start; }
 .slot-model { font-weight: 600; overflow-wrap: anywhere; }
 .endpoint { font-size: 12px; color: var(--el-text-color-secondary); overflow-wrap: anywhere; margin: 8px 0 14px; }
@@ -259,7 +259,7 @@ p { line-height: 1.6; }
 .slot-details > div { display: flex; justify-content: space-between; gap: 16px; margin: 10px 0; }
 dt, .muted, .section-note, .field-hint { color: var(--el-text-color-secondary); }
 dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
-.consumers { align-items: flex-start; font-size: 12px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 14px; }
+.consumers { align-items: flex-start; font-size: 12px; border-top: 1px solid var(--surface-border); padding-top: 14px; }
 .consumers a { color: var(--el-color-primary); overflow-wrap: anywhere; }
 .consumer-binding { display: flex; align-items: center; gap: 8px; max-width: 100%; }
 .consumer-binding .el-button { flex-shrink: 0; }
@@ -270,7 +270,7 @@ dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .usage-filters { display: flex; gap: 12px; margin: 6px 0 20px; }
 .usage-filters .el-input, .usage-filters .el-select { max-width: 260px; }
 .usage-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 20px; }
-.usage-summary > div { display: flex; flex-direction: column; padding: 20px; border: 1px solid var(--el-border-color-lighter); border-radius: 12px; background: var(--el-fill-color-blank); }
+.usage-summary > div { display: flex; flex-direction: column; padding: 20px; border: 1px solid var(--surface-border); border-radius: var(--radius-panel); background: var(--surface-card); box-shadow: var(--surface-shadow); }
 .usage-summary strong { font-size: 25px; margin-bottom: 7px; }
 .usage-summary span { font-size: 12px; color: var(--el-text-color-secondary); }
 .attempt-details { padding: 12px 24px; }

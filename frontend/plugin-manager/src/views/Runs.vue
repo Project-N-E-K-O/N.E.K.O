@@ -344,8 +344,8 @@ onUnmounted(() => {
   margin: 0;
   padding: 8px;
   font-size: 12px;
-  background: var(--el-fill-color-lighter);
-  border-radius: 4px;
+  background: var(--surface-inset);
+  border-radius: var(--radius-panel);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 400px;

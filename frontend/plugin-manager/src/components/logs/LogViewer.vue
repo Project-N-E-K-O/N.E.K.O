@@ -337,9 +337,9 @@ onMounted(async () => {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
   padding: 8px;
 }
 
@@ -349,14 +349,14 @@ onMounted(async () => {
   gap: 8px;
   align-items: center;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-chip);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.5;
 }
 
 .log-item:hover {
-  background: var(--el-fill-color-light);
+  background: color-mix(in srgb, var(--el-color-primary) 6%, var(--surface-card));
 }
 
 .log-time,

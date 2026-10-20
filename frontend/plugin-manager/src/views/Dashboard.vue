@@ -509,14 +509,10 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 16px;
   padding: 20px;
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--el-color-primary) 16%, transparent), transparent 36%),
-    color-mix(in srgb, var(--el-bg-color) 84%, transparent);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
-    0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+  border-radius: var(--radius-card);
+  background: linear-gradient(110deg, color-mix(in srgb, var(--el-color-primary) 8%, var(--surface-card)), var(--surface-card) 65%);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .dashboard-hero__title {
@@ -550,14 +546,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 14px;
   padding: 18px 20px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--el-bg-color) 82%, transparent);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
-    0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+  border-radius: var(--radius-card);
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
   transition:
     transform 0.24s ease,
     box-shadow 0.24s ease;
@@ -565,9 +557,7 @@ onUnmounted(() => {
 
 .stat-card:hover {
   transform: translateY(-2px);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
-    0 8px 28px color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
+  box-shadow: var(--surface-shadow-hover);
 }
 
 .stat-card__icon {
@@ -576,14 +566,11 @@ onUnmounted(() => {
   justify-content: center;
   width: 42px;
   height: 42px;
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   flex-shrink: 0;
-  color: var(--el-color-primary);
+  color: var(--stat-accent, var(--el-color-primary));
+  background: color-mix(in srgb, var(--stat-accent, var(--el-color-primary)) 10%, var(--surface-card));
 }
-
-.stat-card--running .stat-card__icon { color: var(--el-color-success); }
-.stat-card--stopped .stat-card__icon { color: var(--el-color-info); }
-.stat-card--crashed .stat-card__icon { color: var(--el-color-danger); }
 
 .stat-card__body {
   display: flex;
@@ -608,10 +595,18 @@ onUnmounted(() => {
 }
 
 /* Color accents per stat */
-.stat-card--running { border-left: 3px solid var(--el-color-success); }
-.stat-card--stopped { border-left: 3px solid var(--el-color-info); }
-.stat-card--crashed { border-left: 3px solid var(--el-color-danger); }
-.stat-card--total { border-left: 3px solid var(--el-color-primary); }
+.stat-card--running { --stat-accent: var(--el-color-success); }
+.stat-card--stopped { --stat-accent: var(--el-color-info); }
+.stat-card--crashed { --stat-accent: var(--el-color-danger); }
+.stat-card--total { --stat-accent: var(--el-color-primary); }
+
+.stat-card--running,
+.stat-card--stopped,
+.stat-card--crashed,
+.stat-card--total {
+  border-left: 3px solid var(--stat-accent);
+  background: color-mix(in srgb, var(--stat-accent) 4%, var(--surface-card));
+}
 
 /* ── Main grid ── */
 .main-grid {
@@ -625,14 +620,10 @@ onUnmounted(() => {
 .panel {
   contain: layout;
   padding: 20px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--el-bg-color) 82%, transparent);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
-    0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+  border-radius: var(--radius-card);
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .panel__header {
@@ -651,8 +642,8 @@ onUnmounted(() => {
 .panel__action {
   width: 30px;
   height: 30px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  border-radius: 10px;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--el-text-color-regular);
   font-size: 16px;
@@ -700,7 +691,7 @@ onUnmounted(() => {
   text-align: center;
   color: var(--el-color-warning);
   font-size: 13px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--el-color-warning) 6%, transparent);
 }
 
@@ -718,9 +709,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 16px 12px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 50%, transparent);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 25%, transparent);
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
 }
 
 .gauge-card__label {
@@ -744,7 +735,7 @@ onUnmounted(() => {
 
 .gauge__track {
   fill: none;
-  stroke: color-mix(in srgb, var(--el-border-color) 30%, transparent);
+  stroke: color-mix(in srgb, var(--el-color-primary) 8%, var(--surface-border));
   stroke-width: 6;
 }
 
@@ -784,9 +775,9 @@ onUnmounted(() => {
   justify-content: center;
   gap: 4px;
   padding: 16px 12px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 50%, transparent);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 25%, transparent);
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
   transition:
     background-color 0.2s ease,
     border-color 0.2s ease;
@@ -798,7 +789,7 @@ onUnmounted(() => {
 }
 
 .metric-mini__icon {
-  color: var(--el-text-color-secondary);
+  color: var(--el-color-primary);
 }
 
 .metric-mini__value {
@@ -828,7 +819,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 14px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--el-border-color) 25%, transparent);
+  border-bottom: 1px solid var(--surface-border);
 }
 
 .server-info__item:last-child {
@@ -857,7 +848,7 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   padding: 3px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
   color: var(--el-color-primary);
   font-size: 13px;
@@ -905,7 +896,10 @@ onUnmounted(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .gauge__fill {
+  .gauge__fill,
+  .stat-card,
+  .panel__action,
+  .metric-mini {
     transition: none;
   }
 
