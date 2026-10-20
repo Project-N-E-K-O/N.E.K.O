@@ -25,16 +25,23 @@ def community_bootstrap_locale_hints() -> dict[str, str]:
     # Share even failed probes for this call, while allowing the next login
     # to retry. Language and region must not mix different OS samples.
     with _system_locale_probe_generation():
+        system_locale = ""
+        for name, probe in (
+            ("windows_locale", _get_windows_locale),
+            ("macos_locale", _get_macos_locale),
+            ("python_locale", lambda: locale.getlocale()[0]),
+            ("lang_env", lambda: os.environ.get("LANG", "")),
+        ):
+            try:
+                candidate = _read_system_locale_signal_once(name, probe)
+            except (ValueError, TypeError):
+                # The shared reader records only returned values. Publish an
+                # unavailable signal before either parser can retry this read.
+                candidate = _read_system_locale_signal_once(name, lambda: None)
+            if candidate:
+                system_locale = candidate
+                break
         raw = _get_system_language().replace("_", "-").lower()
-        try:
-            system_locale = (
-                _read_system_locale_signal_once("windows_locale", _get_windows_locale)
-                or _read_system_locale_signal_once("macos_locale", _get_macos_locale)
-                or _read_system_locale_signal_once("python_locale", lambda: locale.getlocale()[0])
-                or _read_system_locale_signal_once("lang_env", lambda: os.environ.get("LANG", ""))
-            )
-        except (ValueError, TypeError):
-            system_locale = ""
         # Bootstrap needs this device snapshot, not the global region cache or
         # its retry cooldown. Reuse the shared probe without changing globals.
         china_region = _probe_china_region().value is True

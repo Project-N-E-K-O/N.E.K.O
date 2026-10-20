@@ -217,3 +217,23 @@ def test_bootstrap_region_ignores_posix_modifiers(
     monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
     monkeypatch.setenv("LANG", device_locale)
     assert community_locale.community_bootstrap_locale_hints() == expected
+
+
+@pytest.mark.parametrize("error", [ValueError, TypeError])
+@pytest.mark.parametrize("fallback", [None, "ja_JP.UTF-8"])
+def test_bootstrap_memoizes_process_locale_errors_for_one_call(
+    monkeypatch, isolate_device_probes, error, fallback,
+):
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    probe = Mock(side_effect=[error("temporary locale read failure"), ("es_US", None)])
+    monkeypatch.setattr(community_locale.locale, "getlocale", probe)
+    if fallback:
+        monkeypatch.setenv("LANG", fallback)
+
+    expected = {"locale": "ja", "region": "JP"} if fallback else {"locale": "en"}
+    assert community_locale.community_bootstrap_locale_hints() == expected
+    assert probe.call_count == 1
+    assert language_utils._system_locale_probe_snapshot.get() is None
+    assert community_locale.community_bootstrap_locale_hints() == {"locale": "es", "region": "US"}
+    assert probe.call_count == 2
+    assert language_utils._system_locale_probe_snapshot.get() is None
