@@ -220,6 +220,36 @@ async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
 
 
 @pytest.mark.unit
+async def test_remote_oauth_session_fence_survives_access_token_refresh(monkeypatch):
+    """Token rotation must not look like a new PetCare login session."""
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    async def remote_identity(_request):
+        return "remote-instance"
+
+    monkeypatch.setattr(O, "_account_request_identity", remote_identity)
+    current = {
+        "logged_in": True,
+        "snapshot": {
+            "access_token": "access-old",
+            "local_user_id": USER_ID,
+            "auth_source": "oauth",
+            "session_id": "login-session-a",
+        },
+        "auth": {"user": {"display_name": "User"}},
+    }
+
+    async def resolve_status():
+        return current
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_status)
+    first = await O.oauth_status_endpoint(_local_source_request())
+    current["snapshot"] = {**current["snapshot"], "access_token": "access-new"}
+    second = await O.oauth_status_endpoint(_local_source_request())
+    assert first["session_id"] == second["session_id"] == "login-session-a"
+    assert first["session_generation"] == second["session_generation"]
+
+
+@pytest.mark.unit
 async def test_oauth_status_reports_session_paths_when_signed_out(monkeypatch, tmp_path):
     # 宿主只有亲自拉起后端时才下发得到 NEKO_USER_DATA_DIR；attach 复用的后端会把凭证落到
     # 自己推导的根目录。未登录时也必须回报它实际使用的文件，那正是宿主需要知道去哪等写入的时刻。

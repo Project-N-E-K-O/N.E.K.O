@@ -51,6 +51,12 @@
         return promise;
     }
 
+    function getModelReturnEnterCleanupMs() {
+        return window.__nekoExplorationRecallTransitionActive
+            ? Math.min(760, I.NEKO_MODEL_RETURN_ENTER_CLEANUP_MS)
+            : I.NEKO_MODEL_RETURN_ENTER_CLEANUP_MS;
+    }
+
     async function waitForModelReturnEnterToSettle() {
         const promise = window._nekoModelReturnEnterPromise;
         if (promise && typeof promise.then === 'function') {
@@ -58,7 +64,8 @@
             await Promise.race([
                 promise,
                 new Promise(resolve => {
-                    timeoutId = setTimeout(resolve, I.NEKO_MODEL_RETURN_ENTER_CLEANUP_MS + I.NEKO_MODEL_RETURN_ENTER_SETTLE_BUFFER_MS);
+                    timeoutId = setTimeout(resolve, getModelReturnEnterCleanupMs() +
+                        (window.__nekoExplorationRecallTransitionActive ? 90 : I.NEKO_MODEL_RETURN_ENTER_SETTLE_BUFFER_MS));
                 })
             ]);
             if (timeoutId) {
@@ -671,7 +678,7 @@
                 }
                 window._nekoModelReturnEnterTimer = null;
                 resolveModelReturnEnter('cleanup');
-            }, I.NEKO_MODEL_RETURN_ENTER_CLEANUP_MS);
+            }, getModelReturnEnterCleanupMs());
         });
         return true;
     }
@@ -738,10 +745,30 @@
         return Math.max(0, I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS - I.NEKO_MODEL_CAT_TRANSITION_LOOP_GUARD_MS);
     }
 
+    function isExplorationRecallTransition() {
+        return !!window.__nekoExplorationRecallTransitionActive;
+    }
+
     function getNekoModelCatSettleMs(direction) {
-        return direction === 'cat-to-model'
-            ? Math.max(I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS, I.NEKO_MODEL_CAT_TO_MODEL_LOCK_MS)
-            : I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS;
+        if (direction === 'cat-to-model') {
+            const normalDuration = Math.max(
+                I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS,
+                I.NEKO_MODEL_CAT_TO_MODEL_LOCK_MS
+            );
+            // The lock document caps an exploration recall at one second.
+            // Keep the normal model return lock unchanged and narrow this
+            // shorter bound to the exploration return path only.
+            return isExplorationRecallTransition()
+                ? Math.min(900, normalDuration)
+                : normalDuration;
+        }
+        return I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS;
+    }
+
+    function getNekoModelCatLoadFallbackMs() {
+        return isExplorationRecallTransition()
+            ? Math.min(900, I.NEKO_MODEL_CAT_TRANSITION_LOAD_FALLBACK_MS)
+            : I.NEKO_MODEL_CAT_TRANSITION_LOAD_FALLBACK_MS;
     }
 
     function createNekoModelCatTransitionOverlay(rect, direction, token) {
@@ -991,7 +1018,7 @@
             imageLoadFallbackTimer = setTimeout(() => {
                 didImageLoad = true;
                 startTransitionPlayback();
-            }, I.NEKO_MODEL_CAT_TRANSITION_LOAD_FALLBACK_MS);
+            }, getNekoModelCatLoadFallbackMs());
         });
         if (I.nekoModelCatTransitionActive && I.nekoModelCatTransitionActive.token === token) {
             I.nekoModelCatTransitionActive.promise = transitionPromise;
@@ -1319,6 +1346,11 @@
         return container;
     }
 
+    // Semantic presentation hook for independent surfaces (pet-care
+    // exploration recovery). Callers receive the existing return hit region;
+    // they do not need to know which model manager owns the container.
+    window.showNekoReturnBallContainer = I.showReturnBallContainer;
+
     I.getVisibleIdleReturnBallContainer = function getVisibleIdleReturnBallContainer() {
         return document.querySelector('[id$="-return-button-container"][data-neko-return-visible="true"]');
     }
@@ -1349,14 +1381,38 @@
             ].join(',');
             const busy = (container.matches && container.matches(busySelector)) ||
                 (container.querySelector && container.querySelector(busySelector));
+            // Stretch/eat/play are presentation actions on the existing cat
+            // entity.  They must not make the independent pet-care launcher
+            // disappear.  Some older action adapters briefly mark the shared
+            // return container busy while those classes are active, so only
+            // treat the generic attribute as a gate when no such action is
+            // being presented.  Movement, drag, gravity and edge-peek remain
+            // hard gates through busySelector above.
+            const actionPresentationSelector = [
+                '.is-cat1-stretching', '.is-cat1-eating', '.is-cat1-playing',
+                '[data-neko-cat1-play-finishing="true"]',
+            ].join(',');
+            const actionPresentation = (container.matches && container.matches(actionPresentationSelector)) ||
+                (container.querySelector && container.querySelector(actionPresentationSelector));
+            const markedBusy = container.getAttribute('data-neko-return-busy') === 'true';
             return {
                 visible: true,
-                busy: !!busy || container.getAttribute('data-neko-return-busy') === 'true',
+                busy: !!busy || (markedBusy && !actionPresentation),
                 rect: { left: rect.left, top: rect.top, right: rect.right,
                     bottom: rect.bottom, width: rect.width, height: rect.height },
             };
         },
     });
+
+    function isPetCareExplorationAway() {
+        try {
+            return !!(window.nekoPetCareMode &&
+                typeof window.nekoPetCareMode.isExplorationAway === 'function' &&
+                window.nekoPetCareMode.isExplorationAway());
+        } catch (_) {
+            return false;
+        }
+    }
 
     function getIdleReturnBallScreenRect(container) {
         if (!container || typeof container.getBoundingClientRect !== 'function') return null;
@@ -1393,6 +1449,7 @@
     function postIdleReturnBallDesktopState(reason, container, overrideScreenRect) {
         if (!canPostIdleReturnBallDesktopState()) return;
         const target = container || I.getVisibleIdleReturnBallContainer();
+        const explorationAway = isPetCareExplorationAway();
         const visible = !!(target &&
             target.getAttribute('data-neko-return-visible') === 'true' &&
             target.style.display !== 'none' &&
@@ -1413,6 +1470,7 @@
             tier: tier,
             appearance: appearance,
             screenRect: visible ? screenRect : null,
+            explorationAway: explorationAway,
             lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
             timestamp: Date.now()
         };
@@ -1515,6 +1573,13 @@
     window.addEventListener('neko:auto-goodbye:state-change', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || detail.type !== 'visual-tier') return;
+        if (isPetCareExplorationAway()) {
+            // The away nest owns the shared return surface. Publish the
+            // cross-window fact so a follower can close an old idle dock, but
+            // do not reapply ball/cat styling to the nest container.
+            I.scheduleIdleReturnBallDesktopBridge('pet-care-exploration-away');
+            return;
+        }
         const container = I.getVisibleIdleReturnBallContainer();
         if (getNekoGoodbyeIdleAppearance() === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
             syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');
@@ -1536,6 +1601,10 @@
     });
     window.addEventListener('neko:goodbye-idle-appearance', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (isPetCareExplorationAway()) {
+            I.scheduleIdleReturnBallDesktopBridge('pet-care-exploration-away');
+            return;
+        }
         const mode = detail && typeof detail.mode === 'string' ? detail.mode : '';
         I.nekoGoodbyeIdleAppearance = I.normalizeNekoGoodbyeIdleAppearance(mode);
         window.__nekoGoodbyeIdleAppearance = I.nekoGoodbyeIdleAppearance;
@@ -1579,6 +1648,16 @@
                 }
             );
         }
+    });
+    window.addEventListener('neko:pet-care:exploration-gate', (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (!detail || (detail.active !== true && detail.active !== false)) return;
+        // The goodbye controller may already be at CAT1/NONE when exploration
+        // starts, so no visual-tier event is guaranteed. Publish the ownership
+        // change itself so an Electron chat follower cannot keep a stale dock.
+        I.scheduleIdleReturnBallDesktopBridge(
+            detail.active === true ? 'pet-care-exploration-away' : 'pet-care-exploration-returned'
+        );
     });
     window.addEventListener('resize', () => {
         const container = I.getVisibleIdleReturnBallContainer();

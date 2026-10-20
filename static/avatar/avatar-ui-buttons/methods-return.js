@@ -167,6 +167,7 @@ Object.assign(AvatarButtonMixin.methods, {
 
             returnBtn.addEventListener('mouseenter', (event) => {
                 if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;
+                if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'hover' }).blocked) return;
                 const tier = returnBtn.getAttribute('data-neko-idle-tier');
                 if (tier && tier !== 'none') {
                     _playNekoIdleHoverArt(returnArt, tier, { userInitiated: true });

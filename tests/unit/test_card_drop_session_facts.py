@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import httpx
@@ -2374,7 +2375,11 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
     )
 
     electron_session = electron_root / "social_session.json"
-    assert json.loads(electron_session.read_text(encoding="utf-8")) == {
+    electron_data = json.loads(electron_session.read_text(encoding="utf-8"))
+    session_id = electron_data.pop("session_id", None)
+    assert session_id
+    UUID(session_id)
+    assert electron_data == {
         "schema_version": 2,
         "baseUrl": "https://community.example",
         "token": "token-a",
@@ -2702,6 +2707,9 @@ def test_legacy_web_sync_persists_v2_identity_metadata(client, tmp_path, monkeyp
     assert response.status_code == 200
     social_data = json.loads(social.read_text(encoding="utf-8"))
     auth_data = json.loads(auth.read_text(encoding="utf-8"))
+    session_id = social_data.pop("session_id", None)
+    assert session_id
+    UUID(session_id)
     assert social_data == {
         "schema_version": 2,
         "baseUrl": "https://community.example",

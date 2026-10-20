@@ -1323,6 +1323,10 @@ function _updateNekoIdleCat1WalkSpeedRate(button, state, distance) {
 }
 
 function _stepNekoIdleCat1Walk(button, timestamp) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: false, reason: 'exploration-away' });
+        return;
+    }
     if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     const profile = state && state.profile ? state.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -1402,6 +1406,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
 }
 
 function _startNekoIdleCat1Walk(button, target) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) return;
     if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
@@ -1443,6 +1448,7 @@ function _startNekoIdleCat1Walk(button, target) {
 }
 
 function _scheduleNekoIdleCat1WalkStart(button, target) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) return;
     if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     if (!state || state.paused) return;
@@ -1598,6 +1604,11 @@ function _finishNekoIdleCat1PairMove(button) {
 }
 
 function _stepNekoIdleCat1PairMove(button, startedAt, timestamp) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) {
+        const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+        if (state) _cancelNekoIdleCat1PairMove(state, { reason: 'exploration-away' });
+        return;
+    }
     if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (!state || !state.pairMovePlan || state.paused) {
@@ -1874,6 +1885,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
 }
 
 function _scheduleNekoIdleCat1JourneySync(button) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) return;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
     if (_isNekoIdleCat1MovementAnchored(button)) {
         if (_isNekoIdleCat1EdgePeekActive(button)) {
@@ -2201,6 +2213,24 @@ function _syncAllNekoIdleReturnButtons(tier) {
     });
 }
 
+function _isNekoPetCareExplorationAway() {
+    try {
+        return !!(window.nekoPetCareMode
+            && typeof window.nekoPetCareMode.isExplorationAway === 'function'
+            && window.nekoPetCareMode.isExplorationAway());
+    } catch (_) {
+        return false;
+    }
+}
+
+function _shouldApplyNekoIdleVisualTierDuringExploration(detail) {
+    if (!_isNekoPetCareExplorationAway()) return true;
+    const source = detail && typeof detail.source === 'string' ? detail.source : '';
+    // The explicit care wake is the bounded hand-off into the exploration
+    // departure. All later idle/tier events are subordinate to the nest.
+    return source === 'pet-care-user-action' || source === 'pet-care-exploration-away';
+}
+
 function _ensureNekoIdleReturnPresentationBridge() {
     if (window.__nekoIdleReturnPresentationBridgeBound) return;
     window.__nekoIdleReturnPresentationBridgeBound = true;
@@ -2218,6 +2248,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || detail.type !== 'visual-tier') {
             return;
         }
+        if (!_shouldApplyNekoIdleVisualTierDuringExploration(detail)) {
+            return;
+        }
         if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
             _stopNekoGoodbyeIdleBallCatSounds();
             _syncAllNekoIdleReturnButtons(detail.tier);
@@ -2230,6 +2263,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
 
     window.addEventListener('neko:goodbye-idle-appearance', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (_isNekoPetCareExplorationAway()) {
+            return;
+        }
         const appearance = _normalizeNekoGoodbyeIdleAppearance(detail && detail.mode);
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
             _setNekoGoodbyeIdleAppearanceForButton(button, appearance);
@@ -2254,6 +2290,18 @@ function _ensureNekoIdleReturnPresentationBridge() {
     window.addEventListener('neko:return-ball-manual-move', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || !detail.container) return;
+        const explorationBlocked = window.nekoPetCareMode &&
+            typeof window.nekoPetCareMode.shouldBlockEntityOutput === 'function' &&
+            window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'return-ball-drag' }).blocked;
+        if (explorationBlocked && String(detail.reason || '').startsWith('return-ball-drag-')) {
+            // A return click is handled by the separate unified return event;
+            // drag preparation, motion and tail reactions remain closed while
+            // the cat is away.
+            if (detail.reason === 'return-ball-drag-end' || detail.reason === 'return-ball-drag-cancel') {
+                _finishNekoIdleReturnDragActionForContainer(detail.container, { restoreArt: false });
+            }
+            return;
+        }
         const manualMoveButton = _getNekoIdleReturnButtonFromContainer(detail.container);
         if (_isNekoIdleCat1PlaygroundEntryOrDropActive(manualMoveButton)) return;
         if (detail.reason === 'return-ball-drag-end') {

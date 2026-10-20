@@ -794,6 +794,11 @@ async def _account_request_identity(request: Request) -> str | None:
         return None
 
 
+async def account_request_identity(request: Request) -> str | None:
+    """Public verified-request identity contract for business adapters."""
+    return await _account_request_identity(request)
+
+
 @router.get("/oauth/status", summary="社区 OAuth 登录状态（远程不含本机路径）")
 async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
@@ -808,13 +813,32 @@ async def oauth_status_endpoint(request: Request):
         (session_path, session_paths), status = await asyncio.gather(
             asyncio.to_thread(_desktop_session_paths_for_host), resolve_saved_oauth_status(),
         )
-        session_fields = {"session_path": session_path, "session_paths": session_paths}
+        snapshot = status.get("snapshot") or {}
+        session_fields = {
+            "session_path": session_path,
+            "session_paths": session_paths,
+            "session_id": snapshot.get("session_id") or "",
+        }
     else:
         status = await resolve_saved_oauth_status()
+        snapshot = status.get("snapshot") or {}
         # An opaque, non-authorizing revision lets Electron fence/retry streams
         # after Linux refreshes its cloud token without copying that token.
-        access = str((status.get("snapshot") or {}).get("access_token") or "")
-        session_fields = {"session_generation": int.from_bytes(hashlib.sha256(access.encode()).digest()[:6], "big")}
+        # It must come from the login-session record, never from access_token:
+        # token refresh rotates the latter while the account session remains
+        # the same.  The generation alias is retained for older clients.
+        remote_session_id = str(snapshot.get("session_id") or status.get("session_id") or "").strip()
+        if not remote_session_id and snapshot:
+            stable_key = "|".join(
+                str(snapshot.get(key) or "").strip()
+                for key in ("local_user_id", "auth_source", "base_url")
+            )
+            remote_session_id = hashlib.sha256(stable_key.encode("utf-8")).hexdigest()
+        generation = int.from_bytes(hashlib.sha256(remote_session_id.encode("utf-8")).digest()[:6], "big") if remote_session_id else 0
+        session_fields = {
+            "session_id": remote_session_id,
+            "session_generation": generation,
+        }
     snapshot = status["snapshot"]
     auth = status["auth"]
     if not status["logged_in"] or not snapshot:
@@ -881,6 +905,7 @@ async def oauth_logout_endpoint(request: Request):
 
 async def _oauth_logout() -> dict:
     snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
+    await mark_pet_care_session_invalid(snapshot)
     client_id = (
         str(auth.get("client_id") or "").strip()
         or str(social.get("client_id") or "").strip()
@@ -902,6 +927,36 @@ async def _oauth_logout() -> dict:
     if not await asyncio.to_thread(C._clear_auth):
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"ok": True}
+
+
+async def mark_pet_care_session_invalid(snapshot: dict[str, Any] | None = None) -> bool:
+    """Record the trusted logout edge before local OAuth credentials are cleared.
+
+    This is a best-effort bridge from the unified account adapter to the local
+    PetCare mirror.  It passes only the verified account/session identifiers;
+    if the local PetCare store is unavailable, the frontend keeps its
+    presentation lease and the next verified login remains the fallback.
+    """
+    if snapshot is None:
+        snapshot, _auth, _social = await asyncio.to_thread(_load_oauth_logout_records)
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    account_id = C._normalize_local_user_id(snapshot.get("local_user_id"))
+    session_id = str(snapshot.get("session_id") or "").strip()
+    if not account_id or not session_id:
+        return False
+    try:
+        from services.pet_care import LocalPetCareBindingService
+        from utils.config_manager import get_config_manager
+
+        service = LocalPetCareBindingService(get_config_manager())
+        return await asyncio.to_thread(
+            service.mark_session_invalid,
+            account_id,
+            session_id=session_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - logout must retain its own authority
+        logger.warning("community_oauth: pet-care logout marker unavailable: %s", exc)
+        return False
 
 
 @router.get("/oauth/completion")

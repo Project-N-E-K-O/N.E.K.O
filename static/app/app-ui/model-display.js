@@ -675,6 +675,22 @@
 
     // --- showCurrentModel ---
     I.showCurrentModel = async function showCurrentModel() {
+        // This is the last common model-display gateway.  Older callers
+        // (session return, voice/screen recovery, websocket restart and
+        // tutorial restore) may not emit a model return event, so the active
+        // exploration must be settled here before any model becomes visible.
+        if (!window.nekoPetCareSurface || window.nekoPetCareSurface.ownsLifecycle !== false) {
+            const petEntry = window.nekoPetCareEntry;
+            if (petEntry && typeof petEntry.ensureExplorationEndedBeforeModelExit === 'function') {
+                const confirmed = await petEntry.ensureExplorationEndedBeforeModelExit({
+                    source: 'show-current-model',
+                });
+                if (confirmed === false) {
+                    console.warn('[showCurrentModel] 养宠探索未获服务确认，保持当前形态');
+                    return false;
+                }
+            }
+        }
         // 检查"请她离开"状态
         if (window.live2dManager && window.live2dManager._goodbyeClicked) {
             console.log('[showCurrentModel] 当前处于"请她离开"状态，跳过显示逻辑');

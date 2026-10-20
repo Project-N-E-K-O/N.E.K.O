@@ -24,6 +24,8 @@
         COMPATIBILITY_CHANGE: 'neko:pet-care:compatibility-change',
         CLEANUP_REQUEST: 'neko:pet-care:cleanup-request',
         CAT_LOCAL_ACTIVE_CHANGE: 'neko:cat-local-active-change',
+        EXPLORATION_GATE: 'neko:pet-care:exploration-gate',
+        CONTEXT_CHANGE_REQUEST: 'neko:pet-care:context-change-request',
     });
 
     // These are the Cat Mind autonomous actions that can conflict with a
@@ -55,6 +57,9 @@
         blockedCatMindActionIds: null,
         updatedAt: Date.now(),
         reason: 'initial',
+        explorationAway: null,
+        explorationGeneration: 0,
+        lastExplorationActivityId: '',
     };
 
     function normalizeString(value) {
@@ -85,6 +90,10 @@
                 : null,
             updatedAt: state.updatedAt,
             reason: state.reason,
+            explorationAway: state.explorationAway
+                ? Object.freeze(Object.assign({}, state.explorationAway))
+                : null,
+            explorationGeneration: state.explorationGeneration,
         });
     }
 
@@ -116,6 +125,17 @@
             nextBoundRoleId !== state.boundRoleId;
         if (!changed && next.forceNewGeneration !== true) return snapshot();
 
+        // A context switch invalidates the old account/role activity token.
+        // Release the local entity gate without settling anything; the new
+        // account must reload its own server activity before it can gate the
+        // renderer again.
+        if (state.explorationAway && state.explorationAway.active) {
+            endExplorationAway({
+                activityId: state.explorationAway.activityId,
+                activityGeneration: state.explorationAway.generation,
+                reason: 'pet-care-context-changed',
+            });
+        }
         state.generation += 1;
         state.accountId = nextAccountId;
         state.currentCharacterUid = nextCharacterUid;
@@ -143,7 +163,11 @@
         }
         var next = detail && typeof detail === 'object' ? detail : {};
         var previous = snapshot();
-        if (normalizedMode !== MODES.PET_AVAILABLE && state.catMindSuppressed) {
+        // Exploration is an activity gate layered over the existing pet mode.
+        // It must not release the Stage 3 Cat Mind compatibility gate merely
+        // because the visual cat is temporarily away.
+        if (normalizedMode !== MODES.PET_AVAILABLE &&
+            normalizedMode !== MODES.EXPLORATION_AWAY && state.catMindSuppressed) {
             setCatMindCompatibility({
                 suppressed: false,
                 cleanup: true,
@@ -212,8 +236,28 @@
     }
 
     function shouldBlockCatMindActionRequest(request) {
+        if (state.explorationAway && state.explorationAway.active &&
+            request && request.source === 'cat_mind') {
+            return {
+                blocked: true,
+                reason: 'pet-care-exploration-away',
+                mode: state.mode,
+                generation: state.generation,
+                activityId: state.explorationAway.activityId,
+                activityGeneration: state.explorationAway.generation,
+            };
+        }
         if (!state.catMindSuppressed || !request || request.source !== 'cat_mind') {
             return { blocked: false, reason: '' };
+        }
+        // A yarn drag is a user-owned interaction source. Cat Mind still
+        // decides whether the cat responds, but the request must pass through
+        // so Stage 6 can wait for that real response. Autonomous play with no
+        // matching user trigger remains suppressed.
+        if (request.actionId === 'cat1_play_yarn' && request.detail &&
+            Array.isArray(request.detail.triggerTypes) &&
+            request.detail.triggerTypes.indexOf('chat_yarn_drag_completed') >= 0) {
+            return { blocked: false, reason: 'pet-care-user-yarn-play' };
         }
         var actionIds = state.blockedCatMindActionIds;
         if (Array.isArray(actionIds) && actionIds.indexOf(request.actionId) < 0) {
@@ -225,6 +269,124 @@
             mode: state.mode,
             generation: state.generation,
         };
+    }
+
+    function isExplorationAway() {
+        return !!(state.explorationAway && state.explorationAway.active);
+    }
+
+    function shouldBlockEntityOutput(detail) {
+        if (!isExplorationAway()) return { blocked: false, reason: '' };
+        var next = detail && typeof detail === 'object' ? detail : {};
+        if (next.allowDuringExploration === true || next.source === 'pet-care-exploration') {
+            return { blocked: false, reason: 'pet-care-exploration-allowed' };
+        }
+        return {
+            blocked: true,
+            reason: 'pet-care-exploration-away',
+            activityId: state.explorationAway.activityId,
+            activityGeneration: state.explorationAway.generation,
+        };
+    }
+
+    function beginExplorationAway(detail) {
+        var next = detail && typeof detail === 'object' ? detail : {};
+        var activityId = normalizeString(next.activityId || next.explorationId);
+        if (!activityId) throw new TypeError('exploration activityId is required');
+        if (isExplorationAway() && state.explorationAway.activityId === activityId) {
+            return snapshot();
+        }
+        state.explorationGeneration += 1;
+        state.explorationAway = {
+            active: true,
+            activityId: activityId,
+            generation: state.explorationGeneration,
+            reason: normalizeString(next.reason) || 'exploration-started',
+            startedAt: Number(next.startedAt) || Date.now(),
+        };
+        state.updatedAt = Date.now();
+        state.reason = state.explorationAway.reason;
+        // This is deliberately independent from setMode(): changing mode
+        // would release the Stage 3 Cat Mind gate as a side effect.
+        var current = snapshot();
+        if (next.emit !== false) {
+            emit(EVENT_NAMES.EXPLORATION_GATE, {
+                source: 'pet-care-mode',
+                active: true,
+                activityId: activityId,
+                generation: state.explorationAway.generation,
+                reason: state.explorationAway.reason,
+                current: current,
+            });
+            requestCleanup({
+                source: 'exploration',
+                reason: state.explorationAway.reason,
+                activityId: activityId,
+                activityGeneration: state.explorationAway.generation,
+            });
+        }
+        return current;
+    }
+
+    function endExplorationAway(detail) {
+        var next = detail && typeof detail === 'object' ? detail : {};
+        var currentAway = state.explorationAway;
+        if (!currentAway || !currentAway.active) return snapshot();
+        var activityId = normalizeString(next.activityId || next.explorationId);
+        var activityGeneration = Number(next.activityGeneration || next.generation);
+        if (!activityId) return snapshot();
+        if (activityId && activityId !== currentAway.activityId) return snapshot();
+        if (Number.isFinite(activityGeneration) && activityGeneration !== currentAway.generation) {
+            return snapshot();
+        }
+        state.lastExplorationActivityId = currentAway.activityId;
+        state.explorationAway = null;
+        state.updatedAt = Date.now();
+        state.reason = normalizeString(next.reason) || 'exploration-ended';
+        var current = snapshot();
+        if (next.emit !== false) {
+            emit(EVENT_NAMES.EXPLORATION_GATE, {
+                source: 'pet-care-mode',
+                active: false,
+                activityId: currentAway.activityId,
+                generation: currentAway.generation,
+                reason: state.reason,
+                current: current,
+            });
+        }
+        return current;
+    }
+
+    function isCurrentExploration(detail) {
+        var next = detail && typeof detail === 'object' ? detail : {};
+        var currentAway = state.explorationAway;
+        if (!currentAway || !currentAway.active) return false;
+        var activityId = normalizeString(next.activityId || next.explorationId);
+        var activityGeneration = Number(next.activityGeneration || next.generation);
+        return (!activityId || activityId === currentAway.activityId) &&
+            (!Number.isFinite(activityGeneration) || activityGeneration === currentAway.generation);
+    }
+
+    // Cross-module gate events can arrive after a newer server snapshot has
+    // already been applied.  Only the same activity may change the local
+    // renderer gate; an active event is accepted while no activity is active
+    // so script load order does not drop the first departure notification.
+    function shouldApplyExplorationGate(detail) {
+        var next = detail && typeof detail === 'object' ? detail : {};
+        var activityId = normalizeString(next.activityId || next.explorationId || next.exploration_id);
+        var currentAway = state.explorationAway;
+        if (!activityId) return false;
+        if (next.active === true) {
+            if (!currentAway || !currentAway.active) {
+                // Do not resurrect a terminal/context-invalidated activity
+                // when its delayed active event arrives after the gate ended.
+                return state.lastExplorationActivityId !== activityId;
+            }
+            return currentAway.activityId === activityId;
+        }
+        if (next.active !== false) return false;
+        return !!((currentAway && currentAway.active && currentAway.activityId === activityId) ||
+            (!currentAway && state.lastExplorationActivityId === activityId));
     }
 
     function captureContext() {
@@ -251,10 +413,30 @@
     function observeCurrentCharacter(detail) {
         var eventDetail = detail && typeof detail === 'object' ? detail : {};
         var context = { reason: eventDetail.reason || 'character-display-updated' };
+        var nextUid = '';
         if (Object.prototype.hasOwnProperty.call(eventDetail, 'character_uid')) {
             context.currentCharacterUid = eventDetail.character_uid;
+            nextUid = normalizeString(eventDetail.character_uid);
         } else if (Object.prototype.hasOwnProperty.call(eventDetail, 'currentCharacterUid')) {
             context.currentCharacterUid = eventDetail.currentCharacterUid;
+            nextUid = normalizeString(eventDetail.currentCharacterUid);
+        } else if (Object.prototype.hasOwnProperty.call(eventDetail, 'characterUid')) {
+            context.currentCharacterUid = eventDetail.characterUid;
+            nextUid = normalizeString(eventDetail.characterUid);
+        }
+        // The mode adapter is loaded before the lifecycle owner.  During a
+        // character/model switch it must not release the exploration entity
+        // gate before the owner has confirmed the server recall.  Emit a
+        // request and keep the old context intact; app-pet-care's single
+        // lifecycle coordinator will recall first, then call updateContext.
+        if (state.explorationAway && state.explorationAway.active &&
+            nextUid && nextUid !== state.currentCharacterUid) {
+            emit(EVENT_NAMES.CONTEXT_CHANGE_REQUEST, {
+                current: snapshot(),
+                nextCharacterUid: nextUid,
+                reason: context.reason,
+            });
+            return snapshot();
         }
         return updateContext(context);
     }
@@ -274,6 +456,12 @@
             setCatMindCompatibility: setCatMindCompatibility,
             setCatLocalActive: setCatLocalActive,
             shouldBlockCatMindActionRequest: shouldBlockCatMindActionRequest,
+            shouldBlockEntityOutput: shouldBlockEntityOutput,
+            isExplorationAway: isExplorationAway,
+            beginExplorationAway: beginExplorationAway,
+            endExplorationAway: endExplorationAway,
+            isCurrentExploration: isCurrentExploration,
+            shouldApplyExplorationGate: shouldApplyExplorationGate,
             requestCleanup: requestCleanup,
         });
         window.addEventListener('chat-avatar-display-updated', function (event) {
@@ -282,6 +470,39 @@
         window.addEventListener(EVENT_NAMES.CAT_LOCAL_ACTIVE_CHANGE, function (event) {
             var detail = event && event.detail;
             if (detail && typeof detail === 'object') setCatLocalActive(detail.active === true, detail);
+        });
+        // The exploration UI may publish the server-confirmed activity fact
+        // before it has a direct reference to this mode adapter. Consume that
+        // fact here so every renderer owner sees one authoritative local gate.
+        window.addEventListener(EVENT_NAMES.EXPLORATION_GATE, function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail : {};
+            if (detail.source === 'pet-care-mode') return;
+            var activityId = normalizeString(detail.activityId || detail.explorationId || detail.exploration_id);
+            var generation = detail.activityGeneration || detail.generation;
+            if (detail.active === true && activityId) {
+                if (!shouldApplyExplorationGate(detail)) return;
+                beginExplorationAway({
+                    activityId: activityId,
+                    activityGeneration: generation,
+                    reason: detail.reason || 'exploration-gate-event',
+                    emit: false,
+                });
+            } else if (detail.active !== true && shouldApplyExplorationGate(detail)) {
+                // The activity generation in this cross-module event belongs
+                // to the service snapshot (and may be a UUID or a numeric
+                // server revision).  The mode adapter owns a separate local
+                // generation for stale renderer events.  Releasing with the
+                // service value would therefore be able to ignore a valid
+                // return after another local activity has been created.
+                // Activity ID is the shared identity; the local generation is
+                // checked by calls that originate inside this adapter.
+                endExplorationAway({
+                    activityId: activityId,
+                    reason: detail.reason || 'exploration-gate-event',
+                    emit: false,
+                });
+            }
         });
     }
 })();

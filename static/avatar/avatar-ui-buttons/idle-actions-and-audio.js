@@ -418,6 +418,7 @@ function _findNekoIdleCat1StretchPresentationButton() {
 }
 
 function _requestNekoIdleCat1HissStretchPresentation() {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'cat-local-chat' }).blocked) return false;
     if (!_isNekoCatActionResourceAvailable('cat1_hiss_stretch')) return false;
     const button = _findNekoIdleCat1StretchPresentationButton();
     if (!button || !_playNekoIdleCat1StretchAction(button, { source: 'cat-local-chat' })) return false;
@@ -428,10 +429,310 @@ function _requestNekoIdleCat1HissStretchPresentation() {
     );
     return true;
 }
+function _requestNekoPetCareCat1StretchPresentation() {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'pet-care-action' }).blocked) return false;
+    // Brushing reuses the stretch appearance only.  The chat-specific hiss
+    // voice is not a prerequisite for a PetCare feedback action.
+    const button = _findNekoIdleCat1StretchPresentationButton();
+    if (!button || !_playNekoIdleCat1StretchAction(button, { source: 'pet-care' })) return false;
+    return true;
+}
+
+// Narrow presentation bridge for PetCare user actions.  PetCare asks for a
+// CAT1 response only; it does not enter Cat Mind's autonomous selector or
+// settle any business value.  The existing action runners still own their
+// normal terminal and cleanup lifecycle.
+function _requestNekoPetCareCat1EatPresentation() {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'pet-care-action' }).blocked) return false;
+    const button = _findNekoIdleCat1StretchPresentationButton();
+    return !!(button && _playNekoIdleCat1EatAction(button, { source: 'pet-care' }));
+}
+function _requestNekoPetCareCat1PlayPresentation(options = {}) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'pet-care-action' }).blocked) return false;
+    const button = _findNekoIdleCat1StretchPresentationButton();
+    if (!button) return false;
+    const onTerminal = typeof options.onTerminal === 'function' ? options.onTerminal : null;
+    return !!_playNekoIdleCat1PlayAction(button, {
+        source: typeof options.source === 'string' && options.source
+            ? options.source : 'pet-care-toy',
+        onTerminal,
+    });
+}
+function _cancelNekoPetCarePresentation() {
+    let cancelled = false;
+    _forEachNekoIdleReturnButton((button) => {
+        const eatState = button && button.__nekoIdleCat1EatActionState;
+        if (eatState && eatState.active && eatState.catMindSource === 'pet-care') {
+            _cancelNekoIdleCat1EatAction(button, { reason: 'pet-care-action-failed' });
+            cancelled = true;
+        }
+        const stretchState = button && button.__nekoIdleCat1StretchActionState;
+        if (stretchState && stretchState.active && stretchState.actionSource === 'pet-care') {
+            _cancelNekoIdleCat1StretchAction(button, { reason: 'pet-care-action-failed' });
+            cancelled = true;
+        }
+        const playState = button && button.__nekoIdleCat1PlayActionState;
+        if (playState && playState.active && playState.presentationSource === 'pet-care-toy') {
+            _cancelNekoIdleCat1PlayAction(button, { reason: 'pet-care-action-failed' });
+            cancelled = true;
+        }
+    });
+    return cancelled;
+}
 
 if (typeof window !== 'undefined') {
+    const addNekoPetCareListener = typeof window.addEventListener === 'function'
+        ? window.addEventListener.bind(window)
+        : () => {};
+    let activeExplorationAssetDetail = null;
+    let explorationPresentationSuppressedByModel = false;
+    function _clearNekoPetCareExplorationOverlays(button) {
+        if (!button) return;
+        const overlay = button.querySelector && button.querySelector('.neko-pet-care-exploration-note-overlay');
+        if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        const state = button.__nekoPetCareExplorationOverlay;
+        if (state && state.timer) window.clearInterval(state.timer);
+        delete button.__nekoPetCareExplorationOverlay;
+    }
+    function _explorationRemainingLabel(endsAt) {
+        const numeric = Number(endsAt);
+        const end = Number.isFinite(numeric) ? (numeric < 100000000000 ? numeric * 1000 : numeric) : Date.parse(String(endsAt || ''));
+        if (!Number.isFinite(end)) return '';
+        const seconds = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const remainder = seconds % 60;
+        return hours > 0
+            ? `${hours}小时${String(minutes).padStart(2, '0')}分`
+            : `${minutes}分${String(remainder).padStart(2, '0')}秒`;
+    }
+    function _installNekoPetCareExplorationNote(button, detail) {
+        if (!button) return;
+        _clearNekoPetCareExplorationOverlays(button);
+        const note = typeof detail.note === 'string' ? detail.note.trim() : '';
+        const endsAt = detail.ends_at || detail.endsAt || '';
+        if (!note && !endsAt) return;
+        const overlay = document.createElement('div');
+        overlay.className = 'neko-pet-care-exploration-note-overlay';
+        overlay.setAttribute('aria-label', '探索状态');
+        const noteText = document.createElement('span');
+        noteText.className = 'neko-pet-care-exploration-note-text';
+        noteText.textContent = note || '探索中';
+        overlay.appendChild(noteText);
+        const countdown = document.createElement('span');
+        countdown.className = 'neko-pet-care-exploration-countdown';
+        overlay.appendChild(countdown);
+        button.appendChild(overlay);
+        const update = () => {
+            const label = _explorationRemainingLabel(endsAt);
+            countdown.textContent = label ? `剩余 ${label}` : '探索中';
+        };
+        update();
+        const timer = window.setInterval(update, 1000);
+        // Do not let a presentation-only countdown keep a test/process alive
+        // after the caller has otherwise finished. Browsers ignore unref;
+        // Node-based harnesses can release the timer immediately.
+        if (timer && typeof timer.unref === 'function') timer.unref();
+        button.__nekoPetCareExplorationOverlay = { timer, activityId: String(detail.activityId || detail.explorationId || detail.exploration_id || '') };
+    }
+    addNekoPetCareListener('neko:cat-return-commit', function (event) {
+        // The model return has committed the single visible character form.
+        // Keep the away activity in service state, but never re-show its nest
+        // while the model is visible or the recall request is resolving.
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        if (activeExplorationAssetDetail || detail.explorationRecall === true) {
+            explorationPresentationSuppressedByModel = true;
+        }
+    });
+    addNekoPetCareListener('neko:cat-local-active-change', function (event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        if (detail.active === true) explorationPresentationSuppressedByModel = false;
+    });
+    // Exploration owns a short presentation-only departure phase. This is
+    // deliberately separate from Cat Mind and from the service activity:
+    // the pet-care adapter decides when the bounded phase is over, while
+    // this module only fades the current cat art before the nest is shown.
+    addNekoPetCareListener('neko:pet-care:exploration-departure-request', function (event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const activityId = detail.activityId || detail.explorationId || detail.exploration_id || '';
+        _forEachNekoIdleReturnButton((button) => {
+            if (!button) return;
+            const art = button.querySelector && button.querySelector('.neko-idle-return-art');
+            if (!art) return;
+            if (!button.__nekoPetCareExplorationDeparture) {
+                button.__nekoPetCareExplorationDeparture = {
+                    activityId: String(activityId || ''),
+                    opacity: art.style.opacity,
+                    transition: art.style.transition,
+                };
+            }
+            // A CAT1/CAT2/CAT3 transition owns a temporary second <img>.
+            // The nest must take the whole shared presentation slot, so drop
+            // that transition before the departure fade starts.
+            _cleanupNekoIdleArtTransition(art);
+            _clearNekoIdleHoverPlayback(art);
+            _clearNekoIdleGifPlaybackSource(art);
+            art.style.transition = 'opacity 220ms ease';
+            art.style.opacity = '0';
+            button.dataset.nekoExplorationDeparture = 'true';
+        });
+    });
+    addNekoPetCareListener('neko:pet-care:exploration-return-request', function () {
+        _forEachNekoIdleReturnButton((button) => {
+            const art = button && button.querySelector && button.querySelector('.neko-idle-return-art');
+            if (!art) return;
+            art.style.transition = 'opacity 180ms ease';
+            art.style.opacity = '0';
+            button.dataset.nekoExplorationReturn = 'true';
+        });
+    });
+    // Exploration owns only the temporary presentation asset.  Reuse the
+    // existing cat return container and hit region so the nest remains the
+    // single unified recall entry; no cat form or Cat Mind action is added.
+    addNekoPetCareListener('neko:pet-care:exploration-asset', function (event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const active = detail.active === true;
+        const assetUrl = typeof detail.asset_url === 'string' && detail.asset_url
+            ? detail.asset_url
+            : (typeof detail.assetUrl === 'string' && detail.assetUrl
+                ? detail.assetUrl : '/static/assets/neko-idle/cat-bad.png');
+        if (active && explorationPresentationSuppressedByModel) return;
+        if (active) {
+            const petCare = window.nekoPetCareEntry;
+            const petState = petCare && typeof petCare.getState === 'function' ? petCare.getState() : null;
+            // The model and the cat form are one character presentation.  An
+            // active server exploration may be restored while the model is
+            // already visible (for example after refresh); in that state the
+            // desktop nest must stay hidden until the cat form is entered.
+            if (petState && (!petState.catLocalActive ||
+                petState.explorationRecallRequested || petState.explorationPending)) return;
+            const detailId = String(detail.activityId || detail.explorationId || detail.exploration_id || '').trim();
+            const currentExploration = petState && petState.exploration && typeof petState.exploration === 'object'
+                ? petState.exploration : null;
+            const currentId = String(currentExploration && (
+                currentExploration.activityId || currentExploration.activity_id ||
+                currentExploration.explorationId || currentExploration.exploration_id ||
+                currentExploration.id || '')).trim();
+            const currentStatus = String(currentExploration && currentExploration.status || '').toLowerCase();
+            const terminal = ['completed', 'inactive', 'cancelled', 'recalled', 'returned'].includes(currentStatus);
+            if ((detailId && currentId && detailId !== currentId) || terminal ||
+                (currentExploration && currentExploration.active === false)) return;
+            activeExplorationAssetDetail = Object.assign({}, detail);
+        } else {
+            activeExplorationAssetDetail = null;
+        }
+        _forEachNekoIdleReturnButton((button) => {
+            if (!button) return;
+            const art = button.querySelector && button.querySelector('.neko-idle-return-art');
+            const container = _getNekoIdleReturnContainerFromButton(button);
+            if (!art) return;
+            if (active) {
+                // Only the currently visible semantic hit region may host the
+                // away asset.  Other model containers remain hidden and must
+                // never be made visible just because the service activity was
+                // restored.
+                if (!container || container.getAttribute('data-neko-return-visible') !== 'true') return;
+                if (!button.__nekoPetCareExplorationAsset) {
+                    button.__nekoPetCareExplorationAsset = {
+                        src: art.getAttribute('src') || '',
+                        srcset: art.getAttribute('srcset') || '',
+                        tier: button.getAttribute('data-neko-idle-tier') || ''
+                    };
+                }
+                _cleanupNekoIdleArtTransition(art);
+                _clearNekoIdleHoverPlayback(art);
+                _clearNekoIdleGifPlaybackSource(art);
+                art.src = assetUrl;
+                art.removeAttribute('srcset');
+                art.dataset.nekoExplorationAsset = 'true';
+                button.dataset.nekoExplorationAsset = 'true';
+                if (container) container.dataset.nekoExplorationAsset = 'true';
+                // The departure adapter owns the fade; the service-confirmed
+                // asset event is the point at which the nest becomes visible.
+                art.style.opacity = '1';
+                art.style.transition = 'opacity 180ms ease';
+                _installNekoPetCareExplorationNote(button, detail);
+            } else if (button.__nekoPetCareExplorationAsset) {
+                const previous = button.__nekoPetCareExplorationAsset;
+                _cleanupNekoIdleArtTransition(art);
+                _clearNekoIdleHoverPlayback(art);
+                _clearNekoIdleGifPlaybackSource(art);
+                if (previous.src) art.src = previous.src;
+                else art.removeAttribute('src');
+                if (previous.srcset) art.setAttribute('srcset', previous.srcset);
+                else art.removeAttribute('srcset');
+                if (previous.tier) button.setAttribute('data-neko-idle-tier', previous.tier);
+                delete art.dataset.nekoExplorationAsset;
+                delete button.dataset.nekoExplorationAsset;
+                if (container) delete container.dataset.nekoExplorationAsset;
+                delete button.__nekoPetCareExplorationAsset;
+                _clearNekoPetCareExplorationOverlays(button);
+            }
+            if (!active && button.__nekoPetCareExplorationDeparture) {
+                const departure = button.__nekoPetCareExplorationDeparture;
+                art.style.opacity = departure.opacity || '';
+                art.style.transition = departure.transition || '';
+                delete button.__nekoPetCareExplorationDeparture;
+                delete button.dataset.nekoExplorationDeparture;
+            }
+            if (!active && button.dataset.nekoExplorationReturn) {
+                art.style.opacity = '';
+                art.style.transition = '';
+                delete button.dataset.nekoExplorationReturn;
+            }
+        });
+    });
+    // The service fact may arrive before the renderer creates its return
+    // container. Re-apply it when that existing container later announces its
+    // visibility; no pet-care state is stored in the renderer.
+    addNekoPetCareListener('neko:idle-return-ball-state', function () {
+        if (!activeExplorationAssetDetail || explorationPresentationSuppressedByModel || typeof window.dispatchEvent !== 'function') return;
+        // A renderer can announce a newly-created return container after a
+        // model switch or recall has already released the old activity. Do
+        // not replay the stale nest over the new model. The presentation
+        // layer only reads the pet-care semantic snapshot; it never owns it.
+        const petCare = window.nekoPetCareEntry;
+        const petState = petCare && typeof petCare.getState === 'function'
+            ? petCare.getState() : null;
+        const exploration = petState && petState.exploration;
+        const status = String(exploration && exploration.status || '').toLowerCase();
+        const terminal = ['completed', 'inactive', 'cancelled', 'recalled', 'returned'].includes(status);
+        if (!exploration || exploration.active === false || terminal ||
+            petState.explorationRecallRequested || petState.explorationPending) return;
+        const detailId = String(activeExplorationAssetDetail.activityId ||
+            activeExplorationAssetDetail.explorationId ||
+            activeExplorationAssetDetail.exploration_id || '');
+        const currentId = String(exploration.activityId || exploration.activity_id ||
+            exploration.id || '');
+        if (detailId && currentId && detailId !== currentId) return;
+        try {
+            window.dispatchEvent(new CustomEvent('neko:pet-care:exploration-asset', {
+                detail: Object.assign({}, activeExplorationAssetDetail),
+            }));
+        } catch (_) {}
+    });
+    // Context/account changes can release the shared gate before the
+    // pet-care snapshot adapter gets a chance to publish its normal asset
+    // restore event. Reuse the same restore path for that fail-closed case.
+    addNekoPetCareListener('neko:pet-care:exploration-gate', function (event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const activityId = String(detail.activityId || detail.explorationId || detail.exploration_id || '').trim();
+        if (!activityId) return;
+        const petCareMode = window.nekoPetCareMode;
+        if (petCareMode && typeof petCareMode.shouldApplyExplorationGate === 'function'
+            && !petCareMode.shouldApplyExplorationGate(detail)) return;
+        if (detail.active === false) {
+            window.dispatchEvent(new CustomEvent('neko:pet-care:exploration-asset', {
+                detail: Object.assign({}, detail, { active: false, asset_url: '', assetUrl: '' })
+            }));
+        }
+    });
     window.NekoCatIdlePresentation = Object.freeze({
-        requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation
+        requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation,
+        requestCat1Stretch: _requestNekoPetCareCat1StretchPresentation,
+        requestCat1Eat: _requestNekoPetCareCat1EatPresentation,
+        requestCat1Play: _requestNekoPetCareCat1PlayPresentation,
+        cancelPetCare: _cancelNekoPetCarePresentation,
     });
 }
 
@@ -450,6 +751,7 @@ function _getNekoIdleCat1PlayActionState(button) {
             yarnShell: null,
             yarnHidden: false,
             presentationOnTerminal: null,
+            presentationSource: '',
             catMindActionId: '',
             catMindRunId: '',
             catMindStartedAt: 0,
@@ -712,6 +1014,7 @@ function _cancelNekoIdleCat1PlayAction(button, options = {}) {
     state.presentationOnTerminal = null;
     state.token += 1;
     state.active = false;
+    state.presentationSource = '';
     _clearNekoIdleCat1PlayActionTimers(state);
     _stopNekoIdleSoundAudio(state);
     _setNekoIdleCat1PlayActionClass(button, false);
@@ -792,6 +1095,9 @@ function _playNekoIdleCat1PlayAction(button) {
     state.active = true;
     state.token += 1;
     state.resumeJourney = shouldResumeJourney;
+    state.presentationSource = isCatMindRun ? '' :
+        (typeof catMindRunOptions.source === 'string' && catMindRunOptions.source
+            ? catMindRunOptions.source : 'local');
     state.presentationOnTerminal = !isCatMindRun && typeof catMindRunOptions.onTerminal === 'function'
         ? catMindRunOptions.onTerminal
         : null;
@@ -1349,6 +1655,29 @@ function _playNekoIdleCat1SoundReaction() {
 if (typeof window !== 'undefined') {
     window.addEventListener('neko:pet-care:cleanup-request', function (event) {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        // Exploration is a whole-entity activity gate. Unlike the Stage 3
+        // compatibility cleanup it must stop every presentation owned by this
+        // module, including a user-triggered action that is still running.
+        if (detail.source === 'exploration') {
+            const reason = detail.reason || 'exploration-away';
+            _forEachNekoIdleReturnButton((button) => {
+                const eatState = button && button.__nekoIdleCat1EatActionState;
+                if (eatState && eatState.active) {
+                    _cancelNekoIdleCat1EatAction(button, { restoreArt: false, reason });
+                }
+                const playState = button && button.__nekoIdleCat1PlayActionState;
+                if (playState && playState.active) {
+                    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false, reason });
+                }
+                const stretchState = button && button.__nekoIdleCat1StretchActionState;
+                if (stretchState && stretchState.active) {
+                    _cancelNekoIdleCat1StretchAction(button, { restoreArt: false, reason });
+                }
+            });
+            _stopNekoIdleSleepSound({ reason });
+            _stopNekoIdleCat1AmbientSound({ reason });
+            return;
+        }
         const actionIds = Array.isArray(detail.actionIds) ? detail.actionIds : null;
         const shouldClean = (actionId) => !actionIds || actionIds.indexOf(actionId) >= 0;
         const reason = detail.reason || 'pet-care-mode-change';

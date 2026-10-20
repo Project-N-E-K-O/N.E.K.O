@@ -972,6 +972,9 @@ function _setNekoIdleReturnDragActionArt(button, tier) {
 }
 
 function _prepareNekoIdleReturnDragActionForContainer(container) {
+    if (typeof window !== 'undefined' && window.nekoPetCareMode &&
+        typeof window.nekoPetCareMode.shouldBlockEntityOutput === 'function' &&
+        window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'return-ball-drag' }).blocked) return;
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
     const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
@@ -987,6 +990,9 @@ function _prepareNekoIdleReturnDragActionForContainer(container) {
 }
 
 function _startNekoIdleReturnDragActionForContainer(container) {
+    if (typeof window !== 'undefined' && window.nekoPetCareMode &&
+        typeof window.nekoPetCareMode.shouldBlockEntityOutput === 'function' &&
+        window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'return-ball-drag' }).blocked) return;
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
     _cancelNekoIdleCat1EatAction(button, {
@@ -1795,6 +1801,27 @@ if (typeof window !== 'undefined') {
         const reason = detail.reason || 'pet-care-mode-change';
         _forEachNekoIdleReturnButton((button) => {
             const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+            if (detail.source === 'exploration') {
+                // Exploration owns the whole cat entity for its duration. The
+                // journey owner therefore cancels any current pair movement,
+                // regardless of whether it came from Cat Mind or the user.
+                if (state && state.phase !== 'idle' && state.paused !== true) {
+                    _cancelNekoIdleCat1Journey(button, {
+                        resetArt: false,
+                        preserveObservers: false,
+                        reason
+                    });
+                    _forceNekoIdleCat1LayerCleanup(
+                        _getNekoIdleReturnContainerFromButton(button),
+                        reason
+                    );
+                }
+                if (_isNekoIdleReturnDragActionActive(button)) {
+                    _finishNekoIdleReturnDragAction(button, { reason });
+                }
+                _clearNekoIdleCat1EdgePeek(button);
+                return;
+            }
             // The journey owner also serves local playground/chat movement. It
             // is safe to cancel here only while the active pair move carries a
             // Cat Mind source and run id. This keeps user/return/playground

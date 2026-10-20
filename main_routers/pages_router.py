@@ -128,6 +128,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/app/app-widget-mode.js",
     _PROJECT_ROOT / "static/app/app-widget-interaction.js",
     _PROJECT_ROOT / "static/app/app-pet-care-mode.js",
+    _PROJECT_ROOT / "static/app/app-pet-care-api.js",
+    _PROJECT_ROOT / "static/app/app-pet-care-client.js",
     _PROJECT_ROOT / "static/app/app-pet-care.js",
     _PROJECT_ROOT / "static/css/pet-care.css",
     _PROJECT_ROOT / "static/app/app-cat-mind.js",

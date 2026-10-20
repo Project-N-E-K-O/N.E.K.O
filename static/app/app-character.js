@@ -11,6 +11,13 @@
 
     const mod = {};
     const S = window.appState;
+    function isPetCareModelOwnerSurface() {
+        if (window.nekoPetCareSurface && typeof window.nekoPetCareSurface.ownsLifecycle === 'boolean') {
+            return window.nekoPetCareSurface.ownsLifecycle === true;
+        }
+        const pathname = String(window.location?.pathname || '');
+        return !/^\/chat(?:_full)?(?:\/|$)/.test(pathname);
+    }
     // const C = window.appConst;  // available if needed
 
     // ======================================================================
@@ -329,6 +336,11 @@
     async function handleCatgirlSwitch(newCatgirl, oldCatgirl) {
         console.log('[猫娘切换] ========== 开始切换 ==========');
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
+        if (!isPetCareModelOwnerSurface()) {
+            // Chat follower windows receive the same broadcast but do not own
+            // model resources or the cat-form lifecycle.
+            return { success: true, follower: true };
+        }
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
         let mmdLoadingSessionId = '';
         // 保存旧连接引用，finally 中确保关闭（防止 try 中途 throw 导致永久泄露）
@@ -406,6 +418,42 @@
         if (window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
             console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
             return;
+        }
+        // Character switching is also a model exit path.  Any active service
+        // exploration must be settled before replacing the role.  When the
+        // model is already visible, returnFromGoodbye has no return surface
+        // to animate; it only publishes the service recall commit, so this
+        // does not show a nest or create a second character presentation.
+        try {
+            const petEntry = window.nekoPetCareEntry;
+            const petState = petEntry && typeof petEntry.getState === 'function'
+                ? petEntry.getState() : null;
+            const exploration = petState && petState.exploration;
+            const explorationStatus = String(exploration && exploration.status || '').toLowerCase();
+            const explorationId = exploration && (exploration.exploration_id || exploration.explorationId ||
+                exploration.activity_id || exploration.activityId || exploration.id);
+            const explorationActive = !!(exploration && explorationId && exploration.active !== false &&
+                !['completed', 'inactive', 'cancelled', 'recalled', 'returned'].includes(explorationStatus));
+            if (explorationActive) {
+                if (!window.appUi || typeof window.appUi.returnFromGoodbye !== 'function') {
+                    console.warn('[猫娘切换] 探索召回入口不可用，取消角色切换');
+                    return { success: false, error: 'exploration_model_return_unavailable' };
+                }
+                const returned = await window.appUi.returnFromGoodbye({
+                    source: 'character-switch-exploration-recall',
+                    explorationRecall: true,
+                    activityId: String(explorationId),
+                    activityGeneration: exploration.generation || exploration.activityGeneration,
+                    retryViewportRestore: true,
+                });
+                if (returned === false) {
+                    console.warn('[猫娘切换] 探索召回未完成，取消角色切换');
+                    return { success: false, error: 'exploration_model_return_failed' };
+                }
+            }
+        } catch (petCareError) {
+            console.warn('[猫娘切换] 探索召回检查失败，取消角色切换:', petCareError);
+            return { success: false, error: 'exploration_model_return_failed' };
         }
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();

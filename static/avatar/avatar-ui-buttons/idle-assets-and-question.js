@@ -1099,6 +1099,8 @@ function _clearNekoIdleCat1QuestionMark(button) {
 
 function _showNekoIdleCat1QuestionMark(button) {
     if (!button) return false;
+    if (window.nekoPetCareMode && typeof window.nekoPetCareMode.shouldBlockEntityOutput === 'function' &&
+        window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'question-mark' }).blocked) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
     const state = _getNekoIdleCat1QuestionMarkState(button);
     const mark = _ensureNekoIdleCat1QuestionMarkElement(button);
@@ -1178,6 +1180,11 @@ function _normalizeNekoIdleCat1QuestionMarkKeyboardKey(event) {
 function _handleNekoIdleCat1QuestionMarkKeyboardEvent(event) {
     const state = _nekoIdleCat1QuestionMarkKeyboardState;
     if (!state.button) return false;
+    if (window.nekoPetCareMode && typeof window.nekoPetCareMode.shouldBlockEntityOutput === 'function' &&
+        window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'question-mark' }).blocked) {
+        _resetNekoIdleCat1QuestionMarkKeyboardProgress();
+        return false;
+    }
     if (_isNekoIdleCat1QuestionMarkKeyboardEditableTarget(event && event.target)) return false;
 
     const normalizedKey = _normalizeNekoIdleCat1QuestionMarkKeyboardKey(event);
@@ -1268,4 +1275,18 @@ function _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt(art, tier, src)
     if (_nekoIdleCat1QuestionMarkKeyboardState.button === button || !button) {
         _setNekoIdleCat1QuestionMarkKeyboardTarget(null);
     }
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('neko:pet-care:exploration-gate', function (event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const activityId = String(detail.activityId || detail.explorationId || detail.exploration_id || '').trim();
+        if (!activityId) return;
+        const petCareMode = window.nekoPetCareMode;
+        if (petCareMode && typeof petCareMode.shouldApplyExplorationGate === 'function'
+            && !petCareMode.shouldApplyExplorationGate(detail)) return;
+        if (detail.active !== true) return;
+        _setNekoIdleCat1QuestionMarkKeyboardTarget(null);
+        _forEachNekoIdleReturnButton((button) => _clearNekoIdleCat1QuestionMark(button));
+    });
 }

@@ -25,6 +25,7 @@ function _isNekoIdleCat1PlaygroundActiveAnywhere() {
 }
 
 function _requestNekoIdleCat1GravityEntry(source) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'playground' }).blocked) return false;
     const button = _getNekoIdleCat1PlaygroundEntryButton();
     if (!button || _isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
     try {
@@ -1157,6 +1158,10 @@ function _setNekoIdleCat1PlaygroundCatGroundedArt(button) {
 }
 
 function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'playground' }).blocked) {
+        _releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'exploration-away');
+        return;
+    }
     const state = button && button.__nekoIdleCat1PlaygroundDropState;
     if (!state || !state.active || state.released) return;
     const token = state.token;
@@ -1265,6 +1270,7 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
 }
 
 function _startNekoIdleCat1PlaygroundPhysics(button) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'playground' }).blocked) return;
     const state = button && button.__nekoIdleCat1PlaygroundDropState;
     if (!state || !state.active || state.released || state.frame) return;
     state.lastTickAt = 0;
@@ -1453,6 +1459,7 @@ function _getNekoIdleCat1PlaygroundActiveDesktopBody() {
 }
 
 function _handleNekoIdleCat1PlaygroundDesktopPointerEvent(event) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'playground' }).blocked) return false;
     const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
     if (!detail) return false;
     const active = _getNekoIdleCat1PlaygroundActiveDesktopBody();
@@ -1809,6 +1816,10 @@ function _startNekoIdleCat1PlaygroundDrop(button, detail) {
 }
 
 function _handleNekoIdleCat1PlaygroundEntryRequest(event) {
+    if (window.nekoPetCareMode && typeof window.nekoPetCareMode.shouldBlockEntityOutput === 'function' &&
+        window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'playground' }).blocked) {
+        return false;
+    }
     const button = _getNekoIdleCat1PlaygroundEntryButton();
     if (!button) return false;
     const detail = event && event.detail ? event.detail : null;
@@ -1835,6 +1846,16 @@ if (typeof window !== 'undefined') {
         isActive: _isNekoIdleCat1PlaygroundActiveAnywhere,
     });
     window.addEventListener('neko:idle-cat1-playground-entry-request', _handleNekoIdleCat1PlaygroundEntryRequest);
+    window.addEventListener('neko:pet-care:exploration-gate', function (event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const activityId = String(detail.activityId || detail.explorationId || detail.exploration_id || '').trim();
+        if (!activityId) return;
+        const petCareMode = window.nekoPetCareMode;
+        if (petCareMode && typeof petCareMode.shouldApplyExplorationGate === 'function'
+            && !petCareMode.shouldApplyExplorationGate(detail)) return;
+        if (detail.active !== true) return;
+        _releaseAllNekoIdleCat1PlaygroundDropLifecycles('exploration-away');
+    });
     window.addEventListener('neko:cat-local-active-change', _handleNekoIdleCat1GravityCatActiveChange);
     window.addEventListener('neko:auto-goodbye:state-change', _handleNekoIdleCat1GravityCatTierChange);
     window.addEventListener('neko:idle-cat1-playground-desktop-pointer', _handleNekoIdleCat1PlaygroundDesktopPointerEvent);

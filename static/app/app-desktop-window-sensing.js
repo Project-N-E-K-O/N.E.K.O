@@ -18,6 +18,7 @@
     let catAppearanceActive = false;
     let cat1Active = false;
     let playgroundActive = false;
+    let explorationAway = false;
     let sensingActive = false;
     let disposed = false;
     let generation = 0;
@@ -375,7 +376,7 @@
         const currentTier = readTier(tier);
         const wasCat1Active = cat1Active;
         const desiredMode = playgroundActive ? 'gravity' : 'legacy';
-        const shouldRun = catAppearanceActive && currentTier === CAT1_TIER;
+        const shouldRun = !explorationAway && catAppearanceActive && currentTier === CAT1_TIER;
         cat1Active = shouldRun;
         if (!shouldRun) {
             stopSession();
@@ -432,6 +433,21 @@
         stopSession();
     }
 
+    function handleExplorationGate(event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const activityId = String(detail.activityId || detail.explorationId || detail.exploration_id || '').trim();
+        if (!activityId) return;
+        const petCareMode = window.nekoPetCareMode;
+        if (petCareMode && typeof petCareMode.shouldApplyExplorationGate === 'function'
+            && !petCareMode.shouldApplyExplorationGate(detail)) return;
+        explorationAway = detail.active === true;
+        if (explorationAway) {
+            stopSession();
+        } else {
+            syncCatSession(readTier(''));
+        }
+    }
+
     function dispose() {
         if (disposed) return;
         catAppearanceActive = false;
@@ -447,6 +463,7 @@
         window.removeEventListener(CAT_TIER_EVENT, handleCatTierChange);
         window.removeEventListener(PLAYGROUND_STATE_EVENT, handlePlaygroundState);
         window.removeEventListener(GOODBYE_STATE_CLEARED_EVENT, handleGoodbyeStateCleared);
+        window.removeEventListener('neko:pet-care:exploration-gate', handleExplorationGate);
         window.removeEventListener('pagehide', dispose);
         window.removeEventListener('beforeunload', dispose);
     }
@@ -455,6 +472,7 @@
     window.addEventListener(CAT_TIER_EVENT, handleCatTierChange);
     window.addEventListener(PLAYGROUND_STATE_EVENT, handlePlaygroundState);
     window.addEventListener(GOODBYE_STATE_CLEARED_EVENT, handleGoodbyeStateCleared);
+    window.addEventListener('neko:pet-care:exploration-gate', handleExplorationGate);
     window.addEventListener('pagehide', dispose);
     window.addEventListener('beforeunload', dispose);
 })();

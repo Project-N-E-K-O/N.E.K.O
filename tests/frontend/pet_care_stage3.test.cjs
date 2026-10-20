@@ -178,6 +178,10 @@ test('stage 3 blocks only the six autonomous Cat Mind actions and keeps user act
     source: 'cat_mind',
     actionId: 'future_action',
   }).blocked, false);
+  assert.equal(window.nekoPetCareMode.shouldBlockCatMindActionRequest({
+    source: 'cat_mind', actionId: 'cat1_play_yarn',
+    detail: { triggerTypes: ['chat_yarn_drag_completed'] },
+  }).blocked, false);
 });
 
 test('stage 3 leaving the cat form or losing the service context restores ordinary Cat Mind', () => {

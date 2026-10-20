@@ -850,6 +850,46 @@ I.mod = window.appInterpage;
             return;
         }
 
+        // A model hot-reload is another model-switch exit path, separate from
+        // the pet-care panel's “召回猫咪” activity action.  If the cat form
+        // is currently showing an active exploration, complete the existing
+        // model-return transition first so the service recall is committed
+        // before the new model is rendered.  When the model is already
+        // visible (catLocalActive=false), the same return entry settles the
+        // service activity without rendering a nest; an active server
+        // exploration must not survive a model reload merely because the
+        // cat-form event was missed during refresh.
+        if (!reloadOptions.skipPetCareExplorationRecall) {
+            try {
+                var petCare = window.nekoPetCareEntry;
+                var petState = petCare && typeof petCare.getState === 'function'
+                    ? petCare.getState() : null;
+                var exploration = petState && petState.exploration;
+                var explorationStatus = String(exploration && exploration.status || '').toLowerCase();
+                var explorationId = exploration && (exploration.exploration_id || exploration.explorationId ||
+                    exploration.activity_id || exploration.activityId || exploration.id);
+                var explorationActive = !!(exploration && explorationId && exploration.active !== false &&
+                    !['completed', 'inactive', 'cancelled', 'recalled', 'returned'].includes(explorationStatus));
+                if (explorationActive) {
+                    if (!window.appUi || typeof window.appUi.returnFromGoodbye !== 'function') {
+                        throw new Error('exploration_model_return_unavailable');
+                    }
+                    var returned = await window.appUi.returnFromGoodbye({
+                        source: 'model-reload-exploration-recall',
+                        explorationRecall: true,
+                        activityId: String(explorationId),
+                        activityGeneration: exploration.generation || exploration.activityGeneration,
+                        retryViewportRestore: true,
+                    });
+                    if (returned === false) throw new Error('exploration_model_return_failed');
+                }
+            } catch (petCareError) {
+                console.warn('[Model] 模型重载前养宠探索召回未完成，取消本次重载:', petCareError);
+                if (throwOnError) throw petCareError;
+                return;
+            }
+        }
+
         // Concurrency: wait if another reload is in-flight
         if (window._modelReloadInFlight) {
             console.log('[Model] 模型重载已在进行中，等待完成后重试');
