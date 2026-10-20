@@ -4,14 +4,23 @@
 
 :root {
   /* 主色 */
-  --primary-color: #409EFF;
-  --success-color: #67C23A;
-  --warning-color: #E6A23C;
-  --danger-color: #F56C6C;
-  --info-color: #909399;
+  --primary-color: var(--el-color-primary);
+  --success-color: var(--el-color-success);
+  --warning-color: var(--el-color-warning);
+  --danger-color: var(--el-color-danger);
+  --info-color: var(--el-color-info);
+
+  /* 三层表面，供布局与原有组件共同使用 */
+  --surface-page: #edf5fb;
+  --surface-card: #ffffff;
+  --surface-inset: #f3f9fd;
+  --surface-border: #dbe8f2;
+  --surface-shadow: 0 3px 14px rgba(52, 106, 148, 0.04);
+  --surface-shadow-hover: 0 7px 22px rgba(52, 106, 148, 0.08);
 
   /* 布局 */
-  --sidebar-width: 240px;
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 68px;
   --header-height: 60px;
   --content-padding: 20px;
   --card-gap: 16px;
@@ -24,49 +33,92 @@
   --spacing-xl: 32px;
 
   /* 圆角 */
-  --border-radius-sm: 4px;
-  --border-radius-md: 8px;
-  --border-radius-lg: 12px;
+  --radius-card: 16px;
+  --radius-panel: 12px;
+  --radius-control: 10px;
+  --radius-chip: 8px;
+  --border-radius-sm: var(--radius-chip);
+  --border-radius-md: var(--radius-control);
+  --border-radius-lg: var(--radius-panel);
 
   /* 阴影 */
-  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
-  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.1);
+  --shadow-sm: var(--surface-shadow);
+  --shadow-md: var(--surface-shadow-hover);
+  --shadow-lg: 0 12px 32px rgba(52, 106, 148, 0.12);
 }
 
-/* 自定义深色模式 - 使用更柔和的灰色 */
-html.dark {
-  /* 背景颜色 - 使用柔和的灰色而不是纯黑 */
-  --el-bg-color-page: #2d2d2d;
-  --el-bg-color: #363636;
-  --el-bg-color-overlay: #404040;
+/* 对接 Element Plus 的公共变量，组件自行保留状态与尺寸处理。 */
+html:root,
+html:root.dark {
+  --el-border-radius-base: var(--radius-control);
+  --el-border-radius-small: var(--radius-chip);
+  --el-box-shadow-light: var(--surface-shadow);
+  --el-box-shadow: var(--surface-shadow-hover);
+  --el-bg-color-page: var(--surface-page);
+  --el-bg-color: var(--surface-card);
+  --el-bg-color-overlay: var(--surface-card);
+  --el-fill-color-blank: var(--surface-card);
+  --el-fill-color: #edf5fb;
+  --el-fill-color-light: var(--surface-inset);
+  --el-fill-color-lighter: #f6faff;
+  --el-fill-color-extra-light: #f9fcff;
+  --el-fill-color-dark: #e4eef6;
+  --el-fill-color-darker: #dce8f2;
+  --el-text-color-primary: #243f55;
+  --el-text-color-regular: #506c80;
+  --el-text-color-secondary: #667f93;
+  --el-text-color-placeholder: #8095a6;
+  --el-text-color-disabled: #a3b2bf;
+  --el-border-color: #cfdfeb;
+  --el-border-color-light: var(--surface-border);
+  --el-border-color-lighter: #e5eef6;
+  --el-border-color-extra-light: #edf4f9;
+  --el-border-color-dark: #bacfdf;
+  --el-border-color-darker: #a7bfce;
+  --color-background: var(--surface-page);
+  --color-background-soft: var(--surface-inset);
+  --color-background-mute: var(--surface-inset);
+  --color-text: var(--el-text-color-primary);
+  --color-heading: var(--el-text-color-primary);
+  --color-border: var(--surface-border);
+  --color-border-hover: var(--el-border-color-dark);
+}
+
+/* 跟随应用已有的 html.dark 开关，保持相同的表面层级。 */
+html:root.dark {
+  --surface-page: #1d2a35;
+  --surface-card: #263743;
+  --surface-inset: #22323e;
+  --surface-border: #3b505f;
+  --surface-shadow: 0 3px 14px rgba(0, 0, 0, 0.08);
+  --surface-shadow-hover: 0 7px 22px rgba(0, 0, 0, 0.14);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.24);
+  --el-bg-color-overlay: #2b3f4e;
   
   /* 文本颜色 */
-  --el-text-color-primary: #e5e5e5;
-  --el-text-color-regular: #d0d0d0;
-  --el-text-color-secondary: #b0b0b0;
-  --el-text-color-placeholder: #909090;
-  --el-text-color-disabled: #707070;
+  --el-text-color-primary: #e0edf6;
+  --el-text-color-regular: #bdcfdd;
+  --el-text-color-secondary: #9bb4c6;
+  --el-text-color-placeholder: #829caf;
+  --el-text-color-disabled: #607b8e;
   
   /* 边框颜色 */
-  --el-border-color: #4a4a4a;
-  --el-border-color-light: #3d3d3d;
-  --el-border-color-lighter: #353535;
-  --el-border-color-extra-light: #2f2f2f;
-  --el-border-color-dark: #5a5a5a;
-  --el-border-color-darker: #6a6a6a;
+  --el-border-color: #496070;
+  --el-border-color-light: var(--surface-border);
+  --el-border-color-lighter: #354b5b;
+  --el-border-color-extra-light: #304450;
+  --el-border-color-dark: #587080;
+  --el-border-color-darker: #6d8494;
   
   /* 填充颜色 */
-  --el-fill-color: #404040;
-  --el-fill-color-light: #363636;
-  --el-fill-color-lighter: #2d2d2d;
-  --el-fill-color-extra-light: #252525;
-  --el-fill-color-dark: #4a4a4a;
-  --el-fill-color-darker: #545454;
-  --el-fill-color-blank: transparent;
+  --el-fill-color: #304654;
+  --el-fill-color-light: #2a3e4c;
+  --el-fill-color-lighter: #263a48;
+  --el-fill-color-extra-light: #233541;
+  --el-fill-color-dark: #3b5262;
+  --el-fill-color-darker: #486171;
   
   /* 遮罩层 */
   --el-mask-color: rgba(0, 0, 0, 0.6);
   --el-mask-color-extra-light: rgba(0, 0, 0, 0.3);
 }
-
