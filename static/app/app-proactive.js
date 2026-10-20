@@ -1138,6 +1138,11 @@
     async function triggerProactiveChat() {
         var requestSent = false;
         try {
+            // Capture before any await: clearing chat or switching character retires
+            // this response's card offers even when its dialogue already committed.
+            var canOfferRecommendations = window.nekoRecommendations
+                && typeof window.nekoRecommendations.captureOfferContext === 'function'
+                ? window.nekoRecommendations.captureOfferContext() : function () { return false; };
             if (isHomeTutorialFeatureSuppressed()) {
                 console.log('[ProactiveChat] 首页新手教程接管中，跳过主动搭话');
                 return false;
@@ -1243,7 +1248,7 @@
                 }
                 requestSent = true;
                 var result = await resp.json();
-                if (result.success && result.action === 'chat' && window.nekoRecommendations) {
+                if (result.success && result.action === 'chat' && canOfferRecommendations() && window.nekoRecommendations) {
                     (result.proactive_recommendations || []).slice(0, 3).forEach(function (item) {
                         window.nekoRecommendations.offer(item, result.turn_id);
                     });
@@ -1587,22 +1592,17 @@
                     console.log('主动搭话已发送:', result.message, result.source_mode ? '(来源: ' + result.source_mode + ')' : '');
 
                     // A proactive recommendation never starts audio before the user accepts.
-                    var offeredMusicUrls = [];
-                    var offeredContentUrls = [];
-                    if (window.nekoRecommendations) {
+                    if (canOfferRecommendations() && window.nekoRecommendations) {
                         (result.proactive_recommendations || []).slice(0, 3).forEach(function (item) {
-                            if (window.nekoRecommendations.offer(item, result.turn_id) && item.content && item.content.url) {
-                                offeredContentUrls.push(item.content.url);
-                            }
+                            window.nekoRecommendations.offer(item, result.turn_id);
                         });
                     }
-                    if (result.source_mode === 'music' || result.source_mode === 'both') {
+                    if (canOfferRecommendations() && (result.source_mode === 'music' || result.source_mode === 'both')) {
                         var normalizedLinks = (result.source_links || []).filter(Boolean);
                         var musicLinks = normalizedLinks.filter(function (link) {
                             return link.url && (link.artist || link.source === '音乐推荐');
                         });
                         if (!musicLinks.length) musicLinks = normalizedLinks.filter(function (link) { return link.url; });
-                        offeredMusicUrls = musicLinks.map(function (link) { return link.url; });
                         if (result.music_recommendation && window.nekoMusicRecommendations) {
                             window.nekoMusicRecommendations.offer(result.music_recommendation, result.turn_id);
                         } else if (musicLinks.length && typeof window.showStatusToast === 'function') {
@@ -1610,33 +1610,10 @@
                         }
                     }
 
-                    // 【重构】统一处理链接，使用服务端返回的 turn_id 绑定，解决 HTTP/WS 竞态
-                    var captureTurnId = result.turn_id || 'fallback';
-                    var processed = _processProactiveLinks((result.source_links || []).filter(function (link) {
-                        return !link || (offeredMusicUrls.indexOf(link.url) === -1 && offeredContentUrls.indexOf(link.url) === -1);
-                    }), null);
-
-                    // 暂存待展示附件，等待对应的 turn_id 建立后统一 flush
-                    if (!window._proactiveAttachmentBuffer) {
-                        window._proactiveAttachmentBuffer = {};
-                    }
-                    if (!window._proactiveAttachmentBuffer[captureTurnId]) {
-                        window._proactiveAttachmentBuffer[captureTurnId] = { memes: [], links: [] };
-                    }
-                    
-                    if (processed.memeLinks.length > 0) {
-                        var MAX_MEME_BUBBLES = 2;
-                        window._proactiveAttachmentBuffer[captureTurnId].memes = processed.memeLinks.slice(0, MAX_MEME_BUBBLES);
-                    }
-                    
-                    if (processed.otherLinks.length > 0) {
-                        window._proactiveAttachmentBuffer[captureTurnId].links = processed.otherLinks;
-                    }
-
-                    // 如果当前 turn 已经就绪（例如主动搭话回复极快），直接 flush
-                    if (window.realisticGeminiCurrentTurnId === captureTurnId) {
-                        _flushProactiveAttachments(captureTurnId);
-                    }
+                    // Raw source_links are candidate material, not permission to
+                    // display it. If registration or a card offer failed, keep
+                    // the committed dialogue without bypassing the user's choice
+                    // through legacy image/source attachments.
 
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
                 } else if (result.action === 'pass') {
@@ -1681,83 +1658,6 @@
     mod._flushProactiveAttachments = _flushProactiveAttachments;
 
     // ======================== source link card ========================
-
-    /**
-     * 在聊天区域临时显示来源链接卡片（旁路，不进入 AI 记忆）
-     */
-    /**
-     * 将原始链接处理为分类好的安全链接对象
-     */
-    function _processProactiveLinks(links, dispatchedUrl) {
-        var isSameUrl = function (u1, u2) {
-            if (!u1 || !u2) return false;
-            if (u1 === u2) return true;
-            try {
-                var url1 = new URL(u1, window.location.origin);
-                var url2 = new URL(u2, window.location.origin);
-                var getRef = function (u) { return (u.hostname + u.pathname.replace(/\/$/, '') + u.search).toLowerCase(); };
-                return getRef(url1) === getRef(url2);
-            } catch (e) { return u1 === u2; }
-        };
-
-        var memeLinks = [];
-        var otherLinks = [];
-
-        for (var i = 0; i < links.length; i++) {
-            var link = links[i];
-            if (!link) continue;
-
-            var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
-            if (isMusicLink) continue;
-
-            var isMemeLink = link.type === 'meme' || link.type === 'gif';
-            if (!isMemeLink) {
-                var memeSourceKeywords = ['表情包', '斗图吧', '发表情', 'Imgflip', 'meme', 'sticker'];
-                var linkSource = String(link.source || '').toLowerCase();
-                for (var k = 0; k < memeSourceKeywords.length; k++) {
-                    if (linkSource.indexOf(memeSourceKeywords[k].toLowerCase()) !== -1) {
-                        isMemeLink = true;
-                        break;
-                    }
-                }
-            }
-            if (!isMemeLink && link.url) {
-                // 2026-04-16: doutub.com 域名易主挂黑产，停用（'qn.doutub.com', 'doutub.com'）；新增 doutupk.com（斗图啦）
-                var memeDomains = ['img.soutula.com', 'i.imgflip.com', 'fabiaoqing.com', 'soutula.com', 'img.doutupk.com', 'doutupk.com'];
-                var linkHost = '';
-                try {
-                    var tempUrl = new URL(String(link.url), window.location.origin);
-                    linkHost = tempUrl.hostname.toLowerCase();
-                } catch (e) {}
-                for (var m = 0; m < memeDomains.length; m++) {
-                    if (linkHost === memeDomains[m] || linkHost.endsWith('.' + memeDomains[m])) {
-                        isMemeLink = true;
-                        break;
-                    }
-                }
-            }
-
-            var safeUrl = null;
-            var rawUrl = String(link.url || '').trim();
-            if (rawUrl && (rawUrl.startsWith('http://') || rawUrl.startsWith('https://'))) {
-                try {
-                    var u = new URL(rawUrl);
-                    if (u.protocol === 'http:' || u.protocol === 'https:') {
-                        safeUrl = u.href;
-                    }
-                } catch (e) {}
-            }
-
-            if (safeUrl) {
-                if (isMemeLink) {
-                    memeLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
-                } else {
-                    otherLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
-                }
-            }
-        }
-        return { memeLinks: memeLinks, otherLinks: otherLinks };
-    }
 
     /**
      * 在聊天区域临时显示来源链接卡片

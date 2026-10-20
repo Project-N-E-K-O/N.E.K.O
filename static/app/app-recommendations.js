@@ -4,18 +4,61 @@
     const KEY = 'neko.music-recommendation-event.v1.';
     const MAX_QUEUE = 256;
     const messages = new Map();
-    const inFlight = new Set();
+    const inFlight = new Map();
     const dispatched = new Set();
     const decisionIds = new Map();
     let disposed = false;
     let lifecycleEpoch = 0;
-    const placeholders = new Set();
+    const placeholders = new Map();
+    const retiredIds = new Set();
+    let snapshotRequestId = '';
     let flushing = null;
     let queue = [];
     const requestSnapshot = () => {
-        if (!disposed && typeof window.__nekoBroadcastChatMirror === 'function') window.__nekoBroadcastChatMirror({ type: 'recommendation_request' });
+        if (!disposed && typeof window.__nekoBroadcastChatMirror === 'function') {
+            snapshotRequestId = uid();
+            window.__nekoBroadcastChatMirror({ type: 'recommendation_request', requestId: snapshotRequestId, character: currentCharacter() });
+        }
     };
     const isRecommendation = block => block && ['music_recommendation', 'proactive_recommendation'].includes(block.type);
+    const currentCharacter = () => (window.lanlan_config && window.lanlan_config.lanlan_name) || 'Neko';
+    const belongsHere = message => message && message.author === currentCharacter();
+    function closePlaceholders(ids) {
+        for (const [popup, id] of placeholders) {
+            if (ids && !ids.has(id)) continue;
+            try { if (!popup.closed) popup.close(); } catch (_) {}
+            placeholders.delete(popup);
+        }
+    }
+    function retire(ids) {
+        const retired = new Set(ids.slice(-128));
+        const host = window.reactChatWindowHost;
+        for (const id of retired) {
+            retiredIds.add(id);
+            const message = messages.get(id);
+            messages.delete(id);
+            inFlight.delete(id);
+            dispatched.delete(id);
+            decisionIds.delete(id + ':accepted');
+            decisionIds.delete(id + ':skipped');
+            if (message && host && typeof host.removeMessage === 'function') host.removeMessage(message.id);
+        }
+        // This is a short UI replay fence, not a persistent deletion ledger.
+        while (retiredIds.size > 256) retiredIds.delete(retiredIds.values().next().value);
+        closePlaceholders(retired);
+    }
+    window.addEventListener('react-chat-window:messages-cleared', () => {
+        lifecycleEpoch++;
+        snapshotRequestId = '';
+        const ids = Array.from(messages.keys());
+        retire(ids);
+        closePlaceholders();
+        if (ids.length && typeof window.__nekoBroadcastChatMirror === 'function') {
+            window.__nekoBroadcastChatMirror({ type: 'recommendation_reset', ids });
+        }
+        // Evidence already queued or produced by a continuing player is independent
+        // of the retired chat UI and must still reach its original recommendation.
+    });
     const contentCategories = new Set(['news', 'community', 'video', 'personal', 'meme', 'vision', 'window', 'web', 'work_break', 'anti_slack']);
     function contentUrl(value) {
         if (!value) return '';
@@ -24,19 +67,27 @@
     }
     window.addEventListener('neko:chat-mirror', event => {
         const data = event.detail || {};
+        if (data.type === 'recommendation_reset') {
+            if (Array.isArray(data.ids)) retire(data.ids.filter(id => typeof id === 'string'));
+            return;
+        }
         if (data.type === 'recommendation_request') {
+            if (!data.requestId || data.character !== currentCharacter()) return;
             if (messages.size && typeof window.__nekoBroadcastChatMirror === 'function') {
                 window.__nekoBroadcastChatMirror({ type: 'recommendation_snapshot', target: data.sender,
-                    messages: Array.from(messages.values()) });
+                    requestId: data.requestId, character: currentCharacter(),
+                    messages: Array.from(messages.values()).filter(belongsHere) });
             }
             return;
         }
         if (data.type === 'recommendation_snapshot') {
             const host = window.reactChatWindowHost;
             if (!host || !Array.isArray(data.messages)) return;
+            if (!snapshotRequestId || data.requestId !== snapshotRequestId || data.character !== currentCharacter()) return;
             for (const message of data.messages.slice(-128)) {
                 const block = message && message.blocks && message.blocks[0];
-                if (!isRecommendation(block) || messages.has(block.recommendationId)) continue;
+                if (!isRecommendation(block) || !belongsHere(message) || retiredIds.has(block.recommendationId)
+                    || messages.has(block.recommendationId)) continue;
                 remember(message);
                 host.appendMessage(message);
             }
@@ -45,6 +96,11 @@
         const message = data.message || data.patch;
         const block = message && message.blocks && message.blocks.find(isRecommendation);
         const previous = block && messages.get(block.recommendationId);
+        if (block && (retiredIds.has(block.recommendationId) || (data.message && !belongsHere(message)))) {
+            const host = window.reactChatWindowHost;
+            if (host && typeof host.removeMessage === 'function') host.removeMessage(data.messageId || message.id);
+            return;
+        }
         if (block && (data.message || previous)) remember(Object.assign({}, previous, message,
             { id: data.messageId || message.id, blocks: [block] }));
     });
@@ -76,7 +132,7 @@
         if (!response.ok || !result.success) {
             const error = new Error(result.error_code || 'feedback_unavailable');
             error.permanent = (response.status === 409 || response.status === 422)
-                && result.error_code !== 'feedback_capacity_reached';
+                && !['feedback_capacity_reached', 'feedback_upload_capacity_reached'].includes(result.error_code);
             throw error;
         }
         return result;
@@ -92,6 +148,10 @@
     }
     function remember(message) {
         const id = message.blocks[0].recommendationId;
+        // Host rendering may sanitize the display author. Ownership remains the
+        // original offer's character, including after choices and mirror updates.
+        const previous = messages.get(id);
+        if (previous) message = Object.assign({}, message, { author: previous.author });
         messages.set(id, message);
         // Only UI bookkeeping is evicted; pending evidence is kept separately.
         if (messages.size > 128) messages.delete(messages.keys().next().value);
@@ -124,13 +184,13 @@
         void flush();
     }
     function offer(recommendation, turnId) {
-        if (!recommendation || !recommendation.id || disposed) return false;
+        if (!recommendation || !recommendation.id || disposed || retiredIds.has(recommendation.id)) return false;
         if (messages.has(recommendation.id)) return true;
         const host = window.reactChatWindowHost;
         if (!host || typeof host.appendMessage !== 'function') return false;
         const message = {
             id: 'music-recommendation-' + recommendation.id, role: 'assistant',
-            author: (window.lanlan_config && window.lanlan_config.lanlan_name) || 'Neko',
+            author: currentCharacter(),
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             turnId: turnId || undefined,
             blocks: [{ type: 'music_recommendation', recommendationId: recommendation.id,
@@ -143,7 +203,7 @@
         return true;
     }
     function offerContent(recommendation, turnId) {
-        if (!recommendation || !recommendation.id || !recommendation.content || disposed) return false;
+        if (!recommendation || !recommendation.id || !recommendation.content || disposed || retiredIds.has(recommendation.id)) return false;
         if (!contentCategories.has(recommendation.category)) return false;
         const href = contentUrl(recommendation.content.url);
         const screenObservation = recommendation.category === 'vision' && !recommendation.content.url
@@ -154,7 +214,7 @@
         if (!host || typeof host.appendMessage !== 'function') return false;
         const message = {
             id: 'proactive-recommendation-' + recommendation.id, role: 'assistant',
-            author: (window.lanlan_config && window.lanlan_config.lanlan_name) || 'Neko',
+            author: currentCharacter(),
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             turnId: turnId || undefined,
             blocks: [{ type: 'proactive_recommendation', recommendationId: recommendation.id,
@@ -169,10 +229,13 @@
     async function decide(message, id, kind) {
         if (inFlight.has(id) || disposed) return;
         const previous = messages.get(id);
-        if (previous && !['pending', 'saving'].includes(previous.blocks[0].state)) return;
+        if (!belongsHere(previous) || retiredIds.has(id) || !['pending', 'saving'].includes(previous.blocks[0].state)) return;
         remember(message);
         const epoch = lifecycleEpoch;
-        inFlight.add(id);
+        const operation = {};
+        inFlight.set(id, operation);
+        const isCurrent = () => !disposed && epoch === lifecycleEpoch && inFlight.get(id) === operation
+            && belongsHere(messages.get(id)) && !retiredIds.has(id);
         update(id, 'saving');
         const block = message.blocks[0];
         const href = block.type === 'proactive_recommendation' && block.category !== 'meme' && contentUrl(block.content.url);
@@ -180,7 +243,7 @@
         let placeholder = null;
         // Browser popup permission belongs to this click, before the durable decision await.
         if (kind === 'accepted' && href && !(shell && typeof shell.openExternal === 'function')) {
-            try { placeholder = window.open('', '_blank'); if (placeholder) { placeholder.opener = null; placeholders.add(placeholder); } } catch (_) {}
+            try { placeholder = window.open('', '_blank'); if (placeholder) { placeholder.opener = null; placeholders.set(placeholder, id); } } catch (_) {}
         }
         const closePlaceholder = () => { placeholders.delete(placeholder); try { if (placeholder && !placeholder.closed) placeholder.close(); } catch (_) {} };
         const key = id + ':' + kind;
@@ -188,7 +251,7 @@
         const event = { event_id: decisionIds.get(key), kind, occurred_at: Date.now() / 1000 };
         try {
             const result = await request(id, event);
-            if (disposed || epoch !== lifecycleEpoch) return;
+            if (!isCurrent()) return;
             // Another window may already have advanced playback while this
             // decision response was in flight. Do not roll its status back.
             const currentState = messages.get(id)?.blocks[0].state || 'saving';
@@ -211,13 +274,14 @@
                 ? await window.dispatchMusicPlayDetailed(block.track, {
                     source: 'proactive', recommendationId: id, cardScopeId: 'recommendation:' + id
                 }) : { ok: false, reason: 'ui_not_ready' };
+            if (!isCurrent()) return;
             if (!playback.ok) {
                 update(id, 'failed');
                 evidence(id, 'failed', { playback_id: 'unstarted:' + id, reason: String(playback.reason || 'player_error').slice(0, 64) });
             }
         } catch (error) {
             closePlaceholder();
-            if (disposed || epoch !== lifecycleEpoch) return;
+            if (!isCurrent()) return;
             if (block.type === 'proactive_recommendation' && dispatched.has(id)) {
                 // A dispatch error does not undo an already committed preference.
                 update(id, 'accepted', true);
@@ -228,8 +292,8 @@
                 update(id, error.permanent ? 'unavailable' : 'pending', !error.permanent);
             }
         } finally {
-            if (disposed || epoch !== lifecycleEpoch) closePlaceholder();
-            inFlight.delete(id);
+            if (!isCurrent()) closePlaceholder();
+            if (inFlight.get(id) === operation) inFlight.delete(id);
             if (dispatched.size > 128) dispatched.delete(dispatched.values().next().value);
             if (decisionIds.size > 256) decisionIds.delete(decisionIds.keys().next().value);
         }
@@ -240,6 +304,7 @@
         const payload = action.payload || {};
         const block = detail.message && detail.message.blocks && detail.message.blocks.find(isRecommendation);
         if (!block || block.recommendationId !== payload.recommendationId) return;
+        if (retiredIds.has(block.recommendationId) || !belongsHere(messages.get(block.recommendationId))) return;
         if (action.action === 'music_recommendation_shown') evidence(block.recommendationId, 'shown');
         if (action.action === 'proactive_recommendation_shown') evidence(block.recommendationId, 'shown');
         if (['proactive_recommendation_dismiss', 'proactive_recommendation_reveal'].includes(action.action) && block.type === 'proactive_recommendation' && block.state === 'accepted' && block.category === 'meme') {
@@ -258,8 +323,9 @@
     }, { once: true });
     window.addEventListener('pagehide', () => {
         disposed = true; lifecycleEpoch++;
-        for (const popup of placeholders) { try { if (!popup.closed) popup.close(); } catch (_) {} }
-        placeholders.clear();
+        inFlight.clear();
+        snapshotRequestId = '';
+        closePlaceholders();
     });
     window.addEventListener('pageshow', () => {
         disposed = false;
@@ -272,7 +338,8 @@
         hasPending() {
             return Array.from(messages.values()).some(message => {
                 const block = message.blocks[0];
-                return block.type === 'music_recommendation' && (block.state === 'pending' || block.state === 'saving') && Date.now() < block.expiresAt;
+                return belongsHere(message) && block.type === 'music_recommendation'
+                    && (block.state === 'pending' || block.state === 'saving') && Date.now() < block.expiresAt;
             });
         },
         recordPlayback(id, state, fields) {
@@ -281,7 +348,13 @@
             evidence(id, state, fields);
         }
     };
-    window.nekoRecommendations = { offer: offerContent };
+    window.nekoRecommendations = {
+        offer: offerContent,
+        captureOfferContext() {
+            const epoch = lifecycleEpoch, character = currentCharacter();
+            return () => !disposed && epoch === lifecycleEpoch && character === currentCharacter();
+        }
+    };
     requestSnapshot();
     void flush();
 })();

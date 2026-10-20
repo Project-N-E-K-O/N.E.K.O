@@ -589,3 +589,179 @@ def test_restore_and_prechecked_writer_share_journal_lock_through_rollback(
     assert committed[:len(original)] == original
     assert len(committed) == len(original) + 1
     assert committed[-1]["payload"]["settings"]["proactiveMusicEnabled"] is fail_after_preferences_apply
+
+
+@pytest.mark.asyncio
+async def test_status_confirms_journal_after_an_older_http_receipt(isolated):
+    import httpx
+    from main_logic.recommendation_feedback import RecommendationStore
+    from services.proactive_feedback.host import owner_from_snapshot
+    from services.proactive_feedback.protocol import COMMUNITY_ORIGIN
+    from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, drain_settings, pending_settings
+    from tests.unit.test_proactive_feedback_runtime import receipt
+
+    saved = {"access_token": "fixture-token", "local_user_id": "original-owner", "base_url": COMMUNITY_ORIGIN}
+    owner = owner_from_snapshot(saved)
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    preferences.install_settings_attribution_context(attribution)
+    seed(isolated, proactiveMusicEnabled=False)
+    store = RecommendationStore(isolated.parent / "feedback.sqlite3")
+    store.create(owner, "Fixture", "older-turn", {"name": "Fixture", "artist": "Fixture", "url": "https://media.example/song"}, {})
+    post_entered, post_release = asyncio.Event(), asyncio.Event()
+
+    async def resolver():
+        return {"logged_in": True, "snapshot": dict(saved)}
+
+    async def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"user": {"id": "original-owner"}})
+        post_entered.set()
+        await post_release.wait()
+        return httpx.Response(200, json=receipt(json.loads(request.content)))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    runtime = ProactiveFeedbackRuntime(store, snapshot_provider=lambda: dict(saved), session_provider=resolver,
+                                       attribution_context=attribution, client=client,
+                                       settings_drain=drain_settings, settings_pending_provider=pending_settings)
+    sync = asyncio.create_task(runtime.sync_once())
+    entered, release = threading.Event(), threading.Event()
+    real_status = store.sync_status
+
+    def delayed_status(who):
+        entered.set()
+        assert release.wait(5)
+        return real_status(who)
+
+    status_task = None
+    try:
+        await asyncio.wait_for(post_entered.wait(), 3)
+        store.sync_status = delayed_status
+        status_task = asyncio.create_task(runtime.status())
+        assert await asyncio.to_thread(entered.wait, 3)
+        # The first journal read was empty, but this committed write precedes
+        # the old batch's actual ACK. There is never an all-empty instant.
+        assert await preferences.asave_global_conversation_settings({"proactiveMusicEnabled": True})
+        entry, = await preferences.apending_settings_changes()
+        post_release.set()
+        assert (await asyncio.wait_for(sync, 3))["state"] == "synced"
+        release.set()
+        status = await asyncio.wait_for(status_task, 3)
+        assert status["pending"] == 0 and status["acked"] == 1
+        assert status["settings_journal_pending"] == 1
+        assert not status["fully_synced"] and not status["local_queue_empty"]
+        assert await preferences.apending_settings_changes() == [entry]
+        assert (await runtime.sync_once())["state"] == "synced"
+        status = await runtime.status()
+        assert status["fully_synced"] and status["settings_journal_pending"] == 0
+        assert await preferences.apending_settings_changes() == []
+    finally:
+        post_release.set()
+        release.set()
+        tasks = [task for task in (sync, status_task) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await runtime.close()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_external_preferences_lock_timeout_preserves_journal_and_worker_retries(isolated, monkeypatch):
+    import sys
+    from pathlib import Path
+    import httpx
+    from main_logic.recommendation_feedback import RecommendationStore
+    from services.proactive_feedback.host import owner_from_snapshot
+    from services.proactive_feedback.protocol import COMMUNITY_ORIGIN
+    from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, drain_settings, pending_settings
+    from tests.unit.test_proactive_feedback_runtime import receipt
+
+    saved = {"access_token": "fixture-token", "local_user_id": "original-owner", "base_url": COMMUNITY_ORIGIN}
+    owner = owner_from_snapshot(saved)
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    preferences.install_settings_attribution_context(attribution)
+    seed(isolated, proactiveMusicEnabled=False)
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": True})
+    entry, = preferences.pending_settings_changes()
+    original = isolated.read_bytes()
+    # Exercise actual portalocker exclusion in another process. Only shorten
+    # this test's timeout; the production default and same-process RLock stay.
+    monkeypatch.setattr(preferences, "_PREFERENCES_LOCK_TIMEOUT_SECONDS", 0.01)
+    store = RecommendationStore(isolated.parent / "feedback.sqlite3")
+    store.create(owner, "Fixture", "older-turn", {"name": "Fixture", "artist": "Fixture", "url": "https://media.example/song"}, {})
+    first_upload, journal_upload = asyncio.Event(), asyncio.Event()
+    batches = []
+
+    async def resolver():
+        return {"logged_in": True, "snapshot": dict(saved)}
+
+    async def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"user": {"id": "original-owner"}})
+        batch = json.loads(request.content)
+        batches.append(batch)
+        (first_upload if len(batches) == 1 else journal_upload).set()
+        return httpx.Response(200, json=receipt(batch))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    runtime = ProactiveFeedbackRuntime(store, snapshot_provider=lambda: dict(saved), session_provider=resolver,
+                                       attribution_context=attribution, client=client,
+                                       settings_drain=drain_settings, settings_pending_provider=pending_settings)
+    child, request_seen = None, None
+    try:
+        child = await asyncio.create_subprocess_exec(
+            sys.executable, "-u", "-c",
+            "import sys\nfrom utils.preferences_store_lock import preferences_store_lock\n"
+            "with preferences_store_lock(sys.argv[1]):\n"
+            " print('LOCKED', flush=True)\n sys.stdin.readline()\n",
+            str(isolated), cwd=str(Path(__file__).resolve().parents[2]),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        assert (await asyncio.wait_for(child.stdout.readline(), 3)).strip() == b"LOCKED"
+        runtime.start()
+        request_seen = asyncio.create_task(first_upload.wait())
+        done, _ = await asyncio.wait({request_seen, runtime._task}, timeout=3, return_when=asyncio.FIRST_COMPLETED)
+        if runtime._task in done:
+            await runtime._task
+        assert request_seen in done
+        async with runtime._lock:
+            pass
+        status = await runtime.status()
+        assert status["running"] and not runtime._task.done()
+        assert status["settings_import_error"] == "settings_journal_unavailable"
+        assert status["settings_journal_pending"] is None and not status["fully_synced"]
+        assert status["pending"] == 0 and status["acked"] == 1
+        assert isolated.read_bytes() == original
+        _, stderr = await asyncio.wait_for(child.communicate(b"\n"), 3)
+        assert child.returncode == 0, stderr.decode()
+        runtime._wake.set()
+        await asyncio.wait_for(journal_upload.wait(), 3)
+        async with runtime._lock:
+            pass
+        item, = batches[1]["items"]
+        assert item["id"] == entry["id"] and item["payload"] == entry["payload"]
+        assert preferences.pending_settings_changes() == []
+        assert (await runtime.status())["fully_synced"]
+        await asyncio.wait_for(runtime.close(), 3)
+        assert runtime._task is None
+    finally:
+        if child is not None and child.returncode is None:
+            try:
+                await asyncio.wait_for(child.communicate(b"\n"), 3)
+            except TimeoutError:
+                child.kill()
+                await child.wait()
+        if request_seen is not None:
+            request_seen.cancel()
+            await asyncio.gather(request_seen, return_exceptions=True)
+        await runtime.close()
+        await client.aclose()

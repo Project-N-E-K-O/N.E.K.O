@@ -2289,6 +2289,7 @@
     I.clearMessages = function clearMessages() {
         cancelMessageReactions();
         I.state.messages = [];
+        window.dispatchEvent(new CustomEvent('react-chat-window:messages-cleared'));
         I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         I._sortKeySeq = 0;
         I.invalidatePendingGalgameRequest();

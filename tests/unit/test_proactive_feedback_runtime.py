@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from portalocker.exceptions import AlreadyLocked, LockException
 
 from services.proactive_feedback import host
 from services.proactive_feedback.protocol import COMMUNITY_ORIGIN, SCHEMA_VERSION, canonical_bytes, payload_hash, valid_receipt
@@ -728,5 +729,180 @@ async def test_resume_failures_preserve_blocked_and_do_not_publish_success(setup
             await runtime.resume_blocked_batch(**command)
         assert setup[1].blocked and setup[1].batch == batch and not setup[1].acks
     finally:
+        await runtime.close()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_worker_retries_settings_lock_timeout_without_discarding_facts(setup):
+    first, retried = asyncio.Event(), asyncio.Event()
+    loop = asyncio.get_running_loop()
+    calls = []
+
+    def drain(store):
+        calls.append(store)
+        if len(calls) == 1:
+            loop.call_soon_threadsafe(first.set)
+            raise AlreadyLocked("private lock path")
+        loop.call_soon_threadsafe(retried.set)
+
+    runtime, client = runtime_for(setup, settings_drain=drain)
+    try:
+        runtime.start()
+        await asyncio.wait_for(first.wait(), 3)
+        async with runtime._lock:
+            pass
+        assert not runtime._task.done() and setup[1].acks
+        status = await runtime.status()
+        assert status["running"] and status["settings_import_error"] == "settings_import_unavailable"
+        assert not status["fully_synced"] and "private" not in json.dumps(status)
+        runtime._wake.set()
+        await asyncio.wait_for(retried.wait(), 3)
+        async with runtime._lock:
+            pass
+        assert (await runtime.status())["fully_synced"]
+        await asyncio.wait_for(runtime.close(), 3)
+        assert runtime._task is None
+    finally:
+        await runtime.close()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_worker_retries_lock_timeout_before_settings_drain(setup):
+    failed, uploaded = asyncio.Event(), asyncio.Event()
+    loop = asyncio.get_running_loop()
+    calls = 0
+
+    def snapshot():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            loop.call_soon_threadsafe(failed.set)
+            raise LockException("private snapshot lock path")
+        return dict(setup[0])
+
+    async def handler(request):
+        response = await setup[7](request)
+        if request.method == "POST":
+            uploaded.set()
+        return response
+
+    runtime, client = runtime_for(setup, handler)
+    runtime.snapshot_provider = snapshot
+    try:
+        runtime.start()
+        await asyncio.wait_for(failed.wait(), 3)
+        # This read also proves the failed pass has released the worker lock.
+        status = await runtime.status()
+        assert status["running"] and status["pending"] == 2
+        runtime._wake.set()
+        await asyncio.wait_for(uploaded.wait(), 3)
+        async with runtime._lock:
+            pass
+        assert (await runtime.status())["fully_synced"]
+    finally:
+        await runtime.close()
+        await client.aclose()
+
+
+@pytest.mark.parametrize("read_number", [1, 2])
+@pytest.mark.parametrize("error", [AlreadyLocked, OSError, ValueError])
+@pytest.mark.asyncio
+async def test_status_failed_journal_confirmation_is_unknown(setup, read_number, error):
+    calls = 0
+
+    def pending():
+        nonlocal calls
+        calls += 1
+        if calls == read_number:
+            raise error("private journal details")
+        return []
+
+    runtime, client = runtime_for(setup, settings_pending_provider=pending)
+    try:
+        assert (await runtime.sync_once())["state"] == "synced"
+        status = await runtime.status()
+        assert calls == read_number
+        assert status["settings_journal_pending"] is None
+        assert status["settings_import_error"] == "settings_journal_unavailable"
+        assert not status["fully_synced"] and not status["local_queue_empty"]
+        assert "private" not in json.dumps(status)
+        # A later successful read needs no repair or mutation to report success.
+        assert (await runtime.status())["fully_synced"]
+    finally:
+        await runtime.close()
+        await client.aclose()
+
+
+@pytest.mark.parametrize("reason", ["journal", "outbox", "blocked", "import_error"])
+@pytest.mark.asyncio
+async def test_status_does_not_repeat_slow_journal_read_when_already_incomplete(setup, reason):
+    calls = []
+
+    def pending():
+        calls.append(True)
+        return [{"owner": setup[4]}] if reason == "journal" else []
+
+    runtime, client = runtime_for(setup, settings_pending_provider=pending)
+    if reason != "outbox":
+        setup[1].batch = None
+    if reason == "blocked":
+        setup[1].blocked = True
+    if reason == "import_error":
+        runtime._settings_import_error = "settings_import_unavailable"
+    try:
+        status = await runtime.status()
+        assert calls == [True] and not status["local_queue_empty"] and not status["fully_synced"]
+    finally:
+        await runtime.close()
+        await client.aclose()
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "close", "account", "token"])
+@pytest.mark.asyncio
+async def test_status_confirmation_respects_cancellation_close_and_identity(setup, interruption):
+    import threading
+
+    entered, release, exited = threading.Event(), threading.Event(), threading.Event()
+    calls = 0
+
+    def pending():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered.set()
+            try:
+                assert release.wait(5)
+            finally:
+                exited.set()
+        return []
+
+    runtime, client = runtime_for(setup, settings_pending_provider=pending)
+    task = None
+    try:
+        assert (await runtime.sync_once())["state"] == "synced"
+        task = asyncio.create_task(runtime.status())
+        assert await asyncio.to_thread(entered.wait, 3)
+        if interruption == "cancel":
+            task.cancel()
+        elif interruption == "close":
+            await asyncio.wait_for(runtime.close(), 3)
+        elif interruption == "account":
+            setup[0]["local_user_id"] = "user-b"
+        else:
+            setup[0]["access_token"] = "new-token"
+        release.set()
+        with pytest.raises(asyncio.CancelledError if interruption == "cancel" else SyncFailure):
+            await asyncio.wait_for(task, 3)
+        assert await asyncio.to_thread(exited.wait, 3)
+        assert not runtime._settings_lock.locked()
+        assert len(setup[1].acks) == 1
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
         await runtime.close()
         await client.aclose()

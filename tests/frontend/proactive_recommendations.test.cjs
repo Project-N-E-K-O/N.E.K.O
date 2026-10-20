@@ -119,7 +119,8 @@ test('late host startup requests a fresh snapshot and replays content once',t=>{
     assert.ok(s.broadcasts.filter(x=>x.type==='recommendation_request').length>=2);
     const rec=recommendation('news');
     const message={id:'content',role:'assistant',author:'Neko',time:'',blocks:[{type:'proactive_recommendation',recommendationId:rec.id,category:rec.category,content:rec.content,state:'pending',expiresAt:rec.expires_at*1000}]};
-    for(let i=0;i<2;i++)s.w.dispatchEvent(new s.w.CustomEvent('neko:chat-mirror',{detail:{type:'recommendation_snapshot',messages:[message]}}));
+    const request=s.broadcasts.filter(data=>data.type==='recommendation_request').at(-1);
+    for(let i=0;i<2;i++)s.w.dispatchEvent(new s.w.CustomEvent('neko:chat-mirror',{detail:{...request,type:'recommendation_snapshot',messages:[message]}}));
     assert.equal(s.messages.size,1);
 });
 

@@ -8,6 +8,7 @@ import threading
 import time
 
 import httpx
+from portalocker.exceptions import LockException
 
 from services.proactive_feedback import host
 from services.proactive_feedback.protocol import COMMUNITY_ORIGIN, MAX_RESPONSE_BYTES, canonical_bytes, valid_receipt
@@ -112,7 +113,7 @@ class ProactiveFeedbackRuntime:
                         try:
                             await asyncio.to_thread(self.settings_drain, self.store)
                             self._settings_import_error = ""
-                        except (OSError, sqlite3.Error, ValueError):
+                        except (OSError, sqlite3.Error, ValueError, LockException):
                             # A full outbox must still be uploaded to make room
                             # for the retained atomic settings journal entries.
                             self._settings_import_error = "settings_import_unavailable"
@@ -252,11 +253,23 @@ class ProactiveFeedbackRuntime:
                 try:
                     entries = await asyncio.to_thread(self.settings_pending_provider)
                     journal_pending = sum(entry["owner"] == owner for entry in entries)
-                except (OSError, sqlite3.Error, ValueError):
+                except (OSError, sqlite3.Error, ValueError, LockException):
                     journal_pending, journal_error = None, "settings_journal_unavailable"
             # Read the source journal before its destination. This short handoff
             # lock never waits for OAuth or HTTP, keeping diagnostics available.
             result = await asyncio.to_thread(self.store.sync_status, owner)
+            if (self.settings_pending_provider is not None and journal_pending == 0
+                    and not journal_error and not self._settings_import_error
+                    and result["pending"] == 0 and not result.get("blocked")):
+                # An older HTTP receipt can empty the outbox after a new settings
+                # write. Confirm the source is still empty rather than combining
+                # its earlier snapshot with the later destination snapshot. The
+                # handoff lock prevents our worker from moving new entries away.
+                try:
+                    entries = await asyncio.to_thread(self.settings_pending_provider)
+                    journal_pending = sum(entry["owner"] == owner for entry in entries)
+                except (OSError, sqlite3.Error, ValueError, LockException):
+                    journal_pending, journal_error = None, "settings_journal_unavailable"
             await self._guard(owner, (snapshot or {}).get("access_token"))
             error = journal_error or self._settings_import_error
             queue_empty = result["pending"] == 0 and journal_pending == 0 and not error and not result.get("blocked")
@@ -278,7 +291,7 @@ class ProactiveFeedbackRuntime:
             self._wake.clear()
             try:
                 await self.sync_once()
-            except (OSError, sqlite3.Error, RuntimeError, ValueError):
+            except (OSError, sqlite3.Error, RuntimeError, ValueError, LockException):
                 # Never emit token-bearing exception text; retain durable data.
                 pass
             try:

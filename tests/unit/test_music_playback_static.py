@@ -218,7 +218,14 @@ def test_proactive_music_reuses_one_card_scope_and_only_shortens_intermediate_at
     assert "nekoMusicRecommendations.offer(result.music_recommendation" in source
     assert "window.dispatchMusicPlayDetailed" not in source
     assert "window.dispatchMusicPlay(" not in source
-    assert "offeredMusicUrls.indexOf(link.url) === -1" in source
+    # The HTTP consumer must not feed unregistered material back into legacy
+    # attachments when registration or card rendering is unavailable. Runtime
+    # failure/late-response cases live in proactive_registration_failures.test.cjs.
+    trigger = source.split("async function triggerProactiveChat()", 1)[1].split(
+        "mod.triggerProactiveChat = triggerProactiveChat;", 1
+    )[0]
+    for bypass in ("_proactiveAttachmentBuffer", "_showMemeBubbles(", "_showProactiveSourceCards("):
+        assert bypass not in trigger
     assert "playback_grant" in controller
     assert "cardScopeId: 'recommendation:' + id" in controller
     assert "const MUSIC_MEDIA_LOAD_TIMEOUT_MS = 10000" in player_source

@@ -431,7 +431,7 @@
     function applyChatMirror(data) {
         if (!data || typeof data !== 'object') return;
         if (data.target && data.target !== MUSIC_COORD_SENDER_ID) return;
-        if (data.type === 'recommendation_request' || data.type === 'recommendation_snapshot') {
+        if (data.type === 'recommendation_request' || data.type === 'recommendation_snapshot' || data.type === 'recommendation_reset') {
             window.dispatchEvent(new CustomEvent('neko:chat-mirror', { detail: data }));
             return;
         }
