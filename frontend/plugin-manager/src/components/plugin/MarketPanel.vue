@@ -1257,10 +1257,10 @@ watch(
   */
   min-height: 100%;
   padding: 18px 18px 24px;
-  background: var(--el-bg-color);
-  border-radius: 16px;
-  border: 1px solid var(--el-border-color-lighter);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.04);
+  background: var(--surface-card);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .market-panel__heading {
@@ -1306,7 +1306,7 @@ watch(
   width: 32px;
   height: 32px;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--el-text-color-secondary);
   cursor: pointer;
@@ -1380,7 +1380,7 @@ watch(
   gap: 8px;
   padding: 6px 12px;
   border: 1px solid var(--el-color-primary-light-7);
-  border-radius: 6px;
+  border-radius: var(--radius-chip);
   background: var(--el-color-primary-light-9);
   font-size: 12px;
   color: var(--el-text-color-regular);

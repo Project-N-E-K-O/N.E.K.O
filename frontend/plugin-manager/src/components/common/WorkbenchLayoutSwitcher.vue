@@ -47,7 +47,7 @@ defineEmits<{
 }
 
 .wb-layout-switcher :deep(.el-radio-button__inner) {
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   padding: 5px 12px;
   font-size: 12px;
   font-weight: 500;

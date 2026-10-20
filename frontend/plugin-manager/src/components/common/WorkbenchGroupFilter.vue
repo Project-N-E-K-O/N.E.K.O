@@ -88,11 +88,11 @@ defineEmits<{
   display: flex;
   align-items: center;
   gap: 5px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   padding: 6px 14px;
   font-size: 13px;
   font-weight: 500;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
+  border: 1px solid var(--surface-border);
   transition:
     background-color 0.2s ease,
     border-color 0.2s ease,

@@ -215,7 +215,10 @@ function formatCount(count: number): string {
 <style scoped>
 .plugin-card {
   cursor: pointer;
-  border-radius: var(--plugin-entry-radius, 16px);
+  border-radius: var(--plugin-entry-radius, var(--radius-card));
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
   transition:
     transform 0.24s ease,
     box-shadow 0.24s ease,
@@ -224,7 +227,8 @@ function formatCount(count: number): string {
 
 .plugin-card:hover {
   transform: translateY(-2px);
-  box-shadow: var(--el-box-shadow);
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+  box-shadow: var(--surface-shadow-hover);
 }
 
 .market-plugin-card--installed {

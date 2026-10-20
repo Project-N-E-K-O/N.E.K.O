@@ -372,14 +372,9 @@ const {
   gap: 12px;
   width: 100%;
   padding: 14px 16px;
-  border-radius: 18px;
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color)),
-      color-mix(in srgb, var(--el-color-info) 9%, var(--el-bg-color))
-    );
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 12%, var(--el-border-color));
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
 }
 
 .embedded-heading__copy {
@@ -412,9 +407,9 @@ const {
   gap: 10px;
   flex-wrap: wrap;
   padding: 12px 14px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 78%, var(--el-bg-color));
-  border: 1px solid color-mix(in srgb, var(--el-color-info) 10%, var(--el-border-color));
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
 }
 
 .embedded-selection-summary__text {
@@ -424,7 +419,7 @@ const {
 
 .history-button {
   position: relative;
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   padding-inline: 18px;
 }
 
@@ -433,7 +428,10 @@ const {
 }
 
 .operations-card {
-  border-radius: 18px;
+  border-radius: var(--radius-card);
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .card-header {

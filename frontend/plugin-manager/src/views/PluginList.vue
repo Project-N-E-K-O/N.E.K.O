@@ -1488,15 +1488,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.plugin-workbench,
-.floating-select-bar {
-  /* ── Unified radius system (the floating bar is teleported out of the workbench) ── */
-  --radius-card: 16px;       /* large containers: card, dropdown */
-  --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
-  --radius-control: 10px;    /* buttons, inputs, interactive controls */
-  --radius-chip: 8px;
-}
-
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
   --drawer-width: clamp(320px, 42vw, 620px);
@@ -1623,6 +1614,14 @@ onUnmounted(() => {
 
 .plugin-list-card {
   border-radius: var(--radius-card);
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
+}
+
+.plugin-list-card :deep(> .el-card__header) {
+  background: var(--surface-card);
+  border-bottom-color: var(--surface-border);
 }
 
 .workbench-header {
@@ -1801,9 +1800,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 7px 14px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 60%, transparent);
+  border: 1px solid var(--surface-border);
   border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--el-bg-color) 92%, white);
+  background: var(--surface-card);
   color: var(--el-text-color-regular);
   font-size: 13px;
   font-weight: 500;
@@ -1910,7 +1909,7 @@ onUnmounted(() => {
   gap: 10px;
   padding: 24px;
   border: 1.5px dashed color-mix(in srgb, var(--el-color-primary) 46%, var(--el-border-color));
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   background: color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color));
   color: var(--el-text-color-secondary);
   cursor: pointer;
@@ -1988,14 +1987,9 @@ onUnmounted(() => {
   gap: 4px;
   padding: 6px 10px;
   border-radius: var(--radius-panel);
-  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
-  backdrop-filter: blur(20px) saturate(1.6);
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
-  box-shadow:
-    0 12px 40px color-mix(in srgb, var(--el-text-color-primary) 12%, transparent),
-    0 4px 16px color-mix(in srgb, var(--el-color-primary) 6%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 30%, transparent);
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow-hover);
 }
 
 .floating-select-bar__batch-divider {
@@ -2071,14 +2065,9 @@ onUnmounted(() => {
   gap: 6px;
   padding: 8px 12px;
   border-radius: var(--radius-panel);
-  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
-  backdrop-filter: blur(20px) saturate(1.6);
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 18%, var(--el-border-color));
-  box-shadow:
-    0 20px 60px color-mix(in srgb, var(--el-text-color-primary) 16%, transparent),
-    0 8px 24px color-mix(in srgb, var(--el-color-primary) 10%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 40%, transparent);
+  background: var(--surface-card);
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 18%, var(--surface-border));
+  box-shadow: var(--surface-shadow-hover);
 }
 
 .floating-select-bar__count {

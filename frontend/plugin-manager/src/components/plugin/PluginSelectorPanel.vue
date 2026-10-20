@@ -183,7 +183,10 @@ function isSelected(pluginId: string): boolean {
 
 <style scoped>
 .selector-card {
-  border-radius: 18px;
+  border-radius: var(--radius-card);
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .card-header {
@@ -305,9 +308,9 @@ function isSelected(pluginId: string): boolean {
 }
 
 .plugin-select-item--list {
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 10px;
-  background: var(--el-bg-color);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-control);
+  background: var(--surface-card);
   transition: all 0.2s ease;
 }
 
@@ -322,8 +325,7 @@ function isSelected(pluginId: string): boolean {
   z-index: 2;
   padding: 4px 6px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--el-bg-color) 88%, transparent);
-  backdrop-filter: blur(6px);
+  background: var(--surface-card);
 }
 
 .plugin-select-item :deep(.plugin-card) {

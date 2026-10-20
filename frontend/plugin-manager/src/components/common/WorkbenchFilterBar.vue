@@ -280,18 +280,14 @@ onBeforeUnmount(stopListeners)
 
 <style scoped>
 .wb-filter-bar {
-  --wb-radius-panel: 14px;
-  --wb-radius-control: 10px;
-  --wb-radius-chip: 8px;
+  --wb-radius-panel: var(--radius-panel);
+  --wb-radius-control: var(--radius-control);
+  --wb-radius-chip: var(--radius-chip);
   padding: 10px 14px;
-  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
   border-radius: var(--wb-radius-panel);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
-    0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+  box-shadow: none;
 }
 
 .wb-filter-bar__controls {
@@ -309,7 +305,7 @@ onBeforeUnmount(stopListeners)
 
 .wb-filter-bar__input :deep(.el-input__wrapper) {
   border-radius: var(--wb-radius-control);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--el-border-color) 50%, transparent) inset;
+  box-shadow: 0 0 0 1px var(--surface-border) inset;
   transition:
     box-shadow 0.2s ease,
     border-color 0.2s ease;
@@ -372,9 +368,9 @@ onBeforeUnmount(stopListeners)
   align-items: center;
   gap: 6px;
   padding: 7px 14px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 60%, transparent);
+  border: 1px solid var(--surface-border);
   border-radius: var(--wb-radius-control);
-  background: color-mix(in srgb, var(--el-bg-color) 90%, white);
+  background: var(--surface-card);
   color: var(--el-text-color-regular);
   font-size: 13px;
   font-weight: 500;
@@ -424,15 +420,10 @@ onBeforeUnmount(stopListeners)
   z-index: 2100;
   width: 400px;
   padding: 16px;
-  border-radius: 16px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
-  background: color-mix(in srgb, var(--el-bg-color) 86%, transparent);
-  backdrop-filter: blur(24px) saturate(1.8);
-  -webkit-backdrop-filter: blur(24px) saturate(1.8);
-  box-shadow:
-    0 24px 64px color-mix(in srgb, var(--el-text-color-primary) 16%, transparent),
-    0 8px 24px color-mix(in srgb, var(--el-color-primary) 6%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 30%, transparent);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--surface-border);
+  background: var(--surface-card);
+  box-shadow: var(--surface-shadow-hover);
   transform-origin: top left;
 }
 
@@ -526,9 +517,9 @@ onBeforeUnmount(stopListeners)
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--el-bg-color) 90%, white);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-chip);
+  background: var(--surface-card);
   color: var(--el-text-color-primary);
   font-size: 12px;
   cursor: pointer;

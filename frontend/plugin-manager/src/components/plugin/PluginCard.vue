@@ -147,7 +147,10 @@ const hasUpdate = computed<boolean>(() => {
 .plugin-card {
   container-type: inline-size;
   cursor: pointer;
-  border-radius: var(--plugin-entry-radius, 16px);
+  border-radius: var(--plugin-entry-radius, var(--radius-card));
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
   transition:
     transform 0.24s ease,
     box-shadow 0.24s ease,
@@ -156,11 +159,14 @@ const hasUpdate = computed<boolean>(() => {
 
 .plugin-card:hover {
   transform: translateY(-2px);
-  box-shadow: var(--el-box-shadow);
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+  box-shadow: var(--surface-shadow-hover);
 }
 
-.plugin-card--selected {
+.plugin-card--selected,
+.plugin-card--selected:hover {
   border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
 
 .plugin-card-header {

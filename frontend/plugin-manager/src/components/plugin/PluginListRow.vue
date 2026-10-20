@@ -143,7 +143,10 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 <style scoped>
 .plugin-list-row-card {
   cursor: pointer;
-  border-radius: var(--plugin-entry-radius, 18px);
+  border-radius: var(--plugin-entry-radius, var(--radius-card));
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
   transition:
     transform 0.24s ease,
     box-shadow 0.24s ease,
@@ -152,14 +155,14 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 
 .plugin-list-row-card:hover {
   transform: translateY(-2px);
-  box-shadow: var(--el-box-shadow-light);
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+  box-shadow: var(--surface-shadow-hover);
 }
 
-.plugin-list-row-card--selected {
+.plugin-list-row-card--selected,
+.plugin-list-row-card--selected:hover {
   border-color: var(--el-color-primary);
-  box-shadow:
-    0 14px 28px color-mix(in srgb, var(--el-color-primary) 14%, transparent),
-    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
 
 .plugin-list-row-card__content {
@@ -216,9 +219,9 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 16px;
   padding: 12px 14px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 72%, white);
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 8%, var(--el-border-color));
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
 }
 
 .plugin-list-row-card__meta-item {
