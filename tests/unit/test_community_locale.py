@@ -7,6 +7,7 @@ from utils import community_locale, language_utils
 
 @pytest.fixture(autouse=True)
 def isolate_device_probes(monkeypatch):
+    system_language_probe = language_utils._get_system_language
     monkeypatch.setattr(language_utils, "_get_system_language", lambda: "en")
     monkeypatch.setattr(language_utils, "is_china_region", lambda: False)
     monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: None)
@@ -19,6 +20,7 @@ def isolate_device_probes(monkeypatch):
 
     monkeypatch.setattr(language_utils, "get_global_language_full", reject_interface_probe)
     monkeypatch.setattr(language_utils, "_get_steam_language", reject_interface_probe)
+    return system_language_probe
 
 
 @pytest.mark.parametrize("device_language, expected", [
@@ -27,16 +29,33 @@ def isolate_device_probes(monkeypatch):
     ("ja-JP", "ja"), ("ko-KR", "ko"), ("pt-BR", "pt"),
     ("ru-RU", "ru"), ("es-ES", "es"), ("en-US", "en"), ("fr-FR", "en"),
 ])
-def test_bootstrap_normalizes_device_language(monkeypatch, device_language, expected):
-    monkeypatch.setattr(language_utils, "_get_system_language", lambda: device_language)
-    assert community_locale.community_bootstrap_locale_hints() == {"locale": expected}
+def test_bootstrap_normalizes_device_language(
+    monkeypatch, isolate_device_probes, device_language, expected,
+):
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: device_language)
+    assert community_locale.community_bootstrap_locale_hints()["locale"] == expected
 
 
-def test_spanish_device_is_independent_of_english_interface(monkeypatch):
-    monkeypatch.setattr(language_utils, "_get_system_language", lambda: "es")
+def test_spanish_device_is_independent_of_english_interface(monkeypatch, isolate_device_probes):
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
     monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: "es-ES")
     monkeypatch.setattr(language_utils, "get_global_language_full", lambda: "en")
     assert community_locale.community_bootstrap_locale_hints() == {"locale": "es", "region": "ES"}
+
+
+@pytest.mark.parametrize("source", ["windows", "macos", "process", "environment"])
+def test_macao_bootstrap_preserves_raw_locale(monkeypatch, isolate_device_probes, source):
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    if source == "windows":
+        monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: "zh-MO")
+    elif source == "macos":
+        monkeypatch.setattr(language_utils, "_get_macos_locale", lambda: "zh-MO")
+    elif source == "process":
+        monkeypatch.setattr(community_locale.locale, "getlocale", lambda: ("zh_MO", None))
+    else:
+        monkeypatch.setenv("LANG", "zh_MO.UTF-8")
+    assert community_locale.community_bootstrap_locale_hints() == {"locale": "zh-TW", "region": "MO"}
 
 
 def test_china_region_is_separate_from_language(monkeypatch):
