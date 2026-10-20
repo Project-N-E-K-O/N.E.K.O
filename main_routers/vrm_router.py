@@ -885,8 +885,8 @@ async def get_model_expressions(model_name: str):
             "note": "这是常见表情列表，实际表情以模型为准"
         }
 
-    except json.JSONDecodeError as e:
-        logger.warning(f"情感配置文件 JSON 损坏，回退到常见表情列表: {e}")
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning(f"情感配置文件损坏，回退到常见表情列表: {e}")
         return {
             "success": True,
             "expressions": common_expressions,
