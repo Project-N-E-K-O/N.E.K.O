@@ -519,11 +519,13 @@
     }
 
     function escapeMarkdownDestination(value) {
-        return String(value || '').replace(/[()[\]\\]/g, function (char) { return '%' + char.charCodeAt(0).toString(16).toUpperCase(); });
+        // Escape Markdown's entity syntax without encoding URL query separators.
+        return String(value || '').replace(/[()[\]\\]/g, function (char) { return '%' + char.charCodeAt(0).toString(16).toUpperCase(); })
+            .replace(/&/g, function (char) { return '\\' + char; });
     }
 
     function escapeRecommendationMarkdown(value) {
-        return escapeMarkdown(value).replace(/~/g, '\\~');
+        return escapeMarkdown(value).replace(/[~&<]/g, function (char) { return '\\' + char; });
     }
 
     function extractBlocksPlainText(message) {

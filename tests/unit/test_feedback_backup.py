@@ -3,6 +3,9 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import threading
+import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -85,6 +88,149 @@ def test_timeout_preserves_owned_partial_directory_without_claiming_success(tmp_
     assert (output / "feedback.sqlite3").exists()
     assert not (output / "manifest.json").exists()
     assert store.sync_status(OWNER)["pending"] == 1
+
+
+@contextmanager
+def observe_locked_source(store, monkeypatch, phase, *, on_enter=lambda: None, on_busy=lambda: None):
+    """Hold a real source writer, including between actual backup page steps."""
+    if phase == "between_steps":
+        with sqlite3.connect(store.path) as db:
+            # More than 256 pages ensures a real nonterminal backup step.
+            db.execute("CREATE TABLE copy_work(value BLOB)")
+            db.executemany("INSERT INTO copy_work VALUES (?)", [(b"x" * 4096,)] * 800)
+    live_bytes = store.path.read_bytes()
+    writer = sqlite3.connect(store.path, timeout=0, check_same_thread=False)
+    locked, entered = threading.Event(), threading.Event()
+    statuses = []
+
+    def lock():
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("UPDATE feedback_sync_batches SET attempts=999")
+        locked.set()
+
+    if phase == "before_copy":
+        lock()
+
+    class ObservedConnection(sqlite3.Connection):
+        def backup(self, target, **kwargs):
+            on_enter()
+            entered.set()
+            progress = kwargs["progress"]
+
+            def observe(status, remaining, total):
+                statuses.append(status)
+                if phase == "between_steps" and not locked.is_set() and status == sqlite3.SQLITE_OK:
+                    lock()
+                if status == sqlite3.SQLITE_BUSY:
+                    on_busy()
+                return progress(status, remaining, total)
+
+            return super().backup(target, **{**kwargs, "progress": observe})
+
+    def connect(*args, **kwargs):
+        return sqlite3.connect(*args, **kwargs, factory=ObservedConnection)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(backup, "sqlite3", SimpleNamespace(connect=connect, OperationalError=sqlite3.OperationalError))
+        try:
+            yield SimpleNamespace(writer=writer, locked=locked, entered=entered,
+                                  statuses=statuses, live_bytes=live_bytes)
+        finally:
+            writer.rollback()
+            writer.close()
+
+
+@pytest.mark.parametrize("phase", ["before_copy", "between_steps"])
+def test_real_source_lock_cannot_hide_copy_deadline(tmp_path, monkeypatch, phase):
+    store = create_store(tmp_path)
+    batch = store.prepare_batch(OWNER)
+    output = tmp_path / "locked-timeout"
+    started = [None]
+    # Exclude staging filesystem latency from this copy-specific regression;
+    # once SQLite starts, the deadline follows the actual monotonic clock.
+    real_monotonic = time.monotonic
+    patch_module_clock(monkeypatch, backup, monotonic=lambda: (
+        real_monotonic() - started[0] if started[0] is not None else 0))
+    finished, errors = threading.Event(), []
+
+    def copy():
+        try:
+            backup.backup_feedback(store.path, output, timeout_seconds=0.2)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    with observe_locked_source(store, monkeypatch, phase,
+                               on_enter=lambda: started.__setitem__(0, real_monotonic())) as observed:
+        worker = threading.Thread(target=copy)
+        worker.start()
+        try:
+            assert observed.entered.wait(timeout=10)
+            assert observed.locked.wait(timeout=10)
+            # Generous watchdog (15x the copy budget), not a tight elapsed-time
+            # assertion. The legacy five-second busy wait cannot reach progress
+            # before this boundary; cleanup releases its writer before joining.
+            completed_while_locked = finished.wait(timeout=3)
+        finally:
+            observed.writer.rollback()
+            worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert completed_while_locked, "SQLite busy wait hid the copy deadline"
+        assert len(errors) == 1 and isinstance(errors[0], TimeoutError)
+        assert sqlite3.SQLITE_BUSY in observed.statuses
+        assert store.path.read_bytes() == observed.live_bytes
+    assert (output / "backup-in-progress.json").is_file()
+    assert (output / "feedback.sqlite3").exists()
+    assert not (output / "manifest.json").exists()
+    assert store.prepare_batch(OWNER) == batch
+    assert store.sync_status(OWNER)["attempts"] == 0
+    # The timed-out partial is preserved, and an independent retry can succeed.
+    manifest = backup.backup_feedback(store.path, tmp_path / "unlocked-retry")
+    assert manifest["integrity"] == "ok"
+
+
+@pytest.mark.parametrize("phase", ["before_copy", "between_steps"])
+def test_real_source_lock_released_after_busy_callback_still_succeeds(tmp_path, monkeypatch, phase):
+    store = create_store(tmp_path)
+    batch = store.prepare_batch(OWNER)
+    output = tmp_path / "released-lock"
+    busy, released = threading.Event(), threading.Event()
+    release_errors = []
+
+    def on_busy():
+        busy.set()
+        assert released.wait(timeout=10)
+
+    with observe_locked_source(store, monkeypatch, phase, on_busy=on_busy) as observed:
+        def release():
+            try:
+                assert busy.wait(timeout=10)
+                observed.writer.rollback()
+            except BaseException as error:
+                release_errors.append(error)
+            finally:
+                released.set()
+
+        releaser = threading.Thread(target=release)
+        releaser.start()
+        try:
+            manifest = backup.backup_feedback(store.path, output)
+        finally:
+            busy.set()
+            releaser.join(timeout=10)
+        assert not releaser.is_alive()
+        assert release_errors == []
+        assert observed.locked.is_set() and sqlite3.SQLITE_BUSY in observed.statuses
+        assert store.path.read_bytes() == observed.live_bytes
+    assert (output / "backup-in-progress.json").is_file()
+    assert json.loads((output / "manifest.json").read_text(encoding="utf-8")) == manifest
+    assert hashlib.sha256((output / "feedback.sqlite3").read_bytes()).hexdigest() == manifest["sha256"]
+    with sqlite3.connect(output / "feedback.sqlite3") as snapshot:
+        assert snapshot.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert snapshot.execute("SELECT attempts FROM feedback_sync_batches").fetchone()[0] == 0
+        assert json.loads(snapshot.execute("SELECT body FROM feedback_sync_batches").fetchone()[0]) == batch
+    assert store.prepare_batch(OWNER) == batch
 
 
 def test_deadline_interrupts_real_sql_verification_after_backup(tmp_path, monkeypatch):

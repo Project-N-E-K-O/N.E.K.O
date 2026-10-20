@@ -64,8 +64,10 @@ def backup_feedback(database: Path, output_dir: Path, *, timeout_seconds: float 
         return int(time.monotonic() >= deadline)
 
     # Source URI read-only is enforced by SQLite, including for a live WAL database.
-    with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=5)) as original:
-        with closing(sqlite3.connect(target, timeout=5)) as snapshot:
+    # Let backup's retry/progress loop check the deadline instead of hiding a
+    # fixed busy wait inside a SQLite call.
+    with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=0)) as original:
+        with closing(sqlite3.connect(target, timeout=0)) as snapshot:
             original.backup(snapshot, pages=256, progress=progress, sleep=0.05)
             check_deadline()
             snapshot.set_progress_handler(sql_progress, 10_000)

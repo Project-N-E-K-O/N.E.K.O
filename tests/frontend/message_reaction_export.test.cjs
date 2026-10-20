@@ -3,6 +3,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
+const { createRequire } = require('node:module');
+const { pathToFileURL } = require('node:url');
+const frontendRequire = createRequire(path.join(__dirname, '../../frontend/react-neko-chat/package.json'));
 
 const source = process.env.CHAT_EXPORT_REVISION
   ? require('node:child_process').execFileSync('git', ['show', `${process.env.CHAT_EXPORT_REVISION}:static/app/app-chat-export.js`],
@@ -81,6 +84,139 @@ function recommendation(kind, fields = {}) {
   return message({ id: kind === 'music' ? 'music-recommendation-test' : 'proactive-recommendation-test',
     role: 'assistant', reaction: undefined, blocks: [{ ...block, ...fields }] });
 }
+
+let standardMarkdownRenderer;
+async function renderStandardMarkdown(markdown) {
+  if (!standardMarkdownRenderer) {
+    standardMarkdownRenderer = import(pathToFileURL(frontendRequire.resolve('react-markdown')).href).then(({ default: Markdown }) => {
+      const React = frontendRequire('react');
+      const { renderToStaticMarkup } = frontendRequire('react-dom/server');
+      return text => renderToStaticMarkup(React.createElement(Markdown, { children: text }));
+    });
+  }
+  return (await standardMarkdownRenderer)(markdown);
+}
+
+function readExportHtml(html) {
+  const { JSDOM } = frontendRequire('jsdom');
+  const dom = new JSDOM(html);
+  try {
+    const body = dom.window.document.body;
+    return { text: body.textContent,
+      links: Array.from(body.querySelectorAll('a'), link => ({ text: link.textContent, href: link.getAttribute('href') })),
+      images: Array.from(body.querySelectorAll('img'), image => ({ alt: image.getAttribute('alt'), src: image.getAttribute('src') })) };
+  } finally { dom.window.close(); }
+}
+
+async function exportedRecommendation(message) {
+  const before = JSON.stringify(message);
+  const f = fixture([message]), options = { messageIds: [message.id], format: 'markdown' };
+  const preview = await f.api.buildCompactInlinePreview(options);
+  await f.api.copyCompactInlineSelection(options);
+  await f.api.downloadCompactInlineSelection(options);
+  const markdown = await f.downloads[0].text();
+  const copiedMarkdown = f.clipboard[0];
+  const comparable = [markdown, copiedMarkdown].map(text => {
+    const lines = text.replace(/\r\n/g, '\n').split('\n');
+    assert.equal(lines[0], '# Project N.E.K.O Conversation Export');
+    assert.equal(lines[1], '');
+    assert.match(lines[2], /^Exported At: \d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}:\d{2}\s(?:AM|PM)$/);
+    assert.equal(lines[3], '');
+    // Each public action creates its own timestamp; only this known header may differ.
+    lines[2] = 'Exported At: <generated>';
+    return lines.join('\n');
+  });
+  assert.equal(comparable[0], comparable[1], 'copy and download must deliver the same Markdown body');
+  assert.equal(JSON.stringify(message), before, 'serialization cannot change live recommendation content or URLs');
+  assert.equal(f.errors.length, 0);
+  return { markdown, rendered: [readExportHtml(preview.previewDocument),
+    readExportHtml(await renderStandardMarkdown(copiedMarkdown)), readExportHtml(await renderStandardMarkdown(markdown))] };
+}
+
+function assertSameUrlMeaning(actual, expected) {
+  const left = new URL(actual, 'http://localhost/chat'), right = new URL(expected, 'http://localhost/chat');
+  assert.equal(left.origin, right.origin);
+  assert.equal(decodeURI(left.pathname), decodeURI(right.pathname));
+  assert.deepEqual(Array.from(left.searchParams), Array.from(right.searchParams), 'query separators and encoded values must retain their meaning');
+  assert.equal(decodeURIComponent(left.hash), decodeURIComponent(right.hash));
+}
+
+for (const [name, title, sourceName, url] of [
+  ['entities', 'Music &copy; 2026', 'A &amp; B', 'https://example.test/story?x=1&copy;=2#literal&reg;'],
+  ['ordinary ampersands', 'Rock & Roll', 'A & B', 'https://example.test/story?x=1&copy=2#anchor'],
+  ['literal autolinks', 'Read <https://example.test/inside> literally', 'The <b> tag is text', 'https://example.test/story'],
+  ['encoded values', '100% original &#169;', 'Codes &#x26; and %26', 'https://example.test/doc%28one%29?literal=%26copy%3B&next=one%2526two#hash%26tail'],
+  ['parentheses', 'A (parenthetical) [title]', 'Source &amp; reference', 'https://example.test/doc(1)[draft]?x=(left)&q=bracket[ok]#anchor(2)'],
+  ['Unicode', '猫 &amp; 音乐 🌟', '日本語 &copy; 中文', 'https://例子.测试/音乐?q=猫&lang=中文#段落&copy;'],
+]) {
+  test(`recommendation Markdown preserves ${name} in external renderers and its own preview`, async () => {
+    const result = await exportedRecommendation(recommendation('news', { content: { title, source: sourceName, url } }));
+    for (const rendered of result.rendered) {
+      assert.ok(rendered.text.includes(title));
+      assert.ok(rendered.text.includes(sourceName));
+      assert.equal(rendered.links.length, 1, 'literal text must not introduce another link');
+      assert.equal(rendered.links[0].text, title);
+      assertSameUrlMeaning(rendered.links[0].href, url);
+      if (name === 'encoded values') assert.equal(rendered.links[0].href, new URL(url).href, 'existing percent escapes must not be encoded again');
+      assert.equal(rendered.images.length, 0);
+    }
+  });
+}
+
+test('music Markdown preserves literal metadata and the cover URL without exporting its playback URL', async () => {
+  const track = { name: 'Music &copy; <notes>', artist: 'A &amp; B', url: 'https://example.test/private-audio.mp3',
+    cover: 'https://example.test/cover(1).png?literal=%26copy%3B&copy;=2#cover&reg;' };
+  const result = await exportedRecommendation(recommendation('music', { track }));
+  for (const rendered of result.rendered) {
+    assert.ok(rendered.text.includes(track.name));
+    assert.ok(rendered.text.includes(track.artist));
+    assert.equal(rendered.links.length, 0);
+    assert.equal(rendered.images.length, 1);
+    assert.equal(rendered.images[0].alt, track.name);
+    assertSameUrlMeaning(rendered.images[0].src, track.cover);
+  }
+  assert.equal(result.markdown.includes(track.url), false);
+});
+
+for (const state of ['pending', 'accepted']) {
+  test(`meme Markdown keeps ${state} image consent while preserving literal text and URL semantics`, async () => {
+    const content = { title: 'A cat &copy; <waving>', source: 'A &amp; B',
+      url: 'https://example.test/cat(1).png?literal=%26copy%3B&copy;=2#cat&reg;' };
+    const result = await exportedRecommendation(recommendation('meme', { category: 'meme', state, content }));
+    for (const rendered of result.rendered) {
+      assert.ok(rendered.text.includes(content.title));
+      assert.ok(rendered.text.includes(content.source));
+      assert.equal(rendered.links.length, 1);
+      assertSameUrlMeaning(rendered.links[0].href, content.url);
+      assert.equal(rendered.images.length, state === 'accepted' ? 1 : 0);
+      if (state === 'accepted') {
+        const proxy = new URL(rendered.images[0].src, 'http://localhost/chat');
+        assert.equal(proxy.pathname, '/api/meme/proxy-image');
+        assert.equal(proxy.searchParams.get('url'), content.url);
+        assert.equal(rendered.images[0].alt, content.title);
+      }
+    }
+  });
+}
+
+test('screen-observation Markdown remains literal text without adding links or images', async () => {
+  const title = 'Read <https://example.test/inside> &copy; literally.';
+  const result = await exportedRecommendation(recommendation('vision', { category: 'vision', content: { title, source: '', url: '' } }));
+  for (const rendered of result.rendered) {
+    assert.ok(rendered.text.includes(title));
+    assert.equal(rendered.links.length, 0);
+    assert.equal(rendered.images.length, 0);
+  }
+});
+
+test('recommendation escaping leaves pre-existing text and link Markdown unchanged', async () => {
+  const text = 'Existing **Markdown** &copy; <https://example.test>.';
+  const title = 'Old &copy; link', url = 'https://example.test/story?x=1&copy;=2';
+  const f = fixture([message({ reaction: undefined, blocks: [{ type: 'text', text }, { type: 'link', title, url }] })]);
+  await f.api.copyCompactInlineSelection({ messageIds: ['user-1'], format: 'markdown' });
+  assert.ok(f.clipboard[0].includes(text));
+  assert.ok(f.clipboard[0].includes('[' + title + '](' + url + ')'));
+});
 
 for (const kind of ['music', 'news', 'vision']) {
   test(`${kind} recommendation metadata survives normal Markdown preview, copy and download`, async () => {
