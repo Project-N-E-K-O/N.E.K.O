@@ -4,30 +4,17 @@ import pytest
 from unittest.mock import Mock
 
 from utils import community_locale, language_utils
-
-_REAL_REGION_PROBE = language_utils.is_china_region
-
-
-@pytest.fixture
-def real_region_probe(monkeypatch):
-    monkeypatch.setattr(language_utils, "is_china_region", _REAL_REGION_PROBE)
-    # Keep region initialization real without probing unrelated UI/Steam state.
-    monkeypatch.setattr(language_utils, "_global_language_initialized", True)
-    monkeypatch.setattr(language_utils, "_global_region_initialized", False)
-    monkeypatch.setattr(language_utils, "_global_region", None)
-    monkeypatch.setattr(language_utils, "_global_probe_next_retry_monotonic", 0.0)
-    monkeypatch.setattr(language_utils, "_global_probe_retry_delay_seconds", 1.0)
-
+from tests.fake_clock import patch_module_clock
 
 @pytest.fixture(autouse=True)
 def isolate_device_probes(monkeypatch):
     system_language_probe = language_utils._get_system_language
     monkeypatch.setattr(language_utils, "_get_system_language", lambda: "en")
-    monkeypatch.setattr(language_utils, "is_china_region", lambda: False)
     monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: None)
     monkeypatch.setattr(language_utils, "_get_macos_locale", lambda: None)
     monkeypatch.setattr(community_locale.locale, "getlocale", lambda: (None, None))
     monkeypatch.delenv("LANG", raising=False)
+    monkeypatch.delenv("NEKO_IS_CHINA_REGION", raising=False)
 
     def reject_interface_probe():
         pytest.fail("Account initialization must use the device, not the interface language")
@@ -73,7 +60,7 @@ def test_macao_bootstrap_preserves_raw_locale(monkeypatch, isolate_device_probes
 
 
 def test_china_region_is_separate_from_language(monkeypatch):
-    monkeypatch.setattr(language_utils, "is_china_region", lambda: True)
+    monkeypatch.setenv("NEKO_IS_CHINA_REGION", "true")
     assert community_locale.community_bootstrap_locale_hints() == {"locale": "en", "region": "CN"}
 
 
@@ -128,7 +115,7 @@ def test_bootstrap_samples_transient_device_probe_once_and_retries_next_call(
     ("es-ES", {"locale": "es", "region": "ES"}),
 ])
 def test_bootstrap_honors_negative_region_override(
-    monkeypatch, isolate_device_probes, real_region_probe, override, device_locale, expected,
+    monkeypatch, isolate_device_probes, override, device_locale, expected,
 ):
     monkeypatch.setenv("NEKO_IS_CHINA_REGION", override)
     monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
@@ -138,7 +125,7 @@ def test_bootstrap_honors_negative_region_override(
 
 @pytest.mark.parametrize("override", ["true", "TRUE", "1", "yes", "on"])
 def test_bootstrap_honors_positive_region_override(
-    monkeypatch, isolate_device_probes, real_region_probe, override,
+    monkeypatch, isolate_device_probes, override,
 ):
     monkeypatch.setenv("NEKO_IS_CHINA_REGION", override)
     monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
@@ -148,7 +135,7 @@ def test_bootstrap_honors_positive_region_override(
 
 @pytest.mark.parametrize("override", [None, "", "invalid"])
 def test_bootstrap_region_auto_detection_keeps_china(
-    monkeypatch, isolate_device_probes, real_region_probe, override,
+    monkeypatch, isolate_device_probes, override,
 ):
     if override is None:
         monkeypatch.delenv("NEKO_IS_CHINA_REGION", raising=False)
@@ -157,3 +144,62 @@ def test_bootstrap_region_auto_detection_keeps_china(
     monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
     monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: "zh-CN")
     assert community_locale.community_bootstrap_locale_hints() == {"locale": "zh-CN", "region": "CN"}
+
+
+def test_bootstrap_device_region_recovers_during_global_probe_backoff(
+    monkeypatch, isolate_device_probes,
+):
+    patch_module_clock(monkeypatch, language_utils, monotonic=lambda: 100.0)
+    monkeypatch.delenv("NEKO_IS_CHINA_REGION", raising=False)
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    monkeypatch.setattr(language_utils, "_global_language_initialized", True)
+    monkeypatch.setattr(language_utils, "_global_region_initialized", False)
+    monkeypatch.setattr(language_utils, "_global_region", None)
+    monkeypatch.setattr(language_utils, "_global_probe_next_retry_monotonic", 0.0)
+    monkeypatch.setattr(language_utils, "_global_probe_retry_delay_seconds", 1.0)
+    windows = Mock(side_effect=[None, "en-CN"])
+    monkeypatch.setattr(language_utils, "_get_windows_locale", windows)
+
+    assert language_utils.get_global_region() == "non-china"
+    retry_at = language_utils._global_probe_next_retry_monotonic
+    assert retry_at > 100.0
+    assert language_utils._global_region_initialized is False
+    assert community_locale.community_bootstrap_locale_hints() == {"locale": "en", "region": "CN"}
+    assert windows.call_count == 2
+    assert language_utils._global_region == "non-china"
+    assert language_utils._global_region_initialized is False
+    assert language_utils._global_probe_next_retry_monotonic == retry_at
+
+
+@pytest.mark.parametrize("cached_region, device_locale, expected", [
+    ("china", "es-ES", {"locale": "es", "region": "ES"}),
+    ("non-china", "en-CN", {"locale": "en", "region": "CN"}),
+])
+def test_bootstrap_current_device_hints_do_not_read_or_change_global_region(
+    monkeypatch, isolate_device_probes, cached_region, device_locale, expected,
+):
+    monkeypatch.delenv("NEKO_IS_CHINA_REGION", raising=False)
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    monkeypatch.setattr(language_utils, "_global_region", cached_region)
+    monkeypatch.setattr(language_utils, "_global_region_initialized", True)
+    monkeypatch.setattr(language_utils, "_get_windows_locale", lambda: device_locale)
+
+    assert community_locale.community_bootstrap_locale_hints() == expected
+    assert language_utils._global_region == cached_region
+    assert language_utils._global_region_initialized is True
+
+
+@pytest.mark.parametrize("device_locale, expected", [
+    ("en-u-ca-gregory", {"locale": "en"}),
+    ("ja-u-ca-japanese", {"locale": "ja"}),
+    ("ja-x-US", {"locale": "ja"}),
+    ("ja-JP-u-ca-japanese", {"locale": "ja", "region": "JP"}),
+    ("zh-Hant-u-ca-chinese", {"locale": "zh-TW"}),
+    ("en-001-u-ca-gregory", {"locale": "en"}),
+])
+def test_bootstrap_does_not_treat_locale_extensions_as_regions(
+    monkeypatch, isolate_device_probes, device_locale, expected,
+):
+    monkeypatch.setattr(language_utils, "_get_system_language", isolate_device_probes)
+    monkeypatch.setenv("LANG", device_locale)
+    assert community_locale.community_bootstrap_locale_hints() == expected

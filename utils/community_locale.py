@@ -17,9 +17,9 @@ def community_bootstrap_locale_hints() -> dict[str, str]:
         _get_macos_locale,
         _get_system_language,
         _get_windows_locale,
+        _probe_china_region,
         _read_system_locale_signal_once,
         _system_locale_probe_generation,
-        is_china_region,
     )
 
     # Share even failed probes for this call, while allowing the next login
@@ -35,7 +35,9 @@ def community_bootstrap_locale_hints() -> dict[str, str]:
             )
         except (ValueError, TypeError):
             system_locale = ""
-        china_region = is_china_region()
+        # Bootstrap needs this device snapshot, not the global region cache or
+        # its retry cooldown. Reuse the shared probe without changing globals.
+        china_region = _probe_china_region().value is True
     traditional_prefixes = ("zh-tw", "zh-hk", "zh-mo", "zh-hant")
     device_locale = system_locale.replace("_", "-").lower()
     # The shared language probe collapses zh-MO to zh. Retain the device's
@@ -54,9 +56,19 @@ def community_bootstrap_locale_hints() -> dict[str, str]:
         hints["region"] = "CN"
     else:
         parts = re.split(r"[-_]", system_locale.split(".", 1)[0])
-        region = next((part.upper() for part in parts[1:] if re.fullmatch(r"[A-Za-z]{2}", part)), None)
-        # A negative authoritative China verdict must not be overridden by
-        # extracting CN from the raw locale again.
-        if region and region != "CN":
+        region = None
+        for part in parts[1:]:
+            # Extension/private-use keys (e.g. u-ca or x-US) are not regions.
+            if len(part) == 1:
+                break
+            if re.fullmatch(r"[A-Za-z]{2}", part):
+                region = part.upper()
+                break
+        # The shared China-source policy can also return False for en-CN.
+        # Only an explicit non-China override suppresses a device CN hint.
+        non_china_override = os.environ.get("NEKO_IS_CHINA_REGION", "").strip().lower() in {
+            "0", "false", "no", "off",
+        }
+        if region and (region != "CN" or not non_china_override):
             hints["region"] = region
     return hints
