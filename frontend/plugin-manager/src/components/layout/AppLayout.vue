@@ -551,7 +551,7 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 
-:global(html.dark) .titlebar-paw {
+:global(html.dark .titlebar-paw) {
   filter: brightness(0) invert(1);
   opacity: 0.65;
 }
