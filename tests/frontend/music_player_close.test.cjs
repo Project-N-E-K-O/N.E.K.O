@@ -202,6 +202,7 @@ async function startRecommendation(s, awarenessState) {
     const socket = awarenessState === undefined ? null : { readyState: awarenessState,
         send(value) { awareness.push(JSON.parse(value)); } };
     s.w.appState = { socket };
+    s.w.lanlan_config = { lanlan_name: 'Neko' };
     s.w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({}) };
     s.w.AbortSignal.timeout = () => undefined;
     s.w.fetch = async (url, init) => {

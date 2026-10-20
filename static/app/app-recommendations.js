@@ -14,15 +14,28 @@
     let snapshotRequestId = '';
     let flushing = null;
     let queue = [];
+    let retryTimer = null;
+    let retryDelay = 1000;
+    let evidenceEpoch = 0;
+    let observedPageConfig = null;
     const requestSnapshot = () => {
-        if (!disposed && typeof window.__nekoBroadcastChatMirror === 'function') {
+        if (!disposed && hasCharacter() && typeof window.__nekoBroadcastChatMirror === 'function') {
             snapshotRequestId = uid();
             window.__nekoBroadcastChatMirror({ type: 'recommendation_request', requestId: snapshotRequestId, character: currentCharacter() });
         }
     };
+    function observePageConfig() {
+        // The templates load index.js after this controller, so its readiness
+        // promise may only exist by DOMContentLoaded. Subscribe once per promise.
+        const ready = window.pageConfigReady;
+        if (!ready || typeof ready.then !== 'function' || ready === observedPageConfig) return;
+        observedPageConfig = ready;
+        Promise.resolve(ready).then(requestSnapshot).catch(() => {});
+    }
     const isRecommendation = block => block && ['music_recommendation', 'proactive_recommendation'].includes(block.type);
+    const hasCharacter = () => !!(window.lanlan_config && window.lanlan_config.lanlan_name);
     const currentCharacter = () => (window.lanlan_config && window.lanlan_config.lanlan_name) || 'Neko';
-    const belongsHere = message => message && message.author === currentCharacter();
+    const belongsHere = message => hasCharacter() && message && message.author === currentCharacter();
     function closePlaceholders(ids) {
         for (const [popup, id] of placeholders) {
             if (ids && !ids.has(id)) continue;
@@ -72,7 +85,7 @@
             return;
         }
         if (data.type === 'recommendation_request') {
-            if (!data.requestId || data.character !== currentCharacter()) return;
+            if (!hasCharacter() || !data.requestId || data.character !== currentCharacter()) return;
             if (messages.size && typeof window.__nekoBroadcastChatMirror === 'function') {
                 window.__nekoBroadcastChatMirror({ type: 'recommendation_snapshot', target: data.sender,
                     requestId: data.requestId, character: currentCharacter(),
@@ -83,7 +96,7 @@
         if (data.type === 'recommendation_snapshot') {
             const host = window.reactChatWindowHost;
             if (!host || !Array.isArray(data.messages)) return;
-            if (!snapshotRequestId || data.requestId !== snapshotRequestId || data.character !== currentCharacter()) return;
+            if (!hasCharacter() || !snapshotRequestId || data.requestId !== snapshotRequestId || data.character !== currentCharacter()) return;
             for (const message of data.messages.slice(-128)) {
                 const block = message && message.blocks && message.blocks[0];
                 if (!isRecommendation(block) || !belongsHere(message) || retiredIds.has(block.recommendationId)
@@ -96,7 +109,7 @@
         const message = data.message || data.patch;
         const block = message && message.blocks && message.blocks.find(isRecommendation);
         const previous = block && messages.get(block.recommendationId);
-        if (block && (retiredIds.has(block.recommendationId) || (data.message && !belongsHere(message)))) {
+        if (block && (!hasCharacter() || retiredIds.has(block.recommendationId) || (data.message && !belongsHere(message)))) {
             const host = window.reactChatWindowHost;
             if (host && typeof host.removeMessage === 'function') host.removeMessage(data.messageId || message.id);
             return;
@@ -131,6 +144,7 @@
         }
         if (!response.ok || !result.success) {
             const error = new Error(result.error_code || 'feedback_unavailable');
+            error.code = result.error_code;
             error.permanent = (response.status === 409 || response.status === 422)
                 && !['feedback_capacity_reached', 'feedback_upload_capacity_reached'].includes(result.error_code);
             throw error;
@@ -156,20 +170,62 @@
         // Only UI bookkeeping is evicted; pending evidence is kept separately.
         if (messages.size > 128) messages.delete(messages.keys().next().value);
     }
+    function cancelEvidenceRetry() {
+        if (!retryTimer) return;
+        clearTimeout(retryTimer.handle);
+        retryTimer = null;
+    }
+    function scheduleEvidenceRetry() {
+        if (disposed || !queue.length || retryTimer) return;
+        const timer = { handle: null };
+        retryTimer = timer;
+        timer.handle = setTimeout(() => {
+            if (retryTimer !== timer) return;
+            retryTimer = null;
+            if (!disposed) void flush();
+        }, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30000);
+    }
     async function flush() {
         if (flushing || disposed) return flushing;
-        flushing = (async () => {
-            while (queue.length && !disposed) {
-                const item = queue[0];
+        const epoch = evidenceEpoch;
+        const operation = (async () => {
+            const deferred = new Set();
+            // A bounded pass preserves order within each recommendation while
+            // allowing the current account's facts past another account's item.
+            for (const item of queue.slice(0, MAX_QUEUE)) {
+                if (disposed || epoch !== evidenceEpoch) break;
+                if (deferred.has(item.id)) continue;
                 try { await request(item.id, item.event); }
                 catch (error) {
+                    // The UUID already belongs to its original owner in SQLite.
+                    // A different account (or logout) cannot acknowledge it;
+                    // retain the exact event for when that owner returns.
+                    if (error.code === 'recommendation_not_found') {
+                        deferred.add(item.id);
+                        continue;
+                    }
                     if (!error.permanent) break;
                 }
-                queue.shift();
+                const index = queue.indexOf(item);
+                if (index !== -1) queue.splice(index, 1);
                 try { localStorage.removeItem(KEY + item.event.event_id); } catch (_) {}
             }
         })();
-        try { await flushing; } finally { flushing = null; }
+        flushing = operation;
+        try { await operation; } finally {
+            if (flushing === operation) {
+                flushing = null;
+                if (!queue.length) {
+                    cancelEvidenceRetry();
+                    retryDelay = 1000;
+                } else {
+                    // Also closes the window where new evidence or pageshow
+                    // arrived after this pass's final check but before release.
+                    scheduleEvidenceRetry();
+                }
+            }
+        }
     }
     function evidence(id, kind, fields) {
         if (queue.length >= MAX_QUEUE) {
@@ -319,10 +375,13 @@
     document.addEventListener('DOMContentLoaded', () => {
         if (flushing) void flushing.then(() => flush());
         else void flush();
+        observePageConfig();
         requestSnapshot();
     }, { once: true });
     window.addEventListener('pagehide', () => {
         disposed = true; lifecycleEpoch++;
+        evidenceEpoch++;
+        cancelEvidenceRetry();
         inFlight.clear();
         snapshotRequestId = '';
         closePlaceholders();
@@ -330,6 +389,7 @@
     window.addEventListener('pageshow', () => {
         disposed = false;
         for (const [id, message] of messages) if (message.blocks[0].state === 'saving') update(id, 'pending', true);
+        observePageConfig();
         requestSnapshot();
         void flush();
     });
@@ -355,6 +415,7 @@
             return () => !disposed && epoch === lifecycleEpoch && character === currentCharacter();
         }
     };
+    observePageConfig();
     requestSnapshot();
     void flush();
 })();

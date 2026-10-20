@@ -17,6 +17,7 @@ function surface(t, options={}) {
     const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost:48911/chat', runScripts: 'outside-only' });
     t.after(() => dom.window.close());
     const w = dom.window;
+    w.lanlan_config = { lanlan_name: 'Neko' };
     const messages = new Map(), calls=[], plays=[], broadcasts=[];
     w.AbortSignal.timeout = () => undefined;
     w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'test' }) };

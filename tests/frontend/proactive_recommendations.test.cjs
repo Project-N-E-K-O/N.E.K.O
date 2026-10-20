@@ -13,6 +13,7 @@ function surface(t, options={}) {
     const dom = new JSDOM('<!doctype html><body></body>',{url:'http://127.0.0.1:48911/chat',runScripts:'outside-only'});
     t.after(()=>dom.window.close());
     const w=dom.window, messages=new Map(), requests=[], opens=[], popups=[], broadcasts=[];
+    w.lanlan_config={lanlan_name:'Neko'};
     w.AbortSignal.timeout=()=>undefined;
     w.nekoLocalMutationSecurity={getMutationHeaders:async()=>({'X-CSRF-Token':'fixture'})};
     w.electronShell=options.browser?undefined:{openExternal:async url=>opens.push(url)};
