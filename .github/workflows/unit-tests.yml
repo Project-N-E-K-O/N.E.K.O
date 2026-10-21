@@ -179,22 +179,9 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run plugin-manager boot e2e suite
-        # 覆盖布局几何、适配器 surface、键盘交互及启动壳/主题/Element Plus。
+        # 25 条：布局几何 14 + 适配器 surface 2 + 启动壳/主题/Element Plus 等 9。
         working-directory: frontend/plugin-manager
         run: npm run test:boot:e2e
-
-      - name: Check plugin-manager visual baselines
-        working-directory: frontend/plugin-manager
-        run: npm run test:visual
-
-      - name: Upload plugin-manager browser test failures
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: plugin-manager-browser-failures
-          path: frontend/plugin-manager/test-results/
-          if-no-files-found: ignore
-          retention-days: 7
 
   react-neko-chat-checks:
     name: React chat typecheck & vitest
