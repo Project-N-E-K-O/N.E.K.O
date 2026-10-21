@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import Header from './Header.vue'
-import { usePluginStore } from '@/stores/plugin'
+import { usePluginStore, type PluginStatusRefreshResult } from '@/stores/plugin'
 import { getPlugin, getPluginStatus, getPluginSummaries } from '@/api/plugins'
 
 const messages = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
@@ -74,6 +74,18 @@ describe('titlebar refresh through the real plugin store', () => {
     expect(messages.success).toHaveBeenCalledWith('messages.operationSuccess')
     expect(messages.warning).not.toHaveBeenCalled()
   })
+  it('does not misreport failure when a newer status refresh has already succeeded', async () => {
+    let release!: (value: never) => void
+    vi.mocked(getPluginStatus).mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+      .mockResolvedValueOnce({ plugins: {} } as never)
+    const store = await refreshFromTitlebar(undefined, false)
+    await store.fetchPluginStatus(undefined, true)
+    release({ plugins: {} } as never)
+    await flushRefresh()
+    expect(messages.error).not.toHaveBeenCalled()
+    expect(messages.warning).not.toHaveBeenCalled()
+    expect(messages.success).not.toHaveBeenCalled()
+  })
   it('waits for every loaded detail request before reporting a partial failure', async () => {
     let release!: (value: never) => void
     vi.mocked(getPlugin).mockRejectedValueOnce(new Error('offline'))
@@ -111,12 +123,12 @@ describe('titlebar refresh through the real plugin store', () => {
   it('keeps background failures and timeouts resolved with an explicit failed result', async () => {
     const store = usePluginStore()
     vi.mocked(getPluginStatus).mockRejectedValueOnce(new Error('offline'))
-    await expect(store.fetchPluginStatus()).resolves.toBe(false)
+    await expect(store.fetchPluginStatus()).resolves.toBe('failed')
     vi.useFakeTimers()
     vi.mocked(getPluginStatus).mockReturnValue(new Promise(() => {}))
     const pending = store.fetchPluginStatus()
     await vi.advanceTimersByTimeAsync(15_000)
-    await expect(pending).resolves.toBe(false)
+    await expect(pending).resolves.toBe('failed')
   })
   it('settles a superseded request at its own timeout without invalidating the fresh snapshot', async () => {
     vi.useFakeTimers()
@@ -125,10 +137,10 @@ describe('titlebar refresh through the real plugin store', () => {
       .mockResolvedValueOnce({ plugins: { demo: { status: 'running' } } } as never)
     const old = store.fetchPluginStatus()
     await store.fetchPluginStatus(undefined, true)
-    let oldResult: boolean | undefined
+    let oldResult: PluginStatusRefreshResult | undefined
     void old.then(result => { oldResult = result })
     await vi.advanceTimersByTimeAsync(15_000)
-    expect(oldResult).toBe(false)
+    expect(oldResult).toBe('superseded')
     expect(store.pluginStatuses.demo?.status).toBe('running')
     expect(store.pluginStatusSnapshotLoaded).toBe(true)
   })

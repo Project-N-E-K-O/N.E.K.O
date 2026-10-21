@@ -64,6 +64,7 @@ describe('rules disclosure', () => {
     expect(panel.getAttribute('aria-label')).toBe('Filter rules')
     expect(document.activeElement).toBe(panel.querySelector('button'))
     panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(document.activeElement).toBe(trigger)
     await settle()
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
     expect(document.activeElement).toBe(trigger)

@@ -37,7 +37,7 @@ function deferred<T>() {
 }
 
 function runtime(status: string): PluginStatusData {
-  return { plugin_id: 'demo', status: { status } }
+  return { plugin_id: 'demo', source: 'main_process_synthetic', status: { status } }
 }
 
 function expectVisibleStatus(store: ReturnType<typeof usePluginStore>, status: string) {
@@ -61,6 +61,75 @@ describe('plugin state ownership and registry cache invalidation', () => {
     })
   })
 
+  it.each(['child_process', 'main_process_direct', undefined])(
+    'never lets a %s business report replace the host-confirmed lifecycle', async (source) => {
+      const store = usePluginStore()
+      await store.fetchPluginSummaries()
+      await store.fetchPluginDetail('demo')
+      for (const status of ['running', 'idle']) {
+        const report = { plugin_id: 'demo', source, status: { status } }
+        vi.mocked(getPluginStatus).mockResolvedValueOnce({ plugins: { demo: report } })
+        await store.fetchPluginStatus()
+        expectVisibleStatus(store, 'stopped')
+        expect(store.pluginStatuses.demo).toEqual(report)
+        vi.mocked(getPluginStatus).mockResolvedValueOnce(report)
+        await store.fetchPluginStatus('demo')
+        expectVisibleStatus(store, 'stopped')
+      }
+    },
+  )
+
+  it('rejects non-lifecycle values even when a snapshot claims a host source', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginSummaries()
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('idle'))
+    await store.fetchPluginStatus('demo')
+    expectVisibleStatus(store, 'stopped')
+  })
+
+  it('invalidates installed state and returns without waiting for an unrelated detail', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginSummaries()
+    await store.fetchPluginDetail('demo')
+    const slow = deferred<PluginMeta>()
+    vi.mocked(getPlugin).mockReturnValueOnce(slow.promise)
+    const revision = store.registryRevision
+    let settled = false
+    const sync = store.syncRegistryAndFetchSummaries().then(() => { settled = true })
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+    try {
+      expect(store.registryRevision).toBe(revision + 1)
+      expect(settled).toBe(true)
+    } finally {
+      slow.resolve(plugin())
+      await sync
+    }
+  })
+
+  it('skips redundant invalidation for an unchanged read refresh, but not a mutation', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginSummaries()
+    const revision = store.registryRevision
+    await store.syncRegistryAndFetchSummaries({ invalidateInstalled: false })
+    expect(store.registryRevision).toBe(revision)
+    await store.syncRegistryAndFetchSummaries()
+    expect(store.registryRevision).toBe(revision + 1)
+  })
+
+  it('invalidates a read refresh when install provenance changes without a version change', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginSummaries()
+    const revision = store.registryRevision
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin({
+      install_source: {
+        source: 'imported', reason: null, installed_at: '2026-10-21T00:00:00Z',
+        source_detail: { package_filename: 'demo.neko-plugin', package_sha256: 'changed' },
+      },
+    })], message: '' })
+    await store.syncRegistryAndFetchSummaries({ invalidateInstalled: false })
+    expect(store.registryRevision).toBe(revision + 1)
+  })
+
   it.each(['single', 'full'] as const)('uses the independent %s runtime snapshot in list and detail views', async (scope) => {
     const store = usePluginStore()
     await store.fetchPluginSummaries()
@@ -77,7 +146,7 @@ describe('plugin state ownership and registry cache invalidation', () => {
   it('also accepts a flat status response from older servers', async () => {
     const store = usePluginStore()
     await store.fetchPluginSummaries()
-    vi.mocked(getPluginStatus).mockResolvedValueOnce({ status: 'running' } as any)
+    vi.mocked(getPluginStatus).mockResolvedValueOnce({ source: 'main_process_synthetic', status: 'running' } as any)
 
     await store.fetchPluginStatus('demo')
 
@@ -170,7 +239,7 @@ describe('plugin state ownership and registry cache invalidation', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const oldRequest = store.fetchPluginStatus('demo')
 
-    await expect(store.fetchPluginStatus('demo')).resolves.toBe(false)
+    await expect(store.fetchPluginStatus('demo')).resolves.toBe('failed')
     old.resolve(runtime('running'))
     await oldRequest
 
@@ -232,7 +301,7 @@ describe('plugin state ownership and registry cache invalidation', () => {
     vi.mocked(getPluginStatus).mockRejectedValueOnce(new Error('offline'))
     const log = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    await expect(store.fetchPluginStatus('demo')).resolves.toBe(false)
+    await expect(store.fetchPluginStatus('demo')).resolves.toBe('failed')
 
     expectVisibleStatus(store, 'running')
     log.mockRestore()

@@ -215,10 +215,10 @@ function updateDropdownPos() {
 }
 
 function closeRules(restoreFocus = true) {
+  if (restoreFocus) triggerRef.value?.focus()
   if (panelRef.value) panelRef.value.inert = true
   rulesVisible.value = false
   clearHideTimer()
-  if (restoreFocus) nextTick(() => triggerRef.value?.focus())
 }
 
 async function openRules(focusRules = true) {

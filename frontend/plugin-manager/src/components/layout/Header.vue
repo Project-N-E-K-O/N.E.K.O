@@ -36,9 +36,12 @@ async function handleRefresh() {
     const dataPartiallyUpdated = data.status === 'rejected'
       && data.reason instanceof PluginDataRefreshError
       && data.reason.successfulRequests > 0
-    const statusUpdated = status.status === 'fulfilled' && status.value
+    const statusUpdated = status.status === 'fulfilled' && status.value === 'applied'
+    const statusSuperseded = status.status === 'fulfilled' && status.value === 'superseded'
+    // Another explicit refresh owns the newer status result and its feedback.
+    if (dataUpdated && statusSuperseded) return
     if (dataUpdated && statusUpdated) ElMessage.success(t('messages.operationSuccess'))
-    else if (dataUpdated || dataPartiallyUpdated || statusUpdated) ElMessage.warning(t('messages.refreshPartialFailure'))
+    else if (dataUpdated || dataPartiallyUpdated || statusUpdated || statusSuperseded) ElMessage.warning(t('messages.refreshPartialFailure'))
     else ElMessage.error(t('messages.operationFailed'))
   } finally {
     refreshing.value = false

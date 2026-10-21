@@ -63,8 +63,9 @@ test('nested runtime snapshots update list, detail and lifecycle buttons despite
   )
   await page.route('**/market/status', (route) => route.fulfill({ json: { market_url: null } }))
   let runtimeStatus = 'stopped'
+  let runtimeSource = 'main_process_synthetic'
   await page.route('**/plugin/status*', (route) => {
-    const status = { plugin_id: plugin.id, status: { status: runtimeStatus } }
+    const status = { plugin_id: plugin.id, source: runtimeSource, status: { status: runtimeStatus } }
     const single = new URL(route.request().url()).searchParams.has('plugin_id')
     return route.fulfill({ json: single ? status : { plugins: { [plugin.id]: status } } })
   })
@@ -108,6 +109,16 @@ test('nested runtime snapshots update list, detail and lifecycle buttons despite
   await expect(
     page.locator('.plugin-actions').getByRole('button', { name: 'Stop', exact: true })
   ).toHaveCount(0)
+  // A stopped process may leave a cached business report behind. It must not
+  // restore Stop/require-running controls or publish arbitrary badge values.
+  for (const reported of ['running', 'idle']) {
+    runtimeSource = 'child_process'
+    runtimeStatus = reported
+    await page.locator('.header__actions').getByRole('button', { name: 'Refresh', exact: true }).click()
+    await expect(page.locator('.header__actions').getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled()
+    await expect(page.locator('.plugin-detail .status-stopped')).toBeVisible()
+    await expect(page.locator('.plugin-actions').getByRole('button', { name: 'Start', exact: true })).toBeVisible()
+  }
   await page.locator('[data-yui-guide-id="plugin-detail-back"]').click()
   await expect(card.locator('.status-stopped')).toBeVisible()
 })
@@ -210,6 +221,12 @@ test('a populated market drawer revalidates installed actions after a registry c
   await toggle.click()
   const card = page.locator('.market-plugin-card')
   await expect(card.getByRole('button', { name: /Upgrade.*2\.0\.0/ })).toBeVisible()
+  // A read refresh with unchanged install provenance must not requery the
+  // bridge merely because the already-populated market is visible.
+  const refresh = page.locator('[data-yui-guide-id="plugin-list-refresh"]')
+  await refresh.click()
+  await expect(refresh).toBeEnabled()
+  expect(projectionRequests).toBe(1)
   await toggle.click()
   await expect(card).not.toBeVisible()
   // Simulate removal outside this drawer, then reconcile through the real list

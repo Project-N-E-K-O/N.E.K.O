@@ -744,7 +744,7 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
   },
 ])
 
-type PluginListRefreshMode = 'full' | 'initial-open' | 'light'
+type PluginListRefreshMode = 'full' | 'after-change' | 'initial-open' | 'light'
 
 async function refreshPluginListData(mode: PluginListRefreshMode) {
   const sequence = ++listRefreshSequence
@@ -752,8 +752,8 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
   let failed = false
   pendingListRefreshes.value += 1
   try {
-    if (mode === 'full') {
-      const syncResult = await pluginStore.syncRegistryAndFetchSummaries()
+    if (mode === 'full' || mode === 'after-change') {
+      const syncResult = await pluginStore.syncRegistryAndFetchSummaries({ invalidateInstalled: mode === 'after-change' })
       warningMessage = syncResult.warningMessage || ''
     } else if (mode === 'initial-open') {
       try {
@@ -771,11 +771,10 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
       await pluginStore.fetchPluginSummaries()
     }
     hasLoadedList.value = true
-    if (mode === 'full') {
-      if (!await pluginStore.fetchPluginStatus(undefined, true)) warningMessage ||= t('messages.refreshPartialFailure')
+    if (mode === 'full' || mode === 'after-change') {
+      if (await pluginStore.fetchPluginStatus(undefined, true) === 'failed') warningMessage ||= t('messages.refreshPartialFailure')
     } else {
-      await pluginStore.ensurePluginStatus()
-      if (!pluginStore.pluginStatusSnapshotLoaded) warningMessage ||= t('messages.refreshPartialFailure')
+      if (await pluginStore.ensurePluginStatus() === 'failed') warningMessage ||= t('messages.refreshPartialFailure')
     }
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
@@ -794,7 +793,7 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
       console.warn('Failed to refresh metrics:', error)
     }
   }
-  if (warningMessage) {
+  if (sequence === listRefreshSequence && warningMessage) {
     ElMessage.warning(warningMessage)
   }
 }
@@ -811,7 +810,7 @@ async function handleRefresh() {
 }
 
 async function refreshAfterPluginChange() {
-  await refreshPluginListData('full')
+  await refreshPluginListData('after-change')
 }
 
 async function refreshForInitialOpen() {

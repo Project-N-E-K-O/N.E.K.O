@@ -38,7 +38,11 @@ type RegistrySyncResult = {
 
 type RegistrySyncOptions = {
   preserveMessagesOn404?: boolean
+  /** Mutations invalidate even when the installed version is unchanged. */
+  invalidateInstalled?: boolean
 }
+
+export type PluginStatusRefreshResult = 'applied' | 'failed' | 'superseded'
 
 type PluginMutationOptions = {
   refresh?: boolean
@@ -74,7 +78,7 @@ export const usePluginStore = defineStore('plugin', () => {
   const metadataStatuses = ref<Record<string, { status: string; ticket: number }>>({})
   
   // 防止请求堆积：正在进行的请求
-  let pendingFetchStatus: Promise<boolean> | null = null
+  let pendingFetchStatus: Promise<PluginStatusRefreshResult> | null = null
   let pendingFetchSummaries: Promise<void> | null = null
   let pendingFetchSummariesLocale: string | null = null
   const pendingFetchDetails = new Map<string, Promise<void>>()
@@ -102,12 +106,20 @@ export const usePluginStore = defineStore('plugin', () => {
   // start API 会把 `enabled` override 翻回 true；默认模式下 stop 不再
   // 写入 enabled=false，临时停止只改变当前进程。`auto_start` 默认不随
   // 手动启停改写，只由独立的自动启动开关（PUT /plugin/{id}/auto-start）设置。
-  function runtimeStatus(data: unknown): string | undefined {
+  function reportedStatus(data: unknown): string | undefined {
     if (!data || typeof data !== 'object') return
     const value = (data as { status?: unknown }).status
     const status = typeof value === 'string' ? value
       : value && typeof value === 'object' ? (value as { status?: unknown }).status : undefined
     return typeof status === 'string' && status.length > 0 ? status : undefined
+  }
+
+  function runtimeStatus(data: PluginStatusData | undefined): string | undefined {
+    // Plugin reports are arbitrary business data cached across process stops.
+    // Only the server's synthetic snapshot is based on the host's liveness.
+    if (data?.source !== 'main_process_synthetic') return
+    const status = reportedStatus(data)
+    return status === 'running' || status === 'stopped' || status === 'crashed' ? status : undefined
   }
 
   function recordMetadataStatus(plugin: PluginListSummary, ticket: number) {
@@ -324,6 +336,10 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
+    const installationSignature = () => JSON.stringify(pluginSummaries.value
+      .map(plugin => ({ id: plugin.id, version: plugin.version, source: plugin.install_source ?? null }))
+      .sort((left, right) => left.id.localeCompare(right.id)))
+    const previousInstallation = installationSignature()
     const loadedDetailIds = new Set([
       ...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys(),
     ])
@@ -340,19 +356,26 @@ export const usePluginStore = defineStore('plugin', () => {
       summariesUpdated = true
       return result
     } finally {
+      // Installed state must stop being fresh as soon as registry reconciliation
+      // ends, independent of slow/unavailable detail endpoints. Read-only list
+      // refreshes can reuse the projection when identity/version/source match.
+      if (!summariesUpdated || options.invalidateInstalled !== false
+        || previousInstallation !== installationSignature()) {
+        registryRevision.value += 1
+      }
       const liveIds = summariesUpdated ? new Set(pluginSummaries.value.map(plugin => plugin.id)) : null
       const detailIds = new Set([
         ...loadedDetailIds, ...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys(),
       ])
-      const results = await Promise.allSettled([...detailIds]
+      void Promise.allSettled([...detailIds]
         .filter(id => !liveIds || liveIds.has(id))
-        .map(id => fetchPluginDetail(id, true)))
-      for (const outcome of results) {
-        if (outcome.status === 'rejected') {
-          console.warn('Failed to revalidate plugin detail after registry sync:', outcome.reason)
+        .map(id => fetchPluginDetail(id, true))).then((results) => {
+        for (const outcome of results) {
+          if (outcome.status === 'rejected') {
+            console.warn('Failed to revalidate plugin detail after registry sync:', outcome.reason)
+          }
         }
-      }
-      registryRevision.value += 1
+      })
     }
   }
 
@@ -402,7 +425,7 @@ export const usePluginStore = defineStore('plugin', () => {
 
   // Background callers may ignore this result safely. Explicit refresh callers
   // can distinguish an applied snapshot from a failed or superseded request.
-  async function fetchPluginStatus(pluginId?: string, force = false): Promise<boolean> {
+  async function fetchPluginStatus(pluginId?: string, force = false): Promise<PluginStatusRefreshResult> {
     if (pluginId) {
       // A single-plugin mutation makes any in-flight full snapshot stale.
       fetchStatusSeq += 1
@@ -417,10 +440,11 @@ export const usePluginStore = defineStore('plugin', () => {
     
     // 设置超时自动清理（仅对全量请求）
     let timeoutId: ReturnType<typeof setTimeout> | null = null
-    let finishTimeout: ((result: boolean) => void) | null = null
+    let finishTimeout: ((result: PluginStatusRefreshResult) => void) | null = null
     const seq = !pluginId ? ++fetchStatusSeq : 0
     if (!pluginId) {
       timeoutId = setTimeout(() => {
+        const superseded = seq !== fetchStatusSeq
         if (seq === fetchStatusSeq && pendingFetchStatus) {
           console.warn('[Plugin Store] fetchPluginStatus timeout, clearing pending request')
           fetchStatusSeq += 1
@@ -428,18 +452,18 @@ export const usePluginStore = defineStore('plugin', () => {
         }
         // A forced refresh may replace this request, but its original callers
         // still need a bounded completion without invalidating the replacement.
-        finishTimeout?.(false)
+        finishTimeout?.(superseded ? 'superseded' : 'failed')
       }, REQUEST_TIMEOUT)
     }
     
-    const doFetch = async () => {
+    const doFetch = async (): Promise<PluginStatusRefreshResult> => {
       try {
         const response = await getPluginStatus(pluginId)
         // 忽略过期响应（仅对全量请求）
-        if (!pluginId && seq !== fetchStatusSeq) return false
+        if (!pluginId && seq !== fetchStatusSeq) return 'superseded'
         if (pluginId) {
-          if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return false
-          if (runtimeStatus(response)) {
+          if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return 'superseded'
+          if (reportedStatus(response)) {
             runtimeStatusTickets.set(pluginId, statusTicket)
             pluginStatuses.value = { ...pluginStatuses.value, [pluginId]: response as PluginStatusData }
           }
@@ -449,7 +473,7 @@ export const usePluginStore = defineStore('plugin', () => {
           const next = { ...pluginStatuses.value }
           for (const id of new Set([...Object.keys(next), ...Object.keys(incoming)])) {
             if (statusTicket < (runtimeStatusTickets.get(id) ?? 0)) continue
-            if (runtimeStatus(incoming[id])) {
+            if (reportedStatus(incoming[id])) {
               runtimeStatusTickets.set(id, statusTicket)
               next[id] = incoming[id]!
             } else if (!(id in incoming)) {
@@ -461,10 +485,12 @@ export const usePluginStore = defineStore('plugin', () => {
           pluginStatusSnapshotLoaded.value = true
           pluginStatusFetchedAt.value = Date.now()
         }
-        return true
+        return 'applied'
       } catch (err: any) {
+        if ((!pluginId && seq !== fetchStatusSeq)
+          || (pluginId && statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0))) return 'superseded'
         console.error('Failed to fetch plugin status:', err)
-        return false
+        return 'failed'
       } finally {
         if (timeoutId) clearTimeout(timeoutId)
         if (!pluginId && seq === fetchStatusSeq) {
@@ -474,7 +500,7 @@ export const usePluginStore = defineStore('plugin', () => {
     }
     
     if (!pluginId) {
-      const timeout = new Promise<boolean>((resolve) => { finishTimeout = resolve })
+      const timeout = new Promise<PluginStatusRefreshResult>((resolve) => { finishTimeout = resolve })
       pendingFetchStatus = Promise.race([doFetch(), timeout])
       return pendingFetchStatus
     } else {
@@ -483,8 +509,8 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function ensurePluginStatus(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
-    if (pluginStatusSnapshotLoaded.value && Date.now() - pluginStatusFetchedAt.value < maxAgeMs) return
-    await fetchPluginStatus()
+    if (pluginStatusSnapshotLoaded.value && Date.now() - pluginStatusFetchedAt.value < maxAgeMs) return 'applied' as const
+    return fetchPluginStatus()
   }
 
   /**

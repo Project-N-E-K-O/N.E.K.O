@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
+import { ElMessage } from 'element-plus'
 import PluginList from './PluginList.vue'
 import { usePluginStore } from '@/stores/plugin'
 import { getPluginStatus, getPluginSummaries, refreshPluginsRegistry } from '@/api/plugins'
@@ -18,7 +19,10 @@ vi.mock('@/stores/pluginUpdates', () => ({ usePluginUpdatesStore: () => ({ check
 vi.mock('@/composables/useMarketAuth', () => ({ useMarketAuth: () => ({ marketAuth: { authenticated: false }, loadMarketAuthStatus: async () => {} }) }))
 vi.mock('@/composables/usePluginListContextActions', () => ({ usePluginListContextActions: () => ({ buildActions: vi.fn(), executeAction: vi.fn(), shouldUseHoldConfirm: vi.fn() }) }))
 vi.mock('@/components/plugin/PluginGridSection.vue', () => ({ default: defineComponent({ props: ['items'], setup: props => () => h('div', { 'data-testid': 'visible-plugins' }, props.items.map((item: { name: string }) => item.name).join(',')) }) }))
-vi.mock('@/components/plugin/PluginImportDialog.vue', () => ({ default: { render: () => null } }))
+vi.mock('@/components/plugin/PluginImportDialog.vue', () => ({ default: defineComponent({
+  emits: ['installed'],
+  setup: (_, { emit }) => () => h('button', { 'data-testid': 'installation-completed', onClick: () => emit('installed') }),
+}) }))
 vi.mock('@/components/plugin/PluginContextMenu.vue', () => ({ default: { render: () => null } }))
 vi.mock('@/components/plugin/PluginDangerConfirmDialog.vue', () => ({ default: { render: () => null } }))
 vi.mock('@/components/common/WorkbenchFilterBar.vue', () => ({ default: defineComponent({ props: ['filterText'], emits: ['update:filterText'], setup: (props, { emit }) => () => h('input', { 'data-testid': 'filter', value: props.filterText, onInput: (event: Event) => emit('update:filterText', (event.target as HTMLInputElement).value) }) }) }))
@@ -59,6 +63,23 @@ beforeEach(() => {
 afterEach(() => { cleanup(); cleanup = () => {}; vi.restoreAllMocks() })
 
 describe('plugin list states through its real store and filter', () => {
+  it('suppresses an older refresh warning after the newest refresh succeeds', async () => {
+    const warning = vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
+    const { root } = await mount()
+    let release!: (value: never) => void
+    vi.mocked(refreshPluginsRegistry)
+      .mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+      .mockResolvedValueOnce({ success: true, failed: [] } as never)
+    const refresh = root.querySelector('[data-yui-guide-id="plugin-list-refresh"]') as HTMLButtonElement
+    refresh.click()
+    await flush()
+    ;(root.querySelector('[data-testid="installation-completed"]') as HTMLButtonElement).click()
+    await flush()
+    warning.mockClear()
+    release({ success: false, failed: [{ plugin_id: 'old', error: 'stale failure' }] } as never)
+    await flush()
+    expect(warning).not.toHaveBeenCalled()
+  })
   it('shows a retryable load error instead of claiming there are no plugins', async () => {
     vi.mocked(getPluginSummaries).mockRejectedValue(new Error('offline'))
     const { root } = await mount()
