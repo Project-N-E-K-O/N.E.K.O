@@ -33,7 +33,7 @@ from main_logic.visit.limits import Blocklist
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import derive_pair_id, derive_peer_char_id
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
-from main_routers.visit_router import accounts, http, memory_routes, persona, transport_ws
+from main_routers.visit_router import accounts, display_socket, http, memory_routes, persona, transport_ws
 from main_routers.visit_router import credentials as cr
 from main_routers.visit_router import router as visit_router
 from main_routers.visit_router import runtime as rtm
@@ -982,6 +982,18 @@ async def test_create_room_after_restart_always_mints_a_fresh_local_visit_id(env
     assert created.json()["phase"] == "pending"
     assert created.json()["visit_id"] != VISIT_ID
     assert env.host.rt is not None and env.host.rt.visit_id == created.json()["visit_id"]
+
+
+async def test_create_room_waits_for_desktop_restart_cleanup(env, monkeypatch):
+    async def cleanup_failed():
+        return False
+
+    monkeypatch.setattr(display_socket, "wait_desktop_restart_reset", cleanup_failed)
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    assert response.status_code == 503
+    assert response.json()["code"] == "servers_unreachable"
+    assert env.host.rt is None
 
 
 async def test_state_of_an_idle_character_has_the_same_keys(env):

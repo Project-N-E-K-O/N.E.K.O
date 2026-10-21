@@ -1357,6 +1357,16 @@ def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_poll
         1,
     )[0]
     assert "--compact-visit-layer-reserved-block-size" in above_choice
+    choice_base = styles.split(
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]',
+        1,
+    )[1].split(
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar',
+        1,
+    )[0]
+    assert "--compact-choice-available-block-size" in choice_base
+    assert "const requiredAbove = layerHeight + gap + visitReserve;" in placement_effect
+    assert "availableAbove - gap - visitReserve" in placement_effect
 
 
 def test_compact_visit_geometry_separates_visual_container_from_button_hits():

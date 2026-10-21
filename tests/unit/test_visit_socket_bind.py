@@ -345,6 +345,7 @@ async def test_failed_desktop_restart_cleanup_retries_for_the_same_run(monkeypat
 
     await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-a"))
     await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b"))
+    assert await display_socket.wait_desktop_restart_reset() is True
     await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b"))
     assert attempts == 2
 

@@ -1593,6 +1593,13 @@
         }, delays[index]);
     }
 
+    function recoverCurrentHostInviteIfWaiting(catgirl) {
+        if (currentCatgirl() !== catgirl || visit.side !== 'host' || !VISIT_ID_RE.test(String(visit.visitId || ''))) return;
+        if ((visit.phase === 'pending' || visit.phase === 'invite_ready') && !visit.inviteCode) {
+            scheduleInviteRecovery(catgirl, visit.visitId, 0);
+        }
+    }
+
     async function startInvite() {
         var catgirl = currentCatgirl();
         if (!catgirl || starting) return;
@@ -1603,7 +1610,10 @@
             var currentSeq = stateFrameSeq;
             var current = await api('GET', currentHostRoomUrl(catgirl));
             if (currentCatgirl() !== catgirl) return;
-            if (stateFrameSeq !== currentSeq) return;
+            if (stateFrameSeq !== currentSeq) {
+                recoverCurrentHostInviteIfWaiting(catgirl);
+                return;
+            }
             var restored = applyHostRoomResponse(current, catgirl, currentSeq);
             if (restored) {
                 if (!restored.hasCode) scheduleInviteRecovery(catgirl, restored.visitId, 0);
@@ -1620,7 +1630,10 @@
                 return api('POST', '/api/visit/rooms', { catgirl: catgirl, crop: crop });
             }, catgirl);
             if (await abandonIfCharacterSwitched(result, catgirl)) return;
-            if (stateFrameSeq !== createSeq) return;
+            if (stateFrameSeq !== createSeq) {
+                recoverCurrentHostInviteIfWaiting(catgirl);
+                return;
+            }
             var created = applyHostRoomResponse(result, catgirl, createSeq);
             if (created) {
                 if (!created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);
@@ -1630,7 +1643,10 @@
             if (result.status === 409 && ((result.body || {}).reason === 'already_visiting')) {
                 var raceSeq = stateFrameSeq;
                 var raced = await api('GET', currentHostRoomUrl(catgirl));
-                if (stateFrameSeq !== raceSeq) return;
+                if (stateFrameSeq !== raceSeq) {
+                    recoverCurrentHostInviteIfWaiting(catgirl);
+                    return;
+                }
                 var recovered = applyHostRoomResponse(raced, catgirl, raceSeq);
                 if (recovered) {
                     if (!recovered.hasCode) scheduleInviteRecovery(catgirl, recovered.visitId, 0);

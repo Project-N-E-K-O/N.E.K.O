@@ -1376,6 +1376,33 @@ const report = {};
     report.created_invite_recovered_code = state.inviteCode;
     report.created_invite_creates = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
   }
+  // ── POST 在途先到 pending 帧：仍要安排邀请码恢复，不能因响应已旧而永久等候 ──
+  {
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    let probes = 0;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = {
+      [currentUrl]: async () => {
+        probes += 1;
+        if (probes === 1) return { status: 404, body: { error: 'no_pending_invite' } };
+        return { status: 200, body: { visit_id: VID2, phase: 'invite_ready', invite_code: 'ZXCVBNMA23', invite_expires_at: 9e9 } };
+      },
+      '/api/visit/rooms': async () => { await gate; return { status: 202, body: { visit_id: VID2, phase: 'pending' } }; },
+    };
+    const h = createHarness({ routes });
+    const pending = h.chat._test.startInvite();
+    await h.settle();
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 1 });
+    release();
+    await pending;
+    h.advance(300);
+    await h.settle();
+    const state = h.chat._test.state().visit;
+    report.pending_before_create_recovered_phase = state.phase;
+    report.pending_before_create_recovered_code = state.inviteCode;
+    report.pending_before_create_count = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
+  }
   // ── 建房在途时换了角色：后端收下的那一场同样立刻硬结束 ──
   {
     let release;
@@ -1964,6 +1991,12 @@ def test_a_new_room_recovers_its_code_when_the_ready_frame_is_missed(report):
     assert report["created_invite_recovered_phase"] == "invite_ready"
     assert report["created_invite_recovered_code"] == "QWERTYUI23"
     assert report["created_invite_creates"] == 1
+
+
+def test_pending_frame_before_create_reply_still_recovers_the_invite_code(report):
+    assert report["pending_before_create_recovered_phase"] == "invite_ready"
+    assert report["pending_before_create_recovered_code"] == "ZXCVBNMA23"
+    assert report["pending_before_create_count"] == 1
 
 
 def test_self_line_recipient_uses_the_lines_own_side(report):

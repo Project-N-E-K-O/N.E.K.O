@@ -2680,7 +2680,7 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   position: fixed;
   left: calc(var(--compact-choice-surface-left, var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw))) + (var(--compact-choice-surface-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px))) / 2));
   width: min(var(--compact-choice-surface-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px))), 420px);
-  max-height: min(240px, calc(100vh - 96px));
+  max-height: min(240px, var(--compact-choice-available-block-size, calc(100vh - 96px)));
   height: max-content;
   transform: translateX(-50%);
   overflow-y: auto;

@@ -84,6 +84,8 @@ async def _perform_desktop_run_reset(previous: Optional[asyncio.Task[bool]]) -> 
 
     try:
         reset = await runtime.reset_pending_host_invites_for_desktop_restart()
+        # Connect scopes this bulk reset by both the authenticated account and
+        # X-Client-Id, the stable local installation id (not the public OAuth client id).
         cancelled = await credentials.cancel_pending_host_invites()
     except asyncio.CancelledError:
         raise
@@ -128,6 +130,39 @@ async def _reset_for_new_desktop_run(message: Any) -> None:
             )
             _desktop_run_reset_task = cleanup
     await asyncio.shield(cleanup)
+
+
+async def wait_desktop_restart_reset() -> bool:
+    """Before minting a room, finish (and once retry) the current desktop-run cleanup.
+
+    This is the admission fence that prevents a delayed bulk cancel from
+    invalidating an invitation created after the new renderer already bound.
+    """
+    global _desktop_run_reset_task
+    retried = False
+    while True:
+        async with _desktop_lock():
+            cleanup = _desktop_run_reset_task
+            if cleanup is None:
+                return True
+            if cleanup.done():
+                try:
+                    if cleanup.result() is True:
+                        return True
+                except asyncio.CancelledError:
+                    pass
+                if retried:
+                    return False
+                cleanup = asyncio.create_task(
+                    _perform_desktop_run_reset(None),
+                    name="visit-desktop-restart-reset-admission-retry",
+                )
+                _desktop_run_reset_task = cleanup
+                retried = True
+        if await asyncio.shield(cleanup):
+            return True
+        if retried:
+            return False
 
 
 def is_bound(websocket: Any) -> bool:

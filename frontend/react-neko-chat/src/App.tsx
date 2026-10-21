@@ -2698,41 +2698,63 @@ function CompactChatApp({
       const desktopLayoutSurfaceRect = getDesktopLayoutSurfaceRect(desktopLayout);
       const surfaceRect = desktopLayoutSurfaceRect ?? shellRect;
       syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
-      if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
-        setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
-        return;
-      }
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const desktopSpace = getDesktopPlacementSpace(surfaceRect);
       const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - surfaceRect.bottom);
       const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, surfaceRect.top);
-      const requiredSpace = layerHeight + gap;
-      const nextPlacement = availableBelow >= requiredSpace
+      const visitLayerNode = compactVisitLayerRef.current;
+      const measuredVisitReserve = visitBarVisible && visitLayerNode
+        ? Math.ceil(Math.max(visitLayerNode.getBoundingClientRect().height, visitLayerNode.scrollHeight)) + 22
+        : 0;
+      const cssVisitReserve = Number.parseFloat(window.getComputedStyle(document.documentElement)
+        .getPropertyValue('--compact-visit-layer-reserved-block-size')) || 0;
+      const visitReserve = visitBarVisible ? Math.max(measuredVisitReserve, cssVisitReserve) : 0;
+      const requiredBelow = layerHeight + gap;
+      const requiredAbove = layerHeight + gap + visitReserve;
+      const setAvailableBlockSize = (placement: 'above' | 'below') => {
+        const available = placement === 'above'
+          ? availableAbove - gap - visitReserve
+          : availableBelow - gap;
+        nextLayerNode.style.setProperty('--compact-choice-available-block-size', `${Math.max(0, Math.floor(available))}px`);
+      };
+      if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
+        setAvailableBlockSize(desktopForcedPlacement);
+        setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
+        return;
+      }
+      const nextPlacement: 'above' | 'below' = availableBelow >= requiredBelow
         ? 'below'
-        : availableAbove >= requiredSpace
+        : availableAbove >= requiredAbove
           ? 'above'
-          : availableBelow >= availableAbove
+          : availableBelow - gap >= availableAbove - gap - visitReserve
             ? 'below'
             : 'above';
       setCompactChoiceLayerPlacement((current) => {
-        if (current === nextPlacement) return current;
+        let placement = nextPlacement;
+        if (current === nextPlacement) {
+          setAvailableBlockSize(current);
+          return current;
+        }
         if (
           current === 'above'
           && nextPlacement === 'below'
-          && availableBelow < requiredSpace + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
+          && availableAbove >= requiredAbove
+          && availableBelow < requiredBelow + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
         ) {
-          return current;
+          placement = current;
         }
         if (
           current === 'below'
           && nextPlacement === 'above'
-          && availableAbove < requiredSpace + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
+          && availableBelow >= requiredBelow
+          && availableAbove < requiredAbove + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
         ) {
-          return current;
+          placement = current;
         }
-        return nextPlacement;
+        setAvailableBlockSize(placement);
+        return placement;
       });
     };
 
@@ -2775,6 +2797,8 @@ function CompactChatApp({
       });
       observer.observe(shellNode);
       observer.observe(layerNode);
+      const visitLayerNode = compactVisitLayerRef.current;
+      if (visitBarVisible && visitLayerNode) observer.observe(visitLayerNode);
     }
 
     return () => {
@@ -2788,7 +2812,7 @@ function CompactChatApp({
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();
     };
-  }, [compactChoiceLayerOpen, galgameOptions.length, galgameOptionsLoading, isCompactSurface, choicePrompt]);
+  }, [compactChoiceLayerOpen, galgameOptions.length, galgameOptionsLoading, isCompactSurface, choicePrompt, visitBarVisible]);
 
   const requestCompactChatState = useCallback((nextState: CompactChatState) => {
     if (!isCompactSurface) return;

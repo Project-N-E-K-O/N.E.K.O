@@ -3176,6 +3176,74 @@ describe('App', () => {
     }
   });
 
+  it('budgets the visit bar when choosing and constraining compact options', async () => {
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    desktopWindow.__nekoDesktopCompactLayout = {
+      windowBounds: { x: 0, y: 0, width: 500, height: 400 },
+      workArea: { x: 0, y: 0, width: 500, height: 400 },
+    };
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+          visitBar={{ tone: 'active', badge: '小白 在做客', actions: [{ id: 'recall', label: '送客' }] }}
+        />,
+      );
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 180,
+          top: 180,
+          left: 0,
+          right: 420,
+          bottom: 300,
+          width: 420,
+          height: 120,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 420,
+          bottom: 100,
+          width: 420,
+          height: 100,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'scrollHeight', { configurable: true, value: 100 });
+      document.documentElement.style.setProperty('--compact-visit-layer-reserved-block-size', '90px');
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'below');
+        expect(choiceLayer!.style.getPropertyValue('--compact-choice-available-block-size')).toBe('84px');
+      });
+    } finally {
+      document.documentElement.style.removeProperty('--compact-visit-layer-reserved-block-size');
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
   it('updates compact choice surface vars before applying forced desktop placement', async () => {
     const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
     const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
