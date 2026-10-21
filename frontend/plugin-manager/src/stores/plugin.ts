@@ -186,7 +186,9 @@ export const usePluginStore = defineStore('plugin', () => {
           const saved = confirmedAutoStart.get(plugin.id)
           return saved && saved.seq > savesBefore ? withConfirmedAutoStart(plugin, saved.value) : plugin
         })
-        prunePluginCaches(new Set(nextSummaries.map(plugin => plugin.id)), statusTicket)
+        // Removal also fences reads issued while this summary was in flight.
+        // Live plugins still use the original read ticket below.
+        prunePluginCaches(new Set(nextSummaries.map(plugin => plugin.id)), ++statusReadSequence)
         nextSummaries.forEach(plugin => recordMetadataStatus(plugin, statusTicket))
         pluginSummaries.value = reconcilePluginSnapshot(pluginSummaries.value, nextSummaries)
         pluginSummarySnapshotLoaded.value = true
@@ -282,7 +284,7 @@ export const usePluginStore = defineStore('plugin', () => {
     pendingFetchDetails.delete(pluginId)
   }
 
-  function prunePluginCaches(liveIds: ReadonlySet<string>, statusTicket: number) {
+  function prunePluginCaches(liveIds: ReadonlySet<string>, removalTicket: number) {
     const ids = new Set([
       ...pluginSummaries.value.map(plugin => plugin.id),
       ...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys(),
@@ -294,7 +296,7 @@ export const usePluginStore = defineStore('plugin', () => {
       invalidateDetail(id)
       // Leave a ticket tombstone so a pre-removal status response cannot bring
       // back a cached runtime state for a later installation under the same ID.
-      runtimeStatusTickets.set(id, Math.max(statusTicket, runtimeStatusTickets.get(id) ?? 0))
+      runtimeStatusTickets.set(id, Math.max(removalTicket, runtimeStatusTickets.get(id) ?? 0))
       delete pluginStatuses.value[id]
       delete metadataStatuses.value[id]
       dropped = true

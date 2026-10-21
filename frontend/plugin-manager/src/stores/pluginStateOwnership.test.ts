@@ -397,18 +397,31 @@ describe('plugin state ownership and registry cache invalidation', () => {
     expect(store.pluginStatuses.demo).toBeUndefined()
   })
 
-  it.each(['single', 'full'] as const)('fences an old %s response across same-ID reinstall without status metadata', async (scope) => {
+  it.each([
+    ['single', 'before'], ['full', 'before'], ['single', 'during'], ['full', 'during'],
+  ] as const)('fences an old %s response started %s the removal read across same-ID reinstall', async (scope, timing) => {
     const store = usePluginStore()
     const summary = plugin()
     delete summary.status
     vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [summary], message: '' })
     await store.fetchPluginSummaries()
+    const removed = deferred<{ plugins: PluginMeta[]; message: string }>()
+    let removalRequest: Promise<void> | undefined
+    if (timing === 'during') {
+      vi.mocked(getPluginSummaries).mockReturnValueOnce(removed.promise)
+      removalRequest = store.fetchPluginSummaries(true)
+    }
     const old = deferred<any>()
     vi.mocked(getPluginStatus).mockReturnValueOnce(old.promise)
     const request = store.fetchPluginStatus(scope === 'single' ? 'demo' : undefined)
 
-    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [], message: '' })
-    await store.fetchPluginSummaries(true)
+    if (removalRequest) {
+      removed.resolve({ plugins: [], message: '' })
+      await removalRequest
+    } else {
+      vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [], message: '' })
+      await store.fetchPluginSummaries(true)
+    }
     vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [{ ...summary, version: '2.0.0' }], message: '' })
     await store.fetchPluginSummaries(true)
     old.resolve(scope === 'single' ? runtime('running') : { plugins: { demo: runtime('running') } })
@@ -421,6 +434,26 @@ describe('plugin state ownership and registry cache invalidation', () => {
     vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('running'))
     await store.fetchPluginStatus('demo')
     expectVisibleStatus(store, 'running')
+  })
+
+  it('fences concurrent status reads only for removed IDs, keeping live IDs updateable', async () => {
+    const store = usePluginStore()
+    const kept = plugin({ id: 'kept' })
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin(), kept], message: '' })
+    await store.fetchPluginSummaries()
+    const removed = deferred<{ plugins: PluginMeta[]; message: string }>()
+    vi.mocked(getPluginSummaries).mockReturnValueOnce(removed.promise)
+    const removal = store.fetchPluginSummaries(true)
+    const status = deferred<{ plugins: Record<string, PluginStatusData> }>()
+    vi.mocked(getPluginStatus).mockReturnValueOnce(status.promise)
+    const statusRequest = store.fetchPluginStatus()
+    removed.resolve({ plugins: [kept], message: '' })
+    await removal
+    status.resolve({ plugins: { demo: runtime('running'), kept: { ...runtime('running'), plugin_id: 'kept' } } })
+    await statusRequest
+    expect(store.getPluginById('demo')).toBeNull()
+    expect(store.pluginStatuses.demo).toBeUndefined()
+    expect(store.getPluginById('kept')?.status).toBe('running')
   })
 
   it('does not give stale metadata status new precedence when confirming an auto-start preference', async () => {
