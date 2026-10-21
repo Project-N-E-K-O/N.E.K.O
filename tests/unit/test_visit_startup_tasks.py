@@ -171,7 +171,7 @@ async def test_startup_invalidates_pending_invites_before_spool_recovery(monkeyp
     monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
     monkeypatch.setattr(background, "run_startup_recovery", recover)
     background.start_visit_background_tasks()
-    await background.wait_startup_invite_reset()
+    assert await background.wait_startup_invite_reset() is True
     assert await background._recovery_task is None
     assert order == ["reset", "recover"]
 
@@ -195,7 +195,7 @@ async def test_startup_invite_reset_timeout_does_not_block_recovery(monkeypatch)
     monkeypatch.setattr(credentials, "cancel_pending_host_invites", hanging_reset)
     monkeypatch.setattr(background, "run_startup_recovery", recover)
     background.start_visit_background_tasks()
-    await background.wait_startup_invite_reset()
+    assert await background.wait_startup_invite_reset() is False
     assert await background._recovery_task is None
     assert cancelled.is_set() and recovered.is_set()
 

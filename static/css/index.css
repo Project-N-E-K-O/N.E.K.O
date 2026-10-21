@@ -2032,7 +2032,7 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compac
 }
 
 body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
-    max-height: 240px;
+    max-height: min(240px, var(--compact-choice-available-block-size, 240px));
 }
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .chat-window,

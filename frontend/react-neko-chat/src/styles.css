@@ -2756,7 +2756,7 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compac
 }
 
 body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
-  max-height: 240px;
+  max-height: min(240px, var(--compact-choice-available-block-size, 240px));
 }
 
 /* 串门工具条使用独立 Portal：始终在聊天框上方，不再改变 Galgame 选项的上下位置。 */

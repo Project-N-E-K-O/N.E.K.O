@@ -1335,6 +1335,7 @@ def test_compact_choice_hit_contract_uses_real_options_only():
 def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_polling():
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    host_styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     placement_effect = app_source.split("if (!compactChoiceLayerOpen) return;", 1)[1].split(
         "const requestCompactChatState = useCallback",
@@ -1365,6 +1366,17 @@ def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_poll
         1,
     )[0]
     assert "--compact-choice-available-block-size" in choice_base
+    desktop_selector = 'body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {'
+    assert "var(--compact-choice-available-block-size, 240px)" in css_block(
+        styles,
+        desktop_selector,
+        "/* 串门工具条使用独立 Portal",
+    )
+    assert "var(--compact-choice-available-block-size, 240px)" in css_block(
+        host_styles,
+        desktop_selector,
+        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]',
+    )
     assert "const requiredAbove = layerHeight + gap + visitReserve;" in placement_effect
     assert "availableAbove - gap - visitReserve" in placement_effect
 

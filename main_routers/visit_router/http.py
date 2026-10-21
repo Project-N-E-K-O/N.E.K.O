@@ -373,7 +373,8 @@ async def create_room(request: Request):
     # cleanup and revive or collide with the old code.
     from main_routers.visit_router import background
 
-    await background.wait_startup_invite_reset()
+    if not await background.wait_startup_invite_reset():
+        return _servers_error(cr.VisitServersUnreachable("startup_invite_reset"))
     # A new Electron run can bind while the long-lived backend stays up.  Its
     # pending-invite cleanup must retire before this request mints a new room,
     # otherwise a delayed bulk cancel can invalidate the fresh invitation.
