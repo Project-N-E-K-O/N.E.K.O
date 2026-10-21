@@ -1,12 +1,12 @@
 <template>
-  <el-card class="selector-card">
+  <el-card class="selector-card" :aria-busy="loading">
     <template #header>
       <div class="card-header card-header--stack">
         <div class="selector-topline">
-          <span>本地插件</span>
+          <span>{{ t('plugins.localPlugins') }}</span>
           <div class="selector-topline__meta">
             <el-tag size="small" type="primary">{{ totalCount }}</el-tag>
-            <el-tag size="small" type="info">已选 {{ selectedCount }}</el-tag>
+            <el-tag size="small" type="info">{{ t('plugins.selectedCount', { count: selectedCount }) }}</el-tag>
           </div>
         </div>
 
@@ -14,6 +14,8 @@
           :model-value="pluginFilter"
           clearable
           :placeholder="t('plugins.filterPlaceholder')"
+          :aria-label="t('common.filter')"
+          :aria-invalid="regexError"
           @update:model-value="$emit('update:pluginFilter', $event)"
         />
 
@@ -21,29 +23,32 @@
           <el-switch
             :model-value="useRegex"
             class="selector-filter-switch"
-            active-text="Regex"
-            inactive-text="Text"
+            :active-text="t('plugins.filterRegex')"
+            :inactive-text="t('plugins.filterText')"
+            :aria-label="t('plugins.filterRegex')"
             @update:model-value="$emit('update:useRegex', $event)"
           />
           <el-radio-group
             :model-value="filterMode"
             size="small"
+            :aria-label="t('plugins.filterRules')"
             @update:model-value="$emit('update:filterMode', $event)"
           >
             <el-radio-button label="whitelist">{{ t('plugins.filterWhitelist') }}</el-radio-button>
             <el-radio-button label="blacklist">{{ t('plugins.filterBlacklist') }}</el-radio-button>
           </el-radio-group>
-          <span v-if="regexError" class="selector-filter-error">{{ t('plugins.invalidRegex') }}</span>
+          <span v-if="regexError" class="selector-filter-error" role="alert">{{ t('plugins.invalidRegex') }}</span>
         </div>
 
         <div class="type-filter-bar">
           <el-checkbox-group
             :model-value="selectedTypes"
             class="type-filter-group"
+            :aria-label="t('plugins.pluginType')"
             @update:model-value="$emit('update:selectedTypes', $event)"
           >
-            <el-checkbox-button label="plugin">插件 ({{ pluginCount }})</el-checkbox-button>
-            <el-checkbox-button label="adapter">适配器 ({{ adapterCount }})</el-checkbox-button>
+            <el-checkbox-button label="plugin">{{ t('plugins.pluginsSection') }} ({{ pluginCount }})</el-checkbox-button>
+            <el-checkbox-button label="adapter">{{ t('plugins.adaptersSection') }} ({{ adapterCount }})</el-checkbox-button>
           </el-checkbox-group>
         </div>
 
@@ -51,26 +56,28 @@
           <el-radio-group
             :model-value="layoutMode"
             size="small"
+            :aria-label="t('plugins.layoutLabel')"
             @update:model-value="$emit('update:layoutMode', $event)"
           >
-            <el-radio-button label="list">列表</el-radio-button>
-            <el-radio-button label="single">单排</el-radio-button>
-            <el-radio-button label="double">双排</el-radio-button>
-            <el-radio-button label="compact">小矩阵</el-radio-button>
+            <el-radio-button label="list">{{ t('plugins.layoutList') }}</el-radio-button>
+            <el-radio-button label="single">{{ t('plugins.layoutSingle') }}</el-radio-button>
+            <el-radio-button label="double">{{ t('plugins.layoutDouble') }}</el-radio-button>
+            <el-radio-button label="compact">{{ t('plugins.layoutCompact') }}</el-radio-button>
           </el-radio-group>
 
           <div class="selector-actions">
-            <el-button text @click="$emit('selectAllVisible')">全选</el-button>
-            <el-button text @click="$emit('clearSelection')">清空</el-button>
-            <el-button :loading="loading" text @click="$emit('refresh')">刷新</el-button>
+            <el-button text @click="$emit('selectAllVisible')">{{ t('plugins.selectAllVisible') }}</el-button>
+            <el-button text @click="$emit('clearSelection')">{{ t('plugins.clearSelection') }}</el-button>
+            <el-button :loading="loading" text @click="$emit('refresh')">{{ t('common.refresh') }}</el-button>
           </div>
         </div>
       </div>
     </template>
 
+    <LoadingSpinner v-if="loading && totalFilteredCount === 0" :loading="true" />
     <el-empty
-      v-if="!loading && totalFilteredCount === 0"
-      description="没有匹配的本地插件"
+      v-else-if="totalFilteredCount === 0"
+      :description="t('plugins.noLocalMatches')"
     />
 
     <div v-else class="selector-sections">
@@ -88,27 +95,38 @@
                 'plugin-select-item--list': layoutMode === 'list',
                 'plugin-select-card--active': isSelected(plugin.id),
               }"
-              @click="$emit('togglePlugin', plugin.id)"
+              @click="layoutMode === 'list' && $emit('togglePlugin', plugin.id)"
             >
               <template v-if="layoutMode === 'list'">
                 <div class="plugin-list-row">
                   <el-checkbox
                     :model-value="isSelected(plugin.id)"
+                    :aria-label="`${t('common.toggleSelection')}: ${plugin.displayName || plugin.name}`"
                     @click.stop
                     @change="$emit('togglePlugin', plugin.id)"
                   />
-                  <span class="plugin-list-row__name">{{ plugin.displayName || plugin.name }}</span>
+                  <button
+                    type="button"
+                    class="plugin-list-row__name"
+                    :aria-pressed="isSelected(plugin.id)"
+                    @click.stop="$emit('togglePlugin', plugin.id)"
+                  >{{ plugin.displayName || plugin.name }}</button>
                 </div>
               </template>
               <template v-else>
                 <div class="plugin-select-item__checkbox">
                   <el-checkbox
                     :model-value="isSelected(plugin.id)"
+                    :aria-label="`${t('common.toggleSelection')}: ${plugin.displayName || plugin.name}`"
                     @click.stop
                     @change="$emit('togglePlugin', plugin.id)"
                   />
                 </div>
-                <PluginCard :plugin="plugin" :is-selected="isSelected(plugin.id)" />
+                <PluginCard
+                  :plugin="plugin"
+                  :is-selected="isSelected(plugin.id)"
+                  @click="$emit('togglePlugin', plugin.id)"
+                />
               </template>
             </div>
           </div>
@@ -122,6 +140,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import PluginCard from '@/components/plugin/PluginCard.vue'
+import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import type { PluginMeta } from '@/types/api'
 
 type LayoutMode = 'list' | 'single' | 'double' | 'compact'
@@ -172,8 +191,8 @@ const totalFilteredCount = computed(
 )
 
 const sections = computed(() => [
-  { key: 'plugin', title: '插件', items: props.filteredPurePlugins, headerClass: '' },
-  { key: 'adapter', title: '适配器', items: props.filteredAdapters, headerClass: 'section-header--adapter' },
+  { key: 'plugin', title: t('plugins.pluginsSection'), items: props.filteredPurePlugins, headerClass: '' },
+  { key: 'adapter', title: t('plugins.adaptersSection'), items: props.filteredAdapters, headerClass: 'section-header--adapter' },
 ])
 
 function isSelected(pluginId: string): boolean {
@@ -206,12 +225,14 @@ function isSelected(pluginId: string): boolean {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .selector-topline__meta {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .selector-toolbar {
@@ -219,6 +240,11 @@ function isSelected(pluginId: string): boolean {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.selector-toolbar :deep(.el-radio-group) {
+  display: flex;
   flex-wrap: wrap;
 }
 
@@ -230,6 +256,23 @@ function isSelected(pluginId: string): boolean {
 }
 
 .selector-filter-switch {
+  flex-shrink: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 32px;
+}
+
+.selector-filter-switch :deep(.el-switch__label) {
+  height: auto;
+  min-width: 0;
+}
+
+.selector-filter-switch :deep(.el-switch__label span) {
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.selector-filter-switch :deep(.el-switch__core) {
   flex-shrink: 0;
 }
 
@@ -305,16 +348,18 @@ function isSelected(pluginId: string): boolean {
 .plugin-select-item {
   position: relative;
   cursor: pointer;
+  transition:
+    transform var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
 .plugin-select-item--list {
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-control);
   background: var(--surface-card);
-  transition: all 0.2s ease;
 }
 
-.plugin-select-item:hover {
+.plugin-select-item--list:hover {
   transform: translateY(-2px);
 }
 
@@ -345,16 +390,39 @@ function isSelected(pluginId: string): boolean {
 }
 
 .plugin-list-row__name {
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
   font-size: 14px;
   color: var(--el-text-color-primary);
   line-height: 1.4;
   word-break: break-all;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plugin-list-row__name:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
 }
 
 @media (max-width: 980px) {
   .plugin-selector-grid--double,
   .plugin-selector-grid--compact {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-select-item {
+    transition: none;
+  }
+
+  .plugin-select-item:hover {
+    transform: none;
   }
 }
 </style>

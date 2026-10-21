@@ -47,6 +47,7 @@ export default {
     removeHint: "Stop this plugin and remove its association? Source files and runtime data will be kept.",
   },
   common: {
+    chooseLanguage: "Choose language",
     surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
     surfaceApplyLanguage: "Apply language and reload panel",
     surfaceApplyLanguageConfirm: "Reloading the panel discards its unsaved work. Continue?",
@@ -532,6 +533,14 @@ export default {
     installFallback: 'Could not select a mirror source; using GitHub Direct.'
   },
   plugins: {
+    listLoadFailed: "Could not load the plugin list. Please retry.",
+    noMatches: "No matching plugins",
+    clearFilters: "Clear filters",
+    localPlugins: "Local plugins",
+    noLocalMatches: "No matching local plugins",
+    filterRegex: "Regex",
+    filterText: "Text",
+    layoutLabel: "Layout",
     configSchemaInvalid: 'The plugin configuration schema is invalid. Showing the generic configuration editor.',
     title: 'Plugins',
     name: 'Plugin Name',
@@ -995,6 +1004,7 @@ export default {
     UNKNOWN: 'Unknown'
   },
   messages: {
+    refreshPartialFailure: "Some plugin data could not be refreshed. Displayed information may be out of date.",
     fetchFailed: 'Failed to fetch data',
     operationSuccess: 'Operation successful',
     operationFailed: 'Operation failed',

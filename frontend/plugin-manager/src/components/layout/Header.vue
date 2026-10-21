@@ -14,7 +14,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Refresh, Sunny, Moon } from '@element-plus/icons-vue'
-import { usePluginStore } from '@/stores/plugin'
+import { PluginDataRefreshError, usePluginStore } from '@/stores/plugin'
 import { ElMessage } from 'element-plus'
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
 import { useDarkMode } from '@/composables/useDarkMode'
@@ -25,12 +25,21 @@ const refreshing = ref(false)
 const { isDark, toggleDarkMode } = useDarkMode()
 
 async function handleRefresh() {
+  if (refreshing.value) return
   refreshing.value = true
   try {
-    await Promise.all([pluginStore.refreshLoadedPluginData(), pluginStore.fetchPluginStatus()])
-    ElMessage.success(t('messages.operationSuccess'))
-  } catch {
-    ElMessage.error(t('messages.operationFailed'))
+    const [data, status] = await Promise.allSettled([
+      pluginStore.refreshLoadedPluginData(),
+      pluginStore.fetchPluginStatus(),
+    ])
+    const dataUpdated = data.status === 'fulfilled'
+    const dataPartiallyUpdated = data.status === 'rejected'
+      && data.reason instanceof PluginDataRefreshError
+      && data.reason.successfulRequests > 0
+    const statusUpdated = status.status === 'fulfilled' && status.value
+    if (dataUpdated && statusUpdated) ElMessage.success(t('messages.operationSuccess'))
+    else if (dataUpdated || dataPartiallyUpdated || statusUpdated) ElMessage.warning(t('messages.refreshPartialFailure'))
+    else ElMessage.error(t('messages.operationFailed'))
   } finally {
     refreshing.value = false
   }

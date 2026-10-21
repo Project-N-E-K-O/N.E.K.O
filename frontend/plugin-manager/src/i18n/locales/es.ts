@@ -47,6 +47,7 @@ export default {
     removeHint: "¿Detener el plugin y eliminar el vínculo? Se conservarán el código y los datos de ejecución.",
   },
   common: {
+    chooseLanguage: "Elegir idioma",
     surfaceLanguagePending: "El idioma de la aplicación cambió. Se conserva el idioma del panel para proteger el trabajo sin guardar.",
     surfaceApplyLanguage: "Aplicar idioma y recargar panel",
     surfaceApplyLanguageConfirm: "Al recargar el panel se descartará el trabajo sin guardar. ¿Continuar?",
@@ -532,6 +533,14 @@ export default {
     installFallback: 'No se pudo seleccionar una fuente espejo; se usa GitHub directo.'
   },
   plugins: {
+    listLoadFailed: "No se pudo cargar la lista de plugins. Inténtalo de nuevo.",
+    noMatches: "No hay plugins que coincidan",
+    clearFilters: "Borrar filtros",
+    localPlugins: "Plugins locales",
+    noLocalMatches: "No hay plugins locales que coincidan",
+    filterRegex: "Regex",
+    filterText: "Texto",
+    layoutLabel: "Diseño",
     configSchemaInvalid: 'El esquema de configuración del complemento no es válido. Se muestra el editor de configuración genérico.',
     title: 'Plugins',
     name: 'Nombre del plugin',
@@ -995,6 +1004,7 @@ export default {
     UNKNOWN: 'Desconocido'
   },
   messages: {
+    refreshPartialFailure: "No se pudieron actualizar algunos datos de los plugins. La información mostrada puede estar desactualizada.",
     fetchFailed: 'Error al obtener los datos',
     operationSuccess: 'Operación correcta',
     operationFailed: 'Error en la operación',

@@ -6,10 +6,17 @@
     @contextmenu.prevent="$emit('contextmenu', $event)"
   >
     <template #header>
-      <div class="plugin-card-header">
+      <div class="plugin-card-header" :class="{ 'plugin-card-header--has-ui': !!availableUiAction }">
         <div class="plugin-info">
           <div class="plugin-heading">
-            <h3 class="plugin-name">{{ displayText.name }}</h3>
+            <h3 class="plugin-name">
+              <button
+                type="button"
+                class="plugin-name__button"
+                data-testid="plugin-details-button"
+                @click.stop="$emit('click')"
+              >{{ displayText.name }}</button>
+            </h3>
             <span
               v-if="showIdentity"
               class="plugin-identity"
@@ -19,14 +26,17 @@
               ID: {{ plugin.id }}
             </span>
           </div>
-          <StatusIndicator :status="plugin.status || 'stopped'" />
-          <el-tag v-if="plugin.autoStart === false" size="small" type="warning">
-            {{ t('plugins.manualStart') }}
-          </el-tag>
+          <div class="plugin-statuses">
+            <StatusIndicator :status="plugin.status || 'stopped'" />
+            <el-tag v-if="plugin.autoStart === false" size="small" type="warning" effect="plain">
+              {{ t('plugins.manualStart') }}
+            </el-tag>
+          </div>
         </div>
         <el-button
           v-if="availableUiAction"
           data-testid="plugin-open-ui"
+          class="plugin-ui-action"
           size="small"
           type="primary"
           plain
@@ -146,15 +156,23 @@ const hasUpdate = computed<boolean>(() => {
 <style scoped>
 .plugin-card {
   container-type: inline-size;
+  display: flex;
+  flex-direction: column;
   cursor: pointer;
   border-radius: var(--plugin-entry-radius, var(--radius-card));
   background: var(--surface-card);
   border-color: var(--surface-border);
   box-shadow: var(--surface-shadow);
   transition:
-    transform 0.24s ease,
-    box-shadow 0.24s ease,
-    border-color 0.24s ease;
+    transform var(--motion-duration-normal) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+.plugin-card :deep(> .el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .plugin-card:hover {
@@ -170,20 +188,20 @@ const hasUpdate = computed<boolean>(() => {
 }
 
 .plugin-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  align-items: start;
+  gap: 8px 10px;
+  min-height: 72px;
+}
+
+.plugin-card-header--has-ui {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .plugin-info {
-  display: flex;
-  align-items: center;
-  align-content: flex-start;
-  gap: 10px;
-  flex-wrap: wrap;
-  min-width: 0;
-  flex: 1 1 auto;
+  display: contents;
 }
 
 .plugin-name {
@@ -201,6 +219,51 @@ const hasUpdate = computed<boolean>(() => {
   align-items: flex-start;
   gap: 3px;
   min-width: 0;
+  min-height: 44px;
+  width: 100%;
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.plugin-name__button {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plugin-name__button:focus-visible,
+.plugin-ui-action:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
+}
+
+.plugin-card:focus-within {
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+}
+
+.plugin-statuses {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 20px;
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.plugin-ui-action {
+  grid-column: 2;
+  grid-row: 1;
+  flex-shrink: 0;
+  margin-left: 0;
 }
 
 .plugin-identity {
@@ -224,6 +287,7 @@ const hasUpdate = computed<boolean>(() => {
 
 .plugin-description {
   margin: 0;
+  min-height: 3em;
   color: var(--el-text-color-regular);
   font-size: 14px;
   line-height: 1.5;
@@ -294,12 +358,6 @@ const hasUpdate = computed<boolean>(() => {
   flex-shrink: 0;
 }
 
-@media (max-width: 640px) {
-  .plugin-info {
-    align-items: flex-start;
-  }
-}
-
 @container (max-width: 220px) {
   .plugin-card-footer {
     grid-template-columns: 1fr;
@@ -308,6 +366,16 @@ const hasUpdate = computed<boolean>(() => {
 
   .plugin-entries {
     justify-self: start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-card {
+    transition: none;
+  }
+
+  .plugin-card:hover {
+    transform: none;
   }
 }
 </style>

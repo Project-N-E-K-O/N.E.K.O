@@ -47,6 +47,7 @@ export default {
     removeHint: "停止外掛並移除關聯？原始碼和執行資料會保留。",
   },
   common: {
+    chooseLanguage: "選擇語言",
     surfaceLanguagePending: "應用語言已變更。為保留未儲存內容，此面板暫時保留原語言。",
     surfaceApplyLanguage: "套用新語言並重新載入面板",
     surfaceApplyLanguageConfirm: "重新載入面板會遺失其中未儲存的內容。是否繼續？",
@@ -532,6 +533,14 @@ export default {
     installFallback: '無法選擇鏡像來源，已使用 GitHub 直連。'
   },
   plugins: {
+    listLoadFailed: "外掛清單載入失敗，請重試",
+    noMatches: "沒有相符的外掛",
+    clearFilters: "清除篩選",
+    localPlugins: "本機外掛",
+    noLocalMatches: "沒有相符的本機外掛",
+    filterRegex: "正則",
+    filterText: "文字",
+    layoutLabel: "版面配置",
     configSchemaInvalid: '外掛程式設定 Schema 無效，已使用通用設定編輯器。',
     title: '外掛列表',
     name: '外掛名稱',
@@ -995,6 +1004,7 @@ export default {
     UNKNOWN: '未知'
   },
   messages: {
+    refreshPartialFailure: "部分外掛資料重新整理失敗，顯示的資訊可能不是最新的",
     fetchFailed: '取得資料失敗',
     operationSuccess: '操作成功',
     operationFailed: '操作失敗',

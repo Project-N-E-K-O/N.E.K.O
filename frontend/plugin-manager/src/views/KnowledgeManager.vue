@@ -1275,7 +1275,7 @@ onUnmounted(() => {
   gap: 18px;
   width: 100%;
   min-width: 0;
-  padding: 24px 24px 72px;
+  padding: var(--spacing-lg) var(--spacing-lg) 72px;
   overflow-x: clip;
 }
 
@@ -2015,7 +2015,7 @@ dd {
 
 @media (max-width: 640px) {
   .knowledge-manager {
-    padding: 16px 16px calc(128px + env(safe-area-inset-bottom));
+    padding: var(--spacing-md) var(--spacing-md) calc(128px + env(safe-area-inset-bottom));
   }
 
   :global(.knowledge-entry-drawer) {

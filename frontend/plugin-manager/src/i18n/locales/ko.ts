@@ -47,6 +47,7 @@ export default {
     removeHint: "플러그인을 중지하고 연결을 해제할까요? 소스와 실행 데이터는 유지됩니다.",
   },
   common: {
+    chooseLanguage: "언어 선택",
     surfaceLanguagePending: "앱 언어가 변경되었습니다. 저장하지 않은 내용을 보호하기 위해 패널 언어를 유지합니다.",
     surfaceApplyLanguage: "언어 적용 및 패널 새로고침",
     surfaceApplyLanguageConfirm: "패널을 새로고침하면 저장하지 않은 내용이 손실됩니다. 계속하시겠습니까?",
@@ -532,6 +533,14 @@ export default {
     installFallback: '미러 소스를 선택할 수 없어 GitHub 직접 연결을 사용합니다.'
   },
   plugins: {
+    listLoadFailed: "플러그인 목록을 불러오지 못했습니다. 다시 시도해 주세요.",
+    noMatches: "일치하는 플러그인이 없습니다",
+    clearFilters: "필터 지우기",
+    localPlugins: "로컬 플러그인",
+    noLocalMatches: "일치하는 로컬 플러그인이 없습니다",
+    filterRegex: "정규식",
+    filterText: "텍스트",
+    layoutLabel: "레이아웃",
     configSchemaInvalid: '플러그인 설정 스키마가 유효하지 않아 일반 설정 편집기를 표시합니다.',
     title: '플러그인 목록',
     name: '플러그인 이름',
@@ -995,6 +1004,7 @@ export default {
     UNKNOWN: '알 수 없음'
   },
   messages: {
+    refreshPartialFailure: "일부 플러그인 데이터를 새로 고치지 못했습니다. 표시된 정보가 최신이 아닐 수 있습니다.",
     fetchFailed: '데이터를 불러오지 못했습니다',
     operationSuccess: '작업이 성공했습니다',
     operationFailed: '작업이 실패했습니다',

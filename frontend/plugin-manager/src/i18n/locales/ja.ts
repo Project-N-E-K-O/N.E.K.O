@@ -47,6 +47,7 @@ export default {
     removeHint: "プラグインを停止して関連付けを解除しますか？ソースと実行データは保持されます。",
   },
   common: {
+    chooseLanguage: "言語を選択",
     surfaceLanguagePending: "アプリの言語が変更されました。未保存の内容を保護するため、このパネルの言語は維持されます。",
     surfaceApplyLanguage: "言語を適用してパネルを再読み込み",
     surfaceApplyLanguageConfirm: "パネルを再読み込みすると、未保存の内容は失われます。続行しますか？",
@@ -532,6 +533,14 @@ export default {
     installFallback: 'ミラーソースを選択できないため、GitHub 直結を使用します。'
   },
   plugins: {
+    listLoadFailed: "プラグイン一覧を読み込めませんでした。もう一度お試しください。",
+    noMatches: "一致するプラグインはありません",
+    clearFilters: "フィルターをクリア",
+    localPlugins: "ローカルプラグイン",
+    noLocalMatches: "一致するローカルプラグインはありません",
+    filterRegex: "正規表現",
+    filterText: "テキスト",
+    layoutLabel: "レイアウト",
     configSchemaInvalid: 'プラグインの設定スキーマが無効なため、汎用設定エディターを表示しています。',
     title: 'プラグイン一覧',
     name: 'プラグイン名',
@@ -995,6 +1004,7 @@ export default {
     UNKNOWN: '不明'
   },
   messages: {
+    refreshPartialFailure: "一部のプラグインデータを更新できませんでした。表示情報が最新ではない可能性があります。",
     fetchFailed: 'データの取得に失敗しました',
     operationSuccess: '操作が成功しました',
     operationFailed: '操作が失敗しました',

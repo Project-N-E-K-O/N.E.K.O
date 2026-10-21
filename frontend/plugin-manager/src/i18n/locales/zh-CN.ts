@@ -47,6 +47,7 @@ export default {
     removeHint: "停止插件并移除关联？源码和运行数据会保留。",
   },
   common: {
+    chooseLanguage: "选择语言",
     surfaceLanguagePending: "应用语言已更改。为保留未保存内容，此面板暂时保留原语言。",
     surfaceApplyLanguage: "应用新语言并重新载入面板",
     surfaceApplyLanguageConfirm: "重新载入面板会丢失其中未保存的内容。是否继续？",
@@ -532,6 +533,14 @@ export default {
     installFallback: '无法选择镜像源，已使用 GitHub 直连。'
   },
   plugins: {
+    listLoadFailed: "插件列表加载失败，请重试",
+    noMatches: "没有匹配的插件",
+    clearFilters: "清除筛选",
+    localPlugins: "本地插件",
+    noLocalMatches: "没有匹配的本地插件",
+    filterRegex: "正则",
+    filterText: "文本",
+    layoutLabel: "布局",
     configSchemaInvalid: '插件配置 Schema 无效，已使用通用配置编辑器。',
     title: '插件列表',
     name: '插件名称',
@@ -995,6 +1004,7 @@ export default {
     UNKNOWN: '未知'
   },
   messages: {
+    refreshPartialFailure: "部分插件数据刷新失败，显示的信息可能不是最新的",
     fetchFailed: '获取数据失败',
     operationSuccess: '操作成功',
     operationFailed: '操作失败',

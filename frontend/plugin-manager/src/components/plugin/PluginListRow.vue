@@ -10,9 +10,16 @@
         <div class="plugin-list-row-card__headline">
           <div class="plugin-list-row-card__heading-main">
             <el-tag size="small" effect="plain" :type="typeTagType">{{ typeLabel }}</el-tag>
-            <h3 class="plugin-list-row-card__name">{{ displayText.name }}</h3>
+            <h3 class="plugin-list-row-card__name">
+              <button
+                type="button"
+                class="plugin-list-row-card__name-button"
+                data-testid="plugin-details-button"
+                @click.stop="$emit('click')"
+              >{{ displayText.name }}</button>
+            </h3>
             <StatusIndicator :status="plugin.status || 'stopped'" />
-            <el-tag v-if="plugin.autoStart === false" size="small" type="warning">
+            <el-tag v-if="plugin.autoStart === false" size="small" type="warning" effect="plain">
               {{ t('plugins.manualStart') }}
             </el-tag>
             <SourceTag
@@ -23,6 +30,7 @@
           <el-button
             v-if="availableUiAction"
             data-testid="plugin-open-ui"
+            class="plugin-list-row-card__ui-action"
             size="small"
             type="primary"
             plain
@@ -55,7 +63,7 @@
           <span class="plugin-list-row-card__meta-value plugin-list-row-card__meta-value--code">{{ plugin.id }}</span>
         </div>
         <div class="plugin-list-row-card__meta-item">
-          <span class="plugin-list-row-card__meta-label">Version</span>
+          <span class="plugin-list-row-card__meta-label">{{ t('plugins.version') }}</span>
           <span class="plugin-list-row-card__meta-value">v{{ plugin.version }}</span>
         </div>
         <div class="plugin-list-row-card__meta-item">
@@ -148,9 +156,9 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
   border-color: var(--surface-border);
   box-shadow: var(--surface-shadow);
   transition:
-    transform 0.24s ease,
-    box-shadow 0.24s ease,
-    border-color 0.24s ease;
+    transform var(--motion-duration-normal) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
 .plugin-list-row-card:hover {
@@ -214,6 +222,35 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
   overflow: hidden;
 }
 
+.plugin-list-row-card__name-button {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plugin-list-row-card__name-button:focus-visible,
+.plugin-list-row-card__ui-action:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
+}
+
+.plugin-list-row-card:focus-within {
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+}
+
+.plugin-list-row-card__ui-action {
+  flex-shrink: 0;
+  margin-left: 0;
+}
+
 .plugin-list-row-card__meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -262,6 +299,16 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 
   .plugin-list-row-card__meta {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-list-row-card {
+    transition: none;
+  }
+
+  .plugin-list-row-card:hover {
+    transform: none;
   }
 }
 </style>

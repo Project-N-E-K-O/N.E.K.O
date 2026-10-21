@@ -44,6 +44,17 @@ type PluginMutationOptions = {
   refresh?: boolean
 }
 
+/** Keep refresh rejection semantics while exposing successful subrequests. */
+export class PluginDataRefreshError extends Error {
+  readonly cause: unknown
+
+  constructor(cause: unknown, readonly successfulRequests: number) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = 'PluginDataRefreshError'
+    this.cause = cause
+  }
+}
+
 export const usePluginStore = defineStore('plugin', () => {
   // 状态
   const pluginSummaries = ref<PluginListSummary[]>([])
@@ -57,7 +68,7 @@ export const usePluginStore = defineStore('plugin', () => {
   const pluginSummaryFetchedLocale = ref<string | null>(null)
   
   // 防止请求堆积：正在进行的请求
-  let pendingFetchStatus: Promise<void> | null = null
+  let pendingFetchStatus: Promise<boolean> | null = null
   let pendingFetchSummaries: Promise<void> | null = null
   let pendingFetchSummariesLocale: string | null = null
   const pendingFetchDetails = new Map<string, Promise<void>>()
@@ -255,7 +266,16 @@ export const usePluginStore = defineStore('plugin', () => {
     if (tasks.length === 0) {
       tasks.push(fetchPluginSummaries(true, options))
     }
-    await Promise.all(tasks)
+    // One failed detail must not release the refresh button while other loaded
+    // details are still updating. Callers still receive a rejection, including
+    // how many subrequests succeeded when the refresh only partially failed.
+    const results = await Promise.allSettled(tasks)
+    const failed = results.find((result) => result.status === 'rejected')
+    if (failed?.status === 'rejected') {
+      const successfulRequests = results.filter((result) => result.status === 'fulfilled').length
+      if (successfulRequests > 0) throw new PluginDataRefreshError(failed.reason, successfulRequests)
+      throw failed.reason
+    }
   }
 
   async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
@@ -302,7 +322,9 @@ export const usePluginStore = defineStore('plugin', () => {
     return pendingPluginListRegistrySync
   }
 
-  async function fetchPluginStatus(pluginId?: string, force = false) {
+  // Background callers may ignore this result safely. Explicit refresh callers
+  // can distinguish an applied snapshot from a failed or superseded request.
+  async function fetchPluginStatus(pluginId?: string, force = false): Promise<boolean> {
     if (pluginId) {
       // A single-plugin mutation makes any in-flight full snapshot stale.
       fetchStatusSeq += 1
@@ -316,7 +338,7 @@ export const usePluginStore = defineStore('plugin', () => {
     
     // 设置超时自动清理（仅对全量请求）
     let timeoutId: ReturnType<typeof setTimeout> | null = null
-    let timeoutReject: ((reason?: unknown) => void) | null = null
+    let finishTimeout: ((result: boolean) => void) | null = null
     const seq = !pluginId ? ++fetchStatusSeq : 0
     if (!pluginId) {
       timeoutId = setTimeout(() => {
@@ -324,8 +346,10 @@ export const usePluginStore = defineStore('plugin', () => {
           console.warn('[Plugin Store] fetchPluginStatus timeout, clearing pending request')
           fetchStatusSeq += 1
           pendingFetchStatus = null
-          timeoutReject?.(new Error('获取插件状态超时'))
         }
+        // A forced refresh may replace this request, but its original callers
+        // still need a bounded completion without invalidating the replacement.
+        finishTimeout?.(false)
       }, REQUEST_TIMEOUT)
     }
     
@@ -333,7 +357,7 @@ export const usePluginStore = defineStore('plugin', () => {
       try {
         const response = await getPluginStatus(pluginId)
         // 忽略过期响应（仅对全量请求）
-        if (!pluginId && seq !== fetchStatusSeq) return
+        if (!pluginId && seq !== fetchStatusSeq) return false
         if (pluginId) {
           // 单个插件状态
           pluginStatuses.value[pluginId] = response as PluginStatusData
@@ -344,8 +368,10 @@ export const usePluginStore = defineStore('plugin', () => {
           pluginStatusSnapshotLoaded.value = true
           pluginStatusFetchedAt.value = Date.now()
         }
+        return true
       } catch (err: any) {
         console.error('Failed to fetch plugin status:', err)
+        return false
       } finally {
         if (timeoutId) clearTimeout(timeoutId)
         if (!pluginId && seq === fetchStatusSeq) {
@@ -355,7 +381,7 @@ export const usePluginStore = defineStore('plugin', () => {
     }
     
     if (!pluginId) {
-      const timeout = new Promise<void>((_, reject) => { timeoutReject = reject })
+      const timeout = new Promise<boolean>((resolve) => { finishTimeout = resolve })
       pendingFetchStatus = Promise.race([doFetch(), timeout])
       return pendingFetchStatus
     } else {

@@ -240,7 +240,7 @@ onMounted(() => { void loadSlots(); void loadUsage() })
 </script>
 
 <style scoped>
-.model-api { max-width: 1400px; margin: 0 auto; padding: 24px; }
+.model-api { max-width: 1400px; margin: 0 auto; padding: var(--spacing-lg); }
 .page-heading, .section-heading, .slot-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .page-heading { margin-bottom: 22px; }
 h1 { margin: 0 0 8px; font-size: 26px; }
@@ -282,7 +282,7 @@ dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .field-hint, .field-error { font-size: 12px; margin: 6px 0 0; line-height: 1.5; width: 100%; }
 .field-error { color: var(--el-color-danger); }
 @media (max-width: 700px) {
-  .model-api { padding: 16px; }
+  .model-api { padding: var(--spacing-md); }
   .page-heading, .section-heading { align-items: flex-start; flex-wrap: wrap; }
   .usage-summary { grid-template-columns: 1fr 1fr; }
   .usage-filters { flex-wrap: wrap; }

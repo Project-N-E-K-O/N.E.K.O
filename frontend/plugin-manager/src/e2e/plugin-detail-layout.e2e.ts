@@ -152,6 +152,63 @@ test('日志 tab 的内层滚动条仍然可用', async ({ page }) => {
   expect(m.panelScrollable, '日志列表不再可滚（固定高度被 flex 吃掉？）').toBe(true)
 })
 
+test('断连横幅出现后，多 surface 与长日志仍贴合剩余容器', async ({ page }) => {
+  await page.clock.install()
+  await page.setViewportSize({ width: 1000, height: 768 })
+  await stubLayoutPluginApis(page)
+  await page.route('**/health', (route) => route.fulfill({ status: 503, json: { status: 'offline' } }))
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`, { waitUntil: 'load' })
+  await expect(page.locator('[data-yui-guide-id="plugin-detail-tabs"]')).toBeVisible()
+  // Successful initial API reads reset the health failure count. Allow three
+  // subsequent failed checks, letting each fetch settle before the next one.
+  for (let check = 0; check < 3; check += 1) {
+    const healthResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/health')
+    await page.clock.runFor(10_100)
+    await (await healthResponse).finished()
+  }
+  await expect(page.locator('.connection-banner')).toBeVisible()
+
+  for (const tab of ['panel', 'guide', 'logs']) {
+    await page.locator(`#tab-${tab}`).click()
+    await page.clock.runFor(400)
+    const m = await measure(page)
+    expect(m.outerOverflow, `${tab}: banner introduced an outer scrollbar`).toBe(0)
+    expect(m.panel).not.toBeNull()
+    expect(m.panel!.bottom).toBeLessThanOrEqual(m.main.bottom)
+    expect(m.panelHost!.bottom - m.panel!.bottom, `${tab}: frame stopped filling its host`).toBeLessThanOrEqual(1)
+    if (tab === 'logs') expect(m.panelScrollable).toBe(true)
+  }
+})
+
+test('surface 运行时告警占用自己的高度，iframe 底部不会被裁切', async ({ page }) => {
+  await openDetail(page, 768)
+  await openTab(page, 'panel')
+  const frame = page.locator('#pane-panel .hosted-surface-frame').first()
+  await frame.locator('iframe').contentFrame().locator('body').evaluate(() => {
+    parent.postMessage({
+      type: 'neko-hosted-surface-error',
+      payload: { message: 'A recoverable control error; the surface remains usable.', fatal: false },
+    }, location.origin)
+  })
+  const alert = frame.locator('.hosted-surface-frame__runtime-alert')
+  await expect(alert).toBeVisible()
+  const geometry = await frame.evaluate((element) => {
+    const host = element.getBoundingClientRect()
+    const iframe = element.querySelector('iframe')!.getBoundingClientRect()
+    const alert = element.querySelector('.hosted-surface-frame__runtime-alert')!.getBoundingClientRect()
+    return { bottomGap: host.bottom - iframe.bottom, overlaps: alert.bottom > iframe.top, height: iframe.height }
+  })
+  expect(geometry.bottomGap, 'alert pushed the iframe below the clipped surface').toBeGreaterThanOrEqual(0)
+  expect(geometry.bottomGap).toBeLessThanOrEqual(2)
+  expect(geometry.overlaps).toBe(false)
+  expect(geometry.height).toBeGreaterThan(200)
+
+  await alert.locator('.el-alert__close-btn').click()
+  await expect(alert).toHaveCount(0)
+  const gap = await frame.evaluate((element) => element.getBoundingClientRect().bottom - element.querySelector('iframe')!.getBoundingClientRect().bottom)
+  expect(gap).toBeLessThanOrEqual(2)
+})
+
 // ── 长内容 tab：必须继续由 .app-main 滚动，不能被压到一屏后被裁 ──────────────
 test('长内容 tab（入口点）仍由外层滚动，内容没有被裁', async ({ page }) => {
   await openDetail(page, 1340)

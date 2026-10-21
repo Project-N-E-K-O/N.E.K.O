@@ -158,7 +158,7 @@
                 class="header-btn header-btn--accent"
                 :disabled="importing"
                 data-yui-guide-id="plugin-list-import"
-                @click="openImportDialog"
+                @click="importDialogVisible = true"
               >
                 <el-icon><Upload /></el-icon>
                 <span>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
@@ -251,13 +251,28 @@
           </WorkbenchToolbar>
         </template>
 
-
+        <div v-if="listRefreshError || listRefreshWarning" class="plugin-list-feedback" data-testid="plugin-list-feedback">
+          <ErrorMessage
+            :message="listRefreshError ? (hasListData ? t('messages.refreshPartialFailure') : t('plugins.listLoadFailed')) : listRefreshWarning"
+            :type="hasListData ? 'warning' : 'error'"
+            :closable="false"
+          />
+          <el-button :disabled="loading" @click="handleRefresh">{{ t('market.retry') }}</el-button>
+        </div>
         <LoadingSpinner
           v-if="loading && rawPlugins.length === 0"
           :loading="true"
           :text="$t('common.loading')"
         />
-        <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
+        <template v-else-if="rawPlugins.length === 0">
+          <EmptyState v-if="!listRefreshError" :description="$t('plugins.noPlugins')" />
+        </template>
+        <EmptyState
+          v-else-if="filteredPurePlugins.length + filteredAdapters.length === 0"
+          :description="t('plugins.noMatches')"
+        >
+          <el-button @click="clearFilters">{{ t('plugins.clearFilters') }}</el-button>
+        </EmptyState>
 
         <template v-else>
           <div
@@ -429,61 +444,11 @@
       @confirm="handleDangerActionConfirm"
     />
 
-    <el-dialog
-      v-model="importDialogVisible"
-      class="plugin-import-dialog"
-      :title="t('plugins.importDialogTitle')"
-      width="min(520px, calc(100vw - 32px))"
-      :close-on-click-modal="!importing"
-      :close-on-press-escape="!importing"
-      :show-close="!importing"
-      @closed="clearSelectedImportFile"
-    >
-      <div
-        class="plugin-import-dropzone"
-        :class="{
-          'plugin-import-dropzone--active': importDropActive,
-          'plugin-import-dropzone--selected': selectedImportFile,
-          'plugin-import-dropzone--disabled': importing,
-        }"
-        role="button"
-        :tabindex="importing ? -1 : 0"
-        :aria-disabled="importing"
-        @click="triggerImportFile"
-        @keydown.enter.prevent="triggerImportFile"
-        @keydown.space.prevent="triggerImportFile"
-        @dragenter.prevent="importDropActive = true"
-        @dragover.prevent="importDropActive = true"
-        @dragleave.prevent="importDropActive = false"
-        @drop.prevent="handleImportDrop"
-      >
-        <el-icon class="plugin-import-dropzone__icon"><Upload /></el-icon>
-        <template v-if="selectedImportFile">
-          <strong class="plugin-import-dropzone__filename">{{ selectedImportFile.name }}</strong>
-          <span>{{ formatImportFileSize(selectedImportFile.size) }}</span>
-        </template>
-        <template v-else>
-          <strong>{{ t('plugins.importDropHint') }}</strong>
-          <span>{{ t('plugins.importDropSubHint') }}</span>
-        </template>
-      </div>
-      <input
-        ref="importFileInputRef"
-        type="file"
-        accept=".neko-plugin,.neko-bundle"
-        class="import-file-input"
-        @change="handleImportFileChange"
-      />
-      <p class="plugin-import-dialog__limit">{{ t('plugins.importFileLimit') }}</p>
-
-      <template #footer>
-        <el-button :disabled="importing" @click="importDialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button :disabled="importing" @click="triggerImportFile">{{ t('plugins.importChooseFile') }}</el-button>
-        <el-button type="primary" :disabled="!selectedImportFile" :loading="importing" @click="importSelectedPluginPackage">
-          {{ importing ? t('plugins.importing') : t('plugins.import') }}
-        </el-button>
-      </template>
-    </el-dialog>
+    <PluginImportDialog
+      v-model:visible="importDialogVisible"
+      @busy-change="importing = $event"
+      @installed="refreshAfterPluginChange"
+    />
   </div>
 </template>
 
@@ -499,6 +464,8 @@ import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marke
 import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
+import PluginImportDialog from '@/components/plugin/PluginImportDialog.vue'
+import ErrorMessage from '@/components/common/ErrorMessage.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
 import { deferredPanel } from '@/components/common/deferredPanel'
 const PackageManagerPanel = deferredPanel(() => import('@/components/plugin/PackageManagerPanel.vue'))
@@ -517,15 +484,12 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { getMarketUrl } from '@/api/market'
 import { deletePlugin } from '@/api/plugins'
-import { uploadPluginPackage, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
-import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
+import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
-import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
-import { notifyPluginInstallOutcome } from '@/utils/pluginInstallResult'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { findDuplicatePluginDisplayNameIds, isOrdinaryPlugin } from '@/utils/pluginDisplay'
 import { openExternalUrl } from '@/utils/openExternal'
@@ -543,16 +507,12 @@ const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 const { t, locale } = useI18n()
 const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListContextActions()
-const { installPackagePath: installImportedPackage } = usePluginPackageInstaller()
 const TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
 
 const reloadingAll = ref(false)
 const batchBusy = ref(false)
 const importing = ref(false)
-const importFileInputRef = ref<HTMLInputElement | null>(null)
 const importDialogVisible = ref(false)
-const selectedImportFile = ref<File | null>(null)
-const importDropActive = ref(false)
 const packagePanelVisible = ref(false)
 const packagePanelEverOpened = ref(false)
 const mirrorPanelVisible = ref(false)
@@ -649,6 +609,11 @@ const {
 // shows the skeleton instead of flashing the empty state.
 const pendingListRefreshes = ref(0)
 const loading = computed(() => pendingListRefreshes.value > 0)
+const hasLoadedList = ref(false)
+const hasListData = computed(() => hasLoadedList.value || rawPlugins.value.length > 0)
+const listRefreshError = ref(false)
+const listRefreshWarning = ref('')
+let listRefreshSequence = 0
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
 
@@ -782,7 +747,9 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
 type PluginListRefreshMode = 'full' | 'initial-open' | 'light'
 
 async function refreshPluginListData(mode: PluginListRefreshMode) {
+  const sequence = ++listRefreshSequence
   let warningMessage = ''
+  let failed = false
   pendingListRefreshes.value += 1
   try {
     if (mode === 'full') {
@@ -798,16 +765,27 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
       } catch (syncError) {
         console.warn('Failed to sync plugin registry on first plugin list open:', syncError)
         await pluginStore.fetchPluginSummaries()
+        warningMessage = t('messages.refreshPartialFailure')
       }
     } else {
       await pluginStore.fetchPluginSummaries()
     }
-    if (mode === 'full') await pluginStore.fetchPluginStatus(undefined, true)
-    else await pluginStore.ensurePluginStatus()
+    hasLoadedList.value = true
+    if (mode === 'full') {
+      if (!await pluginStore.fetchPluginStatus(undefined, true)) warningMessage ||= t('messages.refreshPartialFailure')
+    } else {
+      await pluginStore.ensurePluginStatus()
+      if (!pluginStore.pluginStatusSnapshotLoaded) warningMessage ||= t('messages.refreshPartialFailure')
+    }
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
+    failed = true
   } finally {
     pendingListRefreshes.value -= 1
+    if (sequence === listRefreshSequence) {
+      listRefreshError.value = failed
+      listRefreshWarning.value = warningMessage
+    }
   }
   if (showMetrics.value) {
     try {
@@ -819,6 +797,13 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
   if (warningMessage) {
     ElMessage.warning(warningMessage)
   }
+}
+
+function clearFilters() {
+  filterText.value = ''
+  useRegex.value = false
+  filterMode.value = 'whitelist'
+  selectedTypes.value = ['plugin', 'adapter']
 }
 
 async function handleRefresh() {
@@ -1136,91 +1121,6 @@ const runningPlugins = computed(() => {
   return rawPlugins.value.filter((plugin) => plugin.status === 'running')
 })
 
-// ── Import (upload + install) ─────────────────────────────────────────
-
-const PLUGIN_PACKAGE_MAX_BYTES = 500 * 1024 * 1024
-const PLUGIN_PACKAGE_SUFFIXES = ['.neko-plugin', '.neko-bundle']
-
-function openImportDialog() {
-  clearSelectedImportFile()
-  importDialogVisible.value = true
-}
-
-function triggerImportFile() {
-  if (importing.value) return
-  importFileInputRef.value?.click()
-}
-
-function clearSelectedImportFile() {
-  selectedImportFile.value = null
-  importDropActive.value = false
-}
-
-function formatImportFileSize(size: number): string {
-  const sizeInMiB = size / 1024 / 1024
-  return `${Number.isInteger(sizeInMiB) ? sizeInMiB : sizeInMiB.toFixed(size >= 10 * 1024 * 1024 ? 1 : 2)} MiB`
-}
-
-function selectImportFile(file: File) {
-  if (importing.value) return
-  const filename = file.name.toLowerCase()
-  if (!PLUGIN_PACKAGE_SUFFIXES.some((suffix) => filename.endsWith(suffix))) {
-    selectedImportFile.value = null
-    ElMessage.error(t('plugins.importUnsupportedFile'))
-    return
-  }
-  if (file.size > PLUGIN_PACKAGE_MAX_BYTES) {
-    selectedImportFile.value = null
-    ElMessage.error(t('plugins.importFileTooLarge', { limit: formatImportFileSize(PLUGIN_PACKAGE_MAX_BYTES) }))
-    return
-  }
-  selectedImportFile.value = file
-}
-
-function handleImportFileChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  // Reset input so the same file can be re-selected
-  input.value = ''
-  if (importing.value) return
-  if (file) selectImportFile(file)
-}
-
-function handleImportDrop(event: DragEvent) {
-  importDropActive.value = false
-  if (importing.value) return
-  const file = event.dataTransfer?.files?.[0]
-  if (file) selectImportFile(file)
-}
-
-async function importSelectedPluginPackage() {
-  const file = selectedImportFile.value
-  if (!file) return
-
-  importDropActive.value = false
-  importing.value = true
-  try {
-    const upload = await uploadPluginPackage(file)
-    const result = await installImportedPackage(upload.path, {
-      installSource: 'imported',
-      discardOnFailure: true,
-    })
-    if (!result) return
-    const count = result.installed_plugin_count ?? 0
-    notifyPluginInstallOutcome(result, t, ElMessage, {
-      plugin: file.name,
-      successMessage: t('plugins.importSuccess', { name: file.name, count }),
-    })
-    importDialogVisible.value = false
-    await refreshAfterPluginChange()
-  } catch (error: any) {
-    console.error('Failed to import plugin package:', error)
-    ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'upload'))
-  } finally {
-    importing.value = false
-  }
-}
-
 // ── Export (build + download) ─────────────────────────────────────────
 
 async function handleBatchExport() {
@@ -1488,6 +1388,13 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.plugin-list-feedback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
   --drawer-width: clamp(320px, 42vw, 620px);
@@ -1639,6 +1546,10 @@ onUnmounted(() => {
   flex: 0 1 auto;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.workbench-header__copy :deep(.el-button) {
+  margin-left: 0;
 }
 
 /* ── Market quick-access trigger (top-left) ── */
@@ -1894,70 +1805,6 @@ onUnmounted(() => {
   border-color: var(--el-color-warning);
   background: color-mix(in srgb, var(--el-color-warning) 10%, var(--el-bg-color));
   box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-warning) 16%, transparent);
-}
-
-.import-file-input {
-  display: none;
-}
-
-.plugin-import-dropzone {
-  display: flex;
-  min-height: 190px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 24px;
-  border: 1.5px dashed color-mix(in srgb, var(--el-color-primary) 46%, var(--el-border-color));
-  border-radius: var(--radius-panel);
-  background: color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color));
-  color: var(--el-text-color-secondary);
-  cursor: pointer;
-  text-align: center;
-  transition: border-color 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
-}
-
-.plugin-import-dropzone:hover,
-.plugin-import-dropzone--active {
-  border-color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color));
-  transform: translateY(-1px);
-}
-
-.plugin-import-dropzone--selected {
-  border-style: solid;
-  border-color: color-mix(in srgb, var(--el-color-success) 62%, var(--el-border-color));
-  background: color-mix(in srgb, var(--el-color-success) 7%, var(--el-bg-color));
-}
-
-.plugin-import-dropzone--disabled {
-  cursor: not-allowed;
-  opacity: 0.65;
-  pointer-events: none;
-  transform: none;
-}
-
-.plugin-import-dropzone strong {
-  color: var(--el-text-color-primary);
-}
-
-.plugin-import-dropzone__icon {
-  font-size: 34px;
-  color: var(--el-color-primary);
-}
-
-.plugin-import-dropzone__filename {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.plugin-import-dialog__limit {
-  margin: 12px 2px 0;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  text-align: center;
 }
 
 /* ── Export button in batch row ── */

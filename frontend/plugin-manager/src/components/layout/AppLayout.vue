@@ -497,9 +497,10 @@ onBeforeUnmount(() => {
 .app-shell {
   flex: 1;
   display: flex;
+  min-height: 0;
   overflow: hidden;
-  gap: 12px;
-  padding: 12px;
+  gap: var(--shell-spacing);
+  padding: var(--shell-spacing);
   background: var(--surface-page);
 }
 
@@ -523,6 +524,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   border-radius: var(--radius-card);
   background: var(--surface-card);
@@ -537,12 +539,16 @@ onBeforeUnmount(() => {
 .app-main {
   position: relative;
   flex: 1;
+  min-height: 0;
+  /* Reading pages scroll here. Fill workbenches own their inner scrolling;
+     their page-level minimum height keeps controls reachable in short windows. */
   overflow-y: auto;
 }
 
 /* 连接状态提示 */
 .connection-banner {
-  padding: 8px 20px 0;
+  flex-shrink: 0;
+  padding: var(--spacing-sm) var(--content-padding) 0;
 }
 
 .connection-banner__inner {
@@ -561,7 +567,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
-  .app-shell { gap: 6px; padding: 6px; }
   .app-sidebar { width: var(--sidebar-collapsed-width); }
   .connection-banner { padding-inline: 8px; }
 }

@@ -106,6 +106,28 @@ describe.each([
   ['card', PluginCard],
   ['list row', PluginListRow],
 ])('%s Open UI action', (_name, component) => {
+  it('provides a native title button that preserves the card click action exactly once', async () => {
+    const mounted = await mountEntry(component, makePlugin(null), { isSelected: true })
+    const details = mounted.container.querySelector<HTMLButtonElement>(
+      '[data-testid="plugin-details-button"]',
+    )
+
+    expect(details).toBeInstanceOf(HTMLButtonElement)
+    expect(details?.type).toBe('button')
+    expect(details?.textContent).toBe('Generic plugin')
+    details?.focus()
+    expect(document.activeElement).toBe(details)
+    details?.click()
+    await nextTick()
+    expect(mounted.click).toHaveBeenCalledTimes(1)
+    expect(mounted.openUi).not.toHaveBeenCalled()
+
+    mounted.container.querySelector('.plugin-card, .plugin-list-row-card')?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    expect(mounted.click).toHaveBeenCalledTimes(2)
+  })
+
   it('shows the shared i18n action only for an available UI action', async () => {
     const available = await mountEntry(component, makePlugin({
       id: 'open_ui',
