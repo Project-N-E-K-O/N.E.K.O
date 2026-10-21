@@ -1,38 +1,56 @@
 <template>
-  <el-card
+  <article
     class="plugin-card"
-    :class="{ 'plugin-card--selected': isSelected }"
+    :class="{ 'plugin-card--selected': isSelected, 'plugin-card--shared-rows': sharedRows }"
     @click="$emit('click')"
     @contextmenu.prevent="$emit('contextmenu', $event)"
   >
-    <template #header>
-      <div class="plugin-card-header" :class="{ 'plugin-card-header--has-ui': !!availableUiAction }">
-        <div class="plugin-info">
-          <div class="plugin-heading">
-            <h3 class="plugin-name">
-              <button
-                type="button"
-                class="plugin-name__button"
-                data-testid="plugin-details-button"
-                @click.stop="$emit('click')"
-              >{{ displayText.name }}</button>
-            </h3>
-            <span
-              v-if="showIdentity"
-              class="plugin-identity"
-              data-testid="plugin-identity"
-              :title="plugin.id"
-            >
-              ID: {{ plugin.id }}
-            </span>
-          </div>
-          <div class="plugin-statuses">
-            <StatusIndicator :status="plugin.status || 'stopped'" />
-            <el-tag v-if="plugin.autoStart === false" size="small" type="warning" effect="plain">
-              {{ t('plugins.manualStart') }}
-            </el-tag>
-          </div>
-        </div>
+    <div class="plugin-heading">
+      <h3 class="plugin-name">
+        <button
+          type="button"
+          class="plugin-name__button"
+          data-testid="plugin-details-button"
+          @click.stop="$emit('click')"
+        >{{ displayText.name }}</button>
+      </h3>
+      <span
+        v-if="showIdentity"
+        class="plugin-identity"
+        data-testid="plugin-identity"
+      >ID: {{ plugin.id }}</span>
+    </div>
+
+    <div class="plugin-statuses">
+      <StatusIndicator :status="plugin.status || 'stopped'" />
+      <span v-if="typeof plugin.autoStart === 'boolean'" class="plugin-start-mode">
+        {{ t(plugin.autoStart ? 'plugins.autoStart' : 'plugins.manualStart') }}
+      </span>
+    </div>
+
+    <div class="plugin-card-body">
+      <p class="plugin-description">{{ displayText.description || t('common.noData') }}</p>
+      <PluginMetricsInline
+        v-if="showMetrics"
+        :plugin-id="plugin.id"
+        :plugin-status="plugin.status || 'stopped'"
+      />
+      <SourceDetailRow
+        v-if="showSourceDetail"
+        :install-source="plugin.install_source"
+        :latest-version="latestVersion"
+      />
+    </div>
+
+    <footer class="plugin-card-footer">
+      <div class="plugin-card-footer__main">
+        <el-tag size="small" type="info" class="plugin-version-tag" :title="`v${plugin.version}`">
+          <span class="plugin-version-tag__label">v{{ plugin.version }}</span>
+        </el-tag>
+        <SourceTag :source="plugin.install_source?.source" :has-update="hasUpdate" compact />
+      </div>
+      <div class="plugin-card-footer__actions">
+        <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
         <el-button
           v-if="availableUiAction"
           data-testid="plugin-open-ui"
@@ -41,42 +59,10 @@
           type="primary"
           plain
           @click.stop="$emit('open-ui', availableUiAction)"
-        >
-          {{ t('plugins.ui.open') }}
-        </el-button>
+        >{{ t('plugins.ui.open') }}</el-button>
       </div>
-    </template>
-
-    <div class="plugin-card-body">
-      <p class="plugin-description">{{ displayText.description || t('common.noData') }}</p>
-
-      <PluginMetricsInline
-        v-if="showMetrics"
-        :plugin-id="plugin.id"
-        :plugin-status="plugin.status || 'stopped'"
-      />
-
-      <SourceDetailRow
-        v-if="showSourceDetail"
-        :install-source="plugin.install_source"
-        :latest-version="latestVersion"
-      />
-
-      <footer class="plugin-card-footer">
-        <div class="plugin-card-footer__main">
-          <el-tag size="small" type="info" class="plugin-version-tag" :title="`v${plugin.version}`">
-            <span class="plugin-version-tag__label">v{{ plugin.version }}</span>
-          </el-tag>
-          <SourceTag
-            :source="plugin.install_source?.source"
-            :has-update="hasUpdate"
-            compact
-          />
-        </div>
-        <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
-      </footer>
-    </div>
-  </el-card>
+    </footer>
+  </article>
 </template>
 
 <script setup lang="ts">
@@ -99,6 +85,7 @@ interface Props {
   showSourceDetail?: boolean
   enableUiAction?: boolean
   showIdentity?: boolean
+  sharedRows?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -107,6 +94,7 @@ const props = withDefaults(defineProps<Props>(), {
   showSourceDetail: false,
   enableUiAction: false,
   showIdentity: false,
+  sharedRows: false,
 })
 
 const { t, locale } = useI18n()
@@ -155,13 +143,14 @@ const hasUpdate = computed<boolean>(() => {
 
 <style scoped>
 .plugin-card {
-  container-type: inline-size;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto auto;
+  gap: 0;
+  min-width: 0;
   cursor: pointer;
+  border: 1px solid var(--surface-border);
   border-radius: var(--plugin-entry-radius, var(--radius-card));
   background: var(--surface-card);
-  border-color: var(--surface-border);
   box-shadow: var(--surface-shadow);
   transition:
     transform var(--motion-duration-normal) var(--motion-ease-standard),
@@ -169,10 +158,17 @@ const hasUpdate = computed<boolean>(() => {
     border-color var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
-.plugin-card :deep(> .el-card__body) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+/* Five content-sized tracks: name, state, body, metadata, entry/action.
+ * Only grids that opt in share these tracks with their neighbouring cards. */
+@supports (grid-template-rows: subgrid) {
+  .plugin-card--shared-rows {
+    grid-row: 1 / -1;
+    grid-template-rows: subgrid;
+  }
+
+  .plugin-card--shared-rows .plugin-card-footer {
+    grid-template-rows: subgrid;
+  }
 }
 
 .plugin-card:hover {
@@ -187,42 +183,22 @@ const hasUpdate = computed<boolean>(() => {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
 
-.plugin-card-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-content: start;
-  align-items: start;
-  gap: 8px 10px;
-  min-height: 72px;
-}
-
-.plugin-card-header--has-ui {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.plugin-info {
-  display: contents;
-}
-
-.plugin-name {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-  line-height: 1.35;
-  word-break: break-word;
-}
-
 .plugin-heading {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 3px;
   min-width: 0;
-  min-height: 44px;
-  width: 100%;
-  grid-column: 1;
-  grid-row: 1;
+  padding: 16px 16px 0;
+}
+
+.plugin-name {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .plugin-name__button {
@@ -236,6 +212,7 @@ const hasUpdate = computed<boolean>(() => {
   font: inherit;
   line-height: inherit;
   text-align: left;
+  overflow-wrap: inherit;
   cursor: pointer;
 }
 
@@ -252,45 +229,65 @@ const hasUpdate = computed<boolean>(() => {
 .plugin-statuses {
   display: flex;
   align-items: center;
+  align-content: start;
   flex-wrap: wrap;
-  gap: 6px;
-  min-height: 20px;
-  grid-column: 1 / -1;
-  grid-row: 2;
+  gap: 6px 10px;
+  min-width: 0;
+  padding: 8px 16px 12px;
 }
 
-.plugin-ui-action {
-  grid-column: 2;
-  grid-row: 1;
-  flex-shrink: 0;
-  margin-left: 0;
+.plugin-statuses :deep(.status-indicator) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.plugin-start-mode,
+.plugin-identity {
+  color: var(--el-text-color-secondary);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .plugin-identity {
   max-width: 100%;
-  overflow: hidden;
-  color: var(--el-text-color-secondary);
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 11px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 0.6875rem;
 }
 
 .plugin-card-body {
-  flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 0;
+  padding: 14px 16px 0;
+  border-top: 1px solid var(--surface-border);
+}
+
+.plugin-card-body :deep(.metrics-cell),
+.plugin-card-body :deep(.source-cell) {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  line-height: 1.4;
+}
+
+.plugin-card-body :deep(.metrics-cell__value),
+.plugin-card-body :deep(.source-cell__value) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plugin-card-body :deep(.source-cell__value--mono) {
+  white-space: normal;
 }
 
 .plugin-description {
   margin: 0;
-  min-height: 3em;
   color: var(--el-text-color-regular);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.5;
+  overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -299,78 +296,84 @@ const hasUpdate = computed<boolean>(() => {
 
 .plugin-card-footer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-top: auto;
-  padding-top: 10px;
+  grid-row: span 2;
+  grid-template-rows: auto auto;
+  row-gap: 8px;
+  padding: 12px 16px 16px;
   min-width: 0;
+  font-size: 0.75rem;
+  color: var(--el-text-color-secondary);
 }
 
 .plugin-card-footer__main {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   flex-wrap: wrap;
   min-width: 0;
-}
-
-.plugin-version-tag {
-  flex: 0 1 auto;
-  min-width: 0;
   max-width: 100%;
 }
 
-.plugin-version-tag :deep(.el-tag__content) {
+/* Action availability must not change where metadata or entry counts live.
+ * Both footer tracks participate in the parent grid's row alignment. */
+.plugin-card-footer__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(50%);
+  align-items: center;
+  column-gap: 12px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
+.plugin-ui-action {
+  justify-self: end;
+  margin: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 24px;
+  padding: 3px 9px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  transition:
+    color var(--motion-duration-normal) var(--motion-ease-standard),
+    background-color var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+.plugin-ui-action :deep(> span) {
+  min-width: 0;
+}
+
+.plugin-version-tag,
+.plugin-card-footer :deep(.source-tag),
+.plugin-statuses :deep(.status-tag) {
+  max-width: 100%;
+  height: auto;
+  min-height: 20px;
+  padding-block: 1px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.plugin-version-tag,
+.plugin-version-tag :deep(.el-tag__content),
 .plugin-version-tag__label {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .plugin-entries {
-  justify-self: end;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-.plugin-host {
-  color: var(--el-color-primary);
-  font-size: 12px;
   min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.type-tag {
-  flex-shrink: 0;
-}
-
-@container (max-width: 220px) {
-  .plugin-card-footer {
-    grid-template-columns: 1fr;
-    align-items: start;
-  }
-
-  .plugin-entries {
-    justify-self: start;
-  }
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .plugin-card {
+  .plugin-card,
+  .plugin-ui-action {
     transition: none;
   }
 

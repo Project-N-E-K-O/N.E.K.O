@@ -102,6 +102,49 @@ describe('plugin card identity', () => {
   })
 })
 
+describe('plugin card information order', () => {
+  it.each([true, false])('keeps version/source and entry/action in separate rows (UI: %s)', async (hasUi) => {
+    const { container } = await mountEntry(PluginCard, makePlugin(
+      hasUi ? { id: 'open_ui', kind: 'ui' } : null,
+    ))
+    const metadata = container.querySelector('.plugin-card-footer__main')!
+    const actions = container.querySelector('.plugin-card-footer__actions')!
+    expect(metadata.querySelector('.plugin-version-tag')).not.toBeNull()
+    expect(metadata.querySelector('.plugin-entries')).toBeNull()
+    expect(actions).not.toBeNull()
+    expect(actions.querySelector('.plugin-entries')).not.toBeNull()
+    expect(actions.querySelector('[data-testid="plugin-open-ui"]') !== null).toBe(hasUi)
+  })
+
+  it('keeps the full-width name and state above the description, with the UI action in the footer', async () => {
+    const action: PluginListAction = { id: 'open_ui', kind: 'ui' }
+    const { container, openUi, click } = await mountEntry(PluginCard, {
+      ...makePlugin(action, 'stopped'),
+      autoStart: false,
+    })
+    const card = container.querySelector('.plugin-card')!
+    expect(Array.from(card.children, (child) => child.className)).toEqual([
+      'plugin-heading', 'plugin-statuses', 'plugin-card-body', 'plugin-card-footer',
+    ])
+    expect(card.querySelector('.plugin-start-mode')?.textContent).toContain('plugins.manualStart')
+    expect(card.querySelector('.plugin-start-mode')?.tagName).toBe('SPAN')
+    const button = card.querySelector<HTMLButtonElement>('footer [data-testid="plugin-open-ui"]')!
+    button.click()
+    expect(openUi).toHaveBeenCalledExactlyOnceWith(action)
+    expect(click).not.toHaveBeenCalled()
+  })
+
+  it('shows the known startup mode without inventing one for incomplete metadata', async () => {
+    const automatic = await mountEntry(PluginCard, makePlugin(null))
+    expect(automatic.container.querySelector('.plugin-start-mode')?.textContent).toContain('plugins.autoStart')
+    const unknown = await mountEntry(PluginCard, makePlugin(null), {
+      plugin: { ...makePlugin(null), autoStart: undefined },
+    })
+    expect(unknown.container.querySelector('.plugin-start-mode')).toBeNull()
+    expect(unknown.container.querySelector('[data-testid="plugin-open-ui"]')).toBeNull()
+  })
+})
+
 describe.each([
   ['card', PluginCard],
   ['list row', PluginListRow],

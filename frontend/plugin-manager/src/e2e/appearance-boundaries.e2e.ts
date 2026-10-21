@@ -332,3 +332,160 @@ appearanceTest(
     }
   }
 )
+
+// Exercise the production card/grid with short-only and mixed-content rows.
+async function installCardLayoutFixture(page: Page, count = 8) {
+  const plugins = Array.from({ length: count }, (_, index) => ({
+    id: `layout_${index}`,
+    name: index < 4 ? ['猫娘小游戏', 'NEKO Live', 'RVC歌声合成', '微信集成'][index]! :
+      'A deliberately long plugin name that must remain readable / 长名称插件',
+    description: index % 2 ? 'A short description.' :
+      '通过 OpenClaw API 连接微信个人号，支持扫码登录、消息监听和发送。A longer description for mixed content.',
+    version: index === 5 ? '2026.10.21-preview-with-a-long-version-identifier' : '1.0.0',
+    type: 'plugin',
+    status: index % 2 ? 'stopped' : 'running',
+    runtime_enabled: true,
+    runtime_auto_start: index % 2 === 0,
+    entry_count: index,
+    entries: [],
+    install_source: index === 1 ? {
+      source: 'market',
+      source_detail: { plugin_market_id: '42', version: '1.0.0', channel: 'stable' },
+    } : index === 4 ? {
+      source: 'imported',
+      source_detail: { package_filename: 'a-long-imported-plugin-bundle.npkg', package_sha256: 'c'.repeat(64) },
+    } : { source: 'builtin' },
+    list_actions: index % 2 ? [] : [{ id: 'open_ui', kind: 'ui', requires_running: true }],
+  }))
+  await page.route('**/plugins?*', route => route.fulfill({ json: { plugins, message: '' } }))
+  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', route =>
+    route.fulfill({ json: { items: [{ plugin_id: '42', version: '2.0.0' }] } })
+  )
+  await page.route('**/plugin/status', route => route.fulfill({ json: {
+    plugins: Object.fromEntries(plugins.map(plugin => [plugin.id, {
+      plugin_id: plugin.id,
+      source: 'main_process_synthetic',
+      status: { status: plugin.status },
+    }])),
+  } }))
+}
+
+async function expectAlignedCardTracks(page: Page) {
+  await expect.poll(() => page.locator('.plugin-card').evaluateAll(cards => {
+    const rows = new Map<number, number[][]>()
+    for (const card of cards) {
+      const box = card.getBoundingClientRect()
+      const children = Array.from(card.children, child => child.getBoundingClientRect().top)
+      for (const selector of ['.plugin-card-footer__main', '.plugin-card-footer__actions', '.plugin-entries']) {
+        children.push(card.querySelector(selector)!.getBoundingClientRect().top)
+      }
+      const key = Math.round(box.top)
+      rows.set(key, [...(rows.get(key) || []), children])
+    }
+    return [...rows.values()].every(row => row.every(tracks =>
+      tracks.every((top, index) => Math.abs(top - row[0]![index]!) < 1)
+    ))
+  })).toBe(true)
+}
+
+for (const scenario of [
+  { width: 1440, zoom: 1, fontSize: 16, locale: 'en-US' },
+  { width: 1440, zoom: 1.5, fontSize: 16, locale: 'en-US' },
+  { width: 960, zoom: 1, fontSize: 24, locale: 'en-US' },
+  { width: 640, zoom: 1, fontSize: 16, locale: 'en-US' },
+  { width: 320, zoom: 1, fontSize: 24, locale: 'en-US' },
+  { width: 1440, zoom: 1, fontSize: 16, locale: 'zh-CN' },
+  { width: 960, zoom: 1, fontSize: 24, locale: 'zh-CN' },
+]) {
+  appearanceTest(`card tracks remain aligned at ${scenario.width}px, zoom ${scenario.zoom}, text ${scenario.fontSize}px, ${scenario.locale}`, async ({ page }) => {
+    await installCardLayoutFixture(page)
+    await page.addInitScript(locale => localStorage.setItem('locale', locale), scenario.locale)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setViewportSize({ width: scenario.width, height: 1000 })
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+    await expect(page.locator('.plugin-card')).toHaveCount(8)
+    await page.evaluate(({ zoom, fontSize }) => {
+      document.documentElement.style.zoom = String(zoom)
+      document.documentElement.style.fontSize = `${fontSize}px`
+    }, scenario)
+    await expectAlignedCardTracks(page)
+    const first = page.locator('.plugin-card').first()
+    // Short-only rows must not reserve an imaginary second title line.
+    const gap = await first.evaluate(card => {
+      const title = card.querySelector('.plugin-name')!.getBoundingClientRect()
+      const states = card.querySelector('.plugin-statuses')!
+      const contentTop = Math.min(...Array.from(states.children, child => child.getBoundingClientRect().top))
+      return contentTop - title.bottom
+    })
+    expect(gap).toBeGreaterThanOrEqual(7 * scenario.zoom)
+    expect(gap).toBeLessThanOrEqual(9 * scenario.zoom)
+    await expect(first.locator('footer [data-testid="plugin-open-ui"]')).toBeVisible()
+    expect(await page.locator('.plugin-card').evaluateAll(cards => cards.every(card => {
+      const box = card.getBoundingClientRect()
+      return card.scrollWidth <= card.clientWidth + 1 &&
+        [...card.querySelectorAll('.plugin-name__button, .plugin-start-mode, .plugin-entries, .plugin-version-tag, .plugin-ui-action')]
+          .every(element => {
+            const bounds = element.getBoundingClientRect()
+            return bounds.left >= box.left && bounds.right <= box.right + 1 &&
+              element.scrollWidth <= element.clientWidth + 1
+          })
+    }))).toBe(true)
+    await page.locator('[data-yui-guide-id="plugin-list-multi-select"]').click()
+    await expect(page.locator('.grid-section__select')).toHaveCount(8)
+    await page.locator('.grid-section__select').first().click()
+    await expect(page.locator('.grid-section__select').first()).toHaveAttribute('aria-pressed', 'true')
+  })
+}
+
+appearanceTest('card extras, themes and layout switches preserve aligned, reachable content', async ({ page }) => {
+  await installCardLayoutFixture(page)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.route('**/plugin/metrics/**', route => route.fulfill({ json: { metrics: {
+    plugin_id: new URL(route.request().url()).pathname.split('/').pop(),
+    timestamp: Date.now(), cpu_percent: 3.5, memory_mb: 128, num_threads: 4,
+    pending_requests: 2, total_executions: 1234,
+  } } }))
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('.plugin-card')).toHaveCount(8)
+  await page.locator('[data-yui-guide-id="plugin-list-metrics-toggle"]').click()
+  await page.locator('[data-yui-guide-id="plugin-list-source-toggle"]').click()
+  await expect(page.locator('.plugin-card .metrics-bar')).toHaveCount(8)
+  await expect(page.locator('.plugin-card').first().locator('.metrics-bar')).toContainText('3.5%')
+  await expect(page.locator('.plugin-card .source-detail-bar')).toHaveCount(8)
+  await page.locator('.window-titlebar').getByRole('button', { name: 'Dark Mode', exact: true }).click()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  for (const mode of ['Single', 'Double', 'List', 'Compact']) {
+    await page.locator('[data-yui-guide-id="plugin-list-layout-mode"]').getByText(mode, { exact: true }).click()
+    const entries = page.locator(mode === 'List' ? '.plugin-list-row-card' : '.plugin-card')
+    await expect(entries).toHaveCount(8)
+    await expect(entries.first().getByTestId('plugin-open-ui')).toBeVisible()
+    expect(await entries.evaluateAll(cards => cards.every(card => card.scrollWidth <= card.clientWidth + 1))).toBe(true)
+    if (mode !== 'List') {
+      await expectAlignedCardTracks(page)
+      const first = entries.first()
+      expect(await first.evaluate(card => {
+        const footer = card.querySelector('footer')!.getBoundingClientRect()
+        const extras = card.querySelector('.source-detail-bar')!.getBoundingClientRect()
+        return footer.top >= extras.bottom
+      })).toBe(true)
+    }
+  }
+})
+
+appearanceTest('large card grids keep real track sizes when scrolling and filtering', async ({ page }) => {
+  await installCardLayoutFixture(page, 84)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('.plugin-card')).toHaveCount(84)
+  const last = page.locator('.plugin-card').last()
+  await last.scrollIntoViewIfNeeded()
+  await expect(last.getByTestId('plugin-details-button')).toBeInViewport()
+  const height = await last.evaluate(card => card.getBoundingClientRect().height)
+  expect(height).toBeGreaterThan(100)
+  await page.getByPlaceholder('Filter plugins with text, pinyin, and is:/type:/has: rules').fill('NEKO Live')
+  await expect(page.locator('.plugin-card')).toHaveCount(1)
+  await expect(page.getByTestId('plugin-details-button')).toHaveText('NEKO Live')
+  expect(await page.locator('.plugin-card').evaluate(card => card.scrollHeight <= card.clientHeight + 1)).toBe(true)
+})

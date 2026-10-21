@@ -125,6 +125,7 @@
                 <PluginCard
                   :plugin="plugin"
                   :is-selected="isSelected(plugin.id)"
+                  shared-rows
                   @click="$emit('togglePlugin', plugin.id)"
                 />
               </template>
@@ -353,6 +354,15 @@ function isSelected(pluginId: string): boolean {
     border-color var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
+@supports (grid-template-rows: subgrid) {
+  .plugin-select-item:not(.plugin-select-item--list) {
+    display: grid;
+    grid-row: span 5;
+    grid-template-rows: subgrid;
+    row-gap: 0;
+  }
+}
+
 .plugin-select-item--list {
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-control);
@@ -365,10 +375,10 @@ function isSelected(pluginId: string): boolean {
 
 .plugin-select-item__checkbox {
   position: absolute;
-  top: 14px;
-  right: 16px;
+  top: 8px;
+  right: 10px;
   z-index: 2;
-  padding: 4px 6px;
+  padding: 0 6px;
   border-radius: 999px;
   background: var(--surface-card);
 }
@@ -377,8 +387,8 @@ function isSelected(pluginId: string): boolean {
   height: 100%;
 }
 
-.plugin-select-item :deep(.plugin-card-header) {
-  padding-right: 26px;
+.plugin-select-item :deep(.plugin-heading) {
+  padding-right: 56px;
 }
 
 .plugin-list-row {

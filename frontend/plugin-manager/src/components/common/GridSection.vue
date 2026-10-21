@@ -45,6 +45,7 @@
         tag="div"
         class="grid-section__grid"
         :class="gridLayoutClass"
+        :style="{ '--grid-section-item-rows': sharedRows ? itemRowSpan : undefined }"
         @before-leave="pinLeavingItem"
         @after-leave="clearLeavingItemStyles"
       >
@@ -94,6 +95,7 @@
             :layout-mode="layoutMode"
             :is-selected="isItemSelected(item.id)"
             :multi-select-enabled="multiSelectEnabled"
+            :shared-rows="sharedRows"
           />
         </div>
       </TransitionGroup>
@@ -116,6 +118,8 @@ const props = withDefaults(defineProps<{
   multiSelectEnabled: boolean
   selectedIds: string[]
   variant?: string
+  /** Opt in to content-sized row tracks shared by neighbouring items. */
+  itemRowSpan?: number
   /** 可选：用于 data-yui-guide-id 的前缀（如 "plugin-list"）。 */
   guidePrefix?: string
   /** Lightweight updates used while the user is actively filtering. */
@@ -124,6 +128,7 @@ const props = withDefaults(defineProps<{
   title: undefined,
   icon: undefined,
   variant: 'default',
+  itemRowSpan: 1,
   guidePrefix: undefined,
   motionPhase: 'initial',
 })
@@ -140,6 +145,7 @@ const {
 } = useGridMotionController({
   phase: () => props.motionPhase,
 })
+const sharedRows = computed(() => props.itemRowSpan > 1 && props.layoutMode !== 'list')
 const gridLayoutClass = computed(() => `grid-section__grid--${props.layoutMode}`)
 
 const headerClass = computed(() => {
@@ -177,6 +183,7 @@ function itemClass(item: T) {
   return {
     'grid-section__item--selection-mode': props.multiSelectEnabled,
     'grid-section__item--selected': selected,
+    'grid-section__item--shared-rows': sharedRows.value,
     'grid-section__item--list-layout': props.layoutMode === 'list',
   }
 }
@@ -399,8 +406,23 @@ function itemClass(item: T) {
 
 .grid-section__item :deep(.plugin-card) {
   height: 100%;
-  display: flex;
-  flex-direction: column;
+}
+
+/* Subgrid needs each card to contribute its intrinsic content sizes. Size
+ * containment for offscreen items would replace these with placeholders. */
+@supports (grid-template-rows: subgrid) {
+  .grid-section__item--shared-rows {
+    display: grid;
+    grid-row: span var(--grid-section-item-rows);
+    grid-template-rows: subgrid;
+    row-gap: 0;
+    height: auto;
+  }
+
+  .grid-section--large .grid-section__item--shared-rows {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
+  }
 }
 
 .grid-section__item :deep(.el-card__body) {
