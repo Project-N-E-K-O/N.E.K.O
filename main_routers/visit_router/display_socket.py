@@ -66,6 +66,7 @@ _replays: set[asyncio.Task] = set()
 
 _desktop_run_id: Optional[str] = None
 _desktop_run_lock: Optional[asyncio.Lock] = None
+_desktop_run_reset_task: Optional[asyncio.Task[bool]] = None
 
 
 def _desktop_lock() -> asyncio.Lock:
@@ -75,33 +76,58 @@ def _desktop_lock() -> asyncio.Lock:
     return _desktop_run_lock
 
 
+async def _perform_desktop_run_reset(previous: Optional[asyncio.Task[bool]]) -> bool:
+    """Run one restart cleanup after the preceding run's cleanup has retired."""
+    if previous is not None:
+        await asyncio.shield(previous)
+    from main_routers.visit_router import credentials, runtime
+
+    try:
+        reset = await runtime.reset_pending_host_invites_for_desktop_restart()
+        cancelled = await credentials.cancel_pending_host_invites()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - A later bind for this run retries the cleanup.
+        logger.warning("visit display: desktop restart invitation reset failed: %s", type(exc).__name__)
+        return False
+    if reset or cancelled:
+        logger.info(
+            "visit display: desktop restart reset %d local and %d remote pending invitation(s)",
+            reset,
+            cancelled,
+        )
+    return True
+
+
 async def _reset_for_new_desktop_run(message: Any) -> None:
-    """Invalidate unused invites only when the Electron process changed."""
-    global _desktop_run_id
+    """Invalidate unused invites once per Electron process, without holding the ordering lock during I/O."""
+    global _desktop_run_id, _desktop_run_reset_task
     run_id = message.get("desktop_run_id") if isinstance(message, dict) else None
     if not isinstance(run_id, str) or not run_id or len(run_id) > 128:
         return
     async with _desktop_lock():
         previous = _desktop_run_id
-        if previous == run_id:
-            return
-        _desktop_run_id = run_id
+        cleanup = _desktop_run_reset_task
         if previous is None:
+            _desktop_run_id = run_id
+            _desktop_run_reset_task = None
             return
-        from main_routers.visit_router import credentials, runtime
-
-        reset = await runtime.reset_pending_host_invites_for_desktop_restart()
-        try:
-            cancelled = await credentials.cancel_pending_host_invites()
-        except Exception as exc:  # noqa: BLE001 - local reset must still complete if Connect is unavailable.
-            logger.warning("visit display: desktop restart invitation reset failed: %s", type(exc).__name__)
-        else:
-            if reset or cancelled:
-                logger.info(
-                    "visit display: desktop restart reset %d local and %d remote pending invitation(s)",
-                    reset,
-                    cancelled,
-                )
+        if previous == run_id and cleanup is None:
+            return
+        if previous != run_id:
+            cleanup = asyncio.create_task(
+                _perform_desktop_run_reset(cleanup),
+                name="visit-desktop-restart-reset",
+            )
+            _desktop_run_id = run_id
+            _desktop_run_reset_task = cleanup
+        elif cleanup.done() and cleanup.result() is False:
+            cleanup = asyncio.create_task(
+                _perform_desktop_run_reset(None),
+                name="visit-desktop-restart-reset-retry",
+            )
+            _desktop_run_reset_task = cleanup
+    await asyncio.shield(cleanup)
 
 
 def is_bound(websocket: Any) -> bool:
@@ -414,9 +440,12 @@ async def end_visits_with_peer(peer_uid: str) -> int:
 
 
 def _reset_for_tests() -> None:
-    global _desktop_run_id, _desktop_run_lock
+    global _desktop_run_id, _desktop_run_lock, _desktop_run_reset_task
     for task in list(_replays):
         task.cancel()
     _replays.clear()
     _desktop_run_id = None
     _desktop_run_lock = None
+    if _desktop_run_reset_task is not None and not _desktop_run_reset_task.done():
+        _desktop_run_reset_task.cancel()
+    _desktop_run_reset_task = None

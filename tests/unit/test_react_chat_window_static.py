@@ -1359,6 +1359,31 @@ def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_poll
     assert "--compact-visit-layer-reserved-block-size" in above_choice
 
 
+def test_compact_visit_geometry_separates_visual_container_from_button_hits():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    collector = script.split("function collectCompactVisitGeometryItems(element)", 1)[1].split(
+        "function collectCompactCompositeGeometryItems(element, kind)",
+        1,
+    )[0]
+    surface = script.split("function collectCompactSurfaceGeometryItems()", 1)[1].split(
+        "function getCompactInteractionGeometrySnapshot()",
+        1,
+    )[0]
+
+    assert "var visualRect = normalizeCompactDomRect(element.getBoundingClientRect());" in collector
+    visual = collector.split("id: 'visit:visual'", 1)[1].split("interactive: false", 1)[0]
+    assert "visualRect: visualRect" in visual
+    assert "hitRect: null" in visual and "nativeRect: null" in visual
+    assert "querySelectorAll('.composer-visit-bar-action')" in collector
+    action = collector.split("id: child.getAttribute('data-visit-bar-action')", 1)[1].split(
+        "interactive: true",
+        1,
+    )[0]
+    assert "hitRect: rect" in action and "nativeRect: rect" in action
+    assert "if (compactGeometryItem === 'visit')" in surface
+    assert "collectCompactVisitGeometryItems(element)" in surface
+
+
 def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 

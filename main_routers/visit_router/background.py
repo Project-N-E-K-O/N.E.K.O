@@ -41,6 +41,7 @@ _sweep_task: Optional[asyncio.Task] = None
 _recovery_task: Optional[asyncio.Task] = None
 _invite_reset_event: Optional[asyncio.Event] = None
 _RECOVERY_STOP_WAIT_S = 0.2
+_INVITE_RESET_TIMEOUT_S = 15.0
 _STOP_ALL_SLACK_S = 0.5  # stop_all bounds each step with VISIT_SHUTDOWN_BUDGET_S; the outer timeout only catches hangs, leaving cleanup margin.
 
 SHUTDOWN_STEP_BUDGET_S = VISIT_SHUTDOWN_BUDGET_S + 2 * _RECOVERY_STOP_WAIT_S + _STOP_ALL_SLACK_S + 0.3
@@ -103,7 +104,7 @@ async def _recover_in_background() -> None:
     try:
         from main_routers.visit_router.credentials import cancel_pending_host_invites
 
-        cancelled = await cancel_pending_host_invites()
+        cancelled = await asyncio.wait_for(cancel_pending_host_invites(), timeout=_INVITE_RESET_TIMEOUT_S)
         if cancelled:
             logger.info("visit startup invalidated %d pending invitation(s)", cancelled)
     except asyncio.CancelledError:

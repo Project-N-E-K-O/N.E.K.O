@@ -437,10 +437,14 @@ def test_persona_panel_refreshes_compact_hit_geometry_after_async_content_change
 def test_visit_dialog_owns_compact_input_until_it_closes():
     source = _read(CHAT)
     body = _function_body(source, "openDialog")
-    assert "var forceInteractiveWasEnabled = window.__nekoForceInteractive === true;" in body
-    assert "window.__nekoForceInteractive = true;" in body
+    assert "var releaseInteractive = acquireForceInteractiveLease();" in body
     close = body[body.index("close: function (value)"):body.index("setLines: function (lines)")]
-    assert "window.__nekoForceInteractive = forceInteractiveWasEnabled;" in close
+    assert "releaseInteractive();" in close
+    lease = _function_body(source, "acquireForceInteractiveLease")
+    assert "window.__nekoAcquireForceInteractiveLease" in lease
+    assert "window.__nekoForceInteractiveLeaseState" in lease
+    assert "state.count += 1;" in lease and "state.count = Math.max(0, state.count - 1);" in lease
+    assert "if (state.count === 0)" in lease
 
     css = _read(INDEX_CSS)
     overlay = re.search(r"\.visit-dialog-overlay\s*\{([^}]*)\}", css, re.S)
@@ -469,9 +473,11 @@ def test_persona_panel_keeps_actions_outside_its_scrollable_body():
 def test_persona_panel_owns_compact_input_and_has_no_dim_backdrop():
     source = _read(PERSONA)
     assert "visit-dialog-overlay visit-persona-overlay" in source
-    assert "var forceInteractiveWasEnabled = window.__nekoForceInteractive === true;" in source
-    assert "window.__nekoForceInteractive = true;" in source
-    assert "window.__nekoForceInteractive = forceInteractiveWasEnabled;" in _function_body(source, "close")
+    assert "var releaseInteractive = acquireForceInteractiveLease();" in source
+    assert "releaseInteractive();" in _function_body(source, "close")
+    lease = _function_body(source, "acquireForceInteractiveLease")
+    assert "window.__nekoAcquireForceInteractiveLease" in lease
+    assert "window.__nekoForceInteractiveLeaseState" in lease
 
     css = _read(INDEX_CSS)
     base_overlay = re.search(r"\.visit-dialog-overlay\s*\{([^}]*)\}", css, re.S)

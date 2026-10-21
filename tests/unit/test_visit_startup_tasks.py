@@ -176,6 +176,30 @@ async def test_startup_invalidates_pending_invites_before_spool_recovery(monkeyp
     assert order == ["reset", "recover"]
 
 
+async def test_startup_invite_reset_timeout_does_not_block_recovery(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    cancelled = asyncio.Event()
+    recovered = asyncio.Event()
+
+    async def hanging_reset():
+        try:
+            await asyncio.sleep(60)
+        finally:
+            cancelled.set()
+
+    async def recover():
+        recovered.set()
+
+    monkeypatch.setattr(background, "_INVITE_RESET_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", hanging_reset)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    await background.wait_startup_invite_reset()
+    assert await background._recovery_task is None
+    assert cancelled.is_set() and recovered.is_set()
+
+
 async def test_shutdown_is_bounded_even_when_stop_all_hangs(monkeypatch):
     monkeypatch.setattr(background, "VISIT_SHUTDOWN_BUDGET_S", 0.2)
     stopped = asyncio.Event()

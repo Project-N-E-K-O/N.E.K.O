@@ -52,6 +52,33 @@
 
     // ── 小工具 ──────────────────────────────────────────────────────
 
+    function acquireForceInteractiveLease() {
+        if (typeof window.__nekoAcquireForceInteractiveLease !== 'function') {
+            window.__nekoAcquireForceInteractiveLease = function () {
+                var state = window.__nekoForceInteractiveLeaseState;
+                if (!state || typeof state.count !== 'number') {
+                    state = { count: 0, restore: false };
+                    window.__nekoForceInteractiveLeaseState = state;
+                }
+                if (state.count === 0) {
+                    state.restore = window.__nekoForceInteractive === true;
+                    try { window.__nekoForceInteractive = true; } catch (_) { /* 普通浏览器无需处理 */ }
+                }
+                state.count += 1;
+                var released = false;
+                return function () {
+                    if (released) return;
+                    released = true;
+                    state.count = Math.max(0, state.count - 1);
+                    if (state.count === 0) {
+                        try { window.__nekoForceInteractive = state.restore; } catch (_) { /* noop */ }
+                    }
+                };
+            };
+        }
+        return window.__nekoAcquireForceInteractiveLease();
+    }
+
     function t(key, fallback, params) {
         var text = '';
         if (typeof window.t === 'function') {
@@ -250,7 +277,7 @@
                 handle.closed = true;
                 if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onKeydown, true);
                 if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-                try { window.__nekoForceInteractive = forceInteractiveWasEnabled; } catch (_) { /* noop */ }
+                releaseInteractive();
                 refreshCompactGeometry();
                 var index = openDialogs.indexOf(handle);
                 if (index >= 0) openDialogs.splice(index, 1);
@@ -302,8 +329,7 @@
         // 对话框虽然已经画出来，但 native hit region 的异步重排存在一个空窗期；这时
         // 输入框仍能拿到键盘焦点，按钮点击却会落到后面的应用。对话框存活期间接管整窗
         // 输入，关闭后恢复打开前的状态（和串门人设面板使用同一条桌面桥）。
-        var forceInteractiveWasEnabled = window.__nekoForceInteractive === true;
-        try { window.__nekoForceInteractive = true; } catch (_) { /* 普通浏览器无需处理 */ }
+        var releaseInteractive = acquireForceInteractiveLease();
         refreshCompactGeometry();
         openDialogs.push(handle);
         // 焦点移进对话框（有输入框的由调用方再聚焦到输入框）

@@ -24,6 +24,33 @@
     var POLL_MS = 2000;
     var POLL_MAX = 90;
 
+    function acquireForceInteractiveLease() {
+        if (typeof window.__nekoAcquireForceInteractiveLease !== 'function') {
+            window.__nekoAcquireForceInteractiveLease = function () {
+                var state = window.__nekoForceInteractiveLeaseState;
+                if (!state || typeof state.count !== 'number') {
+                    state = { count: 0, restore: false };
+                    window.__nekoForceInteractiveLeaseState = state;
+                }
+                if (state.count === 0) {
+                    state.restore = window.__nekoForceInteractive === true;
+                    try { window.__nekoForceInteractive = true; } catch (_) { /* 普通浏览器无需处理 */ }
+                }
+                state.count += 1;
+                var released = false;
+                return function () {
+                    if (released) return;
+                    released = true;
+                    state.count = Math.max(0, state.count - 1);
+                    if (state.count === 0) {
+                        try { window.__nekoForceInteractive = state.restore; } catch (_) { /* noop */ }
+                    }
+                };
+            };
+        }
+        return window.__nekoAcquireForceInteractiveLease();
+    }
+
     function t(key, fallback, params) {
         var text = '';
         if (typeof window.t === 'function') {
@@ -164,8 +191,7 @@
         (document.body || document.documentElement).appendChild(overlay);
         // Electron 的透明桌面窗默认把未登记区域的鼠标透传给后面的应用。
         // 串门弹窗打开期间临时接管输入，避免按钮看得见却点到后面的窗口。
-        var forceInteractiveWasEnabled = window.__nekoForceInteractive === true;
-        try { window.__nekoForceInteractive = true; } catch (_) { /* 普通浏览器无需处理 */ }
+        var releaseInteractive = acquireForceInteractiveLease();
         refreshCompactGeometry();
 
         var settle;
@@ -184,7 +210,7 @@
             panel.closed = true;
             if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onKeydown, true);
             if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-            try { window.__nekoForceInteractive = forceInteractiveWasEnabled; } catch (_) { /* noop */ }
+            releaseInteractive();
             refreshCompactGeometry();
             if (openPanel === panel) openPanel = null;
             settle(confirmed === true);
