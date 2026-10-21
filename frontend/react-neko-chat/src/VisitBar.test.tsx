@@ -28,6 +28,7 @@ describe('compact visit bar', () => {
     const layer = document.body.querySelector('body > .compact-chat-visit-anchor');
     expect(layer).not.toBeNull();
     expect(layer).toHaveAttribute('data-visit-layer-open', 'true');
+    expect(document.documentElement.style.getPropertyValue('--compact-visit-layer-reserved-block-size')).toBe('22px');
     expect((layer as HTMLElement).style.getPropertyValue('--compact-choice-surface-left')).toBe('');
     expect((layer as HTMLElement).style.getPropertyValue('--compact-choice-surface-top')).toBe('');
     expect(document.body.querySelector('.compact-chat-choice-anchor .composer-visit-bar')).toBeNull();

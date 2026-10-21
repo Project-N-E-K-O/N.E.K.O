@@ -1527,8 +1527,10 @@
     }
 
     /** 把恢复接口 / 建房响应变成本页的权威阶段；返回恢复到的场次，格式不对则 null。 */
-    function applyHostRoomResponse(result, catgirl) {
+    function applyHostRoomResponse(result, catgirl, seqAtSend) {
         if (!result || (result.status !== 200 && result.status !== 202) || currentCatgirl() !== catgirl) return null;
+        // HTTP 恢复/建房响应没有服务端帧序号；请求期间只要收到过更新帧，页面状态就比它新，绝不能倒退。
+        if (typeof seqAtSend === 'number' && stateFrameSeq !== seqAtSend) return null;
         var body = result.body || {};
         var visitId = typeof body.visit_id === 'string' ? body.visit_id : '';
         var phase = body.phase === 'invite_ready' ? 'invite_ready' : (body.phase === 'pending' ? 'pending' : '');
@@ -1548,9 +1550,16 @@
         setTimeout(async function () {
             if (currentCatgirl() !== catgirl || visit.visitId !== visitId
                     || (visit.phase !== 'pending' && visit.phase !== 'invite_ready') || visit.inviteCode) return;
+            var seqAtSend = stateFrameSeq;
             var current = await api('GET', currentHostRoomUrl(catgirl));
             if (currentCatgirl() !== catgirl || visit.visitId !== visitId) return;
-            var restored = applyHostRoomResponse(current, catgirl);
+            if (stateFrameSeq !== seqAtSend) {
+                if (visit.phase === 'pending' && !visit.inviteCode) {
+                    scheduleInviteRecovery(catgirl, visitId, index + 1);
+                }
+                return;
+            }
+            var restored = applyHostRoomResponse(current, catgirl, seqAtSend);
             if (restored && restored.hasCode) return;
             if (visit.visitId === visitId && visit.phase === 'pending') {
                 scheduleInviteRecovery(catgirl, visitId, index + 1);
@@ -1565,9 +1574,11 @@
         render();
         try {
             // 页面错过 invite_ready 或重新载入时，先恢复仍有效的原房间；绝不为同一场再建一个。
+            var currentSeq = stateFrameSeq;
             var current = await api('GET', currentHostRoomUrl(catgirl));
             if (currentCatgirl() !== catgirl) return;
-            var restored = applyHostRoomResponse(current, catgirl);
+            if (stateFrameSeq !== currentSeq) return;
+            var restored = applyHostRoomResponse(current, catgirl, currentSeq);
             if (restored) {
                 if (!restored.hasCode) scheduleInviteRecovery(catgirl, restored.visitId, 0);
                 return;
@@ -1578,19 +1589,23 @@
                 return;
             }
             var crop = readCrop();
+            var createSeq = stateFrameSeq;
             var result = await withPersonaRetry(function () {
                 return api('POST', '/api/visit/rooms', { catgirl: catgirl, crop: crop });
             }, catgirl);
             if (await abandonIfCharacterSwitched(result, catgirl)) return;
-            var created = applyHostRoomResponse(result, catgirl);
+            if (stateFrameSeq !== createSeq) return;
+            var created = applyHostRoomResponse(result, catgirl, createSeq);
             if (created) {
                 if (!created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);
                 return;
             }
             // GET 与 POST 之间另一窗口可能刚建好房间：再恢复一次，而不是停在 already_visiting。
             if (result.status === 409 && ((result.body || {}).reason === 'already_visiting')) {
+                var raceSeq = stateFrameSeq;
                 var raced = await api('GET', currentHostRoomUrl(catgirl));
-                var recovered = applyHostRoomResponse(raced, catgirl);
+                if (stateFrameSeq !== raceSeq) return;
+                var recovered = applyHostRoomResponse(raced, catgirl, raceSeq);
                 if (recovered) {
                     if (!recovered.hasCode) scheduleInviteRecovery(catgirl, recovered.visitId, 0);
                     return;

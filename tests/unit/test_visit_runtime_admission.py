@@ -2405,6 +2405,29 @@ async def test_ended_is_still_sent_when_the_display_write_never_retires(tmp_path
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_final_status_retries_when_the_host_reports_delivery_failure(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    attempts = 0
+
+    async def send_status(code, details):
+        nonlocal attempts
+        attempts += 1
+        return attempts > 1
+
+    host.host.send_status = send_status
+    try:
+        rt.status_code = "VISIT_KICKED"
+        rt.status_details = {"reason": "kicked"}
+        await rt._publish_final_status()
+        assert rt._status_published is False
+        await rt._publish_final_status()
+        assert rt._status_published is True
+        assert attempts == 2
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_an_unpaired_room_is_cancelled_even_if_the_channel_close_is_cut_off(tmp_path, monkeypatch, clocks):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)

@@ -1334,6 +1334,7 @@ def test_compact_choice_hit_contract_uses_real_options_only():
 
 def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_polling():
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
     placement_effect = app_source.split("if (!compactChoiceLayerOpen) return;", 1)[1].split(
         "const requestCompactChatState = useCallback",
@@ -1347,6 +1348,15 @@ def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_poll
     assert "schedulePlacementUpdateWithDesktopLayout(layout);" in placement_effect
     assert "requestAnimationFrame(trackPlacement)" not in placement_effect
     assert "const trackPlacement = () =>" not in placement_effect
+
+    above_choice = styles.split(
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"]',
+        1,
+    )[1].split(
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"]',
+        1,
+    )[0]
+    assert "--compact-visit-layer-reserved-block-size" in above_choice
 
 
 def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():

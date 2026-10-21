@@ -2811,7 +2811,7 @@ function CompactChatApp({
       const nextLayerNode = compactVisitLayerRef.current;
       if (!nextLayerNode) return;
       const visitLayerHeight = Math.max(nextLayerNode.getBoundingClientRect().height, nextLayerNode.scrollHeight);
-      appShellRef.current?.style.setProperty(
+      document.documentElement.style.setProperty(
         '--compact-visit-layer-reserved-block-size',
         `${Math.ceil(visitLayerHeight) + 22}px`,
       );
@@ -2827,7 +2827,7 @@ function CompactChatApp({
 
     return () => {
       observer?.disconnect();
-      appShellRef.current?.style.removeProperty('--compact-visit-layer-reserved-block-size');
+      document.documentElement.style.removeProperty('--compact-visit-layer-reserved-block-size');
     };
   }, [isCompactSurface, visitBarVisible]);
 

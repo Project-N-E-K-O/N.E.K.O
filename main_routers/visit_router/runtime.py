@@ -891,26 +891,35 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self._post_display(payload)
 
-    async def status(self, code: str, **details: Any) -> None:
+    async def status(self, code: str, **details: Any) -> bool:
         details = {"visit_id": self.visit_id, **{k: v for k, v in details.items() if v is not None}}
         ended = self._ended_sending
         if ended is not None and not ended.done():
             # ended still waits behind blocked display writes; queue this status afterward without overtaking/concurrent writes.
             self._keep_background(asyncio.ensure_future(self._status_after(ended, code, details)))
-            return
-        await self.host.send_status(code, details)
+            return False
+        return await self.host.send_status(code, details)
 
     async def _publish_final_status(self) -> None:
         """Publish one terminal banner, retrying during final teardown if an early send fails."""
         if self.status_code is None or self._status_published:
             return
+        ended = self._ended_sending
+        if ended is not None and not ended.done():
+            # ended has its own bounded retirement deadline. Wait for it here so
+            # the delivery result below is authoritative rather than merely queued.
+            await asyncio.wait([ended])
         try:
-            await self.status(self.status_code, reason=self.status_details.get("reason"),
-                              retry_after_s=self.status_details.get("retry_after_s"))
+            delivered = await self.status(
+                self.status_code,
+                reason=self.status_details.get("reason"),
+                retry_after_s=self.status_details.get("retry_after_s"),
+            )
         except Exception as exc:  # noqa: BLE001 - Cleanup must continue; the late call below retries once.
             logger.warning("visit %s: status not sent: %s", self.visit_id[:6], type(exc).__name__)
             return
-        self._status_published = True
+        if delivered:
+            self._status_published = True
 
     # -- Startup --
 

@@ -1332,6 +1332,28 @@ const report = {};
     report.existing_invite_code = state.inviteCode;
     report.existing_invite_creates = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
   }
+  // ── 恢复 GET 在途时收到更晚的 started 帧：旧响应不能让页面倒退 ──
+  {
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = {
+      [currentUrl]: async () => {
+        await gate;
+        return { status: 200, body: { visit_id: VID, phase: 'invite_ready', invite_code: 'ABCDEFGH23', invite_expires_at: 9e9 } };
+      },
+    };
+    const h = createHarness({ routes });
+    const pending = h.chat._test.startInvite();
+    await h.settle();
+    h.frame({ type: 'visit_state_change', action: 'started', visit_id: VID, side: 'host', ts: 1 });
+    release();
+    await pending;
+    const state = h.chat._test.state().visit;
+    report.stale_host_recovery_phase = state.phase;
+    report.stale_host_recovery_code = state.inviteCode;
+    report.stale_host_recovery_creates = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
+  }
   // ── 新房间的 invite_ready 帧丢失：本机恢复接口轮询出原邀请码，不重复建房 ──
   {
     const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
@@ -1929,6 +1951,12 @@ def test_clicking_invite_restores_the_existing_code_without_creating_another_roo
     assert report["existing_invite_phase"] == "invite_ready"
     assert report["existing_invite_code"] == "ABCDEFGH23"
     assert report["existing_invite_creates"] == 0
+
+
+def test_late_host_recovery_reply_does_not_overwrite_a_newer_socket_phase(report):
+    assert report["stale_host_recovery_phase"] == "active"
+    assert report["stale_host_recovery_code"] in (None, "")
+    assert report["stale_host_recovery_creates"] == 0
 
 
 def test_a_new_room_recovers_its_code_when_the_ready_frame_is_missed(report):
