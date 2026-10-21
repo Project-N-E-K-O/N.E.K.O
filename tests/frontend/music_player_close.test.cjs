@@ -233,6 +233,38 @@ async function startRecommendation(s, awarenessState) {
     return { events, awareness, socket, message };
 }
 
+for (const transport of ['IPC', 'BroadcastChannel']) {
+    for (const awarenessState of [undefined, 1, 3]) {
+        for (const paused of [false, true]) {
+            test(`recommendation handoff preserves final listening facts (${transport}, socket=${awarenessState}, paused=${paused})`, async t => {
+                const { owner, follower } = pair(t, { asyncTransport: true,
+                    ...(transport === 'BroadcastChannel' ? { channelHub: new Set() } : {}) });
+                const r = await startRecommendation(owner, awarenessState);
+                const previousPlayer = owner.players[0];
+                if (paused) previousPlayer.pause();
+                await (await follower.start(true)).promise;
+                await follower.advance(100);
+                await owner.advance(1000);
+                await flush();
+                assert.equal(previousPlayer.destroyed, true, 'new owner retires the old player');
+                assert.equal(follower.players[0].destroyed, false, 'new owner keeps its player');
+                assert.equal(follower.players[0].audio.paused, false);
+                const terminal = r.events.filter(event => ['stopped', 'ended', 'failed'].includes(event.kind));
+                assert.equal(terminal.length, 1, 'handoff records exactly one terminal fact');
+                assert.equal(terminal[0].kind, 'stopped');
+                assert.equal(terminal[0].listened_seconds, 12);
+                assert.equal(terminal[0].position_seconds, 12);
+                assert.equal(terminal[0].playback_id, r.events.find(event => event.kind === 'playing').playback_id);
+                const count = r.events.length;
+                previousPlayer.emit('play'); previousPlayer.emit('pause'); previousPlayer.emit('ended');
+                owner.w.destroyMusicPlayer(true, true, true);
+                await flush();
+                assert.equal(r.events.length, count, 'late callbacks cannot re-open the retired evidence');
+            });
+        }
+    }
+}
+
 for (const [name, startState, endState] of [['missing', undefined, undefined], ['closed', 3, 3],
     ['open', 1, 1], ['reconnected', 3, 1], ['disconnected after playing', 1, 3]]) {
     test(`recommendation close reports its final evidence with ${name} awareness socket`, async t => {

@@ -764,6 +764,7 @@
     "chat": {
         "miniGameInviteTitle": "Приглашение в мини-игру",
         "miniGameInviteHint": "Сыграем вместе?",
+        "miniGameInviteOptionsAriaLabel": "Варианты приглашения в мини-игру",
         "visitBarAriaLabel": "В гостях",
         "messageReaction": "{{author}} реагирует {{emoji}}",
         "cardActionFailed": "Ошибка действия плагина",

@@ -764,6 +764,7 @@
     "chat": {
         "miniGameInviteTitle": "ミニゲームのお誘い",
         "miniGameInviteHint": "一緒に遊びませんか？",
+        "miniGameInviteOptionsAriaLabel": "ミニゲーム招待の選択肢",
         "visitBarAriaLabel": "おでかけ",
         "messageReaction": "{{author}} が {{emoji}} でリアクションしました",
         "cardActionFailed": "プラグインの操作に失敗しました",

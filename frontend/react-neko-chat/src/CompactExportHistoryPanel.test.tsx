@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import CompactExportHistoryPanel from './CompactExportHistoryPanel';
+import CompactExportHistoryPanel, { isCompactExportMessageSelectable } from './CompactExportHistoryPanel';
 import { parseChatMessage } from './message-schema';
 
 const message = parseChatMessage({
@@ -45,6 +45,24 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 }
 
 describe('CompactExportHistoryPanel', () => {
+  it('counts only visible recommendations while preserving dialogue and selection guards', () => {
+    const hidden = ['chat', 'news'].map(category => parseChatMessage({ ...message, id: `hidden-${category}`, blocks: [{
+      type: 'proactive_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943',
+      category, state: 'pending', content: { title: '', source: '', url: '' },
+    }] }));
+    const visible = parseChatMessage({ ...message, id: 'visible-recommendation', blocks: [{
+      type: 'proactive_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943',
+      category: 'vision', state: 'pending', content: { title: 'Look at the sky', source: '', url: '' },
+    }] });
+    const dialogue = parseChatMessage({ ...hidden[0], id: 'mixed-dialogue', blocks: [...hidden[0].blocks, ...message.blocks] });
+    const messages = [...hidden, visible, dialogue, message, { ...message, id: 'sending', status: 'sending' as const }];
+    const selectable = messages.filter(isCompactExportMessageSelectable);
+    expect(selectable.map(item => item.id)).toEqual(['visible-recommendation', 'mixed-dialogue', message.id]);
+    const { container } = renderPanel({ messages, selectedIds: new Set(selectable.map(item => item.id)),
+      selectedCount: selectable.length, selectableCount: selectable.length, previewOpen: false });
+    expect(container.querySelectorAll('.compact-export-history-bubble[role="button"]')).toHaveLength(3);
+    for (const item of hidden) expect(container.querySelector(`[data-message-id="${item.id}"]`)).toBeNull();
+  });
   it('omits retired proactive placeholder rows while preserving actual dialogue', () => {
     const placeholder = parseChatMessage({ ...message, id: 'retired-topic', blocks: [{
       type: 'proactive_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943',

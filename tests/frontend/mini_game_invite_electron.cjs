@@ -81,7 +81,10 @@ async function run() {
         for(const win of windows) await win.webContents.executeJavaScript(`window.resolveInvite({sessionId:${JSON.stringify(id)},action:${JSON.stringify(choice==='accept'?'open_game':'cooldown')}})`);
         for(const win of windows) await waitFor(win,"!document.querySelector('.mini-game-invite')");
         if(choice==='accept'){
-            await waitFor(actor,"true");
+            const popupDeadline = Date.now() + 10000;
+            while (popups.length < 1 && Date.now() < popupDeadline) {
+                await new Promise(resolve => setTimeout(resolve, 40));
+            }
             assert.equal(popups.length,1,'accept opens one game window');
             await waitFor(popups[0],"location.pathname==='/game'");
         } else assert.equal(popups.length,1,'skip/later do not open games');

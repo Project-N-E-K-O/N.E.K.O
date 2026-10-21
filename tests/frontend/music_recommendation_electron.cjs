@@ -113,7 +113,16 @@ async function run() {
     await waitFor(owner,"!document.querySelector('.compact-music-recommendation-prompt')");
     const playbackFlags = await Promise.all(windows.map(win=>win.webContents.executeJavaScript("!!(window.aplayer && !window.aplayer.audio.paused)")));
     assert.equal(playbackFlags.filter(Boolean).length,1,'concurrent acceptance produces one actual audio owner');
-    const active = windows[playbackFlags.findIndex(Boolean)];
+    const retired = windows[playbackFlags.findIndex(Boolean)];
+    await waitFor(retired,"window.aplayer && window.aplayer.audio.currentTime > 0.1");
+    stage = 'remote-owner-preserves-listening-facts';
+    const active = windows.find(win => win !== retired);
+    const trackUrl = await retired.webContents.executeJavaScript('new URL(window.aplayer.audio.src).pathname');
+    const handoff = await active.webContents.executeJavaScript(`window.sendMusicMessageDetailed({name:'Handoff',artist:'Neko',url:${JSON.stringify(trackUrl + '?handoff=1')}},true,{source:'user'})`);
+    assert.equal(handoff.ok, true, 'the next window starts a supported local audio source');
+    await waitFor(active,"window.aplayer && !window.aplayer.audio.paused");
+    await waitFor(retired,"!window.aplayer");
+    await waitFor(retired,"fetch('/api/proactive/recommendations/events', {headers:{'X-CSRF-Token':'smoke-token'}}).then(r=>r.json()).then(r=>r.events.some(e=>e.kind==='stopped' && e.listened_seconds>0))");
     await active.webContents.executeJavaScript("document.querySelector('#music-player-bar .music-bar-close').click()");
     await waitFor(follower,"document.querySelectorAll('.music-recommendation-card')[2].textContent.includes('播放已停止')");
     await owner.webContents.executeJavaScript("window.setSmokeSurfaceMode('full')");

@@ -764,6 +764,7 @@
     "chat": {
         "miniGameInviteTitle": "미니게임 초대",
         "miniGameInviteHint": "같이 한 판 할까요?",
+        "miniGameInviteOptionsAriaLabel": "미니게임 초대 옵션",
         "visitBarAriaLabel": "방문",
         "messageReaction": "{{author}}님이 {{emoji}}로 반응했습니다",
         "cardActionFailed": "플러그인 작업 실패",

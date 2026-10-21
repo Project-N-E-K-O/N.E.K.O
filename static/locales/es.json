@@ -764,6 +764,7 @@
     "chat": {
         "miniGameInviteTitle": "Invitación a minijuego",
         "miniGameInviteHint": "¿Jugamos juntos?",
+        "miniGameInviteOptionsAriaLabel": "Opciones de invitación al minijuego",
         "visitBarAriaLabel": "Visita",
         "messageReaction": "{{author}} reaccionó con {{emoji}}",
         "cardActionFailed": "Error en la acción del plugin",

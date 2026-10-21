@@ -764,6 +764,7 @@
     "chat": {
         "miniGameInviteTitle": "小遊戲邀請",
         "miniGameInviteHint": "要不要一起玩一局？",
+        "miniGameInviteOptionsAriaLabel": "小遊戲邀請選項",
         "visitBarAriaLabel": "串門",
         "messageReaction": "{{author}} 貼了 {{emoji}}",
         "cardActionFailed": "外掛操作失敗",

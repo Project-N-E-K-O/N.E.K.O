@@ -598,6 +598,12 @@
         if (remoteTs && currentMusicOwnerStartedAt && remoteTs < currentMusicOwnerStartedAt) return false;
 
         // A newer remote owner wins; remove the local owner bar immediately so a mirror can replace it.
+        // Persist the old owner's final listening interval before cleanup revokes its context.
+        // This handoff does not use fullTeardown and must not depend on the chat socket.
+        const previousContext = localPlayer && localPlayer._musicPlaybackReportContext;
+        if (previousContext && ['playing', 'paused'].includes(previousContext.recommendationLastState)) {
+            reportRecommendationPlaybackState('stopped', previousContext, 'replaced');
+        }
         destroyMusicPlayer(true, false, true);
         return true;
     }
