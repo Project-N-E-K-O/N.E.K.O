@@ -38,7 +38,7 @@ async function handleRefresh() {
       && data.reason.successfulRequests > 0
     const statusUpdated = status.status === 'fulfilled' && status.value === 'applied'
     const statusSuperseded = status.status === 'fulfilled' && status.value === 'superseded'
-    // Another explicit refresh owns the newer status result and its feedback.
+    // `superseded` confirms a newer query has already applied successfully.
     if (dataUpdated && statusSuperseded) return
     if (dataUpdated && statusUpdated) ElMessage.success(t('messages.operationSuccess'))
     else if (dataUpdated || dataPartiallyUpdated || statusUpdated || statusSuperseded) ElMessage.warning(t('messages.refreshPartialFailure'))

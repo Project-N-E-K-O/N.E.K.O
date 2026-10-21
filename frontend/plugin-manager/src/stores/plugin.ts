@@ -42,6 +42,7 @@ type RegistrySyncOptions = {
   invalidateInstalled?: boolean
 }
 
+/** `superseded` is benign only after the replacing query has applied a snapshot. */
 export type PluginStatusRefreshResult = 'applied' | 'failed' | 'superseded'
 
 type PluginMutationOptions = {
@@ -79,6 +80,7 @@ export const usePluginStore = defineStore('plugin', () => {
   
   // 防止请求堆积：正在进行的请求
   let pendingFetchStatus: Promise<PluginStatusRefreshResult> | null = null
+  let latestStatusRefresh = { ticket: 0, applied: false }
   let pendingFetchSummaries: Promise<void> | null = null
   let pendingFetchSummariesLocale: string | null = null
   const pendingFetchDetails = new Map<string, Promise<void>>()
@@ -423,8 +425,15 @@ export const usePluginStore = defineStore('plugin', () => {
     return pendingPluginListRegistrySync
   }
 
-  // Background callers may ignore this result safely. Explicit refresh callers
-  // can distinguish an applied snapshot from a failed or superseded request.
+  function supersededStatusResult(ticket: number): PluginStatusRefreshResult {
+    // A lifecycle caller can ignore its follow-up failure. Do not let that
+    // silence the feedback of a refresh it replaced, or assume a pending query
+    // will succeed. No extra request or unbounded wait is needed to decide.
+    return latestStatusRefresh.ticket > ticket && latestStatusRefresh.applied ? 'superseded' : 'failed'
+  }
+
+  // Explicit refresh callers distinguish a failed refresh from a request
+  // superseded by a confirmed, successfully applied replacement.
   async function fetchPluginStatus(pluginId?: string, force = false): Promise<PluginStatusRefreshResult> {
     if (pluginId) {
       // A single-plugin mutation makes any in-flight full snapshot stale.
@@ -437,6 +446,7 @@ export const usePluginStore = defineStore('plugin', () => {
       return pendingFetchStatus
     }
     const statusTicket = ++statusReadSequence
+    latestStatusRefresh = { ticket: statusTicket, applied: false }
     
     // 设置超时自动清理（仅对全量请求）
     let timeoutId: ReturnType<typeof setTimeout> | null = null
@@ -452,7 +462,7 @@ export const usePluginStore = defineStore('plugin', () => {
         }
         // A forced refresh may replace this request, but its original callers
         // still need a bounded completion without invalidating the replacement.
-        finishTimeout?.(superseded ? 'superseded' : 'failed')
+        finishTimeout?.(superseded ? supersededStatusResult(statusTicket) : 'failed')
       }, REQUEST_TIMEOUT)
     }
     
@@ -460,9 +470,9 @@ export const usePluginStore = defineStore('plugin', () => {
       try {
         const response = await getPluginStatus(pluginId)
         // 忽略过期响应（仅对全量请求）
-        if (!pluginId && seq !== fetchStatusSeq) return 'superseded'
+        if (!pluginId && seq !== fetchStatusSeq) return supersededStatusResult(statusTicket)
         if (pluginId) {
-          if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return 'superseded'
+          if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return supersededStatusResult(statusTicket)
           if (reportedStatus(response)) {
             runtimeStatusTickets.set(pluginId, statusTicket)
             pluginStatuses.value = { ...pluginStatuses.value, [pluginId]: response as PluginStatusData }
@@ -485,10 +495,11 @@ export const usePluginStore = defineStore('plugin', () => {
           pluginStatusSnapshotLoaded.value = true
           pluginStatusFetchedAt.value = Date.now()
         }
+        if (latestStatusRefresh.ticket === statusTicket) latestStatusRefresh.applied = true
         return 'applied'
       } catch (err: any) {
         if ((!pluginId && seq !== fetchStatusSeq)
-          || (pluginId && statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0))) return 'superseded'
+          || (pluginId && statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0))) return supersededStatusResult(statusTicket)
         console.error('Failed to fetch plugin status:', err)
         return 'failed'
       } finally {

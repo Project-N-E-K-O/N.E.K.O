@@ -86,6 +86,62 @@ describe('titlebar refresh through the real plugin store', () => {
     expect(messages.warning).not.toHaveBeenCalled()
     expect(messages.success).not.toHaveBeenCalled()
   })
+  it.each(['single', 'full'] as const)('reports a partial failure when the replacing %s status query fails', async (scope) => {
+    let release!: (value: never) => void
+    vi.mocked(getPluginStatus).mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+      .mockRejectedValueOnce(new Error('replacement unavailable'))
+    const store = await refreshFromTitlebar(undefined, false)
+    // Lifecycle callers intentionally keep mutation success separate from the
+    // follow-up query; they do not necessarily announce that query's failure.
+    await store.fetchPluginStatus(scope === 'single' ? 'demo' : undefined, true)
+    release({ plugins: {} } as never)
+    await flushRefresh()
+    expect(messages.warning).toHaveBeenCalledExactlyOnceWith('messages.refreshPartialFailure')
+    expect(messages.success).not.toHaveBeenCalled()
+  })
+  it('does not assume an unfinished replacing query will succeed', async () => {
+    let releaseOld!: (value: never) => void
+    let releaseNew!: (value: never) => void
+    vi.mocked(getPluginStatus)
+      .mockReturnValueOnce(new Promise(resolve => { releaseOld = resolve }))
+      .mockReturnValueOnce(new Promise(resolve => { releaseNew = resolve }))
+    const store = await refreshFromTitlebar(undefined, false)
+    const replacing = store.fetchPluginStatus('demo')
+    releaseOld({ plugins: {} } as never)
+    await flushRefresh()
+    try {
+      expect(messages.warning).toHaveBeenCalledExactlyOnceWith('messages.refreshPartialFailure')
+      expect(messages.success).not.toHaveBeenCalled()
+    } finally {
+      releaseNew({ plugin_id: 'demo', source: 'main_process_synthetic', status: { status: 'running' } } as never)
+      await replacing
+    }
+  })
+  it('does not let an earlier replacement success hide the newest query failure', async () => {
+    let release!: (value: never) => void
+    vi.mocked(getPluginStatus)
+      .mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+      .mockResolvedValueOnce({ plugins: {} } as never)
+      .mockRejectedValueOnce(new Error('latest query failed'))
+    const store = await refreshFromTitlebar(undefined, false)
+    await store.fetchPluginStatus(undefined, true)
+    await store.fetchPluginStatus('demo')
+    release({ plugins: {} } as never)
+    await flushRefresh()
+    expect(messages.warning).toHaveBeenCalledExactlyOnceWith('messages.refreshPartialFailure')
+  })
+  it('keeps bounded failure feedback when the old query hangs and its replacement fails', async () => {
+    vi.useFakeTimers()
+    vi.mocked(getPluginStatus)
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockRejectedValueOnce(new Error('replacement unavailable'))
+    const store = await refreshFromTitlebar(undefined, false)
+    await store.fetchPluginStatus('demo')
+    await vi.advanceTimersByTimeAsync(15_000)
+    await flushRefresh()
+    expect(messages.warning).toHaveBeenCalledExactlyOnceWith('messages.refreshPartialFailure')
+    expect(messages.success).not.toHaveBeenCalled()
+  })
   it('waits for every loaded detail request before reporting a partial failure', async () => {
     let release!: (value: never) => void
     vi.mocked(getPlugin).mockRejectedValueOnce(new Error('offline'))
