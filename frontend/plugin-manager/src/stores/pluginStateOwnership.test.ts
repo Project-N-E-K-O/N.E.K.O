@@ -397,6 +397,32 @@ describe('plugin state ownership and registry cache invalidation', () => {
     expect(store.pluginStatuses.demo).toBeUndefined()
   })
 
+  it.each(['single', 'full'] as const)('fences an old %s response across same-ID reinstall without status metadata', async (scope) => {
+    const store = usePluginStore()
+    const summary = plugin()
+    delete summary.status
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [summary], message: '' })
+    await store.fetchPluginSummaries()
+    const old = deferred<any>()
+    vi.mocked(getPluginStatus).mockReturnValueOnce(old.promise)
+    const request = store.fetchPluginStatus(scope === 'single' ? 'demo' : undefined)
+
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [], message: '' })
+    await store.fetchPluginSummaries(true)
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [{ ...summary, version: '2.0.0' }], message: '' })
+    await store.fetchPluginSummaries(true)
+    old.resolve(scope === 'single' ? runtime('running') : { plugins: { demo: runtime('running') } })
+    await request
+
+    expect(store.getPluginById('demo')?.version).toBe('2.0.0')
+    expectVisibleStatus(store, 'stopped')
+    expect(store.pluginStatuses.demo).toBeUndefined()
+    // The removal fence must reject the old install, not disable future reads.
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('running'))
+    await store.fetchPluginStatus('demo')
+    expectVisibleStatus(store, 'running')
+  })
+
   it('does not give stale metadata status new precedence when confirming an auto-start preference', async () => {
     const store = usePluginStore()
     await store.fetchPluginSummaries()

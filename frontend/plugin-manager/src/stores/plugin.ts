@@ -284,6 +284,7 @@ export const usePluginStore = defineStore('plugin', () => {
 
   function prunePluginCaches(liveIds: ReadonlySet<string>, statusTicket: number) {
     const ids = new Set([
+      ...pluginSummaries.value.map(plugin => plugin.id),
       ...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys(),
       ...Object.keys(pluginStatuses.value), ...Object.keys(metadataStatuses.value),
     ])
