@@ -295,6 +295,31 @@ def end_visits_disabled() -> int:
     return sum(1 for rt in live_runtimes() if rt.request_finalize("visit_disabled"))
 
 
+async def reset_pending_host_invites_for_desktop_restart(timeout: float = 5.0) -> int:
+    """End unused host invitations when a new Electron process takes over.
+
+    A renderer reload inside one desktop process must keep its invitation, but
+    the desktop app can restart while reusing an already-running backend.  In
+    that case startup recovery does not run, so the new ``desktop_run_id`` on
+    ``visit_bind`` is the process boundary that invalidates pending codes.
+    """
+    pending = [
+        rt for rt in live_runtimes()
+        if rt.side == "host" and rt.peer is None
+        and rt.phase in (PHASE_PENDING, PHASE_INVITE_READY)
+    ]
+    exits: list[asyncio.Task] = []
+    reset = 0
+    for rt in pending:
+        if rt.request_finalize("route_end"):
+            reset += 1
+        if rt.exit_task is not None and not rt.exit_task.done():
+            exits.append(rt.exit_task)
+    if exits:
+        await asyncio.wait(exits, timeout=max(0.0, timeout))
+    return reset
+
+
 def apply_voice_setting(enabled: bool) -> int:
     """``visitVoiceEnabled`` was saved: live visits use it from their next line (design §3.7.6).
 
@@ -753,6 +778,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.peer_reason: Optional[str] = None
         self.status_code: Optional[str] = None
         self.status_details: dict = {}
+        self._status_published = False
         self.finalize_at: Optional[float] = None
         self._was_phase = PHASE_PENDING
         self.ended_at_mono: Optional[float] = None
@@ -873,6 +899,18 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self._keep_background(asyncio.ensure_future(self._status_after(ended, code, details)))
             return
         await self.host.send_status(code, details)
+
+    async def _publish_final_status(self) -> None:
+        """Publish one terminal banner, retrying during final teardown if an early send fails."""
+        if self.status_code is None or self._status_published:
+            return
+        try:
+            await self.status(self.status_code, reason=self.status_details.get("reason"),
+                              retry_after_s=self.status_details.get("retry_after_s"))
+        except Exception as exc:  # noqa: BLE001 - Cleanup must continue; the late call below retries once.
+            logger.warning("visit %s: status not sent: %s", self.visit_id[:6], type(exc).__name__)
+            return
+        self._status_published = True
 
     # -- Startup --
 
@@ -1043,6 +1081,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             reason = "banned"
         elif isinstance(exc, cr.VisitQuotaExceeded):
             reason = "quota_exceeded"
+        elif isinstance(exc, cr.VisitConcurrencyLimit):
+            reason = "concurrency_limit"
         elif isinstance(exc, cr.VisitTierNotEntitled):
             reason = "tier_not_entitled"
         elif isinstance(exc, cr.VisitCrossRegionUnsupported):
@@ -1612,7 +1652,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         from main_logic.visit.room import VisitRoom
         from main_logic.visit.sanitize import neutralize_display_name
         from main_logic.visit.subjects import derive_short_code, resolve_visit_recall_subjects
-        from main_routers.visit_router.local_context import prompt_lang, protected_display_names
+        from main_routers.visit_router.local_context import (
+            prompt_lang,
+            protected_display_names,
+            protected_live_display_names,
+        )
 
         peer = self.peer
         creds = self.creds
@@ -1629,11 +1673,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self.family_names = tuple(getattr(ctx, "family_names", ()) or ())
         self.char_names = tuple(getattr(ctx, "char_names", ()) or ())
-        protected = protected_display_names(self.lang, self.family_names, self.char_names)
+        protected = protected_live_display_names(self.lang, self.family_names)
         peer.display = neutralize_display_name(
             peer.raw_display, protected_names=protected,
             generic_label=self.speaker_label("peer_cat"), short_code=derive_short_code(peer.uid),
         )
+        memory_protected = protected_display_names(self.lang, self.family_names, self.char_names)
         subjects = resolve_visit_recall_subjects({
             "own_uid": creds.visit_uid, "peer_uid": peer.uid, "peer_char_tag": peer.char_tag,
         })
@@ -1643,7 +1688,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 self.lanlan_name, own_uid=creds.visit_uid, own_char=self.lanlan_name, peer_uid=peer.uid,
                 peer_display=peer.raw_display, subjects=subjects, lang=self.lang,
                 own_char_uid=self.character_uid, config_dir=self.config_dir,
-                handoff=self._summary_handoff, protected_names=protected,
+                handoff=self._summary_handoff, protected_names=memory_protected,
                 generic_label=self.speaker_label("peer_cat"),
             )
         except Exception as exc:  # noqa: BLE001 - Missing memory blocks mean empty opening context.
@@ -1881,7 +1926,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # Push ending only after takeover release, because the page restores ordinary input immediately and visit routing must not block it;
         # before release, finalizing rejects visit submissions with request_id for undelivered marking/text restoration.
         if input_released:
-            await self.push(PHASE_ENDING, reason=reason)
+            if self.activated:
+                await self.push(PHASE_ENDING, reason=reason)
+            else:
+                # Admission failures never became a visit. Surface the existing status banner immediately and keep
+                # the frontend out of the misleading "ending" phase; ended below releases the temporary slot.
+                await self._publish_final_status()
         # Release failed: do not push ending; remain visit UI, rejecting/finalizing submissions until teardown retries then sends ended.
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
@@ -1924,9 +1974,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             else:
                 self.takeover_token = None
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
-        if self.status_code is not None:
-            await self.status(self.status_code, reason=self.status_details.get("reason"),
-                              retry_after_s=self.status_details.get("retry_after_s"))
+        await self._publish_final_status()
         self._set_phase(PHASE_ENDED)
         # 6/7. Seal transcript .upload.json first -> spool finalize -> background digest/last-summary work.
         await self._finish_files(reason)
@@ -3174,5 +3222,5 @@ __all__ = [
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
     "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
     "hold_character_lifecycle", "hold_account_for_push", "end_visits_for_account_change", "account_change",
-    "cancel_background_writes",
+    "cancel_background_writes", "reset_pending_host_invites_for_desktop_restart",
 ]

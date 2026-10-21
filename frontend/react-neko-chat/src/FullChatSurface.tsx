@@ -3133,6 +3133,7 @@ export default function FullChatSurface({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
+      onAction={onMessageAction}
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;

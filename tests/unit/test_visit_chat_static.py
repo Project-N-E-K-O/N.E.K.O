@@ -91,6 +91,7 @@ def test_onopen_sends_visit_bind_with_the_csrf_token():
     assert "_sendVisitBind(_thisSocket)" in onopen
     bind = _function_body(source, "_sendVisitBind")
     assert "action: 'visit_bind'" in bind and "csrf_token: token" in bind
+    assert "window.nekoDesktopRuntime" in bind and "desktop_run_id: desktopRunId" in bind
     # Token uses the same source as local HTTP mutation endpoints; nekoLocalMutationSecurity exposes only getMutationHeaders / refreshToken
     token = _function_body(source, "_visitCsrfToken")
     assert "security.getMutationHeaders()" in token and "security.refreshToken()" in token
@@ -263,6 +264,18 @@ def test_join_previews_first_and_never_joins_after_a_failed_preview():
     assert "if (!data) return null;" in join
 
 
+def test_invite_recovers_an_existing_room_before_creating_and_polls_after_creation():
+    chat = _read(CHAT)
+    url = _function_body(chat, "currentHostRoomUrl")
+    assert "'/api/visit/rooms/current?catgirl=' + encodeURIComponent(catgirl)" in url
+    start = _function_body(chat, "startInvite")
+    assert start.index("currentHostRoomUrl(catgirl)") < start.index("'/api/visit/rooms'")
+    assert "current.status !== 404" in start
+    assert "scheduleInviteRecovery(catgirl" in start
+    recovery = _function_body(chat, "scheduleInviteRecovery")
+    assert "api('GET', currentHostRoomUrl(catgirl))" in recovery
+
+
 def test_persona_409_opens_the_panel_before_any_retry():
     body = _function_body(_read(CHAT), "withPersonaRetry")
     first = body.index("await request()")
@@ -413,6 +426,60 @@ def test_persona_panel_refreshes_compact_hit_geometry_on_open_and_close():
     source = _read(PERSONA)
     assert source.count("refreshCompactGeometry();") >= 2
     assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in source
+
+
+def test_persona_panel_refreshes_compact_hit_geometry_after_async_content_changes():
+    source = _read(PERSONA)
+    for name in ("setNotice", "setButtons", "renderPrivate"):
+        assert "refreshCompactGeometry();" in _function_body(source, name), name
+
+
+def test_visit_dialog_owns_compact_input_until_it_closes():
+    source = _read(CHAT)
+    body = _function_body(source, "openDialog")
+    assert "var forceInteractiveWasEnabled = window.__nekoForceInteractive === true;" in body
+    assert "window.__nekoForceInteractive = true;" in body
+    close = body[body.index("close: function (value)"):body.index("setLines: function (lines)")]
+    assert "window.__nekoForceInteractive = forceInteractiveWasEnabled;" in close
+
+    css = _read(INDEX_CSS)
+    overlay = re.search(r"\.visit-dialog-overlay\s*\{([^}]*)\}", css, re.S)
+    dialog = re.search(r"\.visit-dialog\s*\{([^}]*)\}", css, re.S)
+    assert overlay and "background: transparent" in overlay.group(1)
+    assert overlay and "pointer-events: none" in overlay.group(1)
+    assert dialog and "pointer-events: auto" in dialog.group(1)
+    assert dialog and "-webkit-app-region: no-drag" in dialog.group(1)
+
+
+def test_persona_panel_keeps_actions_outside_its_scrollable_body():
+    source = _read(PERSONA)
+    assert "var body = el('div', 'visit-persona-body');" in source
+    assert "body.appendChild(privateBox);" in source
+    assert source.index("dialog.appendChild(body);") < source.index("dialog.appendChild(actions);")
+
+    css = _read(INDEX_CSS)
+    dialog = re.search(r"\.visit-dialog\.visit-persona\s*\{([^}]*)\}", css, re.S)
+    body = re.search(r"\.visit-persona-body\s*\{([^}]*)\}", css, re.S)
+    actions = re.search(r"\.visit-dialog\.visit-persona \.visit-dialog-actions\s*\{([^}]*)\}", css, re.S)
+    assert dialog and "overflow: hidden" in dialog.group(1)
+    assert body and "overflow-y: auto" in body.group(1) and "min-height: 0" in body.group(1)
+    assert actions and "flex: 0 0 auto" in actions.group(1)
+
+
+def test_persona_panel_owns_compact_input_and_has_no_dim_backdrop():
+    source = _read(PERSONA)
+    assert "visit-dialog-overlay visit-persona-overlay" in source
+    assert "var forceInteractiveWasEnabled = window.__nekoForceInteractive === true;" in source
+    assert "window.__nekoForceInteractive = true;" in source
+    assert "window.__nekoForceInteractive = forceInteractiveWasEnabled;" in _function_body(source, "close")
+
+    css = _read(INDEX_CSS)
+    base_overlay = re.search(r"\.visit-dialog-overlay\s*\{([^}]*)\}", css, re.S)
+    overlay = re.search(r"\.visit-persona-overlay\s*\{([^}]*)\}", css, re.S)
+    dialog = re.search(r"\.visit-persona-overlay \.visit-persona\s*\{([^}]*)\}", css, re.S)
+    assert base_overlay and "background: transparent" in base_overlay.group(1)
+    assert overlay and "pointer-events: none" in overlay.group(1)
+    assert dialog and "pointer-events: auto" in dialog.group(1)
 
 
 def test_visit_lines_do_not_toast_text_chatting():

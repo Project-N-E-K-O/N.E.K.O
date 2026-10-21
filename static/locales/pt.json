@@ -6943,6 +6943,7 @@
             "VISIT_LOGIN_REQUIRED": "Entre na sua conta da comunidade para fazer visitas",
             "VISIT_BANNED": "As visitas estão restritas na sua conta no momento",
             "VISIT_QUOTA_EXCEEDED": "O tempo de visitas de hoje acabou",
+            "VISIT_CONCURRENCY_LIMIT": "Há visitas ou convites ativos demais. Encerre um deles e tente novamente",
             "VISIT_TIER_NOT_ENTITLED": "Este nível de qualidade não está disponível",
             "VISIT_FORGET_IN_PROGRESS": "As memórias de visitas estão sendo apagadas. Tente mais tarde",
             "VISIT_UPLOAD_BACKLOG": "Há registros de visitas não enviados. Fique online e tente de novo",

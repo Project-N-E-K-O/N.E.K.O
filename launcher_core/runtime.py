@@ -398,12 +398,33 @@ def emit_frontend_event(event_type: str, payload: dict | None = None):
 
 
 def _resolve_storage_layout_for_launch() -> dict:
+    # A normal launch must resolve storage from the committed policy, not from
+    # layout variables inherited from a parent process.  An intentionally
+    # isolated development instance is different: it has its own lifetime lock
+    # and must also be able to select its own policy anchor.  Preserve that
+    # explicit pairing so two local accounts do not silently share one data
+    # root after the launcher clears inherited layout state.
+    isolated_runtime_dir = os.environ.get(single_instance.RUNTIME_STATE_DIR_ENV, "").strip()
+    isolated_selected_root = os.environ.get("NEKO_STORAGE_SELECTED_ROOT", "").strip()
+    isolated_anchor_root = os.environ.get("NEKO_STORAGE_ANCHOR_ROOT", "").strip()
     clear_storage_layout_env()
+    if isolated_runtime_dir and isolated_selected_root:
+        isolated_anchor_root = isolated_anchor_root or isolated_selected_root
+        export_storage_layout_to_env(
+            {
+                "selected_root": isolated_selected_root,
+                "anchor_root": isolated_anchor_root,
+                "cloudsave_root": str(Path(isolated_anchor_root) / "cloudsave"),
+            }
+        )
     reset_config_manager_cache()
     config_manager = get_config_manager(APP_NAME, migrate=False)
 
     try:
-        migration_result = run_pending_storage_migration(config_manager)
+        migration_result = run_pending_storage_migration(
+            config_manager,
+            **({"anchor_root": isolated_anchor_root} if isolated_runtime_dir and isolated_selected_root else {}),
+        )
     except Exception as exc:
         print(f"[Launcher] Warning: pending storage migration processing failed: {exc}", flush=True)
         migration_result = {
@@ -414,7 +435,17 @@ def _resolve_storage_layout_for_launch() -> dict:
 
     reset_config_manager_cache()
     resolved_config_manager = get_config_manager(APP_NAME, migrate=False)
-    layout = resolve_storage_layout(resolved_config_manager)
+    if isolated_runtime_dir and isolated_selected_root:
+        selected_root = Path(resolved_config_manager.app_docs_dir).resolve(strict=False)
+        anchor_root = Path(resolved_config_manager.anchor_root).resolve(strict=False)
+        layout = {
+            "selected_root": str(selected_root),
+            "anchor_root": str(anchor_root),
+            "cloudsave_root": str(anchor_root / "cloudsave"),
+            "source": "isolated_runtime",
+        }
+    else:
+        layout = resolve_storage_layout(resolved_config_manager)
     export_storage_layout_to_env(layout)
     reset_config_manager_cache()
     return {

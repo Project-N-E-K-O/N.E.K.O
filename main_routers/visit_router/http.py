@@ -18,8 +18,9 @@ Two routers, decorated with paths relative to the package router
 (``prefix='/api/visit'``):
 
 * :data:`router` -- start / join a visit, behind the ``NEKO_VISIT_ENABLED``
-  release switch: ``POST /rooms``, ``GET /invites/{invite_code}/preview``,
-  ``POST /rooms/{visit_id}/join``, ``POST /rooms/{visit_id}/accept``.
+  release switch: ``POST /rooms``, ``GET /rooms/current``,
+  ``GET /invites/{invite_code}/preview``, ``POST /rooms/{visit_id}/join``,
+  ``POST /rooms/{visit_id}/accept``.
 * :data:`data_router` -- always available (ending or inspecting a visit,
   exporting its transcript): ``POST /route/end``, ``GET /state``,
   ``GET /transcript``.
@@ -48,7 +49,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.visit_settings import VISIT_INVITE_PREVIEW_REUSE_S, VISIT_VIDEO_TIER_DEFAULT
+from config.visit_settings import VISIT_CROP_DEFAULT, VISIT_INVITE_PREVIEW_REUSE_S, VISIT_VIDEO_TIER_DEFAULT
 from main_logic.visit import char_lifecycle, local_chars, memory_bridge
 from main_logic.visit.limits import Blocklist
 from main_logic.visit.memory_commit import SIDE_RANK
@@ -62,7 +63,7 @@ from main_routers.visit_router import transcript_upload as tu
 from main_routers.visit_router.local_context import (
     load_character_context,
     prompt_lang,
-    protected_display_names,
+    protected_live_display_names,
     speaker_label,
 )
 from main_routers.visit_router.local_guard import http_denied, visit_enabled
@@ -177,7 +178,7 @@ async def _fetch_preview(invite_code: str, account: Optional[str]) -> tuple[cr.I
     preview = await cr.fetch_invite_preview(
         invite_code,
         generic_label=speaker_label("peer_cat", lang),
-        protected_names=protected_display_names(lang, ctx.family_names, ctx.char_names),
+        protected_names=protected_live_display_names(lang, ctx.family_names),
     )
     # Logout/account switch during request, including A→B→A: preview may use another session's authorization; do not cache.
     if epoch is None or runtime.account_epoch() != epoch:
@@ -361,12 +362,18 @@ async def create_room(request: Request):
     name = payload.get("catgirl")
     if not _valid_name(name):
         return _error(400, "catgirl_required")
-    crop = payload.get("crop", "upper")
+    crop = payload.get("crop", VISIT_CROP_DEFAULT)
     if crop not in _CROPS:
         return _error(400, "crop_format")
     refused = await _refuse_before_admission(request)
     if refused is not None:
         return refused
+    # Startup invalidates the previous process's unused invitations.  Wait for
+    # that one reset attempt before minting a room so a quick click cannot race
+    # cleanup and revive or collide with the old code.
+    from main_routers.visit_router import background
+
+    await background.wait_startup_invite_reset()
     admitted = await _admit(name, "host", crop=crop)
     if isinstance(admitted, JSONResponse):
         return admitted
@@ -390,6 +397,9 @@ async def join_room(request: Request, visit_id: str):
         return _servers_error(cr.VisitInviteFormat())
     if payload.get("confirm") is not True:
         return _error(400, "confirm_required")
+    crop = payload.get("crop", VISIT_CROP_DEFAULT)
+    if crop not in _CROPS:
+        return _error(400, "crop_format")
     # Visits disabled: reject before proxy preview, no network; start_visit rechecks too.
     switch_off = await runtime.visit_switch_refusal()
     if switch_off is not None:
@@ -425,7 +435,7 @@ async def join_room(request: Request, visit_id: str):
         # Logout/account switch during preview, including A→B→A, means preview no longer represents current account.
         return _refused(409, {"reason": "busy"})
     admitted = await _admit(name, "guest", expect_account=account, expect_epoch=preview_epoch,
-                            invite_code=invite_code, visit_id=visit_id)
+                            invite_code=invite_code, visit_id=visit_id, crop=crop)
     if isinstance(admitted, JSONResponse):
         return admitted
     return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
@@ -500,6 +510,36 @@ async def _owned_by_current_account(rt: runtime.VisitRuntime) -> bool:
     if epoch is None or runtime.account_epoch() != epoch:
         return False
     return owner is not None and owner == current
+
+
+@router.get("/rooms/current")
+async def current_host_room(request: Request, catgirl: str = ""):
+    """Recover this account's still-pending host invitation after a lost display frame.
+
+    The general state snapshot deliberately never contains an invite code.  This
+    narrower endpoint keeps that contract while letting the explicit invite flow
+    recover from a page reload, display-socket handover, or a missed
+    ``invite_ready`` frame.  The local-origin/CSRF gate and account ownership
+    check are the same ones used by the rest of the visit surface.
+    """
+    denied = http_denied(request)
+    if denied is not None:
+        return denied
+    if not _valid_name(catgirl):
+        return _error(400, "catgirl_required")
+    rt = runtime.get_runtime(catgirl)
+    if (rt is None or rt.side != "host"
+            or rt.phase not in (runtime.PHASE_PENDING, runtime.PHASE_INVITE_READY)
+            or not await _owned_by_current_account(rt)):
+        return JSONResponse({"error": "no_pending_invite"}, status_code=404)
+    body: dict[str, Any] = {"visit_id": rt.visit_id, "phase": rt.phase}
+    creds = rt.creds
+    # Do not expose a redeemable code until the transport page has actually
+    # joined and the runtime has entered invite_ready (same rule as WS push).
+    if rt.phase == runtime.PHASE_INVITE_READY and creds is not None and creds.invite_code:
+        body["invite_code"] = creds.invite_code
+        body["invite_expires_at"] = creds.invite_expires_at
+    return JSONResponse(body)
 
 
 IDLE_STATE: Mapping[str, Any] = {

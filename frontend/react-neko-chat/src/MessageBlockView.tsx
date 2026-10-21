@@ -111,8 +111,8 @@ export default function MessageBlockView({
             key={action.id}
             className={`message-action-button variant-${action.variant || 'secondary'}`}
             type="button"
-            disabled={action.disabled}
-            onClick={() => onAction?.(message, action)}
+            disabled={action.disabled || !interactive}
+            onClick={interactive ? () => onAction?.(message, action) : undefined}
           >
             {action.label}
           </button>

@@ -6943,6 +6943,7 @@
             "VISIT_LOGIN_REQUIRED": "おでかけにはコミュニティアカウントへのログインが必要です",
             "VISIT_BANNED": "現在、あなたのおでかけ機能は制限されています",
             "VISIT_QUOTA_EXCEEDED": "今日のおでかけ時間を使い切りました",
+            "VISIT_CONCURRENCY_LIMIT": "同時に進行中のおでかけや招待が上限に達しています。ひとつ終了してからお試しください",
             "VISIT_TIER_NOT_ENTITLED": "この画質は利用できません",
             "VISIT_FORGET_IN_PROGRESS": "おでかけの記憶を消去中です。少ししてからどうぞ",
             "VISIT_UPLOAD_BACKLOG": "未送信のおでかけ記録があります。オンラインにしてからお試しください",

@@ -70,6 +70,27 @@ def test_ladder_threshold_follows_the_capture_rate_and_uplink_loss():
     assert out["loss"] == 1
 
 
+def test_loopback_livekit_locks_the_highest_quality():
+    out = run_visit_js(
+        """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const P = ctx.NekoVisitTransport.pack;
+        const L = new P.LadderController({ crop: 'full', level: 2, targetFps: 30 });
+        const restored = L.setLockHighest(true);
+        const afterBad = L.feed({ nowMs: 20000, rxFps: 5, lossPct: 100 });
+        const local = ctx.NekoVisitTransport.loader.isLoopbackLivekit({
+          transport: 'livekit', vendor: { livekit: { url: 'ws://127.0.0.1:7880' } }
+        });
+        const remote = ctx.NekoVisitTransport.loader.isLoopbackLivekit({
+          transport: 'livekit', vendor: { livekit: { url: 'wss://livekit.example.com' } }
+        });
+        return { restored, afterBad, level: L.level, local, remote };
+        """
+    )
+    assert out == {"restored": 0, "afterBad": None, "level": 0, "local": True, "remote": False}
+
+
 def test_controller_steps_the_ladder_from_peer_stats_in_place():
     out = run_visit_js(
         """

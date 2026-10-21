@@ -64,6 +64,45 @@ _UNAUTHORIZED = "VISIT_E_UNAUTHORIZED"
 _replays: set[asyncio.Task] = set()
 """Bind replays in flight (kept referenced until done)."""
 
+_desktop_run_id: Optional[str] = None
+_desktop_run_lock: Optional[asyncio.Lock] = None
+
+
+def _desktop_lock() -> asyncio.Lock:
+    global _desktop_run_lock
+    if _desktop_run_lock is None:
+        _desktop_run_lock = asyncio.Lock()
+    return _desktop_run_lock
+
+
+async def _reset_for_new_desktop_run(message: Any) -> None:
+    """Invalidate unused invites only when the Electron process changed."""
+    global _desktop_run_id
+    run_id = message.get("desktop_run_id") if isinstance(message, dict) else None
+    if not isinstance(run_id, str) or not run_id or len(run_id) > 128:
+        return
+    async with _desktop_lock():
+        previous = _desktop_run_id
+        if previous == run_id:
+            return
+        _desktop_run_id = run_id
+        if previous is None:
+            return
+        from main_routers.visit_router import credentials, runtime
+
+        reset = await runtime.reset_pending_host_invites_for_desktop_restart()
+        try:
+            cancelled = await credentials.cancel_pending_host_invites()
+        except Exception as exc:  # noqa: BLE001 - local reset must still complete if Connect is unavailable.
+            logger.warning("visit display: desktop restart invitation reset failed: %s", type(exc).__name__)
+        else:
+            if reset or cancelled:
+                logger.info(
+                    "visit display: desktop restart reset %d local and %d remote pending invitation(s)",
+                    reset,
+                    cancelled,
+                )
+
 
 def is_bound(websocket: Any) -> bool:
     """Whether ``websocket`` passed ``visit_bind`` (False for None or a fake without the mark)."""
@@ -161,6 +200,7 @@ async def handle_bind(websocket: Any, lanlan_name: str, message: Any) -> bool:
         # reason lets the page distinguish a rejected bind from rejected frames on an unbound connection (screen frames, playback progress): only the former warrants refreshing the token and retrying
         await refuse(websocket, reason="bind_refused")
         return False
+    await _reset_for_new_desktop_run(message)
     setattr(websocket, VISIT_SOCKET_BOUND_ATTR, True)
     _delivered(websocket)
     from main_routers.visit_router import runtime
@@ -374,6 +414,9 @@ async def end_visits_with_peer(peer_uid: str) -> int:
 
 
 def _reset_for_tests() -> None:
+    global _desktop_run_id, _desktop_run_lock
     for task in list(_replays):
         task.cancel()
     _replays.clear()
+    _desktop_run_id = None
+    _desktop_run_lock = None

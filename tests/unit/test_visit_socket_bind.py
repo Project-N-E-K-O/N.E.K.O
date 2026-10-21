@@ -72,8 +72,11 @@ class VisitSocket:
         return [f for f in self.sent if str(f.get("type", "")).startswith("visit_") or f.get("type") == "chat_blocks"]
 
 
-def bind(token=TOKEN):
-    return {"action": "visit_bind", "csrf_token": token}
+def bind(token=TOKEN, *, desktop_run_id=None):
+    message = {"action": "visit_bind", "csrf_token": token}
+    if desktop_run_id is not None:
+        message["desktop_run_id"] = desktop_run_id
+    return message
 
 
 class FakeRuntime:
@@ -255,6 +258,60 @@ async def test_rebinding_after_reconnect_replays_the_invite_again(monkeypatch):
     second = VisitSocket([bind()])
     await run(second, manager)
     assert rt.replayed == [[INVITE], [INVITE]]
+
+
+async def test_new_desktop_process_resets_pending_invite_but_renderer_reconnect_does_not(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    manager = _ProtocolManager()
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
+    resets = []
+    remote_cancels = []
+
+    async def reset_pending():
+        resets.append(True)
+        rt.frames = []
+        return 1
+
+    async def cancel_pending():
+        remote_cancels.append(True)
+        return 1
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await run(VisitSocket([bind(desktop_run_id="desktop-a")]), manager)
+    await run(VisitSocket([bind(desktop_run_id="desktop-a")]), manager)
+    assert len(rt.replayed) == 2
+    assert resets == [] and remote_cancels == []
+
+    await run(VisitSocket([bind(desktop_run_id="desktop-b")]), manager)
+    assert resets == [True] and remote_cancels == [True]
+    assert rt.replayed[-1] == []
+
+
+async def test_desktop_restart_runtime_reset_only_ends_unused_host_invitations(monkeypatch):
+    def fake(side, phase, peer=None):
+        item = SimpleNamespace(side=side, phase=phase, peer=peer, exit_task=None, reasons=[])
+
+        def finalize(reason):
+            item.reasons.append(reason)
+            item.exit_task = asyncio.create_task(asyncio.sleep(0))
+            return True
+
+        item.request_finalize = finalize
+        return item
+
+    pending = fake("host", "pending")
+    ready = fake("host", "invite_ready")
+    consumed = fake("host", "joining", peer=object())
+    guest = fake("guest", "invite_ready")
+    monkeypatch.setattr(runtime, "live_runtimes", lambda: [pending, ready, consumed, guest])
+
+    assert await runtime.reset_pending_host_invites_for_desktop_restart() == 2
+    assert pending.reasons == ["route_end"] and ready.reasons == ["route_end"]
+    assert consumed.reasons == [] and guest.reasons == []
 
 
 # ── Input on unbound connections ────────────────────────────────────────

@@ -6943,6 +6943,7 @@
             "VISIT_LOGIN_REQUIRED": "Sign in to your community account to visit",
             "VISIT_BANNED": "Visits are currently restricted for your account",
             "VISIT_QUOTA_EXCEEDED": "You've used up today's visit time",
+            "VISIT_CONCURRENCY_LIMIT": "You already have the maximum number of active visits or invitations",
             "VISIT_TIER_NOT_ENTITLED": "This quality level isn't available",
             "VISIT_FORGET_IN_PROGRESS": "Visit memories are being cleared. Try visiting a bit later",
             "VISIT_UPLOAD_BACKLOG": "Some visit records haven't been uploaded yet. Go online and try again",

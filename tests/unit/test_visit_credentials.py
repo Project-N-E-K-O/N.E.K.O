@@ -71,6 +71,7 @@ CREDENTIALS_CONTRACT = {
     (410, "invite_expiring"),
     (409, "role_taken"),
     (429, "quota_exceeded"),
+    (429, "concurrency_limit"),
 }
 # §4.7 GET /api/visit/invites/{code}/preview
 PREVIEW_CONTRACT = {
@@ -79,6 +80,8 @@ PREVIEW_CONTRACT = {
     (410, "invite_expired"),
     (403, "banned"),
     (429, "rate_limited"),
+    (429, "quota_exceeded"),
+    (429, "concurrency_limit"),
 }
 
 
@@ -124,6 +127,8 @@ class FakeServers:
             })
         if path == "/api/visit/credentials":
             return self._credentials(json.loads(request.content))
+        if path == "/api/visit/rooms/pending/cancel":
+            return httpx.Response(200, json={"ok": True, "cancelled": 2})
         if path.startswith("/api/visit/rooms/") and path.endswith("/cancel"):
             visit_id = path.split("/")[4]
             self.cancelled.add(visit_id)
@@ -415,6 +420,7 @@ _EXPECTED_CREDENTIALS = {
     (410, "invite_expiring"): (409, "VISIT_INVITE_INVALID"),
     (410, "room_ended"): (410, "room_ended"),
     (429, "quota_exceeded"): (429, "VISIT_QUOTA_EXCEEDED"),
+    (429, "concurrency_limit"): (429, "VISIT_CONCURRENCY_LIMIT"),
 }
 
 
@@ -1244,6 +1250,28 @@ async def test_preview_is_a_bodyless_get_and_hides_the_host_uid(servers):
 
 
 @pytest.mark.asyncio
+async def test_startup_invite_reset_is_an_authenticated_bodyless_post(servers):
+    cancelled = await cr.cancel_pending_host_invites()
+    req = servers.requests[-1]
+    assert req.method == "POST" and req.content == b""
+    assert req.url.path == "/api/visit/rooms/pending/cancel"
+    assert req.headers["authorization"] == f"Bearer {BEARER}"
+    assert cancelled == 2
+
+
+@pytest.mark.asyncio
+async def test_startup_invite_reset_404_is_rolling_deploy_compatible(servers):
+    servers.scripted["/api/visit/rooms/pending/cancel"] = [(404, {"code": "not_found"})]
+    assert await cr.cancel_pending_host_invites() == 0
+
+
+async def test_startup_invite_reset_rejects_malformed_success(servers):
+    servers.scripted["/api/visit/rooms/pending/cancel"] = [(200, {"ok": True, "cancelled": -1})]
+    with pytest.raises(cr.VisitServersUnreachable):
+        await cr.cancel_pending_host_invites()
+
+
+@pytest.mark.asyncio
 async def test_preview_blocklist_hit_is_locally_blocked(servers):
     preview = await cr.fetch_invite_preview(INVITE, generic_label="Neko")
 
@@ -1291,6 +1319,8 @@ _EXPECTED_PREVIEW = {
     (410, "invite_expired"): (410, "invite_expired"),
     (403, "banned"): (403, "VISIT_BANNED"),
     (429, "rate_limited"): (429, "rate_limited"),
+    (429, "quota_exceeded"): (429, "VISIT_QUOTA_EXCEEDED"),
+    (429, "concurrency_limit"): (429, "VISIT_CONCURRENCY_LIMIT"),
 }
 
 

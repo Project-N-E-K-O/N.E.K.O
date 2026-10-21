@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Cat settings panel (PR #3462) merged with the unified chat-history view; refresh all eight language resources.
-    const LOCALE_VERSION = '2026-10-21-pr3462-cat-settings-main-merge';
+    const LOCALE_VERSION = '2026-10-21-visit-v1-initial';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

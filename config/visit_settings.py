@@ -439,8 +439,8 @@ VISIT_DATA_KBPS_MAX = 40
 VISIT_CAPTURE_FPS = 30
 """Target of the fractional frame accumulator; 30 is a hard floor."""
 
-VISIT_CROP_DEFAULT = "upper"
-"""Default framing (upper body); ``'full'`` is 256×560."""
+VISIT_CROP_DEFAULT = "full"
+"""Default framing; full body avoids clipping the visitor on first use."""
 
 VISIT_CROP_REFRESH_MS = (300, 1000)
 """Refresh interval range of the crop box."""

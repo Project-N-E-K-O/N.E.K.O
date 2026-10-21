@@ -238,7 +238,7 @@ def test_release_switch_probe_and_first_enable_persona_prompt():
     assert out["opened_on_disable"] == 0
     # Prompt only on the first opening and require confirmation
     assert out["opened"] == [["小八", {"requireConfirm": True}]]
-    assert out["crop_default"] == "upper" and out["crop_after"] == "full"
+    assert out["crop_default"] == "full" and out["crop_after"] == "full"
     # A backend restart invalidates cached CSRF tokens: refresh once and retry instead of treating 403 as the master switch being off (Codex P2)
     assert out["stale_display"] == ["", ""]
     assert out["stale_refreshed"] == 1 and out["stale_fetches"] == 2

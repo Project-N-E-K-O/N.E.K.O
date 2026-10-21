@@ -2144,6 +2144,7 @@
         VISIT_LOGIN_REQUIRED: 'visit.status.VISIT_LOGIN_REQUIRED',
         VISIT_BANNED: 'visit.status.VISIT_BANNED',
         VISIT_QUOTA_EXCEEDED: 'visit.status.VISIT_QUOTA_EXCEEDED',
+        VISIT_CONCURRENCY_LIMIT: 'visit.status.VISIT_CONCURRENCY_LIMIT',
         VISIT_TIER_NOT_ENTITLED: 'visit.status.VISIT_TIER_NOT_ENTITLED',
         VISIT_FORGET_IN_PROGRESS: 'visit.status.VISIT_FORGET_IN_PROGRESS',
         VISIT_UPLOAD_BACKLOG: 'visit.status.VISIT_UPLOAD_BACKLOG',
@@ -2194,8 +2195,13 @@
             token = await _visitCsrfToken(forceRefresh === true || attempt > 0);
         }
         if (!token || S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        var desktopRuntime = window.nekoDesktopRuntime;
+        var desktopRunId = desktopRuntime && typeof desktopRuntime.id === 'string'
+            && desktopRuntime.id.length > 0 && desktopRuntime.id.length <= 128
+            ? desktopRuntime.id : '';
         try {
-            socket.send(JSON.stringify({ action: 'visit_bind', csrf_token: token }));
+            socket.send(JSON.stringify({ action: 'visit_bind', csrf_token: token,
+                desktop_run_id: desktopRunId || undefined }));
         } catch (_) {
             return;
         }

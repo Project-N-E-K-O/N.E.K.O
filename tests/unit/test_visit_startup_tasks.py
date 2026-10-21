@@ -156,6 +156,26 @@ async def test_recovery_failure_is_logged_not_raised(monkeypatch, caplog):
     assert "visit recovery failed" in caplog.text
 
 
+async def test_startup_invalidates_pending_invites_before_spool_recovery(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    order = []
+
+    async def reset_invites():
+        order.append("reset")
+        return 1
+
+    async def recover():
+        order.append("recover")
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    await background.wait_startup_invite_reset()
+    assert await background._recovery_task is None
+    assert order == ["reset", "recover"]
+
+
 async def test_shutdown_is_bounded_even_when_stop_all_hangs(monkeypatch):
     monkeypatch.setattr(background, "VISIT_SHUTDOWN_BUDGET_S", 0.2)
     stopped = asyncio.Event()

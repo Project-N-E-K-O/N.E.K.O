@@ -132,7 +132,7 @@
             var value = localStorage.getItem(CROP_STORAGE_KEY);
             if (CROPS.indexOf(value) !== -1) return value;
         } catch (_) { /* noop */ }
-        return 'upper';
+        return 'full';
     }
 
     function writeCrop(value) {

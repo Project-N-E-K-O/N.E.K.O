@@ -67,8 +67,9 @@
    */
   function LadderController(opts) {
     opts = opts || {};
+    this.lockHighest = opts.lockHighest === true;
     this.crop = normalizeCrop(opts.crop);
-    this.level = clampLevel(this.crop, opts.level || 0);
+    this.level = this.lockHighest ? 0 : clampLevel(this.crop, opts.level || 0);
     this.targetFps = opts.targetFps || 30;
     this.triggerMs = opts.triggerMs || LADDER_TRIGGER_MS;
     this.recoverMs = opts.recoverMs || LADDER_RECOVER_MS;
@@ -78,9 +79,21 @@
 
   LadderController.prototype.reset = function (crop, level) {
     this.crop = normalizeCrop(crop);
-    this.level = clampLevel(this.crop, level || 0);
+    this.level = this.lockHighest ? 0 : clampLevel(this.crop, level || 0);
     this.badSince = null;
     this.cleanSince = null;
+  };
+
+  /** 本机 LiveKit 开发房不因双开 N.E.K.O 的渲染负载误判网络拥塞。 */
+  LadderController.prototype.setLockHighest = function (on) {
+    this.lockHighest = on === true;
+    this.badSince = null;
+    this.cleanSince = null;
+    if (this.lockHighest && this.level !== 0) {
+      this.level = 0;
+      return 0;
+    }
+    return null;
   };
 
   LadderController.prototype.isBad = function (sample) {
@@ -91,6 +104,15 @@
 
   /** 喂一次观测；级别变了返回新级别，否则 null。 */
   LadderController.prototype.feed = function (sample) {
+    if (this.lockHighest) {
+      this.badSince = null;
+      this.cleanSince = null;
+      if (this.level !== 0) {
+        this.level = 0;
+        return 0;
+      }
+      return null;
+    }
     var now = sample.nowMs;
     var last = CONGESTION_LADDER[this.crop].length - 1;
     if (typeof sample.rxFps !== 'number' && typeof sample.lossPct !== 'number') {

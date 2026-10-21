@@ -44,7 +44,7 @@ def test_upper_full_and_pixel_rects():
     assert out["withHead"]["y"] == 200 - 120 * 0.2
     full = out["full"]
     assert abs(full["width"] / full["height"] - 256 / 560) < 1e-9
-    assert full["height"] >= 1040 - 1e-9 and full["width"] >= 416 - 1e-9
+    assert full["height"] >= 1080 - 1e-9 and full["width"] >= 432 - 1e-9
     assert out["px"] == {"x": 200, "y": 100, "w": 200, "h": 280}
 
 
@@ -91,3 +91,38 @@ def test_bounds_are_clipped_to_the_viewport_before_framing():
     )
     assert out["half"] == {"x": 1500, "y": 600, "width": 420, "height": 480}
     assert out["outside"] is None
+
+
+def test_host_frame_stays_inside_the_desktop_work_area_when_macos_moves_the_window():
+    out = run_visit_js(
+        """
+        const ctx = makeContext();
+        ctx.innerWidth = 2559;
+        ctx.innerHeight = 1439;
+        ctx.screenX = 1;
+        ctx.screenY = 30;
+        ctx.screen = { availLeft: 0, availTop: 25, availWidth: 2560, availHeight: 1415 };
+        ctx.__NEKO_DESKTOP_RUNTIME__ = { platform: 'darwin' };
+        ctx.live2dManager = {
+          getModelScreenBounds: () => ({ x: 900, y: 100, width: 500, height: 1339 })
+        };
+        load(ctx, FILES);
+        const bridge = ctx.nekoVisitParentBridge;
+        bridge.onStateChange({
+          type: 'visit_state_change', action: 'pending', side: 'host',
+          visit_id: VISIT_ID, peer_crop: 'full'
+        });
+        const frame = bridge._state.frame;
+        const top = Number.parseFloat(frame.style.top);
+        const height = Number.parseFloat(frame.style.height);
+        return {
+          top,
+          height,
+          bottom: top + height,
+          visibleClientBottom: ctx.screen.availTop + ctx.screen.availHeight - ctx.screenY,
+        };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["height"] == 900
+    assert out["bottom"] == out["visibleClientBottom"] - 12

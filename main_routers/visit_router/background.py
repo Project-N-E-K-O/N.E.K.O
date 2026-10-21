@@ -39,6 +39,7 @@ logger = get_module_logger(__name__, "Main")
 
 _sweep_task: Optional[asyncio.Task] = None
 _recovery_task: Optional[asyncio.Task] = None
+_invite_reset_event: Optional[asyncio.Event] = None
 _RECOVERY_STOP_WAIT_S = 0.2
 _STOP_ALL_SLACK_S = 0.5  # stop_all bounds each step with VISIT_SHUTDOWN_BUDGET_S; the outer timeout only catches hangs, leaving cleanup margin.
 
@@ -98,6 +99,20 @@ async def run_startup_recovery() -> Any:
 
 
 async def _recover_in_background() -> None:
+    event = _invite_reset_event
+    try:
+        from main_routers.visit_router.credentials import cancel_pending_host_invites
+
+        cancelled = await cancel_pending_host_invites()
+        if cancelled:
+            logger.info("visit startup invalidated %d pending invitation(s)", cancelled)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - A failed reset must not block transcript recovery.
+        logger.warning("visit startup invitation reset failed: %s", type(exc).__name__)
+    finally:
+        if event is not None:
+            event.set()
     try:
         await run_startup_recovery()
     except asyncio.CancelledError:
@@ -108,13 +123,21 @@ async def _recover_in_background() -> None:
 
 def start_visit_background_tasks() -> None:
     """Start the visit sweep and the startup recovery (``create_task``; never awaited by startup)."""
-    global _sweep_task, _recovery_task
+    global _sweep_task, _recovery_task, _invite_reset_event
     from main_routers.visit_router import runtime
 
     if _sweep_task is None or _sweep_task.done():
         _sweep_task = asyncio.create_task(runtime.visit_sweep_loop(), name="visit-sweep")
     if _recovery_task is None or _recovery_task.done():
+        _invite_reset_event = asyncio.Event()
         _recovery_task = asyncio.create_task(_recover_in_background(), name="visit-recovery")
+
+
+async def wait_startup_invite_reset() -> None:
+    """Wait only for the startup invite invalidation, not spool recovery."""
+    event = _invite_reset_event
+    if event is not None and not event.is_set():
+        await event.wait()
 
 
 def startup_recovery_running() -> bool:
@@ -129,11 +152,14 @@ def _cancel(task: Optional[asyncio.Task]) -> None:
 
 async def stop_visit_background_tasks() -> None:
     """Shutdown: stop the sweep, ``stop_all`` within ``VISIT_SHUTDOWN_BUDGET_S``, cancel the recovery."""
-    global _sweep_task, _recovery_task
+    global _sweep_task, _recovery_task, _invite_reset_event
     from main_routers.visit_router import runtime
 
     sweep, recovery = _sweep_task, _recovery_task
     _sweep_task = _recovery_task = None
+    if _invite_reset_event is not None:
+        _invite_reset_event.set()
+    _invite_reset_event = None
     _cancel(sweep)  # Timing no longer runs concurrently with shutdown finalization.
     # Stop backfill first and resume unfinished work next startup; otherwise it can spawn digest/summary writes
     # after stop_all snapshots background tasks, escaping shutdown cancellation.
@@ -160,7 +186,7 @@ async def stop_visit_background_tasks() -> None:
 
 def cancel_visit_background_tasks() -> None:
     """Startup rollback: cancel both tasks and the upload retries recovery scheduled (no visit is live yet)."""
-    global _sweep_task, _recovery_task
+    global _sweep_task, _recovery_task, _invite_reset_event
     from main_routers.visit_router import transcript_upload
 
     from main_routers.visit_router import runtime
@@ -168,6 +194,9 @@ def cancel_visit_background_tasks() -> None:
     _cancel(_sweep_task)
     _cancel(_recovery_task)
     _sweep_task = _recovery_task = None
+    if _invite_reset_event is not None:
+        _invite_reset_event.set()
+    _invite_reset_event = None
     # Backfill's transcript reuploads/report retries and its spawned digest/summary writes are independent tasks; do not let them keep uploading
     # or modifying spool after rollback and overlap the next initialization.
     transcript_upload.cancel_retry_workers()

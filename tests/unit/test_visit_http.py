@@ -89,6 +89,7 @@ class Env:
         self.preview_mode = "ok"
         self.preview_visit_id = VISIT_ID
         self.preview_expires = NOW + 600
+        self.preview_display_name = "Mimi"
         self.preview_calls: list[str] = []
         self.account: str | None = "acct"     # Same community account as fixture-issued credentials.
         self.own_uid: str | None = OWN
@@ -156,6 +157,8 @@ class Env:
             replies = {
                 "404": (404, {"code": "invite_invalid"}), "410": (410, {"code": "invite_expired"}),
                 "403": (403, {"code": "banned"}), "429": (429, {"code": "rate_limited", "retry_after_s": 9}),
+                "quota": (429, {"code": "quota_exceeded", "retry_after_s": 3600}),
+                "concurrency": (429, {"code": "concurrency_limit", "retry_after_s": 60}),
                 "401": (401, {"code": "unauthenticated"}),
             }
             if self.preview_mode == "503":
@@ -166,7 +169,7 @@ class Env:
             return httpx.Response(200, json={
                 "visit_id": self.preview_visit_id, "host_visit_uid": HOST_UID,
                 "host_short_code": HOST_UID[:6].upper(), "cross_region": False, "expires_at": self.preview_expires,
-                "host_display_name": "Mimi",
+                "host_display_name": self.preview_display_name,
             })
         return self.servers.handler(request)
 
@@ -206,6 +209,7 @@ def _no_slot(name="Host") -> bool:
 
 START_CALLS = [
     ("POST", "/api/visit/rooms", {"catgirl": "Host"}),
+    ("GET", "/api/visit/rooms/current?catgirl=Host", None),
     ("POST", f"/api/visit/rooms/{VISIT_ID}/join", {"catgirl": "Guest", "invite_code": INVITE, "confirm": True}),
     ("POST", f"/api/visit/rooms/{VISIT_ID}/accept", {"catgirl": "Host", "accept": True}),
     ("GET", f"/api/visit/invites/{INVITE}/preview", None),
@@ -697,6 +701,13 @@ async def test_preview_returns_the_dialog_fields_without_the_host_uid(env):
     assert (await _join(env)).status_code == 202
 
 
+async def test_preview_keeps_a_peer_card_name_that_is_also_installed_locally(env):
+    env.preview_display_name = "Host"
+    body = (await _preview(env)).json()
+    assert body["host_display_name"] == "Host"
+    assert body["host_short_code"] == HOST_UID[:6].upper()
+
+
 async def test_preview_marks_a_locally_blocked_host(env):
     await Blocklist(env.guest.config_dir).ablock(HOST_UID, display_name_at_block="Mimi")
     body = (await _preview(env)).json()
@@ -706,6 +717,8 @@ async def test_preview_marks_a_locally_blocked_host(env):
 @pytest.mark.parametrize("mode,status,code", [
     ("404", 404, "invite_invalid"), ("410", 410, "invite_expired"), ("403", 403, "VISIT_BANNED"),
     ("429", 429, "rate_limited"), ("401", 409, "VISIT_LOGIN_REQUIRED"), ("503", 503, "servers_unreachable"),
+    ("quota", 429, "VISIT_QUOTA_EXCEEDED"),
+    ("concurrency", 429, "VISIT_CONCURRENCY_LIMIT"),
 ])
 async def test_preview_maps_servers_errors(env, mode, status, code):
     env.preview_mode = mode
@@ -789,6 +802,20 @@ async def test_join_format_gates(env):
     async with env.client() as c:
         resp = await c.post(f"/api/visit/rooms/{VISIT_ID}/join", headers=GOOD, json=body)
     assert resp.status_code == 400 and resp.json()["code"] == "confirm_required"
+    assert env.preview_calls == [] and _no_slot("Guest")
+
+
+async def test_join_applies_the_guest_crop_preference(env):
+    resp = await _join(env, crop="upper")
+    assert resp.status_code == 202
+    runtime = rtm.get_runtime("Guest")
+    assert runtime is not None and runtime.side == "guest"
+    assert runtime.crop == "upper"
+
+
+async def test_join_rejects_an_unknown_crop_before_preview(env):
+    resp = await _join(env, crop="giant")
+    assert resp.status_code == 400 and resp.json()["code"] == "crop_format"
     assert env.preview_calls == [] and _no_slot("Guest")
 
 
@@ -921,6 +948,40 @@ async def test_state_never_carries_the_invite_code(env):
         resp = await c.get("/api/visit/state?catgirl=Host", headers=GOOD)
     assert resp.status_code == 200 and resp.json()["phase"] == "invite_ready"
     assert "invite_code" not in _keys(resp.json()) and INVITE not in resp.text
+
+
+async def test_current_host_room_recovers_only_the_owned_pending_invite(env):
+    async with env.client() as c:
+        missing = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert missing.status_code == 404
+
+    await _rooms(env)
+    async with env.client() as c:
+        pending = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert pending.status_code == 200
+    assert pending.json()["phase"] == "pending" and "invite_code" not in pending.json()
+
+    rt = env.host.rt
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    await rt.on_transport_state({"state": "joined", "peer_present": False})
+    await settle()
+    async with env.client() as c:
+        ready = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+        env.account = "someone-else"
+        hidden = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert ready.status_code == 200
+    assert ready.json() == {"visit_id": rt.visit_id, "phase": "invite_ready",
+                            "invite_code": INVITE, "invite_expires_at": NOW + 600}
+    assert hidden.status_code == 404 and INVITE not in hidden.text
+
+
+async def test_create_room_after_restart_always_mints_a_fresh_local_visit_id(env):
+    created = await _rooms(env)
+    assert created.status_code == 202
+    assert created.json()["phase"] == "pending"
+    assert created.json()["visit_id"] != VISIT_ID
+    assert env.host.rt is not None and env.host.rt.visit_id == created.json()["visit_id"]
 
 
 async def test_state_of_an_idle_character_has_the_same_keys(env):

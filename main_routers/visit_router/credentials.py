@@ -14,7 +14,7 @@
 
 """N.E.K.O. Servers client for catgirl visits (design §5 PR-07, contract §4.7).
 
-Five calls, all through ``get_external_http_client()`` with redirects off:
+Six calls, all through ``get_external_http_client()`` with redirects off:
 
 * :func:`fetch_visit_credentials` -- ``POST /api/visit/credentials`` (bearer):
   room binding / invite code / transport / vendor grant / identity ticket.
@@ -24,6 +24,9 @@ Five calls, all through ``get_external_http_client()`` with redirects off:
   plus the revocation list, cached ``VISIT_PUBKEYS_CACHE_S``.
 * :func:`fetch_invite_preview` -- ``GET /api/visit/invites/{code}/preview``
   (bearer, read-only): data of the guest's confirmation dialog.
+* :func:`cancel_pending_host_invites` --
+  ``POST /api/visit/rooms/pending/cancel`` (bearer): invalidate this device's
+  unused invitations when a new local app run starts.
 * :class:`VisitGrant` -- renews the 10 min vendor grant while keeping the
   identity ticket (``credentials{refresh:true}``, §3.2.1 / §4.3).
 
@@ -305,6 +308,13 @@ class VisitQuotaExceeded(VisitServersError):
     http_status = 429
 
 
+class VisitConcurrencyLimit(VisitServersError):
+    """``429 concurrency_limit``: too many active visits or invitations."""
+
+    code = "VISIT_CONCURRENCY_LIMIT"
+    http_status = 429
+
+
 class VisitInviteNotFound(VisitServersError):
     """Preview ``404 invite_invalid``."""
 
@@ -341,6 +351,7 @@ CREDENTIALS_ERROR_CONTRACT: Mapping[tuple[int, str], ErrorFactory] = {
     (410, "invite_expiring"): VisitInviteInvalid,
     (410, "room_ended"): VisitRoomEnded,
     (429, "quota_exceeded"): VisitQuotaExceeded,
+    (429, "concurrency_limit"): VisitConcurrencyLimit,
 }
 """Every non-2xx, non-5xx ``(status, code)`` of ``POST /api/visit/credentials`` (§4.7)."""
 
@@ -350,8 +361,16 @@ PREVIEW_ERROR_CONTRACT: Mapping[tuple[int, str], ErrorFactory] = {
     (410, "invite_expired"): VisitInviteExpired,
     (403, "banned"): VisitBanned,
     (429, "rate_limited"): VisitRateLimited,
+    (429, "quota_exceeded"): VisitQuotaExceeded,
+    (429, "concurrency_limit"): VisitConcurrencyLimit,
 }
 """Every non-2xx, non-5xx ``(status, code)`` of ``GET /api/visit/invites/{code}/preview`` (§4.7)."""
+
+STARTUP_CANCEL_ERROR_CONTRACT: Mapping[tuple[int, str], ErrorFactory] = {
+    (401, "unauthenticated"): VisitLoginRequired,
+    (403, "banned"): VisitBanned,
+}
+"""Errors of the authenticated startup invitation reset."""
 
 CANCEL_DONE_REPLIES: frozenset[tuple[int, str]] = frozenset({
     (409, "guest_joined"),
@@ -1234,6 +1253,45 @@ async def fetch_pubkeys(*, force_refresh: bool = False) -> PubkeySet:
         # During the failure-suppression window, still wait for an already running refresh: it may be returning a new revocation list
         await asyncio.shield(task)
     return await asyncio.to_thread(PubkeySet.from_runtime, now=time.time(), fetched=_pubkeys_fetched)
+
+
+# ── Startup invitation reset ───────────────────────────────────────────────
+
+
+async def cancel_pending_host_invites() -> int:
+    """Invalidate unused invitations owned by this desktop's previous run.
+
+    A 404 keeps rolling deployments compatible with an older Connect build;
+    no local visit runtime is restored either way.  Other failures are
+    surfaced to the startup task, which logs them without exposing secrets.
+    """
+    session = await _servers_session()
+    resp = await _send(
+        "POST",
+        f"{session.base_url}/api/visit/rooms/pending/cancel",
+        op="startup_invite_reset",
+        headers=session.headers(),
+        timeout=_CANCEL_TIMEOUT_S,
+    )
+    if resp.status_code == 404:
+        return 0
+    if not 200 <= resp.status_code < 300:
+        raise _map_error(
+            resp,
+            STARTUP_CANCEL_ERROR_CONTRACT,
+            op="startup_invite_reset",
+            account=session.account,
+        )
+    payload = _body_json(resp)
+    try:
+        _need(isinstance(payload, Mapping), "body")
+        _need(payload.get("ok") is True, "ok")
+        cancelled = payload.get("cancelled")
+        _need(type(cancelled) is int and 0 <= cancelled <= 100, "cancelled")
+    except _BadResponse as exc:
+        logger.warning("visit servers startup_invite_reset: malformed reply field=%s", exc)
+        raise VisitServersUnreachable("invalid_response") from None
+    return cancelled
 
 
 # ── Invitation preview ─────────────────────────────────────────────────────

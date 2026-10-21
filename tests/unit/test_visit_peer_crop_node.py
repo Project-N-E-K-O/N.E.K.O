@@ -248,8 +248,8 @@ def test_visitor_layer_fits_a_narrow_viewport():
         """,
         files=BRIDGE_FILES,
     )
-    assert out["left"] >= 0
-    assert out["left"] + out["width"] <= 360 + 1
+    assert out["left"] >= 12
+    assert out["left"] + out["width"] <= 348 + 1
     assert abs(out["width"] / out["height"] - 320 / 448) < 0.01
 
 

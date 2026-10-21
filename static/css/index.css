@@ -4786,7 +4786,10 @@ body.chat-export-modal-open {
     align-items: center;
     justify-content: center;
     padding: 16px;
-    background: rgba(20, 28, 40, 0.32);
+    /* 桌面透明窗口里不铺整屏灰幕；只显示中间的白色串门卡片。 */
+    background: transparent;
+    /* 桌面聊天页的 html/body 默认穿透；透明背景继续不拦截，只让卡片本身接管输入。 */
+    pointer-events: none;
 }
 
 .visit-dialog {
@@ -4801,6 +4804,39 @@ body.chat-export-modal-open {
     box-shadow: 0 12px 36px rgba(30, 50, 80, 0.22);
     font-size: 14px;
     line-height: 1.55;
+    /* 覆盖 html/body 的 pointer-events:none，让输入框与按钮真正收到鼠标事件。 */
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
+}
+
+/* 自我介绍的私人段落可能很长：只滚动正文，标题与确认按钮始终留在可见区域。 */
+.visit-dialog.visit-persona {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* 人设确认的透明区域本身也不拦截页面点击。 */
+.visit-persona-overlay {
+    pointer-events: none;
+}
+
+.visit-persona-overlay .visit-persona {
+    pointer-events: auto;
+}
+
+.visit-persona-body {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 4px;
+}
+
+.visit-dialog.visit-persona .visit-dialog-actions {
+    flex: 0 0 auto;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(120, 135, 155, 0.22);
 }
 
 .visit-dialog-title {

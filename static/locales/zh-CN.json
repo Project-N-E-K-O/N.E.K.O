@@ -6943,6 +6943,7 @@
             "VISIT_LOGIN_REQUIRED": "串门需要先登录社区账号",
             "VISIT_BANNED": "你的串门功能暂时受限",
             "VISIT_QUOTA_EXCEEDED": "今天的串门时间用完了",
+            "VISIT_CONCURRENCY_LIMIT": "同时进行的串门或邀请太多了，请先结束一个再试",
             "VISIT_TIER_NOT_ENTITLED": "这个画质档位暂不可用",
             "VISIT_FORGET_IN_PROGRESS": "正在清除串门记忆，稍后再串门",
             "VISIT_UPLOAD_BACKLOG": "有串门记录还没传上去，联网后再来",

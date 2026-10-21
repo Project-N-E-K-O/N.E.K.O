@@ -327,6 +327,7 @@
         if (!element || typeof element.getBoundingClientRect !== 'function') return false;
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
+        if (item === 'visit' && element.getAttribute('data-visit-layer-open') !== 'true') return false;
         if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
         if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle' && item !== 'cat1Mirror') return false;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
@@ -339,8 +340,6 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice') {
             var choiceRects = Array.prototype.slice.call(element.querySelectorAll('.composer-galgame-option'))
-                // 串门工具条与选项同层：工具条整条也是命中区（Electron 透明窗）
-                .concat(Array.prototype.slice.call(element.querySelectorAll('.composer-visit-bar')))
                 .map(function (child) {
                     var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                     if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
@@ -348,6 +347,17 @@
                 })
                 .filter(Boolean);
             return unionCompactRects(choiceRects);
+        }
+        if (item === 'visit') {
+            // 串门区域没有底层：只让实际按钮成为命中区，四周继续穿透。
+            var visitActionRects = Array.prototype.slice.call(element.querySelectorAll('.composer-visit-bar-action'))
+                .map(function (child) {
+                    var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                    if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                    return I.normalizeCompactDomRect(child.getBoundingClientRect());
+                })
+                .filter(Boolean);
+            return unionCompactRects(visitActionRects);
         }
         var ownRect = I.normalizeCompactDomRect(element.getBoundingClientRect());
         if (ownRect) return ownRect;
@@ -756,6 +766,7 @@
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
+                && !element.classList.contains('compact-chat-visit-anchor')
                 && !element.classList.contains('neko-idle-cat1-compact-mirror')
                 && !element.classList.contains('modal-dialog-theater')
                 && !element.classList.contains('visit-dialog')

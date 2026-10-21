@@ -286,6 +286,7 @@ async def test_servers_unreachable_releases_the_slot_without_takeover(tmp_path, 
     (cr.VisitLoginRequired("unauthenticated"), "VISIT_LOGIN_REQUIRED"),
     (cr.VisitBanned("banned"), "VISIT_BANNED"),
     (cr.VisitQuotaExceeded("quota_exceeded", retry_after_s=60), "VISIT_QUOTA_EXCEEDED"),
+    (cr.VisitConcurrencyLimit("concurrency_limit", retry_after_s=60), "VISIT_CONCURRENCY_LIMIT"),
     (cr.VisitCrossRegionUnsupported("cross_region_unsupported"), "VISIT_CROSS_REGION_UNSUPPORTED"),
     (cr.VisitInviteInvalid("invite_expiring"), "VISIT_INVITE_INVALID"),
     (cr.VisitRoomEnded("room_ended"), "VISIT_KICKED"),
@@ -302,6 +303,21 @@ async def test_servers_errors_map_to_their_status(tmp_path, monkeypatch, clocks,
     await _finished(rt)
     assert code in side.host.status_codes()
     assert side.host.takeovers == []
+
+
+async def test_pre_activation_quota_failure_toasts_without_an_ending_phase(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "guest", clock=clock, wall=wall)
+    side.creds_error = cr.VisitQuotaExceeded("quota_exceeded", retry_after_s=60)
+    rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
+    Wire().attach(rt, None, GUEST_VID)
+    await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+    await rt.issue_credentials()
+    await wait_for(lambda: "VISIT_QUOTA_EXCEEDED" in side.host.status_codes())
+    assert side.host.frames_of("visit_state_change", "ending") == []
+    await _finished(rt)
+    assert side.host.status_codes().count("VISIT_QUOTA_EXCEEDED") == 1
 
 
 async def test_invite_code_only_after_joined_and_never_in_the_state(tmp_path, monkeypatch, clocks):
@@ -409,6 +425,28 @@ async def test_verified_hello_invites_the_family_and_fills_peer_vid(tmp_path, mo
         media = [m for m in wire.downlinks["host"] if m.get("type") == "media"]
         assert media[-1]["subscribe"] is False and media[-1]["peer_vid"] == GUEST_VID
         assert side.clients == []                  # No isolated session before reception.
+    finally:
+        await teardown(side, wire=wire, clock=clocks[0])
+
+
+async def test_peer_card_name_installed_as_another_local_card_stays_visible(tmp_path, monkeypatch, clocks):
+    from main_routers.visit_router.local_context import CharacterContext
+
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+
+    async def context():
+        return CharacterContext(family_names=("小明",), cards={"Host": "card", "Mimi": "card"})
+
+    side.deps.character_context = context
+    try:
+        await rt.on_transport_state({"state": "connected", "peer_present": True})
+        await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(display_name="Mimi"), nbytes=900)
+        await settle()
+        invite = side.host.frames_of("visit_invite")
+        assert len(invite) == 1 and invite[0]["peer_name"] == "Mimi"
+        status, body = await rt.accept(True)
+        assert status == 200 and body == {"ok": True}
+        assert rt.peer is not None and rt.peer.display == "Mimi"
     finally:
         await teardown(side, wire=wire, clock=clocks[0])
 

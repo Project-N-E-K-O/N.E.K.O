@@ -1867,11 +1867,75 @@ describe('App', () => {
     await clickCompactExportTool();
     const actionButton = container.querySelector<HTMLButtonElement>('.compact-export-history-content .message-action-button');
     expect(actionButton).not.toBeNull();
+    expect(actionButton).toBeDisabled();
 
     fireEvent.click(actionButton!);
 
     expect(onMessageAction).not.toHaveBeenCalled();
     expect(container.querySelector('.compact-export-history-message')).not.toHaveClass('is-selected');
+  });
+
+  it('dispatches message actions from the normal compact history view', () => {
+    const onMessageAction = vi.fn();
+    const message = parseChatMessage({
+      id: 'visit-debrief-actions',
+      role: 'system',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [
+        { type: 'text', text: 'Keep this visit in her diary?' },
+        {
+          type: 'buttons',
+          buttons: [
+            {
+              id: 'diary',
+              label: 'Keep as diary',
+              action: 'visit_debrief_choice',
+              payload: { visit_id: 'AAAAAAAAAAAAAAAAAAAAAA', choice: 'diary' },
+            },
+            {
+              id: 'forget',
+              label: 'Forget',
+              action: 'visit_debrief_choice',
+              variant: 'danger',
+              payload: { visit_id: 'AAAAAAAAAAAAAAAAAAAAAA', choice: 'forget' },
+            },
+          ],
+        },
+      ],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[message]}
+        onMessageAction={onMessageAction}
+      />,
+    );
+
+    const actionButtons = container.querySelectorAll<HTMLButtonElement>(
+      '.compact-export-history-content .message-action-button',
+    );
+    expect(actionButtons).toHaveLength(2);
+    expect(actionButtons[0]).toBeEnabled();
+    expect(actionButtons[1]).toBeEnabled();
+
+    fireEvent.click(actionButtons[0]);
+    fireEvent.click(actionButtons[1]);
+
+    expect(onMessageAction).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: 'visit-debrief-actions' }),
+      expect.objectContaining({ action: 'visit_debrief_choice', payload: expect.objectContaining({ choice: 'diary' }) }),
+    );
+    expect(onMessageAction).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: 'visit-debrief-actions' }),
+      expect.objectContaining({ action: 'visit_debrief_choice', payload: expect.objectContaining({ choice: 'forget' }) }),
+    );
   });
 
   it('keeps compact inline history open without an empty state when there are no messages', async () => {
@@ -7795,7 +7859,7 @@ describe('App', () => {
       /\.message-block-text,\s*\.message-block-markdown,\s*\.composer-input,\s*\.compact-chat-capsule-text\s*\{[\s\S]*?font-family:\s*var\(--neko-chat-content-font\);/,
     );
     expect(compactChatStyles).toMatch(
-      /\.composer-choice-layer,\s*\.avatar-tool-manager-dialog\s*\{[\s\S]*?font-family:\s*var\(--neko-ui-font\);/,
+      /\.composer-choice-layer,\s*\.composer-visit-layer,\s*\.avatar-tool-manager-dialog\s*\{[\s\S]*?font-family:\s*var\(--neko-ui-font\);/,
     );
     expect(compactChatStyles).not.toContain('Neko ChillReunion Round');
   });

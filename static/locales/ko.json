@@ -6943,6 +6943,7 @@
             "VISIT_LOGIN_REQUIRED": "방문하려면 커뮤니티 계정에 로그인해 주세요",
             "VISIT_BANNED": "현재 방문 기능이 제한되어 있어요",
             "VISIT_QUOTA_EXCEEDED": "오늘 방문 시간을 다 썼어요",
+            "VISIT_CONCURRENCY_LIMIT": "진행 중인 방문이나 초대가 너무 많아요. 하나를 끝낸 뒤 다시 시도해 주세요",
             "VISIT_TIER_NOT_ENTITLED": "이 화질은 사용할 수 없어요",
             "VISIT_FORGET_IN_PROGRESS": "방문 기억을 지우는 중이에요. 조금 뒤에 방문해 주세요",
             "VISIT_UPLOAD_BACKLOG": "아직 올라가지 않은 방문 기록이 있어요. 온라인 상태에서 다시 해 주세요",

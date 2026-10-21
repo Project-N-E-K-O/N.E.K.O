@@ -6943,6 +6943,7 @@
             "VISIT_LOGIN_REQUIRED": "串門需要先登入社群帳號",
             "VISIT_BANNED": "你的串門功能暫時受限",
             "VISIT_QUOTA_EXCEEDED": "今天的串門時間用完了",
+            "VISIT_CONCURRENCY_LIMIT": "同時進行的串門或邀請太多了，請先結束一個再試",
             "VISIT_TIER_NOT_ENTITLED": "這個畫質等級暫不可用",
             "VISIT_FORGET_IN_PROGRESS": "正在清除串門記憶，稍後再串門",
             "VISIT_UPLOAD_BACKLOG": "有串門紀錄還沒傳上去，連網後再來",

@@ -937,10 +937,7 @@ function CompactChatApp({
   galgameToggleButtonAriaLabel,
   galgameLoadingLabel = i18n('chat.galgameLoading', 'Generating options...'),
   theaterPresentation = { active: false, phase: 'inactive' } as TheaterPresentation,
-  // Retained for host API compatibility; the compact-only surface no longer
-  // renders the per-message action menu, so this handler is currently unused
-  // (the `_` prefix opts it out of unused-var lint).
-  onMessageAction: _onMessageAction,
+  onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
   onComposerRemoveAttachment,
@@ -1035,6 +1032,7 @@ function CompactChatApp({
   const compactInputToolFanInteractiveRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
+  const compactVisitLayerRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef(visibleDraft);
   const compactPreviewTextVisibleRef = useRef('');
   const previousCompactPreviewTextRef = useRef('');
@@ -1446,13 +1444,13 @@ function CompactChatApp({
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)
     : null;
-  // 串门工具条与选项共用这一层的定位与命中区，但不把聊天面切到 options 态（不挡最小化以外的任何状态）
+  // 串门工具条使用独立 Portal，不能改变 Galgame 选项原本的上下布局。
   const visitBarVisible = isCompactSurface
     && !catLocalTextOnly
     && !theaterActive
     && !!visitBar
     && (!!visitBar.badge || visitBar.actions.length > 0);
-  const compactChoiceLayerOpen = isCompactSurface && (compactSurfaceChoicesVisible || visitBarVisible);
+  const compactChoiceLayerOpen = isCompactSurface && compactSurfaceChoicesVisible;
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
     () => messages.filter(isCompactExportMessageSelectable),
@@ -2800,6 +2798,38 @@ function CompactChatApp({
     }
     onCompactChatStateChange?.(nextState);
   }, [compactTextEntryLocked, isCompactSurface, isCompactChatStateControlled, onCompactChatStateChange]);
+
+  useEffect(() => {
+    if (!isCompactSurface || !visitBarVisible) return;
+
+    const layerNode = compactVisitLayerRef.current;
+    if (!layerNode) return;
+
+    // 坐标直接继承 documentElement 上与聊天框相同的实时 CSS 变量。
+    // 不再把位置复制到 Portal 的内联变量并延迟到下一帧，否则连续拖拽时会明显落后。
+    const syncVisitLayerReservedBlockSize = () => {
+      const nextLayerNode = compactVisitLayerRef.current;
+      if (!nextLayerNode) return;
+      const visitLayerHeight = Math.max(nextLayerNode.getBoundingClientRect().height, nextLayerNode.scrollHeight);
+      appShellRef.current?.style.setProperty(
+        '--compact-visit-layer-reserved-block-size',
+        `${Math.ceil(visitLayerHeight) + 22}px`,
+      );
+    };
+
+    syncVisitLayerReservedBlockSize();
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(syncVisitLayerReservedBlockSize);
+      observer.observe(layerNode);
+    }
+
+    return () => {
+      observer?.disconnect();
+      appShellRef.current?.style.removeProperty('--compact-visit-layer-reserved-block-size');
+    };
+  }, [isCompactSurface, visitBarVisible]);
 
   const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {
     const shell = compactInputShellRef.current;
@@ -4625,6 +4655,7 @@ function CompactChatApp({
         !!compactInputShellRef.current?.contains(target)
         || !!compactInputToolFanRef.current?.contains(target)
         || !!compactChoiceLayerRef.current?.contains(target)
+        || !!compactVisitLayerRef.current?.contains(target)
         || (
           target instanceof Element
           && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer, .click-guide-choice')
@@ -5748,29 +5779,6 @@ function CompactChatApp({
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
     >
-      {visitBarVisible && visitBar ? (
-        <div
-          className={`composer-visit-bar is-${visitBar.tone ?? 'idle'}`}
-          role="toolbar"
-          aria-label={i18n('chat.visitBarAriaLabel', 'Visit')}
-        >
-          {visitBar.badge ? <span className="composer-visit-bar-badge">{visitBar.badge}</span> : null}
-          {visitBar.detail ? <span className="composer-visit-bar-detail">{visitBar.detail}</span> : null}
-          {visitBar.actions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className={`composer-visit-bar-action is-${action.variant ?? 'secondary'}`}
-              disabled={action.disabled}
-              aria-pressed={typeof action.pressed === 'boolean' ? action.pressed : undefined}
-              data-visit-bar-action={action.id}
-              onClick={() => onVisitBarAction?.(action.id)}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
       {galgameStyleOptionsVisible ? (
         <div
           className={`composer-galgame-slot${compactChoiceLayerOpen && galgameStyleOptionsVisible ? ' is-open' : ''}`}
@@ -5885,6 +5893,42 @@ function CompactChatApp({
   const compactChoiceLayerNode = isCompactSurface && !catLocalTextOnly
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
+  const visitLayerNode = visitBarVisible && visitBar ? (
+    <div
+      className="composer-visit-layer compact-chat-visit-anchor"
+      ref={compactVisitLayerRef}
+      data-compact-geometry-item="visit"
+      data-compact-geometry-owner="surface"
+      data-compact-no-drag="true"
+      data-visit-layer-open="true"
+      data-chat-surface-mode={chatSurfaceMode}
+    >
+      <div
+        className={`composer-visit-bar is-${visitBar.tone ?? 'idle'}`}
+        role="toolbar"
+        aria-label={i18n('chat.visitBarAriaLabel', 'Visit')}
+      >
+        {visitBar.badge ? <span className="composer-visit-bar-badge">{visitBar.badge}</span> : null}
+        {visitBar.detail ? <span className="composer-visit-bar-detail">{visitBar.detail}</span> : null}
+        {visitBar.actions.map((action) => (
+          <button
+            key={action.id}
+            type="button"
+            className={`composer-visit-bar-action is-${action.variant ?? 'secondary'}`}
+            disabled={action.disabled}
+            aria-pressed={typeof action.pressed === 'boolean' ? action.pressed : undefined}
+            data-visit-bar-action={action.id}
+            onClick={() => onVisitBarAction?.(action.id)}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : null;
+  const compactVisitLayerNode = isCompactSurface && !catLocalTextOnly && visitLayerNode
+    ? (typeof document !== 'undefined' ? createPortal(visitLayerNode, document.body) : visitLayerNode)
+    : null;
   const theaterHistoryMessages = useMemo<ChatMessage[]>(() => (
     (theaterPresentation.history ?? []).map((entry, index) => ({
       id: `theater:${entry.id}`,
@@ -5936,6 +5980,7 @@ function CompactChatApp({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
+      onAction={onMessageAction}
       historyResizeActive={compactHistoryResizeActive}
       historyResizeContentLocked={compactHistoryResizeContentLocked}
       onHistoryResizePointerDown={handleCompactHistoryResizePointerDown}
@@ -6039,6 +6084,7 @@ function CompactChatApp({
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
       {compactChoiceLayerNode}
+      {compactVisitLayerNode}
       <AvatarToolItemManager
         open={isCompactSurface && !catLocalTextOnly && avatarToolManagerOpen}
         activeToolIds={activeAvatarToolIds}

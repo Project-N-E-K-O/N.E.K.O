@@ -84,6 +84,7 @@ svg {
 /* Portaled controls cannot inherit from the chat shell. Keep them on the UI
    typeface instead of the conversational typeface used by message content. */
 .composer-choice-layer,
+.composer-visit-layer,
 .avatar-tool-manager-dialog {
   font-family: var(--neko-ui-font);
 }
@@ -2755,20 +2756,37 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   max-height: 240px;
 }
 
-/* 串门工具条：与选项同一层（定位、Electron 命中区沿用 compact-chat-choice-anchor），本身可点 */
+/* 串门工具条使用独立 Portal：始终在聊天框上方，不再改变 Galgame 选项的上下位置。 */
+body > .compact-chat-visit-anchor[data-chat-surface-mode="compact"] {
+  position: fixed;
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)) / 2));
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 0px)) + 16px);
+  width: min(var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)), 420px);
+  height: max-content;
+  transform: translateX(-50%);
+  overflow: visible;
+  z-index: 100003;
+  pointer-events: none;
+}
+
 .composer-visit-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  margin: 0 0 8px;
-  padding: 6px 8px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 2px 10px rgba(40, 80, 120, 0.16);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
   color: #334;
   font-size: 12px;
   line-height: 1.4;
+  pointer-events: none;
+}
+
+.composer-visit-bar .composer-visit-bar-action {
   pointer-events: auto;
 }
 
@@ -2800,43 +2818,91 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   font-variant-numeric: tabular-nums;
 }
 
-.composer-visit-bar-action {
+.composer-visit-bar-action,
+.full-visit-bar-action {
+  --visit-action-fill:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(235, 247, 255, 0.94));
+  --visit-action-hover-fill:
+    linear-gradient(145deg, rgba(255, 255, 255, 1), rgba(220, 242, 255, 0.98));
+  --visit-action-shadow:
+    0 8px 18px rgba(20, 36, 64, 0.13),
+    0 2px 6px rgba(52, 141, 201, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
   max-width: 100%;
+  min-height: 28px;
   overflow: hidden;
   text-overflow: ellipsis;
-  border: 1px solid rgba(68, 120, 170, 0.32);
+  border: 1px solid rgba(137, 196, 234, 0.48);
   border-radius: 999px;
-  padding: 2px 10px;
-  background: transparent;
-  color: inherit;
+  padding: 3px 12px;
+  background: var(--visit-action-fill);
+  box-shadow: var(--visit-action-shadow);
+  color: #2497d9;
   font: inherit;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  -webkit-backdrop-filter: blur(12px) saturate(1.08);
+  backdrop-filter: blur(12px) saturate(1.08);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease,
+    transform 0.15s ease;
 }
 
-.composer-visit-bar-action:hover:not(:disabled) {
-  background: rgba(68, 183, 254, 0.12);
+.composer-visit-bar-action:hover:not(:disabled),
+.full-visit-bar-action:hover:not(:disabled) {
+  border-color: rgba(102, 187, 238, 0.66);
+  background: var(--visit-action-hover-fill);
+  box-shadow:
+    0 10px 22px rgba(20, 76, 116, 0.16),
+    0 3px 8px rgba(52, 141, 201, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+  transform: translateY(-1px) scale(1.03);
 }
 
-.composer-visit-bar-action.is-primary,
-.composer-visit-bar-action[aria-pressed="true"] {
-  border-color: #44b7fe;
-  background: #44b7fe;
-  color: #fff;
+.composer-visit-bar-action:active:not(:disabled),
+.full-visit-bar-action:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
-.composer-visit-bar-action.is-danger {
-  border-color: rgba(220, 80, 80, 0.5);
-  color: #b03434;
+.composer-visit-bar-action:focus-visible,
+.full-visit-bar-action:focus-visible {
+  outline: 2px solid rgba(68, 183, 254, 0.72);
+  outline-offset: 2px;
 }
 
-.composer-visit-bar-action:disabled {
+.composer-visit-bar-action[aria-pressed="true"],
+.full-visit-bar-action[aria-pressed="true"] {
+  border-color: rgba(92, 196, 255, 0.68);
+  background:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 1) 0%, rgba(240, 249, 255, 0.96) 48%, rgba(215, 239, 255, 0.9) 100%);
+  box-shadow:
+    0 0 0 2px rgba(126, 204, 245, 0.48),
+    0 10px 22px rgba(63, 168, 235, 0.18),
+    0 4px 12px rgba(107, 164, 215, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+  color: #167dbb;
+}
+
+.composer-visit-bar-action.is-danger,
+.full-visit-bar-action.is-danger {
+  border-color: rgba(220, 104, 104, 0.4);
+  color: #c04a4a;
+}
+
+.composer-visit-bar-action:disabled,
+.full-visit-bar-action:disabled {
   opacity: 0.5;
   cursor: default;
+  filter: saturate(0.68);
+  transform: none;
 }
 
 [data-theme="dark"] .composer-visit-bar {
-  background: rgba(30, 36, 48, 0.9);
   color: #e6ebf2;
 }
 
@@ -2844,7 +2910,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   color: #9fd8ff;
 }
 
-/* full（冻结的 legacy 界面）自己的一份串门工具条：在 composer 上方，与 compact 的样式互不复用 */
+/* full（冻结的 legacy 界面）保留独立布局；操作按钮与 compact 共享同一套表面材质。 */
 .full-visit-bar {
   display: flex;
   flex-wrap: wrap;
@@ -2887,48 +2953,51 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   font-variant-numeric: tabular-nums;
 }
 
-.full-visit-bar-action {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border: 1px solid rgba(68, 120, 170, 0.32);
-  border-radius: 999px;
-  padding: 2px 10px;
-  background: #fff;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.full-visit-bar-action:hover:not(:disabled) {
-  background: rgba(68, 183, 254, 0.12);
-}
-
-.full-visit-bar-action.is-primary,
-.full-visit-bar-action[aria-pressed="true"] {
-  border-color: #44b7fe;
-  background: #44b7fe;
-  color: #fff;
-}
-
-.full-visit-bar-action.is-danger {
-  border-color: rgba(220, 80, 80, 0.5);
-  color: #b03434;
-}
-
-.full-visit-bar-action:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 [data-theme="dark"] .full-visit-bar {
   background: rgba(68, 183, 254, 0.12);
   color: #e6ebf2;
 }
 
+[data-theme="dark"] .composer-visit-bar-action,
 [data-theme="dark"] .full-visit-bar-action {
-  background: transparent;
+  --visit-action-fill:
+    linear-gradient(145deg, rgba(31, 47, 65, 0.96), rgba(15, 27, 41, 0.96));
+  --visit-action-hover-fill:
+    linear-gradient(145deg, rgba(39, 59, 80, 0.98), rgba(20, 38, 56, 0.98));
+  --visit-action-shadow:
+    0 8px 18px rgba(5, 12, 24, 0.38),
+    0 2px 7px rgba(7, 18, 31, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  border-color: rgba(166, 214, 246, 0.3);
+  color: #8ed9ff;
+}
+
+[data-theme="dark"] .composer-visit-bar-action:hover:not(:disabled),
+[data-theme="dark"] .full-visit-bar-action:hover:not(:disabled) {
+  border-color: rgba(142, 217, 255, 0.5);
+  box-shadow:
+    0 10px 22px rgba(5, 12, 24, 0.44),
+    0 3px 9px rgba(25, 111, 164, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+[data-theme="dark"] .composer-visit-bar-action[aria-pressed="true"],
+[data-theme="dark"] .full-visit-bar-action[aria-pressed="true"] {
+  border-color: rgba(92, 196, 255, 0.58);
+  background:
+    radial-gradient(circle at 30% 25%, rgba(92, 196, 255, 0.3) 0%, rgba(36, 68, 96, 0.96) 44%, rgba(17, 34, 51, 0.98) 100%);
+  box-shadow:
+    0 0 0 2px rgba(92, 196, 255, 0.4),
+    0 10px 22px rgba(0, 0, 0, 0.36),
+    0 4px 12px rgba(14, 83, 128, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  color: #b8e9ff;
+}
+
+[data-theme="dark"] .composer-visit-bar-action.is-danger,
+[data-theme="dark"] .full-visit-bar-action.is-danger {
+  border-color: rgba(255, 132, 132, 0.4);
+  color: #ff9b9b;
 }
 
 [data-theme="dark"] .full-visit-bar-badge {
@@ -3380,7 +3449,10 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   );
   --compact-export-layout-inline-size: 100vw;
   --compact-export-history-edge-gutter: 12px;
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 2px);
+  bottom: calc(
+    100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh))
+      + 2px + var(--compact-visit-layer-reserved-block-size, 0px)
+  );
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
   --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
   --compact-export-controls-border-width: 1px;

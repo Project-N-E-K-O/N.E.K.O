@@ -349,17 +349,16 @@ class ReceiveMixin:
     async def _clean_peer_name(self, raw: Optional[str], uid: str) -> str:
         from main_logic.visit.sanitize import neutralize_display_name
         from main_logic.visit.subjects import derive_short_code
-        from main_routers.visit_router.local_context import prompt_lang, protected_display_names
+        from main_routers.visit_router.local_context import prompt_lang, protected_live_display_names
 
         lang = self.lang or prompt_lang()
         try:
             ctx = await self.deps.character_context()
             family = tuple(getattr(ctx, "family_names", ()) or ())
-            chars = tuple(getattr(ctx, "char_names", ()) or ())
         except Exception:  # noqa: BLE001 - If local names are unreadable, rely only on generic rules.
-            family, chars = (), ()
+            family = ()
         return neutralize_display_name(
-            raw, protected_names=protected_display_names(lang, family, chars),
+            raw, protected_names=protected_live_display_names(lang, family),
             generic_label=self.speaker_label("peer_cat", lang), short_code=derive_short_code(uid),
         )
 
