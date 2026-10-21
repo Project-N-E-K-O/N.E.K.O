@@ -77,20 +77,19 @@ import { useLogsStore } from '@/stores/logs'
 import { useLogStream } from '@/composables/useLogStream'
 import { getPluginLogDirectory, getPluginLogExportUrl } from '@/api/logs'
 import { openLocalPath } from '@/utils/openExternal'
-import { API_BASE_URL, PANEL_FILL_HEIGHT, PANEL_MAX_HEIGHT } from '@/utils/constants'
+import { API_BASE_URL, PANEL_FILL_HEIGHT } from '@/utils/constants'
 
 const props = withDefaults(defineProps<{
   pluginId: string
   height?: string
 }>(), {
-  // 默认填满宿主容器（宿主必须提供确定高度，见 PluginDetail 的 --fill 链）；
-  // min/max 只做兜底，理由见 utils/constants.ts。
+  // Fill the host's definite height; a viewport cap would leave a gap when
+  // the surrounding layout gives this panel more room.
   height: PANEL_FILL_HEIGHT,
 })
 
 const viewerStyle = computed(() => ({
   height: props.height,
-  maxHeight: PANEL_MAX_HEIGHT,
 }))
 
 const { t } = useI18n()

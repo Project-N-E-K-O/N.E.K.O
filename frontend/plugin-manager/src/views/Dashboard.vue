@@ -500,6 +500,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  padding: 20px;
   contain: layout style;
 }
 
@@ -875,6 +876,8 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
+  .dashboard { padding: 12px; }
+
   .dashboard-hero {
     align-items: flex-start;
     flex-direction: column;

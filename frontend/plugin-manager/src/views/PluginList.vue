@@ -1613,10 +1613,10 @@ onUnmounted(() => {
 }
 
 .plugin-list-card {
-  border-radius: var(--radius-card);
+  border: none;
+  border-radius: 0;
   background: var(--surface-card);
-  border-color: var(--surface-border);
-  box-shadow: var(--surface-shadow);
+  box-shadow: none;
 }
 
 .plugin-list-card :deep(> .el-card__header) {

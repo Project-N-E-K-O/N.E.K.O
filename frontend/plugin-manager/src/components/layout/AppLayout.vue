@@ -5,49 +5,52 @@
         <img src="@/assets/paw.png" alt="" class="titlebar-paw" draggable="false" />
         <span class="titlebar-text">{{ t('app.titleSuffix') }}</span>
       </div>
-      <div class="titlebar-controls">
-        <button
-          v-if="pinAvailable"
-          class="titlebar-control titlebar-control--pin"
-          :class="{ 'is-pinned': isPinned }"
-          type="button"
-          :title="pinLabel"
-          :aria-label="pinLabel"
-          :aria-pressed="isPinned"
-          :disabled="pinPending"
-          @click="togglePin"
-        >
-          <span class="titlebar-pin-icon" aria-hidden="true"></span>
-        </button>
-        <button
-          class="titlebar-control"
-          type="button"
-          :title="t('common.minimize')"
-          :aria-label="t('common.minimize')"
-          @click="minimizeWindow"
-        >
-          <span class="titlebar-minimize-icon" aria-hidden="true"></span>
-        </button>
-        <button
-          class="titlebar-control"
-          type="button"
-          :title="maximizeLabel"
-          :aria-label="maximizeLabel"
-          @click="toggleMaximize"
-        >
-          <span class="titlebar-maximize-icon" :class="{ 'is-restored': isMaximized }" aria-hidden="true"></span>
-        </button>
-        <button
-          class="titlebar-control titlebar-control--close"
-          type="button"
-          :title="t('common.close')"
-          :aria-label="t('common.close')"
-          @click="closeWindow"
-        >
-          <svg class="titlebar-close-icon" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false">
-            <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </button>
+      <div class="titlebar-actions">
+        <Header />
+        <div class="titlebar-controls">
+          <button
+            v-if="pinAvailable"
+            class="titlebar-control titlebar-control--pin"
+            :class="{ 'is-pinned': isPinned }"
+            type="button"
+            :title="pinLabel"
+            :aria-label="pinLabel"
+            :aria-pressed="isPinned"
+            :disabled="pinPending"
+            @click="togglePin"
+          >
+            <span class="titlebar-pin-icon" aria-hidden="true"></span>
+          </button>
+          <button
+            class="titlebar-control"
+            type="button"
+            :title="t('common.minimize')"
+            :aria-label="t('common.minimize')"
+            @click="minimizeWindow"
+          >
+            <span class="titlebar-minimize-icon" aria-hidden="true"></span>
+          </button>
+          <button
+            class="titlebar-control"
+            type="button"
+            :title="maximizeLabel"
+            :aria-label="maximizeLabel"
+            @click="toggleMaximize"
+          >
+            <span class="titlebar-maximize-icon" :class="{ 'is-restored': isMaximized }" aria-hidden="true"></span>
+          </button>
+          <button
+            class="titlebar-control titlebar-control--close"
+            type="button"
+            :title="t('common.close')"
+            :aria-label="t('common.close')"
+            @click="closeWindow"
+          >
+            <svg class="titlebar-close-icon" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false">
+              <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -63,12 +66,11 @@
           </div>
         </div>
 
-        <header class="app-header">
-          <Header />
-          <!-- Absolutely positioned off the header's bottom-right so it can
-               never cover the custom titlebar's window controls above it. -->
+        <!-- A zero-height anchor keeps updates below the connection banner
+             without reserving a separate row above the page. -->
+        <div class="update-float-anchor">
           <PluginUpdateFloatWindow v-if="updateFloatWindowLoaded" />
-        </header>
+        </div>
 
         <main class="app-main" data-yui-guide-id="plugin-main">
           <router-view v-slot="{ Component, route: currentRoute }">
@@ -319,12 +321,15 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  margin-right: 12px;
 }
 
 .titlebar-paw {
   width: 20px;
   height: 16px;
   object-fit: contain;
+  flex-shrink: 0;
   filter: brightness(0);
   opacity: 0.4;
 }
@@ -334,12 +339,25 @@ onBeforeUnmount(() => {
   font-weight: 650;
   color: var(--el-text-color-primary);
   letter-spacing: 0.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
 }
 
 .titlebar-controls {
   display: flex;
   align-items: center;
   gap: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--surface-border);
   -webkit-app-region: no-drag;
 }
 
@@ -506,34 +524,20 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--surface-border);
   border-radius: var(--radius-card);
   background: var(--surface-card);
-  box-shadow: var(--surface-shadow);
 }
 
-.app-header {
+.update-float-anchor {
   position: relative;
-  /* The update float window is anchored off this header and hangs into the
-     page area below. `backdrop-filter` already makes the header a stacking
-     context, so without an explicit z-index the scrolling `.app-main` would
-     paint its background over that overhang. */
   z-index: 900;
-  height: 54px;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--surface-border);
-  background: var(--surface-card);
 }
 
 .app-main {
   position: relative;
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
-  background: var(--surface-page);
 }
 
 /* 连接状态提示 */
@@ -559,8 +563,6 @@ onBeforeUnmount(() => {
 @media (max-width: 640px) {
   .app-shell { gap: 6px; padding: 6px; }
   .app-sidebar { width: var(--sidebar-collapsed-width); }
-  .app-header { padding: 0 12px; }
-  .app-main { padding: 0; }
   .connection-banner { padding-inline: 8px; }
 }
 @media (prefers-reduced-motion: reduce) {

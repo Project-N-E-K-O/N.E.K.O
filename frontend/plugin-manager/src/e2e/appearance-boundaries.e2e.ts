@@ -108,11 +108,39 @@ appearanceTest(
   'keeps language, theme, refresh and the original package toolbar usable after collapse',
   async ({ page }) => {
     await page.goto(`${PREVIEW_ORIGIN}/ui/`)
-    const header = page.locator('.header__actions')
+    const titlebar = page.locator('.window-titlebar')
+    const header = titlebar.locator('.header__actions')
+    await expect(page.locator('.app-header, .header__title')).toHaveCount(0)
     await expect(header.getByTestId('language-switcher')).toBeVisible()
+    const toolsBox = await header.boundingBox()
+    const controlsBox = await titlebar.locator('.titlebar-controls').boundingBox()
+    expect(toolsBox!.x + toolsBox!.width).toBeLessThan(controlsBox!.x)
     await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).click()
     await page.getByRole('button', { name: 'Plugins', exact: true }).click()
     await expect(page.locator('.plugin-workbench')).toBeVisible()
+    await expect.poll(() => page.locator('.app-main').evaluate((element) => {
+      const main = element.getBoundingClientRect()
+      const workbench = element.querySelector('.plugin-workbench')!.getBoundingClientRect()
+      const sidebarElement = document.querySelector('.app-sidebar')!
+      const sidebar = sidebarElement.getBoundingClientRect()
+      const bodyElement = document.querySelector('.app-body')!
+      const body = bodyElement.getBoundingClientRect()
+      return [
+        main.top - sidebar.top,
+        main.bottom - sidebar.bottom,
+        window.innerWidth - main.right - sidebar.left,
+        main.left - body.left,
+        main.top - body.top,
+        main.right - body.right,
+        main.bottom - body.bottom,
+        workbench.left - main.left,
+        workbench.top - main.top,
+        main.right - workbench.right,
+        main.bottom - workbench.bottom,
+        parseFloat(getComputedStyle(bodyElement).borderRadius) -
+          parseFloat(getComputedStyle(sidebarElement).borderRadius),
+      ].map(Math.round)
+    })).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 
     await header.getByTestId('language-switcher').click()
     await page.getByRole('menuitem', { name: /简体中文/ }).click()
@@ -204,6 +232,11 @@ appearanceTest(
 appearanceTest(
   'uses compact navigation on narrow screens without overwriting desktop preference and honors reduced motion',
   async ({ page }) => {
+    await page.addInitScript(() => {
+      window.nekoWindowControl = {
+        getPinState: () => ({ available: true, pinned: false }),
+      }
+    })
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await page.setViewportSize({ width: 600, height: 800 })
     await page.goto(`${PREVIEW_ORIGIN}/ui/`)
@@ -238,5 +271,11 @@ appearanceTest(
       'aria-expanded',
       'false'
     )
+    await page.setViewportSize({ width: 320, height: 800 })
+    const titlebar = page.locator('.window-titlebar')
+    await expect(titlebar.getByTestId('language-switcher')).toBeInViewport({ ratio: 1 })
+    for (const name of ['Dark Mode', 'Refresh', 'Pin window', 'Minimize', 'Maximize', 'Close']) {
+      await expect(titlebar.getByRole('button', { name, exact: true })).toBeInViewport({ ratio: 1 })
+    }
   }
 )
