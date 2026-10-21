@@ -1521,12 +1521,12 @@ onUnmounted(() => {
 .plugin-list-card {
   border: none;
   border-radius: 0;
-  background: var(--surface-card);
+  background: var(--surface-workspace);
   box-shadow: none;
 }
 
 .plugin-list-card :deep(> .el-card__header) {
-  background: var(--surface-card);
+  background: var(--surface-workspace);
   border-bottom-color: var(--surface-border);
 }
 
@@ -1584,7 +1584,7 @@ onUnmounted(() => {
 
 .market-trigger--active {
   background: var(--el-color-primary);
-  color: #fff;
+  color: var(--on-primary);
   border-color: var(--el-color-primary);
   box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 22%, transparent);
 }
@@ -1624,7 +1624,7 @@ onUnmounted(() => {
   padding: 0 5px;
   border-radius: 999px;
   background: var(--el-color-danger);
-  color: #fff;
+  color: var(--on-danger);
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
@@ -1933,7 +1933,7 @@ onUnmounted(() => {
   padding: 0 8px;
   border-radius: var(--radius-chip);
   background: var(--el-color-primary);
-  color: #fff;
+  color: var(--on-primary);
   font-size: 14px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;

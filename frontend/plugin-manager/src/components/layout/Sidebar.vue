@@ -153,7 +153,7 @@ onMounted(() => {
   flex-direction: column;
   padding: 14px 10px;
   gap: 6px;
-  background: var(--surface-card);
+  background: var(--surface-workspace);
   border-radius: var(--radius-card);
 }
 
@@ -305,7 +305,7 @@ onMounted(() => {
   justify-content: center;
   border: 1px solid var(--surface-border);
   border-radius: 50%;
-  background: var(--surface-card);
+  background: var(--surface-workspace);
   color: var(--el-text-color-regular);
   box-shadow: var(--surface-shadow);
   cursor: pointer;

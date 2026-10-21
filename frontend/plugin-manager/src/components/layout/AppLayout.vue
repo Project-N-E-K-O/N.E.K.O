@@ -512,7 +512,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-card);
-  background: var(--surface-card);
+  background: var(--surface-workspace);
   box-shadow: var(--surface-shadow);
   transition: width var(--motion-duration-normal) var(--motion-ease-standard);
 }
@@ -527,7 +527,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   border-radius: var(--radius-card);
-  background: var(--surface-card);
+  background: var(--surface-workspace);
 }
 
 .update-float-anchor {

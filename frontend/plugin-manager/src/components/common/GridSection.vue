@@ -350,7 +350,7 @@ function itemClass(item: T) {
 .grid-section__check-icon {
   width: 14px;
   height: 14px;
-  color: #fff;
+  color: var(--on-primary);
   animation: check-draw var(--motion-duration-normal) var(--motion-ease-spring) forwards;
 }
 

@@ -489,3 +489,98 @@ appearanceTest('large card grids keep real track sizes when scrolling and filter
   await expect(page.getByTestId('plugin-details-button')).toHaveText('NEKO Live')
   expect(await page.locator('.plugin-card').evaluate(card => card.scrollHeight <= card.clientHeight + 1)).toBe(true)
 })
+
+appearanceTest('dark surfaces and accent controls remain legible and restore the light palette', async ({ page }) => {
+  await installCardLayoutFixture(page)
+  // Keep the boot update popup from covering the controls under inspection.
+  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', route =>
+    route.fulfill({ json: { items: [{ plugin_id: '42', version: '1.0.0' }] } })
+  )
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('.plugin-card')).toHaveCount(8)
+  const palette = () => page.evaluate(() => {
+    const selectors = ['.app-shell', '.app-body', '.plugin-card', '.wb-filter-bar', '.plugin-description']
+    return selectors.map(selector => {
+      const style = getComputedStyle(document.querySelector(selector)!)
+      return [style.backgroundColor, style.color]
+    })
+  })
+  const lightPalette = await palette()
+  const header = page.locator('.window-titlebar')
+  await header.getByRole('button', { name: 'Dark Mode', exact: true }).click()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+
+  // Resolve actual CSS colours (including color-mix and transparent ancestors)
+  // in the browser, so default Element Plus styles cannot silently override the
+  // intended text/selection/solid-button contrast.
+  const contrast = (selectors: string[]) => page.evaluate(selectors => {
+    const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!
+    const rgba = (value: string) => {
+      context.clearRect(0, 0, 1, 1)
+      context.fillStyle = value
+      context.fillRect(0, 0, 1, 1)
+      return Array.from(context.getImageData(0, 0, 1, 1).data)
+    }
+    const luminance = (rgb: number[]) => rgb.slice(0, 3).map(value => {
+      const v = value / 255
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index]!, 0)
+    const background = (element: Element | null): number[] => {
+      if (!element) return [0, 0, 0]
+      const color = rgba(getComputedStyle(element).backgroundColor)
+      const alpha = color[3]! / 255
+      if (alpha === 1) return color.slice(0, 3)
+      const parent = background(element.parentElement)
+      return color.slice(0, 3).map((value, index) => value * alpha + parent[index]! * (1 - alpha))
+    }
+    return selectors.map(selector => {
+      const element = document.querySelector(selector)!
+      const fg = luminance(rgba(getComputedStyle(element).color))
+      const bg = luminance(background(element))
+      return {
+        selector, foreground: getComputedStyle(element).color, background: background(element),
+        ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
+      }
+    })
+  }, selectors)
+  const readable = async (selectors: string[]) => {
+    // Element Plus tags interpolate their foreground/background on a theme
+    // change; assert the settled palette rather than sampling the first frame.
+    await expect.poll(async () => (await contrast(selectors)).filter(result => result.ratio < 4.5)).toEqual([])
+  }
+  await readable([
+    '.plugin-description', '.plugin-start-mode', '.plugin-version-tag', '.status-tag',
+    '.plugin-ui-action', '.el-checkbox-button.is-checked .el-checkbox-button__inner',
+    '.wb-layout-switcher .el-radio-button.is-active .el-radio-button__inner',
+  ])
+  const darkPalette = await palette()
+  expect(new Set(darkPalette.slice(0, 4).map(([background]) => background)).size).toBe(4)
+
+  await page.locator('.plugin-card').first().click({ button: 'right' })
+  const contextMenu = page.locator('.context-menu')
+  await expect(contextMenu).toBeVisible()
+  await expect(contextMenu).toHaveCSS('background-image', 'none')
+  await expect(contextMenu).toHaveCSS('backdrop-filter', 'none')
+  await readable(['.context-menu__item'])
+  await page.keyboard.press('Escape')
+  await expect(contextMenu).not.toBeVisible()
+
+  await page.getByRole('button', { name: 'Dashboard', exact: true }).click()
+  const primary = page.locator('.dashboard-hero__guide')
+  await expect(primary).toBeVisible()
+  await readable(['.dashboard-hero__guide'])
+  await primary.hover()
+  await readable(['.dashboard-hero__guide'])
+
+  await header.getByTestId('language-switcher').click()
+  await expect(page.getByRole('menuitem', { name: /English/ })).toBeVisible()
+  await readable(['.el-dropdown-menu__item'])
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Plugins', exact: true }).click()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await header.getByRole('button', { name: 'Light Mode', exact: true }).click()
+  await expect(page.locator('html')).not.toHaveClass(/dark/)
+  await page.mouse.move(0, 0)
+  await expect.poll(palette).toEqual(lightPalette)
+})

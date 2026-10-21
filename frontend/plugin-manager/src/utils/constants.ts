@@ -65,13 +65,13 @@ export enum MessageType {
 
 // 状态颜色映射
 export const STATUS_COLORS = {
-  [PluginStatus.RUNNING]: '#67C23A',
-  [PluginStatus.STOPPED]: '#909399',
-  [PluginStatus.CRASHED]: '#F56C6C',
-  [PluginStatus.LOAD_FAILED]: '#F56C6C',
-  [PluginStatus.LOADING]: '#409EFF',
-  [PluginStatus.DISABLED]: '#909399',
-  [PluginStatus.PENDING]: '#E6A23C'
+  [PluginStatus.RUNNING]: 'var(--el-color-success)',
+  [PluginStatus.STOPPED]: 'var(--el-color-info)',
+  [PluginStatus.CRASHED]: 'var(--el-color-danger)',
+  [PluginStatus.LOAD_FAILED]: 'var(--el-color-danger)',
+  [PluginStatus.LOADING]: 'var(--el-color-primary)',
+  [PluginStatus.DISABLED]: 'var(--el-color-info)',
+  [PluginStatus.PENDING]: 'var(--el-color-warning)'
 } as const
 
 // 状态文本映射

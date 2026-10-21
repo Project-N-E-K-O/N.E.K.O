@@ -80,7 +80,7 @@ defineEmits<{
 }
 
 .wb-group-filter__group :deep(.el-checkbox-button) {
-  --el-checkbox-button-checked-bg-color: var(--el-color-primary);
+  --el-checkbox-button-checked-bg-color: var(--group-filter-selected-bg, var(--el-color-primary));
 }
 
 .wb-group-filter__group :deep(.el-checkbox-button__inner),
@@ -108,7 +108,7 @@ defineEmits<{
 
 .wb-group-filter__group :deep(.el-checkbox-button.is-checked .el-checkbox-button__inner),
 .wb-group-filter__group :deep(.el-radio-button.is-active .el-radio-button__inner) {
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 24%, transparent);
+  box-shadow: var(--control-selection-shadow);
   border-color: transparent;
 }
 
