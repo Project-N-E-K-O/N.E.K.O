@@ -111,3 +111,77 @@ test('an offline automatic decision fails closed and remains manually retryable'
     assert.equal(s.calls.filter(event => event.kind === 'accepted')[1].event_id, attempt.event_id);
     assert.deepEqual(s.calls.filter(event => event.kind === 'accepted')[1], attempt, 'retry preserves the original time and automatic trigger');
 });
+
+for (const restoreBeforeGrant of [false, true]) test(`hiding during an automatic decision revokes playback even if restored=${restoreBeforeGrant}`, async t => {
+    const s = surface(t);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const request = s.w.fetch;
+    s.w.fetch = async (url, init) => {
+        const result = await request(url, init);
+        if (JSON.parse(init.body).kind === 'accepted') await gate;
+        return result;
+    };
+    try {
+        s.show(); await s.advance(10000);
+        assert.equal(s.calls.filter(event => event.kind === 'accepted').length, 1);
+        assert.equal(s.message().blocks[0].state, 'saving');
+        s.visibility(true);
+        if (restoreBeforeGrant) s.visibility(false);
+        release(); await settle();
+        assert.equal(s.plays.length, 0);
+        assert.equal(s.message().blocks[0].state, 'failed');
+        assert.equal(s.calls.find(event => event.kind === 'failed')?.reason, 'autoplay_visibility_changed');
+        s.visibility(false); await s.advance(20000);
+        assert.equal(s.plays.length, 0, 'returning to the page does not replay the revoked grant');
+        assert.equal(s.calls.filter(event => event.kind === 'accepted').length, 1);
+    } finally { release(); await settle(); }
+});
+
+test('an explicit music choice remains authorized if the page hides while its response is pending', async t => {
+    const s = surface(t);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const request = s.w.fetch;
+    s.w.fetch = async (url, init) => {
+        const result = await request(url, init);
+        if (JSON.parse(init.body).kind === 'accepted') await gate;
+        return result;
+    };
+    try {
+        s.show(); s.choose('accepted'); await settle();
+        s.visibility(true); release(); await settle();
+        assert.equal(s.plays.length, 1);
+        assert.equal(s.calls.find(event => event.kind === 'accepted').reason, undefined);
+    } finally { release(); await settle(); }
+});
+
+for (const [incoming, expected] of [[112000, 110000], [108000, 108000], [0, 110000]]) test(`mirrored deadline ${incoming} converges in the serialized host view to ${expected}`, async t => {
+    const s = surface(t);
+    const original = structuredClone(s.message());
+    let displayed = structuredClone(original);
+    // applyChatMirror updates the host first, then delivers neko:chat-mirror.
+    // Keep the host snapshot separate from the controller's original object.
+    s.w.reactChatWindowHost = {
+        updateMessage(_id, patch) { displayed = structuredClone({ ...displayed, ...patch }); },
+    };
+    const publish = s.w.__nekoMirrorChatUpdate;
+    let publications = 0;
+    s.w.__nekoMirrorChatUpdate = (...args) => { publications++; publish(...args); };
+    s.show(); await s.advance(2000);
+    const before = publications;
+    const patch = { blocks: [{ ...displayed.blocks[0], autoPlayAt: incoming }] };
+    s.w.reactChatWindowHost.updateMessage(original.id, patch);
+    s.w.dispatchEvent(new s.w.CustomEvent('neko:chat-mirror', {
+        detail: { type: 'update', messageId: original.id, patch: structuredClone(patch) },
+    }));
+    assert.equal(displayed.blocks[0].autoPlayAt, expected);
+    assert.equal(Math.ceil((displayed.blocks[0].autoPlayAt - s.w.Date.now()) / 1000), (expected - 102000) / 1000);
+    assert.equal(publications - before, incoming === expected ? 0 : 1);
+    s.w.dispatchEvent(new s.w.CustomEvent('neko:chat-mirror', {
+        detail: { type: 'update', messageId: original.id, patch: { blocks: structuredClone(displayed.blocks) } },
+    }));
+    assert.equal(publications - before, incoming === expected ? 0 : 1, 'the canonical deadline does not echo');
+    await s.advance(expected - s.w.Date.now() - 1); assert.equal(s.plays.length, 0);
+    await s.advance(1); assert.equal(s.plays.length, 1);
+});

@@ -172,14 +172,20 @@
         // original offer's character, including after choices and mirror updates.
         const previous = messages.get(id);
         if (previous) message = Object.assign({}, message, { author: previous.author });
+        let deadlineCorrected = false;
         if (previous?.blocks[0].autoPlayAt > 0 && message.blocks[0].type === 'music_recommendation'
             && message.blocks[0].state === 'pending' && Number.isFinite(message.blocks[0].autoPlayAt)) {
+            const deadline = message.blocks[0].autoPlayAt > 0
+                ? Math.min(previous.blocks[0].autoPlayAt, message.blocks[0].autoPlayAt) : previous.blocks[0].autoPlayAt;
+            deadlineCorrected = deadline !== message.blocks[0].autoPlayAt;
             message = Object.assign({}, message, { blocks: [Object.assign({}, message.blocks[0], {
-                autoPlayAt: message.blocks[0].autoPlayAt > 0
-                    ? Math.min(previous.blocks[0].autoPlayAt, message.blocks[0].autoPlayAt) : previous.blocks[0].autoPlayAt
+                autoPlayAt: deadline
             })] });
         }
         messages.set(id, message);
+        // The mirror host has already rendered the incoming patch. Correct it
+        // through the same host/broadcast path; equal deadlines do not echo.
+        if (deadlineCorrected) update(id, message.blocks[0].state, message.blocks[0].error);
         if (message.blocks[0].state !== 'pending' || message.blocks[0].error) cancelMusicCountdown(id);
         else if (countdownShown.has(id) && message.blocks[0].autoPlayAt > 0) armMusicCountdown(id);
         // Only UI bookkeeping is evicted; pending evidence is kept separately.
@@ -342,7 +348,7 @@
         if (previous.blocks[0].type === 'proactive_recommendation' && previous.blocks[0].directDelivery) return;
         remember(message);
         const epoch = lifecycleEpoch;
-        const operation = {};
+        const operation = { automatic, playbackInvalidated: false };
         inFlight.set(id, operation);
         const isCurrent = () => !disposed && epoch === lifecycleEpoch && inFlight.get(id) === operation
             && belongsHere(messages.get(id)) && !retiredIds.has(id);
@@ -380,6 +386,13 @@
                 return;
             }
             if (kind !== 'accepted' || !result.playback_grant || dispatched.has(id)) return;
+            // The durable decision remains a fact, but hiding during its await
+            // revokes this automatic dispatch even if the page is visible again.
+            if (automatic && (operation.playbackInvalidated || document.visibilityState === 'hidden')) {
+                update(id, 'failed');
+                evidence(id, 'failed', { playback_id: 'unstarted:' + id, reason: 'autoplay_visibility_changed' });
+                return;
+            }
             dispatched.add(id);
             // Consent is for this track only; never substitute another song.
             const playback = typeof window.dispatchMusicPlayDetailed === 'function'
@@ -457,6 +470,7 @@
     });
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') {
+            for (const operation of inFlight.values()) if (operation.automatic) operation.playbackInvalidated = true;
             for (const id of musicCountdowns.keys()) cancelMusicCountdown(id);
         } else {
             for (const id of countdownShown) armMusicCountdown(id);
