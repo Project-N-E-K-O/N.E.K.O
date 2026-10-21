@@ -918,6 +918,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001 - Cleanup must continue; the late call below retries once.
             logger.warning("visit %s: status not sent: %s", self.visit_id[:6], type(exc).__name__)
             return
+        if not delivered:
+            # Active visits reach this boundary only once.  Give a transient
+            # disconnect/backpressure failure one bounded chance to recover.
+            await asyncio.sleep(0)
+            try:
+                delivered = await self.status(
+                    self.status_code,
+                    reason=self.status_details.get("reason"),
+                    retry_after_s=self.status_details.get("retry_after_s"),
+                )
+            except Exception as exc:  # noqa: BLE001 - Cleanup must continue.
+                logger.warning("visit %s: status retry failed: %s", self.visit_id[:6], type(exc).__name__)
+                return
         if delivered:
             self._status_published = True
 

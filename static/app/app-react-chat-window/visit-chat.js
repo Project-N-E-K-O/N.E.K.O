@@ -1585,6 +1585,17 @@
                 }
                 return;
             }
+            if (current.status === 404) {
+                // /rooms/current only covers pending host invitations.  A 404
+                // may mean the visit ended or advanced, so reconcile against
+                // the authoritative state instead of leaving stale controls.
+                var stateResult = await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(catgirl));
+                if (currentCatgirl() !== catgirl || visit.visitId !== visitId || stateFrameSeq !== seqAtSend) return;
+                if (stateResult.status === 200 && stateResult.body && typeof stateResult.body === 'object') {
+                    applyState(stateResult.body, false);
+                    if (visit.visitId !== visitId || visit.phase !== 'pending' || visit.inviteCode) return;
+                }
+            }
             var restored = applyHostRoomResponse(current, catgirl, seqAtSend);
             if (restored && restored.hasCode) return;
             if (visit.visitId === visitId && visit.phase === 'pending') {

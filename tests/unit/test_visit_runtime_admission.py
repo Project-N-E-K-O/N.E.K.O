@@ -2420,7 +2420,7 @@ async def test_final_status_retries_when_the_host_reports_delivery_failure(tmp_p
         rt.status_code = "VISIT_KICKED"
         rt.status_details = {"reason": "kicked"}
         await rt._publish_final_status()
-        assert rt._status_published is False
+        assert rt._status_published is True
         await rt._publish_final_status()
         assert rt._status_published is True
         assert attempts == 2

@@ -1403,6 +1403,22 @@ const report = {};
     report.pending_before_create_recovered_code = state.inviteCode;
     report.pending_before_create_count = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
   }
+  // ── 恢复接口 404：用权威 state 收掉已结束场次，不能永远停在等待邀请码 ──
+  {
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    const stateUrl = '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA';
+    const routes = {
+      [currentUrl]: async () => ({ status: 404, body: { error: 'no_pending_invite' } }),
+      [stateUrl]: async () => ({ status: 200, body: { enabled: true, active: false } }),
+      '/api/visit/rooms': async () => ({ status: 202, body: { visit_id: VID2, phase: 'pending' } }),
+    };
+    const h = createHarness({ routes });
+    await h.chat._test.startInvite();
+    h.advance(300);
+    await h.settle();
+    report.missing_current_reconciled_visit = h.chat._test.state().visit.visitId;
+    report.missing_current_state_probes = h.fetches.filter((f) => f.url === stateUrl).length;
+  }
   // ── 建房在途时换了角色：后端收下的那一场同样立刻硬结束 ──
   {
     let release;
@@ -1997,6 +2013,11 @@ def test_pending_frame_before_create_reply_still_recovers_the_invite_code(report
     assert report["pending_before_create_recovered_phase"] == "invite_ready"
     assert report["pending_before_create_recovered_code"] == "ZXCVBNMA23"
     assert report["pending_before_create_count"] == 1
+
+
+def test_missing_current_invite_reconciles_authoritative_visit_state(report):
+    assert report["missing_current_reconciled_visit"] in (None, "")
+    assert report["missing_current_state_probes"] == 1
 
 
 def test_self_line_recipient_uses_the_lines_own_side(report):
