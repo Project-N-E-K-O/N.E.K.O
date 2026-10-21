@@ -66,6 +66,12 @@ export const usePluginStore = defineStore('plugin', () => {
   const pluginSummarySnapshotLoaded = ref(false)
   const pluginSummaryFetchedAt = ref(0)
   const pluginSummaryFetchedLocale = ref<string | null>(null)
+  // Consumers of installation provenance invalidate even if a follow-up
+  // registry/list request fails after the installation itself succeeded.
+  const registryRevision = ref(0)
+  let statusReadSequence = 0
+  const runtimeStatusTickets = new Map<string, number>()
+  const metadataStatuses = ref<Record<string, { status: string; ticket: number }>>({})
   
   // 防止请求堆积：正在进行的请求
   let pendingFetchStatus: Promise<boolean> | null = null
@@ -96,10 +102,35 @@ export const usePluginStore = defineStore('plugin', () => {
   // start API 会把 `enabled` override 翻回 true；默认模式下 stop 不再
   // 写入 enabled=false，临时停止只改变当前进程。`auto_start` 默认不随
   // 手动启停改写，只由独立的自动启动开关（PUT /plugin/{id}/auto-start）设置。
+  function runtimeStatus(data: unknown): string | undefined {
+    if (!data || typeof data !== 'object') return
+    const value = (data as { status?: unknown }).status
+    const status = typeof value === 'string' ? value
+      : value && typeof value === 'object' ? (value as { status?: unknown }).status : undefined
+    return typeof status === 'string' && status.length > 0 ? status : undefined
+  }
+
+  function recordMetadataStatus(plugin: PluginListSummary, ticket: number) {
+    if (typeof plugin.status !== 'string' || !plugin.status) return
+    if (ticket < (metadataStatuses.value[plugin.id]?.ticket ?? 0)) return
+    metadataStatuses.value[plugin.id] = { status: plugin.status, ticket }
+  }
+
+  function displayStatus(plugin: PluginListSummary): string {
+    const metadata = metadataStatuses.value[plugin.id]
+    const status = metadata?.status || plugin.status || StatusEnum.STOPPED
+    // Registry faults cannot be learned from /plugin/status: for a plugin
+    // without a host it can synthesize "stopped". Only new metadata clears them.
+    if (status === 'load_failed' || status === 'source_missing') return status
+    const runtime = runtimeStatus(pluginStatuses.value[plugin.id])
+    return runtime && (runtimeStatusTickets.get(plugin.id) ?? 0) >= (metadata?.ticket ?? 0)
+      ? runtime : status
+  }
+
   function withDisplayState<P extends PluginListSummary>(plugin: P) {
     return {
       ...plugin,
-      status: typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED,
+      status: displayStatus(plugin),
       enabled: plugin.runtime_enabled !== false,
       autoStart: plugin.runtime_auto_start !== false,
     }
@@ -128,6 +159,7 @@ export const usePluginStore = defineStore('plugin', () => {
       return pendingFetchSummaries
     }
     const seq = ++fetchSummariesSeq
+    const statusTicket = ++statusReadSequence
     const savesBefore = autoStartSaveSeq
     pendingFetchSummariesLocale = requestLocale
     pendingFetchSummaries = (async () => {
@@ -140,7 +172,8 @@ export const usePluginStore = defineStore('plugin', () => {
           const saved = confirmedAutoStart.get(plugin.id)
           return saved && saved.seq > savesBefore ? withConfirmedAutoStart(plugin, saved.value) : plugin
         })
-        pruneDetails(new Set(nextSummaries.map(plugin => plugin.id)))
+        prunePluginCaches(new Set(nextSummaries.map(plugin => plugin.id)), statusTicket)
+        nextSummaries.forEach(plugin => recordMetadataStatus(plugin, statusTicket))
         pluginSummaries.value = reconcilePluginSnapshot(pluginSummaries.value, nextSummaries)
         pluginSummarySnapshotLoaded.value = true
         pluginSummaryFetchedAt.value = Date.now()
@@ -170,6 +203,7 @@ export const usePluginStore = defineStore('plugin', () => {
     const requestLocale = getLocale()
     const savesBefore = autoStartSaveSeq
     const seq = (fetchDetailSeq.get(pluginId) || 0) + 1
+    const statusTicket = ++statusReadSequence
     fetchDetailSeq.set(pluginId, seq)
     let request!: Promise<void>
     // A locale switch or a summary that dropped this plugin bumps the fence.
@@ -179,6 +213,7 @@ export const usePluginStore = defineStore('plugin', () => {
       try {
         const detail = await getPlugin(pluginId, requestLocale)
         if (!stillCurrent()) return
+        recordMetadataStatus(detail, statusTicket)
         const saved = confirmedAutoStart.get(pluginId)
         pluginDetails.value = { ...pluginDetails.value, [pluginId]: saved && saved.seq > savesBefore
           ? withConfirmedAutoStart(detail, saved.value) : detail }
@@ -191,6 +226,7 @@ export const usePluginStore = defineStore('plugin', () => {
         const detail = response.plugins?.find((plugin) => plugin.id === pluginId)
         if (!stillCurrent()) return
         if (detail) {
+          recordMetadataStatus(detail, statusTicket)
           const saved = confirmedAutoStart.get(pluginId)
           pluginDetails.value = { ...pluginDetails.value, [pluginId]: saved && saved.seq > savesBefore
             ? withConfirmedAutoStart(detail, saved.value) : detail }
@@ -207,8 +243,8 @@ export const usePluginStore = defineStore('plugin', () => {
     return request
   }
 
-  // Installs and upgrades only refresh summaries, so a cached copy is served
-  // immediately and revalidated in the background.
+  // Navigation serves a cached detail immediately and revalidates it without
+  // unmounting editors. Registry reconciliation also revalidates loaded details.
   async function ensurePlugin(pluginId: string) {
     const cached = pluginDetails.value[pluginId]
     if (cached) {
@@ -229,14 +265,23 @@ export const usePluginStore = defineStore('plugin', () => {
 
   function invalidateDetail(pluginId: string) {
     fetchDetailSeq.set(pluginId, (fetchDetailSeq.get(pluginId) || 0) + 1)
+    pendingFetchDetails.delete(pluginId)
   }
 
-  function pruneDetails(liveIds: ReadonlySet<string>) {
-    const ids = new Set([...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys()])
+  function prunePluginCaches(liveIds: ReadonlySet<string>, statusTicket: number) {
+    const ids = new Set([
+      ...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys(),
+      ...Object.keys(pluginStatuses.value), ...Object.keys(metadataStatuses.value),
+    ])
     let dropped = false
     for (const id of ids) {
       if (liveIds.has(id)) continue
       invalidateDetail(id)
+      // Leave a ticket tombstone so a pre-removal status response cannot bring
+      // back a cached runtime state for a later installation under the same ID.
+      runtimeStatusTickets.set(id, Math.max(statusTicket, runtimeStatusTickets.get(id) ?? 0))
+      delete pluginStatuses.value[id]
+      delete metadataStatuses.value[id]
       dropped = true
     }
     if (!dropped) return
@@ -279,6 +324,39 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
+    const loadedDetailIds = new Set([
+      ...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys(),
+    ])
+    // Reads started before this reconciliation describe the previous install.
+    fetchSummariesSeq += 1
+    pendingFetchSummaries = null
+    pendingFetchSummariesLocale = null
+    for (const id of loadedDetailIds) {
+      invalidateDetail(id)
+    }
+    let summariesUpdated = false
+    try {
+      const result = await refreshRegistrySummaries(options)
+      summariesUpdated = true
+      return result
+    } finally {
+      const liveIds = summariesUpdated ? new Set(pluginSummaries.value.map(plugin => plugin.id)) : null
+      const detailIds = new Set([
+        ...loadedDetailIds, ...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys(),
+      ])
+      const results = await Promise.allSettled([...detailIds]
+        .filter(id => !liveIds || liveIds.has(id))
+        .map(id => fetchPluginDetail(id, true)))
+      for (const outcome of results) {
+        if (outcome.status === 'rejected') {
+          console.warn('Failed to revalidate plugin detail after registry sync:', outcome.reason)
+        }
+      }
+      registryRevision.value += 1
+    }
+  }
+
+  async function refreshRegistrySummaries(options: RegistrySyncOptions): Promise<RegistrySyncResult> {
     let result: RegistrySyncResult
     try {
       const response = await refreshPluginsRegistry(
@@ -335,6 +413,7 @@ export const usePluginStore = defineStore('plugin', () => {
     if (!pluginId && pendingFetchStatus && !force) {
       return pendingFetchStatus
     }
+    const statusTicket = ++statusReadSequence
     
     // 设置超时自动清理（仅对全量请求）
     let timeoutId: ReturnType<typeof setTimeout> | null = null
@@ -359,12 +438,26 @@ export const usePluginStore = defineStore('plugin', () => {
         // 忽略过期响应（仅对全量请求）
         if (!pluginId && seq !== fetchStatusSeq) return false
         if (pluginId) {
-          // 单个插件状态
-          pluginStatuses.value[pluginId] = response as PluginStatusData
+          if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return false
+          if (runtimeStatus(response)) {
+            runtimeStatusTickets.set(pluginId, statusTicket)
+            pluginStatuses.value = { ...pluginStatuses.value, [pluginId]: response as PluginStatusData }
+          }
         } else {
-          // 所有插件状态
           const statuses = response as { plugins: Record<string, PluginStatusData> }
-          pluginStatuses.value = statuses.plugins || {}
+          const incoming = statuses.plugins || {}
+          const next = { ...pluginStatuses.value }
+          for (const id of new Set([...Object.keys(next), ...Object.keys(incoming)])) {
+            if (statusTicket < (runtimeStatusTickets.get(id) ?? 0)) continue
+            if (runtimeStatus(incoming[id])) {
+              runtimeStatusTickets.set(id, statusTicket)
+              next[id] = incoming[id]!
+            } else if (!(id in incoming)) {
+              runtimeStatusTickets.set(id, statusTicket)
+              delete next[id]
+            }
+          }
+          pluginStatuses.value = next
           pluginStatusSnapshotLoaded.value = true
           pluginStatusFetchedAt.value = Date.now()
         }
@@ -558,6 +651,7 @@ export const usePluginStore = defineStore('plugin', () => {
     pluginSummariesWithStatus,
     getPluginById,
     pluginListRegistrySynced,
+    registryRevision,
     pluginStatusSnapshotLoaded,
     // 操作
     fetchPluginSummaries,

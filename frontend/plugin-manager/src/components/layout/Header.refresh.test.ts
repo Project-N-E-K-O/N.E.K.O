@@ -54,6 +54,9 @@ afterEach(() => { cleanup(); cleanup = () => {}; vi.restoreAllMocks(); vi.useRea
 describe('titlebar refresh through the real plugin store', () => {
   it('does not announce success when the status endpoint fails; retains the old snapshot', async () => {
     vi.mocked(getPluginStatus).mockRejectedValue(new Error('offline'))
+    // The plugin still exists. A successful empty list instead confirms removal
+    // and must prune its cached runtime state even when the status fetch fails.
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [{ id: 'demo' }], message: '' } as never)
     const store = await refreshFromTitlebar()
     expect(messages.success).not.toHaveBeenCalled()
     expect(messages.warning).toHaveBeenCalledWith('messages.refreshPartialFailure')

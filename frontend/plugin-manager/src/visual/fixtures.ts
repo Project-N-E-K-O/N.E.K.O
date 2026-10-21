@@ -121,7 +121,7 @@ async function isolateNetwork(page: Page) {
       success: true, added: [], updated: [], removed: [], removed_running: [],
       unchanged: visualPlugins.map((plugin) => plugin.id), failed: [], scanned_count: visualPlugins.length,
     }
-    else if (path === '/plugin/status') payload = { plugins: Object.fromEntries(visualPlugins.map((plugin) => [plugin.id, plugin.status])) }
+    else if (path === '/plugin/status') payload = { plugins: Object.fromEntries(visualPlugins.map((plugin) => [plugin.id, { plugin_id: plugin.id, status: { status: plugin.status } }])) }
     else if (path === '/server/info') payload = { sdk_version: '0.1.0', plugins_count: visualPlugins.length, time: FIXED_TIME }
     else if (path === '/plugin/metrics') payload = {
       global: { total_cpu_percent: 12.4, total_memory_percent: 18, total_memory_mb: 1228.8, total_threads: 31, active_plugins: 4 },
@@ -129,7 +129,7 @@ async function isolateNetwork(page: Page) {
     else if (path === '/market/status') payload = { market_url: 'https://market.example.test', market_web_url: 'https://market.example.test' }
     else if (path === '/market/bridge-token') payload = { bridge_token: 'visual-test-token' }
     else if (path === '/market/oauth/status') payload = { authenticated: false, auth_state: 'disconnected' }
-    else if (path === '/market/installed') payload = { items: [] }
+    else if (path === '/market/installed') payload = { installed: [] }
     else if (path === '/market/catalog/api/v1/plugins/latest-versions') payload = { items: [
       { plugin_id: 101, version: '1.2.0', channel: 'stable' },
       { plugin_id: 102, version: '0.2.9', channel: 'stable' },

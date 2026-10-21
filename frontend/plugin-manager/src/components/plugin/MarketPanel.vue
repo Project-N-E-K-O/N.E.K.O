@@ -291,6 +291,7 @@ import {
   type MarketInstallMode,
 } from '@/stores/marketInstallTask'
 import { usePluginStore } from '@/stores/plugin'
+import { useMarketInstalledStore } from '@/stores/marketInstalled'
 import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 import { useUserPreferenceStore } from '@/stores/userPreference'
 import {
@@ -301,9 +302,7 @@ import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
 import {
   deriveMarketPluginAction,
-  fetchInstalledProjection,
   inferUnresolvedLocalConflict,
-  type MarketInstalledState,
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
@@ -315,11 +314,9 @@ import {
 } from '@/utils/confirmBuiltinOverride'
 import {
   extractRepoPluginId,
-  indexInstalledPluginIdentities,
   localPluginIdentityKeys,
   marketIdentityKeys,
   marketLocalIdentityKeys,
-  marketRecordIdentityKeys,
 } from '@/utils/marketPluginIdentity'
 
 interface Props {
@@ -337,6 +334,7 @@ defineEmits<{ close: [] }>()
 
 const { t } = useI18n()
 const pluginStore = usePluginStore()
+const marketInstalled = useMarketInstalledStore()
 const userPref = useUserPreferenceStore()
 
 const loading = ref(false)
@@ -365,11 +363,11 @@ const installTask = useMarketInstallTaskStore()
 const installTaskDialogVisible = ref(false)
 const pluginUpdates = usePluginUpdatesStore()
 
-// The update popup and this page keep separate installed-version snapshots;
-// an upgrade from either side must refresh the other, or it keeps offering
-// the version that was just installed.
-watch(() => pluginUpdates.completedUpgrades, () => {
-  void yankSweep().catch(() => undefined)
+// Registry reconciliation invalidates the shared installed projection, regardless
+// of whether the market drawer is currently visible. Hidden drawers revalidate
+// when reopened; visible ones also refresh their yank warnings here.
+watch(() => pluginStore.registryRevision, () => {
+  if (props.active) void yankSweep().catch(() => undefined)
 })
 
 // 静默安装后把任务面板拉回来的入口：对话框是唯一的取消入口，关掉它不该让
@@ -519,17 +517,6 @@ function resolveApiErrorMessage(payload: unknown, fallbackKey = 'market.installF
 const sortBy = ref<'created_at' | 'download_count' | 'rating_average' | 'name'>('created_at')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 
-// 已装插件按 runtime plugin_id 和 Market record id 分开索引，避免两个
-// 身份命名空间（尤其数字 ID）互相覆盖。
-interface InstalledMarketEntry extends MarketInstalledState {
-  market_id?: string
-  installed_version: string
-  channel?: 'stable' | 'beta'
-  package_url?: string
-}
-const installedByPluginId = ref<Map<string, InstalledMarketEntry>>(new Map())
-const installedByMarketId = ref<Map<string, InstalledMarketEntry>>(new Map())
-const installedProjectionLoaded = ref(false)
 // pluginId → 当前装的版本是否已被作者撤回（v2 yank 检测）
 const yankedMap = ref<Record<string, boolean>>({})
 
@@ -552,22 +539,14 @@ function isInstalled(plugin: MarketPlugin): boolean {
   return marketLocalIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key))
 }
 
-function getInstalledState(plugin: MarketPlugin): InstalledMarketEntry | undefined {
-  for (const key of marketRecordIdentityKeys(plugin)) {
-    const entry = installedByMarketId.value.get(key)
-    if (entry) return entry
-  }
-  for (const key of marketLocalIdentityKeys(plugin)) {
-    const entry = installedByPluginId.value.get(key)
-    if (entry) return entry
-  }
-  return undefined
+function getInstalledState(plugin: MarketPlugin) {
+  return marketInstalled.getInstalledState(plugin)
 }
 
 function getMarketAction(plugin: MarketPlugin): MarketPluginAction {
   const state = getInstalledState(plugin)
   const unresolvedLocalConflict = inferUnresolvedLocalConflict(
-    installedProjectionLoaded.value,
+    marketInstalled.loaded,
     state,
     marketLocalIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key)),
   )
@@ -716,16 +695,6 @@ async function loadPlugins() {
 
 // ─── Installed snapshot + yank detection (R8) ────────────────────────
 
-interface MarketInstalledItem extends MarketInstalledState {
-  path: string
-}
-
-async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null> {
-  return fetchInstalledProjection<MarketInstalledItem>(
-    () => fetchBridge('/market/installed'),
-  )
-}
-
 /**
  * 拉一遍 /market/installed，更新已安装身份索引与 yankedMap。
  *
@@ -737,36 +706,36 @@ async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null>
 // Sweeps can overlap (a batch upgrade from the update popup starts one per
 // plugin): a late response must not overwrite a newer snapshot, yet a newer
 // sweep that fails must not discard an older sweep's valid data either.
-const yankSweepGuard = createStaleResponseGuard<'installed' | 'yanked'>()
+const yankSweepGuard = createStaleResponseGuard<'yanked'>()
+let pendingYankSweep: { revision: number; channel: 'stable' | 'beta'; promise: Promise<void> } | null = null
 
-async function yankSweep() {
-  if (!marketAvailable.value) return
+function yankSweep(): Promise<void> {
+  if (!marketAvailable.value) return Promise.resolve()
+  const revision = pluginStore.registryRevision
+  const channel = userPref.channel
+  // A successful install both changes the registry revision and explicitly
+  // awaits reconciliation. They must join the same sweep, including its yank
+  // lookups, rather than starting two identical sets of requests.
+  if (pendingYankSweep && pendingYankSweep.revision === revision && pendingYankSweep.channel === channel) {
+    return pendingYankSweep.promise
+  }
+  const promise = runYankSweep(revision, channel).finally(() => {
+    if (pendingYankSweep?.promise === promise) pendingYankSweep = null
+  })
+  pendingYankSweep = { revision, channel, promise }
+  return promise
+}
+
+async function runYankSweep(revision: number, channel: 'stable' | 'beta'): Promise<void> {
   const ticket = yankSweepGuard.begin()
-  const installed = await fetchInstalledFromBridge()
-  if (installed === null || !yankSweepGuard.accept('installed', ticket)) return
-  const entries: InstalledMarketEntry[] = []
-  const uniqueEntries = new Map<string, InstalledMarketEntry>()
-  for (const item of installed) {
-    const entry: InstalledMarketEntry = {
-      ...item,
-      plugin_id: item.plugin_id,
-      market_id: item.latest_install_source?.plugin_market_id,
-      installed_version: item.effective_version
-        || item.latest_install_source?.version
-        || item.builtin_version
-        || '',
-      channel: item.latest_install_source?.channel,
-      package_url: item.latest_install_source?.package_url,
-    }
-    entries.push(entry)
-    if (item.latest_install_source && entry.channel && entry.package_url) {
-      uniqueEntries.set(item.plugin_id.toLowerCase(), entry)
+  const installed = await marketInstalled.ensureFresh({ force: true })
+  if (installed === null || revision !== pluginStore.registryRevision || channel !== userPref.channel) return
+  const uniqueEntries = new Map<string, typeof installed[number]>()
+  for (const entry of installed) {
+    if (entry.latest_install_source && entry.channel && entry.package_url) {
+      uniqueEntries.set(entry.plugin_id.toLowerCase(), entry)
     }
   }
-  const indexes = indexInstalledPluginIdentities(entries)
-  installedByPluginId.value = indexes.byPluginId
-  installedByMarketId.value = indexes.byMarketId
-  installedProjectionLoaded.value = true
   // Build the next yank map into a local, then atomic-swap below — so a
   // transient `fetchMarketPluginVersions` failure preserves the previous
   // warning (R8.5 "失败静默") instead of clearing every entry's flag until
@@ -818,6 +787,7 @@ async function yankSweep() {
     if (marketKey) nextYanked[marketKey] = yanked
   }
 
+  if (revision !== pluginStore.registryRevision || channel !== userPref.channel) return
   if (!yankSweepGuard.accept('yanked', ticket)) return
   yankedMap.value = nextYanked
 }
@@ -1231,8 +1201,11 @@ onBeforeUnmount(() => {
 watch(
   () => props.active,
   (active) => {
-    if (active && plugins.value.length === 0 && !loading.value) {
-      initialize()
+    if (!active) return
+    if (plugins.value.length === 0 && !loading.value) {
+      void initialize()
+    } else if (marketInstalled.stale) {
+      void yankSweep().catch(() => undefined)
     }
   },
 )
