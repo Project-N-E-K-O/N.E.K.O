@@ -22,7 +22,11 @@ export default function CompactMusicRecommendationPrompt({ messages, onAction }:
           && next.blocks.some(part => part.type !== 'music_recommendation' && part.type !== 'proactive_recommendation')));
     })
     .map(block => ({ message, block })));
-  const item = pending[pending.length - 1];
+  // Keep the choices for an exposed countdown reachable until it settles.
+  // Later direct material can use this slot after the music decision.
+  const counting = pending.filter(({ block }) => block.type === 'music_recommendation'
+    && block.state === 'pending' && !block.error && (block.autoPlayAt || 0) > Date.now());
+  const item = counting[counting.length - 1] || pending[pending.length - 1];
   if (!item) return null;
   const { message, block } = item;
   if (block.type !== 'music_recommendation' && block.type !== 'proactive_recommendation') return null;
