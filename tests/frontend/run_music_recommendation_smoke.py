@@ -116,6 +116,7 @@ def main():
     await import('/static/jukebox/music_ui.js');
     await import('/static/app/app-recommendations.js');
     window.smokeContentRecommendations = CONTENT_SEEDS;
+    window.smokeMusicRecommendations = SEEDS;
     window.__appReactChatWindowParts = {
       $:id=>document.getElementById(id==='react-chat-window-root'?'root':id),
       isHomeCompactMinimizeBallRoute:()=>true,isCompactHomeMinimizeBallEnabled:()=>surfaceMode==='compact',

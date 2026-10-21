@@ -256,10 +256,10 @@ for (const kind of ['music', 'news', 'vision']) {
   }
 }
 
-for (const [state, dismissed, imageExpected] of [['pending', false, false], ['skipped', false, false],
-  ['accepted', false, true], ['accepted', true, false]]) {
-  test(`meme export respects visible preview consent: ${state}, dismissed=${dismissed}`, async () => {
-    const m = recommendation('meme', { category: 'meme', state, dismissed,
+for (const [state, dismissed, imageExpected, directDelivery] of [['pending', false, false, false], ['skipped', false, false, false],
+  ['accepted', false, true, false], ['accepted', true, false, false], ['pending', false, true, true], ['pending', true, false, true], ['skipped', false, false, true]]) {
+  test(`meme export respects visible preview: ${state}, dismissed=${dismissed}, direct=${directDelivery}`, async () => {
+    const m = recommendation('meme', { category: 'meme', state, dismissed, directDelivery,
       content: { title: 'A waving cat', source: 'Example', url: 'https://example.test/cat.png' } });
     const f = fixture([m]);
     const preview = await f.api.buildCompactInlinePreview({ messageIds: [m.id], format: 'markdown' });

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import MessageBlockView from './MessageBlockView';
 import App from './App';
@@ -12,6 +12,22 @@ function message(state = 'pending') {
 }
 
 describe('music recommendation card', () => {
+  it('shows the shared ten-second deadline below the buttons and removes it after a decision', () => {
+    vi.useFakeTimers();
+    try {
+      const msg = message();
+      if (msg.blocks[0].type !== 'music_recommendation') throw new Error('Expected music block');
+      const block = { ...msg.blocks[0], autoPlayAt: Date.now() + 10000 };
+      const view = render(<MessageBlockView block={block} message={msg} />);
+      expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '10');
+      expect(screen.getByText('Plays automatically in 10 s')).toBeInTheDocument();
+      act(() => vi.advanceTimersByTime(4000));
+      expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6');
+      view.rerender(<MessageBlockView block={{ ...block, state: 'skipped' }} message={msg} />);
+      expect(screen.queryByRole('progressbar')).toBeNull();
+      view.unmount();
+    } finally { vi.useRealTimers(); }
+  });
   it('uses a text bubble without a cover in compact presentation and keeps the same decisions', () => {
     const msg = message();
     const action = vi.fn();

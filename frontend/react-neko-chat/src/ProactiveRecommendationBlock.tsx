@@ -32,6 +32,8 @@ export default function ProactiveRecommendationBlock({ block, message, interacti
   const url = normalizeExternalUrlHref(block.content.url);
   const isMeme = block.category === 'meme';
   const isScreenObservation = block.category === 'vision' && !block.content.url;
+  const direct = !!block.directDelivery && (isMeme || isScreenObservation);
+  const showMeme = isMeme && (block.state === 'accepted' || (direct && block.state === 'pending'));
   const generatedMemeTitle = isMeme && /^(?:表情(?:包)?|meme|gif|image)[_\s-]*\d+(?:\.(?:gif|png|jpe?g|webp))?$/i.test(block.content.title.trim());
   const title = generatedMemeTitle ? i18n('proactiveCard.memeTitle', 'A meme I wanted to share with you')
     : block.content.title || i18n(`proactiveCard.hints.${block.category}`, 'Would you like to take a look?');
@@ -45,23 +47,23 @@ export default function ProactiveRecommendationBlock({ block, message, interacti
         : block.state === 'unavailable' ? i18n('proactiveCard.unavailable', 'This recommendation is no longer available') : '';
   return <div ref={root} className={`proactive-recommendation proactive-recommendation-${presentation}`}
     data-recommendation-id={block.recommendationId} data-proactive-category={block.category}>
-    <header className="proactive-recommendation-heading">
+    {direct && isScreenObservation ? <p className="proactive-direct-observation">{title}</p> : <header className="proactive-recommendation-heading">
       <span className="proactive-recommendation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">{icons[block.category]}</svg></span>
       <div><div className="proactive-recommendation-meta"><span className="proactive-recommendation-category">{category}</span>
         {block.content.source ? <><span aria-hidden="true">·</span><small title={block.content.source}>{block.content.source}</small></> : null}</div>
         <strong>{title}</strong>
       </div>
-    </header>
-    {block.state === 'accepted' && isMeme && url && !block.dismissed ? <MessageImageBlock
+    </header>}
+    {showMeme && url && !block.dismissed ? <MessageImageBlock
       block={{ type: 'image', url: `/api/meme/proxy-image?url=${encodeURIComponent(url)}`, alt: title }}
       interactive={interactive} /> : null}
-    {block.state === 'accepted' && isMeme ? <button type="button" className="message-action-button proactive-recommendation-preview-toggle" disabled={!interactive}
+    {showMeme ? <button type="button" className="message-action-button proactive-recommendation-preview-toggle" disabled={!interactive}
       onClick={() => onAction?.(message, { id: 'preview', action: block.dismissed ? 'proactive_recommendation_reveal' : 'proactive_recommendation_dismiss', label: 'preview', payload: { recommendationId: block.recommendationId } })}>
       {block.dismissed ? i18n('proactiveCard.reveal', 'Show me') : i18n('proactiveCard.dismiss', 'Close preview')}</button> : null}
-    {status ? <div role="status">{status}</div> : null}
+    {status && !direct ? <div role="status">{status}</div> : null}
     {block.error ? <div role="alert">{i18n(block.state === 'accepted' ? 'proactiveCard.openFailed' : 'proactiveCard.saveFailed',
       block.state === 'accepted' ? 'Could not open the content. Use the link below to try again.' : 'Could not save. Please try again.')}</div> : null}
-    {block.state === 'pending' || block.state === 'saving' ? <div className="proactive-recommendation-actions">
+    {!direct && (block.state === 'pending' || block.state === 'saving') ? <div className="proactive-recommendation-actions">
       <button type="button" className="message-action-button proactive-recommendation-action proactive-recommendation-accept" disabled={!interactive || block.state === 'saving'}
         onClick={() => choose('accepted')}>
         <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="m3.5 8 3 3 6-6" /></svg>{i18n(isScreenObservation ? 'proactiveCard.interested' : isMeme ? 'proactiveCard.reveal' : url ? 'proactiveCard.view' : 'proactiveCard.acknowledge', isScreenObservation ? 'Interested' : isMeme ? 'Show me' : url ? 'View' : 'Got it')}

@@ -10,6 +10,11 @@ export default function CompactMusicRecommendationPrompt({ messages, onAction }:
     .filter(block => {
       if (block.type !== 'music_recommendation' && block.type !== 'proactive_recommendation') return false;
       if (block.type === 'proactive_recommendation' && !hasProactiveRecommendationContent(block)) return false;
+      if (block.type === 'proactive_recommendation' && block.directDelivery) {
+        return !block.dismissed && !['skipped', 'unavailable'].includes(block.state)
+          && !messages.slice(index + 1).some(next => next.role === 'user' || (next.role === 'assistant' && next.turnId && next.turnId !== message.turnId
+            && next.blocks.some(part => part.type !== 'music_recommendation' && part.type !== 'proactive_recommendation')));
+      }
       if (block.expiresAt && block.expiresAt <= Date.now()) return false;
       if (['pending', 'saving'].includes(block.state)) return true;
       return block.type === 'proactive_recommendation' && block.category === 'meme' && block.state === 'accepted' && !block.dismissed

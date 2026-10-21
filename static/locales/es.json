@@ -5283,6 +5283,8 @@
         "recommendation": {
             "title": "Recomendación musical",
             "pending": "¿Quieres escuchar esta canción?",
+            "autoPlayCountdown": "Reproducción automática en {{seconds}} s",
+            "autoPlayProgress": "Tiempo hasta la reproducción automática",
             "saving": "Guardando tu elección…",
             "accepted": "Preparando la reproducción…",
             "skipped": "Omitida esta vez",

@@ -74,6 +74,13 @@ async function run() {
     }
     await follower.webContents.executeJavaScript("document.querySelector('.music-recommendation-card').scrollIntoView({block:'start',behavior:'instant'})");
     stage = 'compact-bubble-and-full-card';
+    // Keep one historical pending offer (without a countdown) for the later manual race.
+    await owner.webContents.executeJavaScript(`(() => { const r=window.smokeMusicRecommendations[2], messageId='music-recommendation-'+r.id;
+        const patch={blocks:[{
+            type:'music_recommendation',recommendationId:r.id,track:r.track,state:'pending',expiresAt:r.expires_at*1000
+        }]};
+        window.__nekoMirrorChatUpdate(window.reactChatWindowHost,messageId,patch);
+        window.dispatchEvent(new CustomEvent('neko:chat-mirror',{detail:{type:'update',messageId,patch}})); })()`);
     await owner.webContents.executeJavaScript("window.setSmokeSurfaceMode('compact')");
     await waitFor(owner,"document.querySelectorAll('.compact-music-recommendation-prompt .music-recommendation-bubble button').length === 2");
     await waitFor(owner,"(() => { const e=document.querySelector('.compact-music-recommendation-prompt'); const r=e.getBoundingClientRect(); return r.width>0 && r.top>=0 && r.bottom<=innerHeight && e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)); })()");
@@ -87,18 +94,23 @@ async function run() {
     await follower.webContents.executeJavaScript("document.querySelectorAll('.music-recommendation-card')[0].querySelectorAll('button')[1].click()");
     await waitFor(owner,"document.querySelectorAll('.music-recommendation-card')[0].textContent.includes('这次先不听')");
     for (const win of windows) assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('audio').length"),0,'skip never creates audio');
-    stage = 'accept-play-pause-resume-ended';
-    await follower.webContents.executeJavaScript("document.querySelectorAll('.music-recommendation-card')[1].querySelector('button').click()");
-    await waitFor(follower,"window.aplayer && !window.aplayer.audio.paused");
-    await waitFor(follower,"window.aplayer.audio.currentTime > 0.1");
-    assert.equal(await owner.webContents.executeJavaScript("document.querySelectorAll('audio').length"),0,'follower owns the only audio instance');
-    await follower.webContents.executeJavaScript("window.aplayer.pause()");
+    stage = 'automatic-countdown-play-pause-resume-ended';
+    await waitFor(follower,"fetch('/api/proactive/recommendations/events', {headers:{'X-CSRF-Token':'smoke-token'}}).then(r=>r.json()).then(r=>r.events.some(e=>e.kind==='accepted' && e.reason==='countdown_elapsed'))");
+    const deadline = Date.now() + 10000;
+    let initialPlayer;
+    while (Date.now() < deadline) {
+        const playing = await Promise.all(windows.map(win => win.webContents.executeJavaScript("!!(window.aplayer && !window.aplayer.audio.paused)")));
+        if (playing.some(Boolean)) { assert.equal(playing.filter(Boolean).length, 1); initialPlayer = windows[playing.findIndex(Boolean)]; break; }
+        await new Promise(resolve => setTimeout(resolve, 40));
+    }
+    assert.ok(initialPlayer, 'the ten-second deadline starts exactly one real player');
+    await waitFor(initialPlayer,"window.aplayer.audio.currentTime > 0.1");
+    await initialPlayer.webContents.executeJavaScript("window.aplayer.pause()");
     await waitFor(owner,"document.querySelectorAll('.music-recommendation-card')[1].textContent.includes('已暂停')");
-    await follower.webContents.executeJavaScript("window.aplayer.play()");
-    await waitFor(follower,"window.aplayer.audio.ended",20000);
+    await initialPlayer.webContents.executeJavaScript("window.aplayer.play()");
+    await waitFor(initialPlayer,"window.aplayer.audio.ended",20000);
     await waitFor(owner,"document.querySelectorAll('.music-recommendation-card')[1].textContent.includes('已听完')");
-    // Release the completed playback before testing the next consent operation.
-    await follower.webContents.executeJavaScript("window.destroyMusicPlayer(true,true,true)");
+    await initialPlayer.webContents.executeJavaScript("window.destroyMusicPlayer(true,true,true)");
     await waitFor(owner,"!window.isRemoteMusicActive()");
     stage = 'concurrent-accept-single-owner';
     await follower.webContents.executeJavaScript("document.querySelectorAll('.music-recommendation-card')[2].scrollIntoView()");

@@ -5283,6 +5283,8 @@
         "recommendation": {
             "title": "音樂推薦",
             "pending": "想聽聽這首歌嗎？",
+            "autoPlayCountdown": "{{seconds}} 秒後自動播放",
+            "autoPlayProgress": "自動播放倒數計時",
             "saving": "正在儲存選擇…",
             "accepted": "正在準備播放…",
             "skipped": "這次先不聽",

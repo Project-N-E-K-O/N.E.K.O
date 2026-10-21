@@ -87,13 +87,13 @@ test('navigation and BFCache restoration fence old replies and keep the choice r
     assert.equal(s.requests[0].event_id,s.requests[1].event_id);
 });
 
-test('accepted memes reveal locally; closing a preview does not record a rejection',async t=>{
+test('new memes reveal directly; closing a preview does not fabricate a choice',async t=>{
     const s=surface(t);s.offer('meme');s.choose('accepted');await settle();
     assert.equal(s.opens.length,0);assert.equal(s.popups.length,0);
     s.action('proactive_recommendation_dismiss');await settle();
     const block=s.messages.values().next().value.blocks[0];
-    assert.equal(block.state,'accepted');assert.equal(block.dismissed,true);
-    assert.deepEqual(s.requests.map(x=>x.kind),['accepted']);
+    assert.equal(block.state,'pending');assert.equal(block.directDelivery,true);assert.equal(block.dismissed,true);
+    assert.deepEqual(s.requests.map(x=>x.kind),[]);
 });
 
 test('unsafe external schemes and embedded credentials are refused',t=>{
@@ -125,7 +125,7 @@ test('late host startup requests a fresh snapshot and replays content once',t=>{
     assert.equal(s.messages.size,1);
 });
 
-test('screen observations accept interest without opening a page and reject empty or unsafe content',async t=>{
+test('screen observations deliver directly without a choice and reject empty or unsafe content',async t=>{
     for(const kind of ['accepted','skipped']) {
         const s=surface(t,{browser:true});
         const rec={...recommendation('vision'),content:{title:'You are tending a farm.',source:'',url:''}};
@@ -133,8 +133,9 @@ test('screen observations accept interest without opening a page and reject empt
         assert.equal(s.w.nekoRecommendations.offer({...rec,content:{...rec.content,url:'javascript:alert(1)'}}),false);
         assert.equal(s.w.nekoRecommendations.offer(rec,'screen-turn'),true);
         s.choose(kind);await settle();
-        assert.equal(s.messages.values().next().value.blocks[0].state,kind);
-        assert.deepEqual(s.requests.map(event=>event.kind),[kind]);
+        assert.equal(s.messages.values().next().value.blocks[0].state,'pending');
+        assert.equal(s.messages.values().next().value.blocks[0].directDelivery,true);
+        assert.deepEqual(s.requests.map(event=>event.kind),[]);
         assert.equal(s.popups.length,0);assert.equal(s.opens.length,0);
     }
 });

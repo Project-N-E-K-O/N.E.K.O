@@ -215,6 +215,7 @@ const musicRecommendationBlockSchema = z.object({
   track: z.object({ name: z.string(), artist: z.string(), url: z.string().min(1), cover: z.string() }),
   state: z.enum(['pending', 'saving', 'accepted', 'skipped', 'playing', 'paused', 'ended', 'stopped', 'failed', 'unavailable']),
   error: z.boolean().optional(),
+  autoPlayAt: z.number().finite().nonnegative().optional(),
   expiresAt: z.number().finite().nonnegative().optional(),
 });
 
@@ -223,6 +224,7 @@ const proactiveRecommendationBlockSchema = z.object({
   recommendationId: z.string().uuid(),
   category: z.enum(['news', 'community', 'video', 'personal', 'meme', 'vision', 'window', 'chat', 'web', 'work_break', 'anti_slack']),
   dismissed: z.boolean().optional(),
+  directDelivery: z.boolean().optional(),
   content: z.object({ title: z.string(), source: z.string(), url: z.string() }),
   state: z.enum(['pending', 'saving', 'accepted', 'skipped', 'unavailable']),
   error: z.boolean().optional(),

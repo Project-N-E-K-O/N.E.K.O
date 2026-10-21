@@ -5283,6 +5283,8 @@
         "recommendation": {
             "title": "Music recommendation",
             "pending": "Would you like to listen?",
+            "autoPlayCountdown": "Plays automatically in {{seconds}} s",
+            "autoPlayProgress": "Time until automatic playback",
             "saving": "Saving your choice…",
             "accepted": "Preparing playback…",
             "skipped": "Skipped this time",

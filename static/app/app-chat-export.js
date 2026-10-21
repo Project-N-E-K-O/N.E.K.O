@@ -474,7 +474,7 @@
     }
 
     // Project the visible recommendation into the existing export renderers.
-    // Never mutate chat state, play audio or fetch an unaccepted meme preview.
+    // Never mutate chat state or play audio; only project currently displayed meme previews.
     function getExportBlocks(message) {
         var blocks = message && message.blocks;
         if (!Array.isArray(blocks)) return [];
@@ -511,7 +511,7 @@
             }
             var projected = [{ type: 'link', url: url, title: title,
                 description: String(content.source || ''), exportLiteral: true }];
-            if (block.category === 'meme' && block.state === 'accepted' && !block.dismissed) {
+            if (block.category === 'meme' && (block.state === 'accepted' || (block.directDelivery && block.state === 'pending')) && !block.dismissed) {
                 projected.push({ type: 'image', url: '/api/meme/proxy-image?url=' + encodeURIComponent(url), alt: title, exportLiteral: true });
             }
             return projected;

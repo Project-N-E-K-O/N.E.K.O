@@ -11,6 +11,29 @@ const message = (block: ContentBlock) => parseChatMessage({ id: 'proactive-conte
 
 describe('proactive recommendation presentation', () => {
   beforeEach(() => window.localStorage.clear());
+  it('delivers new memes and screen observations directly without fabricating acceptance', () => {
+    const action = vi.fn();
+    const meme: ContentBlock = { ...base, category: 'meme', directDelivery: true };
+    const view = render(<MessageBlockView block={meme} message={message(meme)} onAction={action} />);
+    expect(view.container.querySelector('img')).toHaveAttribute('src', '/api/meme/proxy-image?url=https%3A%2F%2Fexample.com%2Fstory');
+    expect(screen.queryByRole('button', { name: 'Show me' })).toBeNull();
+    expect(action.mock.calls.some(([, event]) => event.action === 'proactive_recommendation_decision')).toBe(false);
+    const vision: ContentBlock = { ...base, category: 'vision', directDelivery: true, content: { title: 'You are tending a farm.', source: '', url: '' } };
+    view.rerender(<MessageBlockView block={vision} message={message(vision)} onAction={action} />);
+    expect(screen.getByText('You are tending a farm.')).toBeInTheDocument();
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    expect(screen.queryByText('Interest saved')).toBeNull();
+  });
+  it('retires a direct meme bubble after closing or the next user turn', () => {
+    const block: ContentBlock = { ...base, category: 'meme', directDelivery: true };
+    const view = render(<App chatSurfaceMode="compact" messages={[message(block)]} />);
+    expect(view.container.querySelector('.compact-proactive-recommendation-prompt img')).not.toBeNull();
+    view.rerender(<App chatSurfaceMode="compact" messages={[message({ ...block, dismissed: true })]} />);
+    expect(view.container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
+    const user = parseChatMessage({ id: 'next', role: 'user', author: 'User', time: '', blocks: [{ type: 'text', text: 'Next' }] });
+    view.rerender(<App chatSurfaceMode="compact" messages={[message(block), user]} />);
+    expect(view.container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
+  });
 
   it.each(['news', 'community', 'video', 'personal', 'meme', 'vision', 'window', 'web', 'work_break', 'anti_slack'] as const)(
     'shows %s as a full card and a compact bubble without loading content', category => {

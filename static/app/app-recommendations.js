@@ -7,6 +7,9 @@
     const inFlight = new Map();
     const dispatched = new Set();
     const decisionIds = new Map();
+    const musicCountdowns = new Map();
+    const countdownShown = new Set();
+    const MUSIC_COUNTDOWN_MS = 10000;
     let disposed = false;
     let lifecycleEpoch = 0;
     const placeholders = new Map();
@@ -47,6 +50,8 @@
         const retired = new Set(ids.slice(-128));
         const host = window.reactChatWindowHost;
         for (const id of retired) {
+            cancelMusicCountdown(id);
+            countdownShown.delete(id);
             retiredIds.add(id);
             const message = messages.get(id);
             messages.delete(id);
@@ -155,6 +160,7 @@
         const message = messages.get(id);
         if (!message || disposed) return;
         const block = Object.assign({}, message.blocks[0], fields, { state: state, error: !!error });
+        if (state !== 'pending' || error) cancelMusicCountdown(id);
         message.blocks = [block];
         const host = window.reactChatWindowHost;
         if (typeof window.__nekoMirrorChatUpdate === 'function') window.__nekoMirrorChatUpdate(host, message.id, { blocks: [block] });
@@ -166,9 +172,54 @@
         // original offer's character, including after choices and mirror updates.
         const previous = messages.get(id);
         if (previous) message = Object.assign({}, message, { author: previous.author });
+        if (previous?.blocks[0].autoPlayAt > 0 && message.blocks[0].type === 'music_recommendation'
+            && message.blocks[0].state === 'pending' && Number.isFinite(message.blocks[0].autoPlayAt)) {
+            message = Object.assign({}, message, { blocks: [Object.assign({}, message.blocks[0], {
+                autoPlayAt: message.blocks[0].autoPlayAt > 0
+                    ? Math.min(previous.blocks[0].autoPlayAt, message.blocks[0].autoPlayAt) : previous.blocks[0].autoPlayAt
+            })] });
+        }
         messages.set(id, message);
+        if (message.blocks[0].state !== 'pending' || message.blocks[0].error) cancelMusicCountdown(id);
+        else if (countdownShown.has(id) && message.blocks[0].autoPlayAt > 0) armMusicCountdown(id);
         // Only UI bookkeeping is evicted; pending evidence is kept separately.
-        if (messages.size > 128) messages.delete(messages.keys().next().value);
+        if (messages.size > 128) {
+            const oldest = messages.keys().next().value;
+            cancelMusicCountdown(oldest);
+            countdownShown.delete(oldest);
+            messages.delete(oldest);
+        }
+    }
+    function cancelMusicCountdown(id) {
+        const timer = musicCountdowns.get(id);
+        if (timer) clearTimeout(timer.handle);
+        musicCountdowns.delete(id);
+    }
+    function armMusicCountdown(id) {
+        const message = messages.get(id), block = message && message.blocks[0];
+        if (disposed || document.visibilityState === 'hidden' || !belongsHere(message)
+            || !block || block.type !== 'music_recommendation' || block.state !== 'pending'
+            || block.error || !Number.isFinite(block.autoPlayAt) || retiredIds.has(id)) return;
+        if (block.autoPlayAt === 0) {
+            update(id, 'pending', false, { autoPlayAt: Date.now() + MUSIC_COUNTDOWN_MS });
+        }
+        const deadline = message.blocks[0].autoPlayAt;
+        // Historical or resumed proposals never catch up by unexpectedly playing immediately.
+        if (deadline <= Date.now() || (block.expiresAt && deadline >= block.expiresAt)) return;
+        if (musicCountdowns.get(id)?.deadline === deadline) return;
+        cancelMusicCountdown(id);
+        const timer = { deadline, handle: null };
+        timer.handle = setTimeout(() => {
+            if (musicCountdowns.get(id) !== timer) return;
+            musicCountdowns.delete(id);
+            const current = messages.get(id), active = current && current.blocks[0];
+            if (disposed || document.visibilityState === 'hidden' || !belongsHere(current)
+                || retiredIds.has(id) || !active || active.state !== 'pending' || active.error
+                || active.autoPlayAt !== deadline || (active.expiresAt && Date.now() >= active.expiresAt)) return;
+            if (Date.now() < deadline) { armMusicCountdown(id); return; }
+            void decide(current, id, 'accepted', true);
+        }, deadline - Date.now());
+        musicCountdowns.set(id, timer);
     }
     function cancelEvidenceRetry() {
         if (!retryTimer) return;
@@ -251,6 +302,7 @@
             turnId: turnId || undefined,
             blocks: [{ type: 'music_recommendation', recommendationId: recommendation.id,
                 track: recommendation.track, state: recommendation.state || 'pending',
+                autoPlayAt: 0,
                 expiresAt: Number(recommendation.expires_at) * 1000 || 0 }]
         };
         remember(message);
@@ -275,6 +327,7 @@
             turnId: turnId || undefined,
             blocks: [{ type: 'proactive_recommendation', recommendationId: recommendation.id,
                 category: recommendation.category, content: Object.assign({}, recommendation.content, {url: href}),
+                directDelivery: recommendation.category === 'meme' || !!screenObservation,
                 state: recommendation.state || 'pending', expiresAt: Number(recommendation.expires_at) * 1000 || 0 }]
         };
         remember(message);
@@ -282,10 +335,11 @@
         else host.appendMessage(message);
         return true;
     }
-    async function decide(message, id, kind) {
+    async function decide(message, id, kind, automatic = false) {
         if (inFlight.has(id) || disposed) return;
         const previous = messages.get(id);
         if (!belongsHere(previous) || retiredIds.has(id) || !['pending', 'saving'].includes(previous.blocks[0].state)) return;
+        if (previous.blocks[0].type === 'proactive_recommendation' && previous.blocks[0].directDelivery) return;
         remember(message);
         const epoch = lifecycleEpoch;
         const operation = {};
@@ -303,8 +357,10 @@
         }
         const closePlaceholder = () => { placeholders.delete(placeholder); try { if (placeholder && !placeholder.closed) placeholder.close(); } catch (_) {} };
         const key = id + ':' + kind;
-        if (!decisionIds.has(key)) decisionIds.set(key, uid());
-        const event = { event_id: decisionIds.get(key), kind, occurred_at: Date.now() / 1000 };
+        if (!decisionIds.has(key)) decisionIds.set(key, { eventId: uid(), occurredAt: Date.now() / 1000, reason: automatic ? 'countdown_elapsed' : '' });
+        const decision = decisionIds.get(key);
+        const event = { event_id: decision.eventId, kind, occurred_at: decision.occurredAt };
+        if (decision.reason) event.reason = decision.reason;
         try {
             const result = await request(id, event);
             if (!isCurrent()) return;
@@ -361,9 +417,13 @@
         const block = detail.message && detail.message.blocks && detail.message.blocks.find(isRecommendation);
         if (!block || block.recommendationId !== payload.recommendationId) return;
         if (retiredIds.has(block.recommendationId) || !belongsHere(messages.get(block.recommendationId))) return;
-        if (action.action === 'music_recommendation_shown') evidence(block.recommendationId, 'shown');
+        if (action.action === 'music_recommendation_shown') {
+            evidence(block.recommendationId, 'shown');
+            countdownShown.add(block.recommendationId);
+            armMusicCountdown(block.recommendationId);
+        }
         if (action.action === 'proactive_recommendation_shown') evidence(block.recommendationId, 'shown');
-        if (['proactive_recommendation_dismiss', 'proactive_recommendation_reveal'].includes(action.action) && block.type === 'proactive_recommendation' && block.state === 'accepted' && block.category === 'meme') {
+        if (['proactive_recommendation_dismiss', 'proactive_recommendation_reveal'].includes(action.action) && block.type === 'proactive_recommendation' && (block.state === 'accepted' || block.directDelivery) && block.category === 'meme') {
             remember(detail.message);
             update(block.recommendationId, block.state, false, { dismissed: action.action === 'proactive_recommendation_dismiss' });
         }
@@ -382,6 +442,7 @@
         disposed = true; lifecycleEpoch++;
         evidenceEpoch++;
         cancelEvidenceRetry();
+        for (const id of musicCountdowns.keys()) cancelMusicCountdown(id);
         inFlight.clear();
         snapshotRequestId = '';
         closePlaceholders();
@@ -392,6 +453,14 @@
         observePageConfig();
         requestSnapshot();
         void flush();
+        for (const id of countdownShown) armMusicCountdown(id);
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            for (const id of musicCountdowns.keys()) cancelMusicCountdown(id);
+        } else {
+            for (const id of countdownShown) armMusicCountdown(id);
+        }
     });
     window.nekoMusicRecommendations = {
         offer,
