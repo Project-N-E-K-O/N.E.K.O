@@ -125,7 +125,7 @@ appearanceTest('keeps narrow rules in view and does not interrupt typing when ho
   await expect(trigger).toBeFocused()
 
   await trigger.click()
-  const input = page.getByPlaceholder('Filter plugins with text, pinyin, and is:/type:/has: rules')
+  const input = page.getByPlaceholder('Filter plugins')
   await page.keyboard.press('Tab')
   await expect(input).toBeFocused()
   await page.mouse.move(319, 899)
@@ -146,7 +146,7 @@ appearanceTest('honors reduced motion in rule choices and package import without
   await expect(choice).toHaveCSS('transform', 'none')
   await expect(choice).toHaveCSS('transition-duration', '0s')
   await choice.click()
-  await expect(page.getByPlaceholder('Filter plugins with text, pinyin, and is:/type:/has: rules')).not.toHaveValue('')
+  await expect(page.getByPlaceholder('Filter plugins')).not.toHaveValue('')
   await page.locator('[data-yui-guide-id="plugin-list-import"]').click()
   const dropzone = page.locator('.plugin-import-dropzone')
   await expect(dropzone).toBeVisible()
@@ -216,9 +216,7 @@ appearanceTest(
     const packageToggle = page.locator(
       '.workbench-header [data-yui-guide-id="plugin-list-package-panel-toggle"]'
     )
-    const filter = page.getByPlaceholder(
-      'Filter plugins with text, pinyin, and is:/type:/has: rules'
-    )
+    const filter = page.getByPlaceholder('Filter plugins')
     await expect(packageToggle).toBeInViewport()
     await filter.fill('retain this filter')
     const toggleBox = await packageToggle.boundingBox()
@@ -541,7 +539,7 @@ appearanceTest('large card grids keep real track sizes when scrolling and filter
   await expect(last.getByTestId('plugin-details-button')).toBeInViewport()
   const height = await last.evaluate(card => card.getBoundingClientRect().height)
   expect(height).toBeGreaterThan(100)
-  await page.getByPlaceholder('Filter plugins with text, pinyin, and is:/type:/has: rules').fill('NEKO Live')
+  await page.getByPlaceholder('Filter plugins').fill('NEKO Live')
   await expect(page.locator('.plugin-card')).toHaveCount(1)
   await expect(page.getByTestId('plugin-details-button')).toHaveText('NEKO Live')
   expect(await page.locator('.plugin-card').evaluate(card => card.scrollHeight <= card.clientHeight + 1)).toBe(true)
