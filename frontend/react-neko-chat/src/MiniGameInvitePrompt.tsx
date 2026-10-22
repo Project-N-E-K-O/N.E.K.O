@@ -1,4 +1,5 @@
 import { i18n } from './i18n';
+import RecommendationIcon from './RecommendationIcon';
 import type { ChoiceOption, ChoicePrompt } from './message-schema';
 
 export default function MiniGameInvitePrompt({ prompt, presentation, disabled = false, onSelect }: {
@@ -15,7 +16,7 @@ export default function MiniGameInvitePrompt({ prompt, presentation, disabled = 
       data-compact-hit-region-kind={presentation === 'bubble' ? 'choice' : undefined}
       aria-label={i18n('chat.miniGameInviteTitle', 'Game invitation')}>
       <header className="mini-game-invite-heading">
-        <span className="mini-game-invite-icon" aria-hidden="true">🎮</span>
+        <span className="mini-game-invite-icon neko-recommendation-icon" aria-hidden="true"><RecommendationIcon kind="game" /></span>
         <div>
           <strong>{i18n('chat.miniGameInviteTitle', 'Game invitation')}</strong>
           <p>{i18n('chat.miniGameInviteHint', 'Shall we play together?')}</p>

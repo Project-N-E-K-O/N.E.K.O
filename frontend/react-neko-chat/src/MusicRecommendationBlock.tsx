@@ -1,6 +1,7 @@
 import { useRecommendationExposure } from './useRecommendationExposure';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { i18n } from './i18n';
+import RecommendationIcon from './RecommendationIcon';
 import type { ChatMessage, MessageAction, MessageBlock } from './message-schema';
 
 type MusicBlock = Extract<MessageBlock, { type: 'music_recommendation' }>;
@@ -50,10 +51,8 @@ export default function MusicRecommendationBlock({ block, message, interactive, 
     <div className="music-recommendation-track">
       {presentation === 'card' ? <img src={block.track.cover || fallbackCover} alt="" loading="lazy" referrerPolicy="no-referrer"
         onError={event => { if (!event.currentTarget.src.endsWith(fallbackCover)) event.currentTarget.src = fallbackCover; }} /> : ['pending', 'saving'].includes(block.state) ? (
-        <span className="music-recommendation-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 17V6l11-2v11M9 9l11-2" /><ellipse cx="6" cy="17" rx="3" ry="2.5" /><ellipse cx="17" cy="15" rx="3" ry="2.5" />
-          </svg>
+        <span className="music-recommendation-icon neko-recommendation-icon" aria-hidden="true">
+          <RecommendationIcon kind="music" />
         </span>
       ) : null}
       <div>{presentation === 'card' ? <div className="music-recommendation-label">{i18n('music.recommendation.title', 'Music recommendation')}</div> : null}

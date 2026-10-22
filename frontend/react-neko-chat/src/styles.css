@@ -10551,3 +10551,21 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 [data-theme="dark"] .mini-game-invite { background: #252d3d; border-color: #48566d; color: #e6ebf2; }
 [data-theme="dark"] .mini-game-invite-icon { background: #354664; }
 [data-theme="dark"] .mini-game-invite-action:not([data-invite-choice="accept"]) { background: #343f53; border-color: #53627e; }
+
+/* Match the white circular buttons and cyan artwork used by N.E.K.O's toolbar. */
+.music-recommendation-icon.neko-recommendation-icon,
+.proactive-recommendation-icon.neko-recommendation-icon,
+.mini-game-invite-icon.neko-recommendation-icon {
+  border-radius: 50%;
+  background: #fff;
+  color: #43cafa;
+  box-shadow: 0 0 7px rgba(67, 202, 250, .12);
+}
+.neko-recommendation-icon .recommendation-neko-artwork {
+  width: 24px;
+  height: 24px;
+  filter: drop-shadow(0 0 1.5px rgba(67, 202, 250, .35));
+}
+.music-recommendation-icon .recommendation-neko-artwork,
+.proactive-recommendation-bubble .neko-recommendation-icon .recommendation-neko-artwork { width: 20px; height: 20px; }
+.mini-game-invite-icon .recommendation-neko-artwork { width: 28px; height: 28px; }
