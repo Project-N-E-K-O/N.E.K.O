@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Refresh all eight language resources for recommendations and the desktop visit strings from main.
-    const LOCALE_VERSION = '2026-10-22-pr3467-rebase-main';
+    // 新增 Cheaper Inference 辅助 API 提供商名称（八语言），刷新客户端缓存。
+    const LOCALE_VERSION = '2026-10-22-cheaperinference-assist-provider';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -1123,6 +1123,8 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_ORCAROUTER'] = core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter')
         # Requesty is assist-only; a realtime core key cannot authenticate its router.
         config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
+        # Cheaper Inference is assist-only too; never send the core key to the gateway.
+        config['ASSIST_API_KEY_CHEAPERINFERENCE'] = core_cfg.get('assistApiKeyCheaperinference', '')
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -1256,19 +1258,20 @@ class CoreConfigMixin:
             if use_mimo_token_plan
             else assist_api_key_fields.get(assist_api_value)
         )
-        is_requesty_assist = assist_api_value == 'requesty'
+        # Assist-only routers (Requesty, Cheaper Inference) never borrow the core key.
+        is_assist_only_router = assist_api_value in ('requesty', 'cheaperinference')
         derived_key = ''
         if key_field:
             derived_key = config.get(key_field, '')
-            if derived_key and not is_requesty_assist:
+            if derived_key and not is_assist_only_router:
                 config['AUDIO_API_KEY'] = derived_key
 
         # AUDIO_API_KEY also backs CosyVoice and saved voice buckets; preserve
         # its legacy fallback independently of the text router credential.
         if not config['AUDIO_API_KEY']:
             config['AUDIO_API_KEY'] = _core_key_fallback
-        if derived_key or is_requesty_assist:
-            # Requesty's missing dedicated key must stay empty for text/Agent.
+        if derived_key or is_assist_only_router:
+            # A missing dedicated key for these routers must stay empty for text/Agent.
             config['OPENROUTER_API_KEY'] = derived_key
         elif not config['OPENROUTER_API_KEY']:
             config['OPENROUTER_API_KEY'] = _core_key_fallback
