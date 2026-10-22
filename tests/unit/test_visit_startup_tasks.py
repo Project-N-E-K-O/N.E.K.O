@@ -264,6 +264,35 @@ async def test_concurrent_admissions_share_one_reset_retry(monkeypatch):
     assert calls == ["reset", "reset"]
 
 
+async def test_successful_retry_is_recorded_before_any_waiter_resumes(monkeypatch):
+    # A finished retry plus a not-yet-cleared failure would let the next admission
+    # start a second bulk cancel while the first caller is already minting a room.
+    from main_routers.visit_router import credentials
+
+    calls = []
+
+    async def reset_invites():
+        calls.append("reset")
+        if len(calls) == 1:
+            raise credentials.VisitServersUnreachable("network")
+        return 0
+
+    async def recover():
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    first = asyncio.create_task(background.wait_startup_invite_reset())
+    while background._invite_reset_retry is None:
+        await asyncio.sleep(0)
+    assert await background._invite_reset_retry is None
+    assert background._invite_reset_error is None
+    assert await background.wait_startup_invite_reset() is None
+    assert await first is None
+    assert calls == ["reset", "reset"]
+
+
 async def test_shutdown_releases_admissions_waiting_on_a_reset_retry(monkeypatch):
     from main_routers.visit_router import credentials
 

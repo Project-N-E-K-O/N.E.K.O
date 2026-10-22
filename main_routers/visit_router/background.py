@@ -128,6 +128,20 @@ async def _reset_pending_invites() -> Optional[Exception]:
     return None
 
 
+async def _retry_invite_reset(event: asyncio.Event) -> Optional[Exception]:
+    """Admission retry of a failed startup reset; records success before finishing.
+
+    Clearing the failure inside the task (not in a waiter resumed later) closes the
+    gap where a new admission would see the finished retry plus the stale failure
+    and start another bulk cancel while the first caller is already minting a room.
+    """
+    global _invite_reset_error
+    error = await _reset_pending_invites()
+    if error is None and _invite_reset_event is event:
+        _invite_reset_error = None
+    return error
+
+
 async def _recover_in_background() -> None:
     global _invite_reset_error
     event = _invite_reset_event
@@ -171,7 +185,7 @@ async def wait_startup_invite_reset() -> Optional[Exception]:
     refusing every room until the next restart.  Nothing can mint a room
     while the reset is unfinished, so a late retry never cancels a fresh invite.
     """
-    global _invite_reset_error, _invite_reset_retry
+    global _invite_reset_retry
     event = _invite_reset_event
     if event is None:
         return None
@@ -183,7 +197,7 @@ async def wait_startup_invite_reset() -> Optional[Exception]:
         return None
     retry = _invite_reset_retry
     if retry is None or retry.done():
-        retry = asyncio.create_task(_reset_pending_invites(), name="visit-invite-reset-retry")
+        retry = asyncio.create_task(_retry_invite_reset(event), name="visit-invite-reset-retry")
         _invite_reset_retry = retry
     try:
         error = await asyncio.shield(retry)
@@ -193,8 +207,6 @@ async def wait_startup_invite_reset() -> Optional[Exception]:
         return _unfinished_reset()
     if _invite_reset_event is not event:
         return _unfinished_reset()
-    if error is None:
-        _invite_reset_error = None
     return error
 
 
