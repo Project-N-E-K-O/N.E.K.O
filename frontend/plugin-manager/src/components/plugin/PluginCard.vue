@@ -23,9 +23,7 @@
 
     <div class="plugin-statuses">
       <StatusIndicator :status="plugin.status || 'stopped'" />
-      <span v-if="typeof plugin.autoStart === 'boolean'" class="plugin-start-mode">
-        {{ t(plugin.autoStart ? 'plugins.autoStart' : 'plugins.manualStart') }}
-      </span>
+      <PluginAutoStartBadge v-if="plugin.autoStart === true" />
     </div>
 
     <div class="plugin-card-body">
@@ -50,7 +48,6 @@
         <SourceTag :source="plugin.install_source?.source" :has-update="hasUpdate" compact />
       </div>
       <div class="plugin-card-footer__actions">
-        <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
         <el-button
           v-if="availableUiAction"
           data-testid="plugin-open-ui"
@@ -69,6 +66,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
+import PluginAutoStartBadge from './PluginAutoStartBadge.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
 import SourceTag from '@/components/plugin/SourceTag.vue'
 import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
@@ -105,10 +103,6 @@ defineEmits<{
   contextmenu: [event: MouseEvent]
   'open-ui': [action: PluginListAction]
 }>()
-
-const entryCount = computed(() => {
-  return props.plugin.entry_count ?? props.plugin.entries?.length ?? 0
-})
 
 const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
 const availableUiAction = computed(() => {
@@ -158,7 +152,7 @@ const hasUpdate = computed<boolean>(() => {
     border-color var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
-/* Five content-sized tracks: name, state, body, metadata, entry/action.
+/* Five content-sized tracks: name, state, body, metadata, action.
  * Only grids that opt in share these tracks with their neighbouring cards. */
 @supports (grid-template-rows: subgrid) {
   .plugin-card--shared-rows {
@@ -242,7 +236,6 @@ const hasUpdate = computed<boolean>(() => {
   overflow-wrap: anywhere;
 }
 
-.plugin-start-mode,
 .plugin-identity {
   color: var(--el-text-color-secondary);
   font-size: 0.75rem;
@@ -314,13 +307,12 @@ const hasUpdate = computed<boolean>(() => {
   max-width: 100%;
 }
 
-/* Action availability must not change where metadata or entry counts live.
+/* Action availability must not change where metadata lives.
  * Both footer tracks participate in the parent grid's row alignment. */
 .plugin-card-footer__actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) fit-content(50%);
+  display: flex;
+  justify-content: flex-end;
   align-items: center;
-  column-gap: 12px;
   min-width: 0;
 }
 
@@ -361,13 +353,6 @@ const hasUpdate = computed<boolean>(() => {
 .plugin-version-tag :deep(.el-tag__content),
 .plugin-version-tag__label {
   min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.plugin-entries {
-  min-width: 0;
-  line-height: 1.4;
-  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 

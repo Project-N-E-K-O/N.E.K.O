@@ -19,9 +19,7 @@
               >{{ displayText.name }}</button>
             </h3>
             <StatusIndicator :status="plugin.status || 'stopped'" />
-            <el-tag v-if="plugin.autoStart === false" size="small" type="warning" effect="plain">
-              {{ t('plugins.manualStart') }}
-            </el-tag>
+            <PluginAutoStartBadge v-if="plugin.autoStart === true" />
             <SourceTag
               :source="plugin.install_source?.source"
               :has-update="hasUpdate"
@@ -66,10 +64,6 @@
           <span class="plugin-list-row-card__meta-label">{{ t('plugins.version') }}</span>
           <span class="plugin-list-row-card__meta-value">v{{ plugin.version }}</span>
         </div>
-        <div class="plugin-list-row-card__meta-item">
-          <span class="plugin-list-row-card__meta-label">{{ t('plugins.entryPoint') }}</span>
-          <span class="plugin-list-row-card__meta-value">{{ entryCount }}</span>
-        </div>
       </div>
     </div>
   </el-card>
@@ -79,6 +73,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
+import PluginAutoStartBadge from './PluginAutoStartBadge.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
 import SourceTag from '@/components/plugin/SourceTag.vue'
 import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
@@ -112,7 +107,6 @@ defineEmits<{
 const { t, locale } = useI18n()
 const marketVersions = useMarketVersionsStore()
 
-const entryCount = computed(() => props.plugin.entry_count ?? props.plugin.entries?.length ?? 0)
 const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
 const availableUiAction = computed(() => {
   if (!props.enableUiAction) return null

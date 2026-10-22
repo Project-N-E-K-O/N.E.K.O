@@ -376,7 +376,7 @@ async function expectAlignedCardTracks(page: Page) {
     for (const card of cards) {
       const box = card.getBoundingClientRect()
       const children = Array.from(card.children, child => child.getBoundingClientRect().top)
-      for (const selector of ['.plugin-card-footer__main', '.plugin-card-footer__actions', '.plugin-entries']) {
+      for (const selector of ['.plugin-card-footer__main', '.plugin-card-footer__actions']) {
         children.push(card.querySelector(selector)!.getBoundingClientRect().top)
       }
       const key = Math.round(box.top)
@@ -409,6 +409,10 @@ for (const scenario of [
       document.documentElement.style.fontSize = `${fontSize}px`
     }, scenario)
     await expectAlignedCardTracks(page)
+    await expect(page.locator('.plugin-start-mode')).toHaveCount(4)
+    await expect(page.locator('.plugin-start-mode svg[aria-hidden="true"]')).toHaveCount(4)
+    await expect(page.locator('.plugin-entries')).toHaveCount(0)
+    await expect(page.locator('.plugin-workbench')).not.toContainText(scenario.locale === 'zh-CN' ? '手动启动' : /manual start/i)
     const first = page.locator('.plugin-card').first()
     // Short-only rows must not reserve an imaginary second title line.
     const gap = await first.evaluate(card => {
@@ -423,7 +427,7 @@ for (const scenario of [
     expect(await page.locator('.plugin-card').evaluateAll(cards => cards.every(card => {
       const box = card.getBoundingClientRect()
       return card.scrollWidth <= card.clientWidth + 1 &&
-        [...card.querySelectorAll('.plugin-name__button, .plugin-start-mode, .plugin-entries, .plugin-version-tag, .plugin-ui-action')]
+        [...card.querySelectorAll('.plugin-name__button, .plugin-start-mode, .plugin-version-tag, .plugin-ui-action')]
           .every(element => {
             const bounds = element.getBoundingClientRect()
             return bounds.left >= box.left && bounds.right <= box.right + 1 &&
