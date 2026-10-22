@@ -1,5 +1,5 @@
 import { i18n } from './i18n';
-import { useId, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import MessageImageBlock from './MessageImageBlock';
 import { useRecommendationExposure } from './useRecommendationExposure';
@@ -8,24 +8,12 @@ import type { ChatMessage, MessageAction, MessageBlock } from './message-schema'
 
 type ProactiveBlock = Extract<MessageBlock, { type: 'proactive_recommendation' }>;
 
-function MemeIcon() {
-  const gradientId = useId();
-  return <g strokeWidth=".9">
-    <defs><linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-      <stop stopColor="#c1eff9" /><stop offset="1" stopColor="#72c9e8" />
-    </linearGradient></defs>
-    <path d="M12 3C6.5 3 2.5 6.3 2.5 11c0 2.7 1.4 4.8 3.7 6.3l-.7 3.4 4.1-2.1c.8.2 1.6.3 2.4.3 5.5 0 9.5-3.3 9.5-7.9S17.5 3 12 3Z" fill={`url(#${gradientId})`} stroke="#6ab9dc" />
-    <path d="M6.8 9.6q1-1.5 2.1 0m6.2 0q1-1.5 2.1 0M8.7 12c1.9 3.2 4.7 3.2 6.6 0" stroke="#468fb5" strokeWidth="1.25" />
-    <path d="M5.3 7.2q.8-1 2.2-1.5" stroke="white" strokeWidth="1.3" strokeOpacity=".7" />
-  </g>;
-}
-
 const icons: Record<ProactiveBlock['category'], ReactNode> = {
   news: <><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M8 8h8M8 12h8M8 16h4" /></>,
   community: <><path d="M7 10a4 4 0 1 1 7 2M4 20v-2a5 5 0 0 1 9-3M17 13v6m-3-3h6" /></>,
   video: <><rect x="3" y="5" width="18" height="14" rx="4" /><path d="m10 9 5 3-5 3Z" /></>,
   personal: <><path d="M8 18H5l-2 3V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-4M8 9h8M8 13h5" /></>,
-  meme: <MemeIcon />,
+  meme: null,
   vision: <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
   window: <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 9h18M7 6.5h.01M10 6.5h.01" /></>,
   chat: <path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z" />,
@@ -61,7 +49,7 @@ export default function ProactiveRecommendationBlock({ block, message, interacti
   return <div ref={root} className={`proactive-recommendation proactive-recommendation-${presentation}`}
     data-recommendation-id={block.recommendationId} data-proactive-category={block.category}>
     {direct && isScreenObservation ? <p className="proactive-direct-observation">{title}</p> : <header className="proactive-recommendation-heading">
-      <span className="proactive-recommendation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">{icons[block.category]}</svg></span>
+      {!isMeme ? <span className="proactive-recommendation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">{icons[block.category]}</svg></span> : null}
       <div><div className="proactive-recommendation-meta"><span className="proactive-recommendation-category">{category}</span>
         {block.content.source ? <><span aria-hidden="true">·</span><small title={block.content.source}>{block.content.source}</small></> : null}</div>
         <strong>{title}</strong>

@@ -10450,6 +10450,9 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .music-recommendation .message-block-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 .music-recommendation-bubble { display: grid; gap: 8px; min-width: 0; max-width: 100%; }
 .music-recommendation-bubble .music-recommendation-track { font-size: 13px; }
+.music-recommendation-icon { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border-radius: 8px; background: #edf6f9; color: #3c7894; }
+.music-recommendation-icon svg { width: 17px; height: 17px; }
+[data-theme="dark"] .music-recommendation-icon { background: #304653; color: #94c5da; }
 .music-recommendation-bubble .music-recommendation-track strong { display: block; }
 .music-recommendation-bubble .music-recommendation-track strong + div { font-size: 11px; opacity: .65; }
 .music-recommendation-bubble .message-action-button { padding: 5px 11px; min-height: 30px; font-size: 12px; }
@@ -10489,7 +10492,6 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .proactive-recommendation-meta small { font: inherit; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .proactive-recommendation-icon { display: grid; place-items: center; width: 34px; height: 34px; margin-top: 1px; flex: none; border-radius: 11px; background: var(--recommendation-tint); color: var(--recommendation-accent); }
 .proactive-recommendation-icon svg { width: 20px; height: 20px; }
-.proactive-recommendation[data-proactive-category="meme"] .proactive-recommendation-icon { color: #3f8dc9; background: #f1f9fd; border-radius: 50%; }
 .proactive-recommendation-heading strong { font-size: 14px; font-weight: 600; line-height: 1.65; }
 .proactive-recommendation-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 1px; }
 .proactive-recommendation .proactive-recommendation-action {
@@ -10517,7 +10519,6 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .compact-proactive-recommendation-prompt:has(> .proactive-recommendation-bubble) { padding: 14px; border-color: rgba(108, 151, 174, .18); box-shadow: 0 4px 14px rgba(34, 64, 82, .07); }
 [data-theme="dark"] .proactive-recommendation { --recommendation-text: #e2e9ee; --recommendation-muted: #9aaab6; --recommendation-accent: #94c5da; --recommendation-tint: #304653; --recommendation-line: #41545f; }
 [data-theme="dark"] .proactive-recommendation-card { background: #28343f; }
-[data-theme="dark"] .proactive-recommendation[data-proactive-category="meme"] .proactive-recommendation-icon { background: #304956; color: #9acbf0; }
 [data-theme="dark"] .proactive-recommendation .proactive-recommendation-accept { color: #acd3e2; }
 [data-theme="dark"] .proactive-recommendation .proactive-recommendation-skip { color: #a3b3bd; }
 [data-theme="dark"] .proactive-recommendation .proactive-recommendation-action:hover:not(:disabled) { background: #3a5260; }

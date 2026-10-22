@@ -49,7 +49,13 @@ export default function MusicRecommendationBlock({ block, message, interactive, 
   return <div ref={root} className={`message-block music-recommendation music-recommendation-${presentation}`} data-recommendation-id={block.recommendationId}>
     <div className="music-recommendation-track">
       {presentation === 'card' ? <img src={block.track.cover || fallbackCover} alt="" loading="lazy" referrerPolicy="no-referrer"
-        onError={event => { if (!event.currentTarget.src.endsWith(fallbackCover)) event.currentTarget.src = fallbackCover; }} /> : null}
+        onError={event => { if (!event.currentTarget.src.endsWith(fallbackCover)) event.currentTarget.src = fallbackCover; }} /> : ['pending', 'saving'].includes(block.state) ? (
+        <span className="music-recommendation-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 17V6l11-2v11M9 9l11-2" /><ellipse cx="6" cy="17" rx="3" ry="2.5" /><ellipse cx="17" cy="15" rx="3" ry="2.5" />
+          </svg>
+        </span>
+      ) : null}
       <div>{presentation === 'card' ? <div className="music-recommendation-label">{i18n('music.recommendation.title', 'Music recommendation')}</div> : null}
         <strong>{block.track.name || i18n('music.unknownTrack', 'Unknown Track')}</strong>
         <div>{block.track.artist || i18n('music.unknownArtist', 'Unknown Artist')}</div></div>
