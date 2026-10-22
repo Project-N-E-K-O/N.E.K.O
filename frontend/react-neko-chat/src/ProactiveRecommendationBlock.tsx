@@ -1,5 +1,5 @@
 import { i18n } from './i18n';
-import type { ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import MessageImageBlock from './MessageImageBlock';
 import { useRecommendationExposure } from './useRecommendationExposure';
@@ -7,12 +7,27 @@ import { hasProactiveRecommendationContent } from './message-schema';
 import type { ChatMessage, MessageAction, MessageBlock } from './message-schema';
 
 type ProactiveBlock = Extract<MessageBlock, { type: 'proactive_recommendation' }>;
+
+function MemeIcon() {
+  const gradientId = useId();
+  return <g strokeWidth="1.1">
+    <defs><linearGradient id={gradientId} x1="5" y1="6" x2="18" y2="22" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#c1eff9" /><stop offset=".5" stopColor="#95dff2" /><stop offset="1" stopColor="#72c9e8" />
+    </linearGradient></defs>
+    <path d="m4.6 10-.4-4.2c-.1-.8.7-1.2 1.3-.7l3.3 2.2c1.5-.4 3.2-.4 4.7 0l2.4-1.7c.7-.5 1.5-.1 1.4.8l-.2 3.8c1.5 1.2 2.4 3 2.4 4.8 0 4.3-3.7 6.7-8.6 6.7S2.5 19.3 2.5 15c0-1.9.7-3.6 2.1-5Z" fill={`url(#${gradientId})`} stroke="#69c4e2" />
+    <path d="M5.5 11.5c.5-1 1.3-1.7 2.4-2.2" stroke="white" strokeWidth="1.5" strokeOpacity=".75" />
+    <path d="M6.9 13.5q.9-1 1.8 0m5 0q.9-1 1.8 0M9 16v.3a1.1 1.1 0 0 0 2.2 0 1.1 1.1 0 0 0 2.2 0V16" stroke="#4598c1" />
+    <path d="M5.9 15.7h.8m9 0h.8" stroke="#65b6d7" strokeOpacity=".65" />
+    <path d="m19 1.5 1 3 3 1-3 1-1 3-1-3-3-1 3-1Z" fill="white" stroke="#a9ddf0" strokeWidth=".7" />
+  </g>;
+}
+
 const icons: Record<ProactiveBlock['category'], ReactNode> = {
   news: <><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M8 8h8M8 12h8M8 16h4" /></>,
   community: <><path d="M7 10a4 4 0 1 1 7 2M4 20v-2a5 5 0 0 1 9-3M17 13v6m-3-3h6" /></>,
   video: <><rect x="3" y="5" width="18" height="14" rx="4" /><path d="m10 9 5 3-5 3Z" /></>,
   personal: <><path d="M8 18H5l-2 3V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-4M8 9h8M8 13h5" /></>,
-  meme: <><path d="M5 8.5V5a1 1 0 0 1 1.6-.8L10 6.5a12 12 0 0 1 4 0l3.4-2.3A1 1 0 0 1 19 5v3.5c1.7 1.3 2.5 3.1 2.5 5 0 4.4-4 6.5-9.5 6.5S2.5 17.9 2.5 13.5c0-1.9.8-3.7 2.5-5Z" /><path d="M7.3 11.8q.9-1 1.8 0m5.8 0q.9-1 1.8 0M9.4 14.6v.4a1.3 1.3 0 0 0 2.6 0 1.3 1.3 0 0 0 2.6 0v-.4" /><path d="M5.8 14h.8m10.8 0h.8" strokeOpacity=".5" /></>,
+  meme: <MemeIcon />,
   vision: <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
   window: <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 9h18M7 6.5h.01M10 6.5h.01" /></>,
   chat: <path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z" />,

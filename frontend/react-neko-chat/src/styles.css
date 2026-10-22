@@ -10489,7 +10489,7 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .proactive-recommendation-meta small { font: inherit; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .proactive-recommendation-icon { display: grid; place-items: center; width: 34px; height: 34px; margin-top: 1px; flex: none; border-radius: 11px; background: var(--recommendation-tint); color: var(--recommendation-accent); }
 .proactive-recommendation-icon svg { width: 20px; height: 20px; }
-.proactive-recommendation[data-proactive-category="meme"] .proactive-recommendation-icon { color: #3f8dc9; background: #eaf5ff; }
+.proactive-recommendation[data-proactive-category="meme"] .proactive-recommendation-icon { color: #3f8dc9; background: #f1f9fd; border-radius: 50%; }
 .proactive-recommendation-heading strong { font-size: 14px; font-weight: 600; line-height: 1.65; }
 .proactive-recommendation-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 1px; }
 .proactive-recommendation .proactive-recommendation-action {
@@ -10517,7 +10517,7 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .compact-proactive-recommendation-prompt:has(> .proactive-recommendation-bubble) { padding: 14px; border-color: rgba(108, 151, 174, .18); box-shadow: 0 4px 14px rgba(34, 64, 82, .07); }
 [data-theme="dark"] .proactive-recommendation { --recommendation-text: #e2e9ee; --recommendation-muted: #9aaab6; --recommendation-accent: #94c5da; --recommendation-tint: #304653; --recommendation-line: #41545f; }
 [data-theme="dark"] .proactive-recommendation-card { background: #28343f; }
-[data-theme="dark"] .proactive-recommendation[data-proactive-category="meme"] .proactive-recommendation-icon { background: #253d52; color: #9acbf0; }
+[data-theme="dark"] .proactive-recommendation[data-proactive-category="meme"] .proactive-recommendation-icon { background: #304956; color: #9acbf0; }
 [data-theme="dark"] .proactive-recommendation .proactive-recommendation-accept { color: #acd3e2; }
 [data-theme="dark"] .proactive-recommendation .proactive-recommendation-skip { color: #a3b3bd; }
 [data-theme="dark"] .proactive-recommendation .proactive-recommendation-action:hover:not(:disabled) { background: #3a5260; }
