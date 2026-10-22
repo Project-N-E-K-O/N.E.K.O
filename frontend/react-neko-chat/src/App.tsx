@@ -204,6 +204,10 @@ const COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD = 6;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
+// 原生宿主在进入输入态后可能产生一次瞬时窗口失焦（Windows 实测：进入后 ~230ms blur，
+// 随后自行 refocus）。立即强制折叠会折回胶囊、下一次点击再拉回，形成可见闪烁；因此
+// 窗口 blur 触发的折叠延迟执行，执行时页面已重新持有焦点则视为瞬时抖动、放弃折叠。
+const COMPACT_WINDOW_BLUR_COLLAPSE_DELAY_MS = 280;
 const compactInputToolWheelDefaultVisibleSlots = [
   { angleDeg: 107.35, scale: 0.86 },
   { angleDeg: 75.82, scale: 0.98 },
@@ -4669,6 +4673,38 @@ function CompactChatApp({
     }, 0);
   }, [collapseCompactInputIfEmpty]);
 
+  // 折叠回调的最新引用：blur 宽限期定时器到期时必须用当前渲染的 collapseCompactInputIfEmpty，
+  // 否则旧闭包看不到宽限期内变化的守卫状态（例如工具扇已展开 compactInputToolFanOpen=true），
+  // 会绕过防折叠守卫误折叠。
+  const collapseCompactInputIfEmptyRef = useRef(collapseCompactInputIfEmpty);
+  useEffect(() => {
+    collapseCompactInputIfEmptyRef.current = collapseCompactInputIfEmpty;
+  });
+
+  // 窗口 blur 的折叠延迟 + 焦点回归检查：吸收原生层的瞬时失焦抖动，不改变 Escape /
+  // 岛外 pointerdown 的立即折叠语义（它们不经过此入口）。同一时刻只保留一份待执行的
+  // 折叠宽限：连续两次失焦抖动时，第二次 blur 重置第一次的定时器，让每次抖动按自己
+  // 的宽限期独立分类，避免旧定时器在第二次失焦期间误折叠。
+  const windowBlurCollapseTimerRef = useRef(0);
+  const scheduleWindowBlurCompactInputCollapse = useCallback(() => {
+    if (windowBlurCollapseTimerRef.current) {
+      window.clearTimeout(windowBlurCollapseTimerRef.current);
+    }
+    windowBlurCollapseTimerRef.current = window.setTimeout(() => {
+      windowBlurCollapseTimerRef.current = 0;
+      if (document.hasFocus()) return;
+      collapseCompactInputIfEmptyRef.current({ ignoreFocusedShell: true });
+    }, COMPACT_WINDOW_BLUR_COLLAPSE_DELAY_MS);
+  }, []);
+
+  // 组件卸载时清掉待执行的 blur 折叠定时器：卸载后不再向宿主发送过期的折叠通知。
+  useEffect(() => () => {
+    if (windowBlurCollapseTimerRef.current) {
+      window.clearTimeout(windowBlurCollapseTimerRef.current);
+      windowBlurCollapseTimerRef.current = 0;
+    }
+  }, []);
+
   useEffect(() => {
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
@@ -4699,7 +4735,7 @@ function CompactChatApp({
 
     const handleWindowBlur = () => {
       if (document.querySelector('.click-guide-layer.click-guide-native')) return;
-      scheduleForcedCompactInputCollapse();
+      scheduleWindowBlurCompactInputCollapse();
     };
 
     window.addEventListener('blur', handleWindowBlur);
@@ -4710,7 +4746,7 @@ function CompactChatApp({
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
+  }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse, scheduleWindowBlurCompactInputCollapse]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;

@@ -25,7 +25,6 @@ import hashlib
 import http.server
 import io
 import json
-import socket
 import shutil
 import threading
 import time
@@ -968,10 +967,12 @@ async def test_installed_endpoint_projects_latest_install_source(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("retained_profile", [False, True], ids=["clean", "legacy-profile"])
 async def test_built_market_package_install_surfaces_in_plugin_list(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     bridge_e2e_env: dict[str, Any],
+    retained_profile: bool,
 ) -> None:
     """Build package → Market download → bridge install → plugin list source."""
 
@@ -990,6 +991,16 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     token: str = bridge_e2e_env["token"]
     user_root: Path = bridge_e2e_env["user_root"]
     profiles_root: Path = bridge_e2e_env["profiles_root"]
+
+    legacy_profile_dir = profiles_root / plugin_id
+    legacy_contents = {
+        "default.toml": b"legacy default profile\r\n",
+        "custom.toml": b"legacy custom profile\n",
+    }
+    if retained_profile:
+        legacy_profile_dir.mkdir()
+        for filename, content in legacy_contents.items():
+            (legacy_profile_dir / filename).write_bytes(content)
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=package_bytes,
@@ -1028,7 +1039,14 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     assert installed_toml.is_file()
     manager: InstallSourceManager = bridge_e2e_env["manager"]
     [entry] = [entry for entry in manager.snapshot().entries if entry.plugin_id == plugin_id]
-    assert Path(entry.profile_dir) == profiles_root / plugin_id
+    assert entry.profile_dir == ""
+    assert entry.profile_installed is False
+    if retained_profile:
+        assert {
+            path.name: path.read_bytes() for path in legacy_profile_dir.iterdir()
+        } == legacy_contents
+    else:
+        assert not legacy_profile_dir.exists()
 
     from plugin.server.application.plugins import query_service as query_module
 

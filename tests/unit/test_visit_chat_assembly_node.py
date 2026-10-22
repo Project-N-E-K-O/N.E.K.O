@@ -1052,14 +1052,19 @@ const report = {};
     report.snapshot_then_live_lines = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0).length;
     report.snapshot_then_live_pending = h.chat._test.state().pending.length;
   }
-  // ── 等客时取消（pending → ending → ended）：不留查看详情 / 导出 / 举报 ──
+  // ── 等客时取消（后端不推 ending：pending → ended）：不留查看详情 / 导出 / 举报 ──
   {
     const h = createHarness();
     h.state('pending');
-    h.state('ending');
-    report.cancel_before_start_phase_after_ending = h.chat._test.state().visit.phase;
     h.state('ended');
+    report.cancel_before_start_phase_after_ended = h.chat._test.state().visit.phase;
     report.cancel_before_start_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    // 漏收 started：ending 只推给已激活的场次，本身就算开始过
+    const h4 = createHarness();
+    h4.state('pending');
+    h4.state('ending');
+    h4.state('ended');
+    report.missed_started_ending_ended_message = h4.messages.some((m) => m.id === 'visit-ended-' + VID);
     const h2 = createHarness();
     h2.state('started');
     h2.state('ending');
@@ -1872,7 +1877,8 @@ def test_live_final_after_snapshot_claims_and_removes_the_local_bubble(report):
 
 
 def test_cancel_before_start_leaves_no_ended_message(report):
-    assert report["cancel_before_start_phase_after_ending"] is None
+    assert report["cancel_before_start_phase_after_ended"] is None
+    assert report["missed_started_ending_ended_message"] is True
     assert report["unstarted_ending_snapshot_phase"] is None
     assert report["cancel_before_start_ended_message"] is False
     assert report["started_then_ended_message"] is True

@@ -193,3 +193,102 @@ test('renders every top-level route without unresolved Element Plus components',
 
   expect(resolutionWarnings).toEqual([])
 })
+
+for (const initialAutoStart of [undefined, false]) {
+  const initialPreference = initialAutoStart === undefined ? 'omitted' : 'false'
+
+  test(`auto-start stays independent of manual start when the preference is ${initialPreference}`, async ({
+    page,
+  }, testInfo) => {
+    // Exercise the built UI and its HTTP contract. This stateful API stub does
+    // not claim to verify backend persistence or launch a real plugin process.
+    let autoStart: boolean | undefined = initialAutoStart
+    let status = 'stopped'
+    const mutations: Array<{ method: string; action: string; body: unknown }> = []
+    const plugin = () => ({
+      id: 'demo',
+      name: 'Demo',
+      description: '',
+      version: '1.0.0',
+      type: 'plugin',
+      status,
+      runtime_enabled: true,
+      ...(autoStart === undefined ? {} : { runtime_auto_start: autoStart }),
+      entries: [],
+      list_actions: [],
+    })
+
+    await page.addInitScript(() => {
+      window.localStorage.setItem('locale', 'en-US')
+    })
+    await page.route('**/plugins?*', (route) =>
+      route.fulfill({ json: { plugins: [plugin()], message: '' } })
+    )
+    await page.route((url) => url.pathname === '/plugins/demo', (route) =>
+      route.fulfill({ json: { plugin: plugin() } })
+    )
+    await page.route('**/plugin/status', (route) =>
+      route.fulfill({ json: { plugins: { demo: { status, plugin_id: 'demo' } } } })
+    )
+    await page.route('**/plugin/status?*', (route) =>
+      route.fulfill({ json: { status, plugin_id: 'demo' } })
+    )
+    await page.route('**/plugin/demo/surfaces?*', (route) =>
+      route.fulfill({ json: { surfaces: [], warnings: [] } })
+    )
+    await page.route('**/plugin/demo/config/application-state', (route) =>
+      route.fulfill({ json: { plugin_id: 'demo', config_state: 'matched' } })
+    )
+    await page.route('**/plugin/demo/config/base/effective', (route) =>
+      route.fulfill({ json: { schema: {}, config: {} } })
+    )
+    await page.route('**/api/model-config/plugins/demo/bindings', (route) =>
+      route.fulfill({ json: { plugin_id: 'demo', requirements: {}, bindings: {}, ready: true } })
+    )
+    await page.route(/\/plugin\/demo\/(start|stop|reload|auto-start)$/, (route) => {
+      const request = route.request()
+      const action = new URL(request.url()).pathname.split('/').pop()!
+      const body = request.postDataJSON()
+      mutations.push({ method: request.method(), action, body })
+      if (action === 'auto-start') {
+        autoStart = body.auto_start
+      } else {
+        status = action === 'stop' ? 'stopped' : 'running'
+      }
+      return route.fulfill({
+        json: { success: true, plugin_id: 'demo', auto_start: autoStart, message: '' },
+      })
+    })
+
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/demo?tab=info`)
+    const autoStartControl = page.getByTestId('plugin-auto-start-switch')
+    const autoStartSwitch = page.getByRole('switch', { name: 'Auto Start', exact: true })
+    await expect(autoStartControl).toBeVisible()
+    await expect(autoStartSwitch).not.toBeChecked()
+    await expect(autoStartSwitch).toBeEnabled()
+
+    await page.getByRole('button', { name: 'Start', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled()
+    await expect(page.locator('.el-message--success')).toHaveText('Plugin started successfully')
+    await expect(autoStartSwitch).not.toBeChecked()
+    expect(mutations).toEqual([{ method: 'POST', action: 'start', body: null }])
+
+    await autoStartControl.click()
+    await expect(autoStartSwitch).toBeChecked()
+    await expect(autoStartSwitch).toBeEnabled()
+    expect(mutations).toEqual([
+      { method: 'POST', action: 'start', body: null },
+      { method: 'PUT', action: 'auto-start', body: { auto_start: true } },
+    ])
+
+    await page.reload()
+    await expect(autoStartControl).toBeVisible()
+    await expect(autoStartSwitch).toBeChecked()
+    await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled()
+    expect(mutations).toHaveLength(2)
+    await testInfo.attach(`auto-start-${initialPreference}-after-refresh`, {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    })
+  })
+}

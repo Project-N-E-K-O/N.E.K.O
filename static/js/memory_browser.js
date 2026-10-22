@@ -4540,7 +4540,7 @@
         if (valueEl) {
             valueEl.textContent = selectedValue === 'auto'
                 ? translate('memory.externalImportAuto', 'Auto detect')
-                : (selectedValue === 'openclaw' ? 'OpenClaw' : 'Hermes');
+                : (selectedValue === 'openclaw' ? 'OpenClaw' : selectedValue === 'molili' ? 'Molili' : 'Hermes');
         }
         cascader.querySelectorAll('[data-external-memory-format]').forEach(function (option) {
             const selected = option.dataset.externalMemoryFormat === selectedValue;
@@ -4603,7 +4603,13 @@
             if (selected.length !== 1) {
                 throw new Error(translate('memory.externalImportZipOnly', 'Choose one ZIP archive, or one or more Markdown files.'));
             }
-            if (zipFiles[0].size > 8 * 1024 * 1024) {
+            // 上限与后端 _decode_external_archive 的 archive_cap 对齐：auto/molili
+            // 放行到 MAX_ZIP_BYTES（64 MiB，Molili 导出本体就带几 MB 图片附件），
+            // 其余格式仍按 Markdown 预算 8 MiB。
+            const formatValue = format ? String(format.value || 'auto') : 'auto';
+            const zipCapBytes = (formatValue === 'molili' || formatValue === 'auto')
+                ? 64 * 1024 * 1024 : 8 * 1024 * 1024;
+            if (zipFiles[0].size > zipCapBytes) {
                 throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
             }
             const payload = {

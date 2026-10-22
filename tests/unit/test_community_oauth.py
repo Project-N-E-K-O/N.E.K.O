@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -23,6 +24,81 @@ import main_routers.community_oauth as O
 
 
 USER_ID = "11111111-1111-4111-8111-111111111111"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_sends_device_hints_off_loop_and_keeps_account_preference(monkeypatch):
+    requests = []
+    probe_threads = []
+    event_loop_thread = threading.get_ident()
+
+    def device_hints():
+        probe_threads.append(threading.get_ident())
+        return {"locale": "es", "region": "ES"}
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "created": False, "user": {"id": USER_ID, "recommendation_locale": "ja"},
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        monkeypatch.setattr(O.httpx, "AsyncClient", lambda **kwargs: client)
+        monkeypatch.setattr(O, "community_bootstrap_locale_hints", device_hints)
+        result = await O._bootstrap_session("https://community.example/", "test-access")
+    finally:
+        await client.aclose()
+
+    assert len(probe_threads) == 1
+    assert probe_threads[0] != event_loop_thread
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.method == "POST"
+    assert str(request.url) == "https://community.example/api/auth/session/bootstrap"
+    assert request.headers["Authorization"] == "Bearer test-access"
+    assert json.loads(request.content) == {"locale": "es", "region": "ES"}
+    assert result == {"created": False, "user": {"id": USER_ID, "recommendation_locale": "ja"}}
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancelled_during_device_probe_never_sends_request(monkeypatch):
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    requests = []
+
+    def device_hints():
+        loop.call_soon_threadsafe(started.set)
+        try:
+            if not release.wait(timeout=5):
+                raise TimeoutError("test did not release the device probe")
+            return {"locale": "es", "region": "ES"}
+        finally:
+            finished.set()
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(O.httpx, "AsyncClient", lambda **kwargs: client)
+    monkeypatch.setattr(O, "community_bootstrap_locale_hints", device_hints)
+    task = asyncio.create_task(O._bootstrap_session("https://community.example", "test-access"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert requests == []
+        assert client.is_closed
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert await asyncio.to_thread(finished.wait, 3)
+        await client.aclose()
 
 
 @pytest.fixture(autouse=True)

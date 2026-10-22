@@ -146,11 +146,16 @@ startup_failure = "warn"
 - `timeout` - Number of seconds to wait for startup readiness; must satisfy `0 < timeout <= 300`. Omit it to use the system default.
 - `startup_failure` - What to do if `lifecycle.startup` raises after the process is alive. Omit it to default to `warn`: `warn` keeps the plugin running and marks startup as degraded, `fail` aborts startup, and `ignore` only logs the error.
 - `enabled` — Set to `false` to temporarily disable without deleting files
-- `auto_start` — When `true`, starts automatically with N.E.K.O; otherwise start manually from the panel
+- `auto_start` — Defaults to `false` when omitted. A saved user preference overrides this manifest value; automatic startup also requires approval.
 - `priority` — Optional integer runtime ordering hint
 
 Plugin Manager's independent auto-start switch controls the saved preference.
-By default, manual Start/Stop/Reload does not change that preference. Newly
+A first local installation saves this preference as `false`, even if the package
+declares `auto_start = true`, so the switch initially appears off. Normal upgrades
+and reinstalls preserve the saved choice. Existing installations with an explicit
+manifest value keep that value unless a saved preference overrides it.
+
+By default, manual Start/Stop/Reload does not change the saved preference. Newly
 installed plugins remain pending auto-start approval until the independent
 switch is enabled; starting or reloading them manually never grants approval.
 
