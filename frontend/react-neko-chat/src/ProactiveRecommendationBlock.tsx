@@ -10,15 +10,13 @@ type ProactiveBlock = Extract<MessageBlock, { type: 'proactive_recommendation' }
 
 function MemeIcon() {
   const gradientId = useId();
-  return <g strokeWidth="1.1">
-    <defs><linearGradient id={gradientId} x1="5" y1="6" x2="18" y2="22" gradientUnits="userSpaceOnUse">
-      <stop stopColor="#c1eff9" /><stop offset=".5" stopColor="#95dff2" /><stop offset="1" stopColor="#72c9e8" />
+  return <g strokeWidth=".9">
+    <defs><linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+      <stop stopColor="#c1eff9" /><stop offset="1" stopColor="#72c9e8" />
     </linearGradient></defs>
-    <path d="m4.6 10-.4-4.2c-.1-.8.7-1.2 1.3-.7l3.3 2.2c1.5-.4 3.2-.4 4.7 0l2.4-1.7c.7-.5 1.5-.1 1.4.8l-.2 3.8c1.5 1.2 2.4 3 2.4 4.8 0 4.3-3.7 6.7-8.6 6.7S2.5 19.3 2.5 15c0-1.9.7-3.6 2.1-5Z" fill={`url(#${gradientId})`} stroke="#69c4e2" />
-    <path d="M5.5 11.5c.5-1 1.3-1.7 2.4-2.2" stroke="white" strokeWidth="1.5" strokeOpacity=".75" />
-    <path d="M6.9 13.5q.9-1 1.8 0m5 0q.9-1 1.8 0M9 16v.3a1.1 1.1 0 0 0 2.2 0 1.1 1.1 0 0 0 2.2 0V16" stroke="#4598c1" />
-    <path d="M5.9 15.7h.8m9 0h.8" stroke="#65b6d7" strokeOpacity=".65" />
-    <path d="m19 1.5 1 3 3 1-3 1-1 3-1-3-3-1 3-1Z" fill="white" stroke="#a9ddf0" strokeWidth=".7" />
+    <path d="M12 3C6.5 3 2.5 6.3 2.5 11c0 2.7 1.4 4.8 3.7 6.3l-.7 3.4 4.1-2.1c.8.2 1.6.3 2.4.3 5.5 0 9.5-3.3 9.5-7.9S17.5 3 12 3Z" fill={`url(#${gradientId})`} stroke="#6ab9dc" />
+    <path d="M6.8 9.6q1-1.5 2.1 0m6.2 0q1-1.5 2.1 0M8.7 12c1.9 3.2 4.7 3.2 6.6 0" stroke="#468fb5" strokeWidth="1.25" />
+    <path d="M5.3 7.2q.8-1 2.2-1.5" stroke="white" strokeWidth="1.3" strokeOpacity=".7" />
   </g>;
 }
 
