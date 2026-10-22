@@ -107,9 +107,11 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
 
     captured: dict = {}
     gate = asyncio.Event()
+    entered = asyncio.Event()
 
     async def fake_recovery(render_chips, upload_transcript=None, **kw):
         captured.update(kw, render_chips=render_chips, upload_transcript=upload_transcript)
+        entered.set()
         await gate.wait()
         return SimpleNamespace(crashed=[], chips=[], swept=0)
 
@@ -125,8 +127,7 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
     sweep, rec = background._sweep_task, background._recovery_task
     background.start_visit_background_tasks()         # Idempotent: do not create a second instance.
     assert background._sweep_task is sweep and background._recovery_task is rec
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert captured["render_chips"] is debrief.render_chips
     assert captured["upload_transcript"] is transcript_upload.upload_visit_transcript
     assert captured["is_live"] is runtime.is_visit_live
@@ -181,8 +182,11 @@ async def test_startup_invite_reset_timeout_does_not_block_recovery(monkeypatch)
 
     cancelled = asyncio.Event()
     recovered = asyncio.Event()
+    attempts = 0
 
     async def hanging_reset():
+        nonlocal attempts
+        attempts += 1
         try:
             await asyncio.sleep(60)
         finally:
@@ -197,7 +201,30 @@ async def test_startup_invite_reset_timeout_does_not_block_recovery(monkeypatch)
     background.start_visit_background_tasks()
     assert await background.wait_startup_invite_reset() is False
     assert await background._recovery_task is None
-    assert cancelled.is_set() and recovered.is_set()
+    assert attempts == 2 and cancelled.is_set() and recovered.is_set()
+
+
+async def test_failed_startup_invite_reset_retries_after_login_recovers(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    attempts = 0
+
+    async def reset_invites():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("not signed in yet")
+        return 1
+
+    async def recover():
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    assert await background._recovery_task is None
+    assert await background.wait_startup_invite_reset() is True
+    assert attempts == 2
 
 
 async def test_shutdown_is_bounded_even_when_stop_all_hangs(monkeypatch):
