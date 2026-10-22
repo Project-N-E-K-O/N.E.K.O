@@ -36,14 +36,14 @@ async function mountPanel(locale = 'en-US', overrides: Record<string, unknown> =
   document.body.appendChild(container)
   const i18n = createI18n({ legacy: false, locale, messages, missingWarn: false, fallbackWarn: false })
   const app = createApp(PluginSelectorPanel, {
-    loading: false, totalCount: 1, selectedCount: 0, pluginFilter: '', useRegex: false,
-    filterMode: 'whitelist', regexError: false, selectedTypes: ['plugin'], layoutMode: 'compact',
+    loading: false, totalCount: 1, selectedCount: 0, pluginFilter: '',
+    selectedTypes: ['plugin'], layoutMode: 'compact',
     pluginCount: 1, adapterCount: 0, filteredPurePlugins: [plugin], filteredAdapters: [],
     selectedPluginIds: [], onTogglePlugin: toggle, ...overrides,
   })
   app.use(i18n)
   for (const tag of ['el-card', 'el-tag', 'el-radio-group', 'el-radio-button',
-    'el-checkbox-group', 'el-checkbox-button', 'el-switch', 'el-input', 'el-icon']) {
+    'el-checkbox-group', 'el-checkbox-button', 'el-input', 'el-icon']) {
     app.component(tag, passthrough)
   }
   app.component('el-checkbox', defineComponent({
@@ -84,7 +84,7 @@ describe('local plugin selector polish', () => {
       'plugins.noLocalMatches']) {
       expect(container.textContent).toContain(t(key, { count: 0 }))
     }
-    for (const key of ['plugins.filterRegex', 'plugins.layoutLabel', 'plugins.pluginType']) {
+    for (const key of ['common.filter', 'plugins.layoutLabel', 'plugins.pluginType']) {
       expect(container.querySelector(`[aria-label="${t(key)}"]`)).not.toBeNull()
     }
   })

@@ -221,17 +221,11 @@
 
           <WorkbenchFilterBar
             v-model:filter-text="filterText"
-            v-model:use-regex="useRegex"
-            v-model:filter-mode="filterMode"
-            :regex-error="regexError"
             :rule-groups="filterRuleGroups"
             :placeholder="$t('plugins.filterPlaceholder')"
             :rules-trigger-label="$t('plugins.filterRules')"
             :rules-title="$t('plugins.filterRulesTitle')"
             :rules-hint="$t('plugins.filterRulesHint')"
-            :whitelist-label="$t('plugins.filterWhitelist')"
-            :blacklist-label="$t('plugins.filterBlacklist')"
-            :invalid-regex-label="$t('plugins.invalidRegex')"
             :guide-ids="{ rulesTrigger: 'plugin-list-filter-rules', input: 'plugin-list-filter-input' }"
             class="filter-bar-spacing"
           />
@@ -586,13 +580,10 @@ const duplicateDisplayNamePluginIds = computed(() => [
 ])
 const {
   filterText,
-  useRegex,
-  filterMode,
   selectedTypes,
   layoutMode,
   selectedCount,
   multiSelectEnabled,
-  regexError,
   groupCounts,
   filteredPurePlugins,
   filteredAdapters,
@@ -800,8 +791,6 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
 
 function clearFilters() {
   filterText.value = ''
-  useRegex.value = false
-  filterMode.value = 'whitelist'
   selectedTypes.value = ['plugin', 'adapter']
 }
 

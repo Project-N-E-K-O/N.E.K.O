@@ -53,7 +53,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   setActivePinia(createPinia())
   const workbench = usePluginWorkbench(ref([]), { scope: 'plugin-workbench' })
-  workbench.filterText.value = ''; workbench.selectedTypes.value = ['plugin', 'adapter']; workbench.filterMode.value = 'whitelist'; workbench.useRegex.value = false
+  workbench.filterText.value = ''; workbench.selectedTypes.value = ['plugin', 'adapter']
   vi.mocked(getPluginSummaries).mockResolvedValue({ plugins: [demo], message: '' } as never)
   vi.mocked(getPluginStatus).mockResolvedValue({ plugins: { demo: { status: 'running' } } } as never)
   vi.mocked(refreshPluginsRegistry).mockResolvedValue({ success: true, failed: [] } as never)

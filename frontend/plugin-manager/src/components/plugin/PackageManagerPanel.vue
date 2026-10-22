@@ -30,9 +30,6 @@
         :total-count="selectablePlugins.length"
         :selected-count="selectedPluginIds.length"
         :plugin-filter="pluginFilter"
-        :use-regex="useRegex"
-        :filter-mode="filterMode"
-        :regex-error="regexError"
         :selected-types="selectedTypes"
         :layout-mode="layoutMode"
         :plugin-count="pluginCount"
@@ -45,8 +42,6 @@
         @clear-selection="clearSelection"
         @toggle-plugin="togglePlugin"
         @update:plugin-filter="pluginFilter = $event"
-        @update:use-regex="useRegex = $event"
-        @update:filter-mode="filterMode = $event"
         @update:selected-types="selectedTypes = $event"
         @update:layout-mode="layoutMode = $event"
       />
@@ -275,9 +270,6 @@ const {
   layoutMode,
   buildMode,
   pluginFilter,
-  useRegex,
-  filterMode,
-  regexError,
   selectedTypes,
   pluginsLoading,
   packagesLoading,

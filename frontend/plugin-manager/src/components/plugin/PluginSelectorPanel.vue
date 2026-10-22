@@ -15,30 +15,8 @@
           clearable
           :placeholder="t('plugins.filterPlaceholder')"
           :aria-label="t('common.filter')"
-          :aria-invalid="regexError"
           @update:model-value="$emit('update:pluginFilter', $event)"
         />
-
-        <div class="selector-filter-row">
-          <el-switch
-            :model-value="useRegex"
-            class="selector-filter-switch"
-            :active-text="t('plugins.filterRegex')"
-            :inactive-text="t('plugins.filterText')"
-            :aria-label="t('plugins.filterRegex')"
-            @update:model-value="$emit('update:useRegex', $event)"
-          />
-          <el-radio-group
-            :model-value="filterMode"
-            size="small"
-            :aria-label="t('plugins.filterRules')"
-            @update:model-value="$emit('update:filterMode', $event)"
-          >
-            <el-radio-button label="whitelist">{{ t('plugins.filterWhitelist') }}</el-radio-button>
-            <el-radio-button label="blacklist">{{ t('plugins.filterBlacklist') }}</el-radio-button>
-          </el-radio-group>
-          <span v-if="regexError" class="selector-filter-error" role="alert">{{ t('plugins.invalidRegex') }}</span>
-        </div>
 
         <div class="type-filter-bar">
           <el-checkbox-group
@@ -146,7 +124,6 @@ import type { PluginMeta } from '@/types/api'
 
 type LayoutMode = 'list' | 'single' | 'double' | 'compact'
 type PluginGroupType = 'plugin' | 'adapter'
-type FilterMode = 'whitelist' | 'blacklist'
 
 type SelectablePlugin = PluginMeta & {
   type: PluginGroupType
@@ -160,9 +137,6 @@ const props = defineProps<{
   totalCount: number
   selectedCount: number
   pluginFilter: string
-  useRegex: boolean
-  filterMode: FilterMode
-  regexError: boolean
   selectedTypes: PluginGroupType[]
   layoutMode: LayoutMode
   pluginCount: number
@@ -178,8 +152,6 @@ defineEmits<{
   clearSelection: []
   togglePlugin: [pluginId: string]
   'update:pluginFilter': [value: string]
-  'update:useRegex': [value: boolean]
-  'update:filterMode': [value: FilterMode]
   'update:selectedTypes': [value: PluginGroupType[]]
   'update:layoutMode': [value: LayoutMode]
 }>()
@@ -247,39 +219,6 @@ function isSelected(pluginId: string): boolean {
 .selector-toolbar :deep(.el-radio-group) {
   display: flex;
   flex-wrap: wrap;
-}
-
-.selector-filter-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.selector-filter-switch {
-  flex-shrink: 0;
-  max-width: 100%;
-  height: auto;
-  min-height: 32px;
-}
-
-.selector-filter-switch :deep(.el-switch__label) {
-  height: auto;
-  min-width: 0;
-}
-
-.selector-filter-switch :deep(.el-switch__label span) {
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-.selector-filter-switch :deep(.el-switch__core) {
-  flex-shrink: 0;
-}
-
-.selector-filter-error {
-  color: var(--el-color-danger);
-  font-size: 12px;
 }
 
 .selector-actions {

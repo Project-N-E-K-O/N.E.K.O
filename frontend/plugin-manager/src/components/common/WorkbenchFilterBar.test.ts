@@ -11,11 +11,11 @@ async function mount(mouse = false) {
   const root = document.createElement('div')
   document.body.append(root)
   const app = createApp(WorkbenchFilterBar, {
-    filterText: 'demo', useRegex: false, filterMode: 'whitelist', rulesTriggerLabel: 'Rules', rulesTitle: 'Filter rules',
+    filterText: 'demo', rulesTriggerLabel: 'Rules', rulesTitle: 'Filter rules',
     ruleGroups: [{ key: 'state', title: 'State', rules: [{ token: 'is:running', label: 'Running' }, { token: 'is:stopped', label: 'Stopped' }] }],
     'onUpdate:filterText': (value: string) => updates.push(value),
   })
-  for (const name of ['ElIcon', 'ElSwitch', 'ElRadioGroup', 'ElRadioButton']) {
+  for (const name of ['ElIcon']) {
     app.component(name, defineComponent({ setup: () => () => h('span') }))
   }
   app.mount(root)

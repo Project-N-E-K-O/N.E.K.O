@@ -40,11 +40,8 @@ vi.mock('@/composables/useMarketWorkbench', async () => {
   return {
     useMarketWorkbench: (plugins: { value: unknown[] }) => ({
       filterText: ref(''),
-      useRegex: ref(false),
-      filterMode: ref('whitelist'),
       selectedGroupIds: ref(['all']),
       layoutMode: ref('compact'),
-      regexError: ref(''),
       groupCounts: ref({}),
       filteredItems: computed(() => plugins.value),
     }),

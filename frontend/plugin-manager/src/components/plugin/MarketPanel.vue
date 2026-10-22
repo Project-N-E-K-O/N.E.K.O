@@ -91,17 +91,11 @@
 
     <WorkbenchFilterBar
       v-model:filter-text="filterText"
-      v-model:use-regex="useRegex"
-      v-model:filter-mode="filterMode"
-      :regex-error="regexError"
       :rule-groups="filterRuleGroups"
       :placeholder="t('market.searchPlaceholder')"
       :rules-trigger-label="t('market.filterRules')"
       :rules-title="t('market.filterRulesTitle')"
       :rules-hint="t('market.filterRulesHint')"
-      :whitelist-label="t('plugins.filterWhitelist')"
-      :blacklist-label="t('plugins.filterBlacklist')"
-      :invalid-regex-label="t('plugins.invalidRegex')"
     />
 
     <WorkbenchToolbar class="market-panel__toolbar">
@@ -561,11 +555,8 @@ function getMarketAction(plugin: MarketPlugin): MarketPluginAction {
 // ─── 工作台：过滤 + 分组 + 布局 ───────────────────────────────────
 const {
   filterText,
-  useRegex,
-  filterMode,
   selectedGroupIds,
   layoutMode,
-  regexError,
   groupCounts,
   filteredItems,
 } = useMarketWorkbench(plugins, { isInstalled })
@@ -634,11 +625,10 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
 
 const totalPages = computed(() => Math.ceil(totalCount.value / pageSize))
 
-// ─── 后端查询：提取纯关键词，qualifier 和 regex 留给前端 ────────
+// ─── 后端查询：提取纯关键词，qualifier 和排除项留给前端 ────────
 /** 从用户输入里抽取可以直传给后端 q= 的"裸 term"。 */
 function extractServerQuery(input: string): string {
   if (!input.trim()) return ''
-  if (useRegex.value) return ''
   const tokens = input.match(/"[^"]+"|\S+/g) || []
   const terms = tokens
     .map((raw) => {
@@ -802,11 +792,6 @@ watch(filterText, () => {
     currentPage.value = 1
     loadPlugins()
   }, 400)
-})
-
-watch(useRegex, () => {
-  currentPage.value = 1
-  loadPlugins()
 })
 
 // v2 (R7.5): 切换全局 channel 立即重载列表 + 重新跑 yank sweep

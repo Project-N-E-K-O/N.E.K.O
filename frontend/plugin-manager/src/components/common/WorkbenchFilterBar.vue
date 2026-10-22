@@ -85,29 +85,6 @@
         :placeholder="placeholder"
         @update:model-value="(v: string) => $emit('update:filterText', v)"
       />
-
-      <div class="wb-filter-bar__toggles">
-        <el-switch
-          :model-value="useRegex"
-          class="wb-filter-bar__switch"
-          :active-text="regexLabel"
-          :inactive-text="textLabel"
-          @update:model-value="(v: boolean) => $emit('update:useRegex', v)"
-        />
-        <el-radio-group
-          :model-value="filterMode"
-          size="small"
-          class="wb-filter-bar__mode"
-          @update:model-value="(v: FilterMode) => $emit('update:filterMode', v)"
-        >
-          <el-radio-button value="whitelist">{{ whitelistLabel }}</el-radio-button>
-          <el-radio-button value="blacklist">{{ blacklistLabel }}</el-radio-button>
-        </el-radio-group>
-      </div>
-
-      <Transition name="wb-filter-error-fade">
-        <span v-if="regexError" class="wb-filter-bar__error">{{ invalidRegexLabel }}</span>
-      </Transition>
     </div>
   </div>
 </template>
@@ -116,7 +93,6 @@
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { Operation } from '@element-plus/icons-vue'
 import { ElInput } from 'element-plus'
-import type { FilterMode } from '@/composables/useGridWorkbench'
 import type { FilterRuleGroupDescriptor } from '@/composables/workbenchDescriptors'
 
 interface GuideIds {
@@ -126,9 +102,6 @@ interface GuideIds {
 
 const props = withDefaults(defineProps<{
   filterText: string
-  useRegex: boolean
-  filterMode: FilterMode
-  regexError?: boolean
   ruleGroups?: FilterRuleGroupDescriptor[]
   placeholder?: string
   /** Filter-rules 下拉触发按钮的文字。 */
@@ -137,34 +110,18 @@ const props = withDefaults(defineProps<{
   rulesTitle?: string
   /** Filter-rules 下拉内部提示。 */
   rulesHint?: string
-  /** Regex/Text 开关标签。 */
-  regexLabel?: string
-  textLabel?: string
-  /** 白/黑名单标签。 */
-  whitelistLabel?: string
-  blacklistLabel?: string
-  /** 正则非法的提示。 */
-  invalidRegexLabel?: string
   guideIds?: GuideIds
 }>(), {
-  regexError: false,
   ruleGroups: () => [],
   placeholder: '',
   rulesTriggerLabel: '',
   rulesTitle: '',
   rulesHint: '',
-  regexLabel: 'Regex',
-  textLabel: 'Text',
-  whitelistLabel: '',
-  blacklistLabel: '',
-  invalidRegexLabel: '',
   guideIds: undefined,
 })
 
 const emit = defineEmits<{
   'update:filterText': [value: string]
-  'update:useRegex': [value: boolean]
-  'update:filterMode': [value: FilterMode]
 }>()
 
 // ─── 规则下拉定位 + 悬停关闭 ──────────────────────────────────────
@@ -359,7 +316,6 @@ onBeforeUnmount(stopListeners)
 .wb-filter-bar {
   --wb-radius-panel: var(--radius-panel);
   --wb-radius-control: var(--radius-control);
-  --wb-radius-chip: var(--radius-chip);
   padding: 10px 14px;
   background: var(--surface-inset);
   border: 1px solid var(--surface-border);
@@ -396,43 +352,6 @@ onBeforeUnmount(stopListeners)
   box-shadow:
     0 0 0 1px var(--el-color-primary) inset,
     0 0 0 3px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
-}
-
-.wb-filter-bar__toggles {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.wb-filter-bar__switch,
-.wb-filter-bar__mode {
-  flex-shrink: 0;
-}
-
-.wb-filter-bar__mode :deep(.el-radio-button__inner) {
-  border-radius: var(--wb-radius-chip);
-}
-
-.wb-filter-bar__error {
-  color: var(--el-color-danger);
-  font-size: 12px;
-  font-weight: 500;
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: var(--wb-radius-chip);
-  background: color-mix(in srgb, var(--el-color-danger) 8%, transparent);
-}
-
-.wb-filter-error-fade-enter-active,
-.wb-filter-error-fade-leave-active {
-  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
-}
-
-.wb-filter-error-fade-enter-from,
-.wb-filter-error-fade-leave-to {
-  opacity: 0;
-  transform: translateX(-4px);
 }
 
 .wb-filter-bar__rules-anchor {
@@ -656,8 +575,6 @@ onBeforeUnmount(stopListeners)
   .wb-filter-bar__rules-trigger,
   .wb-filter-bar__rules-arrow,
   .wb-filter-bar__input :deep(.el-input__wrapper),
-  .wb-filter-error-fade-enter-active,
-  .wb-filter-error-fade-leave-active,
   :global(.wb-filter-rules-dropdown),
   :global(.wb-filter-rules-group),
   :global(.wb-filter-rule-chip) {
@@ -667,8 +584,6 @@ onBeforeUnmount(stopListeners)
 
   .wb-filter-bar__rules-trigger:hover,
   .wb-filter-bar__rules-trigger--active,
-  .wb-filter-error-fade-enter-from,
-  .wb-filter-error-fade-leave-to,
   :global(.wb-filter-rules-dropdown),
   :global(.wb-filter-rule-chip:hover),
   :global(.wb-filter-rule-chip:active) {
