@@ -12,7 +12,7 @@ const icons: Record<ProactiveBlock['category'], ReactNode> = {
   community: <><path d="M7 10a4 4 0 1 1 7 2M4 20v-2a5 5 0 0 1 9-3M17 13v6m-3-3h6" /></>,
   video: <><rect x="3" y="5" width="18" height="14" rx="4" /><path d="m10 9 5 3-5 3Z" /></>,
   personal: <><path d="M8 18H5l-2 3V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-4M8 9h8M8 13h5" /></>,
-  meme: <><rect x="3" y="3" width="18" height="18" rx="6" /><path d="M8 9v1m8-1v1M8 14c2 3 6 3 8 0" /></>,
+  meme: <><path d="M5 8 4 3l5 3a10 10 0 0 1 6 0l5-3-1 5a8 8 0 0 1 2 5c0 4-4 7-9 7s-9-3-9-7a8 8 0 0 1 2-5Z" /><path d="M7 11.5c.7-1 1.7-1 2.4 0m5.2 0c.7-1 1.7-1 2.4 0M9 15c1.5 2 4.5 2 6 0" /></>,
   vision: <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
   window: <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 9h18M7 6.5h.01M10 6.5h.01" /></>,
   chat: <path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z" />,
