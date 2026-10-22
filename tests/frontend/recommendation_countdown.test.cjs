@@ -185,3 +185,23 @@ for (const [incoming, expected] of [[112000, 110000], [108000, 108000], [0, 1100
     await s.advance(expected - s.w.Date.now() - 1); assert.equal(s.plays.length, 0);
     await s.advance(1); assert.equal(s.plays.length, 1);
 });
+
+for (const state of ['skipped', 'accepted', 'playing', 'paused', 'ended', 'stopped', 'failed', 'unavailable']) {
+    for (const incoming of ['pending', 'saving', ...(state === 'accepted' ? [] : ['accepted'])]) test(`late ${incoming} mirror cannot reopen ${state} music`, async t => {
+        const s = surface(t);
+        const original = structuredClone(s.message());
+        let displayed = structuredClone(original);
+        s.w.reactChatWindowHost = { updateMessage(_id, patch) { displayed = structuredClone({ ...displayed, ...patch }); } };
+        s.w.nekoMusicRecommendations.recordPlayback(id, state);
+        const settled = structuredClone(displayed.blocks[0]);
+        const patch = { blocks: [{ ...original.blocks[0], state: incoming, autoPlayAt: 110000 }] };
+        s.w.reactChatWindowHost.updateMessage(original.id, patch);
+        s.w.dispatchEvent(new s.w.CustomEvent('neko:chat-mirror', {
+            detail: { type: 'update', messageId: original.id, patch: structuredClone(patch) },
+        }));
+        assert.deepEqual(displayed.blocks[0], settled, 'correct the host that already rendered the stale patch');
+        assert.equal(s.w.nekoMusicRecommendations.hasPending(), false);
+        s.show(); await s.advance(20000);
+        assert.equal(s.plays.length, 0, 'stale choices cannot restart a countdown or replay audio');
+    });
+}

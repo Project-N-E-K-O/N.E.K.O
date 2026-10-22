@@ -197,7 +197,7 @@ const endedState = { track: {name:'finished', artist:'test'}, playbackId:'finish
     ended:true, currentTime:60, duration:60, volume:0.2 };
 const remoteEvent = (type, payload) => ({ sender:'remote-owner', type, payload });
 
-async function startRecommendation(s, awarenessState) {
+function offerRecommendation(s, awarenessState) {
     const events = [], awareness = [], messages = new Map();
     const socket = awarenessState === undefined ? null : { readyState: awarenessState,
         send(value) { awareness.push(JSON.parse(value)); } };
@@ -220,18 +220,106 @@ async function startRecommendation(s, awarenessState) {
     s.w.nekoMusicRecommendations.offer({ id, state: 'pending', expires_at: s.w.Date.now()/1000+1800,
         track: { name: 'Recommended', artist: 'Neko', url: 'https://music.163.com/test.mp3', cover: '' } });
     const message = messages.values().next().value;
-    s.w.dispatchEvent(new s.w.CustomEvent('react-chat-window:action', { detail: { message,
-        action: { action: 'music_recommendation_decision', payload: { recommendationId: id, kind: 'accepted' } } } }));
+    const action = name => s.w.dispatchEvent(new s.w.CustomEvent('react-chat-window:action', { detail: { message,
+        action: { action: name, payload: { recommendationId: id, kind: 'accepted' } } } }));
+    return { events, awareness, socket, message,
+        choose: () => action('music_recommendation_decision'), show: () => action('music_recommendation_shown') };
+}
+
+async function startRecommendation(s, awarenessState) {
+    const r = offerRecommendation(s, awarenessState);
+    r.choose();
     await s.advance(100);
     assert.equal(s.players.length, 1);
     assert.equal(s.players[0].audio.paused, false);
-    assert.ok(events.some(event => event.kind === 'accepted'));
-    assert.ok(events.some(event => event.kind === 'playing'));
+    assert.ok(r.events.some(event => event.kind === 'accepted'));
+    assert.ok(r.events.some(event => event.kind === 'playing'));
     const audio = s.players[0].audio;
     audio.currentTime = 12;
     audio.played = { length: 1, start: () => 0, end: () => 12 };
-    return { events, awareness, socket, message };
+    return r;
 }
+
+for (const stage of ['dispatcher', 'library', 'factory', 'delayed play', 'media wait', 'interaction unlock']) {
+    for (const invalidation of ['hidden then restored', 'clear', 'character']) {
+        test(`recommendation cancellation crosses ${stage} after ${invalidation}`, async t => {
+            const s = createSurface(t, { deferInit: stage === 'factory', mediaPending: stage === 'media wait' });
+            const r = offerRecommendation(s);
+            const send = s.w.sendMusicMessage, detailed = s.w.sendMusicMessageDetailed, Player = s.w.APlayer;
+            if (stage === 'dispatcher') { delete s.w.sendMusicMessage; delete s.w.sendMusicMessageDetailed; }
+            if (stage === 'library') delete s.w.APlayer;
+            r.show(); await s.advance(10000);
+            assert.equal(r.events.filter(event => event.kind === 'accepted').length, 1);
+            if (invalidation === 'hidden then restored') {
+                let hidden = true;
+                Object.defineProperty(s.w.document, 'visibilityState', { configurable: true, get: () => hidden ? 'hidden' : 'visible' });
+                s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
+                hidden = false;
+                s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
+            } else if (invalidation === 'clear') s.w.dispatchEvent(new s.w.Event('react-chat-window:messages-cleared'));
+            else s.w.lanlan_config.lanlan_name = 'Other';
+            if (stage === 'dispatcher') {
+                s.w.sendMusicMessage = send; s.w.sendMusicMessageDetailed = detailed;
+                s.w.dispatchEvent(new s.w.Event('music-ui-ready'));
+            }
+            if (stage === 'library') {
+                s.w.APlayer = Player;
+                const script = [...s.w.document.scripts].find(node => /APlayer/.test(node.src));
+                assert.ok(script, 'library wait reached'); script.onload();
+            }
+            if (stage === 'factory') s.completeInit();
+            if (stage === 'interaction unlock') s.w.document.body.click();
+            await s.advance(101);
+            assert.equal(r.events.filter(event => event.kind === 'playing').length, 0);
+            assert.ok(s.players.every(player => player.audio.paused), 'no retired recommendation starts audio');
+            assert.equal(s.w.isMusicPending(), false, 'the owned pending count is released');
+            assert.equal(s.bar(), null, 'canceled initialization releases its own bar');
+            if (invalidation === 'hidden then restored') {
+                assert.equal(r.message.blocks[0].state, 'failed');
+                assert.equal(r.events.filter(event => event.kind === 'failed').length, 1);
+            }
+        });
+    }
+}
+
+test('explicit recommendation remains allowed through delayed play when hidden', async t => {
+    const s = createSurface(t), r = offerRecommendation(s);
+    r.choose(); await flush();
+    Object.defineProperty(s.w.document, 'visibilityState', { get: () => 'hidden' });
+    s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
+    await s.advance(101);
+    assert.equal(s.players[0].audio.paused, false);
+    assert.equal(r.events.filter(event => event.kind === 'playing').length, 1);
+});
+
+test('retiring a recommendation does not destroy a replacement player', async t => {
+    const s = createSurface(t), r = offerRecommendation(s);
+    r.show(); await s.advance(10000);
+    const old = s.players[0];
+    const replacement = s.w.dispatchMusicPlayDetailed({ name: 'Recommended', artist: 'Neko', url: 'https://music.163.com/test.mp3' });
+    await flush();
+    s.w.dispatchEvent(new s.w.Event('react-chat-window:messages-cleared'));
+    await s.advance(101);
+    assert.equal((await replacement).ok, true);
+    assert.equal(s.players.at(-1), old, 'same media can transfer to a new request on the existing player');
+    assert.equal(old._musicPlaybackReportContext.recommendationId, '');
+    assert.equal(s.players.at(-1).destroyed, false);
+    assert.equal(s.players.at(-1).audio.paused, false);
+});
+
+test('hiding after music has started does not cancel playback while metadata is pending', async t => {
+    const s = createSurface(t, { mediaPending: true }), r = offerRecommendation(s);
+    r.show(); await s.advance(10100);
+    const player = s.players[0];
+    assert.equal(player.audio.paused, false);
+    Object.defineProperty(s.w.document, 'visibilityState', { get: () => 'hidden' });
+    s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
+    player.audio.dispatchEvent(new s.w.Event('loadedmetadata'));
+    await flush();
+    assert.equal(player.destroyed, false);
+    assert.equal(player.audio.paused, false);
+    assert.equal(r.events.filter(event => event.kind === 'failed').length, 0);
+});
 
 for (const transport of ['IPC', 'BroadcastChannel']) {
     for (const awarenessState of [undefined, 1, 3]) {

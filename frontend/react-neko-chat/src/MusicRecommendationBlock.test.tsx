@@ -63,8 +63,11 @@ describe('music recommendation card', () => {
       blocks: [{ type: 'buttons', buttons: [{ id: 'details', label: 'Visit details', action: 'visit_details',
         payload: { visit_id: 'visit-test' } }] }] });
     const action = vi.fn();
+    window.localStorage.setItem('neko.reactChatWindow.compactExportHistoryOpen', 'false');
     const view = render(<App chatSurfaceMode="compact" messages={[visit, music]} onMessageAction={action} />);
+    expect(view.container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(view.container.querySelector('.compact-history-visibility-handle')!);
+    expect(view.container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(screen.getByRole('button', { name: 'Visit details' }));
     expect(action).toHaveBeenLastCalledWith(visit, expect.objectContaining({ action: 'visit_details' }));
     fireEvent.click(screen.getByRole('button', { name: /Listen/ }));

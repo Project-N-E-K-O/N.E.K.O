@@ -12,6 +12,7 @@
     const MUSIC_COUNTDOWN_MS = 10000;
     let disposed = false;
     let lifecycleEpoch = 0;
+    let autoplayVisibilityEpoch = 0;
     const placeholders = new Map();
     const retiredIds = new Set();
     let snapshotRequestId = '';
@@ -172,6 +173,10 @@
         // original offer's character, including after choices and mirror updates.
         const previous = messages.get(id);
         if (previous) message = Object.assign({}, message, { author: previous.author });
+        const stateCorrected = previous && !['pending', 'saving'].includes(previous.blocks[0].state)
+            && (['pending', 'saving'].includes(message.blocks[0].state)
+                || (previous.blocks[0].state !== 'accepted' && message.blocks[0].state === 'accepted'));
+        if (stateCorrected) message = Object.assign({}, message, { blocks: [previous.blocks[0]] });
         let deadlineCorrected = false;
         if (previous?.blocks[0].autoPlayAt > 0 && message.blocks[0].type === 'music_recommendation'
             && message.blocks[0].state === 'pending' && Number.isFinite(message.blocks[0].autoPlayAt)) {
@@ -185,7 +190,7 @@
         messages.set(id, message);
         // The mirror host has already rendered the incoming patch. Correct it
         // through the same host/broadcast path; equal deadlines do not echo.
-        if (deadlineCorrected) update(id, message.blocks[0].state, message.blocks[0].error);
+        if (deadlineCorrected || stateCorrected) update(id, message.blocks[0].state, message.blocks[0].error);
         if (message.blocks[0].state !== 'pending' || message.blocks[0].error) cancelMusicCountdown(id);
         else if (countdownShown.has(id) && message.blocks[0].autoPlayAt > 0) armMusicCountdown(id);
         // Only UI bookkeeping is evicted; pending evidence is kept separately.
@@ -348,10 +353,17 @@
         if (previous.blocks[0].type === 'proactive_recommendation' && previous.blocks[0].directDelivery) return;
         remember(message);
         const epoch = lifecycleEpoch;
-        const operation = { automatic, playbackInvalidated: false };
+        const visibilityEpoch = autoplayVisibilityEpoch;
+        const operation = {};
         inFlight.set(id, operation);
         const isCurrent = () => !disposed && epoch === lifecycleEpoch && inFlight.get(id) === operation
             && belongsHere(messages.get(id)) && !retiredIds.has(id);
+        // Outlives the HTTP/dispatch await: the UI may still be waiting to play
+        // after inFlight is released. A hide-and-show must not restore permission.
+        const getCancellationReason = () => disposed || epoch !== lifecycleEpoch
+            || !belongsHere(messages.get(id)) || retiredIds.has(id) ? 'recommendation_retired'
+            : automatic && (visibilityEpoch !== autoplayVisibilityEpoch || document.visibilityState === 'hidden')
+                ? 'autoplay_visibility_changed' : '';
         update(id, 'saving');
         const block = message.blocks[0];
         const href = block.type === 'proactive_recommendation' && block.category !== 'meme' && contentUrl(block.content.url);
@@ -388,19 +400,21 @@
             if (kind !== 'accepted' || !result.playback_grant || dispatched.has(id)) return;
             // The durable decision remains a fact, but hiding during its await
             // revokes this automatic dispatch even if the page is visible again.
-            if (automatic && (operation.playbackInvalidated || document.visibilityState === 'hidden')) {
+            const cancellationReason = getCancellationReason();
+            if (cancellationReason) {
                 update(id, 'failed');
-                evidence(id, 'failed', { playback_id: 'unstarted:' + id, reason: 'autoplay_visibility_changed' });
+                evidence(id, 'failed', { playback_id: 'unstarted:' + id, reason: cancellationReason });
                 return;
             }
             dispatched.add(id);
             // Consent is for this track only; never substitute another song.
             const playback = typeof window.dispatchMusicPlayDetailed === 'function'
                 ? await window.dispatchMusicPlayDetailed(block.track, {
-                    source: 'proactive', recommendationId: id, cardScopeId: 'recommendation:' + id
+                    source: 'proactive', recommendationId: id, cardScopeId: 'recommendation:' + id,
+                    getCancellationReason
                 }) : { ok: false, reason: 'ui_not_ready' };
             if (!isCurrent()) return;
-            if (!playback.ok) {
+            if (!playback.ok && messages.get(id)?.blocks[0].state !== 'failed') {
                 update(id, 'failed');
                 evidence(id, 'failed', { playback_id: 'unstarted:' + id, reason: String(playback.reason || 'player_error').slice(0, 64) });
             }
@@ -470,7 +484,7 @@
     });
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') {
-            for (const operation of inFlight.values()) if (operation.automatic) operation.playbackInvalidated = true;
+            autoplayVisibilityEpoch++;
             for (const id of musicCountdowns.keys()) cancelMusicCountdown(id);
         } else {
             for (const id of countdownShown) armMusicCountdown(id);
