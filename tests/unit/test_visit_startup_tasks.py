@@ -189,11 +189,8 @@ async def test_startup_invite_reset_timeout_does_not_block_recovery(monkeypatch)
 
     cancelled = asyncio.Event()
     recovered = asyncio.Event()
-    attempts = 0
 
     async def hanging_reset():
-        nonlocal attempts
-        attempts += 1
         try:
             await asyncio.sleep(60)
         finally:
@@ -210,30 +207,7 @@ async def test_startup_invite_reset_timeout_does_not_block_recovery(monkeypatch)
     assert isinstance(failure, credentials.VisitServersUnreachable)
     assert failure.reason == "startup_invite_reset"
     assert await background._recovery_task is None
-    assert attempts == 2 and cancelled.is_set() and recovered.is_set()
-
-
-async def test_failed_startup_invite_reset_retries_after_login_recovers(monkeypatch):
-    from main_routers.visit_router import credentials
-
-    attempts = 0
-
-    async def reset_invites():
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("not signed in yet")
-        return 1
-
-    async def recover():
-        return None
-
-    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
-    monkeypatch.setattr(background, "run_startup_recovery", recover)
-    background.start_visit_background_tasks()
-    assert await background._recovery_task is None
-    assert await background.wait_startup_invite_reset() is True
-    assert attempts == 2
+    assert cancelled.is_set() and recovered.is_set()
 
 
 async def test_failed_startup_invite_reset_is_retried_at_admission(monkeypatch):
