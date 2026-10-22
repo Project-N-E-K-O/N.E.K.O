@@ -2970,7 +2970,19 @@
             const dragging = !!active;
             this._isDraggingModel = dragging;
             this.isDragging = dragging;
-            document.body?.classList.toggle('neko-model-dragging', dragging);
+            // 与 Live2D/VRM/MMD 对齐：拖动开始经共享工具收起已展开的悬浮菜单弹窗，
+            // 并屏蔽工具栏/按钮的命中（防拖动“粘手”）；DragHelpers 未加载的页面
+            // （模型管理页等）退回直接切 body class
+            if (typeof window.DragHelpers?.disableButtonPointerEvents === 'function'
+                && typeof window.DragHelpers?.restoreButtonPointerEvents === 'function') {
+                if (dragging) {
+                    window.DragHelpers.disableButtonPointerEvents();
+                } else {
+                    window.DragHelpers.restoreButtonPointerEvents();
+                }
+            } else {
+                document.body?.classList.toggle('neko-model-dragging', dragging);
+            }
             if (!this.image) return;
 
             this.image.dragging = dragging;

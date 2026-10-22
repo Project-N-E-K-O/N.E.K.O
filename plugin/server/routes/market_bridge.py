@@ -4151,40 +4151,6 @@ async def _do_upgrade(
                     f"installed={installed_package_id!r} incoming={package_id!r}"
                 ),
             )
-        recorded_profile_dir = str(getattr(entry, "profile_dir", "") or "")
-        profile_candidate = (
-            Path(recorded_profile_dir).expanduser()
-            if recorded_profile_dir
-            else path_policy.package_profiles_root / package_id
-        )
-        if any(path.is_symlink() for path in (profile_candidate, *profile_candidate.parents)):
-            raise _TaskError(
-                code="unsafe_profile_path",
-                message=f"recorded package profile path contains a symlink: {profile_candidate}",
-            )
-        try:
-            profile_dir = profile_candidate.resolve()
-        except OSError as exc:
-            raise _TaskError(
-                code="unsafe_profile_path",
-                message=f"cannot resolve recorded package profile path: {profile_candidate}",
-            ) from exc
-        if profile_dir.name != package_id:
-            raise _TaskError(
-                code="unsafe_profile_path",
-                message=f"recorded package profile path does not match package id: {profile_dir}",
-            )
-        manual_package_has_profiles = bool(
-            manual_takeover and getattr(inspected, "profile_names", ())
-        )
-        if manual_package_has_profiles and (
-            profile_dir.exists() or profile_dir.is_symlink()
-        ):
-            raise _TaskError(
-                code="manual_takeover_profile_target_exists",
-                message="manual takeover cannot claim an existing package profile",
-                http_status=409,
-            )
         market_override = _build_market_override(
             payload,
             mode="reinstall" if record_as_reinstall else "upgrade",
@@ -4205,10 +4171,9 @@ async def _do_upgrade(
             return await cli_service.upload_and_install(
                 filename=_extract_filename(payload.package_url),
                 package_path=str(package_path),
-                profiles_root=str(profile_dir.parent),
-                _allow_external_profiles_root=True,
                 on_conflict="fail",
                 install_source_override=market_override,
+                _preserve_autostart_plugin_id=installed_plugin_id,
             )
 
         async def rollback_install_source() -> None:
@@ -4274,12 +4239,6 @@ async def _do_upgrade(
                 plugin_dir=plugin_dir,
                 layout=resolve_plugin_layout(installed_plugin_id, plugin_dir),
                 install_new=install_new,
-                additional_targets=(
-                    (profile_dir,)
-                    if not manual_takeover or manual_package_has_profiles
-                    else ()
-                ),
-                preserve_targets=(() if manual_takeover else (profile_dir,)),
                 validate_channel_specific=validate_channel_specific,
                 on_rollback_start=mark_rollback_running,
                 manual_snapshot_sha256=manual_snapshot_sha256,

@@ -90,7 +90,7 @@ export const usePluginStore = defineStore('plugin', () => {
       ...plugin,
       status: typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED,
       enabled: plugin.runtime_enabled !== false,
-      autoStart: plugin.runtime_auto_start !== false,
+      autoStart: plugin.runtime_auto_start === true,
     }
   }
 

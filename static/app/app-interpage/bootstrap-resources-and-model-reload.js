@@ -1518,6 +1518,15 @@ I.mod = window.appInterpage;
                             if (!skipIdleRestore) {
                                 restoreLive2DIdleAnimationOnMainPage();
                             }
+
+                            // 模型热切换完成后的触摸配置刷新钩子：模型管理页保存的 touch_set
+                            // 只落盘不推送，主页面启动快照不会自动更新；切换后强制重拉一次，
+                            // 让新保存的自定义触摸区域无需手动刷新主页面即生效。
+                            if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
+                                window.nekoRefreshLive2DTouchSet({ forceRefetch: true, allowLive2DReload: true }).catch(function (touchSetError) {
+                                    console.warn('[Model] 刷新触摸配置失败:', touchSetError)
+                                })
+                            }
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }

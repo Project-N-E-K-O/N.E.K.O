@@ -1204,7 +1204,8 @@ class PluginLifecycleService:
 
             runtime_obj = conf.get("plugin_runtime")
             enabled_value = True
-            auto_start_value = True
+            # 没写 plugin_runtime.auto_start 时默认关闭，和 PluginRuntimeSchema 一致。
+            auto_start_value = False
             startup_timeout_value: float | None = _normalize_runtime_timeout(
                 PLUGIN_STARTUP_TIMEOUT,
                 plugin_id=current_plugin_id,
@@ -1214,7 +1215,7 @@ class PluginLifecycleService:
             if isinstance(runtime_obj, Mapping):
                 runtime_cfg = _normalize_mapping(runtime_obj, context=f"plugin_config[{current_plugin_id}].plugin_runtime")
                 enabled_value = parse_bool_config(runtime_cfg.get("enabled"), default=True)
-                auto_start_value = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
+                auto_start_value = parse_bool_config(runtime_cfg.get("auto_start"), default=False)
                 if "timeout" in runtime_cfg:
                     startup_timeout_value = _normalize_runtime_timeout(
                         runtime_cfg.get("timeout"),

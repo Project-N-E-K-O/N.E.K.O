@@ -223,14 +223,94 @@ def test_a_patch_level_sdk_difference_is_accepted(tmp_path: Path) -> None:
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None
 
 
+@pytest.mark.parametrize(
+    ("runtime_toml", "user_auto_start", "expected"),
+    [
+        pytest.param("", None, False, id="runtime-section-omitted"),
+        pytest.param(
+            "[plugin_runtime]\nenabled = true\n",
+            None,
+            False,
+            id="auto-start-omitted",
+        ),
+        pytest.param(
+            "[plugin_runtime]\nauto_start = false\n",
+            None,
+            False,
+            id="manifest-disabled",
+        ),
+        pytest.param(
+            "[plugin_runtime]\nauto_start = true\n",
+            None,
+            True,
+            id="manifest-enabled",
+        ),
+        pytest.param("", True, True, id="user-enables-without-runtime-section"),
+        pytest.param(
+            "[plugin_runtime]\nenabled = true\n",
+            True,
+            True,
+            id="user-enables-omitted-auto-start",
+        ),
+        pytest.param(
+            "[plugin_runtime]\nauto_start = false\n",
+            True,
+            True,
+            id="user-enables-over-manifest",
+        ),
+        pytest.param(
+            "[plugin_runtime]\nauto_start = true\n",
+            False,
+            False,
+            id="user-disables-over-manifest",
+        ),
+    ],
+)
+def test_registry_parses_auto_start_defaults_and_user_preference(
+    tmp_path: Path,
+    runtime_toml: str,
+    user_auto_start: bool | None,
+    expected: bool,
+) -> None:
+    from plugin.core import registry
+    from plugin.server.infrastructure import runtime_overrides
+
+    plugin_dir = tmp_path / "auto_start_defaults"
+    plugin_dir.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "[plugin]\n"
+        "id = 'auto_start_defaults'\n"
+        "name = 'Auto-start defaults'\n"
+        "entry = 'auto_start_defaults:Plugin'\n"
+        "version = '1.0.0'\n\n"
+        + runtime_toml,
+        encoding="utf-8",
+    )
+    if user_auto_start is not None:
+        runtime_overrides.set_runtime_auto_start_override(
+            "auto_start_defaults", user_auto_start
+        )
+
+    parsed = registry._parse_single_plugin_config(
+        config_path,
+        set(),
+        registry.logger,
+        materialize_runtime_config=False,
+    )
+
+    assert parsed is not None
+    assert parsed.auto_start is expected
+
+
 def test_a_plugin_the_user_never_started_is_not_autostarted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Installing and running are different acts; only the second is the user's.
 
-    ``plugin_runtime.auto_start`` defaults to true and is declared by the
-    plugin itself, so without this a freshly installed plugin runs its own code
-    at the next greeting without ever having been started.
+    A plugin can declare ``plugin_runtime.auto_start = true``. Without this
+    gate a freshly installed plugin that opts in runs its own code at the next
+    greeting without ever having been started. Omitted ``auto_start`` is off.
 
     Mutation: drop the ``is_autostart_approved`` check from
     ``_get_autostart_plugin_ids_sync``.

@@ -1208,6 +1208,7 @@ let saves = 0;
 let snapshotCalls = 0;
 let deferredFrames = null;
 const markedSwitches = [];
+const dragUiCalls = {{ disabled: 0, restored: 0 }};
 
 const requestAnimationFrame = (callback) => {{
   if (deferredFrames) {{
@@ -1252,6 +1253,10 @@ const window = {{
     async recordPointerEdgeApproach() {{ return false; }},
     async recordPointerEdgeRelease() {{ return false; }},
     markDisplaySwitchSuccess(source) {{ markedSwitches.push(source); }},
+  }},
+  DragHelpers: {{
+    disableButtonPointerEvents() {{ dragUiCalls.disabled += 1; }},
+    restoreButtonPointerEvents() {{ dragUiCalls.restored += 1; }},
   }},
 }};
 
@@ -1328,6 +1333,7 @@ function pointer(type, clientX, clientY, screenX, screenY, pointerId = 7) {{
   manager.startDrag(pointer('pointerdown', 154, 534, 155, 535));
   assert.equal(manager._isDraggingModel, true);
   assert.equal(attributes.get('data-dragging'), 'pending');
+  assert.equal(dragUiCalls.disabled, 1);
 
   manager.moveDrag(pointer('pointermove', -201, 534, -200, 535));
   assert.equal(attributes.get('data-dragging'), 'true');
@@ -1350,6 +1356,7 @@ function pointer(type, clientX, clientY, screenX, screenY, pointerId = 7) {{
   assert.equal(manager._isDraggingModel, false);
   assert.equal(attributes.has('data-dragging'), false);
   assert.equal(bodyClasses.has('neko-model-dragging'), false);
+  assert.equal(dragUiCalls.restored, 1);
 
   currentDisplay = primary;
   currentWindowBounds = {{ ...primaryWindowBounds }};

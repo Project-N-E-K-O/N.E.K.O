@@ -9,7 +9,7 @@
 // 常量
 const AVATAR_POPUP_ANIMATION_DURATION_MS = 200;
 const AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS = 260;
-const AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS = 900;
+const AVATAR_POPUP_HOVER_RECHECK_MS = 90;
 const AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX = 18;
 const AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH = 1240;
 const AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT = 940;
@@ -2021,10 +2021,21 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
         lastPointerPosition = { x: event.clientX, y: event.clientY };
     };
 
+    // 指针离开整个窗口（或窗口失焦）后不会再有 pointermove，记录的位置会
+    // 一直停在保持区里，收起复查就永远不会放行；清掉它。菜单会随模型呼吸/
+    // 鼠标跟随在静止指针下漂移，布局变化会让浏览器补发合成的 mouseleave，
+    // 所以收起判定靠"实时指针位置 + 实时矩形"的驻留复查而不是单次 leave
+    // 事件；坐标也不加时效——指针原地长停是合法悬停，只有离开窗口才作废。
+    const forgetPointerOnWindowExit = (event) => {
+        if (event.type === 'blur' || !event.relatedTarget) lastPointerPosition = null;
+    };
+
     const startPointerTracking = () => {
         if (isPointerTracking) return;
         document.addEventListener('mousemove', rememberPointerPosition, true);
         document.addEventListener('pointermove', rememberPointerPosition, true);
+        document.addEventListener('mouseout', forgetPointerOnWindowExit, true);
+        window.addEventListener('blur', forgetPointerOnWindowExit);
         isPointerTracking = true;
     };
 
@@ -2032,6 +2043,8 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
         if (!isPointerTracking) return;
         document.removeEventListener('mousemove', rememberPointerPosition, true);
         document.removeEventListener('pointermove', rememberPointerPosition, true);
+        document.removeEventListener('mouseout', forgetPointerOnWindowExit, true);
+        window.removeEventListener('blur', forgetPointerOnWindowExit);
         isPointerTracking = false;
     };
     sidePanel._stopHoverPointerTracking = stopPointerTracking;
@@ -2074,10 +2087,15 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             : delay;
         if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
         startPointerTracking();
-        const bridgeGraceStartedAt = Date.now();
+        // 收起判定走驻留复查：每拍重新取实时矩形和最新指针位置，指针仍贴
+        // 着锚点/面板（含过渡缝隙，以及菜单漂移把边界推过静止指针造成的
+        // 贴边停留）就继续观察，真正移出后的下一拍立即收起。不设固定宽限
+        // ——按单次 leave 起算的宽限会在用户中途停顿、或菜单随模型呼吸在
+        // 指针下持续漂移时把还悬停着的面板收走，表现为「悬停展开后一停
+        // 就关」。
         const attemptCollapse = () => {
             sidePanel._hoverCollapseTimer = null;
-            if (!sidePanel.isConnected || isTutorialHoverDisabled()) {
+            if (!sidePanel.isConnected || sidePanel.style.display === 'none' || isTutorialHoverDisabled()) {
                 stopPointerTracking();
                 return;
             }
@@ -2085,11 +2103,8 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
                 stopPointerTracking();
                 return;
             }
-            if (
-                isPointerInTransferBridge()
-                && Date.now() - bridgeGraceStartedAt < AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS
-            ) {
-                sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, 90);
+            if (isPointerInTransferBridge()) {
+                sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, AVATAR_POPUP_HOVER_RECHECK_MS);
                 return;
             }
             sidePanel._collapse();
