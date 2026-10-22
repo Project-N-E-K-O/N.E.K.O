@@ -369,12 +369,13 @@ async def create_room(request: Request):
     if refused is not None:
         return refused
     # Startup invalidates the previous process's unused invitations.  Wait for
-    # that one reset attempt before minting a room so a quick click cannot race
-    # cleanup and revive or collide with the old code.
+    # (or retry a failed) reset before minting a room so a quick click cannot
+    # race cleanup and revive or collide with the old code.
     from main_routers.visit_router import background
 
-    if not await background.wait_startup_invite_reset():
-        return _servers_error(cr.VisitServersUnreachable("startup_invite_reset"))
+    reset_failure = await background.wait_startup_invite_reset()
+    if reset_failure is not None:
+        return _servers_error(reset_failure)
     # A new Electron run can bind while the long-lived backend stays up.  Its
     # pending-invite cleanup must retire before this request mints a new room,
     # otherwise a delayed bulk cancel can invalidate the fresh invitation.

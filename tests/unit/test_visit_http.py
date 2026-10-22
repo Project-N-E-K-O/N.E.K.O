@@ -998,13 +998,25 @@ async def test_create_room_waits_for_desktop_restart_cleanup(env, monkeypatch):
 
 async def test_create_room_refuses_when_startup_invite_cleanup_failed(env, monkeypatch):
     async def cleanup_failed():
-        return False
+        return cr.VisitServersUnreachable("startup_invite_reset")
 
     monkeypatch.setattr(background, "wait_startup_invite_reset", cleanup_failed)
     async with env.client() as c:
         response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
     assert response.status_code == 503
     assert response.json()["code"] == "servers_unreachable"
+    assert env.host.rt is None
+
+
+async def test_create_room_asks_for_login_when_startup_invite_cleanup_needs_it(env, monkeypatch):
+    async def signed_out():
+        return cr.VisitLoginRequired("no_session")
+
+    monkeypatch.setattr(background, "wait_startup_invite_reset", signed_out)
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    assert response.status_code == 409
+    assert response.json()["code"] == "VISIT_LOGIN_REQUIRED"
     assert env.host.rt is None
 
 

@@ -1002,13 +1002,9 @@
         if (typeof frame.cross_region === 'boolean') visit.crossRegion = frame.cross_region;
         visit.ownName = currentCatgirl();
         applyPreviewedPeer();
-        // 额度不足、登录失效等激活前失败也会经过后端 ending。
-        // 这类场次根本没有开始串门，直接恢复入口，不误显示“正在收尾”。
-        if (action === 'ending' && !visit.everStarted) {
-            onEnded(frame);
-            render();
-            return;
-        }
+        // 后端只给已激活的场次推 ending（额度不足、登录失效等激活前失败走状态横幅 + ended）：
+        // 漏收 started 时 ending 本身就是开始过的证据，结束后照样留下带查看详情的结束消息。
+        if (action === 'ending') visit.everStarted = true;
         switch (action) {
         case 'invite_ready':
             visit.phase = 'invite_ready';
