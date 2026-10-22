@@ -954,6 +954,8 @@ export default {
     noLogFileToExport: 'No log file to export'
   },
   runs: {
+    largeOutput: "This JSON is large. Load its outline when needed; copying still includes the complete content.",
+    loadOutput: "Load JSON outline",
     moreDetails: "More details",
     expandAll: "Expand all",
     collapseAll: "Collapse all",

@@ -954,6 +954,8 @@ export default {
     noLogFileToExport: '내보낼 로그 파일이 없습니다'
   },
   runs: {
+    largeOutput: "큰 JSON입니다. 필요할 때 구조를 불러오세요. 복사에는 전체 내용이 포함됩니다.",
+    loadOutput: "JSON 구조 불러오기",
     moreDetails: "추가 정보",
     expandAll: "모두 펼치기",
     collapseAll: "모두 접기",

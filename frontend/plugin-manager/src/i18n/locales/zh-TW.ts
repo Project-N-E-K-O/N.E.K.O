@@ -954,6 +954,8 @@ export default {
     noLogFileToExport: '沒有可匯出的日誌檔案'
   },
   runs: {
+    largeOutput: "此 JSON 較大，結構檢視按需載入。複製仍包含完整內容。",
+    loadOutput: "載入 JSON 結構",
     moreDetails: "更多詳情",
     expandAll: "全部展開",
     collapseAll: "全部收合",

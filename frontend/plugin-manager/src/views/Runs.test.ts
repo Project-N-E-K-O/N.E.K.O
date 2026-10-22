@@ -50,7 +50,7 @@ function mount() {
 beforeEach(() => {
   vi.resetAllMocks()
   mocks.store = reactive({
-    connected: false, connecting: true, runs: [], selectedRunId: null, selectedRun: null, selectedExports: [], exportRevisions: {},
+    connected: false, connecting: true, runs: [], selectedRunId: null, selectedRun: null, selectedExports: [], exportRevisions: {}, runRevisions: {},
     refreshRuns: vi.fn().mockResolvedValue(undefined), disconnect: vi.fn(),
     cancelRun: vi.fn(), loadRun: vi.fn().mockResolvedValue(undefined), loadExports: vi.fn().mockResolvedValue([]),
     selectRun: vi.fn((id: string) => {
@@ -95,6 +95,64 @@ describe('run history page request lifecycle', () => {
     expect(root.textContent).toContain('runs.requestFailed')
     expect(store().loadRun).toHaveBeenCalledTimes(2)
     expect(store().loadExports).toHaveBeenCalledTimes(2)
+  })
+
+  it('reloads cached detail after a background run changes without any output event', async () => {
+    const a = { run_id: 'a', plugin_id: 'p', entry_id: 'e', status: 'running', updated_at: 1 }
+    const b = { run_id: 'b', plugin_id: 'p', entry_id: 'other', status: 'running', updated_at: 1 }
+    mocks.store.runs = [a, b]
+    const root = mount()
+    await flush()
+    root.querySelector<HTMLButtonElement>('[data-run-id="a"]')!.click()
+    await flush()
+    root.querySelector<HTMLButtonElement>('[data-run-id="b"]')!.click()
+    await flush()
+    const current = (mocks.store.runs as typeof a[])[0]!
+    current.status = 'failed'
+    current.updated_at = 2
+    ;(mocks.store.runRevisions as Record<string, number>).a = 1
+    store().loadRun.mockImplementationOnce(async () => {
+      Object.assign(current, { error: { message: 'background failure' }, finished_at: 2, started_at: 1 })
+    })
+    root.querySelector<HTMLButtonElement>('[data-run-id="a"]')!.click()
+    await flush()
+    expect(store().loadRun.mock.calls).toEqual([['a'], ['b'], ['a']])
+    expect(root.querySelector('.run-error')?.textContent).toContain('background failure')
+  })
+
+  it('queues a fresh detail when returning to an in-flight run after a background status change', async () => {
+    const pending = deferred()
+    const a = { run_id: 'a', entry_id: 'entry', status: 'running', updated_at: 1 }
+    mocks.store.runs = [a, { run_id: 'b', entry_id: 'other', status: 'running', updated_at: 1 }]
+    store().loadRun.mockReturnValueOnce(pending.promise).mockImplementationOnce(async () => {
+      Object.assign((mocks.store.runs as typeof a[])[0]!, { error: { message: 'complete failure details' }, finished_at: 2 })
+    })
+    const root = mount()
+    await flush()
+    root.querySelector<HTMLButtonElement>('[data-run-id="a"]')!.click()
+    root.querySelector<HTMLButtonElement>('[data-run-id="b"]')!.click()
+    Object.assign((mocks.store.runs as typeof a[])[0]!, { status: 'failed', updated_at: 2 })
+    ;(mocks.store.runRevisions as Record<string, number>).a = 1
+    root.querySelector<HTMLButtonElement>('[data-run-id="a"]')!.click()
+    pending.resolve()
+    await flush()
+    expect(store().loadRun.mock.calls).toEqual([['a'], ['a']])
+    expect(root.querySelector('.run-error')?.textContent).toContain('complete failure details')
+  })
+
+  it('reloads a selected queued run when it starts so the start time is not left unknown', async () => {
+    mocks.store.runs = [{ run_id: 'a', status: 'queued', updated_at: 1 }]
+    const root = mount()
+    await flush()
+    root.querySelector<HTMLButtonElement>('[data-run-id="a"]')!.click()
+    await flush()
+    const current = (mocks.store.runs as Record<string, unknown>[])[0]!
+    store().loadRun.mockImplementationOnce(async () => { current.started_at = 1 })
+    Object.assign(current, { status: 'running', updated_at: 2 })
+    ;(mocks.store.runRevisions as Record<string, number>).a = 1
+    await flush()
+    expect(store().loadRun.mock.calls).toEqual([['a'], ['a']])
+    expect(current.started_at).toBe(1)
   })
 
   it('loads only the latest row selected while the previous detail load is pending', async () => {

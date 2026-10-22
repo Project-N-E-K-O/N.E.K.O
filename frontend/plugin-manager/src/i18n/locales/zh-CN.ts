@@ -954,6 +954,8 @@ export default {
     noLogFileToExport: '没有可导出的日志文件'
   },
   runs: {
+    largeOutput: "此 JSON 较大，结构视图按需加载。复制仍包含完整内容。",
+    loadOutput: "加载 JSON 结构",
     moreDetails: "更多详情",
     expandAll: "全部展开",
     collapseAll: "全部收起",

@@ -42,7 +42,11 @@
           }}</time>
           <el-icon class="output-chevron"><ArrowRight /></el-icon>
         </summary>
-        <RunOutputReader :item="item" @expand="expandedId = item.export_item_id" />
+        <RunOutputReader
+          :model="readerFor(item.export_item_id)"
+          :active="expandedId !== item.export_item_id"
+          @expand="expandedId = item.export_item_id"
+        />
       </details>
     </div>
     <el-dialog
@@ -56,26 +60,54 @@
       <RunOutputReader
         v-if="expandedItem"
         :key="expandedItem.export_item_id"
-        :item="expandedItem"
+        :model="readerFor(expandedItem.export_item_id)"
         full-screen
       />
     </el-dialog>
   </section>
 </template>
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, shallowReactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ArrowRight, Document } from '@element-plus/icons-vue'
 import type { ExportItem } from '@/api/runs'
 import type { RunResourceState } from '@/composables/useRunWorkbench'
 import { formatRunTimestamp } from '@/utils/runDisplay'
 import RunOutputReader from './RunOutputReader.vue'
+import {
+  createRunOutputReader,
+  type RunOutputReader as ReadingSession,
+} from '@/composables/useRunOutputReader'
 const props = defineProps<{ items: ExportItem[]; resource: RunResourceState }>()
 defineEmits<{ retry: [] }>()
 const { t } = useI18n()
 function typeLabel(item: ExportItem) {
   return typeof item.type === 'string' ? item.type.toUpperCase() : t('common.unknown')
 }
+const readers = shallowReactive(new Map<string, ReadingSession>())
+watch(
+  () => props.items,
+  (items) => {
+    const current = new Set(items.map((item) => item.export_item_id))
+    for (const [id, reader] of readers)
+      if (!current.has(id)) {
+        reader.dispose()
+        readers.delete(id)
+      }
+    for (const item of items) {
+      const previous = readers.get(item.export_item_id)
+      if (previous) previous.update(item)
+      else readers.set(item.export_item_id, createRunOutputReader(item))
+    }
+  },
+  { immediate: true, flush: 'sync' }
+)
+function readerFor(id: string) {
+  return readers.get(id)!
+}
+onUnmounted(() => {
+  for (const reader of readers.values()) reader.dispose()
+})
 const expandedId = ref<string | null>(null)
 const expandedItem = computed(() =>
   props.items.find((item) => item.export_item_id === expandedId.value)

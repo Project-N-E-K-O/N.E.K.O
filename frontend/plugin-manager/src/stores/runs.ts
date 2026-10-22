@@ -21,6 +21,8 @@ export const useRunsStore = defineStore('runs', () => {
   const selectedRunId = ref<string | null>(null)
   const exportsByRunId = ref<Record<string, ExportItem[]>>(Object.create(null))
   const exportRevisions = ref<Record<string, number>>(Object.create(null))
+  const runRevisions = ref<Record<string, number>>(Object.create(null))
+  const terminalStatuses = new Set(['succeeded', 'failed', 'canceled', 'timeout'])
 
   const runs = computed(() => {
     const ids = runOrder.value
@@ -40,6 +42,21 @@ export const useRunsStore = defineStore('runs', () => {
     return exportsByRunId.value[selectedRunId.value] || []
   })
 
+  function preserveAcknowledgedState(rec: RunRecord, current?: RunRecord): RunRecord {
+    if (!current || terminalStatuses.has(rec.status)) return rec
+    // A run cannot leave a terminal state or resume after cancellation was
+    // acknowledged. Delayed progress/snapshots can still fill other fields.
+    if (terminalStatuses.has(current.status)) return { ...rec, ...current }
+    if (current.status !== 'cancel_requested' || rec.status === 'cancel_requested') return rec
+    return {
+      ...rec,
+      status: current.status,
+      cancel_requested: current.cancel_requested ?? true,
+      cancel_reason: current.cancel_reason,
+      cancel_requested_at: current.cancel_requested_at,
+    }
+  }
+
   function setRun(rec: RunRecord, ticket = results.begin()) {
     const id = rec.run_id
     if (!results.accept(`run:${id}`, ticket)) {
@@ -48,7 +65,7 @@ export const useRunsStore = defineStore('runs', () => {
       if (runsById.value[id]) runsById.value[id] = { ...rec, ...runsById.value[id] }
       return
     }
-    runsById.value[id] = rec
+    runsById.value[id] = preserveAcknowledgedState(rec, runsById.value[id])
     if (!runOrder.value.includes(id)) {
       runOrder.value = [id, ...runOrder.value]
     }
@@ -63,6 +80,7 @@ export const useRunsStore = defineStore('runs', () => {
     if (bus === 'runs' && payload && typeof payload === 'object') {
       const id = (payload as Record<string, unknown>).run_id
       if (typeof id === 'string' && id) {
+        runRevisions.value[id] = (runRevisions.value[id] ?? 0) + 1
         liveResults.accept(id, liveResults.begin())
         const prev = runsById.value[id]
         const merged = { ...(prev || {}), ...payload } as RunRecord
@@ -109,7 +127,7 @@ export const useRunsStore = defineStore('runs', () => {
         if (!rec || typeof rec.run_id !== 'string' || !rec.run_id) continue
         ids.add(rec.run_id)
         nextMap[rec.run_id] = results.accept(`run:${rec.run_id}`, ticket)
-          ? rec : { ...rec, ...nextMap[rec.run_id] }
+          ? preserveAcknowledgedState(rec, nextMap[rec.run_id]) : { ...rec, ...nextMap[rec.run_id] }
       }
       // A late list cannot hide records published while that list was pending.
       for (const id of runOrder.value) {
@@ -159,7 +177,16 @@ export const useRunsStore = defineStore('runs', () => {
     assertCurrentVersion(version)
     if (!rec || typeof rec !== 'object' || rec.run_id !== runId) throw new RunsRequestError('outcome_unknown')
     const current = runsById.value[runId]
-    const result = liveResults.accept(runId, ticket) || !current ? rec : { ...rec, ...current }
+    const hasNewerLiveState = !liveResults.accept(runId, ticket) && !!current
+    const result = hasNewerLiveState ? { ...rec, ...current } : rec
+    if (hasNewerLiveState && !terminalStatuses.has(current.status)) {
+      // Progress published while the command was pending is newer metadata,
+      // but cannot negate the command's acknowledged lifecycle transition.
+      result.status = rec.status
+      result.cancel_requested = rec.cancel_requested
+      result.cancel_reason = rec.cancel_reason
+      result.cancel_requested_at = rec.cancel_requested_at
+    }
     // Publish at acknowledgement time so reads begun during the command
     // cannot subsequently undo its result.
     setRun(result)
@@ -176,6 +203,7 @@ export const useRunsStore = defineStore('runs', () => {
     selectedRun,
     selectedExports,
     exportRevisions,
+    runRevisions,
     connect,
     disconnect,
     refreshRuns,

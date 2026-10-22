@@ -561,3 +561,150 @@ test('large arrays page their DOM and search still reaches values in later secti
   await expect(page.locator('.reader-search__count')).toHaveText('No matches')
   expect(api.unexpected).toEqual([])
 })
+
+test('an identical export refresh and expanded reading preserve the current JSON reading state', async ({
+  page,
+}) => {
+  const api = await fixture(page)
+  api.outputs.output![0]!.json = {
+    branch: { nested: { leaf: { value: 'preserved-branch' } } },
+    values: Array.from({ length: 1600 }, (_, index) =>
+      index === 799 || index === 1599 ? 'preserved-match' : `value-${index}`
+    ),
+  }
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/runs`)
+  await page.locator('[data-run-id="output"]').click()
+  const reader = page.locator('.output-item').first().locator('.output-reader')
+  await reader.getByRole('button', { name: 'Expand leaf', exact: true }).click()
+  await expect(reader).toContainText('preserved-branch')
+  await reader.getByRole('searchbox').fill('preserved-match')
+  await expect(reader.locator('.reader-search__count')).toHaveText('1/2')
+  await reader.getByRole('button', { name: 'Next match', exact: true }).click()
+  await expect(reader.locator('.reader-search__count')).toHaveText('2/2')
+  const activeLine = await reader.locator('.json-line--active').getAttribute('data-json-line')
+  const chunk = (await reader.locator('.reader-pages').textContent())!
+  expect(chunk).toContain('1601')
+
+  api.outputs.output!.push({
+    export_item_id: 'additional-output',
+    run_id: 'output',
+    type: 'text',
+    text: 'A later independent output',
+    created_at: Math.floor(Date.now() / 1000),
+  })
+  api.emit('export', { run_id: 'output' })
+  await expect(page.locator('.output-item')).toHaveCount(2)
+  await expect(reader.getByRole('searchbox')).toHaveValue('preserved-match')
+  await expect(reader.locator('.reader-search__count')).toHaveText('2/2')
+  await expect(reader.locator('.json-line--active')).toHaveAttribute('data-json-line', activeLine!)
+  await expect(reader.locator('.reader-pages')).toHaveText(chunk)
+
+  await reader.getByRole('button', { name: 'Expand reader', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('searchbox')).toHaveValue('preserved-match')
+  await expect(dialog.locator('.reader-search__count')).toHaveText('2/2')
+  await expect(dialog.locator('.json-line--active')).toHaveAttribute('data-json-line', activeLine!)
+  await expect(dialog.locator('.reader-pages')).toHaveText(chunk)
+  await dialog.getByRole('button', { name: 'Close this dialog' }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(reader.locator('.reader-search__count')).toHaveText('2/2')
+  await expect(reader.locator('.json-line--active')).toHaveAttribute('data-json-line', activeLine!)
+  await reader.getByRole('searchbox').fill('')
+  const previous = reader.getByRole('button', { name: 'Previous section', exact: true })
+  while (await previous.isEnabled()) await previous.click()
+  await expect(reader.getByRole('button', { name: 'Collapse leaf', exact: true })).toHaveAttribute(
+    'aria-expanded',
+    'true'
+  )
+  expect(api.unexpected).toEqual([])
+})
+
+test('returning to a background run reloads complete terminal details after a partial live event', async ({
+  page,
+}) => {
+  const api = await fixture(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/runs`)
+  await page.locator('[data-run-id="running"]').click()
+  await expect(page.locator('.run-detail-content')).toContainText('Progress has not been reported')
+  await page.locator('[data-run-id="output"]').click()
+  await expect(page.locator('.output-code')).toContainText('gomoku')
+  const run = api.runs.find((item) => item.run_id === 'running')!
+  run.status = 'failed'
+  run.started_at = run.created_at + 1
+  run.finished_at = run.started_at + 42
+  run.updated_at = run.finished_at
+  run.error = {
+    code: 'BACKGROUND_FAILURE',
+    message: 'The background run failed after selection changed.',
+  }
+  api.emit('runs', {
+    run_id: run.run_id,
+    status: run.status,
+    progress: 1,
+    updated_at: run.updated_at,
+  })
+  await expect(page.locator('[data-run-id="running"]')).toContainText('Failed')
+  await page.locator('[data-run-id="running"]').click()
+  await expect(page.locator('.run-error')).toContainText(run.error.message)
+  await expect
+    .poll(
+      () =>
+        api.requests.filter(
+          (request) => request.method === 'run.get' && request.params.run_id === 'running'
+        ).length
+    )
+    .toBe(2)
+  for (const [label, timestamp] of [
+    ['Started at', run.started_at],
+    ['Finished at', run.finished_at],
+  ] as const) {
+    const formatted = await page.evaluate((timestamp) => {
+      const date = new Date(timestamp * 1000)
+      const pad = (number: number) => String(number).padStart(2, '0')
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    }, timestamp)
+    await expect(
+      page
+        .locator('.run-facts > div')
+        .filter({ has: page.locator('dt', { hasText: label }) })
+        .locator('dd')
+    ).toHaveText(formatted)
+  }
+  expect(api.unexpected).toEqual([])
+})
+
+test('oversized JSON defers its outline, copies the complete original and loads searchable bounded rows on demand', async ({
+  page,
+}) => {
+  const api = await fixture(page)
+  const payload = Array.from({ length: 11000 }, (_, index) => `large-value-${index}`)
+  api.outputs.output![0]!.json = payload
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(window as unknown as { copiedOutput: string }).copiedOutput = value
+        },
+      },
+    })
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/runs`)
+  await page.locator('[data-run-id="output"]').click()
+  const reader = page.locator('.output-reader')
+  await expect(reader.getByRole('button', { name: 'Load JSON outline', exact: true })).toBeVisible()
+  await expect(reader.locator('.json-line')).toHaveCount(0)
+  await reader.getByRole('button', { name: 'Copy', exact: true }).click()
+  expect(
+    await page.evaluate(() => (window as unknown as { copiedOutput: string }).copiedOutput)
+  ).toBe(JSON.stringify(payload, null, 2))
+  await reader.getByRole('button', { name: 'Load JSON outline', exact: true }).click()
+  await expect(reader.locator('.json-line')).toHaveCount(400)
+  await reader.getByRole('searchbox').fill('large-value-10999')
+  await expect(reader.locator('.json-line--active')).toContainText('large-value-10999')
+  expect(await reader.locator('.json-line').count()).toBeLessThanOrEqual(400)
+  expect(api.unexpected).toEqual([])
+})

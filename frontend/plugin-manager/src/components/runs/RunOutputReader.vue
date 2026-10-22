@@ -1,7 +1,7 @@
 <template>
   <div ref="reader" class="output-reader" :class="{ 'output-reader--fullscreen': fullScreen }">
     <div class="reader-toolbar">
-      <template v-if="isJson">
+      <template v-if="isJson && !needsLoad">
         <el-button text size="small" @click="setCollapsed(false)">{{
           t('runs.expandAll')
         }}</el-button>
@@ -54,7 +54,11 @@
         >
       </div>
     </div>
-    <div v-if="isJson" class="output-code" :aria-label="t('runs.outputTitle')">
+    <div v-if="needsLoad" class="reader-deferred" role="status">
+      <p>{{ t('runs.largeOutput') }}</p>
+      <el-button size="small" @click="loadPreview">{{ t('runs.loadOutput') }}</el-button>
+    </div>
+    <div v-else-if="isJson" class="output-code" :aria-label="t('runs.outputTitle')">
       <div
         v-for="line in pageLines"
         :key="line.id"
@@ -134,7 +138,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTimeoutFn } from '@vueuse/core'
 import { ElMessage } from 'element-plus'
@@ -146,48 +150,34 @@ import {
   CopyDocument,
   FullScreen,
 } from '@element-plus/icons-vue'
-import type { ExportItem } from '@/api/runs'
-import { buildJsonLines, jsonAncestorIds, visibleJsonLines } from '@/utils/runJson'
+import { RUN_OUTPUT_PAGE_SIZE, type RunOutputReader } from '@/composables/useRunOutputReader'
 import { openExternalUrl } from '@/utils/openExternal'
-const props = defineProps<{ item: ExportItem; fullScreen?: boolean }>()
+const props = withDefaults(
+  defineProps<{ model: RunOutputReader; fullScreen?: boolean; active?: boolean }>(),
+  { active: true }
+)
 defineEmits<{ expand: [] }>()
 const { t } = useI18n()
 const reader = ref<HTMLElement>()
-const PAGE_SIZE = 400
-const isJson = computed(() => props.item.type === 'json')
-const jsonValue = computed(() =>
-  props.item.json !== undefined ? props.item.json : props.item.json_data
-)
-const lines = computed(() => (isJson.value ? buildJsonLines(jsonValue.value) : []))
-const collapsed = ref(new Set<number>())
-const query = ref('')
-const matchIndex = ref(0)
-const page = ref(0)
-const matches = computed(() => {
-  const needle = query.value.trim().toLocaleLowerCase()
-  return needle
-    ? lines.value
-        .filter(
-          (line) =>
-            line.kind !== 'close' &&
-            `${line.key ?? ''} ${line.kind === 'open' ? '' : line.text}`
-              .toLocaleLowerCase()
-              .includes(needle)
-        )
-        .map((line) => line.id)
-    : []
-})
-const matchSet = computed(() => new Set(matches.value))
-const activeMatch = computed(() => matches.value[matchIndex.value])
-const revealed = computed(() =>
-  activeMatch.value === undefined
-    ? new Set<number>()
-    : jsonAncestorIds(lines.value, activeMatch.value)
-)
-const visible = computed(() => visibleJsonLines(lines.value, collapsed.value, revealed.value))
-const pageLines = computed(() =>
-  visible.value.slice(page.value * PAGE_SIZE, (page.value + 1) * PAGE_SIZE)
-)
+const PAGE_SIZE = RUN_OUTPUT_PAGE_SIZE
+const {
+  item,
+  isJson,
+  jsonValue,
+  query,
+  pageLines,
+  matches,
+  matchSet,
+  activeMatch,
+  matchIndex,
+  page,
+  visible,
+  needsLoad,
+  loadPreview,
+  isCollapsed,
+  toggle,
+  setCollapsed,
+} = props.model
 const copied = ref(false)
 const { start: resetCopied } = useTimeoutFn(
   () => {
@@ -197,11 +187,11 @@ const { start: resetCopied } = useTimeoutFn(
   { immediate: false }
 )
 async function copyOutput() {
-  const item = props.item
+  const current = item.value
   try {
     const text = isJson.value
       ? (JSON.stringify(jsonValue.value, null, 2) ?? '')
-      : (item.text ?? item.url ?? item.binary_url ?? item.binary ?? '')
+      : (current.text ?? current.url ?? current.binary_url ?? current.binary ?? '')
     await navigator.clipboard.writeText(text)
     copied.value = true
     resetCopied()
@@ -210,27 +200,9 @@ async function copyOutput() {
     ElMessage.error(t('runs.copyFailed'))
   }
 }
-function isCollapsed(id: number) {
-  return collapsed.value.has(id) && !revealed.value.has(id)
-}
-function toggle(id: number) {
-  const shouldCollapse = !isCollapsed(id)
-  if (revealed.value.has(id)) query.value = ''
-  const next = new Set(collapsed.value)
-  if (shouldCollapse) next.add(id)
-  else next.delete(id)
-  collapsed.value = next
-}
-function setCollapsed(value: boolean) {
-  query.value = ''
-  collapsed.value = new Set(
-    value ? lines.value.filter((line) => line.kind === 'open').map((line) => line.id) : []
-  )
-  page.value = 0
-}
 async function focusMatch() {
   const index = visible.value.findIndex((line) => line.id === activeMatch.value)
-  if (index < 0) return
+  if (index < 0 || !props.active) return
   page.value = Math.floor(index / PAGE_SIZE)
   await nextTick()
   reader.value
@@ -238,8 +210,7 @@ async function focusMatch() {
     ?.scrollIntoView({ block: 'nearest' })
 }
 function moveMatch(direction: number) {
-  if (!matches.value.length) return
-  matchIndex.value = (matchIndex.value + direction + matches.value.length) % matches.value.length
+  props.model.moveMatch(direction)
   void focusMatch()
 }
 async function changePage(delta: number) {
@@ -248,23 +219,12 @@ async function changePage(delta: number) {
   reader.value?.querySelector('.output-code')?.scrollIntoView({ block: 'start' })
 }
 watch(
-  lines,
+  [activeMatch, () => props.active],
   () => {
-    collapsed.value = new Set(
-      lines.value.filter((line) => line.kind === 'open' && line.depth >= 3).map((line) => line.id)
-    )
-    matchIndex.value = 0
-    page.value = 0
+    if (props.active) void focusMatch()
   },
   { immediate: true }
 )
-watch(matches, () => {
-  matchIndex.value = 0
-  void focusMatch()
-})
-watch(visible, (value) => {
-  page.value = Math.min(page.value, Math.max(0, Math.ceil(value.length / PAGE_SIZE) - 1))
-})
 </script>
 <style scoped>
 .output-reader {
@@ -432,6 +392,11 @@ watch(visible, (value) => {
   padding-inline-start: 12px;
   color: var(--el-text-color-secondary);
   font-size: 0.6875rem;
+}
+.reader-deferred {
+  padding: 10px 16px 18px;
+  color: var(--el-text-color-secondary);
+  font-size: 0.8125rem;
 }
 .reader-pages {
   display: flex;

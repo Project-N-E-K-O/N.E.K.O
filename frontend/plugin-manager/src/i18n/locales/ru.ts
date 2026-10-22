@@ -954,6 +954,8 @@ export default {
     noLogFileToExport: 'Нет файла лога для экспорта'
   },
   runs: {
+    largeOutput: "Большой JSON: структура загружается по запросу. Копирование включает всё содержимое.",
+    loadOutput: "Загрузить структуру JSON",
     moreDetails: "Подробнее",
     expandAll: "Развернуть всё",
     collapseAll: "Свернуть всё",

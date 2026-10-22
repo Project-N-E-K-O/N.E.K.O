@@ -954,6 +954,8 @@ export default {
     noLogFileToExport: 'Nenhum arquivo de registro para exportar'
   },
   runs: {
+    largeOutput: "Este JSON é grande. Carregue a estrutura quando necessário; a cópia inclui todo o conteúdo.",
+    loadOutput: "Carregar estrutura JSON",
     moreDetails: "Mais detalhes",
     expandAll: "Expandir tudo",
     collapseAll: "Recolher tudo",

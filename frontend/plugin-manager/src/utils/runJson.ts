@@ -101,3 +101,51 @@ export function visibleJsonLines(
   }
   return visible
 }
+
+/** Budget the automatic outline before allocating a line for every value.
+ * Parsing has already happened at the transport; large outlines remain opt-in. */
+export function isAutoPreviewJson(
+  value: unknown,
+  maxNodes = 10_000,
+  maxCharacters = 500_000
+): boolean {
+  const pending = [value]
+  let nodes = 0,
+    characters = 0
+  while (pending.length) {
+    const current = pending.pop()
+    if (++nodes > maxNodes) return false
+    if (typeof current === 'string') characters += current.length
+    else if (current && typeof current === 'object') {
+      for (const key in current) {
+        if (!Object.hasOwn(current, key)) continue
+        characters += key.length
+        if (pending.length + nodes >= maxNodes || characters > maxCharacters) return false
+        pending.push((current as Record<string, unknown>)[key])
+      }
+    }
+    if (characters > maxCharacters) return false
+  }
+  return true
+}
+
+/** JSON values arrive parsed; compare without allocating another serialized
+ * copy. Iteration also supports deep values without recursive stack growth. */
+export function sameJsonValue(left: unknown, right: unknown): boolean {
+  const pending: [unknown, unknown][] = [[left, right]]
+  while (pending.length) {
+    const [a, b] = pending.pop()!
+    if (a === b) continue
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false
+    if (Array.isArray(a) !== Array.isArray(b)) return false
+    const keys = Object.keys(a),
+      other = Object.keys(b)
+    if (keys.length !== other.length) return false
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]!
+      if (key !== other[i]) return false
+      pending.push([(a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]])
+    }
+  }
+  return true
+}

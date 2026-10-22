@@ -16,6 +16,9 @@ interface SelectionResources {
   output: RunResourceState
   cancelUncertain: boolean
   exportRevision: number
+  detailRevision: number
+  detailStamp: string
+  detailPending: { revision: number; stamp: string } | null
   cancelRevision: number
 }
 const idle = (): RunResourceState => ({ phase: 'idle', error: null, loaded: false })
@@ -37,6 +40,9 @@ export function useRunWorkbench() {
     output: idle(),
     cancelUncertain: false,
     exportRevision: 0,
+    detailRevision: -1,
+    detailStamp: '',
+    detailPending: null,
     cancelRevision: 0,
   }
   let disposed = false
@@ -52,6 +58,9 @@ export function useRunWorkbench() {
         output: idle(),
         cancelUncertain: false,
         exportRevision: 0,
+        detailRevision: -1,
+        detailStamp: '',
+        detailPending: null,
         cancelRevision: 0,
       })
     )
@@ -69,6 +78,22 @@ export function useRunWorkbench() {
       !selection.value.cancelUncertain
   )
 
+  function detailStamp(id: string) {
+    const record =
+      store.runsById?.[id] ??
+      store.runs.find((run) => run.run_id === id) ??
+      (selectedId.value === id ? selectedRun.value : null)
+    return record ? `${record.status}:${record.updated_at ?? ''}` : ''
+  }
+  function detailIsStale(id: string, state: SelectionResources) {
+    const snapshot = state.detailPending ?? {
+      revision: state.detailRevision,
+      stamp: state.detailStamp,
+    }
+    return (
+      snapshot.revision !== (store.runRevisions?.[id] ?? 0) || snapshot.stamp !== detailStamp(id)
+    )
+  }
   async function load(
     id: string,
     resource: RunResourceState,
@@ -77,8 +102,9 @@ export function useRunWorkbench() {
     detail: boolean
   ) {
     if (!force && resource.phase === 'ready') return
-    const revision = store.exportRevisions[id] ?? 0
+    const revision = detail ? (store.runRevisions?.[id] ?? 0) : (store.exportRevisions[id] ?? 0)
     const cancelRevision = forRun(id).cancelRevision
+    if (detail) forRun(id).detailPending = { revision, stamp: detailStamp(id) }
     resource.phase = 'loading'
     resource.error = null
     try {
@@ -91,6 +117,10 @@ export function useRunWorkbench() {
       resource.phase = 'ready'
       resource.loaded = true
       if (!detail) forRun(id).exportRevision = revision
+      else {
+        forRun(id).detailRevision = revision
+        forRun(id).detailStamp = detailStamp(id)
+      }
       if (detail && forRun(id).cancelRevision === cancelRevision) forRun(id).cancelUncertain = false
     } catch (error) {
       if (disposed) return
@@ -99,6 +129,8 @@ export function useRunWorkbench() {
         resource.phase = 'error'
         resource.error = runsRequestErrorKey(error)
       }
+    } finally {
+      if (detail && !disposed) forRun(id).detailPending = null
     }
   }
   async function drain() {
@@ -109,7 +141,13 @@ export function useRunWorkbench() {
       const state = forRun(request.id)
       await Promise.all([
         request.target !== 'output'
-          ? load(request.id, state.detail, () => store.loadRun(request.id), request.force, true)
+          ? load(
+              request.id,
+              state.detail,
+              () => store.loadRun(request.id),
+              request.force || detailIsStale(request.id, state),
+              true
+            )
           : undefined,
         request.target !== 'detail'
           ? load(
@@ -134,6 +172,12 @@ export function useRunWorkbench() {
     // Returning to an in-flight row must preserve a refresh required by an
     // export event, even if another selection was briefly queued in between.
     if (target !== 'detail' && state.exportRevision !== (store.exportRevisions[id] ?? 0))
+      force = true
+    if (
+      target !== 'output' &&
+      (state.detail.loaded || state.detail.phase === 'loading') &&
+      detailIsStale(id, state)
+    )
       force = true
     if (task) {
       if (activeId === id && !force && target === 'both') {
@@ -240,15 +284,7 @@ export function useRunWorkbench() {
   watch(
     () => [selectedId.value, selectedRun.value?.status] as const,
     ([id, status], [oldId, oldStatus]) => {
-      if (
-        id &&
-        id === oldId &&
-        oldStatus &&
-        status !== oldStatus &&
-        status &&
-        ['succeeded', 'failed', 'canceled', 'timeout'].includes(status)
-      )
-        void refreshSelected()
+      if (id && id === oldId && oldStatus && status !== oldStatus && status) void refreshSelected()
     }
   )
   onMounted(async () => {

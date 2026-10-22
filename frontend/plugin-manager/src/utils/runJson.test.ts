@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { buildJsonLines, jsonAncestorIds, visibleJsonLines } from './runJson'
+import {
+  buildJsonLines,
+  jsonAncestorIds,
+  visibleJsonLines,
+  isAutoPreviewJson,
+  sameJsonValue,
+} from './runJson'
 
 describe('run JSON outline', () => {
   it('keeps falsy values and empty containers with correct closing ranges', () => {
@@ -52,4 +58,15 @@ describe('run JSON outline', () => {
     expect(visibleJsonLines(lines, new Set([0]))).toHaveLength(1)
     expect(lines.find((line) => line.text === '"deep"')?.depth).toBe(2500)
   })
+})
+
+it('budgets huge strings and containers before outline allocation', () => {
+  expect(isAutoPreviewJson('x'.repeat(500001))).toBe(false)
+  expect(isAutoPreviewJson(Array.from({ length: 20000 }, (_, i) => i))).toBe(false)
+  expect(isAutoPreviewJson({ a: [false, 0, null] })).toBe(true)
+})
+it('compares fresh JSON snapshots without conflating changed values', () => {
+  expect(sameJsonValue({ a: [0, false, null] }, { a: [0, false, null] })).toBe(true)
+  expect(sameJsonValue({ a: [0] }, { a: [false] })).toBe(false)
+  expect(sameJsonValue([], {})).toBe(false)
 })
