@@ -1244,7 +1244,7 @@ def test_compact_tool_fan_tooltips_stay_noninteractive_and_anchored():
     # into rounded/gradient/backdrop-filter glass; earlier assertions for
     # border-radius:0 / background:#ffffff / box-shadow:none / specific dark colors
     # were intentionally obsolete and produced false alarms on visual iterations.
-    assert "pointer-events: none;" in tooltip_block, "tooltip 不能吃掉指针事件"
+    assert re.search(r"\bpointer-events\s*:\s*none(?:\s*!important)?\s*;", tooltip_block), "tooltip 不能吃掉指针事件"
     assert "user-select: none;" in tooltip_block
     assert "left: calc(100% + 5px);" in tooltip_block, "tooltip 锚点定在按钮右侧"
     assert "top: calc(100% - 6px);" in tooltip_block

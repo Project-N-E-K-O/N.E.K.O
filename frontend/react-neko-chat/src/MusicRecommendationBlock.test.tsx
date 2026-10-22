@@ -57,6 +57,20 @@ describe('music recommendation card', () => {
     view.rerender(<App chatSurfaceMode="compact" messages={[message('accepted')]} onMessageAction={action} />);
     expect(view.container.querySelector('.compact-music-recommendation-prompt')).not.toBeInTheDocument();
   });
+  it('routes visit history actions and recommendation decisions through the shared compact host callback', () => {
+    const music = message();
+    const visit = parseChatMessage({ id: 'visit-history', role: 'system', author: 'Neko', time: '12:00',
+      blocks: [{ type: 'buttons', buttons: [{ id: 'details', label: 'Visit details', action: 'visit_details',
+        payload: { visit_id: 'visit-test' } }] }] });
+    const action = vi.fn();
+    const view = render(<App chatSurfaceMode="compact" messages={[visit, music]} onMessageAction={action} />);
+    fireEvent.click(view.container.querySelector('.compact-history-visibility-handle')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Visit details' }));
+    expect(action).toHaveBeenLastCalledWith(visit, expect.objectContaining({ action: 'visit_details' }));
+    fireEvent.click(screen.getByRole('button', { name: /Listen/ }));
+    expect(action).toHaveBeenLastCalledWith(music, expect.objectContaining({ action: 'music_recommendation_decision',
+      payload: { recommendationId: id, kind: 'accepted' } }));
+  });
   it('renders a safe card and emits accept/skip without creating audio or opening links', () => {
     const msg = message();
     const action = vi.fn();

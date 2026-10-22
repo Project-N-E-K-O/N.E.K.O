@@ -6067,13 +6067,6 @@ function CompactChatApp({
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
       messages={compactExportHistoryMessages}
-      onAction={(message, action) => {
-        // Ordinary historical buttons stay inert; recommendation choices
-        // have their own server-side decision fence and remain actionable.
-        if (['music_recommendation_decision', 'music_recommendation_shown', 'proactive_recommendation_decision', 'proactive_recommendation_shown', 'proactive_recommendation_dismiss', 'proactive_recommendation_reveal'].includes(action.action)) {
-          _onMessageAction?.(message, action);
-        }
-      }}
       mode={theaterActive ? 'theater' : 'chat'}
       theaterTitle={theaterPresentation.storyTitle}
       theaterEnded={theaterPresentation.sessionEnded === true}
@@ -6201,7 +6194,7 @@ function CompactChatApp({
       <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {chatSurfaceMode === 'compact' && !compactExportHistoryMounted && !theaterActive && !catLocalTextOnly ? (
-        <CompactMusicRecommendationPrompt messages={messages} onAction={_onMessageAction} />
+        <CompactMusicRecommendationPrompt messages={messages} onAction={onMessageAction} />
       ) : null}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}

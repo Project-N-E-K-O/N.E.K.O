@@ -66,6 +66,9 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-10-22-pr3477-visit-main-merge",
+        "2026-10-21-pr3467-music-countdown",
+        "2026-10-19-screen-observation-card",
         "2026-10-21-visit-v1-initial",
         "2026-10-21-pr3467-invite-options-label",
         "2026-10-21-pr3467-recommendation-card-main-merge",
