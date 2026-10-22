@@ -218,13 +218,7 @@ async function changePage(delta: number) {
   await nextTick()
   reader.value?.querySelector('.output-code')?.scrollIntoView({ block: 'start' })
 }
-watch(
-  [activeMatch, () => props.active],
-  () => {
-    if (props.active) void focusMatch()
-  },
-  { immediate: true }
-)
+watch(activeMatch, () => void focusMatch(), { immediate: true })
 </script>
 <style scoped>
 .output-reader {
