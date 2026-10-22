@@ -67,6 +67,8 @@ export interface ExportItem {
   binary_url?: string | null
   binary?: string | null
   json?: unknown
+  /** Legacy export payload alias. */
+  json_data?: unknown
   mime?: string | null
   metadata?: Record<string, unknown>
 }
