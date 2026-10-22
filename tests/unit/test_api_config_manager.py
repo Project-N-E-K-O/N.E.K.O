@@ -106,6 +106,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_ORCAROUTER',
                        'ASSIST_API_KEY_REQUESTY',
+                       'ASSIST_API_KEY_CHEAPERINFERENCE',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -247,6 +248,28 @@ class TestKeybookSaveLoad:
         cfg = config_manager.get_core_config()
         assert cfg['ASSIST_API_KEY_MINIMAX'] == ''
         assert cfg['ASSIST_API_KEY_MINIMAX_INTL'] == ''
+
+
+class TestCheaperInferenceResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('ci_key', ['', 'sk-ci-dedicated'])
+    def test_does_not_borrow_core_key(self, config_manager, core_provider, ci_key):
+        """Cheaper Inference never receives the core provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'cheaperinference',
+            'assistApiKeyCheaperinference': ci_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['ASSIST_API_KEY_CHEAPERINFERENCE'] == ci_key
+        assert cfg['OPENROUTER_API_KEY'] == ci_key
+        assert cfg['AGENT_MODEL_API_KEY'] == ci_key
+        assert cfg['AUDIO_API_KEY'] == (
+            core_key if core_provider != 'free' else ''
+        )
 
 
 class TestRequestyResolution:
@@ -886,6 +909,7 @@ class TestProviderExclusion:
             'openrouter',
             'orcarouter',
             'requesty',
+            'cheaperinference',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',

@@ -315,6 +315,18 @@
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
     },
+    "cheaperinference": {
+      "key": "cheaperinference",
+      "name": "Cheaper Inference",
+      "description": "模型聚合网关，OpenAI 兼容接口，国内版不支持",
+      "openrouter_url": "https://api.cheaperinference.com/v1",
+      "conversation_model": "gpt-5.4-mini",
+      "summary_model": "gpt-5.4",
+      "correction_model": "gpt-5.4",
+      "emotion_model": "gpt-5.4-mini",
+      "vision_model": "gpt-5.4-mini",
+      "agent_model": "gpt-5.4"
+    },
     "vllm_omni": {
       "key": "vllm_omni",
       "name": "vLLM-Omni (TTS)",
@@ -381,7 +393,8 @@
     "grok": "ASSIST_API_KEY_GROK",
     "openrouter": "ASSIST_API_KEY_OPENROUTER",
     "orcarouter": "ASSIST_API_KEY_ORCAROUTER",
-    "requesty": "ASSIST_API_KEY_REQUESTY"
+    "requesty": "ASSIST_API_KEY_REQUESTY",
+    "cheaperinference": "ASSIST_API_KEY_CHEAPERINFERENCE"
   },
   "api_key_registry": {
     "qwen": {
@@ -462,6 +475,10 @@
     },
     "requesty": {
       "config_field": "assistApiKeyRequesty",
+      "restricted": true
+    },
+    "cheaperinference": {
+      "config_field": "assistApiKeyCheaperinference",
       "restricted": true
     },
     "vllm_omni": {
