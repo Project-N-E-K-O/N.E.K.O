@@ -357,7 +357,7 @@ function isSelected(pluginId: string): boolean {
 @supports (grid-template-rows: subgrid) {
   .plugin-select-item:not(.plugin-select-item--list) {
     display: grid;
-    grid-row: span 5;
+    grid-row: span 3;
     grid-template-rows: subgrid;
     row-gap: 0;
   }
@@ -387,7 +387,7 @@ function isSelected(pluginId: string): boolean {
   height: 100%;
 }
 
-.plugin-select-item :deep(.plugin-heading) {
+.plugin-select-item :deep(.plugin-card-header) {
   padding-right: 56px;
 }
 

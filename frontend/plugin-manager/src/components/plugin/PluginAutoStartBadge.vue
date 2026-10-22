@@ -19,7 +19,7 @@ const { t } = useI18n()
   gap: 4px;
   min-width: 0;
   max-width: 100%;
-  min-height: 20px;
+  min-height: var(--plugin-card-control-height, 22px);
   padding: 1px 6px;
   border: 1px solid color-mix(in srgb, var(--el-color-primary) 35%, var(--surface-border));
   border-radius: var(--radius-chip);

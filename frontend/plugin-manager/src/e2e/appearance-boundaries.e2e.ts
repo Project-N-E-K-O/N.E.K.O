@@ -370,22 +370,75 @@ async function installCardLayoutFixture(page: Page, count = 8) {
   } }))
 }
 
-async function expectAlignedCardTracks(page: Page) {
+/**
+ * Layout targets for plugin cards, expressed as relations rather than pixels:
+ * - a card is exactly three sections: header (name + state), body, footer;
+ * - cards in one grid row start their header and body on shared lines;
+ * - the footer content hugs the card bottom with one inset for every card,
+ *   so an optional action never leaves an empty band at the bottom;
+ * - metadata and the action share one centre line when they fit on one
+ *   line, and the action always sits at the trailing inset.
+ * Returns human-readable violations so failures say what broke.
+ */
+async function expectOrderedCards(page: Page) {
   await expect.poll(() => page.locator('.plugin-card').evaluateAll(cards => {
-    const rows = new Map<number, number[][]>()
+    const issues: string[] = []
+    const visible = (element: Element) => {
+      const box = element.getBoundingClientRect()
+      return box.width > 0 && box.height > 0
+    }
+    const rows = new Map<number, { name: string; header: number; body: number; contentBottom: number }[]>()
+    const bottomInsets: number[] = []
     for (const card of cards) {
+      const name = card.querySelector('.plugin-name')?.textContent?.trim() || '?'
+      const sections = Array.from(card.children, child => child.className.split(' ')[0])
+      if (sections.join() !== 'plugin-card-header,plugin-card-body,plugin-card-footer') {
+        issues.push(`${name}: sections are ${sections.join()}`)
+        continue
+      }
+      const [header, body] = Array.from(card.children, child => child.getBoundingClientRect())
       const box = card.getBoundingClientRect()
-      const children = Array.from(card.children, child => child.getBoundingClientRect().top)
-      for (const selector of ['.plugin-card-footer__main', '.plugin-card-footer__actions']) {
-        children.push(card.querySelector(selector)!.getBoundingClientRect().top)
+      const controls = Array.from(card.lastElementChild!.querySelectorAll(
+        '.plugin-version-tag, .source-tag, [data-testid="plugin-open-ui"]'
+      )).filter(visible).map(element => element.getBoundingClientRect())
+      if (!controls.length) {
+        issues.push(`${name}: footer has no visible controls`)
+        continue
+      }
+      const contentBottom = Math.max(...controls.map(control => control.bottom))
+      bottomInsets.push(box.bottom - contentBottom)
+      const action = card.querySelector('.plugin-card-footer [data-testid="plugin-open-ui"]')
+      const meta = card.querySelector('.plugin-card-footer__main')
+      if (action && meta) {
+        const actionBox = action.getBoundingClientRect()
+        const metaBox = meta.getBoundingClientRect()
+        const sameLine = actionBox.top < metaBox.bottom - 1
+        const centre = (rect: DOMRect) => rect.top + rect.height / 2
+        if (sameLine && Math.abs(centre(actionBox) - centre(metaBox)) > 1) {
+          issues.push(`${name}: action is off the metadata centre line`)
+        }
+        if (Math.abs(box.right - actionBox.right - (metaBox.left - box.left)) > 1) {
+          issues.push(`${name}: action is not at the trailing inset`)
+        }
       }
       const key = Math.round(box.top)
-      rows.set(key, [...(rows.get(key) || []), children])
+      rows.set(key, [...(rows.get(key) || []), {
+        name, header: header!.top, body: body!.top, contentBottom,
+      }])
     }
-    return [...rows.values()].every(row => row.every(tracks =>
-      tracks.every((top, index) => Math.abs(top - row[0]![index]!) < 1)
-    ))
-  })).toBe(true)
+    for (const row of rows.values()) {
+      for (const field of ['header', 'body', 'contentBottom'] as const) {
+        const values = row.map(card => card[field])
+        if (Math.max(...values) - Math.min(...values) > 1) {
+          issues.push(`row of ${row.map(card => card.name).join(', ')}: ${field} misaligned`)
+        }
+      }
+    }
+    if (bottomInsets.length && Math.max(...bottomInsets) - Math.min(...bottomInsets) > 1) {
+      issues.push(`bottom insets differ: ${[...new Set(bottomInsets.map(Math.round))].join('/')}`)
+    }
+    return issues
+  })).toEqual([])
 }
 
 for (const scenario of [
@@ -397,7 +450,7 @@ for (const scenario of [
   { width: 1440, zoom: 1, fontSize: 16, locale: 'zh-CN' },
   { width: 960, zoom: 1, fontSize: 24, locale: 'zh-CN' },
 ]) {
-  appearanceTest(`card tracks remain aligned at ${scenario.width}px, zoom ${scenario.zoom}, text ${scenario.fontSize}px, ${scenario.locale}`, async ({ page }) => {
+  appearanceTest(`cards stay ordered at ${scenario.width}px, zoom ${scenario.zoom}, text ${scenario.fontSize}px, ${scenario.locale}`, async ({ page }) => {
     await installCardLayoutFixture(page)
     await page.addInitScript(locale => localStorage.setItem('locale', locale), scenario.locale)
     await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -408,7 +461,7 @@ for (const scenario of [
       document.documentElement.style.zoom = String(zoom)
       document.documentElement.style.fontSize = `${fontSize}px`
     }, scenario)
-    await expectAlignedCardTracks(page)
+    await expectOrderedCards(page)
     await expect(page.locator('.plugin-start-mode')).toHaveCount(4)
     await expect(page.locator('.plugin-start-mode svg[aria-hidden="true"]')).toHaveCount(4)
     await expect(page.locator('.plugin-entries')).toHaveCount(0)
@@ -466,7 +519,7 @@ appearanceTest('card extras, themes and layout switches preserve aligned, reacha
     await expect(entries.first().getByTestId('plugin-open-ui')).toBeVisible()
     expect(await entries.evaluateAll(cards => cards.every(card => card.scrollWidth <= card.clientWidth + 1))).toBe(true)
     if (mode !== 'List') {
-      await expectAlignedCardTracks(page)
+      await expectOrderedCards(page)
       const first = entries.first()
       expect(await first.evaluate(card => {
         const footer = card.querySelector('footer')!.getBoundingClientRect()

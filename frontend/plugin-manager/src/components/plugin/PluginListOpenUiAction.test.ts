@@ -107,16 +107,18 @@ describe('plugin card information order', () => {
     const { container } = await mountEntry(PluginCard, makePlugin(
       hasUi ? { id: 'open_ui', kind: 'ui' } : null,
     ))
-    const metadata = container.querySelector('.plugin-card-footer__main')!
-    const actions = container.querySelector('.plugin-card-footer__actions')!
+    const footer = container.querySelector('.plugin-card-footer')!
+    const metadata = footer.querySelector('.plugin-card-footer__main')!
     expect(metadata.querySelector('.plugin-version-tag')).not.toBeNull()
     expect(metadata.querySelector('.plugin-entries')).toBeNull()
-    expect(actions).not.toBeNull()
     expect(container.textContent).not.toContain('plugins.entryPoint')
-    expect(actions.querySelector('[data-testid="plugin-open-ui"]') !== null).toBe(hasUi)
+    // The action is a footer sibling of the metadata, so a card without one
+    // keeps no empty action slot.
+    expect(Array.from(footer.children, (child) => child.getAttribute('data-testid') || child.className))
+      .toEqual(hasUi ? ['plugin-card-footer__main', 'plugin-open-ui'] : ['plugin-card-footer__main'])
   })
 
-  it('keeps the full-width name and state above the description, with the UI action in the footer', async () => {
+  it('keeps name and state in one header above the description, with the UI action in the footer', async () => {
     const action: PluginListAction = { id: 'open_ui', kind: 'ui' }
     const { container, openUi, click } = await mountEntry(PluginCard, {
       ...makePlugin(action, 'stopped'),
@@ -124,8 +126,10 @@ describe('plugin card information order', () => {
     })
     const card = container.querySelector('.plugin-card')!
     expect(Array.from(card.children, (child) => child.className)).toEqual([
-      'plugin-heading', 'plugin-statuses', 'plugin-card-body', 'plugin-card-footer',
+      'plugin-card-header', 'plugin-card-body', 'plugin-card-footer',
     ])
+    expect(card.querySelector('.plugin-card-header .plugin-name')).not.toBeNull()
+    expect(card.querySelector('.plugin-card-header .plugin-statuses')).not.toBeNull()
     expect(card.querySelector('.plugin-start-mode')).toBeNull()
     expect(card.textContent).not.toContain('plugins.manualStart')
     const button = card.querySelector<HTMLButtonElement>('footer [data-testid="plugin-open-ui"]')!

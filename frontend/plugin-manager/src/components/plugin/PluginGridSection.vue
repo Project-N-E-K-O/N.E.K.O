@@ -4,7 +4,7 @@
     :icon="icon"
     :items="items"
     :layout-mode="layoutMode"
-    :item-row-span="5"
+    :item-row-span="3"
     :motion-phase="motionPhase"
     :multi-select-enabled="multiSelectEnabled"
     :selected-ids="selectedPluginIds"
