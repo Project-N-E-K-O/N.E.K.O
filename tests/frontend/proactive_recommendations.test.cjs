@@ -18,7 +18,8 @@ function surface(t, options={}) {
     w.nekoLocalMutationSecurity={getMutationHeaders:async()=>({'X-CSRF-Token':'fixture'})};
     w.electronShell=options.browser?undefined:{openExternal:async url=>opens.push(url)};
     w.open=()=>{const popup={closed:false,opener:w,location:{href:''},close(){this.closed=true;}};popups.push(popup);return popup;};
-    const host={appendMessage:m=>messages.set(m.id,m),updateMessage:(id,p)=>Object.assign(messages.get(id),p)};
+    const copy=value=>options.serializedHost?structuredClone(value):value;
+    const host={appendMessage:m=>messages.set(m.id,copy(m)),updateMessage:(id,p)=>Object.assign(messages.get(id),copy(p))};
     if(!options.lateHost)w.reactChatWindowHost=host;
     w.__nekoBroadcastChatMirror=payload=>broadcasts.push(payload);
     w.fetch=async(_url,init)=>{
@@ -68,6 +69,44 @@ test('disabled or replaced account prevents external action',async t=>{
     s.offer('personal');s.choose('accepted');await settle();
     assert.equal(s.opens.length,0);assert.equal(s.messages.values().next().value.blocks[0].state,'unavailable');
 });
+
+for(const category of ['news','video','personal']) for(const browser of [false,true]) {
+    test(`${category} saved acceptance survives local refusal in both mirror orders (browser=${browser})`,async t=>{
+        const a=surface(t,{browser,serializedHost:true});
+        const b=surface(t,{browser,serializedHost:true,respond:async()=>({success:false,error_code:'recommendation_disabled'})});
+        a.offer(category);b.offer(category);
+        a.choose('accepted');await settle();
+        const accepted=structuredClone(a.messages.values().next().value);
+        assert.equal(accepted.blocks[0].state,'accepted');
+        b.choose('accepted');await settle();
+        const refused=structuredClone(b.messages.values().next().value);
+        assert.equal(refused.blocks[0].state,'unavailable');
+        const mirror=(s,message)=>{
+            const patch={blocks:structuredClone(message.blocks)};
+            s.host.updateMessage(message.id,patch);
+            s.w.dispatchEvent(new s.w.CustomEvent('neko:chat-mirror',{detail:{type:'update',messageId:message.id,patch:structuredClone(patch)}}));
+        };
+        mirror(b,accepted);
+        assert.equal(b.messages.values().next().value.blocks[0].state,'accepted','saved acceptance replaces a local refusal');
+        mirror(a,refused);
+        assert.equal(a.messages.values().next().value.blocks[0].state,'accepted','late refusal cannot hide the saved source link');
+        mirror(b,refused);
+        assert.equal(b.messages.values().next().value.blocks[0].state,'accepted');
+        for(const s of [a,b]){
+            const block=s.messages.values().next().value.blocks[0];
+            assert.equal(block.content.url,recommendation(category).content.url);
+            assert.equal(s.requests.length,1,'mirroring does not fabricate another decision');
+            s.choose('accepted');await settle();
+            assert.equal(s.requests.length,1,'settled cards cannot request another grant');
+        }
+        assert.equal(a.opens.length,browser?0:1);
+        assert.equal(b.opens.length,0,'the refused window never opens from a mirror');
+        if(browser){
+            assert.equal(a.popups[0].location.href,recommendation(category).content.url);
+            assert.ok(b.popups[0].closed);
+        }
+    });
+}
 
 test('browser pre-opens synchronously but closes the placeholder after a refused decision',async t=>{
     const s=surface(t,{browser:true,respond:async()=>({success:true,state:'accepted',action_grant:false})});

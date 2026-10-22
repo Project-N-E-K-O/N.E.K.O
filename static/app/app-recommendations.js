@@ -173,9 +173,15 @@
         // original offer's character, including after choices and mirror updates.
         const previous = messages.get(id);
         if (previous) message = Object.assign({}, message, { author: previous.author });
-        const stateCorrected = previous && !['pending', 'saving'].includes(previous.blocks[0].state)
-            && (['pending', 'saving'].includes(message.blocks[0].state)
-                || (previous.blocks[0].state !== 'accepted' && message.blocks[0].state === 'accepted'));
+        const previousState = previous?.blocks[0].state;
+        const incomingState = message.blocks[0].state;
+        // unavailable is a local refusal, not a saved decision. An accepted
+        // mirror can follow it when another window committed before a toggle.
+        const savedDecision = previous && !['pending', 'saving', 'unavailable'].includes(previousState);
+        const stateCorrected = previous && ((!['pending', 'saving'].includes(previousState)
+            && ['pending', 'saving'].includes(incomingState))
+            || (savedDecision && (incomingState === 'unavailable'
+                || (previousState !== 'accepted' && incomingState === 'accepted'))));
         if (stateCorrected) message = Object.assign({}, message, { blocks: [previous.blocks[0]] });
         let deadlineCorrected = false;
         if (previous?.blocks[0].autoPlayAt > 0 && message.blocks[0].type === 'music_recommendation'

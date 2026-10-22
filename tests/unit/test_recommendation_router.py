@@ -75,6 +75,29 @@ def test_export_and_feedback_require_origin_and_csrf(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("category,setting", [("news", "proactiveNewsChatEnabled"), ("video", "proactiveVideoChatEnabled")])
+async def test_disabled_second_window_does_not_erase_saved_content_acceptance(client, monkeypatch, category, setting):
+    http, _ = client
+    body = {"success": True, "action": "chat", "source_mode": category,
+            "source_links": [{"title": "Shared source", "url": "https://example.com/story", "mode": category}]}
+    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), "Neko")
+    rec = body["proactive_recommendations"][0]
+    endpoint = f"/api/proactive/recommendations/{rec['id']}/events"
+    accepted = http.post(endpoint, json={"event_id": "window-a", "kind": "accepted"})
+    assert accepted.status_code == 200 and accepted.json()["action_grant"]
+    monkeypatch.setattr(routes, "load_global_conversation_settings", lambda: {setting: False})
+    refused = http.post(endpoint, json={"event_id": "window-b", "kind": "accepted"})
+    assert refused.status_code == 409
+    assert refused.json()["error_code"] == "recommendation_disabled"
+    events = http.get("/api/proactive/recommendations/events").json()["events"]
+    assert [(event["kind"], event["event_id"]) for event in events] == [("accepted", "window-a")]
+    monkeypatch.setattr(routes, "load_global_conversation_settings", lambda: {setting: True})
+    replay = http.post(endpoint, json={"event_id": "window-b", "kind": "accepted"})
+    assert replay.status_code == 200 and replay.json()["state"] == "accepted"
+    assert not replay.json()["action_grant"]
+
+
+@pytest.mark.asyncio
 async def test_account_replacement_during_generation_does_not_reassign_recommendation(client):
     _, snapshot = client
     old_owner = await routes.capture_owner()

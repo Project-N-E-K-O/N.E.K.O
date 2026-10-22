@@ -187,7 +187,7 @@ for (const [incoming, expected] of [[112000, 110000], [108000, 108000], [0, 1100
 });
 
 for (const state of ['skipped', 'accepted', 'playing', 'paused', 'ended', 'stopped', 'failed', 'unavailable']) {
-    for (const incoming of ['pending', 'saving', ...(state === 'accepted' ? [] : ['accepted'])]) test(`late ${incoming} mirror cannot reopen ${state} music`, async t => {
+    for (const incoming of ['pending', 'saving', ...(state === 'unavailable' ? [] : ['unavailable']), ...(['accepted', 'unavailable'].includes(state) ? [] : ['accepted'])]) test(`late ${incoming} mirror cannot reopen ${state} music`, async t => {
         const s = surface(t);
         const original = structuredClone(s.message());
         let displayed = structuredClone(original);
