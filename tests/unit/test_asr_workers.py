@@ -3899,6 +3899,96 @@ def test_auth_rejection_classification() -> None:
     )
 
 
+@pytest.mark.parametrize("status,expected_code", [
+    (401, "ASR_CREDENTIALS_REJECTED"),
+    (503, "ASR_SONIOX_RETRYABLE"),
+    (None, "ASR_SONIOX_WORKER_FAILED"),
+])
+@pytest.mark.parametrize("during_reconnect", [False, True])
+async def test_soniox_handshake_failure_closes_without_sending_credentials(
+    monkeypatch, status, expected_code, during_reconnect,
+) -> None:
+    from unittest.mock import AsyncMock
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    first = _FakeWebSocket()
+    failure = (
+        InvalidStatus(Response(status, "controlled", Headers()))
+        if status is not None else OSError("controlled connection failure")
+    )
+    connect = AsyncMock(side_effect=[first, failure] if during_reconnect else failure)
+    monkeypatch.setattr(soniox.websockets, "connect", connect)
+    requests = asyncio.Queue()
+    responses = asyncio.Queue()
+    task = asyncio.create_task(soniox.soniox_asr_worker(
+        requests, responses, "controlled-key", AsrSessionConfig(endpointing_mode="provider"),
+    ))
+    if during_reconnect:
+        await _next_event(responses, "ready")
+        pcm = b"\x01\x00" * 160
+        await requests.put(_AsrWorkerRequest(kind="audio", generation=0, audio=pcm))
+        await _wait_until(lambda: pcm in first.sent)
+        await first.server_end()
+    error = await _next_event(responses, "error")
+    assert error.error_code == expected_code
+    assert "controlled-key" not in error.error_message
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+    assert responses.empty()
+    assert connect.await_count == (2 if during_reconnect else 1)
+    for call in connect.await_args_list:
+        assert call.kwargs["additional_headers"] == {
+            "Authorization": "Bearer controlled-key",
+        }
+    if during_reconnect:
+        assert first.closed
+        assert "api_key" not in json.loads(first.sent[0])
+        assert first.sent[1:] == [pcm]
+    else:
+        assert first.sent == []
+
+
+@pytest.mark.parametrize("mid_send", [False, True])
+async def test_soniox_authenticated_connection_preserves_protected_replay_guard(
+    monkeypatch, mid_send,
+) -> None:
+    from main_logic.asr_client.delivery import delivery_evidence
+
+    entered = asyncio.Event()
+
+    async def on_send(_ws, payload):
+        if isinstance(payload, bytes) and payload:
+            entered.set()
+            if mid_send:
+                await asyncio.Event().wait()
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests = asyncio.Queue()
+    responses = asyncio.Queue()
+    delivery_evidence(requests).protected = True
+    task = asyncio.create_task(soniox.soniox_asr_worker(
+        requests, responses, "key", AsrSessionConfig(endpointing_mode="provider"),
+    ))
+    await _next_event(responses, "ready")
+    await requests.put(_AsrWorkerRequest(
+        kind="audio", generation=0, audio=b"\x01\x00" * 160,
+    ))
+    await asyncio.wait_for(entered.wait(), 1)
+    await websocket.server_end()
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_SONIOX_PROTECTED_REPLAY_DISABLED"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+    assert len(connector.calls) == 1
+    assert connector.calls[0][1]["additional_headers"] == {"Authorization": "Bearer key"}
+    assert "api_key" not in json.loads(websocket.sent[0])
+    assert websocket.closed
+
+
 async def test_soniox_provider_endpoint_aggregates_stable_tokens(monkeypatch) -> None:
     websocket = _FakeWebSocket()
     connector = _FakeConnector(websocket)
@@ -3917,6 +4007,20 @@ async def test_soniox_provider_endpoint_aggregates_stable_tokens(monkeypatch) ->
     await _next_event(responses, "ready")
     config = json.loads(websocket.sent[0])
     assert connector.calls[0][0] == soniox.SONIOX_REGION_URLS["jp"]
+    assert connector.calls[0][1]["additional_headers"] == {
+        "Authorization": "Bearer soniox-key",
+    }
+    assert "api_key" not in config
+    assert config["language_hints"] == ["en", "ja", "es"]
+    assert config == {
+        "model": "stt-rt-v5",
+        "audio_format": "pcm_s16le",
+        "sample_rate": 16_000,
+        "num_channels": 1,
+        "enable_endpoint_detection": True,
+        "enable_language_identification": True,
+        "language_hints": ["en", "ja", "es"],
+    }
     assert config["enable_endpoint_detection"] is True
     assert config["enable_language_identification"] is True
 
@@ -4421,6 +4525,10 @@ async def test_soniox_manual_reconnect_replays_pending_finalize(
         for payload in second.sent
     ]
     assert second_types[:3] == [None, "audio", "finalize"]
+    for _, kwargs in connector.calls:
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer key"}
+    for websocket in (first, second):
+        assert "api_key" not in json.loads(websocket.sent[0])
     assert (await _next_event(responses, "final")).text == "replayed manual"
     await _stop_worker(
         task,
@@ -4654,6 +4762,14 @@ async def test_soniox_reconnects_once_and_replays_current_audio(monkeypatch) -> 
     )
     assert (await _next_event(responses, "utterance_started")).generation == 4
     assert (await _next_event(responses, "final")).text == "replayed"
+    assert len(connector.calls) == 2
+    for url, kwargs in connector.calls:
+        assert url == soniox.SONIOX_REGION_URLS["us"]
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer key"}
+    for websocket in (first, second):
+        assert "api_key" not in json.loads(websocket.sent[0])
+        assert websocket.sent[1] == pcm
+    assert json.loads(first.sent[0]) == json.loads(second.sent[0])
     await _stop_worker(task, requests, responses, generation=4, buffer_epoch=5)
 
 
