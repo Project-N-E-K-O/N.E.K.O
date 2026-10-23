@@ -23,7 +23,8 @@ from services.proactive_feedback.runtime_v2 import ProactiveFeedbackRuntimeV2
 
 
 @pytest.mark.asyncio
-async def test_actual_store_runtime_signed_backend_statistics_roundtrip(tmp_path):
+@pytest.mark.parametrize("tail_kind", ["playing", "paused", "ended", "stopped", "failed"])
+async def test_actual_store_runtime_signed_backend_statistics_roundtrip(tmp_path, tail_kind):
     configured = os.environ.get("NEKO_FEEDBACK_V2_SERVER_ROOT")
     if not configured:
         pytest.skip("optional companion server checkout is not configured")
@@ -115,6 +116,21 @@ async def test_actual_store_runtime_signed_backend_statistics_roundtrip(tmp_path
                 dict(category="music", metric="counts_v2", recommended=1, accepted=1, skipped=0, playback_ms=0),
                 dict(category="music", metric="playback_elapsed_observed_v2", recommended=0, accepted=0, skipped=0, playback_ms=40)]
             assert store.sync_status(owner)["held"] == 0
+            # Real player callbacks attach the last short range to the normal
+            # playing/pause/terminal event, rather than a checkpoint-only fact.
+            await asyncio.sleep(0.04)
+            tail = {**event, "event_id": str(uuid.uuid4()), "kind": tail_kind,
+                    "context": runtime.control_snapshot(owner), "playback_id": "synthetic-playback",
+                    "measurement": {"version": "playback_elapsed_observed_v2", "epoch_id": epoch_id,
+                        "range_start_ms": 40, "range_end_ms": 60, "origin_context": epoch_context}}
+            assert store.record(owner, card["id"], tail, control=context)["telemetry"]["status"] == "durable"
+            await asyncio.sleep(0.12)
+            result = await runtime.sync_once()
+            assert result["state"] == "synced", result
+            response = await client.get(origin + "/api/proactive/feedback/v2/statistics", headers=headers)
+            metrics = {row["metric"]: row for row in response.json()["categories"]}
+            assert metrics["playback_elapsed_observed_v2"]["playback_ms"] == 60
+            assert store.sync_status(owner)["pending"] == 0
         finally:
             try:
                 await client.post(origin + "/_fixture_stop", headers={"Authorization": "Bearer synthetic-integration-token"})

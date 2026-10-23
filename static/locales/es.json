@@ -7054,6 +7054,7 @@
         "upgrade": "Actualiza la aplicación para reanudar el envío del historial. El uso normal no se ve afectado.",
         "update": "Obtener actualización",
         "conflict": "El estado de los dispositivos cambió. Actualiza la lista y vuelve a elegir.",
+        "notEnabled": "La gestión de dispositivos del historial de recomendaciones no está activada. El uso normal no se ve afectado.",
         "unavailable": "No se pudieron cargar los dispositivos. Revisa el inicio de sesión en la comunidad y la conexión y actualiza la lista."
     }
 }

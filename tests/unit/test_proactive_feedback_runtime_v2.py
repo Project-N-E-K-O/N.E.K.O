@@ -78,7 +78,7 @@ def env(tmp_path):
             receipt = {key: batch[key] for key in ("schema_version", "batch_id", "source_id", "binding")}
             receipt.update(batch_hash=payload_hash(batch), results=[{
                 "id": item["id"], "kind": item["kind"],
-                "payload_hash": fact_hash_v2(item, batch["binding"]), "status": "stored"
+                "payload_hash": fact_hash_v2(item, batch["binding"]), "status": options.get("defer") or "stored"
             } for item in batch["items"]])
             return httpx.Response(200, json=receipt)
         raise AssertionError(request.url.path)
@@ -107,6 +107,54 @@ def shown(env):
     result = env.store.record(env.owner, card["id"], event, control=context)
     assert result["telemetry"]["status"] == "durable"
     return card, event
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [None, 0, -1, True, "1"])
+async def test_invalid_registration_version_is_retryable_without_killing_worker(env, version):
+    try:
+        row = env.state["registrations"][env.registration]
+        if version is None:
+            del row["version"]
+        else:
+            row["version"] = version
+        result = await env.runtime.sync_once()
+        assert result == {"state": "retry_wait", "error_code": "invalid_control"}
+        assert env.store.load_control(env.owner) is None
+        assert env.runtime.control_snapshot(env.owner) is None
+        row["version"] = 1
+        assert (await env.runtime.sync_once())["state"] == "idle"
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["time_deferred", "dependency_deferred"])
+async def test_deferred_facts_retry_original_capture_after_normal_facts_without_rebinding(env, monkeypatch, reason):
+    import time
+    from main_logic import recommendation_feedback as module
+    try:
+        await env.runtime.sync_once()
+        _, original = shown(env)
+        env.options["defer"] = reason
+        assert (await env.runtime.sync_once())["state"] == "synced"
+        first = copy.deepcopy(env.uploads[-1])
+        assert env.store.sync_status(env.owner)["held"] == 1
+        env.options["defer"] = None
+        shown(env)
+        assert (await env.runtime.sync_once())["state"] == "synced"
+        assert env.uploads[-1]["items"][0]["id"] != original["event_id"]
+        # Advance this module's retry scheduler, never the shared capture clock.
+        later = time.time() + 61
+        monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: later))
+        assert (await env.runtime.sync_once())["state"] == "synced"
+        retried = env.uploads[-1]
+        assert retried["batch_id"] != first["batch_id"]
+        assert retried["binding"] == first["binding"]
+        assert retried["items"] == first["items"]
+        assert env.store.sync_status(env.owner)["pending"] == 0
+    finally:
+        await env.client.aclose()
 
 
 @pytest.mark.asyncio

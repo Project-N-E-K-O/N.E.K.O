@@ -53,7 +53,7 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
             resolved = await self.session_provider()
         await self._guard(owner)
         snapshot = resolved.get("snapshot") if isinstance(resolved, dict) else None
-        if not resolved or not resolved.get("logged_in") or host.owner_from_snapshot(snapshot) != owner:
+        if not isinstance(resolved, dict) or not resolved.get("logged_in") or host.owner_from_snapshot(snapshot) != owner:
             raise SyncFailure("authentication_required")
         token = (snapshot or {}).get("access_token")
         if not isinstance(token, str) or not token:
@@ -79,6 +79,9 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
             self._control_state = "device_activation_required"
             return False
         key, value = registration
+        if (not isinstance(key, str) or not key or type(value.get("version")) is not int
+                or value["version"] < 1 or type(value.get("active")) is not bool):
+            raise SyncFailure("invalid_control")
         previous = await asyncio.to_thread(self.store.load_control, owner)
         binding = {"account_incarnation": state["account_incarnation"],
                    "clear_generation": state["clear_generation"], "registration_id": key,
@@ -261,12 +264,14 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                         except (OSError, sqlite3.Error, ValueError, LockException):
                             self._settings_import_error = "settings_import_unavailable"
                 batch = await asyncio.to_thread(self.store.prepare_batch, owner, 100)
+                if batch is None and await asyncio.to_thread(self.store.retry_deferred, owner):
+                    batch = await asyncio.to_thread(self.store.prepare_batch, owner, 100)
                 if batch is None:
                     return {"state": "idle"}
                 await self._guard(owner, token)
                 receipt = await self._json_request("POST", "/api/proactive/feedback/v2/batches", token, owner,
                                                    body=await asyncio.to_thread(canonical_bytes, batch))
-                if not valid_receipt(batch, receipt):
+                if not await asyncio.to_thread(valid_receipt, batch, receipt):
                     raise SyncFailure("invalid_receipt")
                 if not await asyncio.to_thread(self._commit_receipt, owner, receipt):
                     raise SyncFailure("session_changed")

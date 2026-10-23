@@ -285,7 +285,8 @@ class ProactiveFeedbackRuntime:
             has_receipt = result.get("acked", 0) > 0
             upgrade_required = (self._errors.get(owner["key"]) == "upgrade_required"
                                 or result.get("last_error") == "upgrade_required")
-            return {**result, "signed_in": signed_in, "owner_key": owner["key"],
+            return {**result, "protocol_version": self.store.protocol_version,
+                    "signed_in": signed_in, "owner_key": owner["key"],
                     "running": self._task is not None and not self._task.done() and not self._closing,
                     "settings_import_error": error, "settings_journal_pending": journal_pending,
                     "local_queue_empty": queue_empty, "identity_verified": verified,

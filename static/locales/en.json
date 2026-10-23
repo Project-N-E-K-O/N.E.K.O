@@ -7054,6 +7054,7 @@
         "upgrade": "Update the desktop app to resume history uploads. Normal use is unaffected.",
         "update": "Get the update",
         "conflict": "The device list changed. Refresh and choose again.",
+        "notEnabled": "Recommendation history device management is not enabled. Normal use is unaffected.",
         "unavailable": "Unable to load devices. Check your community login and connection, then refresh."
     }
 }

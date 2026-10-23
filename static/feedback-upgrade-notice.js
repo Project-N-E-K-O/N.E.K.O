@@ -1,7 +1,7 @@
 /* A visible notice for updated clients. No timer, playback gate or auto-update. */
 (function () {
     'use strict';
-    let disposed = false, fetching = false, notice = null, required = false;
+    let disposed = false, fetching = null, notice = null, required = false, revision = 0;
     function render() {
         if (disposed) return;
         if (!required) { if (notice) notice.remove(); notice = null; return; }
@@ -19,19 +19,22 @@
         if (disposed || fetching || document.hidden) return;
         const security = window.nekoLocalMutationSecurity;
         if (!security || typeof security.getMutationHeaders !== 'function') return;
-        fetching = true;
+        const operation = {}, expectedRevision = revision;
+        fetching = operation;
         try {
             const headers = await security.getMutationHeaders();
             const response = await fetch('/api/proactive/feedback/status', { headers, cache: 'no-store', signal: AbortSignal.timeout(5000) });
             const value = await response.json();
-            if (!disposed && response.ok && value && value.success === true) { required = value.upgrade_required === true; render(); }
+            if (!disposed && fetching === operation && revision === expectedRevision
+                && response.ok && value && value.success === true) { required = value.upgrade_required === true; render(); }
         } catch (_) { /* An unavailable status cannot claim that upgrade completed. */ }
-        finally { fetching = false; }
+        finally { if (fetching === operation) fetching = null; }
     }
-    window.addEventListener('neko:feedback-upgrade-required', () => { required = true; render(); });
+    window.addEventListener('neko:feedback-upgrade-required', () => { ++revision; required = true; render(); });
     window.addEventListener('localechange', () => { if (notice) notice.remove(); notice = null; render(); });
     window.addEventListener('focus', () => { void readStatus(); });
-    window.addEventListener('pagehide', () => { disposed = true; if (notice) notice.remove(); notice = null; });
+    window.addEventListener('pagehide', () => { disposed = true; ++revision; fetching = null; if (notice) notice.remove(); notice = null; });
+    window.addEventListener('pageshow', () => { if (disposed) { disposed = false; render(); void readStatus(); } });
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { render(); void readStatus(); }, { once: true });
     else { render(); void readStatus(); }
 }());

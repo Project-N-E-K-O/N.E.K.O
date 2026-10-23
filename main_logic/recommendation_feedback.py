@@ -627,6 +627,10 @@ class RecommendationStore:
             UNIQUE(owner,event_id))""")
         db.execute("""CREATE INDEX IF NOT EXISTS feedback_v2_spool_ready
             ON feedback_v2_spool(owner,state,seq)""")
+        if "retry_after" not in {row[1] for row in db.execute("PRAGMA table_info(feedback_v2_spool)")}:
+            db.execute("ALTER TABLE feedback_v2_spool ADD COLUMN retry_after REAL NOT NULL DEFAULT 0")
+        db.execute("""CREATE INDEX IF NOT EXISTS feedback_v2_deferred_due
+            ON feedback_v2_spool(owner,state,retry_after,seq)""")
         db.execute("CREATE INDEX IF NOT EXISTS feedback_v2_spool_offer ON feedback_v2_spool(recommendation_id)")
         db.execute("""CREATE TABLE IF NOT EXISTS feedback_v2_usage (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), rows_used INTEGER NOT NULL, bytes_used INTEGER NOT NULL)""")
@@ -811,6 +815,9 @@ class RecommendationStore:
                 "offer_context": context}
 
     def _v2_custody(self, db, owner, event, proof, payload_hash, category, control, recommendation_id):
+        if not owner.get("user_id") or not owner.get("community"):
+            return {"event_id": event["event_id"], "payload_hash": payload_hash,
+                    "status": "discarded", "reason": "anonymous_not_uploadable"}
         old = db.execute("SELECT * FROM feedback_v2_spool WHERE owner=? AND event_id=?", (owner["key"], event["event_id"])).fetchone()
         if old:
             if old["payload_hash"] != payload_hash:
@@ -1013,7 +1020,9 @@ class RecommendationStore:
                    "occurred_at": original.get("occurred_at", 0), "local_received_at": row["created_at"],
                    "playback_id": original.get("playback_id"), "listened_seconds": original.get("listened_seconds", 0),
                    "position_seconds": original.get("position_seconds", 0), "reason": reason,
-                   "measurement_version": "playback_elapsed_observed_v2" if original["kind"] == "measurement" else "media-played-union-v1",
+                   # Normal pause/terminal callbacks also carry a final elapsed
+                   # range; its version follows the measurement, not the action.
+                   "measurement_version": "playback_elapsed_observed_v2" if original.get("measurement") else "media-played-union-v1",
                    "category": row["category"]}
         for key, proof_key in (("offer_context", "offer"), ("measurement", "measurement")):
             if original.get(key) is not None:
@@ -1088,7 +1097,8 @@ class RecommendationStore:
                 raise FeedbackConflict("invalid_feedback_receipt")
             for result in receipt["results"]:
                 if result["status"] in {"time_deferred", "dependency_deferred"}:
-                    db.execute("UPDATE feedback_v2_spool SET state='held',reason=? WHERE owner=? AND event_id=?", (result["status"], owner["key"], result["id"]))
+                    db.execute("UPDATE feedback_v2_spool SET state='held',reason=?,retry_after=? WHERE owner=? AND event_id=?",
+                               (result["status"], time.time() + 60, owner["key"], result["id"]))
                 else:
                     db.execute("DELETE FROM feedback_v2_spool WHERE owner=? AND event_id=?", (owner["key"], result["id"]))
                     db.execute("""UPDATE feedback_v2_baseline SET state=?,event_id=NULL
@@ -1113,6 +1123,38 @@ class RecommendationStore:
             key = _canonical([snapshot.get(name) for name in ("account_incarnation", "registration_id", "registration_version")])
             row = db.execute("SELECT * FROM feedback_v2_baseline WHERE owner=?", (owner["key"],)).fetchone()
             return row is None or row["binding_key"] != key or row["state"] == "pending"
+
+    def retry_deferred(self, owner, *, limit=100, now=None):
+        """Bounded retry of server-deferred originals, after fresh facts drain.
+
+        A new anchor cannot replace an old capture's anchor ID. Retry keeps the
+        original proof/capture and lets the server re-evaluate its interval;
+        uncertainty that remains unprovable stays deferred, never fabricated.
+        """
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise FeedbackConflict("invalid_feedback_batch_limit")
+        now = time.time() if now is None else now
+        with self._transaction() as db:
+            if (db.execute("SELECT 1 FROM feedback_sync_batches WHERE owner=?", (owner["key"],)).fetchone()
+                    or db.execute("SELECT 1 FROM feedback_v2_spool WHERE owner=? AND state='ready'", (owner["key"],)).fetchone()):
+                return 0
+            saved = db.execute("SELECT snapshot FROM feedback_v2_controls WHERE owner=?", (owner["key"],)).fetchone()
+            if saved is None:
+                return 0
+            control = json.loads(saved[0])
+            rows = db.execute("""SELECT * FROM feedback_v2_spool WHERE owner=? AND state='held'
+                AND reason IN ('time_deferred','dependency_deferred') AND retry_after<=?
+                ORDER BY retry_after,seq LIMIT ?""", (owner["key"], now, limit)).fetchall()
+            queued = 0
+            for row in rows:
+                state, reason = self._v2_classify(owner, json.loads(row["event"]), control, json.loads(row["proof"]))
+                if state == "discarded":
+                    db.execute("DELETE FROM feedback_v2_spool WHERE seq=?", (row["seq"],))
+                else:
+                    db.execute("UPDATE feedback_v2_spool SET state=?,reason=?,retry_after=? WHERE seq=?",
+                               (state, reason, now + 60, row["seq"]))
+                    queued += state == "ready"
+            return queued
 
     def ensure_current_settings_baseline(self, owner, payload, context):
         """One bounded snapshot slot per account; ordinary clear keeps completion.

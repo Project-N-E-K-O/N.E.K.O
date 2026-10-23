@@ -49,6 +49,22 @@ def answer(batch, statuses=None):
             for item, status in zip(batch["items"], statuses)]}
 
 
+def test_anonymous_v2_events_and_settings_never_consume_shared_upload_capacity(store):
+    anonymous = {"key": "anonymous-fixture", "user_id": None, "community": None}
+    card = store.create(anonymous, "Fixture", "turn", TRACK, {})
+    result = store.record(anonymous, card["id"], {"event_id": "anonymous-shown", "kind": "shown",
+                         "context": {"version": "desktop-feedback-capture-v2"}})
+    setting = {"revision": 1, "origin": "user", "occurred_at": 100, "previous": {},
+               "settings": {"proactiveMusicEnabled": True}}
+    custody = store.enqueue_settings(anonymous, "anonymous-setting", setting,
+                                    context={"version": "desktop-feedback-capture-v2"})
+    assert result["applied"]
+    assert result["telemetry"]["status"] == custody["status"] == "discarded"
+    assert result["telemetry"]["reason"] == custody["reason"] == "anonymous_not_uploadable"
+    assert store.sync_status(anonymous)["capacity"]["pending_rows"] == 0
+    assert store.prepare_batch(anonymous) is None
+
+
 def test_generation_is_not_a_display_and_same_offer_reopening_counts_once(store):
     cards = [offer(store) for _ in range(3)]
     assert store.prepare_batch(OWNER) is None
@@ -184,6 +200,34 @@ def test_mixed_receipt_is_complete_defer_releases_transport_and_proof_changes_on
     assert retry["batch_id"] != frozen["batch_id"]
     assert fact_hash_v2(retry["items"][0], retry["binding"]) == fact_hash_v2(frozen["items"][0], frozen["binding"])
     assert payload_hash(retry) != payload_hash(frozen)
+
+
+def test_deferred_retry_is_bounded_fair_and_cannot_change_an_inflight_batch(store, monkeypatch):
+    import time
+    from types import SimpleNamespace
+    from main_logic import recommendation_feedback as module
+    store.apply_control(OWNER, control())
+    for index in range(3):
+        card = offer(store)
+        store.record(OWNER, card["id"], event(card, event_id=f"held-{index}"), control=control())
+    original = store.prepare_batch(OWNER)
+    store.acknowledge_batch(OWNER, answer(original, ["dependency_deferred"] * 3))
+    assert store.retry_deferred(OWNER) == 0
+    later = time.time() + 61
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: later))
+    seen = []
+    for _ in range(3):
+        assert store.retry_deferred(OWNER, limit=1, now=later) == 1
+        frozen = store.prepare_batch(OWNER)
+        seen.append(frozen["items"][0]["id"])
+        assert store.retry_deferred(OWNER, limit=1, now=later) == 0
+        assert store.prepare_batch(OWNER) == frozen
+        store.acknowledge_batch(OWNER, answer(frozen, ["dependency_deferred"]))
+    assert seen == [item["id"] for item in original["items"]]
+    store.apply_control(OWNER, control(1, 2))
+    assert store.retry_deferred(OWNER, now=later + 60) == 0
+    assert store.prepare_batch(OWNER) is None
+    assert store.sync_status(OWNER)["pending"] == 0
 
 
 def test_account_and_offer_context_cannot_be_rebound(store):

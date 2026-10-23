@@ -14,15 +14,21 @@ class Element {
     setAttribute() {}
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); }
 }
-async function fixture() {
+async function fixture(options = {}) {
     const elements = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices'].map(id => [id, new Element()]));
-    const data = { owner: 'account-a', upgrade: false, calls: [], devices: Array.from({ length: 5 }, (_, i) => ({
+    const events = {}, timeouts = [];
+    const data = { owner: 'account-a', protocol: 2, upgrade: false, calls: [], devices: Array.from({ length: 5 }, (_, i) => ({
         registration_id: 'old-' + i, registration_version: 1, display_name: 'Laptop ' + i, active: true, is_current: false })) };
     const fetch = async (url, options = {}) => {
         data.calls.push({ url, options });
+        if (options.signal && options.signal.aborted) throw Error('aborted');
+        if (intercept) {
+            const result = await intercept(url, options);
+            if (result) return result;
+        }
         let value;
         if (url.endsWith('page_config')) value = { autostart_csrf_token: 'fixture-csrf' };
-        else if (url.endsWith('/status')) value = { success: true, owner_key: data.owner, upgrade_required: data.upgrade };
+        else if (url.endsWith('/status')) value = { success: true, owner_key: data.owner, protocol_version: data.protocol, upgrade_required: data.upgrade };
         else if (url.endsWith('/devices')) value = { success: true, owner_key: data.owner, devices: data.devices, max_active_devices: 5 };
         else if (url.endsWith('/activate')) {
             const body = JSON.parse(options.body);
@@ -34,12 +40,14 @@ async function fixture() {
         } else throw Error(url);
         return { ok: true, json: async () => JSON.parse(JSON.stringify(value)) };
     };
-    const window = { t: key => key, addEventListener() {} };
+    const window = { t: key => key, addEventListener(name, callback) { events[name] = callback; } };
+    let intercept = options.intercept;
     vm.runInNewContext(fs.readFileSync(path.join(root, 'static/feedback-devices.js'), 'utf8'), {
         window, document: { getElementById: id => elements[id], createElement: () => new Element() }, fetch,
+        AbortSignal: { timeout(ms) { const controller = new AbortController(); timeouts.push({ms,controller}); return controller.signal; } },
     });
     await settle();
-    return { elements, data };
+    return { elements, data, events, timeouts, setIntercept(value) { intercept = value; } };
 }
 async function settle() { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); }
 
@@ -83,9 +91,90 @@ test('management copy has the same complete keys in all eight locales', () => {
     for (const locale of ['en','ja','ko','zh-CN','zh-TW','ru','pt','es']) {
         const entries = JSON.parse(fs.readFileSync(path.join(root, 'static/locales', locale + '.json'), 'utf8')).feedbackDevices;
         assert.ok(entries && Object.values(entries).every(value => typeof value === 'string' && value.length));
+        assert.equal(typeof entries.notEnabled, 'string');
         const keys = Object.keys(entries).sort();
         if (expected) assert.deepEqual(keys, expected); else expected = keys;
     }
+});
+
+test('configuration and device requests are bounded and an aborted mutation unlocks controls', async () => {
+    const s = await fixture();
+    assert.ok(s.data.calls.every(row => row.options.signal), 'all fetches need an abort deadline');
+    assert.ok(s.timeouts.every(row => row.ms > 0 && row.ms <= 15000));
+    let pending;
+    s.setIntercept((url, options) => {
+        if (!url.endsWith('/activate')) return null;
+        pending = options.signal;
+        return new Promise((_, reject) => pending.addEventListener('abort', () => reject(Error('timeout')), {once:true}));
+    });
+    s.elements['replacement-id'].value = 'old-0';
+    s.elements['replacement-id'].listeners.change();
+    s.elements.activate.click(); await settle();
+    assert.ok(s.elements.refresh.disabled);
+    s.timeouts.find(row => row.controller.signal === pending).controller.abort();
+    await settle();
+    assert.equal(s.elements.refresh.disabled, false);
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.unavailable');
+});
+
+test('default v1 explains unavailable capability and does not request devices', async () => {
+    const s = await fixture();
+    const before = s.data.calls.filter(row => row.url.endsWith('/devices')).length;
+    s.data.protocol = 1; s.elements.refresh.click(); await settle();
+    assert.equal(s.elements['device-controls'].hidden, true);
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.notEnabled');
+    assert.equal(s.elements.refresh.disabled, false);
+    assert.equal(s.data.calls.filter(row => row.url.endsWith('/devices')).length, before);
+});
+
+test('failed mutation and failed follow-up read still leave a usable retry button', async () => {
+    const s = await fixture();
+    s.setIntercept(url => {
+        if (url.endsWith('/activate') || url.endsWith('/status')) throw Error('offline');
+        return null;
+    });
+    s.elements['replacement-id'].value = 'old-0';
+    s.elements['replacement-id'].listeners.change();
+    s.elements.activate.click(); await settle();
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.unavailable');
+    assert.equal(s.elements.refresh.disabled, false);
+    s.setIntercept(null); s.elements.refresh.click(); await settle();
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.ready');
+});
+
+test('device management resumes after BFCache and rejects a stale pre-hide response', async () => {
+    const s = await fixture();
+    let oldRead;
+    s.setIntercept(url => url.endsWith('/status') ? new Promise(resolve => { oldRead = resolve; }) : null);
+    s.elements.refresh.click(); await settle();
+    s.events.pagehide(); s.setIntercept(null); s.data.owner = 'account-b';
+    assert.equal(typeof s.events.pageshow, 'function');
+    s.events.pageshow(); await settle();
+    oldRead({ok:true,json:async()=>({success:true,owner_key:'account-a',protocol_version:1})});
+    await settle();
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.ready');
+    assert.equal(s.elements['device-controls'].hidden, false);
+});
+
+test('a late status response cannot hide a newer upgrade event; BFCache can refresh again', async () => {
+    const events = {}, body = new Element();
+    let finishRead, reads = 0;
+    const window = {t:key=>key,addEventListener:(name,callback)=>{events[name]=callback;},
+        nekoLocalMutationSecurity:{getMutationHeaders:async()=>({'X-CSRF-Token':'fixture'})}};
+    vm.runInNewContext(fs.readFileSync(path.join(root,'static/feedback-upgrade-notice.js'),'utf8'), {
+        window,document:{body,readyState:'complete',hidden:false,createElement:()=>new Element()},
+        AbortSignal:{timeout:()=>undefined},
+        fetch:async()=>{reads++;return reads === 1 ? new Promise(resolve=>{finishRead=resolve;})
+            : {ok:true,json:async()=>({success:true,upgrade_required:false})};},
+    });
+    await settle(); events['neko:feedback-upgrade-required']();
+    finishRead({ok:true,json:async()=>({success:true,upgrade_required:false})}); await settle();
+    assert.equal(body.children.length, 1, 'a newer upgrade event retains its notice');
+    events.pagehide();
+    assert.equal(typeof events.pageshow, 'function');
+    events.pageshow(); await settle();
+    assert.equal(reads, 2);
+    assert.equal(body.children.length, 0);
 });
 
 test('shared upgrade notice is visible on the existing event and clears on verified focus read without a timer', async () => {
